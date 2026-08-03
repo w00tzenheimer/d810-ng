@@ -80,6 +80,9 @@ def test_constant_simplification_bundle_expands_to_private_live_stages():
         "FoldReadonlyDataRule",
         "ConstantSubtreeFoldRule",
     ]
+    assert activation.instruction_rules[0].config == {
+        "persist_global_const_annotations": True,
+    }
     assert [rule.name for rule in activation.block_rules] == [
         "ForwardConstantPropagationRule"
     ]

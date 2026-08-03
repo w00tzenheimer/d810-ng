@@ -113,7 +113,11 @@ def constant_simplification_hook_rules(
 ) -> ConstantSimplificationHookRules:
     """Expand the logical pass into its ordered live Hex-Rays stages."""
     options = _parse_options(config)
-    memory_options: dict[str, object] = {}
+    memory_options: dict[str, object] = {
+        # Private bundle-owned behavior. Direct/legacy activation of the
+        # implementation rule does not persist IDB type metadata.
+        "persist_global_const_annotations": True,
+    }
     if options.memory_policy == AGGRESSIVE_MEMORY_POLICY:
         memory_options["fold_writable_constants"] = True
     if options.allow_executable_readonly:

@@ -6,7 +6,9 @@ from d810.analyses.value_flow.global_constness import (
     GlobalConstEvidence,
     GlobalConstPolicy,
     GlobalConstReason,
+    GlobalItemConstEvidence,
     GlobalItemKind,
+    decide_global_item_const,
     decide_global_const_read,
 )
 
@@ -29,6 +31,67 @@ def _evidence(**changes: object) -> GlobalConstEvidence:
     }
     values.update(changes)
     return GlobalConstEvidence(**values)
+
+
+def _item_evidence(**changes: object) -> GlobalItemConstEvidence:
+    values: dict[str, object] = {
+        "item_head": 0x2000,
+        "item_end": 0x2040,
+        "readable": True,
+        "writable": False,
+        "executable": False,
+        "item_kind": GlobalItemKind.DATA,
+        "has_direct_write": False,
+    }
+    values.update(changes)
+    return GlobalItemConstEvidence(**values)
+
+
+@pytest.mark.parametrize(
+    ("evidence", "persist", "reason"),
+    [
+        (_item_evidence(), True, GlobalConstReason.READONLY_DATA),
+        (
+            _item_evidence(executable=True),
+            True,
+            GlobalConstReason.READONLY_DATA,
+        ),
+        (
+            _item_evidence(executable=True, item_kind=GlobalItemKind.CODE),
+            False,
+            GlobalConstReason.EXECUTABLE_ITEM_REJECTED,
+        ),
+        (
+            _item_evidence(writable=True),
+            False,
+            GlobalConstReason.WRITABLE_MEMORY,
+        ),
+        (
+            _item_evidence(has_direct_write=True),
+            False,
+            GlobalConstReason.DIRECT_WRITE_WITHOUT_STABLE_READ,
+        ),
+        (
+            _item_evidence(readable=False),
+            False,
+            GlobalConstReason.NOT_READABLE,
+        ),
+        (
+            _item_evidence(item_head=0x2040, item_end=0x2040),
+            False,
+            GlobalConstReason.READ_OUT_OF_BOUNDS,
+        ),
+    ],
+)
+def test_global_item_constness_does_not_require_a_concrete_read(
+    evidence: GlobalItemConstEvidence,
+    persist: bool,
+    reason: GlobalConstReason,
+) -> None:
+    decision = decide_global_item_const(evidence)
+
+    assert decision.can_persist_const is persist
+    assert decision.reason is reason
 
 
 @pytest.mark.parametrize(

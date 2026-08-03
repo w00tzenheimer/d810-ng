@@ -28,9 +28,7 @@ class GlobalConstReason(str, Enum):
     READONLY_DATA = "readonly_data"
     INITIALIZER_STABLE_AT_READ = "initializer_stable_at_read"
     AGGRESSIVE_NO_DIRECT_WRITES = "aggressive_no_direct_writes"
-    DANGEROUS_EXECUTABLE_READONLY_OVERRIDE = (
-        "dangerous_executable_readonly_override"
-    )
+    DANGEROUS_EXECUTABLE_READONLY_OVERRIDE = "dangerous_executable_readonly_override"
     NOT_READABLE = "not_readable"
     WRITABLE_MEMORY = "writable_memory"
     DIRECT_WRITE_WITHOUT_STABLE_READ = "direct_write_without_stable_read"
@@ -73,7 +71,74 @@ class GlobalConstDecision:
     used_dangerous_override: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class GlobalItemConstEvidence:
+    """Facts needed to classify one complete canonical data item."""
+
+    item_head: int
+    item_end: int
+    readable: bool
+    writable: bool
+    executable: bool
+    item_kind: GlobalItemKind
+    has_direct_write: bool
+
+
+@dataclass(frozen=True, slots=True)
+class GlobalItemConstDecision:
+    """Persistent-type decision independent of any concrete element read."""
+
+    can_persist_const: bool
+    reason: GlobalConstReason
+
+
 _SUPPORTED_WIDTHS = frozenset({1, 2, 4, 8})
+
+
+def decide_global_item_const(
+    evidence: GlobalItemConstEvidence,
+) -> GlobalItemConstDecision:
+    """Decide whether a complete IDA item may receive persistent ``const``.
+
+    This question deliberately excludes read widths, initializer values, and
+    pointer filters. Those facts govern materializing one concrete read, not
+    whether the backing item is immutable.
+    """
+
+    if evidence.item_end <= evidence.item_head:
+        return GlobalItemConstDecision(
+            can_persist_const=False,
+            reason=GlobalConstReason.READ_OUT_OF_BOUNDS,
+        )
+    if not evidence.readable:
+        return GlobalItemConstDecision(
+            can_persist_const=False,
+            reason=GlobalConstReason.NOT_READABLE,
+        )
+    if evidence.has_direct_write:
+        return GlobalItemConstDecision(
+            can_persist_const=False,
+            reason=GlobalConstReason.DIRECT_WRITE_WITHOUT_STABLE_READ,
+        )
+    if evidence.writable:
+        return GlobalItemConstDecision(
+            can_persist_const=False,
+            reason=GlobalConstReason.WRITABLE_MEMORY,
+        )
+    if evidence.item_kind is GlobalItemKind.DATA:
+        return GlobalItemConstDecision(
+            can_persist_const=True,
+            reason=GlobalConstReason.READONLY_DATA,
+        )
+    if evidence.executable:
+        return GlobalItemConstDecision(
+            can_persist_const=False,
+            reason=GlobalConstReason.EXECUTABLE_ITEM_REJECTED,
+        )
+    return GlobalItemConstDecision(
+        can_persist_const=False,
+        reason=GlobalConstReason.UNSUPPORTED_ITEM_KIND,
+    )
 
 
 def _reject(reason: GlobalConstReason) -> GlobalConstDecision:
@@ -178,6 +243,9 @@ __all__ = [
     "GlobalConstEvidence",
     "GlobalConstPolicy",
     "GlobalConstReason",
+    "GlobalItemConstDecision",
+    "GlobalItemConstEvidence",
     "GlobalItemKind",
+    "decide_global_item_const",
     "decide_global_const_read",
 ]
