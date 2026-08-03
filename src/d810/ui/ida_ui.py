@@ -16,11 +16,15 @@ if typing.TYPE_CHECKING:
 
 from d810.core.config import ProjectConfiguration, RuleConfiguration
 from d810.core.logging import LoggerConfigurator, getLogger
+from d810.manager.project_runtime import ProjectConfigMode
 from d810.ui.project_config_logic import (
     ConfigEditMode,
+    ConfigV2FocusTarget,
     ConfigSaveStrategy,
     ProjectConfigView,
     build_project_config_view,
+    config_v2_user_destination,
+    resolve_config_v2_focus_target,
     select_config_edit_policy,
 )
 from d810.ui.project_picker_logic import build_project_picker_entries
@@ -28,6 +32,7 @@ from d810.ui.project_picker_popup import ProjectPickerPopup
 from d810.ui.rule_detail import RuleDetailPanel
 from d810.ui.icon_assets import bundled_icon
 from d810.ui.rule_tree import RuleTreeWidget
+from d810.ui.rule_tree_logic import RuleTreeContextRequest, apply_context_action
 from d810.ui.testbed import TestRunnerForm
 
 logger = getLogger("D810.ui")
@@ -486,6 +491,7 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
             if hasattr(self, "_rule_tree") and self._rule_tree is not None:
                 self._rule_tree.rule_selected.disconnect()
                 self._rule_tree.rule_toggled.disconnect()
+                self._rule_tree.context_action_requested.disconnect()
 
             if hasattr(self, "_rule_detail") and self._rule_detail is not None:
                 self._rule_detail.config_changed.disconnect()
@@ -704,7 +710,10 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         self._splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal, self._rules_content)
         rules_content_layout.addWidget(self._splitter, stretch=1)
 
-        self._rule_tree = RuleTreeWidget(self._splitter)
+        self._rule_tree = RuleTreeWidget(
+            self._splitter,
+            context_actions_enabled=True,
+        )
         self._splitter.addWidget(self._rule_tree)
         self._rule_tree.setMinimumWidth(280)
 
@@ -719,6 +728,9 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         # Wire signals
         self._rule_tree.rule_selected.connect(self._on_rule_selected)
         self._rule_tree.rule_toggled.connect(self._on_rule_toggled)
+        self._rule_tree.context_action_requested.connect(
+            self._on_rule_context_action
+        )
         self._rule_detail.config_changed.connect(self._on_config_changed)
 
         # Populate tree with all known rules (initially in read-only mode)
@@ -826,6 +838,67 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         """Track rule enable/disable state (already handled by the tree)."""
         if logger.debug_on:
             logger.debug("Rule toggled: %s -> %s", rule.name, is_enabled)
+
+    def _on_rule_context_action(self, request: RuleTreeContextRequest) -> None:
+        """Route a rule-tree intent into the correct project editing workflow."""
+
+        snapshot = self.state.get_project_runtime_snapshot()
+        if snapshot is None:
+            QtWidgets.QMessageBox.warning(
+                self.parent,
+                "Rule editing unavailable",
+                "No active project runtime is available.",
+            )
+            return
+
+        policy = select_config_edit_policy(ConfigEditMode.EDIT, snapshot)
+        if not policy.allowed:
+            QtWidgets.QMessageBox.warning(
+                self.parent,
+                "Rule editing unavailable",
+                policy.explanation,
+            )
+            return
+
+        if snapshot.mode is ProjectConfigMode.CONFIG_V2:
+            destination = self._choose_config_v2_destination(
+                snapshot,
+                duplicate=False,
+            )
+            if destination is None:
+                return
+            focus_target = resolve_config_v2_focus_target(
+                request.target,
+                snapshot.effective_pass_ids,
+                self.state.get_workbench_recipe_catalog(),
+            )
+            self._open_config_v2_editor(
+                destination,
+                focus_target=focus_target,
+            )
+            return
+
+        if self._edit_mode is None:
+            current = self.state.current_project
+            self._enter_edit_mode(
+                ConfigEditMode.EDIT,
+                current.description,
+                current.ins_rules,
+                current.blk_rules,
+                current.path,
+                current,
+                snapshot,
+                policy.rules_editable,
+            )
+
+        enabled_names = apply_context_action(
+            self._rule_tree.get_enabled_rule_names(),
+            request.target,
+            request.action,
+        )
+        self._rule_tree.set_enabled_rules(enabled_names)
+        if request.target.rule_name:
+            self._rule_tree.select_rule(request.target.rule_name)
 
     def _on_config_changed(self, param_name: str, value) -> None:
         """Store config changes for the currently-selected rule."""
@@ -1160,11 +1233,10 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
     ) -> pathlib.Path | None:
         config_dir = pathlib.Path(self.state.d810_config.config_dir).resolve()
         runtime_path = pathlib.Path(snapshot.runtime.path).resolve()
-        if not duplicate and runtime_path.parent == config_dir:
-            default = runtime_path
-        else:
-            suffix = "copy" if duplicate else "user"
-            default = config_dir / f"{runtime_path.stem}_{suffix}.json"
+        default = config_v2_user_destination(config_dir, runtime_path)
+        if not duplicate:
+            return default
+        default = config_dir / f"{runtime_path.stem}_copy.json"
         destination, _ = QtWidgets.QFileDialog.getSaveFileName(
             self.parent,
             "Choose a lossless config-v2 project destination",
@@ -1173,7 +1245,12 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         )
         return pathlib.Path(destination) if destination else None
 
-    def _open_config_v2_editor(self, destination: pathlib.Path) -> None:
+    def _open_config_v2_editor(
+        self,
+        destination: pathlib.Path,
+        *,
+        focus_target: ConfigV2FocusTarget | None = None,
+    ) -> None:
         from d810.ui.config_v2_editing_commands import ConfigV2EditingAdapter
         from d810.ui.config_v2_editing_panel import ConfigV2EditingPanel
 
@@ -1187,6 +1264,7 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
             editor = ConfigV2EditingPanel(
                 adapter,
                 on_saved=self._refresh_config_v2_project_view,
+                focus_target=focus_target,
             )
         except Exception as exc:
             logger.warning("Config-v2 project editor failed: %s", exc)
