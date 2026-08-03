@@ -25,18 +25,20 @@ readable, non-writable IDA data item with no direct write xref anywhere in its
 half-open item range. Writable items, code, tails, unresolved bytes, missing
 segments, and contradictory write evidence abstain.
 
-The Hex-Rays backend enumerates data references from every instruction in the
-current function, canonicalizes interior references to item heads, captures
-item-level evidence, and obtains the existing IDA type. When no type exists,
-it may use the same bounded unsigned 1/2/4/8-byte fallback as
-`const_globals.py`; larger untyped items abstain.
+The Hex-Rays backend uses two complementary evidence sources. Defined data
+items come from function data xrefs and are canonicalized to their existing IDA
+item heads. Undefined dynamic tables come from an architecture-neutral
+microcode footprint such as `base + 4 * (index & 7)`: the offset interval and
+load width prove a 32-byte range and an eight-element unsigned array even when
+IDA currently models only one unknown byte at `base`.
 
-The manager runs this backend at the existing `hxe_flowchart` preanalysis
-boundary only when config-v2 activates `constant-simplification`. If at least
-one IDB type changes, the callback requests one Hex-Rays `MERR_REDO`. The
-restarted flowchart observes the already-applied types, makes no further
-changes, and proceeds into the existing memory-resolution, expression-folding,
-and flow-propagation stages.
+The private `FoldReadonlyDataRule` invokes this backend only when config-v2's
+public `constant-simplification` bundle supplies its internal persistence flag.
+It scans defined references once at `MMAT_CALLS` and inspects each `ldx` for a
+bounded dynamic footprint. Type changes are immediately visible in the IDB;
+the current runtime-indexed expression remains dynamic, and later
+decompilations consume the persisted annotation. No Hex-Rays redo or new
+public pass is required.
 
 ## Platform Independence
 
@@ -71,10 +73,10 @@ mode can remove any const qualifier regardless of ownership.
 
 ## Runtime Activation
 
-`PipelineV2HookActivation` carries the validated
-`ConstantSimplificationOptions` when the public pass is present. Runtime
-project activation passes that immutable descriptor to the manager. Legacy
-rule configurations do not activate global annotation.
+The public pass expansion supplies the internal
+`persist_global_const_annotations=true` setting to its memory rule. The same
+private rule defaults the setting to false, so legacy/direct configurations do
+not activate global annotation.
 
 The annotation stage ignores `memory_policy=aggressive_no_direct_writes`
 because writable-memory heuristics never prove whole-item immutability. It also
@@ -83,10 +85,10 @@ their existing meanings for per-read materialization.
 
 ## Diagnostics
 
-Each function annotation run returns a typed report with one outcome per
-canonical item and aggregate changed/applied/removed counts. Debug logging
-records item EAs and stable reasons. A redo decision includes the counts so a
-diagnostic snapshot can explain why Hex-Rays restarted.
+Each annotation run returns a typed report with one outcome per canonical item
+and aggregate changed/applied/removed counts. Logging records exact half-open
+item ranges, element counts, and stable reasons. Failures are diagnostic only
+and never gate the existing peephole rewrite.
 
 ## Verification
 
@@ -95,9 +97,8 @@ Verification must prove:
 - item-level policy is independent of read width and pointer-like values;
 - R+X data is eligible while R+X code remains ineligible;
 - writable and directly-written items are ineligible in every memory policy;
-- dynamic indexed table references resolve to their canonical table item;
-- applying `const` causes exactly one bounded redo and the second pass is
-  idempotent;
+- dynamic indexed table references prove the complete bounded table range;
+- applying `const` changes the IDB exactly once and a second run is idempotent;
 - D810-owned stale const is removed while user-owned or user-edited const is
   preserved;
 - the dangerous executable override never persists const;

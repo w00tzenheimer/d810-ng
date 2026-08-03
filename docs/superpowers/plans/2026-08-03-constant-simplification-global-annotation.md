@@ -4,9 +4,13 @@
 
 **Goal:** Let the existing `constant-simplification` operation persist safe whole-table `const` types even when a runtime index prevents computing a concrete read address.
 
-**Architecture:** Add an IDA-free item-level decision beside the concrete-read oracle, then add a Hex-Rays annotation backend with IDB-local ownership receipts. Activate it at the existing flowchart preanalysis boundary and request a bounded redo only when an IDB type changed; the current three microcode stages remain unchanged.
+**Architecture:** Add an IDA-free item-level decision beside the concrete-read oracle, then add a Hex-Rays annotation backend with IDB-local ownership receipts. Defined items come from data xrefs; undefined dynamic tables come from bounded `ldx` microcode footprints. The existing public bundle enables persistence on its private memory rule, while direct legacy activation leaves it disabled.
 
 **Tech Stack:** Python 3.11+, pytest, IDA 9.x/Hex-Rays hooks, IDAPython type/xref/netnode APIs, config-v2, ast-grep, import-linter, graphify.
+
+**Status:** Implemented and verified on 2026-08-03. The realized integration
+uses the private memory rule's microcode callbacks rather than a flowchart redo;
+the design document records that evidence-driven correction.
 
 ## Global Constraints
 
@@ -83,34 +87,33 @@
 
   Run the Task 2 command and require zero failures.
 
-### Task 3: Config-v2 activation and bounded Hex-Rays redo
+### Task 3: Config-v2 activation through the existing memory rule
 
 **Files:**
-- Modify: `src/d810/passes/pipeline_v2_hook_bridge.py`
-- Modify: `src/d810/manager/state.py`
-- Modify: `src/d810/manager/manager.py`
+- Modify: `src/d810/passes/constant_simplification.py`
+- Modify: `src/d810/optimizers/microcode/instructions/peephole/fold_readonlydata.py`
 - Modify: `tests/unit/passes/test_pipeline_v2_hook_bridge.py`
 - Modify: `tests/system/runtime/backends/hexrays/test_global_const_annotation.py`
 
 **Interfaces:**
 - Consumes: validated `ConstantSimplificationOptions` from the public config-v2 pass.
-- Produces: `PipelineV2HookActivation.constant_simplification_options` and a manager flowchart event handler that sets `decision.request_redo` only when the annotation report changed an IDB type.
+- Produces: a bundle-owned `persist_global_const_annotations` setting that is false for direct legacy rule activation.
 
-- [ ] **Step 1: Write failing activation and redo tests**
+- [ ] **Step 1: Write failing activation and public-operation tests**
 
-  Assert config-v2 activation carries options only when `constant-simplification` is present. In the real-IDA test, remove const from the lookup table, decompile once with the operation active, and assert the table becomes const and the repeated flowchart run is idempotent.
+  Assert bundle expansion configures persistence on the memory rule. In the real-IDA test, remove const from the lookup table, decompile once with the operation active, and assert the table becomes const and a repeated backend run is idempotent.
 
 - [ ] **Step 2: Run both focused tests and verify RED**
 
   Run the unit activation test and the Task 2 Docker command. Require failures for the missing activation field and missing callback behavior.
 
-- [ ] **Step 3: Wire immutable options into manager configuration**
+- [ ] **Step 3: Wire the internal bundle option**
 
-  Populate the activation field from `_parse_options`, pass it as a private runtime manager setting, and leave legacy/default activation as `None`.
+  Set the private memory-rule option in `constant_simplification.py`; keep the rule's schema default false.
 
-- [ ] **Step 4: Add the flowchart annotation event handler**
+- [ ] **Step 4: Add the microcode annotation bridge**
 
-  Register the manager-owned callback before generic flowchart preanalysis. Lazily invoke the Hex-Rays backend and call `request_hexrays_redo` with applied/removed counts only when `report.changed_count > 0`.
+  At `MMAT_CALLS`, annotate defined referenced items once and inspect `ldx` instructions for bounded dynamic table footprints. Keep annotation failures non-fatal and independent of read-folding eligibility.
 
 - [ ] **Step 5: Run focused tests and verify GREEN**
 
@@ -150,4 +153,4 @@
 
 - [ ] **Step 5: Capture supported before/after evidence**
 
-  Run `tools/scripts/run_system_tests_docker.sh dump` against `global_const_simple_lookup` with `default_instruction_only_config_v2_canary.json`, diagnostics enabled, and the `pseudocode_dump` marker. Record the table tinfo before and after, the bounded redo diagnostic, and the resulting pseudocode without claiming that an unknown runtime index became one literal.
+  Run the real-IDA public-operation regression against `global_const_simple_lookup` through `run_system_tests_docker.sh`. Record the table tinfo before and after and the resulting pseudocode without claiming that an unknown runtime index became one literal.

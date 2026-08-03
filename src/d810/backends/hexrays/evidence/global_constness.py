@@ -11,6 +11,7 @@ from d810.analyses.value_flow.global_constness import (
     GlobalConstDecision,
     GlobalConstEvidence,
     GlobalConstPolicy,
+    GlobalItemConstEvidence,
     GlobalItemKind,
     decide_global_const_read,
 )
@@ -176,6 +177,53 @@ def capture_hexrays_global_const_evidence(
     )
 
 
+def capture_hexrays_global_item_const_evidence(
+    address: int,
+) -> GlobalItemConstEvidence:
+    """Capture facts for the complete canonical item containing ``address``."""
+
+    item_head, item_end, item_kind = _canonical_item(int(address), 0)
+    readable, writable, executable = _segment_permissions(item_head)
+    return GlobalItemConstEvidence(
+        item_head=item_head,
+        item_end=item_end,
+        readable=readable,
+        writable=writable,
+        executable=executable,
+        item_kind=item_kind,
+        has_direct_write=_has_direct_write(item_head, item_end),
+    )
+
+
+def capture_hexrays_global_item_range_const_evidence(
+    item_head: int,
+    item_end: int,
+) -> GlobalItemConstEvidence:
+    """Capture a microcode-proven data range not yet defined as an IDA item."""
+
+    item_head = int(item_head)
+    item_end = int(item_end)
+    readable, writable, executable = _segment_permissions(item_head)
+    try:
+        segment = ida_segment.getseg(item_head)
+        range_is_loaded = segment is not None and item_end <= int(segment.end_ea)
+    except Exception:
+        range_is_loaded = False
+    return GlobalItemConstEvidence(
+        item_head=item_head,
+        item_end=item_end,
+        readable=readable and range_is_loaded,
+        writable=writable,
+        executable=executable,
+        # A bounded ldx address expression is direct evidence of a data read,
+        # even when IDA has not created the backing array item yet.
+        item_kind=GlobalItemKind.DATA,
+        has_direct_write=(
+            _has_direct_write(item_head, item_end) if range_is_loaded else False
+        ),
+    )
+
+
 def decide_hexrays_global_read(
     address: int,
     size: int,
@@ -202,5 +250,7 @@ def decide_hexrays_global_read(
 
 __all__ = [
     "capture_hexrays_global_const_evidence",
+    "capture_hexrays_global_item_const_evidence",
+    "capture_hexrays_global_item_range_const_evidence",
     "decide_hexrays_global_read",
 ]

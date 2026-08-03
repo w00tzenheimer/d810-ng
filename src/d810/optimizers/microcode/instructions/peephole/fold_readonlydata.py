@@ -81,6 +81,11 @@ from d810.analyses.value_flow.global_constness import (
 from d810.backends.hexrays.evidence.global_constness import (
     decide_hexrays_global_read,
 )
+from d810.backends.hexrays.global_const_annotation import (
+    annotate_function_global_consts,
+    annotate_global_table_access,
+    discover_dynamic_global_table_access,
+)
 from d810.evaluator.evaluators import evaluate_concrete
 
 # Opcodes where the right operand (shift amount) must have size == 1.
@@ -198,6 +203,12 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
             False,
             "VERY DANGEROUS: treat executable read-only memory as constant data",
         ),
+        ConfigParam(
+            "persist_global_const_annotations",
+            bool,
+            False,
+            "Bundle-owned: persist const types for proven global data items",
+        ),
     )
 
     DESCRIPTION = (
@@ -226,6 +237,13 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
         # write cross-references.  This is needed for hardened OLLVM where
         # opaque constant tables are placed in .data (writable) segments.
         self._fold_writable_constants: bool = False
+        # This is enabled by the public constant-simplification bundle only.
+        # Direct/legacy activation of this private rule remains non-persistent.
+        self._persist_global_const_annotations: bool = False
+        self._annotated_calls_mba_identity: int | None = None
+        self._dynamic_annotation_mba_identity: int | None = None
+        self._dynamic_annotation_maturity: int | None = None
+        self._dynamic_annotation_keys: set[tuple[int, int, int, int]] = set()
 
     def configure(self, kwargs: dict) -> None:
         """Configure rule from project settings."""
@@ -240,6 +258,111 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
             )
         # "fold_writable_constants": true
         self._fold_writable_constants = kwargs.get("fold_writable_constants", False)
+        self._persist_global_const_annotations = kwargs.get(
+            "persist_global_const_annotations",
+            False,
+        )
+
+    def _persist_proven_global_consts(
+        self,
+        blk: ida_hexrays.mblock_t | None,
+        ins: ida_hexrays.minsn_t,
+    ) -> None:
+        """Persist safe const metadata without affecting rewrite eligibility."""
+
+        if not self._persist_global_const_annotations:
+            return
+        try:
+            mba = None if blk is None else blk.mba
+            maturity = -1 if mba is None else int(mba.maturity)
+            try:
+                mba_identity = None if mba is None else int(mba.this)
+            except (AttributeError, TypeError, ValueError):
+                mba_identity = None if mba is None else id(mba)
+            if maturity != int(ida_hexrays.MMAT_CALLS):
+                # A new decompilation reaches earlier maturities before CALLS,
+                # so this also makes immediate native-pointer reuse harmless.
+                self._annotated_calls_mba_identity = None
+            else:
+                assert mba is not None
+                assert mba_identity is not None
+                if self._annotated_calls_mba_identity != mba_identity:
+                    self._annotated_calls_mba_identity = mba_identity
+                    report = annotate_function_global_consts(int(mba.entry_ea))
+                else:
+                    report = None
+                if report is not None:
+                    function_ea = int(mba.entry_ea)
+                    for outcome in report.outcomes:
+                        peephole_logger.debug(
+                            "constant-simplification global annotation "
+                            "function=0x%X item=0x%X..0x%X status=%s reason=%s",
+                            function_ea,
+                            outcome.item_head,
+                            outcome.item_end,
+                            outcome.status.value,
+                            outcome.reason.value,
+                        )
+                if report is not None and report.changed_count:
+                    peephole_logger.info(
+                        "constant-simplification updated %d referenced global "
+                        "const annotation(s) for function 0x%X",
+                        report.changed_count,
+                        function_ea,
+                    )
+
+            access = discover_dynamic_global_table_access(ins)
+            if access is None:
+                return
+            starts_new_mba = self._dynamic_annotation_mba_identity != mba_identity
+            restarts_preoptimized = maturity == int(
+                ida_hexrays.MMAT_PREOPTIMIZED
+            ) and self._dynamic_annotation_maturity != int(
+                ida_hexrays.MMAT_PREOPTIMIZED
+            )
+            if starts_new_mba or restarts_preoptimized:
+                self._dynamic_annotation_keys.clear()
+                self._dynamic_annotation_mba_identity = mba_identity
+            self._dynamic_annotation_maturity = maturity
+            access_key = (
+                access.item_head,
+                access.item_end,
+                access.element_size,
+                access.element_count,
+            )
+            if access_key in self._dynamic_annotation_keys:
+                return
+            self._dynamic_annotation_keys.add(access_key)
+            report = annotate_global_table_access(access)
+            outcome = report.outcomes[0]
+            peephole_logger.debug(
+                "constant-simplification bounded table annotation "
+                "instruction=0x%X item=0x%X..0x%X elements=%d width=%d "
+                "status=%s reason=%s",
+                access.instruction_ea,
+                access.item_head,
+                access.item_end,
+                access.element_count,
+                access.element_size,
+                outcome.status.value,
+                outcome.reason.value,
+            )
+            if report.changed_count:
+                peephole_logger.info(
+                    "constant-simplification persisted bounded const table "
+                    "0x%X..0x%X (%d x %d-byte elements)",
+                    access.item_head,
+                    access.item_end,
+                    access.element_count,
+                    access.element_size,
+                )
+        except Exception:
+            # Persistent metadata is an optional enrichment. A backend/type
+            # failure must never abort or change the peephole rewrite itself.
+            peephole_logger.debug(
+                "constant-simplification could not persist global const metadata",
+                exc_info=True,
+            )
 
     # --------------------------------------------------------------------- #
     # Helper functions                                                      #
@@ -272,6 +395,8 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
         self, blk: ida_hexrays.mblock_t | None, ins: ida_hexrays.minsn_t
     ) -> ida_hexrays.minsn_t | None:
         """Try to rewrite *ins*.  Return modified instruction or None."""
+
+        self._persist_proven_global_consts(blk, ins)
 
         # Attempt the **direct displacement** form first ------------------ #
         ea = self._ea_from_direct_load(ins)
