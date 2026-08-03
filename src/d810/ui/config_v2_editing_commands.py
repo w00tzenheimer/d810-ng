@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pathlib
+import dataclasses
 from collections.abc import Mapping, Sequence
 
 from d810.manager.config_v2_edit_models import (
@@ -122,6 +123,19 @@ class ConfigV2EditingAdapter:
                 require=require,
                 deny=deny,
             )
+        )
+
+    def retarget(
+        self,
+        draft: ConfigV2ProjectDraft,
+        destination: pathlib.Path,
+    ) -> tuple[ConfigV2ProjectDraft, ConfigV2ProjectValidation]:
+        """Move an in-progress draft to a new destination and revalidate it."""
+
+        destination_path = pathlib.Path(destination).expanduser().resolve()
+        self._destination = destination_path
+        return self._edited(
+            dataclasses.replace(draft, destination_path=destination_path)
         )
 
     def save(

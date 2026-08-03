@@ -73,6 +73,23 @@ def test_panel_forwards_typed_mutations_and_save_to_adapter() -> None:
     }.issubset(calls)
 
 
+def test_panel_accepts_focus_and_exposes_explicit_save_as() -> None:
+    init_source = ast.unparse(_method("__init__"))
+    create_source = ast.unparse(_method("OnCreate"))
+
+    assert "focus_target" in init_source
+    assert "Save as another config" in init_source
+    assert "save_as" in create_source
+
+
+def test_panel_save_as_retargets_the_current_draft() -> None:
+    method = _method("_save_as")
+    calls = _calls(method)
+
+    assert "getSaveFileName" in calls
+    assert "retarget" in calls
+
+
 def test_complete_and_unsupported_documents_are_read_only() -> None:
     init_calls = _calls(_method("__init__"))
     assert "setReadOnly" in init_calls

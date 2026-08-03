@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import pathlib
 
 from d810.core import typing
 from d810.core.logging import getLogger
@@ -11,6 +12,7 @@ from d810.ui.config_v2_editing_logic import (
     project_config_v2_document,
     project_serializer_rows,
 )
+from d810.ui.project_config_logic import ConfigV2FocusTarget
 
 logger = getLogger("D810.ui")
 
@@ -42,10 +44,13 @@ if IDA_AVAILABLE:
             adapter: typing.Any,
             *,
             on_saved: typing.Callable[[], None] | None = None,
+            focus_target: ConfigV2FocusTarget | None = None,
         ) -> None:
             ida_kernwin.PluginForm.__init__(self)
             self._adapter = adapter
             self._on_saved = on_saved
+            self._focus_target = focus_target
+            self._focus_applied = False
             self._manifest = tuple(adapter.manifest())
             self._catalog = tuple(adapter.catalog())
             self._draft, self._validation = adapter.reset()
@@ -113,6 +118,7 @@ if IDA_AVAILABLE:
             self.reset_button.setToolTip(
                 "Restore the complete runtime source and any originating recipe seed"
             )
+            self.save_as_button = QtWidgets.QPushButton("Save as another config...")
             self.save_button = QtWidgets.QPushButton("Save atomically and reload")
 
             self.description_button.clicked.connect(self._set_description)
@@ -128,6 +134,7 @@ if IDA_AVAILABLE:
             self.routing_button.clicked.connect(self._edit_routing)
             self.validate_button.clicked.connect(self._validate)
             self.reset_button.clicked.connect(self._reset)
+            self.save_as_button.clicked.connect(self._save_as)
             self.save_button.clicked.connect(self._save)
             self._render()
 
@@ -203,6 +210,7 @@ if IDA_AVAILABLE:
             action_row.addWidget(self.reset_button)
             action_row.addStretch(1)
             action_row.addWidget(self.validate_button)
+            action_row.addWidget(self.save_as_button)
             action_row.addWidget(self.save_button)
 
             layout = QtWidgets.QVBoxLayout(self.parent)
@@ -248,6 +256,7 @@ if IDA_AVAILABLE:
 
         def _render(self) -> None:
             self._view = project_config_v2_document(self._draft)
+            self.destination_label.setText(str(self._adapter.destination))
             serializer_rows = project_serializer_rows(self._manifest)
             actions = {
                 item.action_id: item
@@ -275,6 +284,8 @@ if IDA_AVAILABLE:
                     min(max(selected, 0), len(self._view.pipeline_rows) - 1)
                 )
 
+            self._apply_focus_target()
+
             if not self.description_edit.hasFocus():
                 self.description_edit.setPlainText(self._view.description)
             self.routing_view.setPlainText(self._view.routing_json)
@@ -292,6 +303,30 @@ if IDA_AVAILABLE:
             save = actions["save_project"]
             self.save_button.setEnabled(save.enabled)
             self.save_button.setToolTip(save.reason)
+
+        def _apply_focus_target(self) -> None:
+            """Select one requested pass, or report why focus was not possible."""
+
+            if self._focus_applied or self._focus_target is None:
+                return
+            target = self._focus_target
+            if target.pass_id is None:
+                self._set_status(target.message)
+                self._focus_applied = True
+                return
+            matches = [
+                row.index
+                for row in self._view.pipeline_rows
+                if row.pass_id == target.pass_id
+            ]
+            if len(matches) == 1:
+                self.pipeline_list.setCurrentRow(matches[0])
+                self._set_status(target.message)
+            else:
+                self._set_status(
+                    f"{target.message} The pass row was not uniquely present in this draft."
+                )
+            self._focus_applied = True
 
         def _selected_pass_index(self) -> int | None:
             index = self.pipeline_list.currentRow()
@@ -481,6 +516,30 @@ if IDA_AVAILABLE:
                 self._set_status(
                     "\n".join(item.message for item in self._validation.diagnostics)
                 )
+            self._render()
+
+        def _save_as(self, checked: bool = False) -> None:
+            del checked
+            destination, _ = QtWidgets.QFileDialog.getSaveFileName(
+                self.parent,
+                "Save config-v2 project as",
+                str(self._adapter.destination),
+                "D810 project configurations (*.json)",
+            )
+            if not destination:
+                return
+            try:
+                self._draft, self._validation = self._adapter.retarget(
+                    self._draft,
+                    pathlib.Path(destination),
+                )
+            except Exception as exc:
+                logger.warning("Config-v2 Save As failed: %s", exc)
+                self._set_status(f"Save As failed: {exc}")
+                return
+            self._set_status(
+                f"Draft destination changed to {self._adapter.destination}."
+            )
             self._render()
 
         def _save(self, checked: bool = False) -> None:
