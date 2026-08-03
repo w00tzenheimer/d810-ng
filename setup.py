@@ -119,6 +119,89 @@ def _windows_sdk_lib_subdir(
     return "x64_win_vc_64" if is_64bit else "x64_win_32"
 
 
+# IDA SDK 9.4 stopped shipping lib/x64_win_qt, the prebuilt namespaced Qt6
+# import libraries, and the GitHub SDK this file downloads has never carried
+# them for 9.4. ida-qt-libs republishes them, built with QT_NAMESPACE=QT and
+# symbol-for-symbol identical to the last set Hex-Rays shipped.
+IDA_QT_REPO = "mahmoudimus/ida-qt-libs"
+IDA_QT_TAG = "ida-9.4.0-qt-6.8.2-win64"
+DEFAULT_QT_DIR = pathlib.Path(__file__).parent / ".ida-qt"
+
+
+def _download_ida_qt(
+    dest: pathlib.Path = DEFAULT_QT_DIR, tag: str = IDA_QT_TAG
+) -> pathlib.Path:
+    """Download and checksum-verify an ida-qt-libs release into *dest*."""
+    import hashlib
+    import zipfile
+
+    base = f"https://github.com/{IDA_QT_REPO}/releases/download/{tag}"
+    dest.mkdir(parents=True, exist_ok=True)
+
+    with urllib.request.urlopen(f"{base}/SHA256SUMS") as response:
+        checksums = {
+            parts[1]: parts[0]
+            for parts in (
+                line.split() for line in response.read().decode().splitlines()
+            )
+            if len(parts) == 2
+        }
+
+    archive = dest / f"{tag}.zip"
+    if not archive.is_file():
+        print(f"Downloading {tag} from {IDA_QT_REPO}...", file=sys.stderr)
+        urllib.request.urlretrieve(f"{base}/{tag}.zip", archive)
+
+    digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+    expected = checksums.get(archive.name)
+    if digest != expected:
+        archive.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"Checksum mismatch for {archive.name}: "
+            f"expected {expected}, got {digest}"
+        )
+
+    with zipfile.ZipFile(archive) as bundle:
+        bundle.extractall(dest)
+    print(f"Qt import libraries extracted to: {dest / tag}", file=sys.stderr)
+    return dest / tag
+
+
+def ensure_ida_qt(sdk_path: pathlib.Path) -> pathlib.Path | None:
+    """Return a directory containing Qt6*.lib, or None if unavailable.
+
+    Resolution order:
+      1. ``IDA_QT`` - an extracted ida-qt-libs release, or any directory of
+         namespaced Qt import libraries.
+      2. The SDK's own ``lib/x64_win_qt``, present through SDK 9.3.
+      3. A downloaded ida-qt-libs release, unless ``IDA_QT_NO_DOWNLOAD`` is set.
+    """
+    override = os.environ.get("IDA_QT")
+    if override:
+        candidate = pathlib.Path(override)
+        for path in (candidate / "lib", candidate):
+            if path.is_dir() and any(path.glob("Qt6*.lib")):
+                return path
+        raise FileNotFoundError(f"IDA_QT={override} contains no Qt6*.lib")
+
+    bundled = _sdk_lib_dir(sdk_path, "x64_win_qt")
+    if bundled.is_dir() and any(bundled.glob("Qt*.lib")):
+        print(f"Using SDK-bundled Qt at: {bundled}", file=sys.stderr)
+        return bundled
+
+    if os.environ.get("IDA_QT_NO_DOWNLOAD"):
+        print(
+            "No Qt import libraries found and IDA_QT_NO_DOWNLOAD is set",
+            file=sys.stderr,
+        )
+        return None
+
+    extracted = DEFAULT_QT_DIR / IDA_QT_TAG
+    if not (extracted / "lib").is_dir():
+        extracted = _download_ida_qt()
+    return extracted / "lib"
+
+
 def _ida_runtime_lib_dir() -> pathlib.Path | None:
     """Return the live IDA runtime library directory when available."""
     install_dir = os.environ.get("IDA_INSTALL_DIR") or os.environ.get("IDA_PREFIX")
@@ -226,7 +309,18 @@ def get_compile_args(sdk_version: int = 0):
     """Return platform-specific compilation arguments."""
     if OSTYPE == "Windows":
         standard_args = ["/std:c++17"] if int(sdk_version) >= 940 else []
-        return ["/TP", "/EHa"] + standard_args + (["/Z7", "/Od"] if DEBUG else [])
+        # Qt 6 headers require MSVC conformance mode. Without
+        # /Zc:__cplusplus MSVC reports __cplusplus as 199711L whatever /std:
+        # says and qcompilerdetection.h raises C1189; without /permissive-
+        # ADL resolves Qt's comparesEqual/compareThreeWay ambiguously (C2666)
+        # and an incomplete QString trips C2139.
+        qt_args = ["/Zc:__cplusplus", "/permissive-"]
+        return (
+            ["/TP", "/EHa"]
+            + standard_args
+            + qt_args
+            + (["/Z7", "/Od"] if DEBUG else [])
+        )
     elif OSTYPE == "Linux":
         base = ["-Wno-stringop-truncation", "-Wno-catch-value", "-Wno-unused-variable"]
         return base + (["-g", "-O0"] if DEBUG else [])
@@ -286,12 +380,26 @@ def get_ext_modules():
     # Platform-specific library paths
     runtime_library_dirs = []
     if OSTYPE == "Windows":
-        library_dirs.extend(
-            [
-                str(_sdk_lib_dir(IDA_SDK, _windows_sdk_lib_subdir(sdk_version))),
-                str(_sdk_lib_dir(IDA_SDK, "x64_win_qt")),
-            ]
+        library_dirs.append(
+            str(_sdk_lib_dir(IDA_SDK, _windows_sdk_lib_subdir(sdk_version)))
         )
+
+        qt_dir = ensure_ida_qt(IDA_SDK)
+        if qt_dir is None:
+            raise RuntimeError(
+                "No Qt import libraries found. IDA SDK 9.4 no longer ships "
+                "lib/x64_win_qt. Set IDA_QT to an extracted release from "
+                f"https://github.com/{IDA_QT_REPO}/releases, or unset "
+                "IDA_QT_NO_DOWNLOAD to fetch one automatically."
+            )
+        library_dirs.append(str(qt_dir))
+
+        # An ida-qt-libs release carries matching headers alongside lib/; the
+        # SDK's own x64_win_qt does not.
+        qt_include = qt_dir.parent / "include"
+        if qt_include.is_dir():
+            include_dirs.append(str(qt_include))
+
         # Qt6 for IDA 9.2+ (SDK >= 920), Qt5 for older
         if sdk_version >= 920:
             qt_ver = "Qt6"
