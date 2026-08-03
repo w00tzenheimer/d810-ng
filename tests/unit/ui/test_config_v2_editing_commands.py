@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+from d810.manager.config_v2_edit_models import ConfigV2ProjectDraft
 from d810.ui.config_v2_editing_commands import ConfigV2EditingAdapter
 
 
@@ -87,3 +88,33 @@ def test_adapter_delegates_every_edit_to_state_and_revalidates() -> None:
     ]
     assert sum(event[0] == "validate" for event in events) == 7
     assert events[-1] == ("save", edited, validation)
+
+
+def test_adapter_retargets_a_draft_and_revalidates_without_reloading() -> None:
+    draft = ConfigV2ProjectDraft(
+        draft_id="draft",
+        revision=0,
+        source_path=Path("/tmp/source.json"),
+        destination_path=Path("/tmp/old.json"),
+        source_sha256="source-hash",
+        original_document_json="{}",
+        document_json="{}",
+    )
+    validation = object()
+    events: list[object] = []
+    state = SimpleNamespace(
+        validate_config_v2_project_draft=lambda candidate: events.append(
+            ("validate", candidate)
+        )
+        or validation,
+    )
+    adapter = ConfigV2EditingAdapter(state, destination=Path("/tmp/old.json"))
+
+    retargeted, actual_validation = adapter.retarget(
+        draft,
+        Path("/tmp/new.json"),
+    )
+
+    assert retargeted.destination_path == Path("/tmp/new.json").resolve()
+    assert actual_validation is validation
+    assert len(events) == 1
