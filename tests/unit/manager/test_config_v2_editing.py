@@ -100,6 +100,26 @@ def test_complete_document_edit_save_preserves_unknowns_and_flat_rule_policy(tmp
     assert actual["additional_configuration"]["pipeline_v2_mode"] == "config-v2"
 
 
+def test_save_atomically_overwrites_an_existing_writable_user_override(
+    tmp_path: Path,
+):
+    project, _ = _runtime_project(tmp_path)
+    destination = tmp_path / "edited.json"
+    destination.write_text('{"stale": true}', encoding="utf-8")
+    service = _service()
+    draft = service.set_description(
+        service.create_draft(project, destination=destination),
+        "replacement",
+    )
+
+    saved = service.save(draft, service.validate(draft))
+
+    actual = json.loads(destination.read_text(encoding="utf-8"))
+    assert saved.path == destination
+    assert actual["description"] == "replacement"
+    assert "stale" not in actual
+
+
 def test_unsupported_generic_field_edits_are_refused(tmp_path: Path):
     project, _ = _runtime_project(tmp_path)
     draft = _service().create_draft(project, destination=tmp_path / "edited.json")
@@ -114,6 +134,17 @@ def test_bundled_runtime_project_cannot_be_overwritten_in_place():
 
     with pytest.raises(ConfigV2EditError, match="bundled"):
         _service().create_draft(project, destination=source)
+
+
+def test_save_rejects_a_retargeted_bundled_source_destination(tmp_path: Path):
+    source = (CONF_DIR / "default_instruction_only_config_v2_canary.json").resolve()
+    project = ProjectConfiguration.from_file(source)
+    service = _service()
+    draft = service.create_draft(project, destination=tmp_path / "edited.json")
+    retargeted = dataclasses.replace(draft, destination_path=source)
+
+    with pytest.raises(ConfigV2EditError, match="bundled"):
+        service.save(retargeted, service.validate(retargeted))
 
 
 def test_pass_selection_is_ordered_registered_and_can_remain_invalid_as_a_draft(
