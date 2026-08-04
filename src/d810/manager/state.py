@@ -53,6 +53,10 @@ from d810.manager.project_runtime import (
     clone_runtime_project as clone_runtime_project_command,
     save_legacy_project as save_legacy_project_command,
 )
+from d810.core.function_storage_config import (
+    FunctionStorageConfigurationError,
+    parse_function_recipe_storage,
+)
 from d810.manager.config_v2_edit_models import (
     ConfigV2FieldSerializer,
     ConfigV2ProjectDraft,
@@ -147,6 +151,18 @@ class D810State(metaclass=SingletonMeta):
         configure_loggers(self.log_dir)
         manager_module = importlib.import_module("d810.manager")
         self.manager = manager_module.D810Manager(self.log_dir)
+        self.function_storage_configuration_error: str | None = None
+        try:
+            storage_config = parse_function_recipe_storage(
+                self.d810_config.get("function_recipe_storage"),
+                log_dir=self.log_dir,
+            )
+        except FunctionStorageConfigurationError as exc:
+            self.function_storage_configuration_error = str(exc)
+            logger.error("Function recipe storage is disabled: %s", exc)
+            self.manager.reconfigure_function_storage(None)
+        else:
+            self.manager.reconfigure_function_storage(storage_config)
         self._initialized = True
 
     def _apply_diagnostics_capture_preference(self) -> None:

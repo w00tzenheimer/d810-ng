@@ -17,6 +17,16 @@ def _method(name: str) -> ast.FunctionDef:
     raise AssertionError(f"D810ConfigForm_t.{name} not found")
 
 
+def _plugin_method(name: str) -> ast.FunctionDef:
+    tree = ast.parse(IDA_UI.read_text(encoding="utf-8"), filename=str(IDA_UI))
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and node.name == "PluginConfigurationFileForm_t":
+            for item in node.body:
+                if isinstance(item, ast.FunctionDef) and item.name == name:
+                    return item
+    raise AssertionError(f"PluginConfigurationFileForm_t.{name} not found")
+
+
 def test_rule_splitter_prefers_the_detail_pane_at_narrow_dock_widths() -> None:
     source = ast.unparse(_method("OnCreate"))
 
@@ -44,3 +54,21 @@ def test_project_row_has_a_distinct_diagnostics_capture_indicator() -> None:
     assert "config_row.addWidget(self._diagnostics_capture_indicator)" in source
     assert "diagnostics-capture-enabled" in update_source
     assert "diagnostics-capture-disabled" in update_source
+
+
+def test_plugin_settings_expose_explicit_recipe_storage_backend_and_path() -> None:
+    source = ast.unparse(_plugin_method("__init__"))
+
+    assert "self.function_storage_backend" in source
+    assert "self.function_storage_path" in source
+    assert "self.combo_function_storage_backend" in source
+    assert "self.button_choose_function_storage_path" in source
+    assert "self._update_function_storage_controls" in source
+
+
+def test_plugin_settings_validate_and_apply_storage_without_restart() -> None:
+    save_source = ast.unparse(_plugin_method("save_config"))
+
+    assert "parse_function_recipe_storage" in save_source
+    assert "self.state.manager.reconfigure_function_storage" in save_source
+    assert "FunctionStorageConfigurationError" in save_source

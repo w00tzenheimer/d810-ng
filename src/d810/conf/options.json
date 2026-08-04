@@ -3,6 +3,9 @@
     "generate_z3_code": false,
     "dump_intermediate_microcode": false,
     "log_dir": null,
+    "function_recipe_storage": {
+        "backend": "netnode"
+    },
     "configurations": [
         "default_instruction_only.json",
         "default_unflattening_ollvm.json",
