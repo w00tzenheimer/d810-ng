@@ -9,7 +9,7 @@ from d810.core.persistence import (
 )
 
 
-_RECIPE_JSON = '[{"options":{"legacy_rule":"JumpFixer"},"pass_id":"jump-fixer"}]\n'
+_RECIPE_JSON = '[{"options":{},"pass_id":"jump-fixer"}]\n'
 
 
 _FIRST = FunctionStorageLocator("first.i64", "sample", 0x401000)

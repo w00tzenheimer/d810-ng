@@ -10,10 +10,8 @@ from d810.core.config_v2_defaults import select_config_v2_default_project
 from d810.manager.project_runtime import (
     ProjectConfigurationEditError,
     ProjectConfigMode,
-    RuleProjectionKind,
     build_project_runtime_snapshot,
     clone_runtime_project,
-    save_legacy_project,
 )
 from d810.passes.pipeline_v2_hook_bridge import pipeline_v2_hook_activation
 
@@ -21,7 +19,7 @@ from d810.passes.pipeline_v2_hook_bridge import pipeline_v2_hook_activation
 CONF_DIR = Path("src/d810/conf")
 
 
-def test_legacy_snapshot_reports_source_policy_and_only_active_rules(
+def test_non_v2_snapshot_exposes_no_public_pass_pipeline(
     tmp_path: Path,
 ) -> None:
     project = ProjectConfiguration(
@@ -44,11 +42,8 @@ def test_legacy_snapshot_reports_source_policy_and_only_active_rules(
     )
 
     assert snapshot.mode is ProjectConfigMode.LEGACY
-    assert snapshot.rule_projection is RuleProjectionKind.SOURCE_POLICY
     assert snapshot.routed is False
     assert snapshot.effective_pass_ids == ()
-    assert snapshot.effective_instruction_rule_names == ("EnabledInstruction",)
-    assert snapshot.effective_block_rule_names == ("EnabledBlock",)
 
 
 def test_routed_config_v2_snapshot_reports_distinct_source_and_runtime() -> None:
@@ -76,8 +71,6 @@ def test_routed_config_v2_snapshot_reports_distinct_source_and_runtime() -> None
         "mba-simplify",
         "jump-fixer",
     )
-    assert len(snapshot.effective_instruction_rule_names) == 180
-    assert len(snapshot.effective_block_rule_names) == 2
 
 
 def test_direct_canary_snapshot_is_config_v2_without_routing() -> None:
@@ -99,9 +92,11 @@ def test_direct_canary_snapshot_is_config_v2_without_routing() -> None:
     assert snapshot.source == snapshot.runtime
     assert snapshot.mode is ProjectConfigMode.CONFIG_V2
     assert snapshot.routed is False
-    assert snapshot.rule_projection is RuleProjectionKind.RUNTIME_EXPANSION
-    assert len(snapshot.effective_instruction_rule_names) == 180
-    assert len(snapshot.effective_block_rule_names) == 2
+    assert snapshot.effective_pass_ids == (
+        "constant-simplification",
+        "mba-simplify",
+        "jump-fixer",
+    )
 
 
 def test_snapshot_is_immutable(tmp_path: Path) -> None:
@@ -116,33 +111,6 @@ def test_snapshot_is_immutable(tmp_path: Path) -> None:
 
     with pytest.raises(dataclasses.FrozenInstanceError):
         snapshot.routed = True
-
-
-def test_manager_refuses_legacy_write_for_config_v2_snapshot(tmp_path: Path) -> None:
-    canary = ProjectConfiguration.from_file(
-        CONF_DIR / "default_instruction_only_config_v2_canary.json"
-    )
-    selection = select_config_v2_default_project(canary)
-    assert selection is not None
-    snapshot = build_project_runtime_snapshot(
-        source_project=canary,
-        runtime_project=selection.runtime_project,
-        default_selection=selection,
-        hook_activation=pipeline_v2_hook_activation(selection.runtime_project),
-        hook_mode="config-v2",
-    )
-
-    with pytest.raises(ProjectConfigurationEditError, match="legacy rule editor"):
-        save_legacy_project(
-            snapshot=snapshot,
-            source=canary,
-            destination=tmp_path / "forbidden.json",
-            description="forbidden",
-            ins_rules=(),
-            blk_rules=(),
-        )
-
-    assert not (tmp_path / "forbidden.json").exists()
 
 
 def test_manager_requires_runtime_project_for_clone(tmp_path: Path) -> None:

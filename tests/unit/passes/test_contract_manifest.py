@@ -25,7 +25,6 @@ from d810.passes.pass_pipeline import (
     PassPreserves,
     PassRequires,
     PassSpec,
-    PipelineConfig,
     default,
     no_caps,
 )
@@ -96,13 +95,13 @@ def test_pipeline_contract_manifest_preserves_standard_pass_order():
     )
 
 
-def test_pass_contract_manifest_roundtrips_native_contract_shape():
+def test_pass_contract_manifest_exposes_native_contract_shape():
     spec = standard_state_machine_passes()[3]
     manifest = pass_contract_manifest(spec)
-    config = PipelineConfig.from_dict(manifest)
 
-    assert config.pass_id == spec.pass_id
-    assert config.contract == spec.contract
+    assert manifest["pass"] == spec.pass_id
+    assert manifest["outputs"]["facts"] == ["recovered.cfg_edge"]
+    assert manifest["invalidates"]["facts"] == ["ir.cfg_shape.stale"]
 
 
 def test_manifest_keeps_analysis_evidence_and_fact_namespaces_separate():
@@ -279,7 +278,7 @@ def test_pipeline_preflight_manifest_rejects_ordered_pass_id_mismatch():
         raise AssertionError("expected ValueError")
 
 
-def test_preflight_manifest_does_not_instantiate_pass_factory_and_roundtrips_config():
+def test_preflight_manifest_does_not_instantiate_pass_factory():
     def _raising_factory():
         raise AssertionError("manifest rendering must not instantiate pass factories")
 
@@ -295,7 +294,6 @@ def test_preflight_manifest_does_not_instantiate_pass_factory_and_roundtrips_con
     result = PassContractPreflightResult(pass_id=spec.pass_id, satisfied=True)
 
     manifest = pass_contract_preflight_manifest(spec, result)
-    config = PipelineConfig.from_dict(manifest)
 
     assert manifest["preflight"] == {
         "satisfied": True,
@@ -303,5 +301,5 @@ def test_preflight_manifest_does_not_instantiate_pass_factory_and_roundtrips_con
         "declared_output_evidence": [],
         "diagnostics": [],
     }
-    assert config.pass_id == spec.pass_id
-    assert config.contract == spec.contract
+    assert manifest["pass"] == spec.pass_id
+    assert manifest["requires"]["analyses"] == ["domtree"]

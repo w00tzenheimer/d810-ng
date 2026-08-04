@@ -12,7 +12,6 @@ from d810.manager.project_runtime import (
     ProjectConfigMode,
     ProjectIdentitySnapshot,
     ProjectRuntimeSnapshot,
-    RuleProjectionKind,
 )
 from d810.manager.workbench_recipe_models import FunctionPipelineOverride
 from d810.manager.workbench_recipe_service import RecipeEditError, RecipeService
@@ -42,7 +41,7 @@ def _base_project() -> ProjectConfiguration:
             "pipeline_v2": [
                 {
                     "pass_id": "jump-fixer",
-                    "options": {"legacy_rule": "JumpFixer"},
+                    "options": {},
                 }
             ],
         },
@@ -52,7 +51,7 @@ def _base_project() -> ProjectConfiguration:
 def test_recipe_runtime_project_is_in_memory_lossless_and_config_v2() -> None:
     base = _base_project()
     configs = RecipeService(operational_config_v2_pass_registry()).deserialize_configs(
-        '[{"pass_id":"mba-simplify","options":{"rules":["ConstantMbaRule"]}}]'
+        '[{"pass_id":"mba-simplify","options":{"transforms":["add-xor-1"],"transform_options":{}}}]'
     )
     project = build_recipe_runtime_project(
         base,
@@ -99,9 +98,6 @@ def test_workbench_projection_reports_saved_recipe_as_the_effective_pipeline() -
         routed=True,
         hook_mode="config-v2",
         effective_pass_ids=("jump-fixer",),
-        effective_instruction_rule_names=(),
-        effective_block_rule_names=("JumpFixer",),
-        rule_projection=RuleProjectionKind.RUNTIME_EXPANSION,
     )
     override = FunctionPipelineOverride(
         schema_version=1,
@@ -109,9 +105,7 @@ def test_workbench_projection_reports_saved_recipe_as_the_effective_pipeline() -
         function_fingerprint="sha256:abc",
         source_path="/configs/source.json",
         runtime_path="/configs/runtime.json",
-        pass_configs_json=(
-            '[{"pass_id":"mba-simplify","rules":{"include":["ConstantMbaRule"]}}]'
-        ),
+        pass_configs_json='[{"pass_id":"mba-simplify","options":{"transforms":["add-xor-1"],"transform_options":{}}}]',
         updated_at=1.0,
     )
 
@@ -127,10 +121,6 @@ def test_workbench_projection_reports_saved_recipe_as_the_effective_pipeline() -
     assert projection.runtime_project.path == base.path
     assert projection.project_snapshot.runtime == snapshot.runtime
     assert projection.project_snapshot.effective_pass_ids == ("mba-simplify",)
-    assert projection.project_snapshot.effective_instruction_rule_names == (
-        "ConstantMbaRule",
-    )
-    assert projection.project_snapshot.effective_block_rule_names == ()
     assert projection.draft.workbench_generation == 7
     assert tuple(item.pass_id for item in projection.draft.passes) == ("mba-simplify",)
     assert tuple(
@@ -149,9 +139,6 @@ def test_selection_keeps_project_runtime_and_marks_recipe_explicit_only() -> Non
         routed=True,
         hook_mode="config-v2",
         effective_pass_ids=("jump-fixer",),
-        effective_instruction_rule_names=(),
-        effective_block_rule_names=("JumpFixer",),
-        rule_projection=RuleProjectionKind.RUNTIME_EXPANSION,
     )
     override = FunctionPipelineOverride(
         schema_version=1,
@@ -159,9 +146,7 @@ def test_selection_keeps_project_runtime_and_marks_recipe_explicit_only() -> Non
         function_fingerprint="sha256:abc",
         source_path="/configs/source.json",
         runtime_path="/configs/runtime.json",
-        pass_configs_json=(
-            '[{"pass_id":"mba-simplify","rules":{"include":["ConstantMbaRule"]}}]'
-        ),
+        pass_configs_json='[{"pass_id":"mba-simplify","options":{"transforms":["add-xor-1"],"transform_options":{}}}]',
         updated_at=1.0,
     )
     selection = select_workbench_recipe_projection(
@@ -195,9 +180,6 @@ def test_selection_blocks_stale_saved_recipe_without_mutating_project() -> None:
         routed=True,
         hook_mode="config-v2",
         effective_pass_ids=("jump-fixer",),
-        effective_instruction_rule_names=(),
-        effective_block_rule_names=("JumpFixer",),
-        rule_projection=RuleProjectionKind.RUNTIME_EXPANSION,
     )
     stale = FunctionPipelineOverride(
         schema_version=1,
@@ -235,9 +217,6 @@ def test_selection_blocks_cross_pass_hook_materialization_failure() -> None:
         routed=True,
         hook_mode="config-v2",
         effective_pass_ids=("jump-fixer",),
-        effective_instruction_rule_names=(),
-        effective_block_rule_names=("JumpFixer",),
-        rule_projection=RuleProjectionKind.RUNTIME_EXPANSION,
     )
     individually_valid = operational_config_v2_pass_registry().config_template_for(
         "recover_dispatcher"

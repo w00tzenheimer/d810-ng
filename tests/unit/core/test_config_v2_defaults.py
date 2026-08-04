@@ -119,20 +119,19 @@ def test_shipped_constant_pipelines_use_one_architecture_neutral_bundle(
     pipeline = project.additional_configuration["pipeline_v2"]
 
     bundles = [
-        entry for entry in pipeline if entry["pass"] == "constant-simplification"
+        entry for entry in pipeline if entry["pass_id"] == "constant-simplification"
     ]
     assert len(bundles) == 1
     assert bundles[0]["options"] == {
         "memory_policy": memory_policy,
         "allow_executable_readonly": False,
     }
-    assert not {entry["pass"] for entry in pipeline} & {
+    assert not {entry["pass_id"] for entry in pipeline} & {
         "global-constant-inliner",
         "forward-constant-propagation",
     }
     for entry in pipeline:
-        if entry["pass"] != "mba-simplify":
+        if entry["pass_id"] != "mba-simplify":
             continue
-        selected = set(entry.get("rules", {}).get("include", ()))
-        selected.update(entry.get("rules", {}).get("include_order", ()))
+        selected = set(entry.get("options", {}).get("transforms", ()))
         assert not selected & {"FoldReadonlyDataRule", "ConstantSubtreeFoldRule"}

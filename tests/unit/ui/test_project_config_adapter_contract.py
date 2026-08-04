@@ -6,7 +6,7 @@ from pathlib import Path
 
 IDA_UI = Path(__file__).resolve().parents[3] / "src" / "d810" / "ui" / "ida_ui.py"
 ICON_DIR = IDA_UI.parent / "icons"
-RULE_TREE = IDA_UI.parent / "rule_tree.py"
+PASS_TREE = IDA_UI.parent / "pass_tree.py"
 ICON_ASSETS = IDA_UI.parent / "icon_assets.py"
 PYPROJECT = IDA_UI.parents[3] / "pyproject.toml"
 TREE = ast.parse(IDA_UI.read_text(encoding="utf-8"), filename=str(IDA_UI))
@@ -34,11 +34,7 @@ def _call_names(method: ast.FunctionDef) -> set[str]:
 
 
 def _attribute_names(method: ast.FunctionDef) -> set[str]:
-    return {
-        node.attr
-        for node in ast.walk(method)
-        if isinstance(node, ast.Attribute)
-    }
+    return {node.attr for node in ast.walk(method) if isinstance(node, ast.Attribute)}
 
 
 def test_load_config_reads_manager_snapshot_and_pure_view() -> None:
@@ -84,7 +80,7 @@ def test_config_action_svg_assets_are_packaged() -> None:
         assert icon_path.is_file()
         assert "<svg" in icon_path.read_text(encoding="utf-8")
 
-    assert 'ui/icons/*.svg' in PYPROJECT.read_text(encoding="utf-8")
+    assert "ui/icons/*.svg" in PYPROJECT.read_text(encoding="utf-8")
 
 
 def test_engine_status_uses_svg_icons_instead_of_text_markers() -> None:
@@ -102,17 +98,13 @@ def test_engine_status_uses_svg_icons_instead_of_text_markers() -> None:
         assert "<svg" in icon_path.read_text(encoding="utf-8")
 
 
-def test_rule_state_legend_uses_svg_icons_instead_of_text_markers() -> None:
-    source = RULE_TREE.read_text(encoding="utf-8")
+def test_pass_tree_uses_public_identity_labels() -> None:
+    source = PASS_TREE.read_text(encoding="utf-8")
 
     assert "*>" not in source
-    assert '"* Configurable"' not in source
-    assert ".setPixmap(" in source
-
-    for icon_name in ("rule-enabled", "rule-disabled", "rule-configurable"):
-        icon_path = ICON_DIR / f"{icon_name}.svg"
-        assert icon_path.is_file()
-        assert "<svg" in icon_path.read_text(encoding="utf-8")
+    assert "Pass / child" in source
+    assert "Transform:" in source
+    assert "Stage:" in source
 
 
 def test_icon_assets_have_a_qpainter_fallback_for_pyqt5_svg_failures() -> None:
@@ -123,21 +115,21 @@ def test_icon_assets_have_a_qpainter_fallback_for_pyqt5_svg_failures() -> None:
     assert "QIcon(pixmap)" in source
     assert "isNull()" in source
     assert "bundled_icon" in IDA_UI.read_text(encoding="utf-8")
-    assert "bundled_icon" in RULE_TREE.read_text(encoding="utf-8")
 
 
-def test_save_rules_delegates_to_edit_policy_and_manager_commands() -> None:
-    calls = _call_names(_method("_save_rules"))
+def test_project_view_populates_the_public_pass_tree() -> None:
+    calls = _call_names(_method("_apply_project_config_view"))
 
-    assert "select_config_edit_policy" in calls
-    assert "clone_current_runtime_project" in calls
-    assert "save_legacy_project" in calls
+    assert "get_workbench_recipe_catalog" in calls
+    assert "set_passes" in calls
 
 
-def test_save_rules_no_longer_constructs_project_configuration_directly() -> None:
-    calls = _call_names(_method("_save_rules"))
+def test_private_rule_editor_methods_are_removed() -> None:
+    source = IDA_UI.read_text(encoding="utf-8")
 
-    assert "ProjectConfiguration" not in calls
+    assert "def _save_rules" not in source
+    assert "RuleTreeWidget" not in source
+    assert "RuleDetailPanel" not in source
 
 
 def test_edit_and_duplicate_handlers_use_the_pure_policy() -> None:

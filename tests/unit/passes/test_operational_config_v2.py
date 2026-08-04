@@ -93,7 +93,7 @@ def test_operational_registry_keeps_state_machine_wrapper_unregistered():
 
     with pytest.raises(UnknownPassIdError, match="state-machine-cff-unflattener"):
         pass_specs_from_project_config(
-            {"pipeline_v2": [{"pass": "state-machine-cff-unflattener"}]},
+            {"pipeline_v2": [{"pass_id": "state-machine-cff-unflattener"}]},
             registry,
         )
 
@@ -142,9 +142,9 @@ def test_operational_registry_catalog_templates_all_build_and_explain_stages():
     assert tuple(
         stage.stage_id for stage in registry.stages_for("recover_dispatcher")
     ) == ("recover_dispatcher",)
-    assert (
-        registry.config_template_for("simple-flattening-cleanup-unflattener").options[
-            "legacy_rule"
-        ]
-        == "SimpleFlatteningCleanupUnflattener"
+    cleanup_options = registry.config_template_for(
+        "simple-flattening-cleanup-unflattener"
+    ).options
+    assert not {"legacy_rule", "legacy_rule_options", "native_pipeline"}.intersection(
+        cleanup_options
     )

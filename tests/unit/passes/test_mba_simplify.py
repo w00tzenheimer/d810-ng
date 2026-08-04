@@ -11,7 +11,7 @@ from d810.capabilities.resolver import CapabilityNotProvided, CapabilitySet
 from d810.core.config import ProjectConfiguration
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph
 from d810.ir.maturity import IRMaturity
-from d810.passes.driver import CapabilityError, run_pipeline
+from d810.passes.driver import run_pipeline
 from d810.passes.mba_simplify import (
     MbaSimplifyCapability,
     MbaSimplifyPass,
@@ -177,24 +177,19 @@ def test_mba_simplify_registry_builds_default_instruction_canary_mba_stage():
 
 
 def test_mba_simplify_registry_rejects_former_rule_selection_for_execution():
-    config = PipelineConfig.from_dict(
-        {
-            "pass": "mba-simplify",
-            "rules": {
-                "include_groups": ["all"],
-                "include": ["RuleA"],
-            },
-        }
-    )
-
-    with pytest.raises(PipelineConfigError, match=r"rules\.\*"):
-        mba_simplify_pass_registry().build_spec(config)
+    with pytest.raises(PipelineConfigError, match="unknown fields"):
+        PipelineConfig.from_dict(
+            {
+                "pass": "mba-simplify",
+                "rules": {"include": ["RuleA"]},
+            }
+        )
 
 
 def test_mba_simplify_registry_preserves_explicit_transform_order():
     config = PipelineConfig.from_dict(
         {
-            "pass": "mba-simplify",
+            "pass_id": "mba-simplify",
             "options": {
                 "transforms": ["add-xor-2", "add-xor-1"],
                 "transform_options": {},
@@ -212,7 +207,7 @@ def test_mba_simplify_registry_preserves_explicit_transform_order():
 def test_mba_simplify_registry_rejects_options_for_unselected_transforms():
     config = PipelineConfig.from_dict(
         {
-            "pass": "mba-simplify",
+            "pass_id": "mba-simplify",
             "options": {
                 "transforms": ["add-xor-1"],
                 "transform_options": {"add-xor-2": {"limit": 3}},
@@ -224,40 +219,11 @@ def test_mba_simplify_registry_rejects_options_for_unselected_transforms():
         mba_simplify_pass_registry().build_spec(config)
 
 
-def test_mba_simplify_pipeline_missing_backend_capability_fails_before_execution():
-    capability = _MbaCapability()
-    config = PipelineConfig.from_dict(
-        {
-            "pass": "mba-simplify",
-            "requires": {"capabilities": ["local_instruction_rewrite"]},
-            "options": {"transforms": ["add-xor-1"]},
-        }
-    )
-    spec = mba_simplify_pass_registry().build_spec(config)
-
-    with pytest.raises(CapabilityError, match="local_instruction_rewrite"):
-        run_pipeline(
-            source=_Source(),
-            family=_Family((spec,)),
-            backend=_Backend(caps=()),
-            facts=_Facts(),
-            project_config=None,
-            maturity=IRMaturity.GLOBAL_ANALYZED,
-            capabilities=CapabilitySet().with_capability(
-                MbaSimplifyCapability,
-                capability,
-            ),
-        )
-
-    assert capability.requests == []
-
-
 def test_mba_simplify_pipeline_executes_when_string_and_typed_capabilities_exist():
     capability = _MbaCapability()
     config = PipelineConfig.from_dict(
         {
-            "pass": "mba-simplify",
-            "requires": {"capabilities": ["local_instruction_rewrite", "z3_solver"]},
+            "pass_id": "mba-simplify",
             "options": {
                 "transforms": ["add-xor-2", "add-xor-1"],
                 "transform_options": {"add-xor-1": {"limit": 3}},

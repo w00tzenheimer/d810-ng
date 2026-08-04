@@ -363,7 +363,7 @@ class ConfigV2EditingService:
         additional = _additional(document)
         if additional.get("pipeline_v2_mode") != "config-v2":
             raise ConfigV2EditError(
-                "pipeline_v2_mode must remain 'config-v2'; flat rule downgrade is refused"
+                "pipeline_v2_mode must remain 'config-v2'; schema downgrade is refused"
             )
         configs = pipeline_configs_from_project_config(additional)
         for config in configs:
@@ -395,16 +395,24 @@ class ConfigV2EditingService:
             canonical_policy = {}
         return (
             tuple(config.pass_id for config in configs),
-            tuple(str(rule.name) for rule in activation.instruction_rules),
-            tuple(str(rule.name) for rule in activation.block_rules),
+            tuple(
+                stage.stage_id
+                for config in configs
+                for stage in self._registry.stages_for(config.pass_id)
+            ),
+            tuple(
+                transform_id
+                for config in configs
+                for transform_id in self._registry.transform_ids_for(config.pass_id)
+            ),
             _canonical_json(canonical_policy),
         )
 
     def validate(self, draft: ConfigV2ProjectDraft) -> ConfigV2ProjectValidation:
         diagnostics: list[ConfigV2EditDiagnostic] = []
         pass_ids: tuple[str, ...] = ()
-        instruction_rules: tuple[str, ...] = ()
-        block_rules: tuple[str, ...] = ()
+        stage_ids: tuple[str, ...] = ()
+        transform_ids: tuple[str, ...] = ()
         routing = "{}"
         try:
             document = _document(draft.document_json)
@@ -440,8 +448,8 @@ class ConfigV2EditingService:
                     )
                 )
             try:
-                pass_ids, instruction_rules, block_rules, routing = (
-                    self._validate_semantics(document, draft.destination_path)
+                pass_ids, stage_ids, transform_ids, routing = self._validate_semantics(
+                    document, draft.destination_path
                 )
             except (
                 ConfigV2EditError,
@@ -460,8 +468,8 @@ class ConfigV2EditingService:
             revision=draft.revision,
             valid=not diagnostics,
             pass_ids=pass_ids,
-            instruction_rule_names=instruction_rules,
-            block_rule_names=block_rules,
+            stage_ids=stage_ids,
+            transform_ids=transform_ids,
             routing_policy_json=routing,
             diagnostics=tuple(diagnostics),
         )

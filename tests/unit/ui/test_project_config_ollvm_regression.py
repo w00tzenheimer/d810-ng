@@ -8,7 +8,6 @@ from d810.core.config_v2_defaults import select_config_v2_default_project
 from d810.core.project_config_persistence import clone_project_configuration
 from d810.manager.project_runtime import (
     ProjectConfigMode,
-    RuleProjectionKind,
     build_project_runtime_snapshot,
 )
 from d810.passes.pipeline_v2_hook_bridge import pipeline_v2_hook_activation
@@ -58,20 +57,16 @@ def test_ollvm_routing_view_and_lossless_user_duplicate(tmp_path: Path) -> None:
     )
     assert snapshot.routed is True
     assert snapshot.mode is ProjectConfigMode.CONFIG_V2
-    assert snapshot.rule_projection is RuleProjectionKind.RUNTIME_EXPANSION
     assert snapshot.effective_pass_ids == EXPECTED_PASS_IDS
-    assert len(snapshot.effective_instruction_rule_names) == 180
-    assert len(snapshot.effective_block_rule_names) == 6
     assert view.mode_text == "Config v2 (routed)"
     assert view.effective_passes_text.startswith("11 passes: ")
-    assert view.rules_title == "Rules (runtime expansion: 180 instruction, 6 block)"
-    assert len(view.enabled_rule_names) == 186
+    assert view.pass_tree_title == "Pass pipeline (11 active)"
+    assert view.effective_pass_ids == EXPECTED_PASS_IDS
 
     edit_policy = select_config_edit_policy(ConfigEditMode.EDIT, snapshot)
     duplicate_policy = select_config_edit_policy(ConfigEditMode.DUPLICATE, snapshot)
     assert edit_policy.save_strategy is ConfigSaveStrategy.STRUCTURED_V2
     assert edit_policy.allowed is True
-    assert duplicate_policy.rules_editable is False
     assert duplicate_policy.save_strategy is ConfigSaveStrategy.STRUCTURED_V2
 
     destination = tmp_path / "ollvm-user-copy.json"

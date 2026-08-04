@@ -8,23 +8,19 @@ import ida_kernwin
 import idaapi
 
 from d810.core import logging, typing
-from d810.manager import ProjectConfigurationEditError
 from d810.qt_shim import QFrame, QGroupBox, QMenu, QtCore, QtGui, QToolButton, QtWidgets
 
 if typing.TYPE_CHECKING:
     from d810.manager import D810State, ProjectRuntimeSnapshot
 
-from d810.core.config import ProjectConfiguration, RuleConfiguration
 from d810.core.logging import LoggerConfigurator, getLogger
 from d810.core.function_storage_config import (
     FunctionStorageConfigurationError,
     parse_function_recipe_storage,
 )
-from d810.manager.project_runtime import ProjectConfigMode
 from d810.ui.project_config_logic import (
     ConfigEditMode,
     ConfigV2FocusTarget,
-    ConfigSaveStrategy,
     ProjectConfigView,
     build_project_config_view,
     config_v2_user_destination,
@@ -33,13 +29,12 @@ from d810.ui.project_config_logic import (
 )
 from d810.ui.project_picker_logic import build_project_picker_entries
 from d810.ui.project_picker_popup import ProjectPickerPopup
-from d810.ui.rule_detail import RuleDetailPanel
 from d810.ui.icon_assets import bundled_icon
-from d810.ui.rule_tree import RuleTreeWidget
-from d810.ui.rule_tree_logic import RuleTreeContextRequest, apply_context_action
+from d810.ui.pass_tree import PassTreeWidget
 from d810.ui.testbed import TestRunnerForm
 
 logger = getLogger("D810.ui")
+
 
 def _config_action_icon(name: str):
     """Load a bundled SVG instead of relying on the host font's glyph set."""
@@ -328,9 +323,7 @@ class PluginConfigurationFileForm_t(QtWidgets.QDialog):
         )
         if not isinstance(raw_storage, dict):
             raw_storage = {"backend": "netnode"}
-        self.function_storage_backend = str(
-            raw_storage.get("backend", "netnode")
-        )
+        self.function_storage_backend = str(raw_storage.get("backend", "netnode"))
         self.function_storage_path = str(raw_storage.get("path", ""))
 
         self.setWindowTitle("Plugin Configuration")
@@ -451,9 +444,7 @@ class PluginConfigurationFileForm_t(QtWidgets.QDialog):
             self.lbl_log_dir.setText(self.log_dir)
 
     def _update_function_storage_controls(self, _index: int = -1) -> None:
-        sqlite_selected = (
-            self.combo_function_storage_backend.currentData() == "sqlite"
-        )
+        sqlite_selected = self.combo_function_storage_backend.currentData() == "sqlite"
         self.edit_function_storage_path.setEnabled(sqlite_selected)
         self.button_choose_function_storage_path.setEnabled(sqlite_selected)
 
@@ -520,13 +511,7 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         self.test_runner: TestRunnerForm | None = None
         self._config_v2_editor = None
 
-        # Edit state machine attributes
-        self._edit_mode: ConfigEditMode | None = None
-        self._edit_path: pathlib.Path | None = None
-        self._edit_old_conf: ProjectConfiguration | None = None
-        self._edit_source_config: ProjectConfiguration | None = None
-        self._edit_runtime_snapshot: ProjectRuntimeSnapshot | None = None
-        self._view_rules_title = "Rules"
+        self._view_passes_title = "Pass pipeline"
 
         # Initialize all widget attributes to None (defensive pattern)
         # These are created in OnCreate() but may be accessed before OnCreate() runs
@@ -544,17 +529,8 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         self._config_runtime_value = None
         self._config_passes_value = None
         self.cfg_description = None
-        self._rules_group = None
-        self._rules_content = None
-        self._edit_header = None
-        self._edit_name_input = None
-        self._edit_desc_input = None
-        self._splitter = None
-        self._rule_tree = None
-        self._rule_detail = None
-        self._rule_configs = None
-        self._btn_save_rules = None
-        self._btn_cancel_rules = None
+        self._passes_group = None
+        self._pass_tree = None
         self._engine_group = None
         self.btn_start = None
         self.btn_stop = None
@@ -573,13 +549,8 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
             if hasattr(self, "cfg_select") and self.cfg_select is not None:
                 self.cfg_select.clicked.disconnect()
 
-            if hasattr(self, "_rule_tree") and self._rule_tree is not None:
-                self._rule_tree.rule_selected.disconnect()
-                self._rule_tree.rule_toggled.disconnect()
-                self._rule_tree.context_action_requested.disconnect()
-
-            if hasattr(self, "_rule_detail") and self._rule_detail is not None:
-                self._rule_detail.config_changed.disconnect()
+            if hasattr(self, "_pass_tree") and self._pass_tree is not None:
+                self._pass_tree.edit_requested.disconnect()
 
             # Disconnect all button signals
             for btn_attr in [
@@ -593,8 +564,6 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
                 "btn_logger_cfg",
                 "btn_start_profiling",
                 "btn_test_runner",
-                "_btn_save_rules",
-                "_btn_cancel_rules",
             ]:
                 btn = getattr(self, btn_attr, None)
                 if btn is not None:
@@ -609,8 +578,7 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
             logger.debug("Signal disconnect error (expected during shutdown): %s", e)
 
         # Clear widget references
-        self._rule_tree = None
-        self._rule_detail = None
+        self._pass_tree = None
         self.cfg_select = None
         self._config_mode_value = None
         self._config_source_value = None
@@ -757,94 +725,14 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         divider.setFrameShadow(QFrame.Sunken)
         main_layout.addWidget(divider)
 
-        # =====================================================================
-        # Rules Group (always visible, read-only by default)
-        # =====================================================================
-        self._rules_group = QGroupBox("Rules", self.parent)
-        main_layout.addWidget(self._rules_group, stretch=1)
-
-        rules_outer_layout = QtWidgets.QVBoxLayout(self._rules_group)
-        rules_outer_layout.setContentsMargins(4, 4, 4, 4)
-        rules_outer_layout.setSpacing(4)
-
-        # _rules_content is now always visible
-        self._rules_content = QtWidgets.QWidget()
-        rules_outer_layout.addWidget(self._rules_content)
-
-        rules_content_layout = QtWidgets.QVBoxLayout(self._rules_content)
-        rules_content_layout.setContentsMargins(0, 0, 0, 0)
-        rules_content_layout.setSpacing(4)
-
-        # Edit header (name + description) - shown only for new/duplicate
-        self._edit_header = QtWidgets.QWidget()
-        rules_content_layout.addWidget(self._edit_header)
-
-        edit_header_layout = QtWidgets.QHBoxLayout(self._edit_header)
-        edit_header_layout.setContentsMargins(0, 0, 0, 0)
-        edit_header_layout.setSpacing(4)
-
-        lbl_name = QtWidgets.QLabel("Name:")
-        edit_header_layout.addWidget(lbl_name)
-        self._edit_name_input = QtWidgets.QLineEdit()
-        edit_header_layout.addWidget(self._edit_name_input)
-
-        lbl_desc = QtWidgets.QLabel("Desc:")
-        edit_header_layout.addWidget(lbl_desc)
-        self._edit_desc_input = QtWidgets.QLineEdit()
-        edit_header_layout.addWidget(self._edit_desc_input)
-
-        self._edit_header.setVisible(False)  # Hidden until new/duplicate
-
-        # Splitter: RuleTreeWidget + RuleDetailPanel
-        self._splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal, self._rules_content)
-        rules_content_layout.addWidget(self._splitter, stretch=1)
-
-        self._rule_tree = RuleTreeWidget(
-            self._splitter,
-            context_actions_enabled=True,
-        )
-        self._splitter.addWidget(self._rule_tree)
-        self._rule_tree.setMinimumWidth(280)
-
-        self._rule_detail = RuleDetailPanel(self._splitter)
-        self._splitter.addWidget(self._rule_detail)
-        self._rule_detail.setMinimumWidth(420)
-
-        self._splitter.setStretchFactor(0, 2)
-        self._splitter.setStretchFactor(1, 3)
-        self._splitter.setSizes([400, 600])
-
-        # Wire signals
-        self._rule_tree.rule_selected.connect(self._on_rule_selected)
-        self._rule_tree.rule_toggled.connect(self._on_rule_toggled)
-        self._rule_tree.context_action_requested.connect(
-            self._on_rule_context_action
-        )
-        self._rule_detail.config_changed.connect(self._on_config_changed)
-
-        # Populate tree with all known rules (initially in read-only mode)
-        all_rules = list(self.state.known_ins_rules) + list(self.state.known_blk_rules)
-        self._rule_tree.set_rules(all_rules)
-        self._rule_tree.set_read_only(True)
-        self._rule_detail.set_read_only(True)
-
-        # State for storing per-rule config overrides during editing
-        self._rule_configs: dict[str, dict] = {}
-
-        # Save/Cancel buttons (right-aligned, hidden initially)
-        button_layout = QtWidgets.QHBoxLayout()
-        rules_content_layout.addLayout(button_layout)
-        button_layout.addStretch()
-
-        self._btn_save_rules = QtWidgets.QPushButton("Save")
-        self._btn_save_rules.clicked.connect(self._save_rules)
-        self._btn_save_rules.setVisible(False)
-        button_layout.addWidget(self._btn_save_rules)
-
-        self._btn_cancel_rules = QtWidgets.QPushButton("Cancel")
-        self._btn_cancel_rules.clicked.connect(self._cancel_rules)
-        self._btn_cancel_rules.setVisible(False)
-        button_layout.addWidget(self._btn_cancel_rules)
+        self._passes_group = QGroupBox("Pass pipeline", self.parent)
+        main_layout.addWidget(self._passes_group, stretch=1)
+        passes_layout = QtWidgets.QVBoxLayout(self._passes_group)
+        passes_layout.setContentsMargins(4, 4, 4, 4)
+        self._pass_tree = PassTreeWidget(self._passes_group)
+        self._pass_tree.set_read_only(False)
+        self._pass_tree.edit_requested.connect(self._edit_pass)
+        passes_layout.addWidget(self._pass_tree, stretch=1)
 
         # =====================================================================
         # Engine Group (always visible, compact)
@@ -920,9 +808,7 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
             return
         enabled = self.state.diagnostics_capture_enabled()
         icon_name = (
-            "diagnostics-capture-enabled"
-            if enabled
-            else "diagnostics-capture-disabled"
+            "diagnostics-capture-enabled" if enabled else "diagnostics-capture-disabled"
         )
         tooltip = (
             "Diagnostics capture enabled - the next decompilation will record "
@@ -935,99 +821,15 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         )
         self._diagnostics_capture_indicator.setToolTip(tooltip)
 
-    def _on_rule_selected(self, rule) -> None:
-        """Show the selected rule's detail panel."""
-        if rule is not None:
-            # Inject any stored config overrides into the rule's config dict
-            # so the detail panel shows current values.
-            stored = self._rule_configs.get(rule.name)
-            if stored:
-                rule.config.update(stored)
-        self._rule_detail.set_rule(rule)
-
-    def _on_rule_toggled(self, rule, is_enabled: bool) -> None:
-        """Track rule enable/disable state (already handled by the tree)."""
-        if logger.debug_on:
-            logger.debug("Rule toggled: %s -> %s", rule.name, is_enabled)
-
-    def _on_rule_context_action(self, request: RuleTreeContextRequest) -> None:
-        """Route a rule-tree intent into the correct project editing workflow."""
-
-        snapshot = self.state.get_project_runtime_snapshot()
-        if snapshot is None:
-            QtWidgets.QMessageBox.warning(
-                self.parent,
-                "Rule editing unavailable",
-                "No active project runtime is available.",
-            )
-            return
-
-        policy = select_config_edit_policy(ConfigEditMode.EDIT, snapshot)
-        if not policy.allowed:
-            QtWidgets.QMessageBox.warning(
-                self.parent,
-                "Rule editing unavailable",
-                policy.explanation,
-            )
-            return
-
-        if snapshot.mode is ProjectConfigMode.CONFIG_V2:
-            destination = self._choose_config_v2_destination(
-                snapshot,
-                duplicate=False,
-            )
-            if destination is None:
-                return
-            focus_target = resolve_config_v2_focus_target(
-                request.target,
-                snapshot.effective_pass_ids,
-                self.state.get_workbench_recipe_catalog(),
-            )
-            self._open_config_v2_editor(
-                destination,
-                focus_target=focus_target,
-            )
-            return
-
-        if self._edit_mode is None:
-            current = self.state.current_project
-            self._enter_edit_mode(
-                ConfigEditMode.EDIT,
-                current.description,
-                current.ins_rules,
-                current.blk_rules,
-                current.path,
-                current,
-                snapshot,
-                policy.rules_editable,
-            )
-
-        enabled_names = apply_context_action(
-            self._rule_tree.get_enabled_rule_names(),
-            request.target,
-            request.action,
-        )
-        self._rule_tree.set_enabled_rules(enabled_names)
-        if request.target.rule_name:
-            self._rule_tree.select_rule(request.target.rule_name)
-
-    def _on_config_changed(self, param_name: str, value) -> None:
-        """Store config changes for the currently-selected rule."""
-        rule = self._rule_detail._current_rule
-        if rule is None:
-            return
-        cfg = self._rule_configs.setdefault(rule.name, {})
-        cfg[param_name] = value
-        if logger.debug_on:
-            logger.debug("Config stored: %s.%s = %s", rule.name, param_name, value)
-
     def update_cfg_select(self):
         """Synchronize the current-project button without loading a project."""
 
         projects = self.state.project_manager.projects()
         if not projects:
             self.cfg_select.setText("No configurations available")
-            self.cfg_select.setToolTip("No D-810 configuration projects were discovered")
+            self.cfg_select.setToolTip(
+                "No D-810 configuration projects were discovered"
+            )
             self.cfg_select.setEnabled(False)
             return
         project_index = min(
@@ -1061,212 +863,12 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
     # Edit state machine
     # =========================================================================
 
-    def _enter_edit_mode(
-        self,
-        mode: ConfigEditMode,
-        description: str,
-        ins_rules: list[RuleConfiguration],
-        blk_rules: list[RuleConfiguration],
-        path: pathlib.Path | None,
-        source_config: ProjectConfiguration | None,
-        snapshot: ProjectRuntimeSnapshot | None,
-        rules_editable: bool,
-        enabled_rule_names: frozenset[str] | None = None,
-    ) -> None:
-        """Enter a policy-selected project editing mode."""
-        logger.debug("Entering edit mode: %s", mode)
-
-        self._edit_mode = mode
-        self._edit_path = path
-        self._edit_old_conf = (
-            source_config if mode is ConfigEditMode.EDIT else None
-        )
-        self._edit_source_config = source_config
-        self._edit_runtime_snapshot = snapshot
-
-        enabled_names: set[str] = set(enabled_rule_names or ())
-        self._rule_configs.clear()
-        for rule_config in (*ins_rules, *blk_rules):
-            if rule_config.is_activated and rule_config.name:
-                enabled_names.add(str(rule_config.name))
-            if rule_config.config and rule_config.name:
-                self._rule_configs[rule_config.name] = dict(rule_config.config)
-
-        # Update tree to show enabled rules
-        self._rule_tree.set_enabled_rules(enabled_names)
-
-        self._rule_tree.set_read_only(not rules_editable)
-        self._rule_detail.set_read_only(not rules_editable)
-
-        # Show edit header only for new/duplicate
-        if mode in (ConfigEditMode.NEW, ConfigEditMode.DUPLICATE):
-            self._edit_header.setVisible(True)
-            self._edit_name_input.setText("")
-            self._edit_desc_input.setText(description)
-        else:
-            self._edit_header.setVisible(False)
-
-        # Update title and show Save/Cancel buttons
-        self._rules_group.setTitle(
-            "Rules (editing)" if rules_editable else self._view_rules_title
-        )
-        self._btn_save_rules.setVisible(True)
-        self._btn_cancel_rules.setVisible(True)
-
-        # Disable Project and Engine groups
-        self._project_group.setEnabled(False)
-        self._engine_group.setEnabled(False)
-
-    def _exit_edit_mode(self) -> None:
-        """Exit edit mode and return to view mode."""
-        logger.debug("Exiting edit mode")
-
-        # Update title and hide Save/Cancel buttons
-        self._rules_group.setTitle(self._view_rules_title)
-        self._btn_save_rules.setVisible(False)
-        self._btn_cancel_rules.setVisible(False)
-
-        # Hide edit header
-        self._edit_header.setVisible(False)
-
-        # Make tree and detail panel read-only
-        self._rule_tree.set_read_only(True)
-        self._rule_detail.set_read_only(True)
-
-        # Re-enable Project and Engine groups
-        self._project_group.setEnabled(True)
-        self._engine_group.setEnabled(True)
-
-        # Clear edit state
-        self._edit_mode = None
-        self._edit_path = None
-        self._edit_old_conf = None
-        self._edit_source_config = None
-        self._edit_runtime_snapshot = None
-        self._rule_configs.clear()
-
-    def _save_rules(self) -> None:
-        """Save the current rule configuration."""
-        logger.debug("Saving rules (mode: %s)", self._edit_mode)
-
-        # Determine save path
-        if self._edit_mode in (ConfigEditMode.NEW, ConfigEditMode.DUPLICATE):
-            # Open file dialog
-            fname, _ = QtWidgets.QFileDialog.getSaveFileName(
-                self.parent,
-                "Save configuration",
-                str(self.state.d810_config.config_dir),
-                "Project configuration (*.json)",
-            )
-            if not fname:
-                return  # User cancelled
-            save_path = pathlib.Path(fname)
-            description = self._edit_desc_input.text()
-        elif self._edit_mode is ConfigEditMode.EDIT:
-            # Save to user cfg dir (same as _resolve_config_path user path)
-            save_path = self.state.d810_config.config_dir / self._edit_path.name
-            description = self.state.current_project.description
-        else:
-            logger.error("Invalid edit mode: %s", self._edit_mode)
-            return
-
-        # Build RuleConfiguration lists from tree state
-        enabled = self._rule_tree.get_enabled_rule_names()
-        ins_rules = []
-        for rule in self.state.known_ins_rules:
-            if rule.name in enabled:
-                ins_rules.append(
-                    RuleConfiguration(
-                        name=rule.name,
-                        is_activated=True,
-                        config=self._rule_configs.get(rule.name, {}),
-                    )
-                )
-
-        blk_rules = []
-        for rule in self.state.known_blk_rules:
-            if rule.name in enabled:
-                blk_rules.append(
-                    RuleConfiguration(
-                        name=rule.name,
-                        is_activated=True,
-                        config=self._rule_configs.get(rule.name, {}),
-                    )
-                )
-
-        if self._edit_mode is None:
-            logger.error("Cannot save without an edit mode")
-            return
-        policy = select_config_edit_policy(
-            self._edit_mode,
-            self._edit_runtime_snapshot,
-        )
-        if not policy.allowed or policy.save_strategy is ConfigSaveStrategy.REFUSE:
-            QtWidgets.QMessageBox.warning(
-                self.parent,
-                "Configuration not saved",
-                policy.explanation,
-            )
-            return
-
-        try:
-            if policy.save_strategy is ConfigSaveStrategy.CLONE_RUNTIME_V2:
-                new_config = self.state.clone_current_runtime_project(
-                    save_path,
-                    description,
-                )
-            else:
-                new_config = self.state.save_legacy_project(
-                    snapshot=self._edit_runtime_snapshot,
-                    source=self._edit_source_config,
-                    destination=save_path,
-                    description=description,
-                    ins_rules=ins_rules,
-                    blk_rules=blk_rules,
-                )
-        except ProjectConfigurationEditError as exc:
-            QtWidgets.QMessageBox.critical(
-                self.parent,
-                "Configuration not saved",
-                str(exc),
-            )
-            return
-
-        # Update state
-        if self._edit_mode in (ConfigEditMode.NEW, ConfigEditMode.DUPLICATE):
-            self.state.add_project(new_config)
-        else:  # edit
-            self.state.update_project(self._edit_old_conf, new_config)
-
-        # Update UI
-        self.update_cfg_select()
-
-        # Find the index of the newly saved config
-        for i, proj in enumerate(self.state.project_manager.projects()):
-            if proj.path == save_path:
-                self._load_config(i)
-                break
-
-        # Exit edit mode
-        self._exit_edit_mode()
-
-    def _cancel_rules(self) -> None:
-        """Cancel editing and return to view mode."""
-        logger.debug("Cancelling rule edit")
-        self._exit_edit_mode()
-
     def _create_config(self):
-        logger.debug("Calling _create_config")
-        policy = select_config_edit_policy(ConfigEditMode.NEW, None)
-        self._enter_edit_mode(
-            ConfigEditMode.NEW,
-            "",
-            [],
-            [],
-            None,
-            None,
-            None,
-            policy.rules_editable,
+        QtWidgets.QMessageBox.information(
+            self.parent,
+            "Create config-v2 project",
+            "Duplicate an existing config-v2 project, then edit its ordered pass "
+            "pipeline and typed options.",
         )
 
     def _duplicate_config(self):
@@ -1280,30 +882,12 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
                 policy.explanation,
             )
             return
-        current = self.state.current_project
-        view = build_project_config_view(snapshot)
-        if policy.save_strategy is ConfigSaveStrategy.STRUCTURED_V2:
-            destination = self._choose_config_v2_destination(
-                snapshot,
-                duplicate=True,
-            )
-            if destination is not None:
-                self._open_config_v2_editor(destination)
-            return
-        is_runtime_clone = (
-            policy.save_strategy is ConfigSaveStrategy.CLONE_RUNTIME_V2
-        )
-        self._enter_edit_mode(
-            ConfigEditMode.DUPLICATE,
-            "Duplicate of " + current.description,
-            [] if is_runtime_clone else current.ins_rules,
-            [] if is_runtime_clone else current.blk_rules,
-            None,
-            current,
+        destination = self._choose_config_v2_destination(
             snapshot,
-            policy.rules_editable,
-            view.enabled_rule_names if is_runtime_clone else None,
+            duplicate=True,
         )
+        if destination is not None:
+            self._open_config_v2_editor(destination)
 
     def _edit_config(self):
         logger.debug("Calling _edit_config")
@@ -1316,24 +900,27 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
                 policy.explanation,
             )
             return
-        if policy.save_strategy is ConfigSaveStrategy.STRUCTURED_V2:
-            destination = self._choose_config_v2_destination(
-                snapshot,
-                duplicate=False,
-            )
-            if destination is not None:
-                self._open_config_v2_editor(destination)
-            return
-        current = self.state.current_project
-        self._enter_edit_mode(
-            ConfigEditMode.EDIT,
-            current.description,
-            current.ins_rules,
-            current.blk_rules,
-            current.path,
-            current,
+        destination = self._choose_config_v2_destination(
             snapshot,
-            policy.rules_editable,
+            duplicate=False,
+        )
+        if destination is not None:
+            self._open_config_v2_editor(destination)
+
+    def _edit_pass(self, pass_id: str) -> None:
+        snapshot = self.state.get_project_runtime_snapshot()
+        policy = select_config_edit_policy(ConfigEditMode.EDIT, snapshot)
+        if not policy.allowed:
+            return
+        destination = self._choose_config_v2_destination(snapshot, duplicate=False)
+        if destination is None:
+            return
+        self._open_config_v2_editor(
+            destination,
+            focus_target=resolve_config_v2_focus_target(
+                pass_id,
+                tuple(snapshot.effective_pass_ids),
+            ),
         )
 
     def _choose_config_v2_destination(
@@ -1409,10 +996,12 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         self._config_passes_value.setText(view.effective_passes_text)
         self.btn_edit_cfg.setEnabled(view.edit_enabled)
         self.btn_edit_cfg.setToolTip(view.edit_tooltip)
-        self._view_rules_title = view.rules_title
-        if self._edit_mode is None:
-            self._rules_group.setTitle(view.rules_title)
-        self._rule_tree.set_enabled_rules(set(view.enabled_rule_names))
+        self._view_passes_title = view.pass_tree_title
+        self._passes_group.setTitle(view.pass_tree_title)
+        self._pass_tree.set_passes(
+            self.state.get_workbench_recipe_catalog(),
+            view.effective_pass_ids,
+        )
 
     # Called when the edit combo is changed
     def _load_config(self, index: int):
