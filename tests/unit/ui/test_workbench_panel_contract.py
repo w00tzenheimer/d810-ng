@@ -64,3 +64,30 @@ def test_case_panel_renders_the_pure_workflow_projection() -> None:
     assert "view = project_case_workflow(" in render_source
     assert "self.case_headline.setText(view.headline)" in render_source
     assert "self.case_detail.setText(view.detail)" in render_source
+
+
+def test_successful_fresh_build_opens_canvas_through_existing_recipe_adapter() -> None:
+    source = _method_source("_run_build_deobfuscator")
+
+    assert 'self._run_command("build_deobfuscator", refresh_after=True)' in source
+    assert "should_accept_command_result(snapshot, result)" in source
+    assert "result.succeeded" in source
+    assert 'result.command != "build_deobfuscator"' in source
+    assert "SnapshotFreshness.CURRENT" in source
+    assert "recipe(snapshot)" in source
+    assert "self._show_build_canvas(recipe_adapter)" in source
+    assert source.index("should_accept_command_result") < source.index(
+        "self._show_build_canvas"
+    )
+
+
+def test_build_canvas_reuses_one_panel_and_recipe_composer_save_callback() -> None:
+    panel_source = PANEL.read_text(encoding="utf-8")
+    source = _method_source("_show_build_canvas")
+
+    assert "self._build_canvas_panel" in panel_source
+    assert "WorkbenchCanvasPanel" in source
+    assert "self._snapshot" in source
+    assert "refresh_workbench=self.refresh" in source
+    assert "set_session" in source
+    assert "panel.show()" in source
