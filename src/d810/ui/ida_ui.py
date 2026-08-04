@@ -16,6 +16,10 @@ if typing.TYPE_CHECKING:
 
 from d810.core.config import ProjectConfiguration, RuleConfiguration
 from d810.core.logging import LoggerConfigurator, getLogger
+from d810.core.function_storage_config import (
+    FunctionStorageConfigurationError,
+    parse_function_recipe_storage,
+)
 from d810.manager.project_runtime import ProjectConfigMode
 from d810.ui.project_config_logic import (
     ConfigEditMode,
@@ -318,6 +322,16 @@ class PluginConfigurationFileForm_t(QtWidgets.QDialog):
         self.dump_intermediate_microcode = self.state.d810_config.get(
             "dump_intermediate_microcode"
         )
+        raw_storage = self.state.d810_config.get(
+            "function_recipe_storage",
+            {"backend": "netnode"},
+        )
+        if not isinstance(raw_storage, dict):
+            raw_storage = {"backend": "netnode"}
+        self.function_storage_backend = str(
+            raw_storage.get("backend", "netnode")
+        )
+        self.function_storage_path = str(raw_storage.get("path", ""))
 
         self.setWindowTitle("Plugin Configuration")
 
@@ -347,6 +361,33 @@ class PluginConfigurationFileForm_t(QtWidgets.QDialog):
         self.layout_log_dir.addWidget(self.button_change_log_dir)
 
         settings_layout.addLayout(self.layout_log_dir)
+
+        storage_layout = QtWidgets.QHBoxLayout()
+        storage_layout.addWidget(QtWidgets.QLabel("Function recipe storage:", self))
+        self.combo_function_storage_backend = QtWidgets.QComboBox(self)
+        self.combo_function_storage_backend.addItem("IDB-local netnode", "netnode")
+        self.combo_function_storage_backend.addItem("SQLite file", "sqlite")
+        backend_index = self.combo_function_storage_backend.findData(
+            self.function_storage_backend
+        )
+        self.combo_function_storage_backend.setCurrentIndex(max(0, backend_index))
+        self.combo_function_storage_backend.currentIndexChanged.connect(
+            self._update_function_storage_controls
+        )
+        storage_layout.addWidget(self.combo_function_storage_backend)
+        self.edit_function_storage_path = QtWidgets.QLineEdit(self)
+        self.edit_function_storage_path.setText(self.function_storage_path)
+        self.edit_function_storage_path.setPlaceholderText(
+            "Absolute path to recipes.sqlite3"
+        )
+        storage_layout.addWidget(self.edit_function_storage_path, 1)
+        self.button_choose_function_storage_path = QtWidgets.QPushButton("Choose", self)
+        self.button_choose_function_storage_path.clicked.connect(
+            self.choose_function_storage_path
+        )
+        storage_layout.addWidget(self.button_choose_function_storage_path)
+        settings_layout.addLayout(storage_layout)
+        self._update_function_storage_controls()
 
         # Checkboxes
         self.checkbox_generate_z3_code = QtWidgets.QCheckBox(
@@ -409,7 +450,48 @@ class PluginConfigurationFileForm_t(QtWidgets.QDialog):
             self.log_dir_changed = True
             self.lbl_log_dir.setText(self.log_dir)
 
+    def _update_function_storage_controls(self, _index: int = -1) -> None:
+        sqlite_selected = (
+            self.combo_function_storage_backend.currentData() == "sqlite"
+        )
+        self.edit_function_storage_path.setEnabled(sqlite_selected)
+        self.button_choose_function_storage_path.setEnabled(sqlite_selected)
+
+    def choose_function_storage_path(self) -> None:
+        current = self.edit_function_storage_path.text().strip()
+        initial = current or str(pathlib.Path.home() / "d810-recipes.sqlite3")
+        selected, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self,
+            "Select function recipe database",
+            initial,
+            "SQLite database (*.sqlite3 *.db);;All files (*)",
+        )
+        if selected:
+            self.function_storage_path = selected
+            self.edit_function_storage_path.setText(selected)
+
+    def _function_storage_payload(self) -> dict[str, str]:
+        backend = str(self.combo_function_storage_backend.currentData())
+        if backend == "netnode":
+            return {"backend": "netnode"}
+        return {
+            "backend": "sqlite",
+            "path": self.edit_function_storage_path.text().strip(),
+        }
+
     def save_config(self):
+        storage_payload = self._function_storage_payload()
+        effective_log_dir = pathlib.Path(self.state.log_dir)
+        if self.log_dir_changed:
+            effective_log_dir = pathlib.Path(self.log_dir) / effective_log_dir.name
+        try:
+            storage_config = parse_function_recipe_storage(
+                storage_payload,
+                log_dir=effective_log_dir,
+            )
+        except FunctionStorageConfigurationError as exc:
+            QtWidgets.QMessageBox.critical(self, "Invalid recipe storage", str(exc))
+            return
         if self.log_dir_changed:
             self.state.d810_config.set("log_dir", self.log_dir)
         self.state.d810_config.set(
@@ -422,7 +504,9 @@ class PluginConfigurationFileForm_t(QtWidgets.QDialog):
             "dump_intermediate_microcode",
             self.checkbox_dump_intermediate_microcode.isChecked(),
         )
+        self.state.d810_config.set("function_recipe_storage", storage_payload)
         self.state.d810_config.save()
+        self.state.manager.reconfigure_function_storage(storage_config)
         self.accept()
 
 

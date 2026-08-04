@@ -3,6 +3,10 @@ from __future__ import annotations
 from d810.core.persistence import FunctionStorageLocator
 from d810.core.registry import EventEmitter
 from d810.core.rule_scope import RuleScopeEvent, RuleScopeInvalidation
+from d810.core.function_storage_config import (
+    FunctionRecipeStorageBackend,
+    FunctionRecipeStorageConfig,
+)
 from d810.manager.rule_scope_runtime import RuleScopeRuntime
 
 
@@ -44,20 +48,25 @@ def _build_runtime(
     )
 
 
-def test_initialize_storage_emits_reload_without_persisted_operator_inference(tmp_path):
+def test_initialize_sqlite_storage_uses_only_typed_configuration(tmp_path):
     storage = _FakeStorage()
     targets: list[tuple[object, str]] = []
     runtime = _build_runtime(storage, targets=targets)
-    runtime.configure({"function_recipe_storage": tmp_path / "recipes.db"})
 
     reloaded: list[RuleScopeInvalidation] = []
     runtime._event_emitter.on(
         RuleScopeEvent.IDB_OVERLAY_RELOADED,
         lambda payload: reloaded.append(payload),
     )
-    runtime.initialize_storage()
+    database_path = (tmp_path / "recipes.db").resolve()
+    runtime.initialize_storage(
+        FunctionRecipeStorageConfig(
+            FunctionRecipeStorageBackend.SQLITE,
+            database_path,
+        )
+    )
 
-    assert targets == [(tmp_path / "recipes.db", "sqlite")]
+    assert targets == [(database_path, "sqlite")]
     assert len(reloaded) == 1
     assert reloaded[0].reason == RuleScopeEvent.IDB_OVERLAY_RELOADED
 
@@ -67,21 +76,70 @@ def test_initialize_storage_defaults_to_idb_local_netnode() -> None:
     targets: list[tuple[object, str]] = []
     runtime = _build_runtime(storage, targets=targets)
 
-    runtime.initialize_storage()
+    runtime.initialize_storage(
+        FunctionRecipeStorageConfig(FunctionRecipeStorageBackend.NETNODE, None)
+    )
 
     assert targets == [("$ d810.optimization_storage", "netnode")]
 
 
-def test_explicit_sqlite_backend_requires_non_log_storage_path() -> None:
-    storage = _FakeStorage()
-    targets: list[tuple[object, str]] = []
-    runtime = _build_runtime(storage, targets=targets)
-    runtime.configure({"function_recipe_backend": "sqlite"})
+def test_reconfigure_opens_replacement_before_closing_current_storage(tmp_path) -> None:
+    first = _FakeStorage()
+    second = _FakeStorage()
+    calls: list[tuple[object, str, bool]] = []
 
-    runtime.initialize_storage()
+    def factory(target, *, backend: str):
+        calls.append((target, backend, first.closed))
+        return first if len(calls) == 1 else second
 
-    assert targets == []
-    assert runtime.storage is None
+    runtime = RuleScopeRuntime(
+        storage_factory=factory,
+        event_emitter=EventEmitter(),
+        project_name_provider=lambda: "proj",
+        database_identity_provider=lambda: "sample.i64",
+    )
+    runtime.initialize_storage(
+        FunctionRecipeStorageConfig(FunctionRecipeStorageBackend.NETNODE, None)
+    )
+    runtime.initialize_storage(
+        FunctionRecipeStorageConfig(
+            FunctionRecipeStorageBackend.SQLITE,
+            (tmp_path / "recipes.sqlite3").resolve(),
+        )
+    )
+
+    assert calls[1][2] is False
+    assert first.closed is True
+    assert second.closed is False
+    assert runtime.storage is second
+
+
+def test_failed_reconfiguration_keeps_current_storage() -> None:
+    current = _FakeStorage()
+    call_count = 0
+
+    def factory(_target, *, backend: str):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 2:
+            raise OSError(f"cannot open {backend}")
+        return current
+
+    runtime = RuleScopeRuntime(
+        storage_factory=factory,
+        event_emitter=EventEmitter(),
+        project_name_provider=lambda: "proj",
+        database_identity_provider=lambda: "sample.i64",
+    )
+    runtime.initialize_storage(
+        FunctionRecipeStorageConfig(FunctionRecipeStorageBackend.NETNODE, None)
+    )
+    runtime.initialize_storage(
+        FunctionRecipeStorageConfig(FunctionRecipeStorageBackend.SQLITE, None)
+    )
+
+    assert current.closed is False
+    assert runtime.storage is current
 
 
 def test_scoped_tags_emit_function_invalidations():

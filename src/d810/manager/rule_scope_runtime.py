@@ -10,6 +10,10 @@ from d810.core.rule_scope import (
     RuleScopeInvalidation,
 )
 from d810.core.typing import Any, Callable, Optional, Set
+from d810.core.function_storage_config import (
+    FunctionRecipeStorageBackend,
+    FunctionRecipeStorageConfig,
+)
 
 
 logger = getLogger("D810")
@@ -25,18 +29,19 @@ class RuleScopeRuntime:
         event_emitter: Any,
         project_name_provider: Callable[[], str],
         database_identity_provider: Callable[[], str],
-        config_provider: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         self._storage_factory = storage_factory
         self._event_emitter = event_emitter
         self._project_name_provider = project_name_provider
         self._database_identity_provider = database_identity_provider
-        self._config_provider = config_provider
-        self._config: dict[str, Any] = {}
+        self._storage_config: FunctionRecipeStorageConfig | None = None
         self.storage: Any = None
 
-    def configure(self, config: dict[str, Any]) -> None:
-        self._config = dict(config)
+    def configure_storage(
+        self,
+        config: FunctionRecipeStorageConfig | None,
+    ) -> None:
+        self._storage_config = config
 
     def emit_invalidation(
         self,
@@ -56,46 +61,25 @@ class RuleScopeRuntime:
             ),
         )
 
-    def initialize_storage(self) -> None:
+    def initialize_storage(
+        self,
+        config: FunctionRecipeStorageConfig | None = None,
+    ) -> None:
+        if config is not None:
+            self._storage_config = config
         old_storage = self.storage
-        if self._config_provider is not None:
-            self._config = dict(self._config_provider())
-        target = self._config.get("function_recipe_storage")
-        configured_backend = self._config.get("function_recipe_backend")
-        if configured_backend is None:
-            # A configured filesystem target is the historical explicit SQLite
-            # form. With no storage setting at all, keep function recipes inside
-            # the IDB so log cleanup cannot erase them and separate IDBs cannot
-            # collide by function address.
-            backend = "sqlite" if target is not None else "netnode"
-        else:
-            backend = str(configured_backend).strip().lower()
-        if target is None:
-            if backend == "sqlite":
-                if old_storage is not None:
-                    try:
-                        old_storage.close()
-                    except Exception:
-                        pass
-                self.storage = None
-                logger.warning(
-                    "function_recipe_backend=sqlite requires an explicit "
-                    "function_recipe_storage path outside the erasable log directory"
-                )
-                self.emit_invalidation(
-                    RuleScopeEvent.IDB_OVERLAY_RELOADED,
-                    project_name=self._project_name(),
-                )
-                return
-            else:
-                target = "$ d810.optimization_storage"
+        storage_config = self._storage_config
+        if storage_config is None:
+            return
+        backend = storage_config.backend.value
+        target: object = storage_config.path
+        if storage_config.backend is FunctionRecipeStorageBackend.NETNODE:
+            target = "$ d810.optimization_storage"
         try:
-            if old_storage is not None:
-                try:
-                    old_storage.close()
-                except Exception:
-                    pass
-            self.storage = self._storage_factory(target, backend=backend)
+            replacement = self._storage_factory(target, backend=backend)
+            self.storage = replacement
+            if old_storage is not None and old_storage is not replacement:
+                old_storage.close()
             logger.info(
                 "Function recipe storage configured: backend=%s target=%s",
                 backend,
@@ -106,7 +90,7 @@ class RuleScopeRuntime:
                 project_name=self._project_name(),
             )
         except Exception as exc:
-            self.storage = None
+            self.storage = old_storage
             logger.warning("Failed to initialize function recipe storage: %s", exc)
             self.emit_invalidation(
                 RuleScopeEvent.IDB_OVERLAY_RELOADED,
@@ -171,7 +155,7 @@ class RuleScopeRuntime:
             self.storage = None
 
     def _ensure_storage(self) -> None:
-        if self.storage is None:
+        if self.storage is None and self._storage_config is not None:
             self.initialize_storage()
 
     def _project_name(self) -> str:

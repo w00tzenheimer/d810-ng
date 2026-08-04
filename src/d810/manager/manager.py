@@ -98,6 +98,7 @@ from d810.manager.function_recipe_runtime import (
 from d810.manager.function_recipe_activation import (
     select_workbench_recipe_projection,
 )
+from d810.core.function_storage_config import FunctionRecipeStorageConfig
 from d810.manager.hexrays_pass_pipeline import build_hexrays_flowgraph_pipeline
 from d810.manager.post_d810_runtime import HexRaysPostD810Runtime
 from d810.manager.profiling import ProfilingController
@@ -568,6 +569,11 @@ class D810Manager:
     _function_analysis_priors: dict[str, FunctionAnalysisPriors] = dataclasses.field(
         default_factory=dict, init=False
     )
+    _function_storage_config: FunctionRecipeStorageConfig | None = dataclasses.field(
+        default=None,
+        init=False,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         self.profiling = ProfilingController(self.log_dir)
@@ -578,7 +584,6 @@ class D810Manager:
             database_identity_provider=lambda: (
                 self._database_identity or str(self.config.get("idb_key", ""))
             ),
-            config_provider=lambda: self.config,
         )
         self.comparison_service = WorkbenchComparisonService()
         workbench_registry = operational_config_v2_pass_registry()
@@ -1337,10 +1342,24 @@ class D810Manager:
         self._semantic_route_reference_oracle_registry = (
             _load_semantic_route_reference_oracle_registry(kwargs)
         )
-        self.rule_scope_runtime.configure(kwargs)
         self._load_function_analysis_priors_from_config(
             kwargs.get("function_analysis_priors", {})
         )
+
+    def reconfigure_function_storage(
+        self,
+        config: FunctionRecipeStorageConfig | None,
+    ) -> None:
+        """Install application-owned recipe storage independently of projects."""
+
+        self._function_storage_config = config
+        self.rule_scope_runtime.configure_storage(config)
+        if not self._started:
+            return
+        if config is None:
+            self.rule_scope_runtime.close()
+            return
+        self.rule_scope_runtime.initialize_storage(config)
 
     @staticmethod
     def _create_rule_scope_storage(target, *, backend: str = "sqlite"):
@@ -1716,7 +1735,8 @@ class D810Manager:
         self._started = True
 
     def _init_storage(self) -> None:
-        self.rule_scope_runtime.initialize_storage()
+        if self._function_storage_config is not None:
+            self.rule_scope_runtime.initialize_storage(self._function_storage_config)
 
     def _get_rule_overlay(self, function_ea: int) -> FunctionRuleOverlay | None:
         return self.rule_scope_runtime.get_rule_overlay(function_ea)
