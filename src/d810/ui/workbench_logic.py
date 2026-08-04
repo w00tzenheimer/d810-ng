@@ -496,11 +496,6 @@ def action_states(
             else "Start D810 before running this command."
         )
     )
-    override_reason = (
-        ""
-        if current
-        else "Refresh the stale workbench snapshot before editing overrides."
-    )
     return (
         WorkbenchActionState("refresh", "Refresh", True, ""),
         WorkbenchActionState("export", "Export evidence", True, ""),
@@ -510,12 +505,6 @@ def action_states(
             "Deobfuscate",
             engine_ready,
             engine_reason,
-        ),
-        WorkbenchActionState(
-            "function_override",
-            "Function override",
-            current,
-            override_reason,
         ),
         WorkbenchActionState("compare", "Compare", engine_ready, engine_reason),
         WorkbenchActionState(

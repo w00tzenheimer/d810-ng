@@ -306,37 +306,6 @@ def test_build_deobfuscator_passes_current_mba_without_deobfuscating(
     assert deobfuscate_action_calls == []
 
 
-def test_function_override_reuses_existing_action_exactly_once(monkeypatch) -> None:
-    action_calls: list[object] = []
-
-    class FakeAction:
-        def __init__(self, state, ida_modules) -> None:
-            action_calls.append((state, ida_modules))
-
-        def execute(self, ctx) -> int:
-            action_calls.append(ctx)
-            return 1
-
-    module = ModuleType("d810.ui.actions.function_rules")
-    module.FunctionRules = FakeAction
-    monkeypatch.setitem(sys.modules, module.__name__, module)
-
-    def execute_command(request, *, lifecycle):
-        assert lifecycle() is True
-        return _result(request)
-
-    state = SimpleNamespace(execute_workbench_function_override=execute_command)
-    shim = object()
-    ctx = SimpleNamespace(widget=object())
-    adapter = command_module.WorkbenchCommandAdapter(state, shim, ctx)
-    request = _request("function_override")
-
-    result = adapter.function_override(request)
-
-    assert result.succeeded is True
-    assert action_calls == [(state, {"idaapi": shim}), ctx]
-
-
 def test_analyze_adapter_source_does_not_refresh_decompile_or_import_actions() -> None:
     path = Path(command_module.__file__)
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))

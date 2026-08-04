@@ -81,6 +81,7 @@ from d810.manager.workbench_recipe_models import (
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
 from d810.optimizers.microcode.instructions.handler import InstructionOptimizationRule
 from d810.passes.pipeline_v2_hook_bridge import pipeline_v2_hook_activation
+from d810.passes.state_machine_options import StateMachineCffOptions
 
 if TYPE_CHECKING:
     from d810.manager import D810Manager
@@ -624,6 +625,16 @@ class D810State(metaclass=SingletonMeta):
             options,
         )
 
+    def replace_workbench_recipe_state_cff_options(
+        self,
+        draft: PipelineRecipeDraft,
+        options: StateMachineCffOptions,
+    ) -> PipelineRecipeDraft:
+        return self.manager.replace_workbench_recipe_state_cff_options(
+            draft,
+            options,
+        )
+
     def save_workbench_function_recipe(
         self,
         draft: PipelineRecipeDraft,
@@ -768,17 +779,6 @@ class D810State(metaclass=SingletonMeta):
             request,
             target=target,
             provider_phase=provider_phase,
-        )
-
-    def execute_workbench_function_override(
-        self,
-        request: WorkbenchCommandRequest,
-        *,
-        lifecycle: typing.Callable[[], bool],
-    ) -> WorkbenchCommandResult:
-        return self.manager.workbench_service.execute_function_override(
-            request,
-            lifecycle=lifecycle,
         )
 
     def clone_current_runtime_project(

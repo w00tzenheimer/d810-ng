@@ -180,23 +180,4 @@ class WorkbenchCommandAdapter:
             provider_phase=provider_phase,
         )
 
-    def function_override(
-        self,
-        request: WorkbenchCommandRequest,
-    ) -> WorkbenchCommandResult:
-        def lifecycle() -> bool:
-            from d810.ui.actions.function_rules import FunctionRules
-
-            action = FunctionRules(
-                self._state,
-                ida_modules={"idaapi": self._idaapi},
-            )
-            return action.execute(self._action_context()) == 1
-
-        return self._state.execute_workbench_function_override(
-            request,
-            lifecycle=lifecycle,
-        )
-
-
 __all__ = ["WorkbenchCommandAdapter"]

@@ -208,7 +208,6 @@ def test_current_comparison_offers_contextual_tuning() -> None:
     assert tuple(action.action_id for action in view.secondary) == (
         "diagnostics",
         "recipe",
-        "function_override",
     )
     assert "correct" not in (view.headline + view.detail).casefold()
 

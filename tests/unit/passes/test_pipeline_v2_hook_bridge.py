@@ -173,6 +173,51 @@ def test_hodur_bridge_derives_unflattener_trigger_and_simple_flow_rule():
     assert unflattener.config["enable_transition_uddu_validator"] is True
 
 
+def test_state_cff_bridge_accepts_typed_direct_threshold_on_the_complete_spine():
+    project = ProjectConfiguration(
+        path=Path("typed-state-cff.runtime-config-v2.json"),
+        additional_configuration={
+            "pipeline_v2_mode": "config-v2",
+            "pipeline_v2": [
+                {
+                    "pass": pass_id,
+                    "options": {"min_state_constant": 0x8000},
+                }
+                for pass_id in STATE_MACHINE_NATIVE_PASS_IDS
+            ],
+        },
+    )
+
+    activation = pipeline_v2_hook_activation(project)
+
+    assert activation.native_state_machine_pass_ids == STATE_MACHINE_NATIVE_PASS_IDS
+    assert [rule.name for rule in activation.block_rules] == [
+        STATE_MACHINE_UNFLATTENER_RULE
+    ]
+    assert activation.block_rules[0].config == {"min_state_constant": 0x8000}
+
+
+def test_state_cff_bridge_rejects_disagreeing_typed_thresholds():
+    project = ProjectConfiguration(
+        path=Path("divergent-state-cff.runtime-config-v2.json"),
+        additional_configuration={
+            "pipeline_v2_mode": "config-v2",
+            "pipeline_v2": [
+                {
+                    "pass": pass_id,
+                    "options": {
+                        "min_state_constant": 0x8000 + index,
+                    },
+                }
+                for index, pass_id in enumerate(STATE_MACHINE_NATIVE_PASS_IDS)
+            ],
+        },
+    )
+
+    with pytest.raises(PipelineConfigError, match="disagree"):
+        pipeline_v2_hook_activation(project)
+
+
 def test_ollvm_bridge_omits_legacy_materialized_computed_goto_island_rule():
     project = _config_v2_project("default_unflattening_ollvm")
 

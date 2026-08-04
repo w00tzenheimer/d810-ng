@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 
 from d810.core.deobfuscation_case import (
     DeobfuscationCaseSnapshot,
@@ -17,6 +18,31 @@ from d810.manager.workbench_recipe_models import (
     RecipeCommandResult,
     RecipeValidation,
 )
+from d810.passes.pass_pipeline import PipelineConfig
+from d810.passes.state_machine_options import (
+    STATE_MACHINE_NATIVE_PASS_IDS as _STATE_MACHINE_NATIVE_PASS_IDS,
+    StateMachineCffOptions,
+    state_machine_cff_options_from_config,
+)
+
+STATE_MACHINE_NATIVE_PASS_IDS = _STATE_MACHINE_NATIVE_PASS_IDS
+
+
+def parse_state_cff_minimum_constant(text: str) -> StateMachineCffOptions:
+    """Parse decimal or Python-style hexadecimal input into typed options."""
+    try:
+        value = int(str(text).strip(), 0)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("state-CFF minimum constant must be an integer") from exc
+    return StateMachineCffOptions(min_state_constant=value)
+
+
+def state_cff_minimum_constant_from_config_json(config_json: str) -> int:
+    """Project the typed threshold from one serialized spine entry."""
+    payload = json.loads(config_json)
+    return state_machine_cff_options_from_config(
+        PipelineConfig.from_dict(payload)
+    ).min_state_constant
 
 
 @dataclasses.dataclass(frozen=True, slots=True)

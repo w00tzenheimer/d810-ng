@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from d810.ui.stats_logic import (
-    get_fired_rule_names,
-    save_fired_rules_for_function,
-)
+from pathlib import Path
+
+from d810.ui.stats_logic import get_fired_rule_names
 
 
 class TestGetFiredRuleNames:
@@ -109,71 +108,21 @@ class TestGetFiredRuleNames:
         assert result == ["Rule1"]
 
 
-class TestSaveFiredRulesForFunction:
-    """Test save_fired_rules_for_function function."""
+def test_stats_panel_has_no_private_rule_override_controls() -> None:
+    source = (
+        Path(__file__).resolve().parents[3]
+        / "src"
+        / "d810"
+        / "ui"
+        / "stats_dialog.py"
+    ).read_text(encoding="utf-8")
 
-    def test_basic_creation(self):
-        """Test creating a FunctionRuleConfig with fired rules."""
-        config = save_fired_rules_for_function(
-            func_ea=0x401000,
-            fired_rule_names=["AddRule", "XorRule"],
-        )
-
-        assert config is not None
-        assert config.function_addr == 0x401000
-        assert config.enabled_rules == {"AddRule", "XorRule"}
-        assert config.disabled_rules == set()
-
-    def test_empty_fired_rules(self):
-        """Test with empty fired rules list."""
-        config = save_fired_rules_for_function(
-            func_ea=0x402000,
-            fired_rule_names=[],
-        )
-
-        assert config.function_addr == 0x402000
-        assert config.enabled_rules == set()
-        assert config.disabled_rules == set()
-
-    def test_with_func_name(self):
-        """Test that func_name is used in auto-generated notes."""
-        config = save_fired_rules_for_function(
-            func_ea=0x403000,
-            fired_rule_names=["RuleA"],
-            func_name="my_function",
-        )
-
-        assert config.notes == "Rules that fired during deobfuscation of my_function"
-
-    def test_with_custom_notes(self):
-        """Test that custom notes override auto-generated notes."""
-        config = save_fired_rules_for_function(
-            func_ea=0x404000,
-            fired_rule_names=["RuleB"],
-            func_name="my_function",
-            notes="Custom notes here",
-        )
-
-        assert config.notes == "Custom notes here"
-
-    def test_no_func_name_no_notes(self):
-        """Test that notes are empty if neither provided."""
-        config = save_fired_rules_for_function(
-            func_ea=0x405000,
-            fired_rule_names=["RuleC"],
-        )
-
-        assert config.notes == ""
-
-    def test_preserves_rule_order_as_set(self):
-        """Test that fired_rule_names are stored as a set (unordered)."""
-        config = save_fired_rules_for_function(
-            func_ea=0x406000,
-            fired_rule_names=["ZRule", "ARule", "MRule"],
-        )
-
-        # Should be a set with all three rules
-        assert len(config.enabled_rules) == 3
-        assert "ZRule" in config.enabled_rules
-        assert "ARule" in config.enabled_rules
-        assert "MRule" in config.enabled_rules
+    for removed in (
+        "add_btn",
+        "Save for function",
+        "Apply fired rules as active inference",
+        "_on_save_for_function",
+        "_on_apply_inference_for_function",
+        "_on_clear_active_inference",
+    ):
+        assert removed not in source

@@ -8,10 +8,6 @@ All functions in this module can be imported and tested without IDA Pro.
 
 from __future__ import annotations
 
-# Import here to avoid circular imports and IDA dependencies at module level
-from d810.core.persistence import FunctionRuleConfig
-
-
 def get_fired_rule_names(stats: dict | None) -> list[str]:
     """Extract the names of all rules that fired from the stats dict.
 
@@ -48,32 +44,3 @@ def get_fired_rule_names(stats: dict | None) -> list[str]:
             fired_rules.add(rule_name)
 
     return sorted(fired_rules)
-
-
-def save_fired_rules_for_function(
-    func_ea: int,
-    fired_rule_names: list[str],
-    func_name: str = "",
-    notes: str = "",
-) -> "FunctionRuleConfig":
-    """Create a FunctionRuleConfig with the fired rules as enabled_rules.
-
-    Args:
-        func_ea: Function entry point address
-        fired_rule_names: Rule names from get_fired_rule_names()
-        func_name: Optional function name for display
-        notes: Optional notes about this configuration
-
-    Returns:
-        New FunctionRuleConfig with enabled_rules populated from fired rules
-    """
-    # Build notes string if func_name provided and notes is empty
-    if not notes and func_name:
-        notes = f"Rules that fired during deobfuscation of {func_name}"
-
-    return FunctionRuleConfig(
-        function_addr=func_ea,
-        enabled_rules=set(fired_rule_names),
-        disabled_rules=set(),
-        notes=notes,
-    )

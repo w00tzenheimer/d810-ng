@@ -129,7 +129,6 @@ if IDA_AVAILABLE:
             for action_id, label in (
                 ("refresh", "Refresh"),
                 ("export", "Export evidence"),
-                ("function_override", "Function override"),
                 ("compare", "Compare"),
                 ("recipe", "Recipe"),
                 ("diagnostics", "Diagnostics"),
@@ -146,18 +145,6 @@ if IDA_AVAILABLE:
             )
             self.action_buttons["refresh"].clicked.connect(self.refresh)
             self.action_buttons["export"].clicked.connect(self._export_evidence)
-            for action_id in ("function_override",):
-                button = self.action_buttons[action_id]
-
-                def _dispatch(
-                    checked: bool = False,
-                    *,
-                    action_id: str = action_id,
-                ) -> None:
-                    del checked
-                    self._run_command(action_id)
-
-                button.clicked.connect(_dispatch)
             self.action_buttons["compare"].clicked.connect(self._run_comparison)
             self.action_buttons["recipe"].clicked.connect(self._run_recipe)
             self.action_buttons["diagnostics"].clicked.connect(self._run_diagnostics)
@@ -248,7 +235,6 @@ if IDA_AVAILABLE:
                 for action_id in (
                     "refresh",
                     "export",
-                    "function_override",
                     "compare",
                     "recipe",
                     "diagnostics",
@@ -429,10 +415,6 @@ if IDA_AVAILABLE:
                 if transition.compare:
                     self._run_comparison()
             self._render_case_workflow()
-
-        def _run_function_override(self, checked: bool = False) -> None:
-            del checked
-            self._run_command("function_override")
 
         def _run_comparison(self, checked: bool = False) -> None:
             del checked

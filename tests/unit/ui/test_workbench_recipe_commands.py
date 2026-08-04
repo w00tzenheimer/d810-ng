@@ -180,6 +180,28 @@ def test_save_and_current_state_use_generation_safe_state_facades():
     assert result[0].command == "save_function_recipe"
 
 
+def test_state_cff_threshold_edit_uses_the_typed_state_facade_once():
+    draft = _draft()
+    calls: list[object] = []
+    state = SimpleNamespace(
+        replace_workbench_recipe_state_cff_options=lambda candidate, options: (
+            calls.append((candidate, options)) or "updated"
+        ),
+        validate_workbench_recipe=lambda candidate, facts=None: (
+            calls.append(("validate", candidate, facts)) or "validation"
+        ),
+    )
+    adapter, _, _ = _adapter(state)
+
+    updated, validation = adapter.replace_state_cff_options(draft, 0x8000)
+
+    assert updated == "updated"
+    assert validation == "validation"
+    assert calls[0][0] is draft
+    assert calls[0][1].min_state_constant == 0x8000
+    assert calls[1] == ("validate", "updated", None)
+
+
 def _canvas_catalog() -> tuple[PassCatalogEntry, ...]:
     return (
         PassCatalogEntry(

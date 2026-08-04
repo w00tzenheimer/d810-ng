@@ -577,17 +577,12 @@ def test_stale_before_command_rejects_without_invoking_any_lifecycle(
         dataclasses.replace(stale, command="deobfuscate"),
         lifecycle=lambda: calls.append("deobfuscate") or True,
     )
-    override = service.execute_function_override(
-        dataclasses.replace(stale, command="function_override"),
-        lifecycle=lambda: calls.append("override") or True,
-    )
-
     assert calls == []
     assert all(
         result.status is OutcomeStatus.STALE
         and result.succeeded is False
         and result.accepted is False
-        for result in (analyze, deobfuscate, override)
+        for result in (analyze, deobfuscate)
     )
 
 
@@ -650,7 +645,7 @@ def test_build_deobfuscator_calls_only_the_read_only_analysis_seam(
     assert result.refresh_requested is True
 
 
-def test_deobfuscate_and_function_override_invoke_existing_lifecycles_once(
+def test_deobfuscate_invokes_existing_lifecycle_once(
     tmp_path: Path,
 ) -> None:
     service, _manager_obj, snapshot, _ = _collected_service(tmp_path)
@@ -660,16 +655,9 @@ def test_deobfuscate_and_function_override_invoke_existing_lifecycles_once(
         _request(snapshot, "deobfuscate"),
         lifecycle=lambda: calls.append("deobfuscate") or True,
     )
-    override = service.execute_function_override(
-        _request(snapshot, "function_override"),
-        lifecycle=lambda: calls.append("override") or True,
-    )
-
-    assert calls == ["deobfuscate", "override"]
+    assert calls == ["deobfuscate"]
     assert deobfuscate.succeeded is True
-    assert override.succeeded is True
     assert deobfuscate.refresh_requested is True
-    assert override.refresh_requested is True
 
 
 def test_false_or_raising_lifecycle_fails_without_retry(tmp_path: Path) -> None:
@@ -681,19 +669,8 @@ def test_false_or_raising_lifecycle_fails_without_retry(tmp_path: Path) -> None:
         lifecycle=lambda: calls.append("false") or False,
     )
 
-    def raising() -> bool:
-        calls.append("raise")
-        raise RuntimeError("dialog failed")
-
-    errored = service.execute_function_override(
-        _request(snapshot, "function_override"),
-        lifecycle=raising,
-    )
-
-    assert calls == ["false", "raise"]
+    assert calls == ["false"]
     assert failed.status is OutcomeStatus.FAILED
-    assert errored.status is OutcomeStatus.FAILED
-    assert "dialog failed" in errored.message
 
 
 def test_generation_changed_inside_callback_returns_stale_completion(
@@ -754,7 +731,6 @@ def test_state_command_facades_delegate_without_policy() -> None:
         "execute_workbench_analyze": "execute_analyze",
         "execute_workbench_build_deobfuscator": "execute_build_deobfuscator",
         "execute_workbench_deobfuscate": "execute_deobfuscate",
-        "execute_workbench_function_override": "execute_function_override",
     }
     for method_name, expected_call in expectations.items():
         method = _method(state_path, "D810State", method_name)

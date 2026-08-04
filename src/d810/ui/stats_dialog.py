@@ -1,7 +1,7 @@
 """Deobfuscation statistics panel as a dockable IDA PluginForm.
 
-Provides a Qt-based UI for viewing d810-ng optimization statistics with
-filter bar and action buttons for rule management and CSV export.
+Provides a Qt-based UI for viewing d810-ng optimization statistics with a
+filter bar, refresh, and CSV export.
 
 Follows the CTO function lister lifecycle pattern:
 - Widgets created in __init__ BEFORE Show()
@@ -94,12 +94,6 @@ class StatsTreeWidget(QtWidgets.QTreeView):
         self.menu_btn.setFixedWidth(20)
         self.menu_btn.setToolTip("Actions")
 
-        # [+] button for saving rules (d810-specific)
-        self.add_btn = QtWidgets.QPushButton("+")
-        self.add_btn.setContentsMargins(0, 0, 0, 0)
-        self.add_btn.setFixedWidth(25)
-        self.add_btn.setToolTip("Save fired rules for function")
-
         # Create parent widget for filter bar (CTO pfilter pattern EXACTLY)
         self.pfilter = QtWidgets.QWidget()
         filter_layout = QtWidgets.QHBoxLayout(self.pfilter)
@@ -114,7 +108,6 @@ class StatsTreeWidget(QtWidgets.QTreeView):
         filter_layout.addWidget(self.regex_box)
         filter_layout.addWidget(self.cs_box)
 
-        btn_layout.addWidget(self.add_btn)
         btn_layout.addWidget(self.clear_btn)
         btn_layout.addWidget(self.menu_btn)
 
@@ -153,8 +146,6 @@ class StatsTreeWidget(QtWidgets.QTreeView):
                 self.proxy_model.setFilterRegularExpression(regex)
             except AttributeError:
                 # Qt5 path
-                import re as _re
-
                 syntax = QtCore.QRegExp.PatternSyntax.RegExp
                 cs = (
                     QtCore.Qt.CaseSensitivity.CaseSensitive
@@ -181,7 +172,6 @@ class DeobfuscationStatsPanel(ida_kernwin.PluginForm):
     Features:
     - Qt table with sortable columns showing stats by category
     - Filter bar with regex/case-sensitive options (CTO pfilter)
-    - [+] button to enable/disable rules per function
     - [*] menu for refresh and CSV export
     - Persistent docking (stays open between invocations)
 
@@ -219,10 +209,6 @@ class DeobfuscationStatsPanel(ida_kernwin.PluginForm):
         export_action.triggered.connect(self._export_csv)
         self.tree.menu_btn.setMenu(self.filter_menu)
 
-        # Menu for [+] button
-        self.add_menu = QtWidgets.QMenu("")
-        self.tree.add_btn.setMenu(self.add_menu)
-        self.add_menu.aboutToShow.connect(self._rebuild_add_menu)
 
     def OnCreate(self, form: typing.Any) -> None:
         """Called when the plugin form is created (CTO pattern).
@@ -252,8 +238,6 @@ class DeobfuscationStatsPanel(ida_kernwin.PluginForm):
                 self.tree.clear_btn.pressed.disconnect()
                 if hasattr(self, "filter_menu"):
                     pass  # QMenu signals auto-disconnect when parent is destroyed
-                if hasattr(self, "add_menu"):
-                    self.add_menu.aboutToShow.disconnect()
         except (RuntimeError, TypeError):
             pass  # Already disconnected or C++ object already deleted
 
@@ -385,116 +369,6 @@ class DeobfuscationStatsPanel(ida_kernwin.PluginForm):
                 item.setEditable(False)
 
             self.model.appendRow(items)
-
-    def _rebuild_add_menu(self) -> None:
-        """Rebuild the [+] button context menu."""
-        self.add_menu.clear()
-
-        # No function selected
-        if self._func_ea is None:
-            action = self.add_menu.addAction("(no function selected)")
-            action.setEnabled(False)
-            return
-
-        from d810.ui.stats_logic import get_fired_rule_names
-
-        # Get fired rules from stats
-        fired_rule_names = get_fired_rule_names(self._stats)
-
-        # Check if any rules fired
-        if not fired_rule_names:
-            action = self.add_menu.addAction("(no rules fired)")
-            action.setEnabled(False)
-            return
-
-        # Add "Save for function" option
-        action = self.add_menu.addAction("Save for function")
-        action.triggered.connect(self._on_save_for_function)
-        inference_action = self.add_menu.addAction(
-            "Apply fired rules as active inference"
-        )
-        inference_action.triggered.connect(self._on_apply_inference_for_function)
-        clear_inference_action = self.add_menu.addAction("Clear active inference")
-        clear_inference_action.triggered.connect(self._on_clear_active_inference)
-
-    def _on_save_for_function(self) -> None:
-        """Handle save fired rules for function action."""
-        if self._func_ea is None:
-            return
-
-        from d810.ui.stats_logic import (
-            get_fired_rule_names,
-            save_fired_rules_for_function,
-        )
-
-        # Get fired rules from stats
-        fired_rule_names = get_fired_rule_names(self._stats)
-
-        if not fired_rule_names:
-            ida_kernwin.msg("d810-ng: No fired rules to save\n")
-            return
-
-        # Create function rule config with fired rules
-        func_rule_config = save_fired_rules_for_function(
-            func_ea=self._func_ea,
-            fired_rule_names=fired_rule_names,
-            func_name=self._func_name or f"sub_{self._func_ea:X}",
-        )
-
-        # Persist to storage and emit function-level cache invalidation
-        if hasattr(self._state, "manager") and hasattr(
-            self._state.manager, "set_function_rule_override"
-        ):
-            self._state.manager.set_function_rule_override(
-                function_addr=self._func_ea,
-                enabled_rules=func_rule_config.enabled_rules,
-                disabled_rules=func_rule_config.disabled_rules,
-                notes=func_rule_config.notes,
-            )
-
-        # Show confirmation
-        func_name = self._func_name or f"sub_{self._func_ea:X}"
-        ida_kernwin.msg(
-            f"d810-ng: Saved {len(fired_rule_names)} rules for {func_name}\n"
-        )
-
-    def _on_apply_inference_for_function(self) -> None:
-        if self._func_ea is None:
-            return
-        from d810.ui.stats_logic import get_fired_rule_names
-
-        fired_rule_names = get_fired_rule_names(self._stats)
-        if not fired_rule_names:
-            ida_kernwin.msg("d810-ng: No fired rules to build inference\n")
-            return
-        manager = getattr(self._state, "manager", None)
-        if manager is None or not hasattr(manager, "set_active_rule_inference"):
-            ida_kernwin.warning(
-                "d810-ng manager does not support active inference application."
-            )
-            return
-        func_name = self._func_name or f"sub_{self._func_ea:X}"
-        inference_name = f"fired_{func_name}_{self._func_ea:X}"
-        manager.set_active_rule_inference(
-            inference_name=inference_name,
-            enabled_rules=set(fired_rule_names),
-            target_func_eas={int(self._func_ea)},
-            notes=f"Derived from fired rules for {func_name}",
-        )
-        ida_kernwin.msg(
-            f"d810-ng: Applied active inference '{inference_name}' "
-            f"for function {func_name} ({len(fired_rule_names)} rules)\n"
-        )
-
-    def _on_clear_active_inference(self) -> None:
-        manager = getattr(self._state, "manager", None)
-        if manager is None or not hasattr(manager, "clear_active_rule_inference"):
-            ida_kernwin.warning(
-                "d810-ng manager does not support clearing active inference."
-            )
-            return
-        manager.clear_active_rule_inference()
-        ida_kernwin.msg("d810-ng: Cleared active inference\n")
 
     def _export_csv(self) -> None:
         """Export statistics to CSV file."""

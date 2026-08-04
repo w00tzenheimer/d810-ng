@@ -10,7 +10,9 @@ from d810.manager.workbench_recipe_models import FunctionPipelineOverride, Recip
 from d810.manager.workbench_recipe_service import RecipeEditError, RecipeService
 from d810.passes.operational_config_v2 import operational_config_v2_pass_registry
 from d810.passes.pass_pipeline import PipelineConfig
+from d810.passes.pipeline_v2_hook_bridge import STATE_MACHINE_NATIVE_PASS_IDS
 from d810.passes.registry import UnknownPassIdError
+from d810.passes.state_machine_options import StateMachineCffOptions
 
 
 class _Facts:
@@ -143,11 +145,90 @@ def test_edit_rejects_unknown_pass_item_and_undeclared_options() -> None:
         service.add_pass(draft, "not-registered")
     with pytest.raises(RecipeEditError, match="draft item"):
         service.remove_pass(draft, "missing-item")
-    recover = next(
-        item for item in draft.passes if item.pass_id == "recover_dispatcher"
+    draft = service.add_pass(draft, "mba-simplify")
+    unconfigured = next(
+        item for item in draft.passes if item.pass_id == "mba-simplify"
     )
     with pytest.raises(RecipeEditError, match="does not declare structured options"):
-        service.replace_options(draft, recover.item_id, {"guess": True})
+        service.replace_options(draft, unconfigured.item_id, {"guess": True})
+
+
+def _state_cff_draft(service: RecipeService):
+    registry = operational_config_v2_pass_registry()
+    return service.create_draft(
+        function_ea=0x401000,
+        function_fingerprint="sha256:abc",
+        workbench_generation=4,
+        source_path="/source.json",
+        runtime_path="/runtime.json",
+        configs=tuple(
+            dataclasses.replace(
+                registry.config_template_for(pass_id),
+                options={
+                    "legacy_rule": "StateMachineCffUnflattener",
+                    "legacy_rule_options": {
+                        "min_state_constant": 0x1000000,
+                        "profile": "hodur",
+                    },
+                    "native_pipeline": list(STATE_MACHINE_NATIVE_PASS_IDS),
+                },
+            )
+            for pass_id in STATE_MACHINE_NATIVE_PASS_IDS
+        ),
+    )
+
+
+def test_state_cff_override_replaces_the_complete_spine_atomically() -> None:
+    service = _service()
+    original = _state_cff_draft(service)
+
+    updated = service.replace_state_cff_options(
+        original,
+        StateMachineCffOptions(min_state_constant=0x8000),
+    )
+
+    assert updated.revision == original.revision + 1
+    assert tuple(item.pass_id for item in updated.passes) == STATE_MACHINE_NATIVE_PASS_IDS
+    for item in updated.passes:
+        options = json.loads(item.config_json)["options"]
+        assert options["legacy_rule_options"] == {
+            "min_state_constant": 0x8000,
+            "profile": "hodur",
+        }
+
+
+@pytest.mark.parametrize("mutation", ("missing", "duplicate", "reordered"))
+def test_state_cff_override_rejects_an_incomplete_or_ambiguous_spine(
+    mutation: str,
+) -> None:
+    service = _service()
+    original = _state_cff_draft(service)
+    passes = list(original.passes)
+    if mutation == "missing":
+        passes.pop()
+    elif mutation == "duplicate":
+        passes.append(passes[0])
+    else:
+        passes[0], passes[1] = passes[1], passes[0]
+    malformed = dataclasses.replace(original, passes=tuple(passes))
+
+    with pytest.raises(RecipeEditError, match="complete canonical state-CFF spine"):
+        service.replace_state_cff_options(
+            malformed,
+            StateMachineCffOptions(min_state_constant=0x8000),
+        )
+
+
+def test_state_cff_options_cannot_be_edited_one_private_stage_at_a_time() -> None:
+    service = _service()
+    draft = _state_cff_draft(service)
+
+    with pytest.raises(RecipeEditError, match="replace_state_cff_options"):
+        service.replace_options(
+            draft,
+            draft.passes[0].item_id,
+            {"min_state_constant": 0x8000},
+        )
 
 
 def test_preflight_reports_ordering_requirements_without_auto_reordering() -> None:

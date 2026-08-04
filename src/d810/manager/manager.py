@@ -79,6 +79,7 @@ from d810.passes.analysis_runtime_factory import (
     build_analysis_runtime_bundle,
 )
 from d810.passes.scheduler import PassScheduler
+from d810.passes.state_machine_options import StateMachineCffOptions
 from d810.passes.store import shutdown_all_writers
 from d810.manager.decompilation_lifecycle import (
     DecompilationLifecycleCoordinator,
@@ -1154,6 +1155,13 @@ class D810Manager:
         options: typing.Mapping[str, object],
     ) -> PipelineRecipeDraft:
         return self.recipe_service.replace_options(draft, item_id, options)
+
+    def replace_workbench_recipe_state_cff_options(
+        self,
+        draft: PipelineRecipeDraft,
+        options: StateMachineCffOptions,
+    ) -> PipelineRecipeDraft:
+        return self.recipe_service.replace_state_cff_options(draft, options)
 
     def get_workbench_function_recipe(
         self,

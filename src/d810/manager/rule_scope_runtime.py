@@ -71,10 +71,16 @@ class RuleScopeRuntime:
         old_storage = self.storage
         if self._config_provider is not None:
             self._config = dict(self._config_provider())
-        backend = (
-            str(self._config.get("function_rules_backend", "sqlite")).strip().lower()
-        )
         target = self._config.get("function_rules_storage")
+        configured_backend = self._config.get("function_rules_backend")
+        if configured_backend is None:
+            # A configured filesystem target is the historical explicit SQLite
+            # form. With no storage setting at all, keep function recipes inside
+            # the IDB so log cleanup cannot erase them and separate IDBs cannot
+            # collide by function address.
+            backend = "sqlite" if target is not None else "netnode"
+        else:
+            backend = str(configured_backend).strip().lower()
         if target is None:
             if backend == "sqlite":
                 target = self._log_dir / "d810_function_rules.db"

@@ -92,7 +92,6 @@ def _secondary_actions() -> tuple[WorkflowActionView, ...]:
     return (
         _action("diagnostics", "Investigate diagnostics"),
         _action("recipe", "Tune recipe"),
-        _action("function_override", "Adjust function rules"),
     )
 
 
@@ -184,7 +183,6 @@ def _investigation_view(
         primary=_action("diagnostics", "Investigate diagnostics"),
         secondary=(
             _action("recipe", "Tune recipe"),
-            _action("function_override", "Adjust function rules"),
         ),
         comparison_state="retry",
     )
