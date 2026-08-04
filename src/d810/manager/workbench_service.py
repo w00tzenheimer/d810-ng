@@ -17,6 +17,7 @@ from d810.manager.workbench_models import (
     CountEntry,
     D810OutputRef,
     DeobfuscationWorkbenchSnapshot,
+    EffectiveRuleDecisionSummary,
     FunctionRef,
     OutcomeStatus,
     PatchCountEntry,
@@ -148,32 +149,6 @@ def _consumer_status(report: object) -> OutcomeStatus:
     return OutcomeStatus.ABSTAINED
 
 
-def _inference_applies(
-    inference: object | None,
-    *,
-    function_ea: int,
-    tags: frozenset[str],
-) -> bool:
-    if inference is None:
-        return False
-    target_eas = frozenset(
-        int(value) for value in getattr(inference, "target_func_eas", ())
-    )
-    if target_eas and int(function_ea) not in target_eas:
-        return False
-    target_any = frozenset(
-        str(value) for value in getattr(inference, "target_tags_any", ())
-    )
-    if target_any and target_any.isdisjoint(tags):
-        return False
-    target_all = frozenset(
-        str(value) for value in getattr(inference, "target_tags_all", ())
-    )
-    if target_all and not target_all.issubset(tags):
-        return False
-    return True
-
-
 class WorkbenchService:
     """Collect immutable workbench truth from an existing manager runtime."""
 
@@ -255,18 +230,11 @@ class WorkbenchService:
             )
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             rule_scope = RuleScopeSummary(
-                project_instruction_rules=tuple(
-                    project_snapshot.effective_instruction_rule_names
-                ),
-                project_block_rules=tuple(project_snapshot.effective_block_rule_names),
-                function_enabled_rules=(),
-                function_disabled_rules=(),
+                public_operations=tuple(project_snapshot.effective_pass_ids),
                 function_tags=(),
-                function_notes="",
-                inference_name=None,
-                inference_enabled_rules=(),
-                inference_disabled_rules=(),
-                inference_applies=False,
+                inference_names=(),
+                decisions=(),
+                unknown_rule_names=(),
             )
             errors.append(f"rule-scope: {exc}")
 
@@ -636,48 +604,53 @@ class WorkbenchService:
         function_ea: int,
         project_snapshot: ProjectRuntimeSnapshot,
     ) -> RuleScopeSummary:
-        override_loader = getattr(self._manager, "get_function_rule_override", None)
-        override = (
-            override_loader(int(function_ea)) if callable(override_loader) else None
-        )
-        tag_loader = getattr(self._manager, "get_function_tags", None)
-        tags = set(tag_loader(int(function_ea)) if callable(tag_loader) else ())
-        if override is not None:
-            tags.update(getattr(override, "tags", ()))
-        normalized_tags = frozenset(
-            str(value).strip() for value in tags if str(value).strip()
-        )
-        inference_loader = getattr(self._manager, "get_active_rule_inference", None)
-        inference = inference_loader() if callable(inference_loader) else None
+        report_loader = getattr(self._manager, "get_effective_rule_scope_report", None)
+        report = report_loader(int(function_ea)) if callable(report_loader) else None
+        if report is None:
+            decisions = tuple(
+                EffectiveRuleDecisionSummary(
+                    pipeline=pipeline,
+                    rule_name=str(rule_name),
+                    maturities=(),
+                    active=True,
+                    reason="active",
+                    detail="passed all scope gates",
+                )
+                for pipeline, names in (
+                    (
+                        "instruction",
+                        project_snapshot.effective_instruction_rule_names,
+                    ),
+                    ("flow", project_snapshot.effective_block_rule_names),
+                )
+                for rule_name in names
+            )
+            tags: tuple[str, ...] = ()
+            inference_names: tuple[str, ...] = ()
+            unknown_rule_names: tuple[str, ...] = ()
+        else:
+            decisions = tuple(
+                EffectiveRuleDecisionSummary(
+                    pipeline=str(decision.pipeline),
+                    rule_name=str(decision.rule_name),
+                    maturities=tuple(int(value) for value in decision.maturities),
+                    active=bool(decision.active),
+                    reason=str(decision.reason),
+                    detail=str(decision.detail),
+                )
+                for decision in report.decisions
+            )
+            tags = tuple(str(value) for value in report.function_tags)
+            inference_names = tuple(str(value) for value in report.inference_names)
+            unknown_rule_names = tuple(
+                str(value) for value in report.unknown_rule_names
+            )
         return RuleScopeSummary(
-            project_instruction_rules=tuple(
-                project_snapshot.effective_instruction_rule_names
-            ),
-            project_block_rules=tuple(project_snapshot.effective_block_rule_names),
-            function_enabled_rules=tuple(
-                sorted(str(value) for value in getattr(override, "enabled_rules", ()))
-            ),
-            function_disabled_rules=tuple(
-                sorted(str(value) for value in getattr(override, "disabled_rules", ()))
-            ),
-            function_tags=tuple(sorted(normalized_tags)),
-            function_notes=str(getattr(override, "notes", "") or ""),
-            inference_name=(
-                str(getattr(inference, "name", "")) or None
-                if inference is not None
-                else None
-            ),
-            inference_enabled_rules=tuple(
-                sorted(str(value) for value in getattr(inference, "enabled_rules", ()))
-            ),
-            inference_disabled_rules=tuple(
-                sorted(str(value) for value in getattr(inference, "disabled_rules", ()))
-            ),
-            inference_applies=_inference_applies(
-                inference,
-                function_ea=int(function_ea),
-                tags=normalized_tags,
-            ),
+            public_operations=tuple(project_snapshot.effective_pass_ids),
+            function_tags=tags,
+            inference_names=inference_names,
+            decisions=decisions,
+            unknown_rule_names=unknown_rule_names,
         )
 
     def _statistics(self) -> StatisticsSummary:
@@ -745,8 +718,8 @@ class WorkbenchService:
                 value=getattr(self._manager, "log_dir", None),
             ),
             _path_ref(
-                kind="function-rules-db",
-                label="Function rule storage",
+                kind="function-recipe-storage",
+                label="Function recipe storage",
                 value=storage_path,
             ),
         )

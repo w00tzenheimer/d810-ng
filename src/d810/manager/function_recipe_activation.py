@@ -56,7 +56,7 @@ def build_workbench_recipe_projection(
     function_fingerprint: str | None,
     workbench_generation: int,
 ) -> FunctionRecipeWorkbenchProjection:
-    """Project a validated saved recipe as the effective workbench runtime."""
+    """Materialize a saved recipe for validation and explicit execution."""
     recipe_service = RecipeService(operational_config_v2_pass_registry())
     draft = recipe_service.create_draft_from_override(
         override,
@@ -101,12 +101,12 @@ def select_workbench_recipe_projection(
     function_ea: int,
     function_fingerprint: str | None,
 ) -> FunctionRecipeWorkbenchSelection:
-    """Select project or saved-function runtime truth without importing IDA."""
+    """Keep project runtime truth while validating any explicit saved recipe."""
     if override is None:
         return FunctionRecipeWorkbenchSelection(
             runtime_project=base_project,
             project_snapshot=project_snapshot,
-            recipe_scope="project",
+            recipe_scope="project-runtime",
             errors=(),
             draft=None,
         )
@@ -123,14 +123,14 @@ def select_workbench_recipe_projection(
         return FunctionRecipeWorkbenchSelection(
             runtime_project=base_project,
             project_snapshot=project_snapshot,
-            recipe_scope="function-recipe-blocked",
+            recipe_scope="saved-recipe-blocked",
             errors=(f"function recipe: {exc}",),
             draft=None,
         )
     return FunctionRecipeWorkbenchSelection(
-        runtime_project=projection.runtime_project,
-        project_snapshot=projection.project_snapshot,
-        recipe_scope="function-recipe",
+        runtime_project=base_project,
+        project_snapshot=project_snapshot,
+        recipe_scope="saved-recipe-explicit",
         errors=(),
         draft=projection.draft,
     )

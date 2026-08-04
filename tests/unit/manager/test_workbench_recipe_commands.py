@@ -76,6 +76,9 @@ def test_save_invokes_persistence_exactly_once() -> None:
     assert result.succeeded is True
     assert result.accepted is True
     assert result.refresh_requested is True
+    assert result.message == (
+        "Saved for Deobfuscate This; ordinary F5 remains project-scoped"
+    )
 
 
 def test_stale_before_command_has_no_side_effects() -> None:
@@ -153,20 +156,25 @@ def test_wrong_command_name_is_rejected_without_callback() -> None:
     assert result.status is OutcomeStatus.FAILED
 
 
-def test_workbench_service_recipe_identity_check_uses_latest_collection_identity() -> None:
+def test_workbench_service_recipe_identity_check_uses_latest_collection_identity() -> (
+    None
+):
     service = WorkbenchService.__new__(WorkbenchService)
     service._generation = 4
     service._latest_function_ea = 0x401000
     service._latest_function_fingerprint = "sha256:abc"
 
     assert service.recipe_request_is_current(_request("apply_recipe_once")) is True
-    assert service.recipe_request_is_current(
-        RecipeCommandRequest(
-            command="apply_recipe_once",
-            draft_id="draft-1",
-            draft_revision=2,
-            function_ea=0x401000,
-            expected_workbench_generation=3,
-            function_fingerprint="sha256:abc",
+    assert (
+        service.recipe_request_is_current(
+            RecipeCommandRequest(
+                command="apply_recipe_once",
+                draft_id="draft-1",
+                draft_revision=2,
+                function_ea=0x401000,
+                expected_workbench_generation=3,
+                function_fingerprint="sha256:abc",
+            )
         )
-    ) is False
+        is False
+    )

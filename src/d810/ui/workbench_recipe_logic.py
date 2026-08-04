@@ -400,7 +400,7 @@ def recipe_action_states(
         RecipeActionState("apply_once", "Apply once", apply_enabled, apply_reason),
         RecipeActionState(
             "save_function",
-            "Save for this function",
+            "Save for Deobfuscate This",
             save_enabled,
             (
                 ""

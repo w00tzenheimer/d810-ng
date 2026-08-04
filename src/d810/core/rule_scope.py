@@ -17,11 +17,8 @@ PIPELINE_CTREE = "ctree"
 class RuleScopeEvent(enum.Enum):
     PROJECT_RULES_RELOADED = "project_rules_reloaded"
     IDB_OVERLAY_RELOADED = "idb_overlay_reloaded"
-    FUNCTION_OVERRIDE_UPDATED = "function_override_updated"
     FUNCTION_RECIPE_UPDATED = "function_recipe_updated"
     FUNCTION_TAGS_UPDATED = "function_tags_updated"
-    INFERENCE_APPLIED = "inference_applied"
-    INFERENCE_CLEARED = "inference_cleared"
     HINTS_APPLIED = "hints_applied"
 
 
@@ -70,6 +67,31 @@ class ActiveRuleBundle:
     by_maturity: dict[int, tuple[Any, ...]]
 
 
+@dataclass(frozen=True, slots=True)
+class EffectiveRuleDecision:
+    """One compiled implementation rule and the exact reason it runs or not."""
+
+    pipeline: str
+    rule_name: str
+    maturities: tuple[int, ...]
+    active: bool
+    reason: str
+    detail: str
+
+
+@dataclass(frozen=True, slots=True)
+class EffectiveRuleScopeReport:
+    """Effective internal scope for a function, derived by the execution evaluator."""
+
+    project_name: str
+    idb_key: str
+    function_ea: int
+    function_tags: tuple[str, ...]
+    inference_names: tuple[str, ...]
+    decisions: tuple[EffectiveRuleDecision, ...]
+    unknown_rule_names: tuple[str, ...]
+
+
 @dataclass(slots=True)
 class RuleScopeCaches:
     compiled: CompiledRuleTable | None = None
@@ -78,7 +100,13 @@ class RuleScopeCaches:
 
 @dataclass(frozen=True)
 class RuleDelta:
-    'A single rule adjustment inferred from preanalysis analysis.\n\n    Represents a diff from baseline rule behavior for a specific function.\n    Deltas are ephemeral by default (applied per-decompilation via\n    ``apply_hints``) and can be persisted to project config via the\n    ``persist_inference`` action.\n\n    Precedence (highest to lowest):\n        1. User ``per_function_overrides`` in project JSON\n        2. User ``whitelisted_functions`` / ``blacklisted_functions``\n        3. Inference ``override`` deltas (this type, runtime)\n        4. Inference ``suppress``/``activate`` deltas (this type, runtime)\n        5. Global rule config defaults\n\n    Actions:\n        - ``"suppress"``: Disable the rule for this function.\n        - ``"activate"``: Force-enable the rule for this function.\n        - ``"override"``: Apply parameter overrides from ``overrides`` dict.\n\n    The naming choice of "inference" reflects that these adjustments are\n    *derived from automated preanalysis analysis*, not hand-authored presets.\n    "Delta" conveys a diff from baseline behavior.\n'
+    """One ephemeral adjustment inferred from preanalysis.
+
+    ``suppress`` may exclude an instantiated rule after project selectors.
+    ``activate`` is recorded for observability but cannot instantiate or form
+    an exclusive allowlist; public rule selection belongs to config-v2.
+    ``override`` carries typed runtime parameters for a consuming pass.
+    """
 
     rule_name: str
     action: str  # "suppress" | "activate" | "override"
@@ -87,8 +115,6 @@ class RuleDelta:
 
 @dataclass(frozen=True, slots=True)
 class FunctionRuleOverlay:
-    enabled_rules: frozenset[str] = frozenset()
-    disabled_rules: frozenset[str] = frozenset()
     function_tags: frozenset[str] = frozenset()
 
 
@@ -133,7 +159,7 @@ class ApplyHintsResult:
     cache_invalidated: bool
     generation_before: int
     generation_after: int
-    user_overrides: list[tuple[RuleDelta, int]] = field(default_factory=list)
+    selector_conflicts: tuple[tuple[RuleDelta, int], ...] = ()
 
 
 class HintOverlayProvider:
@@ -246,17 +272,9 @@ class HintOverlayProvider:
         if delegate_overlay is None and not hint_disabled:
             return None
 
-        base_enabled = (
-            delegate_overlay.enabled_rules if delegate_overlay else frozenset()
-        )
-        base_disabled = (
-            delegate_overlay.disabled_rules if delegate_overlay else frozenset()
-        )
         base_tags = delegate_overlay.function_tags if delegate_overlay else frozenset()
 
         return FunctionRuleOverlay(
-            enabled_rules=base_enabled,
-            disabled_rules=base_disabled | hint_disabled,
             function_tags=base_tags,
         )
 
@@ -302,7 +320,6 @@ class RuleScopeService:
 
     def invalidate(self, payload: RuleScopeInvalidation) -> None:
         partial_reasons = {
-            RuleScopeEvent.FUNCTION_OVERRIDE_UPDATED,
             RuleScopeEvent.FUNCTION_RECIPE_UPDATED,
             RuleScopeEvent.FUNCTION_TAGS_UPDATED,
             RuleScopeEvent.HINTS_APPLIED,
@@ -442,7 +459,7 @@ class RuleScopeService:
         generation_before = self._generation
         inferences_applied: list[str] = []
         inferences_not_found: list[str] = []
-        user_overrides: list[tuple[RuleDelta, int]] = []
+        selector_conflicts: list[tuple[RuleDelta, int]] = []
 
         # --- 0. Clear previous hint state for this function ------------------
         # Each call is a full replace, not an append: a later call with
@@ -480,7 +497,7 @@ class RuleScopeService:
                             func_ea,
                             delta.rule_name,
                         )
-                        user_overrides.append((delta, func_ea))
+                        selector_conflicts.append((delta, func_ea))
                     else:
                         enabled.add(delta.rule_name)
                         logger.info(
@@ -496,7 +513,7 @@ class RuleScopeService:
                             func_ea,
                             delta.rule_name,
                         )
-                        user_overrides.append((delta, func_ea))
+                        selector_conflicts.append((delta, func_ea))
                     else:
                         disabled.add(delta.rule_name)
                         logger.info(
@@ -557,7 +574,7 @@ class RuleScopeService:
             cache_invalidated=any_change,
             generation_before=generation_before,
             generation_after=generation_after,
-            user_overrides=user_overrides,
+            selector_conflicts=tuple(selector_conflicts),
         )
         if logger.debug_on:
             logger.debug(
@@ -567,7 +584,7 @@ class RuleScopeService:
                 result.rules_suppressed,
                 generation_before,
                 generation_after,
-                len(result.user_overrides),
+                len(result.selector_conflicts),
             )
         return result
 
@@ -670,31 +687,23 @@ class RuleScopeService:
         if not names:
             return tuple()
 
-        # Determine the effective inference: per-function hint inference takes
-        # precedence over the global _active_inference for this function.
-        effective_inference = self._active_inference
-        if self._hint_overlay is not None:
-            hint_inference = self._hint_overlay.merged_hint_inference(func_ea)
-            if hint_inference is not None:
-                effective_inference = hint_inference
+        effective_inference = self._effective_inference(func_ea)
+        hint_suppressions = self._hint_suppressions(func_ea)
 
         active_for_maturity: list[Any] = []
         for rule_name in names:
             selector = compiled.selectors.get(f"{pipeline}:{rule_name}")
             if selector is None:
                 continue
-            if not self._overlay_allows(overlay, rule_name):
-                continue
-            if not self._inference_allows(
+            reason, _detail = self._evaluate_rule(
+                selector=selector,
                 inference=effective_inference,
                 rule_name=rule_name,
                 func_ea=func_ea,
                 tags=effective_tags,
-            ):
-                continue
-            if not self._selector_allows(
-                selector, func_ea=func_ea, tags=effective_tags
-            ):
+                hint_suppressions=hint_suppressions,
+            )
+            if reason != "active":
                 continue
             rule = rules_by_name.get(rule_name)
             if rule is not None:
@@ -713,6 +722,150 @@ class RuleScopeService:
         )
         self._caches.active_by_scope[scope] = new_bundle
         return active_tuple
+
+    def explain_effective_scope(
+        self,
+        *,
+        project_name: str,
+        idb_key: str,
+        func_ea: int,
+        function_tags: frozenset[str] | None = None,
+    ) -> EffectiveRuleScopeReport:
+        """Explain effective rule scope using the same evaluator as execution."""
+
+        compiled = self._caches.compiled
+        if compiled is None:
+            return EffectiveRuleScopeReport(
+                project_name=project_name,
+                idb_key=idb_key,
+                function_ea=func_ea,
+                function_tags=tuple(sorted(function_tags or ())),
+                inference_names=(),
+                decisions=(),
+                unknown_rule_names=(),
+            )
+
+        tags = set(function_tags or frozenset())
+        overlay = self._get_overlay(func_ea)
+        if overlay is not None:
+            tags.update(overlay.function_tags)
+        effective_tags = frozenset(tags)
+        inference = self._effective_inference(func_ea)
+        hint_suppressions = self._hint_suppressions(func_ea)
+        decisions: list[EffectiveRuleDecision] = []
+        known_names: set[str] = set()
+
+        for pipeline in (PIPELINE_INSTRUCTION, PIPELINE_FLOW, PIPELINE_CTREE):
+            for rule in compiled.by_pipeline.get(pipeline, ()):
+                rule_name = self._rule_name(rule)
+                known_names.add(rule_name)
+                selector = compiled.selectors[f"{pipeline}:{rule_name}"]
+                reason, detail = self._evaluate_rule(
+                    selector=selector,
+                    inference=inference,
+                    rule_name=rule_name,
+                    func_ea=func_ea,
+                    tags=effective_tags,
+                    hint_suppressions=hint_suppressions,
+                )
+                decisions.append(
+                    EffectiveRuleDecision(
+                        pipeline=pipeline,
+                        rule_name=rule_name,
+                        maturities=tuple(sorted(selector.maturities)),
+                        active=reason == "active",
+                        reason=reason,
+                        detail=detail,
+                    )
+                )
+
+        referenced_names = set(hint_suppressions)
+        inference_names: tuple[str, ...] = ()
+        if inference is not None and self._inference_targets_function(
+            inference,
+            func_ea=func_ea,
+            tags=effective_tags,
+        ):
+            inference_names = tuple(
+                name for name in str(inference.name).split("+") if name
+            )
+            referenced_names.update(inference.enabled_rules)
+            referenced_names.update(inference.disabled_rules)
+
+        return EffectiveRuleScopeReport(
+            project_name=project_name,
+            idb_key=idb_key,
+            function_ea=func_ea,
+            function_tags=tuple(sorted(effective_tags)),
+            inference_names=inference_names,
+            decisions=tuple(decisions),
+            unknown_rule_names=tuple(sorted(referenced_names - known_names)),
+        )
+
+    def _effective_inference(self, func_ea: int) -> RuleInferenceOverlay | None:
+        if self._hint_overlay is not None:
+            hint_inference = self._hint_overlay.merged_hint_inference(func_ea)
+            if hint_inference is not None:
+                return hint_inference
+        return self._active_inference
+
+    def _hint_suppressions(self, func_ea: int) -> frozenset[str]:
+        if self._hint_overlay is None:
+            return frozenset()
+        return self._hint_overlay.get_suppressions(func_ea)
+
+    @staticmethod
+    def _evaluate_rule(
+        *,
+        selector: RuleSelectorCompiled,
+        inference: RuleInferenceOverlay | None,
+        rule_name: str,
+        func_ea: int,
+        tags: frozenset[str],
+        hint_suppressions: frozenset[str],
+    ) -> tuple[str, str]:
+        if not selector.enabled:
+            return "selector-disabled", "project selector disabled this rule"
+        if selector.allow_eas is not None and func_ea not in selector.allow_eas:
+            allowed = ", ".join(f"0x{ea:x}" for ea in sorted(selector.allow_eas))
+            return (
+                "selector-ea-not-allowed",
+                f"function 0x{func_ea:x} is not in EA allowlist [{allowed}]",
+            )
+        if selector.deny_eas is not None and func_ea in selector.deny_eas:
+            return (
+                "selector-ea-denied",
+                f"function 0x{func_ea:x} is in the project EA denylist",
+            )
+        if selector.tags_any and selector.tags_any.isdisjoint(tags):
+            required = ", ".join(sorted(selector.tags_any))
+            present = ", ".join(sorted(tags)) or "none"
+            return (
+                "selector-tags-any-missing",
+                f"requires any tag [{required}]; present [{present}]",
+            )
+        if selector.tags_all and not selector.tags_all.issubset(tags):
+            missing = ", ".join(sorted(selector.tags_all - tags))
+            return (
+                "selector-tags-all-missing",
+                f"missing required tags [{missing}]",
+            )
+        if (
+            inference is not None
+            and RuleScopeService._inference_targets_function(
+                inference,
+                func_ea=func_ea,
+                tags=tags,
+            )
+            and rule_name in inference.disabled_rules
+        ):
+            return (
+                "inference-suppressed",
+                f"inference {inference.name} suppressed this rule",
+            )
+        if rule_name in hint_suppressions:
+            return "hint-suppressed", "preanalysis hint suppressed this rule"
+        return "active", "passed all scope gates"
 
     @staticmethod
     def _rule_name(rule: Any) -> str:
@@ -759,25 +912,6 @@ class RuleScopeService:
             enabled=True,
         )
 
-    @staticmethod
-    def _selector_allows(
-        selector: RuleSelectorCompiled,
-        *,
-        func_ea: int,
-        tags: frozenset[str],
-    ) -> bool:
-        if not selector.enabled:
-            return False
-        if selector.allow_eas is not None and func_ea not in selector.allow_eas:
-            return False
-        if selector.deny_eas is not None and func_ea in selector.deny_eas:
-            return False
-        if selector.tags_any and selector.tags_any.isdisjoint(tags):
-            return False
-        if selector.tags_all and not selector.tags_all.issubset(tags):
-            return False
-        return True
-
     def _get_overlay(self, func_ea: int) -> FunctionRuleOverlay | None:
         if self._overlay_provider is None:
             return None
@@ -786,19 +920,6 @@ class RuleScopeService:
         overlay = self._overlay_provider(func_ea)
         self._overlay_cache[func_ea] = overlay
         return overlay
-
-    @staticmethod
-    def _overlay_allows(
-        overlay: FunctionRuleOverlay | None,
-        rule_name: str,
-    ) -> bool:
-        if overlay is None:
-            return True
-        if overlay.enabled_rules and rule_name not in overlay.enabled_rules:
-            return False
-        if rule_name in overlay.disabled_rules:
-            return False
-        return True
 
     @staticmethod
     def _normalize_tag_list(values: Iterable[Any]) -> frozenset[str]:
@@ -821,28 +942,6 @@ class RuleScopeService:
         if inference.target_tags_any and inference.target_tags_any.isdisjoint(tags):
             return False
         if inference.target_tags_all and not inference.target_tags_all.issubset(tags):
-            return False
-        return True
-
-    @staticmethod
-    def _inference_allows(
-        *,
-        inference: RuleInferenceOverlay | None,
-        rule_name: str,
-        func_ea: int,
-        tags: frozenset[str],
-    ) -> bool:
-        if inference is None:
-            return True
-        if not RuleScopeService._inference_targets_function(
-            inference,
-            func_ea=func_ea,
-            tags=tags,
-        ):
-            return True
-        if inference.enabled_rules and rule_name not in inference.enabled_rules:
-            return False
-        if rule_name in inference.disabled_rules:
             return False
         return True
 

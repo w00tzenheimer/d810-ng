@@ -22,7 +22,9 @@ from d810.manager.workbench_recipe_models import (
 from d810.ui import workbench_recipe_logic as logic
 
 
-def test_state_cff_minimum_constant_parser_accepts_hex_and_rejects_non_integer() -> None:
+def test_state_cff_minimum_constant_parser_accepts_hex_and_rejects_non_integer() -> (
+    None
+):
     assert logic.parse_state_cff_minimum_constant("0x8000").min_state_constant == 0x8000
 
     try:
@@ -206,6 +208,7 @@ def test_recipe_action_enablement_requires_current_valid_started_identity() -> N
 
     assert ready["apply_once"].enabled is True
     assert ready["save_function"].enabled is True
+    assert ready["save_function"].label == "Save for Deobfuscate This"
     assert ready["save_project"].enabled is False
     assert "serializer" in ready["save_project"].reason
     assert blocked["apply_once"].enabled is False

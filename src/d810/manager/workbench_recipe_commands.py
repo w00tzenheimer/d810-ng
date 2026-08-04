@@ -116,6 +116,7 @@ class WorkbenchRecipeCommandService:
         request: RecipeCommandRequest,
         *,
         label: str,
+        success_message: str | None = None,
     ) -> RecipeCommandResult:
         if not self._identity_is_current(request):
             return self._result(
@@ -132,7 +133,7 @@ class WorkbenchRecipeCommandService:
             succeeded=True,
             accepted=True,
             refresh_requested=True,
-            message=f"{label} completed",
+            message=success_message or f"{label} completed",
         )
 
     def execute_apply_once(
@@ -200,7 +201,13 @@ class WorkbenchRecipeCommandService:
                 refresh_requested=False,
                 message=f"Save function recipe failed: {exc}",
             )
-        return self._after_callback(request, label="Save function recipe")
+        return self._after_callback(
+            request,
+            label="Save recipe for Deobfuscate This",
+            success_message=(
+                "Saved for Deobfuscate This; ordinary F5 remains project-scoped"
+            ),
+        )
 
 
 __all__ = ["WorkbenchRecipeCommandService"]

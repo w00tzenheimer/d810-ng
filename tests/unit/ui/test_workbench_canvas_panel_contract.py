@@ -187,6 +187,7 @@ def test_panel_owns_three_panes_manual_collapse_and_compact_add_action() -> None
     assert "evidence_summary" in init_source
     assert "node_inspector" in init_source
     assert "QSplitter" in create_source
+    assert "Save for Deobfuscate This" in init_source
     assert "self.evidence_summary" in create_source
     assert "self.canvas_view" in create_source
     assert "self.node_inspector" in create_source

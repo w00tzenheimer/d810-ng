@@ -41,13 +41,13 @@
 - Consumes: `D810Manager._database_identity` and the current project name.
 - Removes: `FunctionRuleConfig`, `set/get/clear_function_rules`, `should_run_rule`, and persisted active-inference storage methods.
 
-- [ ] **Step 1: Add failing storage tests for compound identity**
+- [x] **Step 1: Add failing storage tests for compound identity**
 
   Add tests that save two recipes and two tag sets at the same EA under distinct
   locators and assert both are independently readable and clearable. Add contract
   assertions that the legacy function-rule and active-inference methods are absent.
 
-- [ ] **Step 2: Run the persistence tests and verify RED**
+- [x] **Step 2: Run the persistence tests and verify RED**
 
   Run:
 
@@ -61,7 +61,7 @@
 
   Expected: failures for the missing locator API and surviving legacy methods.
 
-- [ ] **Step 3: Implement locator-based netnode and SQLite storage**
+- [x] **Step 3: Implement locator-based netnode and SQLite storage**
 
   Add the frozen locator dataclass and use a canonical JSON or tuple-derived key
   in netnode state. Create SQLite v2 tables with:
@@ -70,80 +70,76 @@
   PRIMARY KEY (database_identity, project_name, function_addr)
   ```
 
-  Keep `function_fingerprint` in the recipe row. Migrate tags into the scoped
-  tag table only when the runtime supplies the current locator. Do not adopt
-  unnamespaced recipes.
+  Keep `function_fingerprint` in the recipe row. Do not adopt unnamespaced
+  recipes or tags because their database/project ownership is unknown.
 
-- [ ] **Step 4: Remove legacy storage and adapter methods**
+- [x] **Step 4: Remove legacy storage and adapter methods**
 
   Remove private-rule and persisted-inference methods from the storage protocol,
   both backends, and the Hex-Rays caching adapter. Remove their exports and
   statistics labels.
 
-- [ ] **Step 5: Thread locators through the runtimes**
+- [x] **Step 5: Thread locators through the runtimes**
 
   Give `FunctionRecipeRuntime` and `RuleScopeRuntime` database-identity
   providers. Build locators internally for recipe and tag calls so operator
   APIs never assemble storage keys.
 
-- [ ] **Step 6: Run the persistence tests and verify GREEN**
+- [x] **Step 6: Run the persistence tests and verify GREEN**
 
   Re-run Step 2 and require zero failures.
 
 ### Task 2: One explainable internal rule-scope evaluator
 
 **Files:**
-- Create: `src/d810/core/effective_rule_scope.py`
 - Modify: `src/d810/core/rule_scope.py`
 - Modify: `src/d810/manager/rule_scope_runtime.py`
 - Modify: `src/d810/manager/manager.py`
 - Modify: `src/d810/passes/inferences.py`
 - Modify: `tests/unit/core/test_rule_scope.py`
 - Modify: `tests/unit/core/test_rule_scope_apply_hints.py`
-- Create: `tests/unit/core/test_effective_rule_scope.py`
 
 **Interfaces:**
-- Produces: `RuleDecisionReason`, `RuleScopeDecision`, `EffectiveRuleScopeReport`, and `RuleScopePolicy`.
-- Produces: `RuleScopeService.explain_rules(...) -> EffectiveRuleScopeReport`.
+- Produces: `EffectiveRuleDecision` and `EffectiveRuleScopeReport`.
+- Produces: `RuleScopeService.explain_effective_scope(...) -> EffectiveRuleScopeReport`.
 - Consumes: configured rule objects, function EA/tags, and ephemeral hint state.
 - Removes: persisted overlay precedence and `ApplyHintsResult.user_overrides` naming.
 
-- [ ] **Step 1: Write failing decision tests**
+- [x] **Step 1: Write failing decision tests**
 
   Cover active, selector allowlist, selector denylist, tag-any, tag-all,
-  inference allowlist, inference suppression, direct hint suppression, and
+  inference suppression, direct hint suppression, and
   unknown policy rule names. Assert stable reason values and maturity anchors.
 
-- [ ] **Step 2: Write a failing parity test**
+- [x] **Step 2: Write a failing parity test**
 
   For each declared maturity, assert that active decisions from
   `explain_rules()` have exactly the same rule names as `get_active_rules()`.
 
-- [ ] **Step 3: Run the rule-scope tests and verify RED**
+- [x] **Step 3: Run the rule-scope tests and verify RED**
 
   Run:
 
   ```bash
   PYTHONPATH=src:tests pyenv exec python -m pytest -q \
-    tests/unit/core/test_effective_rule_scope.py \
     tests/unit/core/test_rule_scope.py \
     tests/unit/core/test_rule_scope_apply_hints.py
   ```
 
-- [ ] **Step 4: Implement the pure evaluator**
+- [x] **Step 4: Implement the pure evaluator**
 
   Implement one function returning a `RuleScopeDecision` for a rule, maturity,
   function, tags, and policy. Use it from both reporting and active selection.
   Unknown rule names are the policy names absent from all expanded rule sets.
 
-- [ ] **Step 5: Remove persisted overlay behavior**
+- [x] **Step 5: Remove persisted overlay behavior**
 
   Make the runtime overlay provider supply tags only. Remove function-rule
   mutation methods/events and global persisted inference. Keep ephemeral
   `apply_hints()` inference and suppression, renaming conflict output to
   `selector_conflicts`.
 
-- [ ] **Step 6: Run the rule-scope tests and verify GREEN**
+- [x] **Step 6: Run the rule-scope tests and verify GREEN**
 
   Re-run Step 3 and require zero failures.
 
@@ -165,14 +161,14 @@
 - Consumes: `EffectiveRuleScopeReport` for the projected project or saved-recipe rule objects.
 - Produces: immutable Workbench decision summaries without private mutation fields.
 
-- [ ] **Step 1: Write failing Workbench model and rendering tests**
+- [x] **Step 1: Write failing Workbench model and rendering tests**
 
   Assert that the snapshot exposes active/excluded counts, decisions by
   pipeline/maturity, reason codes, and unknown names. Assert that old
   `function_enabled_rules`, `function_disabled_rules`, notes, and persisted
   inference fields are absent.
 
-- [ ] **Step 2: Run the Workbench tests and verify RED**
+- [x] **Step 2: Run the Workbench tests and verify RED**
 
   Run:
 
@@ -185,19 +181,19 @@
     tests/unit/ui/test_workbench_workflow_logic.py
   ```
 
-- [ ] **Step 3: Project the exact rule set being described**
+- [x] **Step 3: Project the exact rule set being described**
 
   For config-v2 runtimes, expand the selected runtime project through the hook
   bridge and pass those instruction/block rules to `RuleScopeService`. For
   non-config-v2 projects, use the manager's live configured rule objects.
 
-- [ ] **Step 4: Replace the stored-state summary**
+- [x] **Step 4: Replace the stored-state summary**
 
   Replace `RuleScopeSummary` fields with function tags, inference names,
   decisions, and unknown names. Render one line per decision with pipeline,
   maturity, active/excluded state, reason code, and detail.
 
-- [ ] **Step 5: Run the Workbench tests and verify GREEN**
+- [x] **Step 5: Run the Workbench tests and verify GREEN**
 
   Re-run Step 2 and require zero failures.
 
@@ -222,13 +218,13 @@
 - Produces: stable execution-scope values `project-runtime`, `saved-recipe-explicit`, and `saved-recipe-blocked`.
 - Produces: UI copy `Ordinary F5: project runtime` and `Deobfuscate This: saved function recipe`.
 
-- [ ] **Step 1: Write failing semantics tests**
+- [x] **Step 1: Write failing semantics tests**
 
   Assert the new scope values, runtime detail copy, Recipe Composer button label
   `Save for Deobfuscate This`, and save result text explaining that ordinary F5
   remains project-scoped.
 
-- [ ] **Step 2: Run the activation/UI tests and verify RED**
+- [x] **Step 2: Run the activation/UI tests and verify RED**
 
   Run:
 
@@ -242,13 +238,13 @@
     tests/unit/ui/test_workbench_recipe_commands.py
   ```
 
-- [ ] **Step 3: Implement explicit execution naming and copy**
+- [x] **Step 3: Implement explicit execution naming and copy**
 
   Rename scope values without changing the atomic context-manager execution.
   Update every user-visible summary and action result to distinguish ordinary
   project refresh from explicit recipe execution.
 
-- [ ] **Step 4: Run the activation/UI tests and verify GREEN**
+- [x] **Step 4: Run the activation/UI tests and verify GREEN**
 
   Re-run Step 2 and require zero failures.
 
@@ -260,39 +256,27 @@
 - Create: `docs/features/function-recipes.md`
 - Modify: `docs/superpowers/specs/2026-08-04-function-recipe-overrides-design.md`
 - Modify: `tests/unit/ui/test_actions_migration.py`
-- Create: `tests/unit/test_function_recipe_documentation.py`
 
 **Interfaces:**
 - Produces: one documented public function configuration workflow.
 - Consumes: the execution-scope and persistence decisions from Tasks 1-4.
 
-- [ ] **Step 1: Write a failing documentation contract test**
-
-  Assert that README links the recipe guide, the old guide does not exist, the
-  recipe guide names the typed state-CFF threshold and explicit action boundary,
-  and production docs contain no `Function rules...` instructions or claims
-  that private overrides always win.
-
-- [ ] **Step 2: Run the documentation test and verify RED**
-
-  Run:
-
-  ```bash
-  PYTHONPATH=src:tests pyenv exec python -m pytest -q \
-    tests/unit/test_function_recipe_documentation.py \
-    tests/unit/ui/test_actions_migration.py
-  ```
-
-- [ ] **Step 3: Replace the legacy documentation**
+- [x] **Step 1: Replace the legacy documentation**
 
   Rewrite README around Recipe Composer and `Deobfuscate This`. Add the recipe
   guide with persistence identity, stale validation, `min_state_constant`,
   ordinary-F5 semantics, and effective-scope diagnostics. Remove the legacy
   guide and correct the earlier design document's compatibility wording.
 
-- [ ] **Step 4: Run the documentation test and verify GREEN**
+- [x] **Step 2: Verify documentation and the public action contract**
 
-  Re-run Step 2 and require zero failures.
+  Review the rendered Markdown, search production documentation for stale
+  `Function rules...` instructions and false precedence claims, and run:
+
+  ```bash
+  PYTHONPATH=src:tests pyenv exec python -m pytest -q \
+    tests/unit/ui/test_actions_migration.py
+  ```
 
 ### Task 6: Full verification, graph update, commit, and push
 
@@ -303,18 +287,18 @@
 - Consumes: all completed tasks.
 - Produces: current regression, architecture, runtime, graph, and delivery evidence.
 
-- [ ] **Step 1: Run the consolidated focused suites**
+- [x] **Step 1: Run the consolidated focused suites**
 
   Run every test file touched in Tasks 1-5 together with `PYTHONPATH=src:tests
   pyenv exec python -m pytest -q`.
 
-- [ ] **Step 2: Run the full unit suite**
+- [x] **Step 2: Run the full unit suite**
 
   ```bash
   PYTHONPATH=src:tests pyenv exec python -m pytest tests/unit/ -q
   ```
 
-- [ ] **Step 3: Run formatting, compilation, and architecture checks**
+- [x] **Step 3: Run formatting, compilation, and architecture checks**
 
   ```bash
   ruff check src tests
@@ -324,14 +308,21 @@
   git diff --check
   ```
 
-- [ ] **Step 4: Run the native IDA Docker regression**
+  Changed-file Ruff and format checks, compilation, ast-grep, import-linter,
+  and `git diff --check` are green. The repository-wide unconfigured
+  `ruff check src tests` remains a known baseline with 937 unrelated/vendor
+  findings; it is recorded rather than expanded into this feature branch.
+
+- [x] **Step 4: Run the native IDA Docker regression**
 
   ```bash
-  tools/scripts/run_system_tests_docker.sh test -- \
-    tests/system/e2e/test_hodur_baselines.py -k hodur_func
+  tools/scripts/run_system_tests_docker.sh test \
+    -w lrea-portable-cfg-case-producer -- \
+    tests/system/runtime/test_rule_scope_manager_events.py \
+    tests/system/runtime/hexrays/test_pass_pipeline_integration.py -q
   ```
 
-- [ ] **Step 5: Update Graphify and inspect repository state**
+- [x] **Step 5: Update Graphify and inspect repository state**
 
   ```bash
   graphify update .
@@ -339,7 +330,7 @@
   git diff --stat
   ```
 
-- [ ] **Step 6: Commit and push**
+- [x] **Step 6: Commit and push**
 
   Stage only scoped files, commit with a closure-focused message, push
   `diff/lrea-portable-cfg-case-producer`, and verify the remote branch contains

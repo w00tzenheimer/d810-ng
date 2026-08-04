@@ -7,6 +7,7 @@ import enum
 
 from d810.core.deobfuscation_case import DeobfuscationCaseSnapshot
 
+
 class OutcomeStatus(str, enum.Enum):
     """Approved status labels shared by passes and supporting consumers."""
 
@@ -54,7 +55,7 @@ class RuntimeConfigRef:
     routed: bool
     hook_mode: str | None
     pass_ids: tuple[str, ...]
-    recipe_scope: str = "project"
+    recipe_scope: str = "project-runtime"
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -102,17 +103,22 @@ class ConsumerOutcomeSnapshot:
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
+class EffectiveRuleDecisionSummary:
+    pipeline: str
+    rule_name: str
+    maturities: tuple[int, ...]
+    active: bool
+    reason: str
+    detail: str
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
 class RuleScopeSummary:
-    project_instruction_rules: tuple[str, ...]
-    project_block_rules: tuple[str, ...]
-    function_enabled_rules: tuple[str, ...]
-    function_disabled_rules: tuple[str, ...]
+    public_operations: tuple[str, ...]
     function_tags: tuple[str, ...]
-    function_notes: str
-    inference_name: str | None
-    inference_enabled_rules: tuple[str, ...]
-    inference_disabled_rules: tuple[str, ...]
-    inference_applies: bool
+    inference_names: tuple[str, ...]
+    decisions: tuple[EffectiveRuleDecisionSummary, ...]
+    unknown_rule_names: tuple[str, ...]
 
 
 @dataclasses.dataclass(frozen=True, slots=True)

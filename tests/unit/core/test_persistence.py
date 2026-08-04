@@ -6,12 +6,12 @@ import pytest
 from pathlib import Path
 
 from d810.core.persistence import (
-    ActiveRuleInferenceConfig,
-    SQLiteOptimizationStorage,
     FunctionFingerprint,
-    ProviderPhaseSnapshot,
+    FunctionStorageLocator,
+    SQLiteOptimizationStorage,
     create_optimization_storage,
 )
+from d810.core.provider_phase import ProviderPhaseSnapshot
 
 
 @pytest.fixture
@@ -132,95 +132,22 @@ class TestSQLiteOptimizationStorage:
         # Check nonexistent function
         assert storage.has_valid_cache(0x999999, "any_hash") is False
 
-    def test_set_and_get_function_rules(self, storage):
-        """Test per-function rule configuration."""
-        storage.set_function_rules(
-            function_addr=0x401000,
-            enabled_rules={"Rule1", "Rule2"},
-            disabled_rules={"SlowRule"},
-            notes="Testing rule config",
-        )
-
-        config = storage.get_function_rules(0x401000)
-
-        assert config is not None
-        assert config.function_addr == 0x401000
-        assert "Rule1" in config.enabled_rules
-        assert "Rule2" in config.enabled_rules
-        assert "SlowRule" in config.disabled_rules
-        assert config.notes == "Testing rule config"
-
-    def test_get_nonexistent_function_rules(self, storage):
-        """Test getting rules for function without config."""
-        config = storage.get_function_rules(0x999999)
-        assert config is None
-
     def test_set_and_get_function_tags(self, storage):
-        """Test per-function tag persistence."""
-        storage.set_function_tags(0x401000, {"flattened", "opaque_pred"})
-        tags = storage.get_function_tags(0x401000)
+        """Function tags are keyed by database, project, and EA."""
+        locator = FunctionStorageLocator("sample.i64", "sample", 0x401000)
+        storage.set_function_tags(locator, {"flattened", "opaque_pred"})
+        tags = storage.get_function_tags(locator)
         assert tags == {"flattened", "opaque_pred"}
 
-    def test_set_function_rules_preserves_existing_tags(self, storage):
-        """Updating rule overrides should not discard previously saved tags."""
-        storage.set_function_tags(0x401000, {"flattened"})
-        storage.set_function_rules(
-            function_addr=0x401000,
-            enabled_rules={"RuleA"},
-            disabled_rules={"RuleB"},
-            notes="keep tags",
-        )
-        config = storage.get_function_rules(0x401000)
-        assert config is not None
-        assert config.tags == {"flattened"}
+    def test_same_ea_tags_do_not_collide_across_database_identity(self, storage):
+        first = FunctionStorageLocator("first.i64", "sample", 0x401000)
+        second = FunctionStorageLocator("second.i64", "sample", 0x401000)
 
-    def test_set_get_and_clear_active_rule_inference(self, storage):
-        inference = ActiveRuleInferenceConfig(
-            name="focused_inference",
-            enabled_rules={"RuleA", "RuleB"},
-            disabled_rules={"RuleC"},
-            target_func_eas={0x401000},
-            target_tags_any={"flattened"},
-            target_tags_all={"dispatcher"},
-            notes="test inference persistence",
-        )
-        storage.set_active_rule_inference(inference)
+        storage.set_function_tags(first, {"first"})
+        storage.set_function_tags(second, {"second"})
 
-        loaded = storage.get_active_rule_inference()
-        assert loaded is not None
-        assert loaded.name == "focused_inference"
-        assert loaded.enabled_rules == {"RuleA", "RuleB"}
-        assert loaded.disabled_rules == {"RuleC"}
-        assert loaded.target_func_eas == {0x401000}
-        assert loaded.target_tags_any == {"flattened"}
-        assert loaded.target_tags_all == {"dispatcher"}
-        assert loaded.notes == "test inference persistence"
-
-        storage.clear_active_rule_inference()
-        assert storage.get_active_rule_inference() is None
-
-    def test_should_run_rule_no_config(self, storage):
-        """Test should_run_rule with no configuration."""
-        # No config = run all rules
-        assert storage.should_run_rule(0x401000, "AnyRule") is True
-
-    def test_should_run_rule_with_enabled_list(self, storage):
-        """Test should_run_rule with enabled rules list."""
-        storage.set_function_rules(
-            function_addr=0x401000, enabled_rules={"AllowedRule"}
-        )
-
-        assert storage.should_run_rule(0x401000, "AllowedRule") is True
-        assert storage.should_run_rule(0x401000, "OtherRule") is False
-
-    def test_should_run_rule_with_disabled_list(self, storage):
-        """Test should_run_rule with disabled rules list."""
-        storage.set_function_rules(
-            function_addr=0x401000, disabled_rules={"BannedRule"}
-        )
-
-        assert storage.should_run_rule(0x401000, "BannedRule") is False
-        assert storage.should_run_rule(0x401000, "OtherRule") is True
+        assert storage.get_function_tags(first) == {"first"}
+        assert storage.get_function_tags(second) == {"second"}
 
     def test_invalidate_function(self, storage):
         """Test invalidating cached data for a function."""
@@ -269,14 +196,11 @@ class TestSQLiteOptimizationStorage:
             patches=[{"type": "test"}],
         )
 
-        storage.set_function_rules(0x401000, disabled_rules={"TestRule"})
-
         stats = storage.get_statistics()
 
         assert stats["functions_cached"] == 1
         assert stats["results_cached"] == 1
         assert stats["patches_stored"] == 1
-        assert stats["functions_with_custom_rules"] == 1
 
     def test_migrates_legacy_phase_schema(self, temp_db):
         """Test migrating cache rows from the pre-provider phase schema."""

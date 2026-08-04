@@ -3,7 +3,7 @@
 This module provides IDA-independent SQLite-backed storage for:
 - Function fingerprints (for cache validation)
 - Optimization results and patches
-- Per-function rule configuration
+- Scoped function recipes and tags
 
 The storage survives restarts and allows results to be reused across
 sessions, dramatically speeding up repeated analysis.
@@ -12,7 +12,8 @@ Architecture:
     - Functions table: Stores function metadata and hash
     - Blocks table: Stores block-level def/use information
     - Patches table: Stores optimization transformations
-    - FunctionRules table: Per-function rule configuration
+    - FunctionRecipesV2 table: Scoped public pass recipes
+    - FunctionTagsV2 table: Scoped internal function metadata
     - Results table: Optimization results per function
 
 Usage:
@@ -34,13 +35,6 @@ Usage:
 
     # Load results
     result = storage.load_result(0x401000, provider_phase=phase)
-
-    # Configure per-function rules
-    storage.set_function_rules(
-        function_addr=0x401000,
-        enabled_rules={"UnflattenerRule", "XorOptimization"},
-        disabled_rules={"SlowRule"}
-    )
 """
 
 from __future__ import annotations
@@ -49,10 +43,10 @@ import json
 import sqlite3
 import time
 import zlib
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
-from d810.core.provider_phase import ProviderPhase, ProviderPhaseSnapshot
+from d810.core.provider_phase import ProviderPhase
 from d810.core.typing import (
     Any,
     Dict,
@@ -98,29 +92,20 @@ class CachedResult:
     fingerprint: str
 
 
-@dataclass
-class FunctionRuleConfig:
-    """Per-function rule configuration.
+@dataclass(frozen=True)
+class FunctionStorageLocator:
+    """Stable owner and address for durable per-function operator data."""
 
-    This allows fine-grained control over which rules run on which functions.
-    Use cases:
-    - Disable slow rules on large functions
-    - Enable experimental rules only on specific functions
-    - Skip unflattening on functions that aren't flattened
-    """
-
+    database_identity: str
+    project_name: str
     function_addr: int
-    enabled_rules: Set[str]
-    disabled_rules: Set[str]
-    tags: Set[str] = field(default_factory=set)
-    notes: str = ""
 
 
 @dataclass(frozen=True)
 class FunctionRecipeConfig:
     """Complete registered-pass pipeline saved for one function."""
 
-    function_addr: int
+    locator: FunctionStorageLocator
     schema_version: int
     function_fingerprint: str | None
     source_path: str
@@ -128,18 +113,9 @@ class FunctionRecipeConfig:
     pass_configs_json: str
     updated_at: float
 
-
-@dataclass
-class ActiveRuleInferenceConfig:
-    """Persisted active rule inference selector."""
-
-    name: str
-    enabled_rules: Set[str] = field(default_factory=set)
-    disabled_rules: Set[str] = field(default_factory=set)
-    target_func_eas: Set[int] = field(default_factory=set)
-    target_tags_any: Set[str] = field(default_factory=set)
-    target_tags_all: Set[str] = field(default_factory=set)
-    notes: str = ""
+    @property
+    def function_addr(self) -> int:
+        return self.locator.function_addr
 
 
 class SupportsOptimizationStorage(Protocol):
@@ -158,21 +134,10 @@ class SupportsOptimizationStorage(Protocol):
     def load_result(
         self, function_addr: int, provider_phase: ProviderPhase
     ) -> Optional[CachedResult]: ...
-    def set_function_rules(
-        self,
-        function_addr: int,
-        enabled_rules: Optional[Set[str]] = None,
-        disabled_rules: Optional[Set[str]] = None,
-        notes: str = "",
-    ) -> None: ...
-    def get_function_rules(
-        self, function_addr: int
-    ) -> Optional[FunctionRuleConfig]: ...
-    def clear_function_rules(self, function_addr: int) -> None: ...
     def set_function_recipe(
         self,
         *,
-        function_addr: int,
+        locator: FunctionStorageLocator,
         schema_version: int,
         function_fingerprint: str | None,
         source_path: str,
@@ -180,17 +145,13 @@ class SupportsOptimizationStorage(Protocol):
         pass_configs_json: str,
     ) -> None: ...
     def get_function_recipe(
-        self, function_addr: int
+        self, locator: FunctionStorageLocator
     ) -> Optional[FunctionRecipeConfig]: ...
-    def clear_function_recipe(self, function_addr: int) -> None: ...
-    def set_function_tags(self, function_addr: int, tags: Set[str]) -> None: ...
-    def get_function_tags(self, function_addr: int) -> Set[str]: ...
-    def set_active_rule_inference(
-        self, inference: ActiveRuleInferenceConfig
+    def clear_function_recipe(self, locator: FunctionStorageLocator) -> None: ...
+    def set_function_tags(
+        self, locator: FunctionStorageLocator, tags: Set[str]
     ) -> None: ...
-    def get_active_rule_inference(self) -> Optional[ActiveRuleInferenceConfig]: ...
-    def clear_active_rule_inference(self) -> None: ...
-    def should_run_rule(self, function_addr: int, rule_name: str) -> bool: ...
+    def get_function_tags(self, locator: FunctionStorageLocator) -> Set[str]: ...
     def invalidate_function(self, function_addr: int) -> None: ...
     def get_statistics(self) -> Dict[str, Any]: ...
     def close(self) -> None: ...
@@ -510,9 +471,8 @@ class NetnodeOptimizationStorage:
             "functions": {},
             "results": {},
             "patches": {},
-            "function_rules": {},
-            "function_recipes": {},
-            "active_inference": None,
+            "function_tags_v2": {},
+            "function_recipes_v2": {},
         }
         self._state = self._load_state()
         logger.info("Netnode optimization storage initialized: %s", self.node_name)
@@ -521,35 +481,20 @@ class NetnodeOptimizationStorage:
         return json.dumps(self._state, sort_keys=True)
 
     def _deserialize(self, payload: Any) -> dict[str, Any]:
-        if payload is None:
-            return {
-                "functions": {},
-                "results": {},
-                "patches": {},
-                "function_rules": {},
-                "function_recipes": {},
-                "active_inference": None,
-            }
         if not isinstance(payload, dict):
-            return {
-                "functions": {},
-                "results": {},
-                "patches": {},
-                "function_rules": {},
-                "function_recipes": {},
-                "active_inference": None,
-            }
+            payload = {}
         payload.setdefault("functions", {})
         payload.setdefault("results", {})
         payload.setdefault("patches", {})
-        payload.setdefault("function_rules", {})
-        payload.setdefault("function_recipes", {})
-        # Backward compat: migrate old "active_recipe" key to "active_inference"
-        if "active_recipe" in payload and "active_inference" not in payload:
-            payload["active_inference"] = payload.pop("active_recipe")
-        elif "active_recipe" in payload:
-            payload.pop("active_recipe")
-        payload.setdefault("active_inference", None)
+        payload.setdefault("function_tags_v2", {})
+        payload.setdefault("function_recipes_v2", {})
+        for legacy_key in (
+            "function_rules",
+            "function_recipes",
+            "active_inference",
+            "active_recipe",
+        ):
+            payload.pop(legacy_key, None)
         return payload
 
     def _load_state(self) -> dict[str, Any]:
@@ -570,6 +515,17 @@ class NetnodeOptimizationStorage:
     @staticmethod
     def _func_key(function_addr: int) -> str:
         return str(int(function_addr))
+
+    @staticmethod
+    def _scoped_key(locator: FunctionStorageLocator) -> str:
+        return json.dumps(
+            [
+                str(locator.database_identity),
+                str(locator.project_name),
+                int(locator.function_addr),
+            ],
+            separators=(",", ":"),
+        )
 
     def has_valid_cache(self, function_addr: int, current_hash: str) -> bool:
         entry = self._state["functions"].get(self._func_key(function_addr))
@@ -647,53 +603,17 @@ class NetnodeOptimizationStorage:
             fingerprint=str(result["fingerprint"]),
         )
 
-    def set_function_rules(
-        self,
-        function_addr: int,
-        enabled_rules: Optional[Set[str]] = None,
-        disabled_rules: Optional[Set[str]] = None,
-        notes: str = "",
-    ) -> None:
-        fkey = self._func_key(function_addr)
-        existing = self._state["function_rules"].get(fkey, {})
-        self._state["function_rules"][fkey] = {
-            "enabled_rules": sorted(enabled_rules or []),
-            "disabled_rules": sorted(disabled_rules or []),
-            "tags": sorted(existing.get("tags", [])),
-            "notes": notes,
-            "updated_at": time.time(),
-        }
-        self._flush_state()
-        logger.info("Updated rule configuration for function %x", function_addr)
-
-    def get_function_rules(self, function_addr: int) -> Optional[FunctionRuleConfig]:
-        row = self._state["function_rules"].get(self._func_key(function_addr))
-        if not row:
-            return None
-        return FunctionRuleConfig(
-            function_addr=int(function_addr),
-            enabled_rules=set(row.get("enabled_rules", [])),
-            disabled_rules=set(row.get("disabled_rules", [])),
-            tags=set(row.get("tags", [])),
-            notes=str(row.get("notes", "")),
-        )
-
-    def clear_function_rules(self, function_addr: int) -> None:
-        self._state["function_rules"].pop(self._func_key(function_addr), None)
-        self._flush_state()
-        logger.info("Cleared rule configuration for function %x", function_addr)
-
     def set_function_recipe(
         self,
         *,
-        function_addr: int,
+        locator: FunctionStorageLocator,
         schema_version: int,
         function_fingerprint: str | None,
         source_path: str,
         runtime_path: str,
         pass_configs_json: str,
     ) -> None:
-        self._state["function_recipes"][self._func_key(function_addr)] = {
+        self._state["function_recipes_v2"][self._scoped_key(locator)] = {
             "schema_version": int(schema_version),
             "function_fingerprint": function_fingerprint,
             "source_path": str(source_path),
@@ -702,16 +622,16 @@ class NetnodeOptimizationStorage:
             "updated_at": time.time(),
         }
         self._flush_state()
-        logger.info("Updated function recipe for %x", function_addr)
+        logger.info("Updated function recipe for %x", locator.function_addr)
 
     def get_function_recipe(
-        self, function_addr: int
+        self, locator: FunctionStorageLocator
     ) -> Optional[FunctionRecipeConfig]:
-        row = self._state["function_recipes"].get(self._func_key(function_addr))
+        row = self._state["function_recipes_v2"].get(self._scoped_key(locator))
         if not row:
             return None
         return FunctionRecipeConfig(
-            function_addr=int(function_addr),
+            locator=locator,
             schema_version=int(row.get("schema_version", 0)),
             function_fingerprint=row.get("function_fingerprint"),
             source_path=str(row.get("source_path", "")),
@@ -720,75 +640,30 @@ class NetnodeOptimizationStorage:
             updated_at=float(row.get("updated_at", 0.0)),
         )
 
-    def clear_function_recipe(self, function_addr: int) -> None:
-        self._state["function_recipes"].pop(self._func_key(function_addr), None)
+    def clear_function_recipe(self, locator: FunctionStorageLocator) -> None:
+        self._state["function_recipes_v2"].pop(self._scoped_key(locator), None)
         self._flush_state()
-        logger.info("Cleared function recipe for %x", function_addr)
+        logger.info("Cleared function recipe for %x", locator.function_addr)
 
-    def set_function_tags(self, function_addr: int, tags: Set[str]) -> None:
-        fkey = self._func_key(function_addr)
-        existing = self._state["function_rules"].get(fkey, {})
-        self._state["function_rules"][fkey] = {
-            "enabled_rules": sorted(existing.get("enabled_rules", [])),
-            "disabled_rules": sorted(existing.get("disabled_rules", [])),
+    def set_function_tags(
+        self, locator: FunctionStorageLocator, tags: Set[str]
+    ) -> None:
+        self._state["function_tags_v2"][self._scoped_key(locator)] = {
             "tags": sorted(str(tag).strip() for tag in tags if str(tag).strip()),
-            "notes": str(existing.get("notes", "")),
             "updated_at": time.time(),
         }
         self._flush_state()
-        logger.info("Updated function tags for %x", function_addr)
+        logger.info("Updated function tags for %x", locator.function_addr)
 
-    def get_function_tags(self, function_addr: int) -> Set[str]:
-        row = self._state["function_rules"].get(self._func_key(function_addr))
+    def get_function_tags(self, locator: FunctionStorageLocator) -> Set[str]:
+        row = self._state["function_tags_v2"].get(self._scoped_key(locator))
         if not row:
             return set()
         return set(row.get("tags", []))
 
-    def set_active_rule_inference(self, inference: ActiveRuleInferenceConfig) -> None:
-        self._state["active_inference"] = {
-            "name": str(inference.name),
-            "enabled_rules": sorted(str(rule) for rule in inference.enabled_rules),
-            "disabled_rules": sorted(str(rule) for rule in inference.disabled_rules),
-            "target_func_eas": sorted(int(ea) for ea in inference.target_func_eas),
-            "target_tags_any": sorted(str(tag) for tag in inference.target_tags_any),
-            "target_tags_all": sorted(str(tag) for tag in inference.target_tags_all),
-            "notes": str(inference.notes),
-            "updated_at": time.time(),
-        }
-        self._flush_state()
-        logger.info("Updated active rule inference: %s", inference.name)
-
-    def get_active_rule_inference(self) -> Optional[ActiveRuleInferenceConfig]:
-        row = self._state.get("active_inference")
-        if not row:
-            return None
-        return ActiveRuleInferenceConfig(
-            name=str(row.get("name", "")),
-            enabled_rules=set(row.get("enabled_rules", [])),
-            disabled_rules=set(row.get("disabled_rules", [])),
-            target_func_eas={int(ea) for ea in row.get("target_func_eas", [])},
-            target_tags_any=set(row.get("target_tags_any", [])),
-            target_tags_all=set(row.get("target_tags_all", [])),
-            notes=str(row.get("notes", "")),
-        )
-
-    def clear_active_rule_inference(self) -> None:
-        self._state["active_inference"] = None
-        self._flush_state()
-        logger.info("Cleared active rule inference")
-
-    def should_run_rule(self, function_addr: int, rule_name: str) -> bool:
-        config = self.get_function_rules(function_addr)
-        if not config:
-            return True
-        if config.enabled_rules:
-            return rule_name in config.enabled_rules
-        return rule_name not in config.disabled_rules
-
     def invalidate_function(self, function_addr: int) -> None:
         fkey = self._func_key(function_addr)
         self._state["functions"].pop(fkey, None)
-        self._state["function_rules"].pop(fkey, None)
         stale = [
             rkey
             for rkey, row in self._state["results"].items()
@@ -807,8 +682,7 @@ class NetnodeOptimizationStorage:
             "patches_stored": sum(
                 len(v) for v in self._state["patches"].values() if isinstance(v, list)
             ),
-            "functions_with_custom_rules": len(self._state["function_rules"]),
-            "functions_with_recipes": len(self._state["function_recipes"]),
+            "functions_with_recipes": len(self._state["function_recipes_v2"]),
         }
 
     def close(self) -> None:
@@ -859,7 +733,7 @@ class SQLiteOptimizationStorage:
     1. Function fingerprints (for validation)
     2. Block-level information (def/use lists)
     3. Optimization patches (transformations applied)
-    4. Per-function rule configuration
+    4. Scoped function recipes and tags
     5. Optimization results (for quick lookup)
 
     Example:
@@ -879,13 +753,6 @@ class SQLiteOptimizationStorage:
         ...         changes,
         ...         patches,
         ...     )
-        >>>
-        >>> # Configure rules for specific function
-        >>> storage.set_function_rules(
-        ...     function_addr=0x401000,
-        ...     enabled_rules={"UnflattenerRule"},
-        ...     disabled_rules={"SlowPatternRule"}
-        ... )
     """
 
     def __init__(self, db_path: str | Path):
@@ -1051,38 +918,39 @@ class SQLiteOptimizationStorage:
         """
         )
 
-        # Function rules table: per-function rule configuration
+        # Remove the obsolete operator-authored private-rule model. Its rows are
+        # intentionally not adopted because no database/project identity was
+        # recorded and ownership cannot be proven.
+        cursor.execute("DROP TABLE IF EXISTS function_rules")
+        cursor.execute("DROP TABLE IF EXISTS function_recipes")
+        cursor.execute("DROP TABLE IF EXISTS rule_scope_inference")
+
         cursor.execute(
             """
-            CREATE TABLE IF NOT EXISTS function_rules (
-                function_addr INTEGER PRIMARY KEY,
-                enabled_rules TEXT,   -- JSON array of rule names
-                disabled_rules TEXT,  -- JSON array of rule names
-                tags TEXT,            -- JSON array of function tags
-                notes TEXT,
+            CREATE TABLE IF NOT EXISTS function_tags_v2 (
+                database_identity TEXT NOT NULL,
+                project_name TEXT NOT NULL,
+                function_addr INTEGER NOT NULL,
+                tags TEXT NOT NULL,
                 updated_at REAL NOT NULL,
-                FOREIGN KEY (function_addr) REFERENCES functions(address)
+                PRIMARY KEY (database_identity, project_name, function_addr)
             )
         """
         )
 
-        cursor.execute("PRAGMA table_info(function_rules)")
-        rule_columns = {str(row["name"]) for row in cursor.fetchall()}
-        if "tags" not in rule_columns:
-            cursor.execute(
-                "ALTER TABLE function_rules ADD COLUMN tags TEXT DEFAULT '[]'"
-            )
-
         cursor.execute(
             """
-            CREATE TABLE IF NOT EXISTS function_recipes (
-                function_addr INTEGER PRIMARY KEY,
+            CREATE TABLE IF NOT EXISTS function_recipes_v2 (
+                database_identity TEXT NOT NULL,
+                project_name TEXT NOT NULL,
+                function_addr INTEGER NOT NULL,
                 schema_version INTEGER NOT NULL,
                 function_fingerprint TEXT,
                 source_path TEXT NOT NULL,
                 runtime_path TEXT NOT NULL,
                 pass_configs_json TEXT NOT NULL,
-                updated_at REAL NOT NULL
+                updated_at REAL NOT NULL,
+                PRIMARY KEY (database_identity, project_name, function_addr)
             )
         """
         )
@@ -1105,23 +973,6 @@ class SQLiteOptimizationStorage:
         )
 
         self._migrate_provider_phase_schema(cursor)
-
-        # Active rule inference table: single persisted selector overlay
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS rule_scope_inference (
-                id INTEGER PRIMARY KEY CHECK (id = 1),
-                name TEXT NOT NULL,
-                enabled_rules TEXT,    -- JSON array of rule names
-                disabled_rules TEXT,   -- JSON array of rule names
-                target_func_eas TEXT,  -- JSON array of function EAs
-                target_tags_any TEXT,  -- JSON array of tags (any)
-                target_tags_all TEXT,  -- JSON array of tags (all)
-                notes TEXT,
-                updated_at REAL NOT NULL
-            )
-        """
-        )
 
         # Create indices for faster lookups
         cursor.execute(
@@ -1376,125 +1227,10 @@ class SQLiteOptimizationStorage:
             fingerprint=row["fingerprint"],
         )
 
-    def set_function_rules(
-        self,
-        function_addr: int,
-        enabled_rules: Optional[Set[str]] = None,
-        disabled_rules: Optional[Set[str]] = None,
-        notes: str = "",
-    ) -> None:
-        """Configure which rules should run on a specific function.
-
-        This allows per-function optimization control:
-        - Enable only specific rules
-        - Disable slow/buggy rules
-        - Document why rules are configured this way
-
-        Args:
-            function_addr: Function address.
-            enabled_rules: Set of rule names to enable (None = all enabled).
-            disabled_rules: Set of rule names to disable (None = none disabled).
-            notes: Human-readable notes about this configuration.
-
-        Example:
-            >>> # Only run unflattening on this function
-            >>> storage.set_function_rules(
-            ...     0x401000,
-            ...     enabled_rules={"UnflattenerRule"},
-            ...     notes="Large switch statement, other rules too slow"
-            ... )
-            >>>
-            >>> # Disable a problematic rule
-            >>> storage.set_function_rules(
-            ...     0x402000,
-            ...     disabled_rules={"BuggyPatternRule"},
-            ...     notes="This rule crashes on this function"
-            ... )
-        """
-        if not self.conn:
-            return
-
-        existing = self.get_function_rules(function_addr)
-        tags = set(existing.tags) if existing is not None else set()
-        cursor = self.conn.cursor()
-        cursor.execute(
-            """
-            INSERT OR REPLACE INTO function_rules
-            (function_addr, enabled_rules, disabled_rules, tags, notes, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """,
-            (
-                function_addr,
-                json.dumps(list(enabled_rules or [])),
-                json.dumps(list(disabled_rules or [])),
-                json.dumps(list(tags)),
-                notes,
-                time.time(),
-            ),
-        )
-
-        self.conn.commit()
-        logger.info(f"Updated rule configuration for function {function_addr:x}")
-
-    def get_function_rules(self, function_addr: int) -> Optional[FunctionRuleConfig]:
-        """Get rule configuration for a function.
-
-        Args:
-            function_addr: Function address.
-
-        Returns:
-            Rule configuration if found, None otherwise.
-        """
-        if not self.conn:
-            return None
-
-        cursor = self.conn.cursor()
-        cursor.execute(
-            """
-            SELECT enabled_rules, disabled_rules, tags, notes
-            FROM function_rules
-            WHERE function_addr = ?
-        """,
-            (function_addr,),
-        )
-
-        row = cursor.fetchone()
-        if not row:
-            return None
-
-        enabled_rules = set(json.loads(row["enabled_rules"] or "[]"))
-        disabled_rules = set(json.loads(row["disabled_rules"] or "[]"))
-        tags = set(json.loads(row["tags"] or "[]"))
-        return FunctionRuleConfig(
-            function_addr=function_addr,
-            enabled_rules=enabled_rules,
-            disabled_rules=disabled_rules,
-            tags=tags,
-            notes=row["notes"] or "",
-        )
-
-    def clear_function_rules(self, function_addr: int) -> None:
-        """Delete the persisted per-function rule configuration row.
-
-        This removes enabled/disabled rule overrides and any tags/notes stored
-        in the same record. Callers that need to preserve tags should re-save
-        them before returning control to normal execution.
-        """
-        if not self.conn:
-            return
-
-        cursor = self.conn.cursor()
-        cursor.execute(
-            "DELETE FROM function_rules WHERE function_addr = ?",
-            (function_addr,),
-        )
-        self.conn.commit()
-        logger.info("Cleared rule configuration for function %x", function_addr)
-
     def set_function_recipe(
         self,
         *,
-        function_addr: int,
+        locator: FunctionStorageLocator,
         schema_version: int,
         function_fingerprint: str | None,
         source_path: str,
@@ -1505,13 +1241,16 @@ class SQLiteOptimizationStorage:
             return
         self.conn.execute(
             """
-            INSERT OR REPLACE INTO function_recipes
-            (function_addr, schema_version, function_fingerprint, source_path,
-             runtime_path, pass_configs_json, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            INSERT OR REPLACE INTO function_recipes_v2
+            (database_identity, project_name, function_addr, schema_version,
+             function_fingerprint, source_path, runtime_path, pass_configs_json,
+             updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                int(function_addr),
+                str(locator.database_identity),
+                str(locator.project_name),
+                int(locator.function_addr),
                 int(schema_version),
                 function_fingerprint,
                 str(source_path),
@@ -1521,10 +1260,10 @@ class SQLiteOptimizationStorage:
             ),
         )
         self.conn.commit()
-        logger.info("Updated function recipe for %x", function_addr)
+        logger.info("Updated function recipe for %x", locator.function_addr)
 
     def get_function_recipe(
-        self, function_addr: int
+        self, locator: FunctionStorageLocator
     ) -> Optional[FunctionRecipeConfig]:
         if not self.conn:
             return None
@@ -1532,15 +1271,19 @@ class SQLiteOptimizationStorage:
             """
             SELECT schema_version, function_fingerprint, source_path,
                    runtime_path, pass_configs_json, updated_at
-            FROM function_recipes
-            WHERE function_addr = ?
+            FROM function_recipes_v2
+            WHERE database_identity = ? AND project_name = ? AND function_addr = ?
             """,
-            (int(function_addr),),
+            (
+                str(locator.database_identity),
+                str(locator.project_name),
+                int(locator.function_addr),
+            ),
         ).fetchone()
         if row is None:
             return None
         return FunctionRecipeConfig(
-            function_addr=int(function_addr),
+            locator=locator,
             schema_version=int(row["schema_version"]),
             function_fingerprint=row["function_fingerprint"],
             source_path=str(row["source_path"]),
@@ -1549,136 +1292,61 @@ class SQLiteOptimizationStorage:
             updated_at=float(row["updated_at"]),
         )
 
-    def clear_function_recipe(self, function_addr: int) -> None:
+    def clear_function_recipe(self, locator: FunctionStorageLocator) -> None:
         if not self.conn:
             return
         self.conn.execute(
-            "DELETE FROM function_recipes WHERE function_addr = ?",
-            (int(function_addr),),
+            """DELETE FROM function_recipes_v2
+            WHERE database_identity = ? AND project_name = ? AND function_addr = ?""",
+            (
+                str(locator.database_identity),
+                str(locator.project_name),
+                int(locator.function_addr),
+            ),
         )
         self.conn.commit()
-        logger.info("Cleared function recipe for %x", function_addr)
+        logger.info("Cleared function recipe for %x", locator.function_addr)
 
-    def set_function_tags(self, function_addr: int, tags: Set[str]) -> None:
+    def set_function_tags(
+        self, locator: FunctionStorageLocator, tags: Set[str]
+    ) -> None:
         if not self.conn:
             return
-        existing = self.get_function_rules(function_addr)
-        enabled_rules = set(existing.enabled_rules) if existing is not None else set()
-        disabled_rules = set(existing.disabled_rules) if existing is not None else set()
-        notes = str(existing.notes) if existing is not None else ""
         normalized_tags = {str(tag).strip() for tag in tags if str(tag).strip()}
 
         cursor = self.conn.cursor()
         cursor.execute(
             """
-            INSERT OR REPLACE INTO function_rules
-            (function_addr, enabled_rules, disabled_rules, tags, notes, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT OR REPLACE INTO function_tags_v2
+            (database_identity, project_name, function_addr, tags, updated_at)
+            VALUES (?, ?, ?, ?, ?)
         """,
             (
-                function_addr,
-                json.dumps(list(enabled_rules)),
-                json.dumps(list(disabled_rules)),
+                str(locator.database_identity),
+                str(locator.project_name),
+                int(locator.function_addr),
                 json.dumps(list(normalized_tags)),
-                notes,
                 time.time(),
             ),
         )
         self.conn.commit()
-        logger.info(f"Updated function tags for {function_addr:x}")
+        logger.info("Updated function tags for %x", locator.function_addr)
 
-    def get_function_tags(self, function_addr: int) -> Set[str]:
-        config = self.get_function_rules(function_addr)
-        if config is None:
+    def get_function_tags(self, locator: FunctionStorageLocator) -> Set[str]:
+        if not self.conn:
             return set()
-        return set(config.tags)
-
-    def set_active_rule_inference(self, inference: ActiveRuleInferenceConfig) -> None:
-        if not self.conn:
-            return
-        cursor = self.conn.cursor()
-        cursor.execute(
-            """
-            INSERT OR REPLACE INTO rule_scope_inference
-            (id, name, enabled_rules, disabled_rules, target_func_eas, target_tags_any, target_tags_all, notes, updated_at)
-            VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
+        row = self.conn.execute(
+            """SELECT tags FROM function_tags_v2
+            WHERE database_identity = ? AND project_name = ? AND function_addr = ?""",
             (
-                str(inference.name),
-                json.dumps(sorted(str(rule) for rule in inference.enabled_rules)),
-                json.dumps(sorted(str(rule) for rule in inference.disabled_rules)),
-                json.dumps(sorted(int(ea) for ea in inference.target_func_eas)),
-                json.dumps(sorted(str(tag) for tag in inference.target_tags_any)),
-                json.dumps(sorted(str(tag) for tag in inference.target_tags_all)),
-                str(inference.notes),
-                time.time(),
+                str(locator.database_identity),
+                str(locator.project_name),
+                int(locator.function_addr),
             ),
-        )
-        self.conn.commit()
-        logger.info("Updated active rule inference: %s", inference.name)
-
-    def get_active_rule_inference(self) -> Optional[ActiveRuleInferenceConfig]:
-        if not self.conn:
-            return None
-        cursor = self.conn.cursor()
-        cursor.execute(
-            """
-            SELECT name, enabled_rules, disabled_rules, target_func_eas, target_tags_any, target_tags_all, notes
-            FROM rule_scope_inference
-            WHERE id = 1
-        """
-        )
-        row = cursor.fetchone()
+        ).fetchone()
         if not row:
-            return None
-        return ActiveRuleInferenceConfig(
-            name=str(row["name"]),
-            enabled_rules=set(json.loads(row["enabled_rules"] or "[]")),
-            disabled_rules=set(json.loads(row["disabled_rules"] or "[]")),
-            target_func_eas={
-                int(ea) for ea in json.loads(row["target_func_eas"] or "[]")
-            },
-            target_tags_any=set(json.loads(row["target_tags_any"] or "[]")),
-            target_tags_all=set(json.loads(row["target_tags_all"] or "[]")),
-            notes=str(row["notes"] or ""),
-        )
-
-    def clear_active_rule_inference(self) -> None:
-        if not self.conn:
-            return
-        cursor = self.conn.cursor()
-        cursor.execute("DELETE FROM rule_scope_inference WHERE id = 1")
-        self.conn.commit()
-        logger.info("Cleared active rule inference")
-
-    def should_run_rule(self, function_addr: int, rule_name: str) -> bool:
-        """Check if a rule should run on a function.
-
-        This consults the per-function rule configuration.
-
-        Args:
-            function_addr: Function address.
-            rule_name: Name of the rule.
-
-        Returns:
-            True if the rule should run, False otherwise.
-
-        Logic:
-            - If enabled_rules is set, only those rules run
-            - If disabled_rules is set, those rules are skipped
-            - If both are empty, all rules run (default)
-        """
-        config = self.get_function_rules(function_addr)
-
-        if not config:
-            return True  # No config = run all rules
-
-        # If enabled_rules is specified, only run those
-        if config.enabled_rules:
-            return rule_name in config.enabled_rules
-
-        # Otherwise, run unless explicitly disabled
-        return rule_name not in config.disabled_rules
+            return set()
+        return set(json.loads(row["tags"] or "[]"))
 
     def invalidate_function(self, function_addr: int) -> None:
         """Invalidate all cached data for a function.
@@ -1724,8 +1392,8 @@ class SQLiteOptimizationStorage:
         cursor.execute("SELECT COUNT(*) as count FROM patches")
         stats["patches_stored"] = cursor.fetchone()["count"]
 
-        cursor.execute("SELECT COUNT(*) as count FROM function_rules")
-        stats["functions_with_custom_rules"] = cursor.fetchone()["count"]
+        cursor.execute("SELECT COUNT(*) as count FROM function_recipes_v2")
+        stats["functions_with_recipes"] = cursor.fetchone()["count"]
 
         return stats
 

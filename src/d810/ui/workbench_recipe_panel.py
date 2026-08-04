@@ -124,7 +124,7 @@ if IDA_AVAILABLE:
                 ("reset", "Reset to effective pipeline"),
                 ("analyze", "Analyze recipe"),
                 ("apply_once", "Apply once"),
-                ("save_function", "Save for this function"),
+                ("save_function", "Save for Deobfuscate This"),
                 ("save_project", "Save as project profile"),
             ):
                 self.action_buttons[action_id] = QtWidgets.QPushButton(label)

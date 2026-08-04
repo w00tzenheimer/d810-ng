@@ -563,18 +563,26 @@ When you want to disable deobfuscation, just click on the `Stop` button or use t
 !["Disassembly context menu"](./resources/assets/disasmview_context_menu.png "Disassembly context menu")
 !["Pseudocode context menu"](./resources/assets/pseudocode_context_menu.png "Pseudocode context menu")
 
-### Per-function rule overrides
+### Per-function recipes
 
-When a rule produces worse output than the baseline on a specific function, you can disable it for that one function without editing project JSON or restarting the plugin:
+Use the Deobfuscation Workbench's **Recipe** composer when one function needs a
+different config-v2 pipeline or typed pass options. The durable action is
+**Save for Deobfuscate This**. It stores public pass IDs and their options, not
+private implementation-rule checkboxes.
 
-1. In the pseudocode view, right-click and open the **d810-ng** submenu.
-2. Click **Function rules...**.
-3. Untick the rules you want disabled for this function (or tick rules you want force-enabled). Add free-form `Function Tags` and `Notes` if you want.
-4. Click **Save** — the pseudocode re-decompiles immediately with the override applied.
+Ordinary F5/refresh continues to use the active project runtime. The saved
+function recipe runs only through **Deobfuscate This**, which installs it for
+one synchronous decompile and restores the project runtime afterward. The
+Workbench runtime row states this distinction and its Rule scope row explains
+the expanded active/excluded rules and reason codes.
 
-Overrides persist to the project database, so reopening the IDB or sharing the project file with a teammate carries them along. Per-function overrides always win over global rule activation in the project JSON.
+Recipes and function tags are keyed by database identity, project name, and
+function address. A stored fingerprint is revalidated so changed function
+bytes produce a visible stale-recipe diagnostic instead of applying uncertain
+configuration.
 
-See [docs/features/function-rules.md](docs/features/function-rules.md) for the full walkthrough, precedence rules, and programmatic API.
+See [docs/features/function-recipes.md](docs/features/function-recipes.md) for
+the workflow, typed state-CFF threshold, persistence, and safety tradeoffs.
 
 ## How to deobfuscate something new
 
@@ -748,7 +756,11 @@ Run `PYTHONPATH=src python3 -m d810.diagnostics --help` for the full set of quer
 
 ### Cross-session persistence
 
-Beyond the per-run diagnostic snapshots, D-810 keeps a persistent SQLite store (`src/d810/core/persistence.py`, `SQLiteOptimizationStorage`) of function fingerprints, applied patches, per-function rule configuration, and optimization results. It survives restarts, so repeated analysis of the same function can reuse prior results instead of recomputing them.
+Beyond the per-run diagnostic snapshots, D-810 keeps persistent optimization
+results plus database/project-scoped function recipes and tags. The safe
+default backend is IDB-local netnode storage; an explicitly configured SQLite
+backend can be shared without colliding same-address functions from different
+databases.
 
 ---
 

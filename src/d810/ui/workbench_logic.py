@@ -155,20 +155,18 @@ def _context_status(snapshot: DeobfuscationWorkbenchSnapshot) -> OutcomeStatus:
 def _rule_scope_detail(snapshot: DeobfuscationWorkbenchSnapshot) -> str:
     scope = snapshot.rule_scope
     parts = [
-        "project instruction rules: "
-        + (", ".join(scope.project_instruction_rules) or "none"),
-        "project block rules: " + (", ".join(scope.project_block_rules) or "none"),
-        "function enabled: " + (", ".join(scope.function_enabled_rules) or "none"),
-        "function disabled: " + (", ".join(scope.function_disabled_rules) or "none"),
+        "public operations: " + (", ".join(scope.public_operations) or "none"),
         "tags: " + (", ".join(scope.function_tags) or "none"),
+        "inferences: " + (", ".join(scope.inference_names) or "none"),
     ]
-    if scope.inference_name:
-        parts.append(
-            f"inference: {scope.inference_name} "
-            f"({'applies' if scope.inference_applies else 'does not apply'})"
-        )
-    if scope.function_notes:
-        parts.append("notes: " + scope.function_notes)
+    parts.extend(
+        f"{decision.pipeline} {decision.rule_name}"
+        f" [{','.join(str(value) for value in decision.maturities) or 'any'}]: "
+        f"{decision.reason} - {decision.detail}"
+        for decision in scope.decisions
+    )
+    if scope.unknown_rule_names:
+        parts.append("unknown/stale rule names: " + ", ".join(scope.unknown_rule_names))
     return "\n".join(parts)
 
 
@@ -198,8 +196,19 @@ def project_workbench_rows(
     runtime = snapshot.runtime
     attack = snapshot.attack
     recipe_scope_suffix = (
-        " (function recipe)" if runtime.recipe_scope == "function-recipe" else ""
+        " (saved recipe: Deobfuscate This only)"
+        if runtime.recipe_scope == "saved-recipe-explicit"
+        else ""
     )
+    recipe_scope_detail = {
+        "saved-recipe-explicit": (
+            "ordinary refresh uses project runtime; Deobfuscate This uses the saved recipe"
+        ),
+        "saved-recipe-blocked": (
+            "ordinary refresh uses project runtime; saved recipe is blocked"
+        ),
+        "project-runtime": "ordinary refresh and execution use project runtime",
+    }.get(runtime.recipe_scope, f"scope: {runtime.recipe_scope}")
     rows: list[WorkbenchRow] = [
         _row(
             key="context:function",
@@ -229,7 +238,7 @@ def project_workbench_rows(
                 f"runtime: {runtime.runtime_path}\n"
                 f"mode: {runtime.mode}\n"
                 f"hook mode: {runtime.hook_mode or 'none'}\n"
-                f"scope: {runtime.recipe_scope}\n"
+                f"{recipe_scope_detail}\n"
                 f"passes: {', '.join(runtime.pass_ids) or 'none'}"
             ),
             status=context_status,
@@ -306,8 +315,8 @@ def project_workbench_rows(
                 ordinal=len(snapshot.consumers),
                 label="Rule scope",
                 summary=(
-                    f"{len(snapshot.rule_scope.function_enabled_rules)} enabled, "
-                    f"{len(snapshot.rule_scope.function_disabled_rules)} disabled"
+                    f"{sum(1 for item in snapshot.rule_scope.decisions if item.active)} active, "
+                    f"{sum(1 for item in snapshot.rule_scope.decisions if not item.active)} excluded"
                 ),
                 detail=_rule_scope_detail(snapshot),
                 status=OutcomeStatus.READY,

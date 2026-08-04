@@ -2,9 +2,8 @@
 
 This module provides:
 
-1. Re-exports of MOP caches from d810.core (MOP_CONSTANT_CACHE, MOP_TO_AST_CACHE)
-2. IDA-specific integration for persistent caching via `core.persistence`
-3. Function fingerprinting using IDA's mba_t (microcode block array)
+1. IDA-specific integration for persistent caching via `core.persistence`
+2. Function fingerprinting using IDA's mba_t (microcode block array)
 
 For the underlying storage implementation, see `d810.core.persistence`.
 For MOP cache definitions, see `d810.core` (moved there to avoid circular imports).
@@ -34,18 +33,17 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
-from d810.core.typing import Any, Dict, List, Optional, Set
+from d810.core.typing import Any, Dict, List, Optional
 
 import ida_hexrays
 
-from d810.core import MOP_CONSTANT_CACHE, MOP_TO_AST_CACHE, getLogger
+from d810.core import getLogger
 from d810.core.persistence import (
     CachedResult,
     FunctionFingerprint,
-    FunctionRuleConfig,
-    ProviderPhaseSnapshot,
     create_optimization_storage,
 )
+from d810.core.provider_phase import ProviderPhaseSnapshot
 from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 
 logger = getLogger("D810.caching")
@@ -222,55 +220,6 @@ class OptimizationCache:
             friendly_provider_level=maturity_to_string(maturity),
         )
         return self._storage.load_result(function_addr, provider_phase)
-
-    def set_function_rules(
-        self,
-        function_addr: int,
-        enabled_rules: Optional[Set[str]] = None,
-        disabled_rules: Optional[Set[str]] = None,
-        notes: str = "",
-    ) -> None:
-        """Configure which rules should run on a specific function.
-
-        Args:
-            function_addr: Function address.
-            enabled_rules: Set of rule names to enable (None = all enabled).
-            disabled_rules: Set of rule names to disable (None = none disabled).
-            notes: Human-readable notes about this configuration.
-        """
-        self._storage.set_function_rules(
-            function_addr=function_addr,
-            enabled_rules=enabled_rules,
-            disabled_rules=disabled_rules,
-            notes=notes,
-        )
-
-    def get_function_rules(self, function_addr: int) -> Optional[FunctionRuleConfig]:
-        """Get rule configuration for a function.
-
-        Args:
-            function_addr: Function address.
-
-        Returns:
-            Rule configuration if found, None otherwise.
-        """
-        return self._storage.get_function_rules(function_addr)
-
-    def clear_function_rules(self, function_addr: int) -> None:
-        """Clear persisted rule configuration for a function."""
-        self._storage.clear_function_rules(function_addr)
-
-    def should_run_rule(self, function_addr: int, rule_name: str) -> bool:
-        """Check if a rule should run on a function.
-
-        Args:
-            function_addr: Function address.
-            rule_name: Name of the rule.
-
-        Returns:
-            True if the rule should run, False otherwise.
-        """
-        return self._storage.should_run_rule(function_addr, rule_name)
 
     def invalidate_function(self, function_addr: int) -> None:
         """Invalidate all cached data for a function.
