@@ -20,21 +20,22 @@ def _method(name: str) -> ast.FunctionDef:
 def _plugin_method(name: str) -> ast.FunctionDef:
     tree = ast.parse(IDA_UI.read_text(encoding="utf-8"), filename=str(IDA_UI))
     for node in tree.body:
-        if isinstance(node, ast.ClassDef) and node.name == "PluginConfigurationFileForm_t":
+        if (
+            isinstance(node, ast.ClassDef)
+            and node.name == "PluginConfigurationFileForm_t"
+        ):
             for item in node.body:
                 if isinstance(item, ast.FunctionDef) and item.name == name:
                     return item
     raise AssertionError(f"PluginConfigurationFileForm_t.{name} not found")
 
 
-def test_rule_splitter_prefers_the_detail_pane_at_narrow_dock_widths() -> None:
+def test_pass_tree_owns_the_project_pipeline_pane() -> None:
     source = ast.unparse(_method("OnCreate"))
 
-    assert "self._rule_tree.setMinimumWidth(" in source
-    assert "self._rule_detail.setMinimumWidth(" in source
-    assert "self._splitter.setStretchFactor(0, 2)" in source
-    assert "self._splitter.setStretchFactor(1, 3)" in source
-    assert "self._splitter.setSizes([400, 600])" in source
+    assert "self._pass_tree = PassTreeWidget(" in source
+    assert "passes_layout.addWidget(self._pass_tree, stretch=1)" in source
+    assert "RuleDetailPanel" not in source
 
 
 def test_project_and_engine_groups_keep_compact_local_layouts() -> None:

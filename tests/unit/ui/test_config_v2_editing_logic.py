@@ -39,8 +39,8 @@ def _validation(*, valid: bool = True, revision: int = 2) -> ConfigV2ProjectVali
         revision=revision,
         valid=valid,
         pass_ids=("mba-simplify",),
-        instruction_rule_names=("Rule",),
-        block_rule_names=(),
+        stage_ids=("simplify-mba",),
+        transform_ids=("add-xor-1",),
         routing_policy_json="{}",
         diagnostics=diagnostics,
     )

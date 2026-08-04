@@ -39,7 +39,6 @@ __all__ = [
     "RecipeDiagnostic",
     "RecipePass",
     "RecipeValidation",
-    "RuleProjectionKind",
     "RuntimeConfigRef",
     "SnapshotFreshness",
     "StatisticsSummary",
@@ -117,7 +116,6 @@ def __getattr__(name: str):
         "ProjectConfigMode",
         "ProjectIdentitySnapshot",
         "ProjectRuntimeSnapshot",
-        "RuleProjectionKind",
     }:
         import d810.manager.project_runtime as project_runtime
 

@@ -9,7 +9,6 @@ from d810.core.config import ProjectConfiguration
 from d810.manager.project_runtime import (
     ProjectConfigMode,
     ProjectRuntimeSnapshot,
-    RuleProjectionKind,
 )
 from d810.manager.workbench_recipe_models import (
     FunctionPipelineOverride,
@@ -37,14 +36,6 @@ class FunctionRecipeWorkbenchSelection:
     recipe_scope: str
     errors: tuple[str, ...]
     draft: PipelineRecipeDraft | None
-
-
-def _active_rule_names(rules: tuple[object, ...]) -> tuple[str, ...]:
-    return tuple(
-        str(getattr(rule, "name"))
-        for rule in rules
-        if bool(getattr(rule, "is_activated", False)) and getattr(rule, "name", None)
-    )
 
 
 def build_workbench_recipe_projection(
@@ -80,11 +71,6 @@ def build_workbench_recipe_projection(
         mode=ProjectConfigMode.CONFIG_V2,
         hook_mode="config-v2",
         effective_pass_ids=activation.configured_pass_ids,
-        effective_instruction_rule_names=_active_rule_names(
-            activation.instruction_rules
-        ),
-        effective_block_rule_names=_active_rule_names(activation.block_rules),
-        rule_projection=RuleProjectionKind.RUNTIME_EXPANSION,
     )
     return FunctionRecipeWorkbenchProjection(
         runtime_project=runtime_project,

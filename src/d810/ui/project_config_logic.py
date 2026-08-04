@@ -1,26 +1,24 @@
-"""Pure presentation and edit policy for project configuration UI."""
+"""Pure presentation and config-v2 edit policy for the project UI."""
+
 from __future__ import annotations
 
 import dataclasses
 import enum
 import pathlib
-from collections.abc import Sequence
 
-from d810.manager.project_runtime import (
-    ProjectConfigMode,
-    ProjectRuntimeSnapshot,
-    RuleProjectionKind,
-)
-from d810.ui.rule_tree_logic import RuleTreeContextTarget
+from d810.manager.project_runtime import ProjectConfigMode, ProjectRuntimeSnapshot
 
 
 V2_STRUCTURED_EDIT_EXPLANATION = (
-    "Edit with the structured config-v2 editor; unsupported fields remain "
-    "read-only and survive lossless save."
+    "Edit the ordered pass pipeline and typed pass options with the structured "
+    "config-v2 editor."
 )
 V2_CLONE_EXPLANATION = (
-    "Duplicate will copy the complete effective runtime config-v2 document; "
-    "the flat rule tree remains read-only."
+    "Duplicate the complete effective config-v2 document before editing it."
+)
+STRICT_V2_EXPLANATION = (
+    "This project does not expose a config-v2 pass pipeline and cannot be edited "
+    "with the strict project editor."
 )
 
 
@@ -30,10 +28,7 @@ class ConfigEditMode(str, enum.Enum):
     EDIT = "edit"
 
 
-class ConfigSaveStrategy(enum.Enum):
-    CREATE_LEGACY = "create-legacy"
-    SAVE_LEGACY_COPY = "save-legacy-copy"
-    CLONE_RUNTIME_V2 = "clone-runtime-v2"
+class ConfigSaveStrategy(str, enum.Enum):
     STRUCTURED_V2 = "structured-v2"
     REFUSE = "refuse"
 
@@ -41,7 +36,6 @@ class ConfigSaveStrategy(enum.Enum):
 @dataclasses.dataclass(frozen=True, slots=True)
 class ConfigEditPolicy:
     allowed: bool
-    rules_editable: bool
     save_strategy: ConfigSaveStrategy
     explanation: str
 
@@ -54,90 +48,35 @@ class ProjectConfigView:
     runtime_text: str
     runtime_tooltip: str
     effective_passes_text: str
-    rules_title: str
-    enabled_rule_names: frozenset[str]
+    pass_tree_title: str
+    effective_pass_ids: tuple[str, ...]
     edit_enabled: bool
     edit_tooltip: str
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class ConfigV2FocusTarget:
-    """Conservative focus information for the structured config-v2 editor."""
+    """Stable pass focus for the structured config-v2 editor."""
 
     pass_id: str | None
-    rule_name: str | None
     message: str
     unambiguous: bool
 
 
 def resolve_config_v2_focus_target(
-    target: RuleTreeContextTarget,
-    pipeline_pass_ids: Sequence[str],
-    catalog: Sequence[object],
+    pass_id: str,
+    pipeline_pass_ids: tuple[str, ...],
 ) -> ConfigV2FocusTarget:
-    """Resolve a displayed runtime target to one configured pipeline pass.
-
-    Catalog-owned rules and transforms are the authoritative mappings. MBA
-    instruction rules are the one deliberate special case because that pass's
-    template has no static ``owned_rules`` list; its configured rule selection
-    is still the owner of every instruction-optimizer rule.
-    """
-
-    pass_ids = tuple(str(pass_id) for pass_id in pipeline_pass_ids)
-    catalog_by_id = {
-        str(getattr(entry, "pass_id", "")): entry
-        for entry in catalog
-        if getattr(entry, "pass_id", "")
-    }
-    candidates: set[tuple[int, str]] = set()
-    for index, pass_id in enumerate(pass_ids):
-        entry = catalog_by_id.get(pass_id)
-        if entry is None:
-            continue
-        owned = {
-            str(name)
-            for name in (
-                *getattr(entry, "owned_rules", ()),
-                *getattr(entry, "stage_ids", ()),
-            )
-            if str(name)
-        }
-        if owned.intersection(target.rule_names):
-            candidates.add((index, pass_id))
-        if (
-            target.optimizer_type == "Instruction Optimizers"
-            and pass_id == "mba-simplify"
-        ):
-            candidates.add((index, pass_id))
-
-    rule_name = target.rule_name
-    if len(candidates) == 1:
-        _index, pass_id = next(iter(candidates))
-        subject = f" for {rule_name}" if rule_name else ""
+    normalized = str(pass_id).strip()
+    if normalized and normalized in pipeline_pass_ids:
         return ConfigV2FocusTarget(
-            pass_id=pass_id,
-            rule_name=rule_name,
-            message=f"Editing config-v2 pass {pass_id!r}{subject}.",
+            pass_id=normalized,
+            message=f"Editing config-v2 pass {normalized!r}.",
             unambiguous=True,
-        )
-    if len(candidates) > 1:
-        names = ", ".join(sorted(pass_id for _index, pass_id in candidates))
-        return ConfigV2FocusTarget(
-            pass_id=None,
-            rule_name=rule_name,
-            message=(
-                "The selected runtime rule maps to multiple configured passes "
-                f"({names}); choose the owning pass explicitly."
-            ),
-            unambiguous=False,
         )
     return ConfigV2FocusTarget(
         pass_id=None,
-        rule_name=rule_name,
-        message=(
-            "No configured config-v2 pass owns the selected runtime rule; "
-            "review the pipeline explicitly."
-        ),
+        message=f"Pass {normalized!r} is not present in the effective pipeline.",
         unambiguous=False,
     )
 
@@ -146,8 +85,6 @@ def config_v2_user_destination(
     config_dir: pathlib.Path,
     runtime_path: pathlib.Path,
 ) -> pathlib.Path:
-    """Return the ordinary writable destination for config-v2 edits."""
-
     config_dir = pathlib.Path(config_dir).expanduser()
     runtime_path = pathlib.Path(runtime_path).expanduser()
     if runtime_path.parent == config_dir:
@@ -159,94 +96,53 @@ def select_config_edit_policy(
     mode: ConfigEditMode,
     snapshot: ProjectRuntimeSnapshot | None,
 ) -> ConfigEditPolicy:
-    if mode is ConfigEditMode.NEW:
-        return ConfigEditPolicy(
-            True,
-            True,
-            ConfigSaveStrategy.CREATE_LEGACY,
-            "",
-        )
-    if snapshot is None:
-        return ConfigEditPolicy(
-            False,
-            False,
-            ConfigSaveStrategy.REFUSE,
-            "No active project",
-        )
-    if mode is ConfigEditMode.EDIT and snapshot.mode is ProjectConfigMode.CONFIG_V2:
-        return ConfigEditPolicy(
-            True,
-            False,
-            ConfigSaveStrategy.STRUCTURED_V2,
-            V2_STRUCTURED_EDIT_EXPLANATION,
-        )
-    if (
-        mode is ConfigEditMode.DUPLICATE
-        and snapshot.mode is ProjectConfigMode.CONFIG_V2
-    ):
-        return ConfigEditPolicy(
-            True,
-            False,
-            ConfigSaveStrategy.STRUCTURED_V2,
-            V2_CLONE_EXPLANATION,
-        )
-    return ConfigEditPolicy(
-        True,
-        True,
-        ConfigSaveStrategy.SAVE_LEGACY_COPY,
-        "",
+    if snapshot is None or snapshot.mode is not ProjectConfigMode.CONFIG_V2:
+        return ConfigEditPolicy(False, ConfigSaveStrategy.REFUSE, STRICT_V2_EXPLANATION)
+    explanation = (
+        V2_CLONE_EXPLANATION
+        if mode is ConfigEditMode.DUPLICATE
+        else V2_STRUCTURED_EDIT_EXPLANATION
     )
+    return ConfigEditPolicy(True, ConfigSaveStrategy.STRUCTURED_V2, explanation)
 
 
-def build_project_config_view(
-    snapshot: ProjectRuntimeSnapshot,
-) -> ProjectConfigView:
-    if snapshot.mode is ProjectConfigMode.LEGACY:
-        mode_text = "Legacy"
-        effective_passes_text = "Legacy rule policy"
-    else:
-        mode_text = "Config v2 (routed)" if snapshot.routed else "Config v2"
-        effective_passes_text = (
-            f"{len(snapshot.effective_pass_ids)} passes: "
-            + ", ".join(snapshot.effective_pass_ids)
-        )
-
-    projection_text = (
-        "runtime expansion"
-        if snapshot.rule_projection is RuleProjectionKind.RUNTIME_EXPANSION
-        else "source policy"
+def build_project_config_view(snapshot: ProjectRuntimeSnapshot) -> ProjectConfigView:
+    is_v2 = snapshot.mode is ProjectConfigMode.CONFIG_V2
+    mode_text = (
+        "Config v2 (routed)"
+        if is_v2 and snapshot.routed
+        else "Config v2"
+        if is_v2
+        else "Unsupported project format"
     )
-    instruction_count = len(snapshot.effective_instruction_rule_names)
-    block_count = len(snapshot.effective_block_rule_names)
-    edit_policy = select_config_edit_policy(ConfigEditMode.EDIT, snapshot)
+    pass_ids = tuple(snapshot.effective_pass_ids) if is_v2 else ()
+    passes_text = (
+        f"{len(pass_ids)} passes: " + ", ".join(pass_ids)
+        if pass_ids
+        else "No executable config-v2 pass pipeline"
+    )
+    policy = select_config_edit_policy(ConfigEditMode.EDIT, snapshot)
     return ProjectConfigView(
         mode_text=mode_text,
         source_text=snapshot.source.basename,
         source_tooltip=str(snapshot.source.path),
         runtime_text=snapshot.runtime.basename,
         runtime_tooltip=str(snapshot.runtime.path),
-        effective_passes_text=effective_passes_text,
-        rules_title=(
-            f"Rules ({projection_text}: {instruction_count} instruction, "
-            f"{block_count} block)"
-        ),
-        enabled_rule_names=frozenset(
-            (
-                *snapshot.effective_instruction_rule_names,
-                *snapshot.effective_block_rule_names,
-            )
-        ),
-        edit_enabled=edit_policy.allowed,
-        edit_tooltip=edit_policy.explanation or "Edit legacy rule configuration",
+        effective_passes_text=passes_text,
+        pass_tree_title=f"Pass pipeline ({len(pass_ids)} active)",
+        effective_pass_ids=pass_ids,
+        edit_enabled=policy.allowed,
+        edit_tooltip=policy.explanation,
     )
 
 
 __all__ = [
-    "ConfigV2FocusTarget",
     "ConfigEditMode",
     "ConfigEditPolicy",
     "ConfigSaveStrategy",
+    "ConfigV2FocusTarget",
     "ProjectConfigView",
+    "STRICT_V2_EXPLANATION",
     "V2_CLONE_EXPLANATION",
     "V2_STRUCTURED_EDIT_EXPLANATION",
     "build_project_config_view",

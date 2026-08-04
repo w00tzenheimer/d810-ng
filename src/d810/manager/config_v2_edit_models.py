@@ -46,8 +46,8 @@ class ConfigV2ProjectValidation:
     revision: int
     valid: bool
     pass_ids: tuple[str, ...]
-    instruction_rule_names: tuple[str, ...]
-    block_rule_names: tuple[str, ...]
+    stage_ids: tuple[str, ...]
+    transform_ids: tuple[str, ...]
     routing_policy_json: str
     diagnostics: tuple[ConfigV2EditDiagnostic, ...]
 

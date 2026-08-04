@@ -60,7 +60,7 @@ def _draft(service: RecipeService):
         configs=(
             PipelineConfig(
                 pass_id="jump-fixer",
-                options={"legacy_rule": "JumpFixer"},
+                options={},
             ),
             PipelineConfig(pass_id="recover_dispatcher"),
         ),
@@ -163,9 +163,7 @@ def test_edit_rejects_unknown_pass_item_and_undeclared_options() -> None:
     with pytest.raises(RecipeEditError, match="draft item"):
         service.remove_pass(draft, "missing-item")
     draft = service.add_pass(draft, "mba-simplify")
-    unconfigured = next(
-        item for item in draft.passes if item.pass_id == "mba-simplify"
-    )
+    unconfigured = next(item for item in draft.passes if item.pass_id == "mba-simplify")
     with pytest.raises(RecipeEditError, match="invalid options"):
         service.replace_options(draft, unconfigured.item_id, {"guess": True})
 
@@ -181,14 +179,7 @@ def _state_cff_draft(service: RecipeService):
         configs=tuple(
             dataclasses.replace(
                 registry.config_template_for(pass_id),
-                options={
-                    "legacy_rule": "StateMachineCffUnflattener",
-                    "legacy_rule_options": {
-                        "min_state_constant": 0x1000000,
-                        "profile": "hodur",
-                    },
-                    "native_pipeline": list(STATE_MACHINE_NATIVE_PASS_IDS),
-                },
+                options={"min_state_constant": 0x1000000},
             )
             for pass_id in STATE_MACHINE_NATIVE_PASS_IDS
         ),
@@ -205,13 +196,12 @@ def test_state_cff_override_replaces_the_complete_spine_atomically() -> None:
     )
 
     assert updated.revision == original.revision + 1
-    assert tuple(item.pass_id for item in updated.passes) == STATE_MACHINE_NATIVE_PASS_IDS
+    assert (
+        tuple(item.pass_id for item in updated.passes) == STATE_MACHINE_NATIVE_PASS_IDS
+    )
     for item in updated.passes:
         options = json.loads(item.config_json)["options"]
-        assert options["legacy_rule_options"] == {
-            "min_state_constant": 0x8000,
-            "profile": "hodur",
-        }
+        assert options == {"min_state_constant": 0x8000}
 
 
 @pytest.mark.parametrize("mutation", ("missing", "duplicate", "reordered"))
@@ -327,10 +317,7 @@ def test_validation_blocks_tampered_unknown_and_invalid_config_payloads() -> Non
         passes=(
             dataclasses.replace(
                 jump,
-                config_json=(
-                    '{"pass_id":"jump-fixer",'
-                    '"options":{"legacy_rule":"WrongTransform"}}'
-                ),
+                config_json='{"pass_id":"jump-fixer","unknown":true}',
             ),
         ),
     )

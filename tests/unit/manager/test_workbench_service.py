@@ -17,7 +17,6 @@ from d810.manager.project_runtime import (
     ProjectConfigMode,
     ProjectIdentitySnapshot,
     ProjectRuntimeSnapshot,
-    RuleProjectionKind,
 )
 from d810.manager.workbench_models import (
     OutcomeStatus,
@@ -179,9 +178,6 @@ def _project_context(
         routed=True,
         hook_mode="config-v2",
         effective_pass_ids=("first", "second"),
-        effective_instruction_rule_names=("ProjectInstructionRule",),
-        effective_block_rule_names=("ProjectBlockRule",),
-        rule_projection=RuleProjectionKind.RUNTIME_EXPANSION,
     )
     runtime_project = ProjectConfiguration(
         path=runtime_path,
