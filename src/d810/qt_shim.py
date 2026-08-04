@@ -60,6 +60,7 @@ def _is_ida_gui_available() -> bool:
 
 # Skip Qt imports entirely if not in GUI mode
 _QT_AVAILABLE = _is_ida_gui_available()
+QT_GRAPHICS_AVAILABLE = False
 
 
 # Version detection constants (similar to six.PY2, six.PY3)
@@ -603,6 +604,9 @@ else:
         QT5 = False
         QT6 = True
         _QT_MODULE = "PySide6"
+        QT_GRAPHICS_AVAILABLE = all(
+            hasattr(QtWidgets, name) for name in ("QGraphicsScene", "QGraphicsView")
+        )
 
         # Pre-combined TextInteractionFlag for text selection (PySide6)
         TEXT_SELECTABLE = QtCore.Qt.TextInteractionFlag(
@@ -670,6 +674,10 @@ else:
             QT5 = True
             QT6 = False
             _QT_MODULE = "PyQt5"
+            QT_GRAPHICS_AVAILABLE = all(
+                hasattr(QtWidgets, name)
+                for name in ("QGraphicsScene", "QGraphicsView")
+            )
 
             # Pre-combined TextInteractionFlag for text selection (PyQt5)
             TEXT_SELECTABLE = (
@@ -896,6 +904,7 @@ __all__ = [
     "QT6",
     "QT_VERSION",
     "QT_BINDING",
+    "QT_GRAPHICS_AVAILABLE",
     # Qt modules (for module-style imports)
     "QtCore",
     "QtGui",

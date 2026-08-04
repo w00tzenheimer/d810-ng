@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import ast
+import importlib
+import sys
+import types
 from pathlib import Path
 
 
@@ -208,3 +211,28 @@ def test_panel_exposes_a_persisted_diagnostics_capture_action_and_state() -> Non
     assert "self._render_capture_state" in source
     assert "self._enable_capture" in source
     assert "Enable capture" not in create_source
+
+
+def test_panel_imports_when_idalib_exposes_ida_kernwin_but_qt_is_headless(
+    monkeypatch,
+) -> None:
+    monkeypatch.setitem(
+        sys.modules,
+        "ida_kernwin",
+        types.SimpleNamespace(PluginForm=type("PluginForm", (), {})),
+    )
+    sys.modules.pop("d810.ui.workbench_diagnostics_panel", None)
+
+    try:
+        panel = importlib.import_module("d810.ui.workbench_diagnostics_panel")
+
+        assert panel.IDA_AVAILABLE is True
+    finally:
+        sys.modules.pop("d810.ui.workbench_diagnostics_panel", None)
+
+
+def test_panel_source_guards_qt_worker_declarations_with_gui_graphics_support() -> None:
+    source = PANEL.read_text(encoding="utf-8")
+
+    assert "QT_GRAPHICS_AVAILABLE" in source
+    assert "if IDA_AVAILABLE and QT_GRAPHICS_AVAILABLE:" in source

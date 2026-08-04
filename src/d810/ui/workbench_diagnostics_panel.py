@@ -43,7 +43,7 @@ except ImportError:
 
 
 if IDA_AVAILABLE:
-    from d810.qt_shim import QtCore, QtGui, QtWidgets
+    from d810.qt_shim import QT_GRAPHICS_AVAILABLE, QtCore, QtGui, QtWidgets
 
     WOPN_NOT_CLOSED_BY_ESC = getattr(ida_kernwin, "WOPN_NOT_CLOSED_BY_ESC", 0x100)
 
@@ -105,6 +105,7 @@ if IDA_AVAILABLE:
             size /= 1024.0
         return f"{value} B"
 
+if IDA_AVAILABLE and QT_GRAPHICS_AVAILABLE:
     _Signal = getattr(QtCore, "Signal", getattr(QtCore, "pyqtSignal", None))
 
     class _InventorySignals(QtCore.QObject):
@@ -125,6 +126,19 @@ if IDA_AVAILABLE:
                 values = ()
                 error = str(exc)
             self.signals.completed.emit(self._generation, values, error)
+
+elif IDA_AVAILABLE:
+
+    class _InventorySignals:
+        pass
+
+    class _InventoryWorker:
+        def __init__(self, adapter: typing.Any, generation: int) -> None:
+            del adapter, generation
+            self.signals = _InventorySignals()
+
+
+if IDA_AVAILABLE:
 
     class WorkbenchDiagnosticsPanel(ida_kernwin.PluginForm):
         """Read-only explorer with separately planned destructive actions."""

@@ -30,3 +30,7 @@ def test_pyqt5_branch_imports_qpixmap_from_qtgui() -> None:
 
     assert "QPixmap," in pyqt5_gui_imports
     assert "QPixmap," not in pyqt5_widget_imports
+
+
+def test_headless_shim_reports_graphics_unavailable() -> None:
+    assert qt_shim.QT_GRAPHICS_AVAILABLE is False
