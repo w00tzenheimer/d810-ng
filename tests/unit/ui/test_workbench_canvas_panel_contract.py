@@ -96,6 +96,7 @@ def test_canvas_panel_uses_popup_then_preserves_renderer_add_intent() -> None:
     assert "_show_add_palette" in source
     assert "renderer.request_add_pass(stage_id, pass_id)" in source
     assert "_show_add_menu" not in source
+    assert "palette.dispose()" in source
     assert "IDA_AVAILABLE and QT_GRAPHICS_AVAILABLE" in source
 
 

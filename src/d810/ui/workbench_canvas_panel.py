@@ -171,6 +171,10 @@ if IDA_AVAILABLE and QT_GRAPHICS_AVAILABLE:
 
         def OnClose(self, form: typing.Any) -> None:
             del form
+            palette = self._add_palette
+            self._add_palette = None
+            if palette is not None:
+                palette.dispose()
             self._closed = True
             self.parent = None
 

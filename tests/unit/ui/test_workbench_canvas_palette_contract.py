@@ -22,6 +22,8 @@ def test_canvas_picker_popup_keeps_filtered_rows_inside_the_popup() -> None:
 def test_canvas_picker_popup_selects_by_visible_row_identity() -> None:
     source = POPUP.read_text(encoding="utf-8")
 
-    assert "self._visible_rows[row].pass_id" in source
-    assert "self._on_pass_selected(self._stage_id, pass_id)" in source
+    assert "self._selection.take(self._visible_rows, row)" in source
+    assert "callback(self._stage_id, pass_id)" in source
+    assert "self._selection.reset()" in source
+    assert "def dispose(self)" in source
     assert "IDA_AVAILABLE and QT_GRAPHICS_AVAILABLE" in source

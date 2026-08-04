@@ -10,7 +10,11 @@ from d810.manager.workbench_recipe_models import (
     PipelineRecipeDraft,
     RecipePass,
 )
-from d810.ui.workbench_canvas_palette_logic import project_canvas_add_palette
+from d810.ui.workbench_canvas_palette_logic import (
+    CanvasPaletteRow,
+    CanvasPaletteSelection,
+    project_canvas_add_palette,
+)
 from d810.ui.workbench_recipe_logic import CanvasAddError
 
 
@@ -142,3 +146,27 @@ def test_palette_empty_query_preserves_legal_candidate_order(
             "",
         )
     ] == ["recover-dispatcher", "second-local-pass"]
+
+
+def test_palette_selection_commits_one_visible_row_then_resets_for_reuse() -> None:
+    selection = CanvasPaletteSelection()
+    rows = (
+        CanvasPaletteRow("second", "Second", "", ""),
+        CanvasPaletteRow("first", "First", "", ""),
+    )
+
+    assert selection.take(rows, 1) == "first"
+    assert selection.take(rows, 1) is None
+    assert selection.take(rows, 0) is None
+
+    selection.reset()
+
+    assert selection.take(rows, 0) == "second"
+
+
+def test_palette_selection_does_not_commit_an_invalid_visible_row() -> None:
+    selection = CanvasPaletteSelection()
+    rows = (CanvasPaletteRow("only", "Only", "", ""),)
+
+    assert selection.take(rows, 1) is None
+    assert selection.take(rows, 0) == "only"
