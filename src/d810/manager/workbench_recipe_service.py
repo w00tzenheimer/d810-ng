@@ -21,6 +21,11 @@ from d810.passes.contract_manifest import (
 from d810.passes.contract_preflight import preflight_pipeline_contract
 from d810.passes.pass_pipeline import PipelineConfig, PipelineConfigError
 from d810.passes.registry import PassRegistry, PassRegistryError, UnknownPassIdError
+from d810.passes.state_machine_options import (
+    STATE_MACHINE_NATIVE_PASS_IDS,
+    StateMachineCffOptions,
+    replace_state_machine_cff_options,
+)
 
 
 RECIPE_SCHEMA_VERSION = 1
@@ -282,6 +287,11 @@ class RecipeService:
     ) -> PipelineRecipeDraft:
         index = self._item_index(draft, item_id)
         item = draft.passes[index]
+        if item.pass_id in STATE_MACHINE_NATIVE_PASS_IDS:
+            raise RecipeEditError(
+                "state-CFF options are shared by the complete spine; use "
+                "replace_state_cff_options"
+            )
         template = self._registry.config_template_for(item.pass_id)
         current_payload = json.loads(item.config_json)
         current = PipelineConfig.from_dict(current_payload)
@@ -303,6 +313,49 @@ class RecipeService:
             item,
             config_json=_canonical_json(updated.to_dict()),
         )
+        return self._replace_passes(draft, passes)
+
+    def replace_state_cff_options(
+        self,
+        draft: PipelineRecipeDraft,
+        options: StateMachineCffOptions,
+    ) -> PipelineRecipeDraft:
+        """Replace one typed option across the complete canonical CFF spine."""
+        indexed = tuple(
+            (index, item)
+            for index, item in enumerate(draft.passes)
+            if item.pass_id in STATE_MACHINE_NATIVE_PASS_IDS
+        )
+        pass_ids = tuple(item.pass_id for _, item in indexed)
+        indexes = tuple(index for index, _ in indexed)
+        contiguous = bool(indexes) and indexes == tuple(
+            range(indexes[0], indexes[0] + len(indexes))
+        )
+        if pass_ids != STATE_MACHINE_NATIVE_PASS_IDS or not contiguous:
+            raise RecipeEditError(
+                "state-CFF option override requires the complete canonical "
+                "state-CFF spine"
+            )
+
+        passes = list(draft.passes)
+        for index, item in indexed:
+            current = PipelineConfig.from_dict(json.loads(item.config_json))
+            try:
+                updated = replace_state_machine_cff_options(current, options)
+                self._registry.build_spec(updated)
+            except (
+                PassRegistryError,
+                PipelineConfigError,
+                TypeError,
+                ValueError,
+            ) as exc:
+                raise RecipeEditError(
+                    f"invalid state-CFF options for {item.pass_id!r}: {exc}"
+                ) from exc
+            passes[index] = dataclasses.replace(
+                item,
+                config_json=_canonical_json(updated.to_dict()),
+            )
         return self._replace_passes(draft, passes)
 
     def validate(

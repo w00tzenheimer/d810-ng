@@ -6,7 +6,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 RULE_TREE = ROOT / "src" / "d810" / "ui" / "rule_tree.py"
-FUNCTION_RULES = ROOT / "src" / "d810" / "ui" / "actions" / "function_rules.py"
 
 
 def _source() -> str:
@@ -49,10 +48,3 @@ def test_context_menu_keeps_legacy_select_all_path_for_non_opt_in_callers() -> N
     assert "Deselect All" in source
     assert "if self._context_actions_enabled" in source
     assert "if self._read_only" in source
-
-
-def test_function_rule_dialog_does_not_opt_into_global_context_intents() -> None:
-    source = FUNCTION_RULES.read_text(encoding="utf-8")
-
-    assert "context_actions_enabled=True" not in source
-    assert "RuleTreeWidget(self)" in source

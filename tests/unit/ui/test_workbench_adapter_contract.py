@@ -85,11 +85,11 @@ def test_panel_accepts_command_adapter_and_dispatches_through_pure_freshness_log
     assert "refresh" in calls
 
 
-def test_panel_exposes_function_override_alongside_scoped_commands() -> None:
+def test_panel_exposes_recipe_without_private_rule_override() -> None:
     source = PANEL.read_text(encoding="utf-8")
 
-    assert '("function_override", "Function override")' in source
-    assert "self._run_command(action_id)" in source
+    assert '("recipe", "Recipe")' in source
+    assert "function_override" not in source
 
 
 def test_panel_dispatches_compare_through_pure_projection_and_owned_dialog() -> None:
@@ -162,7 +162,6 @@ def test_close_disconnects_only_buttons_that_have_connected_handlers() -> None:
     connected_action_ids = {
         "refresh",
         "export",
-        "function_override",
         "compare",
         "recipe",
         "diagnostics",

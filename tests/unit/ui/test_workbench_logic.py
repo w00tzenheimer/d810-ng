@@ -205,7 +205,7 @@ def test_current_started_snapshot_enables_scoped_slice_two_actions() -> None:
     assert states["export"].enabled is True
     assert states["analyze"].enabled is True
     assert states["deobfuscate"].enabled is True
-    assert states["function_override"].enabled is True
+    assert "function_override" not in states
     assert states["compare"].enabled is True
     assert states["recipe"].enabled is True
     assert states["recipe"].reason == ""
@@ -233,7 +233,7 @@ def test_stale_snapshot_marks_pipeline_consumers_and_disables_scoped_actions() -
     assert states["export"].enabled is True
     assert states["analyze"].enabled is False
     assert states["deobfuscate"].enabled is False
-    assert states["function_override"].enabled is False
+    assert "function_override" not in states
     assert states["compare"].enabled is False
 
 

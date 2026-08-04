@@ -16,6 +16,7 @@ from d810.passes.registry import (
     PassRegistry,
     UnknownPassIdError,
 )
+from d810.passes.state_machine_options import StateMachineCffOptions
 
 
 class _FakePass:
@@ -76,6 +77,33 @@ def test_state_machine_pass_ids_resolve_to_pass_specs():
     ]
     for spec in rebuilt_specs:
         assert spec.pass_factory().name == spec.pass_id
+
+
+def test_state_machine_registry_builds_typed_threshold_into_recovery_pass():
+    registry = state_machine_pass_registry()
+    template = registry.config_template_for("recover_dispatcher")
+
+    spec = registry.build_spec(
+        PipelineConfig(
+            pass_id="recover_dispatcher",
+            maturity_gates=template.maturity_gates,
+            granularity=template.granularity,
+            requirements=template.requirements,
+            analyses=template.analyses,
+            preservation=template.preservation,
+            scheduler_policy=template.scheduler_policy,
+            backend_route=template.backend_route,
+            safety_policy=template.safety_policy,
+            contract=template.contract,
+            workflow_stage=template.workflow_stage,
+            options={"min_state_constant": 0x8000},
+        )
+    )
+
+    recovery_pass = spec.pass_factory()
+    assert recovery_pass.options == StateMachineCffOptions(
+        min_state_constant=0x8000
+    )
 
 
 def test_registry_build_spec_preserves_native_pass_contract():

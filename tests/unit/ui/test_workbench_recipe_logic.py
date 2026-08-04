@@ -22,6 +22,17 @@ from d810.manager.workbench_recipe_models import (
 from d810.ui import workbench_recipe_logic as logic
 
 
+def test_state_cff_minimum_constant_parser_accepts_hex_and_rejects_non_integer() -> None:
+    assert logic.parse_state_cff_minimum_constant("0x8000").min_state_constant == 0x8000
+
+    try:
+        logic.parse_state_cff_minimum_constant("12.5")
+    except ValueError as exc:
+        assert "integer" in str(exc)
+    else:
+        raise AssertionError("non-integer state-CFF threshold was accepted")
+
+
 def _catalog() -> tuple[PassCatalogEntry, ...]:
     return (
         PassCatalogEntry(

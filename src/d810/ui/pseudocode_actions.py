@@ -14,7 +14,6 @@ from d810.core.logging import getLogger
 from d810.ui.actions.decompile_function import DecompileFunction
 from d810.ui.actions.deobfuscate_this import DeobfuscateThisFunction
 from d810.ui.actions.deobfuscation_stats import DeobfuscationStats
-from d810.ui.actions.function_rules import FunctionRules
 from d810.ui.actions.mark_deobfuscated import MarkDeobfuscated
 
 # Deprecated: Use d810.ui.actions_logic directly
@@ -31,7 +30,6 @@ logger = getLogger("D810.ui")
 ALL_ACTIONS: list[typing.Any] = [
     DeobfuscateThisFunction,
     DeobfuscationStats,
-    FunctionRules,
     MarkDeobfuscated,
 ]
 
@@ -43,7 +41,6 @@ __all__ = [
     "DecompileFunction",
     "DeobfuscateThisFunction",
     "DeobfuscationStats",
-    "FunctionRules",
     "MarkDeobfuscated",
     "check_plugin_state",
     "format_stats_for_display",

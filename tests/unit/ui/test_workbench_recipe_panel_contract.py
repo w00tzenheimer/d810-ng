@@ -79,6 +79,7 @@ def test_recipe_panel_forwards_all_draft_operations_to_command_adapter() -> None
         "set_enabled",
         "reorder_pass",
         "replace_options",
+        "replace_state_cff_options",
         "reset",
         "analyze",
         "apply_once",
@@ -102,6 +103,14 @@ def test_recipe_panel_forwards_all_draft_operations_to_command_adapter() -> None
     )
 
     assert expected.issubset(calls)
+
+
+def test_state_cff_options_use_the_atomic_typed_editor_path() -> None:
+    source = ast.unparse(_method("_edit_options"))
+
+    assert "STATE_MACHINE_NATIVE_PASS_IDS" in source
+    assert "parse_state_cff_minimum_constant" in source
+    assert "replace_state_cff_options" in source
 
 
 def test_project_profile_save_dispatches_to_owned_config_v2_editor_callback() -> None:

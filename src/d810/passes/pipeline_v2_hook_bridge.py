@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from d810.core.config import ProjectConfiguration, RuleConfiguration
+from d810.core.config import RuleConfiguration
 from d810.passes.cleanup_family_adapter import (
     SIMPLE_FLATTENING_CLEANUP_PASS_ID,
     build_cleanup_family_adapter_pass,
@@ -28,12 +28,12 @@ from d810.passes.pipeline_config_parser import (
     pipeline_configs_from_project_config,
     pipeline_v2_mode_from_project_config,
 )
-from d810.passes.state_machine_spine import standard_state_machine_passes
+from d810.passes.state_machine_options import (
+    STATE_MACHINE_NATIVE_PASS_IDS,
+    state_machine_cff_options_from_config,
+)
 
 STATE_MACHINE_UNFLATTENER_RULE = "StateMachineCffUnflattener"
-STATE_MACHINE_NATIVE_PASS_IDS = tuple(
-    spec.pass_id for spec in standard_state_machine_passes()
-)
 
 
 @dataclass(frozen=True)
@@ -75,9 +75,18 @@ def _state_machine_rule_config(
         )
 
     options_payloads: list[dict[str, object]] = []
+    direct_thresholds: list[int] = []
+    option_shapes: set[str] = set()
     for config in native_configs:
         options = dict(config.options)
         legacy_rule = options.get("legacy_rule")
+        if legacy_rule is None:
+            option_shapes.add("typed")
+            direct_thresholds.append(
+                state_machine_cff_options_from_config(config).min_state_constant
+            )
+            continue
+        option_shapes.add("migrated")
         if legacy_rule != STATE_MACHINE_UNFLATTENER_RULE:
             raise PipelineConfigError(
                 "state-machine native spine entries must preserve "
@@ -96,6 +105,21 @@ def _state_machine_rule_config(
                 "options.legacy_rule_options"
             )
         options_payloads.append(dict(legacy_options))
+
+    if len(option_shapes) != 1:
+        raise PipelineConfigError(
+            "state-machine native spine cannot mix typed and migrated options"
+        )
+    if option_shapes == {"typed"}:
+        first_threshold = direct_thresholds[0]
+        if any(value != first_threshold for value in direct_thresholds[1:]):
+            raise PipelineConfigError(
+                "state-machine native spine entries disagree on typed options"
+            )
+        return _rule_config(
+            STATE_MACHINE_UNFLATTENER_RULE,
+            {"min_state_constant": first_threshold},
+        )
 
     first = options_payloads[0]
     if any(payload != first for payload in options_payloads[1:]):

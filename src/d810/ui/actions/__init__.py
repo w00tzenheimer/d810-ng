@@ -38,7 +38,6 @@ _BUILTIN_ACTION_MODULES = (
     "export_microcode",
     "export_to_c",
     "force_analyze",
-    "function_rules",
     "mark_deobfuscated",
     "term_d810ng",
     "reload_d810ng",

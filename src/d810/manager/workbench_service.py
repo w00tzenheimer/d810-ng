@@ -382,20 +382,6 @@ class WorkbenchService:
             lifecycle=lifecycle,
         )
 
-    def execute_function_override(
-        self,
-        request: WorkbenchCommandRequest,
-        *,
-        lifecycle: Callable[[], bool],
-    ) -> WorkbenchCommandResult:
-        """Invoke the established function-rule dialog lifecycle exactly once."""
-        return self._execute_lifecycle(
-            request,
-            expected_command="function_override",
-            label="Function override",
-            lifecycle=lifecycle,
-        )
-
     def _execute_lifecycle(
         self,
         request: WorkbenchCommandRequest,

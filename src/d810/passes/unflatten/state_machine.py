@@ -24,6 +24,7 @@ from d810.passes.pass_pipeline import (
     PreservedAnalyses,
     PipelinePass,
 )
+from d810.passes.state_machine_options import StateMachineCffOptions
 
 # --- WORK-LIST: portable extractions composed by the passes ---
 from d810.analyses.control_flow.dispatcher_recovery import (
@@ -527,11 +528,18 @@ def _materialized_dispatcher_recovery(
 class RecoverDispatcher(PipelinePass):
     name = "recover_dispatcher"
 
+    def __init__(self, options: StateMachineCffOptions | None = None) -> None:
+        self.options = options
+
     def run(self, context: FunctionPipelineContext) -> PassResult:
         # Thread the project config's min_state_constant so recovery uses the SAME
         # threshold the family's detect did (detect/recover divergence is a known bug
         # class). Defaults to the module MIN_STATE_CONSTANT when absent.
-        min_state_constant = min_state_constant_from_config(context.project_config)
+        min_state_constant = (
+            self.options.min_state_constant
+            if self.options is not None
+            else min_state_constant_from_config(context.project_config)
+        )
         # Opt-in reduced-product engine (ticket llr-1d8u): when the project config
         # sets ``recovery_engine == "reduced_product"`` route dispatcher recovery
         # through the multi-engine orchestrator (sound AI spine + fold_exact-gated

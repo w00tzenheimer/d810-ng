@@ -24,7 +24,6 @@ class TestActionMigration:
         expected_actions = {
             "d810ng:deobfuscate_this",
             "d810ng:deobfuscation_stats",
-            "d810ng:function_rules",
             "d810ng:mark_deobfuscated",
             "d810ng:decompile_function",
             "d810ng:export_microcode",
@@ -42,6 +41,7 @@ class TestActionMigration:
             assert action_id in registered_actions, (
                 f"Action {action_id} not found in registry"
             )
+        assert "d810ng:function_rules" not in registered_actions
 
     def test_pseudocode_actions_count(self):
         """7 actions should support pseudocode view."""
@@ -67,7 +67,6 @@ class TestActionMigration:
         migrated_action_names = {
             "DeobfuscateThisFunction",
             "DeobfuscationStats",
-            "FunctionRules",
             "MarkDeobfuscated",
             "DecompileFunction",
             "ExportMicrocode",
@@ -86,7 +85,6 @@ class TestActionMigration:
         migrated_action_names = {
             "DeobfuscateThisFunction",
             "DeobfuscationStats",
-            "FunctionRules",
             "MarkDeobfuscated",
             "DecompileFunction",
             "ExportMicrocode",
@@ -105,11 +103,15 @@ class TestActionMigration:
         """Legacy ALL_ACTIONS list should still work."""
         from d810.ui.pseudocode_actions import ALL_ACTIONS
 
-        assert len(ALL_ACTIONS) == 4
+        assert len(ALL_ACTIONS) == 3
         # All should have ACTION_ID
         for action_cls in ALL_ACTIONS:
             assert hasattr(action_cls, "ACTION_ID")
             assert action_cls.ACTION_ID
+
+        assert all(
+            action_cls.__name__ != "FunctionRules" for action_cls in ALL_ACTIONS
+        )
 
     def test_backward_compat_disasm_actions_list(self):
         """Legacy DISASM_ACTIONS list should still work."""

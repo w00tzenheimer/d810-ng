@@ -8,6 +8,8 @@ This module owns the canonical 5-tuple — the DRY source consumed by the family
 
 from __future__ import annotations
 
+import dataclasses
+
 from d810.core.deobfuscation_case import StrategyWorkflowStage
 from d810.passes.pass_pipeline import (
     AnalysisContract,
@@ -27,6 +29,10 @@ from d810.passes.pass_pipeline import (
     no_caps,
 )
 from d810.passes.registry import PassRegistry
+from d810.passes.state_machine_options import (
+    StateMachineCffOptions,
+    state_machine_cff_options_from_config,
+)
 from d810.ir.maturity import IRMaturity
 from d810.passes.unflatten.state_machine import (
     BOUND_CANONICAL_SEMANTIC_EVIDENCE,
@@ -237,10 +243,21 @@ def state_machine_pass_spec(
 def register_state_machine_passes(registry: PassRegistry) -> PassRegistry:
     """Register the canonical state-machine CFF pass factories."""
     for spec in standard_state_machine_passes():
-        registry.register(
+        def build(config, *, factory=spec.pass_factory):
+            options = state_machine_cff_options_from_config(config)
+            if factory is RecoverDispatcher:
+                return factory(options=options)
+            return factory()
+
+        registry.register_configured(
             spec.pass_id,
-            spec.pass_factory,
-            config_template=spec.config,
+            build,
+            config_template=dataclasses.replace(
+                spec.config,
+                options={
+                    "min_state_constant": StateMachineCffOptions().min_state_constant
+                },
+            ),
             transforms=(spec.pass_factory.__name__,),
         )
     return registry

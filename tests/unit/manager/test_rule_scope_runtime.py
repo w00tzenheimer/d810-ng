@@ -121,6 +121,16 @@ def test_initialize_storage_loads_persisted_inference_and_emits_events(tmp_path)
     assert reloaded[0].reason == RuleScopeEvent.IDB_OVERLAY_RELOADED
 
 
+def test_initialize_storage_defaults_to_idb_local_netnode() -> None:
+    storage = _FakeStorage()
+    targets: list[tuple[object, str]] = []
+    runtime = _build_runtime(storage, targets=targets)
+
+    runtime.initialize_storage()
+
+    assert targets == [("$ d810.optimization_storage", "netnode")]
+
+
 def test_set_function_rules_and_tags_emit_function_invalidations():
     storage = _FakeStorage()
     runtime = _build_runtime(storage)

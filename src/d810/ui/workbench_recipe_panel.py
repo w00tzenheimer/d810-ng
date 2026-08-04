@@ -7,12 +7,15 @@ import json
 from d810.core import typing
 from d810.core.logging import getLogger
 from d810.ui.workbench_recipe_logic import (
+    STATE_MACHINE_NATIVE_PASS_IDS,
     enables_dangerous_executable_readonly,
+    parse_state_cff_minimum_constant,
     project_catalog_rows,
     project_draft_rows,
     project_recipe_strategy,
     recipe_action_states,
     should_accept_recipe_result,
+    state_cff_minimum_constant_from_config_json,
 )
 
 logger = getLogger("D810.ui")
@@ -397,6 +400,30 @@ if IDA_AVAILABLE:
             item_id = self._selected_draft_item_id()
             row = self._draft_by_item.get(item_id or "")
             if row is None:
+                return
+            if row.pass_id in STATE_MACHINE_NATIVE_PASS_IDS:
+                current_threshold = state_cff_minimum_constant_from_config_json(
+                    row.config_json
+                )
+                text, accepted = QtWidgets.QInputDialog.getText(
+                    self.parent,
+                    "State CFF minimum constant",
+                    "Minimum accepted state value (decimal or 0x-prefixed):",
+                    text=f"0x{current_threshold:X}",
+                )
+                if not accepted:
+                    return
+                try:
+                    options = parse_state_cff_minimum_constant(str(text))
+                except ValueError as exc:
+                    self.detail.setPlainText(f"Invalid state-CFF options: {exc}")
+                    return
+                self._apply_edit(
+                    lambda: self._adapter.replace_state_cff_options(
+                        self._draft,
+                        options.min_state_constant,
+                    )
+                )
                 return
             current = json.loads(row.config_json).get("options", {})
             text, accepted = QtWidgets.QInputDialog.getMultiLineText(
