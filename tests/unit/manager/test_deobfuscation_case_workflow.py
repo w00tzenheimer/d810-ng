@@ -54,7 +54,11 @@ def _evidence(
                 kind=finding_kind,
                 summary="Recorded evidence.",
                 detail="",
-                native_ea=(0x1800020F0 if finding_kind is not CaseFindingKind.OBSERVATION else None),
+                native_ea=(
+                    0x1800020F0
+                    if finding_kind is not CaseFindingKind.OBSERVATION
+                    else None
+                ),
                 confidence=1.0,
                 provenance=("run:fixture",),
             ),
@@ -105,7 +109,7 @@ def _snapshot(
         ),
         pipeline=(),
         consumers=(),
-        rule_scope=RuleScopeSummary((), (), (), (), (), "", None, (), (), False),
+        rule_scope=RuleScopeSummary((), (), (), (), ()),
         statistics=StatisticsSummary((), (), (), 0, (), 0),
         baseline=BaselineRef(False, None, None, None),
         latest_output=D810OutputRef(False, None, None, None),
@@ -174,7 +178,9 @@ def test_validated_recommendation_makes_deobfuscate_function_available() -> None
 
 def test_c5_receipt_names_publication_without_claiming_semantic_success() -> None:
     view = project_case_workflow(
-        _snapshot(case=_case(evidence=_evidence(level=CaseEvidenceLevel.C5_PUBLICATION)))
+        _snapshot(
+            case=_case(evidence=_evidence(level=CaseEvidenceLevel.C5_PUBLICATION))
+        )
     )
 
     assert view.verdict.label == "Publication receipt committed."
@@ -227,7 +233,9 @@ def test_running_commands_name_the_correct_non_mutating_or_direct_phase() -> Non
     assert direct.primary.enabled is False
 
 
-def test_running_command_remains_readable_while_the_panel_marks_its_snapshot_stale() -> None:
+def test_running_command_remains_readable_while_the_panel_marks_its_snapshot_stale() -> (
+    None
+):
     view = project_case_workflow(
         _snapshot(
             case=_case(evidence=_evidence()),
@@ -244,7 +252,9 @@ def test_running_command_remains_readable_while_the_panel_marks_its_snapshot_sta
 def test_rejected_case_surfaces_the_first_blocked_obligation() -> None:
     snapshot = _snapshot(
         case=_case(
-            evidence=_evidence(blocked="Validate predicate and both destinations first."),
+            evidence=_evidence(
+                blocked="Validate predicate and both destinations first."
+            ),
         )
     )
 
@@ -272,7 +282,9 @@ def test_c6_requires_its_existing_witness_to_name_semantic_verification() -> Non
     assert "verified-output:fixture" in view.verdict.detail
 
 
-def test_saved_recipe_can_enable_direct_run_without_an_automatic_recommendation() -> None:
+def test_saved_recipe_can_enable_direct_run_without_an_automatic_recommendation() -> (
+    None
+):
     snapshot = _snapshot(
         case=_case(
             evidence=_evidence(),

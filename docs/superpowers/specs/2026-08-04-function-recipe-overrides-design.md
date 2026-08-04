@@ -10,8 +10,8 @@ state-machine CFF unflattener.
 ## Public model
 
 The public unit is a registered pass recipe, never a private optimizer rule.
-The workbench Recipe Composer remains the authoring surface and "Save for this
-function" remains the persistence action. The old Function Rules dialog and
+The workbench Recipe Composer remains the authoring surface and "Save for
+Deobfuscate This" is the persistence action. The old Function Rules dialog and
 the statistics panel actions that save or infer private fired-rule sets are
 removed from user-facing registration.
 
@@ -36,20 +36,23 @@ selection.
 
 ## Persistence
 
-Function recipes and internal rule-scope state share the optimization storage
-port, but the default live-IDA backend changes from a SQLite file inside the
-erasable log directory to an IDB-local netnode. Explicit `sqlite` configuration
-continues to work for offline tests and users who deliberately select it. This
-makes the default architecture portable across IDA on macOS, Linux, and Windows
-and prevents `erase_logs_on_reload` from deleting saved function recipes.
+Function recipes and scoped tags share the optimization storage port, but the
+default live-IDA backend changes from a SQLite file inside the erasable log
+directory to an IDB-local netnode. Explicit `sqlite` configuration continues to
+work for offline tests and users who deliberately select it. Both backends key
+records by database identity, project name, and function EA. This makes the
+default architecture portable across IDA on macOS, Linux, and Windows and
+prevents `erase_logs_on_reload` from deleting saved function recipes.
 
 ## Compatibility boundary
 
-The internal `RuleScopeService`, inference records, tags, and manager APIs stay
-available for runtime policy and compatibility. They are no longer advertised
-as operator controls. Existing saved function recipes continue to be checked
-against function fingerprint, source project path, runtime project path, and
-registered pass validation before activation.
+The internal `RuleScopeService`, tags, project selectors, and ephemeral
+analysis suppressions stay available as runtime policy. Durable private-rule
+records, manager mutation APIs, and persisted active inference are removed.
+Saved function recipes are checked against function fingerprint, source project
+path, runtime project path, and registered pass validation before activation.
+Ordinary F5 uses project runtime; saved recipes execute through `Deobfuscate
+This` only.
 
 ## Verification
 

@@ -4,7 +4,6 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from d810.core import logging
 from d810.core.rule_scope import (
     PIPELINE_INSTRUCTION,
     ApplyHintsResult,
@@ -12,9 +11,7 @@ from d810.core.rule_scope import (
     HintOverlayProvider,
     InferenceFactory,
     RuleDelta,
-    RuleInferenceOverlay,
     RuleScopeService,
-    logger,
 )
 
 # ---------------------------------------------------------------------------
@@ -158,20 +155,17 @@ class TestHintOverlayProvider:
         prov.suppress_rules(0x1000, frozenset({"BadRule"}))
         overlay = prov(0x1000)
         assert overlay is not None
-        assert "BadRule" in overlay.disabled_rules
-        assert overlay.enabled_rules == frozenset()
+        assert prov.get_suppressions(0x1000) == frozenset({"BadRule"})
 
-    def test_suppress_rules_merges_with_delegate(self) -> None:
-        delegate = lambda ea: FunctionRuleOverlay(
-            disabled_rules=frozenset({"DelegateRule"}),
-            function_tags=frozenset({"tag1"}),
-        )
+    def test_suppress_rules_preserves_delegate_tags(self) -> None:
+        def delegate(ea):
+            return FunctionRuleOverlay(function_tags=frozenset({"tag1"}))
+
         prov = HintOverlayProvider(delegate=delegate)
         prov.suppress_rules(0x1000, frozenset({"HintRule"}))
         overlay = prov(0x1000)
         assert overlay is not None
-        assert "DelegateRule" in overlay.disabled_rules
-        assert "HintRule" in overlay.disabled_rules
+        assert prov.get_suppressions(0x1000) == frozenset({"HintRule"})
         assert "tag1" in overlay.function_tags
 
     def test_has_suppressions(self) -> None:
@@ -202,24 +196,26 @@ class TestHintOverlayProvider:
         prov.suppress_rules(0x1000, frozenset({"B"}))
         overlay = prov(0x1000)
         assert overlay is not None
-        assert overlay.disabled_rules == frozenset({"A", "B"})
+        assert prov.get_suppressions(0x1000) == frozenset({"A", "B"})
 
     def test_delegate_property(self) -> None:
-        d = lambda ea: None
+        def d(ea):
+            return None
+
         prov = HintOverlayProvider(delegate=d)
         assert prov.delegate is d
 
     def test_unaffected_function_passes_delegate_through(self) -> None:
-        delegate = lambda ea: FunctionRuleOverlay(
-            enabled_rules=frozenset({"R1"}),
-        )
+        def delegate(ea):
+            return FunctionRuleOverlay(function_tags=frozenset({"flat"}))
+
         prov = HintOverlayProvider(delegate=delegate)
         prov.suppress_rules(0x2000, frozenset({"X"}))
         # 0x1000 has no suppressions -> delegate result only
         overlay = prov(0x1000)
         assert overlay is not None
-        assert overlay.enabled_rules == frozenset({"R1"})
-        assert overlay.disabled_rules == frozenset()
+        assert overlay.function_tags == frozenset({"flat"})
+        assert prov.get_suppressions(0x1000) == frozenset()
 
 
 # ---------------------------------------------------------------------------
@@ -307,7 +303,9 @@ class TestApplyHints:
         assert result.generation_before == gen_before
         assert result.generation_after == gen_before  # no change
 
-    def test_inference_applied_activates_inference(self) -> None:
+    def test_inference_activation_is_observable_but_not_an_exclusive_allowlist(
+        self,
+    ) -> None:
         svc = _make_service_with_rules(
             _DummyRule(name="R1", maturities=[1]),
             _DummyRule(name="R2", maturities=[1]),
@@ -321,9 +319,9 @@ class TestApplyHints:
         assert result.cache_invalidated
         assert result.generation_after > result.generation_before
 
-        # The inference should filter rules for func_ea 0x1000
+        # Activation cannot expand or narrow the configured project rule set.
         active = _active_names(svc, 0x1000)
-        assert active == ("R2",)
+        assert active == ("R1", "R2")
 
     def test_inference_not_found(self) -> None:
         svc = _make_service_with_rules(_DummyRule(name="R1", maturities=[1]))
@@ -404,31 +402,30 @@ class TestApplyHints:
 
         assert result.inferences_applied == ("enable_r1_r2",)
         assert result.rules_suppressed == ("R2",)
-        # Inference allows R1 and R2; suppress removes R2 -> only R1
-        assert _active_names(svc, 0x1000) == ("R1",)
+        # Only suppressions filter the configured project rule set.
+        assert _active_names(svc, 0x1000) == ("R1", "R3")
 
-    def test_hint_overlay_composes_with_existing_provider(self) -> None:
+    def test_hint_overlay_composes_with_existing_tag_provider(self) -> None:
         svc = _make_service_with_rules(
             _DummyRule(name="RuleA", maturities=[1]),
             _DummyRule(name="RuleB", maturities=[1]),
             _DummyRule(name="RuleC", maturities=[1]),
         )
-        # Pre-existing overlay disables RuleA for 0x1000
+        # Pre-existing overlay contributes tags only.
         svc.set_overlay_provider(
             lambda ea: (
-                FunctionRuleOverlay(disabled_rules=frozenset({"RuleA"}))
+                FunctionRuleOverlay(function_tags=frozenset({"flat"}))
                 if ea == 0x1000
                 else None
             )
         )
-        assert _active_names(svc, 0x1000) == ("RuleB", "RuleC")
+        assert _active_names(svc, 0x1000) == ("RuleA", "RuleB", "RuleC")
 
         # Hints additionally suppress RuleB
         hints = _DummyHints(func_ea=0x1000, suppress_rules=("RuleB",))
         svc.apply_hints(hints)
 
-        # Both delegate disable (RuleA) and hint suppress (RuleB) active
-        assert _active_names(svc, 0x1000) == ("RuleC",)
+        assert _active_names(svc, 0x1000) == ("RuleA", "RuleC")
 
     def test_multiple_apply_hints_replaces_suppressions(self) -> None:
         """Second apply_hints replaces (not accumulates) suppressions."""
@@ -485,8 +482,7 @@ class TestApplyHints:
         active = _active_names(svc, 0x1000)
         assert "R1" in active, f"R1 missing from active rules: {active}"
         assert "R2" in active, f"R2 missing from active rules: {active}"
-        # R3 is NOT in any inference's enabled_rules, so it should be blocked
-        assert "R3" not in active, f"R3 should be blocked: {active}"
+        assert "R3" in active
 
     def test_apply_hints_different_functions_independent(self) -> None:
         """Hints for func_A must not clobber hints for func_B."""
@@ -512,15 +508,15 @@ class TestApplyHints:
             )
         )
 
-        # func_A should still have inference_for_a active (R1 only)
+        # Activations are observable but do not narrow configured rules.
         active_a = _active_names(svc, 0xA000)
         assert "R1" in active_a, f"func_A lost R1: {active_a}"
-        assert "R2" not in active_a, f"func_A should not have R2: {active_a}"
+        assert active_a == ("R1", "R2", "R3")
 
         # func_B should have inference_for_b active (R2 only)
         active_b = _active_names(svc, 0xB000)
         assert "R2" in active_b, f"func_B lost R2: {active_b}"
-        assert "R1" not in active_b, f"func_B should not have R1: {active_b}"
+        assert active_b == ("R1", "R2", "R3")
 
         # func_C (no hints) should have all rules (no inference filtering)
         active_c = _active_names(svc, 0xC000)
@@ -539,14 +535,13 @@ class TestApplyHints:
         svc.apply_hints(
             _DummyHints(func_ea=0x1000, recommended_inferences=("inference_a",))
         )
-        assert _active_names(svc, 0x1000) == ("R1",)
+        assert svc.get_hint_state_summary(0x1000)["inference_names"] == ["inference_a"]
 
         # Second call replaces -- only inference_b active now
         svc.apply_hints(
             _DummyHints(func_ea=0x1000, recommended_inferences=("inference_b",))
         )
-        active = _active_names(svc, 0x1000)
-        assert active == ("R2",), f"Expected only R2 after replace, got {active}"
+        assert svc.get_hint_state_summary(0x1000)["inference_names"] == ["inference_b"]
 
     def test_apply_hints_empty_clears_previous(self) -> None:
         """Applying empty hints for a function clears all previous hint state."""
@@ -559,7 +554,7 @@ class TestApplyHints:
         svc.apply_hints(
             _DummyHints(func_ea=0x1000, recommended_inferences=("only_r1",))
         )
-        assert _active_names(svc, 0x1000) == ("R1",)
+        assert svc.get_hint_state_summary(0x1000)["inference_names"] == ["only_r1"]
 
         # Apply empty hints -- should clear, restoring all rules
         svc.apply_hints(_DummyHints(func_ea=0x1000))
@@ -670,12 +665,11 @@ class TestGetHintStateSummary:
         summary = svc.get_hint_state_summary(0x1000)
         assert summary["generation"] == gen_before + 1
 
-    def test_summary_excludes_delegate_overlay_suppressions(self) -> None:
-        """Suppressions from delegate overlay must NOT appear in hint summary."""
+    def test_summary_excludes_delegate_tags(self) -> None:
+        """Tags from the durable delegate are not hint suppressions."""
         svc = RuleScopeService()
-        # Set a delegate that disables "BaseRule"
         svc.set_overlay_provider(
-            lambda ea: FunctionRuleOverlay(disabled_rules=frozenset({"BaseRule"}))
+            lambda ea: FunctionRuleOverlay(function_tags=frozenset({"flat"}))
         )
 
         # No hints applied -- summary should show empty suppressions
@@ -860,7 +854,7 @@ class TestInferenceConflictLogging:
         hints = _DummyHints(func_ea=0x1000, recommended_inferences=("test",))
         result = svc.apply_hints(hints)
 
-        assert len(result.user_overrides) == 0
+        assert len(result.selector_conflicts) == 0
 
     def test_activate_overridden_by_blacklist(
         self, caplog: pytest.LogCaptureFixture
@@ -883,9 +877,9 @@ class TestInferenceConflictLogging:
         hints = _DummyHints(func_ea=0x2000, recommended_inferences=("test",))
         result = svc.apply_hints(hints)
 
-        assert len(result.user_overrides) == 1
-        assert result.user_overrides[0][0].rule_name == "SomeRule"
-        assert result.user_overrides[0][1] == 0x2000
+        assert len(result.selector_conflicts) == 1
+        assert result.selector_conflicts[0][0].rule_name == "SomeRule"
+        assert result.selector_conflicts[0][1] == 0x2000
 
     def test_no_conflict_without_whitelist_or_blacklist(self) -> None:
         """No conflict logged when rule has no whitelist/blacklist."""
@@ -901,7 +895,7 @@ class TestInferenceConflictLogging:
         hints = _DummyHints(func_ea=0x1000, recommended_inferences=("test",))
         result = svc.apply_hints(hints)
 
-        assert len(result.user_overrides) == 0
+        assert len(result.selector_conflicts) == 0
 
     def test_suppress_applied_when_no_whitelist(self) -> None:
         """Without whitelist, suppress delta still disables the rule."""
@@ -916,6 +910,6 @@ class TestInferenceConflictLogging:
         hints = _DummyHints(func_ea=0x1000, recommended_inferences=("test",))
         result = svc.apply_hints(hints)
 
-        assert len(result.user_overrides) == 0
+        assert len(result.selector_conflicts) == 0
         active = _active_names(svc, 0x1000)
         assert "R1" not in active

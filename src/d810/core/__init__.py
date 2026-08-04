@@ -109,7 +109,7 @@ from .persistence import (
     create_optimization_storage,
     FunctionFingerprint,
     CachedResult,
-    FunctionRuleConfig,
+    FunctionStorageLocator,
 )
 
 # Statistics
@@ -246,6 +246,16 @@ __all__ = [
     "resolve_forward_ref",
     "lazy_type",
     "get_all_subclasses",
+    # descriptors
+    "CombineMeta",
+    "combine_meta",
+    "async_await",
+    "coroutine",
+    "timestamp",
+    "Thunk",
+    "Defer",
+    "TypeRef",
+    "DeferTypeRef",
     # singleton
     "SingletonMeta",
     "singleton",
@@ -262,7 +272,7 @@ __all__ = [
     "ProviderPhase",
     "ProviderPhaseSnapshot",
     "CachedResult",
-    "FunctionRuleConfig",
+    "FunctionStorageLocator",
     # stats
     "OptimizationStatistics",
     "OptimizationEvent",

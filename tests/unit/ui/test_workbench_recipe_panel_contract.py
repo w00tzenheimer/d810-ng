@@ -63,6 +63,7 @@ def test_recipe_panel_projects_catalog_draft_and_action_states_through_pure_logi
     assert "project_draft_rows" in calls
     assert "project_recipe_strategy" in calls
     assert "recipe_action_states" in calls
+    assert "Save for Deobfuscate This" in PANEL.read_text(encoding="utf-8")
 
 
 def test_recipe_panel_groups_catalog_rows_by_display_only_workflow_stage() -> None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from d810.core.persistence import FunctionStorageLocator
 from d810.core.rule_scope import (
     RuleScopeEvent,
     RuleScopeInvalidation,
@@ -28,10 +29,19 @@ class FunctionRecipeRuntime:
         storage_provider: Callable[[], object | None],
         event_emitter: object,
         project_name_provider: Callable[[], str],
+        database_identity_provider: Callable[[], str],
     ) -> None:
         self._storage_provider = storage_provider
         self._event_emitter = event_emitter
         self._project_name_provider = project_name_provider
+        self._database_identity_provider = database_identity_provider
+
+    def _locator(self, function_ea: int) -> FunctionStorageLocator:
+        return FunctionStorageLocator(
+            database_identity=str(self._database_identity_provider()),
+            project_name=str(self._project_name_provider()),
+            function_addr=int(function_ea),
+        )
 
     def _storage(self) -> object:
         storage = self._storage_provider()
@@ -45,7 +55,7 @@ class FunctionRecipeRuntime:
     def _override(persisted: object) -> FunctionPipelineOverride:
         return FunctionPipelineOverride(
             schema_version=int(getattr(persisted, "schema_version")),
-            function_ea=int(getattr(persisted, "function_addr")),
+            function_ea=int(getattr(persisted, "locator").function_addr),
             function_fingerprint=getattr(persisted, "function_fingerprint", None),
             source_path=str(getattr(persisted, "source_path")),
             runtime_path=str(getattr(persisted, "runtime_path")),
@@ -66,7 +76,7 @@ class FunctionRecipeRuntime:
         )
 
     def get(self, function_ea: int) -> FunctionPipelineOverride | None:
-        persisted = self._storage().get_function_recipe(int(function_ea))
+        persisted = self._storage().get_function_recipe(self._locator(function_ea))
         if persisted is None:
             return None
         return self._override(persisted)
@@ -90,15 +100,16 @@ class FunctionRecipeRuntime:
                 "Recipe validation does not describe the current draft revision"
             )
         storage = self._storage()
+        locator = self._locator(draft.function_ea)
         storage.set_function_recipe(
-            function_addr=draft.function_ea,
+            locator=locator,
             schema_version=draft.schema_version,
             function_fingerprint=draft.function_fingerprint,
             source_path=draft.source_path,
             runtime_path=draft.runtime_path,
             pass_configs_json=str(pass_configs_json),
         )
-        persisted = storage.get_function_recipe(draft.function_ea)
+        persisted = storage.get_function_recipe(locator)
         if persisted is None:
             raise FunctionRecipePersistenceError(
                 "Function recipe storage did not return the saved record"
@@ -108,9 +119,10 @@ class FunctionRecipeRuntime:
 
     def clear(self, function_ea: int) -> bool:
         storage = self._storage()
-        if storage.get_function_recipe(int(function_ea)) is None:
+        locator = self._locator(function_ea)
+        if storage.get_function_recipe(locator) is None:
             return False
-        storage.clear_function_recipe(int(function_ea))
+        storage.clear_function_recipe(locator)
         self._emit_invalidation(function_ea)
         return True
 

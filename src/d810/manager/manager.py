@@ -25,7 +25,6 @@ from d810.core.project import (
 from d810.core.registry import EventEmitter
 from d810.core.rule_scope import (
     FunctionRuleOverlay,
-    RuleInferenceOverlay,
     RuleScopeEvent,
     RuleScopeInvalidation,
     RuleScopeService,
@@ -574,10 +573,11 @@ class D810Manager:
         self.profiling = ProfilingController(self.log_dir)
         self.rule_scope_runtime = RuleScopeRuntime(
             storage_factory=self._create_rule_scope_storage,
-            rule_scope_service=self.rule_scope_service,
             event_emitter=self.event_emitter,
-            log_dir=self.log_dir,
             project_name_provider=lambda: str(self.config.get("project_name", "")),
+            database_identity_provider=lambda: (
+                self._database_identity or str(self.config.get("idb_key", ""))
+            ),
             config_provider=lambda: self.config,
         )
         self.comparison_service = WorkbenchComparisonService()
@@ -587,6 +587,9 @@ class D810Manager:
             storage_provider=lambda: self.rule_scope_runtime.storage,
             event_emitter=self.event_emitter,
             project_name_provider=lambda: str(self.config.get("project_name", "")),
+            database_identity_provider=lambda: (
+                self._database_identity or str(self.config.get("idb_key", ""))
+            ),
         )
         self.workbench_service = WorkbenchService(self, registry=workbench_registry)
         self.recipe_command_service = WorkbenchRecipeCommandService(
@@ -872,7 +875,9 @@ class D810Manager:
             return tuple(runtime.outcome_log.get_func_reports(int(function_ea)))
         analysis_runtime = self._analysis_runtime
         if analysis_runtime is not None:
-            return tuple(analysis_runtime.outcome_log.get_func_reports(int(function_ea)))
+            return tuple(
+                analysis_runtime.outcome_log.get_func_reports(int(function_ea))
+            )
         return ()
 
     def get_diagnostic_databases(self) -> tuple[DiagnosticDatabaseSummary, ...]:
@@ -1225,7 +1230,7 @@ class D810Manager:
         latest_output: D810OutputRef | None = None,
     ) -> DeobfuscationWorkbenchSnapshot:
         """Collect one immutable read-only workbench snapshot."""
-        runtime_scope = "project"
+        runtime_scope = "project-runtime"
         initial_errors: tuple[str, ...] = ()
         saved_recipe: FunctionPipelineOverride | None = None
         try:
@@ -1241,10 +1246,10 @@ class D810Manager:
             project_snapshot = selection.project_snapshot
             runtime_scope = selection.recipe_scope
             initial_errors = selection.errors
-            if selection.recipe_scope == "function-recipe":
+            if selection.recipe_scope == "saved-recipe-explicit":
                 saved_recipe = override
         except FunctionRecipePersistenceError as exc:
-            runtime_scope = "function-recipe-blocked"
+            runtime_scope = "saved-recipe-blocked"
             initial_errors = (f"function recipe: {exc}",)
         return self.workbench_service.collect(
             function_ea=function_ea,
@@ -1545,9 +1550,6 @@ class D810Manager:
         self.rule_scope_service.attach(self.event_emitter)
         self._init_storage()
         self.rule_scope_service.set_overlay_provider(self._get_rule_overlay)
-        self.rule_scope_service.set_active_inference(
-            self.rule_scope_runtime.active_rule_inference
-        )
         self.rule_scope_service.register_inference(
             "unflattening", unflattening_inference
         )
@@ -1716,32 +1718,8 @@ class D810Manager:
     def _init_storage(self) -> None:
         self.rule_scope_runtime.initialize_storage()
 
-    def _load_active_inference_from_storage(self) -> None:
-        self.rule_scope_runtime.load_active_inference_from_storage()
-
     def _get_rule_overlay(self, function_ea: int) -> FunctionRuleOverlay | None:
         return self.rule_scope_runtime.get_rule_overlay(function_ea)
-
-    def get_function_rule_override(self, function_addr: int):
-        return self.rule_scope_runtime.get_function_rule_override(function_addr)
-
-    def set_function_rule_override(
-        self,
-        *,
-        function_addr: int,
-        enabled_rules: typing.Optional[typing.Set[str]] = None,
-        disabled_rules: typing.Optional[typing.Set[str]] = None,
-        notes: str = "",
-    ) -> None:
-        self.rule_scope_runtime.set_function_rule_override(
-            function_addr=function_addr,
-            enabled_rules=enabled_rules,
-            disabled_rules=disabled_rules,
-            notes=notes,
-        )
-
-    def clear_function_rule_override(self, function_addr: int) -> None:
-        self.rule_scope_runtime.clear_function_rule_override(function_addr)
 
     def get_function_tags(self, function_addr: int) -> set[str]:
         return self.rule_scope_runtime.get_function_tags(function_addr)
@@ -1757,32 +1735,13 @@ class D810Manager:
             tags=tags,
         )
 
-    def set_active_rule_inference(
-        self,
-        *,
-        inference_name: str,
-        enabled_rules: typing.Optional[typing.Set[str]] = None,
-        disabled_rules: typing.Optional[typing.Set[str]] = None,
-        target_func_eas: typing.Optional[typing.Set[int]] = None,
-        target_tags_any: typing.Optional[typing.Set[str]] = None,
-        target_tags_all: typing.Optional[typing.Set[str]] = None,
-        notes: str = "",
-    ) -> None:
-        self.rule_scope_runtime.set_active_rule_inference(
-            inference_name=inference_name,
-            enabled_rules=enabled_rules,
-            disabled_rules=disabled_rules,
-            target_func_eas=target_func_eas,
-            target_tags_any=target_tags_any,
-            target_tags_all=target_tags_all,
-            notes=notes,
+    def get_effective_rule_scope_report(self, function_addr: int):
+        """Return the same scoped rule decisions used by optimizer execution."""
+        return self.rule_scope_service.explain_effective_scope(
+            project_name=str(self.config.get("project_name", "")),
+            idb_key=self._database_identity or str(self.config.get("idb_key", "")),
+            func_ea=int(function_addr),
         )
-
-    def clear_active_rule_inference(self) -> None:
-        self.rule_scope_runtime.clear_active_rule_inference()
-
-    def get_active_rule_inference(self) -> RuleInferenceOverlay | None:
-        return self.rule_scope_runtime.get_active_rule_inference()
 
     def _compile_rule_scope(self) -> None:
         self.rule_scope_service.compile_base_rules(

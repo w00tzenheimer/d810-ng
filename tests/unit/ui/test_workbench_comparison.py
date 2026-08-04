@@ -45,7 +45,7 @@ def _snapshot() -> DeobfuscationWorkbenchSnapshot:
         attack=AttackSummary("unknown", "unavailable", None, "none", None, (), (), ()),
         pipeline=(),
         consumers=(),
-        rule_scope=RuleScopeSummary((), (), (), (), (), "", None, (), (), False),
+        rule_scope=RuleScopeSummary((), (), (), (), ()),
         statistics=StatisticsSummary((), (), (), 0, (), 0),
         baseline=BaselineRef(False, None, None, None),
         latest_output=D810OutputRef(False, None, None, None),

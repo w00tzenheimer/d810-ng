@@ -15,6 +15,7 @@ from d810.manager.workbench_models import (
     ComparisonMetric,
     D810OutputRef,
     DeobfuscationWorkbenchSnapshot,
+    EffectiveRuleDecisionSummary,
     FunctionRef,
     OutcomeStatus,
     PipelineStageSnapshot,
@@ -91,16 +92,20 @@ def _snapshot() -> DeobfuscationWorkbenchSnapshot:
             ),
         ),
         rule_scope=RuleScopeSummary(
-            project_instruction_rules=("ProjectRule",),
-            project_block_rules=(),
-            function_enabled_rules=(),
-            function_disabled_rules=(),
+            public_operations=("constant-simplification",),
             function_tags=("hard",),
-            function_notes="",
-            inference_name="unflattening",
-            inference_enabled_rules=("UnflattenRule",),
-            inference_disabled_rules=(),
-            inference_applies=True,
+            inference_names=("unflattening",),
+            decisions=(
+                EffectiveRuleDecisionSummary(
+                    "instruction",
+                    "UnflattenRule",
+                    (1,),
+                    True,
+                    "active",
+                    "passed all scope gates",
+                ),
+            ),
+            unknown_rule_names=(),
         ),
         statistics=StatisticsSummary((), (), (), 0, (), 0),
         baseline=BaselineRef(False, None, None, None),
@@ -164,13 +169,13 @@ def test_context_rows_keep_source_and_runtime_truth_distinct() -> None:
     assert "config-v2" in runtime.detail
 
 
-def test_context_runtime_labels_saved_function_recipe_scope() -> None:
+def test_context_runtime_labels_saved_recipe_as_explicit_only() -> None:
     snapshot = _snapshot()
     scoped = dataclasses.replace(
         snapshot,
         runtime=dataclasses.replace(
             snapshot.runtime,
-            recipe_scope="function-recipe",
+            recipe_scope="saved-recipe-explicit",
             pass_ids=("jump-fixer",),
         ),
     )
@@ -181,8 +186,9 @@ def test_context_runtime_labels_saved_function_recipe_scope() -> None:
         if row.key == "context:runtime"
     )
 
-    assert "function recipe" in runtime.summary
-    assert "scope: function-recipe" in runtime.detail
+    assert "saved recipe" in runtime.summary
+    assert "ordinary refresh uses project runtime" in runtime.detail
+    assert "Deobfuscate This" in runtime.detail
     assert "passes: jump-fixer" in runtime.detail
 
 
@@ -500,22 +506,26 @@ def test_evidence_export_is_canonical_deterministic_json() -> None:
             },
         ],
         "rule_scope": {
-            "function_disabled_rules": [],
-            "function_enabled_rules": [],
-            "function_notes": "",
+            "decisions": [
+                {
+                    "active": True,
+                    "maturities": [1],
+                    "pipeline": "instruction",
+                    "reason": "active",
+                    "rule_name": "UnflattenRule",
+                    "detail": "passed all scope gates",
+                }
+            ],
             "function_tags": ["hard"],
-            "inference_applies": True,
-            "inference_disabled_rules": [],
-            "inference_enabled_rules": ["UnflattenRule"],
-            "inference_name": "unflattening",
-            "project_block_rules": [],
-            "project_instruction_rules": ["ProjectRule"],
+            "inference_names": ["unflattening"],
+            "public_operations": ["constant-simplification"],
+            "unknown_rule_names": [],
         },
         "runtime": {
             "hook_mode": "config-v2",
             "mode": "config-v2",
             "pass_ids": ["first", "second"],
-            "recipe_scope": "project",
+            "recipe_scope": "project-runtime",
             "routed": True,
             "runtime_name": "default_ollvm_v2.json",
             "runtime_path": "/configs/default_ollvm_v2.json",

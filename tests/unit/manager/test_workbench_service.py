@@ -9,8 +9,7 @@ from types import SimpleNamespace
 
 from d810.analyses.control_flow.models import CandidateFlag, DeobfuscationHints
 from d810.core.config import ProjectConfiguration
-from d810.core.persistence import FunctionRuleConfig
-from d810.core.rule_scope import RuleInferenceOverlay
+from d810.core.rule_scope import EffectiveRuleDecision, EffectiveRuleScopeReport
 from d810.manager.project_runtime import (
     ProjectConfigMode,
     ProjectIdentitySnapshot,
@@ -202,19 +201,39 @@ def _manager(tmp_path: Path) -> SimpleNamespace:
         ),
         suppress_rules=("UnsafeRule",),
     )
-    override = FunctionRuleConfig(
-        function_addr=0x401000,
-        enabled_rules={"FunctionRule"},
-        disabled_rules={"UnsafeRule"},
-        tags={"hard"},
-        notes="investigate",
-    )
-    inference = RuleInferenceOverlay(
-        name="unflattening",
-        enabled_rules=frozenset({"UnflatteningRule"}),
-        disabled_rules=frozenset({"PreRecoveryFcp"}),
-        target_func_eas=frozenset({0x401000}),
-        target_tags_all=frozenset({"hard"}),
+    scope_report = EffectiveRuleScopeReport(
+        project_name="sample",
+        idb_key="sample.i64",
+        function_ea=0x401000,
+        function_tags=("hard", "priority"),
+        inference_names=("unflattening",),
+        decisions=(
+            EffectiveRuleDecision(
+                "instruction",
+                "ProjectInstructionRule",
+                (1,),
+                True,
+                "active",
+                "passed all scope gates",
+            ),
+            EffectiveRuleDecision(
+                "flow",
+                "ProjectBlockRule",
+                (2,),
+                True,
+                "active",
+                "passed all scope gates",
+            ),
+            EffectiveRuleDecision(
+                "flow",
+                "PreRecoveryFcp",
+                (2,),
+                False,
+                "inference-suppressed",
+                "inference unflattening suppressed this rule",
+            ),
+        ),
+        unknown_rule_names=("RemovedRule",),
     )
     reports = (
         _Report("not_eligible", artifacts=False, summary=False, applied=False),
@@ -234,13 +253,11 @@ def _manager(tmp_path: Path) -> SimpleNamespace:
         stats=_Stats(),
         log_dir=log_dir,
         recon_db=recon_db,
-        storage=SimpleNamespace(db_path=tmp_path / "function-rules.db"),
+        storage=SimpleNamespace(db_path=tmp_path / "function-recipes.db"),
         config={},
         load_recon_hints=lambda function_ea: hints,
         get_recon_outcome_reports=lambda function_ea: reports,
-        get_function_rule_override=lambda function_ea: override,
-        get_function_tags=lambda function_ea: {"hard", "priority"},
-        get_active_rule_inference=lambda: inference,
+        get_effective_rule_scope_report=lambda function_ea: scope_report,
     )
 
 
@@ -302,11 +319,11 @@ def test_collect_preserves_effective_recipe_scope_and_projection_error(
         function_fingerprint="sha256:abc",
         project_snapshot=project_snapshot,
         runtime_project=runtime_project,
-        runtime_scope="function-recipe-blocked",
+        runtime_scope="saved-recipe-blocked",
         initial_errors=("function recipe: stale fingerprint",),
     )
 
-    assert snapshot.runtime.recipe_scope == "function-recipe-blocked"
+    assert snapshot.runtime.recipe_scope == "saved-recipe-blocked"
     assert snapshot.collection_errors[0] == "function recipe: stale fingerprint"
 
 
@@ -392,16 +409,16 @@ def test_attack_consumers_rule_scope_statistics_and_artifacts_are_truthful(
         "status": "Unchanged",
     }
 
-    assert snapshot.rule_scope.project_instruction_rules == ("ProjectInstructionRule",)
-    assert snapshot.rule_scope.project_block_rules == ("ProjectBlockRule",)
-    assert snapshot.rule_scope.function_enabled_rules == ("FunctionRule",)
-    assert snapshot.rule_scope.function_disabled_rules == ("UnsafeRule",)
+    assert snapshot.rule_scope.public_operations == ("first", "second")
     assert snapshot.rule_scope.function_tags == ("hard", "priority")
-    assert snapshot.rule_scope.function_notes == "investigate"
-    assert snapshot.rule_scope.inference_name == "unflattening"
-    assert snapshot.rule_scope.inference_enabled_rules == ("UnflatteningRule",)
-    assert snapshot.rule_scope.inference_disabled_rules == ("PreRecoveryFcp",)
-    assert snapshot.rule_scope.inference_applies is True
+    assert snapshot.rule_scope.inference_names == ("unflattening",)
+    assert tuple(item.rule_name for item in snapshot.rule_scope.decisions) == (
+        "ProjectInstructionRule",
+        "ProjectBlockRule",
+        "PreRecoveryFcp",
+    )
+    assert snapshot.rule_scope.decisions[-1].reason == "inference-suppressed"
+    assert snapshot.rule_scope.unknown_rule_names == ("RemovedRule",)
 
     assert snapshot.statistics.optimizer_matches[0].name == "PatternOptimizer"
     assert snapshot.statistics.optimizer_matches[0].count == 2
@@ -414,8 +431,8 @@ def test_attack_consumers_rule_scope_statistics_and_artifacts_are_truthful(
     assert artifacts["runtime-config"].available is True
     assert artifacts["recon-db"].available is True
     assert artifacts["log-directory"].available is True
-    assert artifacts["function-rules-db"].path is not None
-    assert artifacts["function-rules-db"].available is False
+    assert artifacts["function-recipe-storage"].path is not None
+    assert artifacts["function-recipe-storage"].available is False
     assert snapshot.baseline.available is False
     assert snapshot.latest_output.available is False
 
@@ -593,8 +610,8 @@ def test_analyze_calls_read_only_manager_seam_once_and_requests_refresh(
     target = object()
     provider_phase = object()
     calls: list[dict[str, object]] = []
-    manager.analyze_workbench_function = (
-        lambda **kwargs: calls.append(kwargs) or object()
+    manager.analyze_workbench_function = lambda **kwargs: (
+        calls.append(kwargs) or object()
     )
 
     result = service.execute_analyze(
@@ -623,8 +640,8 @@ def test_build_deobfuscator_calls_only_the_read_only_analysis_seam(
     target = object()
     provider_phase = object()
     calls: list[dict[str, object]] = []
-    manager.analyze_workbench_function = (
-        lambda **kwargs: calls.append(kwargs) or object()
+    manager.analyze_workbench_function = lambda **kwargs: (
+        calls.append(kwargs) or object()
     )
 
     result = service.execute_build_deobfuscator(

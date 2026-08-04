@@ -43,10 +43,10 @@ Cons:
 ### Remove durable private-rule operator state
 
 Persisted function rule allowlists, denylists, notes, the manager mutation APIs,
-and the persisted active-inference selector are removed. Function tags are
-migrated into a dedicated scoped metadata store. Existing private-rule and
-active-inference values are intentionally not migrated because retaining them
-would preserve the competing configuration model this change removes.
+and the persisted active-inference selector are removed. Function tags use a
+dedicated scoped metadata store. Existing unnamespaced tags, private-rule
+values, and active-inference values are intentionally not migrated because
+their database/project ownership cannot be established safely.
 
 `RuleScopeService` remains internal and owns:
 
@@ -81,9 +81,13 @@ The precedence is:
 
 1. The project or explicit recipe determines which rules are instantiated.
 2. A project selector may require or reject a function EA or tags.
-3. An ephemeral inference allowlist may narrow the instantiated set.
-4. Ephemeral inference or direct hint suppressions may exclude a rule.
+3. An ephemeral inference suppression may exclude a rule.
+4. A direct hint suppression may exclude a rule.
 5. Rules surviving every gate are active.
+
+Inference `activate` deltas are retained as analysis observability, but they do
+not form an exclusive allowlist and cannot instantiate or remove project
+rules. Durable public selection belongs to config-v2 recipes.
 
 `apply_hints()` resolves selector conflicts before it installs an inference, so
 an explicit project whitelist/blacklist remains authoritative. The effective
@@ -119,7 +123,9 @@ of making the recipe silently disappear.
 The IDB-local netnode backend uses the same locator for uniform behavior. The
 explicit SQLite backend receives a v2 recipe table with a compound primary key.
 Unnamespaced recipe rows are not adopted because their binary ownership cannot
-be proven safely.
+be proven safely. Selecting the SQLite backend without an explicit
+`function_recipe_storage` path fails closed instead of falling back into the
+erasable log directory.
 
 Pros:
 
@@ -149,14 +155,15 @@ and maturity, with reason codes. It never offers private-rule mutation.
 ## Migration and safety
 
 - Netnode state preserves recipes only after they are saved under the scoped
-  locator. Legacy `function_rules` and `active_inference` payloads are removed;
-  tags are copied into scoped metadata when their current database/project
-  ownership is known.
+  locator. Legacy `function_rules`, unscoped tags, and `active_inference`
+  payloads are removed.
 - SQLite creates scoped function-tag and function-recipe tables. Legacy private
-  rule and active-inference tables are dropped after tag migration.
+  rule, unscoped recipe, unscoped tag, and active-inference tables are dropped.
 - No migration guesses a database identity for an unnamespaced recipe.
 - The explicit SQLite backend remains an advanced compatibility choice; the
   IDB-local netnode remains the safe default on macOS, Linux, and Windows.
+- Explicit SQLite requires a caller-owned path; no recipe database is created
+  under the log directory.
 
 ## Verification
 

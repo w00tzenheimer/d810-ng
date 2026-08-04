@@ -110,7 +110,7 @@ def test_workbench_projection_reports_saved_recipe_as_the_effective_pipeline() -
         source_path="/configs/source.json",
         runtime_path="/configs/runtime.json",
         pass_configs_json=(
-            '[{"pass_id":"mba-simplify",' '"rules":{"include":["ConstantMbaRule"]}}]'
+            '[{"pass_id":"mba-simplify","rules":{"include":["ConstantMbaRule"]}}]'
         ),
         updated_at=1.0,
     )
@@ -138,7 +138,7 @@ def test_workbench_projection_reports_saved_recipe_as_the_effective_pipeline() -
     ) == ("jump-fixer",)
 
 
-def test_selection_exposes_saved_recipe_as_effective_workbench_runtime() -> None:
+def test_selection_keeps_project_runtime_and_marks_recipe_explicit_only() -> None:
     base = _base_project()
     snapshot = ProjectRuntimeSnapshot(
         source=ProjectIdentitySnapshot(
@@ -160,7 +160,7 @@ def test_selection_exposes_saved_recipe_as_effective_workbench_runtime() -> None
         source_path="/configs/source.json",
         runtime_path="/configs/runtime.json",
         pass_configs_json=(
-            '[{"pass_id":"mba-simplify",' '"rules":{"include":["ConstantMbaRule"]}}]'
+            '[{"pass_id":"mba-simplify","rules":{"include":["ConstantMbaRule"]}}]'
         ),
         updated_at=1.0,
     )
@@ -172,13 +172,16 @@ def test_selection_exposes_saved_recipe_as_effective_workbench_runtime() -> None
         function_fingerprint="sha256:abc",
     )
 
-    assert selection.recipe_scope == "function-recipe"
+    assert selection.recipe_scope == "saved-recipe-explicit"
     assert selection.errors == ()
-    assert selection.project_snapshot.effective_pass_ids == ("mba-simplify",)
+    assert selection.project_snapshot is snapshot
+    assert selection.runtime_project is base
+    assert selection.project_snapshot.effective_pass_ids == ("jump-fixer",)
+    assert selection.draft is not None
     assert tuple(
         config.pass_id
         for config in pipeline_configs_from_project_config(selection.runtime_project)
-    ) == ("mba-simplify",)
+    ) == ("jump-fixer",)
 
 
 def test_selection_blocks_stale_saved_recipe_without_mutating_project() -> None:
@@ -216,7 +219,7 @@ def test_selection_blocks_stale_saved_recipe_without_mutating_project() -> None:
 
     assert selection.runtime_project is base
     assert selection.project_snapshot is snapshot
-    assert selection.recipe_scope == "function-recipe-blocked"
+    assert selection.recipe_scope == "saved-recipe-blocked"
     assert selection.draft is None
     assert "fingerprint is stale" in selection.errors[0]
 
@@ -259,7 +262,7 @@ def test_selection_blocks_cross_pass_hook_materialization_failure() -> None:
 
     assert selection.runtime_project is base
     assert selection.project_snapshot is snapshot
-    assert selection.recipe_scope == "function-recipe-blocked"
+    assert selection.recipe_scope == "saved-recipe-blocked"
     assert selection.draft is None
     assert "complete native pass sequence" in selection.errors[0]
 

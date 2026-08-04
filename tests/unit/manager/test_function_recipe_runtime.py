@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from d810.core.persistence import FunctionStorageLocator
 from d810.core.rule_scope import RuleScopeEvent, RuleScopeService, ScopeKey
 from d810.manager.function_recipe_runtime import (
     FunctionRecipePersistenceError,
@@ -20,26 +21,21 @@ from d810.manager.workbench_recipe_models import (
 
 class _Storage:
     def __init__(self) -> None:
-        self.recipe = None
+        self.recipes: dict[FunctionStorageLocator, object] = {}
         self.saved: list[dict[str, object]] = []
-        self.cleared: list[int] = []
-        self.function_rule_calls: list[object] = []
+        self.cleared: list[FunctionStorageLocator] = []
 
     def set_function_recipe(self, **kwargs: object) -> None:
         self.saved.append(dict(kwargs))
-        self.recipe = SimpleNamespace(**kwargs, updated_at=12.5)
+        locator = kwargs["locator"]
+        self.recipes[locator] = SimpleNamespace(**kwargs, updated_at=12.5)
 
-    def get_function_recipe(self, function_addr: int):
-        if self.recipe is None or self.recipe.function_addr != function_addr:
-            return None
-        return self.recipe
+    def get_function_recipe(self, locator: FunctionStorageLocator):
+        return self.recipes.get(locator)
 
-    def clear_function_recipe(self, function_addr: int) -> None:
-        self.cleared.append(function_addr)
-        self.recipe = None
-
-    def set_function_rules(self, *args: object, **kwargs: object) -> None:
-        self.function_rule_calls.append((args, kwargs))
+    def clear_function_recipe(self, locator: FunctionStorageLocator) -> None:
+        self.cleared.append(locator)
+        self.recipes.pop(locator, None)
 
 
 class _Emitter:
@@ -81,6 +77,7 @@ def test_save_uses_sibling_storage_and_emits_one_function_scoped_invalidation() 
         storage_provider=lambda: storage,
         event_emitter=emitter,
         project_name_provider=lambda: "sample",
+        database_identity_provider=lambda: "sample.i64",
     )
 
     saved = runtime.save(
@@ -92,7 +89,9 @@ def test_save_uses_sibling_storage_and_emits_one_function_scoped_invalidation() 
     assert saved.function_ea == 0x401000
     assert saved.updated_at == 12.5
     assert len(storage.saved) == 1
-    assert storage.function_rule_calls == []
+    assert storage.saved[0]["locator"] == FunctionStorageLocator(
+        "sample.i64", "sample", 0x401000
+    )
     assert len(emitter.events) == 1
     event, payload = emitter.events[0]
     assert event is RuleScopeEvent.FUNCTION_RECIPE_UPDATED
@@ -116,6 +115,7 @@ def test_save_rejects_unvalidated_or_mismatched_draft(
         storage_provider=lambda: storage,
         event_emitter=_Emitter(),
         project_name_provider=lambda: "sample",
+        database_identity_provider=lambda: "sample.i64",
     )
 
     with pytest.raises(FunctionRecipePersistenceError):
@@ -131,14 +131,14 @@ def test_clear_removes_only_recipe_and_invalidates_once() -> None:
         storage_provider=lambda: storage,
         event_emitter=emitter,
         project_name_provider=lambda: "sample",
+        database_identity_provider=lambda: "sample.i64",
     )
     runtime.save(_draft(), _validation(), pass_configs_json="[]\n")
     emitter.events.clear()
 
     assert runtime.clear(0x401000) is True
 
-    assert storage.cleared == [0x401000]
-    assert storage.function_rule_calls == []
+    assert storage.cleared == [FunctionStorageLocator("sample.i64", "sample", 0x401000)]
     assert len(emitter.events) == 1
 
 

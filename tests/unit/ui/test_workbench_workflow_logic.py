@@ -51,7 +51,7 @@ def _snapshot(*, generation: int = 4) -> DeobfuscationWorkbenchSnapshot:
         ),
         pipeline=(),
         consumers=(),
-        rule_scope=RuleScopeSummary((), (), (), (), (), "", None, (), (), False),
+        rule_scope=RuleScopeSummary((), (), (), (), ()),
         statistics=StatisticsSummary((), (), (), 0, (), 0),
         baseline=BaselineRef(False, None, None, None),
         latest_output=D810OutputRef(False, None, None, None),
@@ -130,7 +130,9 @@ def test_accepted_matching_direct_attack_transition_refreshes_before_optional_co
     assert transition.compare is expected_compare
 
 
-def test_accepted_but_stale_direct_attack_transition_does_not_refresh_or_compare() -> None:
+def test_accepted_but_stale_direct_attack_transition_does_not_refresh_or_compare() -> (
+    None
+):
     snapshot = _snapshot()
     result = _accepted_deobfuscation_result(snapshot, status=OutcomeStatus.STALE)
 

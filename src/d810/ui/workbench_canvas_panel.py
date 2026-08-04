@@ -101,7 +101,7 @@ if IDA_AVAILABLE and QT_GRAPHICS_AVAILABLE:
             self.add_registered_node_button.setText("Add registered node")
             self.edit_options_button = QtWidgets.QToolButton()
             self.edit_options_button.setText("Edit options")
-            self.save_recipe_button = QtWidgets.QPushButton("Save for this function")
+            self.save_recipe_button = QtWidgets.QPushButton("Save for Deobfuscate This")
 
             self.stage_selector.currentIndexChanged.connect(self._update_collapse_label)
             self.collapse_button.clicked.connect(self._toggle_stage)

@@ -88,16 +88,20 @@ def _snapshot() -> object:
         provenance_json=None,
     )
     rule_scope = models.RuleScopeSummary(
-        project_instruction_rules=("ProjectInstructionRule",),
-        project_block_rules=("ProjectBlockRule",),
-        function_enabled_rules=("FunctionRule",),
-        function_disabled_rules=("UnsafeRule",),
+        public_operations=("constant-simplification",),
         function_tags=("hard",),
-        function_notes="investigate",
-        inference_name="unflattening",
-        inference_enabled_rules=("UnflatteningRule",),
-        inference_disabled_rules=(),
-        inference_applies=True,
+        inference_names=("unflattening",),
+        decisions=(
+            models.EffectiveRuleDecisionSummary(
+                "instruction",
+                "ConstantSubtreeFoldRule",
+                (1,),
+                True,
+                "active",
+                "passed all scope gates",
+            ),
+        ),
+        unknown_rule_names=(),
     )
     statistics = models.StatisticsSummary(
         optimizer_matches=(models.CountEntry("PatternOptimizer", 2),),

@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 
 from d810.core.registry import EventEmitter
 from d810.core.rule_scope import (
+    EffectiveRuleScopeReport,
     FunctionRuleOverlay,
     PIPELINE_FLOW,
     PIPELINE_INSTRUCTION,
@@ -134,7 +135,7 @@ def test_partial_invalidation_removes_only_target_functions():
 
     svc.invalidate(
         RuleScopeInvalidation(
-            reason=RuleScopeEvent.FUNCTION_OVERRIDE_UPDATED,
+            reason=RuleScopeEvent.FUNCTION_TAGS_UPDATED,
             func_eas=frozenset({0x1000}),
         )
     )
@@ -175,50 +176,17 @@ def test_event_emitter_full_invalidation_on_project_reload():
     assert svc.active_cache_size == 0
 
 
-def test_overlay_provider_filters_enabled_and_disabled_rules():
+def test_overlay_cache_is_refreshed_by_function_tag_invalidation():
     svc = RuleScopeService()
-    rule_a = _DummyRule(name="RuleA", maturities=[1])
-    rule_b = _DummyRule(name="RuleB", maturities=[1])
+    tagged = _DummyRule(name="Tagged", maturities=[1], tags_any=["flat"])
     svc.compile_base_rules(
         project_name="proj",
-        instruction_rules=(rule_a, rule_b),
-        flow_rules=(),
-        ctree_rules=(),
-    )
-
-    svc.set_overlay_provider(
-        lambda ea: (
-            FunctionRuleOverlay(
-                enabled_rules=frozenset({"RuleA"}),
-                disabled_rules=frozenset({"RuleB"}),
-            )
-            if ea == 0x1337
-            else None
-        )
-    )
-
-    filtered = svc.get_active_rules(
-        project_name="proj",
-        idb_key="idb",
-        func_ea=0x1337,
-        pipeline=PIPELINE_INSTRUCTION,
-        maturity=1,
-    )
-    assert tuple(rule.name for rule in filtered) == ("RuleA",)
-
-
-def test_overlay_cache_is_refreshed_by_function_override_invalidation():
-    svc = RuleScopeService()
-    rule_a = _DummyRule(name="RuleA", maturities=[1])
-    rule_b = _DummyRule(name="RuleB", maturities=[1])
-    svc.compile_base_rules(
-        project_name="proj",
-        instruction_rules=(rule_a, rule_b),
+        instruction_rules=(tagged,),
         flow_rules=(),
         ctree_rules=(),
     )
     overlays = {
-        0x2000: FunctionRuleOverlay(enabled_rules=frozenset({"RuleA"})),
+        0x2000: FunctionRuleOverlay(function_tags=frozenset({"flat"})),
     }
     svc.set_overlay_provider(lambda ea: overlays.get(ea))
 
@@ -229,12 +197,12 @@ def test_overlay_cache_is_refreshed_by_function_override_invalidation():
         pipeline=PIPELINE_INSTRUCTION,
         maturity=1,
     )
-    assert tuple(rule.name for rule in first) == ("RuleA",)
+    assert tuple(rule.name for rule in first) == ("Tagged",)
 
-    overlays[0x2000] = FunctionRuleOverlay(enabled_rules=frozenset({"RuleB"}))
+    overlays[0x2000] = FunctionRuleOverlay()
     svc.invalidate(
         RuleScopeInvalidation(
-            reason=RuleScopeEvent.FUNCTION_OVERRIDE_UPDATED,
+            reason=RuleScopeEvent.FUNCTION_TAGS_UPDATED,
             func_eas=frozenset({0x2000}),
         )
     )
@@ -246,63 +214,10 @@ def test_overlay_cache_is_refreshed_by_function_override_invalidation():
         pipeline=PIPELINE_INSTRUCTION,
         maturity=1,
     )
-    assert tuple(rule.name for rule in second) == ("RuleB",)
+    assert second == ()
 
 
-def test_overlay_precedence_over_project_config():
-    svc = RuleScopeService()
-    rule_a = _DummyRule(
-        name="RuleA",
-        maturities=[1],
-        use_whitelist=True,
-        whitelisted_function_ea_list=["0x3000"],
-    )
-    rule_b = _DummyRule(
-        name="RuleB",
-        maturities=[1],
-        use_whitelist=True,
-        whitelisted_function_ea_list=["0x3000"],
-    )
-    svc.compile_base_rules(
-        project_name="proj",
-        instruction_rules=(rule_a, rule_b),
-        flow_rules=(),
-        ctree_rules=(),
-    )
-
-    baseline = svc.get_active_rules(
-        project_name="proj",
-        idb_key="idb",
-        func_ea=0x3000,
-        pipeline=PIPELINE_INSTRUCTION,
-        maturity=1,
-    )
-    assert tuple(rule.name for rule in baseline) == ("RuleA", "RuleB")
-
-    svc.set_overlay_provider(
-        lambda ea: (
-            FunctionRuleOverlay(enabled_rules=frozenset({"RuleB"}))
-            if ea == 0x3000
-            else None
-        )
-    )
-    svc.invalidate(
-        RuleScopeInvalidation(
-            reason=RuleScopeEvent.FUNCTION_OVERRIDE_UPDATED,
-            func_eas=frozenset({0x3000}),
-        )
-    )
-    overridden = svc.get_active_rules(
-        project_name="proj",
-        idb_key="idb",
-        func_ea=0x3000,
-        pipeline=PIPELINE_INSTRUCTION,
-        maturity=1,
-    )
-    assert tuple(rule.name for rule in overridden) == ("RuleB",)
-
-
-def test_event_emitter_partial_invalidation_on_function_override():
+def test_event_emitter_partial_invalidation_on_function_tags():
     svc = RuleScopeService()
     emitter: EventEmitter = EventEmitter()
     svc.attach(emitter)
@@ -332,9 +247,9 @@ def test_event_emitter_partial_invalidation_on_function_override():
     generation_before = svc.generation
 
     emitter.emit(
-        RuleScopeEvent.FUNCTION_OVERRIDE_UPDATED,
+        RuleScopeEvent.FUNCTION_TAGS_UPDATED,
         RuleScopeInvalidation(
-            reason=RuleScopeEvent.FUNCTION_OVERRIDE_UPDATED,
+            reason=RuleScopeEvent.FUNCTION_TAGS_UPDATED,
             func_eas=frozenset({0x1111}),
         ),
     )
@@ -404,7 +319,7 @@ def test_active_inference_filters_targeted_scope_only():
         pipeline=PIPELINE_INSTRUCTION,
         maturity=1,
     )
-    assert tuple(rule.name for rule in targeted) == ("RuleB",)
+    assert tuple(rule.name for rule in targeted) == ("RuleA", "RuleB")
 
     untargeted = svc.get_active_rules(
         project_name="proj",
@@ -414,3 +329,131 @@ def test_active_inference_filters_targeted_scope_only():
         maturity=1,
     )
     assert tuple(rule.name for rule in untargeted) == ("RuleA", "RuleB")
+
+
+def test_effective_scope_report_and_execution_share_one_decision_path():
+    svc = RuleScopeService()
+    active = _DummyRule(name="Active", maturities=[1])
+    wrong_ea = _DummyRule(
+        name="WrongEa",
+        maturities=[1],
+        use_whitelist=True,
+        whitelisted_function_ea_list=[0x5000],
+    )
+    needs_tag = _DummyRule(name="NeedsTag", maturities=[1], tags_all=["flat"])
+    suppressed = _DummyRule(name="Suppressed", maturities=[1])
+    svc.compile_base_rules(
+        project_name="proj",
+        instruction_rules=(active, wrong_ea, needs_tag, suppressed),
+        flow_rules=(),
+        ctree_rules=(),
+    )
+    svc.set_active_inference(
+        RuleInferenceOverlay(
+            name="runtime-hint",
+            disabled_rules=frozenset({"Suppressed", "StaleRule"}),
+            target_func_eas=frozenset({0x401000}),
+        )
+    )
+
+    report = svc.explain_effective_scope(
+        project_name="proj",
+        idb_key="sample.i64",
+        func_ea=0x401000,
+    )
+    selected = svc.get_active_rules(
+        project_name="proj",
+        idb_key="sample.i64",
+        func_ea=0x401000,
+        pipeline=PIPELINE_INSTRUCTION,
+        maturity=1,
+    )
+
+    assert isinstance(report, EffectiveRuleScopeReport)
+    assert tuple(rule.name for rule in selected) == ("Active",)
+    assert {
+        decision.rule_name: (decision.active, decision.reason)
+        for decision in report.decisions
+    } == {
+        "Active": (True, "active"),
+        "WrongEa": (False, "selector-ea-not-allowed"),
+        "NeedsTag": (False, "selector-tags-all-missing"),
+        "Suppressed": (False, "inference-suppressed"),
+    }
+    assert report.inference_names == ("runtime-hint",)
+    assert report.unknown_rule_names == ("StaleRule",)
+    details = {decision.rule_name: decision.detail for decision in report.decisions}
+    assert "0x401000" in details["WrongEa"]
+    assert "flat" in details["NeedsTag"]
+    assert "runtime-hint" in details["Suppressed"]
+
+
+def test_hint_suppression_is_reported_without_private_function_rule_overlay():
+    svc = RuleScopeService()
+    rule = _DummyRule(name="Unsafe", maturities=[1])
+    svc.compile_base_rules(
+        project_name="proj",
+        instruction_rules=(rule,),
+        flow_rules=(),
+        ctree_rules=(),
+    )
+    svc.apply_hints(
+        type(
+            "Hints",
+            (),
+            {
+                "func_ea": 0x401000,
+                "recommended_inferences": (),
+                "suppress_rules": ("Unsafe", "RemovedRule"),
+            },
+        )()
+    )
+
+    report = svc.explain_effective_scope(
+        project_name="proj",
+        idb_key="sample.i64",
+        func_ea=0x401000,
+    )
+
+    assert report.decisions[0].reason == "hint-suppressed"
+    assert report.unknown_rule_names == ("RemovedRule",)
+
+
+def test_effective_report_matches_execution_at_each_declared_maturity():
+    svc = RuleScopeService()
+    rules = (
+        _DummyRule(name="M1", maturities=[1]),
+        _DummyRule(name="M2", maturities=[2]),
+        _DummyRule(name="Any"),
+    )
+    svc.compile_base_rules(
+        project_name="proj",
+        instruction_rules=rules,
+        flow_rules=(),
+        ctree_rules=(),
+    )
+    report = svc.explain_effective_scope(
+        project_name="proj",
+        idb_key="sample.i64",
+        func_ea=0x401000,
+    )
+
+    for maturity in (1, 2):
+        explained = tuple(
+            decision.rule_name
+            for decision in report.decisions
+            if decision.pipeline == PIPELINE_INSTRUCTION
+            and decision.active
+            and (not decision.maturities or maturity in decision.maturities)
+        )
+        executed = tuple(
+            rule.name
+            for rule in svc.get_active_rules(
+                project_name="proj",
+                idb_key="sample.i64",
+                func_ea=0x401000,
+                pipeline=PIPELINE_INSTRUCTION,
+                maturity=maturity,
+            )
+        )
+        assert explained == executed
