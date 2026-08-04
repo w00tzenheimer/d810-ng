@@ -1,7 +1,15 @@
 from __future__ import annotations
 
 import ast
+import importlib
 from pathlib import Path
+from types import SimpleNamespace
+
+from d810.manager.workbench_models import (
+    OutcomeStatus,
+    SnapshotFreshness,
+    WorkbenchCommandResult,
+)
 
 
 PANEL = Path(__file__).resolve().parents[3] / "src" / "d810" / "ui" / "workbench_panel.py"
@@ -70,15 +78,36 @@ def test_successful_fresh_build_opens_canvas_through_existing_recipe_adapter() -
     source = _method_source("_run_build_deobfuscator")
 
     assert 'self._run_command("build_deobfuscator", refresh_after=True)' in source
-    assert "should_accept_command_result(snapshot, result)" in source
-    assert "result.succeeded" in source
-    assert 'result.command != "build_deobfuscator"' in source
-    assert "SnapshotFreshness.CURRENT" in source
+    assert "_should_open_build_canvas(snapshot, result, current_snapshot)" in source
     assert "recipe(snapshot)" in source
     assert "self._show_build_canvas(recipe_adapter)" in source
-    assert source.index("should_accept_command_result") < source.index(
+    assert source.index("_should_open_build_canvas") < source.index(
         "self._show_build_canvas"
     )
+
+
+def test_stale_status_never_opens_build_canvas_even_when_result_is_accepted() -> None:
+    panel_module = importlib.import_module("d810.ui.workbench_panel")
+    should_open = getattr(panel_module, "_should_open_build_canvas", None)
+    assert callable(should_open), "Build canvas gate must be headless-testable"
+    snapshot = SimpleNamespace(
+        generation=7,
+        function=SimpleNamespace(ea=0x401000, fingerprint="sha256:build"),
+    )
+    current_snapshot = SimpleNamespace(freshness=SnapshotFreshness.CURRENT)
+    stale_result = WorkbenchCommandResult(
+        command="build_deobfuscator",
+        function_ea=0x401000,
+        requested_generation=7,
+        function_fingerprint="sha256:build",
+        status=OutcomeStatus.STALE,
+        succeeded=True,
+        accepted=True,
+        refresh_requested=True,
+        message="stale",
+    )
+
+    assert should_open(snapshot, stale_result, current_snapshot) is False
 
 
 def test_build_canvas_reuses_one_panel_and_recipe_composer_save_callback() -> None:
@@ -89,5 +118,16 @@ def test_build_canvas_reuses_one_panel_and_recipe_composer_save_callback() -> No
     assert "WorkbenchCanvasPanel" in source
     assert "self._snapshot" in source
     assert "refresh_workbench=self.refresh" in source
+    assert "_canvas_panel_can_reuse(panel)" in source
     assert "set_session" in source
     assert "panel.show()" in source
+
+
+def test_closed_build_canvas_is_replaced_instead_of_reused() -> None:
+    panel_module = importlib.import_module("d810.ui.workbench_panel")
+    can_reuse = getattr(panel_module, "_canvas_panel_can_reuse", None)
+    assert callable(can_reuse), "canvas reuse decision must be headless-testable"
+
+    assert can_reuse(None) is False
+    assert can_reuse(SimpleNamespace(closed=True)) is False
+    assert can_reuse(SimpleNamespace(closed=False)) is True

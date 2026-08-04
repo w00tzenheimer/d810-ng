@@ -5,6 +5,14 @@ import importlib
 import sys
 from pathlib import Path
 
+from d810.ui.workbench_canvas_models import (
+    CanvasEdge,
+    CanvasMaturity,
+    CanvasNode,
+    CanvasPort,
+    MaturityCanvasProjection,
+)
+
 
 ROOT = Path(__file__).resolve().parents[3]
 RENDERER = ROOT / "src" / "d810" / "ui" / "workbench_canvas_renderer.py"
@@ -44,6 +52,25 @@ def _imports(path: Path) -> set[str]:
     return imports
 
 
+def _node(
+    node_id: str,
+    maturity: CanvasMaturity,
+    *,
+    inputs: tuple[CanvasPort, ...] = (),
+    outputs: tuple[CanvasPort, ...] = (),
+) -> CanvasNode:
+    return CanvasNode(
+        node_id=node_id,
+        pass_id=node_id,
+        label=node_id,
+        maturity=maturity,
+        inputs=inputs,
+        outputs=outputs,
+        state="ready",
+        detail="{}",
+    )
+
+
 def test_canvas_modules_are_headless_safe_and_use_only_the_qt_shim() -> None:
     for path in (RENDERER, PANEL):
         source = path.read_text(encoding="utf-8")
@@ -72,12 +99,67 @@ def test_renderer_draws_projection_as_one_vertical_read_only_workspace() -> None
     assert "addEllipse" in render_source
     assert "addLine" in render_source
     assert "stage_y" in render_source
-    assert "projection.maturities" in render_source
-    assert "projection.nodes" in render_source
-    assert "projection.edges" in render_source
+    assert "_layout_projection(projection" in render_source
+    assert "layout.stages" in render_source
+    assert "layout.edges" in render_source
     assert "adapter" not in render_source
     assert "drag" not in source.lower()
     assert "connect_nodes" not in source
+
+
+def test_carrier_edges_use_distinct_direction_aware_port_positions() -> None:
+    renderer_module = importlib.import_module("d810.ui.workbench_canvas_renderer")
+    layout_projection = getattr(renderer_module, "_layout_projection", None)
+    assert callable(layout_projection), "renderer must expose its pure layout step"
+    early = CanvasMaturity("ir.canonical", "Canonical", 1)
+    late = CanvasMaturity("ir.global", "Global", 2)
+    fact_in = CanvasPort("fact:value", "value", "fact", "input")
+    fact_out = CanvasPort("fact:value", "value", "fact", "output")
+    source = _node("source", early, outputs=(fact_out,))
+    carrier = _node("carrier", late, inputs=(fact_in,), outputs=(fact_out,))
+    target = _node("target", late, inputs=(fact_in,))
+    projection = MaturityCanvasProjection(
+        maturities=(early, late),
+        nodes=(source, carrier, target),
+        edges=(
+            CanvasEdge("source", "fact:value", "carrier", "fact:value", "fact"),
+            CanvasEdge("carrier", "fact:value", "target", "fact:value", "fact"),
+        ),
+        diagnostics=(),
+    )
+
+    layout = layout_projection(projection, ())
+
+    carrier_input = layout.port_positions[("carrier", "fact:value", "input")]
+    carrier_output = layout.port_positions[("carrier", "fact:value", "output")]
+    assert carrier_input != carrier_output
+    incoming, outgoing = layout.edges
+    assert incoming.target == carrier_input
+    assert outgoing.source == carrier_output
+
+
+def test_nine_node_stage_expands_to_contain_every_node() -> None:
+    renderer_module = importlib.import_module("d810.ui.workbench_canvas_renderer")
+    layout_projection = renderer_module._layout_projection
+    stage = CanvasMaturity("any", "Any maturity", -1)
+    nodes = tuple(_node(f"node-{index}", stage) for index in range(9))
+    projection = MaturityCanvasProjection(
+        maturities=(stage,),
+        nodes=nodes,
+        edges=(),
+        diagnostics=(),
+    )
+
+    layout = layout_projection(projection, ())
+
+    stage_geometry = layout.stages[0]
+    assert len(stage_geometry.nodes) == 9
+    assert stage_geometry.width > 980.0
+    assert all(
+        node.x >= stage_geometry.x
+        and node.x + node.width <= stage_geometry.x + stage_geometry.width
+        for node in stage_geometry.nodes
+    )
 
 
 def test_renderer_binds_only_selection_and_recipe_intents() -> None:
