@@ -7,7 +7,7 @@ import json
 from d810.core import typing
 from d810.core.logging import getLogger
 from d810.qt_shim import QT_GRAPHICS_AVAILABLE, QtCore, QtWidgets
-from d810.ui.workbench_canvas_logic import project_maturity_canvas
+from d810.ui.workbench_canvas_logic import linked_case_findings, project_maturity_canvas
 from d810.ui.workbench_recipe_logic import (
     canvas_add_candidates,
     enables_dangerous_executable_readonly,
@@ -58,17 +58,20 @@ if IDA_AVAILABLE and QT_GRAPHICS_AVAILABLE:
             snapshot: typing.Any,
             *,
             refresh_workbench: typing.Callable[[], None] | None = None,
+            open_diagnostic_record: typing.Callable[[str, int], None] | None = None,
         ) -> None:
             ida_kernwin.PluginForm.__init__(self)
             self._adapter = adapter
             self._snapshot = snapshot
             self._refresh_workbench = refresh_workbench
+            self._open_diagnostic_record = open_diagnostic_record
             self._collapsed_stages: set[str] = set()
             self._catalog_entries: tuple[typing.Any, ...] = ()
             self._draft: typing.Any = None
             self._validation: typing.Any = None
             self._projection: typing.Any = None
             self._selected_node_id: str | None = None
+            self._selected_finding: typing.Any = None
             self._closed = False
             self.parent: typing.Any = None
 
@@ -101,12 +104,16 @@ if IDA_AVAILABLE and QT_GRAPHICS_AVAILABLE:
             self.add_registered_node_button.setText("Add registered node")
             self.edit_options_button = QtWidgets.QToolButton()
             self.edit_options_button.setText("Edit options")
+            self.open_diagnostic_button = QtWidgets.QToolButton()
+            self.open_diagnostic_button.setText("Open linked diagnostic")
+            self.open_diagnostic_button.setEnabled(False)
             self.save_recipe_button = QtWidgets.QPushButton("Save for Deobfuscate This")
 
             self.stage_selector.currentIndexChanged.connect(self._update_collapse_label)
             self.collapse_button.clicked.connect(self._toggle_stage)
             self.add_registered_node_button.clicked.connect(self._show_add_menu)
             self.edit_options_button.clicked.connect(self._edit_selected_options)
+            self.open_diagnostic_button.clicked.connect(self._open_selected_diagnostic)
             self.save_recipe_button.clicked.connect(
                 lambda checked=False: self.renderer.request_save_recipe()
             )
@@ -119,6 +126,7 @@ if IDA_AVAILABLE and QT_GRAPHICS_AVAILABLE:
             self._catalog_entries = tuple(adapter.catalog())
             self._draft, self._validation = adapter.reset()
             self._selected_node_id = None
+            self._selected_finding = None
             self._collapsed_stages.clear()
             self._render_evidence()
             self._render_projection()
@@ -132,6 +140,7 @@ if IDA_AVAILABLE and QT_GRAPHICS_AVAILABLE:
             controls.addWidget(self.collapse_button)
             controls.addWidget(self.add_registered_node_button)
             controls.addWidget(self.edit_options_button)
+            controls.addWidget(self.open_diagnostic_button)
             controls.addStretch(1)
             controls.addWidget(self.save_recipe_button)
 
@@ -314,6 +323,7 @@ if IDA_AVAILABLE and QT_GRAPHICS_AVAILABLE:
 
         def _select_node(self, node_id: str | None) -> None:
             self._selected_node_id = node_id
+            self._selected_finding = None
             node = next(
                 (
                     value
@@ -325,8 +335,18 @@ if IDA_AVAILABLE and QT_GRAPHICS_AVAILABLE:
             item = self._selected_recipe_pass(node_id or "")
             self.edit_options_button.setEnabled(item is not None)
             if node is None:
+                self.open_diagnostic_button.setEnabled(False)
                 self.node_inspector.setPlainText("")
                 return
+            findings = linked_case_findings(
+                node,
+                getattr(self._snapshot, "case", None),
+            )
+            self._selected_finding = findings[0] if findings else None
+            self.open_diagnostic_button.setEnabled(
+                self._selected_finding is not None
+                and self._open_diagnostic_record is not None
+            )
             options = self._options(item) if item is not None else {}
             prerequisites = [
                 f"{port.artifact_type}: {port.label}" for port in node.inputs
@@ -351,6 +371,16 @@ if IDA_AVAILABLE and QT_GRAPHICS_AVAILABLE:
                         *(evidence_references or ("None",)),
                     )
                 )
+            )
+
+        def _open_selected_diagnostic(self, checked: bool = False) -> None:
+            del checked
+            finding = self._selected_finding
+            if finding is None or self._open_diagnostic_record is None:
+                return
+            self._open_diagnostic_record(
+                str(finding.finding_id),
+                int(finding.native_ea),
             )
 
         def _edit_selected_options(self, checked: bool = False) -> None:

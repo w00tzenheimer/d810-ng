@@ -33,6 +33,28 @@ from d810.ui.icon_assets import bundled_icon
 
 logger = getLogger("D810.ui")
 
+
+def _case_record_row_index(
+    rows: typing.Sequence[typing.Any],
+    finding_id: str,
+    native_ea: int,
+) -> int | None:
+    """Match a case row only by its stable finding identity and EA anchor."""
+    for index, row in enumerate(rows):
+        record = getattr(row, "record", None)
+        if getattr(record, "source_table", None) != "deobfuscation_case" or getattr(
+            record, "anchor_ea", None
+        ) != int(native_ea):
+            continue
+        if any(
+            getattr(field, "name", None) == "finding"
+            and getattr(field, "value", None) == finding_id
+            for field in getattr(record, "fields", ())
+        ):
+            return index
+    return None
+
+
 try:
     import ida_kernwin
 
@@ -104,6 +126,7 @@ if IDA_AVAILABLE:
                 )
             size /= 1024.0
         return f"{value} B"
+
 
 if IDA_AVAILABLE and QT_GRAPHICS_AVAILABLE:
     _Signal = getattr(QtCore, "Signal", getattr(QtCore, "pyqtSignal", None))
@@ -177,6 +200,7 @@ if IDA_AVAILABLE:
             self._records: tuple[typing.Any, ...] = ()
             self._record_rows: tuple[typing.Any, ...] = ()
             self._record_identity: tuple[str, int, str] | None = None
+            self._pending_case_record: tuple[str, int] | None = None
             self._case_evidence: typing.Any = None
             self._case_baseline_evidence: typing.Any = None
             self._case_baseline_path: str | None = None
@@ -534,6 +558,24 @@ if IDA_AVAILABLE:
                 )
                 self.refresh()
             return shown
+
+        def open_case_record(self, finding_id: str, native_ea: int) -> bool:
+            """Open the case view and queue exact record selection across refresh."""
+            normalized_id = str(finding_id).strip()
+            anchor = int(native_ea)
+            if not normalized_id or anchor < 0:
+                return False
+            self._pending_case_record = (normalized_id, anchor)
+            self.record_filter.clear()
+            case_index = self.view_combo.findData("case")
+            if case_index < 0:
+                return False
+            if self.view_combo.currentIndex() == case_index:
+                self._load_records()
+            else:
+                self.view_combo.setCurrentIndex(case_index)
+            self._select_pending_case_record()
+            return True
 
         @staticmethod
         def _sort_database_rows(
@@ -908,9 +950,7 @@ if IDA_AVAILABLE:
                     f"{len(comparison.receipt_ids)}"
                 )
                 if comparison.first_regression:
-                    lines.append(
-                        f"First regression: {comparison.first_regression}"
-                    )
+                    lines.append(f"First regression: {comparison.first_regression}")
                 if comparison.timing_delta_seconds is not None:
                     lines.append(
                         "Timing delta (current-baseline): "
@@ -996,7 +1036,20 @@ if IDA_AVAILABLE:
         ) -> None:
             self._record_rows = project_record_rows(filtered)
             self._render_records()
+            self._select_pending_case_record()
             self._render_action_states()
+
+        def _select_pending_case_record(self) -> bool:
+            pending = self._pending_case_record
+            if pending is None:
+                return False
+            row = _case_record_row_index(self._record_rows, *pending)
+            if row is None:
+                return False
+            self.record_tree.setCurrentIndex(self.record_model.index(row, 0))
+            self.record_tree.scrollTo(self.record_model.index(row, 0))
+            self._pending_case_record = None
+            return True
 
         def _render_records(self) -> None:
             self._rendering = True
@@ -1147,7 +1200,9 @@ if IDA_AVAILABLE:
             action_id = self._selected_cleanup_action()
             state = states.get(action_id)
             self.preview_cleanup_button.setEnabled(bool(state and state.enabled))
-            self.preview_cleanup_button.setToolTip("" if state is None else state.reason)
+            self.preview_cleanup_button.setToolTip(
+                "" if state is None else state.reason
+            )
             self.cleanup_action_combo.setToolTip("" if state is None else state.reason)
             snapshot = self._current_snapshot()
             record = self._current_record_row()
@@ -1188,9 +1243,7 @@ if IDA_AVAILABLE:
             selected_paths = self._selected_database_paths()
             all_paths = tuple(item.path for item in self._databases)
             protected_paths = (
-                ()
-                if self._case_baseline_path is None
-                else (self._case_baseline_path,)
+                () if self._case_baseline_path is None else (self._case_baseline_path,)
             )
             candidate_paths = (
                 all_paths

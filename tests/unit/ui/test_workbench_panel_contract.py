@@ -12,14 +12,19 @@ from d810.manager.workbench_models import (
 )
 
 
-PANEL = Path(__file__).resolve().parents[3] / "src" / "d810" / "ui" / "workbench_panel.py"
+PANEL = (
+    Path(__file__).resolve().parents[3] / "src" / "d810" / "ui" / "workbench_panel.py"
+)
 
 
 def _method_source(name: str) -> str:
     source = PANEL.read_text(encoding="utf-8")
     tree = ast.parse(source, filename=str(PANEL))
     for node in ast.walk(tree):
-        if isinstance(node, ast.ClassDef) and node.name == "DeobfuscationWorkbenchPanel":
+        if (
+            isinstance(node, ast.ClassDef)
+            and node.name == "DeobfuscationWorkbenchPanel"
+        ):
             for item in node.body:
                 if isinstance(item, ast.FunctionDef) and item.name == name:
                     segment = ast.get_source_segment(source, item)
@@ -131,3 +136,13 @@ def test_closed_build_canvas_is_replaced_instead_of_reused() -> None:
     assert can_reuse(None) is False
     assert can_reuse(SimpleNamespace(closed=True)) is False
     assert can_reuse(SimpleNamespace(closed=False)) is True
+
+
+def test_build_canvas_injects_existing_diagnostics_explorer_record_path() -> None:
+    build_source = _method_source("_show_build_canvas")
+    open_source = _method_source("_open_diagnostic_record")
+
+    assert "open_diagnostic_record=self._open_diagnostic_record" in build_source
+    assert "WorkbenchDiagnosticsAdapter" in open_source
+    assert "self._show_diagnostics(adapter)" in open_source
+    assert "panel.open_case_record(finding_id, native_ea)" in open_source
