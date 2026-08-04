@@ -97,8 +97,8 @@ def _context(
 def test_cleanup_family_adapter_pass_invokes_typed_capability():
     capability = _CleanupCapability()
     adapter = CleanupFamilyAdapterPass(
-        legacy_rule=SIMPLE_FLATTENING_CLEANUP_RULE,
-        rule_options={"max_passes": 3},
+        implementation_name=SIMPLE_FLATTENING_CLEANUP_RULE,
+        transform_options={"max_passes": 3},
     )
 
     result = adapter.run(_context(capability))
@@ -110,14 +110,14 @@ def test_cleanup_family_adapter_pass_invokes_typed_capability():
     assert request.func_ea == 0x1000
     assert request.maturity is IRMaturity.GLOBAL_ANALYZED
     assert request.pass_id == SIMPLE_FLATTENING_CLEANUP_PASS_ID
-    assert request.legacy_rule == SIMPLE_FLATTENING_CLEANUP_RULE
-    assert request.rule_options == {"max_passes": 3}
+    assert request.implementation_name == SIMPLE_FLATTENING_CLEANUP_RULE
+    assert request.transform_options == {"max_passes": 3}
 
 
 def test_cleanup_family_adapter_pass_requires_typed_capability():
     adapter = CleanupFamilyAdapterPass(
-        legacy_rule=SIMPLE_FLATTENING_CLEANUP_RULE,
-        rule_options={},
+        implementation_name=SIMPLE_FLATTENING_CLEANUP_RULE,
+        transform_options={},
     )
 
     with pytest.raises(CapabilityNotProvided, match="CleanupFamilyAdapterCapability"):
@@ -127,14 +127,11 @@ def test_cleanup_family_adapter_pass_requires_typed_capability():
 def test_cleanup_family_adapter_registry_builds_cleanup_entry():
     config = PipelineConfig.from_dict(
         {
-            "pass": SIMPLE_FLATTENING_CLEANUP_PASS_ID,
-            "requires": {
-                "capabilities": [CLEANUP_FAMILY_ADAPTER_CAPABILITY],
+            "pass_id": SIMPLE_FLATTENING_CLEANUP_PASS_ID,
+            "requirements": {
+                "required": [CLEANUP_FAMILY_ADAPTER_CAPABILITY],
             },
-            "options": {
-                "legacy_rule": SIMPLE_FLATTENING_CLEANUP_RULE,
-                "max_passes": 3,
-            },
+            "options": {"max_passes": 3},
         }
     )
 
@@ -142,34 +139,30 @@ def test_cleanup_family_adapter_registry_builds_cleanup_entry():
     adapter = spec.pass_factory()
 
     assert spec.pass_id == SIMPLE_FLATTENING_CLEANUP_PASS_ID
-    assert spec.contract.requires.capabilities == frozenset(
-        {CLEANUP_FAMILY_ADAPTER_CAPABILITY}
-    )
+    assert spec.requirements.required == frozenset({CLEANUP_FAMILY_ADAPTER_CAPABILITY})
     assert isinstance(adapter, CleanupFamilyAdapterPass)
-    assert adapter.legacy_rule == SIMPLE_FLATTENING_CLEANUP_RULE
-    assert adapter.rule_options == {"max_passes": 3}
+    assert adapter.implementation_name == SIMPLE_FLATTENING_CLEANUP_RULE
+    assert adapter.transform_options == {"max_passes": 3}
 
 
-def test_cleanup_family_adapter_registry_rejects_mismatched_legacy_rule():
+def test_cleanup_family_adapter_registry_rejects_former_legacy_rule_option():
     config = PipelineConfig.from_dict(
         {
-            "pass": SIMPLE_FLATTENING_CLEANUP_PASS_ID,
+            "pass_id": SIMPLE_FLATTENING_CLEANUP_PASS_ID,
             "options": {"legacy_rule": "JumpFixer"},
         }
     )
 
-    with pytest.raises(PipelineConfigError, match=SIMPLE_FLATTENING_CLEANUP_RULE):
+    with pytest.raises(PipelineConfigError, match="former cleanup"):
         cleanup_family_adapter_pass_registry().build_spec(config)
 
 
 def test_cleanup_family_adapter_registry_rejects_rules_selection():
-    config = PipelineConfig.from_dict(
-        {
-            "pass": SIMPLE_FLATTENING_CLEANUP_PASS_ID,
-            "options": {"legacy_rule": SIMPLE_FLATTENING_CLEANUP_RULE},
-            "rules": {"include": ["cleanup"]},
-        }
-    )
-
     with pytest.raises(PipelineConfigError, match="rules"):
-        cleanup_family_adapter_pass_registry().build_spec(config)
+        PipelineConfig.from_dict(
+            {
+                "pass_id": SIMPLE_FLATTENING_CLEANUP_PASS_ID,
+                "options": {},
+                "rules": {"include": ["cleanup"]},
+            }
+        )

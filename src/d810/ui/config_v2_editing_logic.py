@@ -32,7 +32,7 @@ class ConfigV2ActionState:
 class ConfigV2PipelineRow:
     index: int
     pass_id: str
-    rules_json: str
+    options_json: str
     config_json: str
 
 
@@ -66,17 +66,17 @@ def project_config_v2_document(
     for index, entry in enumerate(pipeline):
         if not isinstance(entry, dict):
             raise ValueError(f"pipeline_v2[{index}] must be an object")
-        pass_id = entry.get("pass_id", entry.get("pass"))
+        pass_id = entry.get("pass_id")
         if not isinstance(pass_id, str) or not pass_id:
             raise ValueError(f"pipeline_v2[{index}] has no stable pass ID")
-        rules = entry.get("rules", {})
-        if not isinstance(rules, dict):
-            raise ValueError(f"pipeline_v2[{index}].rules must be an object")
+        options = entry.get("options", {})
+        if not isinstance(options, dict):
+            raise ValueError(f"pipeline_v2[{index}].options must be an object")
         rows.append(
             ConfigV2PipelineRow(
                 index=index,
                 pass_id=pass_id,
-                rules_json=_pretty_json(rules),
+                options_json=_pretty_json(options),
                 config_json=_pretty_json(entry),
             )
         )
@@ -120,8 +120,7 @@ def config_v2_action_states(
     validation: ConfigV2ProjectValidation,
 ) -> tuple[ConfigV2ActionState, ...]:
     exact = (
-        validation.draft_id == draft.draft_id
-        and validation.revision == draft.revision
+        validation.draft_id == draft.draft_id and validation.revision == draft.revision
     )
     if not exact:
         reason = "Validate the current draft before saving."

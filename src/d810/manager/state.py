@@ -500,20 +500,16 @@ class D810State(metaclass=SingletonMeta):
     ) -> ConfigV2ProjectDraft:
         return self.manager.reorder_config_v2_pass(draft, pass_index, new_index)
 
-    def set_config_v2_pass_rules(
+    def set_config_v2_pass_options(
         self,
         draft: ConfigV2ProjectDraft,
         *,
         pass_index: int,
-        include: typing.Sequence[str],
-        exclude: typing.Sequence[str],
         options: typing.Mapping[str, object],
     ) -> ConfigV2ProjectDraft:
-        return self.manager.set_config_v2_pass_rules(
+        return self.manager.set_config_v2_pass_options(
             draft,
             pass_index=pass_index,
-            include=include,
-            exclude=exclude,
             options=options,
         )
 

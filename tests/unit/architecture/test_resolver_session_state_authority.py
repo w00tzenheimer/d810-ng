@@ -57,7 +57,7 @@ LEGACY_ISLAND_REFERENCE_PATHS = (
     / "conf"
     / "default_unflattening_ollvm_config_v2_canary.json",
     REPO_ROOT / "src" / "d810" / "core" / "config_v2_defaults.py",
-    REPO_ROOT / "src" / "d810" / "passes" / "legacy_flow_rules.py",
+    REPO_ROOT / "src" / "d810" / "passes" / "hook_transform_passes.py",
     REPO_ROOT / "tools" / "scripts" / "rhad_investigation" / "README.md",
 )
 LEGACY_PREOPT_PROBE_PATH = (

@@ -20,7 +20,7 @@ from d810.passes.constant_simplification import (
     CONSTANT_SIMPLIFICATION_PASS_ID,
     constant_simplification_hook_rules,
 )
-from d810.passes.legacy_flow_rules import build_legacy_flow_rule_pass
+from d810.passes.hook_transform_passes import build_hook_transform_pass
 from d810.passes.mba_simplify import MBA_SIMPLIFY_PASS_ID, build_mba_simplify_pass
 from d810.passes.pass_pipeline import PipelineConfig, PipelineConfigError
 from d810.passes.pipeline_config_parser import (
@@ -74,59 +74,19 @@ def _state_machine_rule_config(
             f"sequence: {list(STATE_MACHINE_NATIVE_PASS_IDS)}"
         )
 
-    options_payloads: list[dict[str, object]] = []
-    direct_thresholds: list[int] = []
-    option_shapes: set[str] = set()
-    for config in native_configs:
-        options = dict(config.options)
-        legacy_rule = options.get("legacy_rule")
-        if legacy_rule is None:
-            option_shapes.add("typed")
-            direct_thresholds.append(
-                state_machine_cff_options_from_config(config).min_state_constant
-            )
-            continue
-        option_shapes.add("migrated")
-        if legacy_rule != STATE_MACHINE_UNFLATTENER_RULE:
-            raise PipelineConfigError(
-                "state-machine native spine entries must preserve "
-                f"options.legacy_rule={STATE_MACHINE_UNFLATTENER_RULE!r}"
-            )
-        native_pipeline = tuple(options.get("native_pipeline", ()))
-        if native_pipeline != STATE_MACHINE_NATIVE_PASS_IDS:
-            raise PipelineConfigError(
-                "state-machine native spine entries must preserve the native "
-                "pipeline pass list"
-            )
-        legacy_options = options.get("legacy_rule_options", {})
-        if not isinstance(legacy_options, dict):
-            raise PipelineConfigError(
-                "state-machine native spine entries require mapping "
-                "options.legacy_rule_options"
-            )
-        options_payloads.append(dict(legacy_options))
-
-    if len(option_shapes) != 1:
+    thresholds = tuple(
+        state_machine_cff_options_from_config(config).min_state_constant
+        for config in native_configs
+    )
+    first = thresholds[0]
+    if any(value != first for value in thresholds[1:]):
         raise PipelineConfigError(
-            "state-machine native spine cannot mix typed and migrated options"
+            "state-machine native spine entries disagree on typed options"
         )
-    if option_shapes == {"typed"}:
-        first_threshold = direct_thresholds[0]
-        if any(value != first_threshold for value in direct_thresholds[1:]):
-            raise PipelineConfigError(
-                "state-machine native spine entries disagree on typed options"
-            )
-        return _rule_config(
-            STATE_MACHINE_UNFLATTENER_RULE,
-            {"min_state_constant": first_threshold},
-        )
-
-    first = options_payloads[0]
-    if any(payload != first for payload in options_payloads[1:]):
-        raise PipelineConfigError(
-            "state-machine native spine entries disagree on legacy_rule_options"
-        )
-    return _rule_config(STATE_MACHINE_UNFLATTENER_RULE, first)
+    return _rule_config(
+        STATE_MACHINE_UNFLATTENER_RULE,
+        {"min_state_constant": first},
+    )
 
 
 def _instruction_rules_from(config: PipelineConfig) -> tuple[RuleConfiguration, ...]:
@@ -145,13 +105,13 @@ def _instruction_rules_from(config: PipelineConfig) -> tuple[RuleConfiguration, 
 
 
 def _flow_rule_from(config: PipelineConfig) -> RuleConfiguration:
-    adapter = build_legacy_flow_rule_pass(config)
-    return _rule_config(adapter.legacy_rule, adapter.rule_options)
+    adapter = build_hook_transform_pass(config)
+    return _rule_config(adapter.implementation_name, adapter.transform_options)
 
 
 def _cleanup_family_rule_from(config: PipelineConfig) -> RuleConfiguration:
     adapter = build_cleanup_family_adapter_pass(config)
-    return _rule_config(adapter.legacy_rule, adapter.rule_options)
+    return _rule_config(adapter.implementation_name, adapter.transform_options)
 
 
 def _dedupe_rule_configs(
@@ -198,17 +158,6 @@ def _validate_constant_simplification_ownership(
                 "constant-simplification cannot coexist with legacy constant pass "
                 f"{config.pass_id!r}"
             )
-        if config.pass_id == MBA_SIMPLIFY_PASS_ID:
-            selected = set(config.rules.include) | set(config.rules.include_order)
-            conflict = selected & {
-                "FoldReadonlyDataRule",
-                "ConstantSubtreeFoldRule",
-            }
-            if conflict:
-                raise PipelineConfigError(
-                    "constant-simplification owns these mba-simplify rules: "
-                    f"{sorted(conflict)}"
-                )
 
 
 def pipeline_v2_hook_activation(project_config) -> PipelineV2HookActivation:

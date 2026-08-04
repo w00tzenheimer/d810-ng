@@ -10,7 +10,7 @@ import pathlib
 class ConfigV2EditableField(str, enum.Enum):
     DESCRIPTION = "description"
     PIPELINE_SELECTION = "pipeline_selection"
-    PASS_RULES = "pass_rules"
+    PASS_OPTIONS = "pass_options"
     ROUTER_RESOLUTION = "router_resolution"
 
 

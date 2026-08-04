@@ -10,73 +10,183 @@
     },
     "pipeline_v2": [
       {
-        "pass": "single-trip-loop-peel",
-        "scope": "block",
-        "maturity": {
-          "range": {
+        "pass_id": "single-trip-loop-peel",
+        "maturity_gates": [],
+        "granularity": "function",
+        "requirements": {
+          "required": []
+        },
+        "analyses": {
+          "required": [],
+          "provided": []
+        },
+        "preservation": {
+          "all_preserved": true,
+          "kept": []
+        },
+        "scheduler_policy": "worklist",
+        "backend_route": "mutation_backend",
+        "safety_policy": {
+          "name": "default",
+          "golden_required": false
+        },
+        "contract": {
+          "scope": "block",
+          "maturity": {
             "min": "ir.canonical",
-            "max": "ir.global.optimized"
+            "max": "ir.global.optimized",
+            "preferred": null
+          },
+          "requires": {
+            "capabilities": [
+              "hook_transform_adapter"
+            ],
+            "analyses": [],
+            "evidence": [],
+            "facts": {
+              "required": [],
+              "optional": []
+            }
+          },
+          "outputs": {
+            "facts": [],
+            "evidence": []
+          },
+          "preserves": {
+            "analyses": [],
+            "facts": []
+          },
+          "invalidates": {
+            "analyses": [],
+            "facts": []
+          },
+          "safety": {
+            "policy": "default",
+            "requires_oracle": false
           }
         },
-        "requires": {
-          "capabilities": [
-            "legacy_flow_rule_adapter"
-          ]
-        },
-        "migration": {
-          "source_config": "bogus_loops.json",
-          "source_section": "blk_rules",
-          "source_rule": "SingleTripLoopPeel"
-        },
-        "options": {
-          "legacy_rule": "SingleTripLoopPeel"
-        }
+        "workflow_stage": "canonical_pipeline",
+        "options": {}
       },
       {
-        "pass": "mba-state-preconditioner",
-        "scope": "block",
-        "maturity": {
-          "range": {
+        "pass_id": "mba-state-preconditioner",
+        "maturity_gates": [],
+        "granularity": "function",
+        "requirements": {
+          "required": []
+        },
+        "analyses": {
+          "required": [],
+          "provided": []
+        },
+        "preservation": {
+          "all_preserved": true,
+          "kept": []
+        },
+        "scheduler_policy": "worklist",
+        "backend_route": "mutation_backend",
+        "safety_policy": {
+          "name": "default",
+          "golden_required": false
+        },
+        "contract": {
+          "scope": "block",
+          "maturity": {
             "min": "ir.canonical",
-            "max": "ir.global.optimized"
+            "max": "ir.global.optimized",
+            "preferred": null
+          },
+          "requires": {
+            "capabilities": [
+              "hook_transform_adapter"
+            ],
+            "analyses": [],
+            "evidence": [],
+            "facts": {
+              "required": [],
+              "optional": []
+            }
+          },
+          "outputs": {
+            "facts": [],
+            "evidence": []
+          },
+          "preserves": {
+            "analyses": [],
+            "facts": []
+          },
+          "invalidates": {
+            "analyses": [],
+            "facts": []
+          },
+          "safety": {
+            "policy": "default",
+            "requires_oracle": false
           }
         },
-        "requires": {
-          "capabilities": [
-            "legacy_flow_rule_adapter"
-          ]
-        },
-        "migration": {
-          "source_config": "bogus_loops.json",
-          "source_section": "blk_rules",
-          "source_rule": "MbaStatePreconditioner"
-        },
+        "workflow_stage": "canonical_pipeline",
         "options": {
-          "legacy_rule": "MbaStatePreconditioner",
           "max_optimize_local_rounds": 1
         }
       },
       {
-        "pass": "jump-fixer",
-        "scope": "block",
-        "maturity": {
-          "range": {
+        "pass_id": "jump-fixer",
+        "maturity_gates": [],
+        "granularity": "function",
+        "requirements": {
+          "required": []
+        },
+        "analyses": {
+          "required": [],
+          "provided": []
+        },
+        "preservation": {
+          "all_preserved": true,
+          "kept": []
+        },
+        "scheduler_policy": "worklist",
+        "backend_route": "mutation_backend",
+        "safety_policy": {
+          "name": "default",
+          "golden_required": false
+        },
+        "contract": {
+          "scope": "block",
+          "maturity": {
             "min": "ir.canonical",
-            "max": "ir.global.optimized"
+            "max": "ir.global.optimized",
+            "preferred": null
+          },
+          "requires": {
+            "capabilities": [
+              "hook_transform_adapter"
+            ],
+            "analyses": [],
+            "evidence": [],
+            "facts": {
+              "required": [],
+              "optional": []
+            }
+          },
+          "outputs": {
+            "facts": [],
+            "evidence": []
+          },
+          "preserves": {
+            "analyses": [],
+            "facts": []
+          },
+          "invalidates": {
+            "analyses": [],
+            "facts": []
+          },
+          "safety": {
+            "policy": "default",
+            "requires_oracle": false
           }
         },
-        "requires": {
-          "capabilities": [
-            "legacy_flow_rule_adapter"
-          ]
-        },
-        "migration": {
-          "source_config": "bogus_loops.json",
-          "source_section": "blk_rules",
-          "source_rule": "JumpFixer"
-        },
+        "workflow_stage": "canonical_pipeline",
         "options": {
-          "legacy_rule": "JumpFixer",
           "enabled_rules": [
             "CompareConstantRule1",
             "CompareConstantRule2",

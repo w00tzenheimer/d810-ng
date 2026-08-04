@@ -66,7 +66,7 @@ def test_constant_simplification_bundle_expands_to_private_live_stages():
             "pipeline_v2_mode": "config-v2",
             "pipeline_v2": [
                 {
-                    "pass": "constant-simplification",
+                    "pass_id": "constant-simplification",
                     "options": {"memory_policy": "strict"},
                 }
             ],
@@ -89,29 +89,37 @@ def test_constant_simplification_bundle_expands_to_private_live_stages():
 
 
 @pytest.mark.parametrize(
-    "conflict",
+    ("conflict", "message"),
     [
-        {
-            "pass": "forward-constant-propagation",
-            "options": {"legacy_rule": "ForwardConstantPropagationRule"},
-        },
-        {
-            "pass": "mba-simplify",
-            "rules": {
-                "include": ["FoldReadonlyDataRule"],
-                "include_order": ["FoldReadonlyDataRule"],
+        (
+            {
+                "pass_id": "forward-constant-propagation",
+                "options": {},
             },
-        },
+            "constant-simplification",
+        ),
+        (
+            {
+                "pass_id": "mba-simplify",
+                "rules": {
+                    "include": ["FoldReadonlyDataRule"],
+                    "include_order": ["FoldReadonlyDataRule"],
+                },
+            },
+            "unknown field: rules",
+        ),
     ],
 )
-def test_constant_bundle_rejects_duplicate_legacy_constant_stages(conflict):
+def test_constant_bundle_rejects_duplicate_or_former_constant_selection(
+    conflict, message
+):
     project = ProjectConfiguration(
         path=Path("constant-conflict.runtime-config-v2.json"),
         additional_configuration={
             "pipeline_v2_mode": "config-v2",
             "pipeline_v2": [
                 {
-                    "pass": "constant-simplification",
+                    "pass_id": "constant-simplification",
                     "options": {"memory_policy": "strict"},
                 },
                 conflict,
@@ -119,7 +127,7 @@ def test_constant_bundle_rejects_duplicate_legacy_constant_stages(conflict):
         },
     )
 
-    with pytest.raises(PipelineConfigError, match="constant-simplification"):
+    with pytest.raises(PipelineConfigError, match=message):
         pipeline_v2_hook_activation(project)
 
 
@@ -167,10 +175,7 @@ def test_hodur_bridge_derives_unflattener_trigger_and_simple_flow_rule():
         "JumpFixer",
     ]
     unflattener = activation.block_rules[0]
-    assert unflattener.config["max_state_constants"] == 100
-    assert unflattener.config["min_state_constant"] == 16777216
-    assert unflattener.config["enable_transition_validator"] is True
-    assert unflattener.config["enable_transition_uddu_validator"] is True
+    assert unflattener.config == {"min_state_constant": 16777216}
 
 
 def test_state_cff_bridge_accepts_typed_direct_threshold_on_the_complete_spine():
@@ -180,7 +185,7 @@ def test_state_cff_bridge_accepts_typed_direct_threshold_on_the_complete_spine()
             "pipeline_v2_mode": "config-v2",
             "pipeline_v2": [
                 {
-                    "pass": pass_id,
+                    "pass_id": pass_id,
                     "options": {"min_state_constant": 0x8000},
                 }
                 for pass_id in STATE_MACHINE_NATIVE_PASS_IDS
@@ -204,7 +209,7 @@ def test_state_cff_bridge_rejects_disagreeing_typed_thresholds():
             "pipeline_v2_mode": "config-v2",
             "pipeline_v2": [
                 {
-                    "pass": pass_id,
+                    "pass_id": pass_id,
                     "options": {
                         "min_state_constant": 0x8000 + index,
                     },
@@ -313,12 +318,12 @@ def test_unsupported_non_spine_pass_fails_closed():
             "pipeline_v2_mode": "config-v2",
             "pipeline_v2": [
                 {
-                    "pass": "block-level-egglog-optimizer",
-                    "options": {"legacy_rule": "BlockLevelEgglogOptimizer"},
+                    "pass_id": "block-level-egglog-optimizer",
+                    "options": {},
                 }
             ],
         },
     )
 
-    with pytest.raises(PipelineConfigError, match="unsupported legacy flow-rule"):
+    with pytest.raises(PipelineConfigError, match="unsupported hook-transform pass id"):
         pipeline_v2_hook_activation(project)

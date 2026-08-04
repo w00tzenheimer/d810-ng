@@ -30,7 +30,9 @@ def _validation(*, valid: bool = True, revision: int = 2) -> ConfigV2ProjectVali
     diagnostics = (
         ()
         if valid
-        else (ConfigV2EditDiagnostic("invalid-pipeline", "unknown pass", "pipeline_v2"),)
+        else (
+            ConfigV2EditDiagnostic("invalid-pipeline", "unknown pass", "pipeline_v2"),
+        )
     )
     return ConfigV2ProjectValidation(
         draft_id="draft",
@@ -67,7 +69,10 @@ def test_serializer_rows_are_manifest_driven_and_preserve_declared_order():
 
 
 def test_save_action_requires_exact_current_valid_identity():
-    ready = {item.action_id: item for item in logic.config_v2_action_states(_draft(), _validation())}
+    ready = {
+        item.action_id: item
+        for item in logic.config_v2_action_states(_draft(), _validation())
+    }
     invalid = {
         item.action_id: item
         for item in logic.config_v2_action_states(_draft(), _validation(valid=False))
@@ -99,14 +104,10 @@ def test_document_projection_exposes_typed_fields_and_read_only_complete_payload
             "pipeline_v2": [
                 {
                     "pass_id": "mba-simplify",
-                    "rules": {
-                        "include": ["RuleA"],
-                        "exclude": [],
-                        "options": {"budget": 3},
-                    },
+                    "options": {"budget": 3},
                     "unknown_pass_metadata": "preserve-me",
                 },
-                {"pass": "jump-fixer", "options": {}},
+                {"pass_id": "jump-fixer", "options": {}},
             ],
         },
     }
@@ -127,7 +128,7 @@ def test_document_projection_exposes_typed_fields_and_read_only_complete_payload
         "mba-simplify",
         "jump-fixer",
     ]
-    assert json.loads(view.pipeline_rows[0].rules_json)["options"] == {"budget": 3}
+    assert json.loads(view.pipeline_rows[0].options_json) == {"budget": 3}
     assert json.loads(view.routing_json)["deny"] == ["tigress"]
     assert json.loads(view.complete_document_json)["migration_metadata"] == {
         "schema": 7
@@ -156,4 +157,6 @@ def test_config_v2_logic_has_no_qt_ida_registry_or_persistence_imports():
     )
 
     assert not any(name.startswith(("ida", "PyQt", "PySide")) for name in imports)
-    assert not any(token in name for name in imports for token in ("registry", "persistence"))
+    assert not any(
+        token in name for name in imports for token in ("registry", "persistence")
+    )

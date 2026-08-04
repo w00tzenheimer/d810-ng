@@ -10,23 +10,62 @@
     },
     "pipeline_v2": [
       {
-        "pass": "mba-simplify",
-        "scope": "expression",
-        "maturity": {
-          "range": {
+        "pass_id": "mba-simplify",
+        "maturity_gates": [],
+        "granularity": "function",
+        "requirements": {
+          "required": []
+        },
+        "analyses": {
+          "required": [],
+          "provided": []
+        },
+        "preservation": {
+          "all_preserved": true,
+          "kept": []
+        },
+        "scheduler_policy": "worklist",
+        "backend_route": "mutation_backend",
+        "safety_policy": {
+          "name": "default",
+          "golden_required": false
+        },
+        "contract": {
+          "scope": "expression",
+          "maturity": {
             "min": "ir.canonical",
-            "max": "ir.global.optimized"
+            "max": "ir.global.optimized",
+            "preferred": null
+          },
+          "requires": {
+            "capabilities": [
+              "local_instruction_rewrite"
+            ],
+            "analyses": [],
+            "evidence": [],
+            "facts": {
+              "required": [],
+              "optional": []
+            }
+          },
+          "outputs": {
+            "facts": [],
+            "evidence": []
+          },
+          "preserves": {
+            "analyses": [],
+            "facts": []
+          },
+          "invalidates": {
+            "analyses": [],
+            "facts": []
+          },
+          "safety": {
+            "policy": "default",
+            "requires_oracle": false
           }
         },
-        "requires": {
-          "capabilities": [
-            "local_instruction_rewrite"
-          ]
-        },
-        "migration": {
-          "source_config": "eidolon.json",
-          "source_section": "ins_rules"
-        },
+        "workflow_stage": "canonical_pipeline",
         "options": {
           "transforms": [
             "add-xor-1",

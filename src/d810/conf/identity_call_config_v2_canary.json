@@ -10,26 +10,63 @@
     },
     "pipeline_v2": [
       {
-        "pass": "identity-call-resolver",
-        "scope": "block",
-        "maturity": {
-          "range": {
+        "pass_id": "identity-call-resolver",
+        "maturity_gates": [],
+        "granularity": "function",
+        "requirements": {
+          "required": []
+        },
+        "analyses": {
+          "required": [],
+          "provided": []
+        },
+        "preservation": {
+          "all_preserved": true,
+          "kept": []
+        },
+        "scheduler_policy": "worklist",
+        "backend_route": "mutation_backend",
+        "safety_policy": {
+          "name": "default",
+          "golden_required": false
+        },
+        "contract": {
+          "scope": "block",
+          "maturity": {
             "min": "ir.canonical",
-            "max": "ir.global.optimized"
+            "max": "ir.global.optimized",
+            "preferred": null
+          },
+          "requires": {
+            "capabilities": [
+              "hook_transform_adapter"
+            ],
+            "analyses": [],
+            "evidence": [],
+            "facts": {
+              "required": [],
+              "optional": []
+            }
+          },
+          "outputs": {
+            "facts": [],
+            "evidence": []
+          },
+          "preserves": {
+            "analyses": [],
+            "facts": []
+          },
+          "invalidates": {
+            "analyses": [],
+            "facts": []
+          },
+          "safety": {
+            "policy": "default",
+            "requires_oracle": false
           }
         },
-        "requires": {
-          "capabilities": [
-            "legacy_flow_rule_adapter"
-          ]
-        },
-        "migration": {
-          "source_config": "identity_call.json",
-          "source_section": "blk_rules",
-          "source_rule": "IdentityCallResolver"
-        },
+        "workflow_stage": "canonical_pipeline",
         "options": {
-          "legacy_rule": "IdentityCallResolver",
           "enable_experimental": true,
           "max_trampoline_depth": 32,
           "max_search_instructions": 30

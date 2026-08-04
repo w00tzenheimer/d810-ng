@@ -111,19 +111,6 @@ def parse_mba_simplify_options(
         raise PipelineConfigError(
             f"expected {MBA_SIMPLIFY_PASS_ID!r}, got {config.pass_id!r}"
         )
-    rules = config.rules
-    if (
-        rules.include_groups
-        or rules.include
-        or rules.include_order
-        or rules.exclude_groups
-        or rules.exclude
-        or rules.exclude_order
-        or rules.options
-    ):
-        raise PipelineConfigError(
-            "mba-simplify uses options.transforms; rules.* is not executable"
-        )
     unknown_option_names = tuple(
         sorted(set(config.options) - {"transforms", "transform_options"})
     )

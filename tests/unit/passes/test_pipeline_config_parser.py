@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import warnings
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,7 +13,6 @@ from d810.families.state_machine_cff.pipeline import (
     standard_state_machine_passes,
     state_machine_pass_registry,
 )
-from d810.passes.contract_vocabulary import ContractVocabularyWarning
 from d810.passes.pass_pipeline import (
     BackendRoute,
     PipelineConfigError,
@@ -146,53 +144,6 @@ _REMAINING_GENERATED_SHADOWS = (
 )
 
 
-def _legacy_recover_state_machine_contract_payload():
-    return {
-        "pass": "recover-state-machine",
-        "scope": "function",
-        "maturity": {
-            "min": "ir.call.modeled",
-            "max": "ir.global.analyzed",
-            "preferred": "ir.call.modeled",
-        },
-        "requires": {
-            "capabilities": ["live_mba", "z3_solver"],
-            "analyses": ["def_use", "dominators", "value_ranges"],
-            "evidence": [
-                "state_variable_writes",
-                "dispatcher_predicates",
-                "branch_targets",
-            ],
-            "facts": {
-                "optional": ["carrier_store_candidates"],
-                "required": [],
-            },
-        },
-        "outputs": {
-            "facts": [
-                "state_transition",
-                "recovered_cfg_edge",
-                "dispatcher_family",
-            ],
-            "evidence": [
-                "branch_targets",
-            ],
-        },
-        "preserves": {
-            "analyses": ["function_boundaries"],
-            "facts": ["raw_instruction_addresses"],
-        },
-        "invalidates": {
-            "analyses": ["dominators", "postdominators", "loop_info", "regions"],
-            "facts": ["stale_cfg_shape"],
-        },
-        "safety": {
-            "policy": "guarded-rewrite",
-            "requires_oracle": False,
-        },
-    }
-
-
 def test_missing_pipeline_v2_is_inert_for_existing_project_configs():
     assert pipeline_configs_from_project_config({}) == ()
     project = SimpleNamespace(additional_configuration={"enable_pass_pipeline": True})
@@ -302,100 +253,6 @@ def test_pipeline_v2_shadow_parse_from_project_like_object():
     assert configs[0].pass_id == "recover_dispatcher"
     assert configs[0].maturity_gates == frozenset({IRMaturity.GLOBAL_ANALYZED})
     assert configs[0].backend_route is BackendRoute.ANALYSIS_ONLY
-
-
-def test_pipeline_v2_warns_for_legacy_native_deobfuscation_contract_aliases():
-    with pytest.warns(ContractVocabularyWarning) as warnings:
-        configs = pipeline_configs_from_project_config(
-            {"pipeline_v2": [_legacy_recover_state_machine_contract_payload()]}
-        )
-
-    assert len(configs) == 1
-    warning_text = "\n".join(str(warning.message) for warning in warnings)
-    assert "state_variable_writes->ir.state_variable_write" in warning_text
-    assert "dispatcher_predicates->role.dispatcher_predicate" in warning_text
-    assert "branch_targets->ir.branch_target" in warning_text
-    assert "dispatcher_family->role.dispatcher" in warning_text
-    assert "carrier_store_candidates->ir.memory_def.candidate" in warning_text
-    assert "state_transition->recovered.state_transition" in warning_text
-    assert "recovered_cfg_edge->recovered.cfg_edge" in warning_text
-    assert "stale_cfg_shape->ir.cfg_shape.stale" in warning_text
-    config = configs[0]
-    assert config.pass_id == "recover-state-machine"
-    assert config.contract.scope.value == "function"
-    assert config.contract.maturity.min is IRMaturity.CALL_MODELED
-    assert config.contract.maturity.max is IRMaturity.GLOBAL_ANALYZED
-    assert config.contract.maturity.preferred is IRMaturity.CALL_MODELED
-    assert config.contract.requires.capabilities == frozenset({"live_mba", "z3_solver"})
-    assert config.contract.requires.analyses == frozenset(
-        {"def_use", "dominators", "value_ranges"}
-    )
-    assert config.contract.requires.evidence == frozenset(
-        {"state_variable_writes", "dispatcher_predicates", "branch_targets"}
-    )
-    assert config.contract.requires.facts.required == frozenset()
-    assert config.contract.requires.facts.optional == frozenset(
-        {"carrier_store_candidates"}
-    )
-    assert config.contract.outputs.facts == frozenset(
-        {"state_transition", "recovered_cfg_edge", "dispatcher_family"}
-    )
-    assert config.contract.outputs.evidence == frozenset({"branch_targets"})
-    assert config.contract.preserves.analyses == frozenset({"function_boundaries"})
-    assert config.contract.preserves.facts == frozenset({"raw_instruction_addresses"})
-    assert config.contract.invalidates.analyses == frozenset(
-        {"dominators", "postdominators", "loop_info", "regions"}
-    )
-    assert config.contract.invalidates.facts == frozenset({"stale_cfg_shape"})
-    assert config.contract.safety.policy == "guarded-rewrite"
-    assert config.contract.safety.requires_oracle is False
-
-
-def test_pipeline_v2_canonical_contract_names_do_not_warn():
-    payload = _legacy_recover_state_machine_contract_payload()
-    payload["requires"]["evidence"] = [
-        "ir.state_variable_write",
-        "role.dispatcher_predicate",
-        "ir.branch_target",
-        "ir.memory_def.candidate",
-        "ir.branch_cond.candidate",
-    ]
-    payload["requires"]["facts"]["optional"] = ["effect.memory_def.observable"]
-    payload["outputs"]["facts"] = [
-        "recovered.state_transition",
-        "recovered.cfg_edge",
-        "role.dispatcher",
-    ]
-    payload["outputs"]["evidence"] = [
-        "ir.branch_target",
-        "ir.induction_var.candidate",
-    ]
-    payload["invalidates"]["facts"] = ["ir.cfg_shape.stale"]
-
-    with warnings.catch_warnings(record=True) as recorded:
-        warnings.simplefilter("always")
-        configs = pipeline_configs_from_project_config({"pipeline_v2": [payload]})
-
-    assert configs[0].contract.requires.evidence == frozenset(
-        {
-            "ir.state_variable_write",
-            "role.dispatcher_predicate",
-            "ir.branch_target",
-            "ir.memory_def.candidate",
-            "ir.branch_cond.candidate",
-        }
-    )
-    assert configs[0].contract.outputs.facts == frozenset(
-        {"recovered.state_transition", "recovered.cfg_edge", "role.dispatcher"}
-    )
-    assert configs[0].contract.outputs.evidence == frozenset(
-        {"ir.branch_target", "ir.induction_var.candidate"}
-    )
-    assert not [
-        warning
-        for warning in recorded
-        if issubclass(warning.category, ContractVocabularyWarning)
-    ]
 
 
 def test_malformed_pipeline_v2_fails_clearly():

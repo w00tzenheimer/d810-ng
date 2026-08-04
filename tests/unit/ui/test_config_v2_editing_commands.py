@@ -16,46 +16,36 @@ def test_adapter_delegates_every_edit_to_state_and_revalidates() -> None:
     state = SimpleNamespace(
         get_config_v2_serializer_manifest=lambda: ("manifest",),
         get_workbench_recipe_catalog=lambda: ("catalog",),
-        create_config_v2_project_draft=lambda destination: events.append(
-            ("create", destination)
-        )
-        or draft,
-        materialize_recipe_as_config_v2=lambda candidate, value: events.append(
-            ("materialize", candidate, value)
-        )
-        or edited,
-        validate_config_v2_project_draft=lambda candidate: events.append(
-            ("validate", candidate)
-        )
-        or validation,
-        set_config_v2_description=lambda candidate, value: events.append(
-            ("description", candidate, value)
-        )
-        or edited,
-        add_config_v2_pass=lambda candidate, pass_id, index=None: events.append(
-            ("add", candidate, pass_id, index)
-        )
-        or edited,
-        remove_config_v2_pass=lambda candidate, index: events.append(
-            ("remove", candidate, index)
-        )
-        or edited,
-        reorder_config_v2_pass=lambda candidate, index, new_index: events.append(
-            ("reorder", candidate, index, new_index)
-        )
-        or edited,
-        set_config_v2_pass_rules=lambda candidate, **kwargs: events.append(
-            ("rules", candidate, kwargs)
-        )
-        or edited,
-        set_config_v2_routing_override=lambda candidate, **kwargs: events.append(
-            ("routing", candidate, kwargs)
-        )
-        or edited,
-        save_and_reload_config_v2_project=lambda candidate, checked: events.append(
-            ("save", candidate, checked)
-        )
-        or "saved",
+        create_config_v2_project_draft=lambda destination: (
+            events.append(("create", destination)) or draft
+        ),
+        materialize_recipe_as_config_v2=lambda candidate, value: (
+            events.append(("materialize", candidate, value)) or edited
+        ),
+        validate_config_v2_project_draft=lambda candidate: (
+            events.append(("validate", candidate)) or validation
+        ),
+        set_config_v2_description=lambda candidate, value: (
+            events.append(("description", candidate, value)) or edited
+        ),
+        add_config_v2_pass=lambda candidate, pass_id, index=None: (
+            events.append(("add", candidate, pass_id, index)) or edited
+        ),
+        remove_config_v2_pass=lambda candidate, index: (
+            events.append(("remove", candidate, index)) or edited
+        ),
+        reorder_config_v2_pass=lambda candidate, index, new_index: (
+            events.append(("reorder", candidate, index, new_index)) or edited
+        ),
+        set_config_v2_pass_options=lambda candidate, **kwargs: (
+            events.append(("options", candidate, kwargs)) or edited
+        ),
+        set_config_v2_routing_override=lambda candidate, **kwargs: (
+            events.append(("routing", candidate, kwargs)) or edited
+        ),
+        save_and_reload_config_v2_project=lambda candidate, checked: (
+            events.append(("save", candidate, checked)) or "saved"
+        ),
     )
     destination = Path("/tmp/profile.json")
     adapter = ConfigV2EditingAdapter(state, destination=destination, recipe=recipe)
@@ -67,11 +57,9 @@ def test_adapter_delegates_every_edit_to_state_and_revalidates() -> None:
     assert adapter.add_pass(draft, "jump-fixer", index=1) == (edited, validation)
     assert adapter.remove_pass(draft, 0) == (edited, validation)
     assert adapter.reorder_pass(draft, 0, 1) == (edited, validation)
-    assert adapter.set_pass_rules(
+    assert adapter.set_pass_options(
         draft,
         pass_index=0,
-        include=("A",),
-        exclude=("B",),
         options={"x": 1},
     ) == (edited, validation)
     assert adapter.set_routing_override(
@@ -103,10 +91,9 @@ def test_adapter_retargets_a_draft_and_revalidates_without_reloading() -> None:
     validation = object()
     events: list[object] = []
     state = SimpleNamespace(
-        validate_config_v2_project_draft=lambda candidate: events.append(
-            ("validate", candidate)
-        )
-        or validation,
+        validate_config_v2_project_draft=lambda candidate: (
+            events.append(("validate", candidate)) or validation
+        ),
     )
     adapter = ConfigV2EditingAdapter(state, destination=Path("/tmp/old.json"))
 

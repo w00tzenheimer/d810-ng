@@ -50,27 +50,10 @@ class ConstantSimplificationPass(PipelinePass):
         return PassResult()
 
 
-def _rules_are_empty(config: PipelineConfig) -> bool:
-    rules = config.rules
-    return not (
-        rules.include_groups
-        or rules.include
-        or rules.include_order
-        or rules.exclude_groups
-        or rules.exclude
-        or rules.exclude_order
-        or rules.options
-    )
-
-
 def _parse_options(config: PipelineConfig) -> ConstantSimplificationOptions:
     if config.pass_id != CONSTANT_SIMPLIFICATION_PASS_ID:
         raise PipelineConfigError(
             f"expected {CONSTANT_SIMPLIFICATION_PASS_ID!r}, got {config.pass_id!r}"
-        )
-    if not _rules_are_empty(config):
-        raise PipelineConfigError(
-            "constant-simplification owns its private rules; rules.* must be empty"
         )
     unknown = tuple(sorted(set(config.options) - _OPTION_NAMES))
     if unknown:

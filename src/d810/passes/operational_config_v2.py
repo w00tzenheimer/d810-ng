@@ -6,7 +6,7 @@ from d810.passes.cleanup_family_adapter import register_cleanup_family_adapter_p
 from d810.passes.constant_simplification import (
     register_constant_simplification_pass,
 )
-from d810.passes.legacy_flow_rules import register_legacy_flow_rule_passes
+from d810.passes.hook_transform_passes import register_hook_transform_passes
 from d810.passes.mba_simplify import register_mba_simplify_pass
 from d810.passes.registry import PassRegistry
 from d810.passes.state_machine_spine import register_state_machine_passes
@@ -19,7 +19,7 @@ def register_operational_config_v2_passes(registry: PassRegistry) -> PassRegistr
     register_mba_simplify_pass(registry)
     register_constant_simplification_pass(registry)
     register_state_machine_passes(registry)
-    register_legacy_flow_rule_passes(registry)
+    register_hook_transform_passes(registry)
     register_cleanup_family_adapter_passes(registry)
     return registry
 

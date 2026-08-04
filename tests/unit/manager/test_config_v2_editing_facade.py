@@ -53,7 +53,9 @@ def _assigned_strings(path: Path, name: str) -> set[str]:
 
 def test_manager_owns_config_v2_editor_and_exposes_structured_operations():
     path = _ROOT / "src/d810/manager/manager.py"
-    assert "ConfigV2EditingService" in _calls(_method(path, "D810Manager", "__post_init__"))
+    assert "ConfigV2EditingService" in _calls(
+        _method(path, "D810Manager", "__post_init__")
+    )
     expected = {
         "get_config_v2_serializer_manifest": "serializer_manifest",
         "create_config_v2_project_draft": "create_draft",
@@ -62,7 +64,7 @@ def test_manager_owns_config_v2_editor_and_exposes_structured_operations():
         "add_config_v2_pass": "add_pass",
         "remove_config_v2_pass": "remove_pass",
         "reorder_config_v2_pass": "reorder_pass",
-        "set_config_v2_pass_rules": "set_pass_rules",
+        "set_config_v2_pass_options": "set_pass_options",
         "set_config_v2_routing_override": "set_routing_override",
         "materialize_recipe_as_config_v2": "materialize_recipe",
         "save_config_v2_project": "save",

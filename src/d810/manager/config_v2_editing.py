@@ -53,10 +53,10 @@ _SERIALIZERS = (
         ("additional_configuration", "pipeline_v2"),
     ),
     ConfigV2FieldSerializer(
-        ConfigV2EditableField.PASS_RULES,
-        "Pass rule selection",
-        "rule-selection",
-        ("additional_configuration", "pipeline_v2", "*", "rules"),
+        ConfigV2EditableField.PASS_OPTIONS,
+        "Typed pass options",
+        "object",
+        ("additional_configuration", "pipeline_v2", "*", "options"),
     ),
     ConfigV2FieldSerializer(
         ConfigV2EditableField.ROUTER_RESOLUTION,
@@ -100,7 +100,7 @@ def _pipeline(document: dict[str, object]) -> list[dict[str, object]]:
 
 
 def _pass_id(entry: Mapping[str, object]) -> str:
-    value = entry.get("pass_id", entry.get("pass"))
+    value = entry.get("pass_id")
     if not isinstance(value, str) or not value:
         raise ConfigV2EditError("pipeline entry pass ID must be a non-empty string")
     return value
@@ -142,7 +142,9 @@ class ConfigV2EditingService:
             raw = source.read_bytes()
             document = json.loads(raw.decode("utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError) as error:
-            raise ConfigV2EditError(f"cannot read complete runtime project: {error}") from error
+            raise ConfigV2EditError(
+                f"cannot read complete runtime project: {error}"
+            ) from error
         if not isinstance(document, dict):
             raise ConfigV2EditError("runtime project document must be an object")
         canonical = _canonical_json(document)
@@ -199,10 +201,10 @@ class ConfigV2EditingService:
         document["description"] = description
         return self._updated(draft, document)
 
-    def pipeline_pass_ids(
-        self, draft: ConfigV2ProjectDraft
-    ) -> tuple[str, ...]:
-        return tuple(_pass_id(entry) for entry in _pipeline(_document(draft.document_json)))
+    def pipeline_pass_ids(self, draft: ConfigV2ProjectDraft) -> tuple[str, ...]:
+        return tuple(
+            _pass_id(entry) for entry in _pipeline(_document(draft.document_json))
+        )
 
     def add_pass(
         self,
@@ -248,32 +250,27 @@ class ConfigV2EditingService:
         pipeline.insert(new_index, entry)
         return self._updated(draft, document)
 
-    def set_pass_rules(
+    def set_pass_options(
         self,
         draft: ConfigV2ProjectDraft,
         *,
         pass_index: int,
-        include: Sequence[str],
-        exclude: Sequence[str],
         options: Mapping[str, object],
     ) -> ConfigV2ProjectDraft:
+        if not isinstance(options, Mapping):
+            raise ConfigV2EditError("pass options must be an object")
         document = _document(draft.document_json)
         pipeline = _pipeline(document)
         if not 0 <= pass_index < len(pipeline):
             raise ConfigV2EditError("pass index is out of range")
-        entry = pipeline[pass_index]
-        rules = entry.get("rules", {})
-        if not isinstance(rules, dict):
-            raise ConfigV2EditError("pass rules must be an object")
-        rules["include"] = [str(value) for value in include]
-        rules["exclude"] = [str(value) for value in exclude]
-        rules["options"] = copy.deepcopy(dict(options))
-        entry["rules"] = rules
+        candidate = copy.deepcopy(pipeline[pass_index])
+        candidate["options"] = copy.deepcopy(dict(options))
         try:
-            config = PipelineConfig.from_dict(entry)
+            config = PipelineConfig.from_dict(candidate)
             self._registry.build_spec(config)
         except (PipelineConfigError, PassRegistryError, TypeError, ValueError) as error:
-            raise ConfigV2EditError(f"invalid pass rule selection: {error}") from error
+            raise ConfigV2EditError(str(error)) from error
+        pipeline[pass_index] = config.to_dict()
         return self._updated(draft, document)
 
     @staticmethod
@@ -333,10 +330,7 @@ class ConfigV2EditingService:
         recipe: PipelineRecipeDraft,
     ) -> ConfigV2ProjectDraft:
         document = _document(draft.document_json)
-        raw_pipeline = _pipeline(document)
-        available: dict[str, list[dict[str, object]]] = {}
-        for entry in raw_pipeline:
-            available.setdefault(_pass_id(entry), []).append(entry)
+        _pipeline(document)
         materialized: list[dict[str, object]] = []
         for item in recipe.passes:
             if not item.enabled:
@@ -356,15 +350,10 @@ class ConfigV2EditingService:
                 TypeError,
                 ValueError,
             ) as error:
-                raise ConfigV2EditError(f"invalid recipe pass {item.pass_id}: {error}") from error
-            candidates = available.get(item.pass_id, [])
-            if candidates:
-                entry = copy.deepcopy(candidates.pop(0))
-                canonical = config.to_dict()
-                entry["options"] = copy.deepcopy(canonical["options"])
-            else:
-                entry = config.to_dict()
-            materialized.append(entry)
+                raise ConfigV2EditError(
+                    f"invalid recipe pass {item.pass_id}: {error}"
+                ) from error
+            materialized.append(config.to_dict())
         _additional(document)["pipeline_v2"] = materialized
         return self._updated(draft, document)
 
@@ -421,7 +410,9 @@ class ConfigV2EditingService:
             document = _document(draft.document_json)
             original = _document(draft.original_document_json)
         except (ConfigV2EditError, json.JSONDecodeError) as error:
-            diagnostics.append(ConfigV2EditDiagnostic("invalid-document", str(error), None))
+            diagnostics.append(
+                ConfigV2EditDiagnostic("invalid-document", str(error), None)
+            )
             document = {}
             original = {}
         if document and original:
@@ -444,11 +435,13 @@ class ConfigV2EditingService:
                     )
             except OSError as error:
                 diagnostics.append(
-                    ConfigV2EditDiagnostic("source-drift", str(error), str(draft.source_path))
+                    ConfigV2EditDiagnostic(
+                        "source-drift", str(error), str(draft.source_path)
+                    )
                 )
             try:
-                pass_ids, instruction_rules, block_rules, routing = self._validate_semantics(
-                    document, draft.destination_path
+                pass_ids, instruction_rules, block_rules, routing = (
+                    self._validate_semantics(document, draft.destination_path)
                 )
             except (
                 ConfigV2EditError,
@@ -458,7 +451,9 @@ class ConfigV2EditingService:
                 ValueError,
             ) as error:
                 diagnostics.append(
-                    ConfigV2EditDiagnostic("invalid-pipeline", str(error), "pipeline_v2")
+                    ConfigV2EditDiagnostic(
+                        "invalid-pipeline", str(error), "pipeline_v2"
+                    )
                 )
         return ConfigV2ProjectValidation(
             draft_id=draft.draft_id,
