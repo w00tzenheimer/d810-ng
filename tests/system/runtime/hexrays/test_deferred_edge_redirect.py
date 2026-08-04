@@ -14,10 +14,10 @@ import pytest
 
 ida_hexrays = pytest.importorskip("ida_hexrays")
 
-from d810.hexrays.mutation.deferred_modifier import (
+from d810.hexrays.mutation.deferred_modifier import (  # noqa: E402
     DeferredGraphModifier,
-    GraphModification,
     ModificationType,
+    QueuedModification,
     _is_redirectable_conditional_tail,
 )
 
@@ -296,13 +296,13 @@ class TestPriorityOrdering:
     def test_edge_redirect_priority_between_create_and_goto(self):
         """EDGE_REDIRECT priority=8 sorts after CREATE (5) and before GOTO (10)."""
         mods = [
-            GraphModification(
+            QueuedModification(
                 mod_type=ModificationType.BLOCK_CREATE_WITH_REDIRECT,
                 block_serial=1,
                 new_target=2,
                 priority=5,
             ),
-            GraphModification(
+            QueuedModification(
                 mod_type=ModificationType.EDGE_REDIRECT_VIA_PRED_SPLIT,
                 block_serial=3,
                 new_target=4,
@@ -311,7 +311,7 @@ class TestPriorityOrdering:
                 old_target=10,
                 via_pred=0,
             ),
-            GraphModification(
+            QueuedModification(
                 mod_type=ModificationType.BLOCK_GOTO_CHANGE,
                 block_serial=5,
                 new_target=6,

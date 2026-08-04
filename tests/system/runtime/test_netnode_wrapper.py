@@ -12,9 +12,9 @@ from d810.core.persistence import (
     FunctionFingerprint,
     Netnode,
     NetnodeOptimizationStorage,
-    ProviderPhaseSnapshot,
     create_optimization_storage,
 )
+from d810.core.provider_phase import ProviderPhaseSnapshot
 
 
 def _get_default_binary() -> str:

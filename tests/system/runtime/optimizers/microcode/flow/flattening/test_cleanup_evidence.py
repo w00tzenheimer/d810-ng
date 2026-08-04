@@ -228,9 +228,6 @@ def test_side_effect_replay_candidate_validates_lowers_and_compiles_to_patch_ins
 
     patch_plan = compile_patch_plan([modification], _duplicate_cfg())
     assert any(isinstance(step, PatchInsertBlock) for step in patch_plan.steps)
-    assert not any(
-        step.__class__.__name__ == "LegacyBlockOperation" for step in patch_plan.steps
-    )
 
 
 def test_duplicate_group_replay_candidate_validates_lowers_and_compiles_to_composite_patch() -> (
