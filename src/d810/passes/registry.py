@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from d810.core.typing import Callable
+from d810.passes.execution_stages import ExecutionStageDescriptor
 from d810.passes.pass_pipeline import PipelineConfig, PipelinePass, PassSpec
 
 
@@ -27,7 +28,7 @@ class PassRegistry:
             str, Callable[[PipelineConfig], PipelinePass]
         ] = {}
         self._config_templates: dict[str, PipelineConfig] = {}
-        self._transforms: dict[str, tuple[str, ...]] = {}
+        self._stages: dict[str, tuple[ExecutionStageDescriptor, ...]] = {}
         self._public: set[str] = set()
 
     def _record_catalog_metadata(
@@ -35,7 +36,7 @@ class PassRegistry:
         pass_id: str,
         *,
         config_template: PipelineConfig | None,
-        transforms: tuple[str, ...],
+        stages: tuple[ExecutionStageDescriptor, ...],
         public: bool,
     ) -> None:
         template = config_template or PipelineConfig(pass_id=pass_id)
@@ -44,15 +45,22 @@ class PassRegistry:
                 "config template pass id does not match registration: "
                 f"{template.pass_id!r} != {pass_id!r}"
             )
-        normalized = tuple(
-            dict.fromkeys(
-                str(transform).strip()
-                for transform in transforms
-                if str(transform).strip()
-            )
-        )
+        seen_stage_ids: set[str] = set()
+        for stage in stages:
+            if not isinstance(stage, ExecutionStageDescriptor):
+                raise PassRegistryError("stages must contain ExecutionStageDescriptor values")
+            if stage.pass_id != pass_id:
+                raise PassRegistryError(
+                    f"stage {stage.stage_id!r} owning pass {stage.pass_id!r} "
+                    f"does not match registration {pass_id!r}"
+                )
+            if stage.stage_id in seen_stage_ids:
+                raise PassRegistryError(
+                    f"duplicate stage id {stage.stage_id!r} in pass {pass_id!r}"
+                )
+            seen_stage_ids.add(stage.stage_id)
         self._config_templates[pass_id] = template
-        self._transforms[pass_id] = normalized
+        self._stages[pass_id] = tuple(stages)
         if public:
             self._public.add(pass_id)
 
@@ -62,7 +70,7 @@ class PassRegistry:
         pass_factory: Callable[..., PipelinePass],
         *,
         config_template: PipelineConfig | None = None,
-        transforms: tuple[str, ...] = (),
+        stages: tuple[ExecutionStageDescriptor, ...] = (),
         public: bool = True,
     ) -> None:
         """Register ``pass_factory`` under ``pass_id``."""
@@ -74,7 +82,7 @@ class PassRegistry:
         self._record_catalog_metadata(
             pass_id,
             config_template=config_template,
-            transforms=transforms,
+            stages=stages,
             public=public,
         )
 
@@ -84,7 +92,7 @@ class PassRegistry:
         pass_factory: Callable[[PipelineConfig], PipelinePass],
         *,
         config_template: PipelineConfig | None = None,
-        transforms: tuple[str, ...] = (),
+        stages: tuple[ExecutionStageDescriptor, ...] = (),
         public: bool = True,
     ) -> None:
         """Register a pass factory that is built from its ``PipelineConfig``."""
@@ -96,7 +104,7 @@ class PassRegistry:
         self._record_catalog_metadata(
             pass_id,
             config_template=config_template,
-            transforms=transforms,
+            stages=stages,
             public=public,
         )
 
@@ -115,9 +123,10 @@ class PassRegistry:
         except KeyError as exc:
             raise UnknownPassIdError(f"unknown pass id: {pass_id!r}") from exc
 
-    def transforms_for(self, pass_id: str) -> tuple[str, ...]:
+    def stages_for(self, pass_id: str) -> tuple[ExecutionStageDescriptor, ...]:
+        """Return ordered stable execution stages owned by one pass."""
         self.config_template_for(pass_id)
-        return self._transforms[pass_id]
+        return self._stages[pass_id]
 
     def is_configured(self, pass_id: str) -> bool:
         self.config_template_for(pass_id)

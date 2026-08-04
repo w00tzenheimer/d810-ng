@@ -80,7 +80,7 @@ def test_mba_instruction_rule_focus_is_unique() -> None:
         SimpleNamespace(
             pass_id="mba-simplify",
             owned_rules=(),
-            transforms=(),
+            stage_ids=(),
         ),
     )
 
@@ -95,7 +95,7 @@ def test_mba_instruction_rule_focus_is_unique() -> None:
     assert focus.rule_name == "Add_Xor_Rule_1"
 
 
-def test_catalog_transform_focus_is_unique() -> None:
+def test_private_rule_name_does_not_match_a_stable_stage_id() -> None:
     target = RuleTreeContextTarget(
         kind=RuleTreeTargetKind.RULE,
         rule_names=("JumpFixer",),
@@ -108,14 +108,15 @@ def test_catalog_transform_focus_is_unique() -> None:
         SimpleNamespace(
             pass_id="jump-fixer",
             owned_rules=(),
-            transforms=("JumpFixer",),
+            stage_ids=("jump-fixer",),
         ),
     )
 
     focus = resolve_config_v2_focus_target(target, ("jump-fixer",), catalog)
 
-    assert focus.unambiguous is True
-    assert focus.pass_id == "jump-fixer"
+    assert focus.unambiguous is False
+    assert focus.pass_id is None
+    assert "no configured" in focus.message.lower()
 
 
 def test_ambiguous_or_unowned_focus_does_not_guess() -> None:
@@ -128,8 +129,8 @@ def test_ambiguous_or_unowned_focus_does_not_guess() -> None:
         optimizer_type="Block Optimizers",
     )
     catalog = (
-        SimpleNamespace(pass_id="first", owned_rules=("SharedRule",), transforms=()),
-        SimpleNamespace(pass_id="second", owned_rules=("SharedRule",), transforms=()),
+        SimpleNamespace(pass_id="first", owned_rules=("SharedRule",), stage_ids=()),
+        SimpleNamespace(pass_id="second", owned_rules=("SharedRule",), stage_ids=()),
     )
 
     ambiguous = resolve_config_v2_focus_target(
