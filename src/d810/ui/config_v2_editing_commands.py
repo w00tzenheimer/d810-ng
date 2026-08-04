@@ -89,21 +89,17 @@ class ConfigV2EditingAdapter:
             self._state.reorder_config_v2_pass(draft, pass_index, new_index)
         )
 
-    def set_pass_rules(
+    def set_pass_options(
         self,
         draft: ConfigV2ProjectDraft,
         *,
         pass_index: int,
-        include: Sequence[str],
-        exclude: Sequence[str],
         options: Mapping[str, object],
     ) -> tuple[ConfigV2ProjectDraft, ConfigV2ProjectValidation]:
         return self._edited(
-            self._state.set_config_v2_pass_rules(
+            self._state.set_config_v2_pass_options(
                 draft,
                 pass_index=pass_index,
-                include=include,
-                exclude=exclude,
                 options=options,
             )
         )

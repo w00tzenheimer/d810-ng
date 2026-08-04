@@ -99,7 +99,7 @@ if IDA_AVAILABLE:
                 ("remove", "Remove"),
                 ("up", "Move up"),
                 ("down", "Move down"),
-                ("rules", "Edit rules/options"),
+                ("options", "Edit pass options"),
             ):
                 self.pass_buttons[action_id] = QtWidgets.QPushButton(label)
 
@@ -130,7 +130,7 @@ if IDA_AVAILABLE:
             self.pass_buttons["down"].clicked.connect(
                 lambda checked=False: self._move_pass(1)
             )
-            self.pass_buttons["rules"].clicked.connect(self._edit_pass_rules)
+            self.pass_buttons["options"].clicked.connect(self._edit_pass_options)
             self.routing_button.clicked.connect(self._edit_routing)
             self.validate_button.clicked.connect(self._validate)
             self.reset_button.clicked.connect(self._reset)
@@ -157,7 +157,7 @@ if IDA_AVAILABLE:
             pass_row = QtWidgets.QHBoxLayout()
             pass_row.setSpacing(4)
             pass_row.addWidget(self.catalog_combo, stretch=1)
-            for action_id in ("add", "remove", "up", "down", "rules"):
+            for action_id in ("add", "remove", "up", "down", "options"):
                 pass_row.addWidget(self.pass_buttons[action_id])
 
             typed_splitter = QtWidgets.QSplitter()
@@ -393,59 +393,33 @@ if IDA_AVAILABLE:
                 )
                 self.pipeline_list.setCurrentRow(target)
 
-        def _edit_pass_rules(self, checked: bool = False) -> None:
+        def _edit_pass_options(self, checked: bool = False) -> None:
             del checked
             index = self._selected_pass_index()
             if index is None:
                 return
             row = self._view.pipeline_rows[index]
-            current = json.loads(row.rules_json)
-            payload = {
-                "include": current.get("include", []),
-                "exclude": current.get("exclude", []),
-                "options": current.get("options", {}),
-            }
+            payload = json.loads(row.options_json)
             text, accepted = QtWidgets.QInputDialog.getMultiLineText(
                 self.parent,
-                f"Rules/options for {row.pass_id}",
-                "Typed JSON object with include, exclude, and options:",
+                f"Options for {row.pass_id}",
+                "Typed pass options JSON object:",
                 json.dumps(payload, indent=2, sort_keys=True),
             )
             if not accepted:
                 return
             try:
                 value = json.loads(str(text))
-                if not isinstance(value, dict) or set(value) != {
-                    "include",
-                    "exclude",
-                    "options",
-                }:
-                    raise ValueError(
-                        "rules must contain exactly include, exclude, and options"
-                    )
-                include = value["include"]
-                exclude = value["exclude"]
-                options = value["options"]
-                if (
-                    not isinstance(include, list)
-                    or not all(isinstance(item, str) for item in include)
-                    or not isinstance(exclude, list)
-                    or not all(isinstance(item, str) for item in exclude)
-                    or not isinstance(options, dict)
-                ):
-                    raise ValueError(
-                        "include/exclude must be string lists and options an object"
-                    )
+                if not isinstance(value, dict):
+                    raise ValueError("pass options must be an object")
             except (json.JSONDecodeError, ValueError) as exc:
-                self._set_status(f"Invalid pass rule selection: {exc}")
+                self._set_status(f"Invalid pass options: {exc}")
                 return
             self._apply_edit(
-                lambda: self._adapter.set_pass_rules(
+                lambda: self._adapter.set_pass_options(
                     self._draft,
                     pass_index=index,
-                    include=include,
-                    exclude=exclude,
-                    options=options,
+                    options=value,
                 )
             )
 

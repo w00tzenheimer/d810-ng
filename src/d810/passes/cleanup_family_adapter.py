@@ -30,8 +30,8 @@ class CleanupFamilyAdapterRequest:
     func_ea: int
     maturity: IRMaturity
     pass_id: str
-    legacy_rule: str
-    rule_options: Mapping[str, object]
+    implementation_name: str
+    transform_options: Mapping[str, object]
 
 
 class CleanupFamilyAdapterCapability(Protocol):
@@ -46,8 +46,8 @@ class CleanupFamilyAdapterCapability(Protocol):
 class CleanupFamilyAdapterPass(PipelinePass):
     """Route a config-v2 cleanup-family pass to an explicit backend capability."""
 
-    legacy_rule: str
-    rule_options: Mapping[str, object]
+    implementation_name: str
+    transform_options: Mapping[str, object]
     name: str = SIMPLE_FLATTENING_CLEANUP_PASS_ID
 
     def run(self, context: FunctionPipelineContext) -> PassResult:
@@ -58,23 +58,10 @@ class CleanupFamilyAdapterPass(PipelinePass):
                 func_ea=int(context.source.func_ea),
                 maturity=context.maturity,
                 pass_id=self.name,
-                legacy_rule=self.legacy_rule,
-                rule_options=self.rule_options,
+                implementation_name=self.implementation_name,
+                transform_options=self.transform_options,
             )
         )
-
-
-def _rules_are_empty(config: PipelineConfig) -> bool:
-    rules = config.rules
-    return not (
-        rules.include_groups
-        or rules.include
-        or rules.include_order
-        or rules.exclude_groups
-        or rules.exclude
-        or rules.exclude_order
-        or rules.options
-    )
 
 
 def build_cleanup_family_adapter_pass(
@@ -85,22 +72,16 @@ def build_cleanup_family_adapter_pass(
         raise PipelineConfigError(
             f"unsupported cleanup-family pass id: {config.pass_id!r}"
         )
-    if not _rules_are_empty(config):
+    forbidden = {"legacy_rule", "legacy_rule_options", "native_pipeline"}.intersection(
+        config.options
+    )
+    if forbidden:
         raise PipelineConfigError(
-            f"{config.pass_id} uses rules.*; rules.* is not executable"
+            "former cleanup option(s) are unsupported: " + ", ".join(sorted(forbidden))
         )
-    legacy_rule = config.options.get("legacy_rule")
-    if legacy_rule != SIMPLE_FLATTENING_CLEANUP_RULE:
-        raise PipelineConfigError(
-            f"{config.pass_id} must declare "
-            f"options.legacy_rule={SIMPLE_FLATTENING_CLEANUP_RULE!r}"
-        )
-    rule_options = {
-        key: value for key, value in config.options.items() if key != "legacy_rule"
-    }
     return CleanupFamilyAdapterPass(
-        legacy_rule=SIMPLE_FLATTENING_CLEANUP_RULE,
-        rule_options=rule_options,
+        implementation_name=SIMPLE_FLATTENING_CLEANUP_RULE,
+        transform_options=dict(config.options),
     )
 
 
@@ -112,7 +93,7 @@ def register_cleanup_family_adapter_passes(registry: PassRegistry) -> PassRegist
         config_template=PipelineConfig(
             pass_id=SIMPLE_FLATTENING_CLEANUP_PASS_ID,
             workflow_stage=StrategyWorkflowStage.CANONICAL_TRANSFORM,
-            options={"legacy_rule": SIMPLE_FLATTENING_CLEANUP_RULE},
+            options={},
         ),
         stages=(
             ExecutionStageDescriptor(

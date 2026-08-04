@@ -102,9 +102,7 @@ def test_state_machine_registry_builds_typed_threshold_into_recovery_pass():
     )
 
     recovery_pass = spec.pass_factory()
-    assert recovery_pass.options == StateMachineCffOptions(
-        min_state_constant=0x8000
-    )
+    assert recovery_pass.options == StateMachineCffOptions(min_state_constant=0x8000)
 
 
 def test_registry_build_spec_preserves_native_pass_contract():
@@ -130,26 +128,10 @@ def test_registry_build_spec_preserves_native_pass_contract():
     assert spec.config.contract.invalidates.facts == frozenset({"stale_cfg_shape"})
 
 
-def test_registry_build_spec_preserves_rule_selection_metadata():
-    registry = PassRegistry()
-    registry.register("fake", _FakePass)
-    rules = pp.RuleSelection(
-        include_groups=frozenset({"compat.metadata"}),
-        include=frozenset({"FoldReadonlyDataRule"}),
-    )
-
-    spec = registry.build_spec(PipelineConfig(pass_id="fake", rules=rules))
-
-    assert spec.rules is rules
-    assert spec.config.rules is rules
-    assert spec.config.rules.include_groups == frozenset({"compat.metadata"})
-    assert spec.config.rules.include == frozenset({"FoldReadonlyDataRule"})
-
-
 def test_registry_build_spec_preserves_pass_options_metadata():
     registry = PassRegistry()
     registry.register("fake", _FakePass)
-    options = {"legacy_rule": "JumpFixer", "enabled_rules": ["JnzRule1"]}
+    options = {"max_passes": 3, "mode": "conservative"}
 
     spec = registry.build_spec(PipelineConfig(pass_id="fake", options=options))
 
@@ -190,10 +172,7 @@ def test_registry_configured_factory_receives_full_pipeline_config():
     )
     config = PipelineConfig(
         pass_id="configured",
-        rules=pp.RuleSelection(
-            include=frozenset({"B", "A"}),
-            include_order=("B", "A"),
-        ),
+        options={"transforms": ["b", "a"]},
     )
 
     spec = registry.build_spec(config)
@@ -202,15 +181,15 @@ def test_registry_configured_factory_receives_full_pipeline_config():
 
     assert isinstance(built, _ConfiguredPass)
     assert seen == [config, config]
-    assert built.config.rules.include_order == ("B", "A")
-    assert spec.rules is config.rules
+    assert built.config.options["transforms"] == ["b", "a"]
+    assert spec.options == config.options
 
 
 def test_registry_exposes_deterministic_read_only_catalog_metadata():
     registry = PassRegistry()
     template = PipelineConfig(
         pass_id="zeta",
-        options={"legacy_rule": "ZetaTransform"},
+        options={"mode": "default"},
     )
     registry.register_configured(
         "zeta",

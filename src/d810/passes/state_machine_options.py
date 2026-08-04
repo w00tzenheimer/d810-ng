@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Mapping
 
 from d810.analyses.control_flow.dispatcher_recovery import MIN_STATE_CONSTANT
 from d810.passes.pass_pipeline import PipelineConfig, PipelineConfigError
@@ -45,28 +44,20 @@ class StateMachineCffOptions:
         )
 
 
-def _legacy_rule_options(config: PipelineConfig) -> Mapping[str, object] | None:
-    payload = config.options.get("legacy_rule_options")
-    if payload is None:
-        return None
-    if not isinstance(payload, Mapping):
-        raise PipelineConfigError(
-            "state-CFF options.legacy_rule_options must be a mapping"
-        )
-    return payload
-
-
 def state_machine_cff_options_from_config(
     config: PipelineConfig,
 ) -> StateMachineCffOptions:
-    """Read the typed public threshold from modern or migrated config-v2."""
+    """Read the one typed public threshold from strict config-v2."""
     if config.pass_id not in STATE_MACHINE_NATIVE_PASS_IDS:
         raise PipelineConfigError(
             f"{config.pass_id!r} is not a state-machine CFF pass"
         )
-    legacy = _legacy_rule_options(config)
-    source = legacy if legacy is not None else config.options
-    value = source.get("min_state_constant", MIN_STATE_CONSTANT)
+    unknown = tuple(sorted(set(config.options) - {"min_state_constant"}))
+    if unknown:
+        raise PipelineConfigError(
+            f"state-CFF has unknown options: {list(unknown)}"
+        )
+    value = config.options.get("min_state_constant", MIN_STATE_CONSTANT)
     return StateMachineCffOptions(
         min_state_constant=_validated_min_state_constant(value)
     )
@@ -76,21 +67,13 @@ def replace_state_machine_cff_options(
     config: PipelineConfig,
     options: StateMachineCffOptions,
 ) -> PipelineConfig:
-    """Replace the public threshold without losing migrated private options."""
+    """Replace the public threshold using the strict typed option shape."""
     if config.pass_id not in STATE_MACHINE_NATIVE_PASS_IDS:
         raise PipelineConfigError(
             f"{config.pass_id!r} is not a state-machine CFF pass"
         )
     value = _validated_min_state_constant(options.min_state_constant)
-    payload = dict(config.options)
-    legacy = _legacy_rule_options(config)
-    if legacy is None:
-        payload["min_state_constant"] = value
-    else:
-        migrated = dict(legacy)
-        migrated["min_state_constant"] = value
-        payload["legacy_rule_options"] = migrated
-    return dataclasses.replace(config, options=payload)
+    return dataclasses.replace(config, options={"min_state_constant": value})
 
 
 __all__ = [

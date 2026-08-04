@@ -25,14 +25,6 @@ def _runtime_project(tmp_path: Path) -> tuple[ProjectConfiguration, dict[str, ob
             encoding="utf-8"
         )
     )
-    document["future_top_level"] = {"retain": [1, 2, 3]}
-    additional = document["additional_configuration"]
-    additional["future_additional"] = {"retain": True}
-    mba = next(
-        entry for entry in additional["pipeline_v2"] if entry["pass"] == "mba-simplify"
-    )
-    mba["future_pass_field"] = {"retain": "yes"}
-    mba["rules"]["future_rule_field"] = {"retain": "also"}
     source = tmp_path / "runtime.json"
     source.write_text(json.dumps(document, indent=2), encoding="utf-8")
     return ProjectConfiguration.from_file(source), document
@@ -49,7 +41,7 @@ def test_serializer_manifest_is_explicit_immutable_and_bounded():
     assert {item.field.value for item in serializers} == {
         "description",
         "pipeline_selection",
-        "pass_rules",
+        "pass_options",
         "router_resolution",
     }
     assert all(dataclasses.is_dataclass(item) for item in serializers)
@@ -57,7 +49,7 @@ def test_serializer_manifest_is_explicit_immutable_and_bounded():
     assert all(not hasattr(item, "__dict__") for item in serializers)
 
 
-def test_complete_document_edit_save_preserves_unknowns_and_flat_rule_policy(
+def test_complete_document_edit_save_uses_typed_options_and_config_v2_policy(
     tmp_path: Path,
 ):
     project, original = _runtime_project(tmp_path)
@@ -71,12 +63,10 @@ def test_complete_document_edit_save_preserves_unknowns_and_flat_rule_policy(
         require=None,
         deny=("tigress",),
     )
-    draft = service.set_pass_rules(
+    draft = service.set_pass_options(
         draft,
         pass_index=1,
-        include=("AddXor_Rule_1",),
-        exclude=(),
-        options={"AddXor_Rule_1": {}},
+        options={"transforms": ["add-xor-1"], "transform_options": {}},
     )
     validation = service.validate(draft)
 
@@ -91,14 +81,15 @@ def test_complete_document_edit_save_preserves_unknowns_and_flat_rule_policy(
 
     assert saved.path == destination
     assert actual["description"] == "edited config-v2"
-    assert actual["future_top_level"] == original["future_top_level"]
-    assert actual["additional_configuration"]["future_additional"] == {"retain": True}
     mba = next(
         entry
         for entry in actual["additional_configuration"]["pipeline_v2"]
-        if entry["pass"] == "mba-simplify"
+        if entry["pass_id"] == "mba-simplify"
     )
-    assert mba["future_pass_field"] == {"retain": "yes"}
+    assert mba["options"] == {
+        "transforms": ["add-xor-1"],
+        "transform_options": {},
+    }
     assert actual["ins_rules"] == original["ins_rules"]
     assert actual["blk_rules"] == original["blk_rules"]
     assert actual["additional_configuration"]["pipeline_v2_mode"] == "config-v2"
@@ -177,7 +168,7 @@ def test_pass_selection_is_ordered_registered_and_can_remain_invalid_as_a_draft(
         service.add_pass(draft, "not-registered")
 
 
-def test_recipe_materialization_reuses_raw_entries_and_preserves_migration_metadata(
+def test_recipe_materialization_serializes_only_canonical_entries(
     tmp_path: Path,
 ):
     project, _ = _runtime_project(tmp_path)
@@ -213,15 +204,16 @@ def test_recipe_materialization_reuses_raw_entries_and_preserves_migration_metad
         "pipeline_v2"
     ]
 
-    assert [entry.get("pass", entry.get("pass_id")) for entry in pipeline] == [
+    assert [entry["pass_id"] for entry in pipeline] == [
         "jump-fixer",
         "mba-simplify",
         "constant-simplification",
     ]
-    mba = pipeline[1]
-    assert "migration" in mba
-    assert mba["future_pass_field"] == {"retain": "yes"}
-    assert mba["rules"]["future_rule_field"] == {"retain": "also"}
+    assert all(
+        set(entry) == set(PipelineConfig.from_dict(entry).to_dict())
+        for entry in pipeline
+    )
+    assert all("rules" not in entry and "migration" not in entry for entry in pipeline)
 
 
 def test_routing_policy_and_stale_validation_fail_closed(tmp_path: Path):

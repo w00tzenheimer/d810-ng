@@ -1003,20 +1003,16 @@ class D810Manager:
     ) -> ConfigV2ProjectDraft:
         return self.config_v2_editing_service.reorder_pass(draft, pass_index, new_index)
 
-    def set_config_v2_pass_rules(
+    def set_config_v2_pass_options(
         self,
         draft: ConfigV2ProjectDraft,
         *,
         pass_index: int,
-        include: typing.Sequence[str],
-        exclude: typing.Sequence[str],
         options: typing.Mapping[str, object],
     ) -> ConfigV2ProjectDraft:
-        return self.config_v2_editing_service.set_pass_rules(
+        return self.config_v2_editing_service.set_pass_options(
             draft,
             pass_index=pass_index,
-            include=include,
-            exclude=exclude,
             options=options,
         )
 

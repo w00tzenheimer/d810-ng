@@ -1,4 +1,4 @@
-"""Config-v2 simple legacy flow-rule adapter behavior."""
+"""Config-v2 registered hook-transform behavior."""
 
 from __future__ import annotations
 
@@ -12,12 +12,12 @@ from d810.core.config import ProjectConfiguration
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph
 from d810.ir.maturity import IRMaturity
 from d810.passes.driver import CapabilityError, run_pipeline
-from d810.passes.legacy_flow_rules import (
-    LEGACY_FLOW_RULE_ADAPTER_CAPABILITY,
-    LegacyFlowRuleAdapterCapability,
-    LegacyFlowRuleAdapterPass,
-    LegacyFlowRuleRequest,
-    legacy_flow_rule_pass_registry,
+from d810.passes.hook_transform_passes import (
+    HOOK_TRANSFORM_CAPABILITY,
+    HookTransformCapability,
+    HookTransformPass,
+    HookTransformRequest,
+    hook_transform_pass_registry,
 )
 from d810.passes.operational_config_v2 import operational_config_v2_pass_registry
 from d810.passes.pass_pipeline import (
@@ -68,7 +68,7 @@ class _Facts:
 
     def invalidate_to(self, graph, preserved):
         raise AssertionError(
-            "legacy flow-rule adapter should not emit PatchPlan mutations"
+            "hook-transform adapter should not emit PatchPlan mutations"
         )
 
 
@@ -81,7 +81,7 @@ class _Backend:
 
     def apply(self, plan, live_source, safety_policy):
         raise AssertionError(
-            "legacy flow-rule adapter should not use MutationBackend.apply"
+            "hook-transform adapter should not use MutationBackend.apply"
         )
 
 
@@ -100,9 +100,9 @@ class _Family:
 
 class _FlowRuleCapability:
     def __init__(self):
-        self.requests: list[LegacyFlowRuleRequest] = []
+        self.requests: list[HookTransformRequest] = []
 
-    def run_legacy_flow_rule(self, request: LegacyFlowRuleRequest) -> PassResult:
+    def run_hook_transform(self, request: HookTransformRequest) -> PassResult:
         self.requests.append(request)
         return PassResult()
 
@@ -114,7 +114,7 @@ def _context(
     capabilities = CapabilitySet()
     if capability is not None:
         capabilities = capabilities.with_capability(
-            LegacyFlowRuleAdapterCapability,
+            HookTransformCapability,
             capability,
         )
     return FunctionPipelineContext(
@@ -127,12 +127,12 @@ def _context(
     )
 
 
-def test_legacy_flow_rule_pass_invokes_capability_with_options():
+def test_hook_transform_pass_invokes_capability_with_options():
     capability = _FlowRuleCapability()
-    adapter = LegacyFlowRuleAdapterPass(
+    adapter = HookTransformPass(
         name="jump-fixer",
-        legacy_rule="JumpFixer",
-        rule_options={"enabled_rules": ["JnzRule1"]},
+        implementation_name="JumpFixer",
+        transform_options={"enabled_rules": ["JnzRule1"]},
     )
 
     result = adapter.run(_context(capability))
@@ -144,41 +144,39 @@ def test_legacy_flow_rule_pass_invokes_capability_with_options():
     assert request.func_ea == 0x1000
     assert request.maturity is IRMaturity.GLOBAL_ANALYZED
     assert request.pass_id == "jump-fixer"
-    assert request.legacy_rule == "JumpFixer"
-    assert request.rule_options == {"enabled_rules": ["JnzRule1"]}
+    assert request.implementation_name == "JumpFixer"
+    assert request.transform_options == {"enabled_rules": ["JnzRule1"]}
 
 
-def test_legacy_flow_rule_pass_requires_typed_capability():
-    adapter = LegacyFlowRuleAdapterPass(
+def test_hook_transform_pass_requires_typed_capability():
+    adapter = HookTransformPass(
         name="jump-fixer",
-        legacy_rule="JumpFixer",
-        rule_options={},
+        implementation_name="JumpFixer",
+        transform_options={},
     )
 
-    with pytest.raises(CapabilityNotProvided, match="LegacyFlowRuleAdapterCapability"):
+    with pytest.raises(CapabilityNotProvided, match="HookTransformCapability"):
         adapter.run(_context())
 
 
-def test_legacy_flow_rule_registry_builds_jump_fixer_canary_entry():
+def test_hook_transform_registry_builds_jump_fixer_canary_entry():
     project = ProjectConfiguration.from_file(
         _CONF_DIR / "hodur_flag2_config_v2_canary.json"
     )
     config = pipeline_configs_from_project_config(project)[-1]
 
-    spec = legacy_flow_rule_pass_registry().build_spec(config)
+    spec = hook_transform_pass_registry().build_spec(config)
     adapter = spec.pass_factory()
 
     assert spec.pass_id == "jump-fixer"
-    assert spec.contract.requires.capabilities == frozenset(
-        {LEGACY_FLOW_RULE_ADAPTER_CAPABILITY}
-    )
-    assert isinstance(adapter, LegacyFlowRuleAdapterPass)
-    assert adapter.legacy_rule == "JumpFixer"
-    assert "JmpRuleZ3Const" in adapter.rule_options["enabled_rules"]
+    assert spec.contract.requires.capabilities == frozenset({HOOK_TRANSFORM_CAPABILITY})
+    assert isinstance(adapter, HookTransformPass)
+    assert adapter.implementation_name == "JumpFixer"
+    assert "JmpRuleZ3Const" in adapter.transform_options["enabled_rules"]
 
 
 @pytest.mark.parametrize(
-    ("pass_id", "legacy_rule"),
+    ("pass_id", "implementation_name"),
     [
         ("forward-constant-propagation", "ForwardConstantPropagationRule"),
         ("identity-call-resolver", "IdentityCallResolver"),
@@ -188,76 +186,60 @@ def test_legacy_flow_rule_registry_builds_jump_fixer_canary_entry():
         ("jump-fixer", "JumpFixer"),
     ],
 )
-def test_legacy_flow_rule_registry_builds_supported_simple_ids(
+def test_hook_transform_registry_builds_supported_simple_ids(
     pass_id,
-    legacy_rule,
+    implementation_name,
 ):
     config = PipelineConfig.from_dict(
         {
-            "pass": pass_id,
-            "requires": {
-                "capabilities": [LEGACY_FLOW_RULE_ADAPTER_CAPABILITY],
+            "pass_id": pass_id,
+            "requirements": {
+                "required": [HOOK_TRANSFORM_CAPABILITY],
             },
-            "options": {
-                "legacy_rule": legacy_rule,
-                "limit": 3,
-            },
+            "options": {"limit": 3},
         }
     )
 
-    adapter = legacy_flow_rule_pass_registry().build_spec(config).pass_factory()
+    adapter = hook_transform_pass_registry().build_spec(config).pass_factory()
 
-    assert isinstance(adapter, LegacyFlowRuleAdapterPass)
+    assert isinstance(adapter, HookTransformPass)
     assert adapter.name == pass_id
-    assert adapter.legacy_rule == legacy_rule
-    assert adapter.rule_options == {"limit": 3}
+    assert adapter.implementation_name == implementation_name
+    assert adapter.transform_options == {"limit": 3}
 
 
-def test_global_constant_inliner_is_not_a_registered_legacy_pass():
-    registry = legacy_flow_rule_pass_registry()
+def test_global_constant_inliner_is_not_a_registered_pass():
+    registry = hook_transform_pass_registry()
 
     assert "global-constant-inliner" not in registry.registered_pass_ids()
 
 
-def test_legacy_flow_rule_registry_rejects_mismatched_legacy_rule():
+def test_hook_transform_registry_rejects_former_legacy_rule_option():
     config = PipelineConfig.from_dict(
         {
-            "pass": "jump-fixer",
+            "pass_id": "jump-fixer",
             "options": {"legacy_rule": "ForwardConstantPropagationRule"},
         }
     )
 
-    with pytest.raises(PipelineConfigError, match="JumpFixer"):
-        legacy_flow_rule_pass_registry().build_spec(config)
+    with pytest.raises(PipelineConfigError, match="former hook-transform"):
+        hook_transform_pass_registry().build_spec(config)
 
 
-def test_legacy_flow_rule_registry_rejects_rules_selection():
-    config = PipelineConfig.from_dict(
-        {
-            "pass": "jump-fixer",
-            "options": {"legacy_rule": "JumpFixer"},
-            "rules": {"include": ["JnzRule1"]},
-        }
-    )
-
-    with pytest.raises(PipelineConfigError, match="rules"):
-        legacy_flow_rule_pass_registry().build_spec(config)
-
-
-def test_legacy_flow_rule_pipeline_missing_backend_capability_fails_before_execution():
+def test_hook_transform_pipeline_missing_backend_capability_fails_before_execution():
     capability = _FlowRuleCapability()
     config = PipelineConfig.from_dict(
         {
-            "pass": "jump-fixer",
-            "requires": {
-                "capabilities": [LEGACY_FLOW_RULE_ADAPTER_CAPABILITY],
+            "pass_id": "jump-fixer",
+            "requirements": {
+                "required": [HOOK_TRANSFORM_CAPABILITY],
             },
-            "options": {"legacy_rule": "JumpFixer"},
+            "options": {},
         }
     )
-    spec = legacy_flow_rule_pass_registry().build_spec(config)
+    spec = hook_transform_pass_registry().build_spec(config)
 
-    with pytest.raises(CapabilityError, match=LEGACY_FLOW_RULE_ADAPTER_CAPABILITY):
+    with pytest.raises(CapabilityError, match=HOOK_TRANSFORM_CAPABILITY):
         run_pipeline(
             source=_Source(),
             family=_Family((spec,)),
@@ -266,7 +248,7 @@ def test_legacy_flow_rule_pipeline_missing_backend_capability_fails_before_execu
             project_config=None,
             maturity=IRMaturity.GLOBAL_ANALYZED,
             capabilities=CapabilitySet().with_capability(
-                LegacyFlowRuleAdapterCapability,
+                HookTransformCapability,
                 capability,
             ),
         )
@@ -274,39 +256,38 @@ def test_legacy_flow_rule_pipeline_missing_backend_capability_fails_before_execu
     assert capability.requests == []
 
 
-def test_legacy_flow_rule_pipeline_executes_when_string_and_typed_capabilities_exist():
+def test_hook_transform_pipeline_executes_when_capabilities_exist():
     capability = _FlowRuleCapability()
     config = PipelineConfig.from_dict(
         {
-            "pass": "jump-fixer",
-            "requires": {
-                "capabilities": [LEGACY_FLOW_RULE_ADAPTER_CAPABILITY],
+            "pass_id": "jump-fixer",
+            "requirements": {
+                "required": [HOOK_TRANSFORM_CAPABILITY],
             },
             "options": {
-                "legacy_rule": "JumpFixer",
                 "enabled_rules": ["JnzRule1"],
             },
         }
     )
-    spec = legacy_flow_rule_pass_registry().build_spec(config)
+    spec = hook_transform_pass_registry().build_spec(config)
 
     out = run_pipeline(
         source=_Source(),
         family=_Family((spec,)),
-        backend=_Backend(caps=(LEGACY_FLOW_RULE_ADAPTER_CAPABILITY,)),
+        backend=_Backend(caps=(HOOK_TRANSFORM_CAPABILITY,)),
         facts=_Facts(),
         project_config=None,
         maturity=IRMaturity.GLOBAL_ANALYZED,
         capabilities=CapabilitySet().with_capability(
-            LegacyFlowRuleAdapterCapability,
+            HookTransformCapability,
             capability,
         ),
     )
 
     assert out == _graph()
     assert len(capability.requests) == 1
-    assert capability.requests[0].legacy_rule == "JumpFixer"
-    assert capability.requests[0].rule_options == {"enabled_rules": ["JnzRule1"]}
+    assert capability.requests[0].implementation_name == "JumpFixer"
+    assert capability.requests[0].transform_options == {"enabled_rules": ["JnzRule1"]}
 
 
 def test_operational_registry_builds_mba_spine_and_simple_block_canary():
@@ -342,9 +323,9 @@ def test_operational_registry_builds_identity_call_canary():
 
     assert [spec.pass_id for spec in specs] == ["identity-call-resolver"]
     adapter = specs[0].pass_factory()
-    assert isinstance(adapter, LegacyFlowRuleAdapterPass)
-    assert adapter.legacy_rule == "IdentityCallResolver"
-    assert adapter.rule_options == {
+    assert isinstance(adapter, HookTransformPass)
+    assert adapter.implementation_name == "IdentityCallResolver"
+    assert adapter.transform_options == {
         "enable_experimental": True,
         "max_trampoline_depth": 32,
         "max_search_instructions": 30,
@@ -367,9 +348,9 @@ def test_operational_registry_builds_indirect_branch_call_canary(config_name):
         "indirect-call-resolver",
     ]
     adapters = [spec.pass_factory() for spec in specs]
-    assert all(isinstance(adapter, LegacyFlowRuleAdapterPass) for adapter in adapters)
-    assert [adapter.legacy_rule for adapter in adapters] == [
+    assert all(isinstance(adapter, HookTransformPass) for adapter in adapters)
+    assert [adapter.implementation_name for adapter in adapters] == [
         "IndirectBranchResolver",
         "IndirectCallResolver",
     ]
-    assert [adapter.rule_options for adapter in adapters] == [{}, {}]
+    assert [adapter.transform_options for adapter in adapters] == [{}, {}]
