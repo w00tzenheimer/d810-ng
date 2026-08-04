@@ -1,0 +1,79 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[3]
+FORBIDDEN_CONFIG_KEYS = {
+    "rules",
+    "legacy_rule",
+    "legacy_rule_options",
+    "native_pipeline",
+}
+FORBIDDEN_PUBLIC_COPY = {
+    "Rule scope",
+    "Pass rule selection",
+    "unknown/stale rule names",
+}
+
+
+def _walk(value: object):
+    yield value
+    if isinstance(value, dict):
+        for key, child in value.items():
+            yield key
+            yield from _walk(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _walk(child)
+
+
+def test_config_v2_canaries_use_only_strict_pass_and_transform_keys() -> None:
+    canaries = tuple(sorted((ROOT / "src/d810/conf").glob("*config_v2*.json")))
+    assert canaries
+    for path in canaries:
+        document = json.loads(path.read_text(encoding="utf-8"))
+        pipeline = document["additional_configuration"]["pipeline_v2"]
+        for entry in pipeline:
+            found = FORBIDDEN_CONFIG_KEYS.intersection(
+                value for value in _walk(entry) if isinstance(value, str)
+            )
+            assert not found, f"{path.name} contains former config keys: {found}"
+            assert "pass_id" in entry
+            assert "pass" not in entry
+
+
+def test_recipe_models_do_not_serialize_private_implementation_selection() -> None:
+    paths = (
+        ROOT / "src/d810/manager/workbench_recipe_models.py",
+        ROOT / "src/d810/manager/config_v2_edit_models.py",
+        ROOT / "src/d810/core/function_recipe.py",
+    )
+    source = "\n".join(
+        path.read_text(encoding="utf-8") for path in paths if path.is_file()
+    )
+    for forbidden in (
+        "enabled_rule_names",
+        "instruction_rule_names",
+        "block_rule_names",
+        "FunctionRuleConfig",
+    ):
+        assert forbidden not in source
+
+
+def test_user_facing_ui_uses_pass_stage_transform_vocabulary() -> None:
+    paths = (
+        ROOT / "src/d810/ui/ida_ui.py",
+        ROOT / "src/d810/ui/pass_tree.py",
+        ROOT / "src/d810/ui/project_config_logic.py",
+        ROOT / "src/d810/ui/workbench_logic.py",
+        ROOT / "src/d810/ui/workbench_recipe_panel.py",
+    )
+    source = "\n".join(path.read_text(encoding="utf-8") for path in paths)
+    for forbidden in FORBIDDEN_PUBLIC_COPY:
+        assert forbidden not in source
+    assert "Effective execution" in source
+    assert "Pass pipeline" in source
+    assert "Transform:" in source
+    assert "Stage:" in source

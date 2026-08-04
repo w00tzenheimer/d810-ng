@@ -1,8 +1,25 @@
-# Function Recipes
+# Function recipes and execution configuration
 
 Function recipes are the sole durable per-function execution configuration.
-They contain config-v2 public pass IDs and typed options. They do not expose
-expanded instruction or flow rule classes as operator controls.
+They store strict config-v2 pass entries: stable pass IDs, typed options, and
+function targeting. Private Python optimizer class names are never recipe
+selectors.
+
+## Public vocabulary
+
+- A **pass** is an ordered public operation, such as
+  `constant-simplification` or `mba-simplify`.
+- A **family** selects an obfuscation strategy behind a pass.
+- A **transform** is a stable, user-selectable operation owned by a pass. MBA
+  recipes use `options.transforms` and `options.transform_options`.
+- A **stage** is a stable execution/diagnostic child owned atomically by a
+  pass. Stages are visible but are not independent configuration switches.
+
+`constant-simplification` owns `fold-readonly-data`,
+`fold-constant-subtree`, and `forward-constants`. Its memory policy and the
+dangerous `allow_executable_readonly` override apply to the operation as a
+whole. The override remains available for explicit expert use and is rejected
+unless the user confirms it in the editor.
 
 ## Create and run a recipe
 
@@ -11,58 +28,65 @@ expanded instruction or flow rule classes as operator controls.
 3. Run **Analyze recipe** and resolve validation diagnostics.
 4. Use **Apply once** to test the draft.
 5. Use **Save for Deobfuscate This** to retain it for this function.
-6. Invoke **Deobfuscate This** whenever you want that saved recipe to execute.
+6. Invoke **Deobfuscate This** whenever the saved recipe should execute.
 
-Ordinary F5 and generic pseudocode refresh use the active project runtime. A
-saved recipe does not silently alter those refreshes. `Deobfuscate This`
-temporarily installs the recipe for one synchronous decompile and restores the
-project runtime afterward.
+Ordinary F5 uses the active project pipeline. `Deobfuscate This` temporarily
+installs the saved recipe for one synchronous decompile and restores the
+project pipeline afterward.
 
-## Typed state-CFF threshold
+The state-CFF spine exposes one family option, `min_state_constant`. The typed
+integer is applied to the complete canonical spine; individual stages cannot
+diverge. Validation rejects booleans, negative values, and integers wider than
+64 bits.
 
-The state-machine CFF pass exposes `min_state_constant` as a typed integer
-option. Set it in the recipe editor when a function's dispatcher state values
-fall below the project default. Validation rejects booleans, negative values,
-and integers wider than 64 bits before execution or persistence.
+## Effective execution diagnostics
 
-## What the Workbench reports
-
-The runtime row distinguishes these cases:
-
-- `project-runtime`: ordinary refresh and execution use the project pipeline;
-- `saved-recipe-explicit`: ordinary refresh uses the project pipeline and
-  `Deobfuscate This` has a current saved recipe;
-- `saved-recipe-blocked`: the project remains active and the saved recipe is
-  stale or invalid.
-
-The Rule scope row lists the public operations and each expanded implementation
-rule by pipeline and maturity. Every excluded rule has a stable reason such as
-an EA selector, missing tag, inference suppression, or direct hint suppression.
-Unknown/stale rule names referenced by ephemeral analysis are reported and do
-not instantiate absent rules.
+The Workbench groups decisions by pass ID and stage ID. Each stage reports its
+pipeline, maturities, active/excluded state, reason, and detail. Execution and
+the report use the same evaluator, so the report cannot claim that a stage ran
+when the optimizer excluded it. Unknown targets are reported without creating
+or activating an implementation.
 
 ## Persistence and identity
 
-Recipes and tags use a compound identity: database identity, project name, and
-function address. The function fingerprint is stored in the recipe payload and
-checked when loading. Keeping it outside the primary key makes code drift a
-visible stale-recipe error instead of making the record disappear.
+The application setting is `function_recipe_storage`:
 
-The default IDB-local netnode backend travels with the IDB and is not erased by
-log cleanup. The optional SQLite backend uses the same compound identity, so
-multiple databases and projects can share a file safely on macOS, Linux, or
-Windows. Configure that advanced backend with `function_recipe_backend` and
-`function_recipe_storage`.
+```json
+{"backend": "netnode"}
+```
 
-Legacy unnamespaced recipes, private-rule overrides, notes, and persisted
-active inference are intentionally not adopted: their database ownership is
-not provable and retaining them would recreate a competing configuration
-model.
+Netnode is the portable default and travels with the IDB. SQLite is opt-in and
+requires an explicit absolute path outside the erasable log directory:
 
-## Decision tradeoff
+```json
+{
+  "backend": "sqlite",
+  "path": "/absolute/path/to/d810-function-recipes.sqlite3"
+}
+```
 
-Applying saved recipes automatically on every F5 would currently require
-stopping and restarting global D810 state from Hex-Rays callbacks. That is
-re-entrant and could leak one function's configuration into another. Explicit
-`Deobfuscate This` activation is less magical, but it preserves an atomic,
-testable install/decompile/restore boundary.
+In the plugin settings, choosing SQLite, selecting the file, and saving calls
+the manager's live reconfiguration path immediately; no restart or project
+reload is required. An invalid backend, missing/relative path, or path beneath
+the log directory fails closed and leaves the previous storage active. The
+path rules are `pathlib`-based and therefore apply on macOS, Linux, and Windows.
+
+Both backends key recipes and tags by database identity, project name, and
+function address. The recipe also stores a function fingerprint; code drift
+produces a visible stale-recipe result rather than silently applying uncertain
+configuration.
+
+Former unscoped records and private implementation selectors are intentionally
+ignored. Translating them would recreate competing configuration semantics and
+could assign data to the wrong database.
+
+## Tradeoffs
+
+- Explicit `Deobfuscate This` activation is less automatic than applying a
+  recipe on every F5, but avoids re-entrant global runtime swaps from Hex-Rays
+  callbacks.
+- Netnode is portable and zero-configuration; SQLite is easier to inspect and
+  share, but requires the operator to own a safe path and its lifecycle.
+- Atomic pass-owned stages reduce fine-grained switches, but prevent invalid
+  combinations such as folding memory without the propagation stages that
+  define the public constant-simplification contract.

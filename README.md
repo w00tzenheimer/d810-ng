@@ -118,9 +118,12 @@ class Xor_HackersDelightRule_1(VerifiableRule):
 
 Rules marked `SKIP_VERIFICATION = True` (e.g. microcode-type checks or very slow Z3 cases) are exempt but must be documented.
 
-### Rule Maturity System
+### Pass execution stages and maturity
 
-D-810 rules fire at specific IDA microcode maturity levels. Each rule declares which maturities it targets; the optimizer calls rules only at the declared levels.
+Config-v2 exposes ordered passes, typed pass options, and stable transforms.
+Each pass owns one or more execution stages that declare their Hex-Rays
+maturities. Stage identities drive scheduling and diagnostics; private
+optimizer classes are implementation details, not project selectors.
 
 #### Maturity Levels
 
@@ -131,43 +134,10 @@ D-810 rules fire at specific IDA microcode maturity levels. Each rule declares w
 | `MMAT_CALLS` | 4 | After call analysis |
 | `MMAT_GLBOPT1` | 5 | After global optimization pass 1 |
 
-#### Default Behavior
-
-Rules that do not declare maturities inherit the optimizer defaults: `MMAT_LOCOPT`, `MMAT_CALLS`, and `MMAT_GLBOPT1`. `MMAT_PREOPTIMIZED` is **not** included by default — firing rules at maturity 2 on complex functions can cause expression bloat and IDA hangs.
-
-#### Per-Category Exceptions
-
-- **MBA rules** (XOR, OR, AND, HackersDelight, O-LLVM, etc.) explicitly declare `MMAT_PREOPTIMIZED` because they need to match arithmetic patterns before IDA's optimizer transforms them away.
-- **CstSimplification rules** intentionally omit `MMAT_PREOPTIMIZED` to prevent expression bloat — for example, De Morgan's law expansion at maturity 2 can create cascading rewrites that stall decompilation.
-
-#### Per-Rule Override via Project Config
-
-Any rule's maturities can be overridden in your project JSON config:
-
-```json
-{
-    "name": "CstSimplificationRule17",
-    "is_activated": true,
-    "config": {
-        "maturities": ["MMAT_PREOPTIMIZED", "MMAT_LOCOPT", "MMAT_CALLS", "MMAT_GLBOPT1"]
-    }
-}
-```
-
-Priority order: **project config JSON** > **class-level `maturities`** > **optimizer default inheritance**.
-
-#### Adding Maturities to New Rules
-
-When subclassing `VerifiableRule`, add a class-level `maturities` attribute if the rule needs to fire at `MMAT_PREOPTIMIZED`:
-
-```python
-class MyNewRule(VerifiableRule):
-    maturities = [2, 3, 4, 5]  # Include MMAT_PREOPTIMIZED (2)
-    PATTERN = ...
-    REPLACEMENT = ...
-```
-
-Omit `maturities` entirely to inherit the default (`MMAT_LOCOPT`, `MMAT_CALLS`, `MMAT_GLBOPT1`), which is safe for most rules.
+The pass registry owns these maturity declarations. Function targeting uses a
+pass entry's typed `target` object (`include_eas`, `exclude_eas`, `tags_any`,
+and `tags_all`). Ephemeral preanalysis may suppress a stable stage, but there is
+no durable per-function implementation-class override.
 
 ## Architecture
 
@@ -573,8 +543,8 @@ private implementation-rule checkboxes.
 Ordinary F5/refresh continues to use the active project runtime. The saved
 function recipe runs only through **Deobfuscate This**, which installs it for
 one synchronous decompile and restores the project runtime afterward. The
-Workbench runtime row states this distinction and its Rule scope row explains
-the expanded active/excluded rules and reason codes.
+Workbench runtime row states this distinction and its **Effective execution**
+row explains active/excluded pass stages and reason codes.
 
 Recipes and function tags are keyed by database identity, project name, and
 function address. A stored fingerprint is revalidated so changed function
@@ -760,7 +730,9 @@ Beyond the per-run diagnostic snapshots, D-810 keeps persistent optimization
 results plus database/project-scoped function recipes and tags. The safe
 default backend is IDB-local netnode storage; an explicitly configured SQLite
 backend can be shared without colliding same-address functions from different
-databases.
+databases. SQLite is activated by saving the typed `function_recipe_storage`
+setting with `backend: sqlite` and an explicit absolute `path` outside the log
+directory; the manager switches backends immediately without a restart.
 
 ---
 
