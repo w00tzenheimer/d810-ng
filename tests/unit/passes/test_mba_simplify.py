@@ -116,8 +116,9 @@ def _context(capability: _MbaCapability | None = None) -> FunctionPipelineContex
 def test_mba_simplify_pass_invokes_capability_with_ordered_rules_and_options():
     capability = _MbaCapability()
     adapter = MbaSimplifyPass(
-        rule_names=("RuleB", "RuleA"),
-        rule_options={"RuleA": {"limit": 3}},
+        transform_ids=("transform-b", "transform-a"),
+        implementation_names=("RuleB", "RuleA"),
+        transform_options={"transform-a": {"limit": 3}},
     )
 
     result = adapter.run(_context(capability))
@@ -133,14 +134,22 @@ def test_mba_simplify_pass_invokes_capability_with_ordered_rules_and_options():
 
 
 def test_mba_simplify_pass_requires_typed_capability():
-    adapter = MbaSimplifyPass(rule_names=("RuleA",), rule_options={})
+    adapter = MbaSimplifyPass(
+        transform_ids=("transform-a",),
+        implementation_names=("RuleA",),
+        transform_options={},
+    )
 
     with pytest.raises(CapabilityNotProvided, match="MbaSimplifyCapability"):
         adapter.run(_context())
 
 
 def test_mba_simplify_empty_rule_selection_is_noop_without_capability():
-    adapter = MbaSimplifyPass(rule_names=(), rule_options={})
+    adapter = MbaSimplifyPass(
+        transform_ids=(),
+        implementation_names=(),
+        transform_options={},
+    )
 
     assert isinstance(adapter.run(_context()), PassResult)
 
@@ -160,14 +169,14 @@ def test_mba_simplify_registry_builds_default_instruction_canary_mba_stage():
 
     assert spec.pass_id == "mba-simplify"
     assert isinstance(adapter, MbaSimplifyPass)
-    assert adapter.rule_names == config.rules.include_order
-    assert len(adapter.rule_names) == 178
-    assert "FoldReadonlyDataRule" not in adapter.rule_names
-    assert "ConstantSubtreeFoldRule" not in adapter.rule_names
+    assert adapter.transform_ids == tuple(config.options["transforms"])
+    assert len(adapter.transform_ids) == 178
+    assert "FoldReadonlyDataRule" not in adapter.implementation_names
+    assert "ConstantSubtreeFoldRule" not in adapter.implementation_names
     assert "z3_solver" in spec.contract.requires.capabilities
 
 
-def test_mba_simplify_registry_rejects_rule_groups_for_execution():
+def test_mba_simplify_registry_rejects_former_rule_selection_for_execution():
     config = PipelineConfig.from_dict(
         {
             "pass": "mba-simplify",
@@ -178,17 +187,17 @@ def test_mba_simplify_registry_rejects_rule_groups_for_execution():
         }
     )
 
-    with pytest.raises(PipelineConfigError, match="rule groups"):
+    with pytest.raises(PipelineConfigError, match=r"rules\.\*"):
         mba_simplify_pass_registry().build_spec(config)
 
 
-def test_mba_simplify_registry_applies_explicit_excludes():
+def test_mba_simplify_registry_preserves_explicit_transform_order():
     config = PipelineConfig.from_dict(
         {
             "pass": "mba-simplify",
-            "rules": {
-                "include": ["RuleB", "RuleA", "RuleC"],
-                "exclude": ["RuleA"],
+            "options": {
+                "transforms": ["add-xor-2", "add-xor-1"],
+                "transform_options": {},
             },
         }
     )
@@ -196,21 +205,22 @@ def test_mba_simplify_registry_applies_explicit_excludes():
     adapter = mba_simplify_pass_registry().build_spec(config).pass_factory()
 
     assert isinstance(adapter, MbaSimplifyPass)
-    assert adapter.rule_names == ("RuleB", "RuleC")
+    assert adapter.transform_ids == ("add-xor-2", "add-xor-1")
+    assert adapter.implementation_names == ("AddXor_Rule_2", "AddXor_Rule_1")
 
 
-def test_mba_simplify_registry_rejects_options_for_unselected_rules():
+def test_mba_simplify_registry_rejects_options_for_unselected_transforms():
     config = PipelineConfig.from_dict(
         {
             "pass": "mba-simplify",
-            "rules": {
-                "include": ["RuleA"],
-                "options": {"RuleB": {"limit": 3}},
+            "options": {
+                "transforms": ["add-xor-1"],
+                "transform_options": {"add-xor-2": {"limit": 3}},
             },
         }
     )
 
-    with pytest.raises(PipelineConfigError, match="RuleB"):
+    with pytest.raises(PipelineConfigError, match="add-xor-2"):
         mba_simplify_pass_registry().build_spec(config)
 
 
@@ -220,7 +230,7 @@ def test_mba_simplify_pipeline_missing_backend_capability_fails_before_execution
         {
             "pass": "mba-simplify",
             "requires": {"capabilities": ["local_instruction_rewrite"]},
-            "rules": {"include": ["RuleA"]},
+            "options": {"transforms": ["add-xor-1"]},
         }
     )
     spec = mba_simplify_pass_registry().build_spec(config)
@@ -248,9 +258,9 @@ def test_mba_simplify_pipeline_executes_when_string_and_typed_capabilities_exist
         {
             "pass": "mba-simplify",
             "requires": {"capabilities": ["local_instruction_rewrite", "z3_solver"]},
-            "rules": {
-                "include": ["RuleB", "RuleA"],
-                "options": {"RuleA": {"limit": 3}},
+            "options": {
+                "transforms": ["add-xor-2", "add-xor-1"],
+                "transform_options": {"add-xor-1": {"limit": 3}},
             },
         }
     )
@@ -271,5 +281,5 @@ def test_mba_simplify_pipeline_executes_when_string_and_typed_capabilities_exist
 
     assert out == _graph()
     assert len(capability.requests) == 1
-    assert capability.requests[0].rule_names == ("RuleB", "RuleA")
-    assert capability.requests[0].rule_options["RuleA"] == {"limit": 3}
+    assert capability.requests[0].rule_names == ("AddXor_Rule_2", "AddXor_Rule_1")
+    assert capability.requests[0].rule_options["AddXor_Rule_1"] == {"limit": 3}

@@ -275,7 +275,7 @@ def project_catalog_rows(
                 entry.backend_route,
                 entry.safety_policy,
                 entry.workflow_stage.value,
-                *entry.owned_rules,
+                *entry.transform_ids,
                 *entry.stage_ids,
             )
         ).casefold()
@@ -306,7 +306,7 @@ def project_catalog_rows(
             detail=(
                 f"stage: {workflow_stage_label(entry.workflow_stage)}\n"
                 f"safety: {entry.safety_policy}\n"
-                f"rules: {', '.join(entry.owned_rules) or 'none'}\n"
+                f"transforms: {', '.join(entry.transform_ids) or 'none'}\n"
                 f"options: {entry.option_template_json}\n"
                 f"contract: {entry.contract_json}"
             ),

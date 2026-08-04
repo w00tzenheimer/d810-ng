@@ -1,0 +1,61 @@
+from __future__ import annotations
+
+import pytest
+
+from d810.passes.mba_simplify import build_mba_simplify_pass, mba_simplify_pass_registry
+from d810.passes.mba_transform_options import (
+    MbaSimplifyOptions,
+    parse_mba_simplify_options,
+)
+from d810.passes.pass_pipeline import PipelineConfig, PipelineConfigError
+
+
+def _config(
+    transforms: object,
+    transform_options: object | None = None,
+) -> PipelineConfig:
+    options: dict[str, object] = {"transforms": transforms}
+    if transform_options is not None:
+        options["transform_options"] = transform_options
+    return PipelineConfig(pass_id="mba-simplify", options=options)
+
+
+def test_typed_mba_options_preserve_order_and_resolve_private_bindings() -> None:
+    registry = mba_simplify_pass_registry()
+    config = _config(
+        ["add-xor-1", "add-ollvm-1"],
+        {"add-ollvm-1": {"max_depth": 6}},
+    )
+
+    parsed = parse_mba_simplify_options(config, registry)
+    adapter = build_mba_simplify_pass(config, registry)
+
+    assert parsed == MbaSimplifyOptions(
+        transform_ids=("add-xor-1", "add-ollvm-1"),
+        transform_options={"add-ollvm-1": {"max_depth": 6}},
+    )
+    assert adapter.transform_ids == ("add-xor-1", "add-ollvm-1")
+    assert adapter.implementation_names == ("AddXor_Rule_1", "Add_OllvmRule_1")
+
+
+@pytest.mark.parametrize(
+    ("config", "message"),
+    (
+        (_config(["not-registered"]), "unknown transform"),
+        (_config(["add-xor-1", "add-xor-1"]), "duplicate"),
+        (
+            _config(
+                ["add-xor-1"],
+                {"add-ollvm-1": {"max_depth": 6}},
+            ),
+            "unselected transform",
+        ),
+        (_config(["AddXor_Rule_1"]), "unknown transform"),
+    ),
+)
+def test_typed_mba_options_reject_unknown_duplicate_or_private_names(
+    config: PipelineConfig,
+    message: str,
+) -> None:
+    with pytest.raises(PipelineConfigError, match=message):
+        parse_mba_simplify_options(config, mba_simplify_pass_registry())

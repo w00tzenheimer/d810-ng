@@ -28,7 +28,7 @@ def test_recipe_records_are_frozen_and_keep_ordered_tuple_payloads() -> None:
         maturity="ir.global.optimized",
         backend_route="mutation_backend",
         safety_policy="default",
-        owned_rules=(),
+        transform_ids=(),
         stage_ids=("recover_dispatcher",),
         configured=False,
     )

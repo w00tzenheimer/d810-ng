@@ -10,11 +10,15 @@ from d810.ir.maturity import IRMaturity
 from d810.passes.pass_pipeline import (
     FunctionPipelineContext,
     PipelineConfig,
-    PipelineConfigError,
     PipelinePass,
     PassResult,
 )
 from d810.passes.registry import PassRegistry
+from d810.passes.mba_transform_options import (
+    MbaSimplifyOptions,
+    mba_transform_stages,
+    parse_mba_simplify_options,
+)
 
 MBA_SIMPLIFY_PASS_ID = "mba-simplify"
 
@@ -38,68 +42,78 @@ class MbaSimplifyCapability(Protocol):
 
 @dataclass(frozen=True)
 class MbaSimplifyPass(PipelinePass):
-    """Run selected legacy instruction rewrite rules through an explicit capability."""
+    """Run selected MBA transforms through an explicit backend capability."""
 
-    rule_names: tuple[str, ...]
-    rule_options: Mapping[str, Mapping[str, object]]
+    transform_ids: tuple[str, ...]
+    implementation_names: tuple[str, ...]
+    transform_options: Mapping[str, Mapping[str, object]]
     name: str = MBA_SIMPLIFY_PASS_ID
 
+    def __post_init__(self) -> None:
+        if len(self.transform_ids) != len(self.implementation_names):
+            raise ValueError("transform and implementation counts must match")
+
     def run(self, context: FunctionPipelineContext) -> PassResult:
-        if not self.rule_names:
+        if not self.transform_ids:
             return PassResult()
         capability = context.capabilities.require(MbaSimplifyCapability)
+        implementation_options = {
+            implementation_name: self.transform_options[transform_id]
+            for transform_id, implementation_name in zip(
+                self.transform_ids,
+                self.implementation_names,
+                strict=True,
+            )
+            if transform_id in self.transform_options
+        }
         return capability.run_mba_simplify(
             MbaSimplifyRequest(
                 live_source=context.source.live_source,
                 func_ea=int(context.source.func_ea),
                 maturity=context.maturity,
-                rule_names=self.rule_names,
-                rule_options=self.rule_options,
+                rule_names=self.implementation_names,
+                rule_options=implementation_options,
             )
         )
 
 
-def build_mba_simplify_pass(config: PipelineConfig) -> MbaSimplifyPass:
-    """Build ``mba-simplify`` from its durable config-v2 rule selection."""
-    if config.rules.include_groups or config.rules.exclude_groups:
-        raise PipelineConfigError(
-            "mba-simplify config-v2 execution requires explicit rules.include/exclude; "
-            "rule groups are migration metadata only"
-        )
-    excluded = config.rules.exclude
-    selected = tuple(
-        rule_name
-        for rule_name in config.rules.include_order
-        if rule_name not in excluded
+def build_mba_simplify_pass(
+    config: PipelineConfig,
+    registry: PassRegistry | None = None,
+) -> MbaSimplifyPass:
+    """Build ``mba-simplify`` from stable pass-owned transform IDs."""
+    active_registry = registry or mba_simplify_pass_registry()
+    options: MbaSimplifyOptions = parse_mba_simplify_options(
+        config,
+        active_registry,
     )
-    unknown_options = tuple(
-        sorted(set(config.rules.options) - set(config.rules.include))
-    )
-    if unknown_options:
-        raise PipelineConfigError(
-            "mba-simplify rules.options entries must reference included rules: "
-            f"{list(unknown_options)}"
-        )
-    selected_options = {
-        rule_name: config.rules.options[rule_name]
-        for rule_name in selected
-        if rule_name in config.rules.options
+    implementation_by_id = {
+        stage.stage_id: stage.implementation_name
+        for stage in active_registry.stages_for(MBA_SIMPLIFY_PASS_ID)
     }
     return MbaSimplifyPass(
-        rule_names=selected,
-        rule_options=selected_options,
+        transform_ids=options.transform_ids,
+        implementation_names=tuple(
+            implementation_by_id[transform_id]
+            for transform_id in options.transform_ids
+        ),
+        transform_options=options.transform_options,
     )
 
 
 def register_mba_simplify_pass(registry: PassRegistry) -> PassRegistry:
     """Register the config-aware ``mba-simplify`` pass factory."""
+    stages = mba_transform_stages()
     registry.register_configured(
         MBA_SIMPLIFY_PASS_ID,
-        build_mba_simplify_pass,
+        lambda config: build_mba_simplify_pass(config, registry),
         config_template=PipelineConfig(
             pass_id=MBA_SIMPLIFY_PASS_ID,
             workflow_stage=StrategyWorkflowStage.FRONTEND_NORMALIZATION,
+            options={"transforms": [], "transform_options": {}},
         ),
+        stages=stages,
+        transform_ids=tuple(stage.stage_id for stage in stages),
     )
     return registry
 

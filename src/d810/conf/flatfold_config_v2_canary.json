@@ -35,633 +35,632 @@
           "source_config": "flatfold.json",
           "source_section": "ins_rules"
         },
-        "rules": {
-          "include": [
-            "RotateHelperInlineRule",
-            "ConstantCallResultFoldRule",
-            "ReplaceReadonlyAddressOfWithImmediate",
-            "XorChain",
-            "AndChain",
-            "OrChain",
-            "ArithmeticChain",
-            "WeirdRule1",
-            "WeirdRule2",
-            "WeirdRule3",
-            "WeirdRule4",
-            "WeirdRule5",
-            "WeirdRule6",
-            "Xor_HackersDelightRule_1",
-            "Xor_HackersDelightRule_2",
-            "Xor_HackersDelightRule_3",
-            "Xor_HackersDelightRule_4",
-            "Xor_HackersDelightRule_5",
-            "Xor_MbaRule_1",
-            "Xor_MbaRule_2",
-            "Xor_MbaRule_3",
-            "Xor_FactorRule_1",
-            "Xor_FactorRule_2",
-            "Xor_FactorRule_3",
-            "Xor_SpecialConstantRule_1",
-            "Xor_SpecialConstantRule_2",
-            "Xor1_MbaRule_1",
-            "Xor_Rule_1",
-            "Xor_Rule_2",
-            "Xor_Rule_3",
-            "XorAlmost_Rule_1",
-            "Xor_NestedStuff",
-            "Sub_HackersDelightRule_1",
-            "Sub_HackersDelightRule_2",
-            "Sub_HackersDelightRule_3",
-            "Sub_HackersDelightRule_4",
-            "Sub1_FactorRule_1",
-            "Sub1_FactorRule_2",
-            "Sub1Add_HackersDelightRule_1",
-            "Sub1And_HackersDelightRule_1",
-            "Sub1Or_MbaRule_1",
-            "Sub1And1_MbaRule_1",
-            "PredSetnzRule1",
-            "PredSetnzRule2",
-            "PredSetnzRule3",
-            "PredSetnzRule4",
-            "PredSetnzRule5",
-            "PredSetnzRule6",
-            "PredSetnzRule8",
-            "PredSetzRule1",
-            "PredSetzRule2",
-            "PredSetzRule3",
-            "PredSetbRule1",
-            "PredOdd1",
-            "PredOdd2",
-            "Pred0Rule1",
-            "Pred0Rule2",
-            "Pred0Rule3",
-            "Pred0Rule4",
-            "Pred0Rule5",
-            "PredFFRule1",
-            "PredFFRule2",
-            "PredFFRule3",
-            "PredFFRule4",
-            "PredOr2_Rule_1",
-            "PredOr1_Rule_1",
-            "Or_HackersDelightRule_1",
-            "Or_HackersDelightRule_2",
-            "Or_HackersDelightRule_2_variant_1",
-            "Or_MbaRule_1",
-            "Or_MbaRule_2",
-            "Or_MbaRule_3",
-            "Or_FactorRule_1",
-            "Or_FactorRule_2",
-            "Or_FactorRule_3",
-            "Or_OllvmRule_1",
-            "Or_Rule_1",
-            "Or_Rule_2",
-            "CstSimplificationRule1",
-            "CstSimplificationRule2",
-            "CstSimplificationRule3",
-            "CstSimplificationRule4",
-            "CstSimplificationRule5",
-            "CstSimplificationRule6",
-            "CstSimplificationRule7",
-            "CstSimplificationRule8",
-            "CstSimplificationRule9",
-            "CstSimplificationRule10",
-            "CstSimplificationRule11",
-            "CstSimplificationRule13",
-            "CstSimplificationRule14",
-            "CstSimplificationRule15",
-            "CstSimplificationRule16",
-            "CstSimplificationRule17",
-            "CstSimplificationRule18",
-            "CstSimplificationRule19",
-            "CstSimplificationRule20",
-            "CstSimplificationRule21",
-            "CstSimplificationRule22",
-            "Bnot_HackersDelightRule_1",
-            "Bnot_HackersDelightRule_2",
-            "Bnot_MbaRule_1",
-            "Bnot_FactorRule_1",
-            "Bnot_FactorRule_2",
-            "Bnot_FactorRule_3",
-            "Bnot_FactorRule_4",
-            "Bnot_FactorRule_5",
-            "BnotXor_Rule_1",
-            "BnotXor_Rule_2",
-            "BnotXor_Rule_3",
-            "BnotXor_FactorRule_1",
-            "BnotAnd_FactorRule_1",
-            "BnotAnd_FactorRule_2",
-            "BnotAnd_FactorRule_3",
-            "BnotAnd_FactorRule_4",
-            "BnotOr_FactorRule_1",
-            "BnotAdd_MbaRule_1",
-            "Bnot_Rule_1",
-            "Bnot_XorRule_1",
-            "And_HackersDelightRule_1",
-            "And_HackersDelightRule_2",
-            "And_HackersDelightRule_3",
-            "And_HackersDelightRule_4",
-            "And_OllvmRule_1",
-            "And_OllvmRule_2",
-            "And_OllvmRule_3",
-            "And_FactorRule_1",
-            "And_FactorRule_2",
-            "AndBnot_HackersDelightRule_1",
-            "AndBnot_HackersDelightRule_2",
-            "AndBnot_FactorRule_1",
-            "AndBnot_FactorRule_2",
-            "AndBnot_FactorRule_3",
-            "AndBnot_FactorRule_4",
-            "AndOr_FactorRule_1",
-            "AndXor_FactorRule_1",
-            "And1_MbaRule_1",
-            "Add_HackersDelightRule_1",
-            "Add_HackersDelightRule_2",
-            "Add_HackersDelightRule_3",
-            "Add_HackersDelightRule_4",
-            "Add_HackersDelightRule_5",
-            "Add_SpecialConstantRule_1",
-            "Add_SpecialConstantRule_2",
-            "Add_SpecialConstantRule_3",
-            "Add_OllvmRule_1",
-            "Add_OllvmRule_2",
-            "Add_OllvmRule_3",
-            "Add_OllvmRule_4",
-            "AddXor_Rule_1",
-            "AddXor_Rule_2",
-            "Z3setzRuleGeneric",
-            "Z3setnzRuleGeneric",
-            "Z3lnotRuleGeneric",
-            "Z3SmodRuleGeneric",
-            "Z3ConstantOptimization"
+        "options": {
+          "transforms": [
+            "rotate-helper-inline",
+            "constant-call-result-fold",
+            "replace-readonly-address-of-with-immediate",
+            "xor-chain",
+            "and-chain",
+            "or-chain",
+            "arithmetic-chain",
+            "weird-1",
+            "weird-2",
+            "weird-3",
+            "weird-4",
+            "weird-5",
+            "weird-6",
+            "xor-hackers-delight-1",
+            "xor-hackers-delight-2",
+            "xor-hackers-delight-3",
+            "xor-hackers-delight-4",
+            "xor-hackers-delight-5",
+            "xor-mba-1",
+            "xor-mba-2",
+            "xor-mba-3",
+            "xor-factor-1",
+            "xor-factor-2",
+            "xor-factor-3",
+            "xor-special-constant-1",
+            "xor-special-constant-2",
+            "xor-1-mba-1",
+            "xor-1",
+            "xor-2",
+            "xor-3",
+            "xor-almost-1",
+            "xor-nested-stuff",
+            "sub-hackers-delight-1",
+            "sub-hackers-delight-2",
+            "sub-hackers-delight-3",
+            "sub-hackers-delight-4",
+            "sub-1-factor-1",
+            "sub-1-factor-2",
+            "sub-1-add-hackers-delight-1",
+            "sub-1-and-hackers-delight-1",
+            "sub-1-or-mba-1",
+            "sub-1-and-1-mba-1",
+            "pred-setnz-1",
+            "pred-setnz-2",
+            "pred-setnz-3",
+            "pred-setnz-4",
+            "pred-setnz-5",
+            "pred-setnz-6",
+            "pred-setnz-8",
+            "pred-setz-1",
+            "pred-setz-2",
+            "pred-setz-3",
+            "pred-setb-1",
+            "pred-odd-1",
+            "pred-odd-2",
+            "pred-0-1",
+            "pred-0-2",
+            "pred-0-3",
+            "pred-0-4",
+            "pred-0-5",
+            "pred-ff-1",
+            "pred-ff-2",
+            "pred-ff-3",
+            "pred-ff-4",
+            "pred-or-2-1",
+            "pred-or-1-1",
+            "or-hackers-delight-1",
+            "or-hackers-delight-2",
+            "or-hackers-delight-2-variant-1",
+            "or-mba-1",
+            "or-mba-2",
+            "or-mba-3",
+            "or-factor-1",
+            "or-factor-2",
+            "or-factor-3",
+            "or-ollvm-1",
+            "or-1",
+            "or-2",
+            "cst-simplification-1",
+            "cst-simplification-2",
+            "cst-simplification-3",
+            "cst-simplification-4",
+            "cst-simplification-5",
+            "cst-simplification-6",
+            "cst-simplification-7",
+            "cst-simplification-8",
+            "cst-simplification-9",
+            "cst-simplification-10",
+            "cst-simplification-11",
+            "cst-simplification-13",
+            "cst-simplification-14",
+            "cst-simplification-15",
+            "cst-simplification-16",
+            "cst-simplification-17",
+            "cst-simplification-18",
+            "cst-simplification-19",
+            "cst-simplification-20",
+            "cst-simplification-21",
+            "cst-simplification-22",
+            "bnot-hackers-delight-1",
+            "bnot-hackers-delight-2",
+            "bnot-mba-1",
+            "bnot-factor-1",
+            "bnot-factor-2",
+            "bnot-factor-3",
+            "bnot-factor-4",
+            "bnot-factor-5",
+            "bnot-xor-paired-not-1",
+            "bnot-xor-2",
+            "bnot-xor-3",
+            "bnot-xor-factor-1",
+            "bnot-and-factor-1",
+            "bnot-and-factor-2",
+            "bnot-and-factor-3",
+            "bnot-and-factor-4",
+            "bnot-or-factor-1",
+            "bnot-add-mba-1",
+            "bnot-1",
+            "bnot-xor-demorgan-1",
+            "and-hackers-delight-1",
+            "and-hackers-delight-2",
+            "and-hackers-delight-3",
+            "and-hackers-delight-4",
+            "and-ollvm-1",
+            "and-ollvm-2",
+            "and-ollvm-3",
+            "and-factor-1",
+            "and-factor-2",
+            "and-bnot-hackers-delight-1",
+            "and-bnot-hackers-delight-2",
+            "and-bnot-factor-1",
+            "and-bnot-factor-2",
+            "and-bnot-factor-3",
+            "and-bnot-factor-4",
+            "and-or-factor-1",
+            "and-xor-factor-1",
+            "and-1-mba-1",
+            "add-hackers-delight-1",
+            "add-hackers-delight-2",
+            "add-hackers-delight-3",
+            "add-hackers-delight-4",
+            "add-hackers-delight-5",
+            "add-special-constant-1",
+            "add-special-constant-2",
+            "add-special-constant-3",
+            "add-ollvm-1",
+            "add-ollvm-2",
+            "add-ollvm-3",
+            "add-ollvm-4",
+            "add-xor-1",
+            "add-xor-2",
+            "z-3-setz-generic",
+            "z-3-setnz-generic",
+            "z-3-lnot-generic",
+            "z-3-smod-generic",
+            "z-3-constant-optimization"
           ],
-          "exclude": [],
-          "options": {
-            "RotateHelperInlineRule": {
+          "transform_options": {
+            "rotate-helper-inline": {
               "dump_intermediate_microcode": false
             },
-            "ConstantCallResultFoldRule": {
+            "constant-call-result-fold": {
               "dump_intermediate_microcode": false
             },
-            "ReplaceReadonlyAddressOfWithImmediate": {
+            "replace-readonly-address-of-with-immediate": {
               "dump_intermediate_microcode": false
             },
-            "XorChain": {
+            "xor-chain": {
               "dump_intermediate_microcode": false
             },
-            "AndChain": {
+            "and-chain": {
               "dump_intermediate_microcode": false
             },
-            "OrChain": {
+            "or-chain": {
               "dump_intermediate_microcode": false
             },
-            "ArithmeticChain": {
+            "arithmetic-chain": {
               "dump_intermediate_microcode": false
             },
-            "WeirdRule1": {
+            "weird-1": {
               "dump_intermediate_microcode": false
             },
-            "WeirdRule2": {
+            "weird-2": {
               "dump_intermediate_microcode": false
             },
-            "WeirdRule3": {
+            "weird-3": {
               "dump_intermediate_microcode": false
             },
-            "WeirdRule4": {
+            "weird-4": {
               "dump_intermediate_microcode": false
             },
-            "WeirdRule5": {
+            "weird-5": {
               "dump_intermediate_microcode": false
             },
-            "WeirdRule6": {
+            "weird-6": {
               "dump_intermediate_microcode": false
             },
-            "Xor_HackersDelightRule_1": {
+            "xor-hackers-delight-1": {
               "dump_intermediate_microcode": false
             },
-            "Xor_HackersDelightRule_2": {
+            "xor-hackers-delight-2": {
               "dump_intermediate_microcode": false
             },
-            "Xor_HackersDelightRule_3": {
+            "xor-hackers-delight-3": {
               "dump_intermediate_microcode": false
             },
-            "Xor_HackersDelightRule_4": {
+            "xor-hackers-delight-4": {
               "dump_intermediate_microcode": false
             },
-            "Xor_HackersDelightRule_5": {
+            "xor-hackers-delight-5": {
               "dump_intermediate_microcode": false
             },
-            "Xor_MbaRule_1": {
+            "xor-mba-1": {
               "dump_intermediate_microcode": false
             },
-            "Xor_MbaRule_2": {
+            "xor-mba-2": {
               "dump_intermediate_microcode": false
             },
-            "Xor_MbaRule_3": {
+            "xor-mba-3": {
               "dump_intermediate_microcode": false
             },
-            "Xor_FactorRule_1": {
+            "xor-factor-1": {
               "dump_intermediate_microcode": false
             },
-            "Xor_FactorRule_2": {
+            "xor-factor-2": {
               "dump_intermediate_microcode": false
             },
-            "Xor_FactorRule_3": {
+            "xor-factor-3": {
               "dump_intermediate_microcode": false
             },
-            "Xor_SpecialConstantRule_1": {
+            "xor-special-constant-1": {
               "dump_intermediate_microcode": false
             },
-            "Xor_SpecialConstantRule_2": {
+            "xor-special-constant-2": {
               "dump_intermediate_microcode": false
             },
-            "Xor1_MbaRule_1": {
+            "xor-1-mba-1": {
               "dump_intermediate_microcode": false
             },
-            "Xor_Rule_1": {
+            "xor-1": {
               "dump_intermediate_microcode": false
             },
-            "Xor_Rule_2": {
+            "xor-2": {
               "dump_intermediate_microcode": false
             },
-            "Xor_Rule_3": {
+            "xor-3": {
               "dump_intermediate_microcode": false
             },
-            "XorAlmost_Rule_1": {
+            "xor-almost-1": {
               "dump_intermediate_microcode": false
             },
-            "Xor_NestedStuff": {
+            "xor-nested-stuff": {
               "dump_intermediate_microcode": false
             },
-            "Sub_HackersDelightRule_1": {
+            "sub-hackers-delight-1": {
               "dump_intermediate_microcode": false
             },
-            "Sub_HackersDelightRule_2": {
+            "sub-hackers-delight-2": {
               "dump_intermediate_microcode": false
             },
-            "Sub_HackersDelightRule_3": {
+            "sub-hackers-delight-3": {
               "dump_intermediate_microcode": false
             },
-            "Sub_HackersDelightRule_4": {
+            "sub-hackers-delight-4": {
               "dump_intermediate_microcode": false
             },
-            "Sub1_FactorRule_1": {
+            "sub-1-factor-1": {
               "dump_intermediate_microcode": false
             },
-            "Sub1_FactorRule_2": {
+            "sub-1-factor-2": {
               "dump_intermediate_microcode": false
             },
-            "Sub1Add_HackersDelightRule_1": {
+            "sub-1-add-hackers-delight-1": {
               "dump_intermediate_microcode": false
             },
-            "Sub1And_HackersDelightRule_1": {
+            "sub-1-and-hackers-delight-1": {
               "dump_intermediate_microcode": false
             },
-            "Sub1Or_MbaRule_1": {
+            "sub-1-or-mba-1": {
               "dump_intermediate_microcode": false
             },
-            "Sub1And1_MbaRule_1": {
+            "sub-1-and-1-mba-1": {
               "dump_intermediate_microcode": false
             },
-            "PredSetnzRule1": {
+            "pred-setnz-1": {
               "dump_intermediate_microcode": false
             },
-            "PredSetnzRule2": {
+            "pred-setnz-2": {
               "dump_intermediate_microcode": false
             },
-            "PredSetnzRule3": {
+            "pred-setnz-3": {
               "dump_intermediate_microcode": false
             },
-            "PredSetnzRule4": {
+            "pred-setnz-4": {
               "dump_intermediate_microcode": false
             },
-            "PredSetnzRule5": {
+            "pred-setnz-5": {
               "dump_intermediate_microcode": false
             },
-            "PredSetnzRule6": {
+            "pred-setnz-6": {
               "dump_intermediate_microcode": false
             },
-            "PredSetnzRule8": {
+            "pred-setnz-8": {
               "dump_intermediate_microcode": false
             },
-            "PredSetzRule1": {
+            "pred-setz-1": {
               "dump_intermediate_microcode": false
             },
-            "PredSetzRule2": {
+            "pred-setz-2": {
               "dump_intermediate_microcode": false
             },
-            "PredSetzRule3": {
+            "pred-setz-3": {
               "dump_intermediate_microcode": false
             },
-            "PredSetbRule1": {
+            "pred-setb-1": {
               "dump_intermediate_microcode": false
             },
-            "PredOdd1": {
+            "pred-odd-1": {
               "dump_intermediate_microcode": false
             },
-            "PredOdd2": {
+            "pred-odd-2": {
               "dump_intermediate_microcode": false
             },
-            "Pred0Rule1": {
+            "pred-0-1": {
               "dump_intermediate_microcode": false
             },
-            "Pred0Rule2": {
+            "pred-0-2": {
               "dump_intermediate_microcode": false
             },
-            "Pred0Rule3": {
+            "pred-0-3": {
               "dump_intermediate_microcode": false
             },
-            "Pred0Rule4": {
+            "pred-0-4": {
               "dump_intermediate_microcode": false
             },
-            "Pred0Rule5": {
+            "pred-0-5": {
               "dump_intermediate_microcode": false
             },
-            "PredFFRule1": {
+            "pred-ff-1": {
               "dump_intermediate_microcode": false
             },
-            "PredFFRule2": {
+            "pred-ff-2": {
               "dump_intermediate_microcode": false
             },
-            "PredFFRule3": {
+            "pred-ff-3": {
               "dump_intermediate_microcode": false
             },
-            "PredFFRule4": {
+            "pred-ff-4": {
               "dump_intermediate_microcode": false
             },
-            "PredOr2_Rule_1": {
+            "pred-or-2-1": {
               "dump_intermediate_microcode": false
             },
-            "PredOr1_Rule_1": {
+            "pred-or-1-1": {
               "dump_intermediate_microcode": false
             },
-            "Or_HackersDelightRule_1": {
+            "or-hackers-delight-1": {
               "dump_intermediate_microcode": false
             },
-            "Or_HackersDelightRule_2": {
+            "or-hackers-delight-2": {
               "dump_intermediate_microcode": false
             },
-            "Or_HackersDelightRule_2_variant_1": {
+            "or-hackers-delight-2-variant-1": {
               "dump_intermediate_microcode": false
             },
-            "Or_MbaRule_1": {
+            "or-mba-1": {
               "dump_intermediate_microcode": false
             },
-            "Or_MbaRule_2": {
+            "or-mba-2": {
               "dump_intermediate_microcode": false
             },
-            "Or_MbaRule_3": {
+            "or-mba-3": {
               "dump_intermediate_microcode": false
             },
-            "Or_FactorRule_1": {
+            "or-factor-1": {
               "dump_intermediate_microcode": false
             },
-            "Or_FactorRule_2": {
+            "or-factor-2": {
               "dump_intermediate_microcode": false
             },
-            "Or_FactorRule_3": {
+            "or-factor-3": {
               "dump_intermediate_microcode": false
             },
-            "Or_OllvmRule_1": {
+            "or-ollvm-1": {
               "dump_intermediate_microcode": false
             },
-            "Or_Rule_1": {
+            "or-1": {
               "dump_intermediate_microcode": false
             },
-            "Or_Rule_2": {
+            "or-2": {
               "dump_intermediate_microcode": false
             },
-            "CstSimplificationRule1": {
+            "cst-simplification-1": {
               "dump_intermediate_microcode": false
             },
-            "CstSimplificationRule2": {
+            "cst-simplification-2": {
               "dump_intermediate_microcode": false
             },
-            "CstSimplificationRule3": {
+            "cst-simplification-3": {
               "dump_intermediate_microcode": false
             },
-            "CstSimplificationRule4": {
+            "cst-simplification-4": {
               "dump_intermediate_microcode": false
             },
-            "CstSimplificationRule5": {
+            "cst-simplification-5": {
               "dump_intermediate_microcode": false
             },
-            "CstSimplificationRule6": {
+            "cst-simplification-6": {
               "dump_intermediate_microcode": false
             },
-            "CstSimplificationRule7": {
+            "cst-simplification-7": {
               "dump_intermediate_microcode": false
             },
-            "CstSimplificationRule8": {
+            "cst-simplification-8": {
               "dump_intermediate_microcode": false
             },
-            "CstSimplificationRule9": {
+            "cst-simplification-9": {
               "dump_intermediate_microcode": false
             },
-            "CstSimplificationRule10": {
+            "cst-simplification-10": {
               "dump_intermediate_microcode": false
             },
-            "CstSimplificationRule11": {
+            "cst-simplification-11": {
               "dump_intermediate_microcode": false
             },
-            "CstSimplificationRule13": {
+            "cst-simplification-13": {
               "dump_intermediate_microcode": false
             },
-            "CstSimplificationRule14": {
+            "cst-simplification-14": {
               "dump_intermediate_microcode": false
             },
-            "CstSimplificationRule15": {
+            "cst-simplification-15": {
               "dump_intermediate_microcode": false
             },
-            "CstSimplificationRule16": {
+            "cst-simplification-16": {
               "dump_intermediate_microcode": false
             },
-            "CstSimplificationRule17": {
+            "cst-simplification-17": {
               "dump_intermediate_microcode": false
             },
-            "CstSimplificationRule18": {
+            "cst-simplification-18": {
               "dump_intermediate_microcode": false
             },
-            "CstSimplificationRule19": {
+            "cst-simplification-19": {
               "dump_intermediate_microcode": false
             },
-            "CstSimplificationRule20": {
+            "cst-simplification-20": {
               "dump_intermediate_microcode": false
             },
-            "CstSimplificationRule21": {
+            "cst-simplification-21": {
               "dump_intermediate_microcode": false
             },
-            "CstSimplificationRule22": {
+            "cst-simplification-22": {
               "dump_intermediate_microcode": false
             },
-            "Bnot_HackersDelightRule_1": {
+            "bnot-hackers-delight-1": {
               "dump_intermediate_microcode": false
             },
-            "Bnot_HackersDelightRule_2": {
+            "bnot-hackers-delight-2": {
               "dump_intermediate_microcode": false
             },
-            "Bnot_MbaRule_1": {
+            "bnot-mba-1": {
               "dump_intermediate_microcode": false
             },
-            "Bnot_FactorRule_1": {
+            "bnot-factor-1": {
               "dump_intermediate_microcode": false
             },
-            "Bnot_FactorRule_2": {
+            "bnot-factor-2": {
               "dump_intermediate_microcode": false
             },
-            "Bnot_FactorRule_3": {
+            "bnot-factor-3": {
               "dump_intermediate_microcode": false
             },
-            "Bnot_FactorRule_4": {
+            "bnot-factor-4": {
               "dump_intermediate_microcode": false
             },
-            "Bnot_FactorRule_5": {
+            "bnot-factor-5": {
               "dump_intermediate_microcode": false
             },
-            "BnotXor_Rule_1": {
+            "bnot-xor-paired-not-1": {
               "dump_intermediate_microcode": false
             },
-            "BnotXor_Rule_2": {
+            "bnot-xor-2": {
               "dump_intermediate_microcode": false
             },
-            "BnotXor_Rule_3": {
+            "bnot-xor-3": {
               "dump_intermediate_microcode": false
             },
-            "BnotXor_FactorRule_1": {
+            "bnot-xor-factor-1": {
               "dump_intermediate_microcode": false
             },
-            "BnotAnd_FactorRule_1": {
+            "bnot-and-factor-1": {
               "dump_intermediate_microcode": false
             },
-            "BnotAnd_FactorRule_2": {
+            "bnot-and-factor-2": {
               "dump_intermediate_microcode": false
             },
-            "BnotAnd_FactorRule_3": {
+            "bnot-and-factor-3": {
               "dump_intermediate_microcode": false
             },
-            "BnotAnd_FactorRule_4": {
+            "bnot-and-factor-4": {
               "dump_intermediate_microcode": false
             },
-            "BnotOr_FactorRule_1": {
+            "bnot-or-factor-1": {
               "dump_intermediate_microcode": false
             },
-            "BnotAdd_MbaRule_1": {
+            "bnot-add-mba-1": {
               "dump_intermediate_microcode": false
             },
-            "Bnot_Rule_1": {
+            "bnot-1": {
               "dump_intermediate_microcode": false
             },
-            "Bnot_XorRule_1": {
+            "bnot-xor-demorgan-1": {
               "dump_intermediate_microcode": false
             },
-            "And_HackersDelightRule_1": {
+            "and-hackers-delight-1": {
               "dump_intermediate_microcode": false
             },
-            "And_HackersDelightRule_2": {
+            "and-hackers-delight-2": {
               "dump_intermediate_microcode": false
             },
-            "And_HackersDelightRule_3": {
+            "and-hackers-delight-3": {
               "dump_intermediate_microcode": false
             },
-            "And_HackersDelightRule_4": {
+            "and-hackers-delight-4": {
               "dump_intermediate_microcode": false
             },
-            "And_OllvmRule_1": {
+            "and-ollvm-1": {
               "dump_intermediate_microcode": false
             },
-            "And_OllvmRule_2": {
+            "and-ollvm-2": {
               "dump_intermediate_microcode": false
             },
-            "And_OllvmRule_3": {
+            "and-ollvm-3": {
               "dump_intermediate_microcode": false
             },
-            "And_FactorRule_1": {
+            "and-factor-1": {
               "dump_intermediate_microcode": false
             },
-            "And_FactorRule_2": {
+            "and-factor-2": {
               "dump_intermediate_microcode": false
             },
-            "AndBnot_HackersDelightRule_1": {
+            "and-bnot-hackers-delight-1": {
               "dump_intermediate_microcode": false
             },
-            "AndBnot_HackersDelightRule_2": {
+            "and-bnot-hackers-delight-2": {
               "dump_intermediate_microcode": false
             },
-            "AndBnot_FactorRule_1": {
+            "and-bnot-factor-1": {
               "dump_intermediate_microcode": false
             },
-            "AndBnot_FactorRule_2": {
+            "and-bnot-factor-2": {
               "dump_intermediate_microcode": false
             },
-            "AndBnot_FactorRule_3": {
+            "and-bnot-factor-3": {
               "dump_intermediate_microcode": false
             },
-            "AndBnot_FactorRule_4": {
+            "and-bnot-factor-4": {
               "dump_intermediate_microcode": false
             },
-            "AndOr_FactorRule_1": {
+            "and-or-factor-1": {
               "dump_intermediate_microcode": false
             },
-            "AndXor_FactorRule_1": {
+            "and-xor-factor-1": {
               "dump_intermediate_microcode": false
             },
-            "And1_MbaRule_1": {
+            "and-1-mba-1": {
               "dump_intermediate_microcode": false
             },
-            "Add_HackersDelightRule_1": {
+            "add-hackers-delight-1": {
               "dump_intermediate_microcode": false
             },
-            "Add_HackersDelightRule_2": {
+            "add-hackers-delight-2": {
               "dump_intermediate_microcode": false
             },
-            "Add_HackersDelightRule_3": {
+            "add-hackers-delight-3": {
               "dump_intermediate_microcode": false
             },
-            "Add_HackersDelightRule_4": {
+            "add-hackers-delight-4": {
               "dump_intermediate_microcode": false
             },
-            "Add_HackersDelightRule_5": {
+            "add-hackers-delight-5": {
               "dump_intermediate_microcode": false
             },
-            "Add_SpecialConstantRule_1": {
+            "add-special-constant-1": {
               "dump_intermediate_microcode": false
             },
-            "Add_SpecialConstantRule_2": {
+            "add-special-constant-2": {
               "dump_intermediate_microcode": false
             },
-            "Add_SpecialConstantRule_3": {
+            "add-special-constant-3": {
               "dump_intermediate_microcode": false
             },
-            "Add_OllvmRule_1": {
+            "add-ollvm-1": {
               "dump_intermediate_microcode": false
             },
-            "Add_OllvmRule_2": {
+            "add-ollvm-2": {
               "dump_intermediate_microcode": false
             },
-            "Add_OllvmRule_3": {
+            "add-ollvm-3": {
               "dump_intermediate_microcode": false
             },
-            "Add_OllvmRule_4": {
+            "add-ollvm-4": {
               "dump_intermediate_microcode": false
             },
-            "AddXor_Rule_1": {
+            "add-xor-1": {
               "dump_intermediate_microcode": false
             },
-            "AddXor_Rule_2": {
+            "add-xor-2": {
               "dump_intermediate_microcode": false
             },
-            "Z3setzRuleGeneric": {
+            "z-3-setz-generic": {
               "dump_intermediate_microcode": false
             },
-            "Z3setnzRuleGeneric": {
+            "z-3-setnz-generic": {
               "dump_intermediate_microcode": false
             },
-            "Z3lnotRuleGeneric": {
+            "z-3-lnot-generic": {
               "dump_intermediate_microcode": false
             },
-            "Z3SmodRuleGeneric": {
+            "z-3-smod-generic": {
               "dump_intermediate_microcode": false
             },
-            "Z3ConstantOptimization": {
+            "z-3-constant-optimization": {
               "min_nb_opcode": 4,
               "min_nb_constant": 3,
               "dump_intermediate_microcode": false

@@ -107,6 +107,23 @@ def test_catalog_exposes_only_the_consolidated_constant_operation():
         registry.config_template_for("global-constant-inliner")
 
 
+def test_catalog_exposes_stable_selectable_transforms_without_private_names():
+    catalog = _service().catalog()
+    mba = next(entry for entry in catalog if entry.pass_id == "mba-simplify")
+    constants = next(
+        entry for entry in catalog if entry.pass_id == "constant-simplification"
+    )
+
+    assert "add-xor-1" in mba.transform_ids
+    assert "AddXor_Rule_1" not in mba.transform_ids
+    assert constants.transform_ids == ()
+    assert constants.stage_ids == (
+        "fold-readonly-data",
+        "fold-constant-subtree",
+        "forward-constants",
+    )
+
+
 def test_add_remove_enable_and_reorder_are_immutable_and_revisioned() -> None:
     service = _service()
     original = _draft(service)
@@ -149,7 +166,7 @@ def test_edit_rejects_unknown_pass_item_and_undeclared_options() -> None:
     unconfigured = next(
         item for item in draft.passes if item.pass_id == "mba-simplify"
     )
-    with pytest.raises(RecipeEditError, match="does not declare structured options"):
+    with pytest.raises(RecipeEditError, match="invalid options"):
         service.replace_options(draft, unconfigured.item_id, {"guess": True})
 
 
