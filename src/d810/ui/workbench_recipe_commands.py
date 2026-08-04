@@ -10,7 +10,7 @@ from d810.manager.workbench_recipe_models import (
     RecipeCommandResult,
     RecipeValidation,
 )
-from d810.ui.workbench_recipe_logic import recipe_command_request
+from d810.ui.workbench_recipe_logic import canvas_add_candidates, recipe_command_request
 
 
 class WorkbenchRecipeAdapter:
@@ -81,6 +81,22 @@ class WorkbenchRecipeAdapter:
         pass_id: str,
     ) -> tuple[PipelineRecipeDraft, RecipeValidation]:
         return self._edited(self._state.add_workbench_recipe_pass(draft, pass_id))
+
+    def add_canvas_pass(
+        self,
+        draft: PipelineRecipeDraft,
+        stage_id: str,
+        pass_id: str,
+    ) -> tuple[PipelineRecipeDraft, RecipeValidation]:
+        """Add only a configured pass that is legal for the selected canvas stage."""
+        from d810.ui.workbench_recipe_logic import CanvasAddError
+
+        if any(item.pass_id == pass_id for item in draft.passes):
+            raise CanvasAddError("duplicate-exclusive-pass")
+        candidates = canvas_add_candidates(self.catalog(), stage_id, draft)
+        if not any(entry.pass_id == pass_id for entry in candidates):
+            raise CanvasAddError("pass-not-legal-at-stage")
+        return self.add_pass(draft, pass_id)
 
     def remove_pass(
         self,

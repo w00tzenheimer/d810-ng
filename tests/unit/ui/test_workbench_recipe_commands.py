@@ -3,6 +3,8 @@ from __future__ import annotations
 import sys
 from types import ModuleType, SimpleNamespace
 
+from d810.manager.workbench_recipe_models import PassCatalogEntry
+from d810.ui.workbench_recipe_logic import CanvasAddError
 from d810.ui.workbench_recipe_commands import WorkbenchRecipeAdapter
 
 
@@ -13,6 +15,7 @@ def _draft():
         workbench_generation=8,
         draft_id="draft",
         revision=2,
+        passes=(),
     )
 
 
@@ -57,18 +60,15 @@ def test_reset_catalog_and_edits_delegate_to_state_then_revalidate():
     events: list[object] = []
     state = SimpleNamespace(
         get_workbench_recipe_catalog=lambda: ("catalog",),
-        create_workbench_recipe_draft=lambda snapshot: events.append(
-            ("reset", snapshot)
-        )
-        or draft,
-        validate_workbench_recipe=lambda candidate, facts=None: events.append(
-            ("validate", candidate, facts)
-        )
-        or validation,
-        add_workbench_recipe_pass=lambda candidate, pass_id: events.append(
-            ("add", candidate, pass_id)
-        )
-        or edited,
+        create_workbench_recipe_draft=lambda snapshot: (
+            events.append(("reset", snapshot)) or draft
+        ),
+        validate_workbench_recipe=lambda candidate, facts=None: (
+            events.append(("validate", candidate, facts)) or validation
+        ),
+        add_workbench_recipe_pass=lambda candidate, pass_id: (
+            events.append(("add", candidate, pass_id)) or edited
+        ),
     )
     adapter, _, _ = _adapter(state)
 
@@ -83,14 +83,12 @@ def test_analyze_uses_current_microcode_and_retains_fact_view_for_future_edits()
     facts = object()
     validations: list[object] = []
     state = SimpleNamespace(
-        analyze_workbench_recipe=lambda **kwargs: validations.append(
-            ("analyze", kwargs)
-        )
-        or facts,
-        validate_workbench_recipe=lambda candidate, facts=None: validations.append(
-            ("validate", candidate, facts)
-        )
-        or "valid",
+        analyze_workbench_recipe=lambda **kwargs: (
+            validations.append(("analyze", kwargs)) or facts
+        ),
+        validate_workbench_recipe=lambda candidate, facts=None: (
+            validations.append(("validate", candidate, facts)) or "valid"
+        ),
     )
     adapter, mba, stable_widget = _adapter(state)
 
@@ -162,8 +160,9 @@ def test_save_and_current_state_use_generation_safe_state_facades():
     manager = SimpleNamespace(started=True)
     state = SimpleNamespace(
         manager=manager,
-        workbench_recipe_request_is_current=lambda request: requests.append(request)
-        or True,
+        workbench_recipe_request_is_current=lambda request: (
+            requests.append(request) or True
+        ),
         execute_workbench_save_function_recipe=lambda request, candidate, validation: (
             request,
             candidate,
@@ -179,3 +178,90 @@ def test_save_and_current_state_use_generation_safe_state_facades():
     assert result[1:] == (draft, "validation")
     assert requests[0].command == "recipe_status"
     assert result[0].command == "save_function_recipe"
+
+
+def _canvas_catalog() -> tuple[PassCatalogEntry, ...]:
+    return (
+        PassCatalogEntry(
+            "recover-dispatcher",
+            "Recover dispatcher",
+            "{}",
+            "{}",
+            "function",
+            "ir.local.optimized",
+            "mutation_backend",
+            "default",
+            (),
+            (),
+            True,
+        ),
+    )
+
+
+def test_canvas_add_rejects_wrong_stage_without_changing_draft_revision():
+    draft = _draft()
+    calls: list[object] = []
+    state = SimpleNamespace(
+        get_workbench_recipe_catalog=lambda: _canvas_catalog(),
+        add_workbench_recipe_pass=lambda *args: calls.append(args),
+    )
+    adapter, _, _ = _adapter(state)
+
+    try:
+        adapter.add_canvas_pass(draft, "ir.global.analyzed", "recover-dispatcher")
+    except CanvasAddError as exc:
+        assert exc.code == "pass-not-legal-at-stage"
+    else:
+        raise AssertionError("wrong-stage additions must be rejected")
+
+    assert draft.revision == 2
+    assert calls == []
+
+
+def test_canvas_add_delegates_valid_addition_to_existing_validation_path():
+    draft = _draft()
+    edited = SimpleNamespace(**{**draft.__dict__, "revision": 3})
+    calls: list[object] = []
+    validation = object()
+    state = SimpleNamespace(
+        get_workbench_recipe_catalog=lambda: _canvas_catalog(),
+        add_workbench_recipe_pass=lambda candidate, pass_id: (
+            calls.append(("add", candidate, pass_id)) or edited
+        ),
+        validate_workbench_recipe=lambda candidate, facts=None: (
+            calls.append(("validate", candidate, facts)) or validation
+        ),
+    )
+    adapter, _, _ = _adapter(state)
+
+    assert adapter.add_canvas_pass(
+        draft, "ir.local.optimized", "recover-dispatcher"
+    ) == (edited, validation)
+    assert calls == [
+        ("add", draft, "recover-dispatcher"),
+        ("validate", edited, None),
+    ]
+
+
+def test_canvas_add_rejects_duplicate_exclusive_pass_without_calling_state():
+    draft = SimpleNamespace(
+        **{
+            **_draft().__dict__,
+            "passes": (SimpleNamespace(pass_id="recover-dispatcher"),),
+        }
+    )
+    calls: list[object] = []
+    state = SimpleNamespace(
+        get_workbench_recipe_catalog=lambda: _canvas_catalog(),
+        add_workbench_recipe_pass=lambda *args: calls.append(args),
+    )
+    adapter, _, _ = _adapter(state)
+
+    try:
+        adapter.add_canvas_pass(draft, "ir.local.optimized", "recover-dispatcher")
+    except CanvasAddError as exc:
+        assert exc.code == "duplicate-exclusive-pass"
+    else:
+        raise AssertionError("duplicate canvas additions must be rejected")
+
+    assert calls == []

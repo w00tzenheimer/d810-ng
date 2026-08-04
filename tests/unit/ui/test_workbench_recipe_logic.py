@@ -265,3 +265,67 @@ def test_recipe_logic_has_no_ida_qt_registry_or_persistence_imports() -> None:
         for name in imports
         for token in ("registry", "persistence", "sqlite", "pipeline_config")
     )
+
+
+def test_canvas_add_candidates_exclude_wrong_maturity_and_unconfigured_passes() -> None:
+    draft = dataclasses.replace(_draft(), passes=())
+    catalog = (
+        dataclasses.replace(
+            _catalog()[0],
+            pass_id="recover-dispatcher",
+            maturity="ir.local.optimized",
+            configured=True,
+        ),
+        dataclasses.replace(
+            _catalog()[1],
+            pass_id="unconfigured-local-pass",
+            maturity="ir.local.optimized",
+            configured=False,
+        ),
+        dataclasses.replace(
+            _catalog()[1],
+            pass_id="later-pass",
+            maturity="ir.global.analyzed",
+            configured=True,
+        ),
+    )
+
+    assert [
+        entry.pass_id
+        for entry in logic.canvas_add_candidates(catalog, "ir.local.optimized", draft)
+    ] == ["recover-dispatcher"]
+
+
+def test_canvas_add_candidates_normalizes_ranges_and_any_fallback() -> None:
+    draft = dataclasses.replace(_draft(), passes=())
+    catalog = (
+        dataclasses.replace(
+            _catalog()[0],
+            pass_id="range-pass",
+            maturity="ir.canonical..ir.global.analyzed",
+            configured=True,
+        ),
+        dataclasses.replace(
+            _catalog()[1],
+            pass_id="any-pass",
+            maturity="any",
+            configured=True,
+        ),
+    )
+
+    assert [
+        entry.pass_id
+        for entry in logic.canvas_add_candidates(catalog, "ir.local.optimized", draft)
+    ] == ["range-pass"]
+    assert [
+        entry.pass_id for entry in logic.canvas_add_candidates(catalog, "any", draft)
+    ] == ["any-pass"]
+
+
+def test_canvas_add_candidates_reject_unknown_stages() -> None:
+    try:
+        logic.canvas_add_candidates(_catalog(), "MMAT_LOCOPT", _draft())
+    except logic.CanvasAddError as exc:
+        assert exc.code == "unknown-stage"
+    else:
+        raise AssertionError("unknown canvas stages must be rejected")
