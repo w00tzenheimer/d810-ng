@@ -43,27 +43,27 @@ CREATE TABLE IF NOT EXISTS preanalysis_results (
     PRIMARY KEY (func_ea, maturity, collector_name)
 );
 
-CREATE TABLE IF NOT EXISTS deobfuscation_hints (
+CREATE TABLE IF NOT EXISTS deobfuscation_execution_hints (
     func_ea                  INTEGER PRIMARY KEY,
     obfuscation_type         TEXT,
     confidence               REAL    NOT NULL,
     recommended_inferences_json TEXT    NOT NULL,
     candidates_json          TEXT    NOT NULL,
-    suppress_rules_json      TEXT    NOT NULL,
+    suppress_stages_json      TEXT    NOT NULL,
     updated_at               REAL    NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_preanalysis_func_ea
     ON preanalysis_results(func_ea);
 
-CREATE TABLE IF NOT EXISTS preanalysis_session_summary (
+CREATE TABLE IF NOT EXISTS preanalysis_execution_session_summary (
     func_ea INTEGER NOT NULL,
     timestamp REAL NOT NULL,
     collectors_fired INTEGER NOT NULL DEFAULT 0,
     classification TEXT NOT NULL DEFAULT '',
     confidence REAL NOT NULL DEFAULT 0.0,
     inferences_json TEXT NOT NULL DEFAULT '[]',
-    suppress_rules_json TEXT NOT NULL DEFAULT '[]',
+    suppress_stages_json TEXT NOT NULL DEFAULT '[]',
     PRIMARY KEY (func_ea)
 );
 
@@ -95,7 +95,7 @@ CREATE TABLE IF NOT EXISTS user_overrides (
 # Each entry is checked on connection; if the column is missing it is added.
 _MIGRATIONS: list[tuple[str, str, str]] = [
     (
-        "deobfuscation_hints",
+        "deobfuscation_execution_hints",
         "recommended_inferences_json",
         "TEXT NOT NULL DEFAULT '[]'",
     ),
@@ -357,10 +357,10 @@ class PreanalysisStore:
         """Upsert DeobfuscationHints for a function (primary key: func_ea)."""
         self._conn.execute(
             """
-            INSERT OR REPLACE INTO deobfuscation_hints
+            INSERT OR REPLACE INTO deobfuscation_execution_hints
                 (func_ea, obfuscation_type, confidence,
                  recommended_inferences_json, candidates_json,
-                 suppress_rules_json, updated_at)
+                 suppress_stages_json, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
@@ -369,7 +369,7 @@ class PreanalysisStore:
                 float(hints.confidence),
                 json.dumps(list(hints.recommended_inferences)),
                 json.dumps([_candidate_to_dict(c) for c in hints.candidates]),
-                json.dumps(list(hints.suppress_rules)),
+                json.dumps(list(hints.suppress_stages)),
                 time.time(),
             ),
         )
@@ -380,8 +380,8 @@ class PreanalysisStore:
         cursor = self._conn.execute(
             """
             SELECT obfuscation_type, confidence, recommended_inferences_json,
-                   candidates_json, suppress_rules_json
-            FROM deobfuscation_hints
+                   candidates_json, suppress_stages_json
+            FROM deobfuscation_execution_hints
             WHERE func_ea = ?
             """,
             (int(func_ea),),
@@ -400,7 +400,7 @@ class PreanalysisStore:
                 json.loads(row["recommended_inferences_json"] or "[]")
             ),
             candidates=candidates,
-            suppress_rules=tuple(json.loads(row["suppress_rules_json"] or "[]")),
+            suppress_stages=tuple(json.loads(row["suppress_stages_json"] or "[]")),
         )
 
     # ------------------------------------------------------------------
@@ -418,13 +418,13 @@ class PreanalysisStore:
         classification: str,
         confidence: float,
         inferences: list[str],
-        suppress_rules: list[str],
+        suppress_stages: list[str],
     ) -> None:
         """Persist per-function session summary (upsert)."""
         self._conn.execute(
-            "INSERT OR REPLACE INTO preanalysis_session_summary "
+            "INSERT OR REPLACE INTO preanalysis_execution_session_summary "
             "(func_ea, timestamp, collectors_fired, classification, confidence, "
-            "inferences_json, suppress_rules_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "inferences_json, suppress_stages_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 func_ea,
                 time.time(),
@@ -432,7 +432,7 @@ class PreanalysisStore:
                 classification,
                 confidence,
                 json.dumps(inferences),
-                json.dumps(suppress_rules),
+                json.dumps(suppress_stages),
             ),
         )
         self._conn.commit()
@@ -440,7 +440,7 @@ class PreanalysisStore:
     def load_session_summary(self, func_ea: int) -> dict | None:
         """Load persisted session summary for a function."""
         row = self._conn.execute(
-            "SELECT * FROM preanalysis_session_summary WHERE func_ea = ?",
+            "SELECT * FROM preanalysis_execution_session_summary WHERE func_ea = ?",
             (func_ea,),
         ).fetchone()
         if row is None:
@@ -451,7 +451,7 @@ class PreanalysisStore:
             "classification": row["classification"],
             "confidence": row["confidence"],
             "inferences": json.loads(row["inferences_json"]),
-            "suppress_rules": json.loads(row["suppress_rules_json"]),
+            "suppress_stages": json.loads(row["suppress_stages_json"]),
         }
 
     # ------------------------------------------------------------------
@@ -511,14 +511,14 @@ class PreanalysisStore:
     def count_functions_with_hints(self) -> int:
         """Count distinct functions that have deobfuscation hints."""
         row = self._conn.execute(
-            "SELECT COUNT(DISTINCT func_ea) AS cnt FROM deobfuscation_hints"
+            "SELECT COUNT(DISTINCT func_ea) AS cnt FROM deobfuscation_execution_hints"
         ).fetchone()
         return int(row["cnt"]) if row else 0
 
     def count_functions_with_session_summaries(self) -> int:
         """Count distinct functions that have session summaries."""
         row = self._conn.execute(
-            "SELECT COUNT(DISTINCT func_ea) AS cnt FROM preanalysis_session_summary"
+            "SELECT COUNT(DISTINCT func_ea) AS cnt FROM preanalysis_execution_session_summary"
         ).fetchone()
         return int(row["cnt"]) if row else 0
 
@@ -532,7 +532,7 @@ class PreanalysisStore:
     def list_functions_with_hints(self) -> list[int]:
         """Return sorted list of func_ea values that have hints."""
         rows = self._conn.execute(
-            "SELECT DISTINCT func_ea FROM deobfuscation_hints ORDER BY func_ea"
+            "SELECT DISTINCT func_ea FROM deobfuscation_execution_hints ORDER BY func_ea"
         ).fetchall()
         return [int(r["func_ea"]) for r in rows]
 
@@ -541,8 +541,8 @@ class PreanalysisStore:
         rows = self._conn.execute(
             """
             SELECT DISTINCT h.func_ea
-            FROM deobfuscation_hints h
-            LEFT JOIN preanalysis_session_summary s ON h.func_ea = s.func_ea
+            FROM deobfuscation_execution_hints h
+            LEFT JOIN preanalysis_execution_session_summary s ON h.func_ea = s.func_ea
             WHERE s.func_ea IS NULL
             ORDER BY h.func_ea
             """
@@ -552,7 +552,7 @@ class PreanalysisStore:
     def load_all_session_summaries(self) -> list[dict]:
         """Load all session summaries across all functions."""
         rows = self._conn.execute(
-            "SELECT * FROM preanalysis_session_summary ORDER BY func_ea"
+            "SELECT * FROM preanalysis_execution_session_summary ORDER BY func_ea"
         ).fetchall()
         return [
             {
@@ -561,7 +561,7 @@ class PreanalysisStore:
                 "classification": r["classification"],
                 "confidence": float(r["confidence"]),
                 "inferences": json.loads(r["inferences_json"]),
-                "suppress_rules": json.loads(r["suppress_rules_json"]),
+                "suppress_stages": json.loads(r["suppress_stages_json"]),
             }
             for r in rows
         ]
@@ -616,10 +616,12 @@ class PreanalysisStore:
             "DELETE FROM preanalysis_results WHERE func_ea = ?", (int(func_ea),)
         )
         self._conn.execute(
-            "DELETE FROM deobfuscation_hints WHERE func_ea = ?", (int(func_ea),)
+            "DELETE FROM deobfuscation_execution_hints WHERE func_ea = ?",
+            (int(func_ea),),
         )
         self._conn.execute(
-            "DELETE FROM preanalysis_session_summary WHERE func_ea = ?", (int(func_ea),)
+            "DELETE FROM preanalysis_execution_session_summary WHERE func_ea = ?",
+            (int(func_ea),),
         )
         self._conn.execute(
             "DELETE FROM consumer_outcomes WHERE func_ea = ?", (int(func_ea),)

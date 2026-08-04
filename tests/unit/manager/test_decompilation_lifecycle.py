@@ -86,7 +86,7 @@ class _AnalysisRuntime:
         self._calls.append(("runtime.analyze", func_ea))
         return self.hints
 
-    def record_rule_scope_outcome(
+    def record_execution_scope_outcome(
         self,
         *,
         func_ea: int,
@@ -95,7 +95,7 @@ class _AnalysisRuntime:
         source: str,
     ) -> None:
         self._calls.append(
-            ("runtime.rule-scope-outcome", (func_ea, hints, apply_result, source))
+            ("runtime.execution-scope-outcome", (func_ea, hints, apply_result, source))
         )
 
     def finish_session(
@@ -113,15 +113,15 @@ class _AnalysisRuntime:
         )
 
 
-class _RuleScopeService:
+class _ExecutionScopeService:
     def __init__(self, calls: list[tuple[str, object]]) -> None:
         self._calls = calls
 
     def clear_hint_state(self, func_ea: int) -> None:
-        self._calls.append(("rule-scope.clear", func_ea))
+        self._calls.append(("execution-scope.clear", func_ea))
 
     def apply_hints(self, hints: object) -> str:
-        self._calls.append(("rule-scope.apply", hints))
+        self._calls.append(("execution-scope.apply", hints))
         return "applied"
 
 
@@ -133,7 +133,7 @@ def _coordinator(
         DecompilationLifecycleCoordinator(
             preanalysis_runtime=_PreanalysisRuntime(calls),
             analysis_runtime=runtime,
-            rule_scope_service=_RuleScopeService(calls),
+            execution_scope_service=_ExecutionScopeService(calls),
             native_preanalysis_key_provider=lambda _function_ea: NATIVE_KEY,
             mba_mutation_gateway_factory=lambda **kwargs: kwargs,
         ),
@@ -303,7 +303,7 @@ def test_native_fact_session_api_preserves_nested_owners() -> None:
     coordinator = DecompilationLifecycleCoordinator(
         preanalysis_runtime=None,
         analysis_runtime=None,
-        rule_scope_service=None,
+        execution_scope_service=None,
         native_preanalysis_key_provider=keys.__getitem__,
     )
 
@@ -349,7 +349,7 @@ def test_ensure_capture_analyze_and_finish_preserve_lifecycle_order() -> None:
     assert calls == [
         ("preanalysis.reset", 0x401000),
         ("runtime.reset", (0x401000, False)),
-        ("rule-scope.clear", 0x401000),
+        ("execution-scope.clear", 0x401000),
         (
             "phase.flowgraph",
             ("flow-graph", 0x401000, _flowgraph_payload().provider_phase),
@@ -365,9 +365,9 @@ def test_ensure_capture_analyze_and_finish_preserve_lifecycle_order() -> None:
             ),
         ),
         ("runtime.analyze", 0x401000),
-        ("rule-scope.apply", "hints"),
+        ("execution-scope.apply", "hints"),
         (
-            "runtime.rule-scope-outcome",
+            "runtime.execution-scope-outcome",
             (0x401000, "hints", "applied", "instruction"),
         ),
         ("preanalysis.finish", 0x401000),
@@ -395,7 +395,7 @@ def test_repeated_ensure_for_same_top_level_decompilation_reuses_epoch() -> None
     assert calls == [
         ("preanalysis.reset", 0x401000),
         ("runtime.reset", (0x401000, False)),
-        ("rule-scope.clear", 0x401000),
+        ("execution-scope.clear", 0x401000),
     ]
 
 
@@ -758,7 +758,7 @@ def test_session_materializer_factory_is_scoped_to_the_active_function() -> None
     coordinator = DecompilationLifecycleCoordinator(
         preanalysis_runtime=None,
         analysis_runtime=None,
-        rule_scope_service=None,
+        execution_scope_service=None,
         native_preanalysis_key_provider=lambda _function_ea: NATIVE_KEY,
         semantic_native_body_materializer_factory=lambda **kwargs: (
             calls.append(kwargs) or materializer
@@ -815,10 +815,10 @@ def test_nested_different_function_gets_a_new_epoch_and_restores_parent() -> Non
     assert calls == [
         ("preanalysis.reset", 0x401000),
         ("runtime.reset", (0x401000, False)),
-        ("rule-scope.clear", 0x401000),
+        ("execution-scope.clear", 0x401000),
         ("preanalysis.reset", 0x402000),
         ("runtime.reset", (0x402000, True)),
-        ("rule-scope.clear", 0x402000),
+        ("execution-scope.clear", 0x402000),
         ("preanalysis.finish", 0x402000),
         ("runtime.finish", 0x401000),
         ("preanalysis.finish", 0x401000),
@@ -865,10 +865,10 @@ def test_reentry_below_a_nested_child_reuses_parent_without_finishing_it() -> No
     assert calls == [
         ("preanalysis.reset", 0x401000),
         ("runtime.reset", (0x401000, False)),
-        ("rule-scope.clear", 0x401000),
+        ("execution-scope.clear", 0x401000),
         ("preanalysis.reset", 0x402000),
         ("runtime.reset", (0x402000, True)),
-        ("rule-scope.clear", 0x402000),
+        ("execution-scope.clear", 0x402000),
         ("preanalysis.finish", 0x402000),
         ("runtime.finish", 0x401000),
         ("preanalysis.finish", 0x401000),
@@ -904,7 +904,7 @@ def test_native_preanalysis_reserves_the_owner_across_an_internal_callback() -> 
     assert calls == [
         ("preanalysis.reset", 0x401000),
         ("runtime.reset", (0x401000, False)),
-        ("rule-scope.clear", 0x401000),
+        ("execution-scope.clear", 0x401000),
         ("preanalysis.finish", 0x401000),
         ("runtime.finish", None),
     ]
@@ -966,7 +966,7 @@ def test_pending_generated_restart_retains_owner_until_flowchart_consumes_it() -
     assert coordinator.current_session(0x401000) is None
 
 
-def test_analysis_without_hints_does_not_apply_or_record_rule_scope_outcome() -> None:
+def test_analysis_without_hints_does_not_apply_or_record_execution_scope_outcome() -> None:
     calls: list[tuple[str, object]] = []
     coordinator, _runtime = _coordinator(calls)
 

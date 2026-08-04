@@ -1,4 +1,4 @@
-"Shared outcome vocabulary across all lifecycle consumers.\n\nEach consumer subsystem (rule-scope, flow-context, Hodur planner)\nproduces its own detailed outcome type.  This module defines a\n:class:`ConsumerOutcomeReport` Protocol for cross-consumer comparison\nwithout forcing subsystem-specific provenance into one lossy format.\n\nConcrete adapters wrap existing outcome types to expose the shared view.\n\n:class:`AnalysisOutcomeLog` accumulates reports per-function for summary\nand diagnostic purposes.\n"
+"Shared outcome vocabulary across all lifecycle consumers.\n\nEach consumer subsystem (execution scope, flow-context, Hodur planner)\nproduces its own detailed outcome type.  This module defines a\n:class:`ConsumerOutcomeReport` Protocol for cross-consumer comparison\nwithout forcing subsystem-specific provenance into one lossy format.\n\nConcrete adapters wrap existing outcome types to expose the shared view.\n\n:class:`AnalysisOutcomeLog` accumulates reports per-function for summary\nand diagnostic purposes.\n"
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from d810.core.typing import Protocol, runtime_checkable
 class ConsumerOutcomeReport(Protocol):
     """Minimal shared outcome vocabulary across all lifecycle consumers.
 
-    Each consumer subsystem (rule-scope, flow-context, Hodur planner)
+    Each consumer subsystem (execution scope, flow-context, Hodur planner)
     produces its own detailed outcome type. This protocol defines the
     common vocabulary for cross-consumer comparison without forcing
     subsystem-specific provenance into one lossy format.
@@ -68,15 +68,15 @@ class _FlowGateDecisionLike(Protocol):
     allowed: bool
 
 
-class RuleScopeOutcomeAdapter:
-    "Adapter exposing :class:`AnalysisOutcome` as a :class:`ConsumerOutcomeReport`.\n\n    Wraps the rule-scope consumer's outcome without modifying it.\n"
+class ExecutionScopeOutcomeAdapter:
+    "Adapter exposing :class:`AnalysisOutcome` as a :class:`ConsumerOutcomeReport`.\n\n    Wraps the execution scope consumer's outcome without modifying it.\n"
 
     def __init__(self, outcome: _AnalysisOutcomeLike) -> None:
         self._outcome = outcome
 
     @property
     def consumer_name(self) -> str:
-        return "rule_scope"
+        return "execution_scope"
 
     @property
     def source_artifacts_available(self) -> bool:

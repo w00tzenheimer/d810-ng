@@ -88,7 +88,7 @@ class TestDeobfuscationHints:
             confidence=0.0,
             recommended_inferences=(),
             candidates=(),
-            suppress_rules=(),
+            suppress_stages=(),
         )
         assert hints.obfuscation_type is None
         assert hints.confidence == 0.0
@@ -101,11 +101,11 @@ class TestDeobfuscationHints:
             confidence=0.85,
             recommended_inferences=("unflattening", "mba"),
             candidates=(),
-            suppress_rules=("SlowRule",),
+            suppress_stages=("SlowRule",),
         )
         assert hints.obfuscation_type == "ollvm_flat"
         assert "unflattening" in hints.recommended_inferences
-        assert "SlowRule" in hints.suppress_rules
+        assert "SlowRule" in hints.suppress_stages
 
     def test_frozen(self):
         hints = DeobfuscationHints(
@@ -114,7 +114,7 @@ class TestDeobfuscationHints:
             confidence=0.0,
             recommended_inferences=(),
             candidates=(),
-            suppress_rules=(),
+            suppress_stages=(),
         )
         with pytest.raises((AttributeError, TypeError)):
             hints.func_ea = 1  # type: ignore[misc]

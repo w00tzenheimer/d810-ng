@@ -923,7 +923,6 @@ class SQLiteOptimizationStorage:
         # recorded and ownership cannot be proven.
         cursor.execute("DROP TABLE IF EXISTS function_rules")
         cursor.execute("DROP TABLE IF EXISTS function_recipes")
-        cursor.execute("DROP TABLE IF EXISTS rule_scope_inference")
 
         cursor.execute(
             """

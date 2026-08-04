@@ -32,7 +32,7 @@ def test_save_and_load_session_summary() -> None:
             classification="ollvm_flat",
             confidence=0.85,
             inferences=["unflattening"],
-            suppress_rules=["ConstantFolding"],
+            suppress_stages=["ConstantFolding"],
         )
         result = store.load_session_summary(0x401000)
         assert result is not None
@@ -41,7 +41,7 @@ def test_save_and_load_session_summary() -> None:
         assert result["classification"] == "ollvm_flat"
         assert result["confidence"] == 0.85
         assert result["inferences"] == ["unflattening"]
-        assert result["suppress_rules"] == ["ConstantFolding"]
+        assert result["suppress_stages"] == ["ConstantFolding"]
     finally:
         store.close()
 
@@ -66,7 +66,7 @@ def test_save_and_load_consumer_outcomes() -> None:
     try:
         store.save_consumer_outcome(
             func_ea=0x401000,
-            consumer_name="rule_scope",
+            consumer_name="execution_scope",
             artifacts_available=True,
             summary_available=True,
             verdict_applied=False,
@@ -85,16 +85,16 @@ def test_save_and_load_consumer_outcomes() -> None:
         outcomes = store.load_consumer_outcomes(0x401000)
         assert len(outcomes) == 2
         # Ordered by consumer_name
-        assert outcomes[0]["consumer_name"] == "hodur_planner"
+        assert outcomes[0]["consumer_name"] == "execution_scope"
         assert outcomes[0]["artifacts_available"] is True
-        assert outcomes[0]["summary_available"] is False
-        assert outcomes[0]["verdict_applied"] is True
+        assert outcomes[0]["summary_available"] is True
+        assert outcomes[0]["verdict_applied"] is False
+        assert outcomes[0]["detail"] == "source=analyzed"
 
-        assert outcomes[1]["consumer_name"] == "rule_scope"
+        assert outcomes[1]["consumer_name"] == "hodur_planner"
         assert outcomes[1]["artifacts_available"] is True
-        assert outcomes[1]["summary_available"] is True
-        assert outcomes[1]["verdict_applied"] is False
-        assert outcomes[1]["detail"] == "source=analyzed"
+        assert outcomes[1]["summary_available"] is False
+        assert outcomes[1]["verdict_applied"] is True
     finally:
         store.close()
 
@@ -170,7 +170,7 @@ def test_clear_func_preserves_user_overrides() -> None:
             classification="ollvm_flat",
             confidence=0.8,
             inferences=["unflattening"],
-            suppress_rules=[],
+            suppress_stages=[],
         )
         store.clear_func(func_ea=0x401000)
 
@@ -192,11 +192,11 @@ def test_clear_func_clears_session_summary_and_outcomes() -> None:
             classification="ollvm_flat",
             confidence=0.7,
             inferences=[],
-            suppress_rules=[],
+            suppress_stages=[],
         )
         store.save_consumer_outcome(
             func_ea=0x401000,
-            consumer_name="rule_scope",
+            consumer_name="execution_scope",
             artifacts_available=True,
             summary_available=True,
             verdict_applied=True,
@@ -225,7 +225,7 @@ def test_count_functions_with_hints() -> None:
                 confidence=0.9,
                 recommended_inferences=("unflattening",),
                 candidates=(),
-                suppress_rules=(),
+                suppress_stages=(),
             )
         )
         assert store.count_functions_with_hints() == 1
@@ -236,7 +236,7 @@ def test_count_functions_with_hints() -> None:
                 confidence=0.1,
                 recommended_inferences=(),
                 candidates=(),
-                suppress_rules=(),
+                suppress_stages=(),
             )
         )
         assert store.count_functions_with_hints() == 2
@@ -254,7 +254,7 @@ def test_count_functions_with_session_summaries() -> None:
             classification="flattening",
             confidence=0.8,
             inferences=["unflattening"],
-            suppress_rules=[],
+            suppress_stages=[],
         )
         assert store.count_functions_with_session_summaries() == 1
     finally:
@@ -267,7 +267,7 @@ def test_count_functions_with_consumer_outcomes() -> None:
         assert store.count_functions_with_consumer_outcomes() == 0
         store.save_consumer_outcome(
             func_ea=0x1000,
-            consumer_name="rule_scope",
+            consumer_name="execution_scope",
             artifacts_available=True,
             summary_available=True,
             verdict_applied=True,
@@ -287,7 +287,7 @@ def test_list_functions_with_hints() -> None:
                 confidence=0.1,
                 recommended_inferences=(),
                 candidates=(),
-                suppress_rules=(),
+                suppress_stages=(),
             )
         )
         store.save_hints(
@@ -297,7 +297,7 @@ def test_list_functions_with_hints() -> None:
                 confidence=0.9,
                 recommended_inferences=("unflattening",),
                 candidates=(),
-                suppress_rules=(),
+                suppress_stages=(),
             )
         )
         assert store.list_functions_with_hints() == [0x1000, 0x2000]
@@ -315,7 +315,7 @@ def test_list_functions_missing_session_summary() -> None:
                 confidence=0.9,
                 recommended_inferences=("unflattening",),
                 candidates=(),
-                suppress_rules=(),
+                suppress_stages=(),
             )
         )
         # No session summary yet — should appear in the gap list
@@ -328,7 +328,7 @@ def test_list_functions_missing_session_summary() -> None:
             classification="flattening",
             confidence=0.9,
             inferences=["unflattening"],
-            suppress_rules=[],
+            suppress_stages=[],
         )
         assert store.list_functions_missing_session_summary() == []
     finally:
@@ -344,7 +344,7 @@ def test_load_all_session_summaries() -> None:
             classification="flattening",
             confidence=0.8,
             inferences=["unflattening"],
-            suppress_rules=[],
+            suppress_stages=[],
         )
         store.save_session_summary(
             func_ea=0x2000,
@@ -352,7 +352,7 @@ def test_load_all_session_summaries() -> None:
             classification="",
             confidence=0.1,
             inferences=[],
-            suppress_rules=[],
+            suppress_stages=[],
         )
         summaries = store.load_all_session_summaries()
         assert len(summaries) == 2
@@ -385,7 +385,7 @@ def _create_legacy_db(path: str) -> None:
             obfuscation_type     TEXT,
             confidence           REAL    NOT NULL,
             candidates_json      TEXT    NOT NULL,
-            suppress_rules_json  TEXT    NOT NULL,
+            suppress_stages_json  TEXT    NOT NULL,
             updated_at           REAL    NOT NULL
         );
     """)
@@ -393,8 +393,7 @@ def _create_legacy_db(path: str) -> None:
     conn.close()
 
 
-def test_migration_adds_recommended_inferences_column() -> None:
-    """Opening a store with legacy DB auto-adds recommended_inferences_json."""
+def test_former_hint_table_is_ignored_and_strict_table_is_created() -> None:
     tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
     tmp.close()
     _create_legacy_db(tmp.name)
@@ -405,12 +404,19 @@ def test_migration_adds_recommended_inferences_column() -> None:
     assert "recommended_inferences_json" not in cols
     conn.close()
 
-    # Opening PreanalysisStore should migrate
+    # Opening PreanalysisStore creates the strict table without translating rows.
     store = PreanalysisStore(tmp.name)
     try:
-        # Verify column now exists
-        cols = {
+        # The former table remains untouched and the strict table has its schema.
+        former_cols = {
             r[1] for r in store._conn.execute("PRAGMA table_info(deobfuscation_hints)")
+        }
+        assert "recommended_inferences_json" not in former_cols
+        cols = {
+            r[1]
+            for r in store._conn.execute(
+                "PRAGMA table_info(deobfuscation_execution_hints)"
+            )
         }
         assert "recommended_inferences_json" in cols
 
@@ -422,7 +428,7 @@ def test_migration_adds_recommended_inferences_column() -> None:
                 confidence=0.9,
                 recommended_inferences=("unflattening",),
                 candidates=(),
-                suppress_rules=(),
+                suppress_stages=(),
             )
         )
         loaded = store.load_hints(func_ea=0x1000)
@@ -432,12 +438,14 @@ def test_migration_adds_recommended_inferences_column() -> None:
         store.close()
 
 
-def test_migration_idempotent_on_fresh_db() -> None:
-    """Migration is a no-op on a fresh DB (column already exists)."""
+def test_strict_hint_schema_is_idempotent_on_fresh_db() -> None:
     store = _make_store()
     try:
         cols = {
-            r[1] for r in store._conn.execute("PRAGMA table_info(deobfuscation_hints)")
+            r[1]
+            for r in store._conn.execute(
+                "PRAGMA table_info(deobfuscation_execution_hints)"
+            )
         }
         assert "recommended_inferences_json" in cols
 
@@ -449,7 +457,7 @@ def test_migration_idempotent_on_fresh_db() -> None:
                 confidence=0.5,
                 recommended_inferences=(),
                 candidates=(),
-                suppress_rules=(),
+                suppress_stages=(),
             )
         )
         loaded = store.load_hints(func_ea=0x2000)

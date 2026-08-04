@@ -40,7 +40,7 @@ def sample_hints() -> DeobfuscationHints:
         confidence=0.85,
         recommended_inferences=("unflattening",),
         candidates=(),
-        suppress_rules=(),
+        suppress_stages=(),
     )
 
 
@@ -196,13 +196,13 @@ class TestPreanalysisStoreHints:
             confidence=0.55,
             recommended_inferences=("mba",),
             candidates=(),
-            suppress_rules=("SlowRule",),
+            suppress_stages=("SlowRule",),
         )
         store.save_hints(updated)
         loaded = store.load_hints(func_ea=0x401000)
         assert loaded is not None
         assert loaded.obfuscation_type == "mixed"
-        assert "SlowRule" in loaded.suppress_rules
+        assert "SlowRule" in loaded.suppress_stages
 
     def test_load_hints_none_for_unknown(self, store):
         assert store.load_hints(func_ea=0xDEAD) is None

@@ -200,7 +200,7 @@ class TestFlowGraphReadyCoordinatorDedup:
         return DecompilationLifecycleCoordinator(
             preanalysis_runtime=_PreanalysisRuntime(phase, fact_runtime),
             analysis_runtime=None,
-            rule_scope_service=None,
+            execution_scope_service=None,
             native_preanalysis_key_provider=lambda _function_ea: NATIVE_KEY,
         )
 

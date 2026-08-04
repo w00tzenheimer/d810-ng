@@ -5,9 +5,9 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from d810.core.persistence import FunctionStorageLocator
-from d810.core.rule_scope import (
-    RuleScopeEvent,
-    RuleScopeInvalidation,
+from d810.core.execution_scope import (
+    ExecutionScopeEvent,
+    ExecutionScopeInvalidation,
 )
 from d810.manager.workbench_recipe_models import (
     FunctionPipelineOverride,
@@ -64,14 +64,14 @@ class FunctionRecipeRuntime:
         )
 
     def _emit_invalidation(self, function_ea: int) -> None:
-        event = RuleScopeEvent.FUNCTION_RECIPE_UPDATED
+        event = ExecutionScopeEvent.FUNCTION_RECIPE_UPDATED
         self._event_emitter.emit(
             event,
-            RuleScopeInvalidation(
+            ExecutionScopeInvalidation(
                 reason=event,
                 project_name=str(self._project_name_provider()),
                 func_eas=frozenset({int(function_ea)}),
-                changed_rules=frozenset(),
+                changed_targets=frozenset(),
             ),
         )
 

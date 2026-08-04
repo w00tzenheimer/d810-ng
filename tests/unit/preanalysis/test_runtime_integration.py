@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, create_autospec, patch
 import pytest
 
 from d810.core import ProviderPhaseSnapshot
-from d810.core.rule_scope import ApplyHintsResult, RuleScopeService
+from d810.core.execution_scope import ApplyExecutionHintsResult, ExecutionScopeService
 from d810.passes.analysis import AnalysisPhase
 from d810.analyses.control_flow.models import DeobfuscationHints, PreanalysisResult
 from d810.passes.phase import PreanalysisPhase
@@ -55,7 +55,7 @@ def _make_hints(
     obfuscation_type: str | None = "ollvm_flat",
     confidence: float = 0.85,
     recommended_inferences: tuple[str, ...] = ("unflattening",),
-    suppress_rules: tuple[str, ...] = (),
+    suppress_stages: tuple[str, ...] = (),
 ) -> DeobfuscationHints:
     return DeobfuscationHints(
         func_ea=func_ea,
@@ -63,7 +63,7 @@ def _make_hints(
         confidence=confidence,
         recommended_inferences=recommended_inferences,
         candidates=(),
-        suppress_rules=suppress_rules,
+        suppress_stages=suppress_stages,
     )
 
 
@@ -71,16 +71,16 @@ def _make_apply_result(
     func_ea: int = _FUNC_EA,
     inferences_applied: tuple[str, ...] = ("unflattening",),
     inferences_not_found: tuple[str, ...] = (),
-    rules_suppressed: tuple[str, ...] = (),
+    stages_suppressed: tuple[str, ...] = (),
     cache_invalidated: bool = True,
     generation_before: int = 0,
     generation_after: int = 1,
-) -> ApplyHintsResult:
-    return ApplyHintsResult(
+) -> ApplyExecutionHintsResult:
+    return ApplyExecutionHintsResult(
         func_ea=func_ea,
         inferences_applied=inferences_applied,
         inferences_not_found=inferences_not_found,
-        rules_suppressed=rules_suppressed,
+        stages_suppressed=stages_suppressed,
         cache_invalidated=cache_invalidated,
         generation_before=generation_before,
         generation_after=generation_after,
@@ -134,10 +134,10 @@ def _make_runtime() -> tuple[
 # ---------------------------------------------------------------------------
 
 
-def test_apply_to_rule_scope_fresh_analysis() -> None:
+def test_apply_to_execution_scope_fresh_analysis() -> None:
     """No cached hints -> analyzes persisted evidence and applies it."""
     rt, mock_phase, mock_analysis, mock_store = _make_runtime()
-    mock_rule_scope = create_autospec(RuleScopeService, instance=True)
+    mock_execution_scope = create_autospec(ExecutionScopeService, instance=True)
 
     results = [_make_preanalysis_result()]
     hints = _make_hints()
@@ -146,9 +146,9 @@ def test_apply_to_rule_scope_fresh_analysis() -> None:
     mock_store.load_hints.return_value = None
     mock_store.load_all_preanalysis_results.return_value = results
     mock_analysis.interpret.return_value = hints
-    mock_rule_scope.apply_hints.return_value = apply_result
+    mock_execution_scope.apply_hints.return_value = apply_result
 
-    outcome = rt.apply_to_rule_scope(_FUNC_EA, mock_rule_scope)
+    outcome = rt.apply_to_execution_scope(_FUNC_EA, mock_execution_scope)
 
     assert outcome.func_ea == _FUNC_EA
     assert outcome.hints is hints
@@ -162,21 +162,21 @@ def test_apply_to_rule_scope_fresh_analysis() -> None:
         results=results,
         store=mock_store,
     )
-    mock_rule_scope.apply_hints.assert_called_once_with(hints)
+    mock_execution_scope.apply_hints.assert_called_once_with(hints)
 
 
-def test_apply_to_rule_scope_cached_hints() -> None:
+def test_apply_to_execution_scope_cached_hints() -> None:
     """Cached hints -> skips collectors, applies directly."""
     rt, mock_phase, mock_analysis, mock_store = _make_runtime()
-    mock_rule_scope = create_autospec(RuleScopeService, instance=True)
+    mock_execution_scope = create_autospec(ExecutionScopeService, instance=True)
 
     cached_hints = _make_hints()
     apply_result = _make_apply_result()
 
     mock_store.load_hints.return_value = cached_hints
-    mock_rule_scope.apply_hints.return_value = apply_result
+    mock_execution_scope.apply_hints.return_value = apply_result
 
-    outcome = rt.apply_to_rule_scope(_FUNC_EA, mock_rule_scope)
+    outcome = rt.apply_to_execution_scope(_FUNC_EA, mock_execution_scope)
 
     assert outcome.func_ea == _FUNC_EA
     assert outcome.hints is cached_hints
@@ -188,15 +188,15 @@ def test_apply_to_rule_scope_cached_hints() -> None:
     mock_analysis.interpret.assert_not_called()
 
 
-def test_apply_to_rule_scope_no_hints_available() -> None:
+def test_apply_to_execution_scope_no_hints_available() -> None:
     """No cached hints and no target -> returns unavailable outcome."""
     rt, mock_phase, mock_analysis, mock_store = _make_runtime()
-    mock_rule_scope = create_autospec(RuleScopeService, instance=True)
+    mock_execution_scope = create_autospec(ExecutionScopeService, instance=True)
 
     mock_store.load_hints.return_value = None
     mock_store.load_all_preanalysis_results.return_value = []
 
-    outcome = rt.apply_to_rule_scope(_FUNC_EA, mock_rule_scope)
+    outcome = rt.apply_to_execution_scope(_FUNC_EA, mock_execution_scope)
 
     assert outcome.func_ea == _FUNC_EA
     assert outcome.hints is None
@@ -206,35 +206,35 @@ def test_apply_to_rule_scope_no_hints_available() -> None:
     # Nothing should have run
     mock_phase.run_microcode_collectors.assert_not_called()
     mock_analysis.interpret.assert_not_called()
-    mock_rule_scope.apply_hints.assert_not_called()
+    mock_execution_scope.apply_hints.assert_not_called()
 
 
 def test_outcome_records_source_correctly() -> None:
     """Verify source field is set correctly for each scenario."""
     rt, mock_phase, mock_analysis, mock_store = _make_runtime()
-    mock_rule_scope = create_autospec(RuleScopeService, instance=True)
+    mock_execution_scope = create_autospec(ExecutionScopeService, instance=True)
     hints = _make_hints()
     apply_result = _make_apply_result()
 
     # --- "cached" ---
     mock_store.load_hints.return_value = hints
-    mock_rule_scope.apply_hints.return_value = apply_result
+    mock_execution_scope.apply_hints.return_value = apply_result
 
-    cached_outcome = rt.apply_to_rule_scope(_FUNC_EA, mock_rule_scope)
+    cached_outcome = rt.apply_to_execution_scope(_FUNC_EA, mock_execution_scope)
     assert cached_outcome.source == "cached"
 
     # --- "analyzed" ---
     mock_store.load_hints.return_value = None
     mock_store.load_all_preanalysis_results.return_value = [_make_preanalysis_result()]
     mock_analysis.interpret.return_value = hints
-    mock_rule_scope.apply_hints.return_value = apply_result
+    mock_execution_scope.apply_hints.return_value = apply_result
 
-    analyzed_outcome = rt.apply_to_rule_scope(_FUNC_EA, mock_rule_scope)
+    analyzed_outcome = rt.apply_to_execution_scope(_FUNC_EA, mock_execution_scope)
     assert analyzed_outcome.source == "analyzed"
 
     # --- "unavailable" ---
     mock_store.load_hints.return_value = None
     mock_store.load_all_preanalysis_results.return_value = []
 
-    unavailable_outcome = rt.apply_to_rule_scope(_FUNC_EA, mock_rule_scope)
+    unavailable_outcome = rt.apply_to_execution_scope(_FUNC_EA, mock_execution_scope)
     assert unavailable_outcome.source == "unavailable"

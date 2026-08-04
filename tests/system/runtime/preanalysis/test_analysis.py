@@ -122,10 +122,10 @@ class TestAnalysisPhaseOllvmFlat:
         assert hints.obfuscation_type is None
         assert hints.func_ea == 0x401000
 
-    def test_suppress_rules_empty_when_no_obfuscation(self):
+    def test_suppress_stages_empty_when_no_obfuscation(self):
         phase = AnalysisPhase()
         hints = phase.interpret(func_ea=0x401000, results=[])
-        assert hints.suppress_rules == ()
+        assert hints.suppress_stages == ()
 
 
 class TestAnalysisPhaseInterpretFromStore:

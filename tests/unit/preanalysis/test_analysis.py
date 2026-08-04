@@ -351,7 +351,7 @@ class TestAllSupplementaryCombined:
 
 
 # ---------------------------------------------------------------------------
-# suppress_rules at high confidence
+# suppress_stages at high confidence
 # ---------------------------------------------------------------------------
 
 
@@ -380,8 +380,8 @@ class TestSuppressRules:
         hints = phase.interpret(func_ea=0x401000, results=results)
         assert hints.obfuscation_type == "ollvm_flat"
         assert hints.confidence >= _SUPPRESS_CONFIDENCE_THRESHOLD
-        assert "ConstantFolding" in hints.suppress_rules
-        assert "ForwardConstantPropagationRule" not in hints.suppress_rules
+        assert "constant-folding" in hints.suppress_stages
+        assert "ForwardConstantPropagationRule" not in hints.suppress_stages
 
     def test_no_suppress_below_threshold(self) -> None:
         """At baseline confidence (2 signals), no rule suppression."""
@@ -410,7 +410,7 @@ class TestSuppressRules:
         assert hints.obfuscation_type == "ollvm_flat"
 
     def test_no_suppress_when_not_classified(self) -> None:
-        """When not classified as ollvm_flat, no suppress_rules."""
+        """When not classified as ollvm_flat, no suppress_stages."""
         phase = AnalysisPhase()
         results = [
             _preanalysis(
@@ -430,7 +430,7 @@ class TestSuppressRules:
         ]
         hints = phase.interpret(func_ea=0x401000, results=results)
         assert hints.obfuscation_type is None
-        assert hints.suppress_rules == ()
+        assert hints.suppress_stages == ()
 
 
 # ---------------------------------------------------------------------------
@@ -521,8 +521,8 @@ class TestUserOverride:
             assert hints.obfuscation_type == "ollvm_flat"
             assert hints.confidence == 1.0
             assert "unflattening" in hints.recommended_inferences
-            assert "ConstantFolding" in hints.suppress_rules
-            assert "ForwardConstantPropagationRule" not in hints.suppress_rules
+            assert "constant-folding" in hints.suppress_stages
+            assert "ForwardConstantPropagationRule" not in hints.suppress_stages
         finally:
             store.close()
 
@@ -562,6 +562,6 @@ class TestUserOverride:
             assert hints.obfuscation_type == "tigress_indirect"
             assert hints.confidence == 0.9
             assert hints.recommended_inferences == ()
-            assert hints.suppress_rules == ()
+            assert hints.suppress_stages == ()
         finally:
             store.close()

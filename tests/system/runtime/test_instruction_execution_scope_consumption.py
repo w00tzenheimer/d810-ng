@@ -1,4 +1,4 @@
-"""Runtime tests for instruction-pipeline rule-scope consumption."""
+"""Runtime tests for instruction-pipeline execution-scope consumption."""
 
 from __future__ import annotations
 
@@ -31,17 +31,20 @@ def _get_default_binary() -> str:
     )
 
 
-class _NamedRule:
+class _NamedImplementation:
     def __init__(self, name: str):
         self.name = name
 
 
-class _FakeRuleScopeService:
-    def __init__(self, active_by_key: dict[tuple[int, int], tuple[_NamedRule, ...]]):
+class _FakeExecutionScopeService:
+    def __init__(
+        self,
+        active_by_key: dict[tuple[int, int], tuple[_NamedImplementation, ...]],
+    ):
         self.active_by_key = active_by_key
         self.calls: list[tuple[int, int, str, str, str]] = []
 
-    def get_active_rules(
+    def active_stages(
         self,
         *,
         project_name: str,
@@ -50,9 +53,12 @@ class _FakeRuleScopeService:
         pipeline: str,
         maturity: int,
         function_tags=None,
-    ) -> tuple[_NamedRule, ...]:
+    ) -> tuple[SimpleNamespace, ...]:
         self.calls.append((func_ea, maturity, pipeline, project_name, idb_key))
-        return self.active_by_key.get((func_ea, maturity), tuple())
+        return tuple(
+            SimpleNamespace(implementation=implementation)
+            for implementation in self.active_by_key.get((func_ea, maturity), tuple())
+        )
 
 
 class _CaptureOptimizer:
@@ -141,17 +147,20 @@ class TestInstructionScopeCaching:
         manager.instruction_optimizers = [capture]
         manager._active_optimizers = list(manager.instruction_optimizers)
 
-        scope_service = _FakeRuleScopeService(
+        scope_service = _FakeExecutionScopeService(
             {
-                (0x401000, 1): (_NamedRule("Rule.A"), _NamedRule("Rule.B")),
-                (0x401000, 2): (_NamedRule("Rule.C"),),
-                (0x402000, 2): (_NamedRule("Rule.D"),),
+                (0x401000, 1): (
+                    _NamedImplementation("Rule.A"),
+                    _NamedImplementation("Rule.B"),
+                ),
+                (0x401000, 2): (_NamedImplementation("Rule.C"),),
+                (0x402000, 2): (_NamedImplementation("Rule.D"),),
             }
         )
         manager.configure(
-            rule_scope_service=scope_service,
-            rule_scope_project_name="proj",
-            rule_scope_idb_key="idb",
+            execution_scope_service=scope_service,
+            execution_scope_project_name="proj",
+            execution_scope_idb_key="idb",
         )
 
         ins = SimpleNamespace(opcode=ida_hexrays.m_add)
@@ -181,7 +190,7 @@ class TestInstructionScopeCaching:
         assert capture.scheduled[-1] == frozenset()
         assert len(scope_service.calls) == 3
 
-    def test_instruction_run_later_request_joins_rule_scope_names(
+    def test_instruction_run_later_request_joins_execution_scope_names(
         self, libobfuscated_setup
     ):
         manager = InstructionOptimizerManager(
@@ -193,12 +202,12 @@ class TestInstructionScopeCaching:
         manager._active_optimizers = list(manager.instruction_optimizers)
         manager.current_maturity = ida_hexrays.MMAT_GLBOPT1
         manager.configure(
-            rule_scope_service=_FakeRuleScopeService({}),
-            rule_scope_project_name="proj",
-            rule_scope_idb_key="idb",
+            execution_scope_service=_FakeExecutionScopeService({}),
+            execution_scope_project_name="proj",
+            execution_scope_idb_key="idb",
             pass_scheduler=PassScheduler(),
         )
-        manager._rule_scope_func_ea = 0x401000
+        manager._execution_scope_func_ea = 0x401000
 
         manager._record_run_later_requests(
             _RunLaterRequestingRule(),

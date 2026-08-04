@@ -27,7 +27,7 @@ def _make_hints(
         confidence=confidence,
         recommended_inferences=(),
         candidates=(),
-        suppress_rules=(),
+        suppress_stages=(),
     )
 
 

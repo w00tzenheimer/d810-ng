@@ -34,7 +34,7 @@ from d810.core.project import (
     emit_project_reloading,
 )
 from d810.core.registry import SingletonMeta
-from d810.core.rule_scope import RuleScopeEvent
+from d810.core.execution_scope import ExecutionScopeEvent
 from d810.core.stats import OptimizationStatistics
 from d810.core.settings import configure_settings, get_settings
 from d810.core.typing import TYPE_CHECKING
@@ -299,31 +299,31 @@ class D810State(metaclass=SingletonMeta):
         cfg.setdefault("project_name", self.current_project.path.name)
         cfg.setdefault("runtime_project_name", runtime_project.path.name)
         self.manager.configure(**cfg)
-        self.manager.emit_rule_scope_invalidation(
-            RuleScopeEvent.PROJECT_RULES_RELOADED,
+        self.manager.emit_execution_scope_invalidation(
+            ExecutionScopeEvent.PROJECT_PIPELINE_RELOADED,
             project_name=self.current_project.path.name,
         )
         if self.manager.started:
             self.manager.instruction_optimizer.configure(
                 **self.manager.instruction_optimizer_config,
-                rule_scope_service=self.manager.rule_scope_service,
-                rule_scope_project_name=self.current_project.path.name,
-                rule_scope_idb_key=str(
+                execution_scope_service=self.manager.execution_scope_service,
+                execution_scope_project_name=self.current_project.path.name,
+                execution_scope_idb_key=str(
                     cfg.get("idb_key", self.current_project.path.name)
                 ),
                 pass_scheduler=self.manager.instruction_pass_scheduler,
             )
             self.manager.block_optimizer.configure(
                 **cfg,
-                rule_scope_service=self.manager.rule_scope_service,
-                rule_scope_project_name=self.current_project.path.name,
-                rule_scope_idb_key=str(
+                execution_scope_service=self.manager.execution_scope_service,
+                execution_scope_project_name=self.current_project.path.name,
+                execution_scope_idb_key=str(
                     cfg.get("idb_key", self.current_project.path.name)
                 ),
                 pass_scheduler=self.manager.block_pass_scheduler,
                 function_priors_provider=(self.manager.function_analysis_priors_for_ea),
             )
-            self.manager._compile_rule_scope()
+            self.manager._compile_execution_scope()
         if getattr(self, "gui", None) is not None:
             logger.info(
                 "d810-ng: Rules reconfigured for project %s",

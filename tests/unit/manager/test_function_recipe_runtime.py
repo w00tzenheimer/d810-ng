@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from d810.core.persistence import FunctionStorageLocator
-from d810.core.rule_scope import RuleScopeEvent, RuleScopeService, ScopeKey
+from d810.core.execution_scope import ExecutionScopeEvent, ExecutionScopeService
 from d810.manager.function_recipe_runtime import (
     FunctionRecipePersistenceError,
     FunctionRecipeRuntime,
@@ -94,8 +94,8 @@ def test_save_uses_sibling_storage_and_emits_one_function_scoped_invalidation() 
     )
     assert len(emitter.events) == 1
     event, payload = emitter.events[0]
-    assert event is RuleScopeEvent.FUNCTION_RECIPE_UPDATED
-    assert payload.reason is RuleScopeEvent.FUNCTION_RECIPE_UPDATED
+    assert event is ExecutionScopeEvent.FUNCTION_RECIPE_UPDATED
+    assert payload.reason is ExecutionScopeEvent.FUNCTION_RECIPE_UPDATED
     assert payload.func_eas == frozenset({0x401000})
 
 
@@ -143,20 +143,20 @@ def test_clear_removes_only_recipe_and_invalidates_once() -> None:
 
 
 def test_recipe_event_uses_existing_function_scoped_cache_invalidation_path() -> None:
-    service = RuleScopeService()
-    service._caches.active_by_scope = {
-        ScopeKey("sample", "idb", 0x401000, "flow"): object(),
-        ScopeKey("sample", "idb", 0x402000, "flow"): object(),
+    service = ExecutionScopeService()
+    service._active_cache = {
+        ("sample", "idb", 0x401000, "flow", 3): (),
+        ("sample", "idb", 0x402000, "flow", 3): (),
     }
 
     service.invalidate(
         SimpleNamespace(
-            reason=RuleScopeEvent.FUNCTION_RECIPE_UPDATED,
+            reason=ExecutionScopeEvent.FUNCTION_RECIPE_UPDATED,
             func_eas=frozenset({0x401000}),
         )
     )
 
-    assert {key.func_ea for key in service._caches.active_by_scope} == {0x402000}
+    assert {key[2] for key in service._active_cache} == {0x402000}
 
 
 def _method(path: Path, class_name: str, method_name: str) -> ast.FunctionDef:

@@ -3078,14 +3078,14 @@ def _run_worker(binary: pathlib.Path) -> None:
         )
         headless.start()
 
-        class NoFlowRules:
-            def get_active_rules(self, **_kwargs):
+        class NoFlowStages:
+            def active_stages(self, **_kwargs):
                 return ()
 
         # The checksum isolates the GENERATED producer.  Retain the configured
         # instruction optimizer (its first callback owns the GENERATED seam),
         # while suppressing the older broad PREOPT flow publication entirely.
-        headless._state.manager.block_optimizer._rule_scope_service = NoFlowRules()
+        headless._state.manager.block_optimizer._execution_scope_service = NoFlowStages()
         print("checksum-worker:started", flush=True)
         receipts = []
         from d810.hexrays.mutation.mba_mutation_events import MbaMutationCommitted

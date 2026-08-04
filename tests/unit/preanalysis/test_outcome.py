@@ -4,14 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import pytest
-
 from d810.passes.outcome import (
     ConsumerOutcomeReport,
     FlowGateOutcomeAdapter,
     PlannerOutcomeAdapter,
     AnalysisOutcomeLog,
-    RuleScopeOutcomeAdapter,
+    ExecutionScopeOutcomeAdapter,
 )
 
 
@@ -25,7 +23,7 @@ class _StubApplyHintsResult:
     func_ea: int = 0x401000
     inferences_applied: tuple[str, ...] = ()
     inferences_not_found: tuple[str, ...] = ()
-    rules_suppressed: tuple[str, ...] = ()
+    stages_suppressed: tuple[str, ...] = ()
     cache_invalidated: bool = False
     generation_before: int = 0
     generation_after: int = 1
@@ -75,9 +73,9 @@ class _StubFlowGateDecision:
 class TestProtocolConformance:
     """Each adapter must satisfy the ConsumerOutcomeReport protocol."""
 
-    def test_rule_scope_adapter_is_protocol_instance(self) -> None:
+    def test_execution_scope_adapter_is_protocol_instance(self) -> None:
         outcome = _StubAnalysisOutcome()
-        adapter = RuleScopeOutcomeAdapter(outcome)
+        adapter = ExecutionScopeOutcomeAdapter(outcome)
         assert isinstance(adapter, ConsumerOutcomeReport)
 
     def test_planner_adapter_is_protocol_instance(self) -> None:
@@ -92,49 +90,51 @@ class TestProtocolConformance:
 
 
 # ---------------------------------------------------------------------------
-# RuleScopeOutcomeAdapter field mapping
+# ExecutionScopeOutcomeAdapter field mapping
 # ---------------------------------------------------------------------------
 
 
-class TestRuleScopeOutcomeAdapter:
+class TestExecutionScopeOutcomeAdapter:
     def test_consumer_name(self) -> None:
-        adapter = RuleScopeOutcomeAdapter(_StubAnalysisOutcome())
-        assert adapter.consumer_name == "rule_scope"
+        adapter = ExecutionScopeOutcomeAdapter(_StubAnalysisOutcome())
+        assert adapter.consumer_name == "execution_scope"
 
     def test_source_unavailable(self) -> None:
-        adapter = RuleScopeOutcomeAdapter(_StubAnalysisOutcome(source="unavailable"))
+        adapter = ExecutionScopeOutcomeAdapter(
+            _StubAnalysisOutcome(source="unavailable")
+        )
         assert adapter.source_artifacts_available is False
 
     def test_source_cached(self) -> None:
-        adapter = RuleScopeOutcomeAdapter(_StubAnalysisOutcome(source="cached"))
+        adapter = ExecutionScopeOutcomeAdapter(_StubAnalysisOutcome(source="cached"))
         assert adapter.source_artifacts_available is True
 
     def test_source_analyzed(self) -> None:
-        adapter = RuleScopeOutcomeAdapter(_StubAnalysisOutcome(source="analyzed"))
+        adapter = ExecutionScopeOutcomeAdapter(_StubAnalysisOutcome(source="analyzed"))
         assert adapter.source_artifacts_available is True
 
     def test_summary_available_when_hints_present(self) -> None:
-        adapter = RuleScopeOutcomeAdapter(
+        adapter = ExecutionScopeOutcomeAdapter(
             _StubAnalysisOutcome(hints=object()),
         )
         assert adapter.summary_available is True
 
     def test_summary_unavailable_when_hints_none(self) -> None:
-        adapter = RuleScopeOutcomeAdapter(_StubAnalysisOutcome(hints=None))
+        adapter = ExecutionScopeOutcomeAdapter(_StubAnalysisOutcome(hints=None))
         assert adapter.summary_available is False
 
     def test_verdict_applied_when_result_present(self) -> None:
-        adapter = RuleScopeOutcomeAdapter(
+        adapter = ExecutionScopeOutcomeAdapter(
             _StubAnalysisOutcome(apply_result=_StubApplyHintsResult()),
         )
         assert adapter.consumer_verdict_applied is True
 
     def test_verdict_not_applied_when_result_none(self) -> None:
-        adapter = RuleScopeOutcomeAdapter(_StubAnalysisOutcome(apply_result=None))
+        adapter = ExecutionScopeOutcomeAdapter(_StubAnalysisOutcome(apply_result=None))
         assert adapter.consumer_verdict_applied is False
 
     def test_func_ea(self) -> None:
-        adapter = RuleScopeOutcomeAdapter(_StubAnalysisOutcome(func_ea=0xDEAD))
+        adapter = ExecutionScopeOutcomeAdapter(_StubAnalysisOutcome(func_ea=0xDEAD))
         assert adapter.func_ea == 0xDEAD
 
 
@@ -239,30 +239,32 @@ class TestFlowGateOutcomeAdapter:
 
 
 class TestAdapterDetail:
-    def test_rule_scope_detail(self) -> None:
-        adapter = RuleScopeOutcomeAdapter(_StubAnalysisOutcome(source="analyzed"))
+    def test_execution_scope_detail(self) -> None:
+        adapter = ExecutionScopeOutcomeAdapter(_StubAnalysisOutcome(source="analyzed"))
         assert "source=analyzed" in adapter.detail
 
-    def test_rule_scope_detail_unavailable(self) -> None:
-        adapter = RuleScopeOutcomeAdapter(_StubAnalysisOutcome(source="unavailable"))
+    def test_execution_scope_detail_unavailable(self) -> None:
+        adapter = ExecutionScopeOutcomeAdapter(
+            _StubAnalysisOutcome(source="unavailable")
+        )
         assert "source=unavailable" in adapter.detail
 
-    def test_rule_scope_detail_includes_inferences_applied(self) -> None:
+    def test_execution_scope_detail_includes_inferences_applied(self) -> None:
         ar = _StubApplyHintsResult(inferences_applied=("unflattening", "mba"))
-        adapter = RuleScopeOutcomeAdapter(
+        adapter = ExecutionScopeOutcomeAdapter(
             _StubAnalysisOutcome(source="analyzed", apply_result=ar),
         )
         assert "inferences_applied=unflattening,mba" in adapter.detail
 
-    def test_rule_scope_detail_includes_inferences_not_found(self) -> None:
+    def test_execution_scope_detail_includes_inferences_not_found(self) -> None:
         ar = _StubApplyHintsResult(inferences_not_found=("missing_one",))
-        adapter = RuleScopeOutcomeAdapter(
+        adapter = ExecutionScopeOutcomeAdapter(
             _StubAnalysisOutcome(source="analyzed", apply_result=ar),
         )
         assert "inferences_not_found=missing_one" in adapter.detail
 
-    def test_rule_scope_detail_no_inference_when_no_apply_result(self) -> None:
-        adapter = RuleScopeOutcomeAdapter(
+    def test_execution_scope_detail_no_inference_when_no_apply_result(self) -> None:
+        adapter = ExecutionScopeOutcomeAdapter(
             _StubAnalysisOutcome(source="analyzed", apply_result=None),
         )
         assert "inferences_applied" not in adapter.detail
@@ -361,7 +363,7 @@ class TestAnalysisOutcomeLog:
         """Record 2 adapters, verify summary dict."""
         log = AnalysisOutcomeLog()
 
-        a1 = RuleScopeOutcomeAdapter(
+        a1 = ExecutionScopeOutcomeAdapter(
             _StubAnalysisOutcome(
                 func_ea=0x1000, source="analyzed", hints=object(), apply_result=object()
             ),
@@ -376,7 +378,7 @@ class TestAnalysisOutcomeLog:
         s = log.summary(0x1000)
         assert s["func_ea"] == 0x1000
         assert len(s["consumers"]) == 2
-        assert s["consumers"][0]["name"] == "rule_scope"
+        assert s["consumers"][0]["name"] == "execution_scope"
         assert s["consumers"][0]["artifacts_available"] is True
         assert s["consumers"][0]["summary_available"] is True
         assert s["consumers"][0]["verdict_applied"] is True
@@ -389,7 +391,7 @@ class TestAnalysisOutcomeLog:
         """Record, reset, verify empty."""
         log = AnalysisOutcomeLog()
 
-        adapter = RuleScopeOutcomeAdapter(
+        adapter = ExecutionScopeOutcomeAdapter(
             _StubAnalysisOutcome(func_ea=0x2000, source="cached"),
         )
         log.record(adapter)
@@ -408,7 +410,7 @@ class TestAnalysisOutcomeLog:
         """Multiple consumers for same func_ea coexist (dedup is per consumer_name)."""
         log = AnalysisOutcomeLog()
 
-        a1 = RuleScopeOutcomeAdapter(
+        a1 = ExecutionScopeOutcomeAdapter(
             _StubAnalysisOutcome(func_ea=0x100, source="analyzed"),
         )
         log.record(a1)
@@ -422,12 +424,12 @@ class TestAnalysisOutcomeLog:
         reports = log.get_func_reports(0x100)
         assert len(reports) == 2
         names = {r.consumer_name for r in reports}
-        assert names == {"rule_scope", "hodur_planner"}
+        assert names == {"execution_scope", "hodur_planner"}
 
     def test_get_func_reports_returns_copy(self) -> None:
         """get_func_reports returns a copy, not the internal list."""
         log = AnalysisOutcomeLog()
-        adapter = RuleScopeOutcomeAdapter(
+        adapter = ExecutionScopeOutcomeAdapter(
             _StubAnalysisOutcome(func_ea=0x3000, source="analyzed"),
         )
         log.record(adapter)
@@ -442,8 +444,8 @@ class TestAnalysisOutcomeLog:
 
 
 class TestProvenanceDict:
-    def test_rule_scope_provenance_dict_is_none(self) -> None:
-        adapter = RuleScopeOutcomeAdapter(_StubAnalysisOutcome())
+    def test_execution_scope_provenance_dict_is_none(self) -> None:
+        adapter = ExecutionScopeOutcomeAdapter(_StubAnalysisOutcome())
         assert adapter.provenance_dict is None
 
     def test_flow_gate_provenance_dict_is_none(self) -> None:

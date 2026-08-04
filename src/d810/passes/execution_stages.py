@@ -2,15 +2,10 @@
 
 from __future__ import annotations
 
-import enum
 import re
 from dataclasses import dataclass
 
-
-class ExecutionPipeline(str, enum.Enum):
-    INSTRUCTION = "instruction"
-    FLOW = "flow"
-    CTREE = "ctree"
+from d810.core.execution_scope import ExecutionPipeline
 
 
 @dataclass(frozen=True, slots=True)

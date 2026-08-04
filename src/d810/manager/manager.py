@@ -23,11 +23,12 @@ from d810.core.project import (
     emit_preanalysis_fact_collector_registration,
 )
 from d810.core.registry import EventEmitter
-from d810.core.rule_scope import (
-    FunctionRuleOverlay,
-    RuleScopeEvent,
-    RuleScopeInvalidation,
-    RuleScopeService,
+from d810.core.execution_scope import (
+    ExecutionScopeEvent,
+    ExecutionScopeInvalidation,
+    ExecutionScopeService,
+    ExpandedExecutionStage,
+    FunctionExecutionMetadata,
 )
 from d810.core.stats import OptimizationStatistics
 from d810.backends.ast.z3 import Z3MopProver
@@ -69,6 +70,9 @@ from d810.passes.function_prior_config import (
 )
 from d810.passes.function_priors import FunctionAnalysisPriors
 from d810.passes.inferences import unflattening_inference
+from d810.passes.execution_stages import ExecutionPipeline
+from d810.passes.pipeline_config_parser import pipeline_configs_from_project_config
+from d810.passes.operational_config_v2 import operational_config_v2_pass_registry
 from d810.passes.pass_pipeline_factory import (
     PassPipelineSpec,
     build_pass_pipeline_spec,
@@ -103,7 +107,7 @@ from d810.manager.hexrays_pass_pipeline import build_hexrays_flowgraph_pipeline
 from d810.manager.post_d810_runtime import HexRaysPostD810Runtime
 from d810.manager.profiling import ProfilingController
 from d810.manager.project_runtime import ProjectRuntimeSnapshot
-from d810.manager.rule_scope_runtime import RuleScopeRuntime
+from d810.manager.function_storage_runtime import FunctionStorageRuntime
 from d810.manager.workbench_comparison import (
     ComparisonIdentity,
     WorkbenchComparisonService,
@@ -129,9 +133,6 @@ from d810.manager.workbench_recipe_models import (
 from d810.manager.workbench_recipe_commands import WorkbenchRecipeCommandService
 from d810.manager.workbench_recipe_analysis import collect_recipe_preflight_facts
 from d810.manager.workbench_recipe_service import RecipeService
-from d810.passes.operational_config_v2 import operational_config_v2_pass_registry
-from d810.passes.pipeline_config_parser import pipeline_configs_from_project_config
-
 
 D810_LOG_DIR_NAME = "d810_logs"
 
@@ -524,8 +525,8 @@ class D810Manager:
         repr=False,
     )
     event_emitter: EventEmitter = dataclasses.field(default_factory=EventEmitter)
-    rule_scope_service: RuleScopeService = dataclasses.field(
-        default_factory=RuleScopeService
+    execution_scope_service: ExecutionScopeService = dataclasses.field(
+        default_factory=ExecutionScopeService
     )
     block_pass_scheduler: PassScheduler = dataclasses.field(
         default_factory=PassScheduler
@@ -534,7 +535,7 @@ class D810Manager:
         default_factory=PassScheduler
     )
     profiling: ProfilingController = dataclasses.field(init=False)
-    rule_scope_runtime: RuleScopeRuntime = dataclasses.field(init=False)
+    function_storage_runtime: FunctionStorageRuntime = dataclasses.field(init=False)
     comparison_service: WorkbenchComparisonService = dataclasses.field(init=False)
     recipe_service: RecipeService = dataclasses.field(init=False)
     function_recipe_runtime: FunctionRecipeRuntime = dataclasses.field(init=False)
@@ -577,8 +578,8 @@ class D810Manager:
 
     def __post_init__(self) -> None:
         self.profiling = ProfilingController(self.log_dir)
-        self.rule_scope_runtime = RuleScopeRuntime(
-            storage_factory=self._create_rule_scope_storage,
+        self.function_storage_runtime = FunctionStorageRuntime(
+            storage_factory=self._create_function_storage,
             event_emitter=self.event_emitter,
             project_name_provider=lambda: str(self.config.get("project_name", "")),
             database_identity_provider=lambda: (
@@ -589,7 +590,7 @@ class D810Manager:
         workbench_registry = operational_config_v2_pass_registry()
         self.recipe_service = RecipeService(workbench_registry)
         self.function_recipe_runtime = FunctionRecipeRuntime(
-            storage_provider=lambda: self.rule_scope_runtime.storage,
+            storage_provider=lambda: self.function_storage_runtime.storage,
             event_emitter=self.event_emitter,
             project_name_provider=lambda: str(self.config.get("project_name", "")),
             database_identity_provider=lambda: (
@@ -849,11 +850,11 @@ class D810Manager:
 
     @property
     def storage(self):
-        return self.rule_scope_runtime.storage
+        return self.function_storage_runtime.storage
 
     @storage.setter
     def storage(self, value):
-        self.rule_scope_runtime.storage = value
+        self.function_storage_runtime.storage = value
 
     @property
     def analysis_db(self) -> pathlib.Path | None:
@@ -1349,16 +1350,16 @@ class D810Manager:
         """Install application-owned recipe storage independently of projects."""
 
         self._function_storage_config = config
-        self.rule_scope_runtime.configure_storage(config)
+        self.function_storage_runtime.configure_storage(config)
         if not self._started:
             return
         if config is None:
-            self.rule_scope_runtime.close()
+            self.function_storage_runtime.close()
             return
-        self.rule_scope_runtime.initialize_storage(config)
+        self.function_storage_runtime.initialize_storage(config)
 
     @staticmethod
-    def _create_rule_scope_storage(target, *, backend: str = "sqlite"):
+    def _create_function_storage(target, *, backend: str = "sqlite"):
         from d810.core.persistence import create_optimization_storage
 
         return create_optimization_storage(target, backend=backend)
@@ -1435,21 +1436,21 @@ class D810Manager:
             priors = priors.merge(self.function_analysis_priors(identifier))
         return priors
 
-    def emit_rule_scope_invalidation(
+    def emit_execution_scope_invalidation(
         self,
-        reason: RuleScopeEvent,
+        reason: ExecutionScopeEvent,
         *,
         project_name: str | None = None,
         func_eas: frozenset[int] | None = None,
-        changed_rules: frozenset[str] | None = None,
+        changed_targets: frozenset[str] | None = None,
     ) -> None:
         self.event_emitter.emit(
             reason,
-            RuleScopeInvalidation(
+            ExecutionScopeInvalidation(
                 reason=reason,
                 project_name=project_name,
                 func_eas=func_eas,
-                changed_rules=changed_rules,
+                changed_targets=changed_targets,
             ),
         )
 
@@ -1562,10 +1563,10 @@ class D810Manager:
         except ImportError:
             pass
 
-        self.rule_scope_service.attach(self.event_emitter)
+        self.execution_scope_service.attach(self.event_emitter)
         self._init_storage()
-        self.rule_scope_service.set_overlay_provider(self._get_rule_overlay)
-        self.rule_scope_service.register_inference(
+        self.execution_scope_service.set_metadata_provider(self._get_execution_metadata)
+        self.execution_scope_service.register_inference(
             "unflattening", unflattening_inference
         )
 
@@ -1578,9 +1579,9 @@ class D810Manager:
         self._database_identity = idb_key
         self.instruction_optimizer.configure(
             **self.instruction_optimizer_config,
-            rule_scope_service=self.rule_scope_service,
-            rule_scope_project_name=project_name,
-            rule_scope_idb_key=idb_key,
+            execution_scope_service=self.execution_scope_service,
+            execution_scope_project_name=project_name,
+            execution_scope_idb_key=idb_key,
             pass_scheduler=self.instruction_pass_scheduler,
         )
         self.block_optimizer = BlockOptimizerManager(
@@ -1588,9 +1589,9 @@ class D810Manager:
         )
         self.block_optimizer.configure(
             **self.block_optimizer_config,
-            rule_scope_service=self.rule_scope_service,
-            rule_scope_project_name=project_name,
-            rule_scope_idb_key=idb_key,
+            execution_scope_service=self.execution_scope_service,
+            execution_scope_project_name=project_name,
+            execution_scope_idb_key=idb_key,
             pass_scheduler=self.block_pass_scheduler,
             function_priors_provider=self.function_analysis_priors_for_ea,
             dispatcher_artifact_planner=plan_dispatcher_state_return_carrier_artifact,
@@ -1629,7 +1630,7 @@ class D810Manager:
         self.decompilation_lifecycle = DecompilationLifecycleCoordinator(
             preanalysis_runtime=self._preanalysis_runtime,
             analysis_runtime=self._analysis_runtime,
-            rule_scope_service=self.rule_scope_service,
+            execution_scope_service=self.execution_scope_service,
             native_preanalysis_key_provider=lambda function_ea: (
                 _build_native_preanalysis_key(
                     function_ea=function_ea,
@@ -1726,19 +1727,23 @@ class D810Manager:
             database_identity=idb_key,
         )
         self._post_d810_runtime = None
-        self._compile_rule_scope()
+        self._compile_execution_scope()
         self._install_hooks()
         self._started = True
 
     def _init_storage(self) -> None:
         if self._function_storage_config is not None:
-            self.rule_scope_runtime.initialize_storage(self._function_storage_config)
+            self.function_storage_runtime.initialize_storage(
+                self._function_storage_config
+            )
 
-    def _get_rule_overlay(self, function_ea: int) -> FunctionRuleOverlay | None:
-        return self.rule_scope_runtime.get_rule_overlay(function_ea)
+    def _get_execution_metadata(
+        self, function_ea: int
+    ) -> FunctionExecutionMetadata | None:
+        return self.function_storage_runtime.get_execution_metadata(function_ea)
 
     def get_function_tags(self, function_addr: int) -> set[str]:
-        return self.rule_scope_runtime.get_function_tags(function_addr)
+        return self.function_storage_runtime.get_function_tags(function_addr)
 
     def set_function_tags(
         self,
@@ -1746,26 +1751,70 @@ class D810Manager:
         function_addr: int,
         tags: typing.Optional[typing.Set[str]] = None,
     ) -> None:
-        self.rule_scope_runtime.set_function_tags(
+        self.function_storage_runtime.set_function_tags(
             function_addr=function_addr,
             tags=tags,
         )
 
-    def get_effective_rule_scope_report(self, function_addr: int):
-        """Return the same scoped rule decisions used by optimizer execution."""
-        return self.rule_scope_service.explain_effective_scope(
+    def get_effective_execution_report(self, function_addr: int):
+        """Return the same pass/stage decisions used by optimizer execution."""
+        return self.execution_scope_service.explain(
             project_name=str(self.config.get("project_name", "")),
             idb_key=self._database_identity or str(self.config.get("idb_key", "")),
             func_ea=int(function_addr),
         )
 
-    def _compile_rule_scope(self) -> None:
-        self.rule_scope_service.compile_base_rules(
-            project_name=str(self.config.get("project_name", "")),
-            instruction_rules=self.instruction_optimizer_rules,
-            flow_rules=self.block_optimizer_rules,
-            ctree_rules=self.ctree_optimizer_rules,
-        )
+    def _compile_execution_scope(self) -> None:
+        registry = operational_config_v2_pass_registry()
+        configs = pipeline_configs_from_project_config(self.config)
+        implementations = {
+            ExecutionPipeline.INSTRUCTION: tuple(self.instruction_optimizer_rules),
+            ExecutionPipeline.FLOW: tuple(self.block_optimizer_rules),
+            ExecutionPipeline.CTREE: tuple(self.ctree_optimizer_rules),
+        }
+        expanded: list[ExpandedExecutionStage] = []
+        state_fallback_used = False
+        for config in configs:
+            for descriptor in registry.stages_for(config.pass_id):
+                candidates = implementations[descriptor.pipeline]
+                implementation = next(
+                    (
+                        item
+                        for item in candidates
+                        if str(getattr(item, "name", item.__class__.__name__))
+                        == descriptor.implementation_name
+                    ),
+                    None,
+                )
+                if (
+                    implementation is None
+                    and not state_fallback_used
+                    and config.pass_id == "recover_dispatcher"
+                ):
+                    implementation = next(
+                        (
+                            item
+                            for item in candidates
+                            if str(getattr(item, "name", ""))
+                            == "StateMachineCffUnflattener"
+                        ),
+                        None,
+                    )
+                    state_fallback_used = implementation is not None
+                maturities = frozenset(
+                    int(value)
+                    for value in getattr(implementation, "maturities", ())
+                    if value is not None
+                )
+                expanded.append(
+                    ExpandedExecutionStage(
+                        descriptor=descriptor,
+                        implementation=implementation,
+                        target=config.target,
+                        maturities=maturities,
+                    )
+                )
+        self.execution_scope_service.configure(expanded)
 
     def _start_timer(self):
         self.profiling.start_timer()
@@ -2486,7 +2535,7 @@ class D810Manager:
         shutdown_all_writers()
         self.event_emitter.clear()
         self.stop_profiling()
-        self.rule_scope_runtime.close()
+        self.function_storage_runtime.close()
         if self._analysis_bundle is not None:
             self._analysis_bundle.close()
             self._analysis_bundle = None

@@ -17,12 +17,12 @@ from d810.manager.workbench_models import (
     CountEntry,
     D810OutputRef,
     DeobfuscationWorkbenchSnapshot,
-    EffectiveRuleDecisionSummary,
+    EffectiveStageDecisionSummary,
     FunctionRef,
     OutcomeStatus,
     PatchCountEntry,
     PipelineStageSnapshot,
-    RuleScopeSummary,
+    ExecutionScopeSummary,
     RuntimeConfigRef,
     SnapshotFreshness,
     StatisticsSummary,
@@ -75,7 +75,7 @@ def _empty_attack() -> AttackSummary:
         selection_mode="not-analyzed",
         confidence=None,
         recommended_inferences=(),
-        suppressed_rules=(),
+        suppressed_stages=(),
         candidate_kinds=(),
     )
 
@@ -224,24 +224,24 @@ class WorkbenchService:
             errors.append(f"consumers: {exc}")
 
         try:
-            rule_scope = self._rule_scope(
+            execution_scope = self._execution_scope(
                 function_ea=function_ea,
                 project_snapshot=project_snapshot,
             )
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
-            rule_scope = RuleScopeSummary(
-                public_operations=tuple(project_snapshot.effective_pass_ids),
+            execution_scope = ExecutionScopeSummary(
+                public_passes=tuple(project_snapshot.effective_pass_ids),
                 function_tags=(),
                 inference_names=(),
                 decisions=(),
-                unknown_rule_names=(),
+                unknown_targets=(),
             )
-            errors.append(f"rule-scope: {exc}")
+            errors.append(f"execution-scope: {exc}")
 
         try:
             statistics = self._statistics()
         except (RuntimeError, TypeError, ValueError) as exc:
-            statistics = StatisticsSummary((), (), (), 0, (), 0)
+            statistics = StatisticsSummary((), 0, ())
             errors.append(f"statistics: {exc}")
 
         if baseline is None or latest_output is None:
@@ -267,7 +267,7 @@ class WorkbenchService:
             attack=attack,
             pipeline=pipeline,
             consumers=consumers,
-            rule_scope=rule_scope,
+            execution_scope=execution_scope,
             statistics=statistics,
             baseline=baseline or BaselineRef(False, None, None, None),
             latest_output=latest_output or D810OutputRef(False, None, None, None),
@@ -573,8 +573,8 @@ class WorkbenchService:
             recommended_inferences=tuple(
                 str(value) for value in getattr(hints, "recommended_inferences", ())
             ),
-            suppressed_rules=tuple(
-                str(value) for value in getattr(hints, "suppress_rules", ())
+            suppressed_stages=tuple(
+                str(value) for value in getattr(hints, "suppress_stages", ())
             ),
             candidate_kinds=candidate_kinds,
         )
@@ -598,41 +598,27 @@ class WorkbenchService:
             )
         return tuple(outcomes)
 
-    def _rule_scope(
+    def _execution_scope(
         self,
         *,
         function_ea: int,
         project_snapshot: ProjectRuntimeSnapshot,
-    ) -> RuleScopeSummary:
-        report_loader = getattr(self._manager, "get_effective_rule_scope_report", None)
+    ) -> ExecutionScopeSummary:
+        report_loader = getattr(self._manager, "get_effective_execution_report", None)
         report = report_loader(int(function_ea)) if callable(report_loader) else None
         if report is None:
-            decisions = tuple(
-                EffectiveRuleDecisionSummary(
-                    pipeline=pipeline,
-                    rule_name=str(rule_name),
-                    maturities=(),
-                    active=True,
-                    reason="active",
-                    detail="passed all scope gates",
-                )
-                for pipeline, names in (
-                    (
-                        "instruction",
-                        project_snapshot.effective_instruction_rule_names,
-                    ),
-                    ("flow", project_snapshot.effective_block_rule_names),
-                )
-                for rule_name in names
-            )
+            decisions = ()
             tags: tuple[str, ...] = ()
             inference_names: tuple[str, ...] = ()
-            unknown_rule_names: tuple[str, ...] = ()
+            unknown_targets: tuple[str, ...] = ()
         else:
             decisions = tuple(
-                EffectiveRuleDecisionSummary(
-                    pipeline=str(decision.pipeline),
-                    rule_name=str(decision.rule_name),
+                EffectiveStageDecisionSummary(
+                    pass_id=str(decision.pass_id),
+                    stage_id=str(decision.stage_id),
+                    pipeline=str(
+                        getattr(decision.pipeline, "value", decision.pipeline)
+                    ),
                     maturities=tuple(int(value) for value in decision.maturities),
                     active=bool(decision.active),
                     reason=str(decision.reason),
@@ -642,48 +628,54 @@ class WorkbenchService:
             )
             tags = tuple(str(value) for value in report.function_tags)
             inference_names = tuple(str(value) for value in report.inference_names)
-            unknown_rule_names = tuple(
-                str(value) for value in report.unknown_rule_names
-            )
-        return RuleScopeSummary(
-            public_operations=tuple(project_snapshot.effective_pass_ids),
+            unknown_targets = tuple(str(value) for value in report.unknown_targets)
+        return ExecutionScopeSummary(
+            public_passes=tuple(project_snapshot.effective_pass_ids),
             function_tags=tags,
             inference_names=inference_names,
             decisions=decisions,
-            unknown_rule_names=unknown_rule_names,
+            unknown_targets=unknown_targets,
         )
 
     def _statistics(self) -> StatisticsSummary:
         stats = getattr(self._manager, "stats", None)
         report = stats.last_report() if stats is not None else {}
         report = report or {}
-        optimizer_matches = report.get("optimizer_matches", {})
-        rule_matches = report.get("rule_matches", {})
+        private_matches = report.get("rule_matches", {})
         cfg_patches = report.get("cfg_patches", {})
-        cycles = report.get("cycles_detected", {})
+        implementation_to_stage: dict[str, str] = {}
+        for pass_id in self._registry.public_pass_ids():
+            for stage in self._registry.stages_for(pass_id):
+                implementation_to_stage.setdefault(
+                    stage.implementation_name,
+                    f"{pass_id}/{stage.stage_id}",
+                )
+        stage_matches: dict[str, int] = {}
+        for implementation_name, count in private_matches.items():
+            stage_name = implementation_to_stage.get(str(implementation_name))
+            if stage_name is not None:
+                stage_matches[stage_name] = stage_matches.get(stage_name, 0) + int(
+                    count
+                )
+        stage_patches: dict[str, dict[str, int]] = {}
+        for implementation_name, values in cfg_patches.items():
+            stage_name = implementation_to_stage.get(str(implementation_name))
+            if stage_name is not None:
+                stage_patches[stage_name] = values
         return StatisticsSummary(
-            optimizer_matches=tuple(
+            stage_matches=tuple(
                 CountEntry(str(name), int(count))
-                for name, count in sorted(optimizer_matches.items())
+                for name, count in sorted(stage_matches.items())
             ),
-            rule_matches=tuple(
-                CountEntry(str(name), int(count))
-                for name, count in sorted(rule_matches.items())
-            ),
-            cfg_patches=tuple(
+            total_stage_firings=sum(stage_matches.values()),
+            stage_patches=tuple(
                 PatchCountEntry(
                     str(name),
                     int(values.get("uses", 0)),
                     int(values.get("total_patches", 0)),
                 )
-                for name, values in sorted(cfg_patches.items())
+                for name, values in sorted(stage_patches.items())
             ),
-            total_rule_firings=int(report.get("total_rule_firings", 0)),
-            cycles_detected=tuple(
-                CountEntry(str(name), int(count))
-                for name, count in sorted(cycles.items())
-            ),
-            total_cycles_detected=int(report.get("total_cycles_detected", 0)),
         )
 
     def _artifacts(

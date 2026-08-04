@@ -65,9 +65,7 @@ class PassRegistry:
             seen_stage_ids.add(stage.stage_id)
         normalized_transform_ids = tuple(transform_ids)
         if len(set(normalized_transform_ids)) != len(normalized_transform_ids):
-            raise PassRegistryError(
-                f"duplicate transform id in pass {pass_id!r}"
-            )
+            raise PassRegistryError(f"duplicate transform id in pass {pass_id!r}")
         unknown_transform_ids = tuple(
             transform_id
             for transform_id in normalized_transform_ids
@@ -176,7 +174,10 @@ class PassRegistry:
             pass_factory = self.factory_for(config.pass_id)
         else:
             configured_factory(config)
-            pass_factory = lambda: configured_factory(config)
+
+            def pass_factory() -> PipelinePass:
+                return configured_factory(config)
+
         return PassSpec(
             config.pass_id,
             pass_factory,
@@ -190,5 +191,6 @@ class PassRegistry:
             backend_route=config.backend_route,
             contract=config.contract,
             workflow_stage=config.workflow_stage,
+            target=config.target,
             options=config.options,
         )
