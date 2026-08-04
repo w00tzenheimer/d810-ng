@@ -8,6 +8,7 @@ from d810.core.deobfuscation_case import (
     DeobfuscationCaseSnapshot,
     StrategyWorkflowStage,
 )
+from d810.ir.maturity import IRMaturity, ir_maturity_rank
 from d810.manager.workbench_models import OutcomeStatus
 from d810.manager.workbench_recipe_models import (
     PassCatalogEntry,
@@ -67,6 +68,98 @@ _WORKFLOW_STAGE_LABELS = {
 _WORKFLOW_STAGE_ORDER = {
     stage: ordinal for ordinal, stage in enumerate(StrategyWorkflowStage)
 }
+
+
+class CanvasAddError(ValueError):
+    """Reject a canvas addition before it reaches mutable recipe state."""
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code)
+
+
+def _maturity_boundary(value: object) -> IRMaturity | None:
+    normalized = str(value).strip()
+    if normalized == "any":
+        return None
+    boundary = normalized.removeprefix(">=").removeprefix("<=").split("..", 1)[0]
+    try:
+        return IRMaturity(boundary)
+    except ValueError:
+        try:
+            return IRMaturity[boundary]
+        except KeyError:
+            return None
+
+
+def _maturity_range(
+    value: object,
+) -> tuple[IRMaturity | None, IRMaturity | None] | None:
+    normalized = str(value).strip()
+    if normalized == "any":
+        return None, None
+    if normalized.startswith(">="):
+        minimum = _maturity_boundary(normalized)
+        return (minimum, None) if minimum is not None else None
+    if normalized.startswith("<="):
+        maximum = _maturity_boundary(normalized)
+        return (None, maximum) if maximum is not None else None
+    if ".." in normalized:
+        minimum_text, maximum_text = normalized.split("..", 1)
+        minimum = _maturity_boundary(minimum_text)
+        maximum = _maturity_boundary(maximum_text)
+        if minimum is None or maximum is None:
+            return None
+        if ir_maturity_rank(minimum) > ir_maturity_rank(maximum):
+            return None
+        return minimum, maximum
+    maturity = _maturity_boundary(normalized)
+    return (maturity, maturity) if maturity is not None else None
+
+
+def _canvas_stage(stage_id: object) -> IRMaturity | None:
+    normalized = str(stage_id).strip()
+    if normalized == "any":
+        return None
+    return _maturity_boundary(normalized)
+
+
+def _is_legal_canvas_stage(entry: PassCatalogEntry, stage_id: object) -> bool:
+    normalized_stage = str(stage_id).strip()
+    stage = _canvas_stage(normalized_stage)
+    if normalized_stage == "any":
+        return str(entry.maturity).strip() == "any"
+    if stage is None:
+        return False
+    maturity_range = _maturity_range(entry.maturity)
+    if maturity_range is None:
+        return False
+    minimum, maximum = maturity_range
+    if minimum is None and maximum is None:
+        return False
+    rank = ir_maturity_rank(stage)
+    return (minimum is None or ir_maturity_rank(minimum) <= rank) and (
+        maximum is None or rank <= ir_maturity_rank(maximum)
+    )
+
+
+def canvas_add_candidates(
+    catalog: tuple[PassCatalogEntry, ...],
+    stage_id: str,
+    draft: PipelineRecipeDraft,
+) -> tuple[PassCatalogEntry, ...]:
+    """Return configured, non-duplicate passes that are legal at a canvas stage."""
+    normalized_stage = str(stage_id).strip()
+    if normalized_stage != "any" and _canvas_stage(normalized_stage) is None:
+        raise CanvasAddError("unknown-stage")
+    used_pass_ids = {item.pass_id for item in draft.passes}
+    return tuple(
+        entry
+        for entry in catalog
+        if entry.configured
+        and entry.pass_id not in used_pass_ids
+        and _is_legal_canvas_stage(entry, normalized_stage)
+    )
 
 
 def enables_dangerous_executable_readonly(
@@ -327,10 +420,12 @@ def should_accept_recipe_result(
 
 
 __all__ = [
+    "CanvasAddError",
     "RecipeActionState",
     "RecipeCatalogRow",
     "RecipeDraftRow",
     "RecipeStrategyView",
+    "canvas_add_candidates",
     "project_catalog_rows",
     "project_draft_rows",
     "project_recipe_strategy",
