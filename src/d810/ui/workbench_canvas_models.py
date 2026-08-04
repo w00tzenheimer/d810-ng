@@ -30,6 +30,8 @@ class CanvasNode:
     outputs: tuple[CanvasPort, ...]
     state: str
     detail: str
+    workflow_stage_id: str = ""
+    workflow_stage_label: str = ""
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -42,11 +44,23 @@ class CanvasEdge:
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
+class CanvasSubgraph:
+    """Display-only workflow grouping inside one fixed maturity stage."""
+
+    group_id: str
+    maturity_id: str
+    strategy_stage_id: str
+    label: str
+    node_ids: tuple[str, ...]
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
 class MaturityCanvasProjection:
     maturities: tuple[CanvasMaturity, ...]
     nodes: tuple[CanvasNode, ...]
     edges: tuple[CanvasEdge, ...]
     diagnostics: tuple[str, ...]
+    subgraphs: tuple[CanvasSubgraph, ...] = ()
 
 
 __all__ = [
@@ -54,5 +68,6 @@ __all__ = [
     "CanvasMaturity",
     "CanvasNode",
     "CanvasPort",
+    "CanvasSubgraph",
     "MaturityCanvasProjection",
 ]

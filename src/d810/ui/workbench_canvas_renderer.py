@@ -10,6 +10,7 @@ from d810.ui.workbench_canvas_models import (
     CanvasEdge,
     CanvasMaturity,
     CanvasNode,
+    CanvasSubgraph,
     MaturityCanvasProjection,
 )
 
@@ -25,6 +26,8 @@ _STAGE_WIDTH = 980.0
 _NODE_WIDTH = 210.0
 _NODE_GAP = 18.0
 _STAGE_GAP = 14.0
+_SUBGRAPH_GAP = 10.0
+_SUBGRAPH_HEADER_HEIGHT = 24.0
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -37,6 +40,16 @@ class _NodeGeometry:
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
+class _SubgraphGeometry:
+    subgraph: CanvasSubgraph
+    x: float
+    y: float
+    width: float
+    height: float
+    nodes: tuple[_NodeGeometry, ...]
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
 class _StageGeometry:
     stage: CanvasMaturity
     x: float
@@ -45,6 +58,7 @@ class _StageGeometry:
     height: float
     collapsed: bool
     nodes: tuple[_NodeGeometry, ...]
+    subgraphs: tuple[_SubgraphGeometry, ...]
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -59,6 +73,48 @@ class _CanvasLayout:
     stages: tuple[_StageGeometry, ...]
     port_positions: dict[tuple[str, str, str], tuple[float, float]]
     edges: tuple[_EdgeGeometry, ...]
+
+
+def _stage_subgraphs(
+    projection: MaturityCanvasProjection,
+    stage: CanvasMaturity,
+    stage_nodes: list[CanvasNode],
+) -> tuple[tuple[CanvasSubgraph, tuple[CanvasNode, ...]], ...]:
+    """Return declared display groups, with a compatibility group for old fixtures."""
+    by_id = {node.node_id: node for node in stage_nodes}
+    declared = tuple(
+        group
+        for group in projection.subgraphs
+        if group.maturity_id == stage.stage_id
+    )
+    result: list[tuple[CanvasSubgraph, tuple[CanvasNode, ...]]] = []
+    grouped_node_ids: set[str] = set()
+    for subgraph in declared:
+        nodes = tuple(
+            by_id[node_id]
+            for node_id in subgraph.node_ids
+            if node_id in by_id
+        )
+        if nodes:
+            result.append((subgraph, nodes))
+            grouped_node_ids.update(node.node_id for node in nodes)
+    ungrouped = tuple(
+        node for node in stage_nodes if node.node_id not in grouped_node_ids
+    )
+    if ungrouped:
+        result.append(
+            (
+                CanvasSubgraph(
+                    group_id=f"{stage.stage_id}:unassigned",
+                    maturity_id=stage.stage_id,
+                    strategy_stage_id="unassigned",
+                    label="Unassigned workflow stage",
+                    node_ids=tuple(node.node_id for node in ungrouped),
+                ),
+                ungrouped,
+            )
+        )
+    return tuple(result)
 
 
 def _layout_projection(
@@ -81,46 +137,67 @@ def _layout_projection(
         key=lambda value: (value.ordinal, value.stage_id),
     ):
         collapsed = stage.stage_id in collapsed_ids
-        stage_nodes = nodes_by_stage.get(stage.stage_id, ())
-        node_height = (
-            max(
-                58.0 + 12.0 * max(len(node.inputs), len(node.outputs))
-                for node in stage_nodes
-            )
-            if stage_nodes
-            else 58.0
-        )
-        body_height = 18.0 if collapsed else node_height + 16.0
+        stage_nodes = nodes_by_stage.get(stage.stage_id, [])
         node_geometries: list[_NodeGeometry] = []
-        if not collapsed:
-            for column, node in enumerate(stage_nodes):
-                node_x = 18.0 + column * (_NODE_WIDTH + _NODE_GAP)
-                node_y = stage_y + 34.0
-                node_geometry = _NodeGeometry(
-                    node=node,
-                    x=node_x,
-                    y=node_y,
-                    width=_NODE_WIDTH,
-                    height=node_height,
-                )
-                node_geometries.append(node_geometry)
-                for index, port in enumerate(node.inputs):
-                    port_positions[(node.node_id, port.port_id, "input")] = (
-                        node_x,
-                        node_y + 34.0 + index * 12.0,
-                    )
-                for index, port in enumerate(node.outputs):
-                    port_positions[(node.node_id, port.port_id, "output")] = (
-                        node_x + _NODE_WIDTH,
-                        node_y + 34.0 + index * 12.0,
-                    )
+        subgraph_geometries: list[_SubgraphGeometry] = []
         stage_width = _STAGE_WIDTH
-        if node_geometries:
-            last_node = node_geometries[-1]
-            stage_width = max(
-                stage_width,
-                last_node.x + last_node.width - 4.0 + 14.0,
-            )
+        if not collapsed:
+            subgraph_y = stage_y + 32.0
+            for subgraph, subgraph_nodes in _stage_subgraphs(
+                projection,
+                stage,
+                stage_nodes,
+            ):
+                node_height = max(
+                    58.0 + 12.0 * max(len(node.inputs), len(node.outputs))
+                    for node in subgraph_nodes
+                )
+                subgraph_x = 14.0
+                subgraph_width = max(
+                    _STAGE_WIDTH - 20.0,
+                    20.0
+                    + len(subgraph_nodes) * _NODE_WIDTH
+                    + max(0, len(subgraph_nodes) - 1) * _NODE_GAP,
+                )
+                subgraph_height = _SUBGRAPH_HEADER_HEIGHT + node_height + 14.0
+                group_nodes: list[_NodeGeometry] = []
+                for column, node in enumerate(subgraph_nodes):
+                    node_x = subgraph_x + 10.0 + column * (_NODE_WIDTH + _NODE_GAP)
+                    node_y = subgraph_y + _SUBGRAPH_HEADER_HEIGHT
+                    node_geometry = _NodeGeometry(
+                        node=node,
+                        x=node_x,
+                        y=node_y,
+                        width=_NODE_WIDTH,
+                        height=node_height,
+                    )
+                    group_nodes.append(node_geometry)
+                    node_geometries.append(node_geometry)
+                    for index, port in enumerate(node.inputs):
+                        port_positions[(node.node_id, port.port_id, "input")] = (
+                            node_x,
+                            node_y + 34.0 + index * 12.0,
+                        )
+                    for index, port in enumerate(node.outputs):
+                        port_positions[(node.node_id, port.port_id, "output")] = (
+                            node_x + _NODE_WIDTH,
+                            node_y + 34.0 + index * 12.0,
+                        )
+                subgraph_geometries.append(
+                    _SubgraphGeometry(
+                        subgraph=subgraph,
+                        x=subgraph_x,
+                        y=subgraph_y,
+                        width=subgraph_width,
+                        height=subgraph_height,
+                        nodes=tuple(group_nodes),
+                    )
+                )
+                stage_width = max(stage_width, subgraph_x + subgraph_width + 10.0)
+                subgraph_y += subgraph_height + _SUBGRAPH_GAP
+            body_height = subgraph_y - stage_y - _SUBGRAPH_GAP + 12.0
+        else:
+            body_height = 18.0
         stage_geometry = _StageGeometry(
             stage=stage,
             x=4.0,
@@ -129,6 +206,7 @@ def _layout_projection(
             height=26.0 + body_height,
             collapsed=collapsed,
             nodes=tuple(node_geometries),
+            subgraphs=tuple(subgraph_geometries),
         )
         stages.append(stage_geometry)
         stage_y += stage_geometry.height + _STAGE_GAP
@@ -230,6 +308,23 @@ if QT_GRAPHICS_AVAILABLE:
                     QtGui.QBrush(QtGui.QColor("#20252b")),
                 )
                 stage_box.setZValue(-2.0)
+                for subgraph_geometry in stage_geometry.subgraphs:
+                    subgraph = subgraph_geometry.subgraph
+                    subgraph_box = self.scene.addRect(
+                        subgraph_geometry.x,
+                        subgraph_geometry.y,
+                        subgraph_geometry.width,
+                        subgraph_geometry.height,
+                        QtGui.QPen(QtGui.QColor("#53606d")),
+                        QtGui.QBrush(QtGui.QColor("#27313d")),
+                    )
+                    subgraph_box.setZValue(-1.5)
+                    subgraph_label = self.scene.addText(subgraph.label)
+                    subgraph_label.setPos(
+                        subgraph_geometry.x + 8.0,
+                        subgraph_geometry.y + 3.0,
+                    )
+                    subgraph_label.setDefaultTextColor(QtGui.QColor("#c8d3df"))
                 for node_geometry in stage_geometry.nodes:
                     node = node_geometry.node
                     fill = {
