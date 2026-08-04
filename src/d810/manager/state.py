@@ -14,7 +14,6 @@ from d810.core import typing
 from d810.core.config import (
     D810Configuration,
     ProjectConfiguration,
-    RuleConfiguration,
 )
 from d810.core.config_v2_defaults import (
     ConfigV2DefaultSelection,
@@ -51,7 +50,6 @@ from d810.manager.project_runtime import (
     ProjectRuntimeSnapshot,
     build_project_runtime_snapshot,
     clone_runtime_project as clone_runtime_project_command,
-    save_legacy_project as save_legacy_project_command,
 )
 from d810.core.function_storage_config import (
     FunctionStorageConfigurationError,
@@ -802,25 +800,6 @@ class D810State(metaclass=SingletonMeta):
             runtime_project=self.current_runtime_project,
             destination=destination,
             description=description,
-        )
-
-    def save_legacy_project(
-        self,
-        *,
-        snapshot: ProjectRuntimeSnapshot | None,
-        source: ProjectConfiguration | None,
-        destination: pathlib.Path,
-        description: str,
-        ins_rules: typing.Sequence[RuleConfiguration],
-        blk_rules: typing.Sequence[RuleConfiguration],
-    ) -> ProjectConfiguration:
-        return save_legacy_project_command(
-            snapshot=snapshot,
-            source=source,
-            destination=destination,
-            description=description,
-            ins_rules=ins_rules,
-            blk_rules=blk_rules,
         )
 
     def _register_backend_analysis_providers(self) -> None:

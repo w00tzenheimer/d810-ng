@@ -4,10 +4,10 @@ import json
 import os
 import pathlib
 import tempfile
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 
 from d810.core import typing
-from d810.core.config import ProjectConfiguration, RuleConfiguration
+from d810.core.config import ProjectConfiguration
 
 
 class ProjectConfigurationWriteError(RuntimeError):
@@ -68,20 +68,4 @@ def clone_project_configuration(
 ) -> ProjectConfiguration:
     document = _read_complete_document(source.path)
     document["description"] = description
-    return write_project_document_atomically(destination, document)
-
-
-def save_legacy_project_configuration(
-    *,
-    source: ProjectConfiguration | None,
-    destination: pathlib.Path,
-    description: str,
-    ins_rules: Sequence[RuleConfiguration],
-    blk_rules: Sequence[RuleConfiguration],
-) -> ProjectConfiguration:
-    document = _read_complete_document(source.path) if source is not None else {}
-    document["description"] = description
-    document["ins_rules"] = [rule.to_dict() for rule in ins_rules]
-    document["blk_rules"] = [rule.to_dict() for rule in blk_rules]
-    document.setdefault("additional_configuration", {})
     return write_project_document_atomically(destination, document)

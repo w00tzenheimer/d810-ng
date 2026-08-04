@@ -14,8 +14,8 @@ logger = getLogger("D810.ui.pass_tree")
 class PassTreeWidget(QtWidgets.QWidget):
     """Display the public execution model without private optimizer objects."""
 
-    pass_selected = QtCore.Signal(str)
-    edit_requested = QtCore.Signal(str)
+    pass_selected = QtCore.pyqtSignal(str)
+    edit_requested = QtCore.pyqtSignal(str)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
