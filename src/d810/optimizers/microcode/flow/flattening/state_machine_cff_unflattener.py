@@ -204,7 +204,6 @@ from d810.passes.pipeline_config_parser import (
     PipelineV2Mode,
     pass_specs_from_project_config,
     pipeline_v2_mode_from_project_config,
-    pipeline_v2_shadow_match_required,
 )
 from d810.passes.pipeline_v2_hook_bridge import STATE_MACHINE_NATIVE_PASS_IDS
 from d810.passes.pipeline_shadow import compare_pipeline_v2_shadow
@@ -2025,7 +2024,6 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             pipeline_mode = pipeline_v2_mode_from_project_config(project_config)
             self._last_pipeline_v2_mode = pipeline_mode.value
             self._last_config_v2_pass_ids = ()
-            require_shadow_match = pipeline_v2_shadow_match_required(project_config)
             shadow_gate_kwargs = {}
             if pipeline_mode is PipelineV2Mode.CONFIG_V2:
                 configured_specs = pass_specs_from_project_config(
@@ -2065,7 +2063,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 shadow_gate_kwargs = {
                     "pipeline_v2_specs": native_specs,
                 }
-            elif require_shadow_match:
+            elif pipeline_mode is PipelineV2Mode.SHADOW_CHECK:
                 shadow_gate_kwargs = {
                     "pipeline_v2_shadow_registry": state_machine_pass_registry(),
                     "require_pipeline_v2_shadow_match": True,

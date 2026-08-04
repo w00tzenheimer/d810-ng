@@ -9,6 +9,7 @@ import ida_hexrays
 import pytest
 
 from d810.core.stats import OptimizationStatistics
+from d810.core.execution_scope import ExecutionStageIdentity
 from d810.hexrays.hooks.optblock_adapter import BlockOptimizerManager
 from d810.ir.maturity import IRMaturity
 from d810.optimizers.microcode.flow.context import FlowMaturityContext
@@ -67,7 +68,7 @@ class _CrossPassRunLaterRule(_DummyRule):
             self.flow_context.run_later(
                 IRMaturity.GLOBAL_OPTIMIZED,
                 reason="needs target rule at GLBOPT2",
-                pass_id=self.target_rule_name,
+                target_id=self.target_rule_name,
             )
         return self.patches
 
@@ -78,8 +79,14 @@ class _GatewayRule(FlowOptimizationRule):
 
 
 class _FakeExecutionScopeService:
-    def __init__(self, rules: tuple[_DummyRule, ...]):
+    def __init__(
+        self,
+        rules: tuple[_DummyRule, ...],
+        *,
+        known_rules: tuple[_DummyRule, ...] | None = None,
+    ):
         self.rules = rules
+        self.known_rules = known_rules or rules
         self.calls: list[tuple[int, int, str, str]] = []
 
     def active_stages(
@@ -94,6 +101,27 @@ class _FakeExecutionScopeService:
     ) -> tuple[SimpleNamespace, ...]:
         self.calls.append((func_ea, maturity, project_name, idb_key))
         return tuple(SimpleNamespace(implementation=rule) for rule in self.rules)
+
+    def identity_for_implementation(self, implementation, *, pipeline):
+        del pipeline
+        if all(rule is not implementation for rule in self.known_rules):
+            return None
+        return ExecutionStageIdentity(implementation.name, implementation.name)
+
+    def identity_for_target(self, target_id, *, pipeline):
+        del pipeline
+        if all(rule.name != target_id for rule in self.known_rules):
+            return None
+        return ExecutionStageIdentity(target_id, target_id)
+
+    def scheduled_stages(self, *, identities, func_ea, pipeline):
+        del func_ea, pipeline
+        requested = frozenset(identities)
+        return tuple(
+            SimpleNamespace(implementation=rule)
+            for rule in self.known_rules
+            if ExecutionStageIdentity(rule.name, rule.name) in requested
+        )
 
 
 class _MutationGatewayLifecycle:
@@ -352,7 +380,10 @@ def test_block_optimizer_runs_cross_pass_scheduled_rule_at_later_maturity():
     scheduler = PassScheduler()
     source_rule = _CrossPassRunLaterRule("source_rule", "target_rule")
     target_rule = _DummyRule("target_rule")
-    scope_service = _FakeExecutionScopeService((source_rule,))
+    scope_service = _FakeExecutionScopeService(
+        (source_rule,),
+        known_rules=(source_rule, target_rule),
+    )
     manager.add_rule(source_rule)
     manager.add_rule(target_rule)
     manager.configure(

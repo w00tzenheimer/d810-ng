@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from d810.analyses.control_flow.dispatcher_analysis import DispatcherAnalysis
     from d810.analyses.control_flow.dispatcher_facts import BlockAnalysis
     from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
+    from d810.ir.flowgraph import FlowGraph
 
 
 logger = getLogger("D810.flow.context")
@@ -303,15 +304,19 @@ class FlowMaturityContext:
         at: IRMaturity,
         reason: str = "",
         *,
-        pass_id: str | None = None,
+        target_id: str | None = None,
     ) -> None:
-        """Request that the current flow rule run again at a later maturity."""
-        requested_pass = pass_id if pass_id is not None else self._current_rule_name
-        if requested_pass is None:
-            raise ValueError("run_later requires an executing rule or explicit pass_id")
+        """Request a configured stage through a stable pass or stage target."""
+        requested_target = (
+            target_id if target_id is not None else self._current_rule_name
+        )
+        if requested_target is None:
+            raise ValueError(
+                "run_later requires an executing implementation or explicit target_id"
+            )
         self._run_later_requests.append(
             (
-                str(requested_pass),
+                str(requested_target),
                 RunLater(at=at, reason=reason),
             )
         )
@@ -319,24 +324,24 @@ class FlowMaturityContext:
     def drain_run_later_requests(
         self,
         *,
-        pass_id: str | None = None,
+        target_id: str | None = None,
     ) -> tuple[tuple[str, RunLater], ...]:
         """Return and remove queued run-later requests."""
         if not self._run_later_requests:
             return ()
-        if pass_id is None:
+        if target_id is None:
             drained = tuple(self._run_later_requests)
             self._run_later_requests.clear()
             return drained
 
-        pass_id_text = str(pass_id)
+        target_id_text = str(target_id)
         drained_list: list[tuple[str, RunLater]] = []
         remaining: list[tuple[str, RunLater]] = []
-        for request_pass_id, request in self._run_later_requests:
-            if request_pass_id == pass_id_text:
-                drained_list.append((request_pass_id, request))
+        for request_target_id, request in self._run_later_requests:
+            if request_target_id == target_id_text:
+                drained_list.append((request_target_id, request))
             else:
-                remaining.append((request_pass_id, request))
+                remaining.append((request_target_id, request))
         self._run_later_requests = remaining
         return tuple(drained_list)
 
@@ -380,12 +385,6 @@ class FlowMaturityContext:
         if analysis is None or analysis.router_kind != RouterKind.CONDITION_CHAIN:
             return self._terminal_boundary_blocks
 
-        from d810.ir.flowgraph import (
-            BlockSnapshot,
-            FlowGraph,
-            InsnSnapshot,
-            MopSnapshot,
-        )
         from d810.analyses.control_flow.state_machine_analysis import (
             detect_terminal_state_families_snapshot,
         )

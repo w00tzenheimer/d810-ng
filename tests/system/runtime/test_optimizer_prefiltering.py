@@ -6,8 +6,14 @@ from types import SimpleNamespace
 
 import ida_hexrays
 
+from d810.core.decompilation_session import DecompilationEvent
 from d810.core.stats import OptimizationStatistics
+from d810.hexrays.hooks.optblock_adapter import BlockOptimizerManager
+from d810.hexrays.hooks.optinsn_adapter import InstructionOptimizerManager
 from d810.optimizers.microcode.instructions.handler import InstructionOptimizer
+from d810.optimizers.microcode.instructions.peephole.fold_readonlydata import (
+    _has_potential_readonly_operand,
+)
 
 
 class _StubRule:
@@ -87,12 +93,7 @@ def test_maturity_gate_allows_optimizer_at_correct_maturity():
     result = opt.get_optimized_instruction(blk, ins)
 
     assert result is None  # Rule returns None
-    assert rule.calls == 1, f"Rule was not called at correct maturity"
-
-
-from d810.hexrays.hooks.optinsn_adapter import InstructionOptimizerManager
-from d810.hexrays.hooks.optblock_adapter import BlockOptimizerManager
-from d810.core.decompilation_session import DecompilationEvent
+    assert rule.calls == 1, "Rule was not called at correct maturity"
 
 
 def test_instruction_adapter_emits_top_level_preopt_with_live_ports() -> None:
@@ -442,7 +443,8 @@ def test_active_optimizer_list_filters_by_maturity():
     mgr._preanalysis_phase = None
     mgr._analysis_runtime = None
     mgr._run_later_scheduler = None
-    mgr._run_later_rule_names = frozenset()
+    mgr._scheduled_stage_identities = frozenset()
+    mgr._scheduled_implementation_names = frozenset()
 
     # Simulate maturity change to MMAT_LOCOPT
     blk = _make_blk(ida_hexrays.MMAT_LOCOPT)
@@ -455,7 +457,7 @@ def test_active_optimizer_list_filters_by_maturity():
     assert early_opt.calls == 0, (
         f"EarlyOpt was called {early_opt.calls} times at LOCOPT"
     )
-    assert locopt_opt.calls == 1, f"LocoptOpt was not called at LOCOPT"
+    assert locopt_opt.calls == 1, "LocoptOpt was not called at LOCOPT"
 
 
 def test_instruction_optimizer_abstains_during_scoped_suppression():
@@ -485,7 +487,8 @@ def test_instruction_optimizer_abstains_during_scoped_suppression():
     mgr._preanalysis_phase = None
     mgr._analysis_runtime = None
     mgr._run_later_scheduler = None
-    mgr._run_later_rule_names = frozenset()
+    mgr._scheduled_stage_identities = frozenset()
+    mgr._scheduled_implementation_names = frozenset()
     mgr._active_optimizers = [optimizer]
 
     with suppress_d810_optimization():
@@ -501,7 +504,8 @@ def test_instruction_optimizer_accepts_destination_owned_imported_mba():
     mgr = InstructionOptimizerManager.__new__(InstructionOptimizerManager)
     mgr.current_maturity = ida_hexrays.MMAT_PREOPTIMIZED
     mgr._execution_scope_service = None
-    mgr._run_later_rule_names = frozenset()
+    mgr._scheduled_stage_identities = frozenset()
+    mgr._scheduled_implementation_names = frozenset()
     mgr._active_optimizers = [optimizer]
     mgr._last_optimizer_tried = None
     mgr.analyzer = SimpleNamespace(analyze=lambda _blk, _ins: None)
@@ -556,12 +560,6 @@ def test_owned_fake_block_registry_distinguishes_native_clone_with_same_ea():
         assert not is_owned_fake_block(mba, native_clone)
     finally:
         clear_owned_fake_block_registrations()
-
-
-from d810.optimizers.microcode.instructions.peephole.fold_readonlydata import (
-    FoldReadonlyDataRule,
-    _has_potential_readonly_operand,
-)
 
 
 class _FakeMop:

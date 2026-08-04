@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import ida_hexrays
 
 from d810.core.stats import OptimizationStatistics
+from d810.core.execution_scope import ExecutionStageIdentity
 from d810.hexrays.hooks.optinsn_adapter import InstructionOptimizerManager
 from d810.ir.maturity import IRMaturity
 from d810.optimizers.microcode.instructions.handler import InstructionOptimizer
@@ -43,6 +44,7 @@ class _FakeExecutionScopeService:
     ):
         self.active_by_key = active_by_key
         self.calls: list[tuple[int, int, str, str, str]] = []
+        self.scheduled_calls: list[tuple[ExecutionStageIdentity, ...]] = []
 
     def active_stages(
         self,
@@ -59,6 +61,29 @@ class _FakeExecutionScopeService:
             SimpleNamespace(implementation=implementation)
             for implementation in self.active_by_key.get((func_ea, maturity), tuple())
         )
+
+    def identity_for_implementation(self, implementation, *, pipeline):
+        del pipeline
+        if implementation.name != "Rule.RequestLater":
+            return None
+        return ExecutionStageIdentity(
+            pass_id="request-later",
+            stage_id="request-later",
+        )
+
+    def scheduled_stages(self, *, identities, func_ea, pipeline):
+        del func_ea, pipeline
+        resolved = tuple(identities)
+        self.scheduled_calls.append(resolved)
+        if resolved == (
+            ExecutionStageIdentity("request-later", "request-later"),
+        ):
+            return (
+                SimpleNamespace(
+                    implementation=_NamedImplementation("Rule.RequestLater")
+                ),
+            )
+        return ()
 
 
 class _CaptureOptimizer:
@@ -201,8 +226,9 @@ class TestInstructionScopeCaching:
         manager.instruction_optimizers = [capture]
         manager._active_optimizers = list(manager.instruction_optimizers)
         manager.current_maturity = ida_hexrays.MMAT_GLBOPT1
+        scope_service = _FakeExecutionScopeService({})
         manager.configure(
-            execution_scope_service=_FakeExecutionScopeService({}),
+            execution_scope_service=scope_service,
             execution_scope_project_name="proj",
             execution_scope_idb_key="idb",
             pass_scheduler=PassScheduler(),
@@ -221,6 +247,9 @@ class TestInstructionScopeCaching:
         assert manager.optimize(_make_block(0x401000), SimpleNamespace()) is False
         assert capture.allowed[-1] == frozenset({"Rule.RequestLater"})
         assert capture.scheduled[-1] == frozenset({"Rule.RequestLater"})
+        assert scope_service.scheduled_calls == [
+            (ExecutionStageIdentity("request-later", "request-later"),)
+        ]
 
 
 def test_instruction_optimizer_scheduled_rule_bypasses_static_maturity():

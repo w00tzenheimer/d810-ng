@@ -47,28 +47,15 @@ def pipeline_configs_from_project_config(project_config) -> tuple[PipelineConfig
     return tuple(PipelineConfig.from_dict(item) for item in payload)
 
 
-def pipeline_v2_shadow_match_required(project_config) -> bool:
-    """Return whether live execution should fail on explicit ``pipeline_v2`` drift."""
-    config = _project_additional_config(project_config)
-    if "require_pipeline_v2_shadow_match" not in config:
-        return False
-    value = config["require_pipeline_v2_shadow_match"]
-    if not isinstance(value, bool):
-        raise PipelineConfigError("require_pipeline_v2_shadow_match must be a boolean")
-    return value
-
-
 def pipeline_v2_mode_from_project_config(project_config) -> PipelineV2Mode:
-    """Return the explicit ``pipeline_v2`` execution mode.
-
-    ``require_pipeline_v2_shadow_match`` remains a legacy compatibility spelling
-    for ``shadow-check`` when ``pipeline_v2_mode`` is absent.
-    """
+    """Return the explicit ``pipeline_v2`` execution mode."""
     config = _project_additional_config(project_config)
-    legacy_shadow_required = pipeline_v2_shadow_match_required(project_config)
+    if "require_pipeline_v2_shadow_match" in config:
+        raise PipelineConfigError(
+            "require_pipeline_v2_shadow_match is a former field; "
+            "use pipeline_v2_mode='shadow-check'"
+        )
     if "pipeline_v2_mode" not in config:
-        if legacy_shadow_required:
-            return PipelineV2Mode.SHADOW_CHECK
         return PipelineV2Mode.LEGACY
 
     value = config["pipeline_v2_mode"]
@@ -81,11 +68,6 @@ def pipeline_v2_mode_from_project_config(project_config) -> PipelineV2Mode:
         raise PipelineConfigError(
             f"pipeline_v2_mode must be one of: {allowed}"
         ) from exc
-    if legacy_shadow_required and mode is not PipelineV2Mode.SHADOW_CHECK:
-        raise PipelineConfigError(
-            "require_pipeline_v2_shadow_match conflicts with "
-            f"pipeline_v2_mode={mode.value!r}"
-        )
     return mode
 
 

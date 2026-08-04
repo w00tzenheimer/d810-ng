@@ -24,7 +24,6 @@ from d810.passes.pipeline_config_parser import (
     PipelineV2Mode,
     pipeline_configs_from_project_config,
     pipeline_v2_mode_from_project_config,
-    pipeline_v2_shadow_match_required,
     pass_specs_from_project_config,
 )
 from d810.passes.operational_config_v2 import operational_config_v2_pass_registry
@@ -150,41 +149,6 @@ def test_missing_pipeline_v2_is_inert_for_existing_project_configs():
     assert pipeline_configs_from_project_config(project) == ()
 
 
-def test_pipeline_v2_shadow_match_required_defaults_false_when_missing():
-    assert pipeline_v2_shadow_match_required({}) is False
-    project = SimpleNamespace(additional_configuration={"enable_pass_pipeline": True})
-    assert pipeline_v2_shadow_match_required(project) is False
-
-
-def test_pipeline_v2_shadow_match_required_reads_plain_mapping_and_project_object():
-    assert (
-        pipeline_v2_shadow_match_required({"require_pipeline_v2_shadow_match": True})
-        is True
-    )
-    project = SimpleNamespace(
-        additional_configuration={"require_pipeline_v2_shadow_match": False}
-    )
-    assert pipeline_v2_shadow_match_required(project) is False
-
-
-@pytest.mark.parametrize("value", ["true", 1, [], {}])
-def test_pipeline_v2_shadow_match_required_rejects_non_boolean_values(value):
-    with pytest.raises(
-        PipelineConfigError,
-        match="require_pipeline_v2_shadow_match must be a boolean",
-    ):
-        pipeline_v2_shadow_match_required({"require_pipeline_v2_shadow_match": value})
-
-
-def test_pipeline_v2_shadow_match_required_rejects_malformed_project_config():
-    project = SimpleNamespace(additional_configuration=[])
-    with pytest.raises(
-        PipelineConfigError,
-        match="project additional_configuration must be a mapping",
-    ):
-        pipeline_v2_shadow_match_required(project)
-
-
 def test_pipeline_v2_mode_defaults_legacy_without_project_opt_in():
     assert pipeline_v2_mode_from_project_config({}) is PipelineV2Mode.LEGACY
     project = SimpleNamespace(additional_configuration={"enable_pass_pipeline": True})
@@ -203,11 +167,11 @@ def test_pipeline_v2_mode_reads_explicit_project_mode(value, expected):
     assert pipeline_v2_mode_from_project_config({"pipeline_v2_mode": value}) is expected
 
 
-def test_pipeline_v2_mode_preserves_legacy_shadow_match_boolean():
-    assert (
-        pipeline_v2_mode_from_project_config({"require_pipeline_v2_shadow_match": True})
-        is PipelineV2Mode.SHADOW_CHECK
-    )
+def test_pipeline_v2_mode_rejects_former_shadow_match_boolean():
+    with pytest.raises(PipelineConfigError, match="former field"):
+        pipeline_v2_mode_from_project_config(
+            {"require_pipeline_v2_shadow_match": True}
+        )
 
 
 @pytest.mark.parametrize("value", [True, 1, [], {}])
@@ -221,11 +185,8 @@ def test_pipeline_v2_mode_rejects_unknown_values():
         pipeline_v2_mode_from_project_config({"pipeline_v2_mode": "execute"})
 
 
-def test_pipeline_v2_mode_rejects_conflicting_legacy_shadow_boolean():
-    with pytest.raises(
-        PipelineConfigError,
-        match="require_pipeline_v2_shadow_match conflicts",
-    ):
+def test_pipeline_v2_mode_rejects_former_shadow_boolean_even_with_explicit_mode():
+    with pytest.raises(PipelineConfigError, match="former field"):
         pipeline_v2_mode_from_project_config(
             {
                 "pipeline_v2_mode": "config-v2",
