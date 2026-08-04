@@ -10,7 +10,7 @@ from __future__ import annotations
 import enum
 from dataclasses import dataclass, field
 
-from d810.core.typing import Any, Callable, Iterable, Literal, Mapping, Protocol
+from d810.core.typing import Any, Callable, Iterable, Mapping, Protocol
 
 from d810.core.registry import EventEmitter
 
@@ -21,6 +21,20 @@ class ExecutionPipeline(str, enum.Enum):
     INSTRUCTION = "instruction"
     FLOW = "flow"
     CTREE = "ctree"
+
+
+class ExecutionTargetKind(str, enum.Enum):
+    """Public identity namespace targeted by an execution adjustment."""
+
+    PASS = "pass"
+    STAGE = "stage"
+
+
+class ExecutionAdjustmentAction(str, enum.Enum):
+    """Strict operation applied to a public pass or stage identity."""
+
+    SUPPRESS = "suppress"
+    OVERRIDE = "override"
 
 
 class ExecutionScopeEvent(enum.Enum):
@@ -69,16 +83,32 @@ class ExpandedExecutionStage:
 
 
 @dataclass(frozen=True, slots=True)
+class ExecutionStageIdentity:
+    """Stable identity carried across deferred execution boundaries."""
+
+    pass_id: str
+    stage_id: str
+
+    def __post_init__(self) -> None:
+        if not self.pass_id or not self.stage_id:
+            raise ValueError("execution stage identity fields must be non-empty")
+
+
+@dataclass(frozen=True, slots=True)
 class ExecutionAdjustment:
-    target_kind: Literal["pass", "stage"]
+    target_kind: ExecutionTargetKind
     target_id: str
-    action: Literal["suppress", "override"]
+    action: ExecutionAdjustmentAction
     overrides: Mapping[str, object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        if not isinstance(self.target_kind, ExecutionTargetKind):
+            raise TypeError("execution adjustment target_kind must be typed")
+        if not isinstance(self.action, ExecutionAdjustmentAction):
+            raise TypeError("execution adjustment action must be typed")
         if not self.target_id:
             raise ValueError("execution adjustment target_id must be non-empty")
-        if self.action == "suppress" and self.overrides:
+        if self.action is ExecutionAdjustmentAction.SUPPRESS and self.overrides:
             raise ValueError("suppress adjustments cannot carry overrides")
 
 
@@ -295,6 +325,84 @@ class ExecutionScopeService:
         self._active_cache[key] = result
         return result
 
+    def identity_for_implementation(
+        self,
+        implementation: object,
+        *,
+        pipeline: object,
+    ) -> ExecutionStageIdentity | None:
+        """Resolve one private object to its configured public stage identity."""
+        pipeline_value = str(getattr(pipeline, "value", pipeline))
+        matches = tuple(
+            stage
+            for stage in self._stages
+            if stage.implementation is implementation
+            and str(getattr(stage.pipeline, "value", stage.pipeline))
+            == pipeline_value
+        )
+        if not matches:
+            return None
+        if len(matches) != 1:
+            identities = ", ".join(
+                f"{stage.pass_id}/{stage.stage_id}" for stage in matches
+            )
+            raise ValueError(
+                "implementation is bound to multiple configured stages: "
+                f"{identities}"
+            )
+        return ExecutionStageIdentity(matches[0].pass_id, matches[0].stage_id)
+
+    def identity_for_target(
+        self,
+        target_id: str,
+        *,
+        pipeline: object,
+    ) -> ExecutionStageIdentity | None:
+        """Resolve an explicit stable pass or stage target without aliases."""
+        pipeline_value = str(getattr(pipeline, "value", pipeline))
+        matches = tuple(
+            stage
+            for stage in self._stages
+            if stage.implementation is not None
+            and str(getattr(stage.pipeline, "value", stage.pipeline))
+            == pipeline_value
+            and target_id in {stage.pass_id, stage.stage_id}
+        )
+        if not matches:
+            return None
+        if len(matches) != 1:
+            identities = ", ".join(
+                f"{stage.pass_id}/{stage.stage_id}" for stage in matches
+            )
+            raise ValueError(
+                f"execution target {target_id!r} is ambiguous: {identities}"
+            )
+        return ExecutionStageIdentity(matches[0].pass_id, matches[0].stage_id)
+
+    def scheduled_stages(
+        self,
+        *,
+        identities: Iterable[ExecutionStageIdentity],
+        func_ea: int,
+        pipeline: object,
+        function_tags: frozenset[str] | None = None,
+    ) -> tuple[ExpandedExecutionStage, ...]:
+        """Resolve deferred stages while intentionally bypassing maturity gates."""
+        requested = frozenset(identities)
+        if not requested:
+            return ()
+        pipeline_value = str(getattr(pipeline, "value", pipeline))
+        tags = self._tags(int(func_ea), function_tags)
+        return tuple(
+            stage
+            for stage in self._stages
+            if ExecutionStageIdentity(stage.pass_id, stage.stage_id) in requested
+            and str(getattr(stage.pipeline, "value", stage.pipeline))
+            == pipeline_value
+            and stage.implementation is not None
+            and self._evaluate(stage, int(func_ea), None, tags).active
+        )
+
     def explain(
         self,
         *,
@@ -385,13 +493,13 @@ class ExecutionScopeService:
                 continue
             for adjustment in inference.adjustments:
                 matches = (
-                    adjustment.target_kind == "pass"
+                    adjustment.target_kind is ExecutionTargetKind.PASS
                     and adjustment.target_id == stage.pass_id
                 ) or (
-                    adjustment.target_kind == "stage"
+                    adjustment.target_kind is ExecutionTargetKind.STAGE
                     and adjustment.target_id == stage.stage_id
                 )
-                if matches and adjustment.action == "suppress":
+                if matches and adjustment.action is ExecutionAdjustmentAction.SUPPRESS:
                     return _Evaluation(
                         False,
                         "inference-suppressed",
@@ -421,11 +529,14 @@ __all__ = [
     "EffectiveExecutionDecision",
     "EffectiveExecutionReport",
     "ExecutionAdjustment",
+    "ExecutionAdjustmentAction",
     "ExecutionInference",
     "ExecutionPipeline",
     "ExecutionScopeEvent",
     "ExecutionScopeInvalidation",
     "ExecutionScopeService",
+    "ExecutionStageIdentity",
+    "ExecutionTargetKind",
     "ExpandedExecutionStage",
     "FunctionExecutionMetadata",
     "FunctionExecutionMetadataProvider",

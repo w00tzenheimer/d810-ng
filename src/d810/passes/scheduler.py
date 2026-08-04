@@ -49,8 +49,17 @@ class PendingRun:
     func_ea: int
     pass_id: str
     at: IRMaturity
+    stage_id: str | None = None
     domain: RunLaterDomain = RunLaterDomain.OPTIMIZER_RULE
     reason: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.pass_id:
+            raise ValueError("pass_id must be non-empty")
+        if self.domain is RunLaterDomain.OPTIMIZER_RULE and not self.stage_id:
+            raise ValueError("optimizer run_later requires stage_id")
+        if self.domain is RunLaterDomain.PIPELINE_PASS and self.stage_id is not None:
+            raise ValueError("pipeline pass run_later cannot carry stage_id")
 
 
 def _maturity_rank(stage: IRMaturity) -> int | None:
@@ -77,7 +86,8 @@ class PassScheduler:
             raise ValueError("per_func_request_budget must be >= 1")
         self._per_func_request_budget = per_func_request_budget
         self._pending_by_func: dict[
-            int, dict[tuple[int, RunLaterDomain, str, IRMaturity], PendingRun]
+            int,
+            dict[tuple[int, RunLaterDomain, str, str | None, IRMaturity], PendingRun],
         ] = {}
 
     def request(
@@ -85,6 +95,7 @@ class PassScheduler:
         *,
         func_ea: int,
         pass_id: str,
+        stage_id: str | None = None,
         current_maturity: IRMaturity,
         run_later: RunLater,
         domain: RunLaterDomain = RunLaterDomain.OPTIMIZER_RULE,
@@ -94,6 +105,12 @@ class PassScheduler:
         Returns ``True`` when the request is accepted or already pending and
         ``False`` when maturity ordering or the per-function budget rejects it.
         """
+
+        requested_domain = RunLaterDomain(domain)
+        if requested_domain is RunLaterDomain.OPTIMIZER_RULE and not stage_id:
+            raise ValueError("optimizer run_later requires stage_id")
+        if requested_domain is RunLaterDomain.PIPELINE_PASS and stage_id is not None:
+            raise ValueError("pipeline pass run_later cannot carry stage_id")
 
         maturity_delta = _compare_maturity(run_later.at, current_maturity)
         if maturity_delta is not None and maturity_delta <= 0:
@@ -105,7 +122,13 @@ class PassScheduler:
             )
             return False
 
-        key = (int(func_ea), RunLaterDomain(domain), str(pass_id), run_later.at)
+        key = (
+            int(func_ea),
+            requested_domain,
+            str(pass_id),
+            None if stage_id is None else str(stage_id),
+            run_later.at,
+        )
         pending_for_func = self._pending_by_func.setdefault(int(func_ea), {})
         if key in pending_for_func:
             return True
@@ -124,8 +147,9 @@ class PassScheduler:
         pending_for_func[key] = PendingRun(
             func_ea=int(func_ea),
             pass_id=str(pass_id),
+            stage_id=None if stage_id is None else str(stage_id),
             at=run_later.at,
-            domain=RunLaterDomain(domain),
+            domain=requested_domain,
             reason=run_later.reason,
         )
         return True
@@ -145,7 +169,9 @@ class PassScheduler:
             return ()
 
         requested_domain = RunLaterDomain(domain)
-        drained_keys: list[tuple[int, RunLaterDomain, str, IRMaturity]] = []
+        drained_keys: list[
+            tuple[int, RunLaterDomain, str, str | None, IRMaturity]
+        ] = []
         drained: list[PendingRun] = []
         for key, pending in pending_for_func.items():
             if pending.domain is not requested_domain:

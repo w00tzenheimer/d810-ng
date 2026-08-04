@@ -14,7 +14,7 @@ from d810.hexrays.hooks.optimization_suppression import (
 
 from d810.core import getLogger, typing
 from d810.core.decompilation_session import DecompilationEvent
-from d810.core.execution_scope import ExecutionPipeline
+from d810.core.execution_scope import ExecutionPipeline, ExecutionStageIdentity
 from d810.errors import D810Exception
 from d810.hexrays.hooks.callback_mutation_diagnostics import (
     LiveNopSite,
@@ -37,7 +37,6 @@ _PROJECT_CONFIG_KEYS = frozenset(
     {
         "pipeline_v2",
         "pipeline_v2_mode",
-        "require_pipeline_v2_shadow_match",
         "router_resolution",
     }
 )
@@ -128,7 +127,8 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         # Accessing stale mop_t pointers after pipeline mutations causes segfaults.
         self._pipeline_just_fired: bool = False
         self._run_later_scheduler = None
-        self._run_later_rule_names: frozenset[str] = frozenset()
+        self._scheduled_stage_identities: frozenset[ExecutionStageIdentity] = frozenset()
+        self._scheduled_flow_implementations: tuple[FlowOptimizationRule, ...] = ()
         # usage tracking moved to centralized statistics object
         # Optional event emitter - set by D810Manager after construction.
         self.event_emitter = None
@@ -170,7 +170,8 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                 reset_pass_manager()
 
     def _reset_run_later_state(self) -> None:
-        self._run_later_rule_names = frozenset()
+        self._scheduled_stage_identities = frozenset()
+        self._scheduled_flow_implementations = ()
         scheduler = self._run_later_scheduler
         if scheduler is not None:
             reset_all = getattr(scheduler, "reset_all", None)
@@ -193,7 +194,8 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         self,
         mba: ida_hexrays.mbl_array_t,
     ) -> None:
-        self._run_later_rule_names = frozenset()
+        self._scheduled_stage_identities = frozenset()
+        self._scheduled_flow_implementations = ()
         scheduler = self._run_later_scheduler
         if scheduler is None or self.current_maturity is None:
             return
@@ -213,17 +215,35 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         )
         if not pending:
             return
-        self._run_later_rule_names = frozenset(
-            str(getattr(item, "pass_id", ""))
+        identities = frozenset(
+            ExecutionStageIdentity(
+                pass_id=str(item.pass_id),
+                stage_id=str(item.stage_id),
+            )
             for item in pending
-            if str(getattr(item, "pass_id", ""))
+            if getattr(item, "stage_id", None)
         )
-        if self._run_later_rule_names:
+        service = self._execution_scope_service
+        if service is None:
+            return
+        stages = service.scheduled_stages(
+            identities=identities,
+            func_ea=func_ea,
+            pipeline=ExecutionPipeline.FLOW,
+        )
+        self._scheduled_stage_identities = identities
+        self._scheduled_flow_implementations = tuple(
+            stage.implementation for stage in stages
+        )
+        if self._scheduled_stage_identities:
             optimizer_logger.info(
-                "run_later scheduler activated flow rules at %s for function %#x: %s",
+                "run_later scheduler activated flow stages at %s for function %#x: %s",
                 maturity_to_string(int(self.current_maturity)),
                 func_ea,
-                sorted(self._run_later_rule_names),
+                sorted(
+                    f"{identity.pass_id}/{identity.stage_id}"
+                    for identity in self._scheduled_stage_identities
+                ),
             )
 
     def _is_loop_carrier_only_pipeline(self) -> bool:
@@ -562,31 +582,14 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         *,
         func_entry_ea: int,
     ) -> tuple[FlowOptimizationRule, ...]:
-        if not self._run_later_rule_names:
+        if not self._scheduled_flow_implementations:
             return active_rules
-
-        by_name = {str(rule.name): rule for rule in active_rules}
-        missing = set(self._run_later_rule_names)
-        for cfg_rule in self.cfg_rules:
-            rule_name = str(cfg_rule.name)
-            if rule_name not in self._run_later_rule_names:
-                continue
-            missing.discard(rule_name)
-            if rule_name in by_name:
-                continue
-            if not self.check_if_rule_is_activated_for_address(
-                cfg_rule,
-                func_entry_ea,
-            ):
-                continue
-            by_name[rule_name] = cfg_rule
-
-        if missing:
-            optimizer_logger.warning(
-                "run_later scheduler could not find configured flow rule(s): %s",
-                sorted(missing),
-            )
-        return tuple(by_name.values())
+        del func_entry_ea
+        ordered = list(active_rules)
+        for implementation in self._scheduled_flow_implementations:
+            if all(existing is not implementation for existing in ordered):
+                ordered.append(implementation)
+        return tuple(ordered)
 
     def _legacy_candidate_count(self, func_entry_ea: int) -> int:
         count = 0
@@ -911,7 +914,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         self,
         flow_context: FlowMaturityContext | None,
         *,
-        rule_name: str,
+        rule: FlowOptimizationRule,
         func_ea: int,
     ) -> None:
         if flow_context is None:
@@ -929,24 +932,46 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             optimizer_logger.debug(
                 "discarding %d run_later request(s) for %s: scheduler unavailable",
                 len(requests),
-                rule_name,
+                str(rule.name),
             )
             return
         request_method = getattr(scheduler, "request", None)
         if not callable(request_method):
             return
-        for requested_pass_id, request in requests:
+        service = self._execution_scope_service
+        if service is None:
+            return
+        for requested_target_id, request in requests:
+            identity = (
+                service.identity_for_implementation(
+                    rule,
+                    pipeline=ExecutionPipeline.FLOW,
+                )
+                if requested_target_id == str(rule.name)
+                else service.identity_for_target(
+                    requested_target_id,
+                    pipeline=ExecutionPipeline.FLOW,
+                )
+            )
+            if identity is None:
+                optimizer_logger.warning(
+                    "discarding flow run_later for unknown execution target %s",
+                    requested_target_id,
+                )
+                continue
             accepted = request_method(
                 func_ea=func_ea,
-                pass_id=requested_pass_id,
+                pass_id=identity.pass_id,
+                stage_id=identity.stage_id,
                 current_maturity=current_ir_maturity,
                 run_later=request,
                 domain=_RUN_LATER_DOMAIN_OPTIMIZER_RULE,
             )
             if accepted:
                 optimizer_logger.debug(
-                    "scheduled run_later for %s at %s (func=%#x)",
-                    requested_pass_id,
+                    "scheduled run_later for %s/%s at %s (func=%#x)",
+                    identity.pass_id,
+                    identity.stage_id,
                     getattr(request, "at", "?"),
                     func_ea,
                 )
@@ -1211,7 +1236,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                         )
                         self._record_run_later_requests(
                             flow_context,
-                            rule_name=rule_name,
+                            rule=cfg_rule,
                             func_ea=func_ea,
                         )
                         if flow_context is not None:

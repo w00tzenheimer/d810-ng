@@ -12,7 +12,7 @@ from d810.hexrays.hooks.optimization_suppression import (
 from d810.core import getLogger, typing
 from d810.core.cymode import CythonMode
 from d810.core.decompilation_session import DecompilationEvent
-from d810.core.execution_scope import ExecutionPipeline
+from d810.core.execution_scope import ExecutionPipeline, ExecutionStageIdentity
 from d810.errors import D810Exception
 from d810.hexrays.hooks.callback_mutation_diagnostics import (
     LiveNopSite,
@@ -164,7 +164,8 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         self._execution_scope_func_ea = -1
         self._active_instruction_rule_names_by_maturity: dict[int, frozenset[str]] = {}
         self._run_later_scheduler = None
-        self._run_later_rule_names: frozenset[str] = frozenset()
+        self._scheduled_stage_identities: frozenset[ExecutionStageIdentity] = frozenset()
+        self._scheduled_implementation_names: frozenset[str] = frozenset()
 
         # Cycle detection: maps instruction EA -> set of post-rewrite hashes.
         # If a rewrite produces an instruction whose hash was already seen for
@@ -304,7 +305,8 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         self._rewrite_seen.clear()
 
     def reset_run_later_state(self) -> None:
-        self._run_later_rule_names = frozenset()
+        self._scheduled_stage_identities = frozenset()
+        self._scheduled_implementation_names = frozenset()
         scheduler = self._run_later_scheduler
         if scheduler is not None:
             reset_all = getattr(scheduler, "reset_all", None)
@@ -327,7 +329,8 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         return self._ir_maturity_for(int(self.current_maturity))
 
     def _drain_run_later_for_maturity(self, mba: ida_hexrays.mbl_array_t) -> None:
-        self._run_later_rule_names = frozenset()
+        self._scheduled_stage_identities = frozenset()
+        self._scheduled_implementation_names = frozenset()
         scheduler = self._run_later_scheduler
         if scheduler is None or self.current_maturity is None:
             return
@@ -347,18 +350,36 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         )
         if not pending:
             return
-        self._run_later_rule_names = frozenset(
-            str(getattr(item, "pass_id", ""))
+        identities = frozenset(
+            ExecutionStageIdentity(
+                pass_id=str(item.pass_id),
+                stage_id=str(item.stage_id),
+            )
             for item in pending
-            if str(getattr(item, "pass_id", ""))
+            if getattr(item, "stage_id", None)
         )
-        if self._run_later_rule_names:
+        service = self._execution_scope_service
+        if service is None:
+            return
+        stages = service.scheduled_stages(
+            identities=identities,
+            func_ea=func_ea,
+            pipeline=ExecutionPipeline.INSTRUCTION,
+        )
+        self._scheduled_stage_identities = identities
+        self._scheduled_implementation_names = frozenset(
+            self._rule_name(stage.implementation) for stage in stages
+        )
+        if self._scheduled_stage_identities:
             optimizer_logger.info(
-                "run_later scheduler activated instruction rules at %s for "
+                "run_later scheduler activated instruction stages at %s for "
                 "function %#x: %s",
                 maturity_to_string(int(self.current_maturity)),
                 func_ea,
-                sorted(self._run_later_rule_names),
+                sorted(
+                    f"{identity.pass_id}/{identity.stage_id}"
+                    for identity in self._scheduled_stage_identities
+                ),
             )
 
     def _record_run_later_requests(self, rule, maturity: int) -> None:
@@ -384,18 +405,33 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         func_ea = int(self._execution_scope_func_ea)
         if func_ea <= 0:
             return
+        service = self._execution_scope_service
+        if service is None:
+            return
+        identity = service.identity_for_implementation(
+            rule,
+            pipeline=ExecutionPipeline.INSTRUCTION,
+        )
+        if identity is None:
+            optimizer_logger.warning(
+                "discarding instruction run_later for unconfigured implementation %s",
+                self._rule_name(rule),
+            )
+            return
         for request in requests:
             accepted = request_method(
                 func_ea=func_ea,
-                pass_id=self._rule_name(rule),
+                pass_id=identity.pass_id,
+                stage_id=identity.stage_id,
                 current_maturity=current_ir_maturity,
                 run_later=request,
                 domain=_RUN_LATER_DOMAIN_OPTIMIZER_RULE,
             )
             if accepted:
                 optimizer_logger.debug(
-                    "scheduled instruction run_later for %s at %s (func=%#x)",
-                    self._rule_name(rule),
+                    "scheduled instruction run_later for %s/%s at %s (func=%#x)",
+                    identity.pass_id,
+                    identity.stage_id,
                     getattr(request, "at", "?"),
                     func_ea,
                 )
@@ -875,10 +911,10 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         return str(getattr(rule, "name", rule.__class__.__name__))
 
     def _optimizer_has_scheduled_rule(self, optimizer: object) -> bool:
-        if not self._run_later_rule_names:
+        if not self._scheduled_implementation_names:
             return False
         for rule in getattr(optimizer, "rules", ()) or ():
-            if self._rule_name(rule) in self._run_later_rule_names:
+            if self._rule_name(rule) in self._scheduled_implementation_names:
                 return True
         return False
 
@@ -916,7 +952,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         )
         names = (
             frozenset(self._rule_name(stage.implementation) for stage in active_stages)
-            | self._run_later_rule_names
+            | self._scheduled_implementation_names
         )
         self._active_instruction_rule_names_by_maturity[maturity] = names
         return names
@@ -926,7 +962,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             return False
         # optimizer_log.info("Trying to optimize {0}".format(format_minsn_t(ins)))
         allowed_rule_names = self._resolve_active_instruction_rule_names(blk)
-        scheduled_rule_names = self._run_later_rule_names
+        scheduled_rule_names = self._scheduled_implementation_names
         for ins_optimizer in self._active_optimizers:
             self._last_optimizer_tried = ins_optimizer
             new_ins = ins_optimizer.get_optimized_instruction(

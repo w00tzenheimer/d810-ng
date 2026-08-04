@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 
+import pytest
+
 from d810.ir.maturity import IRMaturity
 from d810.passes.scheduler import (
     PassScheduler,
@@ -25,6 +27,7 @@ def test_scheduler_accepts_later_maturity_request():
         scheduler.request(
             func_ea=0x1000,
             pass_id="recover",
+            stage_id="recover-dispatcher",
             current_maturity=IRMaturity.CANONICAL,
             run_later=RunLater(IRMaturity.GLOBAL_ANALYZED),
         )
@@ -38,6 +41,7 @@ def test_scheduler_rejects_same_maturity_request():
         scheduler.request(
             func_ea=0x1000,
             pass_id="recover",
+            stage_id="recover-dispatcher",
             current_maturity=IRMaturity.GLOBAL_ANALYZED,
             run_later=RunLater(IRMaturity.GLOBAL_ANALYZED),
         )
@@ -51,6 +55,7 @@ def test_scheduler_rejects_earlier_maturity_request():
         scheduler.request(
             func_ea=0x1000,
             pass_id="recover",
+            stage_id="recover-dispatcher",
             current_maturity=IRMaturity.VARIABLE_RECOVERED,
             run_later=RunLater(IRMaturity.GLOBAL_ANALYZED),
         )
@@ -64,6 +69,7 @@ def test_scheduler_accepts_next_optimized_ir_maturity():
         scheduler.request(
             func_ea=0x1000,
             pass_id="recover",
+            stage_id="recover-dispatcher",
             current_maturity=IRMaturity.GLOBAL_ANALYZED,
             run_later=RunLater(IRMaturity.GLOBAL_OPTIMIZED),
         )
@@ -78,6 +84,7 @@ def test_scheduler_dedupes_by_function_pass_and_maturity():
         scheduler.request(
             func_ea=0x1000,
             pass_id="recover",
+            stage_id="recover-dispatcher",
             current_maturity=IRMaturity.CANONICAL,
             run_later=request,
         )
@@ -87,6 +94,7 @@ def test_scheduler_dedupes_by_function_pass_and_maturity():
         scheduler.request(
             func_ea=0x1000,
             pass_id="recover",
+            stage_id="recover-dispatcher",
             current_maturity=IRMaturity.CANONICAL,
             run_later=RunLater(IRMaturity.GLOBAL_ANALYZED, reason="duplicate"),
         )
@@ -100,6 +108,7 @@ def test_scheduler_dedupes_by_function_pass_and_maturity():
         PendingRun(
             func_ea=0x1000,
             pass_id="recover",
+            stage_id="recover-dispatcher",
             at=IRMaturity.GLOBAL_ANALYZED,
             reason="first",
         ),
@@ -146,6 +155,7 @@ def test_scheduler_drains_at_or_after_requested_maturity_and_removes_entries():
     scheduler.request(
         func_ea=0x1000,
         pass_id="recover",
+        stage_id="recover-dispatcher",
         current_maturity=IRMaturity.CANONICAL,
         run_later=RunLater(IRMaturity.VARIABLE_RECOVERED),
     )
@@ -170,12 +180,14 @@ def test_scheduler_reset_func_clears_only_one_function():
     scheduler.request(
         func_ea=0x1000,
         pass_id="recover",
+        stage_id="recover-dispatcher",
         current_maturity=IRMaturity.CANONICAL,
         run_later=RunLater(IRMaturity.GLOBAL_ANALYZED),
     )
     scheduler.request(
         func_ea=0x2000,
         pass_id="recover",
+        stage_id="recover-dispatcher",
         current_maturity=IRMaturity.CANONICAL,
         run_later=RunLater(IRMaturity.GLOBAL_ANALYZED),
     )
@@ -197,12 +209,14 @@ def test_scheduler_reset_all_clears_everything():
     scheduler.request(
         func_ea=0x1000,
         pass_id="recover",
+        stage_id="recover-dispatcher",
         current_maturity=IRMaturity.CANONICAL,
         run_later=RunLater(IRMaturity.GLOBAL_ANALYZED),
     )
     scheduler.request(
         func_ea=0x2000,
         pass_id="recover",
+        stage_id="recover-dispatcher",
         current_maturity=IRMaturity.CANONICAL,
         run_later=RunLater(IRMaturity.GLOBAL_ANALYZED),
     )
@@ -224,6 +238,7 @@ def test_scheduler_rejects_requests_after_per_function_budget(caplog):
     scheduler.request(
         func_ea=0x1000,
         pass_id="first",
+        stage_id="first-stage",
         current_maturity=IRMaturity.CANONICAL,
         run_later=RunLater(IRMaturity.GLOBAL_ANALYZED),
     )
@@ -232,9 +247,21 @@ def test_scheduler_rejects_requests_after_per_function_budget(caplog):
         accepted = scheduler.request(
             func_ea=0x1000,
             pass_id="second",
+            stage_id="second-stage",
             current_maturity=IRMaturity.CANONICAL,
             run_later=RunLater(IRMaturity.VARIABLE_RECOVERED),
         )
 
     assert accepted is False
     assert "per-function budget 1 exceeded" in caplog.text
+
+
+def test_optimizer_run_later_requires_a_stage_identity() -> None:
+    scheduler = PassScheduler()
+    with pytest.raises(ValueError, match="stage_id"):
+        scheduler.request(
+            func_ea=0x1000,
+            pass_id="recover",
+            current_maturity=IRMaturity.CANONICAL,
+            run_later=RunLater(IRMaturity.GLOBAL_ANALYZED),
+        )

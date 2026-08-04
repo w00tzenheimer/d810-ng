@@ -6,7 +6,10 @@ import pytest
 
 from d810.core.execution_scope import (
     ExecutionAdjustment,
+    ExecutionAdjustmentAction,
     ExecutionScopeService,
+    ExecutionStageIdentity,
+    ExecutionTargetKind,
     ExpandedExecutionStage,
     FunctionExecutionMetadata,
 )
@@ -92,7 +95,13 @@ def test_wrong_maturity_and_hint_suppression_use_stable_stage_ids() -> None:
     service.configure((_stage("jump-fixer", "jump-fixer"),))
     service.register_inference(
         "flattening",
-        lambda _hints: [ExecutionAdjustment("stage", "jump-fixer", "suppress")],
+        lambda _hints: [
+            ExecutionAdjustment(
+                ExecutionTargetKind.STAGE,
+                "jump-fixer",
+                ExecutionAdjustmentAction.SUPPRESS,
+            )
+        ],
     )
     result = service.apply_hints(
         SimpleNamespace(
@@ -131,13 +140,58 @@ def test_unknown_stable_targets_are_reported() -> None:
     assert report.unknown_targets == ("stale-stage",)
 
 
+def test_scheduled_stage_round_trip_uses_public_identity() -> None:
+    service = ExecutionScopeService()
+    stage = _stage("constant-simplification", "forward-constants")
+    service.configure((stage,))
+
+    identity = service.identity_for_implementation(
+        stage.implementation,
+        pipeline=ExecutionPipeline.FLOW,
+    )
+    assert identity == ExecutionStageIdentity(
+        pass_id="constant-simplification",
+        stage_id="forward-constants",
+    )
+    assert service.scheduled_stages(
+        identities=(identity,),
+        func_ea=0x401000,
+        pipeline=ExecutionPipeline.FLOW,
+    ) == (stage,)
+
+
 @pytest.mark.parametrize(
     "adjustment",
     (
-        lambda: ExecutionAdjustment("stage", "", "suppress"),
-        lambda: ExecutionAdjustment("stage", "x", "suppress", {"bad": True}),
+        lambda: ExecutionAdjustment(
+            ExecutionTargetKind.STAGE,
+            "",
+            ExecutionAdjustmentAction.SUPPRESS,
+        ),
+        lambda: ExecutionAdjustment(
+            ExecutionTargetKind.STAGE,
+            "x",
+            ExecutionAdjustmentAction.SUPPRESS,
+            {"bad": True},
+        ),
     ),
 )
 def test_execution_adjustments_fail_closed(adjustment) -> None:
     with pytest.raises(ValueError):
+        adjustment()
+
+
+@pytest.mark.parametrize(
+    "adjustment",
+    (
+        lambda: ExecutionAdjustment(  # type: ignore[arg-type]
+            "stage", "x", ExecutionAdjustmentAction.SUPPRESS
+        ),
+        lambda: ExecutionAdjustment(  # type: ignore[arg-type]
+            ExecutionTargetKind.STAGE, "x", "suppress"
+        ),
+    ),
+)
+def test_execution_adjustments_reject_untyped_compatibility_values(adjustment) -> None:
+    with pytest.raises(TypeError):
         adjustment()

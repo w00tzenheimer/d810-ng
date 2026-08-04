@@ -2690,11 +2690,11 @@ class TestUnflattenBoundedRerunGate:
         project_config = {
             "pipeline_v2_mode": "config-v2",
             "pipeline_v2": [
-                {"pass": "recover_dispatcher"},
-                {"pass": "recover_state_transitions"},
-                {"pass": "plan_semantic_regions"},
-                {"pass": "lower_state_machine"},
-                {"pass": "cleanup_residual_dispatcher"},
+                {"pass_id": "recover_dispatcher"},
+                {"pass_id": "recover_state_transitions"},
+                {"pass_id": "plan_semantic_regions"},
+                {"pass_id": "lower_state_machine"},
+                {"pass_id": "cleanup_residual_dispatcher"},
             ],
         }
 
@@ -2809,7 +2809,7 @@ class TestUnflattenBoundedRerunGate:
         )
 
     def test_block_optimizer_manager_forwards_project_config_to_rules(self, tmp_path):
-        """Project additional config reaches rules after legacy rule configuration."""
+        """Project additional config reaches private implementations."""
         from d810.hexrays.hooks.optblock_adapter import BlockOptimizerManager
 
         class _Rule:
@@ -2832,12 +2832,12 @@ class TestUnflattenBoundedRerunGate:
         manager.add_rule(rule)
         manager.configure(
             pipeline_v2_mode="config-v2",
-            pipeline_v2=({"pass": "recover_dispatcher"},),
+            pipeline_v2=({"pass_id": "recover_dispatcher"},),
         )
 
         assert rule.project_configs[-1] == {
             "pipeline_v2_mode": "config-v2",
-            "pipeline_v2": ({"pass": "recover_dispatcher"},),
+            "pipeline_v2": ({"pass_id": "recover_dispatcher"},),
         }
         manager.configure(project_name="legacy.json")
         assert rule.project_configs[-1] == {}

@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from d810.core.execution_scope import ExecutionAdjustment
+from d810.core.execution_scope import (
+    ExecutionAdjustment,
+    ExecutionAdjustmentAction,
+    ExecutionTargetKind,
+)
 from d810.core.typing import Any
 
 
@@ -21,5 +25,11 @@ def unflattening_inference(hints: Any) -> list[ExecutionAdjustment]:
     deltas: list[ExecutionAdjustment] = []
     confidence = getattr(hints, "confidence", 0.0)
     if confidence >= 0.7:
-        deltas.append(ExecutionAdjustment("stage", "constant-folding", "suppress"))
+        deltas.append(
+            ExecutionAdjustment(
+                ExecutionTargetKind.STAGE,
+                "constant-folding",
+                ExecutionAdjustmentAction.SUPPRESS,
+            )
+        )
     return deltas
