@@ -87,12 +87,6 @@ def _maturity_label(config: PipelineConfig) -> str:
     return "any"
 
 
-def _owned_rules(config: PipelineConfig) -> tuple[str, ...]:
-    ordered = list(config.rules.include_order)
-    ordered.extend(sorted(config.rules.include - frozenset(ordered)))
-    return tuple(ordered)
-
-
 class RecipeService:
     """Compose immutable drafts strictly from registered pass templates."""
 
@@ -114,7 +108,7 @@ class RecipeService:
                     maturity=_maturity_label(config),
                     backend_route=config.backend_route.value,
                     safety_policy=config.safety_policy.name,
-                    owned_rules=_owned_rules(config),
+                    transform_ids=self._registry.transform_ids_for(pass_id),
                     stage_ids=tuple(
                         stage.stage_id for stage in self._registry.stages_for(pass_id)
                     ),

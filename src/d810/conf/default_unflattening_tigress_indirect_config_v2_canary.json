@@ -27,18 +27,17 @@
           "source_config": "default_unflattening_tigress_indirect.json",
           "source_section": "ins_rules"
         },
-        "rules": {
-          "include": [
-            "TigressIncrementRule",
-            "TigressXorViaOrMinusAndRule",
-            "TigressAddViaXorOrRule",
-            "TigressXorViaSubOrRule",
-            "TigressNotEqualSignBitRule",
-            "TigressNotEqualSignBitRule64",
-            "TigressMultiplyBitPartitionRule"
+        "options": {
+          "transforms": [
+            "tigress-increment",
+            "tigress-xor-via-or-minus-and",
+            "tigress-add-via-xor-or",
+            "tigress-xor-via-sub-or",
+            "tigress-not-equal-sign-bit",
+            "tigress-not-equal-sign-bit-64",
+            "tigress-multiply-bit-partition"
           ],
-          "exclude": [],
-          "options": {}
+          "transform_options": {}
         }
       },
       {

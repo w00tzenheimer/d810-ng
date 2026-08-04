@@ -133,10 +133,14 @@ def _instruction_rules_from(config: PipelineConfig) -> tuple[RuleConfiguration, 
     adapter = build_mba_simplify_pass(config)
     return tuple(
         _rule_config(
-            rule_name,
-            adapter.rule_options.get(rule_name, {}),
+            implementation_name,
+            adapter.transform_options.get(transform_id, {}),
         )
-        for rule_name in adapter.rule_names
+        for transform_id, implementation_name in zip(
+            adapter.transform_ids,
+            adapter.implementation_names,
+            strict=True,
+        )
     )
 
 

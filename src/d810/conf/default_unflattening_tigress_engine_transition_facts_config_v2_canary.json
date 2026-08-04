@@ -35,15 +35,14 @@
           "source_config": "default_unflattening_tigress_engine_transition_facts.json",
           "source_section": "ins_rules"
         },
-        "rules": {
-          "include": [
-            "Z3ConstantOptimization",
-            "Z3setnzRuleGeneric",
-            "Z3setzRuleGeneric"
+        "options": {
+          "transforms": [
+            "z-3-constant-optimization",
+            "z-3-setnz-generic",
+            "z-3-setz-generic"
           ],
-          "exclude": [],
-          "options": {
-            "Z3ConstantOptimization": {
+          "transform_options": {
+            "z-3-constant-optimization": {
               "min_nb_opcode": 4,
               "min_nb_constant": 3
             }

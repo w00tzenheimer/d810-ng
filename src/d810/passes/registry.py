@@ -29,6 +29,7 @@ class PassRegistry:
         ] = {}
         self._config_templates: dict[str, PipelineConfig] = {}
         self._stages: dict[str, tuple[ExecutionStageDescriptor, ...]] = {}
+        self._transform_ids: dict[str, tuple[str, ...]] = {}
         self._public: set[str] = set()
 
     def _record_catalog_metadata(
@@ -37,6 +38,7 @@ class PassRegistry:
         *,
         config_template: PipelineConfig | None,
         stages: tuple[ExecutionStageDescriptor, ...],
+        transform_ids: tuple[str, ...],
         public: bool,
     ) -> None:
         template = config_template or PipelineConfig(pass_id=pass_id)
@@ -48,7 +50,9 @@ class PassRegistry:
         seen_stage_ids: set[str] = set()
         for stage in stages:
             if not isinstance(stage, ExecutionStageDescriptor):
-                raise PassRegistryError("stages must contain ExecutionStageDescriptor values")
+                raise PassRegistryError(
+                    "stages must contain ExecutionStageDescriptor values"
+                )
             if stage.pass_id != pass_id:
                 raise PassRegistryError(
                     f"stage {stage.stage_id!r} owning pass {stage.pass_id!r} "
@@ -59,8 +63,24 @@ class PassRegistry:
                     f"duplicate stage id {stage.stage_id!r} in pass {pass_id!r}"
                 )
             seen_stage_ids.add(stage.stage_id)
+        normalized_transform_ids = tuple(transform_ids)
+        if len(set(normalized_transform_ids)) != len(normalized_transform_ids):
+            raise PassRegistryError(
+                f"duplicate transform id in pass {pass_id!r}"
+            )
+        unknown_transform_ids = tuple(
+            transform_id
+            for transform_id in normalized_transform_ids
+            if transform_id not in seen_stage_ids
+        )
+        if unknown_transform_ids:
+            raise PassRegistryError(
+                f"transform ids must reference registered stages for {pass_id!r}: "
+                f"{list(unknown_transform_ids)}"
+            )
         self._config_templates[pass_id] = template
         self._stages[pass_id] = tuple(stages)
+        self._transform_ids[pass_id] = normalized_transform_ids
         if public:
             self._public.add(pass_id)
 
@@ -71,6 +91,7 @@ class PassRegistry:
         *,
         config_template: PipelineConfig | None = None,
         stages: tuple[ExecutionStageDescriptor, ...] = (),
+        transform_ids: tuple[str, ...] = (),
         public: bool = True,
     ) -> None:
         """Register ``pass_factory`` under ``pass_id``."""
@@ -78,13 +99,14 @@ class PassRegistry:
             raise PassRegistryError("pass_id must be non-empty")
         if pass_id in self._factories or pass_id in self._configured_factories:
             raise DuplicatePassIdError(f"duplicate pass id: {pass_id!r}")
-        self._factories[pass_id] = pass_factory
         self._record_catalog_metadata(
             pass_id,
             config_template=config_template,
             stages=stages,
+            transform_ids=transform_ids,
             public=public,
         )
+        self._factories[pass_id] = pass_factory
 
     def register_configured(
         self,
@@ -93,6 +115,7 @@ class PassRegistry:
         *,
         config_template: PipelineConfig | None = None,
         stages: tuple[ExecutionStageDescriptor, ...] = (),
+        transform_ids: tuple[str, ...] = (),
         public: bool = True,
     ) -> None:
         """Register a pass factory that is built from its ``PipelineConfig``."""
@@ -100,13 +123,14 @@ class PassRegistry:
             raise PassRegistryError("pass_id must be non-empty")
         if pass_id in self._factories or pass_id in self._configured_factories:
             raise DuplicatePassIdError(f"duplicate pass id: {pass_id!r}")
-        self._configured_factories[pass_id] = pass_factory
         self._record_catalog_metadata(
             pass_id,
             config_template=config_template,
             stages=stages,
+            transform_ids=transform_ids,
             public=public,
         )
+        self._configured_factories[pass_id] = pass_factory
 
     def registered_pass_ids(self) -> tuple[str, ...]:
         """Return stable registered pass IDs in deterministic catalog order."""
@@ -127,6 +151,11 @@ class PassRegistry:
         """Return ordered stable execution stages owned by one pass."""
         self.config_template_for(pass_id)
         return self._stages[pass_id]
+
+    def transform_ids_for(self, pass_id: str) -> tuple[str, ...]:
+        """Return stable user-selectable transform IDs owned by one pass."""
+        self.config_template_for(pass_id)
+        return self._transform_ids[pass_id]
 
     def is_configured(self, pass_id: str) -> bool:
         self.config_template_for(pass_id)

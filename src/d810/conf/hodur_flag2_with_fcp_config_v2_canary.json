@@ -28,14 +28,13 @@
           "source_config": "hodur_flag2_with_fcp.json",
           "source_section": "ins_rules"
         },
-        "rules": {
-          "include": [
-            "Z3ConstantOptimization",
-            "CstSimplificationRule17",
-            "CstSimplificationRule18"
+        "options": {
+          "transforms": [
+            "z-3-constant-optimization",
+            "cst-simplification-17",
+            "cst-simplification-18"
           ],
-          "exclude": [],
-          "options": {}
+          "transform_options": {}
         }
       },
       {
