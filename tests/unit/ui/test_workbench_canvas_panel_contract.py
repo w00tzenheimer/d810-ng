@@ -89,6 +89,16 @@ def test_canvas_modules_are_headless_safe_and_use_only_the_qt_shim() -> None:
         importlib.import_module(module_name)
 
 
+def test_canvas_panel_uses_popup_then_preserves_renderer_add_intent() -> None:
+    source = PANEL.read_text(encoding="utf-8")
+
+    assert "CanvasPassPickerPopup" in source
+    assert "_show_add_palette" in source
+    assert "renderer.request_add_pass(stage_id, pass_id)" in source
+    assert "_show_add_menu" not in source
+    assert "IDA_AVAILABLE and QT_GRAPHICS_AVAILABLE" in source
+
+
 def test_renderer_draws_projection_as_one_vertical_read_only_workspace() -> None:
     source = RENDERER.read_text(encoding="utf-8")
     render_source = _method_source(RENDERER, "MaturityCanvasRenderer", "render")
@@ -201,7 +211,7 @@ def test_panel_reprojects_after_adapter_owned_add_and_edit_then_reuses_save() ->
     edit_source = _method_source(PANEL, "WorkbenchCanvasPanel", "_edit_options")
     save_source = _method_source(PANEL, "WorkbenchCanvasPanel", "_save_recipe")
 
-    assert "canvas_add_candidates" in source
+    assert "canvas_add_candidates" not in source
     assert "project_maturity_canvas" in source
     assert "self._adapter.add_canvas_pass" in add_source
     assert "self._adapter.replace_options" in edit_source

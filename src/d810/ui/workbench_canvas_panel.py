@@ -8,8 +8,8 @@ from d810.core import typing
 from d810.core.logging import getLogger
 from d810.qt_shim import QT_GRAPHICS_AVAILABLE, QtCore, QtWidgets
 from d810.ui.workbench_canvas_logic import linked_case_findings, project_maturity_canvas
+from d810.ui.workbench_canvas_palette import CanvasPassPickerPopup
 from d810.ui.workbench_recipe_logic import (
-    canvas_add_candidates,
     enables_dangerous_executable_readonly,
     should_accept_recipe_result,
 )
@@ -72,6 +72,7 @@ if IDA_AVAILABLE and QT_GRAPHICS_AVAILABLE:
             self._projection: typing.Any = None
             self._selected_node_id: str | None = None
             self._selected_finding: typing.Any = None
+            self._add_palette: typing.Any = None
             self._closed = False
             self.parent: typing.Any = None
 
@@ -111,7 +112,7 @@ if IDA_AVAILABLE and QT_GRAPHICS_AVAILABLE:
 
             self.stage_selector.currentIndexChanged.connect(self._update_collapse_label)
             self.collapse_button.clicked.connect(self._toggle_stage)
-            self.add_registered_node_button.clicked.connect(self._show_add_menu)
+            self.add_registered_node_button.clicked.connect(self._show_add_palette)
             self.edit_options_button.clicked.connect(self._edit_selected_options)
             self.open_diagnostic_button.clicked.connect(self._open_selected_diagnostic)
             self.save_recipe_button.clicked.connect(
@@ -133,6 +134,10 @@ if IDA_AVAILABLE and QT_GRAPHICS_AVAILABLE:
 
         def OnCreate(self, form: typing.Any) -> None:
             self.parent = self.FormToPyQtWidget(form)
+            self._add_palette = CanvasPassPickerPopup(
+                on_pass_selected=self._request_add_pass,
+                parent=self.parent,
+            )
             controls = QtWidgets.QHBoxLayout()
             controls.setContentsMargins(0, 0, 0, 0)
             controls.setSpacing(4)
@@ -264,34 +269,20 @@ if IDA_AVAILABLE and QT_GRAPHICS_AVAILABLE:
                 self._collapsed_stages.add(stage_id)
             self._render_projection()
 
-        def _show_add_menu(self, checked: bool = False) -> None:
+        def _show_add_palette(self, checked: bool = False) -> None:
             del checked
             stage_id = self._selected_stage_id()
-            if stage_id is None:
+            if stage_id is None or self._add_palette is None:
                 return
-            candidates = canvas_add_candidates(
+            self._add_palette.show_for(
+                self.add_registered_node_button,
                 self._catalog_entries,
                 stage_id,
                 self._draft,
             )
-            menu = QtWidgets.QMenu(self.add_registered_node_button)
-            if not candidates:
-                action = menu.addAction("No legal registered nodes")
-                action.setEnabled(False)
-            for entry in candidates:
-                action = menu.addAction(f"{entry.display_name} ({entry.pass_id})")
-                action.setToolTip(entry.contract_json)
-                action.triggered.connect(
-                    lambda checked=False, stage=stage_id, pass_id=entry.pass_id: (
-                        self.renderer.request_add_pass(stage, pass_id)
-                    )
-                )
-            position = self.add_registered_node_button.mapToGlobal(
-                self.add_registered_node_button.rect().bottomLeft()
-            )
-            execute = getattr(menu, "exec", None) or getattr(menu, "exec_", None)
-            if callable(execute):
-                execute(position)
+
+        def _request_add_pass(self, stage_id: str, pass_id: str) -> None:
+            self.renderer.request_add_pass(stage_id, pass_id)
 
         def _add_pass(self, stage_id: str, pass_id: str) -> None:
             try:
