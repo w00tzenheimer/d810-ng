@@ -160,6 +160,10 @@ if IDA_AVAILABLE and QT_GRAPHICS_AVAILABLE:
             self._closed = True
             self.parent = None
 
+        @property
+        def closed(self) -> bool:
+            return self._closed
+
         def close(self) -> None:
             if self._closed:
                 return

@@ -7,7 +7,11 @@ import pathlib
 from d810.core import typing
 from d810.core.logging import getLogger
 from d810.manager.deobfuscation_case_workflow import project_case_workflow
-from d810.manager.workbench_models import SnapshotFreshness, WorkbenchCommandResult
+from d810.manager.workbench_models import (
+    OutcomeStatus,
+    SnapshotFreshness,
+    WorkbenchCommandResult,
+)
 from d810.ui.workbench_logic import (
     WorkbenchActionState,
     WorkbenchRow,
@@ -25,6 +29,30 @@ from d810.ui.workbench_logic import (
 from d810.ui.workbench_workflow_logic import recommended_attack_transition
 
 logger = getLogger("D810.ui")
+
+
+def _should_open_build_canvas(
+    snapshot: typing.Any,
+    result: WorkbenchCommandResult | None,
+    current_snapshot: typing.Any,
+) -> bool:
+    """Accept only this Build command and its refreshed current snapshot."""
+    return (
+        snapshot is not None
+        and result is not None
+        and result.succeeded
+        and result.status is not OutcomeStatus.STALE
+        and result.command == "build_deobfuscator"
+        and should_accept_command_result(snapshot, result)
+        and current_snapshot is not None
+        and current_snapshot.freshness is SnapshotFreshness.CURRENT
+    )
+
+
+def _canvas_panel_can_reuse(panel: typing.Any) -> bool:
+    """Return whether an existing native canvas still owns a live session."""
+    return panel is not None and not bool(getattr(panel, "closed", True))
+
 
 try:
     import ida_kernwin
@@ -374,17 +402,10 @@ if IDA_AVAILABLE:
             self._case_running_command = None
             self._case_result = result
             self._render_case_workflow()
-            if (
-                snapshot is None
-                or result is None
-                or not result.succeeded
-                or result.command != "build_deobfuscator"
-                or not should_accept_command_result(snapshot, result)
-            ):
+            current_snapshot = self._snapshot
+            if not _should_open_build_canvas(snapshot, result, current_snapshot):
                 return
-            snapshot = self._snapshot
-            if snapshot is None or snapshot.freshness is not SnapshotFreshness.CURRENT:
-                return
+            snapshot = current_snapshot
             adapter = self._command_adapter
             recipe = getattr(adapter, "recipe", None)
             if not callable(recipe):
@@ -487,7 +508,7 @@ if IDA_AVAILABLE:
             if snapshot is None:
                 return
             panel = self._build_canvas_panel
-            if panel is None:
+            if not _canvas_panel_can_reuse(panel):
                 panel = WorkbenchCanvasPanel(
                     adapter,
                     snapshot,
