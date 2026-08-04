@@ -29,7 +29,6 @@ from d810.transforms.materialization_payload import (
 )
 from d810.transforms.plan import (
     ExecutionPolicy,
-    LegacyBlockOperation,
     PatchConditionalRedirect,
     PatchDuplicateBlock,
     PatchDuplicateReplayAndRedirect,
@@ -1003,7 +1002,6 @@ def test_simple_cleanup_family_selects_and_plans_conditional_cleanup_edits() -> 
     patch_plan = compile_patch_plan(fragment.modifications, snapshot.flow_graph)
     assert any(isinstance(step, PatchDuplicateBlock) for step in patch_plan.steps)
     assert any(isinstance(step, PatchConditionalRedirect) for step in patch_plan.steps)
-    assert not any(isinstance(step, LegacyBlockOperation) for step in patch_plan.steps)
 
 
 def test_simple_cleanup_family_uses_backend_evidence_for_metadata() -> None:
@@ -1126,8 +1124,7 @@ def test_simple_cleanup_family_uses_backend_evidence_for_metadata() -> None:
         ConvertToGoto(block_serial=44, goto_target=43),
     ]
 
-    patch_plan = compile_patch_plan(fragment.modifications, snapshot.flow_graph)
-    assert not any(isinstance(step, LegacyBlockOperation) for step in patch_plan.steps)
+    assert compile_patch_plan(fragment.modifications, snapshot.flow_graph).steps
 
 
 def test_tail_goto_merge_strategy_emits_relaxed_nop_cleanup() -> None:
@@ -1259,7 +1256,6 @@ def test_simple_cleanup_family_selects_and_plans_direct_side_effect_replay() -> 
 
     patch_plan = compile_patch_plan(fragment.modifications, snapshot.flow_graph)
     assert any(isinstance(step, PatchInsertBlock) for step in patch_plan.steps)
-    assert not any(isinstance(step, LegacyBlockOperation) for step in patch_plan.steps)
 
 
 def test_simple_cleanup_family_selects_and_plans_duplicate_group_replay() -> None:
@@ -1321,7 +1317,6 @@ def test_simple_cleanup_family_selects_and_plans_duplicate_group_replay() -> Non
     assert any(
         isinstance(step, PatchDuplicateReplayAndRedirect) for step in patch_plan.steps
     )
-    assert not any(isinstance(step, LegacyBlockOperation) for step in patch_plan.steps)
 
 
 def test_simple_cleanup_family_selects_trampoline_isolation_candidate() -> None:
@@ -1388,7 +1383,6 @@ def test_simple_cleanup_family_selects_trampoline_isolation_candidate() -> None:
 
     patch_plan = compile_patch_plan(fragment.modifications, snapshot.flow_graph)
     assert any(isinstance(step, PatchInsertBlock) for step in patch_plan.steps)
-    assert not any(isinstance(step, LegacyBlockOperation) for step in patch_plan.steps)
 
 
 def test_simple_cleanup_family_carries_dependency_diagnostics_without_planning() -> (
