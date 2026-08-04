@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 
+from d810.ir.maturity import IRMaturity, ir_maturity_rank
 from d810.manager.workbench_recipe_models import (
     PassCatalogEntry,
     PipelineRecipeDraft,
@@ -19,24 +20,20 @@ from d810.ui.workbench_canvas_models import (
 )
 
 
-_MATURITY_ORDER = (
-    "MMAT_GENERATED",
-    "MMAT_PREOPTIMIZED",
-    "MMAT_LOCOPT",
-    "MMAT_CALLS",
-    "MMAT_GLBOPT1",
-    "MMAT_GLBOPT2",
-    "MMAT_GLBOPT3",
-    "MMAT_LVARS",
-)
-_MATURITY_ORDINAL = {stage_id: ordinal for ordinal, stage_id in enumerate(_MATURITY_ORDER)}
-
-
 def _maturity(stage_id: str) -> CanvasMaturity:
     normalized = str(stage_id).strip()
-    ordinal = _MATURITY_ORDINAL.get(normalized, len(_MATURITY_ORDER))
-    label = normalized.removeprefix("MMAT_").replace("_", " ").title()
-    return CanvasMaturity(normalized or "unknown", label or "Unknown", ordinal)
+    if normalized == "any":
+        return CanvasMaturity("any", "Any maturity", -1)
+    boundary = normalized.removeprefix(">=").removeprefix("<=").split("..", 1)[0]
+    try:
+        maturity = IRMaturity(boundary)
+    except ValueError:
+        return CanvasMaturity(normalized or "unknown", normalized or "Unknown", 99)
+    return CanvasMaturity(
+        normalized,
+        maturity.value.removeprefix("ir.").replace(".", " ").title(),
+        ir_maturity_rank(maturity),
+    )
 
 
 def _artifact_port(artifact_type: str, label: str, direction: str) -> CanvasPort:
@@ -135,7 +132,7 @@ def project_maturity_canvas(
             label = entry.display_name
             detail = entry.contract_json
         node_messages = list(validation_messages.get(ordinal, ()))
-        if maturity.stage_id not in _MATURITY_ORDINAL:
+        if maturity.stage_id != "any" and maturity.ordinal == 99:
             node_messages.append(f"unknown maturity: {maturity.stage_id}")
         if node_messages:
             diagnostics.extend(node_messages)
@@ -155,45 +152,58 @@ def project_maturity_canvas(
             )
         )
 
-    producers: dict[str, list[CanvasNode]] = {}
-    for _, node in prepared:
+    producers: dict[str, list[tuple[int, CanvasNode, CanvasPort]]] = {}
+    for ordinal, node in prepared:
         for output in node.outputs:
-            producers.setdefault(output.port_id, []).append(node)
+            producers.setdefault(output.port_id, []).append((ordinal, node, output))
     edges: list[CanvasEdge] = []
     carried: list[CanvasNode] = []
-    for _, target in prepared:
+    for target_ordinal, target in prepared:
         for input_port in target.inputs:
-            candidates = producers.get(input_port.port_id, ())
+            matching = producers.get(input_port.port_id, ())
+            candidates = [
+                candidate
+                for candidate in matching
+                if candidate[0] < target_ordinal
+            ]
             if candidates:
-                source = candidates[0]
-                edges.append(
-                    CanvasEdge(
-                        source_node_id=source.node_id,
-                        source_port_id=input_port.port_id,
-                        target_node_id=target.node_id,
-                        target_port_id=input_port.port_id,
-                        kind=input_port.artifact_type,
-                    )
-                )
+                _, source, source_port = candidates[-1]
                 if source.maturity.ordinal < target.maturity.ordinal:
-                    carried.append(
-                        CanvasNode(
-                            node_id=(f"carry:{source.node_id}:{input_port.port_id}:{target.maturity.stage_id}"),
-                            pass_id="carried-artifact",
-                            label=f"Carry {input_port.label}",
-                            maturity=target.maturity,
-                            inputs=(_artifact_port(input_port.artifact_type, input_port.label, "input"),),
-                            outputs=(_artifact_port(input_port.artifact_type, input_port.label, "output"),),
-                            state="carried",
-                            detail=f"Carried from {source.maturity.stage_id}.",
+                    carrier = CanvasNode(
+                        node_id=(f"carry:{source.node_id}:{input_port.port_id}:{target.maturity.stage_id}"),
+                        pass_id="carried-artifact",
+                        label=f"Carry {input_port.label}",
+                        maturity=target.maturity,
+                        inputs=(_artifact_port(input_port.artifact_type, input_port.label, "input"),),
+                        outputs=(_artifact_port(input_port.artifact_type, input_port.label, "output"),),
+                        state="carried",
+                        detail=f"Carried from {source.maturity.stage_id}.",
+                    )
+                    carried.append(carrier)
+                    edges.extend(
+                        (
+                            CanvasEdge(source.node_id, source_port.port_id, carrier.node_id, carrier.inputs[0].port_id, input_port.artifact_type),
+                            CanvasEdge(carrier.node_id, carrier.outputs[0].port_id, target.node_id, input_port.port_id, input_port.artifact_type),
                         )
+                    )
+                else:
+                    edges.append(
+                        CanvasEdge(source.node_id, source_port.port_id, target.node_id, input_port.port_id, input_port.artifact_type)
+                    )
+                continue
+            if matching:
+                diagnostics.append(
+                    f"out-of-order requirement: {input_port.artifact_type}:{input_port.label}"
+                )
+                if any(candidate[0] == target_ordinal for candidate in matching):
+                    diagnostics.append(
+                        f"cycle prevented: {target.node_id} -> {target.node_id}"
                     )
                 continue
             same_label = [
                 output
-                for candidate in producers.values()
-                for producer in candidate
-                for output in producer.outputs
+                for candidates_by_type in producers.values()
+                for _, _, output in candidates_by_type
                 if output.label == input_port.label
             ]
             if same_label:
@@ -204,23 +214,6 @@ def project_maturity_canvas(
                 diagnostics.append(
                     f"unresolved requirement: {input_port.artifact_type}:{input_port.label}"
                 )
-
-    adjacency: dict[str, list[str]] = {node.node_id: [] for _, node in prepared}
-    for edge in edges:
-        if edge.source_node_id != edge.target_node_id:
-            adjacency[edge.source_node_id].append(edge.target_node_id)
-    for start in adjacency:
-        stack: list[tuple[str, list[str]]] = [(start, [start])]
-        while stack:
-            current, path = stack.pop()
-            for next_node in adjacency[current]:
-                if next_node == start and len(path) > 1:
-                    diagnostics.append("cycle: " + " -> ".join((*path, start)))
-                    stack.clear()
-                    break
-                if next_node not in path:
-                    stack.append((next_node, [*path, next_node]))
-
     stage_by_id = {node.maturity.stage_id: node.maturity for _, node in prepared}
     maturities = tuple(sorted(stage_by_id.values(), key=lambda stage: (stage.ordinal, stage.stage_id)))
     return MaturityCanvasProjection(

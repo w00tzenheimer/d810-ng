@@ -24,9 +24,9 @@ from d810.backends.hexrays.evidence.global_constness import (
     capture_hexrays_global_item_const_evidence,
     capture_hexrays_global_item_range_const_evidence,
 )
+from d810.core import typing
 from d810.core.logging import getLogger
 from d810.core.persistence import Netnode
-from d810.core.typing import Any
 
 logger = getLogger("D810.backends.hexrays.global_const_annotation")
 
@@ -286,7 +286,9 @@ def _type_rendering(tif: ida_typeinf.tinfo_t) -> str:
         return str(tif)
 
 
-def _delete_receipt(receipt_store: MutableMapping[int, Any], item_head: int) -> None:
+def _delete_receipt(
+    receipt_store: MutableMapping[int, typing.Any], item_head: int
+) -> None:
     try:
         del receipt_store[int(item_head)]
     except KeyError:
@@ -304,11 +306,11 @@ def _receipt_matches_current(receipt: object, current_type: str) -> bool:
 def annotate_function_global_consts(
     function_ea: int,
     *,
-    receipt_store: MutableMapping[int, Any] | None = None,
+    receipt_store: MutableMapping[int, typing.Any] | None = None,
 ) -> GlobalConstAnnotationReport:
     """Persist safe const qualifiers and repair only D810-owned stale ones."""
 
-    store: MutableMapping[int, Any]
+    store: MutableMapping[int, typing.Any]
     store = Netnode(_RECEIPT_NODE_NAME) if receipt_store is None else receipt_store
     outcomes: list[GlobalConstAnnotationOutcome] = []
 
@@ -449,11 +451,11 @@ def annotate_function_global_consts(
 def annotate_global_table_access(
     access: DynamicGlobalTableAccess,
     *,
-    receipt_store: MutableMapping[int, Any] | None = None,
+    receipt_store: MutableMapping[int, typing.Any] | None = None,
 ) -> GlobalConstAnnotationReport:
     """Persist const for one bounded dynamic table access."""
 
-    store: MutableMapping[int, Any]
+    store: MutableMapping[int, typing.Any]
     store = Netnode(_RECEIPT_NODE_NAME) if receipt_store is None else receipt_store
     evidence = capture_hexrays_global_item_range_const_evidence(
         access.item_head,

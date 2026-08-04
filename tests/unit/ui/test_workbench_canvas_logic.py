@@ -9,6 +9,9 @@ from d810.manager.workbench_recipe_models import (
     RecipePass,
     RecipeValidation,
 )
+from d810.manager.workbench_recipe_service import RecipeService
+from d810.passes.operational_config_v2 import operational_config_v2_pass_registry
+from d810.passes.pass_pipeline import PipelineConfig
 from d810.ui.workbench_canvas_logic import project_maturity_canvas
 
 
@@ -77,16 +80,16 @@ def test_projection_carries_typed_output_into_later_maturity() -> None:
         RecipePass("item-glbopt", "regions", True, "{}"),
     )
     catalog = (
-        _entry("microcode", "MMAT_PREOPTIMIZED", outputs={"facts": ["microcode"], "evidence": []}),
+        _entry("microcode", "ir.canonical", outputs={"facts": ["microcode"], "evidence": []}),
         _entry(
             "dispatcher",
-            "MMAT_LOCOPT",
+            "ir.local.optimized",
             requires={"capabilities": [], "analyses": [], "evidence": [], "facts": {"required": ["microcode"], "optional": []}},
             outputs={"facts": ["dispatcher"], "evidence": []},
         ),
         _entry(
             "regions",
-            "MMAT_GLBOPT1",
+            "ir.global.analyzed",
             requires={"capabilities": [], "analyses": [], "evidence": [], "facts": {"required": ["dispatcher"], "optional": []}},
             outputs={"facts": ["regions"], "evidence": []},
         ),
@@ -95,20 +98,26 @@ def test_projection_carries_typed_output_into_later_maturity() -> None:
     view = project_maturity_canvas(draft, catalog, _validation(), case=None)
 
     assert [stage.stage_id for stage in view.maturities] == [
-        "MMAT_PREOPTIMIZED",
-        "MMAT_LOCOPT",
-        "MMAT_GLBOPT1",
+        "ir.canonical",
+        "ir.local.optimized",
+        "ir.global.analyzed",
     ]
+    assert not any(
+        edge.source_node_id == "item-pre" and edge.target_node_id == "item-locopt"
+        for edge in view.edges
+    )
     assert {(edge.source_node_id, edge.target_node_id) for edge in view.edges} == {
-        ("item-pre", "item-locopt"),
-        ("item-locopt", "item-glbopt"),
+        ("item-pre", "carry:item-pre:fact:microcode:ir.local.optimized"),
+        ("carry:item-pre:fact:microcode:ir.local.optimized", "item-locopt"),
+        ("item-locopt", "carry:item-locopt:fact:dispatcher:ir.global.analyzed"),
+        ("carry:item-locopt:fact:dispatcher:ir.global.analyzed", "item-glbopt"),
     }
     assert view.nodes[1].inputs[0].artifact_type == "fact"
     assert view.nodes[1].outputs[0].artifact_type == "fact"
     carried = [node for node in view.nodes if node.state == "carried"]
     assert [(node.maturity.stage_id, node.inputs[0].label) for node in carried] == [
-        ("MMAT_LOCOPT", "microcode"),
-        ("MMAT_GLBOPT1", "dispatcher"),
+        ("ir.local.optimized", "microcode"),
+        ("ir.global.analyzed", "dispatcher"),
     ]
 
 
@@ -130,27 +139,66 @@ def test_projection_reports_unknown_maturity_and_unresolved_requirement() -> Non
     assert any("unresolved requirement: fact:missing" in diagnostic for diagnostic in view.diagnostics)
 
 
-def test_projection_reports_incompatible_artifact_and_cycle() -> None:
+def test_projection_reports_incompatible_artifact_and_rejects_later_or_self_producers() -> None:
     draft = _draft(
         RecipePass("item-one", "one", True, "{}"),
         RecipePass("item-two", "two", True, "{}"),
+        RecipePass("item-self", "self", True, "{}"),
     )
     catalog = (
         _entry(
             "one",
-            "MMAT_PREOPTIMIZED",
+            "ir.canonical",
             requires={"capabilities": [], "analyses": [], "evidence": [], "facts": {"required": ["later"], "optional": []}},
             outputs={"facts": ["shared"], "evidence": []},
         ),
         _entry(
             "two",
-            "MMAT_LOCOPT",
+            "ir.local.optimized",
             requires={"capabilities": [], "analyses": [], "evidence": ["shared"], "facts": {"required": ["shared"], "optional": []}},
             outputs={"facts": ["later"], "evidence": []},
+        ),
+        _entry(
+            "self",
+            "ir.global.analyzed",
+            requires={"capabilities": [], "analyses": [], "evidence": [], "facts": {"required": ["self"], "optional": []}},
+            outputs={"facts": ["self"], "evidence": []},
         ),
     )
 
     view = project_maturity_canvas(draft, catalog, _validation(), case=None)
 
     assert any("incompatible artifact: evidence:shared" in diagnostic for diagnostic in view.diagnostics)
-    assert any("cycle: item-one -> item-two -> item-one" in diagnostic for diagnostic in view.diagnostics)
+    assert any("out-of-order requirement: fact:later" in diagnostic for diagnostic in view.diagnostics)
+    assert any("out-of-order requirement: fact:self" in diagnostic for diagnostic in view.diagnostics)
+    assert not any(edge.source_node_id == edge.target_node_id for edge in view.edges)
+
+
+def test_projection_accepts_actual_recipe_service_portable_maturity_values() -> None:
+    service = RecipeService(operational_config_v2_pass_registry())
+    draft = service.create_draft(
+        function_ea=0x401000,
+        function_fingerprint="sha256:canvas",
+        workbench_generation=1,
+        source_path="/source.json",
+        runtime_path="/runtime.json",
+        configs=(
+            PipelineConfig(pass_id="jump-fixer", options={"legacy_rule": "JumpFixer"}),
+            PipelineConfig(pass_id="recover_dispatcher"),
+        ),
+    )
+    validation = RecipeValidation(
+        draft_id=draft.draft_id,
+        revision=draft.revision,
+        satisfied=True,
+        diagnostics=(),
+        manifest_json="[]",
+    )
+
+    view = project_maturity_canvas(draft, service.catalog(), validation, case=None)
+
+    assert [stage.stage_id for stage in view.maturities] == [
+        "any",
+        "ir.global.analyzed",
+    ]
+    assert not any("unknown maturity" in diagnostic for diagnostic in view.diagnostics)
