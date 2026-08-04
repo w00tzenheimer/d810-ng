@@ -569,9 +569,59 @@ _PIPELINE_CONFIG_FIELDS = frozenset(
         "safety_policy",
         "contract",
         "workflow_stage",
+        "target",
         "options",
     }
 )
+
+
+@dataclass(frozen=True, slots=True)
+class FunctionTarget:
+    """Stable function selection owned by a configured pass."""
+
+    include_eas: frozenset[int] = frozenset()
+    exclude_eas: frozenset[int] = frozenset()
+    tags_any: frozenset[str] = frozenset()
+    tags_all: frozenset[str] = frozenset()
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "include_eas": sorted(self.include_eas),
+            "exclude_eas": sorted(self.exclude_eas),
+            "tags_any": sorted(self.tags_any),
+            "tags_all": sorted(self.tags_all),
+        }
+
+    @classmethod
+    def from_dict(cls, payload: object) -> "FunctionTarget":
+        data = _require_mapping(payload, "target")
+        unknown = sorted(
+            set(data) - {"include_eas", "exclude_eas", "tags_any", "tags_all"}
+        )
+        if unknown:
+            raise PipelineConfigError(
+                "target has unknown fields: " + ", ".join(unknown)
+            )
+
+        def eas(field_name: str) -> frozenset[int]:
+            raw = data.get(field_name, ())
+            if not isinstance(raw, (list, tuple)) or any(
+                isinstance(value, bool) or not isinstance(value, int) or value < 0
+                for value in raw
+            ):
+                raise PipelineConfigError(
+                    f"target.{field_name} must be non-negative integers"
+                )
+            if len(set(raw)) != len(raw):
+                raise PipelineConfigError(f"target.{field_name} contains duplicates")
+            return frozenset(raw)
+
+        return cls(
+            include_eas=eas("include_eas"),
+            exclude_eas=eas("exclude_eas"),
+            tags_any=_parse_string_set(data.get("tags_any", ()), "target.tags_any"),
+            tags_all=_parse_string_set(data.get("tags_all", ()), "target.tags_all"),
+        )
 
 
 @dataclass(frozen=True)
@@ -589,6 +639,7 @@ class PipelineConfig:
     safety_policy: SafetyPolicy = field(default_factory=SafetyPolicy)
     contract: PassContract = field(default_factory=PassContract)
     workflow_stage: StrategyWorkflowStage = StrategyWorkflowStage.CANONICAL_PIPELINE
+    target: FunctionTarget = field(default_factory=FunctionTarget)
     options: Mapping[str, object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -626,6 +677,7 @@ class PipelineConfig:
             },
             "contract": self.contract.to_dict(),
             "workflow_stage": self.workflow_stage.value,
+            "target": self.target.to_dict(),
             "options": _copy_json_value(self.options, "options"),
         }
 
@@ -722,6 +774,7 @@ class PipelineConfig:
                 ),
                 "workflow_stage",
             ),
+            target=FunctionTarget.from_dict(data.get("target", {})),
             options=_copy_json_mapping(data.get("options", {}), "options"),
         )
 
@@ -824,6 +877,7 @@ class PassSpec:
     backend_route: BackendRoute = BackendRoute.MUTATION_BACKEND
     contract: PassContract = field(default_factory=PassContract)
     workflow_stage: StrategyWorkflowStage = StrategyWorkflowStage.CANONICAL_PIPELINE
+    target: FunctionTarget = field(default_factory=FunctionTarget)
     options: Mapping[str, object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -847,6 +901,7 @@ class PassSpec:
             safety_policy=self.safety_policy,
             contract=self.contract,
             workflow_stage=self.workflow_stage,
+            target=self.target,
             options=self.options,
         )
 

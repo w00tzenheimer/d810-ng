@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from d810.core.persistence import FunctionStorageLocator
 from d810.core.registry import EventEmitter
-from d810.core.rule_scope import RuleScopeEvent, RuleScopeInvalidation
+from d810.core.execution_scope import ExecutionScopeEvent, ExecutionScopeInvalidation
 from d810.core.function_storage_config import (
     FunctionRecipeStorageBackend,
     FunctionRecipeStorageConfig,
 )
-from d810.manager.rule_scope_runtime import RuleScopeRuntime
+from d810.manager.function_storage_runtime import FunctionStorageRuntime
 
 
 class _FakeStorage:
@@ -32,7 +32,7 @@ def _build_runtime(
     *,
     project_name: str = "proj",
     targets: list[tuple[object, str]] | None = None,
-) -> RuleScopeRuntime:
+) -> FunctionStorageRuntime:
     emitter = EventEmitter()
 
     def _factory(target, *, backend: str = "sqlite"):
@@ -40,7 +40,7 @@ def _build_runtime(
             targets.append((target, backend))
         return storage
 
-    return RuleScopeRuntime(
+    return FunctionStorageRuntime(
         storage_factory=_factory,
         event_emitter=emitter,
         project_name_provider=lambda: project_name,
@@ -53,9 +53,9 @@ def test_initialize_sqlite_storage_uses_only_typed_configuration(tmp_path):
     targets: list[tuple[object, str]] = []
     runtime = _build_runtime(storage, targets=targets)
 
-    reloaded: list[RuleScopeInvalidation] = []
+    reloaded: list[ExecutionScopeInvalidation] = []
     runtime._event_emitter.on(
-        RuleScopeEvent.IDB_OVERLAY_RELOADED,
+        ExecutionScopeEvent.IDB_METADATA_RELOADED,
         lambda payload: reloaded.append(payload),
     )
     database_path = (tmp_path / "recipes.db").resolve()
@@ -68,7 +68,7 @@ def test_initialize_sqlite_storage_uses_only_typed_configuration(tmp_path):
 
     assert targets == [(database_path, "sqlite")]
     assert len(reloaded) == 1
-    assert reloaded[0].reason == RuleScopeEvent.IDB_OVERLAY_RELOADED
+    assert reloaded[0].reason == ExecutionScopeEvent.IDB_METADATA_RELOADED
 
 
 def test_initialize_storage_defaults_to_idb_local_netnode() -> None:
@@ -92,7 +92,7 @@ def test_reconfigure_opens_replacement_before_closing_current_storage(tmp_path) 
         calls.append((target, backend, first.closed))
         return first if len(calls) == 1 else second
 
-    runtime = RuleScopeRuntime(
+    runtime = FunctionStorageRuntime(
         storage_factory=factory,
         event_emitter=EventEmitter(),
         project_name_provider=lambda: "proj",
@@ -125,7 +125,7 @@ def test_failed_reconfiguration_keeps_current_storage() -> None:
             raise OSError(f"cannot open {backend}")
         return current
 
-    runtime = RuleScopeRuntime(
+    runtime = FunctionStorageRuntime(
         storage_factory=factory,
         event_emitter=EventEmitter(),
         project_name_provider=lambda: "proj",
@@ -147,9 +147,9 @@ def test_scoped_tags_emit_function_invalidations():
     runtime = _build_runtime(storage)
     runtime.storage = storage
 
-    tags: list[RuleScopeInvalidation] = []
+    tags: list[ExecutionScopeInvalidation] = []
     runtime._event_emitter.on(
-        RuleScopeEvent.FUNCTION_TAGS_UPDATED,
+        ExecutionScopeEvent.FUNCTION_TAGS_UPDATED,
         lambda payload: tags.append(payload),
     )
 

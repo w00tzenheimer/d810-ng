@@ -87,12 +87,12 @@ class _NopWritingRule:
         return 0
 
 
-class _RuleScope:
+class _ExecutionScope:
     def __init__(self, rule: _NopWritingRule) -> None:
         self._rule = rule
 
-    def get_active_rules(self, **_kwargs):
-        return (self._rule,)
+    def active_stages(self, **_kwargs):
+        return (SimpleNamespace(implementation=self._rule),)
 
 
 class _GlboptNopProbe:
@@ -325,9 +325,9 @@ def test_block_optimizer_reports_a_rule_nop_write_that_returns_zero() -> None:
     )
     manager.current_maturity = ida_hexrays.MMAT_GLBOPT2
     manager.configure(
-        rule_scope_service=_RuleScope(rule),
-        rule_scope_project_name="test",
-        rule_scope_idb_key="test-idb",
+        execution_scope_service=_ExecutionScope(rule),
+        execution_scope_project_name="test",
+        execution_scope_idb_key="test-idb",
         fact_consumer_callback=lambda _func_ea, records: persisted.extend(records),
     )
 
@@ -366,9 +366,9 @@ def test_block_optimizer_nop_diagnostics_are_callback_block_local() -> None:
     )
     manager.current_maturity = ida_hexrays.MMAT_GLBOPT2
     manager.configure(
-        rule_scope_service=_RuleScope(rule),
-        rule_scope_project_name="test",
-        rule_scope_idb_key="test-idb",
+        execution_scope_service=_ExecutionScope(rule),
+        execution_scope_project_name="test",
+        execution_scope_idb_key="test-idb",
         fact_consumer_callback=lambda _func_ea, records: persisted.extend(records),
     )
 

@@ -152,38 +152,33 @@ def _context_status(snapshot: DeobfuscationWorkbenchSnapshot) -> OutcomeStatus:
     return OutcomeStatus.READY
 
 
-def _rule_scope_detail(snapshot: DeobfuscationWorkbenchSnapshot) -> str:
-    scope = snapshot.rule_scope
+def _execution_scope_detail(snapshot: DeobfuscationWorkbenchSnapshot) -> str:
+    scope = snapshot.execution_scope
     parts = [
-        "public operations: " + (", ".join(scope.public_operations) or "none"),
+        "passes: " + (", ".join(scope.public_passes) or "none"),
         "tags: " + (", ".join(scope.function_tags) or "none"),
         "inferences: " + (", ".join(scope.inference_names) or "none"),
     ]
     parts.extend(
-        f"{decision.pipeline} {decision.rule_name}"
+        f"{decision.pipeline} {decision.pass_id}/{decision.stage_id}"
         f" [{','.join(str(value) for value in decision.maturities) or 'any'}]: "
         f"{decision.reason} - {decision.detail}"
         for decision in scope.decisions
     )
-    if scope.unknown_rule_names:
-        parts.append("unknown/stale rule names: " + ", ".join(scope.unknown_rule_names))
+    if scope.unknown_targets:
+        parts.append("unknown execution targets: " + ", ".join(scope.unknown_targets))
     return "\n".join(parts)
 
 
 def _statistics_detail(snapshot: DeobfuscationWorkbenchSnapshot) -> str:
     stats = snapshot.statistics
     lines = [
-        *(
-            f"optimizer {entry.name}: {entry.count}"
-            for entry in stats.optimizer_matches
-        ),
-        *(f"rule {entry.name}: {entry.count}" for entry in stats.rule_matches),
+        *(f"stage {entry.name}: {entry.count}" for entry in stats.stage_matches),
         *(
             f"cfg {entry.name}: {entry.uses} uses, {entry.total_patches} patches"
-            for entry in stats.cfg_patches
+            for entry in stats.stage_patches
         ),
-        f"total rule firings: {stats.total_rule_firings}",
-        f"total cycles broken: {stats.total_cycles_detected}",
+        f"total stage firings: {stats.total_stage_firings}",
     ]
     return "\n".join(lines)
 
@@ -310,15 +305,15 @@ def project_workbench_rows(
     rows.extend(
         (
             _row(
-                key="supporting:rule-scope",
+                key="supporting:execution-scope",
                 section=WorkbenchSection.SUPPORTING,
                 ordinal=len(snapshot.consumers),
-                label="Rule scope",
+                label="Effective execution",
                 summary=(
-                    f"{sum(1 for item in snapshot.rule_scope.decisions if item.active)} active, "
-                    f"{sum(1 for item in snapshot.rule_scope.decisions if not item.active)} excluded"
+                    f"{sum(1 for item in snapshot.execution_scope.decisions if item.active)} active, "
+                    f"{sum(1 for item in snapshot.execution_scope.decisions if not item.active)} excluded"
                 ),
-                detail=_rule_scope_detail(snapshot),
+                detail=_execution_scope_detail(snapshot),
                 status=OutcomeStatus.READY,
             ),
             _row(
@@ -326,11 +321,11 @@ def project_workbench_rows(
                 section=WorkbenchSection.SUPPORTING,
                 ordinal=len(snapshot.consumers) + 1,
                 label="Supporting statistics",
-                summary=f"{snapshot.statistics.total_rule_firings} rule firings",
+                summary=f"{snapshot.statistics.total_stage_firings} stage firings",
                 detail=_statistics_detail(snapshot),
                 status=(
                     OutcomeStatus.READY
-                    if snapshot.statistics.total_rule_firings
+                    if snapshot.statistics.total_stage_firings
                     else OutcomeStatus.NOT_RUN
                 ),
             ),

@@ -2,7 +2,7 @@
 
 Heuristics are deliberately simple in this first pass. The intent is to
 cover the common OLLVM control-flow flattening case and emit inference names
-that ``RuleScopeService.apply_hints()`` can act on.
+that ``ExecutionScopeService.apply_hints()`` can act on.
 
 Four supplementary collectors—``FixPredSignalsCollector``,
 ``CompareChainCollector``, ``FlowProfileClassifierCollector``, and
@@ -53,7 +53,7 @@ _FLOW_PROFILE_MIN_CONFIDENCE = 0.4
 # globally: Approov engine-wrapper recovery relies on it.  Profiles with known
 # pre-recovery FCP hazards should disable it explicitly.
 _SUPPRESS_CONFIDENCE_THRESHOLD = 0.7
-_FLATTENING_SUPPRESSED_RULES = ("ConstantFolding",)
+_FLATTENING_SUPPRESSED_STAGES = ("constant-folding",)
 
 
 class AnalysisPhase:
@@ -93,14 +93,14 @@ class AnalysisPhase:
                 suppress: tuple[str, ...] = ()
                 if override["override_value"] == "ollvm_flat":
                     inferences = ("unflattening",)
-                    suppress = _FLATTENING_SUPPRESSED_RULES
+                    suppress = _FLATTENING_SUPPRESSED_STAGES
                 return DeobfuscationHints(
                     func_ea=func_ea,
                     obfuscation_type=override["override_value"],
                     confidence=override["confidence"],
                     recommended_inferences=inferences,
                     candidates=(),
-                    suppress_rules=suppress,
+                    suppress_stages=suppress,
                 )
 
         if not results:
@@ -110,7 +110,7 @@ class AnalysisPhase:
                 confidence=0.0,
                 recommended_inferences=(),
                 candidates=(),
-                suppress_rules=(),
+                suppress_stages=(),
             )
 
         # Aggregate metrics by collector
@@ -184,13 +184,13 @@ class AnalysisPhase:
             # specific configs own narrower FCP hazards so Approov-style
             # engine-wrapper recovery can still use forward state propagation.
             if min(1.0, confidence) >= _SUPPRESS_CONFIDENCE_THRESHOLD:
-                suppress_rules: tuple[str, ...] = _FLATTENING_SUPPRESSED_RULES
+                suppress_stages: tuple[str, ...] = _FLATTENING_SUPPRESSED_STAGES
             else:
-                suppress_rules = ()
+                suppress_stages = ()
         else:
             obfuscation_type = None
             recommended_inferences = ()
-            suppress_rules = ()
+            suppress_stages = ()
 
         return DeobfuscationHints(
             func_ea=func_ea,
@@ -198,7 +198,7 @@ class AnalysisPhase:
             confidence=min(1.0, confidence),
             recommended_inferences=recommended_inferences,
             candidates=tuple(all_candidates),
-            suppress_rules=suppress_rules,
+            suppress_stages=suppress_stages,
         )
 
     def interpret_from_store(

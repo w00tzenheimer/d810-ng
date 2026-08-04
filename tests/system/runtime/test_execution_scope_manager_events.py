@@ -1,11 +1,11 @@
-"""Runtime tests for manager-level function-tag scope and lifecycle."""
+"""Runtime tests for manager-level execution-scope lifecycle."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
 from d810.core.persistence import FunctionStorageLocator
-from d810.core.rule_scope import RuleScopeEvent, RuleScopeInvalidation
+from d810.core.execution_scope import ExecutionScopeEvent, ExecutionScopeInvalidation
 from d810.manager import D810Manager
 
 
@@ -36,9 +36,9 @@ def test_set_function_tags_emits_function_level_invalidation():
     fake_storage = _FakeStorage()
     manager.storage = fake_storage
 
-    captured: list[RuleScopeInvalidation] = []
+    captured: list[ExecutionScopeInvalidation] = []
     manager.event_emitter.on(
-        RuleScopeEvent.FUNCTION_TAGS_UPDATED,
+        ExecutionScopeEvent.FUNCTION_TAGS_UPDATED,
         lambda payload: captured.append(payload),
     )
 
@@ -47,5 +47,5 @@ def test_set_function_tags_emits_function_level_invalidation():
     locator = FunctionStorageLocator("idb", "proj", 0x401000)
     assert fake_storage.get_function_tags(locator) == {"flattened", "dispatcher"}
     assert len(captured) == 1
-    assert captured[0].reason == RuleScopeEvent.FUNCTION_TAGS_UPDATED
+    assert captured[0].reason == ExecutionScopeEvent.FUNCTION_TAGS_UPDATED
     assert captured[0].func_eas == frozenset({0x401000})

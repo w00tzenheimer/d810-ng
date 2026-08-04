@@ -207,7 +207,7 @@ def test_actual_hook_lifecycle_order_is_stable_across_merr_redo(monkeypatch) -> 
         def finish_session(self, event, *, resume_event=None) -> None:
             del event, resume_event
 
-    class _RuleScope:
+    class _ExecutionScope:
         @staticmethod
         def clear_hint_state(function_ea: int) -> None:
             del function_ea
@@ -247,7 +247,7 @@ def test_actual_hook_lifecycle_order_is_stable_across_merr_redo(monkeypatch) -> 
     coordinator = DecompilationLifecycleCoordinator(
         preanalysis_runtime=_PreanalysisRuntime(),
         analysis_runtime=_AnalysisRuntime(),
-        rule_scope_service=_RuleScope(),
+        execution_scope_service=_ExecutionScope(),
         native_preanalysis_key_provider=lambda _function_ea: NATIVE_KEY,
         event_emitter=emitter,
     )

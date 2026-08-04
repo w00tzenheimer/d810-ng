@@ -77,12 +77,12 @@ class _GatewayRule(FlowOptimizationRule):
         return 0
 
 
-class _FakeRuleScopeService:
+class _FakeExecutionScopeService:
     def __init__(self, rules: tuple[_DummyRule, ...]):
         self.rules = rules
         self.calls: list[tuple[int, int, str, str]] = []
 
-    def get_active_rules(
+    def active_stages(
         self,
         *,
         project_name: str,
@@ -91,9 +91,9 @@ class _FakeRuleScopeService:
         pipeline: str,
         maturity: int,
         function_tags=None,
-    ) -> tuple[_DummyRule, ...]:
+    ) -> tuple[SimpleNamespace, ...]:
         self.calls.append((func_ea, maturity, project_name, idb_key))
-        return self.rules
+        return tuple(SimpleNamespace(implementation=rule) for rule in self.rules)
 
 
 class _MutationGatewayLifecycle:
@@ -163,14 +163,14 @@ def test_block_optimizer_refreshes_live_identity_before_each_gateway() -> None:
     )
     manager.current_maturity = ida_hexrays.MMAT_GLBOPT1
     rule = _DummyRule("mutation_port")
-    scope_service = _FakeRuleScopeService((rule,))
+    scope_service = _FakeExecutionScopeService((rule,))
     gateway = object()
     materializer = object()
     lifecycle = _MutationGatewayLifecycle(gateway, materializer)
     manager.configure(
-        rule_scope_service=scope_service,
-        rule_scope_project_name="proj",
-        rule_scope_idb_key="idb",
+        execution_scope_service=scope_service,
+        execution_scope_project_name="proj",
+        execution_scope_idb_key="idb",
         decompilation_lifecycle=lifecycle,
     )
 
@@ -299,12 +299,12 @@ def test_block_optimizer_runs_scheduled_rule_at_later_maturity():
     )
     scheduler = PassScheduler()
     rule = _RunLaterRule("late_rule")
-    scope_service = _FakeRuleScopeService((rule,))
+    scope_service = _FakeExecutionScopeService((rule,))
     manager.add_rule(rule)
     manager.configure(
-        rule_scope_service=scope_service,
-        rule_scope_project_name="proj",
-        rule_scope_idb_key="idb",
+        execution_scope_service=scope_service,
+        execution_scope_project_name="proj",
+        execution_scope_idb_key="idb",
         pass_scheduler=scheduler,
     )
 
@@ -329,12 +329,12 @@ def test_block_optimizer_abstains_during_scoped_suppression():
         OptimizationStatistics(), Path("."), ctx_cls=FlowMaturityContext
     )
     rule = _DummyRule("suppressed_rule")
-    scope_service = _FakeRuleScopeService((rule,))
+    scope_service = _FakeExecutionScopeService((rule,))
     manager.add_rule(rule)
     manager.configure(
-        rule_scope_service=scope_service,
-        rule_scope_project_name="proj",
-        rule_scope_idb_key="idb",
+        execution_scope_service=scope_service,
+        execution_scope_project_name="proj",
+        execution_scope_idb_key="idb",
     )
     manager.current_maturity = ida_hexrays.MMAT_GLBOPT1
 
@@ -352,13 +352,13 @@ def test_block_optimizer_runs_cross_pass_scheduled_rule_at_later_maturity():
     scheduler = PassScheduler()
     source_rule = _CrossPassRunLaterRule("source_rule", "target_rule")
     target_rule = _DummyRule("target_rule")
-    scope_service = _FakeRuleScopeService((source_rule,))
+    scope_service = _FakeExecutionScopeService((source_rule,))
     manager.add_rule(source_rule)
     manager.add_rule(target_rule)
     manager.configure(
-        rule_scope_service=scope_service,
-        rule_scope_project_name="proj",
-        rule_scope_idb_key="idb",
+        execution_scope_service=scope_service,
+        execution_scope_project_name="proj",
+        execution_scope_idb_key="idb",
         pass_scheduler=scheduler,
     )
 
@@ -382,11 +382,11 @@ def test_scoped_perf_counters_track_calls_candidates_and_lookup_time():
     )
     manager.current_maturity = 1
     scoped_rule = _DummyRule("scoped")
-    scope_service = _FakeRuleScopeService((scoped_rule,))
+    scope_service = _FakeExecutionScopeService((scoped_rule,))
     manager.configure(
-        rule_scope_service=scope_service,
-        rule_scope_project_name="proj",
-        rule_scope_idb_key="idb",
+        execution_scope_service=scope_service,
+        execution_scope_project_name="proj",
+        execution_scope_idb_key="idb",
     )
 
     assert manager.optimize(_make_block()) == 0
@@ -428,14 +428,14 @@ def test_scoped_compare_mode_records_legacy_baseline_and_can_reset():
     legacy_denied = _DummyRule("legacy_denied", blacklist=[0x401000])
     manager.add_rule(legacy_allowed)
     manager.add_rule(legacy_denied)
-    scope_service = _FakeRuleScopeService(
+    scope_service = _FakeExecutionScopeService(
         (_DummyRule("scoped_a"), _DummyRule("scoped_b"))
     )
     manager.configure(
-        rule_scope_service=scope_service,
-        rule_scope_project_name="proj",
-        rule_scope_idb_key="idb",
-        rule_scope_perf_compare=True,
+        execution_scope_service=scope_service,
+        execution_scope_project_name="proj",
+        execution_scope_idb_key="idb",
+        execution_scope_perf_compare=True,
     )
 
     assert manager.optimize(_make_block()) == 0
@@ -463,11 +463,11 @@ def test_scoped_rules_are_executed_in_priority_order():
     manager.current_maturity = 1
     low = _DummyRule("low", patches=1, priority=10)
     high = _DummyRule("high", patches=1, priority=90)
-    scope_service = _FakeRuleScopeService((low, high))
+    scope_service = _FakeExecutionScopeService((low, high))
     manager.configure(
-        rule_scope_service=scope_service,
-        rule_scope_project_name="proj",
-        rule_scope_idb_key="idb",
+        execution_scope_service=scope_service,
+        execution_scope_project_name="proj",
+        execution_scope_idb_key="idb",
     )
 
     assert manager.optimize(_make_block()) == 1

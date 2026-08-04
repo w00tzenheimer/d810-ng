@@ -66,7 +66,7 @@ class AttackSummary:
     selection_mode: str
     confidence: float | None
     recommended_inferences: tuple[str, ...]
-    suppressed_rules: tuple[str, ...]
+    suppressed_stages: tuple[str, ...]
     candidate_kinds: tuple[str, ...]
 
 
@@ -103,9 +103,10 @@ class ConsumerOutcomeSnapshot:
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
-class EffectiveRuleDecisionSummary:
+class EffectiveStageDecisionSummary:
+    pass_id: str
+    stage_id: str
     pipeline: str
-    rule_name: str
     maturities: tuple[int, ...]
     active: bool
     reason: str
@@ -113,12 +114,12 @@ class EffectiveRuleDecisionSummary:
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
-class RuleScopeSummary:
-    public_operations: tuple[str, ...]
+class ExecutionScopeSummary:
+    public_passes: tuple[str, ...]
     function_tags: tuple[str, ...]
     inference_names: tuple[str, ...]
-    decisions: tuple[EffectiveRuleDecisionSummary, ...]
-    unknown_rule_names: tuple[str, ...]
+    decisions: tuple[EffectiveStageDecisionSummary, ...]
+    unknown_targets: tuple[str, ...]
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -136,12 +137,9 @@ class PatchCountEntry:
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class StatisticsSummary:
-    optimizer_matches: tuple[CountEntry, ...]
-    rule_matches: tuple[CountEntry, ...]
-    cfg_patches: tuple[PatchCountEntry, ...]
-    total_rule_firings: int
-    cycles_detected: tuple[CountEntry, ...]
-    total_cycles_detected: int
+    stage_matches: tuple[CountEntry, ...]
+    total_stage_firings: int
+    stage_patches: tuple[PatchCountEntry, ...]
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -218,7 +216,7 @@ class DeobfuscationWorkbenchSnapshot:
     attack: AttackSummary
     pipeline: tuple[PipelineStageSnapshot, ...]
     consumers: tuple[ConsumerOutcomeSnapshot, ...]
-    rule_scope: RuleScopeSummary
+    execution_scope: ExecutionScopeSummary
     statistics: StatisticsSummary
     baseline: BaselineRef
     latest_output: D810OutputRef
@@ -260,11 +258,12 @@ __all__ = [
     "CountEntry",
     "D810OutputRef",
     "DeobfuscationWorkbenchSnapshot",
+    "EffectiveStageDecisionSummary",
     "FunctionRef",
     "OutcomeStatus",
     "PatchCountEntry",
     "PipelineStageSnapshot",
-    "RuleScopeSummary",
+    "ExecutionScopeSummary",
     "RuntimeConfigRef",
     "SnapshotFreshness",
     "StatisticsSummary",

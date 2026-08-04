@@ -14,7 +14,7 @@ from d810.hexrays.hooks.optimization_suppression import (
 
 from d810.core import getLogger, typing
 from d810.core.decompilation_session import DecompilationEvent
-from d810.core.rule_scope import PIPELINE_FLOW
+from d810.core.execution_scope import ExecutionPipeline
 from d810.errors import D810Exception
 from d810.hexrays.hooks.callback_mutation_diagnostics import (
     LiveNopSite,
@@ -78,10 +78,10 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         self.stats = stats
         self._flow_context_type = ctx_cls
         self.cfg_rules: list[FlowOptimizationRule] = []
-        self._rule_scope_service = None
-        self._rule_scope_project_name = ""
-        self._rule_scope_idb_key = ""
-        self._perf_compare_rule_scope = False
+        self._execution_scope_service = None
+        self._execution_scope_project_name = ""
+        self._execution_scope_idb_key = ""
+        self._perf_compare_execution_scope = False
         self._perf_counters = {
             "scoped_calls": 0,
             "legacy_calls": 0,
@@ -324,7 +324,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             scoped_avg,
             legacy_avg,
             lookup_us,
-            self._perf_compare_rule_scope,
+            self._perf_compare_execution_scope,
         )
 
     def func(self, blk: ida_hexrays.mblock_t):
@@ -529,12 +529,12 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
     def _resolve_active_rules(
         self, blk: ida_hexrays.mblock_t
     ) -> tuple[FlowOptimizationRule, ...] | None:
-        if self._rule_scope_service is None:
-            # FAIL CLOSED: If rule scope service not initialized, run NO rules
+        if self._execution_scope_service is None:
+            # FAIL CLOSED: If execution scope service not initialized, run NO rules
             # instead of ALL rules. This prevents hangs when optimizer callbacks
             # fire before configure() is called.
             optimizer_logger.warning(
-                "Rule scope service not initialized at block optimize time - no rules will run. "
+                "Execution scope service not initialized at block optimize time - no rules will run. "
                 "This may indicate a race condition during initialization."
             )
             return ()
@@ -543,16 +543,16 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         if self.current_maturity is None:
             return ()
         t0_ns = time.perf_counter_ns()
-        rules = self._rule_scope_service.get_active_rules(
-            project_name=self._rule_scope_project_name,
-            idb_key=self._rule_scope_idb_key,
+        stages = self._execution_scope_service.active_stages(
+            project_name=self._execution_scope_project_name,
+            idb_key=self._execution_scope_idb_key,
             func_ea=int(blk.mba.entry_ea),
-            pipeline=PIPELINE_FLOW,
+            pipeline=ExecutionPipeline.FLOW,
             maturity=int(self.current_maturity),
         )
         self._perf_counters["scoped_lookup_ns"] += time.perf_counter_ns() - t0_ns
         return self._include_run_later_rules(
-            rules,
+            tuple(stage.implementation for stage in stages),
             func_entry_ea=int(blk.mba.entry_ea),
         )
 
@@ -1121,7 +1121,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         if active_rules is not None:
             self._perf_counters["scoped_calls"] += 1
             self._perf_counters["scoped_candidates_total"] += len(rules)
-            if self._perf_compare_rule_scope and func_ea != 0:
+            if self._perf_compare_execution_scope and func_ea != 0:
                 self._perf_counters["legacy_candidates_total"] += (
                     self._legacy_candidate_count(func_ea)
                 )
@@ -1528,17 +1528,21 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         for cfg_rule in self.cfg_rules:
             self._configure_rule_scheduler(cfg_rule)
             self._configure_rule_project_config(cfg_rule)
-        self._rule_scope_service = kwargs.get(
-            "rule_scope_service", self._rule_scope_service
+        self._execution_scope_service = kwargs.get(
+            "execution_scope_service", self._execution_scope_service
         )
-        self._rule_scope_project_name = str(
-            kwargs.get("rule_scope_project_name", self._rule_scope_project_name)
+        self._execution_scope_project_name = str(
+            kwargs.get(
+                "execution_scope_project_name", self._execution_scope_project_name
+            )
         )
-        self._rule_scope_idb_key = str(
-            kwargs.get("rule_scope_idb_key", self._rule_scope_idb_key)
+        self._execution_scope_idb_key = str(
+            kwargs.get("execution_scope_idb_key", self._execution_scope_idb_key)
         )
-        self._perf_compare_rule_scope = bool(
-            kwargs.get("rule_scope_perf_compare", self._perf_compare_rule_scope)
+        self._perf_compare_execution_scope = bool(
+            kwargs.get(
+                "execution_scope_perf_compare", self._perf_compare_execution_scope
+            )
         )
 
     def check_if_rule_is_activated_for_address(

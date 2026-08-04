@@ -30,7 +30,7 @@ from d810.passes.outcome import (
     FlowGateOutcomeAdapter,
     PlannerOutcomeAdapter,
     AnalysisOutcomeLog,
-    RuleScopeOutcomeAdapter,
+    ExecutionScopeOutcomeAdapter,
 )
 from d810.passes.flow_hints import derive_flow_context_summary
 from d810.analyses.value_flow.model import FactConsumerRecord
@@ -38,7 +38,10 @@ from d810.passes.store import PreanalysisStore
 
 if TYPE_CHECKING:
     from d810.analyses.value_flow.model import ValidatedFactView
-    from d810.core.rule_scope import ApplyHintsResult, RuleScopeService
+    from d810.core.execution_scope import (
+        ApplyExecutionHintsResult,
+        ExecutionScopeService,
+    )
     from d810.passes.flow_hints import FlowContextHintSummary
 
 logger = getLogger("D810.passes.runtime")
@@ -51,7 +54,7 @@ class AnalysisOutcome:
     Attributes:
         func_ea: Function effective address.
         hints: Resolved hints, or ``None`` if unavailable.
-        apply_result: Result from ``RuleScopeService.apply_hints()``, or
+        apply_result: Result from ``ExecutionScopeService.apply_hints()``, or
             ``None`` if hints were unavailable.
         source: How the hints were obtained: ``"cached"``, ``"analyzed"``,
             or ``"unavailable"``.
@@ -59,7 +62,7 @@ class AnalysisOutcome:
 
     func_ea: int
     hints: DeobfuscationHints | None
-    apply_result: ApplyHintsResult | None
+    apply_result: ApplyExecutionHintsResult | None
     source: str  # "cached" | "analyzed" | "unavailable"
 
 
@@ -222,14 +225,14 @@ class DecompilationAnalysisRuntime:
             report.consumer_verdict_applied,
         )
 
-    def record_rule_scope_outcome(
+    def record_execution_scope_outcome(
         self,
         func_ea: int,
         hints: DeobfuscationHints | None,
-        apply_result: ApplyHintsResult | None,
+        apply_result: ApplyExecutionHintsResult | None,
         source: str,
     ) -> None:
-        """Convenience: build a :class:`RuleScopeOutcomeAdapter` and record it.
+        """Convenience: build a :class:`ExecutionScopeOutcomeAdapter` and record it.
 
         Keeps :class:`AnalysisOutcome` adapter construction in the analysis
         layer so ``d810.hexrays`` hooks need no outcome-model imports.
@@ -240,7 +243,7 @@ class DecompilationAnalysisRuntime:
             apply_result=apply_result,
             source=source,
         )
-        adapter = RuleScopeOutcomeAdapter(outcome)
+        adapter = ExecutionScopeOutcomeAdapter(outcome)
         self.record_outcome(adapter)
 
     def record_planner_outcome(
@@ -332,7 +335,7 @@ class DecompilationAnalysisRuntime:
                 classification=h.obfuscation_type or "",
                 confidence=h.confidence,
                 inferences=list(h.recommended_inferences),
-                suppress_rules=list(h.suppress_rules),
+                suppress_stages=list(h.suppress_stages),
             )
         )
         logger.info(
@@ -366,17 +369,17 @@ class DecompilationAnalysisRuntime:
             return None
         return derive_flow_context_summary(hints)
 
-    def apply_to_rule_scope(
+    def apply_to_execution_scope(
         self,
         func_ea: int,
-        rule_scope: RuleScopeService,
+        execution_scope: ExecutionScopeService,
     ) -> AnalysisOutcome:
         """Analyze persisted evidence and apply available hints."""
         hints = self.load_hints(func_ea)
         if hints is not None:
             source = "cached"
             logger.info(
-                "apply_to_rule_scope: func=0x%x using cached hints "
+                "apply_to_execution_scope: func=0x%x using cached hints "
                 "(type=%s confidence=%.2f)",
                 func_ea,
                 hints.obfuscation_type,
@@ -388,13 +391,13 @@ class DecompilationAnalysisRuntime:
 
         apply_result = None
         if hints is not None:
-            apply_result = rule_scope.apply_hints(hints)
+            apply_result = execution_scope.apply_hints(hints)
             logger.info(
-                "apply_to_rule_scope: func=0x%x applied -> "
+                "apply_to_execution_scope: func=0x%x applied -> "
                 "inferences=%s suppressed=%s gen=%d->%d",
                 func_ea,
                 apply_result.inferences_applied,
-                apply_result.rules_suppressed,
+                apply_result.stages_suppressed,
                 apply_result.generation_before,
                 apply_result.generation_after,
             )

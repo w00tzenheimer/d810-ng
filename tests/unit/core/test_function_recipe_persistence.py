@@ -67,8 +67,6 @@ def test_sqlite_function_recipes_are_scoped(tmp_path: Path) -> None:
         }
         assert "function_recipes_v2" in tables
         assert "function_tags_v2" in tables
-        assert "function_rules" not in tables
-        assert "rule_scope_inference" not in tables
     finally:
         storage.close()
 

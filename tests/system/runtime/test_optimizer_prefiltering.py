@@ -426,9 +426,9 @@ def test_active_optimizer_list_filters_by_maturity():
     mgr.current_maturity = None
     mgr.current_blk_serial = None
     mgr._rewrite_seen = {}
-    mgr._rule_scope_service = None
-    mgr._rule_scope_project_name = ""
-    mgr._rule_scope_idb_key = ""
+    mgr._execution_scope_service = None
+    mgr._execution_scope_project_name = ""
+    mgr._execution_scope_idb_key = ""
     mgr.analyzer = SimpleNamespace(
         set_maturity=lambda m: None, analyze=lambda blk, ins: None
     )
@@ -469,9 +469,9 @@ def test_instruction_optimizer_abstains_during_scoped_suppression():
     mgr.current_maturity = ida_hexrays.MMAT_LOCOPT
     mgr.current_blk_serial = None
     mgr._rewrite_seen = {}
-    mgr._rule_scope_service = None
-    mgr._rule_scope_project_name = ""
-    mgr._rule_scope_idb_key = ""
+    mgr._execution_scope_service = None
+    mgr._execution_scope_project_name = ""
+    mgr._execution_scope_idb_key = ""
     mgr.analyzer = SimpleNamespace(
         set_maturity=lambda m: None, analyze=lambda blk, ins: None
     )
@@ -500,7 +500,7 @@ def test_instruction_optimizer_accepts_destination_owned_imported_mba():
     )
     mgr = InstructionOptimizerManager.__new__(InstructionOptimizerManager)
     mgr.current_maturity = ida_hexrays.MMAT_PREOPTIMIZED
-    mgr._rule_scope_service = None
+    mgr._execution_scope_service = None
     mgr._run_later_rule_names = frozenset()
     mgr._active_optimizers = [optimizer]
     mgr._last_optimizer_tried = None

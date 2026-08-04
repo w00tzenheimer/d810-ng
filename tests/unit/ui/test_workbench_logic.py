@@ -15,11 +15,11 @@ from d810.manager.workbench_models import (
     ComparisonMetric,
     D810OutputRef,
     DeobfuscationWorkbenchSnapshot,
-    EffectiveRuleDecisionSummary,
+    EffectiveStageDecisionSummary,
     FunctionRef,
     OutcomeStatus,
     PipelineStageSnapshot,
-    RuleScopeSummary,
+    ExecutionScopeSummary,
     RuntimeConfigRef,
     SnapshotFreshness,
     StatisticsSummary,
@@ -55,7 +55,7 @@ def _snapshot() -> DeobfuscationWorkbenchSnapshot:
             selection_mode="recon-hints",
             confidence=0.9,
             recommended_inferences=("unflattening",),
-            suppressed_rules=(),
+            suppressed_stages=(),
             candidate_kinds=("flattened_switch",),
         ),
         pipeline=(
@@ -85,29 +85,30 @@ def _snapshot() -> DeobfuscationWorkbenchSnapshot:
         consumers=(
             ConsumerOutcomeSnapshot(
                 phase="supporting",
-                consumer_name="rule_scope",
+                consumer_name="execution_scope",
                 status=OutcomeStatus.ABSTAINED,
                 detail="verdict was not applied",
                 provenance_json=None,
             ),
         ),
-        rule_scope=RuleScopeSummary(
-            public_operations=("constant-simplification",),
+        execution_scope=ExecutionScopeSummary(
+            public_passes=("constant-simplification",),
             function_tags=("hard",),
             inference_names=("unflattening",),
             decisions=(
-                EffectiveRuleDecisionSummary(
+                EffectiveStageDecisionSummary(
+                    "constant-simplification",
+                    "fold-constant-subtree",
                     "instruction",
-                    "UnflattenRule",
                     (1,),
                     True,
                     "active",
                     "passed all scope gates",
                 ),
             ),
-            unknown_rule_names=(),
+            unknown_targets=(),
         ),
-        statistics=StatisticsSummary((), (), (), 0, (), 0),
+        statistics=StatisticsSummary((), 0, ()),
         baseline=BaselineRef(False, None, None, None),
         latest_output=D810OutputRef(False, None, None, None),
         artifacts=(
@@ -151,10 +152,10 @@ def test_rows_preserve_pipeline_order_and_keep_consumers_supporting() -> None:
         OutcomeStatus.READY,
         OutcomeStatus.BLOCKED,
     )
-    assert all("rule_scope" not in row.key for row in pipeline)
-    assert any(row.key == "consumer:rule_scope" for row in supporting)
+    assert all("execution_scope" not in row.key for row in pipeline)
+    assert any(row.key == "consumer:execution_scope" for row in supporting)
     assert (
-        next(row for row in supporting if row.key == "consumer:rule_scope").status
+        next(row for row in supporting if row.key == "consumer:execution_scope").status
         is OutcomeStatus.ABSTAINED
     )
 
@@ -426,7 +427,7 @@ def test_evidence_export_is_canonical_deterministic_json() -> None:
             "recommended_inferences": ["unflattening"],
             "selected_profile": None,
             "selection_mode": "recon-hints",
-            "suppressed_rules": [],
+            "suppressed_stages": [],
         },
         "baseline": {
             "available": False,
@@ -447,7 +448,7 @@ def test_evidence_export_is_canonical_deterministic_json() -> None:
         "collection_errors": ["statistics: unavailable"],
         "consumers": [
             {
-                "consumer_name": "rule_scope",
+                "consumer_name": "execution_scope",
                 "detail": "verdict was not applied",
                 "phase": "supporting",
                 "provenance_json": None,
@@ -505,21 +506,22 @@ def test_evidence_export_is_canonical_deterministic_json() -> None:
                 "summary": "missing state_transition",
             },
         ],
-        "rule_scope": {
+        "execution_scope": {
             "decisions": [
                 {
                     "active": True,
                     "maturities": [1],
+                    "pass_id": "constant-simplification",
                     "pipeline": "instruction",
                     "reason": "active",
-                    "rule_name": "UnflattenRule",
+                    "stage_id": "fold-constant-subtree",
                     "detail": "passed all scope gates",
                 }
             ],
             "function_tags": ["hard"],
             "inference_names": ["unflattening"],
-            "public_operations": ["constant-simplification"],
-            "unknown_rule_names": [],
+            "public_passes": ["constant-simplification"],
+            "unknown_targets": [],
         },
         "runtime": {
             "hook_mode": "config-v2",
@@ -533,12 +535,9 @@ def test_evidence_export_is_canonical_deterministic_json() -> None:
             "source_path": "/configs/default_ollvm.json",
         },
         "statistics": {
-            "cfg_patches": [],
-            "cycles_detected": [],
-            "optimizer_matches": [],
-            "rule_matches": [],
-            "total_cycles_detected": 0,
-            "total_rule_firings": 0,
+            "stage_patches": [],
+            "stage_matches": [],
+            "total_stage_firings": 0,
         },
     }
 

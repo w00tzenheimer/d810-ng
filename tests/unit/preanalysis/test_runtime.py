@@ -75,7 +75,7 @@ def _make_hints(
         confidence=confidence,
         recommended_inferences=("unflattening",),
         candidates=(),
-        suppress_rules=(),
+        suppress_stages=(),
     )
 
 
@@ -625,7 +625,7 @@ def test_begin_session_flushes_previous_outcomes() -> None:
     mock_store.load_all_preanalysis_results.return_value = results_a
 
     # Record an outcome for func A
-    rt.record_rule_scope_outcome(
+    rt.record_execution_scope_outcome(
         func_ea=func_a,
         hints=hints_a,
         apply_result=None,
@@ -642,7 +642,7 @@ def test_begin_session_flushes_previous_outcomes() -> None:
     mock_store.save_consumer_outcome.assert_called_once()
     outcome_call = mock_store.save_consumer_outcome.call_args
     assert outcome_call.kwargs["func_ea"] == func_a
-    assert outcome_call.kwargs["consumer_name"] == "rule_scope"
+    assert outcome_call.kwargs["consumer_name"] == "execution_scope"
 
 
 def test_nested_session_reset_restores_parent_without_mark_finished() -> None:
@@ -677,7 +677,7 @@ def test_runtime_record_outcome() -> None:
     """record_outcome delegates to outcome log."""
     rt, _mock_phase, _mock_analysis, _mock_store = _make_runtime()
 
-    from d810.passes.outcome import RuleScopeOutcomeAdapter
+    from d810.passes.outcome import ExecutionScopeOutcomeAdapter
     from d810.passes.runtime import AnalysisOutcome
 
     outcome = AnalysisOutcome(
@@ -686,12 +686,12 @@ def test_runtime_record_outcome() -> None:
         apply_result=None,
         source="analyzed",
     )
-    adapter = RuleScopeOutcomeAdapter(outcome)
+    adapter = ExecutionScopeOutcomeAdapter(outcome)
     rt.record_outcome(adapter)
 
     reports = rt.outcome_log.get_func_reports(_FUNC_EA)
     assert len(reports) == 1
-    assert reports[0].consumer_name == "rule_scope"
+    assert reports[0].consumer_name == "execution_scope"
     assert reports[0].func_ea == _FUNC_EA
 
 
@@ -699,7 +699,7 @@ def test_reset_clears_outcome_log() -> None:
     """begin_session clears outcome entries for the function."""
     rt, _mock_phase, _mock_analysis, _mock_store = _make_runtime()
 
-    from d810.passes.outcome import RuleScopeOutcomeAdapter
+    from d810.passes.outcome import ExecutionScopeOutcomeAdapter
     from d810.passes.runtime import AnalysisOutcome
 
     outcome = AnalysisOutcome(
@@ -708,7 +708,7 @@ def test_reset_clears_outcome_log() -> None:
         apply_result=None,
         source="cached",
     )
-    adapter = RuleScopeOutcomeAdapter(outcome)
+    adapter = ExecutionScopeOutcomeAdapter(outcome)
     rt.record_outcome(adapter)
     assert len(rt.outcome_log.get_func_reports(_FUNC_EA)) == 1
 
@@ -717,12 +717,12 @@ def test_reset_clears_outcome_log() -> None:
     assert rt.outcome_log.get_func_reports(_FUNC_EA) == []
 
 
-def test_record_rule_scope_outcome() -> None:
-    """record_rule_scope_outcome builds adapter internally and records."""
+def test_record_execution_scope_outcome() -> None:
+    """record_execution_scope_outcome builds adapter internally and records."""
     rt, _mock_phase, _mock_analysis, _mock_store = _make_runtime()
 
     hints = _make_hints()
-    rt.record_rule_scope_outcome(
+    rt.record_execution_scope_outcome(
         func_ea=_FUNC_EA,
         hints=hints,
         apply_result=None,
@@ -731,7 +731,7 @@ def test_record_rule_scope_outcome() -> None:
 
     reports = rt.outcome_log.get_func_reports(_FUNC_EA)
     assert len(reports) == 1
-    assert reports[0].consumer_name == "rule_scope"
+    assert reports[0].consumer_name == "execution_scope"
     assert reports[0].source_artifacts_available is True
     assert reports[0].summary_available is True
     assert reports[0].consumer_verdict_applied is False  # apply_result=None
@@ -790,7 +790,7 @@ def test_finish_session_logs_summary() -> None:
     rt.begin_session(_event())
 
     # Record an outcome
-    rt.record_rule_scope_outcome(
+    rt.record_execution_scope_outcome(
         func_ea=_FUNC_EA,
         hints=_make_hints(),
         apply_result=None,
@@ -816,7 +816,7 @@ def test_get_outcome_summary() -> None:
     """get_outcome_summary delegates to outcome log summary."""
     rt, _mock_phase, _mock_analysis, _mock_store = _make_runtime()
 
-    rt.record_rule_scope_outcome(
+    rt.record_execution_scope_outcome(
         func_ea=_FUNC_EA,
         hints=_make_hints(),
         apply_result=None,
@@ -826,7 +826,7 @@ def test_get_outcome_summary() -> None:
     summary = rt.get_outcome_summary(_FUNC_EA)
     assert summary["func_ea"] == _FUNC_EA
     assert len(summary["consumers"]) == 1
-    assert summary["consumers"][0]["name"] == "rule_scope"
+    assert summary["consumers"][0]["name"] == "execution_scope"
 
 
 # ---------------------------------------------------------------------------
@@ -848,7 +848,7 @@ def test_finish_session_persists_outcomes() -> None:
     mock_store.load_all_preanalysis_results.return_value = results
 
     # Record a consumer outcome
-    rt.record_rule_scope_outcome(
+    rt.record_execution_scope_outcome(
         func_ea=_FUNC_EA,
         hints=hints,
         apply_result=None,
@@ -864,7 +864,7 @@ def test_finish_session_persists_outcomes() -> None:
     mock_store.save_consumer_outcome.assert_called_once()
     outcome_call = mock_store.save_consumer_outcome.call_args
     assert outcome_call.kwargs["func_ea"] == _FUNC_EA
-    assert outcome_call.kwargs["consumer_name"] == "rule_scope"
+    assert outcome_call.kwargs["consumer_name"] == "execution_scope"
     assert outcome_call.kwargs["artifacts_available"] is True
     assert outcome_call.kwargs["summary_available"] is True
     assert outcome_call.kwargs["verdict_applied"] is False
@@ -877,7 +877,7 @@ def test_finish_session_no_hints_still_persists_outcomes() -> None:
     rt.begin_session(_event())
 
     # Record a consumer outcome
-    rt.record_rule_scope_outcome(
+    rt.record_execution_scope_outcome(
         func_ea=_FUNC_EA,
         hints=None,
         apply_result=None,

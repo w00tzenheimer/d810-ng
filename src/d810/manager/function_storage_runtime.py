@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from d810.core.logging import getLogger
 from d810.core.persistence import FunctionStorageLocator
-from d810.core.rule_scope import (
-    FunctionRuleOverlay,
-    RuleScopeEvent,
-    RuleScopeInvalidation,
+from d810.core.execution_scope import (
+    ExecutionScopeEvent,
+    ExecutionScopeInvalidation,
+    FunctionExecutionMetadata,
 )
 from d810.core.typing import Any, Callable, Optional, Set
 from d810.core.function_storage_config import (
@@ -19,8 +19,8 @@ from d810.core.function_storage_config import (
 logger = getLogger("D810")
 
 
-class RuleScopeRuntime:
-    """Own storage-backed rule-scope state for the manager facade."""
+class FunctionStorageRuntime:
+    """Own storage-backed recipes and function tags for the manager facade."""
 
     def __init__(
         self,
@@ -45,19 +45,19 @@ class RuleScopeRuntime:
 
     def emit_invalidation(
         self,
-        reason: RuleScopeEvent,
+        reason: ExecutionScopeEvent,
         *,
         project_name: str | None = None,
         func_eas: frozenset[int] | None = None,
-        changed_rules: frozenset[str] | None = None,
+        changed_targets: frozenset[str] | None = None,
     ) -> None:
         self._event_emitter.emit(
             reason,
-            RuleScopeInvalidation(
+            ExecutionScopeInvalidation(
                 reason=reason,
                 project_name=project_name,
                 func_eas=func_eas,
-                changed_rules=changed_rules,
+                changed_targets=changed_targets,
             ),
         )
 
@@ -86,14 +86,14 @@ class RuleScopeRuntime:
                 target,
             )
             self.emit_invalidation(
-                RuleScopeEvent.IDB_OVERLAY_RELOADED,
+                ExecutionScopeEvent.IDB_METADATA_RELOADED,
                 project_name=self._project_name(),
             )
         except Exception as exc:
             self.storage = old_storage
             logger.warning("Failed to initialize function recipe storage: %s", exc)
             self.emit_invalidation(
-                RuleScopeEvent.IDB_OVERLAY_RELOADED,
+                ExecutionScopeEvent.IDB_METADATA_RELOADED,
                 project_name=self._project_name(),
             )
 
@@ -104,14 +104,16 @@ class RuleScopeRuntime:
             function_addr=int(function_ea),
         )
 
-    def get_rule_overlay(self, function_ea: int) -> FunctionRuleOverlay | None:
+    def get_execution_metadata(
+        self, function_ea: int
+    ) -> FunctionExecutionMetadata | None:
         storage = self.storage
         if storage is None:
             return None
         tags = storage.get_function_tags(self._locator(function_ea))
         if not tags:
             return None
-        return FunctionRuleOverlay(
+        return FunctionExecutionMetadata(
             function_tags=frozenset(tags),
         )
 
@@ -141,7 +143,7 @@ class RuleScopeRuntime:
         }
         self.storage.set_function_tags(self._locator(function_addr), normalized_tags)
         self.emit_invalidation(
-            RuleScopeEvent.FUNCTION_TAGS_UPDATED,
+            ExecutionScopeEvent.FUNCTION_TAGS_UPDATED,
             project_name=self._project_name(),
             func_eas=frozenset({int(function_addr)}),
         )
@@ -162,4 +164,4 @@ class RuleScopeRuntime:
         return str(self._project_name_provider() or "")
 
 
-__all__ = ["RuleScopeRuntime"]
+__all__ = ["FunctionStorageRuntime"]

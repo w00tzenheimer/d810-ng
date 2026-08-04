@@ -9,7 +9,10 @@ from types import SimpleNamespace
 
 from d810.analyses.control_flow.models import CandidateFlag, DeobfuscationHints
 from d810.core.config import ProjectConfiguration
-from d810.core.rule_scope import EffectiveRuleDecision, EffectiveRuleScopeReport
+from d810.core.execution_scope import (
+    EffectiveExecutionDecision,
+    EffectiveExecutionReport,
+)
 from d810.manager.project_runtime import (
     ProjectConfigMode,
     ProjectIdentitySnapshot,
@@ -86,6 +89,18 @@ class _Registry:
 
     def build_spec(self, config: object) -> PassSpec:
         return self._specs[config.pass_id]
+
+    def public_pass_ids(self) -> tuple[str, ...]:
+        return tuple(self._specs)
+
+    def stages_for(self, pass_id: str) -> tuple[object, ...]:
+        implementation = {"first": "FoldRule", "second": "CfgRule"}[pass_id]
+        return (
+            SimpleNamespace(
+                stage_id=pass_id,
+                implementation_name=implementation,
+            ),
+        )
 
 
 class _Facts:
@@ -173,8 +188,8 @@ def _project_context(
         description="effective runtime",
         additional_configuration={
             "pipeline_v2": [
-                {"pass": "first"},
-                {"pass": "second"},
+                {"pass_id": "first"},
+                {"pass_id": "second"},
             ]
         },
     )
@@ -199,41 +214,44 @@ def _manager(tmp_path: Path) -> SimpleNamespace:
                 detail="serial is deliberately not projected",
             ),
         ),
-        suppress_rules=("UnsafeRule",),
+        suppress_stages=("unsafe-stage",),
     )
-    scope_report = EffectiveRuleScopeReport(
+    scope_report = EffectiveExecutionReport(
         project_name="sample",
         idb_key="sample.i64",
         function_ea=0x401000,
         function_tags=("hard", "priority"),
         inference_names=("unflattening",),
         decisions=(
-            EffectiveRuleDecision(
+            EffectiveExecutionDecision(
+                "constant-simplification",
+                "fold-constant-subtree",
                 "instruction",
-                "ProjectInstructionRule",
                 (1,),
                 True,
                 "active",
                 "passed all scope gates",
             ),
-            EffectiveRuleDecision(
+            EffectiveExecutionDecision(
+                "jump-fixer",
+                "jump-fixer",
                 "flow",
-                "ProjectBlockRule",
                 (2,),
                 True,
                 "active",
                 "passed all scope gates",
             ),
-            EffectiveRuleDecision(
+            EffectiveExecutionDecision(
+                "constant-simplification",
+                "forward-constants",
                 "flow",
-                "PreRecoveryFcp",
                 (2,),
                 False,
                 "inference-suppressed",
-                "inference unflattening suppressed this rule",
+                "inference unflattening suppressed this stage",
             ),
         ),
-        unknown_rule_names=("RemovedRule",),
+        unknown_targets=("removed-stage",),
     )
     reports = (
         _Report("not_eligible", artifacts=False, summary=False, applied=False),
@@ -257,7 +275,7 @@ def _manager(tmp_path: Path) -> SimpleNamespace:
         config={},
         load_recon_hints=lambda function_ea: hints,
         get_recon_outcome_reports=lambda function_ea: reports,
-        get_effective_rule_scope_report=lambda function_ea: scope_report,
+        get_effective_execution_report=lambda function_ea: scope_report,
     )
 
 
@@ -367,7 +385,7 @@ def test_preflight_distinguishes_ready_and_blocked_with_structured_diagnostics(
     )
 
 
-def test_attack_consumers_rule_scope_statistics_and_artifacts_are_truthful(
+def test_attack_consumers_execution_scope_statistics_and_artifacts_are_truthful(
     tmp_path: Path,
 ) -> None:
     project_snapshot, runtime_project = _project_context(tmp_path)
@@ -385,7 +403,7 @@ def test_attack_consumers_rule_scope_statistics_and_artifacts_are_truthful(
     assert snapshot.attack.selection_mode == "recon-hints"
     assert snapshot.attack.confidence == 0.91
     assert snapshot.attack.recommended_inferences == ("unflattening",)
-    assert snapshot.attack.suppressed_rules == ("UnsafeRule",)
+    assert snapshot.attack.suppressed_stages == ("unsafe-stage",)
     assert snapshot.attack.candidate_kinds == ("flattened_switch",)
     assert "77" not in repr(snapshot.attack)
 
@@ -409,22 +427,21 @@ def test_attack_consumers_rule_scope_statistics_and_artifacts_are_truthful(
         "status": "Unchanged",
     }
 
-    assert snapshot.rule_scope.public_operations == ("first", "second")
-    assert snapshot.rule_scope.function_tags == ("hard", "priority")
-    assert snapshot.rule_scope.inference_names == ("unflattening",)
-    assert tuple(item.rule_name for item in snapshot.rule_scope.decisions) == (
-        "ProjectInstructionRule",
-        "ProjectBlockRule",
-        "PreRecoveryFcp",
+    assert snapshot.execution_scope.public_passes == ("first", "second")
+    assert snapshot.execution_scope.function_tags == ("hard", "priority")
+    assert snapshot.execution_scope.inference_names == ("unflattening",)
+    assert tuple(item.stage_id for item in snapshot.execution_scope.decisions) == (
+        "fold-constant-subtree",
+        "jump-fixer",
+        "forward-constants",
     )
-    assert snapshot.rule_scope.decisions[-1].reason == "inference-suppressed"
-    assert snapshot.rule_scope.unknown_rule_names == ("RemovedRule",)
+    assert snapshot.execution_scope.decisions[-1].reason == "inference-suppressed"
+    assert snapshot.execution_scope.unknown_targets == ("removed-stage",)
 
-    assert snapshot.statistics.optimizer_matches[0].name == "PatternOptimizer"
-    assert snapshot.statistics.optimizer_matches[0].count == 2
-    assert snapshot.statistics.cfg_patches[0].total_patches == 4
-    assert snapshot.statistics.total_rule_firings == 3
-    assert snapshot.statistics.total_cycles_detected == 1
+    assert snapshot.statistics.stage_matches[0].name == "first/first"
+    assert snapshot.statistics.stage_matches[0].count == 3
+    assert snapshot.statistics.stage_patches[0].total_patches == 4
+    assert snapshot.statistics.total_stage_firings == 3
 
     artifacts = {artifact.kind: artifact for artifact in snapshot.artifacts}
     assert artifacts["source-config"].available is True

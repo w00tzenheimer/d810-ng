@@ -1,7 +1,7 @@
 """Core data model for the reconnaissance pipeline.
 
 Immutable value objects passed between PreanalysisPhase, AnalysisPhase, and
-RuleScopeService. All public types are frozen dataclasses or NamedTuples.
+ExecutionScopeService. All public types are frozen dataclasses or NamedTuples.
 No IDA imports - this module is unit-testable without IDA.
 """
 
@@ -95,11 +95,11 @@ class PreanalysisResult:
 
 @dataclass(frozen=True)
 class DeobfuscationHints:
-    'Actionable output of the AnalysisPhase.\n\n    Summarises what obfuscation was detected and what the DeobfuscationPhase\n    should do about it. Consumed by ``RuleScopeService.apply_hints()``.\n\n    Attributes:\n        func_ea: Function effective address these hints apply to.\n        obfuscation_type: Detected obfuscation family, or ``None`` if none.\n            One of: ``"ollvm_flat"``, ``"tigress_indirect"``, ``"mixed"``,\n            ``None``.\n        confidence: Overall classification confidence in ``[0.0, 1.0]``.\n        recommended_inferences: Tuple of inference names to activate.\n        candidates: Forwarded candidate flags from PreanalysisResults.\n        suppress_rules: Rule names to explicitly disable for this function.\n\n    Example:\n        >>> hints = DeobfuscationHints(\n        ...     func_ea=0x401000,\n        ...     obfuscation_type="ollvm_flat",\n        ...     confidence=0.85,\n        ...     recommended_inferences=("unflattening",),\n        ...     candidates=(),\n        ...     suppress_rules=(),\n        ... )\n        >>> hints.obfuscation_type\n        \'ollvm_flat\'\n'
+    'Actionable output of the AnalysisPhase.\n\n    Summarises what obfuscation was detected and what the DeobfuscationPhase\n    should do about it. Consumed by ``ExecutionScopeService.apply_hints()``.\n\n    Attributes:\n        func_ea: Function effective address these hints apply to.\n        obfuscation_type: Detected obfuscation family, or ``None`` if none.\n            One of: ``"ollvm_flat"``, ``"tigress_indirect"``, ``"mixed"``,\n            ``None``.\n        confidence: Overall classification confidence in ``[0.0, 1.0]``.\n        recommended_inferences: Tuple of inference names to activate.\n        candidates: Forwarded candidate flags from PreanalysisResults.\n        suppress_stages: Stage IDs to explicitly disable for this function.\n\n    Example:\n        >>> hints = DeobfuscationHints(\n        ...     func_ea=0x401000,\n        ...     obfuscation_type="ollvm_flat",\n        ...     confidence=0.85,\n        ...     recommended_inferences=("unflattening",),\n        ...     candidates=(),\n        ...     suppress_stages=(),\n        ... )\n        >>> hints.obfuscation_type\n        \'ollvm_flat\'\n'
 
     func_ea: int
     obfuscation_type: str | None
     confidence: float
     recommended_inferences: tuple[str, ...]
     candidates: tuple[CandidateFlag, ...]
-    suppress_rules: tuple[str, ...]
+    suppress_stages: tuple[str, ...]

@@ -14,7 +14,7 @@ from d810.manager.workbench_models import (
     DeobfuscationWorkbenchSnapshot,
     FunctionRef,
     OutcomeStatus,
-    RuleScopeSummary,
+    ExecutionScopeSummary,
     RuntimeConfigRef,
     SnapshotFreshness,
     StatisticsSummary,
@@ -46,13 +46,13 @@ def _snapshot(*, generation: int = 4) -> DeobfuscationWorkbenchSnapshot:
             selection_mode="recon-hints",
             confidence=0.9,
             recommended_inferences=("unflattening",),
-            suppressed_rules=(),
+            suppressed_stages=(),
             candidate_kinds=("flattened_switch",),
         ),
         pipeline=(),
         consumers=(),
-        rule_scope=RuleScopeSummary((), (), (), (), ()),
-        statistics=StatisticsSummary((), (), (), 0, (), 0),
+        execution_scope=ExecutionScopeSummary((), (), (), (), ()),
+        statistics=StatisticsSummary((), 0, ()),
         baseline=BaselineRef(False, None, None, None),
         latest_output=D810OutputRef(False, None, None, None),
         artifacts=(ArtifactRef("recon-db", "Recon database", "/logs/recon.db", True),),
@@ -382,7 +382,7 @@ def test_comparison_error_requires_an_accepted_current_direct_run() -> None:
     snapshot = _snapshot()
     altered_statistics = dataclasses.replace(
         snapshot,
-        statistics=StatisticsSummary((), (), (), 999, (), 0),
+        statistics=StatisticsSummary((), 999, ()),
     )
 
     original = workflow.project_workbench_workflow(

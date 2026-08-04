@@ -54,9 +54,7 @@ class DecompilationSessionContext:
     generated_ready_emitted_for_current_mba: bool = False
     rhad_generated_checksum_attempted_for_current_mba: bool = False
     rhad_generated_checksum_committed_for_current_mba: bool = False
-    rhad_generated_checksum_observed_maturities: set[str] = field(
-        default_factory=set
-    )
+    rhad_generated_checksum_observed_maturities: set[str] = field(default_factory=set)
     preopt_ready_emitted_for_current_mba: bool = False
     resolver_attachment: ResolverEvidenceAttachment | None = None
     frontend_normalization_plan_authority: SessionFrontendNormalizationPlanAuthority = (
@@ -122,7 +120,7 @@ class DecompilationLifecycleCoordinator:
 
     preanalysis_runtime: typing.Any | None
     analysis_runtime: typing.Any | None
-    rule_scope_service: typing.Any | None
+    execution_scope_service: typing.Any | None
     native_preanalysis_key_provider: typing.Callable[[int], NativePreanalysisKey]
     event_emitter: typing.Any | None = None
     current_mba_identity_index_builder: typing.Callable[..., object | None] | None = (
@@ -411,9 +409,9 @@ class DecompilationLifecycleCoordinator:
                     "analysis runtime session reset failed for func=0x%x",
                     function_ea,
                 )
-        if self.rule_scope_service is not None:
+        if self.execution_scope_service is not None:
             try:
-                self.rule_scope_service.clear_hint_state(function_ea)
+                self.execution_scope_service.clear_hint_state(function_ea)
             except Exception:
                 logger.exception(
                     "rule-scope hint reset failed for func=0x%x",
@@ -929,11 +927,11 @@ class DecompilationLifecycleCoordinator:
         except Exception:
             logger.exception("analysis failed for func=0x%x", function_ea)
             return
-        if hints is None or self.rule_scope_service is None:
+        if hints is None or self.execution_scope_service is None:
             return
         try:
-            apply_result = self.rule_scope_service.apply_hints(hints)
-            self.analysis_runtime.record_rule_scope_outcome(
+            apply_result = self.execution_scope_service.apply_hints(hints)
+            self.analysis_runtime.record_execution_scope_outcome(
                 func_ea=function_ea,
                 hints=hints,
                 apply_result=apply_result,

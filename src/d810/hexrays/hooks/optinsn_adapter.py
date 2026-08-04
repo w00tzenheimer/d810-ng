@@ -12,7 +12,7 @@ from d810.hexrays.hooks.optimization_suppression import (
 from d810.core import getLogger, typing
 from d810.core.cymode import CythonMode
 from d810.core.decompilation_session import DecompilationEvent
-from d810.core.rule_scope import PIPELINE_INSTRUCTION
+from d810.core.execution_scope import ExecutionPipeline
 from d810.errors import D810Exception
 from d810.hexrays.hooks.callback_mutation_diagnostics import (
     LiveNopSite,
@@ -158,10 +158,10 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         self.current_blk_serial = None
         self.generate_z3_code = False
         self.dump_intermediate_microcode = False
-        self._rule_scope_service = None
-        self._rule_scope_project_name = ""
-        self._rule_scope_idb_key = ""
-        self._rule_scope_func_ea = -1
+        self._execution_scope_service = None
+        self._execution_scope_project_name = ""
+        self._execution_scope_idb_key = ""
+        self._execution_scope_func_ea = -1
         self._active_instruction_rule_names_by_maturity: dict[int, frozenset[str]] = {}
         self._run_later_scheduler = None
         self._run_later_rule_names: frozenset[str] = frozenset()
@@ -381,7 +381,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         request_method = getattr(scheduler, "request", None)
         if not callable(request_method):
             return
-        func_ea = int(self._rule_scope_func_ea)
+        func_ea = int(self._execution_scope_func_ea)
         if func_ea <= 0:
             return
         for request in requests:
@@ -827,9 +827,9 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         self, generate_z3_code=False, dump_intermediate_microcode=False, **kwargs
     ):
         old_scope = (
-            self._rule_scope_service,
-            self._rule_scope_project_name,
-            self._rule_scope_idb_key,
+            self._execution_scope_service,
+            self._execution_scope_project_name,
+            self._execution_scope_idb_key,
         )
         self.generate_z3_code = generate_z3_code
         self.dump_intermediate_microcode = dump_intermediate_microcode
@@ -845,23 +845,25 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             "pass_scheduler",
             self._run_later_scheduler,
         )
-        self._rule_scope_service = kwargs.get(
-            "rule_scope_service",
-            self._rule_scope_service,
+        self._execution_scope_service = kwargs.get(
+            "execution_scope_service",
+            self._execution_scope_service,
         )
-        self._rule_scope_project_name = str(
-            kwargs.get("rule_scope_project_name", self._rule_scope_project_name)
+        self._execution_scope_project_name = str(
+            kwargs.get(
+                "execution_scope_project_name", self._execution_scope_project_name
+            )
         )
-        self._rule_scope_idb_key = str(
-            kwargs.get("rule_scope_idb_key", self._rule_scope_idb_key)
+        self._execution_scope_idb_key = str(
+            kwargs.get("execution_scope_idb_key", self._execution_scope_idb_key)
         )
         new_scope = (
-            self._rule_scope_service,
-            self._rule_scope_project_name,
-            self._rule_scope_idb_key,
+            self._execution_scope_service,
+            self._execution_scope_project_name,
+            self._execution_scope_idb_key,
         )
         if new_scope != old_scope:
-            self._rule_scope_func_ea = -1
+            self._execution_scope_func_ea = -1
             self._active_instruction_rule_names_by_maturity.clear()
             # Invalidate compiled rule views on scope change (PR3)
             for optimizer in self.instruction_optimizers:
@@ -884,12 +886,12 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         self,
         blk: ida_hexrays.mblock_t,
     ) -> frozenset[str]:
-        if self._rule_scope_service is None:
-            # FAIL CLOSED: If rule scope service not initialized, run NO rules
+        if self._execution_scope_service is None:
+            # FAIL CLOSED: If execution scope service not initialized, run NO rules
             # instead of ALL rules. This prevents expression bloat when optimizer
             # callbacks fire before configure() is called.
             optimizer_logger.warning(
-                "Rule scope service not initialized at optimize time - no rules will run. "
+                "Execution scope service not initialized at optimize time - no rules will run. "
                 "This may indicate a race condition during initialization."
             )
             return frozenset()
@@ -899,21 +901,21 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             return frozenset()
         func_ea = int(blk.mba.entry_ea)
         maturity = int(self.current_maturity)
-        if func_ea != self._rule_scope_func_ea:
-            self._rule_scope_func_ea = func_ea
+        if func_ea != self._execution_scope_func_ea:
+            self._execution_scope_func_ea = func_ea
             self._active_instruction_rule_names_by_maturity.clear()
         cached = self._active_instruction_rule_names_by_maturity.get(maturity)
         if cached is not None:
             return cached
-        active_rules = self._rule_scope_service.get_active_rules(
-            project_name=self._rule_scope_project_name,
-            idb_key=self._rule_scope_idb_key,
+        active_stages = self._execution_scope_service.active_stages(
+            project_name=self._execution_scope_project_name,
+            idb_key=self._execution_scope_idb_key,
             func_ea=func_ea,
-            pipeline=PIPELINE_INSTRUCTION,
+            pipeline=ExecutionPipeline.INSTRUCTION,
             maturity=maturity,
         )
         names = (
-            frozenset(self._rule_name(rule) for rule in active_rules)
+            frozenset(self._rule_name(stage.implementation) for stage in active_stages)
             | self._run_later_rule_names
         )
         self._active_instruction_rule_names_by_maturity[maturity] = names

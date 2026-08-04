@@ -58,7 +58,7 @@ def _snapshot() -> object:
         selection_mode="recon",
         confidence=0.91,
         recommended_inferences=("unflattening",),
-        suppressed_rules=("UnsafeRule",),
+        suppressed_stages=("unsafe-stage",),
         candidate_kinds=("flattened_switch",),
     )
     diagnostic = models.WorkbenchDiagnostic(
@@ -82,34 +82,32 @@ def _snapshot() -> object:
     )
     consumer = models.ConsumerOutcomeSnapshot(
         phase="supporting",
-        consumer_name="rule_scope",
+        consumer_name="execution_scope",
         status=models.OutcomeStatus.CHANGED,
         detail="inference applied",
         provenance_json=None,
     )
-    rule_scope = models.RuleScopeSummary(
-        public_operations=("constant-simplification",),
+    execution_scope = models.ExecutionScopeSummary(
+        public_passes=("constant-simplification",),
         function_tags=("hard",),
         inference_names=("unflattening",),
         decisions=(
-            models.EffectiveRuleDecisionSummary(
+            models.EffectiveStageDecisionSummary(
+                "constant-simplification",
+                "fold-constant-subtree",
                 "instruction",
-                "ConstantSubtreeFoldRule",
                 (1,),
                 True,
                 "active",
                 "passed all scope gates",
             ),
         ),
-        unknown_rule_names=(),
+        unknown_targets=(),
     )
     statistics = models.StatisticsSummary(
-        optimizer_matches=(models.CountEntry("PatternOptimizer", 2),),
-        rule_matches=(models.CountEntry("FunctionRule", 1),),
-        cfg_patches=(models.PatchCountEntry("CfgRule", 1, 3),),
-        total_rule_firings=1,
-        cycles_detected=(),
-        total_cycles_detected=0,
+        stage_matches=(models.CountEntry("constant-simplification/fold-constant-subtree", 1),),
+        total_stage_firings=1,
+        stage_patches=(models.PatchCountEntry("jump-fixer/jump-fixer", 1, 3),),
     )
     baseline = models.BaselineRef(
         available=False,
@@ -136,7 +134,7 @@ def _snapshot() -> object:
         attack=attack,
         pipeline=(stage,),
         consumers=(consumer,),
-        rule_scope=rule_scope,
+        execution_scope=execution_scope,
         statistics=statistics,
         baseline=baseline,
         latest_output=output,
@@ -155,8 +153,8 @@ def test_workbench_snapshot_is_deeply_immutable_and_slotted() -> None:
     assert isinstance(snapshot.pipeline, tuple)
     assert isinstance(snapshot.pipeline[0].diagnostics, tuple)
     assert isinstance(snapshot.consumers, tuple)
-    assert isinstance(snapshot.rule_scope.function_tags, tuple)
-    assert isinstance(snapshot.statistics.optimizer_matches, tuple)
+    assert isinstance(snapshot.execution_scope.function_tags, tuple)
+    assert isinstance(snapshot.statistics.stage_matches, tuple)
     assert isinstance(snapshot.artifacts, tuple)
     assert isinstance(snapshot.collection_errors, tuple)
 
@@ -177,10 +175,10 @@ def test_every_nested_record_is_frozen_and_slotted() -> None:
         snapshot.pipeline[0],
         snapshot.pipeline[0].diagnostics[0],
         snapshot.consumers[0],
-        snapshot.rule_scope,
+        snapshot.execution_scope,
         snapshot.statistics,
-        snapshot.statistics.optimizer_matches[0],
-        snapshot.statistics.cfg_patches[0],
+        snapshot.statistics.stage_matches[0],
+        snapshot.statistics.stage_patches[0],
         snapshot.baseline,
         snapshot.latest_output,
         snapshot.artifacts[0],

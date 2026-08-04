@@ -74,7 +74,7 @@ def derive_flow_context_summary(
         ...     confidence=0.9,
         ...     recommended_inferences=(),
         ...     candidates=(),
-        ...     suppress_rules=(),
+        ...     suppress_stages=(),
         ... )
         >>> summary = derive_flow_context_summary(hints)
         >>> summary.has_flattening_signal
