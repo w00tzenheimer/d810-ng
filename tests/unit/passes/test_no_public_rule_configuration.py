@@ -77,3 +77,13 @@ def test_user_facing_ui_uses_pass_stage_transform_vocabulary() -> None:
     assert "Pass pipeline" in source
     assert "Transform:" in source
     assert "Stage:" in source
+
+
+def test_manager_runtime_has_no_legacy_project_save_command() -> None:
+    paths = (
+        ROOT / "src/d810/manager/state.py",
+        ROOT / "src/d810/manager/project_runtime.py",
+        ROOT / "src/d810/core/project_config_persistence.py",
+    )
+    source = "\n".join(path.read_text(encoding="utf-8") for path in paths)
+    assert "save_legacy_project" not in source
