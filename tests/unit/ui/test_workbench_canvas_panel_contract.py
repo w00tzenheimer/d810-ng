@@ -10,6 +10,7 @@ from d810.ui.workbench_canvas_models import (
     CanvasMaturity,
     CanvasNode,
     CanvasPort,
+    CanvasSubgraph,
     MaturityCanvasProjection,
 )
 
@@ -113,6 +114,9 @@ def test_renderer_draws_projection_as_one_vertical_read_only_workspace() -> None
     assert "_layout_projection(projection" in render_source
     assert "layout.stages" in render_source
     assert "layout.edges" in render_source
+    assert "projection.subgraphs" in source
+    assert "subgraph.label" in render_source
+    assert "stage_geometry.subgraphs" in render_source
     assert "adapter" not in render_source
     assert "drag" not in source.lower()
     assert "connect_nodes" not in source
@@ -171,6 +175,60 @@ def test_nine_node_stage_expands_to_contain_every_node() -> None:
         and node.x + node.width <= stage_geometry.x + stage_geometry.width
         for node in stage_geometry.nodes
     )
+
+
+def test_projection_defaults_keep_existing_direct_canvas_fixtures_compatible() -> None:
+    stage = CanvasMaturity("any", "Any maturity", -1)
+    projection = MaturityCanvasProjection(
+        maturities=(stage,),
+        nodes=(_node("node", stage),),
+        edges=(),
+        diagnostics=(),
+    )
+
+    assert projection.subgraphs == ()
+    assert projection.nodes[0].workflow_stage_id == ""
+    assert projection.nodes[0].workflow_stage_label == ""
+
+
+def test_renderer_lays_out_projected_strategy_subgraphs_in_declared_order() -> None:
+    renderer_module = importlib.import_module("d810.ui.workbench_canvas_renderer")
+    stage = CanvasMaturity("ir.local.optimized", "Local", 1)
+    analysis = _node("analysis", stage)
+    transform = _node("transform", stage)
+    projection = MaturityCanvasProjection(
+        maturities=(stage,),
+        nodes=(analysis, transform),
+        edges=(),
+        diagnostics=(),
+        subgraphs=(
+            CanvasSubgraph(
+                "ir.local.optimized:canonical_analysis",
+                "ir.local.optimized",
+                "canonical_analysis",
+                "Canonical analysis",
+                ("analysis",),
+            ),
+            CanvasSubgraph(
+                "ir.local.optimized:canonical_transform",
+                "ir.local.optimized",
+                "canonical_transform",
+                "Canonical transform",
+                ("transform",),
+            ),
+        ),
+    )
+
+    layout = renderer_module._layout_projection(projection, ())
+    subgraphs = layout.stages[0].subgraphs
+
+    assert [group.subgraph.label for group in subgraphs] == [
+        "Canonical analysis",
+        "Canonical transform",
+    ]
+    assert subgraphs[0].nodes[0].node.node_id == "analysis"
+    assert subgraphs[1].nodes[0].node.node_id == "transform"
+    assert subgraphs[0].y < subgraphs[1].y
 
 
 def test_renderer_binds_only_selection_and_recipe_intents() -> None:

@@ -17,8 +17,10 @@ from d810.ui.workbench_canvas_models import (
     CanvasMaturity,
     CanvasNode,
     CanvasPort,
+    CanvasSubgraph,
     MaturityCanvasProjection,
 )
+from d810.ui.workbench_recipe_logic import workflow_stage_label
 
 
 def _maturity(stage_id: str) -> CanvasMaturity:
@@ -166,6 +168,36 @@ def _overlay_case_evidence(node: CanvasNode, case: object | None) -> CanvasNode:
     return dataclasses.replace(node, state=state, detail="\n".join(detail_lines))
 
 
+def _subgraphs(
+    nodes: tuple[CanvasNode, ...],
+) -> tuple[CanvasSubgraph, ...]:
+    """Group projected nodes without changing their recipes, edges, or order."""
+    memberships: dict[tuple[str, str], list[str]] = {}
+    labels: dict[tuple[str, str], str] = {}
+    ordering: dict[tuple[str, str], tuple[int, int, str]] = {}
+    for node_order, node in enumerate(nodes):
+        key = (node.maturity.stage_id, node.workflow_stage_id)
+        memberships.setdefault(key, []).append(node.node_id)
+        labels.setdefault(key, node.workflow_stage_label)
+        ordering.setdefault(
+            key,
+            (node.maturity.ordinal, node_order, node.workflow_stage_id),
+        )
+    return tuple(
+        CanvasSubgraph(
+            group_id=f"{maturity_id}:{strategy_stage_id}",
+            maturity_id=maturity_id,
+            strategy_stage_id=strategy_stage_id,
+            label=labels[(maturity_id, strategy_stage_id)],
+            node_ids=tuple(node_ids),
+        )
+        for (maturity_id, strategy_stage_id), node_ids in sorted(
+            memberships.items(),
+            key=lambda item: ordering[item[0]],
+        )
+    )
+
+
 def project_maturity_canvas(
     draft: PipelineRecipeDraft,
     catalog: tuple[PassCatalogEntry, ...],
@@ -184,12 +216,16 @@ def project_maturity_canvas(
             inputs, outputs = (_artifact_port("pipeline", "pipeline", "input"),), ()
             label = item.pass_id
             detail = f"Pass {item.pass_id!r} is not in the current catalog."
+            workflow_stage_id = "unknown"
+            workflow_label = "Unknown workflow stage"
             diagnostics.append(f"unknown pass: {item.pass_id}")
         else:
             maturity = _maturity(entry.maturity)
             inputs, outputs = _contract_ports(entry)
             label = entry.display_name
             detail = entry.contract_json
+            workflow_stage_id = entry.workflow_stage.value
+            workflow_label = workflow_stage_label(entry.workflow_stage)
         node_messages = list(validation_messages.get(ordinal, ()))
         if maturity.stage_id != "any" and maturity.ordinal == 99:
             node_messages.append(f"unknown maturity: {maturity.stage_id}")
@@ -211,6 +247,8 @@ def project_maturity_canvas(
                         else ("blocked" if node_messages else "ready")
                     ),
                     detail=detail,
+                    workflow_stage_id=workflow_stage_id,
+                    workflow_stage_label=workflow_label,
                 ),
             )
         )
@@ -253,6 +291,8 @@ def project_maturity_canvas(
                         ),
                         state="carried",
                         detail=f"Carried from {source.maturity.stage_id}.",
+                        workflow_stage_id="carried-artifacts",
+                        workflow_stage_label="Carried artifacts",
                     )
                     carried.append(carrier)
                     edges.extend(
@@ -316,6 +356,7 @@ def project_maturity_canvas(
         nodes=tuple(node for _, node in prepared) + tuple(carried),
         edges=tuple(edges),
         diagnostics=tuple(dict.fromkeys(diagnostics)),
+        subgraphs=_subgraphs(tuple(node for _, node in prepared) + tuple(carried)),
     )
 
 

@@ -9,6 +9,7 @@ from d810.core.deobfuscation_case import (
     CaseVerdict,
     DeobfuscationCaseEvidence,
     DeobfuscationCaseSnapshot,
+    StrategyWorkflowStage,
 )
 from d810.manager.workbench_recipe_models import (
     PassCatalogEntry,
@@ -29,6 +30,7 @@ def _entry(
     *,
     requires: dict[str, object] | None = None,
     outputs: dict[str, object] | None = None,
+    workflow_stage: StrategyWorkflowStage = StrategyWorkflowStage.CANONICAL_PIPELINE,
 ) -> PassCatalogEntry:
     return PassCatalogEntry(
         pass_id=pass_id,
@@ -54,6 +56,7 @@ def _entry(
         transform_ids=(),
         stage_ids=(),
         configured=True,
+        workflow_stage=workflow_stage,
     )
 
 
@@ -274,7 +277,7 @@ def test_projection_accepts_actual_recipe_service_portable_maturity_values() -> 
         source_path="/source.json",
         runtime_path="/runtime.json",
         configs=(
-            PipelineConfig(pass_id="jump-fixer", options={"legacy_rule": "JumpFixer"}),
+            PipelineConfig(pass_id="jump-fixer"),
             PipelineConfig(pass_id="recover_dispatcher"),
         ),
     )
@@ -349,3 +352,68 @@ def test_case_evidence_marks_only_the_exact_producer_and_blocked_consumer() -> N
     assert nodes["item-consumer"].state == "blocked"
     assert blocked_obligation in nodes["item-consumer"].detail
     assert nodes["item-unrelated"].state == "ready"
+
+
+def test_projection_groups_nodes_by_display_only_strategy_stage_within_maturity() -> None:
+    draft = _draft(
+        RecipePass("recover", "recover-dispatcher", True, "{}"),
+        RecipePass("lower", "lower-state-machine", True, "{}"),
+    )
+    catalog = (
+        _entry(
+            "recover-dispatcher",
+            "ir.local.optimized",
+            workflow_stage=StrategyWorkflowStage.CANONICAL_ANALYSIS,
+        ),
+        _entry(
+            "lower-state-machine",
+            "ir.local.optimized",
+            workflow_stage=StrategyWorkflowStage.CANONICAL_TRANSFORM,
+        ),
+    )
+
+    view = project_maturity_canvas(draft, catalog, _validation(), case=None)
+
+    assert [
+        (group.maturity_id, group.strategy_stage_id, group.node_ids)
+        for group in view.subgraphs
+    ] == [
+        ("ir.local.optimized", "canonical_analysis", ("recover",)),
+        ("ir.local.optimized", "canonical_transform", ("lower",)),
+    ]
+    assert view.nodes[0].workflow_stage_label == "Canonical analysis"
+    assert view.edges == ()
+    assert view.diagnostics == ()
+
+
+def test_carried_artifacts_are_grouped_as_explanatory_nodes() -> None:
+    draft = _draft(
+        RecipePass("producer", "producer", True, "{}"),
+        RecipePass("consumer", "consumer", True, "{}"),
+    )
+    catalog = (
+        _entry(
+            "producer",
+            "ir.canonical",
+            outputs={"facts": ["state"], "evidence": []},
+        ),
+        _entry(
+            "consumer",
+            "ir.global.analyzed",
+            requires={
+                "capabilities": [],
+                "analyses": [],
+                "evidence": [],
+                "facts": {"required": ["state"], "optional": []},
+            },
+        ),
+    )
+
+    view = project_maturity_canvas(draft, catalog, _validation(), case=None)
+
+    assert any(
+        group.strategy_stage_id == "carried-artifacts"
+        and group.label == "Carried artifacts"
+        and group.node_ids == ("carry:producer:fact:state:ir.global.analyzed",)
+        for group in view.subgraphs
+    )
