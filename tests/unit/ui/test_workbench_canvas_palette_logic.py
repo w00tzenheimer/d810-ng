@@ -100,6 +100,15 @@ def test_palette_filters_display_name_pass_id_stage_and_contract_case_insensitiv
     ] == ["recover-dispatcher"]
     assert [
         row.pass_id
+        for row in project_canvas_add_palette(
+            catalog,
+            stage,
+            draft,
+            "RECOVER-DISPATCHER",
+        )
+    ] == ["recover-dispatcher"]
+    assert [
+        row.pass_id
         for row in project_canvas_add_palette(catalog, stage, draft, "canonical analysis")
     ] == ["recover-dispatcher"]
     assert [
