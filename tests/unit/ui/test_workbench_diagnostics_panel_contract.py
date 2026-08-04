@@ -6,6 +6,13 @@ import sys
 import types
 from pathlib import Path
 
+from d810.diagnostics.workbench_models import (
+    DiagnosticField,
+    DiagnosticRecord,
+    DiagnosticViewKind,
+)
+from d810.ui.workbench_diagnostics_logic import project_record_rows
+
 
 PANEL = (
     Path(__file__).resolve().parents[3]
@@ -188,7 +195,9 @@ def test_panel_publishes_graph_context_without_projecting_or_refiltering_it() ->
     assert "_publish_graph_context" not in refilter_source
 
 
-def test_panel_exposes_case_timeline_canary_comparison_and_protects_baseline_cleanup() -> None:
+def test_panel_exposes_case_timeline_canary_comparison_and_protects_baseline_cleanup() -> (
+    None
+):
     source = PANEL.read_text(encoding="utf-8")
     load_source = _method_source("_load_records")
     cleanup_source = _method_source("_plan_cleanup")
@@ -198,6 +207,42 @@ def test_panel_exposes_case_timeline_canary_comparison_and_protects_baseline_cle
     assert "case_summary" in source
     assert "project_case_timeline" in load_source
     assert "filter_cleanup_candidate_paths" in cleanup_source
+
+
+def test_case_record_opening_matches_both_stable_identity_and_ea_anchor() -> None:
+    panel_module = importlib.import_module("d810.ui.workbench_diagnostics_panel")
+    row_index = getattr(panel_module, "_case_record_row_index", None)
+    assert callable(row_index), "case record selection must be headless-testable"
+    rows = project_record_rows(
+        (
+            DiagnosticRecord(
+                kind=DiagnosticViewKind.FACTS,
+                source_table="deobfuscation_case",
+                snapshot_id=7,
+                ordinal=0,
+                fields=(
+                    DiagnosticField(
+                        "finding",
+                        "ir.branch_target:0x401020",
+                        "ir.branch_target:0x401020",
+                    ),
+                ),
+                warnings=(),
+                anchor_ea=0x401020,
+            ),
+        )
+    )
+
+    assert row_index(rows, "ir.branch_target:0x401020", 0x401020) == 0
+    assert row_index(rows, "ir.branch_target:0x401020", 0x401021) is None
+    assert row_index(rows, "different:0x401020", 0x401020) is None
+
+    open_source = _method_source("open_case_record")
+    select_source = _method_source("_select_pending_case_record")
+    assert "self._pending_case_record" in open_source
+    assert 'findData("case")' in open_source
+    assert "_case_record_row_index" in select_source
+    assert "self.record_tree.setCurrentIndex" in select_source
 
 
 def test_panel_exposes_a_persisted_diagnostics_capture_action_and_state() -> None:

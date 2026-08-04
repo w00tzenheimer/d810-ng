@@ -208,7 +208,14 @@ def test_panel_reprojects_after_adapter_owned_add_and_edit_then_reuses_save() ->
     assert "self._adapter.save_function" in save_source
     assert "self._render_projection" in add_source
     assert "self._render_projection" in edit_source
-    for forbidden in ("sqlite3", "ida_bytes", "ida_funcs", "open("):
+    for forbidden in (
+        "sqlite3",
+        "ida_bytes",
+        "ida_funcs",
+        "open(",
+        "set_workbench_function_recipe",
+        "FunctionPipelineOverride",
+    ):
         assert forbidden not in source
 
 
@@ -221,3 +228,28 @@ def test_selected_node_inspector_includes_contract_options_prerequisites_and_evi
     assert "Options" in source
     assert "Prerequisites" in source
     assert "Evidence references" in source
+
+
+def test_selected_evidence_node_delegates_opening_without_owning_diagnostics() -> None:
+    panel_source = PANEL.read_text(encoding="utf-8")
+    init_source = _method_source(PANEL, "WorkbenchCanvasPanel", "__init__")
+    select_source = _method_source(PANEL, "WorkbenchCanvasPanel", "_select_node")
+    open_source = _method_source(
+        PANEL,
+        "WorkbenchCanvasPanel",
+        "_open_selected_diagnostic",
+    )
+
+    assert "open_diagnostic_record" in init_source
+    assert "Open linked diagnostic" in init_source
+    assert "linked_case_findings" in select_source
+    assert "self._selected_finding" in select_source
+    assert "self._open_diagnostic_record" in open_source
+    assert "finding.finding_id" in open_source
+    assert "finding.native_ea" in open_source
+    for forbidden in (
+        "sqlite3",
+        "WorkbenchDiagnosticsPanel",
+        "WorkbenchDiagnosticsAdapter",
+    ):
+        assert forbidden not in panel_source

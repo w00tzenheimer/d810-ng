@@ -513,11 +513,27 @@ if IDA_AVAILABLE:
                     adapter,
                     snapshot,
                     refresh_workbench=self.refresh,
+                    open_diagnostic_record=self._open_diagnostic_record,
                 )
                 self._build_canvas_panel = panel
             else:
                 panel.set_session(adapter, snapshot)
             panel.show()
+
+        def _open_diagnostic_record(self, finding_id: str, native_ea: int) -> None:
+            """Open the existing Explorer and select one anchored case record."""
+            from d810.ui.workbench_diagnostics_commands import (
+                WorkbenchDiagnosticsAdapter,
+            )
+
+            adapter = WorkbenchDiagnosticsAdapter(
+                self._state,
+                navigate=ida_kernwin.jumpto,
+            )
+            self._show_diagnostics(adapter)
+            panel = self._diagnostics_panel
+            if panel is not None:
+                panel.open_case_record(finding_id, native_ea)
 
         def _run_diagnostics(self, checked: bool = False) -> None:
             del checked
@@ -663,9 +679,7 @@ if IDA_AVAILABLE:
                 widget = self.case_stage_widgets.get(stage.stage_id)
                 if widget is None:
                     continue
-                widget.setText(
-                    f"{stage.label}\n{stage.status.value.replace('_', ' ')}"
-                )
+                widget.setText(f"{stage.label}\n{stage.status.value.replace('_', ' ')}")
                 widget.setToolTip(stage.detail)
 
         def _render_context(self) -> None:
