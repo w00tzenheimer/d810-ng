@@ -29,6 +29,7 @@ from d810.passes.pass_pipeline import (
     no_caps,
 )
 from d810.passes.registry import PassRegistry
+from d810.passes.execution_stages import ExecutionPipeline, ExecutionStageDescriptor
 from d810.passes.state_machine_options import (
     StateMachineCffOptions,
     state_machine_cff_options_from_config,
@@ -258,7 +259,14 @@ def register_state_machine_passes(registry: PassRegistry) -> PassRegistry:
                     "min_state_constant": StateMachineCffOptions().min_state_constant
                 },
             ),
-            transforms=(spec.pass_factory.__name__,),
+            stages=(
+                ExecutionStageDescriptor(
+                    spec.pass_id,
+                    spec.pass_id,
+                    ExecutionPipeline.FLOW,
+                    spec.pass_factory.__name__,
+                ),
+            ),
         )
     return registry
 

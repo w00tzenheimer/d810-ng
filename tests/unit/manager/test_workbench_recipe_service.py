@@ -77,7 +77,7 @@ def test_catalog_is_sorted_but_draft_keeps_effective_execution_order() -> None:
     )
     assert next(
         entry for entry in catalog if entry.pass_id == "jump-fixer"
-    ).transforms == ("JumpFixer",)
+    ).stage_ids == ("jump-fixer",)
     assert (
         next(
             entry for entry in catalog if entry.pass_id == "recover_dispatcher"

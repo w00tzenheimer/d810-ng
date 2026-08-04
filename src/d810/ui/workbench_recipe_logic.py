@@ -53,7 +53,7 @@ class RecipeCatalogRow:
     workflow_stage_label: str
     summary: str
     detail: str
-    transform_children: tuple[str, ...]
+    stage_children: tuple[str, ...]
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -276,7 +276,7 @@ def project_catalog_rows(
                 entry.safety_policy,
                 entry.workflow_stage.value,
                 *entry.owned_rules,
-                *entry.transforms,
+                *entry.stage_ids,
             )
         ).casefold()
     )
@@ -310,7 +310,7 @@ def project_catalog_rows(
                 f"options: {entry.option_template_json}\n"
                 f"contract: {entry.contract_json}"
             ),
-            transform_children=entry.transforms,
+            stage_children=entry.stage_ids,
         )
         for entry in ordered
     )

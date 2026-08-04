@@ -15,6 +15,7 @@ from d810.passes.pass_pipeline import (
     PassResult,
 )
 from d810.passes.registry import PassRegistry
+from d810.passes.execution_stages import ExecutionPipeline, ExecutionStageDescriptor
 
 CLEANUP_FAMILY_ADAPTER_CAPABILITY = "cleanup_family_adapter"
 SIMPLE_FLATTENING_CLEANUP_PASS_ID = "simple-flattening-cleanup-unflattener"
@@ -113,7 +114,14 @@ def register_cleanup_family_adapter_passes(registry: PassRegistry) -> PassRegist
             workflow_stage=StrategyWorkflowStage.CANONICAL_TRANSFORM,
             options={"legacy_rule": SIMPLE_FLATTENING_CLEANUP_RULE},
         ),
-        transforms=(SIMPLE_FLATTENING_CLEANUP_RULE,),
+        stages=(
+            ExecutionStageDescriptor(
+                SIMPLE_FLATTENING_CLEANUP_PASS_ID,
+                SIMPLE_FLATTENING_CLEANUP_PASS_ID,
+                ExecutionPipeline.FLOW,
+                SIMPLE_FLATTENING_CLEANUP_RULE,
+            ),
+        ),
     )
     return registry
 

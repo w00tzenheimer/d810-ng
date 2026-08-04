@@ -124,7 +124,7 @@ def test_operational_registry_builds_public_constant_simplification_bundle():
     assert "forward-constant-propagation" not in registry.public_pass_ids()
 
 
-def test_operational_registry_catalog_templates_all_build_and_explain_transforms():
+def test_operational_registry_catalog_templates_all_build_and_explain_stages():
     registry = operational_config_v2_pass_registry()
 
     assert registry.registered_pass_ids() == tuple(
@@ -136,8 +136,12 @@ def test_operational_registry_catalog_templates_all_build_and_explain_transforms
     )
 
     assert tuple(spec.pass_id for spec in specs) == registry.registered_pass_ids()
-    assert registry.transforms_for("jump-fixer") == ("JumpFixer",)
-    assert registry.transforms_for("recover_dispatcher") == ("RecoverDispatcher",)
+    assert tuple(stage.stage_id for stage in registry.stages_for("jump-fixer")) == (
+        "jump-fixer",
+    )
+    assert tuple(
+        stage.stage_id for stage in registry.stages_for("recover_dispatcher")
+    ) == ("recover_dispatcher",)
     assert (
         registry.config_template_for("simple-flattening-cleanup-unflattener").options[
             "legacy_rule"

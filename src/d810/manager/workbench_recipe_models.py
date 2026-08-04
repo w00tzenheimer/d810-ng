@@ -19,7 +19,7 @@ class PassCatalogEntry:
     backend_route: str
     safety_policy: str
     owned_rules: tuple[str, ...]
-    transforms: tuple[str, ...]
+    stage_ids: tuple[str, ...]
     configured: bool
     workflow_stage: StrategyWorkflowStage = StrategyWorkflowStage.CANONICAL_PIPELINE
 

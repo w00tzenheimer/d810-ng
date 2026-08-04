@@ -14,6 +14,7 @@ from d810.passes.pass_pipeline import (
     PassResult,
 )
 from d810.passes.registry import PassRegistry
+from d810.passes.execution_stages import ExecutionPipeline, ExecutionStageDescriptor
 
 CONSTANT_SIMPLIFICATION_PASS_ID = "constant-simplification"
 STRICT_MEMORY_POLICY = "strict"
@@ -144,10 +145,25 @@ def register_constant_simplification_pass(registry: PassRegistry) -> PassRegistr
                 "allow_executable_readonly": False,
             },
         ),
-        transforms=(
-            "FoldReadonlyDataRule",
-            "ConstantSubtreeFoldRule",
-            "ForwardConstantPropagationRule",
+        stages=(
+            ExecutionStageDescriptor(
+                CONSTANT_SIMPLIFICATION_PASS_ID,
+                "fold-readonly-data",
+                ExecutionPipeline.INSTRUCTION,
+                "FoldReadonlyDataRule",
+            ),
+            ExecutionStageDescriptor(
+                CONSTANT_SIMPLIFICATION_PASS_ID,
+                "fold-constant-subtree",
+                ExecutionPipeline.INSTRUCTION,
+                "ConstantSubtreeFoldRule",
+            ),
+            ExecutionStageDescriptor(
+                CONSTANT_SIMPLIFICATION_PASS_ID,
+                "forward-constants",
+                ExecutionPipeline.FLOW,
+                "ForwardConstantPropagationRule",
+            ),
         ),
     )
     return registry

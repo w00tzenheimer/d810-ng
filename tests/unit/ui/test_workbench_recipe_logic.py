@@ -106,7 +106,7 @@ def test_catalog_filter_and_sort_do_not_change_draft_execution_order() -> None:
     draft_rows = logic.project_draft_rows(_draft(), _validation())
 
     assert [row.pass_id for row in catalog_rows] == ["z-pass"]
-    assert catalog_rows[0].transform_children == ("TransformZ",)
+    assert catalog_rows[0].stage_children == ("TransformZ",)
     assert [row.pass_id for row in logic.project_catalog_rows(_catalog())] == [
         "a-pass",
         "z-pass",

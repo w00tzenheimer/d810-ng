@@ -15,6 +15,7 @@ from d810.passes.pass_pipeline import (
     PassResult,
 )
 from d810.passes.registry import PassRegistry
+from d810.passes.execution_stages import ExecutionPipeline, ExecutionStageDescriptor
 
 LEGACY_FLOW_RULE_ADAPTER_CAPABILITY = "legacy_flow_rule_adapter"
 
@@ -131,7 +132,14 @@ def register_legacy_flow_rule_passes(registry: PassRegistry) -> PassRegistry:
                 workflow_stage=_WORKFLOW_STAGE_BY_PASS_ID[pass_id],
                 options={"legacy_rule": legacy_rule},
             ),
-            transforms=(legacy_rule,),
+            stages=(
+                ExecutionStageDescriptor(
+                    pass_id,
+                    pass_id,
+                    ExecutionPipeline.FLOW,
+                    legacy_rule,
+                ),
+            ),
             public=pass_id != "forward-constant-propagation",
         )
     return registry

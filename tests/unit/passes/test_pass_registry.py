@@ -11,6 +11,7 @@ from d810.families.state_machine_cff.pipeline import (
 )
 from d810.passes.pass_pipeline import PipelineConfig, PassResult
 from d810.passes import pass_pipeline as pp
+from d810.passes.execution_stages import ExecutionPipeline, ExecutionStageDescriptor
 from d810.passes.registry import (
     DuplicatePassIdError,
     PassRegistry,
@@ -215,7 +216,14 @@ def test_registry_exposes_deterministic_read_only_catalog_metadata():
         "zeta",
         lambda config: _FakePass(),
         config_template=template,
-        transforms=("ZetaTransform",),
+        stages=(
+            ExecutionStageDescriptor(
+                pass_id="zeta",
+                stage_id="zeta",
+                pipeline=ExecutionPipeline.FLOW,
+                implementation_name="ZetaTransform",
+            ),
+        ),
     )
     registry.register(
         "alpha",
@@ -225,7 +233,7 @@ def test_registry_exposes_deterministic_read_only_catalog_metadata():
 
     assert registry.registered_pass_ids() == ("alpha", "zeta")
     assert registry.config_template_for("zeta") is template
-    assert registry.transforms_for("zeta") == ("ZetaTransform",)
+    assert tuple(stage.stage_id for stage in registry.stages_for("zeta")) == ("zeta",)
     assert registry.is_configured("zeta") is True
     assert registry.is_configured("alpha") is False
     with pytest.raises(TypeError):

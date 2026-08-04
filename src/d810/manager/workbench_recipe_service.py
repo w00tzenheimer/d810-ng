@@ -115,7 +115,9 @@ class RecipeService:
                     backend_route=config.backend_route.value,
                     safety_policy=config.safety_policy.name,
                     owned_rules=_owned_rules(config),
-                    transforms=self._registry.transforms_for(pass_id),
+                    stage_ids=tuple(
+                        stage.stage_id for stage in self._registry.stages_for(pass_id)
+                    ),
                     configured=self._registry.is_configured(pass_id),
                     workflow_stage=config.workflow_stage,
                 )

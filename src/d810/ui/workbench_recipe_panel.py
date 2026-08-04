@@ -297,10 +297,10 @@ if IDA_AVAILABLE:
                 label.setToolTip(row.detail)
                 summary.setToolTip(row.detail)
                 stage.appendRow([label, summary])
-                for transform in row.transform_children:
-                    child = QtGui.QStandardItem(f"transform: {transform}")
+                for stage_id in row.stage_children:
+                    child = QtGui.QStandardItem(f"stage: {stage_id}")
                     child.setToolTip(
-                        "Explanatory owned transform; add its registered pass instead"
+                        "Private execution stage owned by this registered pass"
                     )
                     label.appendRow([child, QtGui.QStandardItem("explanatory")])
             self.catalog_tree.expandAll()

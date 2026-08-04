@@ -29,7 +29,7 @@ def test_recipe_records_are_frozen_and_keep_ordered_tuple_payloads() -> None:
         backend_route="mutation_backend",
         safety_policy="default",
         owned_rules=(),
-        transforms=("dispatcher recovery",),
+        stage_ids=("recover_dispatcher",),
         configured=False,
     )
     recipe_pass = RecipePass(
@@ -51,7 +51,7 @@ def test_recipe_records_are_frozen_and_keep_ordered_tuple_payloads() -> None:
     )
 
     assert draft.passes == (recipe_pass,)
-    assert entry.transforms == ("dispatcher recovery",)
+    assert entry.stage_ids == ("recover_dispatcher",)
     assert entry.workflow_stage is StrategyWorkflowStage.CANONICAL_PIPELINE
     with pytest.raises(dataclasses.FrozenInstanceError):
         draft.revision = 2  # type: ignore[misc]

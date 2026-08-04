@@ -44,7 +44,7 @@ def _entry(
         backend_route="mutation_backend",
         safety_policy="default",
         owned_rules=(),
-        transforms=(),
+        stage_ids=(),
         configured=True,
     )
 

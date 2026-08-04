@@ -98,7 +98,7 @@ def resolve_config_v2_focus_target(
             str(name)
             for name in (
                 *getattr(entry, "owned_rules", ()),
-                *getattr(entry, "transforms", ()),
+                *getattr(entry, "stage_ids", ()),
             )
             if str(name)
         }
