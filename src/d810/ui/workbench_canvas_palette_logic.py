@@ -22,6 +22,27 @@ class CanvasPaletteRow:
     detail: str
 
 
+@dataclasses.dataclass(slots=True)
+class CanvasPaletteSelection:
+    """One-shot selection gate for a single visible palette presentation."""
+
+    _committed: bool = False
+
+    def reset(self) -> None:
+        self._committed = False
+
+    def take(
+        self,
+        rows: tuple[CanvasPaletteRow, ...],
+        row_index: int,
+    ) -> str | None:
+        """Return one visible pass identity, or nothing after it was committed."""
+        if self._committed or not 0 <= row_index < len(rows):
+            return None
+        self._committed = True
+        return rows[row_index].pass_id
+
+
 def _palette_row(entry: PassCatalogEntry) -> CanvasPaletteRow:
     return CanvasPaletteRow(
         pass_id=entry.pass_id,
@@ -54,4 +75,8 @@ def project_canvas_add_palette(
     )
 
 
-__all__ = ["CanvasPaletteRow", "project_canvas_add_palette"]
+__all__ = [
+    "CanvasPaletteRow",
+    "CanvasPaletteSelection",
+    "project_canvas_add_palette",
+]

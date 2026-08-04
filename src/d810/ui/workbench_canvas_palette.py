@@ -8,6 +8,7 @@ from d810.core import typing
 from d810.qt_shim import QT_GRAPHICS_AVAILABLE, QtCore, QtWidgets
 from d810.ui.workbench_canvas_palette_logic import (
     CanvasPaletteRow,
+    CanvasPaletteSelection,
     project_canvas_add_palette,
 )
 
@@ -42,7 +43,10 @@ if IDA_AVAILABLE and QT_GRAPHICS_AVAILABLE:
             self._stage_id = ""
             self._draft: typing.Any = None
             self._visible_rows: tuple[CanvasPaletteRow, ...] = ()
-            self._on_pass_selected = on_pass_selected
+            self._selection = CanvasPaletteSelection()
+            self._on_pass_selected: Callable[[str, str], None] | None = (
+                on_pass_selected
+            )
 
             self.setWindowFlags(_popup_window_flag())
             self.setWindowTitle("Add registered canvas node")
@@ -101,6 +105,7 @@ if IDA_AVAILABLE and QT_GRAPHICS_AVAILABLE:
             self._catalog = tuple(catalog)
             self._stage_id = str(stage_id)
             self._draft = draft
+            self._selection.reset()
             self.search_edit.clear()
             self._render_rows("")
             popup_width = min(max(anchor.width(), 520), 960)
@@ -135,13 +140,25 @@ if IDA_AVAILABLE and QT_GRAPHICS_AVAILABLE:
                 self.results.setCurrentCell(0, 0)
 
         def _select_row(self, row: int, _column: int = 0) -> None:
-            if 0 <= row < len(self._visible_rows):
-                pass_id = self._visible_rows[row].pass_id
-                self.close()
-                self._on_pass_selected(self._stage_id, pass_id)
+            pass_id = self._selection.take(self._visible_rows, row)
+            if pass_id is None:
+                return
+            self.close()
+            callback = self._on_pass_selected
+            if callback is not None:
+                callback(self._stage_id, pass_id)
 
         def _select_current_row(self, *_: typing.Any) -> None:
             self._select_row(self.results.currentRow())
+
+        def dispose(self) -> None:
+            """Release the panel callback before the owning form is destroyed."""
+            self._on_pass_selected = None
+            try:
+                self.close()
+                self.deleteLater()
+            except RuntimeError:
+                pass
 
 
 else:
