@@ -10735,7 +10735,7 @@ class DeferredGraphModifier:
             self._patch_plan_ref_by_bound_serial[int(bound_serial)]
             for bound_serial in bound_serials
         )
-        gateway.begin_patch_realization(attempt, plan_refs=plan_refs)
+        gateway.authorize_patch_block_creation(attempt, plan_refs=plan_refs)
 
     def _bind_patch_block_creation(
         self,

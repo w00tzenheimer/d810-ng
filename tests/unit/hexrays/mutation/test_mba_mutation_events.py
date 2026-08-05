@@ -935,6 +935,91 @@ def test_gateway_reserves_before_sdk_creation_and_binds_exact_returned_block() -
     assert gateway.plan_creation_receipts == (receipt,)
 
 
+def test_gateway_authorizes_one_reserved_creation_from_multi_block_plan() -> None:
+    index = MbaBlockIdentityIndex.from_bindings(
+        session_id="mutation-session",
+        generation=3,
+        bindings=(),
+        native_key=NATIVE_KEY,
+    )
+    gateway = MbaMutationGateway(
+        generation=3,
+        session_id="mutation-session",
+        identity_index=index,
+        native_key=NATIVE_KEY,
+    )
+    attempt = TransactionAttemptId(
+        plan_id="plan-a",
+        session_id=index.session_id,
+        generation=index.generation,
+        attempt_id="attempt-create-many",
+    )
+    first = PlanBlockRef("plan-a", "helper:0")
+    second = PlanBlockRef("plan-a", "helper:1")
+    gateway.begin_batch(
+        StructuralMutationKind.BLOCK_INSERT,
+        serial_quantity=3,
+        transaction_attempt=attempt,
+        patch_plan_refs=(first, second),
+    )
+    gateway.reserve_plan_block(attempt, first)
+    gateway.reserve_plan_block(attempt, second)
+    gateway.begin_patch_realization(attempt, plan_refs=(first, second))
+
+    gateway.authorize_patch_block_creation(attempt, plan_refs=(first,))
+    gateway.authorize_patch_block_creation(attempt, plan_refs=(second,))
+
+
+def test_gateway_rejects_individual_creation_outside_reserved_plan() -> None:
+    index = MbaBlockIdentityIndex.from_bindings(
+        session_id="mutation-session",
+        generation=3,
+        bindings=(),
+        native_key=NATIVE_KEY,
+    )
+    gateway = MbaMutationGateway(
+        generation=3,
+        session_id="mutation-session",
+        identity_index=index,
+        native_key=NATIVE_KEY,
+    )
+    attempt = TransactionAttemptId(
+        plan_id="plan-a",
+        session_id=index.session_id,
+        generation=index.generation,
+        attempt_id="attempt-create-guarded",
+    )
+    plan_ref = PlanBlockRef("plan-a", "helper:0")
+    gateway.begin_batch(
+        StructuralMutationKind.BLOCK_INSERT,
+        serial_quantity=3,
+        transaction_attempt=attempt,
+        patch_plan_refs=(plan_ref,),
+    )
+    gateway.reserve_plan_block(attempt, plan_ref)
+
+    with pytest.raises(RuntimeError, match="requires started realization"):
+        gateway.authorize_patch_block_creation(attempt, plan_refs=(plan_ref,))
+
+    gateway.begin_patch_realization(attempt, plan_refs=(plan_ref,))
+    with pytest.raises(ValueError, match="requires planned block ownership"):
+        gateway.authorize_patch_block_creation(attempt, plan_refs=())
+    with pytest.raises(ValueError, match="duplicate planned blocks"):
+        gateway.authorize_patch_block_creation(
+            attempt,
+            plan_refs=(plan_ref, plan_ref),
+        )
+    with pytest.raises(ValueError, match="ownership differs from its plan"):
+        gateway.authorize_patch_block_creation(
+            attempt,
+            plan_refs=(PlanBlockRef("plan-a", "foreign-helper"),),
+        )
+
+    gateway._cfg_reservations.pop(plan_ref)
+    with pytest.raises(ValueError, match="unreserved plan block"):
+        gateway.authorize_patch_block_creation(attempt, plan_refs=(plan_ref,))
+
+
 def test_patch_attempt_observes_exact_applied_count_before_commit() -> None:
     index = MbaBlockIdentityIndex.from_bindings(
         session_id="mutation-session",
