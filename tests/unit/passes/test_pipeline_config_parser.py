@@ -169,9 +169,7 @@ def test_pipeline_v2_mode_reads_explicit_project_mode(value, expected):
 
 def test_pipeline_v2_mode_rejects_former_shadow_match_boolean():
     with pytest.raises(PipelineConfigError, match="former field"):
-        pipeline_v2_mode_from_project_config(
-            {"require_pipeline_v2_shadow_match": True}
-        )
+        pipeline_v2_mode_from_project_config({"require_pipeline_v2_shadow_match": True})
 
 
 @pytest.mark.parametrize("value", [True, 1, [], {}])
@@ -232,6 +230,36 @@ def test_malformed_pipeline_v2_fails_clearly():
                 ]
             }
         )
+
+
+def test_removed_direct_contract_schema_reports_the_project_path():
+    project = SimpleNamespace(
+        path=Path("C:/IDA/cfg/d810/stale_config_v2.json"),
+        additional_configuration={
+            "pipeline_v2": [
+                {
+                    "pass": "recover_dispatcher",
+                    "scope": "function",
+                    "maturity": {},
+                    "requires": {},
+                    "outputs": {},
+                    "preserves": {},
+                    "invalidates": {},
+                    "safety": {},
+                    "migration": {},
+                }
+            ]
+        },
+    )
+
+    with pytest.raises(
+        PipelineConfigError,
+        match=(
+            r"stale_config_v2\.json: pipeline_v2\[0\] uses the removed "
+            r"direct-contract schema"
+        ),
+    ):
+        pipeline_configs_from_project_config(project)
 
 
 def test_pipeline_v2_shadow_comparison_is_inert_when_missing():

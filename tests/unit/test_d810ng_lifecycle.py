@@ -178,3 +178,24 @@ def test_reload_restores_the_previous_started_state(
     plugin.reload()
 
     assert events == expected_tail
+
+
+def test_reload_action_enters_plugin_lifecycle_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module, events = _load_plugin_module(
+        monkeypatch,
+        initially_loaded=True,
+        initially_started=True,
+    )
+
+    plugin = module.D810Plugin()
+    assert plugin.activate(None) == 1
+
+    assert events == [
+        "base-reload-enter",
+        "reload-package",
+        "base-reload-exit",
+        "core-is-loaded",
+        "core-start",
+    ]

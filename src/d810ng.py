@@ -155,8 +155,7 @@ class D810Plugin(
     @override
     def activate(self, ctx: ida_kernwin.action_ctx_base_t):
         """Action handler activate - triggers reload."""
-        with self.plugin_setup_reload():
-            self.reload()
+        self.reload()
         return 1
 
     @override

@@ -44,7 +44,23 @@ def pipeline_configs_from_project_config(project_config) -> tuple[PipelineConfig
         raise PipelineConfigError("pipeline_v2 must be a sequence of pass configs")
     if not payload:
         raise PipelineConfigError("pipeline_v2 must contain at least one pass config")
-    return tuple(PipelineConfig.from_dict(item) for item in payload)
+    source_path = getattr(project_config, "path", None)
+    source_prefix = "" if source_path is None else f"{source_path}: "
+    configs: list[PipelineConfig] = []
+    for index, item in enumerate(payload):
+        if isinstance(item, Mapping) and "pass" in item:
+            raise PipelineConfigError(
+                f"{source_prefix}pipeline_v2[{index}] uses the removed "
+                "direct-contract schema; regenerate it with the config-v2 editor "
+                "so the entry uses pass_id and typed pass options"
+            )
+        try:
+            configs.append(PipelineConfig.from_dict(item))
+        except PipelineConfigError as exc:
+            raise PipelineConfigError(
+                f"{source_prefix}pipeline_v2[{index}]: {exc}"
+            ) from exc
+    return tuple(configs)
 
 
 def pipeline_v2_mode_from_project_config(project_config) -> PipelineV2Mode:
