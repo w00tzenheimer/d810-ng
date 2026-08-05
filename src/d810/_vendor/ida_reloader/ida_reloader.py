@@ -210,6 +210,7 @@ class DependencyGraph:
         If `module` is None (pure relative import), treat as importing from the current package.
         """
         try:
+            package_prefix = self._pkg_prefix.rstrip(".")
             # Get the module path relative to plugin package
             # Find the plugin package root by going up from this file
             base_dir = pathlib.Path(__file__).parent.parent
@@ -242,17 +243,15 @@ class DependencyGraph:
                 # Remove the last component (the module itself) to get the package
                 package_parts = path_parts.copy()
                 if package_parts:
-                    return (
-                        f"{self._pkg_prefix}.{'.'.join(package_parts)}.{imported_name}"
-                    )
-                return f"{self._pkg_prefix}.{imported_name}"
+                    return f"{package_prefix}.{'.'.join(package_parts)}.{imported_name}"
+                return f"{package_prefix}.{imported_name}"
 
             # Add the relative module if provided
             if module:
                 path_parts.extend(module.split("."))
 
             if path_parts:
-                return f"{self._pkg_prefix}.{'.'.join(path_parts)}"
+                return f"{package_prefix}.{'.'.join(path_parts)}"
         except (ValueError, IndexError) as e:
             print(f"Failed to resolve relative import: {e}")
 
@@ -576,6 +575,52 @@ class Scanner:
             cls._load_module(spec, callback)
 
 
+def _discard_modules_outside_package_paths(
+    *,
+    base_package: str,
+    package_paths: Iterable[str],
+    skip_prefixes: tuple[str, ...],
+) -> list[str]:
+    """Remove loaded children that belong to a different package checkout."""
+    roots = tuple(pathlib.Path(path).resolve() for path in package_paths)
+
+    def belongs_to_current_checkout(module: types.ModuleType) -> bool:
+        module_file = getattr(module, "__file__", None)
+        if module_file is not None:
+            path = pathlib.Path(module_file).resolve()
+            return any(path.is_relative_to(root) for root in roots)
+
+        module_paths = getattr(module, "__path__", None)
+        if module_paths is None:
+            return True
+        return any(
+            pathlib.Path(path).resolve().is_relative_to(root)
+            for path in module_paths
+            for root in roots
+        )
+
+    stale_names = [
+        name
+        for name, module in sys.modules.items()
+        if name.startswith(base_package + ".")
+        and module is not None
+        and not any(name.startswith(prefix) for prefix in skip_prefixes)
+        and not belongs_to_current_checkout(module)
+    ]
+
+    for name in sorted(stale_names, key=lambda value: value.count("."), reverse=True):
+        module = sys.modules.pop(name, None)
+        parent_name, _, child_name = name.rpartition(".")
+        parent = sys.modules.get(parent_name)
+        if parent is not None and getattr(parent, child_name, None) is module:
+            try:
+                delattr(parent, child_name)
+            except (AttributeError, TypeError):
+                pass
+
+    return sorted(stale_names)
+
+
 def _reload_package_with_graph(
     pkg_path: Iterable[str],
     base_package: str,
@@ -608,6 +653,19 @@ def _reload_package_with_graph(
     that relies on them. Modules whose names match skip_prefixes are excluded
     from reloading.
     """
+    pkg_path = tuple(pkg_path)
+    stale_modules = _discard_modules_outside_package_paths(
+        base_package=base_package,
+        package_paths=pkg_path,
+        skip_prefixes=skip_prefixes,
+    )
+    if stale_modules:
+        print(
+            f"[{base_package}][reload] discarded modules loaded from a different "
+            f"package root: {', '.join(stale_modules)}"
+        )
+    importlib.invalidate_caches()
+
     # Build dependency graph
     dg = DependencyGraph(base_package + ".", pkg_paths=pkg_path)
 
