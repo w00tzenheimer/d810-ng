@@ -559,6 +559,22 @@ class D810State(metaclass=SingletonMeta):
             raise RuntimeError("No runtime project is available for the recipe")
         return self.manager.create_workbench_recipe_draft(snapshot, runtime_project)
 
+    def create_active_workbench_recipe_draft(
+        self,
+        function_ea: int,
+    ) -> PipelineRecipeDraft:
+        """Create a temporary function recipe from the active config-v2 runtime."""
+        runtime_project = self.current_runtime_project
+        snapshot = self.current_project_runtime_snapshot
+        if runtime_project is None or snapshot is None:
+            raise RuntimeError("No runtime project is available for the recipe")
+        return self.manager.create_active_workbench_recipe_draft(
+            function_ea=function_ea,
+            source_path=str(snapshot.source.path),
+            runtime_path=str(snapshot.runtime.path),
+            runtime_project=runtime_project,
+        )
+
     def create_saved_workbench_recipe_draft(
         self,
         *,
@@ -644,6 +660,12 @@ class D810State(metaclass=SingletonMeta):
             draft,
             options,
         )
+
+    def get_workbench_recipe_state_cff_options(
+        self,
+        draft: PipelineRecipeDraft,
+    ) -> StateMachineCffOptions:
+        return self.manager.get_workbench_recipe_state_cff_options(draft)
 
     def save_workbench_function_recipe(
         self,

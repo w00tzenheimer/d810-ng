@@ -50,6 +50,14 @@ class SemanticPredicateKind(str, Enum):
     STORAGE_EQUALS = "storage_equals"
 
 
+class SemanticStateWriteDeliveryKind(str, Enum):
+    """Physical transfer already proven at a direct semantic route boundary."""
+
+    DIRECT = "direct"
+    INDIRECT = "indirect"
+    CONDITIONAL = "conditional"
+
+
 def _identifier(value: str, description: str) -> str:
     normalized = str(value).strip()
     if not normalized:
@@ -349,6 +357,9 @@ class SemanticStateWriteProof:
     corridor_instruction_eas: tuple[int, ...]
     authority_transfer_ea: int | None
     preserved_call_instruction_eas: tuple[int, ...]
+    delivery_kind: SemanticStateWriteDeliveryKind = (
+        SemanticStateWriteDeliveryKind.INDIRECT
+    )
 
     def __post_init__(self) -> None:
         if not isinstance(self.identity, StableBlockIdentity):
@@ -363,6 +374,8 @@ class SemanticStateWriteProof:
             )
         if not isinstance(self.state_variable, StorageIdentity):
             raise TypeError("semantic state write requires storage identity")
+        if not isinstance(self.delivery_kind, SemanticStateWriteDeliveryKind):
+            raise TypeError("semantic state write requires a typed delivery kind")
         width = int(self.width)
         if not 1 <= width <= 8:
             raise SemanticRouteEvidenceRejected(
@@ -1069,6 +1082,7 @@ __all__ = [
     "SemanticRouteProofKind",
     "SemanticRouteShape",
     "SemanticStateWriteProof",
+    "SemanticStateWriteDeliveryKind",
     "bind_canonical_semantic_evidence",
     "canonical_terminal_state_targets",
     "semantic_route_proof_reaches_consumer",

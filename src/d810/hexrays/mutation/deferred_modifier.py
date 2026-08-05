@@ -201,9 +201,12 @@ import os
 import time
 
 import ida_hexrays
+import ida_ida
+import ida_typeinf
 import idaapi
 
 from d810.core import getLogger
+from d810.hexrays.mutation.block_retention import release_committed_block_retention
 from d810.hexrays.mutation.deferred_events import DeferredEvent, EventEmitter
 from d810.hexrays.mutation.mba_mutation_events import (
     MbaMutationGateway,
@@ -235,12 +238,18 @@ from d810.hexrays.mutation.semantic_fragment_preparation import (
     PreparedSemanticFragment,
     sdk_owned_call,
 )
+from d810.hexrays.mutation.terminal_return_lifecycle import (
+    protect_scalar_return_register,
+)
 from d810.hexrays.mutation.cfg_verify import capture_failure_artifact
 from d810.hexrays.mutation.cfg_verify import register_resolver_proven_live_predicate
 from d810.hexrays.mutation.cfg_mutations import CPBLK_MINREF, copy_block_keep
 from d810.hexrays.mutation.cfg_mutations import change_0way_block_successor
 from d810.hexrays.mutation.cfg_mutations import change_1way_block_successor
 from d810.hexrays.mutation.cfg_mutations import change_2way_block_conditional_successor
+from d810.hexrays.mutation.cfg_mutations import (
+    canonicalize_explicit_return_to_stop_edge as _canonicalize_return_to_stop_edge,
+)
 from d810.hexrays.mutation.cfg_mutations import coalesce_jtbl_cases
 from d810.transforms.cfg_transaction import PlanBlockRef, TransactionAttemptId
 from d810.hexrays.mutation.cfg_mutations import create_standalone_block
@@ -308,6 +317,85 @@ def _is_redirectable_conditional_tail(tail: object | None) -> bool:
         int(ida_hexrays.m_jl),
         int(ida_hexrays.m_jle),
     }
+
+
+def canonicalize_explicit_return_to_stop_edge(
+    block: ida_hexrays.mblock_t,
+    stop: ida_hexrays.mblock_t,
+) -> bool:
+    """Execute canonical return-edge mutation through the backend boundary."""
+    return _canonicalize_return_to_stop_edge(block, stop)
+
+
+def invalidate_use_def_after_type_refinement(mba: ida_hexrays.mba_t) -> None:
+    """Invalidate live use/def lists after changing the transient prototype."""
+    for serial in range(int(getattr(mba, "qty", 0) or 0)):
+        block = mba.get_mblock(serial)
+        if block is not None:
+            block.mark_lists_dirty()
+    mba.mark_chains_dirty()
+
+
+def refine_transient_terminal_return_type(
+    mba: object,
+    return_widths: Collection[int],
+) -> bool:
+    """Refine a guessed void MBA type from planned ABI return assignments."""
+    carrier_widths = {int(width) for width in return_widths}
+    if len(carrier_widths) != 1:
+        return False
+    carrier_width = next(iter(carrier_widths))
+    integer_base_types = {
+        1: int(ida_typeinf.BT_INT8),
+        2: int(ida_typeinf.BT_INT16),
+        4: int(ida_typeinf.BT_INT32),
+        8: int(ida_typeinf.BT_INT64),
+    }
+    base_type = integer_base_types.get(carrier_width)
+    function_type = getattr(mba, "idb_type", None)
+    is_function = getattr(function_type, "is_func", None)
+    if base_type is None or not callable(is_function) or not is_function():
+        return False
+    current_return_type = function_type.get_rettype()
+    if not current_return_type.is_void():
+        if int(current_return_type.get_size()) != carrier_width:
+            return False
+        protected = protect_scalar_return_register(mba, carrier_width)
+        if not bool(mba.final_type):
+            mba.clr_mba_flags(ida_hexrays.MBA_REFINE)
+        return protected
+    if bool(mba.final_type):
+        return False
+    return_type = ida_typeinf.tinfo_t(int(base_type) | int(ida_typeinf.BTMT_UNKSIGN))
+    if int(return_type.get_size()) != carrier_width:
+        return False
+    get_cc = getattr(function_type, "get_cc", None)
+    current_cc = int(get_cc()) if callable(get_cc) else None
+    if current_cc == int(ida_typeinf.CM_CC_UNKNOWN):
+        function_details = ida_typeinf.func_type_data_t()
+        if not function_type.get_func_details(function_details):
+            return False
+        function_details.rettype = return_type
+        function_details.flags = int(function_details.flags) & ~int(
+            ida_typeinf.FTI_NORET
+        )
+        function_details.set_cc(ida_ida.inf_get_callcnv())
+        refined_function_type = ida_typeinf.tinfo_t()
+        if not refined_function_type.create_func(function_details):
+            return False
+    else:
+        if int(function_type.set_func_rettype(return_type)) != int(
+            ida_typeinf.TERR_OK
+        ):
+            return False
+        refined_function_type = function_type
+    mba.idb_type = refined_function_type
+    mba.clr_mba_flags(ida_hexrays.MBA_REFINE)
+    protect_scalar_return_register(mba, carrier_width)
+    # A return has no explicit microcode operand: Hex-Rays derives its implicit
+    # ABI-register use from ``mba.idb_type`` while building block use/def lists.
+    invalidate_use_def_after_type_refinement(mba)
+    return True
 
 
 def _env_flag(name: str) -> bool:
@@ -954,6 +1042,16 @@ class _StagedPendingRewire:
     new_start_ea: int = -1
 
 
+@dataclass(frozen=True)
+class _SyntheticRegisterComparisonCondition:
+    """Backend-only description of one direct register comparison branch."""
+
+    branch_opcode: int
+    predicate_register: int
+    predicate_size: int
+    predicate_constant: int
+
+
 @dataclass
 class QueuedModification:
     """Represents a single queued graph modification."""
@@ -1202,6 +1300,13 @@ class DeferredGraphModifier:
             )
         self._mutation_gateway = self.mutation_gateway
         self._semantic_native_body_materializer = self.semantic_native_body_materializer
+
+    def refine_transient_terminal_return_type_now(
+        self,
+        return_widths: Collection[int],
+    ) -> bool:
+        """Apply transient return-type refinement through this backend."""
+        return refine_transient_terminal_return_type(self.mba, return_widths)
 
     def reset(self) -> None:
         """Clear all queued modifications."""
@@ -5957,6 +6062,61 @@ class DeferredGraphModifier:
                     for live_ea, native_ea in block_origins.items()
                 },
             )
+        else:
+            gateway = self._mutation_gateway
+            if gateway is None:
+                raise SemanticFragmentBackendRejected(
+                    "semantic fragment completion has no mutation gateway"
+                )
+            helper_ids = {
+                helper.helper_block_id for helper in state.fallthrough_helpers
+            }
+            helper_ids.update(
+                helper.helper_block_id
+                for helper in state.root_fallthrough_helpers
+            )
+            release_ids = (
+                helper_ids
+                | set(plan.owned_originals)
+                | set(state.staged_block_ids)
+            )
+            for block_id in sorted(release_ids):
+                binding = state.bindings.get(block_id)
+                published = None if binding is None else binding.proxy.resolve()
+                bound = (
+                    None
+                    if published is None
+                    else gateway.identity_index.resolve_logical_version(published)
+                )
+                block = (
+                    None
+                    if bound is None
+                    else self.mba.get_mblock(int(bound.serial))
+                )
+                if block is None:
+                    raise SemanticFragmentBackendRejected(
+                        f"committed retained block {block_id!r} is absent"
+                    )
+                release_committed_block_retention(block)
+            if plan.normalization_authority is not None:
+                reachable: set[int] = set()
+                pending = [0]
+                quantity = int(self.mba.qty)
+                while pending:
+                    serial = pending.pop()
+                    if serial in reachable or not 0 <= serial < quantity:
+                        continue
+                    block = self.mba.get_mblock(serial)
+                    if block is None:
+                        continue
+                    reachable.add(serial)
+                    pending.extend(int(value) for value in block.succset)
+                for serial in range(1, max(1, quantity - 1)):
+                    if serial in reachable:
+                        continue
+                    block = self.mba.get_mblock(serial)
+                    if block is not None:
+                        release_committed_block_retention(block)
         self._semantic_fragment_state = None
 
     def restore_pruned_conditional_now(
@@ -6397,27 +6557,29 @@ class DeferredGraphModifier:
         ``m_mov``/``m_icall`` envelope even though its native target bodies are
         absent from the live function MBA.  The static resolver supplies the
         exact x86 comparison semantics and both targets.  Rebuild that proof as
-        ``m_jnz(m_setcc(register, constant), 0)`` so later Hex-Rays maturities
-        see ordinary two-way microcode rather than an invented call.
+        a direct binary conditional branch so later Hex-Rays maturities see
+        ordinary two-way microcode rather than an invented call.  Avoid a
+        nested ``setcc`` boolean because Hex-Rays can canonicalize its flag
+        semantics with the opposite branch polarity.
         """
-        set_opcode_by_condition_code = {
-            2: int(ida_hexrays.m_setb),
-            3: int(ida_hexrays.m_setae),
-            4: int(ida_hexrays.m_setz),
-            5: int(ida_hexrays.m_setnz),
-            6: int(ida_hexrays.m_setbe),
-            7: int(ida_hexrays.m_seta),
-            12: int(ida_hexrays.m_setl),
-            13: int(ida_hexrays.m_setge),
-            14: int(ida_hexrays.m_setle),
-            15: int(ida_hexrays.m_setg),
+        branch_opcode_by_condition_code = {
+            2: int(ida_hexrays.m_jb),
+            3: int(ida_hexrays.m_jae),
+            4: int(ida_hexrays.m_jz),
+            5: int(ida_hexrays.m_jnz),
+            6: int(ida_hexrays.m_jbe),
+            7: int(ida_hexrays.m_ja),
+            12: int(ida_hexrays.m_jl),
+            13: int(ida_hexrays.m_jge),
+            14: int(ida_hexrays.m_jle),
+            15: int(ida_hexrays.m_jg),
         }
         condition_code = int(condition_code)
         predicate_size = int(predicate_size)
-        set_opcode = set_opcode_by_condition_code.get(condition_code)
+        branch_opcode = branch_opcode_by_condition_code.get(condition_code)
         current_successors = tuple(int(serial) for serial in source.succset)
         if (
-            set_opcode is None
+            branch_opcode is None
             or predicate_size <= 0
             or int(predicate_register) < 0
             or source is taken_target
@@ -6518,28 +6680,14 @@ class DeferredGraphModifier:
             return False
 
         safe_ea = int(indirect_instruction_ea)
-        try:
-            compare = ida_hexrays.minsn_t(safe_ea)
-            compare.opcode = set_opcode
-            compare.l = ida_hexrays.mop_t()
-            compare.l.make_reg(int(predicate_register), predicate_size)
-            compare.r = ida_hexrays.mop_t()
-            compare.r.make_number(
-                int(predicate_constant) & ((1 << (8 * predicate_size)) - 1),
-                predicate_size,
-                safe_ea,
-            )
-            compare.d = ida_hexrays.mop_t()
-            compare.d.size = 1
-            condition = ida_hexrays.mop_t()
-            condition.create_from_insn(compare)
-        except Exception as exc:  # noqa: BLE001 - synthesis is fail-closed
-            logger.warning(
-                "resolver conditional cut synthesis failed at 0x%x: %s",
-                safe_ea,
-                exc,
-            )
-            return False
+        condition = _SyntheticRegisterComparisonCondition(
+            branch_opcode=int(branch_opcode),
+            predicate_register=int(predicate_register),
+            predicate_size=predicate_size,
+            predicate_constant=(
+                int(predicate_constant) & ((1 << (8 * predicate_size)) - 1)
+            ),
+        )
 
         if synthetic_return is None:
             old_dispatcher_serial = int(taken_target.serial)
@@ -12223,6 +12371,11 @@ class DeferredGraphModifier:
         preserve_live_predicate = bool(
             getattr(condition_operand, "preserve_live_predicate", False)
         )
+        synthetic_register_comparison = (
+            condition_operand
+            if isinstance(condition_operand, _SyntheticRegisterComparisonCondition)
+            else None
+        )
         preserved_branch = None
         true_is_taken = True
         condition_mop = None
@@ -12248,7 +12401,7 @@ class DeferredGraphModifier:
                 return False
             preserved_branch = ida_hexrays.minsn_t(rewrite_insn)
             true_is_taken = bool(marker_true_is_taken)
-        else:
+        elif synthetic_register_comparison is None:
             condition_mop = self._materialize_condition_mop(condition_operand)
             if condition_mop is None:
                 logger.info(
@@ -12451,6 +12604,22 @@ class DeferredGraphModifier:
 
         if preserved_branch is not None:
             branch = preserved_branch
+            branch.d.make_blkref(int(taken_serial))
+        elif synthetic_register_comparison is not None:
+            branch = ida_hexrays.minsn_t(safe_ea)
+            branch.opcode = int(synthetic_register_comparison.branch_opcode)
+            branch.l = ida_hexrays.mop_t()
+            branch.l.make_reg(
+                int(synthetic_register_comparison.predicate_register),
+                int(synthetic_register_comparison.predicate_size),
+            )
+            branch.r = ida_hexrays.mop_t()
+            branch.r.make_number(
+                int(synthetic_register_comparison.predicate_constant),
+                int(synthetic_register_comparison.predicate_size),
+                safe_ea,
+            )
+            branch.d = ida_hexrays.mop_t()
             branch.d.make_blkref(int(taken_serial))
         else:
             condition_size = int(getattr(condition_mop, "size", 0) or 1)

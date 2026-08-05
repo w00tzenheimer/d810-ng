@@ -356,7 +356,7 @@ class TestAllSupplementaryCombined:
 
 
 class TestSuppressRules:
-    def test_suppress_constant_folding_at_high_confidence(self) -> None:
+    def test_suppress_forward_constants_at_high_confidence(self) -> None:
         phase = AnalysisPhase()
         results = _base_flat_results()
         # Add supplementary signals to push confidence above threshold
@@ -380,7 +380,7 @@ class TestSuppressRules:
         hints = phase.interpret(func_ea=0x401000, results=results)
         assert hints.obfuscation_type == "ollvm_flat"
         assert hints.confidence >= _SUPPRESS_CONFIDENCE_THRESHOLD
-        assert "constant-folding" in hints.suppress_stages
+        assert hints.suppress_stages == ("forward-constants",)
         assert "ForwardConstantPropagationRule" not in hints.suppress_stages
 
     def test_no_suppress_below_threshold(self) -> None:
@@ -521,7 +521,7 @@ class TestUserOverride:
             assert hints.obfuscation_type == "ollvm_flat"
             assert hints.confidence == 1.0
             assert "unflattening" in hints.recommended_inferences
-            assert "constant-folding" in hints.suppress_stages
+            assert hints.suppress_stages == ("forward-constants",)
             assert "ForwardConstantPropagationRule" not in hints.suppress_stages
         finally:
             store.close()

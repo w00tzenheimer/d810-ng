@@ -30,6 +30,8 @@ from d810.passes.pipeline_config_parser import (
 )
 from d810.passes.state_machine_options import (
     STATE_MACHINE_NATIVE_PASS_IDS,
+    StateMachineCffFamily,
+    StateMachineRecoveryStrategy,
     state_machine_cff_options_from_config,
 )
 
@@ -74,18 +76,24 @@ def _state_machine_rule_config(
             f"sequence: {list(STATE_MACHINE_NATIVE_PASS_IDS)}"
         )
 
-    thresholds = tuple(
-        state_machine_cff_options_from_config(config).min_state_constant
-        for config in native_configs
+    options = tuple(
+        state_machine_cff_options_from_config(config) for config in native_configs
     )
-    first = thresholds[0]
-    if any(value != first for value in thresholds[1:]):
+    first = options[0]
+    if any(value != first for value in options[1:]):
         raise PipelineConfigError(
             "state-machine native spine entries disagree on typed options"
         )
+    hook_options: dict[str, object] = {
+        "min_state_constant": first.min_state_constant
+    }
+    if first.family is StateMachineCffFamily.TIGRESS_INDIRECT:
+        hook_options["profile"] = "tigress_indirect"
+    if first.recovery_strategy is StateMachineRecoveryStrategy.REDUCED_PRODUCT:
+        hook_options["recovery_engine"] = "reduced_product"
     return _rule_config(
         STATE_MACHINE_UNFLATTENER_RULE,
-        {"min_state_constant": first},
+        hook_options,
     )
 
 

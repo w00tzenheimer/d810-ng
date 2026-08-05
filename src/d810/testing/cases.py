@@ -113,6 +113,11 @@ class DeobfuscationCase:
     # Project configuration
     project: str = "default_instruction_only.json"
 
+    # Optional per-function typed state-CFF threshold override. The runner
+    # applies this through an in-memory function recipe and preserves the
+    # active recipe's family and recovery strategy.
+    state_cff_min_state_constant: Optional[int] = None
+
     # Optional description
     description: str = ""
 
@@ -185,6 +190,7 @@ class DeobfuscationCase:
         return DeobfuscationCase(
             function=self.function,
             project=self.project,
+            state_cff_min_state_constant=self.state_cff_min_state_constant,
             description=self.description,
             # Apply overrides (use override value if not None, else original)
             obfuscated_contains=(

@@ -16,6 +16,7 @@ from d810.analyses.control_flow.semantic_route_evidence import (
     SemanticRouteProof,
     SemanticRouteProofKind,
     SemanticRouteShape,
+    SemanticStateWriteDeliveryKind,
     SemanticStateWriteProof,
     bind_canonical_semantic_evidence,
 )
@@ -1217,6 +1218,73 @@ def test_canonical_route_accepts_exact_write_proof_inside_plan_owned_range() -> 
     assert 0x1100 in root.stable_identity.exact_instruction_eas
 
 
+def test_canonical_route_does_not_prohibit_its_owned_source() -> None:
+    graph, normalization_plan, evidence = _live_source_detached_target_case()
+
+    plan = compose_canonical_semantic_fragment_plan(
+        graph,
+        normalization_plan,
+        evidence,
+        available_evidence=evidence,
+        current_identity_by_serial=_current_identity_authority(graph),
+        normalization_authority=_normalization_authority(
+            normalization_plan,
+            evidence,
+        ),
+        prohibited_dispatcher_serials=(20, 90),
+    )
+
+    root = plan.block(plan.roots[0])
+    assert root.role is FragmentBlockRole.REPLACEMENT
+    assert tuple(
+        plan.block(block_id).semantic_anchor_ea
+        for block_id in plan.prohibited_dispatcher_blocks
+    ) == (0x1400,)
+    assert all(
+        block.role is not FragmentBlockRole.EXTERNAL
+        or block.stable_identity != root.stable_identity
+        for block in plan.blocks
+    )
+
+
+def test_direct_delivery_route_replaces_receipted_edge_without_cut_rewrite() -> None:
+    graph, normalization_plan, evidence = _live_source_detached_target_case()
+    (proof,) = evidence.route_proofs
+    assert proof.state_write is not None
+    evidence = replace(
+        evidence,
+        route_proofs=(
+            replace(
+                proof,
+                state_write=replace(
+                    proof.state_write,
+                    delivery_kind=SemanticStateWriteDeliveryKind.DIRECT,
+                ),
+            ),
+        ),
+    )
+
+    plan = compose_canonical_semantic_fragment_plan(
+        graph,
+        normalization_plan,
+        evidence,
+        available_evidence=evidence,
+        current_identity_by_serial=_current_identity_authority(graph),
+        normalization_authority=_normalization_authority(
+            normalization_plan,
+            evidence,
+        ),
+        prohibited_dispatcher_serials=(90,),
+    )
+
+    route_operation = next(
+        operation
+        for operation in plan.operations
+        if operation.operation_id.startswith("route:state-assignment")
+    )
+    assert route_operation.direct_transfer_rewrite is None
+
+
 def test_detached_semantic_consumer_supersedes_raw_dispatcher_atomically() -> None:
     graph, normalization_plan, evidence = _live_source_detached_target_case()
     (native_body,) = normalization_plan.native_bodies
@@ -2130,6 +2198,11 @@ def test_nested_imported_state_assignments_reach_fixpoint() -> None:
         plan.block(edge.target_block_id).semantic_anchor_ea != 0x1300
         for operation in plan.operations
         for edge in operation.edges
+    )
+    assert any(
+        plan.block(block_id).semantic_anchor_ea == route_target.semantic_anchor_ea
+        for planned_body in plan.native_bodies
+        for block_id in planned_body.terminal_block_ids
     )
 
 
@@ -4638,6 +4711,70 @@ def test_canonical_route_rebinds_retained_corridor_to_live_source_subset() -> No
     assert route_operation.direct_transfer_rewrite.superseded_instruction_eas == (
         0x1110,
     )
+
+
+def test_canonical_route_accepts_split_normalization_delivery_identity() -> None:
+    """The receipt may retain write and delivery as distinct external blocks.
+
+    Frontend normalization can consume the native delivery instruction while
+    the regenerated live graph keeps the state write as the sole route owner.
+    The canonical rewrite must bind that live write owner while still proving
+    the rewrite anchor through the receipted delivery block.
+    """
+    graph, normalization_plan, evidence = _omitted_delivery_source_case()
+    graph = replace(
+        graph,
+        blocks={
+            **graph.blocks,
+            25: _block(25, 0x1110, succs=(), preds=()),
+        },
+    )
+    normalization_plan = replace(
+        normalization_plan,
+        blocks=(
+            *(
+                replace(
+                    block,
+                    semantic_anchor_ea=0x1100,
+                    stable_identity=_identity(0x1100),
+                )
+                if block.block_id == "live-route-source"
+                else block
+                for block in normalization_plan.blocks
+            ),
+            FragmentBlock(
+                block_id="normalized-route-delivery",
+                role=FragmentBlockRole.EXTERNAL,
+                materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
+                semantic_anchor_ea=0x1110,
+                stable_identity=_identity(0x1110),
+            ),
+        ),
+    )
+
+    plan = compose_canonical_semantic_fragment_plan(
+        graph,
+        normalization_plan,
+        evidence,
+        available_evidence=evidence,
+        current_identity_by_serial=_current_identity_authority(graph),
+        normalization_authority=_normalization_authority(
+            normalization_plan,
+            evidence,
+        ),
+        prohibited_dispatcher_serials=(90,),
+    )
+
+    root = plan.block(plan.roots[0])
+    assert root.semantic_anchor_ea == 0x1100
+    assert root.stable_identity == _identity(0x1100)
+    route_operation = next(
+        operation
+        for operation in plan.operations
+        if operation.operation_id.startswith("route:state-assignment@0x1110")
+    )
+    assert route_operation.direct_transfer_rewrite is not None
+    assert route_operation.direct_transfer_rewrite.rewrite_anchor_ea == 0x1110
 
 
 def test_canonical_composition_ids_external_blocks_by_stable_identity() -> None:

@@ -166,9 +166,13 @@ class _Instruction:
         self.r = right or _Operand()
         self.d = dest or _Operand()
         self.next: _Instruction | None = None
+        self.persistent = False
 
     def setaddr(self, ea: int) -> None:
         self.ea = int(ea)
+
+    def set_persistent(self) -> None:
+        self.persistent = True
 
 
 class _SerialList(list[int]):
@@ -8684,6 +8688,93 @@ def test_terminal_return_port_inserts_captured_carrier_in_imported_return_arm(
         )
     )
     assert origins[int(inserted_carrier.ea)] == carrier_ea
+    assert inserted_carrier.persistent is True
+
+
+def test_native_body_protects_exact_captured_carrier_without_boundary_port(
+    monkeypatch,
+) -> None:
+    from d810.analyses.control_flow.materialized_indirect_transfer import (
+        TerminalReturnCarrierRequest,
+    )
+
+    _install_runtime_fakes(monkeypatch)
+    function_ea = 0x9000
+    source_handler_ea = 0x3000
+    terminal_target_ea = 0x4000
+    return_ea = 0x4005
+    state_register = 20
+    state_constant = 0x19A7218A
+    return_register = int(ida_hexrays.reg2mreg(0))
+    request = TerminalReturnCarrierRequest(
+        source_handler_ea=source_handler_ea,
+        terminal_target_ea=terminal_target_ea,
+        state_var_reg=state_register,
+        state_constant=state_constant,
+    )
+    state_write = _Instruction(
+        ida_hexrays.m_mov,
+        source_handler_ea,
+        left=_Operand(ida_hexrays.mop_n, value=state_constant),
+        dest=_Operand(ida_hexrays.mop_r, register=state_register),
+    )
+    captured_carrier = _Instruction(
+        ida_hexrays.m_mov,
+        terminal_target_ea,
+        left=_Operand(ida_hexrays.mop_v, target_ea=0x48B8A4),
+        dest=_Operand(ida_hexrays.mop_r, register=return_register),
+    )
+    carrier_source = _MBA(
+        (_Block(0, source_handler_ea, (state_write, captured_carrier)),),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+    assert detached_handler_island.capture_terminal_return_carrier_template(
+        function_ea,
+        request,
+        carrier_source,
+    )
+
+    imported_carrier = copy.deepcopy(captured_carrier)
+    terminal = _Block(
+        0,
+        terminal_target_ea,
+        (
+            imported_carrier,
+            _Instruction(ida_hexrays.m_ret, return_ea),
+        ),
+    )
+    terminal.type = int(ida_hexrays.BLT_STOP)
+    source = _MBA((terminal,), maturity=ida_hexrays.MMAT_PREOPTIMIZED)
+    assert detached_handler_island.capture_detached_snippet_template(
+        function_ea,
+        terminal_target_ea,
+        source,
+        ((terminal_target_ea, return_ea + 1),),
+    )
+    destination = _MBA(
+        (
+            _Block(
+                0,
+                function_ea,
+                (_Instruction(ida_hexrays.m_nop, function_ea),),
+            ),
+        ),
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+    )
+
+    result = detached_handler_island.materialize_detached_snippet_templates(
+        destination,
+        function_ea,
+        (terminal_target_ea,),
+        mutation_gateway=make_mutation_gateway(destination),
+    )
+
+    imported = destination.get_mblock(result[terminal_target_ea]).instructions()
+    assert tuple(int(instruction.opcode) for instruction in imported) == (
+        int(ida_hexrays.m_mov),
+        int(ida_hexrays.m_ret),
+    )
+    assert imported[0].persistent is True
 
 
 def test_terminal_return_port_abstains_atomically_without_unique_carrier(
@@ -10581,6 +10672,11 @@ def test_resolver_conditional_cut_accepts_fictitious_synthetic_return_ea(
     )
     assert len(applied) == 1
     assert applied[0]["old_dispatcher_serial"] == int(synthetic_return.serial)
+    condition = applied[0]["condition_operand"]
+    assert condition.branch_opcode == int(ida_hexrays.m_jnz)
+    assert condition.predicate_register == 16
+    assert condition.predicate_size == 4
+    assert condition.predicate_constant == 0xA4C94734
 
 
 def test_boundary_port_result_uses_template_record_kind_across_reload(

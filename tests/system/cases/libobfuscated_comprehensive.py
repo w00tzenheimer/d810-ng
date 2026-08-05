@@ -522,6 +522,7 @@ DISPATCHER_PATTERN_CASES = [
         function="high_fan_in_pattern",
         description="HIGH_FAN_IN dispatcher with multiple case blocks",
         project="example_libobfuscated.json",
+        state_cff_min_state_constant=0,
         must_change=True,
         semantic_reference="samples/src/c/dispatcher_patterns.c",
     ),
@@ -545,6 +546,7 @@ DISPATCHER_PATTERN_CASES = [
         function="switch_case_ollvm_pattern",
         description="SWITCH_JUMP pattern with O-LLVM style jtbl",
         project="example_libobfuscated.json",
+        state_cff_min_state_constant=0,
         obfuscated_contains=["switch", "case"],
         must_change=True,
         semantic_reference="samples/src/c/dispatcher_patterns.c",
@@ -696,6 +698,7 @@ NESTED_DISPATCHER_CASES = [
         function="nested_deep",
         description="Deeply nested dispatchers (3 levels: L1 -> L2 -> L3)",
         project="example_libobfuscated.json",
+        state_cff_min_state_constant=0,
         must_change=True,
     ),
     DeobfuscationCase(
@@ -862,6 +865,7 @@ UNWRAP_LOOPS_CASES = [
         function="unwrap_loops",
         description="Loop unwrapping with spin-lock synchronization",
         project="example_libobfuscated.json",
+        state_cff_min_state_constant=0,
         must_change=True,
     ),
     DeobfuscationCase(
@@ -919,6 +923,7 @@ HARDENED_OLLVM_COND_CHAIN_CASES = [
         function="hardened_cond_chain_simple",
         description="Hardened OLLVM conditional chain (6 states, binary search dispatch)",
         project="example_libobfuscated.json",
+        state_cff_min_state_constant=0x1000,
         # Use state-machine constants instead of symbol names to remain backend-stable
         # across PE/Mach-O naming differences.
         obfuscated_contains=["0x1000", "0x6000"],

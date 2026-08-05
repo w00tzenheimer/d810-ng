@@ -76,6 +76,32 @@ def test_exact_branch_predicate_accepts_sequential_signed_flag_complement() -> N
     ) is PredicateKind.SGE
 
 
+def test_exact_branch_predicate_accepts_truthy_equality_flag_register() -> None:
+    zero_flag = _reg(1)
+
+    assert exact_branch_predicate_kind(
+        (
+            InsnSnapshot(
+                opcode=1,
+                ea=0x40A5F0,
+                operands=(),
+                d=zero_flag,
+                predicate_kind=PredicateKind.EQ,
+            ),
+            InsnSnapshot(
+                opcode=2,
+                ea=0x40A5FE,
+                operands=(),
+                l=zero_flag,
+                predicate_kind=PredicateKind.TRUTHY,
+                branch_predicate=PredicateKind.TRUTHY,
+                is_conditional_jump=True,
+            ),
+        ),
+        condition_producer_ea=0x40A5F0,
+    ) is PredicateKind.EQ
+
+
 def test_exact_branch_predicate_rejects_sequential_mismatched_flag_register() -> None:
     sign = _reg(2)
     overflow = _reg(3)

@@ -271,6 +271,7 @@ class _MBA:
         self.qty = len(blocks)
         self.entry_ea = int(entry_ea)
         self.chains_dirty = 0
+        self.cleared_mba_flags: list[int] = []
 
     def get_mblock(self, serial: int) -> _Block:
         return self.blocks[int(serial)]
@@ -281,8 +282,15 @@ class _MBA:
     def stkoff_ida2vd(self, stack_offset: int) -> int:
         return int(stack_offset) - 0x1000
 
+    @staticmethod
+    def map_fict_ea(instruction_ea: int) -> int:
+        return int(instruction_ea)
+
     def mark_chains_dirty(self) -> None:
         self.chains_dirty += 1
+
+    def clr_mba_flags(self, flags: int) -> None:
+        self.cleared_mba_flags.append(int(flags))
 
     def verify(self, _always: bool) -> None:
         return None
@@ -422,7 +430,7 @@ def _bare_call_result_mba(
 
 
 def test_restores_analyzed_call_result_definition_by_native_ea(monkeypatch) -> None:
-    from d810.hexrays.mutation import detached_handler_island
+    from d810.hexrays.mutation import deferred_modifier, detached_handler_island
 
     function_ea = 0x40A560
     detached_handler_island.clear_detached_handler_call_templates()
@@ -610,6 +618,30 @@ def _terminal_return_carrier_snippet(
     )
 
 
+def _split_terminal_return_carrier_snippet() -> _MBA:
+    return_mreg = int(ida_hexrays.reg2mreg(0))
+    source_ea = 0x18000218B
+    terminal_ea = 0x180002195
+    state_write = _Instruction(
+        ida_hexrays.m_mov,
+        source_ea,
+        left=_Operand(ida_hexrays.mop_n, value=0xEE6B2800),
+        dest=_Operand(ida_hexrays.mop_r, register=32),
+    )
+    carrier = _Instruction(
+        ida_hexrays.m_mov,
+        terminal_ea,
+        left=_Operand(ida_hexrays.mop_v, target_ea=0x18000A000, size=8),
+        dest=_Operand(ida_hexrays.mop_r, register=return_mreg, size=8),
+    )
+    return _MBA(
+        (
+            _Block(0, source_ea, (state_write,), (1,)),
+            _Block(1, terminal_ea, (carrier,), ()),
+        )
+    )
+
+
 def _terminal_return_live_mba(*, state: int = 0x19A7218A) -> tuple[_MBA, _Block]:
     state_write = _Instruction(
         ida_hexrays.m_mov,
@@ -663,6 +695,50 @@ def test_captures_terminal_return_carrier_as_portable_evidence() -> None:
     assert evidence.state_write_ea == 0x40C7E5
     assert evidence.carrier_ea == 0x40C7EA
     assert evidence.corridor_instruction_eas == (0x40C7E5, 0x40C7EA)
+
+
+def test_captures_terminal_return_carrier_from_routed_terminal_block() -> None:
+    from d810.analyses.control_flow.materialized_indirect_transfer import (
+        TerminalReturnCarrierRequest,
+    )
+    from d810.hexrays.mutation import detached_handler_island
+
+    source_ea = 0x18000218B
+    terminal_ea = 0x180002195
+    request = TerminalReturnCarrierRequest(
+        source_handler_ea=source_ea,
+        terminal_target_ea=terminal_ea,
+        state_var_reg=32,
+        state_constant=0xEE6B2800,
+    )
+    capture_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(source_ea, source_ea + 1),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(source_ea,),
+    )
+    terminal_identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(terminal_ea, terminal_ea + 9),),
+        native_key=NATIVE_KEY,
+        exact_instruction_eas=(terminal_ea, terminal_ea + 8),
+    )
+
+    evidence = detached_handler_island.capture_terminal_return_carrier_evidence(
+        0x1800020F0,
+        request,
+        _split_terminal_return_carrier_snippet(),
+        capture_identity=capture_identity,
+        terminal_identity=terminal_identity,
+        terminal_return_ea=terminal_ea + 8,
+    )
+
+    assert evidence is not None
+    assert evidence.state_write_ea == source_ea
+    assert evidence.carrier_ea == terminal_ea
+    assert evidence.corridor_instruction_eas == (source_ea, terminal_ea)
+    assert evidence.source.storage_identity == StorageIdentity(
+        StorageIdentityKind.GLOBAL,
+        0x18000A000,
+    )
 
 
 def test_terminal_carrier_capture_owns_exact_corridor_missing_from_route() -> None:
@@ -1229,7 +1305,7 @@ def test_refines_guessed_void_return_type_from_proven_carrier_width(
     from d810.analyses.control_flow.materialized_indirect_transfer import (
         TerminalReturnCarrierRequest,
     )
-    from d810.hexrays.mutation import detached_handler_island
+    from d810.hexrays.mutation import deferred_modifier, detached_handler_island
 
     class _ReturnType:
         def __init__(self, declaration: int) -> None:
@@ -1254,7 +1330,7 @@ def test_refines_guessed_void_return_type_from_proven_carrier_width(
 
         def set_func_rettype(self, return_type: _ReturnType) -> int:
             self.return_type = return_type
-            return int(detached_handler_island.ida_typeinf.TERR_OK)
+            return int(deferred_modifier.ida_typeinf.TERR_OK)
 
     request = TerminalReturnCarrierRequest(
         source_handler_ea=0x40C7E5,
@@ -1263,12 +1339,35 @@ def test_refines_guessed_void_return_type_from_proven_carrier_width(
         state_constant=0x19A7218A,
     )
     function_type = _FunctionType()
-    mba = SimpleNamespace(final_type=False, idb_type=function_type)
+    blocks = tuple(
+        _Block(
+            serial,
+            0x40A560 + serial,
+            (_Instruction(ida_hexrays.m_nop, 0x40A560 + serial),),
+            (),
+        )
+        for serial in range(2)
+    )
+    mba = _MBA(blocks)
+    mba.final_type = False
+    mba.idb_type = function_type
+    protected_registers: list[tuple[int, int]] = []
+    mba.nodel_memory = SimpleNamespace(
+        add=lambda register, width: protected_registers.append(
+            (int(register), int(width))
+        )
+        or True
+    )
     monkeypatch.setattr(detached_handler_island.ida_hexrays, "minsn_t", _fake_minsn)
     monkeypatch.setattr(
-        detached_handler_island.ida_typeinf,
+        deferred_modifier.ida_typeinf,
         "tinfo_t",
         _ReturnType,
+    )
+    monkeypatch.setattr(
+        deferred_modifier,
+        "protect_scalar_return_register",
+        lambda candidate_mba, width: candidate_mba.nodel_memory.add(24, width),
     )
     detached_handler_island.clear_terminal_return_carrier_templates()
     try:
@@ -1278,34 +1377,74 @@ def test_refines_guessed_void_return_type_from_proven_carrier_width(
             _terminal_return_carrier_snippet(),
         )
 
-        assert detached_handler_island.refine_transient_terminal_return_type(
+        assert deferred_modifier.refine_transient_terminal_return_type(
             mba,
-            0x40A560,
+            (4,),
         )
         assert function_type.return_type is not None
         assert function_type.return_type.declaration == (
-            int(detached_handler_island.ida_typeinf.BT_INT32)
-            | int(detached_handler_island.ida_typeinf.BTMT_UNKSIGN)
+            int(deferred_modifier.ida_typeinf.BT_INT32)
+            | int(deferred_modifier.ida_typeinf.BTMT_UNKSIGN)
         )
-        assert mba.final_type is True
+        assert mba.final_type is False
+        assert protected_registers == [(24, 4)]
+        assert mba.cleared_mba_flags == [int(ida_hexrays.MBA_REFINE)]
+        assert mba.chains_dirty == 1
+        assert tuple(block.dirty for block in blocks) == (1, 1)
     finally:
         detached_handler_island.clear_terminal_return_carrier_templates()
 
 
 def test_does_not_refine_user_final_return_type(monkeypatch) -> None:
-    from d810.hexrays.mutation import detached_handler_island
+    from d810.hexrays.mutation import deferred_modifier
 
     mba = SimpleNamespace(final_type=True, idb_type=object())
     monkeypatch.setattr(
-        detached_handler_island.ida_typeinf,
+        deferred_modifier.ida_typeinf,
         "tinfo_t",
         lambda _declaration: pytest.fail("final type must not be replaced"),
     )
 
-    assert not detached_handler_island.refine_transient_terminal_return_type(
+    assert not deferred_modifier.refine_transient_terminal_return_type(
+        mba,
+        (4,),
+    )
+
+
+def test_prolog_hydrates_only_transient_function_type(monkeypatch) -> None:
+    from d810.hexrays.hooks import hexrays_hooks
+
+    class _Type:
+        def __init__(self, is_function: bool = False) -> None:
+            self.is_function = bool(is_function)
+
+        def is_func(self) -> bool:
+            return self.is_function
+
+    hydrated = _Type()
+    mba = SimpleNamespace(idb_type=_Type(), entry_ea=0x40A560)
+    requested: list[int] = []
+
+    monkeypatch.setattr(hexrays_hooks.ida_typeinf, "tinfo_t", lambda: hydrated)
+
+    def get_tinfo(function_type: _Type, function_ea: int) -> bool:
+        requested.append(int(function_ea))
+        function_type.is_function = True
+        return True
+
+    monkeypatch.setattr(hexrays_hooks.ida_nalt, "get_tinfo", get_tinfo)
+    monkeypatch.setattr(
+        hexrays_hooks.ida_typeinf,
+        "guess_tinfo",
+        lambda *_args: pytest.fail("stored type should win before guessing"),
+    )
+
+    assert HexraysDecompilationHook._hydrate_transient_function_type(
         mba,
         0x40A560,
     )
+    assert requested == [0x40A560]
+    assert mba.idb_type is hydrated
 
 
 def test_detached_target_lookup_accepts_live_block_start_anchor() -> None:

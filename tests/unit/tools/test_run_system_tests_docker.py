@@ -93,7 +93,7 @@ def _container_run(calls: list[str]) -> str:
         ("exec", "--", "true"),
     ],
 )
-def test_baked_runtime_skips_dependency_setup_in_every_mode(
+def test_baked_runtime_validates_dependencies_in_every_mode(
     tmp_path: Path,
     args: tuple[str, ...],
 ) -> None:
@@ -102,9 +102,12 @@ def test_baked_runtime_skips_dependency_setup_in_every_mode(
     assert result.returncode == 0, result.stderr
     assert any(call.startswith("image inspect ") for call in calls)
     command = _container_run(calls)
-    assert "[dev,emulation]" not in command
+    assert "import setuptools" in command
+    assert "command -v git" in command
+    assert "[dev,emulation]" in command
     assert "d810.speedups.install" not in command
     assert "baked runtime dependencies detected" in command
+    assert "baked runtime is stale" in command
 
 
 def test_unlabeled_runtime_keeps_dependency_setup(tmp_path: Path) -> None:
@@ -128,7 +131,8 @@ def test_baked_runtime_preserves_native_cython_build(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     command = _container_run(calls)
-    assert "[dev,emulation]" not in command
+    assert "[dev,emulation]" in command
+    assert "command -v git" in command
     assert "D810_BUILD_SPEEDUPS=1" in command
     assert "pip install -e .[speedups]" in command
 
@@ -146,7 +150,8 @@ def test_baked_runtime_preserves_llvm_provisioning(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     command = _container_run(calls)
     assert "apt-get install -y --no-install-recommends llvm" in command
-    assert "[dev,emulation]" not in command
+    assert "[dev,emulation]" in command
+    assert "command -v git" in command
 
 
 def test_dotenv_image_overrides_hardcoded_default(tmp_path: Path) -> None:

@@ -13,7 +13,6 @@ import ida_ida
 import ida_idaapi
 import ida_idp
 import ida_range
-import ida_typeinf
 import ida_ua
 import idautils
 
@@ -44,7 +43,9 @@ from d810.analyses.control_flow.terminal_return_carrier_evidence import (
 )
 from d810.core.logging import getLogger
 from d810.core.semantic_route_oracle import SemanticTransferKind
-from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
+from d810.hexrays.mutation.deferred_modifier import (
+    DeferredGraphModifier,
+)
 from d810.hexrays.mutation.mba_mutation_events import MbaMutationGateway
 from d810.hexrays.opcode_lift import (
     set_predicate_from_opcode,
@@ -93,6 +94,7 @@ from d810.transforms.prepared_native_body import (
 )
 from d810.ir.block_identity import (
     BlockHandleProvenance,
+    CurrentMbaIdentityBindingSnapshot,
     NativeEaInterval,
     StableBlockIdentity,
 )
@@ -1217,6 +1219,8 @@ class PreoptUnionSemanticNativeBodyMaterializer:
         Callable[[FragmentPlan, FragmentNativeBody, PreparedNativeBodyFact], None]
         | None
     ) = None
+    current_identity_index: object | None = None
+    current_mba_identity_binding: CurrentMbaIdentityBindingSnapshot | None = None
 
     @staticmethod
     def _oriented_predicate_producers(
@@ -4022,6 +4026,145 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             preserved_terminators_by_block_id=(preserved_terminators_by_block_id),
         )
 
+    def _prepare_current_materialized_direct_body(
+        self,
+        *,
+        plan: FragmentPlan,
+        native_body: FragmentNativeBody,
+    ) -> PreparedNativeBodyPreparation | None:
+        """Reuse an optimized, provenance-mapped normalization body at GLBOPT1.
+
+        Frontend normalization may already have published a simple handler
+        chain from the same PREOPT union.  Re-importing the raw template after
+        GLBOPT1 would reintroduce flag plumbing after Hex-Rays' normal local
+        simplification window.  For a closed direct chain only, clone the
+        current materialized instructions before any live mutation.  Every
+        retained instruction must still carry its exact native origin; all
+        conditional, call, rewrite, and unowned shapes fall back to the
+        immutable PREOPT preparation path.
+        """
+        if (
+            int(self.mba.maturity) != int(ida_hexrays.MMAT_GLBOPT1)
+            or getattr(plan, "normalization_authority", None) is None
+        ):
+            return None
+        terminal_block_ids = set(native_body.terminal_block_ids)
+        operations_by_source = {
+            block_id: tuple(
+                operation
+                for operation in plan.operations
+                if operation.source_block_id == block_id
+            )
+            for block_id in native_body.block_ids
+        }
+        for block_id, operations in operations_by_source.items():
+            if block_id in terminal_block_ids:
+                if operations:
+                    return None
+                continue
+            if (
+                len(operations) != 1
+                or len(operations[0].edges) != 1
+                or operations[0].edges[0].role is not SemanticEdgeRole.DIRECT
+                or operations[0].direct_transfer_rewrite is not None
+                or operations[0].computed_branch_normalization is not None
+                or operations[0].storage_predicate_materialization is not None
+            ):
+                return None
+
+        (
+            _template,
+            _immutable_matched,
+            immutable_prepared,
+            direct_transfer_operation_ids,
+        ) = self._prepare_native_body(plan=plan, native_body=native_body)
+        mba_identity = stable_mba_identity(self.mba)
+        receipt_origins = (
+            {}
+            if self.current_mba_identity_binding is None
+            else dict(self.current_mba_identity_binding.instruction_origins)
+        )
+        prepared_rows: list[tuple[str, int, tuple[tuple[int, object], ...]]] = []
+        for block_id in native_body.block_ids:
+            plan_block = plan.block(block_id)
+            identity = plan_block.stable_identity
+            if identity is None:
+                return None
+            source = None
+            if (
+                self.current_identity_index is not None
+                and self.current_mba_identity_binding is not None
+                and getattr(self.current_identity_index, "native_key", None)
+                == identity.native_key
+            ):
+                rebound = self.current_identity_index.rebind_region_entry(identity)
+                if rebound.block is not None:
+                    source = self.mba.get_mblock(int(rebound.block.serial))
+            if source is None:
+                source = find_materialized_handler_block_by_native_ea(
+                    self.mba,
+                    int(plan_block.semantic_anchor_ea),
+                )
+            if source is None:
+                return None
+            source_instructions = tuple(_instructions(source))
+            operations = operations_by_source[block_id]
+            if (
+                operations
+                and source_instructions
+                and int(source_instructions[-1].opcode) == int(ida_hexrays.m_goto)
+            ):
+                source_instructions = source_instructions[:-1]
+            if not source_instructions:
+                return None
+            block_rows: list[tuple[int, object]] = []
+            for source_instruction in source_instructions:
+                live_ea = int(source_instruction.ea)
+                native_ea = receipt_origins.get(
+                    live_ea,
+                    _IMPORTED_INSTRUCTION_ORIGINS.get((mba_identity, live_ea)),
+                )
+                if (
+                    native_ea is None
+                    or not identity.native_ranges.contains(int(native_ea))
+                ):
+                    return None
+                block_rows.append(
+                    (int(native_ea), ida_hexrays.minsn_t(source_instruction))
+                )
+            if (
+                block_id in terminal_block_ids
+                and len(block_rows) == 1
+                and int(block_rows[0][1].opcode) == int(ida_hexrays.m_ret)
+            ):
+                immutable_value_rows = tuple(
+                    (int(native_ea), ida_hexrays.minsn_t(instruction))
+                    for native_ea, instruction in immutable_prepared[block_id]
+                    if int(instruction.opcode)
+                    not in {int(ida_hexrays.m_pop), int(ida_hexrays.m_ret)}
+                )
+                if not immutable_value_rows:
+                    return None
+                block_rows = [*immutable_value_rows, *block_rows]
+            prepared_rows.append(
+                (block_id, int(source.flags), tuple(block_rows))
+            )
+        preparation = build_prepared_native_body(
+            plan=plan,
+            native_body=native_body,
+            rows=tuple(prepared_rows),
+            preserved_boundary_exits_by_block_id={},
+            direct_transfer_operation_ids=direct_transfer_operation_ids,
+        )
+        logger.info(
+            "GLBOPT1 native body uses receipt-bound materialized instructions: "
+            "body=%s blocks=%d rows=%d",
+            native_body.body_id,
+            len(prepared_rows),
+            sum(len(rows) for _block_id, _flags, rows in prepared_rows),
+        )
+        return preparation
+
     @staticmethod
     def _generated_preserved_transfer_authority(
         *,
@@ -4155,6 +4298,15 @@ class PreoptUnionSemanticNativeBodyMaterializer:
             raise SemanticFragmentBackendRejected(
                 "PREOPT native body requires a PREOPT or GLBOPT1 destination MBA"
             )
+        current_materialized = self._prepare_current_materialized_direct_body(
+            plan=plan,
+            native_body=native_body,
+        )
+        if current_materialized is not None:
+            observer = self.prepared_fact_observer
+            if observer is not None:
+                observer(plan, native_body, current_materialized.fact)
+            return current_materialized
         (
             _template,
             matched,
@@ -8773,6 +8925,73 @@ def _prepare_terminal_return_carrier_instruction(
     return assignment
 
 
+def _preflight_native_terminal_return_carriers(
+    mba: object,
+    function_ea: int,
+    selected_templates: tuple[DetachedSnippetTemplate, ...],
+) -> dict[int, object] | None:
+    """Bind exact captured carrier writes already owned by an imported body.
+
+    A terminal carrier can be part of the ordinary native body even when the
+    frontend plan has no boundary port.  Protect that existing assignment at
+    copy time, before Hex-Rays can discard it as an apparently dead ABI write.
+    Native EA plus full instruction equality is the authority; duplicate or
+    drifting captures make the import abstain rather than persist a guess.
+    """
+    captured_by_ea: dict[int, list[object]] = {}
+    for selected in selected_templates:
+        for block in selected.blocks:
+            for instruction in block.instructions:
+                captured_by_ea.setdefault(int(instruction.ea), []).append(instruction)
+
+    candidates_by_ea: dict[int, list[_TerminalReturnCarrierTemplate]] = {}
+    for (
+        owner_ea,
+        _source_ea,
+        _state,
+    ), carrier_template in _TERMINAL_RETURN_CARRIER_TEMPLATES.items():
+        native_ea = int(carrier_template.instruction.ea)
+        if int(owner_ea) != int(function_ea) or native_ea not in captured_by_ea:
+            continue
+        candidates_by_ea.setdefault(native_ea, []).append(carrier_template)
+
+    prepared_by_ea: dict[int, object] = {}
+    for native_ea, candidates in candidates_by_ea.items():
+        captured = captured_by_ea[native_ea]
+        matching = tuple(
+            candidate
+            for candidate in candidates
+            if all(
+                _same_terminal_carrier_write(
+                    instruction,
+                    candidate.instruction,
+                )
+                for instruction in captured
+            )
+        )
+        if len(matching) != 1:
+            logger.info(
+                "detached snippet import abstained: carrier=0x%X "
+                "captures=%d templates=%d matches=%d "
+                "reason=native_terminal_carrier_identity",
+                native_ea,
+                len(captured),
+                len(candidates),
+                len(matching),
+            )
+            return None
+        prepared = _prepare_terminal_return_carrier_instruction(mba, matching[0])
+        if prepared is None or not _is_stable_terminal_carrier_write(prepared):
+            logger.info(
+                "detached snippet import abstained: carrier=0x%X "
+                "reason=native_terminal_carrier_drift",
+                native_ea,
+            )
+            return None
+        prepared_by_ea[native_ea] = prepared
+    return prepared_by_ea
+
+
 def _destination_stack_map(
     mba: object,
     template: DetachedSnippetTemplate,
@@ -11217,8 +11436,20 @@ def _apply_imported_terminal_return_carriers(
     changed = 0
     for insertion in insertions:
         if insertion.already_present:
+            return_writes = tuple(
+                instruction
+                for instruction in _instructions(insertion.target_block)
+                if int(instruction.d.t) == int(ida_hexrays.mop_r)
+                and int(instruction.d.r) == _return_mreg()
+            )
+            if len(return_writes) != 1:
+                raise RuntimeError(
+                    "preflighted terminal return carrier disappeared before apply"
+                )
+            return_writes[0].set_persistent()
             continue
         assignment = ida_hexrays.minsn_t(insertion.prepared_instruction)
+        assignment.set_persistent()
         native_carrier_ea = int(assignment.ea)
         imported_carrier_ea = int(mba.alloc_fict_ea(int(mba.entry_ea) + 1))
         assignment.setaddr(imported_carrier_ea)
@@ -12171,6 +12402,14 @@ def _materialize_detached_snippet_templates(
             "native_preopt_ranges_require_raw_calls"
         )
         return {}
+
+    native_terminal_carriers = _preflight_native_terminal_return_carriers(
+        mba,
+        function_ea,
+        selected,
+    )
+    if native_terminal_carriers is None:
+        return {}
     raw_preopt_import = preserve_raw_calls and required_maturity == int(
         ida_hexrays.MMAT_PREOPTIMIZED
     )
@@ -12653,6 +12892,22 @@ def _materialize_detached_snippet_templates(
                         int(block.native_entry_ea),
                     )
                     return {}
+                native_terminal_carrier = native_terminal_carriers.get(
+                    native_instruction_ea
+                )
+                if native_terminal_carrier is not None:
+                    if not _same_terminal_carrier_write(
+                        instruction,
+                        native_terminal_carrier,
+                    ):
+                        logger.info(
+                            "detached snippet import abstained: target=0x%X "
+                            "carrier=0x%X reason=native_terminal_carrier_rebase",
+                            int(template.target_ea),
+                            native_instruction_ea,
+                        )
+                        return {}
+                    instruction.set_persistent()
                 # Multiple reachable definitions at one address are
                 # indistinguishable to Hex-Rays value numbering (INTERR 50342).
                 # Detached native EAs may also lie outside the destination MBA
@@ -13337,53 +13592,6 @@ def clear_terminal_return_carrier_templates() -> None:
     _TERMINAL_RETURN_CARRIER_TEMPLATES.clear()
 
 
-def refine_transient_terminal_return_type(mba: object, function_ea: int) -> bool:
-    """Refine a guessed void MBA type from proven ABI return assignments.
-
-    This mutates only the transient ``mba.idb_type``. User-final types are
-    authoritative, and inconsistent carrier widths abstain.
-    """
-    if bool(mba.final_type):
-        return False
-    templates = tuple(
-        template
-        for (owner_ea, _source_ea, _state), template in (
-            _TERMINAL_RETURN_CARRIER_TEMPLATES.items()
-        )
-        if int(owner_ea) == int(function_ea)
-    )
-    if not templates or any(
-        not _is_stable_terminal_carrier_write(template.instruction)
-        for template in templates
-    ):
-        return False
-    carrier_widths = {int(template.instruction.d.size) for template in templates}
-    if len(carrier_widths) != 1:
-        return False
-    carrier_width = next(iter(carrier_widths))
-    integer_base_types = {
-        1: int(ida_typeinf.BT_INT8),
-        2: int(ida_typeinf.BT_INT16),
-        4: int(ida_typeinf.BT_INT32),
-        8: int(ida_typeinf.BT_INT64),
-    }
-    base_type = integer_base_types.get(carrier_width)
-    function_type = mba.idb_type
-    if (
-        base_type is None
-        or not function_type.is_func()
-        or not function_type.get_rettype().is_void()
-    ):
-        return False
-    return_type = ida_typeinf.tinfo_t(int(base_type) | int(ida_typeinf.BTMT_UNKSIGN))
-    if int(return_type.get_size()) != carrier_width:
-        return False
-    if int(function_type.set_func_rettype(return_type)) != int(ida_typeinf.TERR_OK):
-        return False
-    mba.final_type = True
-    return True
-
-
 def has_terminal_return_carrier_template(
     function_ea: int,
     request: TerminalReturnCarrierRequest,
@@ -13435,8 +13643,15 @@ def _unique_terminal_return_carrier_candidate(
     request: TerminalReturnCarrierRequest,
     mba: object,
 ) -> tuple[object, object, tuple[object, ...]] | None:
-    """Return one exact state write, carrier, and intervening corridor."""
-    candidates: list[tuple[object, object, tuple[object, ...]]] = []
+    """Return one exact state write, carrier, and proven route corridor.
+
+    A handler may materialize the ABI return value after it writes the
+    terminal state, or the routed terminal block may materialize that value
+    immediately before its epilogue.  Both are the same semantic route.  The
+    capture remains fail-closed: it requires one state writer and one carrier
+    across the source and terminal identities.
+    """
+    source_rows: list[tuple[object, object, tuple[object, ...]]] = []
     for block in _blocks_containing_ea(mba, int(request.source_handler_ea)):
         instructions = _instructions(block)
         state_writes = tuple(
@@ -13446,24 +13661,42 @@ def _unique_terminal_return_carrier_candidate(
         )
         if len(state_writes) != 1:
             continue
-        state_write = state_writes[0]
-        state_index = instructions.index(state_write)
-        block_carriers = tuple(
-            instruction
-            for instruction in instructions[state_index + 1 :]
-            if _is_stable_terminal_carrier_write(instruction)
-        )
-        if len(block_carriers) != 1:
-            continue
-        carrier = block_carriers[0]
-        carrier_index = instructions.index(carrier)
+        source_rows.append((block, state_writes[0], instructions))
+    if len(source_rows) != 1:
+        return None
+
+    source_block, state_write, source_instructions = source_rows[0]
+    state_index = source_instructions.index(state_write)
+    candidates: list[tuple[object, object, tuple[object, ...]]] = []
+    source_carriers = tuple(
+        instruction
+        for instruction in source_instructions[state_index + 1 :]
+        if _is_stable_terminal_carrier_write(instruction)
+    )
+    for carrier in source_carriers:
+        carrier_index = source_instructions.index(carrier)
         candidates.append(
             (
                 state_write,
                 carrier,
-                tuple(instructions[state_index : carrier_index + 1]),
+                tuple(source_instructions[state_index : carrier_index + 1]),
             )
         )
+
+    for terminal_block in _blocks_containing_ea(
+        mba,
+        int(request.terminal_target_ea),
+    ):
+        terminal_instructions = _instructions(terminal_block)
+        block_carriers = tuple(
+            instruction
+            for instruction in terminal_instructions
+            if _is_stable_terminal_carrier_write(instruction)
+        )
+        for carrier in block_carriers:
+            if terminal_block is source_block and carrier in source_carriers:
+                continue
+            candidates.append((state_write, carrier, (state_write, carrier)))
     return candidates[0] if len(candidates) == 1 else None
 
 
@@ -14492,7 +14725,6 @@ __all__ = [
     "materialize_detached_snippet_templates",
     "materialize_preopt_union_snippet_templates",
     "native_stack_frame_offsets_for_ranges",
-    "refine_transient_terminal_return_type",
     "reconcile_imported_callinfo_with_live_native_calls",
     "redirect_live_target_predecessors",
     "restore_call_result_carriers",

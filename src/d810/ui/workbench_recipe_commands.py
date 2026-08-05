@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from types import SimpleNamespace
 
 from d810.core.provider_phase import provider_phase_snapshot_from_level
@@ -11,7 +12,6 @@ from d810.manager.workbench_recipe_models import (
     RecipeValidation,
 )
 from d810.ui.workbench_recipe_logic import canvas_add_candidates, recipe_command_request
-from d810.passes.state_machine_options import StateMachineCffOptions
 
 
 class WorkbenchRecipeAdapter:
@@ -153,10 +153,12 @@ class WorkbenchRecipeAdapter:
         draft: PipelineRecipeDraft,
         min_state_constant: int,
     ) -> tuple[PipelineRecipeDraft, RecipeValidation]:
+        current = self._state.get_workbench_recipe_state_cff_options(draft)
         return self._edited(
             self._state.replace_workbench_recipe_state_cff_options(
                 draft,
-                StateMachineCffOptions(
+                dataclasses.replace(
+                    current,
                     min_state_constant=min_state_constant,
                 ),
             )

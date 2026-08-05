@@ -2,8 +2,14 @@ from __future__ import annotations
 
 import sys
 from types import ModuleType, SimpleNamespace
+import dataclasses
 
 from d810.manager.workbench_recipe_models import PassCatalogEntry
+from d810.passes.state_machine_options import (
+    StateMachineCffFamily,
+    StateMachineCffOptions,
+    StateMachineRecoveryStrategy,
+)
 from d810.ui.workbench_recipe_logic import CanvasAddError
 from d810.ui.workbench_recipe_commands import WorkbenchRecipeAdapter
 
@@ -183,7 +189,15 @@ def test_save_and_current_state_use_generation_safe_state_facades():
 def test_state_cff_threshold_edit_uses_the_typed_state_facade_once():
     draft = _draft()
     calls: list[object] = []
+    current = StateMachineCffOptions(
+        min_state_constant=0x10000,
+        family=StateMachineCffFamily.TIGRESS_INDIRECT,
+        recovery_strategy=StateMachineRecoveryStrategy.REDUCED_PRODUCT,
+    )
     state = SimpleNamespace(
+        get_workbench_recipe_state_cff_options=lambda candidate: (
+            calls.append(("get", candidate)) or current
+        ),
         replace_workbench_recipe_state_cff_options=lambda candidate, options: (
             calls.append((candidate, options)) or "updated"
         ),
@@ -197,9 +211,10 @@ def test_state_cff_threshold_edit_uses_the_typed_state_facade_once():
 
     assert updated == "updated"
     assert validation == "validation"
-    assert calls[0][0] is draft
-    assert calls[0][1].min_state_constant == 0x8000
-    assert calls[1] == ("validate", "updated", None)
+    assert calls[0] == ("get", draft)
+    assert calls[1][0] is draft
+    assert calls[1][1] == dataclasses.replace(current, min_state_constant=0x8000)
+    assert calls[2] == ("validate", "updated", None)
 
 
 def _canvas_catalog() -> tuple[PassCatalogEntry, ...]:

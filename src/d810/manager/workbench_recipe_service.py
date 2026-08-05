@@ -25,6 +25,7 @@ from d810.passes.state_machine_options import (
     STATE_MACHINE_NATIVE_PASS_IDS,
     StateMachineCffOptions,
     replace_state_machine_cff_options,
+    state_machine_cff_options_from_config,
 )
 
 
@@ -353,6 +354,41 @@ class RecipeService:
                 config_json=_canonical_json(updated.to_dict()),
             )
         return self._replace_passes(draft, passes)
+
+    def state_cff_options(
+        self,
+        draft: PipelineRecipeDraft,
+    ) -> StateMachineCffOptions:
+        """Read the single typed option set owned by the canonical CFF spine."""
+        items = tuple(
+            item
+            for item in draft.passes
+            if item.pass_id in STATE_MACHINE_NATIVE_PASS_IDS
+        )
+        pass_ids = tuple(item.pass_id for item in items)
+        indexes = tuple(draft.passes.index(item) for item in items)
+        contiguous = bool(indexes) and indexes == tuple(
+            range(indexes[0], indexes[0] + len(indexes))
+        )
+        if pass_ids != STATE_MACHINE_NATIVE_PASS_IDS or not contiguous:
+            raise RecipeEditError(
+                "state-CFF option access requires the complete canonical "
+                "state-CFF spine"
+            )
+        try:
+            options = tuple(
+                state_machine_cff_options_from_config(
+                    PipelineConfig.from_dict(json.loads(item.config_json))
+                )
+                for item in items
+            )
+        except (PipelineConfigError, TypeError, ValueError) as exc:
+            raise RecipeEditError(f"invalid state-CFF options: {exc}") from exc
+        if any(candidate != options[0] for candidate in options[1:]):
+            raise RecipeEditError(
+                "the canonical state-CFF spine must use the same typed options"
+            )
+        return options[0]
 
     def validate(
         self,

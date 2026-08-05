@@ -37,6 +37,23 @@ def _exact_flag_result_register(
     return _one_byte_register(producers[0].d)
 
 
+def _exact_truthy_flag_predicate(
+    instructions: Sequence[InsnSnapshot],
+    *,
+    condition_producer_ea: int,
+    branch_register: int,
+) -> PredicateKind | None:
+    """Recover the one typed flag result consumed by a truthiness branch."""
+    matches = tuple(
+        instruction.predicate_kind
+        for instruction in instructions
+        if int(instruction.ea) == int(condition_producer_ea)
+        and instruction.predicate_kind not in {None, PredicateKind.TRUTHY}
+        and _one_byte_register(instruction.d) == int(branch_register)
+    )
+    return matches[0] if len(matches) == 1 else None
+
+
 def _exact_signed_flag_xor(
     expression: MopSnapshot | None,
     *,
@@ -112,6 +129,16 @@ def exact_branch_predicate_kind(
     if not branch.is_conditional_jump:
         return None
 
+    branch_register = _one_byte_register(branch.l)
+    if branch_register is not None:
+        direct_flag_predicate = _exact_truthy_flag_predicate(
+            instructions,
+            condition_producer_ea=condition_producer_ea,
+            branch_register=branch_register,
+        )
+        if direct_flag_predicate is not None:
+            return direct_flag_predicate
+
     sign_register = _exact_flag_result_register(
         instructions,
         condition_producer_ea=condition_producer_ea,
@@ -149,7 +176,6 @@ def exact_branch_predicate_kind(
         )
     ):
         return PredicateKind.SGE
-    branch_register = _one_byte_register(branch.l)
     if branch_register is not None and _exact_sequential_signed_flag_complement(
         instructions,
         branch_register=branch_register,

@@ -28,6 +28,8 @@ from d810.optimizers.microcode.flow.flattening.state_machine_cff_unflattener imp
     _materialized_identity_evidence_ready,
     _portable_materialized_state_route_evidence,
     _postvalidated_canonical_terminal_state_targets,
+    _rebind_current_instruction_owner,
+    _rebind_current_native_ea,
     _rebind_portable_materialized_state_routes,
     _request_materialized_recovery_generated_restart,
     _resolver_native_state_register,
@@ -1183,6 +1185,47 @@ def test_materialized_handler_targets_rebind_to_current_mba_blocks() -> None:
     assert missing == ((0x33333333, 0x40DEAD),)
 
 
+def test_materialized_handler_rebind_uses_receipted_current_native_identity() -> None:
+    block = SimpleNamespace(serial=40)
+    observed = []
+
+    def rebind(identity):
+        observed.append(identity)
+        return SimpleNamespace(block=block)
+
+    index = SimpleNamespace(native_key=NATIVE_KEY, rebind_identity=rebind)
+
+    assert _rebind_current_native_ea(index, 0x40EAA7) is block
+    assert len(observed) == 1
+    assert observed[0].native_ranges.intervals == (
+        NativeEaInterval(0x40EAA7, 0x40EAA8),
+    )
+    assert _rebind_current_native_ea(None, 0x40EAA7) is None
+
+
+def test_materialized_state_write_rebinds_through_imported_instruction_origin() -> None:
+    block = SimpleNamespace(serial=40)
+    observed = []
+
+    def rebind(identity):
+        observed.append(identity)
+        return SimpleNamespace(block=block)
+
+    index = SimpleNamespace(native_key=NATIVE_KEY, rebind_identity=rebind)
+
+    assert (
+        _rebind_current_instruction_owner(
+            index,
+            {0xF1C0000000000060: 0x40EAAF},
+            0xF1C0000000000060,
+        )
+        is block
+    )
+    assert observed[0].native_ranges.intervals == (
+        NativeEaInterval(0x40EAAF, 0x40EAB0),
+    )
+
+
 def test_materialized_handler_target_rebinds_through_exact_entry_route_source() -> None:
     blocks = {44: SimpleNamespace(insn_snapshots=(object(),))}
     flow_graph = SimpleNamespace(get_block=blocks.get)
@@ -1487,7 +1530,14 @@ def test_complete_materialized_identity_evidence_reopens_the_family_gate(
         canonical_composition_ready=True,
     )
     assert composition_family is not None
-    assert composition_family.name == "materialized_computed_goto_continuation"
+    assert composition_family.name == "canonical_computed_goto_composition"
+    assert composition_family.pipeline_for(composition_family, {}) == tuple(
+        unflat_mod.semantic_evidence_state_machine_passes()
+    )
+    assert (
+        composition_family.pipeline_for(composition_family, {})[-1].backend_route.value
+        == "fragment_publication"
+    )
     assert (
         rule._select_family(
             mba,

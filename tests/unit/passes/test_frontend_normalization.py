@@ -308,10 +308,11 @@ def _conditional_select_case(
     nested_signed_truthiness: bool = False,
     mismatched_signed_flag_register: bool = False,
     relocated_instruction_eas: tuple[int, ...] = (),
+    predicate_anchor_is_live_branch: bool = False,
 ) -> tuple[FlowGraph, FrontendNormalizationEvidence]:
     condition_ea = 0x1100
     predicate_anchor_ea = 0x1101
-    live_predicate_ea = 0x1108
+    live_predicate_ea = predicate_anchor_ea if predicate_anchor_is_live_branch else 0x1108
     unresolved_transfer_ea = 0x110F
     source_identity = StableBlockIdentity.from_intervals(
         (NativeEaInterval(predicate_anchor_ea, 0x1110),),
@@ -342,7 +343,11 @@ def _conditional_select_case(
                 anchor_ea=0x1300,
             ),
         ),
-        predicate_kind=PredicateKind.SLT,
+        predicate_kind=(
+            PredicateKind.NE
+            if predicate_anchor_is_live_branch
+            else PredicateKind.SLT
+        ),
         predicate_anchor_ea=predicate_anchor_ea,
         condition_producer_ea=condition_ea,
         flag_corridor=(condition_identity, source_identity),
@@ -356,7 +361,11 @@ def _conditional_select_case(
         ),
     )
     source_prefix = (_insn(condition_ea, InsnKind.SUB),)
-    live_predicate_kind = PredicateKind.SGE
+    live_predicate_kind = (
+        PredicateKind.EQ
+        if predicate_anchor_is_live_branch
+        else PredicateKind.SGE
+    )
     live_predicate_left = None
     if nested_signed_truthiness:
         sign_register = MopSnapshot(
@@ -406,6 +415,14 @@ def _conditional_select_case(
                 value_op_kind=ValueOpKind.OVERFLOW_FLAG,
             ),
         )
+    source_routing_prefix = (
+        ()
+        if predicate_anchor_is_live_branch
+        else (
+            _insn(predicate_anchor_ea, InsnKind.MOV),
+            _insn(0x1103, InsnKind.MOV),
+        )
+    )
     graph = FlowGraph(
         blocks={
             0: _block(
@@ -421,9 +438,8 @@ def _conditional_select_case(
                 (2, 3),
                 (0,),
                 source_prefix
+                + source_routing_prefix
                 + (
-                    _insn(predicate_anchor_ea, InsnKind.MOV),
-                    _insn(0x1103, InsnKind.MOV),
                     _insn(
                         live_predicate_ea,
                         InsnKind.COND_JUMP,
@@ -605,6 +621,33 @@ def test_live_conditional_select_is_one_detached_normalization_contract() -> Non
                 if block.semantic_anchor_ea == 0x110A
             ),
         )
+    )
+
+
+def test_live_cmov_skip_branch_sharing_predicate_anchor_is_not_faithful() -> None:
+    graph, evidence = _conditional_select_case(
+        predicate_anchor_is_live_branch=True,
+    )
+    blocks = dict(graph.blocks)
+    blocks[6] = replace(blocks[1], serial=6, preds=())
+    blocks[3] = replace(blocks[3], preds=(*blocks[3].preds, 6))
+    graph = FlowGraph(
+        blocks=blocks,
+        entry_serial=graph.entry_serial,
+        func_ea=graph.func_ea,
+    )
+
+    plan = plan_frontend_computed_branch_normalization(graph, evidence)
+
+    assert plan is not None
+    normalization = plan.operations[0].computed_branch_normalization
+    assert normalization is not None
+    assert normalization.predicate_kind is PredicateKind.NE
+    assert normalization.conditional_select_envelope is not None
+    assert normalization.conditional_select_envelope.predicate_ea == 0x1101
+    assert (
+        normalization.conditional_select_envelope.observed_predicate_kind
+        is PredicateKind.EQ
     )
 
 
@@ -2486,7 +2529,7 @@ def test_normalization_publishes_only_owned_boundary_roots() -> None:
     } <= external_anchors
 
 
-def test_normalization_rejects_when_original_route_corridor_is_not_closed() -> None:
+def test_normalization_ignores_unreachable_original_route_predecessor() -> None:
     graph = FlowGraph(
         blocks={
             0: _block(
@@ -2539,26 +2582,10 @@ def test_normalization_rejects_when_original_route_corridor_is_not_closed() -> N
         ),
     )
 
-    with pytest.raises(FrontendNormalizationCorridorRejected) as exc_info:
-        plan_frontend_computed_branch_normalization(graph, evidence)
+    plan = plan_frontend_computed_branch_normalization(graph, evidence)
 
-    rejection = exc_info.value
-    assert str(rejection).startswith("original route corridor is not closed")
-    assert rejection.failure.to_payload() == {
-        "reason_code": "external_predecessor",
-        "edge_role": "incoming_predecessor",
-        "context_anchor_ea": "0x1000",
-        "corridor_block": {
-            "label": "blk2@0x1200",
-            "serial": 2,
-            "anchor_ea": "0x1200",
-        },
-        "boundary_block": {
-            "label": "blk4@0x1400",
-            "serial": 4,
-            "anchor_ea": "0x1400",
-        },
-    }
+    assert plan is not None
+    assert plan.operations[0].operation_id == "direct@0x1100"
 
 
 def test_normalization_ids_distinguish_same_range_topology_and_instruction_blocks() -> (

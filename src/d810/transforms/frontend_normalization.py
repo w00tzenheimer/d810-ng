@@ -13,6 +13,7 @@ from d810.analyses.control_flow.frontend_normalization import (
     NativeTransferEndpoint,
     NativeTransferShape,
     native_anchor_matches,
+    native_source_matches,
     plan_detached_semantic_closure_import,
     unique_block_for_native_anchor,
 )
@@ -237,6 +238,25 @@ class _BoundImportedConditionalSelectEnvelope:
     join: NativeBlock
 
 
+def _entry_reachable_serials(graph: FlowGraph) -> frozenset[int]:
+    reachable: set[int] = set()
+    pending = [int(graph.entry_serial)]
+    while pending:
+        serial = pending.pop()
+        if serial in reachable:
+            continue
+        block = graph.blocks.get(serial)
+        if block is None:
+            continue
+        reachable.add(serial)
+        pending.extend(
+            int(successor)
+            for successor in block.succs
+            if int(successor) not in reachable
+        )
+    return frozenset(reachable)
+
+
 def _bind_corridor_block(
     graph: FlowGraph,
     identity: StableBlockIdentity,
@@ -258,6 +278,13 @@ def _bind_corridor_block(
         )
         if len(preferred) == 1:
             return preferred[0]
+    if len(matches) > 1:
+        reachable = _entry_reachable_serials(graph)
+        reachable_matches = tuple(
+            block for block in matches if int(block.serial) in reachable
+        )
+        if len(reachable_matches) == 1:
+            return reachable_matches[0]
     return matches[0] if len(matches) == 1 else None
 
 
@@ -265,23 +292,8 @@ def _bind_source_block(
     graph: FlowGraph,
     proof: NativeIndirectTransferProof,
 ) -> BlockSnapshot | None:
-    matches = native_anchor_matches(
-        graph,
-        proof.source_identity,
-        proof.source_anchor_ea,
-    )
-    if len(matches) == 1:
-        return matches[0]
-    if proof.shape is not NativeTransferShape.CONDITIONAL:
-        return None
-    conditional_owners = tuple(
-        block
-        for block in matches
-        if block.tail is not None
-        and block.tail.is_conditional_jump
-        and int(block.tail.ea) == int(proof.predicate_anchor_ea)
-    )
-    return conditional_owners[0] if len(conditional_owners) == 1 else None
+    matches = native_source_matches(graph, proof)
+    return matches[0] if len(matches) == 1 else None
 
 
 def _bind_proof(
@@ -373,7 +385,6 @@ def _bind_conditional_select_envelope(
         or len(source.succs) != 2
         or tail is None
         or not tail.is_conditional_jump
-        or int(tail.ea) == int(proof.predicate_anchor_ea)
     ):
         return None
     observed_predicate = exact_branch_predicate_kind(
@@ -399,6 +410,7 @@ def _bind_conditional_select_envelope(
         if observed_predicate is proof.predicate_kind
         else nonexplicit_targets[0]
     )
+    reachable = _entry_reachable_serials(graph)
 
     candidates: list[tuple[BlockSnapshot, BlockSnapshot]] = []
     for selected_serial in source.succs:
@@ -420,8 +432,17 @@ def _bind_conditional_select_envelope(
             or semantic_true_target != int(selected.serial)
             or selected.kind is not BlockKind.ONE_WAY
             or selected.succs != (int(join.serial),)
-            or tuple(graph.predecessors(int(selected.serial))) != (int(source.serial),)
-            or set(graph.predecessors(int(join.serial)))
+            or tuple(
+                predecessor
+                for predecessor in graph.predecessors(int(selected.serial))
+                if int(predecessor) in reachable
+            )
+            != (int(source.serial),)
+            or {
+                int(predecessor)
+                for predecessor in graph.predecessors(int(join.serial))
+                if int(predecessor) in reachable
+            }
             != {int(source.serial), int(selected.serial)}
             or len(selected_instructions) != 1
             or selected_instructions[0].value_op_kind is not ValueOpKind.MOVE
@@ -685,11 +706,7 @@ def _bind_imported_proof(
     proof: NativeIndirectTransferProof,
 ) -> _ImportedTransferProof | None:
     """Bind a proof only when its absent source belongs uniquely to the closure."""
-    live_source_matches = native_anchor_matches(
-        graph,
-        proof.source_identity,
-        proof.source_anchor_ea,
-    )
+    live_source_matches = native_source_matches(graph, proof)
     if live_source_matches:
         raise FrontendNormalizationEvidenceRejected(
             f"transfer proof {proof.proof_id!r} has "
@@ -1025,6 +1042,7 @@ def _projected_route_corridor_serials(
         )
 
     relevant = {int(serial) for serial in relevant_serials}
+    entry_reachable = _entry_reachable_serials(graph)
     corridor: set[int] = set()
     pending: deque[tuple[int, int]] = deque()
     for serial in sorted(relevant):
@@ -1070,6 +1088,7 @@ def _projected_route_corridor_serials(
             int(predecessor)
             for predecessor in graph.predecessors(serial)
             if int(predecessor) not in closed_serials
+            and int(predecessor) in entry_reachable
         )
         if external_predecessors:
             reject(
@@ -1157,12 +1176,16 @@ def plan_frontend_computed_branch_normalization(
             and binding.source.kind is BlockKind.TWO_WAY
             and tail is not None
             and tail.is_conditional_jump
-            and int(tail.ea) != int(proof.predicate_anchor_ea)
         )
         if not is_split_conditional_candidate:
             continue
         envelope = _bind_conditional_select_envelope(graph, binding)
         if envelope is None:
+            if int(tail.ea) == int(proof.predicate_anchor_ea):
+                # Sharing the native predicate EA is also the ordinary
+                # conditional-owner shape. Only promote it to a split select
+                # when the full selected-value/join envelope binds exactly.
+                continue
             raise FrontendNormalizationEvidenceRejected(
                 f"transfer proof {proof.proof_id!r} live conditional-select "
                 "envelope is incomplete or ambiguous; "

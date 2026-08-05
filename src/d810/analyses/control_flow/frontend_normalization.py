@@ -468,6 +468,49 @@ def native_anchor_matches(
     )
 
 
+def native_source_matches(
+    graph: FlowGraph,
+    proof: NativeIndirectTransferProof,
+) -> tuple[BlockSnapshot, ...]:
+    """Bind one source through exact shape and entry reachability authority."""
+    matches = native_anchor_matches(
+        graph,
+        proof.source_identity,
+        proof.source_anchor_ea,
+    )
+    if len(matches) <= 1 or proof.shape is not NativeTransferShape.CONDITIONAL:
+        return matches
+    conditional_owners = tuple(
+        block
+        for block in matches
+        if block.tail is not None
+        and block.tail.is_conditional_jump
+        and int(block.tail.ea) == int(proof.predicate_anchor_ea)
+    )
+    if len(conditional_owners) <= 1:
+        return conditional_owners
+
+    reachable: set[int] = set()
+    pending = [int(graph.entry_serial)]
+    while pending:
+        serial = pending.pop()
+        if serial in reachable:
+            continue
+        block = graph.blocks.get(serial)
+        if block is None:
+            continue
+        reachable.add(serial)
+        pending.extend(
+            int(successor)
+            for successor in block.succs
+            if int(successor) not in reachable
+        )
+    reachable_owners = tuple(
+        block for block in conditional_owners if int(block.serial) in reachable
+    )
+    return reachable_owners if len(reachable_owners) == 1 else conditional_owners
+
+
 def unique_block_for_native_anchor(
     graph: FlowGraph,
     identity: StableBlockIdentity,
@@ -578,24 +621,16 @@ def plan_detached_semantic_closure_import(
     missing_anchors: set[int] = set()
     proof_ids: set[str] = set()
     for proof in evidence.transfer_proofs:
-        source_matches = native_anchor_matches(
-            graph,
-            proof.source_identity,
-            proof.source_anchor_ea,
-        )
-        if len(source_matches) > 1 and proof.shape is NativeTransferShape.CONDITIONAL:
-            conditional_owners = tuple(
-                block
-                for block in source_matches
-                if block.tail is not None
-                and block.tail.is_conditional_jump
-                and int(block.tail.ea) == int(proof.predicate_anchor_ea)
-            )
-            if len(conditional_owners) == 1:
-                source_matches = conditional_owners
+        source_matches = native_source_matches(graph, proof)
         if len(source_matches) > 1:
             raise FrontendNormalizationEvidenceRejected(
-                f"native source 0x{proof.source_anchor_ea:X} is ambiguous"
+                f"native source 0x{proof.source_anchor_ea:X} is ambiguous: "
+                + ", ".join(
+                    f"blk{int(block.serial)}@0x{int(block.start_ea):X}"
+                    f" preds={tuple(int(value) for value in block.preds)}"
+                    f" succs={tuple(int(value) for value in block.succs)}"
+                    for block in source_matches
+                )
             )
         if not source_matches:
             missing_anchors.add(int(proof.source_anchor_ea))
@@ -697,6 +732,7 @@ __all__ = [
     "NativeTransferEndpoint",
     "NativeTransferShape",
     "native_anchor_matches",
+    "native_source_matches",
     "plan_detached_semantic_closure_import",
     "unique_block_for_native_anchor",
 ]

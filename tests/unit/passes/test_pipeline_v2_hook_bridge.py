@@ -202,6 +202,34 @@ def test_state_cff_bridge_accepts_typed_direct_threshold_on_the_complete_spine()
     assert activation.block_rules[0].config == {"min_state_constant": 0x8000}
 
 
+def test_state_cff_bridge_maps_public_modes_only_at_the_private_hook_boundary():
+    project = ProjectConfiguration(
+        path=Path("typed-state-cff.runtime-config-v2.json"),
+        additional_configuration={
+            "pipeline_v2_mode": "config-v2",
+            "pipeline_v2": [
+                {
+                    "pass_id": pass_id,
+                    "options": {
+                        "min_state_constant": 0x8000,
+                        "family": "tigress-indirect",
+                        "recovery_strategy": "reduced-product",
+                    },
+                }
+                for pass_id in STATE_MACHINE_NATIVE_PASS_IDS
+            ],
+        },
+    )
+
+    activation = pipeline_v2_hook_activation(project)
+
+    assert activation.block_rules[0].config == {
+        "min_state_constant": 0x8000,
+        "profile": "tigress_indirect",
+        "recovery_engine": "reduced_product",
+    }
+
+
 def test_state_cff_bridge_rejects_disagreeing_typed_thresholds():
     project = ProjectConfiguration(
         path=Path("divergent-state-cff.runtime-config-v2.json"),

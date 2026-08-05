@@ -13,8 +13,9 @@ from d810.core.typing import Any
 def unflattening_inference(hints: Any) -> list[ExecutionAdjustment]:
     """Infer execution adjustments for functions with detected control-flow flattening.
 
-    Confidence-gated: suppresses the stable ``constant-folding`` stage at >= 0.7
-    because early scalar folding can interfere with dispatcher-state recovery.
+    Confidence-gated: suppresses the stable ``forward-constants`` stage at >= 0.7
+    because path-insensitive scalar propagation can interfere with
+    dispatcher-state recovery before control-flow ownership is reconstructed.
 
     Args:
         hints: ``DeobfuscationHints`` (duck-typed to avoid circular import).
@@ -28,7 +29,7 @@ def unflattening_inference(hints: Any) -> list[ExecutionAdjustment]:
         deltas.append(
             ExecutionAdjustment(
                 ExecutionTargetKind.STAGE,
-                "constant-folding",
+                "forward-constants",
                 ExecutionAdjustmentAction.SUPPRESS,
             )
         )

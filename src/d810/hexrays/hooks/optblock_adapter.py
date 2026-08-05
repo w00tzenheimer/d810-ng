@@ -28,6 +28,7 @@ from d810.hexrays.ir_maturity import ida_maturity_to_ir
 from d810.hexrays.mutation.return_carrier_corruption import (
     snapshot_return_reg_consumer_def_eas,
 )
+from d810.hexrays.mutation.block_retention import synchronize_explicit_goto_flag
 from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 
 main_logger = getLogger("D810")
@@ -348,6 +349,16 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         )
 
     def func(self, blk: ida_hexrays.mblock_t):
+        result = self._func(blk)
+        if (
+            int(result) == 0
+            and not self._pipeline_just_fired
+            and synchronize_explicit_goto_flag(blk)
+        ):
+            result = 1
+        return result
+
+    def _func(self, blk: ida_hexrays.mblock_t):
         if self.log_info_on_input(blk):
             # PREOPT structural import invalidated the callback-local block.
             # Report one change so Hex-Rays revisits the updated MBA before
@@ -430,6 +441,17 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         mba: ida_hexrays.mbl_array_t = blk.mba
 
         if (mba is not None) and (mba.maturity != self.current_maturity):
+            callback_input_snapshot = None
+            try:
+                from d810.hexrays.mba_serializer import mba_to_block_snapshots
+
+                callback_input_snapshot = tuple(mba_to_block_snapshots(mba))
+            except Exception:
+                # Snapshot comparison is a conservative notification aid, not
+                # an execution prerequisite. Minimal SDK test doubles and an
+                # unavailable diagnostic serializer must not suppress maturity
+                # transitions or queued run-later work.
+                pass
             if main_logger.debug_on:
                 main_logger.debug(
                     "BlockOptimizer called at maturity: %s",
@@ -542,6 +564,23 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                 # pointers after the pipeline mutates CFG.
                 self._run_pass_pipeline_once(mba, phase_label="MMAT_GLBOPT2")
 
+            callback_changed = False
+            if callback_input_snapshot is not None:
+                try:
+                    callback_changed = callback_input_snapshot != tuple(
+                        mba_to_block_snapshots(mba)
+                    )
+                except Exception:
+                    # The input was observable but the post-state was not.
+                    # Conservatively ask Hex-Rays to revisit the MBA.
+                    callback_changed = True
+            if callback_changed:
+                optimizer_logger.info(
+                    "maturity-boundary callback modified MBA: maturity=%s",
+                    maturity_to_string(int(mba.maturity)),
+                )
+            return callback_changed
+
         return False
 
     # statistics are managed centrally via the stats object
@@ -609,11 +648,12 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
     def _order_rules_for_execution(
         self, rules: tuple[FlowOptimizationRule, ...]
     ) -> tuple[FlowOptimizationRule, ...]:
-        # Higher priority values run first. Name is a deterministic tiebreaker.
+        # Higher safety priorities run first. Python's stable sort preserves the
+        # config-v2 public pipeline order for rules in the same priority phase.
         return tuple(
             sorted(
                 rules,
-                key=lambda rule: (-self._rule_priority(rule), str(rule.name)),
+                key=lambda rule: -self._rule_priority(rule),
             )
         )
 
@@ -626,6 +666,31 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         return tuple(
             (priority, tuple(grouped[priority]))
             for priority in sorted(grouped.keys(), reverse=True)
+        )
+
+    @staticmethod
+    def _frontend_generation_is_stale(
+        flow_context: FlowMaturityContext | None,
+    ) -> bool:
+        """Return whether manager-owned evidence requires a fresh PREOPT MBA."""
+        if flow_context is None:
+            return False
+        state_provider = getattr(flow_context, "resolver_session_state", None)
+        state = state_provider() if callable(state_provider) else None
+        if state is None or not bool(getattr(state, "is_materialized", False)):
+            return False
+        native_preanalysis = getattr(state, "native_preanalysis", None)
+        normalized_generation = getattr(
+            native_preanalysis,
+            "normalization_published_postvalidated_generation",
+            None,
+        )
+        evidence_generation = getattr(state, "evidence_generation", None)
+        return bool(
+            getattr(state, "pending_preopt_reimport", False)
+            or evidence_generation is None
+            or normalized_generation is None
+            or int(normalized_generation) != int(evidence_generation)
         )
 
     def _get_or_create_flow_context(
@@ -1166,6 +1231,13 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                 phase_index=phase_index,
                 phase_rules=phase_rules,
             )
+            if self._frontend_generation_is_stale(flow_context):
+                optimizer_logger.info(
+                    "flow pipeline deferred for function %#x: "
+                    "receipt-backed PREOPT reimport pending",
+                    func_ea,
+                )
+                return 0
             for cfg_rule in phase_rules:
                 cfg_rule.current_maturity = self.current_maturity
                 cfg_rule.current_generation = self._generation
@@ -1266,6 +1338,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                             f"{cfg_rule.name} applied {nb_patch} patch(es)"
                         )
                         return nb_patch
+
         impossible_artifact_patch_count = (
             self._maybe_rewrite_impossible_return_artifact_edges(blk)
         )

@@ -454,7 +454,8 @@
         },
         "workflow_stage": "canonical_pipeline",
         "options": {
-          "min_state_constant": 65536
+          "min_state_constant": 65536,
+          "recovery_strategy": "reduced-product"
         }
       },
       {
@@ -530,7 +531,8 @@
         },
         "workflow_stage": "canonical_pipeline",
         "options": {
-          "min_state_constant": 65536
+          "min_state_constant": 65536,
+          "recovery_strategy": "reduced-product"
         }
       },
       {
@@ -602,7 +604,8 @@
         },
         "workflow_stage": "canonical_pipeline",
         "options": {
-          "min_state_constant": 65536
+          "min_state_constant": 65536,
+          "recovery_strategy": "reduced-product"
         }
       },
       {
@@ -689,7 +692,8 @@
         },
         "workflow_stage": "canonical_pipeline",
         "options": {
-          "min_state_constant": 65536
+          "min_state_constant": 65536,
+          "recovery_strategy": "reduced-product"
         }
       },
       {
@@ -760,7 +764,8 @@
         },
         "workflow_stage": "canonical_pipeline",
         "options": {
-          "min_state_constant": 65536
+          "min_state_constant": 65536,
+          "recovery_strategy": "reduced-product"
         }
       },
       {

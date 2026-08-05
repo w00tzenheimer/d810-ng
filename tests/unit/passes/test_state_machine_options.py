@@ -6,7 +6,9 @@ from d810.analyses.control_flow.dispatcher_recovery import MIN_STATE_CONSTANT
 from d810.passes.pass_pipeline import PipelineConfig, PipelineConfigError
 from d810.passes.state_machine_options import (
     MAX_STATE_CONSTANT,
+    StateMachineCffFamily,
     StateMachineCffOptions,
+    StateMachineRecoveryStrategy,
     replace_state_machine_cff_options,
     state_machine_cff_options_from_config,
 )
@@ -23,6 +25,31 @@ def test_state_cff_options_accept_default_and_direct_thresholds() -> None:
     assert state_machine_cff_options_from_config(
         _config({"min_state_constant": 0x1234})
     ) == StateMachineCffOptions(min_state_constant=0x1234)
+
+
+def test_state_cff_options_accept_typed_family_and_recovery_strategy() -> None:
+    assert state_machine_cff_options_from_config(
+        _config(
+            {
+                "min_state_constant": 0x1234,
+                "family": "tigress-indirect",
+                "recovery_strategy": "reduced-product",
+            }
+        )
+    ) == StateMachineCffOptions(
+        min_state_constant=0x1234,
+        family=StateMachineCffFamily.TIGRESS_INDIRECT,
+        recovery_strategy=StateMachineRecoveryStrategy.REDUCED_PRODUCT,
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (("family", "legacy-profile"), ("recovery_strategy", "old-engine")),
+)
+def test_state_cff_options_reject_unknown_typed_modes(field: str, value: str) -> None:
+    with pytest.raises(PipelineConfigError, match=field):
+        state_machine_cff_options_from_config(_config({field: value}))
 
 
 @pytest.mark.parametrize(
@@ -54,3 +81,20 @@ def test_replace_state_cff_options_uses_direct_shape() -> None:
     )
 
     assert replaced.options == {"min_state_constant": 0x8000}
+
+
+def test_replace_state_cff_options_serializes_public_typed_modes() -> None:
+    replaced = replace_state_machine_cff_options(
+        _config({}),
+        StateMachineCffOptions(
+            min_state_constant=0x8000,
+            family=StateMachineCffFamily.TIGRESS_INDIRECT,
+            recovery_strategy=StateMachineRecoveryStrategy.REDUCED_PRODUCT,
+        ),
+    )
+
+    assert replaced.options == {
+        "min_state_constant": 0x8000,
+        "family": "tigress-indirect",
+        "recovery_strategy": "reduced-product",
+    }

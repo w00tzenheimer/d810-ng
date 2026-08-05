@@ -21,6 +21,7 @@ These real-IDA tests verify:
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import pathlib
 import re
@@ -702,16 +703,22 @@ class TestIntegrationOpaqueTableFolding:
             if not project_loaded:
                 pytest.skip("example_libobfuscated project not found")
 
-            # Enable fold_writable_constants in FoldReadonlyDataRule
-            for rule in state.current_ins_rules:
-                if isinstance(rule, FoldReadonlyDataRule):
-                    rule._fold_writable_constants = True
-                    print("  Enabled fold_writable_constants on FoldReadonlyDataRule")
-
             state.start_d810()
             state.stats.reset()
-
-            decompiled = idaapi.decompile(func_ea, flags=idaapi.DECOMP_NO_CACHE)
+            draft = state.create_active_workbench_recipe_draft(func_ea)
+            current_options = state.get_workbench_recipe_state_cff_options(draft)
+            draft = state.replace_workbench_recipe_state_cff_options(
+                draft,
+                dataclasses.replace(
+                    current_options,
+                    min_state_constant=0x1000,
+                ),
+            )
+            with state.activate_workbench_recipe(draft):
+                decompiled = idaapi.decompile(
+                    func_ea,
+                    flags=idaapi.DECOMP_NO_CACHE,
+                )
             assert decompiled is not None, "Decompilation failed"
 
             code = pseudocode_to_string(decompiled.get_pseudocode())

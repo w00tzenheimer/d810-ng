@@ -34,8 +34,8 @@ from d810.transforms.plan import (
     PatchDuplicateReplayAndRedirect,
     PatchInsertBlock,
     PatchNopInstructions,
-    compile_patch_plan,
 )
+from tests.typed_patch_authority import compile_patch_plan
 from d810.optimizers.microcode.flow.flattening import (
     cleanup_backend as backend_module,
     unflattener_cleanup_family as shell_module,
@@ -1179,9 +1179,11 @@ def test_tail_goto_merge_strategy_emits_relaxed_nop_cleanup() -> None:
         execution_policy=ExecutionPolicy.NOP_MERGE_BLOCKS_RELAXED,
     )
     assert patch_plan.execution_policy is ExecutionPolicy.NOP_MERGE_BLOCKS_RELAXED
-    assert patch_plan.steps == (
-        PatchNopInstructions(block_serial=1, insn_eas=(0x5001,)),
-    )
+    assert len(patch_plan.steps) == 1
+    step = patch_plan.steps[0]
+    assert isinstance(step, PatchNopInstructions)
+    assert dict(patch_plan.source_coordinates)[step.block_serial] == 1
+    assert step.insn_eas == (0x5001,)
 
 
 def test_tail_goto_merge_rejects_non_fallthrough_successor() -> None:
