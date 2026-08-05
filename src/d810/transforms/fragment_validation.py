@@ -1368,6 +1368,7 @@ def _validate_terminal_effects(
         ),
         *sorted(
             {carrier.block_id for carrier in plan.return_carriers}
+            | {carrier.state_write_block_id for carrier in plan.return_carriers}
             | {terminal_return.block_id for terminal_return in plan.terminal_returns}
         ),
     )
@@ -1376,17 +1377,31 @@ def _validate_terminal_effects(
     for carrier in plan.return_carriers:
         observed = tuple(observed_carriers_by_id.get(carrier.carrier_id, ()))
         block = blocks.get(carrier.block_id)
+        state_write_block = blocks.get(carrier.state_write_block_id)
         corridor_present = False
-        if block is not None:
+        if block is not None and state_write_block is not None:
             instructions = block.instruction_eas
-            try:
-                start = instructions.index(carrier.state_write_ea)
-                end = instructions.index(carrier.carrier_ea, start + 1)
-            except ValueError:
-                pass
+            if carrier.state_write_block_id == carrier.block_id:
+                try:
+                    start = instructions.index(carrier.state_write_ea)
+                    end = instructions.index(carrier.carrier_ea, start + 1)
+                except ValueError:
+                    pass
+                else:
+                    corridor_present = (
+                        instructions[start : end + 1]
+                        == carrier.corridor_instruction_eas
+                    )
             else:
-                corridor_present = (
-                    instructions[start : end + 1] == carrier.corridor_instruction_eas
+                owned_eas = frozenset(
+                    (*state_write_block.instruction_eas, *block.instruction_eas)
+                )
+                corridor_present = bool(
+                    carrier.state_write_ea in state_write_block.instruction_eas
+                    and carrier.carrier_ea in block.instruction_eas
+                    and all(
+                        ea in owned_eas for ea in carrier.corridor_instruction_eas
+                    )
                 )
         passed = bool(
             len(observed) == 1 and observed[0] == carrier and corridor_present
@@ -1408,6 +1423,7 @@ def _validate_terminal_effects(
                 f"{[] if block is None else [hex(ea) for ea in block.instruction_eas]!r}"
                 f"{diagnostic_suffix(carrier.carrier_id)}"
             ),
+            carrier.state_write_block_id,
             carrier.block_id,
         )
 

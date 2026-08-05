@@ -268,6 +268,89 @@ def test_project_fragment_materializes_folded_direct_rewrite_anchor() -> None:
     assert replacement.terminator_kind is InsnKind.GOTO
 
 
+def test_project_fragment_models_structural_goto_for_implicit_direct_clone() -> None:
+    plan = replace(
+        _plan(),
+        operations=(
+            FragmentOperation(
+                operation_id="route:implicit-state-assignment@0x1000",
+                source_block_id="replacement",
+                edges=(
+                    FragmentEdge(
+                        role=SemanticEdgeRole.DIRECT,
+                        target_block_id="true",
+                    ),
+                ),
+            ),
+        ),
+        data_flow_obligations=(),
+        flag_corridors=(),
+        value_range_assumptions=(),
+    )
+    staged = _projection(plan)
+    plan_block_ids = {block.block_id for block in plan.blocks}
+    snapshot = FragmentProjectionInput(
+        snapshot_id="snapshot:implicit-direct-clone",
+        entry_block_id="entry",
+        blocks=tuple(
+            FragmentProjectionBlockInput(
+                block_id=block.block_id,
+                kind=(
+                    BlockKind.ONE_WAY
+                    if block.block_id == "original"
+                    else block.kind
+                ),
+                successors=(
+                    ("original",)
+                    if block.block_id == "entry"
+                    else ("dispatcher",)
+                    if block.block_id == "original"
+                    else block.successors
+                ),
+                predecessors=("entry",)
+                if block.block_id == "original"
+                else block.predecessors,
+                physical_position=block.physical_position,
+                adjacent_fallthrough_target_id=None,
+                terminator_ea=None,
+                terminator_kind=InsnKind.UNKNOWN,
+                instruction_eas=(0x1000,)
+                if block.block_id == "original"
+                else block.instruction_eas,
+                flag_write_eas=frozenset(),
+            )
+            for block in staged.blocks
+            if block.block_id in plan_block_ids and block.block_id != "replacement"
+        ),
+        identity_bindings=tuple(
+            binding
+            for binding in staged.identity_bindings
+            if binding.block_id in plan_block_ids and binding.block_id != "replacement"
+        ),
+    )
+    inventory = SimpleNamespace(
+        plan_id=plan.plan_id,
+        atomic_group_id=plan.atomic_group_id,
+        items=(
+            SimpleNamespace(
+                root_block_id="replacement",
+                original_block_id="original",
+                predecessor_block_id="entry",
+                role=SemanticEdgeRole.DIRECT,
+                requires_helper=False,
+            ),
+        ),
+    )
+
+    projection = project_fragment(plan, snapshot, inventory)
+
+    replacement = projection.block("replacement")
+    assert replacement.successors == ("true",)
+    assert replacement.instruction_eas == (0x1000,)
+    assert replacement.terminator_ea is None
+    assert replacement.terminator_kind is InsnKind.GOTO
+
+
 def test_projection_obligation_comparison_includes_instruction_semantics() -> None:
     expected = _projection()
     replacement = expected.block("replacement")
@@ -790,6 +873,7 @@ def _terminal_plan() -> FragmentPlan:
             FragmentReturnCarrier(
                 carrier_id="return-carrier",
                 block_id=source_replacement.block_id,
+                state_write_block_id=source_replacement.block_id,
                 state_write_ea=0x1000,
                 carrier_ea=0x1004,
                 operation=ValueOpKind.MOVE,

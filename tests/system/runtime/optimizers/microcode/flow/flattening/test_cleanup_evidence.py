@@ -19,8 +19,8 @@ from d810.transforms.materialization_payload import (
 from d810.transforms.plan import (
     PatchDuplicateReplayAndRedirect,
     PatchInsertBlock,
-    compile_patch_plan,
 )
+from tests.typed_patch_authority import compile_patch_plan
 from d810.transforms.cleanup_evidence import (
     BAD_WHILE_LOOP_SOURCE_RULE,
     CLEANUP_CONDITIONAL_REDIRECT_PROOF_METADATA_KEY,
@@ -285,7 +285,6 @@ def test_duplicate_group_replay_candidate_validates_lowers_and_compiles_to_compo
 
     patch_plan = compile_patch_plan([modification], _duplicate_cfg())
     assert isinstance(patch_plan.steps[0], PatchDuplicateReplayAndRedirect)
-    assert patch_plan.legacy_block_operations == ()
     assert [spec.kind for spec in patch_plan.new_blocks] == [
         "duplicate_replay_insert",
         "duplicate_replay_insert",
@@ -394,7 +393,6 @@ def test_trampoline_isolation_candidate_validates_lowers_and_compiles() -> None:
 
     patch_plan = compile_patch_plan([modification], _conditional_redirect_cfg())
     assert any(isinstance(step, PatchInsertBlock) for step in patch_plan.steps)
-    assert patch_plan.legacy_block_operations == ()
 
 
 def test_trampoline_isolation_candidate_rejects_stale_or_cyclic_shape() -> None:

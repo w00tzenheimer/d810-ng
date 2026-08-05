@@ -86,7 +86,8 @@ def test_computed_goto_dispatcher_unflattens(monkeypatch) -> None:
             cg.install()
             try:
                 ida_hexrays.clear_cached_cfuncs()
-                recovered = str(headless.decompile(func_ea) or "None")
+                failure = ida_hexrays.hexrays_failure_t()
+                recovered = str(headless.decompile(func_ea, failure=failure) or "None")
             finally:
                 cg.uninstall()
         finally:
@@ -98,7 +99,14 @@ def test_computed_goto_dispatcher_unflattens(monkeypatch) -> None:
 
     # the flattened dispatcher is gone and each handler's side effect survives, in order
     assert "__asm" not in recovered and "jmp" not in recovered.lower(), (
-        f"computed goto not materialised/unflattened:\n{recovered}"
+        f"computed goto not materialised/unflattened:\n{recovered}\n"
+        f"failure={int(failure.code)}@0x{int(failure.errea):X}: {failure.desc()}"
+    )
+    assert "__noreturn" not in recovered and re.search(
+        r"\breturn\s+\w+\s*;", recovered
+    ), (
+        f"terminal return carrier was not recovered:\n{recovered}\n"
+        f"failure={int(failure.code)}@0x{int(failure.errea):X}: {failure.desc()}"
     )
     # IDA's persisted radix setting may render these as hexadecimal or decimal.
     # Compare the ordered values, not their presentation.
@@ -107,7 +115,9 @@ def test_computed_goto_dispatcher_unflattens(monkeypatch) -> None:
         for literal in re.findall(r"\+=\s+(0x[0-9A-Fa-f]+|[0-9]+)", recovered)
     )
     assert effects == (0x11, 0x22, 0x33), (
-        f"handler effects/order not recovered: {effects}\n{recovered}"
+        f"handler effects/order not recovered: {effects}\n{recovered}\n"
+        f"failure={int(failure.code)}@0x{int(failure.errea):X}: "
+        f"{failure.desc()}"
     )
 
 

@@ -531,7 +531,11 @@ def project_fragment(
     for carrier in snapshot.return_carriers:
         rows = list(instruction_eas.get(carrier.block_id, ()))
         if carrier.carrier_ea not in rows:
-            insertion = rows.index(carrier.state_write_ea) + 1
+            insertion = (
+                rows.index(carrier.state_write_ea) + 1
+                if carrier.state_write_block_id == carrier.block_id
+                else 0
+            )
             rows.insert(insertion, carrier.carrier_ea)
         instruction_eas[carrier.block_id] = tuple(rows)
     for terminal in snapshot.terminal_returns:
@@ -642,6 +646,28 @@ def project_fragment(
             )
             terminator_eas[operation.source_block_id] = predicate_anchor_ea
             terminator_kinds[operation.source_block_id] = InsnKind.COND_JUMP
+        storage_predicate = operation.storage_predicate_materialization
+        if storage_predicate is not None:
+            predicate_anchor_ea = int(operation.predicate_anchor_ea)
+            cut_after_ea = int(storage_predicate.cut_after_ea)
+            rows = list(instruction_eas[operation.source_block_id])
+            if rows.count(cut_after_ea) != 1:
+                raise FragmentProjectionFailure(
+                    FragmentValidationPostcondition.OPERATION_TOPOLOGY,
+                    operation.operation_id,
+                    "storage-predicate replacement requires exactly one cut "
+                    "anchor in its immutable instruction evidence",
+                )
+            rows = rows[: rows.index(cut_after_ea) + 1]
+            if predicate_anchor_ea != cut_after_ea:
+                rows = [ea for ea in rows if ea != predicate_anchor_ea]
+                rows.append(predicate_anchor_ea)
+            instruction_eas[operation.source_block_id] = tuple(rows)
+            flag_write_eas[operation.source_block_id] = frozenset(
+                ea for ea in flag_write_eas[operation.source_block_id] if ea in rows
+            )
+            terminator_eas[operation.source_block_id] = predicate_anchor_ea
+            terminator_kinds[operation.source_block_id] = InsnKind.COND_JUMP
         direct_rewrite = operation.direct_transfer_rewrite
         if direct_rewrite is not None:
             rewrite_anchor_ea = int(direct_rewrite.rewrite_anchor_ea)
@@ -656,6 +682,17 @@ def project_fragment(
             )
             terminator_eas[operation.source_block_id] = rewrite_anchor_ea
             terminator_kinds[operation.source_block_id] = InsnKind.GOTO
+        elif (
+            len(operation.edges) == 1
+            and operation.edges[0].role is SemanticEdgeRole.DIRECT
+            and terminator_kinds[operation.source_block_id] is not InsnKind.GOTO
+        ):
+            # A direct semantic edge appends an originless structural goto
+            # when the source does not already end in one. Existing native
+            # gotos are retargeted in place and retain their exact EA.
+            source_block_id = operation.source_block_id
+            terminator_eas[source_block_id] = None
+            terminator_kinds[source_block_id] = InsnKind.GOTO
 
     root_helpers: list[ProjectedRootFallthroughHelper] = []
     for item in inventory.items:

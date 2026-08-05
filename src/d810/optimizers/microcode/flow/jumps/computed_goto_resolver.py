@@ -84,6 +84,7 @@ from d810.analyses.control_flow.materialized_indirect_transfer import (
     is_conditional_handler_bridge_kind,
     plan_terminal_return_carrier_requests_from_native_routes,
     plan_terminal_return_carrier_requests_from_state_writes,
+    recover_state_write_handler_entry_routes,
     route_materialized_transfer_chain,
     route_transfer_target_through_condition_chain,
     unique_materialized_equality_target_eas,
@@ -209,6 +210,157 @@ class _FrontendNormalizationUnionSource(NamedTuple):
     region: PreoptUnionRegionPlan
     cfg: NativeCfg
     closure: NativeSemanticClosure
+
+
+def _resolve_static_fixpoint_default_target(
+    transfers: Sequence[MaterializedIndirectTransfer],
+    *,
+    state_var_reg: int,
+    state_constant: int,
+) -> int | None:
+    """Evaluate one complete portable equality chain to its unmatched leaf."""
+    rows_by_source: dict[int, set[MaterializedIndirectTransfer]] = {}
+    for transfer in transfers:
+        if (
+            transfer.resolver_kind not in {"static_equality_fixpoint", "static_fixpoint"}
+            or transfer.selector_state_var_reg is None
+            or int(transfer.selector_state_var_reg) != int(state_var_reg)
+            or transfer.selector_compare_constant is None
+            or transfer.condition_code not in {4, 5}
+            or transfer.true_target_ea is None
+            or transfer.false_target_ea is None
+        ):
+            continue
+        rows_by_source.setdefault(int(transfer.source_block_ea), set()).add(transfer)
+    if not rows_by_source or any(len(rows) != 1 for rows in rows_by_source.values()):
+        return None
+    source_eas = frozenset(rows_by_source)
+    referenced_sources = {
+        int(target_ea)
+        for rows in rows_by_source.values()
+        for row in rows
+        for target_ea in (row.true_target_ea, row.false_target_ea)
+        if target_ea is not None and int(target_ea) in source_eas
+    }
+    roots = source_eas.difference(referenced_sources)
+    if len(roots) != 1:
+        return None
+    current_ea = next(iter(roots))
+    seen: set[int] = set()
+    normalized_state = int(state_constant) & _MASK32
+    while current_ea not in seen:
+        seen.add(current_ea)
+        rows = rows_by_source.get(current_ea)
+        if rows is None or len(rows) != 1:
+            return None
+        row = next(iter(rows))
+        matches = normalized_state == (int(row.selector_compare_constant) & _MASK32)
+        equality_takes_true = int(row.condition_code) == 4
+        selected_target = (
+            row.true_target_ea
+            if matches == equality_takes_true
+            else row.false_target_ea
+        )
+        if selected_target is None or int(selected_target) <= 0:
+            return None
+        current_ea = int(selected_target)
+        if current_ea not in rows_by_source:
+            return current_ea
+    return None
+
+
+def _replay_unmatched_immediate_state_targets(
+    decoded: Sequence[_DecodedNativeFlowInstruction],
+    *,
+    transfers: Sequence[MaterializedIndirectTransfer],
+    state_var_reg: int,
+    known_state_targets: Mapping[int, int],
+    dispatcher_router_eas: frozenset[int],
+    dispatcher_router_ranges: tuple[tuple[int, int], ...],
+    known_native_entries: frozenset[int],
+    initial_mregs: Mapping[int, int],
+    register_snapshots_by_ea: Mapping[int, Mapping[int, int]],
+    dispatch_anchor_eas: frozenset[int],
+    route_resolver,
+) -> dict[int, int]:
+    """Resolve default dispatcher arms for immediate native state writes.
+
+    Equality rows prove named handler states but intentionally omit the final
+    default arm.  A source-owned ``mov state, imm`` immediately followed by a
+    direct dispatcher delivery supplies the missing concrete input.  Publish
+    it only when native replay lands on one already-known block entry and all
+    observations for that state agree.
+    """
+    candidates: dict[int, set[int]] = {}
+    assignment: _DecodedNativeFlowInstruction | None = None
+    for instruction in sorted(decoded, key=lambda item: int(item.ea)):
+        mnemonic = str(instruction.mnemonic).lower()
+        if (
+            mnemonic == "mov"
+            and instruction.destination_mreg is not None
+            and int(instruction.destination_mreg) == int(state_var_reg)
+            and instruction.writes_destination
+            and instruction.source_immediate is not None
+        ):
+            assignment = instruction
+            continue
+        if mnemonic == "jmp" and instruction.direct_target_ea is not None:
+            direct_target_ea = int(instruction.direct_target_ea)
+            enters_dispatcher = direct_target_ea in dispatcher_router_eas or any(
+                int(start_ea) <= direct_target_ea < int(end_ea)
+                for start_ea, end_ea in dispatcher_router_ranges
+            )
+            if assignment is not None and enters_dispatcher:
+                state_constant = int(assignment.source_immediate) & _MASK32
+                if state_constant not in known_state_targets:
+                    target_ea = _resolve_static_fixpoint_default_target(
+                        transfers,
+                        state_var_reg=int(state_var_reg),
+                        state_constant=state_constant,
+                    )
+                    if target_ea is None:
+                        replay_mregs = dict(initial_mregs)
+                        replay_mregs[int(state_var_reg)] = state_constant
+                        try:
+                            target_ea = route_resolver(
+                                int(instruction.ea),
+                                initial_mregs=replay_mregs,
+                                handler_eas=frozenset(),
+                                register_snapshots_by_ea=register_snapshots_by_ea,
+                                dispatch_anchor_eas=dispatch_anchor_eas,
+                                return_first_indirect_target=True,
+                            )
+                        except Exception:
+                            target_ea = None
+                    if (
+                        isinstance(target_ea, int)
+                        and int(target_ea) in known_native_entries
+                    ):
+                        candidates.setdefault(state_constant, set()).add(
+                            int(target_ea)
+                        )
+            assignment = None
+            continue
+        if mnemonic in _SV_JCC_MNEMS or mnemonic in {
+            "call",
+            "ret",
+            "retn",
+            "retf",
+        }:
+            assignment = None
+            continue
+        if (
+            assignment is not None
+            and instruction.destination_mreg is not None
+            and int(instruction.destination_mreg) == int(state_var_reg)
+            and instruction.writes_destination
+        ):
+            assignment = None
+    return {
+        state_constant: next(iter(target_eas))
+        for state_constant, target_eas in candidates.items()
+        if len(target_eas) == 1
+    }
 
 
 def _discover_immediate_native_state_routes(
@@ -1227,6 +1379,16 @@ _SV_REG_NAMES = {
     5: "ebp",
     6: "esi",
     7: "edi",
+}
+_SV_X64_REGISTER_NAMES = {
+    "eax": "rax",
+    "ecx": "rcx",
+    "edx": "rdx",
+    "ebx": "rbx",
+    "esp": "rsp",
+    "ebp": "rbp",
+    "esi": "rsi",
+    "edi": "rdi",
 }
 _SV_CALLER_CLOBBERED = ("eax", "ecx", "edx")
 _SV_SHIFT_MNEMS = {"shl", "sal", "shr"}
@@ -3991,10 +4153,15 @@ def _native_register_mreg(name: str | None) -> int | None:
     import ida_hexrays  # type: ignore[import-untyped]
     import ida_idp  # type: ignore[import-untyped]
 
-    reg = int(ida_idp.str2reg(str(name)))
-    if reg < 0:
-        return None
-    return int(ida_hexrays.reg2mreg(reg))
+    register_name = str(name).lower()
+    candidates = (register_name, _SV_X64_REGISTER_NAMES.get(register_name))
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        reg = int(ida_idp.str2reg(candidate))
+        if reg >= 0:
+            return int(ida_hexrays.reg2mreg(reg))
+    return None
 
 
 def _native_register_state(mreg_values: Mapping[int, int]) -> dict[str, frozenset[int]]:
@@ -4088,15 +4255,19 @@ def _native_return_epilogue_instruction_ea(
                 return None
             saw_teardown = True
         elif mnemonic == "mov":
-            is_stack_return_value_load = (
+            is_return_value_load = (
                 not saw_teardown
                 and not saw_return_value_load
                 and insn.ops[0].type == idaapi.o_reg
                 and _sv_reg_name(insn.ops[0]) == "eax"
-                and insn.ops[1].type in {idaapi.o_displ, idaapi.o_phrase}
-                and _SV_REG_NAMES.get(insn.ops[1].reg) in {"esp", "ebp"}
+                and insn.ops[1].type
+                in {
+                    getattr(idaapi, "o_mem", -1),
+                    idaapi.o_displ,
+                    idaapi.o_phrase,
+                }
             )
-            if is_stack_return_value_load:
+            if is_return_value_load:
                 saw_return_value_load = True
             elif (
                 insn.ops[0].type != idaapi.o_reg
@@ -4603,7 +4774,7 @@ def _recover_static_choice_handler_entry_routes(
     one already-known native block entry.  A state is published only when all
     applicable entry sources agree on one target.
     """
-    if resolution.arch != "x86":
+    if resolution.arch not in {"x86", "x86_64"}:
         return ()
     if entry_seed_resolver is None:
         entry_seed_resolver = _native_entry_bootstrap_seeds
@@ -4723,7 +4894,7 @@ def _recover_prepatch_handler_entry_routes(
     range_resolver=None,
 ) -> tuple[MaterializedIndirectTransfer, ...]:
     """Replay native equality leaves before byte delivery destroys them."""
-    if resolution.arch != "x86":
+    if resolution.arch not in {"x86", "x86_64"}:
         return ()
     if route_resolver is None:
         route_resolver = _resolve_concrete_dispatch_corridor
@@ -4847,7 +5018,7 @@ def _recover_static_fixpoint_handler_entry_routes(
     the proven target while its handler still ends at the original indirect
     transfer.
     """
-    if resolution.arch != "x86":
+    if resolution.arch not in {"x86", "x86_64"}:
         return ()
     if range_resolver is None:
         envelope_end = (
@@ -7155,6 +7326,8 @@ def _discover_static_state_write_routes(
     state: ResolverSessionState,
     resolution: ComputedGotoResolution,
     transfers: Sequence[MaterializedIndirectTransfer],
+    *,
+    unmatched_state_target_resolver=None,
 ) -> tuple[PortableStateWriteRouteEvidence, ...]:
     """Publish direct reference-style state routes before top-level PREOPT."""
     state_registers = {
@@ -7178,6 +7351,22 @@ def _discover_static_state_write_routes(
             int(state_var_reg),
         )
         return ()
+    if unmatched_state_target_resolver is None:
+        unmatched_state_target_resolver = _resolve_concrete_dispatch_corridor
+    replay_context_mregs, replay_snapshots_by_ea, replay_dispatch_anchor_eas = (
+        _bootstrap_native_replay_inputs(transfers)
+    )
+    known_native_entries = frozenset(
+        {
+            *(int(ea) for ea in resolution.block_entries if int(ea) > 0),
+            *(
+                int(target_ea)
+                for target_eas in resolution.jmp_targets.values()
+                for target_ea in target_eas
+                if int(target_ea) > 0
+            ),
+        }
+    )
     decoded_count = 0
     assignment_count = 0
     mapped_count = 0
@@ -7196,6 +7385,23 @@ def _discover_static_state_write_routes(
         int(router_ea)
         for transfer in transfers
         for router_ea in transfer.dispatcher_router_eas
+    )
+    dispatcher_router_ranges = merge_detached_snippet_ranges(
+        (
+            *(
+                (int(site.block_entry_ea), int(site.delivery_region_end_ea))
+                for site, _plan in patch_delivery_sites
+            ),
+            *(
+                (int(start_ea), int(end_ea))
+                for transfer in transfers
+                for start_ea, end_ea in transfer.owned_native_ranges
+                if any(
+                    int(start_ea) <= int(router_ea) < int(end_ea)
+                    for router_ea in dispatcher_router_eas
+                )
+            ),
+        )
     )
     envelope_end_ea = (
         max(
@@ -7228,11 +7434,28 @@ def _discover_static_state_write_routes(
             int(site.delivery_ea) for site, _plan in patch_delivery_sites
         ),
     )
-    immediate_routes = _discover_immediate_native_state_routes(
-        _decode_native_flow_route_inventory(
-            int(resolution.function_ea),
-            int(envelope_end_ea),
+    decoded_native_inventory = _decode_native_flow_route_inventory(
+        int(resolution.function_ea),
+        int(envelope_end_ea),
+    )
+    state_targets = {
+        **state_targets,
+        **_replay_unmatched_immediate_state_targets(
+            decoded_native_inventory,
+            transfers=transfers,
+            state_var_reg=int(state_var_reg),
+            known_state_targets=state_targets,
+            dispatcher_router_eas=dispatcher_router_eas,
+            dispatcher_router_ranges=dispatcher_router_ranges,
+            known_native_entries=known_native_entries,
+            initial_mregs=replay_context_mregs,
+            register_snapshots_by_ea=replay_snapshots_by_ea,
+            dispatch_anchor_eas=replay_dispatch_anchor_eas,
+            route_resolver=unmatched_state_target_resolver,
         ),
+    }
+    immediate_routes = _discover_immediate_native_state_routes(
+        decoded_native_inventory,
         state_var_reg=int(state_var_reg),
         state_targets=state_targets,
     )
@@ -7369,6 +7592,30 @@ def _discover_static_state_write_routes(
         assignment_count += 1
         write_ea, state_constant, corridor_instruction_eas = selected
         target_ea = state_targets.get(int(state_constant))
+        if (
+            target_ea is None
+            and normalization_plan is None
+            and resolution.arch in {"x86", "x86_64"}
+            and known_native_entries
+        ):
+            initial_mregs = dict(replay_context_mregs)
+            initial_mregs[int(state_var_reg)] = int(state_constant) & _MASK32
+            try:
+                replayed_target = unmatched_state_target_resolver(
+                    int(site.delivery_ea),
+                    initial_mregs=initial_mregs,
+                    handler_eas=frozenset(),
+                    register_snapshots_by_ea=replay_snapshots_by_ea,
+                    dispatch_anchor_eas=replay_dispatch_anchor_eas,
+                    return_first_indirect_target=True,
+                )
+            except Exception:
+                replayed_target = None
+            if (
+                isinstance(replayed_target, int)
+                and int(replayed_target) in known_native_entries
+            ):
+                target_ea = int(replayed_target)
         if target_ea is None:
             continue
         mapped_count += 1
@@ -8882,6 +9129,9 @@ def _analyze_select_block(jmp_ea: int, block_start: int, arch: str) -> dict | No
     lea_cell: dict[int, int] = {}
     cmp_ea: int | None = None
     cmp_end: int | None = None
+    selector_register_name: str | None = None
+    selector_compare_constant: int | None = None
+    selector_state_on_left: bool | None = None
     cmov: tuple[int, int] | None = None
     cc: int | None = None
     key: int | None = None
@@ -8898,9 +9148,20 @@ def _analyze_select_block(jmp_ea: int, block_start: int, arch: str) -> dict | No
             and insn.ops[1].type in (idaapi.o_mem, idaapi.o_displ)
         ):
             lea_cell[insn.ops[0].reg] = int(insn.ops[1].addr)
-        elif mnem == "cmp" and insn.ops[1].type == idaapi.o_imm:
-            cmp_ea = int(ea)
-            cmp_end = ea + length
+        elif mnem == "cmp":
+            left, right = insn.ops[0], insn.ops[1]
+            if left.type == idaapi.o_reg and right.type == idaapi.o_imm:
+                cmp_ea = int(ea)
+                cmp_end = ea + length
+                selector_register_name = _sv_reg_name(left)
+                selector_compare_constant = int(right.value) & _MASK32
+                selector_state_on_left = True
+            elif left.type == idaapi.o_imm and right.type == idaapi.o_reg:
+                cmp_ea = int(ea)
+                cmp_end = ea + length
+                selector_register_name = _sv_reg_name(right)
+                selector_compare_constant = int(left.value) & _MASK32
+                selector_state_on_left = False
         elif mnem.startswith("cmov"):
             cmov = (insn.ops[0].reg, insn.ops[1].reg)
             cc = _select_cc_nibble(ea, length)
@@ -8921,6 +9182,9 @@ def _analyze_select_block(jmp_ea: int, block_start: int, arch: str) -> dict | No
         "target_false": (getptr(cell_false) + key)
         & mask,  # cc false → dst keeps its lea
         "target_true": (getptr(cell_true) + key) & mask,  # cc true  → dst = src
+        "selector_register_name": selector_register_name,
+        "selector_compare_constant": selector_compare_constant,
+        "selector_state_on_left": selector_state_on_left,
     }
 
 
@@ -9035,6 +9299,11 @@ def _concolic_frontend_normalization_plans(
                 condition_code=condition_code,
                 true_target_ea=true_target_ea,
                 false_target_ea=false_target_ea,
+                selector_register_name=analysis.get("selector_register_name"),
+                selector_compare_constant=analysis.get(
+                    "selector_compare_constant"
+                ),
+                selector_state_on_left=analysis.get("selector_state_on_left"),
                 condition_producer_ea=condition_producer_ea,
             )
         )
@@ -10341,7 +10610,20 @@ def _capture_prepatch_preopt_union_source(
         return False
 
     enriched = _enrich_preopt_union_route_ranges(resolution, transfers)
-    _discover_static_state_write_routes(state, resolution, enriched)
+    state_write_routes = _discover_static_state_write_routes(
+        state,
+        resolution,
+        enriched,
+    )
+    recovered_entry_routes = recover_state_write_handler_entry_routes(
+        state_write_routes,
+        enriched,
+    )
+    if recovered_entry_routes:
+        enriched = _enrich_preopt_union_route_ranges(
+            resolution,
+            tuple(dict.fromkeys((*enriched, *recovered_entry_routes))),
+        )
     source_plan = _plan_frontend_normalization_union_source(
         resolution,
         transfers=enriched,
@@ -10731,8 +11013,7 @@ def _preopt_union_boundary_ports(
         conditional_candidates = tuple(
             transfer
             for transfer in transfers
-            if int(transfer.source_block_ea) == source_ea
-            and int(transfer.source_jmp_ea) == source_instruction_ea
+            if int(transfer.source_jmp_ea) == source_instruction_ea
             and transfer.condition_code is not None
             and transfer.true_target_ea is not None
             and transfer.false_target_ea is not None
@@ -10748,6 +11029,8 @@ def _preopt_union_boundary_ports(
             port = conditional_port(
                 conditional_candidates[0],
                 source_owner=DetachedSnippetBoundaryPortOwner.IMPORTED,
+                source_block_ea=source_ea,
+                predicate_ea=source_instruction_ea,
             )
             if port is None:
                 return None
@@ -11645,7 +11928,7 @@ def prepare_preopt_union_closure(
     if isinstance(cached, PreoptUnionPreparationResult):
         return replace(cached, published=False)
     if (
-        resolution.arch != "x86"
+        resolution.arch not in {"x86", "x86_64"}
         or not is_computed_goto_materialized(state)
         or state.snippet_capture_active
     ):
@@ -12200,7 +12483,7 @@ def prepare_detached_handler_snippets(
     if resolution.patch_plans and prepatch_source is None:
         source_transfers = (
             _static_prepatch_union_source_transfers(resolution)
-            if resolution.arch == "x86"
+            if resolution.arch in {"x86", "x86_64"}
             else ()
         )
         source_captured = _capture_prepatch_preopt_union_source(
@@ -13277,6 +13560,21 @@ def _on_calls_done_preanalysis(
             )
             _refresh_preopt_union_from_calls_evidence(state, mba)
             return
+
+        # The manager preflight captures the pristine PREOPT union source before
+        # this live MBA exists. CALLS is the first safe point where that portable
+        # source can be projected against the current graph. Publish the frontend
+        # fragment and request a fresh GENERATED/PREOPT binding before declaring
+        # the materialization fixed: otherwise a zero-transfer first round marks
+        # the session complete and strands the captured source permanently.
+        if prepare_detached_handler_snippets(state, live_mba=mba):
+            materialization.rounds += 1
+            if request_generated_restart(
+                "computed_goto_preopt_union",
+                evidence_generation=state.evidence_generation,
+                round=int(materialization.rounds),
+            ):
+                return
 
         logger.info(
             "computed-goto evidence fixed point: func=0x%X static=%d equality_routes=%d kept=%d",

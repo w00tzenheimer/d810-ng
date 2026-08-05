@@ -1826,6 +1826,45 @@ def remove_block_edge(
     return False
 
 
+def canonicalize_explicit_return_to_stop_edge(
+    block: ida_hexrays.mblock_t,
+    stop: ida_hexrays.mblock_t,
+) -> bool:
+    """Replace one explicit ``m_ret`` with the canonical ``BLT_STOP`` edge."""
+    # Do not compare ``block.mba is stop.mba`` here. SWIG may materialize two
+    # Python wrappers for the same native mba_t pointer, so object identity is
+    # not a valid ownership check. The caller obtains both blocks by serial
+    # from one MBA and this primitive validates their exact edge shape.
+    tail = block.tail
+    successors = tuple(int(value) for value in block.succset)
+    stop_serial = int(stop.serial)
+    is_explicit_return = (
+        int(block.type) == int(ida_hexrays.BLT_0WAY) and not successors
+    )
+    is_transitional_stop_edge = (
+        int(block.type) == int(ida_hexrays.BLT_1WAY)
+        and successors == (stop_serial,)
+    )
+    if (
+        tail is None
+        or int(tail.opcode) != int(ida_hexrays.m_ret)
+        or not (is_explicit_return or is_transitional_stop_edge)
+        or int(stop.type) != int(ida_hexrays.BLT_STOP)
+    ):
+        return False
+
+    block.remove_from_block(tail)
+    block.type = ida_hexrays.BLT_1WAY
+    if not successors:
+        block.succset.push_back(stop_serial)
+    if int(block.serial) not in tuple(int(value) for value in stop.predset):
+        stop.predset.push_back(int(block.serial))
+    block.mark_lists_dirty()
+    stop.mark_lists_dirty()
+    block.mba.mark_chains_dirty()
+    return True
+
+
 __all__ = [
     "_rewire_edge",
     "insert_goto_instruction",
@@ -1852,4 +1891,5 @@ __all__ = [
     "ensure_child_has_an_unconditional_father",
     "downgrade_nway_null_tail_to_1way",
     "remove_block_edge",
+    "canonicalize_explicit_return_to_stop_edge",
 ]

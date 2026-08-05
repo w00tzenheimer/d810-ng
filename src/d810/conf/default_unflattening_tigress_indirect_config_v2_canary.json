@@ -143,7 +143,8 @@
         },
         "workflow_stage": "canonical_pipeline",
         "options": {
-          "min_state_constant": 16777216
+          "min_state_constant": 16777216,
+          "family": "tigress-indirect"
         }
       },
       {
@@ -219,7 +220,8 @@
         },
         "workflow_stage": "canonical_pipeline",
         "options": {
-          "min_state_constant": 16777216
+          "min_state_constant": 16777216,
+          "family": "tigress-indirect"
         }
       },
       {
@@ -291,7 +293,8 @@
         },
         "workflow_stage": "canonical_pipeline",
         "options": {
-          "min_state_constant": 16777216
+          "min_state_constant": 16777216,
+          "family": "tigress-indirect"
         }
       },
       {
@@ -378,7 +381,8 @@
         },
         "workflow_stage": "canonical_pipeline",
         "options": {
-          "min_state_constant": 16777216
+          "min_state_constant": 16777216,
+          "family": "tigress-indirect"
         }
       },
       {
@@ -449,7 +453,8 @@
         },
         "workflow_stage": "canonical_pipeline",
         "options": {
-          "min_state_constant": 16777216
+          "min_state_constant": 16777216,
+          "family": "tigress-indirect"
         }
       },
       {

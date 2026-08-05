@@ -232,14 +232,20 @@ def _build_current_mba_identity_index(*, session, mba):
         raise ValueError("current MBA identity index requires a known maturity")
     if maturity_stage.value < HexRaysMaturity.MMAT_LOCOPT.value:
         reference_oracle = state.semantic_route_reference_oracle_provider
-        if (
-            reference_oracle is None
-            or reference_oracle.reference_oracle_scope_for(
+        reference_scope = (
+            None
+            if reference_oracle is None
+            else reference_oracle.reference_oracle_scope_for(
                 int(session.function_ea),
                 session.native_key,
             )
-            is None
-        ):
+        )
+        frontend_evidence = (
+            session.native_preanalysis.frontend_normalization_evidence_for(
+                session.native_key
+            )
+        )
+        if reference_scope is None and frontend_evidence is None:
             return None
         if maturity_stage is not HexRaysMaturity.MMAT_GENERATED:
             build_graph = getattr(mba, "build_graph", None)
@@ -380,10 +386,24 @@ def _new_semantic_native_body_materializer(*, session, mba):
 
             prepared_fact_observer = observe_prepared_body_fact
 
+        from d810.hexrays.mutation.detached_handler_island import (
+            stable_mba_identity,
+        )
+        from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
+            resolver_session_state,
+        )
+
+        resolver_state = resolver_session_state(session)
         return PreoptUnionSemanticNativeBodyMaterializer(
             mba=mba,
             function_ea=int(session.function_ea),
             prepared_fact_observer=prepared_fact_observer,
+            current_identity_index=session.current_mba_identity_index,
+            current_mba_identity_binding=(
+                resolver_state.current_mba_identity_binding_for(
+                    stable_mba_identity(mba)
+                )
+            ),
         )
     if native_maturity is HexRaysMaturity.MMAT_CALLS:
 
@@ -1096,6 +1116,24 @@ class D810Manager:
             configs=pipeline_configs_from_project_config(runtime_project),
         )
 
+    def create_active_workbench_recipe_draft(
+        self,
+        *,
+        function_ea: int,
+        source_path: str,
+        runtime_path: str,
+        runtime_project: object,
+    ) -> PipelineRecipeDraft:
+        """Create an in-memory recipe from the exact active config-v2 pipeline."""
+        return self.recipe_service.create_draft(
+            function_ea=function_ea,
+            function_fingerprint=None,
+            workbench_generation=0,
+            source_path=source_path,
+            runtime_path=runtime_path,
+            configs=pipeline_configs_from_project_config(runtime_project),
+        )
+
     def create_saved_workbench_recipe_draft(
         self,
         *,
@@ -1169,6 +1207,12 @@ class D810Manager:
         options: StateMachineCffOptions,
     ) -> PipelineRecipeDraft:
         return self.recipe_service.replace_state_cff_options(draft, options)
+
+    def get_workbench_recipe_state_cff_options(
+        self,
+        draft: PipelineRecipeDraft,
+    ) -> StateMachineCffOptions:
+        return self.recipe_service.state_cff_options(draft)
 
     def get_workbench_function_recipe(
         self,

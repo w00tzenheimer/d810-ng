@@ -21,6 +21,15 @@ class TestDeobfuscationCase:
         assert case.project == "default_instruction_only.json"
         assert case.must_change is True
         assert case.check_stats is True
+        assert case.state_cff_min_state_constant is None
+
+    def test_accepts_function_state_cff_threshold(self):
+        case = DeobfuscationCase(
+            function="low_state_dispatcher",
+            state_cff_min_state_constant=0x1000,
+        )
+
+        assert case.state_cff_min_state_constant == 0x1000
 
     def test_expected_code_dedent(self):
         """Test that expected_code is automatically dedented."""
@@ -130,6 +139,15 @@ class TestBinaryOverride:
         )
         effective = case.get_effective_config(".dll")
         assert effective.skip == "DLL not supported"
+
+    def test_override_preserves_function_state_cff_threshold(self):
+        case = DeobfuscationCase(
+            function="test_func",
+            state_cff_min_state_constant=0x1000,
+            dll_override=BinaryOverride(required_rules=["DllRule"]),
+        )
+
+        assert case.get_effective_config(".dll").state_cff_min_state_constant == 0x1000
 
 
 class TestAssertContains:

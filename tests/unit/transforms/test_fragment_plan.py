@@ -1779,6 +1779,7 @@ def _terminal_plan() -> FragmentPlan:
             fragment_plan.FragmentReturnCarrier(
                 carrier_id="return-value",
                 block_id=source_replacement.block_id,
+                state_write_block_id=source_replacement.block_id,
                 state_write_ea=0x40C7E5,
                 carrier_ea=0x40C7EA,
                 operation=ValueOpKind.MOVE,
@@ -1896,6 +1897,7 @@ def test_fragment_plan_requires_exact_terminal_effect_anchors() -> None:
     assert rejection.payload == {
         "carrier_id": carrier.carrier_id,
         "block_id": source.block_id,
+        "state_write_block_id": carrier.state_write_block_id,
         "block_role": source.role.value,
         "block_semantic_anchor_ea": "0x40C7E5",
         "block_identity": source.stable_identity.diagnostic_label(),
@@ -1904,6 +1906,8 @@ def test_fragment_plan_requires_exact_terminal_effect_anchors() -> None:
         "corridor_instruction_eas": ("0x40C7E5", "0x40C7EB"),
         "exact_instruction_eas": ("0x40C7E5", "0x40C7EA"),
         "missing_anchor_eas": ("0x40C7EB",),
+        "state_anchor_missing": False,
+        "carrier_anchor_missing": True,
     }
 
 

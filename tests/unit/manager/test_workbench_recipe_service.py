@@ -12,7 +12,11 @@ from d810.passes.operational_config_v2 import operational_config_v2_pass_registr
 from d810.passes.pass_pipeline import PipelineConfig
 from d810.passes.pipeline_v2_hook_bridge import STATE_MACHINE_NATIVE_PASS_IDS
 from d810.passes.registry import UnknownPassIdError
-from d810.passes.state_machine_options import StateMachineCffOptions
+from d810.passes.state_machine_options import (
+    StateMachineCffFamily,
+    StateMachineCffOptions,
+    StateMachineRecoveryStrategy,
+)
 
 
 class _Facts:
@@ -202,6 +206,40 @@ def test_state_cff_override_replaces_the_complete_spine_atomically() -> None:
     for item in updated.passes:
         options = json.loads(item.config_json)["options"]
         assert options == {"min_state_constant": 0x8000}
+
+
+def test_state_cff_options_reads_one_consistent_typed_spine() -> None:
+    service = _service()
+    original = _state_cff_draft(service)
+    configured = service.replace_state_cff_options(
+        original,
+        StateMachineCffOptions(
+            min_state_constant=0x8000,
+            family=StateMachineCffFamily.TIGRESS_INDIRECT,
+            recovery_strategy=StateMachineRecoveryStrategy.REDUCED_PRODUCT,
+        ),
+    )
+
+    assert service.state_cff_options(configured) == StateMachineCffOptions(
+        min_state_constant=0x8000,
+        family=StateMachineCffFamily.TIGRESS_INDIRECT,
+        recovery_strategy=StateMachineRecoveryStrategy.REDUCED_PRODUCT,
+    )
+
+
+def test_state_cff_options_rejects_divergent_stage_options() -> None:
+    service = _service()
+    draft = _state_cff_draft(service)
+    passes = list(draft.passes)
+    payload = json.loads(passes[-1].config_json)
+    payload["options"]["min_state_constant"] = 0x8000
+    passes[-1] = dataclasses.replace(
+        passes[-1],
+        config_json=json.dumps(payload),
+    )
+
+    with pytest.raises(RecipeEditError, match="same typed options"):
+        service.state_cff_options(dataclasses.replace(draft, passes=tuple(passes)))
 
 
 @pytest.mark.parametrize("mutation", ("missing", "duplicate", "reordered"))

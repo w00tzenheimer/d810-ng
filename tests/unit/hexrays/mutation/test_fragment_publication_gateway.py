@@ -329,6 +329,7 @@ def _plan_with_terminal_effects() -> FragmentPlan:
             FragmentReturnCarrier(
                 carrier_id="return-value",
                 block_id="replacement",
+                state_write_block_id="replacement",
                 state_write_ea=0x401000,
                 carrier_ea=0x401004,
                 operation=ValueOpKind.MOVE,
@@ -736,7 +737,7 @@ class _FragmentBackend:
             None if route_rewrite is None else route_rewrite.rewrite_anchor_ea
         )
         route_terminator_kind = (
-            InsnKind.UNKNOWN
+            InsnKind.GOTO
             if route_rewrite is None
             else (
                 InsnKind.COND_JUMP if self.malformed_route_projection else InsnKind.GOTO

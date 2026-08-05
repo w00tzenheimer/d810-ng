@@ -15,6 +15,7 @@ from d810.analyses.control_flow.semantic_route_evidence import (
     SemanticRouteProof,
     SemanticRouteProofKind,
     SemanticRouteShape,
+    SemanticStateWriteDeliveryKind,
     SemanticStateWriteProof,
     semantic_route_proof_reaches_consumer,
 )
@@ -763,6 +764,37 @@ def _unique_plan_block(
     return matches[0]
 
 
+def _terminal_carrier_owner(
+    source: FragmentBlock,
+    destination: FragmentBlock,
+    anchor_ea: int,
+    *,
+    description: str,
+) -> FragmentBlock:
+    """Bind one terminal-effect anchor to its unique staged route owner."""
+    anchor_ea = int(anchor_ea)
+    matches = tuple(
+        block
+        for block in (source, destination)
+        if block.stable_identity is not None
+        and block.stable_identity.native_ranges.contains(anchor_ea)
+    )
+    if len(matches) != 1:
+        raise CanonicalSemanticFragmentRejected(
+            f"{description} 0x{anchor_ea:X} requires one staged route owner, "
+            f"observed {len(matches)}",
+            reason_code="terminal_effect_owner_count_mismatch",
+            anchor_ea=anchor_ea,
+            payload={
+                "description": description,
+                "owner_count": len(matches),
+                "source_block_id": source.block_id,
+                "destination_block_id": destination.block_id,
+            },
+        )
+    return matches[0]
+
+
 def _current_route_source(
     graph: FlowGraph,
     *,
@@ -772,6 +804,7 @@ def _current_route_source(
     state_write_ea: int,
     delivery_ea: int,
     corridor_instruction_eas: tuple[int, ...],
+    receipted_split_corridor_eas: frozenset[int] = frozenset(),
 ) -> tuple[int, StableBlockIdentity]:
     state_write_ea = int(state_write_ea)
     delivery_ea = int(delivery_ea)
@@ -821,6 +854,11 @@ def _current_route_source(
             len(materialized_owners) != 1
             or int(materialized_owners[0].serial) != source_serial
         ):
+            if (
+                len(materialized_owners) == 1
+                and corridor_ea in receipted_split_corridor_eas
+            ):
+                continue
             raise CanonicalSemanticFragmentRejected(
                 "canonical route corridor has split current-graph ownership "
                 f"at 0x{corridor_ea:X}",
@@ -2023,6 +2061,12 @@ def _direct_transfer_rewrite(
 ) -> FragmentDirectTransferRewrite | None:
     """Carry one proved direct route into detached rewrite coordinates."""
     if proof.shape is not SemanticRouteShape.DIRECT:
+        return None
+    if (
+        proof.state_write is not None
+        and proof.state_write.delivery_kind
+        is SemanticStateWriteDeliveryKind.DIRECT
+    ):
         return None
     delivery_region = proof.delivery_region
     if delivery_region is None:
@@ -3409,10 +3453,17 @@ def _nested_terminal_effects(
                 },
             )
         carrier_id = f"return-carrier:{proof.proof_id}"
+        carrier_owner = _terminal_carrier_owner(
+            source,
+            destination,
+            int(carrier.carrier_ea),
+            description="nested terminal carrier",
+        )
         return_carriers.append(
             FragmentReturnCarrier(
                 carrier_id=carrier_id,
-                block_id=source.block_id,
+                block_id=carrier_owner.block_id,
+                state_write_block_id=source.block_id,
                 state_write_ea=int(carrier.state_write_ea),
                 carrier_ea=int(carrier.carrier_ea),
                 operation=carrier.operation,
@@ -3603,6 +3654,54 @@ def _resolved_detached_target_component(
         effective_normalization_plan = projected_plan
         nested_route_proof_list.extend(projected_proofs)
         selected_proof_ids.update(projected_proof_ids)
+        # A newly projected route can land on a handler that is already live
+        # and therefore appeared as an external boundary in this round.  If
+        # that destination owns the next canonical route, stage it in the next
+        # round so the complete state chain is published atomically instead of
+        # leaving a reachable dispatcher edge behind.
+        terminal_imported_ids = {
+            block_id
+            for native_body in projected_plan.native_bodies
+            for block_id in native_body.terminal_block_ids
+        }
+        projected_destination_ids = {
+            destination_block.block_id
+            for projected_proof in projected_proofs
+            for destination in projected_proof.destinations
+            for destination_block in (
+                _unique_plan_block(
+                    projected_plan,
+                    destination.target_identity,
+                    destination.target_anchor_ea,
+                    roles=frozenset(
+                        {
+                            FragmentBlockRole.EXTERNAL,
+                            FragmentBlockRole.IMPORTED,
+                            FragmentBlockRole.REPLACEMENT,
+                        }
+                    ),
+                    description="nested canonical route continuation",
+                ),
+            )
+            if (
+                destination_block.block_id in terminal_imported_ids
+                or any(
+                    candidate.proof_id not in selected_proof_ids
+                    and destination_block.stable_identity is not None
+                    and _identity_ranges_contain(
+                        destination_block.stable_identity,
+                        candidate.source_identity,
+                    )
+                    and destination_block.stable_identity.native_ranges.contains(
+                        int(candidate.source_anchor_ea)
+                    )
+                    for candidate in available_evidence.route_proofs
+                )
+            )
+        }
+        provisional_required_staged_ids = frozenset(
+            (*provisional_required_staged_ids, *projected_destination_ids)
+        )
     else:
         raise CanonicalSemanticFragmentRejected(
             "nested canonical state-route projection exceeded its proof bound",
@@ -3624,11 +3723,14 @@ def _resolved_detached_target_component(
             for requirement in call_backed_staging_requirements
             if requirement.route_proof_id in nested_route_proof_ids
         )
-        required_staged_destination_ids: set[str] = {
+        required_staged_destination_ids: set[str] = set(
+            provisional_required_staged_ids
+        )
+        required_staged_destination_ids.update(
             block_id
             for requirement in selected_call_backed_requirements
             for block_id in requirement.block_ids
-        }
+        )
         required_exact_instruction_eas_by_block_id: dict[str, set[int]] = {}
         for requirement in selected_call_backed_requirements:
             for (
@@ -3655,10 +3757,31 @@ def _resolved_detached_target_component(
                     anchor_ea=int(proof.source_anchor_ea),
                     payload={"route_proof_id": proof.proof_id},
                 )
-            required_exact_instruction_eas_by_block_id.setdefault(
-                operation.source_block_id,
-                set(),
-            ).update(int(ea) for ea in carrier.corridor_instruction_eas)
+            destination = _unique_plan_block(
+                effective_normalization_plan,
+                carrier.terminal_identity,
+                int(carrier.request.terminal_target_ea),
+                roles=frozenset(
+                    {
+                        FragmentBlockRole.EXTERNAL,
+                        FragmentBlockRole.IMPORTED,
+                        FragmentBlockRole.REPLACEMENT,
+                    }
+                ),
+                description="nested terminal destination",
+            )
+            source = effective_normalization_plan.block(operation.source_block_id)
+            for corridor_ea in carrier.corridor_instruction_eas:
+                owner = _terminal_carrier_owner(
+                    source,
+                    destination,
+                    int(corridor_ea),
+                    description="nested terminal carrier corridor",
+                )
+                required_exact_instruction_eas_by_block_id.setdefault(
+                    owner.block_id,
+                    set(),
+                ).add(int(corridor_ea))
             for destination in proof.destinations:
                 destination_block = _unique_plan_block(
                     effective_normalization_plan,
@@ -3896,19 +4019,45 @@ def compose_canonical_semantic_fragment_plan(
         )
     )
 
-    source = _unique_plan_block(
+    # The normalization receipt owns the rewrite anchor even when frontend
+    # publication consumed it into a different external block from the native
+    # state write.  Prove both coordinates independently, then bind the live
+    # replacement through the state-write owner below.
+    _unique_plan_block(
         effective_normalization_plan,
         proof.source_identity,
         proof.source_anchor_ea,
         roles=frozenset({FragmentBlockRole.EXTERNAL}),
-        description="canonical route source",
+        description="canonical route delivery",
     )
+    state_write = proof.state_write
+    source_matches = tuple(
+        block
+        for block in effective_normalization_plan.blocks
+        if block.role is FragmentBlockRole.EXTERNAL
+        and block.stable_identity is not None
+        and _identity_ranges_contain(block.stable_identity, state_write.identity)
+        and block.stable_identity.native_ranges.contains(
+            int(state_write.instruction_ea)
+        )
+    )
+    if len(source_matches) != 1:
+        raise CanonicalSemanticFragmentRejected(
+            "canonical route state-write owner requires one normalization-plan "
+            f"range owner, observed {len(source_matches)}",
+            reason_code="normalization_plan_owner_count_mismatch",
+            anchor_ea=int(state_write.instruction_ea),
+            payload={
+                "description": "canonical route state-write owner",
+                "owner_count": len(source_matches),
+            },
+        )
+    (source,) = source_matches
     retained_source_identity = source.stable_identity
     if retained_source_identity is None:
         raise CanonicalSemanticFragmentRejected(
             "canonical route source lacks stable identity"
         )
-    state_write = proof.state_write
     if (
         not _identity_ranges_contain(
             retained_source_identity,
@@ -3918,13 +4067,9 @@ def compose_canonical_semantic_fragment_plan(
             state_write.instruction_ea
         )
         or state_write.corridor_instruction_eas[-1] != int(proof.source_anchor_ea)
-        or any(
-            not retained_source_identity.native_ranges.contains(ea)
-            for ea in state_write.corridor_instruction_eas
-        )
     ):
         raise CanonicalSemanticFragmentRejected(
-            "canonical state-write corridor is not owned by its live source"
+            "canonical state-write owner or delivery corridor is incomplete"
         )
     source_serial, source_identity = _current_route_source(
         graph,
@@ -3934,6 +4079,22 @@ def compose_canonical_semantic_fragment_plan(
         state_write_ea=state_write.instruction_ea,
         delivery_ea=proof.source_anchor_ea,
         corridor_instruction_eas=state_write.corridor_instruction_eas,
+        receipted_split_corridor_eas=frozenset(
+            int(corridor_ea)
+            for corridor_ea in state_write.corridor_instruction_eas
+            if any(
+                block is not source
+                and block.role
+                in {
+                    FragmentBlockRole.ORIGINAL,
+                    FragmentBlockRole.REPLACEMENT,
+                    FragmentBlockRole.EXTERNAL,
+                }
+                and block.stable_identity is not None
+                and block.stable_identity.native_ranges.contains(int(corridor_ea))
+                for block in effective_normalization_plan.blocks
+            )
+        ),
     )
     source_anchor_ea = int(state_write.instruction_ea)
     (destination,) = proof.destinations
@@ -4317,6 +4478,11 @@ def compose_canonical_semantic_fragment_plan(
         all_prohibited_serials,
         current_identity_by_serial=current_identity_by_serial,
         modified_current_serials=frozenset({source_serial}),
+    )
+    prohibited_witness_serials = tuple(
+        serial
+        for serial in prohibited_witness_serials
+        if int(serial) != int(source_serial)
     )
     outside_predecessors = tuple(
         int(predecessor)
@@ -5085,6 +5251,11 @@ def compose_canonical_semantic_boundary_fragment_plan(
                 if carrier.block_id == detached_root_id
                 else carrier.block_id
             ),
+            state_write_block_id=(
+                replacement_id
+                if carrier.state_write_block_id == detached_root_id
+                else carrier.state_write_block_id
+            ),
         )
         for carrier in nested_return_carriers
     )
@@ -5593,11 +5764,24 @@ def build_canonical_semantic_fragment_plan(
                     "terminal semantic route lacks an owned return block"
                 )
             source_block_id = replacement_id_by_serial[int(route.source.serial)]
+            source_block = next(
+                block for block in blocks if block.block_id == source_block_id
+            )
+            terminal_block = next(
+                block for block in blocks if block.block_id == terminal_block_id
+            )
+            carrier_owner = _terminal_carrier_owner(
+                source_block,
+                terminal_block,
+                int(terminal_carrier.carrier_ea),
+                description="terminal carrier",
+            )
             carrier_id = f"return-carrier:{proof.proof_id}"
             return_carriers.append(
                 FragmentReturnCarrier(
                     carrier_id=carrier_id,
-                    block_id=source_block_id,
+                    block_id=carrier_owner.block_id,
+                    state_write_block_id=source_block_id,
                     state_write_ea=terminal_carrier.state_write_ea,
                     carrier_ea=terminal_carrier.carrier_ea,
                     operation=terminal_carrier.operation,

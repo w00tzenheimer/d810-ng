@@ -47,13 +47,13 @@ _COMPARE_CHAIN_MIN_LENGTH = 3
 _COMPARE_CHAIN_MIN_CONSTANTS = 4
 _FLOW_PROFILE_MIN_CONFIDENCE = 0.4
 
-# When confidence reaches this level with ollvm_flat, suppress scalar constant
-# folding that can misread dispatcher-carried variables before unflattening
-# reconstructs path ownership.  Do not suppress ForwardConstantPropagationRule
-# globally: Approov engine-wrapper recovery relies on it.  Profiles with known
-# pre-recovery FCP hazards should disable it explicitly.
+# When confidence reaches this level with ollvm_flat, suppress the consolidated
+# pass's forward-constants stage. It can misread dispatcher-carried variables
+# before unflattening reconstructs path ownership. This is an internal,
+# evidence-derived stage gate; the public constant-simplification operation
+# remains enabled and its memory/subtree stages still prepare state constants.
 _SUPPRESS_CONFIDENCE_THRESHOLD = 0.7
-_FLATTENING_SUPPRESSED_STAGES = ("constant-folding",)
+_FLATTENING_SUPPRESSED_STAGES = ("forward-constants",)
 
 
 class AnalysisPhase:
@@ -180,9 +180,9 @@ class AnalysisPhase:
         if confidence >= _CONF_CLASSIFY_THRESHOLD:
             obfuscation_type: str | None = "ollvm_flat"
             recommended_inferences: tuple[str, ...] = ("unflattening",)
-            # Suppress scalar constant folding at high confidence. Profile-
-            # specific configs own narrower FCP hazards so Approov-style
-            # engine-wrapper recovery can still use forward state propagation.
+            # Suppress path-insensitive forward propagation at high confidence.
+            # Memory and constant-subtree folding remain available to recover
+            # opaque dispatcher state values.
             if min(1.0, confidence) >= _SUPPRESS_CONFIDENCE_THRESHOLD:
                 suppress_stages: tuple[str, ...] = _FLATTENING_SUPPRESSED_STAGES
             else:

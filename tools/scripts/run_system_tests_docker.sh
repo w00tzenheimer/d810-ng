@@ -349,6 +349,13 @@ fi
 
 # Docker mount: host path -> container path (use variables so no host-specific paths in printed commands)
 VOL_WORK="-v ${WORK_DIR}:/work"
+VOL_GIT=""
+ENV_GIT=""
+GIT_COMMON_DIR="$(git -C "$WORK_DIR" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+if [ -n "$GIT_COMMON_DIR" ] && [ -d "$GIT_COMMON_DIR" ]; then
+  VOL_GIT="-v ${GIT_COMMON_DIR}:/d810-git:ro"
+  ENV_GIT="GIT_DIR=/d810-git"
+fi
 VOL_LOGS=""
 if [ -n "$MOUNT_LOGS" ]; then
   LOGS_DIR="${WORK_DIR}/.tmp/logs"
@@ -454,11 +461,11 @@ else
   SPEEDUPS_BUILD_CMD="D810_BUILD_SPEEDUPS=1 $IDA_VENV_PIP install -e .[speedups] -q || echo '[speedups] build failed, falling back to pure-Python'"
 fi
 if _image_has_baked_runtime; then
-  DEPENDENCY_SETUP="echo '[setup] baked runtime dependencies detected; install skipped'"
+  DEPENDENCY_SETUP="if $IDA_VENV_PYTHON -c 'import setuptools' >/dev/null 2>&1 && command -v git >/dev/null 2>&1; then echo '[setup] baked runtime dependencies detected; install skipped'; else echo '[setup] baked runtime is stale; refreshing declared test dependencies'; if ! command -v git >/dev/null 2>&1; then apt-get update && apt-get install -y --no-install-recommends git; fi; $IDA_VENV_PIP install -e '.[dev,emulation]' -q; fi"
 else
   DEPENDENCY_SETUP="$IDA_VENV_PIP install -e '.[dev,emulation]' -q && $IDA_VENV_PYTHON -m d810.speedups.install"
 fi
-SETUP_CMD="$LLVM_OPT_SETUP${LLVM_OPT_SETUP:+ && }export $ENV_IDA $ENV_PYTHON && $DEPENDENCY_SETUP && { $SPEEDUPS_BUILD_CMD; }"
+SETUP_CMD="$LLVM_OPT_SETUP${LLVM_OPT_SETUP:+ && }export $ENV_IDA $ENV_PYTHON $ENV_GIT && $DEPENDENCY_SETUP && { $SPEEDUPS_BUILD_CMD; }"
 
 # Safely reassemble an array of args into a string suitable for embedding in
 # a bash -c command that gets re-parsed by another shell (e.g. inside the
@@ -484,6 +491,7 @@ run_bash() {
     -e "D810_MEMORY_LIMIT_BYTES=$MEMORY_BYTES" \
     $extra_env \
     $VOL_WORK \
+    $VOL_GIT \
     $VOL_LOGS \
     -w /work \
     --entrypoint /bin/bash "$DOCKER_IMAGE" -lc "$inner"
@@ -497,6 +505,7 @@ run_bash_it() {
     -e "D810_MEMORY_LIMIT_BYTES=$MEMORY_BYTES" \
     $extra_env \
     $VOL_WORK \
+    $VOL_GIT \
     $VOL_LOGS \
     -w /work \
     -e "CMD=$CMD" \
@@ -516,6 +525,7 @@ run_bash_exec() {
     -e "D810_MEMORY_LIMIT_BYTES=$MEMORY_BYTES" \
     $extra_env \
     $VOL_WORK \
+    $VOL_GIT \
     $VOL_LOGS \
     -w /work \
     -e "CMD=exec" \

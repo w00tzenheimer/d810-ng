@@ -761,8 +761,7 @@ class _SemanticPatchLifecycle:
                 self.prepublication,
             )
         if any(
-            operation.direct_transfer_rewrite is not None
-            or operation.reference_route_authority is not None
+            operation.reference_route_authority is not None
             for operation in self.plan.operations
         ):
             self.failure_phase = "detached_route_oracle"

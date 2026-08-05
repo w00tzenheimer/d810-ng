@@ -19,11 +19,11 @@ class TestUnflatteningInference:
             suppress_stages=(),
         )
 
-    def test_high_confidence_suppresses_constant_folding(self) -> None:
+    def test_high_confidence_suppresses_forward_constants(self) -> None:
         hints = self._make_hints(confidence=0.8)
         deltas = unflattening_inference(hints)
         suppressed = {d.target_id for d in deltas if d.action == "suppress"}
-        assert "constant-folding" in suppressed
+        assert suppressed == {"forward-constants"}
         assert "ForwardConstantPropagationRule" not in suppressed
 
     def test_low_confidence_no_deltas(self) -> None:
@@ -35,7 +35,7 @@ class TestUnflatteningInference:
         hints = self._make_hints(confidence=0.7)
         deltas = unflattening_inference(hints)
         suppressed = {d.target_id for d in deltas if d.action == "suppress"}
-        assert "constant-folding" in suppressed
+        assert suppressed == {"forward-constants"}
         assert "ForwardConstantPropagationRule" not in suppressed
 
     def test_just_below_threshold(self) -> None:

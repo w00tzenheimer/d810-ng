@@ -7,6 +7,10 @@ from dataclasses import dataclass, field, replace
 import ida_hexrays
 import ida_range
 
+from d810.core.logging import getLogger
+
+logger = getLogger("D810.semantic_fragment_backend")
+
 from d810.core.typing import Mapping, Protocol, TYPE_CHECKING, runtime_checkable
 from d810.hexrays.ir.exact_data_flow import (
     find_exact_storage_access_eas,
@@ -29,6 +33,7 @@ from d810.hexrays.mutation.ir_translator import capture_mop_snapshot
 from d810.hexrays.opcode_lift import (
     branch_opcode_for_predicate,
     branch_predicate_from_opcode,
+    predicate_from_opcode,
     value_op_from_opcode,
 )
 from d810.hexrays.ir.logical_block_proxy import (
@@ -73,6 +78,7 @@ from d810.transforms.fragment_plan import (
     FragmentBlockMaterialization,
     FragmentBlockRole,
     FragmentConstantPublicationEnvelope,
+    FragmentComputedBranchNormalization,
     FragmentConditionalSelectEnvelope,
     FragmentImportedConditionalSelectEnvelope,
     FragmentNativeBody,
@@ -681,7 +687,7 @@ def _reobserve_constant_materializations(
 def _capture_predicate_insn_snapshot(instruction) -> InsnSnapshot:
     """Lift only portable operands, avoiding provenance-owned mop clones."""
     opcode = int(instruction.opcode)
-    predicate = branch_predicate_from_opcode(opcode)
+    branch_predicate = branch_predicate_from_opcode(opcode)
     return InsnSnapshot(
         opcode=opcode,
         ea=int(instruction.ea),
@@ -690,9 +696,9 @@ def _capture_predicate_insn_snapshot(instruction) -> InsnSnapshot:
         r=capture_mop_snapshot(instruction.r),
         d=capture_mop_snapshot(instruction.d),
         value_op_kind=value_op_from_opcode(opcode),
-        predicate_kind=predicate,
-        branch_predicate=predicate,
-        is_conditional_jump=predicate is not None,
+        predicate_kind=predicate_from_opcode(opcode),
+        branch_predicate=branch_predicate,
+        is_conditional_jump=branch_predicate is not None,
     )
 
 
@@ -910,6 +916,16 @@ class SemanticFragmentBackendState:
 
     def live_instruction_ea(self, block_id: str, native_ea: int) -> int:
         """Resolve one portable native anchor to its transaction-local live EA."""
+        matches = self.live_instruction_eas(block_id, native_ea)
+        if len(matches) > 1:
+            raise SemanticFragmentBackendRejected(
+                f"fragment instruction origin is ambiguous at "
+                f"{block_id}@0x{int(native_ea):X}"
+            )
+        return int(matches[0])
+
+    def live_instruction_eas(self, block_id: str, native_ea: int) -> tuple[int, ...]:
+        """Resolve every lowered live instruction owned by one native anchor."""
         native_ea = int(native_ea)
         matches = tuple(
             live_ea
@@ -919,12 +935,7 @@ class SemanticFragmentBackendState:
             ).items()
             if int(candidate_native_ea) == native_ea
         )
-        if len(matches) > 1:
-            raise SemanticFragmentBackendRejected(
-                f"fragment instruction origin is ambiguous at "
-                f"{block_id}@0x{native_ea:X}"
-            )
-        return native_ea if not matches else int(matches[0])
+        return (native_ea,) if not matches else tuple(sorted(int(ea) for ea in matches))
 
     def live_operation_predicate_ea(
         self,
@@ -1941,6 +1952,73 @@ def _clone_replacement(
     state.staged_block_ids.append(replacement_block.block_id)
 
 
+def _orient_conditional_select_branch(
+    branch: object,
+    *,
+    observed_predicate: PredicateKind,
+    intended_predicate: PredicateKind,
+    label: str,
+) -> None:
+    """Orient one cloned select-skip branch to its semantic handler edge."""
+    if int(branch.opcode) != int(ida_hexrays.m_jcnd):
+        branch_opcode = branch_opcode_for_predicate(intended_predicate)
+        if branch_opcode is None:
+            raise SemanticFragmentBackendRejected(
+                "live conditional-select predicate has no Hex-Rays branch "
+                f"opcode; {label}"
+            )
+        branch.opcode = int(branch_opcode)
+        return
+
+    if observed_predicate is intended_predicate:
+        return
+    if inverted_predicate_kind(observed_predicate) is not intended_predicate:
+        raise SemanticFragmentBackendRejected(
+            "live conditional-select truthiness predicate cannot be "
+            f"oriented exactly; {label}"
+        )
+
+    expression = None if int(branch.l.t) != int(ida_hexrays.mop_d) else branch.l.d
+    if (
+        expression is not None
+        and int(expression.opcode) == int(ida_hexrays.m_lnot)
+        and int(expression.l.t) == int(ida_hexrays.mop_d)
+    ):
+        oriented_condition = ida_hexrays.mop_t()
+        oriented_condition.assign(expression.l)
+        if int(oriented_condition.t) == int(ida_hexrays.mop_z):
+            raise SemanticFragmentBackendRejected(
+                "live conditional-select inner predicate could not be "
+                f"cloned independently; {label}"
+            )
+        branch.l.assign(oriented_condition)
+        return
+
+    condition_size = int(getattr(branch.l, "size", 0) or 1)
+    branch.opcode = int(ida_hexrays.m_jz)
+    branch.r.make_number(0, condition_size, int(branch.ea))
+
+
+def _live_entry_reachable_serials(mba: object) -> frozenset[int]:
+    reachable: set[int] = set()
+    pending = [0]
+    quantity = int(getattr(mba, "qty", 0) or 0)
+    while pending:
+        serial = pending.pop()
+        if serial in reachable or not 0 <= serial < quantity:
+            continue
+        block = mba.get_mblock(serial)
+        if block is None:
+            continue
+        reachable.add(serial)
+        pending.extend(
+            int(successor)
+            for successor in block.succset
+            if int(successor) not in reachable
+        )
+    return frozenset(reachable)
+
+
 def _normalize_conditional_select_replacement(
     modifier: DeferredGraphModifier,
     plan: FragmentPlan,
@@ -2038,6 +2116,7 @@ def _normalize_conditional_select_replacement(
         and len(nonexplicit_targets) == 1
     ):
         semantic_true_target = nonexplicit_targets[0]
+    entry_reachable = _live_entry_reachable_serials(modifier.mba)
     condition_indexes = tuple(
         index
         for index, instruction in enumerate(replacement_instructions)
@@ -2072,14 +2151,23 @@ def _normalize_conditional_select_replacement(
         )
         or int(selected.type) != int(ida_hexrays.BLT_1WAY)
         or tuple(int(value) for value in selected.succset) != (int(join.serial),)
-        or tuple(int(value) for value in selected.predset) != (int(original.serial),)
+        or tuple(
+            int(value)
+            for value in selected.predset
+            if int(value) in entry_reachable
+        )
+        != (int(original.serial),)
         or selected.nextb is None
         or int(selected.nextb.serial) != int(join.serial)
         or len(selected_instructions) != 1
         or value_op_from_opcode(int(selected_instructions[0].opcode))
         is not ValueOpKind.MOVE
         or int(selected_instructions[0].ea) != int(envelope.predicate_ea)
-        or set(int(value) for value in join.predset)
+        or {
+            int(value)
+            for value in join.predset
+            if int(value) in entry_reachable
+        }
         != {int(original.serial), int(selected.serial)}
         or int(join.type) != int(ida_hexrays.BLT_0WAY)
         or join_tail is None
@@ -2088,46 +2176,34 @@ def _normalize_conditional_select_replacement(
         or not condition_indexes
         or len(cut_indexes) != 1
         or max(condition_indexes) >= cut_indexes[0]
-        or cut_indexes[0] >= len(replacement_instructions) - 1
     ):
         raise SemanticFragmentBackendRejected(
             "live conditional-select envelope changed before detached "
-            f"normalization; {label}"
+            f"normalization; {label}; "
+            f"original_type={int(original.type)} "
+            f"original_succs={original_successors!r} "
+            f"explicit={explicit_target!r} nonexplicit={nonexplicit_targets!r} "
+            f"original_next={None if original.nextb is None else int(original.nextb.serial)} "
+            f"observed={observed_predicate!r} expected={normalization.predicate_kind!r} "
+            f"envelope_observed={envelope.observed_predicate_kind!r} "
+            f"semantic_true={semantic_true_target!r} "
+            f"selected_type={int(selected.type)} selected_succs={tuple(int(value) for value in selected.succset)!r} "
+            f"selected_preds={tuple(int(value) for value in selected.predset)!r} "
+            f"selected_reachable_preds={tuple(int(value) for value in selected.predset if int(value) in entry_reachable)!r} "
+            f"selected_next={None if selected.nextb is None else int(selected.nextb.serial)} "
+            f"join_type={int(join.type)} join_preds={tuple(int(value) for value in join.predset)!r} "
+            f"join_reachable_preds={tuple(int(value) for value in join.predset if int(value) in entry_reachable)!r} "
+            f"condition_indexes={condition_indexes!r} cut_indexes={cut_indexes!r} "
+            f"replacement_count={len(replacement_instructions)}"
         )
     branch = ida_hexrays.minsn_t(replacement_tail)
     branch.ea = int(operation.predicate_anchor_ea)
-    if int(branch.opcode) == int(ida_hexrays.m_jcnd):
-        expression = None if int(branch.l.t) != int(ida_hexrays.mop_d) else branch.l.d
-        if observed_predicate is normalization.predicate_kind:
-            pass
-        elif (
-            observed_predicate is PredicateKind.SGE
-            and normalization.predicate_kind is PredicateKind.SLT
-            and expression is not None
-            and int(expression.opcode) == int(ida_hexrays.m_lnot)
-            and int(expression.l.t) == int(ida_hexrays.mop_d)
-        ):
-            oriented_condition = ida_hexrays.mop_t()
-            oriented_condition.assign(expression.l)
-            if int(oriented_condition.t) == int(ida_hexrays.mop_z):
-                raise SemanticFragmentBackendRejected(
-                    "live conditional-select inner predicate could not be "
-                    f"cloned independently; {label}"
-                )
-            branch.l.assign(oriented_condition)
-        else:
-            raise SemanticFragmentBackendRejected(
-                "live conditional-select truthiness predicate cannot be "
-                f"oriented exactly; {label}"
-            )
-    else:
-        branch_opcode = branch_opcode_for_predicate(normalization.predicate_kind)
-        if branch_opcode is None:
-            raise SemanticFragmentBackendRejected(
-                "live conditional-select predicate has no Hex-Rays branch "
-                f"opcode; {label}"
-            )
-        branch.opcode = int(branch_opcode)
+    _orient_conditional_select_branch(
+        branch,
+        observed_predicate=observed_predicate,
+        intended_predicate=normalization.predicate_kind,
+        label=label,
+    )
     modifier.replace_instruction_suffix_now(
         replacement,
         cut_ea=int(operation.predicate_anchor_ea),
@@ -2408,6 +2484,16 @@ def _normalize_replacement_operations(
             )
             continue
         normalization = operation.computed_branch_normalization
+        if isinstance(normalization, FragmentComputedBranchNormalization) and (
+            normalization.conditional_select_envelope is None
+        ):
+            _normalize_imported_computed_branch(
+                modifier,
+                plan,
+                state,
+                operation,
+            )
+            continue
         if normalization is None or normalization.conditional_select_envelope is None:
             continue
         _normalize_conditional_select_replacement(
@@ -2416,6 +2502,98 @@ def _normalize_replacement_operations(
             state,
             operation,
         )
+
+
+def _normalize_imported_computed_branch(
+    modifier: DeferredGraphModifier,
+    plan: FragmentPlan,
+    state: SemanticFragmentBackendState,
+    operation: FragmentOperation,
+) -> None:
+    """Orient an imported conditional to its portable predicate contract."""
+    normalization = operation.computed_branch_normalization
+    source_plan_block = plan.block(operation.source_block_id)
+    if (
+        not isinstance(normalization, FragmentComputedBranchNormalization)
+        or normalization.conditional_select_envelope is not None
+        or source_plan_block.materialization
+        is not FragmentBlockMaterialization.IMPORT_NATIVE
+    ):
+        raise SemanticFragmentBackendRejected(
+            "envelope-free computed normalization requires an imported source"
+        )
+    if operation.roles != {
+        SemanticEdgeRole.CONDITIONAL_TAKEN,
+        SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+    }:
+        raise SemanticFragmentBackendRejected(
+            "imported computed normalization requires two conditional edges"
+        )
+
+    source = _live_block_for_binding(
+        modifier,
+        state.binding(operation.source_block_id),
+    )
+    instructions = tuple(_iter_block_instructions(source))
+    tail = source.tail
+    predicate_ea = state.live_operation_predicate_ea(operation)
+    producer_eas = state.live_instruction_eas(
+        operation.source_block_id,
+        normalization.condition_producer_ea,
+    )
+    snapshots = tuple(_capture_predicate_insn_snapshot(row) for row in instructions)
+    observed_predicates = {
+        predicate
+        for producer_ea in producer_eas
+        if (
+            predicate := exact_branch_predicate_kind(
+                snapshots,
+                condition_producer_ea=producer_ea,
+            )
+        )
+        is not None
+    }
+    observed_predicate = (
+        next(iter(observed_predicates))
+        if len(observed_predicates) == 1
+        else None
+    )
+    if (
+        tail is None
+        or not ida_hexrays.is_mcode_jcond(int(tail.opcode))
+        or int(tail.ea) != int(predicate_ea)
+        or not any(int(row.ea) in producer_eas for row in instructions)
+        or observed_predicate is None
+        or (
+            observed_predicate is not normalization.predicate_kind
+            and inverted_predicate_kind(observed_predicate)
+            is not normalization.predicate_kind
+        )
+    ):
+        raise SemanticFragmentBackendRejected(
+            "imported computed branch cannot be oriented exactly; "
+            f"operation={operation.operation_id!r} "
+            f"source=blk{int(source.serial)}@0x{int(source.start):X} "
+            f"predicate=0x{int(predicate_ea):X} "
+            f"producers={tuple(hex(int(ea)) for ea in producer_eas)!r} "
+            f"observed={observed_predicate!r} "
+            f"intended={normalization.predicate_kind!r}"
+        )
+    if observed_predicate is normalization.predicate_kind:
+        return
+
+    branch = ida_hexrays.minsn_t(tail)
+    _orient_conditional_select_branch(
+        branch,
+        observed_predicate=observed_predicate,
+        intended_predicate=normalization.predicate_kind,
+        label=f"operation={operation.operation_id!r}",
+    )
+    modifier.replace_instruction_suffix_now(
+        source,
+        cut_ea=int(predicate_ea),
+        replacement=branch,
+    )
 
 
 def _create_empty_block(
@@ -3246,17 +3424,32 @@ def _diagnose_return_carrier(
     block,
 ) -> tuple[FragmentReturnCarrier | None, str]:
     rows = _native_instruction_rows(state, planned.block_id, block)
+    state_block = (
+        block
+        if planned.state_write_block_id == planned.block_id
+        else _live_block_for_binding(
+            modifier,
+            state.binding(planned.state_write_block_id),
+        )
+    )
+    state_rows = _native_instruction_rows(
+        state,
+        planned.state_write_block_id,
+        state_block,
+    )
     carrier_matches = tuple(
         index
         for index, (native_ea, _instruction) in enumerate(rows)
         if native_ea == planned.carrier_ea
     )
+    same_block = planned.state_write_block_id == planned.block_id
     if len(carrier_matches) == 1:
         carrier_index = carrier_matches[0]
         state_matches = tuple(
             index
-            for index, (native_ea, _instruction) in enumerate(rows)
-            if native_ea == planned.state_write_ea and index < carrier_index
+            for index, (native_ea, _instruction) in enumerate(state_rows)
+            if native_ea == planned.state_write_ea
+            and (not same_block or index < carrier_index)
         )
     else:
         carrier_index = -1
@@ -3316,14 +3509,21 @@ def _diagnose_return_carrier(
             FragmentReturnCarrier(
                 carrier_id=planned.carrier_id,
                 block_id=planned.block_id,
-                state_write_ea=rows[state_index][0],
+                state_write_block_id=planned.state_write_block_id,
+                state_write_ea=state_rows[state_index][0],
                 carrier_ea=rows[carrier_index][0],
                 operation=operation,
                 source=source,
                 return_width=int(destination.size),
-                corridor_instruction_eas=tuple(
-                    native_ea
-                    for native_ea, _instruction in rows[state_index : carrier_index + 1]
+                corridor_instruction_eas=(
+                    tuple(
+                        native_ea
+                        for native_ea, _instruction in rows[
+                            state_index : carrier_index + 1
+                        ]
+                    )
+                    if same_block
+                    else planned.corridor_instruction_eas
                 ),
             ),
             "matched",
@@ -3494,23 +3694,36 @@ def _materialize_return_carrier(
                 f"fragment return carrier conflicts at "
                 f"{planned.block_id}@0x{planned.carrier_ea:X}"
             )
+        carrier_matches[0].set_persistent()
         return
 
+    same_block = planned.state_write_block_id == planned.block_id
     prefix = planned.corridor_instruction_eas[:-1]
+    prefix_rows = rows
+    if not same_block:
+        state_block = _live_block_for_binding(
+            modifier,
+            state.binding(planned.state_write_block_id),
+        )
+        prefix_rows = _native_instruction_rows(
+            state,
+            planned.state_write_block_id,
+            state_block,
+        )
     prefix_positions: list[int] = []
     for native_ea in prefix:
         matches = tuple(
             index
-            for index, (candidate_ea, _instruction) in enumerate(rows)
+            for index, (candidate_ea, _instruction) in enumerate(prefix_rows)
             if candidate_ea == native_ea
         )
         if len(matches) != 1:
             raise SemanticFragmentBackendRejected(
                 f"fragment return corridor is ambiguous at "
-                f"{planned.block_id}@0x{native_ea:X}"
+                f"{planned.state_write_block_id}@0x{native_ea:X}"
             )
         prefix_positions.append(matches[0])
-    if any(
+    if same_block and any(
         following != current + 1
         for current, following in zip(prefix_positions, prefix_positions[1:])
     ):
@@ -3534,10 +3747,11 @@ def _materialize_return_carrier(
         instruction.l.assign(source)
         instruction.r.erase()
         instruction.d.make_reg(construction.return_mreg, planned.return_width)
+        instruction.set_persistent()
         modifier.insert_instruction_now(
             block,
             instruction,
-            rows[prefix_positions[-1]][1],
+            rows[prefix_positions[-1]][1] if same_block else None,
         )
     except Exception as exc:
         if isinstance(exc, SemanticFragmentBackendRejected):
@@ -3656,6 +3870,10 @@ def _materialize_terminal_effects(
     plan: FragmentPlan,
     state: SemanticFragmentBackendState,
 ) -> None:
+    if plan.return_carriers:
+        modifier.refine_transient_terminal_return_type_now(
+            tuple(carrier.return_width for carrier in plan.return_carriers),
+        )
     gateway = _gateway(modifier)
     for carrier in plan.return_carriers:
         _materialize_return_carrier(modifier, state, carrier)
@@ -4825,7 +5043,10 @@ def _project_fragment(
             and operation.edges[0].role is SemanticEdgeRole.DIRECT
             and operation.direct_transfer_rewrite is None
             and plan.block(operation.source_block_id).materialization
-            is FragmentBlockMaterialization.IMPORT_NATIVE
+            in {
+                FragmentBlockMaterialization.CLONE_PUBLISHED,
+                FragmentBlockMaterialization.IMPORT_NATIVE,
+            }
         )
     }
     projection_bindings = dict(state.bindings)
@@ -4993,32 +5214,74 @@ def _project_fragment(
             if live_tail_ea is not None and live_tail_ea not in instruction_origins:
                 target = live_by_id.get(structural_target_id)
                 expected = state.preflight_projection.block(block_id)
+                native_goto_retained = bool(
+                    expected.terminator_ea is not None
+                    and expected.terminator_kind is InsnKind.GOTO
+                    and live_tail_ea == int(expected.terminator_ea)
+                )
+                exact_goto_shape = bool(
+                    target is not None
+                    and block_kind is BlockKind.ONE_WAY
+                    and tuple(raw_successors) == (int(target.serial),)
+                    and direct_tail is not None
+                    and int(direct_tail.opcode) == int(ida_hexrays.m_goto)
+                    and int(getattr(direct_tail.l, "t", -1))
+                    == int(ida_hexrays.mop_b)
+                    and int(getattr(direct_tail.l, "b", -1))
+                    == int(target.serial)
+                    and bool(int(block.flags) & int(ida_hexrays.MBL_GOTO))
+                )
+                if native_goto_retained and exact_goto_shape:
+                    continue
                 prefix_live_eas = tuple(
                     int(getattr(instruction, "ea", -1) or -1)
                     for instruction in direct_instructions[:-1]
                 )
+                source_materialization = plan.block(block_id).materialization
                 if (
-                    target is None
-                    or block_kind is not BlockKind.ONE_WAY
-                    or tuple(raw_successors) != (int(target.serial),)
-                    or direct_tail is None
-                    or int(direct_tail.opcode) != int(ida_hexrays.m_goto)
-                    or int(getattr(direct_tail.l, "t", -1)) != int(ida_hexrays.mop_b)
-                    or int(getattr(direct_tail.l, "b", -1)) != int(target.serial)
-                    or not int(block.flags) & int(ida_hexrays.MBL_GOTO)
-                    or any(ea not in instruction_origins for ea in prefix_live_eas)
+                    source_materialization
+                    is FragmentBlockMaterialization.CLONE_PUBLISHED
+                ):
+                    prefix_has_exact_origins = (
+                        prefix_live_eas == expected.instruction_eas
+                    )
+                    projected_prefix_eas = expected.instruction_eas
+                else:
+                    prefix_has_exact_origins = all(
+                        ea in instruction_origins for ea in prefix_live_eas
+                    )
+                    projected_prefix_eas = tuple(
+                        dict.fromkeys(
+                            int(instruction_origins[ea])
+                            for ea in prefix_live_eas
+                            if ea in instruction_origins
+                        )
+                    )
+                if (
+                    not exact_goto_shape
+                    or not prefix_has_exact_origins
                     or expected.terminator_ea is not None
                     or expected.terminator_kind is not InsnKind.GOTO
                 ):
                     raise SemanticFragmentBackendRejected(
                         f"planned structural direct transfer {block_id!r} lost "
-                        "its exact synthetic goto shape"
+                        "its exact synthetic goto shape; "
+                        f"target_bound={target is not None} "
+                        f"kind={block_kind.value} "
+                        f"successors={tuple(raw_successors)!r} "
+                        f"target_serial={None if target is None else int(target.serial)!r} "
+                        f"tail_opcode={None if direct_tail is None else int(direct_tail.opcode)!r} "
+                        f"tail_ea={live_tail_ea!r} "
+                        f"tail_l_type={None if direct_tail is None else int(getattr(direct_tail.l, 't', -1))!r} "
+                        f"tail_l_block={None if direct_tail is None else int(getattr(direct_tail.l, 'b', -1))!r} "
+                        f"flags=0x{int(block.flags):X} "
+                        f"goto_flag=0x{int(ida_hexrays.MBL_GOTO):X} "
+                        f"prefix_origins={prefix_live_eas!r} "
+                        f"known_origins={tuple(sorted(instruction_origins))!r} "
+                        f"expected_terminator=({expected.terminator_ea!r}, "
+                        f"{expected.terminator_kind.value})"
                     )
-                instruction_eas[block_id] = tuple(
-                    dict.fromkeys(
-                        int(instruction_origins[ea]) for ea in prefix_live_eas
-                    )
-                )
+                instruction_eas[block_id] = projected_prefix_eas
                 terminator_eas[block_id] = None
                 terminator_kinds[block_id] = InsnKind.GOTO
     flag_write_eas = _project_flag_writes(state, plan, live_by_id)
@@ -6185,9 +6448,13 @@ def snapshot_semantic_fragment_inputs(
     terminal_diagnostics: list[ProjectedTerminalEffectDiagnostic] = []
     for carrier in plan.return_carriers:
         rows = prepared_instruction_rows_by_block.get(carrier.block_id, ())
+        state_rows = prepared_instruction_rows_by_block.get(
+            carrier.state_write_block_id,
+            (),
+        )
         state_matches = tuple(
             index
-            for index, (ea, _instruction) in enumerate(rows)
+            for index, (ea, _instruction) in enumerate(state_rows)
             if int(ea) == carrier.state_write_ea
         )
         carrier_matches = tuple(
@@ -6205,7 +6472,10 @@ def snapshot_semantic_fragment_inputs(
         existing_matches = bool(
             len(state_matches) == 1
             and len(carrier_matches) == 1
-            and state_matches[0] < carrier_matches[0][0]
+            and (
+                carrier.state_write_block_id != carrier.block_id
+                or state_matches[0] < carrier_matches[0][0]
+            )
             and value_op_from_opcode(int(carrier_matches[0][1].opcode))
             is carrier.operation
         )

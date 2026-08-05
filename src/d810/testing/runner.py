@@ -13,6 +13,8 @@ Architecture Note:
 
 from __future__ import annotations
 
+import contextlib
+import dataclasses
 from pathlib import Path
 from d810.core.typing import Any, Callable, Optional
 
@@ -211,7 +213,23 @@ def run_deobfuscation_test(
         # AFTER: Decompile with d810 (deobfuscated)
         # ==========================================
         state.start_d810()
-        decompiled_after = idaapi.decompile(func_ea, flags=idaapi.DECOMP_NO_CACHE)
+        recipe_activation = contextlib.nullcontext()
+        if effective_case.state_cff_min_state_constant is not None:
+            draft = state.create_active_workbench_recipe_draft(func_ea)
+            current_options = state.get_workbench_recipe_state_cff_options(draft)
+            draft = state.replace_workbench_recipe_state_cff_options(
+                draft,
+                dataclasses.replace(
+                    current_options,
+                    min_state_constant=effective_case.state_cff_min_state_constant,
+                ),
+            )
+            recipe_activation = state.activate_workbench_recipe(draft)
+        with recipe_activation:
+            decompiled_after = idaapi.decompile(
+                func_ea,
+                flags=idaapi.DECOMP_NO_CACHE,
+            )
         if decompiled_after is None:
             raise AssertionError(
                 f"Decompilation with d810 failed for '{effective_case.function}'"

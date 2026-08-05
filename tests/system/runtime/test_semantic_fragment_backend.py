@@ -26,6 +26,7 @@ from d810.core.observability import (  # noqa: E402
 from d810.core.observability_events import DiagnosticSessionObserved  # noqa: E402
 from d810.core.semantic_route_oracle import SemanticTransferKind  # noqa: E402
 from d810.hexrays.mutation import deferred_modifier as dm  # noqa: E402
+from d810.hexrays.mutation import block_retention  # noqa: E402
 from d810.hexrays.mutation import detached_handler_island as dhi  # noqa: E402
 from d810.hexrays.mutation import semantic_fragment_backend as sfb  # noqa: E402
 from d810.hexrays.mutation.mba_mutation_events import (  # noqa: E402
@@ -402,9 +403,13 @@ class _Instruction:
         self.r = _BlockReference()
         self.d = _BlockReference()
         self.next = None
+        self.persistent = False
 
     def setaddr(self, ea: int) -> None:
         self.ea = int(ea)
+
+    def set_persistent(self) -> None:
+        self.persistent = True
 
 
 def _fake_minsn(ea: int) -> _Instruction:
@@ -458,6 +463,7 @@ class _Block:
         result.swap(observed)
         return True
 
+
     def remove_from_block(self, instruction) -> None:
         previous = None
         current = self.head
@@ -488,6 +494,31 @@ class _Block:
         after.next = instruction
         if self.tail is after:
             self.tail = instruction
+
+
+def test_committed_semantic_block_releases_stale_goto_retention() -> None:
+    block = _Block(1, start=0x401000, block_type=ida_hexrays.BLT_0WAY)
+    block.tail = _Instruction(ida_hexrays.m_ret, 0x401010)
+    block.flags = int(
+        ida_hexrays.MBL_KEEP | ida_hexrays.MBL_GOTO | ida_hexrays.MBL_FAKE
+    )
+
+    block_retention.release_committed_block_retention(block)
+
+    assert not int(block.flags) & int(ida_hexrays.MBL_KEEP)
+    assert not int(block.flags) & int(ida_hexrays.MBL_GOTO)
+    assert int(block.flags) & int(ida_hexrays.MBL_FAKE)
+
+
+def test_committed_semantic_block_keeps_live_goto_shape() -> None:
+    block = _Block(1, start=0x401000, block_type=ida_hexrays.BLT_1WAY)
+    block.tail = _Instruction(ida_hexrays.m_goto, 0x401010, target=2)
+    block.flags = int(ida_hexrays.MBL_KEEP | ida_hexrays.MBL_GOTO)
+
+    block_retention.release_committed_block_retention(block)
+
+    assert not int(block.flags) & int(ida_hexrays.MBL_KEEP)
+    assert int(block.flags) & int(ida_hexrays.MBL_GOTO)
 
 
 class _Mba:
@@ -661,6 +692,7 @@ def _connect(source: _Block, target: _Block) -> None:
     source.type = int(ida_hexrays.BLT_1WAY)
     source.tail = _Instruction(ida_hexrays.m_goto, source.start, target.serial)
     source.head = source.tail
+    source.flags |= int(ida_hexrays.MBL_GOTO)
     source.succset.push_back(target.serial)
     target.predset.push_back(source.serial)
 
@@ -1060,7 +1092,28 @@ class _RecordingNativeBodyMaterializer:
         plan: FragmentPlan,
         native_body: FragmentNativeBody,
     ) -> PreparedNativeBodyPreparation:
-        return _native_body_preparation(plan, native_body)
+        assert len(native_body.block_ids) == 1
+        block_id = native_body.block_ids[0]
+        block = plan.block(block_id)
+        return _native_body_preparation(
+            plan,
+            native_body,
+            (
+                (
+                    block_id,
+                    0,
+                    (
+                        (
+                            int(block.semantic_anchor_ea),
+                            _Instruction(
+                                ida_hexrays.m_ret,
+                                int(block.semantic_anchor_ea),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
 
     def stage_native_body(
         self,
@@ -1080,6 +1133,12 @@ class _RecordingNativeBodyMaterializer:
         )
         for block_id in native_body.block_ids:
             context.stage_block(block_id)
+            _block_id, block_flags, instructions = preparation.payload.rows[0]
+            context.populate_block(
+                block_id=block_id,
+                instructions=instructions,
+                block_flags=block_flags,
+            )
 
 
 class _RejectingNativeBodyMaterializer:
@@ -1377,6 +1436,7 @@ def _plan_with_terminal_effects(
             FragmentReturnCarrier(
                 carrier_id="return-value",
                 block_id=carrier.block_id,
+                state_write_block_id=carrier.block_id,
                 state_write_ea=0x500000,
                 carrier_ea=0x500004,
                 operation=ValueOpKind.MOVE,
@@ -6961,7 +7021,7 @@ def test_gateway_publishes_implicit_entry_root_through_adjacent_helper(
     assert int(helper.tail.l.b) == int(replacement.serial)
     assert int(helper.start) == int(mba.entry_ea)
     assert int(helper.end) == int(mba.entry_ea) + 1
-    assert int(helper.flags) & int(ida_hexrays.MBL_KEEP)
+    assert not int(helper.flags) & int(ida_hexrays.MBL_KEEP)
     assert int(helper.flags) & int(ida_hexrays.MBL_FAKE)
     assert tuple(original.predset) == ()
     assert tuple(replacement.predset) == (helper.serial,)
@@ -7026,6 +7086,25 @@ def test_gateway_collapses_detached_conditional_to_proven_direct_route(
                 materialization=FragmentBlockMaterialization.REUSE_PUBLISHED,
                 semantic_anchor_ea=int(fallthrough_binding.anchor_ea),
                 stable_identity=fallthrough_handle.stable_identity,
+            ),
+        ),
+        operations=(
+            replace(
+                plan.operations[0],
+                operation_id="route:proof:conditional-collapse",
+                direct_transfer_rewrite=FragmentDirectTransferRewrite(
+                    route_proof_id="proof:conditional-collapse",
+                    owner_identity=plan.block("replacement").stable_identity,
+                    owner_anchor_ea=int(original.tail.ea),
+                    rewrite_anchor_ea=int(original.tail.ea),
+                    delivery_region=NativeEaInterval(
+                        int(original.tail.ea),
+                        int(original.tail.ea) + 1,
+                    ),
+                    proof_corridor_instruction_eas=(int(original.tail.ea),),
+                    superseded_instruction_eas=(int(original.tail.ea),),
+                    source_transfer_kind=SemanticTransferKind.CONDITIONAL,
+                ),
             ),
         ),
     )
@@ -7684,7 +7763,7 @@ def test_backend_stages_plan_owned_empty_synthetic_block(monkeypatch) -> None:
     monkeypatch.setattr(
         dm,
         "change_0way_block_successor",
-        _change_fake_zero_way_successor,
+        _change_fake_zero_way_successor_preserving_instructions,
     )
     plan = _plan(gateway, entry=0, original=1, target=2, dispatcher=3)
     synthetic = FragmentBlock(
@@ -7809,7 +7888,8 @@ def test_backend_normalizes_conditional_select_only_on_detached_replacement(
     join = _Block(3, start=0x40A601, block_type=ida_hexrays.BLT_0WAY)
     taken = _Block(4, start=0x40B6C0, block_type=ida_hexrays.BLT_0WAY)
     fallthrough = _Block(5, start=0x40A607, block_type=ida_hexrays.BLT_0WAY)
-    stop = _Block(6, start=0x40C000, block_type=ida_hexrays.BLT_STOP)
+    orphan = _Block(6, start=0x40A5F0, block_type=ida_hexrays.BLT_1WAY)
+    stop = _Block(7, start=0x40C000, block_type=ida_hexrays.BLT_STOP)
     original.end = 0x40A5FF
     selected.end = 0x40A5FF
     join.end = 0x40A607
@@ -7843,7 +7923,10 @@ def test_backend_normalizes_conditional_select_only_on_detached_replacement(
     join_prefix.next = join_transfer
     join.head = join_prefix
     join.tail = join_transfer
-    mba = _Mba((entry, original, selected, join, taken, fallthrough, stop))
+    orphan.head = orphan.tail = _Instruction(ida_hexrays.m_goto, 0x40A5FE)
+    orphan.tail.l.make_blkref(join.serial)
+    _connect(orphan, join)
+    mba = _Mba((entry, original, selected, join, taken, fallthrough, orphan, stop))
     gateway = make_fragment_publication_gateway(
         mba,
         publication_purpose=(FragmentPublicationPurpose.FRONTEND_NORMALIZATION),
@@ -7906,6 +7989,102 @@ def test_backend_normalizes_conditional_select_only_on_detached_replacement(
 
     modifier._discard_staged_semantic_fragment(plan)
     gateway.abort(reason="runtime conditional-select staging cleanup")
+
+
+def test_backend_inverts_plain_truthiness_for_cmov_skip_branch(monkeypatch) -> None:
+    branch = _Instruction(ida_hexrays.m_jcnd, 0x40A5FE)
+    branch.l.make_reg(55, 1)
+    monkeypatch.setattr(sfb.ida_hexrays, "mop_t", _BlockReference)
+
+    sfb._orient_conditional_select_branch(
+        branch,
+        observed_predicate=PredicateKind.EQ,
+        intended_predicate=PredicateKind.NE,
+        label="cmovne skip branch",
+    )
+
+    assert int(branch.opcode) == int(ida_hexrays.m_jz)
+    assert int(branch.l.t) == int(ida_hexrays.mop_r)
+    assert int(branch.l.r) == 55
+    assert int(branch.r.t) == int(ida_hexrays.mop_n)
+    assert int(branch.r.nnn.value) == 0
+    assert int(branch.r.size) == 1
+
+
+def test_backend_orients_imported_conditional_to_portable_predicate(
+    monkeypatch,
+) -> None:
+    producer_ea = 0x40A620
+    predicate_ea = 0x40A626
+    producer = _Instruction(ida_hexrays.m_nop, producer_ea)
+    branch = _Instruction(ida_hexrays.m_jz, predicate_ea)
+    producer.next = branch
+    source = _Block(0, start=0xF10000, block_type=ida_hexrays.BLT_0WAY)
+    source.head = producer
+    source.tail = branch
+    operation = FragmentOperation(
+        operation_id="native-indirect-transfer@0x40A626",
+        source_block_id="imported-router",
+        predicate_anchor_ea=predicate_ea,
+        computed_branch_normalization=FragmentComputedBranchNormalization(
+            predicate_kind=PredicateKind.NE,
+            normalization_start_ea=predicate_ea,
+            condition_producer_ea=producer_ea,
+            unresolved_transfer_ea=0x40A630,
+        ),
+        edges=(
+            FragmentEdge(
+                role=SemanticEdgeRole.CONDITIONAL_TAKEN,
+                target_block_id="next-router",
+            ),
+            FragmentEdge(
+                role=SemanticEdgeRole.CONDITIONAL_FALLTHROUGH,
+                target_block_id="handler",
+            ),
+        ),
+    )
+    def replace_suffix(_block, *, cut_ea, replacement: object) -> None:
+        nonlocal replacement_branch
+        assert _block is source
+        assert int(cut_ea) == predicate_ea
+        replacement_branch = replacement
+
+    replacement_branch = None
+    modifier = SimpleNamespace(replace_instruction_suffix_now=replace_suffix)
+    state = SimpleNamespace(
+        binding=lambda _block_id: object(),
+        live_instruction_ea=lambda _block_id, native_ea: int(native_ea),
+        live_instruction_eas=lambda _block_id, native_ea: (int(native_ea),),
+        live_operation_predicate_ea=lambda _operation: predicate_ea,
+    )
+    plan = SimpleNamespace(
+        block=lambda _block_id: SimpleNamespace(
+            materialization=FragmentBlockMaterialization.IMPORT_NATIVE
+        )
+    )
+    monkeypatch.setattr(sfb, "_live_block_for_binding", lambda *_args: source)
+    monkeypatch.setattr(sfb.ida_hexrays, "minsn_t", deepcopy)
+
+    sfb._normalize_replacement_operations(
+        modifier,
+        plan,
+        state,
+        (operation,),
+    )
+
+    assert replacement_branch is not None
+    assert int(replacement_branch.opcode) == int(ida_hexrays.m_jnz)
+    assert int(replacement_branch.ea) == predicate_ea
+
+
+def test_backend_predicate_snapshot_preserves_setcc_semantics() -> None:
+    snapshot = sfb._capture_predicate_insn_snapshot(
+        _Instruction(ida_hexrays.m_setz, 0x40A5F0)
+    )
+
+    assert snapshot.predicate_kind is PredicateKind.EQ
+    assert snapshot.branch_predicate is None
+    assert snapshot.is_conditional_jump is False
 
 
 def test_backend_clones_nested_signed_skip_before_replacing_parent(

@@ -3,6 +3,8 @@ from __future__ import annotations
 import contextlib
 
 import ida_hexrays
+import ida_nalt
+import ida_typeinf
 import idaapi
 
 from d810.core import getLogger, typing
@@ -12,6 +14,14 @@ from d810.hexrays.hooks.ctree_hooks import CtreeOptimizerManager
 from d810.hexrays.hooks.glbopt_diagnostics import (
     apply_return_const_corruption_cleanup,
     prune_unreachable_condition_chain,
+)
+from d810.hexrays.mutation.deferred_modifier import (
+    canonicalize_explicit_return_to_stop_edge,
+    refine_transient_terminal_return_type,
+)
+from d810.hexrays.mutation.terminal_return_lifecycle import (
+    imported_terminal_return_edges,
+    release_scalar_return_register,
 )
 
 main_logger = getLogger("D810")
@@ -57,6 +67,53 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
             pass
         return entry_ea
 
+    @staticmethod
+    def _hydrate_transient_function_type(mba: object, function_ea: int) -> bool:
+        """Ensure pre-generation MBAs have a refinable function type.
+
+        ``hxe_prolog`` may expose an empty ``mba.idb_type`` even though IDA can
+        retrieve or guess a function type for the owning entry.  Hydrate only
+        the transient MBA copy: terminal-carrier inference must affect this
+        decompilation without persisting a guessed prototype in the IDB.
+        """
+        current_type = getattr(mba, "idb_type", None)
+        if current_type is not None and current_type.is_func():
+            return True
+        function_type = ida_typeinf.tinfo_t()
+        recovered = bool(ida_nalt.get_tinfo(function_type, int(function_ea)))
+        if not recovered:
+            recovered = int(ida_typeinf.guess_tinfo(function_type, int(function_ea))) > 0
+        if not recovered or not function_type.is_func():
+            return False
+        mba.idb_type = function_type
+        return True
+
+    @staticmethod
+    def _refine_session_terminal_return_type(session: object, mba: object) -> None:
+        resolver_evidence = getattr(
+            getattr(session, "native_preanalysis", None),
+            "resolver_evidence",
+            None,
+        )
+        terminal_carriers = tuple(
+            getattr(resolver_evidence, "terminal_return_carriers", ()) or ()
+        )
+        if not terminal_carriers:
+            return
+        function_ea = int(
+            getattr(session, "function_ea", getattr(mba, "entry_ea", 0)) or 0
+        )
+        hydrated = HexraysDecompilationHook._hydrate_transient_function_type(
+            mba,
+            function_ea,
+        )
+        if not hydrated:
+            return
+        refine_transient_terminal_return_type(
+            mba,
+            tuple(carrier.return_width for carrier in terminal_carriers),
+        )
+
     def _decision_for_mba(
         self,
         mba: ida_hexrays.mbl_array_t,
@@ -87,6 +144,7 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
         if session is None:
             return decision
         decision["session"] = session
+        HexraysDecompilationHook._refine_session_terminal_return_type(session, mba)
         if not bind_live_identity:
             return decision
         build_identity_index = getattr(
@@ -201,7 +259,8 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
                 function_ea,
                 decision.get("reason", "unspecified"),
             )
-            return ida_hexrays.MERR_REDO
+            result = ida_hexrays.MERR_REDO
+            return result
         return 0
 
     def calls_done(self, mba: ida_hexrays.mbl_array_t) -> "int":
@@ -236,7 +295,8 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
             # Hex-Rays documents MERR_LOOP as the required result when a
             # calls_done subscriber changes microcode inputs.  It restarts the
             # optimization pipeline at the CALLS boundary.
-            return ida_hexrays.MERR_LOOP
+            result = ida_hexrays.MERR_LOOP
+            return result
         return 0
 
     def build_callinfo(self, blk, call_type):
@@ -329,6 +389,8 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
             mba,
             structural_callback=True,
         )
+        if session is not None:
+            HexraysDecompilationHook._refine_session_terminal_return_type(session, mba)
         diagnostic_owner_ea = int(
             getattr(session, "function_ea", function_ea)
             if session is not None
@@ -365,12 +427,27 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
 
     def glbopt(self, mba: ida_hexrays.mbl_array_t) -> "int":
         function_ea = HexraysDecompilationHook._function_owner_ea(mba)
+        decision = self._decision_for_mba(mba, bind_live_identity=True)
+        session = decision.get("session")
+        resolver_evidence = getattr(
+            getattr(session, "native_preanalysis", None),
+            "resolver_evidence",
+            None,
+        )
+        terminal_carriers = tuple(
+            getattr(resolver_evidence, "terminal_return_carriers", ()) or ()
+        )
+        return_widths = tuple(
+            int(carrier.return_width) for carrier in terminal_carriers
+        )
+        terminal_canonicalized = any(
+            canonicalize_explicit_return_to_stop_edge(block, stop)
+            for block, stop in imported_terminal_return_edges(mba, return_widths)
+        )
         main_logger.info("glbopt finished for function at %s", hex(function_ea))
         main_logger.reset_maturity()
-
         # PruneUnreachable: diagnostic-only; logs unreachable condition-chain blocks
         # but does NOT remove them (see helper for rationale).
-        decision = self._decision_for_mba(mba, bind_live_identity=True)
         prune_unreachable_condition_chain(
             mba,
             self._block_optimizer,
@@ -418,7 +495,11 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
                 mba,
                 prefold_def_eas=prefold_def_eas,
             )
-            callback_result = ida_hexrays.MERR_LOOP if applied else 0
+            loop_requested = bool(applied or terminal_canonicalized)
+            if not loop_requested:
+                for return_width in set(return_widths):
+                    release_scalar_return_register(mba, return_width)
+            callback_result = ida_hexrays.MERR_LOOP if loop_requested else 0
             return callback_result
         except Exception as error:
             callback_exception_name = type(error).__name__

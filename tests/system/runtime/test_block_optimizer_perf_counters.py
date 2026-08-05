@@ -506,6 +506,62 @@ def test_scoped_rules_are_executed_in_priority_order():
     assert low.calls == 0
 
 
+def test_equal_priority_scoped_rules_preserve_public_pipeline_order():
+    manager = BlockOptimizerManager(
+        OptimizationStatistics(), Path("."), ctx_cls=FlowMaturityContext
+    )
+    manager.current_maturity = 1
+    first = _DummyRule("z_first", patches=1)
+    second = _DummyRule("a_second", patches=1)
+    scope_service = _FakeExecutionScopeService((first, second))
+    manager.configure(
+        execution_scope_service=scope_service,
+        execution_scope_project_name="proj",
+        execution_scope_idb_key="idb",
+    )
+
+    assert manager.optimize(_make_block()) == 1
+    assert first.calls == 1
+    assert second.calls == 0
+
+
+def test_pending_preopt_reimport_marks_current_flow_generation_stale():
+    def resolver_state(*, evidence, normalized, pending=False):
+        return SimpleNamespace(
+            is_materialized=True,
+            pending_preopt_reimport=pending,
+            evidence_generation=evidence,
+            native_preanalysis=SimpleNamespace(
+                normalization_published_postvalidated_generation=normalized
+            ),
+        )
+
+    stale = SimpleNamespace(
+        resolver_session_state=lambda: resolver_state(
+            evidence=2,
+            normalized=1,
+        )
+    )
+    current = SimpleNamespace(
+        resolver_session_state=lambda: resolver_state(
+            evidence=2,
+            normalized=2,
+        )
+    )
+    pending = SimpleNamespace(
+        resolver_session_state=lambda: resolver_state(
+            evidence=2,
+            normalized=2,
+            pending=True,
+        )
+    )
+
+    assert BlockOptimizerManager._frontend_generation_is_stale(stale)
+    assert BlockOptimizerManager._frontend_generation_is_stale(pending)
+    assert not BlockOptimizerManager._frontend_generation_is_stale(current)
+    assert not BlockOptimizerManager._frontend_generation_is_stale(None)
+
+
 def test_no_scope_service_does_not_execute_legacy_rules():
     manager = BlockOptimizerManager(
         OptimizationStatistics(), Path("."), ctx_cls=FlowMaturityContext

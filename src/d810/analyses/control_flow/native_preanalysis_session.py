@@ -27,6 +27,7 @@ from d810.analyses.control_flow.materialized_indirect_transfer import (
     MaterializedIndirectTransfer,
     PortableMaterializedStateRoute,
     PortableStateWriteRouteEvidence,
+    StateWriteRouteDeliveryKind,
     TerminalReturnCarrierRequest,
     condition_code_predicate,
     is_conditional_handler_bridge_kind,
@@ -48,6 +49,7 @@ from d810.analyses.control_flow.semantic_route_evidence import (
     SemanticRouteProof,
     SemanticRouteProofKind,
     SemanticRouteShape,
+    SemanticStateWriteDeliveryKind,
     SemanticStateWriteProof,
 )
 from d810.analyses.control_flow.terminal_return_carrier_evidence import (
@@ -2045,6 +2047,12 @@ class NativePreanalysisSessionState:
                         ),
                         preserved_call_instruction_eas=tuple(
                             int(ea) for ea in route.preserved_call_instruction_eas
+                        ),
+                        delivery_kind=(
+                            SemanticStateWriteDeliveryKind.DIRECT
+                            if route.delivery_kind
+                            is StateWriteRouteDeliveryKind.DIRECT_TARGET
+                            else SemanticStateWriteDeliveryKind.INDIRECT
                         ),
                     ),
                     terminal_return_carrier=terminal_carrier,

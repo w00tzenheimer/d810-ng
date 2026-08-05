@@ -595,6 +595,73 @@ class PortableStateWriteRouteEvidence:
         }
 
 
+def recover_state_write_handler_entry_routes(
+    routes: Sequence[PortableStateWriteRouteEvidence],
+    transfers: Sequence[MaterializedIndirectTransfer],
+) -> tuple[MaterializedIndirectTransfer, ...]:
+    """Promote unambiguous portable state routes into handler-entry facts.
+
+    Existing entry-route evidence remains authoritative. A conflicting target
+    for the same register/state pair causes abstention rather than merging two
+    disagreeing proof producers.
+    """
+    mask32 = 0xFFFFFFFF
+    existing_targets: dict[tuple[int, int], set[int]] = {}
+    for transfer in transfers:
+        if (
+            transfer.resolver_kind != "static_handler_entry_route"
+            or transfer.selector_state_var_reg is None
+            or transfer.selector_state_constant is None
+            or len(transfer.target_eas) != 1
+        ):
+            continue
+        existing_targets.setdefault(
+            (
+                int(transfer.selector_state_var_reg),
+                int(transfer.selector_state_constant) & mask32,
+            ),
+            set(),
+        ).add(int(transfer.target_eas[0]))
+
+    candidates: dict[tuple[int, int], set[tuple[int, int, int, int]]] = {}
+    for route in routes:
+        key = (int(route.state_var_reg), int(route.state_constant) & mask32)
+        candidates.setdefault(key, set()).add(
+            (
+                int(route.target_ea),
+                int(route.source_write_ea),
+                int(route.delivery_region_start_ea),
+                int(route.delivery_ea),
+            )
+        )
+
+    recovered: list[MaterializedIndirectTransfer] = []
+    for (state_var_reg, state_constant), rows in sorted(candidates.items()):
+        targets = {target_ea for target_ea, *_rest in rows}
+        prior_targets = existing_targets.get((state_var_reg, state_constant), set())
+        if len(targets) != 1 or (prior_targets and prior_targets != targets):
+            continue
+        target_ea = next(iter(targets))
+        if prior_targets:
+            continue
+        _target, source_write_ea, source_block_ea, delivery_ea = min(
+            rows,
+            key=lambda row: (row[1], row[3], row[2]),
+        )
+        recovered.append(
+            MaterializedIndirectTransfer(
+                source_jmp_ea=int(delivery_ea),
+                source_block_ea=int(source_block_ea),
+                materialized_anchor_eas=(int(source_write_ea),),
+                target_eas=(int(target_ea),),
+                selector_state_var_reg=int(state_var_reg),
+                selector_state_constant=int(state_constant),
+                resolver_kind="static_handler_entry_route",
+            )
+        )
+    return tuple(recovered)
+
+
 @dataclass(frozen=True, slots=True)
 class TerminalReturnCarrierRequest:
     """Request exact early-maturity return-value evidence for one terminal arm.
@@ -1875,6 +1942,7 @@ __all__ = [
     "plan_terminal_return_carrier_requests",
     "plan_terminal_return_carrier_requests_from_native_routes",
     "plan_terminal_return_carrier_requests_from_state_writes",
+    "recover_state_write_handler_entry_routes",
     "route_materialized_transfer_chain",
     "route_transfer_target_through_condition_chain",
     "unique_materialized_conditional_handler_entry_eas",

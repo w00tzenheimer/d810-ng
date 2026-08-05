@@ -1992,6 +1992,7 @@ class FragmentReturnCarrier:
 
     carrier_id: str
     block_id: str
+    state_write_block_id: str
     state_write_ea: int
     carrier_ea: int
     operation: ValueOpKind
@@ -2007,6 +2008,10 @@ class FragmentReturnCarrier:
         block_id = _require_identifier(
             self.block_id,
             "fragment return carrier block",
+        )
+        state_write_block_id = _require_identifier(
+            self.state_write_block_id,
+            "fragment return carrier state-write block",
         )
         state_write_ea = _require_native_ea(
             self.state_write_ea,
@@ -2060,6 +2065,7 @@ class FragmentReturnCarrier:
             )
         object.__setattr__(self, "carrier_id", carrier_id)
         object.__setattr__(self, "block_id", block_id)
+        object.__setattr__(self, "state_write_block_id", state_write_block_id)
         object.__setattr__(self, "state_write_ea", state_write_ea)
         object.__setattr__(self, "carrier_ea", carrier_ea)
         object.__setattr__(self, "return_width", return_width)
@@ -3309,9 +3315,15 @@ class FragmentPlan:
         carrier_by_id = {carrier.carrier_id: carrier for carrier in return_carriers}
         for carrier in return_carriers:
             block = block_by_id.get(carrier.block_id)
+            state_write_block = block_by_id.get(carrier.state_write_block_id)
             if block is None:
                 raise FragmentPlanRejected(
                     f"fragment return carrier {carrier.carrier_id!r} has unknown block"
+                )
+            if state_write_block is None:
+                raise FragmentPlanRejected(
+                    f"fragment return carrier {carrier.carrier_id!r} has unknown "
+                    "state-write block"
                 )
             if block.role not in {
                 FragmentBlockRole.REPLACEMENT,
@@ -3321,28 +3333,58 @@ class FragmentPlan:
                     f"fragment return carrier {carrier.carrier_id!r} must "
                     "execute on a staged replacement or imported block"
                 )
+            if state_write_block.role not in {
+                FragmentBlockRole.REPLACEMENT,
+                FragmentBlockRole.IMPORTED,
+            }:
+                raise FragmentPlanRejected(
+                    f"fragment return carrier {carrier.carrier_id!r} state write "
+                    "must execute on a staged replacement or imported block"
+                )
             identity = block.stable_identity
-            missing_anchor_eas = tuple(
+            state_write_identity = state_write_block.stable_identity
+            state_anchor_missing = bool(
+                state_write_identity is None
+                or not state_write_identity.native_ranges.contains(
+                    carrier.state_write_ea
+                )
+                or carrier.state_write_ea
+                not in state_write_identity.exact_instruction_eas
+            )
+            carrier_anchor_missing = bool(
+                identity is None
+                or not identity.native_ranges.contains(carrier.carrier_ea)
+                or carrier.carrier_ea not in identity.exact_instruction_eas
+            )
+            missing_corridor_eas = tuple(
                 ea
                 for ea in carrier.corridor_instruction_eas
-                if identity is None
-                or not identity.native_ranges.contains(ea)
-                or ea not in identity.exact_instruction_eas
+                if not any(
+                    candidate is not None
+                    and candidate.native_ranges.contains(ea)
+                    and ea in candidate.exact_instruction_eas
+                    for candidate in (state_write_identity, identity)
+                )
             )
-            if identity is None or missing_anchor_eas:
+            if state_anchor_missing or carrier_anchor_missing or missing_corridor_eas:
                 anchor_ea = (
                     int(carrier.state_write_ea)
-                    if not missing_anchor_eas
-                    else int(missing_anchor_eas[0])
+                    if state_anchor_missing
+                    else (
+                        int(carrier.carrier_ea)
+                        if carrier_anchor_missing
+                        else int(missing_corridor_eas[0])
+                    )
                 )
                 raise FragmentPlanRejected(
                     f"fragment return carrier {carrier.carrier_id!r} requires "
-                    "exact anchors owned by its block identity",
+                    "exact anchors owned by its state-write and carrier identities",
                     reason_code="fragment_return_carrier_exact_anchor_missing",
                     anchor_ea=anchor_ea,
                     payload={
                         "carrier_id": carrier.carrier_id,
                         "block_id": block.block_id,
+                        "state_write_block_id": state_write_block.block_id,
                         "block_role": block.role.value,
                         "block_semantic_anchor_ea": (
                             f"0x{int(block.semantic_anchor_ea):X}"
@@ -3363,8 +3405,10 @@ class FragmentPlan:
                                 for ea in sorted(identity.exact_instruction_eas)
                             )
                         ),
+                        "state_anchor_missing": state_anchor_missing,
+                        "carrier_anchor_missing": carrier_anchor_missing,
                         "missing_anchor_eas": tuple(
-                            f"0x{int(ea):X}" for ea in missing_anchor_eas
+                            f"0x{int(ea):X}" for ea in missing_corridor_eas
                         ),
                     },
                 )
@@ -3478,6 +3522,19 @@ class FragmentPlan:
                 raise FragmentPlanRejected(
                     f"fragment terminal route {terminal_route.terminal_route_id!r} "
                     "carrier and return widths must match"
+                )
+            if carrier.state_write_block_id != operation.source_block_id:
+                raise FragmentPlanRejected(
+                    f"fragment terminal route {terminal_route.terminal_route_id!r} "
+                    "state-write owner must be its operation source"
+                )
+            if carrier.block_id not in {
+                operation.source_block_id,
+                terminal_return.block_id,
+            }:
+                raise FragmentPlanRejected(
+                    f"fragment terminal route {terminal_route.terminal_route_id!r} "
+                    "carrier must execute on its source or terminal block"
                 )
             used_carrier_ids.add(carrier.carrier_id)
             used_return_ids.add(terminal_return.return_id)

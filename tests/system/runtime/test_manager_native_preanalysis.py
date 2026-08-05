@@ -471,6 +471,41 @@ def test_current_mba_identity_index_abstains_before_locopt_without_route_authori
     assert state.identity_index is None
 
 
+def test_current_mba_identity_index_accepts_typed_frontend_evidence_before_locopt(
+    monkeypatch,
+) -> None:
+    native_preanalysis = NativePreanalysisSessionState()
+    session = SimpleNamespace(
+        native_preanalysis=native_preanalysis,
+        native_key=NATIVE_KEY,
+        resolver_attachment=None,
+        identity_key="frontend-normalization-session",
+        function_ea=0x18000C090,
+    )
+    state = resolver_session_state(session)
+    events: list[str] = []
+    index = SimpleNamespace(evidence_generation=0, generation=0)
+    mba = SimpleNamespace(
+        maturity=ida_hexrays.MMAT_PREOPTIMIZED,
+        this=0x1234,
+        build_graph=lambda: events.append("build_graph"),
+    )
+    monkeypatch.setattr(
+        NativePreanalysisSessionState,
+        "frontend_normalization_evidence_for",
+        lambda self, key: object() if self is native_preanalysis and key == NATIVE_KEY else None,
+    )
+    monkeypatch.setattr(
+        MbaBlockIdentityIndex,
+        "from_mba",
+        staticmethod(lambda *_args, **_kwargs: index),
+    )
+
+    assert _build_current_mba_identity_index(session=session, mba=mba) is index
+    assert state.identity_index is index
+    assert events == ["build_graph"]
+
+
 def test_current_mba_identity_index_never_rebuilds_graph_after_locopt(
     monkeypatch,
 ) -> None:

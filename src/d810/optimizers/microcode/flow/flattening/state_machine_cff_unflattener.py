@@ -876,6 +876,29 @@ def _bind_materialized_handler_targets(
     return handler_targets, handler_entry_eas, tuple(missing)
 
 
+def _rebind_current_native_ea(current_identity_index, native_ea: int):
+    """Resolve one native instruction through receipt-backed current identity."""
+    if current_identity_index is None or int(native_ea) <= 0:
+        return None
+    identity = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(int(native_ea), int(native_ea) + 1),),
+        native_key=current_identity_index.native_key,
+    )
+    return current_identity_index.rebind_identity(identity).block
+
+
+def _rebind_current_instruction_owner(
+    current_identity_index,
+    imported_instruction_origins: ABCMapping[int, int],
+    instruction_ea: int,
+):
+    """Resolve a current instruction through its receipted native origin."""
+    native_ea = int(
+        imported_instruction_origins.get(int(instruction_ea), int(instruction_ea))
+    )
+    return _rebind_current_native_ea(current_identity_index, native_ea)
+
+
 def _instruction_backed_portable_handler_overrides(
     flow_graph: object,
     equality_target_eas: ABCMapping[int, int],
@@ -1088,13 +1111,15 @@ class _ReducedProductBypassFamily:
 
 
 class _MaterializedComputedGotoContinuationFamily:
-    """Resume the canonical spine from complete portable resolver evidence.
+    """Compose a fully materialized computed-goto graph as one fragment.
 
     A first unflattening round can remove the static dispatcher shape before a
     regenerated MBA contains every imported handler.  Once the live identity
     index proves the dispatcher entry and every handler with no missing target,
     static family detection is no longer the authority: the portable evidence
-    itself is the exact current-snapshot dispatcher contract.
+    itself is the exact current-snapshot dispatcher contract.  Publication must
+    remain atomic: late per-edge mutation can pass ``mba.verify()`` yet leave
+    Hex-Rays unable to produce a cfunc for the regenerated imported graph.
     """
 
     name = "materialized_computed_goto_continuation"
@@ -1102,6 +1127,22 @@ class _MaterializedComputedGotoContinuationFamily:
     # profile or at GLBOPT1 after GENERATED imports and PREOPT rebind the full
     # handler/route closure.  Admission follows that typed evidence state; it
     # is not tied to one sample function or native address.
+    recovery_maturities = (
+        IRMaturity.CALL_MODELED,
+        IRMaturity.GLOBAL_ANALYZED,
+    )
+
+    def detect(self, graph, capabilities, context=None):
+        return self
+
+    def pipeline_for(self, match, context):
+        return semantic_evidence_state_machine_passes()
+
+
+class _CanonicalComputedGotoCompositionFamily:
+    """Publish a partial canonical evidence group as one atomic fragment."""
+
+    name = "canonical_computed_goto_composition"
     recovery_maturities = (
         IRMaturity.CALL_MODELED,
         IRMaturity.GLOBAL_ANALYZED,
@@ -2048,7 +2089,10 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     semantic_evidence_state_machine_passes()
                     if isinstance(
                         family,
-                        _MaterializedComputedGotoContinuationFamily,
+                        (
+                            _CanonicalComputedGotoCompositionFamily,
+                            _MaterializedComputedGotoContinuationFamily,
+                        ),
                     )
                     else configured_native_specs
                 )
@@ -2618,7 +2662,8 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 source.flow_graph,
                 equality_target_eas,
                 live_block_for_ea=lambda target_ea: (
-                    find_unique_live_block_by_ea(mba, int(target_ea))
+                    _rebind_current_native_ea(current_identity_index, int(target_ea))
+                    or find_unique_live_block_by_ea(mba, int(target_ea))
                     or find_materialized_handler_block_by_native_ea(mba, int(target_ea))
                     or find_unique_live_block_by_native_ea(mba, int(target_ea))
                 ),
@@ -2688,19 +2733,12 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             def current_block_serial_for_instruction_ea(
                 instruction_ea: int,
             ) -> int | None:
-                if current_identity_index is None:
-                    return None
-                identity = StableBlockIdentity.from_intervals(
-                    (
-                        NativeEaInterval(
-                            int(instruction_ea),
-                            int(instruction_ea) + 1,
-                        ),
-                    ),
-                    native_key=current_identity_index.native_key,
+                block = _rebind_current_instruction_owner(
+                    current_identity_index,
+                    imported_instruction_origins,
+                    int(instruction_ea),
                 )
-                rebound = current_identity_index.rebind_identity(identity)
-                return None if rebound.block is None else int(rebound.block.serial)
+                return None if block is None else int(block.serial)
 
             state_write_anchors = rebind_state_write_anchors(
                 observed_state_write_anchors,
@@ -2791,10 +2829,16 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             )
             imported_handler_serials: set[int] = set()
             for state_constant, target_ea in equality_target_eas.items():
-                target_block = find_materialized_handler_block_by_native_ea(
-                    mba,
-                    int(target_ea),
-                    required_native_eas=atomic_predicate_eas,
+                target_block = (
+                    _rebind_current_native_ea(
+                        current_identity_index,
+                        int(target_ea),
+                    )
+                    or find_materialized_handler_block_by_native_ea(
+                        mba,
+                        int(target_ea),
+                        required_native_eas=atomic_predicate_eas,
+                    )
                 )
                 if target_block is None:
                     continue
@@ -3099,10 +3143,16 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 )
 
             def resolve_live_target_serial(target_ea: int) -> int | None:
-                target_block = find_materialized_handler_block_by_native_ea(
-                    mba,
-                    int(target_ea),
-                    required_native_eas=atomic_predicate_eas,
+                target_block = (
+                    _rebind_current_native_ea(
+                        current_identity_index,
+                        int(target_ea),
+                    )
+                    or find_materialized_handler_block_by_native_ea(
+                        mba,
+                        int(target_ea),
+                        required_native_eas=atomic_predicate_eas,
+                    )
                 )
                 target_serial = (
                     int(target_block.serial) if target_block is not None else None
@@ -3702,19 +3752,26 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         canonical_composition_ready: bool = False,
     ):
         """Poll the family registry (reduced-product bypass on opt-in). Returns family|None."""
-        if (
-            materialized_evidence_ready or canonical_composition_ready
-        ) and not self._uses_tigress_indirect_materialization(rule_config):
+        if materialized_evidence_ready and not self._uses_tigress_indirect_materialization(
+            rule_config
+        ):
             logger.info(
-                "unflat: materialized canonical evidence resumes pipeline "
-                "for func=0x%x at %s complete_identity=%s "
-                "partial_composition=%s",
+                "unflat: complete materialized identity resumes canonical fragment composition "
+                "for func=0x%x at %s",
                 int(mba.entry_ea),
                 maturity_to_string(int(mba.maturity)),
-                bool(materialized_evidence_ready),
-                bool(canonical_composition_ready),
             )
             return _MaterializedComputedGotoContinuationFamily()
+        if canonical_composition_ready and not self._uses_tigress_indirect_materialization(
+            rule_config
+        ):
+            logger.info(
+                "unflat: partial canonical evidence resumes fragment composition "
+                "for func=0x%x at %s",
+                int(mba.entry_ea),
+                maturity_to_string(int(mba.maturity)),
+            )
+            return _CanonicalComputedGotoCompositionFamily()
 
         # Route through the registered profiles (llr-ibpi): select_family polls the
         # StateMachineCffFamily registry (HodurFamily=equality-chain, ApproovFamily/

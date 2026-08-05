@@ -2659,10 +2659,10 @@ class MbaMutationGateway:
     def commit(self) -> MbaMutationReceipt:
         self._require_active()
         fragment_plan = self._active_fragment_plan
-        requires_detached_route_oracle = bool(
+        requires_reference_route_oracle = bool(
             fragment_plan is not None
             and any(
-                operation.direct_transfer_rewrite is not None
+                operation.reference_route_authority is not None
                 for operation in fragment_plan.operations
             )
         )
@@ -2673,7 +2673,7 @@ class MbaMutationGateway:
             or not self._active_root_publication_confirmed
             or not self._active_current_mba_identity_binding_recorded
             or (
-                requires_detached_route_oracle
+                requires_reference_route_oracle
                 and (
                     self._active_detached_route_oracle is None
                     or not self._active_detached_route_oracle.passed
