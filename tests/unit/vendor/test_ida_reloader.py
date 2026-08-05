@@ -4,12 +4,103 @@ import importlib
 import sys
 from pathlib import Path
 
-from d810._vendor.ida_reloader import reload_package
+from d810._vendor.ida_reloader import DependencyGraph, reload_package
 
 
 def _write_module(path: Path, source: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(source, encoding="utf-8")
+
+
+def _dependency_graph(package_root: Path, package_name: str) -> DependencyGraph:
+    graph = DependencyGraph(f"{package_name}.", pkg_paths=[str(package_root)])
+    source_root = package_root.parent
+    for path in sorted(package_root.rglob("*.py")):
+        relative = path.relative_to(source_root).with_suffix("")
+        module_name = ".".join(relative.parts)
+        if module_name.endswith(".__init__"):
+            module_name = module_name[: -len(".__init__")]
+        graph.update_dependencies(path, module_name)
+    return graph
+
+
+def test_dependency_graph_resolves_imported_child_module(
+    tmp_path: Path,
+) -> None:
+    """A child-module import must not become a dependency on its re-exporter."""
+    package_name = "d810_dependency_child_probe"
+    package_root = tmp_path / package_name
+    _write_module(package_root / "__init__.py", "")
+    _write_module(package_root / "core" / "__init__.py", "")
+    _write_module(package_root / "core" / "typing.py", "VALUE = 1\n")
+    _write_module(
+        package_root / "consumer.py",
+        f"from {package_name}.core import typing\n",
+    )
+
+    graph = _dependency_graph(package_root, package_name)
+
+    assert graph.get_module_dependencies(f"{package_name}.consumer") == {
+        f"{package_name}.core.typing"
+    }
+
+
+def test_dependency_graph_ignores_function_local_imports(tmp_path: Path) -> None:
+    """A deferred import must not constrain module reload order."""
+    package_name = "d810_dependency_lazy_probe"
+    package_root = tmp_path / package_name
+    _write_module(package_root / "__init__.py", "")
+    _write_module(package_root / "dependency.py", "VALUE = 1\n")
+    _write_module(
+        package_root / "consumer.py",
+        f"def load():\n    from {package_name}.dependency import VALUE\n    return VALUE\n",
+    )
+
+    graph = _dependency_graph(package_root, package_name)
+
+    assert graph.get_module_dependencies(f"{package_name}.consumer") == set()
+
+
+def test_dependency_graph_does_not_invent_parent_package_cycles(
+    tmp_path: Path,
+) -> None:
+    """Package containment alone must not turn an acyclic import graph cyclic."""
+    package_name = "d810_dependency_parent_probe"
+    package_root = tmp_path / package_name
+    _write_module(package_root / "__init__.py", "")
+    _write_module(
+        package_root / "feature" / "__init__.py",
+        "from .public import VALUE\n",
+    )
+    _write_module(
+        package_root / "feature" / "public.py",
+        "from .helper import VALUE\n",
+    )
+    _write_module(package_root / "feature" / "helper.py", "VALUE = 1\n")
+
+    graph = _dependency_graph(package_root, package_name)
+
+    assert graph.get_cycles() == []
+    order = graph.topo_order()
+    assert order.index(f"{package_name}.feature.helper") < order.index(
+        f"{package_name}.feature.public"
+    )
+    assert order.index(f"{package_name}.feature.public") < order.index(
+        f"{package_name}.feature"
+    )
+
+
+def test_dependency_graph_still_detects_eager_import_cycles(tmp_path: Path) -> None:
+    """Mutually eager module imports must remain a reported cycle."""
+    package_name = "d810_dependency_cycle_probe"
+    package_root = tmp_path / package_name
+    _write_module(package_root / "__init__.py", "")
+    _write_module(package_root / "left.py", "from .right import VALUE\n")
+    _write_module(package_root / "right.py", "from .left import VALUE\n")
+
+    graph = _dependency_graph(package_root, package_name)
+
+    assert graph.get_cycles() == [{f"{package_name}.left", f"{package_name}.right"}]
 
 
 def test_reload_package_replaces_submodules_loaded_from_a_previous_root(

@@ -118,6 +118,15 @@ class DependencyGraph:
             # Otherwise recurse normally
             self.generic_visit(node)
 
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            """Ignore imports deferred until a function is called."""
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            """Ignore imports deferred until an async function is called."""
+
+        def visit_Lambda(self, node: ast.Lambda) -> None:
+            """Ignore expressions deferred until a lambda is called."""
+
         def visit_Import(self, node: ast.Import) -> None:
             self.graph._process_import_node(node, self.dependencies)
 
@@ -167,10 +176,42 @@ class DependencyGraph:
         self, node: ast.ImportFrom, dependencies: set[str], file_path: pathlib.Path
     ) -> None:
         """Process an import-from node."""
-        if node.module and node.module.startswith(self._pkg_prefix):
-            dependencies.add(node.module)
+        package_name = self._pkg_prefix.rstrip(".")
+        if node.module and (
+            node.module == package_name or node.module.startswith(f"{package_name}.")
+        ):
+            self._add_import_from_dependencies(node.module, node.names, dependencies)
         elif node.level > 0:
             self._process_relative_import(node, dependencies, file_path)
+
+    def _add_import_from_dependencies(
+        self,
+        module_name: str,
+        imported_names: list[ast.alias],
+        dependencies: set[str],
+    ) -> None:
+        """Record child modules precisely, falling back to their exporter."""
+        for alias in imported_names:
+            child_module = f"{module_name}.{alias.name}"
+            if alias.name != "*" and self._module_exists(child_module):
+                dependencies.add(child_module)
+            else:
+                dependencies.add(module_name)
+
+    def _module_exists(self, module_name: str) -> bool:
+        """Return whether ``module_name`` is a source module in this package."""
+        package_name = self._pkg_prefix.rstrip(".")
+        if not module_name.startswith(f"{package_name}."):
+            return False
+        relative_parts = module_name[len(package_name) + 1 :].split(".")
+        for package_path in self._pkg_paths:
+            candidate = package_path.joinpath(*relative_parts)
+            if (
+                candidate.with_suffix(".py").is_file()
+                or (candidate / "__init__.py").is_file()
+            ):
+                return True
+        return False
 
     def _process_relative_import(
         self, node: ast.ImportFrom, dependencies: set[str], file_path: pathlib.Path
@@ -183,7 +224,7 @@ class DependencyGraph:
                     file_path, node.module, node.level
                 )
             ) and abs_module.startswith(self._pkg_prefix):
-                dependencies.add(abs_module)
+                self._add_import_from_dependencies(abs_module, node.names, dependencies)
         else:
             # Pure relative import: from . import something
             for alias in node.names:
@@ -344,22 +385,11 @@ class DependencyGraph:
         return [m for m in self._topo_order if m not in skip]
 
     def _build_adjacency(self) -> dict[str, set[str]]:
-        """Return adjacency list with implicit parent-package edges."""
-        adj: dict[str, set[str]] = {}
-        for mod, deps in self._module_dependencies.items():
-            dset = set(deps)
-            # Add implicit parent packages (pkg.sub -> pkg)
-            # Skip if parent already has explicit forward dependency on child (re-export pattern)
-            parts = mod.split(".")
-            for i in range(1, len(parts)):
-                parent = ".".join(parts[:i])
-                if parent.startswith(self._pkg_prefix):
-                    # Check if parent explicitly depends on this module (re-export case)
-                    parent_deps = self._module_dependencies.get(parent, set())
-                    if mod not in parent_deps:
-                        dset.add(parent)
-            adj[mod] = dset
-        return adj
+        """Return the explicit, reload-time module dependency graph."""
+        return {
+            module_name: set(dependencies)
+            for module_name, dependencies in self._module_dependencies.items()
+        }
 
     def _recompute_graph_info(self):
         if not self._dirty:
