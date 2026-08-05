@@ -1273,6 +1273,29 @@ class MbaMutationGateway:
             raise ValueError("patch realization references an unreserved plan block")
         self._record_cfg_mutation_started()
 
+    def authorize_patch_block_creation(
+        self,
+        attempt: TransactionAttemptId,
+        *,
+        plan_refs: Iterable[PlanBlockRef],
+    ) -> None:
+        """Authorize imminent SDK creation for reserved members of this plan."""
+        self._require_active()
+        if attempt != self._current_transaction_attempt:
+            raise ValueError("patch block creation attempt is not the active batch")
+        if not self._mutation_started:
+            raise RuntimeError("patch block creation requires started realization")
+        requested = tuple(plan_refs)
+        if not requested:
+            raise ValueError("patch block creation requires planned block ownership")
+        if len(set(requested)) != len(requested):
+            raise ValueError("patch block creation references duplicate planned blocks")
+        declared = set(self._cfg_plan_refs)
+        if any(plan_ref not in declared for plan_ref in requested):
+            raise ValueError("patch block creation ownership differs from its plan")
+        if any(plan_ref not in self._cfg_reservations for plan_ref in requested):
+            raise ValueError("patch block creation references an unreserved plan block")
+
     def observe_patch_realization(
         self,
         live_graph: FlowGraph,

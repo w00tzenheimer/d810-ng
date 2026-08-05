@@ -22,7 +22,7 @@ from d810.ir.block_identity import (
 )
 from d810.transforms.report import InvariantViolation
 from d810.ir.flowgraph import InsnSnapshot
-from d810.transforms.cfg_transaction import TransactionAttemptId
+from d810.transforms.cfg_transaction import PlanBlockRef, TransactionAttemptId
 from d810.hexrays.mutation import deferred_modifier as dm
 from tests.system.runtime.conftest import gen_microcode_at_maturity, get_func_ea
 from tests.native_preanalysis import make_native_key
@@ -1399,6 +1399,32 @@ def test_block_target_change_rejects_unplanned_fallthrough_helper_before_mutatio
     assert conditional_targets == []
     assert mba.qty == 300
     modifier._mutation_gateway.abort()
+
+
+def test_planned_helper_creation_accepts_one_member_of_multi_block_plan() -> None:
+    mba = _FakeMBA()
+    gateway = make_mutation_gateway(mba)
+    attempt = TransactionAttemptId(
+        plan_id="multi-helper-plan",
+        session_id=gateway.session_id,
+        generation=gateway.generation,
+        attempt_id="multi-helper-attempt",
+    )
+    first = PlanBlockRef("multi-helper-plan", "helper:0")
+    second = PlanBlockRef("multi-helper-plan", "helper:1")
+    gateway.begin_batch(
+        StructuralMutationKind.BLOCK_INSERT,
+        serial_quantity=mba.qty,
+        transaction_attempt=attempt,
+        patch_plan_refs=(first, second),
+    )
+    gateway.reserve_plan_block(attempt, first)
+    gateway.reserve_plan_block(attempt, second)
+    gateway.begin_patch_realization(attempt, plan_refs=(first, second))
+    modifier = dm.DeferredGraphModifier(mba, mutation_gateway=gateway)
+    modifier._patch_plan_ref_by_bound_serial = {mba.qty: first, mba.qty + 1: second}
+
+    modifier._begin_patch_block_creation(mba.qty)
 
 
 def test_block_target_change_rejects_unplanned_helper_after_serial_drift(
