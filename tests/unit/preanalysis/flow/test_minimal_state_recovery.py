@@ -2156,3 +2156,175 @@ def test_masked_or_shared_glue_block_partitioned_via_seed(_seam) -> None:
         assert splits[wb].is_return is False
         assert splits[wb].proof is not None
         assert splits[wb].proof.kind == "region_seeded_partitioned"
+
+
+_OP_ADD = 12  # m_add
+
+
+def _add(
+    ea: int,
+    left: MopSnapshot,
+    right: MopSnapshot,
+    dst: MopSnapshot,
+) -> InsnSnapshot:
+    return InsnSnapshot(
+        opcode=_OP_ADD,
+        ea=ea,
+        operands=(),
+        l=left,
+        r=right,
+        d=dst,
+        kind=InsnKind.ADD,
+        value_op_kind=ValueOpKind.ADD,
+    )
+
+
+def test_shared_store_partitions_foldable_edges_despite_one_bottom_pred(
+    _seam,
+) -> None:
+    """One unfoldable incoming edge must not discard the proven partitions.
+
+    VM_DecryptPacket shape: every handler routes its next state through ONE
+    shared store block (``state = ecx``).  18 of its 19 predecessors fold to a
+    distinct exact constant; a single predecessor is a multi-pred merge whose
+    register value is bottom.  Bailing on the whole partition leaves the shared
+    store ``unresolved`` -- which severs every handler from the entry component,
+    because that store is the only path back to the dispatcher.
+    """
+    fg = FlowGraph(
+        blocks={
+            # dispatcher
+            2: _blk(2, (10, 20, 30, 70, 80), (40,), ()),
+            # foldable handlers: each parks its next state in ecx (reg 24)
+            10: _blk(10, (40,), (2,), (_mov(0x1000, _num(0x11), _reg(24)),)),
+            20: _blk(20, (40,), (2,), (_mov(0x2000, _num(0x22), _reg(24)),)),
+            # bottom handler: ecx = eax + ecx with eax never defined -> ⊥
+            30: _blk(30, (40,), (2,), (_add(0x3000, _reg(8), _reg(24), _reg(24)),)),
+            # the single shared store block -> back-edge to the dispatcher
+            40: _blk(40, (2,), (10, 20, 30), (_mov(0x4000, _reg(24), _stk(_STATE_OFF)),)),
+            70: _blk(70, (2,), (2,), ()),
+            80: _blk(80, (2,), (2,), ()),
+        },
+        entry_serial=2,
+        func_ea=0x1000,
+    )
+    disp = _dispatcher({0x11: 70, 0x22: 80}, exit_block=99)
+
+    transitions = recover_state_write_transitions_via_partitioned_fixpoint(
+        fg, disp, _STATE_OFF, dispatcher_entry_serial=2
+    )
+    by_write_block = {int(t.write_block): t for t in transitions}
+
+    # The two foldable predecessors each get their own proven redirect.
+    assert set(by_write_block) >= {10, 20}, (
+        "expected per-predecessor partitions for the foldable edges, got "
+        f"{sorted(by_write_block)}"
+    )
+    assert by_write_block[10].next_state == 0x11
+    assert by_write_block[10].target_handler == 70
+    assert by_write_block[10].via_block == 40
+    assert by_write_block[10].is_return is False
+    assert by_write_block[20].next_state == 0x22
+    assert by_write_block[20].target_handler == 80
+    assert by_write_block[20].via_block == 40
+    assert by_write_block[20].is_return is False
+
+    # The shared store must NOT be collapsed into a single unresolved return.
+    unresolved = [
+        t
+        for t in transitions
+        if int(t.write_block) == 40 and t.next_state is None and t.is_return
+    ]
+    assert not unresolved, "shared store must not fall back to an unresolved return"
+
+
+def test_shared_store_partitions_through_a_bottom_glue_merge(_seam) -> None:
+    """A ⊥ predecessor that is pure state-glue is partitioned one level further.
+
+    VM_DecryptPacket residual: the shared store's ⊥ edge comes from a block doing
+    ``ecx = eax + ecx``, itself a merge whose predecessors each set BOTH registers
+    to distinct constants.  Partitioning only the shared store's immediate
+    predecessors leaves that whole sub-tree on the dispatcher, so its handlers stay
+    flattened behind a residual comparison chain.  One more level resolves every
+    edge exactly.
+    """
+    fg = FlowGraph(
+        blocks={
+            2: _blk(2, (10, 20, 60, 70, 80), (40,), ()),
+            10: _blk(
+                10,
+                (30,),
+                (2,),
+                (_mov(0x1000, _num(0xA0), _reg(8)), _mov(0x1004, _num(0x0B), _reg(24))),
+            ),
+            20: _blk(
+                20,
+                (30,),
+                (2,),
+                (_mov(0x2000, _num(0xB0), _reg(8)), _mov(0x2004, _num(0x0C), _reg(24))),
+            ),
+            # ⊥ glue merge: 1-way into the shared store, no constant of its own
+            30: _blk(30, (40,), (10, 20), (_add(0x3000, _reg(8), _reg(24), _reg(24)),)),
+            40: _blk(40, (2,), (30, 50), (_mov(0x4000, _reg(24), _stk(_STATE_OFF)),)),
+            50: _blk(50, (40,), (2,), (_mov(0x5000, _num(0x77), _reg(24)),)),
+            60: _blk(60, (2,), (2,), ()),
+            70: _blk(70, (2,), (2,), ()),
+            80: _blk(80, (2,), (2,), ()),
+        },
+        entry_serial=2,
+        func_ea=0x1000,
+    )
+    # 0xA0 + 0x0B = 0xAB ; 0xB0 + 0x0C = 0xBC
+    disp = _dispatcher({0xAB: 60, 0xBC: 70, 0x77: 80}, exit_block=99)
+
+    transitions = recover_state_write_transitions_via_partitioned_fixpoint(
+        fg, disp, _STATE_OFF, dispatcher_entry_serial=2
+    )
+    by_write_block = {int(t.write_block): t for t in transitions}
+
+    assert set(by_write_block) >= {10, 20, 50}, (
+        "expected the ⊥ glue merge to be partitioned one level up, got "
+        f"{sorted(by_write_block)}"
+    )
+    # transitive: anchored on the grandparent, bypassing the glue block
+    assert by_write_block[10].next_state == 0xAB
+    assert by_write_block[10].target_handler == 60
+    assert by_write_block[10].via_block == 30
+    assert by_write_block[20].next_state == 0xBC
+    assert by_write_block[20].target_handler == 70
+    assert by_write_block[20].via_block == 30
+    # the ordinary direct edge is unaffected
+    assert by_write_block[50].next_state == 0x77
+    assert by_write_block[50].target_handler == 80
+    assert by_write_block[50].via_block == 40
+
+
+def test_glue_partition_rejects_a_merge_whose_inputs_are_unknown(_seam) -> None:
+    """Soundness: an unfoldable glue write must not pass a STALE carrier through.
+
+    ``_transfer_snapshot_constant_block`` keeps the previous value when an
+    instruction cannot fold, so ``ecx = eax + ecx`` with ``eax`` undefined would
+    otherwise be read as the incoming ``ecx`` and produce a wrong route.
+    """
+    fg = FlowGraph(
+        blocks={
+            2: _blk(2, (10, 20, 60, 70), (40,), ()),
+            # neither handler defines eax -> the glue add cannot fold
+            10: _blk(10, (30,), (2,), (_mov(0x1000, _num(0x11), _reg(24)),)),
+            20: _blk(20, (30,), (2,), (_mov(0x2000, _num(0x22), _reg(24)),)),
+            30: _blk(30, (40,), (10, 20), (_add(0x3000, _reg(8), _reg(24), _reg(24)),)),
+            40: _blk(40, (2,), (30, 50), (_mov(0x4000, _reg(24), _stk(_STATE_OFF)),)),
+            50: _blk(50, (40,), (2,), (_mov(0x5000, _num(0x77), _reg(24)),)),
+            60: _blk(60, (2,), (2,), ()),
+            70: _blk(70, (2,), (2,), ()),
+        },
+        entry_serial=2,
+        func_ea=0x1000,
+    )
+    disp = _dispatcher({0x11: 60, 0x22: 70, 0x77: 80}, exit_block=99)
+    transitions = recover_state_write_transitions_via_partitioned_fixpoint(
+        fg, disp, _STATE_OFF, dispatcher_entry_serial=2
+    )
+    by_write_block = {int(t.write_block): t for t in transitions}
+    # the stale incoming ecx must NOT be mistaken for the glue block's output
+    assert 10 not in by_write_block and 20 not in by_write_block
