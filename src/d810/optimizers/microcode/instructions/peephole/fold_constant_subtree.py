@@ -50,13 +50,22 @@ _SKIP_OPCODES: frozenset[int] = frozenset(
     }
 )
 
-# Set/comparison opcodes: their destination is always 1 byte (the flag),
-# but the source operands can be wider.  Replacing the whole instruction
-# with ``m_ldc #value, dst`` would use ``dst_size`` (1) for the constant
-# but the folded value was computed from wider operands, producing a
-# size mismatch that causes INTERR 50832 in IDA's verifier.
+# Flag-producing opcodes: their destination is always 1 byte (the flag), but
+# the source operands can be wider.  Replacing the whole instruction with
+# ``m_ldc #value, dst`` would use ``dst_size`` (1) for the constant but the
+# folded value was computed from wider operands, producing a size mismatch
+# that causes INTERR 50832 in IDA's verifier.
 # These opcodes must fall through to the partial-fold path which
 # reconstructs the instruction from the folded AST, preserving sizes.
+#
+# The carry/overflow/sign computations below share that exact shape and were
+# missing from this set.  On VM_DecryptPacket that let 46 of 111 rewrites turn
+# ``ofadd #0x5506EB47.4, #0xBB16AAD0.4, of.1`` into ``ldc #0x17.1, of.1`` --
+# ``bits`` is derived from ``dst_size`` (1), so the value is evaluated 8-bit
+# wide and is BOTH the wrong overflow result and a size mismatch.  The verifier
+# reported it at an unrelated ``xdu`` downstream, and the failure rolled back
+# the whole constant-simplification bundle, so its sibling FoldReadonlyDataRule
+# never inlined a single global.
 _SET_OPCODES: frozenset[int] = frozenset(
     {
         ida_hexrays.m_setz,
@@ -70,6 +79,12 @@ _SET_OPCODES: frozenset[int] = frozenset(
         ida_hexrays.m_setl,
         ida_hexrays.m_setle,
         ida_hexrays.m_setp,
+        ida_hexrays.m_sets,
+        ida_hexrays.m_seto,
+        ida_hexrays.m_cfadd,
+        ida_hexrays.m_ofadd,
+        ida_hexrays.m_cfshl,
+        ida_hexrays.m_cfshr,
     }
 )
 
