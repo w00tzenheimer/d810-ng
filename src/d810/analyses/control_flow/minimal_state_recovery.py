@@ -39,6 +39,8 @@ from dataclasses import dataclass, replace
 
 from d810.core.logging import getLogger
 from d810.analyses.control_flow.state_machine_analysis import (
+    _constant_dest_locator_snapshot,
+    _forward_eval_insn,
     _is_call_insn,
     _is_goto_insn,
     _is_nop_insn,
@@ -1770,10 +1772,12 @@ def _abstract_partition_states(ctx: _ResolverContext, block):
     fold (``⊥``), the exact gap the concrete leg / seeded fold fill.
     """
     edge_states: dict[int, int] = {}
+    ambiguous = False
     for ip in sorted(int(p) for p in block.preds):
         ip_block = ctx.flow_graph.get_block(ip)
         if ip_block is None:
-            return edge_states, True
+            ambiguous = True
+            continue
         out_stk, out_reg = _transfer_snapshot_constant_block(
             block,
             dict(ctx.fp.out_stk_maps.get(ip, {})),
@@ -1784,9 +1788,15 @@ def _abstract_partition_states(ctx: _ResolverContext, block):
         )
         ev = _folded_state_from_maps(ctx, out_stk, out_reg)
         if ev is None:
-            return edge_states, True
+            # ⊥ on this edge.  Keep scanning: the surviving edges are each
+            # independently proven and the partial-partition floor provider
+            # (ticket d81-asrt) can still redirect them.  ``edge_states`` is only
+            # READ when ``ambiguous`` is False, so collecting the rest cannot
+            # change any behaviour that the early return used to produce.
+            ambiguous = True
+            continue
         edge_states[int(ip)] = int(ev) & 0xFFFFFFFF
-    return edge_states, False
+    return edge_states, ambiguous
 
 
 def _provider_predecessor_partitioned(ctx, pred, block, arm, edge_states, ambiguous):
@@ -1833,6 +1843,119 @@ def _provider_predecessor_partitioned(ctx, pred, block, arm, edge_states, ambigu
             )
         ]
     return None
+
+
+def _provider_partial_predecessor_partitioned(ctx, pred, block, arm, edge_states):
+    """[floor] Partition the PROVEN incoming edges of a partly-⊥ shared store.
+
+    A flattened function may funnel every handler's next state through ONE shared
+    store block (``state = ecx``; VM_DecryptPacket blk4 has 19 predecessors).  The
+    full partition above is all-or-nothing: a single ⊥ edge discards every proven
+    partition and drops the whole back-edge to ``unresolved``.  When that store is
+    the only path back to the dispatcher, the unresolved return severs every
+    handler from the entry component and the projected rewrite is rejected
+    wholesale by the reachability preflight -- i.e. one ⊥ edge costs the entire
+    function.
+
+    Each surviving edge is independently proven by the same abstract transfer the
+    full partition uses, so redirecting them is exactly as sound.  The ⊥ edges are
+    NOT redirected: they keep their natural path into the shared store and on to
+    the dispatcher, which stays live as a residual for those states only.
+
+    Ranked at the floor, below every existing provider, so a back-edge that any
+    other provider resolves is byte-identical (ticket d81-asrt).
+    """
+    out: list[StateWriteTransition] = []
+    for ip, state in sorted(edge_states.items()):
+        target, is_ret = ctx.classify(state)
+        ip_arm = ctx.arm_of(ctx.flow_graph.get_block(int(ip)), pred)
+        out.append(
+            StateWriteTransition(
+                int(ip),
+                state,
+                target,
+                is_ret,
+                ip_arm,
+                via_block=pred,
+                proof=TransitionProof(
+                    _FIXPOINT_ORACLE, "partial_predecessor_partitioned", not is_ret
+                ),
+            )
+        )
+    out.extend(_transitive_glue_partition_transitions(ctx, pred, block, edge_states))
+    return out if len(out) >= 2 else None
+
+
+def _block_folds_strictly(ctx, blk, in_stk, in_reg) -> bool:
+    """Every tracked-destination write in ``blk`` folds from KNOWN inputs."""
+    stk_map = dict(in_stk)
+    reg_map = dict(in_reg)
+    for insn in blk.insn_snapshots:
+        if _constant_dest_locator_snapshot(insn) is None:
+            continue
+        left, right, _dest = operand_storages(insn)
+        left_kind, right_kind, _dk = operand_kinds(insn)
+        for storage, kind in ((left, left_kind), (right, right_kind)):
+            if storage is None:
+                continue
+            if _storage_const_value(storage) is not None:
+                continue
+            locator = _storage_dest_locator(storage, kind)
+            if locator is None:
+                return False
+            space, ident = locator
+            source_map = stk_map if space == 'stk' else reg_map
+            if source_map.get(int(ident)) is None:
+                return False
+        _forward_eval_insn(insn, stk_map, reg_map, ctx.effective_stkoff,
+                           mba=None, state_var_lvar_idx=None)
+    return True
+
+
+def _transitive_glue_partition_transitions(ctx, pred, block, edge_states):
+    """Partition one level further through a bottom pure-state-glue predecessor."""
+    out: list[StateWriteTransition] = []
+    for ip in sorted(int(p) for p in block.preds):
+        if ip in edge_states or ip == int(ctx.dispatcher_entry):
+            continue
+        glue = ctx.flow_graph.get_block(ip)
+        if glue is None:
+            continue
+        if tuple(int(s) for s in glue.succs) != (int(block.serial),):
+            continue
+        grandparents = sorted(int(gp) for gp in glue.preds
+                              if int(gp) != int(ctx.dispatcher_entry))
+        if len(grandparents) < 2:
+            continue
+        resolved: dict[int, int] = {}
+        for gp in grandparents:
+            if ctx.flow_graph.get_block(gp) is None:
+                break
+            in_stk = dict(ctx.fp.out_stk_maps.get(gp, {}))
+            in_reg = dict(ctx.fp.out_reg_maps.get(gp, {}))
+            if not _block_folds_strictly(ctx, glue, in_stk, in_reg):
+                break
+            g_stk, g_reg = _transfer_snapshot_constant_block(
+                glue, in_stk, in_reg, ctx.effective_stkoff,
+                state_var_gaddr=ctx.state_var_gaddr,
+                foldable_global_reads=ctx.foldable_global_reads)
+            o_stk, o_reg = _transfer_snapshot_constant_block(
+                block, g_stk, g_reg, ctx.effective_stkoff,
+                state_var_gaddr=ctx.state_var_gaddr,
+                foldable_global_reads=ctx.foldable_global_reads)
+            ev = _folded_state_from_maps(ctx, o_stk, o_reg)
+            if ev is None:
+                break
+            resolved[gp] = int(ev) & 0xFFFFFFFF
+        if len(resolved) != len(grandparents):
+            continue
+        for gp, state in sorted(resolved.items()):
+            target, is_ret = ctx.classify(state)
+            gp_arm = ctx.arm_of(ctx.flow_graph.get_block(gp), ip)
+            out.append(StateWriteTransition(
+                gp, state, target, is_ret, gp_arm, via_block=ip,
+                proof=TransitionProof(_FIXPOINT_ORACLE, "transitive_glue_partitioned", not is_ret)))
+    return out
 
 
 def _provider_emulation(ctx, pred, block, arm, ambiguous):
@@ -2053,6 +2176,16 @@ def _resolve_next_state(ctx: _ResolverContext, pred, block, arm):
     edges = _provider_region_seeded(ctx, pred, block, arm)
     if edges is not None:
         return edges
+
+    # [floor] partial predecessor partition: redirect the edges that DID fold when
+    # only some of a shared store's incoming edges are ⊥.  Below every provider
+    # above, so it only ever replaces the unresolved sink.
+    if ambiguous:
+        edges = _provider_partial_predecessor_partitioned(
+            ctx, pred, block, arm, edge_states
+        )
+        if edges is not None:
+            return edges
 
     # [future] symbolic / solver providers slot in here, ranked below the floor and
     # the concrete leg, above the unresolved sink.
