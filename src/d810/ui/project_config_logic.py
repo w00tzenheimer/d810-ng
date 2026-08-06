@@ -49,6 +49,8 @@ class ProjectConfigView:
     runtime_tooltip: str
     effective_passes_text: str
     pass_tree_title: str
+    header_summary_text: str
+    identity_is_divergent: bool
     effective_pass_ids: tuple[str, ...]
     edit_enabled: bool
     edit_tooltip: str
@@ -122,6 +124,10 @@ def build_project_config_view(snapshot: ProjectRuntimeSnapshot) -> ProjectConfig
         else "No executable config-v2 pass pipeline"
     )
     policy = select_config_edit_policy(ConfigEditMode.EDIT, snapshot)
+    # Compare resolved paths, not the routed flag and not basenames: two
+    # projects in different directories can share a filename.
+    divergent = snapshot.source.path != snapshot.runtime.path
+    summary_text = f"{mode_text} . {len(pass_ids)} passes" if pass_ids else mode_text
     return ProjectConfigView(
         mode_text=mode_text,
         source_text=snapshot.source.basename,
@@ -130,6 +136,8 @@ def build_project_config_view(snapshot: ProjectRuntimeSnapshot) -> ProjectConfig
         runtime_tooltip=str(snapshot.runtime.path),
         effective_passes_text=passes_text,
         pass_tree_title=f"Pass pipeline ({len(pass_ids)} active)",
+        header_summary_text=summary_text,
+        identity_is_divergent=divergent,
         effective_pass_ids=pass_ids,
         edit_enabled=policy.allowed,
         edit_tooltip=policy.explanation,

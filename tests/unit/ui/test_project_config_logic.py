@@ -53,6 +53,32 @@ def test_routed_v2_view_exposes_only_public_pass_identity() -> None:
     assert view.edit_enabled is True
 
 
+def test_routed_v2_view_reports_divergent_source_and_runtime_identity() -> None:
+    view = build_project_config_view(
+        _snapshot(mode=ProjectConfigMode.CONFIG_V2, routed=True)
+    )
+
+    assert view.identity_is_divergent is True
+    assert view.header_summary_text == "Config v2 (routed) . 2 passes"
+
+
+def test_unrouted_v2_view_reports_agreeing_identity() -> None:
+    view = build_project_config_view(
+        _snapshot(mode=ProjectConfigMode.CONFIG_V2, routed=False)
+    )
+
+    assert view.identity_is_divergent is False
+    assert view.header_summary_text == "Config v2 . 2 passes"
+
+
+def test_project_without_a_pipeline_summarizes_mode_alone() -> None:
+    view = build_project_config_view(
+        _snapshot(mode=ProjectConfigMode.LEGACY, routed=False)
+    )
+
+    assert view.header_summary_text == "Unsupported project format"
+
+
 def test_non_v2_project_is_visible_but_not_editable() -> None:
     snapshot = _snapshot(mode=ProjectConfigMode.LEGACY, routed=False)
     view = build_project_config_view(snapshot)
