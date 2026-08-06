@@ -1077,11 +1077,26 @@ def check_ins_mop_size_are_ok(ins: ida_hexrays.minsn_t) -> bool:
         # (llr-kdaf)
         if ins.l is None or ins.l.t == ida_hexrays.mop_z:
             return False
-        if ins.r is None or ins.r.t == ida_hexrays.mop_z:
+        # ...except m_sets, which is UNARY.  hexrays.hpp declares it
+        # ``m_sets = 0x1D, // sets l, d=byte SF=1`` -- operand ``l`` and
+        # destination only -- and ships a dedicated ``is_mcode_set1()``
+        # predicate that matches m_sets alone.  ``verify.cpp`` agrees: every
+        # other flag opcode is checked with ``l.size != r.size`` (INTERR 50832)
+        # while m_sets is the fallthrough label that only ever reaches the
+        # ``d.size != 1`` check.  Demanding a non-mop_z ``r`` here rejected
+        # perfectly valid microcode, so any rewrite touching a ``sets`` was
+        # discarded and logged as "Invalid original instruction" -- which is how
+        # a folded global (``sets ($dword_X + eax), sf.1``) never landed.
+        is_unary_set = ins.opcode == ida_hexrays.m_sets
+        if not is_unary_set and (ins.r is None or ins.r.t == ida_hexrays.mop_z):
             return False
         if (ins.l.t == ida_hexrays.mop_d) and (not check_ins_mop_size_are_ok(ins.l.d)):
             return False
-        if (ins.r.t == ida_hexrays.mop_d) and (not check_ins_mop_size_are_ok(ins.r.d)):
+        if (
+            ins.r is not None
+            and ins.r.t == ida_hexrays.mop_d
+            and not check_ins_mop_size_are_ok(ins.r.d)
+        ):
             return False
         return True
 

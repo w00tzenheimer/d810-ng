@@ -210,14 +210,24 @@ def _source_event(
     return row
 
 
-def _first_plan_anchor(rows: list[tuple[object, ...]]) -> int:
+def _first_plan_anchor(rows: list[tuple[object, ...]], fallback_ea: int) -> int:
+    """Native EA to attribute a mutation plan to, else the owning function.
+
+    A plan whose items are ALL logical (reserved/synthetic blocks carry no
+    native EA) is legitimate, not corrupt.  Raising here aborted
+    ``project_closed_case_rows`` for the whole session, and because the
+    observability bus swallows subscriber exceptions the only visible effect was
+    a warning plus a silently unmaterialized deobfuscation case.  Attribute such
+    a plan to the function instead -- strictly more information than no case at
+    all, and the per-item anchors remain authoritative whenever they exist.
+    """
     for row in rows:
         source_anchor = row[0]
         target_anchor = row[1]
         anchor = source_anchor if source_anchor is not None else target_anchor
         if anchor is not None:
             return int(anchor)
-    raise ValueError("mutation plan has no native EA anchor")
+    return int(fallback_ea)
 
 
 def project_closed_case_rows(
@@ -416,7 +426,7 @@ def project_closed_case_rows(
     for batch_id, (event_id, _event_seq, items) in plans.items():
         if not items:
             continue
-        anchor = _first_plan_anchor(items)
+        anchor = _first_plan_anchor(items, function_ea)
         add(
             event_id=event_id,
             tie=0,
