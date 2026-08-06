@@ -89,6 +89,51 @@ _SET_OPCODES: frozenset[int] = frozenset(
 )
 
 
+# Shift opcodes: the verifier requires the shift-AMOUNT operand to be exactly
+# one byte -- ``verify.cpp`` raises ``INTERR 50835`` for ``m_shl``/``m_shr``/
+# ``m_sar`` whenever ``r.size != 1`` (and ``INTERR 52118`` when a ``mop_n``
+# amount exceeds the shift mask).  ``create_minsn`` rebuilds the partially
+# folded tree at ``dst_size``, so a folded shift amount comes back at the
+# DESTINATION width instead of its own.  On VM_DecryptPacket that produced
+#
+#     shr %var_3F8.4, #0x6F57001.4, %var_61C.4
+#
+# from an amount expression whose every operand was ``.1`` -- wrong size (trips
+# 50835) and wrong value (evaluated 32-bit wide; the true 8-bit result is 1).
+# The same clamp already exists in ``FoldReadonlyDataRule``.
+_SHIFT_OPCODES: frozenset[int] = frozenset(
+    {
+        ida_hexrays.m_shl,
+        ida_hexrays.m_shr,
+        ida_hexrays.m_sar,
+    }
+)
+
+
+def _clamp_shift_amount(ins: "ida_hexrays.minsn_t | None", depth: int = 0) -> None:
+    """Narrow every folded shift amount back to the one byte the verifier demands.
+
+    Recursive: ``create_minsn`` commonly buries the shift one level down inside a
+    ``mop_d`` (``and (%var_6B4.4 <<l #5.4), #0x2000.4, eax.4``), so the outer
+    opcode is ``m_and`` / ``m_bnot`` and a top-level-only check never fires.  The
+    verifier walks sub-instructions too, so every nesting level must be clamped.
+    """
+    if ins is None or depth > 12:
+        return
+    if ins.opcode in _SHIFT_OPCODES:
+        r = ins.r
+        if r is not None and r.t == ida_hexrays.mop_n and r.size != 1:
+            r.make_number(r.nnn.value & 0xFF, 1)
+    for slot in ("l", "r", "d"):
+        operand = getattr(ins, slot, None)
+        if (
+            operand is not None
+            and operand.t == ida_hexrays.mop_d
+            and operand.d is not None
+        ):
+            _clamp_shift_amount(operand.d, depth + 1)
+
+
 class ConstantSubtreeFoldRule(PeepholeSimplificationRule):
     """Fold constant subtrees bottom-up (handles nested ROL/XOR/SBox chains).
 
@@ -210,6 +255,7 @@ class ConstantSubtreeFoldRule(PeepholeSimplificationRule):
             dst_mop.assign(ins.d)
             dst_mop.size = dst_size
             new_ins = folded.create_minsn(sanitize_ea(ins.ea), dst_mop)
+            _clamp_shift_amount(new_ins)
             return new_ins
         except Exception as exc:
             return None
