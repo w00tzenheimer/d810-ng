@@ -34,6 +34,7 @@ from d810.ui.project_picker_popup import ProjectPickerPopup
 from d810.ui.qt_layout_policy import (
     configure_left_aligned_button,
     configure_left_aligned_form,
+    configure_overflow_menu_button,
 )
 from d810.ui.pass_tree import PassTreeWidget
 from d810.ui.testbed import TestRunnerForm
@@ -870,6 +871,7 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         self._engine_actions = tuple(actions)
 
         self.btn_engine_overflow = QToolButton()
+        configure_overflow_menu_button(self.btn_engine_overflow)
         self.btn_engine_overflow.setText("...")
         self.btn_engine_overflow.setToolTip("Configuration, loggers, profiling, tests")
         self.btn_engine_overflow.setPopupMode(QToolButton.InstantPopup)

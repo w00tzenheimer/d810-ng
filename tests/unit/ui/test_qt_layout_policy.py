@@ -33,12 +33,16 @@ class _RecordingButton:
     def __init__(self) -> None:
         self.stylesheet = ""
         self.minimum_height: int | None = None
+        self.minimum_width: int | None = None
 
     def setStyleSheet(self, stylesheet: str) -> None:
         self.stylesheet = stylesheet
 
     def setMinimumHeight(self, height: int) -> None:
         self.minimum_height = height
+
+    def setMinimumWidth(self, width: int) -> None:
+        self.minimum_width = width
 
 
 @pytest.mark.parametrize("qt6", (False, True))
@@ -89,3 +93,11 @@ def test_button_policy_preserves_project_row_height_while_left_aligned() -> None
     assert button.stylesheet == (
         "QPushButton { text-align: left; padding-left: 8px; }"
     )
+
+
+def test_overflow_menu_button_has_a_comfortable_minimum_width() -> None:
+    button = _RecordingButton()
+
+    qt_layout_policy.configure_overflow_menu_button(button)
+
+    assert button.minimum_width == 72

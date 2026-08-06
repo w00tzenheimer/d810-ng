@@ -43,7 +43,13 @@ def configure_left_aligned_button(button: Any) -> None:
     button.setStyleSheet(_LEFT_ALIGNED_BUTTON_STYLESHEET)
 
 
+def configure_overflow_menu_button(button: Any) -> None:
+    """Keep a compact overflow menu easy to target without fixing its size."""
+    button.setMinimumWidth(72)
+
+
 __all__ = [
     "configure_left_aligned_button",
     "configure_left_aligned_form",
+    "configure_overflow_menu_button",
 ]
