@@ -26,6 +26,7 @@ from d810.optimizers.microcode.instructions.peephole.handler import (
 from d810.optimizers.microcode.instructions.peephole.normalise_helpers import (
     _eval_subtree,
 )
+from d810.hexrays.ir.number_operand import safe_make_number
 
 logger = getLogger(__name__)
 
@@ -376,7 +377,7 @@ class RotateHelperInlineRule(PeepholeSimplificationRule):
                 new_ins = ida_hexrays.minsn_t(ins)
                 copy_slots = (new_ins.l, new_ins.r)
                 for slot_index, result, slot_size in pending:
-                    copy_slots[slot_index].make_number(result, slot_size)
+                    safe_make_number(copy_slots[slot_index], result, slot_size)
                 return new_ins
 
         # mov call, register
@@ -513,6 +514,6 @@ class RotateHelperInlineRule(PeepholeSimplificationRule):
         new_ins = ida_hexrays.minsn_t(sanitize_ea(ins.ea))
         new_ins.opcode = ida_hexrays.m_mov
         new_ins.l = ida_hexrays.mop_t()
-        new_ins.l.make_number(result, dest.size)
+        safe_make_number(new_ins.l, result, dest.size)
         new_ins.d = dest
         return new_ins

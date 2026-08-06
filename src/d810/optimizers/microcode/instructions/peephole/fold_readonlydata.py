@@ -112,6 +112,7 @@ from d810.optimizers.microcode.handler import ConfigParam
 from d810.optimizers.microcode.instructions.peephole.handler import (
     PeepholeSimplificationRule,
 )
+from d810.hexrays.ir.number_operand import safe_make_number
 
 peephole_logger = getLogger(__name__)
 
@@ -704,7 +705,7 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
         if new_ins.opcode in _SHIFT_OPCODES:
             r = new_ins.r
             if r is not None and r.t == ida_hexrays.mop_n and r.size != 1:
-                r.make_number(r.nnn.value & 0xFF, 1)
+                safe_make_number(r, r.nnn.value, 1)
 
         return new_ins
 

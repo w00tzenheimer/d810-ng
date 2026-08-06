@@ -19,6 +19,7 @@ from d810.core.bits import AND_TABLE, MSB_TABLE
 from d810.core.cymode import CythonMode
 from d810.core.logging import configure_loggers
 from d810.core.typing import TYPE_CHECKING, Optional, Tuple, TypedDict, Union
+from d810.hexrays.ir.number_operand import safe_make_number
 
 # Try to import Cython hash_mop if CythonMode is enabled
 cy_hash_mop = None
@@ -2209,9 +2210,9 @@ def create_constant_operand(value: Union[int, float], size: int = 4) -> MicroOpe
     if isinstance(value, float):
         # For floating point, we'd need to handle it differently
         # This is a simplified version
-        mop.make_number(int(value), size)
+        safe_make_number(mop, int(value), size)
     else:
-        mop.make_number(value, size)
+        safe_make_number(mop, value, size)
     return MicroOperand(mop)
 
 

@@ -436,6 +436,13 @@ class DecompilationLifecycleCoordinator:
             and session.native_preanalysis.has_pending_generated_restart
         )
 
+    def generated_restart_consumed_count(self, function_ea: int) -> int:
+        """Return how many staged restarts this session has actually consumed."""
+        session = self.current_session(int(function_ea))
+        if session is None:
+            return 0
+        return int(session.native_preanalysis.generated_restart_consumed_count)
+
     def has_exhausted_poison_restart(self, function_ea: int) -> bool:
         """Return whether poison recurred after this epoch's recovery retry."""
         session = self.current_session(int(function_ea))

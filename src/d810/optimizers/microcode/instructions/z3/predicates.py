@@ -3,6 +3,7 @@ import ida_hexrays
 from d810.hexrays.expr.ast import AstConstant, AstLeaf, AstNode
 from d810.backends.ast.z3 import Z3MopProver
 from d810.optimizers.microcode.instructions.z3.handler import Z3Rule
+from d810.hexrays.ir.number_operand import safe_make_number
 
 
 class Z3setzRuleGeneric(Z3Rule):
@@ -127,7 +128,7 @@ class Z3lnotRuleGeneric(Z3Rule):
         # For comparing x_0 against 0, use the operand's size
         operand_size = candidate["x_0"].size or 1
         val_0_mop = ida_hexrays.mop_t()
-        val_0_mop.make_number(0, operand_size)
+        safe_make_number(val_0_mop, 0, operand_size)
         if Z3MopProver().are_equal(candidate["x_0"].mop, val_0_mop):
             candidate.add_constant_leaf("val_res", 1, res_size)
             return True
@@ -153,12 +154,12 @@ class Z3SmodRuleGeneric(Z3Rule):
         # smod result size should match destination operand size
         res_size = candidate.dst_mop.size if candidate.dst_mop else 1
         cst_0_mop = ida_hexrays.mop_t()
-        cst_0_mop.make_number(0, res_size)
+        safe_make_number(cst_0_mop, 0, res_size)
         if Z3MopProver().are_equal(candidate.mop, cst_0_mop):
             candidate.add_leaf("val_res", cst_0_mop)
             return True
         cst_1_mop = ida_hexrays.mop_t()
-        cst_1_mop.make_number(1, res_size)
+        safe_make_number(cst_1_mop, 1, res_size)
         if Z3MopProver().are_equal(candidate.mop, cst_1_mop):
             candidate.add_leaf("val_res", cst_1_mop)
             return True

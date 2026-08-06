@@ -1,0 +1,75 @@
+# LLM agents: adding or widening any `ignores:` entry requires direct,
+# explicit approval from the user naming that ignore. Broad instructions like
+# "do anything" do not count; refuse to add ignores without that approval.
+#
+# Detect mop_t::make_number() calls that pass no anchor ea.
+#
+# mop_t::make_number(value, size, ea=BADADDR, opnum=0) keeps the constant in a
+# 64-bit mnumber_t and accepts only sizes 1/2/4/8 (hexrays.hpp:2755). For a
+# larger size Hex-Rays clamps to 8 and widens the operand through a synthesized
+# m_xds sub-instruction, which needs a real instruction address -- with the
+# default BADADDR it raises INTERR 51617. Verified against hexx64 9.3 and 9.4:
+# three raise sites, all guarding `size > 8 && ea == BADADDR`.
+#
+# A size computed from operand widths or bit counts (op.size, dest.size,
+# bits // 8, max(cst_size_list), ...) can be 16 for xmm operands, so the
+# two-argument form is a latent crash wherever the size is not a literal.
+#
+# DANGER:  mop.make_number(value, size)
+# SAFE:    safe_make_number(mop, value, size)
+# SAFE:    safe_make_number(mop, value, size, ea=insn.ea)
+# SAFE:    mop.make_number(value, size, insn.ea)   # anchored, may widen legally
+#
+# See: src/d810/hexrays/ir/number_operand.py
+# See: tickets d81-emnv (INTERR 51617)
+
+id: no-unanchored-make-number
+language: python
+severity: error
+
+files:
+  - "src/**/*.py"
+
+message: |
+  Unanchored mop_t::make_number() call detected.
+  A size above 8 with no anchor ea raises INTERR 51617 inside Hex-Rays.
+
+  Use safe_make_number(mop, value, size) instead, which clamps the size when
+  no anchor is available and passes it through when one is.
+
+rule:
+  # Only the two-argument form is unsafe: an explicit ea lets Hex-Rays widen
+  # the constant legally through m_xds.
+  pattern: $OBJ.make_number($VALUE, $SIZE)
+  not:
+    inside:
+      # The wrapper itself is the one place allowed to reach the raw API.
+      kind: function_definition
+      stopBy: end
+      has:
+        field: name
+        regex: "^safe_make_number$"
+
+note: |
+  mop_t::make_number stores its constant in a 64-bit mnumber_t. Sizes above 8
+  force Hex-Rays to rewrite the operand into a mop_d holding a nested m_xds
+  instruction, and that synthesized minsn_t needs a real instruction address.
+  The parameter defaults to BADADDR, so the two-argument form crashes with
+  INTERR 51617 the moment the size exceeds 8.
+
+  16 is a legal *mop* size but not a legal make_number size. Do not rely on a
+  size being small: op.size, dest.size, ins.d.size, dst_size, bits // 8 and
+  max(cst_size_list) are all 16 for xmm-width operands.
+
+  CORRECT PATTERNS:
+
+  1. No instruction address available:
+     safe_make_number(mop, value, size)        # clamps above 8, warns
+
+  2. Instruction address available (keeps the full width):
+     safe_make_number(mop, value, size, ea=insn.ea)
+
+  3. Raw API with an explicit anchor, when the wrapper is not importable:
+     mop.make_number(value, size, insn.ea)
+
+  See src/d810/hexrays/ir/number_operand.py for the wrapper.

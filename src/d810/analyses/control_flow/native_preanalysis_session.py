@@ -1277,6 +1277,10 @@ class NativePreanalysisSessionState:
     redo_generation: int | None = None
     pending_generated_restart_generation: int | None = None
     pending_generated_restart_family: str | None = None
+    # Monotonic across the whole session. The decompile controller compares it
+    # across rounds to tell "the restart ran and was consumed" apart from "no
+    # consumer ever reached it", which otherwise look identical from outside.
+    generated_restart_consumed_count: int = 0
     poisoned_restart_generation: int | None = None
     exhausted_poison_restart_generation: int | None = None
     event_observer: Callable[[EvidenceLifecycleTransition], None] | None = field(
@@ -3065,6 +3069,7 @@ class NativePreanalysisSessionState:
         self.pending_generated_restart_generation = None
         evidence_family = self.pending_generated_restart_family or "controller_restart"
         self.pending_generated_restart_family = None
+        self.generated_restart_consumed_count += 1
         self._observe_transition(
             operation="generated_restart_consumed",
             previous_generation=generation,
