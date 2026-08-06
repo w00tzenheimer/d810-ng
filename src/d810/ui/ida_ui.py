@@ -8,7 +8,7 @@ import ida_kernwin
 import idaapi
 
 from d810.core import logging, typing
-from d810.qt_shim import QFrame, QGroupBox, QMenu, QtCore, QtGui, QToolButton, QtWidgets
+from d810.qt_shim import QFrame, QGroupBox, QMenu, QtCore, QToolButton, QtWidgets
 
 if typing.TYPE_CHECKING:
     from d810.manager import D810State, ProjectRuntimeSnapshot
@@ -19,6 +19,7 @@ from d810.core.function_storage_config import (
     parse_function_recipe_storage,
 )
 from d810.ui.icon_assets import bundled_icon
+from d810.ui.panel_density_logic import plan_panel_density
 from d810.ui.project_config_logic import (
     ConfigEditMode,
     ConfigV2FocusTarget,
@@ -505,6 +506,23 @@ class PluginConfigurationFileForm_t(QtWidgets.QDialog):
         self.accept()
 
 
+class _DensityHost(QtWidgets.QWidget):
+    """Panel body that reports its own resizes to the density planner.
+
+    ``PluginForm`` is not a ``QObject`` and the widget IDA hands back cannot be
+    subclassed, so the panel owns one widget of its own and reads height
+    changes from it directly rather than through an event filter.
+    """
+
+    def __init__(self, on_resize, parent=None) -> None:
+        super().__init__(parent)
+        self._on_resize = on_resize
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._on_resize()
+
+
 class D810ConfigForm_t(ida_kernwin.PluginForm):
     def __init__(self, state: "D810State"):
         super().__init__()
@@ -517,9 +535,22 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
 
         self._view_passes_title = "Pass pipeline"
 
+        # Disclosure state: what the user asked for, and what the project makes
+        # mandatory. Divergent identity outranks the request.
+        self._details_requested = False
+        self._identity_is_divergent = False
+
         # Initialize all widget attributes to None (defensive pattern)
         # These are created in OnCreate() but may be accessed before OnCreate() runs
-        self._project_group = None
+        self._header_fixed = None
+        self._config_summary_value = None
+        self._details_toggle = None
+        self._details_panel = None
+        self._engine_bar = None
+        self._engine_menu = None
+        self._engine_actions = ()
+        self.btn_engine_overflow = None
+        self._density_host = None
         self._status_indicator = None
         self._diagnostics_capture_indicator = None
         self.curlabel = None
@@ -533,9 +564,7 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         self._config_runtime_value = None
         self._config_passes_value = None
         self.cfg_description = None
-        self._passes_group = None
         self._pass_tree = None
-        self._engine_group = None
         self.btn_start = None
         self.btn_stop = None
         self.btn_config = None
@@ -555,6 +584,17 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
 
             if hasattr(self, "_pass_tree") and self._pass_tree is not None:
                 self._pass_tree.edit_requested.disconnect()
+
+            if self._details_toggle is not None:
+                self._details_toggle.toggled.disconnect()
+
+            # Overflow-menu actions hold the same kind of Python-side
+            # connection as the buttons and need the same teardown.
+            for action in self._engine_actions:
+                try:
+                    action.triggered.disconnect()
+                except (TypeError, RuntimeError):
+                    pass
 
             # Disconnect all button signals
             for btn_attr in [
@@ -584,6 +624,11 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         # Clear widget references
         self._pass_tree = None
         self.cfg_select = None
+        self._engine_menu = None
+        self._engine_actions = ()
+        self._density_host = None
+        self._details_toggle = None
+        self._details_panel = None
         self._config_mode_value = None
         self._config_source_value = None
         self._config_runtime_value = None
@@ -617,20 +662,27 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         logger.debug("Calling OnCreate")
         self.created = True
 
-        # Get parent widget
+        # Get parent widget. The body lives in a widget we own so the panel can
+        # re-plan its optional chrome whenever the dock height changes.
         self.parent = self.FormToPyQtWidget(form)
-        main_layout = QtWidgets.QVBoxLayout(self.parent)
+        host_layout = QtWidgets.QVBoxLayout(self.parent)
+        host_layout.setContentsMargins(0, 0, 0, 0)
+        self._density_host = _DensityHost(self._apply_panel_density, self.parent)
+        host_layout.addWidget(self._density_host)
+
+        main_layout = QtWidgets.QVBoxLayout(self._density_host)
         main_layout.setContentsMargins(4, 4, 4, 4)
         main_layout.setSpacing(6)
 
         # =====================================================================
-        # Project Group (always visible, compact)
+        # Header (always visible, compact). No group frame: in a dock the
+        # title and border cost a row and carry nothing.
         # =====================================================================
-        self._project_group = QGroupBox("Project", self.parent)
-        main_layout.addWidget(self._project_group)
+        self._header_fixed = QtWidgets.QWidget(self.parent)
+        main_layout.addWidget(self._header_fixed)
 
-        # Use VBoxLayout to stack config row and description
-        project_vbox = QtWidgets.QVBoxLayout(self._project_group)
+        # Use VBoxLayout to stack config row and summary
+        project_vbox = QtWidgets.QVBoxLayout(self._header_fixed)
         project_vbox.setContentsMargins(4, 4, 4, 4)
         project_vbox.setSpacing(4)
 
@@ -690,6 +742,35 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         self.btn_delele_cfg.clicked.connect(self._delete_config)
         config_row.addWidget(self.btn_delele_cfg)
 
+        # Summary row: mode and pass count always visible, everything else
+        # behind the disclosure.
+        summary_row = QtWidgets.QHBoxLayout()
+        project_vbox.addLayout(summary_row)
+
+        self._config_summary_value = QtWidgets.QLabel()
+        self._config_summary_value.setTextInteractionFlags(
+            QtCore.Qt.TextSelectableByMouse
+        )
+        summary_row.addWidget(self._config_summary_value)
+        summary_row.addStretch(1)
+
+        self._details_toggle = QToolButton()
+        self._details_toggle.setText("Details")
+        self._details_toggle.setCheckable(True)
+        self._details_toggle.setAutoRaise(True)
+        self._details_toggle.setArrowType(QtCore.Qt.RightArrow)
+        self._details_toggle.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
+        self._details_toggle.toggled.connect(self._on_details_toggled)
+        summary_row.addWidget(self._details_toggle)
+
+        # Details disclosure: identity form plus description, collapsed by
+        # default and force-expanded whenever source and runtime differ.
+        self._details_panel = QtWidgets.QWidget(self._header_fixed)
+        project_vbox.addWidget(self._details_panel)
+        details_layout = QtWidgets.QVBoxLayout(self._details_panel)
+        details_layout.setContentsMargins(0, 0, 0, 0)
+        details_layout.setSpacing(4)
+
         identity_layout = QtWidgets.QFormLayout()
         configure_left_aligned_form(identity_layout)
         self._config_mode_value = QtWidgets.QLabel()
@@ -708,45 +789,43 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         identity_layout.addRow("Source:", self._config_source_value)
         identity_layout.addRow("Runtime:", self._config_runtime_value)
         identity_layout.addRow("Effective passes:", self._config_passes_value)
-        project_vbox.addLayout(identity_layout)
+        details_layout.addLayout(identity_layout)
 
-        # Description text box (read-only, scrollable, below config row)
-        self.cfg_description = QtWidgets.QTextEdit()
-        self.cfg_description.setReadOnly(True)
-        self.cfg_description.setStyleSheet(
-            "QTextEdit { background-color: palette(window); color: palette(text); }"
-        )
-        self.cfg_description.setFixedHeight(60)
-        self.cfg_description.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
-        self.cfg_description.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
-        self.cfg_description.setWordWrapMode(QtGui.QTextOption.WordWrap)
-        self.cfg_description.setPlainText("No description")
-        project_vbox.addWidget(self.cfg_description)
+        # Description wraps in place instead of reserving a fixed 60px box.
+        self.cfg_description = QtWidgets.QLabel()
+        self.cfg_description.setWordWrap(True)
+        self.cfg_description.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        self.cfg_description.setText("No description")
+        details_layout.addWidget(self.cfg_description)
+
+        self._details_panel.setVisible(False)
 
         # =====================================================================
-        # Horizontal divider between Project and Rules
+        # Horizontal divider between header and pass pipeline
         # =====================================================================
         divider = QFrame()
         divider.setFrameShape(QFrame.HLine)
         divider.setFrameShadow(QFrame.Sunken)
         main_layout.addWidget(divider)
 
-        self._passes_group = QGroupBox("Pass pipeline", self.parent)
-        main_layout.addWidget(self._passes_group, stretch=1)
-        passes_layout = QtWidgets.QVBoxLayout(self._passes_group)
-        passes_layout.setContentsMargins(4, 4, 4, 4)
-        self._pass_tree = PassTreeWidget(self._passes_group)
+        self._pass_tree = PassTreeWidget(self.parent)
+        self._pass_tree.setAccessibleName(self._view_passes_title)
         self._pass_tree.set_read_only(False)
         self._pass_tree.edit_requested.connect(self._edit_pass)
-        passes_layout.addWidget(self._pass_tree, stretch=1)
+        main_layout.addWidget(self._pass_tree, stretch=1)
 
         # =====================================================================
-        # Engine Group (always visible, compact)
+        # Engine bar (always visible, compact)
         # =====================================================================
-        self._engine_group = QGroupBox("Engine", self.parent)
-        main_layout.addWidget(self._engine_group)
+        engine_divider = QFrame()
+        engine_divider.setFrameShape(QFrame.HLine)
+        engine_divider.setFrameShadow(QFrame.Sunken)
+        main_layout.addWidget(engine_divider)
 
-        engine_layout = QtWidgets.QHBoxLayout(self._engine_group)
+        self._engine_bar = QtWidgets.QWidget(self.parent)
+        main_layout.addWidget(self._engine_bar)
+
+        engine_layout = QtWidgets.QHBoxLayout(self._engine_bar)
         engine_layout.setContentsMargins(4, 4, 4, 4)
         engine_layout.setSpacing(4)
 
@@ -758,28 +837,46 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         self.btn_stop.clicked.connect(self._stop_d810)
         engine_layout.addWidget(self.btn_stop)
 
-        self.btn_config = QtWidgets.QPushButton("Config")
-        self.btn_config.clicked.connect(self._configure_plugin)
-        engine_layout.addWidget(self.btn_config)
+        # The stretch keeps Start/Stop at their size hint instead of letting
+        # them span a sixth of the dock each.
+        engine_layout.addStretch(1)
 
-        self.btn_logger_cfg = QtWidgets.QPushButton("Loggers")
+        # Occasional controls collapse into one overflow menu.
+        self._engine_menu = QMenu(self.parent)
+        self._engine_menu.setToolTipsVisible(True)
+        actions = []
+
+        self.btn_config = self._engine_menu.addAction("Config")
+        self.btn_config.triggered.connect(self._configure_plugin)
+        actions.append(self.btn_config)
+
+        self.btn_logger_cfg = self._engine_menu.addAction("Loggers")
         self.btn_logger_cfg.setToolTip("Adjust log-levels at runtime")
-        self.btn_logger_cfg.clicked.connect(self._configure_logging)
-        engine_layout.addWidget(self.btn_logger_cfg)
+        self.btn_logger_cfg.triggered.connect(self._configure_logging)
+        actions.append(self.btn_logger_cfg)
 
-        self.btn_start_profiling = QtWidgets.QPushButton("Profile")
+        self.btn_start_profiling = self._engine_menu.addAction("Profile")
         self.btn_start_profiling.setToolTip(
             "Toggle profiling: start to capture, stop to save report"
         )
-        self.btn_start_profiling.clicked.connect(self._toggle_profiling)
-        engine_layout.addWidget(self.btn_start_profiling)
+        self.btn_start_profiling.triggered.connect(self._toggle_profiling)
+        actions.append(self.btn_start_profiling)
 
         if TestRunnerForm is not None:
-            self.btn_test_runner = QtWidgets.QPushButton("TestRunner")
-            self.btn_test_runner.clicked.connect(self._show_test_runner)
-            engine_layout.addWidget(self.btn_test_runner)
+            self.btn_test_runner = self._engine_menu.addAction("TestRunner")
+            self.btn_test_runner.triggered.connect(self._show_test_runner)
+            actions.append(self.btn_test_runner)
 
-        # Status is now shown via the circle indicator in the Project group
+        self._engine_actions = tuple(actions)
+
+        self.btn_engine_overflow = QToolButton()
+        self.btn_engine_overflow.setText("...")
+        self.btn_engine_overflow.setToolTip("Configuration, loggers, profiling, tests")
+        self.btn_engine_overflow.setPopupMode(QToolButton.InstantPopup)
+        self.btn_engine_overflow.setMenu(self._engine_menu)
+        engine_layout.addWidget(self.btn_engine_overflow)
+
+        # Status is now shown via the circle indicator in the header row
         self._update_status(loaded=False)
         self._update_diagnostics_capture_indicator()
 
@@ -789,8 +886,55 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         self.update_cfg_select()
         self.cfg_select.clicked.connect(self._open_config_picker)
 
-        # Load the current config to populate the Rules tree immediately
+        # Load the current config to populate the pass tree immediately
         self._load_config(self.state.current_project_index)
+        self._apply_panel_density()
+
+    def _on_details_toggled(self, checked: bool) -> None:
+        """Record the user's disclosure preference and re-plan the panel."""
+        self._details_requested = bool(checked)
+        self._apply_panel_density()
+
+    def _apply_panel_density(self) -> None:
+        """Show or hide optional chrome for the height the dock actually has."""
+        if self._pass_tree is None or self._density_host is None:
+            return
+        if self._details_panel is None or self._details_toggle is None:
+            return
+
+        # Measure against fixed chrome only. Subtracting the disclosure itself
+        # would make the plan depend on its own outcome and oscillate.
+        # A widget whose layout is not populated yet reports a height of -1.
+        fixed_px = 0
+        for widget in (self._header_fixed, self._engine_bar):
+            if widget is not None:
+                fixed_px += max(0, widget.sizeHint().height())
+        available_px = max(0, self._density_host.height() - fixed_px)
+
+        plan = plan_panel_density(
+            available_px=available_px,
+            row_px=self._pass_tree.row_height(),
+            filter_has_text=self._pass_tree.filter_has_text(),
+            details_requested=self._details_requested,
+            identity_is_divergent=self._identity_is_divergent,
+        )
+
+        self._pass_tree.set_filter_visible(plan.show_filter)
+        self._details_panel.setVisible(plan.show_details)
+        self._details_toggle.setEnabled(not plan.details_locked)
+        self._details_toggle.setToolTip(
+            "Source and runtime projects differ; identity stays visible."
+            if plan.details_locked
+            else "Show project mode, identity, and effective passes"
+        )
+        self._details_toggle.setArrowType(
+            QtCore.Qt.DownArrow if plan.show_details else QtCore.Qt.RightArrow
+        )
+        # setChecked would re-enter _on_details_toggled and overwrite the
+        # user's preference with a height-driven decision.
+        self._details_toggle.blockSignals(True)
+        self._details_toggle.setChecked(plan.show_details)
+        self._details_toggle.blockSignals(False)
 
     def _update_status(self, loaded: bool) -> None:
         """Update the status indicator circle."""
@@ -984,7 +1128,9 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
     def _refresh_config_v2_project_view(self) -> None:
         self.update_cfg_select()
         snapshot = self.state.get_project_runtime_snapshot()
-        self.cfg_description.setPlainText(self.state.current_project.description)
+        self.cfg_description.setText(
+            self.state.current_project.description or "No description"
+        )
         self._apply_project_config_view(build_project_config_view(snapshot))
 
     # callback when the "Delete" button is clicked
@@ -997,17 +1143,26 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         self._config_mode_value.setText(view.mode_text)
         self._config_source_value.setText(view.source_text)
         self._config_source_value.setToolTip(view.source_tooltip)
-        self._config_runtime_value.setText(view.runtime_text)
+        # Name the divergence in the row itself: a routed runtime must never
+        # look like the project the user picked.
+        self._config_runtime_value.setText(
+            f"{view.runtime_text}  (differs from source)"
+            if view.identity_is_divergent
+            else view.runtime_text
+        )
         self._config_runtime_value.setToolTip(view.runtime_tooltip)
         self._config_passes_value.setText(view.effective_passes_text)
+        self._config_summary_value.setText(view.header_summary_text)
         self.btn_edit_cfg.setEnabled(view.edit_enabled)
         self.btn_edit_cfg.setToolTip(view.edit_tooltip)
         self._view_passes_title = view.pass_tree_title
-        self._passes_group.setTitle(view.pass_tree_title)
+        self._pass_tree.setAccessibleName(view.pass_tree_title)
         self._pass_tree.set_passes(
             self.state.get_workbench_recipe_catalog(),
             view.effective_pass_ids,
         )
+        self._identity_is_divergent = view.identity_is_divergent
+        self._apply_panel_density()
 
     # Called when the edit combo is changed
     def _load_config(self, index: int):
@@ -1040,7 +1195,7 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         self.update_cfg_select()
         snapshot = self.state.get_project_runtime_snapshot()
         view = build_project_config_view(snapshot)
-        self.cfg_description.setPlainText(project.description)
+        self.cfg_description.setText(project.description or "No description")
         self._apply_project_config_view(view)
         return
 

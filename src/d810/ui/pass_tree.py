@@ -5,10 +5,15 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 
 from d810.core import getLogger
-from d810.qt_shim import QtCore, QtWidgets
+from d810.qt_shim import QHeaderView, QPalette, QtCore, QtWidgets
 from d810.ui.pass_tree_logic import PassTreeNodeKind, project_pass_tree
 
 logger = getLogger("D810.ui.pass_tree")
+
+# Plain ASCII markers rather than glyphs: the panel is hosted by IDA on
+# platforms whose fonts silently substitute for box and check characters.
+_ENABLED_MARKER = "[*] "
+_DISABLED_MARKER = "[ ] "
 
 
 class PassTreeWidget(QtWidgets.QWidget):
@@ -26,9 +31,22 @@ class PassTreeWidget(QtWidgets.QWidget):
         self._filter = QtWidgets.QLineEdit(self)
         self._filter.setPlaceholderText("Filter passes, transforms, or stages...")
         self._tree = QtWidgets.QTreeWidget(self)
-        self._tree.setColumnCount(3)
-        self._tree.setHeaderLabels(("Pass / child", "Kind", "State"))
+        # Kind is recoverable from indent depth and the child label prefix, so
+        # the column is spent on the label instead.
+        self._tree.setColumnCount(2)
+        self._tree.setHeaderLabels(("Pass / child", "State"))
         self._tree.setRootIsDecorated(True)
+        self._tree.setUniformRowHeights(True)
+        self._tree.setAlternatingRowColors(True)
+        header = self._tree.header()
+        header.setSectionResizeMode(0, QHeaderView.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self._tree.headerItem().setTextAlignment(
+            1, QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter
+        )
+        self._disabled_brush = self.palette().brush(
+            QPalette.Disabled, QPalette.WindowText
+        )
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -51,6 +69,20 @@ class PassTreeWidget(QtWidgets.QWidget):
     def set_read_only(self, read_only: bool) -> None:
         self._read_only = bool(read_only)
 
+    def set_filter_visible(self, visible: bool) -> None:
+        """Show or hide the filter field, preserving whatever it holds."""
+        self._filter.setVisible(bool(visible))
+
+    def filter_has_text(self) -> bool:
+        return bool(self._filter.text().strip())
+
+    def row_height(self) -> int:
+        """Height of one tree row, or 0 before the view has been laid out."""
+        model = self._tree.model()
+        if model is None or model.rowCount() == 0:
+            return 0
+        return int(self._tree.rowHeight(model.index(0, 0)))
+
     def select_pass(self, pass_id: str) -> None:
         for index in range(self._tree.topLevelItemCount()):
             item = self._tree.topLevelItem(index)
@@ -67,14 +99,15 @@ class PassTreeWidget(QtWidgets.QWidget):
             ).casefold()
             if query and query not in searchable:
                 continue
+            marker = _ENABLED_MARKER if row.parent.enabled else _DISABLED_MARKER
             parent = QtWidgets.QTreeWidgetItem(
                 (
-                    row.parent.label,
-                    row.parent.kind.value,
+                    f"{marker}{row.parent.label}",
                     "active" if row.parent.enabled else "available",
                 )
             )
             parent.setData(0, QtCore.Qt.UserRole, row.parent.pass_id)
+            self._style_row(parent, enabled=row.parent.enabled)
             self._tree.addTopLevelItem(parent)
             for child in row.children:
                 label = child.label
@@ -83,12 +116,20 @@ class PassTreeWidget(QtWidgets.QWidget):
                 elif child.kind is PassTreeNodeKind.TRANSFORM:
                     label = f"Transform: {label}"
                 item = QtWidgets.QTreeWidgetItem(
-                    (label, child.kind.value, "owned" if child.enabled else "available")
+                    (label, "owned" if child.enabled else "available")
                 )
                 item.setData(0, QtCore.Qt.UserRole, child.pass_id)
+                self._style_row(item, enabled=child.enabled)
                 parent.addChild(item)
             parent.setExpanded(row.parent.enabled)
-        self._tree.resizeColumnToContents(0)
+
+    def _style_row(self, item, *, enabled: bool) -> None:
+        """Right-align the state column and dim rows that are not in effect."""
+        item.setTextAlignment(1, QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        if enabled:
+            return
+        for column in (0, 1):
+            item.setForeground(column, self._disabled_brush)
 
     def _selection_changed(self, current, _previous) -> None:
         if current is None:

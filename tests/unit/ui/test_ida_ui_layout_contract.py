@@ -34,17 +34,69 @@ def test_pass_tree_owns_the_project_pipeline_pane() -> None:
     source = ast.unparse(_method("OnCreate"))
 
     assert "self._pass_tree = PassTreeWidget(" in source
-    assert "passes_layout.addWidget(self._pass_tree, stretch=1)" in source
+    assert "main_layout.addWidget(self._pass_tree, stretch=1)" in source
     assert "RuleDetailPanel" not in source
 
 
-def test_project_and_engine_groups_keep_compact_local_layouts() -> None:
+def test_panel_is_a_flat_stack_without_group_frames() -> None:
+    source = ast.unparse(_method("OnCreate"))
+
+    assert "QGroupBox" not in source
+    assert "self._header_fixed = QtWidgets.QWidget(" in source
+    assert "self._engine_bar = QtWidgets.QWidget(" in source
+
+
+def test_header_and_engine_bar_keep_compact_local_layouts() -> None:
     source = ast.unparse(_method("OnCreate"))
 
     assert "project_vbox.setContentsMargins(4, 4, 4, 4)" in source
     assert "project_vbox.setSpacing(4)" in source
     assert "engine_layout.setContentsMargins(4, 4, 4, 4)" in source
     assert "engine_layout.setSpacing(4)" in source
+
+
+def test_identity_form_and_description_live_behind_the_details_disclosure() -> None:
+    source = ast.unparse(_method("OnCreate"))
+
+    assert "self._details_toggle.setCheckable(True)" in source
+    assert "details_layout.addLayout(identity_layout)" in source
+    assert "details_layout.addWidget(self.cfg_description)" in source
+    assert "self._details_panel.setVisible(False)" in source
+    # The fixed-height description box is what the disclosure replaces.
+    assert "setFixedHeight(60)" not in source
+
+
+def test_divergent_identity_forces_and_locks_the_disclosure() -> None:
+    density = ast.unparse(_method("_apply_panel_density"))
+    apply_view = ast.unparse(_method("_apply_project_config_view"))
+
+    assert "identity_is_divergent=self._identity_is_divergent" in density
+    assert "self._details_toggle.setEnabled(not plan.details_locked)" in density
+    assert "self._identity_is_divergent = view.identity_is_divergent" in apply_view
+    assert "differs from source" in apply_view
+
+
+def test_density_plan_comes_from_the_pure_logic_layer() -> None:
+    source = ast.unparse(_method("OnCreate"))
+    density = ast.unparse(_method("_apply_panel_density"))
+
+    assert "self._density_host = _DensityHost(self._apply_panel_density" in source
+    assert "plan = plan_panel_density(" in density
+    assert "self._pass_tree.set_filter_visible(plan.show_filter)" in density
+
+
+def test_occasional_engine_controls_live_in_one_overflow_menu() -> None:
+    source = ast.unparse(_method("OnCreate"))
+    close_source = ast.unparse(_method("OnClose"))
+
+    assert "engine_layout.addWidget(self.btn_start)" in source
+    assert "engine_layout.addWidget(self.btn_stop)" in source
+    assert "engine_layout.addStretch(1)" in source
+    assert "self.btn_engine_overflow.setMenu(self._engine_menu)" in source
+    for label in ("Config", "Loggers", "Profile"):
+        assert f"self._engine_menu.addAction('{label}')" in source
+    # Menu actions need the same finalization teardown as the buttons.
+    assert "action.triggered.disconnect()" in close_source
 
 
 def test_project_row_has_a_distinct_diagnostics_capture_indicator() -> None:
