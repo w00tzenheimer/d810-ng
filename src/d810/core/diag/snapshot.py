@@ -76,6 +76,12 @@ _SIGNED64_MAX = 0x7FFFFFFFFFFFFFFF
 _MASK64 = 0xFFFFFFFFFFFFFFFF
 _SYNTHETIC_DAG_NODE_STATE_PREFIX = 0xD810000000000000
 _SYNTHETIC_DAG_NODE_STATE_MASK = 0x0000FFFFFFFFFFFF
+_SQLITE_FALLBACK_VARIABLE_LIMIT = 999
+_SQLITE_VARIABLE_LIMIT_CATEGORY = getattr(
+    sqlite3,
+    "SQLITE_LIMIT_VARIABLE_NUMBER",
+    9,
+)
 
 
 def _safe_int(val: int | None) -> int | None:
@@ -99,6 +105,27 @@ def _dual(val: int | None) -> tuple[str | None, int | None]:
     hex_text = f"0x{val & _MASK64:016x}"
     i64 = _safe_int(val)
     return (hex_text, i64)
+
+
+def _insert_many_within_sqlite_variable_limit(
+    conn: sqlite3.Connection,
+    model: Any,
+    rows: list[dict[str, object]],
+) -> None:
+    """Insert rows without exceeding this SQLite build's host-variable limit."""
+    if not rows:
+        return
+    try:
+        variable_limit = int(conn.getlimit(_SQLITE_VARIABLE_LIMIT_CATEGORY))
+    except (AttributeError, TypeError, ValueError):
+        variable_limit = _SQLITE_FALLBACK_VARIABLE_LIMIT
+    if variable_limit <= 0:
+        variable_limit = _SQLITE_FALLBACK_VARIABLE_LIMIT
+
+    parameters_per_row = len(set().union(*(row.keys() for row in rows)))
+    batch_size = max(1, variable_limit // max(1, parameters_per_row))
+    for offset in range(0, len(rows), batch_size):
+        model.insert_many(rows[offset : offset + batch_size]).execute()
 
 
 def _hex64_or_none(value: int | None) -> str | None:
@@ -308,7 +335,11 @@ def snapshot_mba(
                     }
                 )
         if insn_rows:
-            Instruction.insert_many(insn_rows).execute()
+            _insert_many_within_sqlite_variable_limit(
+                conn,
+                Instruction,
+                insn_rows,
+            )
 
         # Flush any pending CFG provenance entries under this snapshot_id. Each
         # call to ``log_cfg_provenance`` appends to a per-process buffer; the

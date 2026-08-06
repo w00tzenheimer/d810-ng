@@ -4,6 +4,7 @@ from __future__ import annotations
 from d810.core.diag import create_diag_database
 
 import json
+import sqlite3
 
 import pytest
 
@@ -519,6 +520,28 @@ class TestSnapshotMba:
             "SELECT COUNT(*) FROM instructions WHERE snapshot_id=1"
         ).fetchone()
         assert rows[0] == 6  # 3 blocks * 2 insns
+
+    def test_writes_large_instruction_snapshot_with_portable_sqlite_limit(
+        self,
+    ) -> None:
+        conn = create_diag_database(":memory:").connection()
+        if not hasattr(conn, "setlimit"):
+            pytest.skip("sqlite3.Connection.setlimit requires Python 3.11+")
+        conn.setlimit(getattr(sqlite3, "SQLITE_LIMIT_VARIABLE_NUMBER", 9), 999)
+        block = _make_block(0, nsucc=0, npred=0, insn_count=100)
+
+        snap_id = snapshot_mba(
+            conn,
+            [block],
+            label="large_instruction_snapshot",
+            func_ea=0x401000,
+        )
+
+        count = conn.execute(
+            "SELECT COUNT(*) FROM instructions WHERE snapshot_id=?",
+            (snap_id,),
+        ).fetchone()
+        assert count == (100,)
 
     def test_writes_instruction_assertion_state(self) -> None:
         conn = create_diag_database(":memory:").connection()
