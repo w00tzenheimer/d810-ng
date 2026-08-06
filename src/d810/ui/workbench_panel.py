@@ -26,6 +26,7 @@ from d810.ui.workbench_logic import (
     should_accept_command_result,
     stale_snapshot,
 )
+from d810.ui.qt_layout_policy import configure_left_aligned_form
 from d810.ui.workbench_workflow_logic import recommended_attack_transition
 
 logger = getLogger("D810.ui")
@@ -186,6 +187,7 @@ if IDA_AVAILABLE:
 
             context_group = QtWidgets.QGroupBox("Function", self.parent)
             context_layout = QtWidgets.QFormLayout(context_group)
+            configure_left_aligned_form(context_layout)
             context_layout.addRow("Function:", self.function_label)
             context_layout.addRow("Runtime:", self.runtime_label)
             context_layout.addRow("Attack:", self.attack_label)
@@ -210,6 +212,7 @@ if IDA_AVAILABLE:
                 self.case_stage_layout.addWidget(label)
             case_layout.addLayout(self.case_stage_layout)
             case_summary = QtWidgets.QFormLayout()
+            configure_left_aligned_form(case_summary)
             case_summary.setContentsMargins(0, 0, 0, 0)
             case_summary.setSpacing(4)
             case_summary.addRow("Evidence:", self.case_evidence)
