@@ -27,6 +27,7 @@ from d810.hexrays.utils.hexrays_helpers import (  # already maps size->mask
 from d810.optimizers.microcode.instructions.peephole.handler import (
     PeepholeSimplificationRule,
 )
+from d810.hexrays.ir.number_operand import safe_make_number
 
 logger = getLogger(__name__)
 
@@ -157,7 +158,7 @@ class TypedImmediateCanonicaliseRule(PeepholeSimplificationRule):
                 ):
                     lit = args[0]
                     dup = ida_hexrays.mop_t()
-                    dup.make_number(lit.nnn.value, lit.size)
+                    safe_make_number(dup, lit.nnn.value, lit.size)
                     setattr(ins, op_name, dup)
                     changed = True
         return ins if changed else None
@@ -484,7 +485,7 @@ def _fold_bottom_up(
             if val is not None:
                 leaf = AstLeaf(val)
                 leaf.mop = ida_hexrays.mop_t()
-                leaf.mop.make_number(val, bits // 8)
+                safe_make_number(leaf.mop, val, bits // 8)
                 return leaf, True
         return ast, False
 
@@ -506,7 +507,7 @@ def _fold_bottom_up(
         if val is not None:
             leaf = AstLeaf(val)  # tiny helper; see below
             leaf.mop = ida_hexrays.mop_t()
-            leaf.mop.make_number(val, bits // 8)
+            safe_make_number(leaf.mop, val, bits // 8)
             return leaf, True
     elif ast.left is not None and ast.right is not None:
         lval = _eval_subtree(ast.left, bits, blk=blk, ins=ins)
@@ -516,7 +517,7 @@ def _fold_bottom_up(
             if val is not None:
                 leaf = AstLeaf(val)
                 leaf.mop = ida_hexrays.mop_t()
-                leaf.mop.make_number(val, bits // 8)
+                safe_make_number(leaf.mop, val, bits // 8)
                 return leaf, True
 
     return ast, changed

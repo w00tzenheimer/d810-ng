@@ -33,6 +33,7 @@ from d810.mba.constraints import (
     EqualityConstraintProtocol,
     is_constraint_expr,
 )
+from d810.hexrays.ir.number_operand import safe_make_number
 
 # Import egglog pattern generation (optional - graceful fallback if not available)
 try:
@@ -690,7 +691,7 @@ class IDAPatternAdapter:
                 size = 1
 
             cst_mop = ida_hexrays.mop_t()
-            cst_mop.make_number(int(value), int(size))
+            safe_make_number(cst_mop, int(value), int(size))
             leaf.mop = cst_mop
             if hasattr(leaf, "expected_value"):
                 leaf.expected_value = int(value)

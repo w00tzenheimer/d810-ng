@@ -17,6 +17,7 @@ import ida_hexrays
 
 from d810.core.cymode import CythonMode
 from d810.core.logging import getLogger
+from d810.hexrays.ir.number_operand import safe_make_number
 
 logger = getLogger(__name__)
 
@@ -255,7 +256,7 @@ class MopSnapshot:
                     self.t,
                 )
         if self.t == ida_hexrays.mop_n and self.value is not None:
-            m.make_number(self.value, self.size)
+            safe_make_number(m, self.value, self.size)
         elif self.t == ida_hexrays.mop_r and self.reg is not None:
             m.make_reg(self.reg, self.size)
         elif self.t == ida_hexrays.mop_S and self.stkoff is not None:

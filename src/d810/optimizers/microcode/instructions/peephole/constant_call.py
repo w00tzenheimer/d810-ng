@@ -21,6 +21,7 @@ from d810.hexrays.utils.hexrays_helpers import (
 from d810.optimizers.microcode.instructions.peephole.handler import (
     PeepholeSimplificationRule,
 )
+from d810.hexrays.ir.number_operand import safe_make_number
 
 logger = getLogger(__name__)
 
@@ -141,7 +142,7 @@ class ConstantCallResultFoldRule(PeepholeSimplificationRule):
         new = ida_hexrays.minsn_t(sanitize_ea(ins.ea))
         new.opcode = ida_hexrays.m_ldc
         cst = ida_hexrays.mop_t()
-        cst.make_number(result, ins.d.size)
+        safe_make_number(cst, result, ins.d.size)
         new.l = cst
         # clone destination when it's a real l-value
         if ins.d.t in {

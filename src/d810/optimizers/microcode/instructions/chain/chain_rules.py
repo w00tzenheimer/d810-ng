@@ -11,6 +11,7 @@ from d810.hexrays.utils.hexrays_helpers import (
     structural_mop_hash,
 )
 from d810.optimizers.microcode.instructions.chain.handler import ChainSimplificationRule
+from d810.hexrays.ir.number_operand import safe_make_number
 
 rules_chain_logger = getLogger("D810.rules.chain")
 
@@ -65,7 +66,7 @@ class ChainSimplification(object):
             final_cst = final_cst & AND_TABLE[final_cst_size]
             rules_chain_logger.debug("Final cst: {0}".format(final_cst))
             final_cst_mop = ida_hexrays.mop_t()
-            final_cst_mop.make_number(final_cst, max(cst_size_list))
+            safe_make_number(final_cst_mop, final_cst, max(cst_size_list))
             return [final_cst_mop]
 
     def get_simplified_non_constant(self):
@@ -225,7 +226,7 @@ class ChainSimplification(object):
 
     def create_cst_mop(self, value, size):
         cst_mop = ida_hexrays.mop_t()
-        cst_mop.make_number(value, size)
+        safe_make_number(cst_mop, value, size)
         return cst_mop
 
     def _create_mop_chain(self, ea, mop_list, size):
@@ -311,14 +312,14 @@ class ArithmeticChainSimplification(object):
         final_cst = final_cst & AND_TABLE[final_cst_size]
         rules_chain_logger.debug("Final cst: {0}".format(final_cst))
         final_cst_mop = ida_hexrays.mop_t()
-        final_cst_mop.make_number(final_cst, final_cst_size)
+        safe_make_number(final_cst_mop, final_cst, final_cst_size)
         return [final_cst_mop], []
 
     def get_simplified_non_constant(self):
         if len(self.add_non_cst_mop_list) == 0 and len(self.sub_non_cst_mop_list) == 0:
             # Return an explicit zero-constant mop so callers can safely inspect .nnn
             zero = ida_hexrays.mop_t()
-            zero.make_number(0, 1)
+            safe_make_number(zero, 0, 1)
             return [], [], zero
         final_add_list = self.add_non_cst_mop_list
         final_sub_list = self.sub_non_cst_mop_list
@@ -350,7 +351,7 @@ class ArithmeticChainSimplification(object):
     def check_bnot_mop(self, add_non_cst_mop_list, sub_non_cst_mop_list):
         if len(add_non_cst_mop_list) == 0 and len(sub_non_cst_mop_list) == 0:
             zero = ida_hexrays.mop_t()
-            zero.make_number(0, 1)
+            safe_make_number(zero, 0, 1)
             return add_non_cst_mop_list, sub_non_cst_mop_list, zero
         add_index_removed = []
         sub_index_removed = []
@@ -376,9 +377,7 @@ class ArithmeticChainSimplification(object):
                         sub_index_removed += [i, j]
 
         final_add_cst_mop = ida_hexrays.mop_t()
-        final_add_cst_mop.make_number(
-            cst_value & AND_TABLE[final_cst_size], final_cst_size
-        )
+        safe_make_number(final_add_cst_mop, cst_value, final_cst_size)
 
         if len(add_index_removed) > 0:
             final_add_non_cst_mop_list = []
@@ -445,7 +444,7 @@ class ArithmeticChainSimplification(object):
     def _create_mop_add_chain(self, ea, mop_list, size):
         if len(mop_list) == 0:
             res = ida_hexrays.mop_t()
-            res.make_number(0, size)
+            safe_make_number(res, 0, size)
             return res
         elif len(mop_list) == 1:
             return mop_list[0]

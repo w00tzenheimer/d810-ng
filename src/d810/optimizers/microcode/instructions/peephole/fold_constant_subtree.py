@@ -19,6 +19,7 @@ from d810.optimizers.microcode.instructions.peephole.normalise_helpers import (
     _eval_subtree,
     _fold_bottom_up,
 )
+from d810.hexrays.ir.number_operand import safe_make_number
 
 logger = getLogger(__name__)
 
@@ -123,7 +124,7 @@ def _clamp_shift_amount(ins: "ida_hexrays.minsn_t | None", depth: int = 0) -> No
     if ins.opcode in _SHIFT_OPCODES:
         r = ins.r
         if r is not None and r.t == ida_hexrays.mop_n and r.size != 1:
-            r.make_number(r.nnn.value & 0xFF, 1)
+            safe_make_number(r, r.nnn.value, 1)
     for slot in ("l", "r", "d"):
         operand = getattr(ins, slot, None)
         if (
@@ -214,7 +215,7 @@ class ConstantSubtreeFoldRule(PeepholeSimplificationRule):
             new_ins.opcode = ida_hexrays.m_ldc
 
             cst = ida_hexrays.mop_t()
-            cst.make_number(value, dst_size)
+            safe_make_number(cst, value, dst_size)
             new_ins.l = cst
 
             new_ins.d = ida_hexrays.mop_t()

@@ -23,6 +23,11 @@ from d810.hexrays.expr.ast import (
 )
 from d810.hexrays.ir.mop_snapshot import MopSnapshot
 from d810.hexrays.ir.mop_ownership import mop_mba_owner_scope
+from d810.hexrays.ir.number_operand import (
+    MAX_MAKE_NUMBER_SIZE,
+    VALID_MOP_SIZES,
+    safe_make_number,
+)
 from d810.hexrays.utils.hexrays_formatters import (
     format_mop_t,
     mop_tree,
@@ -38,7 +43,8 @@ from d810.hexrays.utils.hexrays_helpers import (
 
 logger = getLogger(__name__)
 
-_VALID_MOP_SIZES = frozenset({1, 2, 4, 8, 16})
+_VALID_MOP_SIZES = VALID_MOP_SIZES
+_MAX_MAKE_NUMBER_SIZE = MAX_MAKE_NUMBER_SIZE
 
 
 class AstBuilderContext:
@@ -62,18 +68,9 @@ def _mop_ast_cache_key(mop: object) -> tuple[object, tuple[int, ...]]:
     return get_mop_key(mop), mop_mba_owner_scope(mop)
 
 
-def safe_make_number(mop, value, size):
-    """Create a number operand with validated size.
-
-    If *size* is not one of the valid IDA operand sizes (1, 2, 4, 8, 16),
-    it is replaced with 4 (32-bit) to prevent a zero-size ``mop_n`` from
-    crashing Hex-Rays' C++ verify / optimize_local passes.
-    """
-    if size not in _VALID_MOP_SIZES:
-        logger.warning("Invalid mop size %d, defaulting to 4", size)
-        size = 4
-    mask = (1 << (size * 8)) - 1
-    mop.make_number(value & mask, size)
+# safe_make_number now lives in the leaf module d810.hexrays.ir.number_operand
+# so the lowest-level helpers can use it without cycling back through here.
+# Re-exported for the existing importers.
 
 
 @functools.lru_cache(maxsize=1024)
@@ -348,7 +345,7 @@ def mop_to_ast_internal(
             const_leaf = AstConstant(hex(const_val), const_val, const_size)
             # Clone numeric mop to detach from Hex-Rays internal storage
             cloned_mop = ida_hexrays.mop_t()
-            cloned_mop.make_number(const_val, const_size)
+            safe_make_number(cloned_mop, const_val, const_size)
             const_leaf.mop = cloned_mop
             const_leaf.dest_size = const_size
 

@@ -10,6 +10,7 @@ from d810.hexrays.ir.minsn_utils import minsn_to_ast
 from d810.backends.ast.z3 import Z3MopProver
 from d810.hexrays.utils.hexrays_formatters import format_minsn_t
 from d810.optimizers.microcode.instructions.z3.handler import Z3Rule
+from d810.hexrays.ir.number_operand import safe_make_number
 
 logger = getLogger(__name__)
 
@@ -77,7 +78,7 @@ class Z3ConstantOptimization(Z3Rule):
             #   new_instruction = self.get_replacement(typing.cast(AstNode, tmp))
             #   return new_instruction
             c_res_mop = ida_hexrays.mop_t()
-            c_res_mop.make_number(val_0, tmp.mop.size or 1)
+            safe_make_number(c_res_mop, val_0, tmp.mop.size or 1)
             if Z3MopProver().are_equal(tmp.mop, c_res_mop):
                 if logger.debug_on:
                     logger.debug("  Z3MopProver.are_equal confirmed equality")

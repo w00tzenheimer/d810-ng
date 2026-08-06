@@ -30,6 +30,7 @@ from d810.hexrays.utils.hexrays_helpers import (
 )
 from d810.hexrays.ir.mop_snapshot import MopSnapshot
 from d810.core import NOT_GIVEN, NotGiven
+from d810.hexrays.ir.number_operand import safe_make_number
 
 logger = getLogger(__name__)
 
@@ -57,7 +58,7 @@ def get_constant_mop(value: int, size: int) -> ida_hexrays.mop_t:
 
     # Not in cache, create it once and store it.
     cst_mop = ida_hexrays.mop_t()
-    cst_mop.make_number(value, size)
+    safe_make_number(cst_mop, value, size)
     MOP_CONSTANT_CACHE[key] = cst_mop
     return cst_mop
 

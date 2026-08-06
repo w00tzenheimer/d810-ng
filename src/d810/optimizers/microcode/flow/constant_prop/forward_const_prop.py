@@ -31,7 +31,6 @@ from d810.hexrays.ir.mop_utils import get_stack_var_name
 from d810.hexrays.ir.mop_utils import safe_make_number
 from d810.hexrays.mutation.cfg_verify import safe_verify
 from d810.hexrays.utils.hexrays_formatters import maturity_to_string
-from d810.hexrays.utils.hexrays_helpers import AND_TABLE
 from d810.optimizers.microcode.flow.handler import (
     FlowOptimizationRule,
     FlowRulePriority,
@@ -778,7 +777,7 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
                 # When folding a constant into the shift-amount operand, force
                 # the rewrite size to 1 regardless of what the stack var says.
                 rewrite_size = 1 if is_shift_amount else op.size
-                op.make_number(val & ((1 << (rewrite_size * 8)) - 1), rewrite_size)
+                safe_make_number(op, val, rewrite_size)
                 return True
         elif op.t == ida_hexrays.mop_f and op.f is not None:
             for a in op.f.args:
@@ -808,7 +807,7 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
                         )
                         return False
                     tmp = ida_hexrays.mop_t()
-                    tmp.make_number(val & AND_TABLE[op.size], op.size)
+                    safe_make_number(tmp, val, op.size)
                     op.assign(tmp)
                     return True
             for attr in ("l", "r", "d"):

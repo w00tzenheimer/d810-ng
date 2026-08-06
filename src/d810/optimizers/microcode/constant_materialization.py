@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ida_hexrays
+from d810.hexrays.ir.number_operand import safe_make_number
 
 
 _SUPPORTED_WIDTHS = frozenset({1, 2, 4, 8})
@@ -25,7 +26,7 @@ def _masked_value(value: int, size: int) -> int:
 def replace_operand_with_immediate(operand, value: int, size: int) -> None:
     """Replace one owned ``mop_t`` with an unsigned immediate."""
 
-    operand.make_number(_masked_value(value, size), int(size))
+    safe_make_number(operand, value, int(size))
 
 
 def make_ldc_replacement(instruction, value: int, size: int):

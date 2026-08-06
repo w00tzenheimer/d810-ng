@@ -60,6 +60,7 @@ from d810.hexrays.mutation.terminal_return_literals import (
     remember_terminal_zero_guard_literal_return_value,
     terminal_zero_guard_literal_return_values,
 )
+from d810.hexrays.ir.number_operand import safe_make_number
 
 
 logger = logging.getLogger(__name__)
@@ -1456,7 +1457,7 @@ def _wrap_address_with_offset(op, delta: int, _ih, ea: int = 0) -> bool:
         add_insn.opcode = _ih.m_add
         add_insn.l = original
         add_insn.r = _ih.mop_t()
-        add_insn.r.make_number(int(delta), original_size)
+        safe_make_number(add_insn.r, int(delta), original_size)
         add_insn.d = _ih.mop_t()
         add_insn.d.erase()
         add_insn.d.size = original_size
@@ -1657,7 +1658,8 @@ def _patch_source_byte_index_const(
                     base_key = _source_base_key(base, _ih)
                     if base_key != family.key:
                         continue
-                    index_op.make_number(
+                    safe_make_number(
+                        index_op,
                         int(new_index),
                         int(getattr(index_op, "size", 0) or 8),
                     )
