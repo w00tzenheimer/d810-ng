@@ -32,9 +32,13 @@ class _RecordingFormLayout:
 class _RecordingButton:
     def __init__(self) -> None:
         self.stylesheet = ""
+        self.minimum_height: int | None = None
 
     def setStyleSheet(self, stylesheet: str) -> None:
         self.stylesheet = stylesheet
+
+    def setMinimumHeight(self, height: int) -> None:
+        self.minimum_height = height
 
 
 @pytest.mark.parametrize("qt6", (False, True))
@@ -76,11 +80,12 @@ def test_form_policy_is_left_aligned_and_expands_fields(
     assert layout.field_growth_policy is growth_policy
 
 
-def test_button_policy_is_local_left_aligned_with_leading_padding() -> None:
+def test_button_policy_preserves_project_row_height_while_left_aligned() -> None:
     button = _RecordingButton()
 
     qt_layout_policy.configure_left_aligned_button(button)
 
+    assert button.minimum_height == 32
     assert button.stylesheet == (
         "QPushButton { text-align: left; padding-left: 8px; }"
     )
