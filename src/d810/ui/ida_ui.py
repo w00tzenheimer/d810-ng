@@ -18,6 +18,7 @@ from d810.core.function_storage_config import (
     FunctionStorageConfigurationError,
     parse_function_recipe_storage,
 )
+from d810.ui.icon_assets import bundled_icon
 from d810.ui.project_config_logic import (
     ConfigEditMode,
     ConfigV2FocusTarget,
@@ -29,7 +30,10 @@ from d810.ui.project_config_logic import (
 )
 from d810.ui.project_picker_logic import build_project_picker_entries
 from d810.ui.project_picker_popup import ProjectPickerPopup
-from d810.ui.icon_assets import bundled_icon
+from d810.ui.qt_layout_policy import (
+    configure_left_aligned_button,
+    configure_left_aligned_form,
+)
 from d810.ui.pass_tree import PassTreeWidget
 from d810.ui.testbed import TestRunnerForm
 
@@ -649,6 +653,7 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         config_row.addWidget(self.curlabel)
 
         self.cfg_select = QtWidgets.QPushButton(self.parent)
+        configure_left_aligned_button(self.cfg_select)
         self.cfg_select.setToolTip("Choose a D-810 configuration")
         config_row.addWidget(self.cfg_select, stretch=1)
 
@@ -686,6 +691,7 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         config_row.addWidget(self.btn_delele_cfg)
 
         identity_layout = QtWidgets.QFormLayout()
+        configure_left_aligned_form(identity_layout)
         self._config_mode_value = QtWidgets.QLabel()
         self._config_source_value = QtWidgets.QLabel()
         self._config_runtime_value = QtWidgets.QLabel()

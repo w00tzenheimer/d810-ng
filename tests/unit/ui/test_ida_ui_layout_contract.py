@@ -57,6 +57,13 @@ def test_project_row_has_a_distinct_diagnostics_capture_indicator() -> None:
     assert "diagnostics-capture-disabled" in update_source
 
 
+def test_project_selector_and_identity_form_use_left_aligned_layout_policy() -> None:
+    source = ast.unparse(_method("OnCreate"))
+
+    assert "configure_left_aligned_button(self.cfg_select)" in source
+    assert "configure_left_aligned_form(identity_layout)" in source
+
+
 def test_plugin_settings_expose_explicit_recipe_storage_backend_and_path() -> None:
     source = ast.unparse(_plugin_method("__init__"))
 

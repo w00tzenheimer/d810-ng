@@ -146,3 +146,10 @@ def test_build_canvas_injects_existing_diagnostics_explorer_record_path() -> Non
     assert "WorkbenchDiagnosticsAdapter" in open_source
     assert "self._show_diagnostics(adapter)" in open_source
     assert "panel.open_case_record(finding_id, native_ea)" in open_source
+
+
+def test_context_and_workflow_summary_use_left_aligned_layout_policy() -> None:
+    source = _method_source("OnCreate")
+
+    assert "configure_left_aligned_form(context_layout)" in source
+    assert "configure_left_aligned_form(case_summary)" in source
