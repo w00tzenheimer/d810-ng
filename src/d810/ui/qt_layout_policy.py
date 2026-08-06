@@ -39,6 +39,7 @@ def configure_left_aligned_form(layout: Any) -> None:
 
 def configure_left_aligned_button(button: Any) -> None:
     """Left-align one push-button caption without affecting host-wide styling."""
+    button.setMinimumHeight(32)
     button.setStyleSheet(_LEFT_ALIGNED_BUTTON_STYLESHEET)
 
 
