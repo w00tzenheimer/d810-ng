@@ -403,6 +403,14 @@ class ConfigV2EditingService:
         _additional(document)["router_resolution"] = policy
         return self._updated(draft, document)
 
+    def clear_routing_override(
+        self, draft: ConfigV2ProjectDraft
+    ) -> ConfigV2ProjectDraft:
+        document = copy.deepcopy(_document(draft.document_json))
+        _additional(document).pop("router_resolution", None)
+        self._validate_semantics(document, draft.destination_path)
+        return self._updated(draft, document)
+
     def materialize_recipe(
         self,
         draft: ConfigV2ProjectDraft,

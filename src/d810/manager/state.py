@@ -539,6 +539,11 @@ class D810State(metaclass=SingletonMeta):
             deny=deny,
         )
 
+    def clear_config_v2_routing_override(
+        self, draft: ConfigV2ProjectDraft
+    ) -> ConfigV2ProjectDraft:
+        return self.manager.clear_config_v2_routing_override(draft)
+
     def replace_config_v2_document(
         self,
         draft: ConfigV2ProjectDraft,

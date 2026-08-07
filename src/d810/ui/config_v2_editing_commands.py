@@ -144,6 +144,11 @@ class ConfigV2EditingAdapter:
             )
         )
 
+    def clear_routing_override(
+        self, draft: ConfigV2ProjectDraft
+    ) -> tuple[ConfigV2ProjectDraft, ConfigV2ProjectValidation]:
+        return self._edited(self._state.clear_config_v2_routing_override(draft))
+
     def replace_document(
         self,
         draft: ConfigV2ProjectDraft,
