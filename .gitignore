@@ -48,6 +48,10 @@ samples/bins/*
 # Cython compiled files
 *.so
 src/d810/**/*.cpp
+# ...but cobra_shim.cpp is hand-written C++ that Cython links against, not
+# generated output. Without this negation it is silently untracked and the
+# extension cannot be built from a fresh clone.
+!src/d810/backends/cobra/cobra_shim.cpp
 src/d810/**/*.so
 src/d810/**/*.dll
 src/d810/**/*.html

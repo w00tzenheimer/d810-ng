@@ -358,5 +358,111 @@ def get_ext_modules():
     )
 
 
+def _first_existing(root, relatives):
+    """Return the first relative path under *root* that exists, else None."""
+    for rel in relatives:
+        candidate = root / rel
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def get_cobra_ext_modules():
+    """Build the CoBRA solver binding if D810_BUILD_COBRA=1, else nothing.
+
+    Deliberately a SEPARATE Extension from the speedups above, for two reasons
+    that are not stylistic:
+
+    * The speedups glob carries IDA-SDK include/library dirs.  A CoBRA source
+      dropped under ``src/d810/speedups`` would inherit them, and would also
+      make CoBRA a hard requirement for everyone building speedups.
+    * The IDA SDK does not compile as C++23 (``pro.h`` uses ``std::is_pod``,
+      removed in C++23) while CoBRA requires it (``Result.h`` uses
+      ``std::expected``).  The two can never share compiler flags, let alone a
+      translation unit.
+    """
+    if os.environ.get("D810_BUILD_COBRA", "0") != "1":
+        return []
+
+    try:
+        from Cython.Build import cythonize
+        from setuptools import Extension
+    except ImportError:
+        raise ImportError("Cython is required to build the CoBRA binding")
+
+    cobra_root = os.environ.get("COBRA_ROOT")
+    if not cobra_root:
+        raise RuntimeError(
+            "D810_BUILD_COBRA=1 requires COBRA_ROOT to point at a CoBRA build "
+            "tree (CoBRA exports no CMake package to discover)"
+        )
+    root = pathlib.Path(cobra_root)
+
+    # Pick ONE dependency prefix and one core build; globbing several and
+    # merging them silently mixes incompatible trees.
+    deps_prefix = _first_existing(
+        root, ("build-deps/install", "build-deps-nollvm/install")
+    )
+    core_dir = _first_existing(root, ("build/lib/core", "build-nollvm/lib/core"))
+    if deps_prefix is None or core_dir is None:
+        raise RuntimeError(
+            f"COBRA_ROOT={root} does not look built: expected build-deps/install "
+            "and build/lib/core (see CoBRA BUILD.md)"
+        )
+
+    here = pathlib.Path(__file__).parent / "src" / "d810" / "backends" / "cobra"
+    include_dirs = [str(here), str(root / "include"), str(deps_prefix / "include")]
+    # lib vs lib64: manylinux is RHEL-based, where CMAKE_INSTALL_LIBDIR
+    # defaults to lib64, so never hardcode "lib".
+    library_dirs = [str(core_dir)] + [
+        str(p) for p in sorted(deps_prefix.glob("lib*")) if p.is_dir()
+    ]
+
+    std_args = ["/std:c++latest"] if OSTYPE == "Windows" else ["-std=c++23"]
+
+    # abseil scatters constants and singletons (container_internal::kSooControl,
+    # MixingHashState::kSeed, Mutex, Now, ...) across archive members that
+    # nothing else references, so a normal -l link never pulls them in.  Python
+    # extensions link with -undefined dynamic_lookup, so this does NOT fail the
+    # link -- it fails later at dlopen with "symbol not found in flat
+    # namespace", which is much harder to diagnose.  Force every abseil archive
+    # in and let the linker dead-strip the remainder; resolving the symbols one
+    # at a time is whack-a-mole.
+    absl_archives = [
+        str(p)
+        for d in library_dirs
+        for p in sorted(pathlib.Path(d).glob("libabsl_*.a"))
+    ]
+    if OSTYPE == "Darwin":
+        link_args = [f"-Wl,-force_load,{a}" for a in absl_archives]
+        link_args.append("-Wl,-dead_strip")
+    elif OSTYPE == "Linux":
+        link_args = [
+            "-Wl,--whole-archive",
+            *absl_archives,
+            "-Wl,--no-whole-archive",
+            "-Wl,--gc-sections",
+        ]
+    else:
+        link_args = [f"/WHOLEARCHIVE:{a}" for a in absl_archives]
+
+    return cythonize(
+        Extension(
+            "d810.backends.cobra._cobra",
+            [
+                "src/d810/backends/cobra/_cobra.pyx",
+                "src/d810/backends/cobra/cobra_shim.cpp",
+            ],
+            language="c++",
+            include_dirs=include_dirs,
+            library_dirs=library_dirs,
+            libraries=["cobra-core"],
+            extra_compile_args=std_args,
+            extra_link_args=link_args,
+        ),
+        compiler_directives={"language_level": "3", "binding": True},
+    )
+
+
 # Minimal setup() - everything else comes from pyproject.toml
-setup(ext_modules=get_ext_modules())
+setup(ext_modules=get_ext_modules() + get_cobra_ext_modules())
