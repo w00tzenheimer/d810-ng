@@ -76,6 +76,24 @@ def test_invalid_size_still_falls_back_to_four() -> None:
     assert mop.calls[0][1] == 4
 
 
+def test_return_value_reports_whether_the_requested_width_survived() -> None:
+    """Callers emitting m_ldc rely on this to abstain instead of malforming.
+
+    The live case: a peephole folded `xds #0.8, xmm6.16` into
+    `ldc #0.8, xmm6.16`, whose operand sizes disagree, because the clamp was
+    silent. m_ldc's l operand must be a real mop_n and make_number cannot build
+    one wider than 8 bytes, so the rule has to decline.
+    """
+    assert safe_make_number(_RecordingMop(), 0xFF, 4) is True
+    assert safe_make_number(_RecordingMop(), 0xFF, 8) is True
+    assert safe_make_number(_RecordingMop(), 0xFF, 16) is False
+    assert safe_make_number(_RecordingMop(), 0xFF, 16, ea=0x401000) is True
+
+
+def test_an_invalid_size_that_falls_back_to_four_is_not_reported_as_honored() -> None:
+    assert safe_make_number(_RecordingMop(), 0xFF, 0) is False
+
+
 def test_no_size_above_eight_can_ever_reach_make_number_unanchored() -> None:
     """Guard the whole class, not just 16, in case _VALID_MOP_SIZES grows."""
     for size in (1, 2, 4, 8, 16, 32, 64, 0, -1, 3):

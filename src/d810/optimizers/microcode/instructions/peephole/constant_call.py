@@ -142,7 +142,11 @@ class ConstantCallResultFoldRule(PeepholeSimplificationRule):
         new = ida_hexrays.minsn_t(sanitize_ea(ins.ea))
         new.opcode = ida_hexrays.m_ldc
         cst = ida_hexrays.mop_t()
-        safe_make_number(cst, result, ins.d.size)
+        if not safe_make_number(cst, result, ins.d.size):
+            # m_ldc's l operand must be a real mop_n; make_number cannot build
+            # one wider than 8 bytes, so a wider destination has no foldable
+            # form here. See fold_constant_subtree for the same guard.
+            return None
         new.l = cst
         # clone destination when it's a real l-value
         if ins.d.t in {

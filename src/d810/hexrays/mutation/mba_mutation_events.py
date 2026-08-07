@@ -589,6 +589,10 @@ class MbaMutationGateway:
     _operation_count: int = field(default=0, init=False)
     _active_batch_id: str | None = field(default=None, init=False)
     _planned_operation_count: int = field(default=0, init=False)
+    # Planned steps that coalescing removed as redundant before they could be
+    # applied. Reconciling the realization inventory needs these back:
+    # applied + superseded == planned.
+    _superseded_operation_count: int = field(default=0, init=False)
     _active_fragment_plan: FragmentPlan | None = field(
         default=None,
         init=False,
@@ -1204,6 +1208,9 @@ class MbaMutationGateway:
         )
         self._affected_identities.clear()
         self._operation_count = 0
+        # Scope the tally to this batch: a count left by an earlier batch must
+        # never reconcile this one's inventory.
+        self._superseded_operation_count = 0
         self._emit_observation(
             phase="planned",
             event_type=MbaMutationPlanned,
@@ -1296,6 +1303,21 @@ class MbaMutationGateway:
         if any(plan_ref not in self._cfg_reservations for plan_ref in requested):
             raise ValueError("patch block creation references an unreserved plan block")
 
+    def record_coalesced_supersessions(self, count: int) -> None:
+        """Record planned steps that coalescing removed before apply.
+
+        Conflict resolution legitimately collapses several queued modifications
+        that describe the same edge into one, so an applied count alone cannot
+        be reconciled against the number of planned PatchPlan steps. Without
+        this, a benign deduplication is indistinguishable from a lost operation
+        and poisons the CFG generation.
+        """
+        self._require_active()
+        superseded = int(count)
+        if superseded < 0:
+            raise ValueError("superseded operation count must be non-negative")
+        self._superseded_operation_count = superseded
+
     def observe_patch_realization(
         self,
         live_graph: FlowGraph,
@@ -1313,10 +1335,15 @@ class MbaMutationGateway:
         if not isinstance(live_graph, FlowGraph):
             raise TypeError("patch observation requires a portable live graph")
         applied = int(applied_operation_count)
-        if applied != self._planned_operation_count:
+        # A planned step is accounted for when it was applied OR when conflict
+        # resolution deliberately superseded it as redundant. Comparing applied
+        # against planned alone reads a benign deduplication as corruption.
+        superseded = int(self._superseded_operation_count)
+        if applied + superseded != self._planned_operation_count:
             raise RuntimeError(
                 "patch realization operation inventory mismatch: "
-                f"planned={self._planned_operation_count} applied={applied}"
+                f"planned={self._planned_operation_count} applied={applied} "
+                f"superseded={superseded}"
             )
         if set(self._cfg_creation_receipts) != set(self._cfg_plan_refs):
             raise RuntimeError("patch observation lacks complete creation receipts")
@@ -2718,12 +2745,17 @@ class MbaMutationGateway:
         if (
             self._current_transaction_attempt is not None
             and self._active_kind is not StructuralMutationKind.FRAGMENT_PUBLICATION
-            and self._operation_count != self._planned_operation_count
+            # Same reconciliation as observe_patch_realization: a planned step
+            # is accounted for when it was applied OR when conflict resolution
+            # deliberately superseded it as redundant.
+            and self._operation_count + self._superseded_operation_count
+            != self._planned_operation_count
         ):
             raise RuntimeError(
                 "patch realization operation inventory mismatch: "
                 f"planned={self._planned_operation_count} "
-                f"applied={self._operation_count}"
+                f"applied={self._operation_count} "
+                f"superseded={self._superseded_operation_count}"
             )
         version_transitions = self.identity_index.commit_proxy_transaction(
             str(self._active_batch_id)
