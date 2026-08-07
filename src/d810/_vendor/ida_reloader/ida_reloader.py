@@ -519,6 +519,32 @@ class DependencyGraph:
 class Scanner:
     """Module scanner that loads and discovers all modules in a package."""
 
+    @staticmethod
+    def _discard_stale_unchecked_bytecode(
+        spec: importlib.machinery.ModuleSpec,
+    ) -> bool:
+        """Remove unchecked hash bytecode that does not match its source."""
+        if not spec.origin or not spec.cached or not spec.origin.endswith(".py"):
+            return False
+        source_path = pathlib.Path(spec.origin)
+        cached_path = pathlib.Path(spec.cached)
+        try:
+            with cached_path.open("rb") as cache_file:
+                header = cache_file.read(16)
+            if len(header) != 16 or header[:4] != importlib.util.MAGIC_NUMBER:
+                return False
+            flags = int.from_bytes(header[4:8], "little")
+            if flags != 0x01:
+                return False
+            source_hash = importlib.util.source_hash(source_path.read_bytes())
+            if header[8:16] == source_hash:
+                return False
+            cached_path.unlink()
+        except OSError:
+            return False
+        print(f"Discarded stale unchecked bytecode for {spec.name}: {cached_path}")
+        return True
+
     @classmethod
     def _load_module(
         cls, spec: importlib.machinery.ModuleSpec, callback: typing.Callable | None
@@ -603,6 +629,7 @@ class Scanner:
             if spec is None:
                 continue
 
+            cls._discard_stale_unchecked_bytecode(spec)
             discovered[spec.name] = spec
             if not load_new_modules and spec.name not in sys.modules:
                 continue
