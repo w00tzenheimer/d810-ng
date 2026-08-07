@@ -574,7 +574,8 @@ class Scanner:
         callback=None,
         skip_packages: bool = False,
         skip_prefixes: Sequence[str] = (),
-    ):
+        load_new_modules: bool = True,
+    ) -> dict[str, importlib.machinery.ModuleSpec]:
         if isinstance(package_path, pathlib.Path):
             package_path = str(package_path)
 
@@ -582,6 +583,7 @@ class Scanner:
         def _on_walk_error(name):
             print(f"Warning: failed to import package {name}", file=sys.stderr)
 
+        discovered: dict[str, importlib.machinery.ModuleSpec] = {}
         for mod_info in pkgutil.walk_packages(
             package_path, prefix=prefix, onerror=_on_walk_error
         ):
@@ -593,16 +595,21 @@ class Scanner:
             if skip_packages and mod_info.ispkg:
                 continue
 
-            # Always attempt to load the module, *including* packages, so that
-            # every discovered module becomes visible in ``sys.modules``. This
-            # guarantees that later dependency-aware reloading sees brand-new
-            # additions on disk even if they have never been imported before.
+            # Normal scans load every module, including packages. Hot reload
+            # can instead defer new modules until their updated dependencies
+            # have been reloaded in graph order.
 
             spec = mod_info.module_finder.find_spec(mod_info.name, None)
             if spec is None:
                 continue
 
+            discovered[spec.name] = spec
+            if not load_new_modules and spec.name not in sys.modules:
+                continue
+
             cls._load_module(spec, callback)
+
+        return discovered
 
 
 def _discard_modules_outside_package_paths(
@@ -699,18 +706,19 @@ def _reload_package_with_graph(
     # Build dependency graph
     dg = DependencyGraph(base_package + ".", pkg_paths=pkg_path)
 
-    # Scan and discover all modules in the package
-    def update_deps(module):
-        if file_path := getattr(module, "__file__", None):
-            dg.update_dependencies(file_path, module.__name__)
-
-    Scanner.scan(
+    # Discover source modules without executing previously unloaded consumers.
+    # A new consumer may import a symbol that exists only in the dependency's
+    # updated source; executing it here would still see the old module object.
+    discovered_specs = Scanner.scan(
         pkg_path,
         base_package + ".",
-        callback=update_deps,
         skip_packages=False,
         skip_prefixes=skip_prefixes,
+        load_new_modules=False,
     )
+    for name, spec in discovered_specs.items():
+        if file_path := spec.origin:
+            dg.update_dependencies(file_path, name)
 
     # Get topological order, skipping specified prefixes
     skip_set = set(
@@ -731,11 +739,13 @@ def _reload_package_with_graph(
 
     # Reload all modules in dependency order
     for name in order:
-        if name not in sys.modules:
-            continue
         try:
-            print(f"Reloading {name} ...")
-            importlib.reload(sys.modules[name])
+            if name in sys.modules:
+                print(f"Reloading {name} ...")
+                importlib.reload(sys.modules[name])
+            elif spec := discovered_specs.get(name):
+                print(f"Loading {name} ...")
+                Scanner._load_module(spec, callback=None)
         except ModuleNotFoundError as e:
             if suppress_errors:
                 print(f"[{base_package}][reload] suppressed {e}")
