@@ -140,6 +140,14 @@ def test_unsupported_generic_field_edits_are_refused(tmp_path: Path):
 
 def test_selecting_mba_transforms_is_ordered_lossless_and_validated(tmp_path: Path):
     service, draft = _service_and_draft(tmp_path)
+    document = json.loads(draft.document_json)
+    options = document["additional_configuration"]["pipeline_v2"][1]["options"]
+    options["transform_options"] = {
+        "add-ollvm-1": {"retained": "ollvm"},
+        "z-3-constant-optimization": {"discarded": True},
+        "add-xor-1": {"retained": "xor"},
+    }
+    draft = dataclasses.replace(draft, document_json=json.dumps(document))
     changed = service.set_pass_transforms(
         draft,
         pass_index=1,
@@ -148,7 +156,11 @@ def test_selecting_mba_transforms_is_ordered_lossless_and_validated(tmp_path: Pa
 
     options = _pipeline_entry(changed, "mba-simplify")["options"]
     assert options["transforms"] == ["add-xor-1", "add-ollvm-1"]
-    assert options["transform_options"] == {}
+    assert list(options["transform_options"]) == ["add-xor-1", "add-ollvm-1"]
+    assert options["transform_options"] == {
+        "add-xor-1": {"retained": "xor"},
+        "add-ollvm-1": {"retained": "ollvm"},
+    }
     assert service.validate(changed).valid is True
 
 
