@@ -34,121 +34,111 @@ def _calls(method: ast.FunctionDef) -> set[str]:
     }
 
 
-def test_panel_is_thin_and_projects_only_through_pure_logic() -> None:
+def _source(name: str) -> str:
+    return ast.unparse(_method(name))
+
+
+def test_panel_projects_one_draft_into_a_stacked_builder_and_inspector() -> None:
+    init_source = _source("__init__")
+    create_source = _source("OnCreate")
+    render_calls = _calls(_method("_render"))
+
+    assert "ConfigV2EditorScreen.BUILDER" in init_source
+    assert "self._screen = screen" in init_source
+    assert "self._selected_pass_index" in init_source
+    assert "self._editor_view" in init_source
+    assert "QStackedWidget" in init_source
+    assert "builder_page" in create_source
+    assert "inspector_page" in create_source
+    assert "project_config_v2_editor_view" in render_calls
+
+
+def test_inspector_uses_structured_identity_options_and_contract_controls() -> None:
+    source = PANEL.read_text(encoding="utf-8")
+    init_calls = _calls(_method("__init__"))
+
+    assert "StructuredDetailsView" in source
+    assert "JsonTreeEditor" in source
+    assert "RawJsonDialog" in source
+    assert "Pass" in source
+    assert "Purpose" in source
+    assert "Runs during" in source
+    assert "Scope" in source
+    assert "Backend" in source
+    assert "Safety" in source
+    assert "QListWidget" in source
+    assert "set_on_value_changed" in init_calls
+    assert "View raw contract" in source
+    assert "Edit raw options" in source
+    assert "Edit pipeline..." in source
+
+
+def test_inspector_transform_picker_is_projection_driven_and_fail_closed() -> None:
+    render_source = _source("_render_inspector")
+
+    assert "inspector.transforms_editable" in render_source
+    assert "inspector.selected_transforms" in render_source
+    assert "No individually selectable transforms." in render_source
+    assert "stage_ids" not in render_source
+    assert "transform_ids" not in render_source
+
+
+def test_inspector_callbacks_delegate_typed_edits_and_rerender_rejections() -> None:
+    transform_source = _source("_apply_selected_transforms")
+    options_source = _source("_apply_inspector_options")
+    apply_source = _source("_apply_edit")
+
+    assert "set_pass_transforms" in transform_source
+    assert "selected_transforms" in transform_source
+    assert "set_pass_options" in options_source
+    assert "isinstance(value, dict)" in options_source
+    assert "self._render()" in apply_source
+
+
+def test_screen_switches_preserve_the_current_draft_without_io() -> None:
+    for method_name in ("_show_inspector", "_show_builder"):
+        source = _source(method_name)
+        calls = _calls(_method(method_name))
+
+        assert "self._draft =" not in source
+        assert not {"reset", "save", "load_view"} & calls
+        assert "_render" in calls
+
+
+def test_exact_focus_uses_the_requested_row_and_rejects_mismatches() -> None:
+    source = _source("_apply_focus_target")
+
+    assert "target.unambiguous" in source
+    assert "target.pass_index" in source
+    assert "inspector.pass_index" in source
+    assert "inspector.pass_id == target.pass_id" in source
+    assert "self._selected_pass_index = target.pass_index" in source
+
+
+def test_panel_remains_a_thin_adapter_and_explicit_save_surface() -> None:
     imports = {
         node.module
         for node in ast.walk(_tree())
         if isinstance(node, ast.ImportFrom) and node.module
     }
+    calls = set().union(
+        *(
+            _calls(_method(name))
+            for name in (
+                "_set_description",
+                "_add_pass",
+                "_remove_pass",
+                "_move_pass",
+                "_edit_routing",
+                "_reset",
+                "_validate",
+                "_save_as",
+                "_save",
+            )
+        )
+    )
+
     assert "d810.ui.config_v2_editing_logic" in imports
     assert "d810.manager.config_v2_editing" not in imports
     assert "d810.core.project_config_persistence" not in imports
-    assert "project_config_v2_document" in _calls(_method("_render"))
-    assert "config_v2_action_states" in _calls(_method("_render"))
-
-
-def test_panel_forwards_typed_mutations_and_save_to_adapter() -> None:
-    methods = (
-        "_set_description",
-        "_add_pass",
-        "_remove_pass",
-        "_move_pass",
-        "_edit_pass_options",
-        "_edit_routing",
-        "_reset",
-        "_validate",
-        "_save",
-    )
-    calls = set().union(*(_calls(_method(name)) for name in methods))
-    assert {
-        "set_description",
-        "add_pass",
-        "remove_pass",
-        "reorder_pass",
-        "set_pass_options",
-        "set_routing_override",
-        "reset",
-        "validate",
-        "save",
-    }.issubset(calls)
-
-
-def test_panel_accepts_focus_and_exposes_explicit_save_as() -> None:
-    init_source = ast.unparse(_method("__init__"))
-    create_source = ast.unparse(_method("OnCreate"))
-
-    assert "focus_target" in init_source
-    assert "Save as another config" in init_source
-    assert "save_as" in create_source
-
-
-def test_panel_save_as_retargets_the_current_draft() -> None:
-    method = _method("_save_as")
-    calls = _calls(method)
-
-    assert "getSaveFileName" in calls
-    assert "retarget" in calls
-
-
-def test_complete_and_unsupported_documents_are_read_only() -> None:
-    init_calls = _calls(_method("__init__"))
-    assert "setReadOnly" in init_calls
-
-
-def test_registered_pass_catalog_uses_the_manager_record_display_name() -> None:
-    source = PANEL.read_text(encoding="utf-8")
-
-    assert "entry.display_name" in source
-    assert "entry.label" not in source
-
-
-def test_description_is_a_wrapped_scrollable_multiline_editor() -> None:
-    source = PANEL.read_text(encoding="utf-8")
-    init_calls = _calls(_method("__init__"))
-
-    assert "QPlainTextEdit" in source
-    assert "setLineWrapMode" in init_calls
-    assert "setVerticalScrollBarPolicy" in init_calls
-    assert "setHorizontalScrollBarPolicy" in init_calls
-    assert "toPlainText" in _calls(_method("_set_description"))
-
-
-def test_empty_status_area_does_not_consume_editor_space() -> None:
-    calls = _calls(_method("_set_status"))
-
-    assert "setPlainText" in calls
-    assert "setVisible" in calls
-
-
-def test_editor_uses_a_resizable_outer_splitter_that_favors_preserved_text() -> None:
-    source = ast.unparse(_method("OnCreate"))
-
-    assert "outer_splitter = QtWidgets.QSplitter()" in source
-    assert "outer_splitter.setOrientation(QtCore.Qt.Orientation.Vertical)" in source
-    assert "outer_splitter.addWidget(editing_group)" in source
-    assert "outer_splitter.addWidget(raw_group)" in source
-    assert "outer_splitter.setStretchFactor(0, 1)" in source
-    assert "outer_splitter.setStretchFactor(1, 1)" in source
-    assert "outer_splitter.setSizes([450, 550])" in source
-    assert "layout.addWidget(outer_splitter, stretch=1)" in source
-
-
-def test_typed_editor_panes_have_explicit_resizable_geometry() -> None:
-    source = ast.unparse(_method("OnCreate"))
-
-    for pane in ("manifest_list", "pipeline_list", "routing_view"):
-        assert f"self.{pane}.setMinimumWidth(" in source
-    assert "typed_splitter.setStretchFactor(0, 1)" in source
-    assert "typed_splitter.setStretchFactor(1, 2)" in source
-    assert "typed_splitter.setStretchFactor(2, 2)" in source
-    assert "typed_splitter.setSizes([200, 400, 400])" in source
-
-
-def test_editor_uses_compact_local_layouts_for_dense_information() -> None:
-    source = ast.unparse(_method("OnCreate"))
-
-    for layout_name in ("identity_layout", "editing_layout", "raw_layout"):
-        assert f"{layout_name}.setContentsMargins(4, 4, 4, 4)" in source
-        assert f"{layout_name}.setSpacing(4)" in source
-    assert "description_row.setSpacing(4)" in source
-    assert "pass_row.setSpacing(4)" in source
+    assert {"retarget", "save", "validate"}.issubset(calls)

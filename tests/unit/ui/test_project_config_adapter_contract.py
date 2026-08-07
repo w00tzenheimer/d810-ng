@@ -1,7 +1,19 @@
 from __future__ import annotations
 
 import ast
+import importlib.util
+import json
+import sys
+import types
 from pathlib import Path
+
+from d810.manager.config_v2_edit_models import (
+    ConfigV2ProjectDraft,
+    ConfigV2ProjectValidation,
+)
+from d810.manager.workbench_recipe_models import PassCatalogEntry
+from d810.ui.config_v2_editing_logic import ConfigV2EditorScreen
+from d810.ui.project_config_logic import resolve_config_v2_focus_target
 
 
 IDA_UI = Path(__file__).resolve().parents[3] / "src" / "d810" / "ui" / "ida_ui.py"
@@ -265,6 +277,284 @@ def test_recipe_profile_opens_builder_before_closing_the_previous_editor() -> No
     assert source.index("editor = ConfigV2EditingPanel(") < source.index(
         "self._config_v2_editor.close()"
     )
+
+
+class _Signal:
+    def connect(self, callback: object) -> None:
+        del callback
+
+
+class _Widget:
+    class LineWrapMode:
+        WidgetWidth = 1
+
+    WidgetWidth = 1
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        self.clicked = _Signal()
+        self.itemChanged = _Signal()
+        self._row = -1
+        self._items: list[object] = []
+        self._text = ""
+
+    def __getattr__(self, name: str):
+        if name.startswith("set") or name in {
+            "addLayout",
+            "addStretch",
+            "addTab",
+            "addWidget",
+            "clear",
+            "expandAll",
+        }:
+            return lambda *args, **kwargs: None
+        raise AttributeError(name)
+
+    def addItem(self, *args: object) -> None:
+        self._items.append(args[-1])
+
+    def count(self) -> int:
+        return len(self._items)
+
+    def currentData(self) -> object | None:
+        return None
+
+    def currentRow(self) -> int:
+        return self._row
+
+    def hasFocus(self) -> bool:
+        return False
+
+    def item(self, index: int) -> object:
+        return self._items[index]
+
+    def setCurrentRow(self, index: int) -> None:
+        self._row = index
+
+    def setPlainText(self, text: str) -> None:
+        self._text = text
+
+    def toPlainText(self) -> str:
+        return self._text
+
+
+class _ListItem:
+    def __init__(self, text: str = "") -> None:
+        self._text = text
+        self._check_state = 0
+        self._data: dict[tuple[int, object], object] = {}
+
+    def checkState(self) -> int:
+        return self._check_state
+
+    def data(self, column: int, role: object) -> object | None:
+        return self._data.get((column, role))
+
+    def flags(self) -> int:
+        return 0
+
+    def setCheckState(self, state: int) -> None:
+        self._check_state = state
+
+    def setData(self, column: int, role: object, value: object) -> None:
+        self._data[(column, role)] = value
+
+    def setFlags(self, flags: int) -> None:
+        del flags
+
+    def setToolTip(self, tooltip: str) -> None:
+        del tooltip
+
+    def text(self) -> str:
+        return self._text
+
+
+class _JsonTreeEditor(_Widget):
+    def set_json(self, value: object, *, editable: bool) -> None:
+        self.value = value
+        self.editable = editable
+
+    def set_on_value_changed(self, callback: object) -> None:
+        self.callback = callback
+
+
+class _StructuredDetailsView(_Widget):
+    def set_sections(self, sections: object) -> None:
+        self.sections = sections
+
+
+class _RouteAdapter:
+    destination = Path("/tmp/task-5-route.json")
+
+    def __init__(self) -> None:
+        self.reset_count = 0
+        document = {
+            "description": "route proof",
+            "additional_configuration": {
+                "pipeline_v2": [
+                    {"pass_id": "mba-simplify", "options": {"transforms": ["a"]}},
+                    {"pass_id": "mba-simplify", "options": {"transforms": ["b"]}},
+                ]
+            },
+        }
+        payload = json.dumps(document)
+        self.draft = ConfigV2ProjectDraft(
+            draft_id="route",
+            revision=0,
+            source_path=self.destination,
+            destination_path=self.destination,
+            source_sha256="abc",
+            original_document_json=payload,
+            document_json=payload,
+        )
+        self.validation = ConfigV2ProjectValidation(
+            draft_id="route",
+            revision=0,
+            valid=True,
+            pass_ids=("mba-simplify", "mba-simplify"),
+            stage_ids=(),
+            transform_ids=("a", "b"),
+            routing_policy_json="{}",
+            diagnostics=(),
+        )
+
+    def manifest(self) -> tuple[object, ...]:
+        return ()
+
+    def catalog(self) -> tuple[PassCatalogEntry, ...]:
+        return (
+            PassCatalogEntry(
+                pass_id="mba-simplify",
+                display_name="MBA simplify",
+                contract_json='{"inputs": ["microcode"]}',
+                option_template_json="{}",
+                granularity="function",
+                maturity="MMAT_LOCOPT",
+                backend_route="mutation_backend",
+                safety_policy="verified",
+                transform_ids=("a", "b"),
+                stage_ids=(),
+                configured=True,
+            ),
+        )
+
+    def reset(self) -> tuple[ConfigV2ProjectDraft, ConfigV2ProjectValidation]:
+        self.reset_count += 1
+        return self.draft, self.validation
+
+
+def _load_gui_panel(monkeypatch):
+    plugin_form = type(
+        "PluginForm",
+        (),
+        {
+            "WOPN_PERSIST": 1,
+            "WCLS_SAVE": 2,
+            "__init__": lambda self: None,
+        },
+    )
+    ida = types.SimpleNamespace(PluginForm=plugin_form)
+    qt = types.SimpleNamespace(
+        Qt=types.SimpleNamespace(
+            CheckState=types.SimpleNamespace(Checked=2, Unchecked=0),
+            ItemDataRole=types.SimpleNamespace(UserRole=32),
+            ItemFlag=types.SimpleNamespace(ItemIsUserCheckable=1),
+            ScrollBarPolicy=types.SimpleNamespace(
+                ScrollBarAsNeeded=1, ScrollBarAlwaysOff=2
+            ),
+        )
+    )
+    widgets = types.SimpleNamespace(
+        **{
+            name: _Widget
+            for name in (
+                "QComboBox",
+                "QFileDialog",
+                "QFormLayout",
+                "QGroupBox",
+                "QHBoxLayout",
+                "QInputDialog",
+                "QLabel",
+                "QListWidget",
+                "QPlainTextEdit",
+                "QPushButton",
+                "QStackedWidget",
+                "QTabWidget",
+                "QToolButton",
+                "QVBoxLayout",
+                "QWidget",
+            )
+        },
+        QListWidgetItem=_ListItem,
+    )
+    monkeypatch.setitem(sys.modules, "ida_kernwin", ida)
+    monkeypatch.setitem(
+        sys.modules,
+        "d810.qt_shim",
+        types.SimpleNamespace(QtCore=qt, QtWidgets=widgets),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "d810.ui.workbench_structured_details",
+        types.SimpleNamespace(
+            JsonTreeEditor=_JsonTreeEditor,
+            RawJsonDialog=_Widget,
+            StructuredDetailsView=_StructuredDetailsView,
+        ),
+    )
+    module_name = "d810.ui._task5_gui_panel"
+    spec = importlib.util.spec_from_file_location(
+        module_name,
+        IDA_UI.parent / "config_v2_editing_panel.py",
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, module_name, module)
+    spec.loader.exec_module(module)
+    return module.ConfigV2EditingPanel
+
+
+def test_task4_routes_construct_both_screens_and_focus_duplicate_by_exact_row(
+    monkeypatch,
+) -> None:
+    panel_type = _load_gui_panel(monkeypatch)
+    builder_adapter = _RouteAdapter()
+    builder = panel_type(builder_adapter, screen=ConfigV2EditorScreen.BUILDER)
+
+    inspector_adapter = _RouteAdapter()
+    exact_focus = resolve_config_v2_focus_target(
+        "mba-simplify",
+        ("mba-simplify", "mba-simplify"),
+        pass_index=1,
+    )
+    inspector = panel_type(
+        inspector_adapter,
+        screen=ConfigV2EditorScreen.INSPECTOR,
+        focus_target=exact_focus,
+    )
+
+    assert builder._screen is ConfigV2EditorScreen.BUILDER
+    assert inspector._screen is ConfigV2EditorScreen.INSPECTOR
+    assert inspector._selected_pass_index == 1
+    assert builder_adapter.reset_count == inspector_adapter.reset_count == 1
+    owned_draft = inspector._draft
+    inspector._show_builder()
+    inspector._show_inspector(0)
+    assert inspector._draft is owned_draft
+    assert inspector_adapter.reset_count == 1
+    assert inspector._screen is ConfigV2EditorScreen.INSPECTOR
+    assert inspector._selected_pass_index == 0
+
+    ambiguous_focus = resolve_config_v2_focus_target(
+        "mba-simplify",
+        ("mba-simplify", "mba-simplify"),
+    )
+    refused = panel_type(
+        _RouteAdapter(),
+        screen=ConfigV2EditorScreen.INSPECTOR,
+        focus_target=ambiguous_focus,
+    )
+    assert refused._selected_pass_index is None
 
 
 def test_config_v2_save_refreshes_the_current_project_view_without_reloading() -> None:
