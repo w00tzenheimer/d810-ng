@@ -1037,6 +1037,19 @@ class D810Manager:
             options=options,
         )
 
+    def set_config_v2_pass_transforms(
+        self,
+        draft: ConfigV2ProjectDraft,
+        *,
+        pass_index: int,
+        transform_ids: typing.Sequence[str],
+    ) -> ConfigV2ProjectDraft:
+        return self.config_v2_editing_service.set_pass_transforms(
+            draft,
+            pass_index=pass_index,
+            transform_ids=transform_ids,
+        )
+
     def set_config_v2_routing_override(
         self,
         draft: ConfigV2ProjectDraft,
@@ -1051,6 +1064,13 @@ class D810Manager:
             require=require,
             deny=deny,
         )
+
+    def replace_config_v2_document(
+        self,
+        draft: ConfigV2ProjectDraft,
+        document: typing.Mapping[str, object],
+    ) -> ConfigV2ProjectDraft:
+        return self.config_v2_editing_service.replace_document(draft, document)
 
     def materialize_recipe_as_config_v2(
         self,
