@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import py_compile
 import sys
 from pathlib import Path
 
@@ -258,6 +259,56 @@ def test_reload_package_defers_new_consumers_until_dependencies_are_reloaded(
         "RESULT = PassContractEvidencePublished\n",
     )
     importlib.invalidate_caches()
+
+    try:
+        reload_package(package)
+
+        consumer = importlib.import_module(f"{package_name}.consumer")
+        dependency = importlib.import_module(f"{package_name}.dependency")
+        assert consumer.RESULT == 42
+        assert dependency.EXISTING == 2
+        assert "Error while loading extension" not in capsys.readouterr().err
+    finally:
+        for module_name in tuple(sys.modules):
+            if module_name == package_name or module_name.startswith(
+                f"{package_name}."
+            ):
+                sys.modules.pop(module_name, None)
+
+
+def test_reload_package_rejects_unchecked_bytecode_stale_against_source(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    """Hot reload must not execute unchecked bytecode for older source."""
+    package_name = "d810_reload_stale_pyc_probe"
+    source_root = tmp_path / "source"
+    package_root = source_root / package_name
+    dependency_path = package_root / "dependency.py"
+
+    _write_module(package_root / "__init__.py", "")
+    _write_module(dependency_path, "EXISTING = 1\n")
+    py_compile.compile(
+        str(dependency_path),
+        doraise=True,
+        invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH,
+    )
+    _write_module(
+        dependency_path,
+        "EXISTING = 2\nPassContractEvidencePublished = 42\n",
+    )
+    _write_module(
+        package_root / "consumer.py",
+        f"from {package_name}.dependency import PassContractEvidencePublished\n"
+        "RESULT = PassContractEvidencePublished\n",
+    )
+
+    monkeypatch.syspath_prepend(str(source_root))
+    package = importlib.import_module(package_name)
+    dependency = importlib.import_module(f"{package_name}.dependency")
+    assert dependency.EXISTING == 1
+    assert not hasattr(dependency, "PassContractEvidencePublished")
 
     try:
         reload_package(package)
