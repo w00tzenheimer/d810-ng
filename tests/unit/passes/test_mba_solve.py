@@ -29,7 +29,7 @@ class TestOptions(unittest.TestCase):
         max_leaves, require_proof, maturities = parse_mba_solve_options(_config())
         self.assertEqual(max_leaves, DEFAULT_MAX_LEAVES)
         self.assertTrue(require_proof)
-        self.assertEqual(maturities, ("CALL_MODELED", "GLOBAL_ANALYZED"))
+        self.assertEqual(maturities, ("GLOBAL_OPTIMIZED",))
 
     def test_default_leaf_cap_is_8_not_16(self):
         # Signature cost is 2**n: 256 evaluations at 8, 65,536 at 16.
@@ -122,7 +122,7 @@ class TestMaturitiesOption(unittest.TestCase):
     instance the manager built.
     """
 
-    def test_defaults_to_calls_and_glbopt1(self):
+    def test_defaults_to_glbopt2_only(self):
         pass_ = build_mba_solve_pass(
             PipelineConfig(
                 pass_id=MBA_SOLVE_PASS_ID,
@@ -130,7 +130,7 @@ class TestMaturitiesOption(unittest.TestCase):
                 options={},
             )
         )
-        self.assertEqual(pass_.maturities, ("CALL_MODELED", "GLOBAL_ANALYZED"))
+        self.assertEqual(pass_.maturities, ("GLOBAL_OPTIMIZED",))
 
     def test_accepts_an_explicit_single_maturity(self):
         pass_ = build_mba_solve_pass(
