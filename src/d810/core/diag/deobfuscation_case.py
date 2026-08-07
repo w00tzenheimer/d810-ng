@@ -230,6 +230,26 @@ def _first_plan_anchor(rows: list[tuple[object, ...]], fallback_ea: int) -> int:
     return int(fallback_ea)
 
 
+def _pass_contract_anchors(value: object) -> tuple[int, ...]:
+    """Decode the typed, ordered native-anchor sequence retained by the sink."""
+    try:
+        decoded = json.loads(str(value))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("pass contract evidence anchors are invalid JSON") from exc
+    if not isinstance(decoded, list) or not decoded:
+        raise ValueError("pass contract evidence requires native anchors")
+    if any(isinstance(anchor, bool) or not isinstance(anchor, int) for anchor in decoded):
+        raise ValueError("pass contract evidence anchors must be integers")
+    anchors = tuple(int(anchor) for anchor in decoded)
+    if any(anchor < 0 for anchor in anchors):
+        raise ValueError("pass contract evidence anchors must be non-negative")
+    if anchors != tuple(sorted(set(anchors))):
+        raise ValueError(
+            "pass contract evidence anchors must be ordered and unique"
+        )
+    return anchors
+
+
 def project_closed_case_rows(
     conn: sqlite3.Connection,
     session_id: str,
@@ -323,6 +343,54 @@ def project_closed_case_rows(
                 confidence=1.0 if accepted else 0.0,
             ),
         )
+
+    for row in conn.execute(
+        "SELECT p.event_id,p.pass_id,p.evidence_token,p.evidence_generation,"
+        "p.maturity,p.summary,p.native_anchor_eas_json "
+        "FROM pass_contract_evidence_publications p "
+        "JOIN lifecycle_events le ON le.event_id=p.event_id "
+        "WHERE le.session_id=? ORDER BY le.event_seq,p.event_id",
+        (session_id,),
+    ):
+        (
+            event_id,
+            pass_id,
+            evidence_token,
+            evidence_generation,
+            maturity,
+            summary,
+            anchors_json,
+        ) = row
+        pass_id = _require_text(pass_id, "pass contract evidence pass_id")
+        evidence_token = _require_text(
+            evidence_token,
+            "pass contract evidence token",
+        )
+        summary = _require_text(summary, "pass contract evidence summary")
+        anchors = _pass_contract_anchors(anchors_json)
+        for anchor_index, anchor in enumerate(anchors):
+            add(
+                event_id=int(event_id),
+                tie=int(anchor_index),
+                event_kind="pass_contract_evidence",
+                finding=_stable_finding(
+                    finding_id=(
+                        f"pass-contract-evidence:{int(event_id)}:{int(anchor_index)}"
+                    ),
+                    event_id=int(event_id),
+                    kind=CaseFindingKind.PORTABLE_EVIDENCE,
+                    level=CaseEvidenceLevel.C1_DISCOVERY,
+                    summary=summary,
+                    detail={
+                        "evidence_generation": int(evidence_generation),
+                        "evidence_token": evidence_token,
+                        "maturity": maturity,
+                        "pass_id": pass_id,
+                    },
+                    native_ea=anchor,
+                    confidence=1.0,
+                ),
+            )
 
     for row in conn.execute(
         "SELECT i.event_id,i.decision_kind,i.consumer,i.identity_role,"
@@ -769,6 +837,7 @@ def _finding_level(finding: CaseFinding) -> CaseEvidenceLevel:
         "environment": CaseEvidenceLevel.C0_ENVIRONMENT,
         "evidence-generation": CaseEvidenceLevel.C1_DISCOVERY,
         "identity-decision": CaseEvidenceLevel.C1_DISCOVERY,
+        "pass-contract-evidence": CaseEvidenceLevel.C1_DISCOVERY,
         "normalization-intent": CaseEvidenceLevel.C2_NORMALIZATION,
         "mutation-plan": CaseEvidenceLevel.C3_CANONICAL_PLAN,
         "validation": CaseEvidenceLevel.C4_STAGED_PROOF,

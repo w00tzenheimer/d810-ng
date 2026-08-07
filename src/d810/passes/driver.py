@@ -19,6 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 
 from d810.core.typing import Protocol, runtime_checkable
+from d810.capabilities.pass_contract_evidence import PassContractEvidenceObserver
 from d810.capabilities.resolver import CapabilitySet
 from d810.passes.contract_vocabulary import (
     contract_name_in,
@@ -318,7 +319,7 @@ def validate_contract_fact_outputs(spec: PassSpec, result) -> None:
 
 def validate_contract_evidence_outputs(spec: PassSpec, result) -> None:
     """Fail when a native-contract pass publishes undeclared evidence."""
-    if not result.evidence_outputs:
+    if not result.evidence_outputs and not result.evidence_publications:
         return
 
     declared = spec.contract.outputs.evidence
@@ -326,7 +327,7 @@ def validate_contract_evidence_outputs(spec: PassSpec, result) -> None:
     undeclared = tuple(
         sorted(
             name
-            for name in result.evidence_outputs
+            for name in (*result.evidence_outputs, *result.evidence_publications)
             if resolve_contract_name(str(name)) not in declared_names
         )
     )
@@ -340,6 +341,27 @@ def validate_contract_evidence_outputs(spec: PassSpec, result) -> None:
                     namespace="outputs.evidence",
                     undeclared=undeclared,
                     available=tuple(sorted(declared)),
+                ),
+            ),
+        )
+
+    publication_names = {
+        resolve_contract_name(str(name)) for name in result.evidence_publications
+    }
+    output_names = {
+        resolve_contract_name(str(name)) for name in result.evidence_outputs
+    }
+    unpaired = tuple(sorted(publication_names.difference(output_names)))
+    if unpaired:
+        raise PassContractError(
+            f"pass {spec.pass_id!r} published evidence metadata without evidence "
+            f"output {list(unpaired)}",
+            diagnostics=(
+                PassContractDiagnostic(
+                    pass_id=spec.pass_id,
+                    namespace="outputs.evidence_publications",
+                    undeclared=unpaired,
+                    available=tuple(sorted(result.evidence_outputs)),
                 ),
             ),
         )
@@ -384,8 +406,27 @@ def publish_contract_evidence_outputs(
     _require_contract_methods(
         ctx.facts, pass_id=spec.pass_id, method_names=("put_evidence",)
     )
+    observer = ctx.capabilities.optional(PassContractEvidenceObserver)
+    publications = {
+        resolve_contract_name(str(token)): publication
+        for token, publication in result.evidence_publications.items()
+    }
     for name, value in result.evidence_outputs.items():
         ctx.facts.put_evidence(str(name), value)
+        publication = publications.get(resolve_contract_name(str(name)))
+        if publication is None or observer is None:
+            continue
+        try:
+            observer.observe_contract_evidence(
+                pass_id=spec.pass_id,
+                evidence_token=resolve_contract_name(str(name)),
+                function_ea=int(ctx.source.func_ea),
+                producer_stage_id=ctx.maturity.value,
+                publication=publication,
+            )
+        except Exception:
+            # Observability is additive: a sink failure cannot alter pass execution.
+            continue
 
 
 def validate_backend_route(spec: PassSpec, result) -> None:

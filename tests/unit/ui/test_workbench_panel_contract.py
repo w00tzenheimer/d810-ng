@@ -79,22 +79,22 @@ def test_case_panel_renders_the_pure_workflow_projection() -> None:
     assert "self.case_detail.setText(view.detail)" in render_source
 
 
-def test_successful_fresh_build_opens_canvas_through_existing_recipe_adapter() -> None:
+def test_successful_fresh_build_opens_primary_workspace_through_existing_recipe_adapter() -> None:
     source = _method_source("_run_build_deobfuscator")
 
     assert 'self._run_command("build_deobfuscator", refresh_after=True)' in source
-    assert "_should_open_build_canvas(snapshot, result, current_snapshot)" in source
+    assert "_should_open_build_workspace(snapshot, result, current_snapshot)" in source
     assert "recipe(snapshot)" in source
-    assert "self._show_build_canvas(recipe_adapter)" in source
-    assert source.index("_should_open_build_canvas") < source.index(
-        "self._show_build_canvas"
+    assert "self._show_build_workspace(recipe_adapter)" in source
+    assert source.index("_should_open_build_workspace") < source.index(
+        "self._show_build_workspace"
     )
 
 
-def test_stale_status_never_opens_build_canvas_even_when_result_is_accepted() -> None:
+def test_stale_status_never_opens_build_workspace_even_when_result_is_accepted() -> None:
     panel_module = importlib.import_module("d810.ui.workbench_panel")
-    should_open = getattr(panel_module, "_should_open_build_canvas", None)
-    assert callable(should_open), "Build canvas gate must be headless-testable"
+    should_open = getattr(panel_module, "_should_open_build_workspace", None)
+    assert callable(should_open), "Build workspace gate must be headless-testable"
     snapshot = SimpleNamespace(
         generation=7,
         function=SimpleNamespace(ea=0x401000, fingerprint="sha256:build"),
@@ -115,31 +115,34 @@ def test_stale_status_never_opens_build_canvas_even_when_result_is_accepted() ->
     assert should_open(snapshot, stale_result, current_snapshot) is False
 
 
-def test_build_canvas_reuses_one_panel_and_recipe_composer_save_callback() -> None:
+def test_build_workspace_reuses_one_panel_and_preserves_workbench_authority() -> None:
     panel_source = PANEL.read_text(encoding="utf-8")
-    source = _method_source("_show_build_canvas")
+    source = _method_source("_show_build_workspace")
 
-    assert "self._build_canvas_panel" in panel_source
-    assert "WorkbenchCanvasPanel" in source
+    assert "self._build_workspace_panel" in panel_source
+    assert "BuildDeobfuscatorPanel" in source
     assert "self._snapshot" in source
+    assert "refresh_build=self._run_build_deobfuscator" in source
+    assert "deobfuscate_function=self._run_deobfuscate_function" in source
+    assert "open_diagnostics=self._run_diagnostics" in source
     assert "refresh_workbench=self.refresh" in source
-    assert "_canvas_panel_can_reuse(panel)" in source
+    assert "_workspace_panel_can_reuse(panel)" in source
     assert "set_session" in source
     assert "panel.show()" in source
 
 
-def test_closed_build_canvas_is_replaced_instead_of_reused() -> None:
+def test_closed_build_workspace_is_replaced_instead_of_reused() -> None:
     panel_module = importlib.import_module("d810.ui.workbench_panel")
-    can_reuse = getattr(panel_module, "_canvas_panel_can_reuse", None)
-    assert callable(can_reuse), "canvas reuse decision must be headless-testable"
+    can_reuse = getattr(panel_module, "_workspace_panel_can_reuse", None)
+    assert callable(can_reuse), "workspace reuse decision must be headless-testable"
 
     assert can_reuse(None) is False
     assert can_reuse(SimpleNamespace(closed=True)) is False
     assert can_reuse(SimpleNamespace(closed=False)) is True
 
 
-def test_build_canvas_injects_existing_diagnostics_explorer_record_path() -> None:
-    build_source = _method_source("_show_build_canvas")
+def test_build_workspace_injects_existing_diagnostics_explorer_record_path() -> None:
+    build_source = _method_source("_show_build_workspace")
     open_source = _method_source("_open_diagnostic_record")
 
     assert "open_diagnostic_record=self._open_diagnostic_record" in build_source

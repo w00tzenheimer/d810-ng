@@ -15,6 +15,7 @@ from d810.core.observability_events import (
     LifecycleEventObserved,
     MutationPlanObserved,
     MutationReceiptObserved,
+    PassContractEvidencePublished,
     SemanticOutputVerifiedObserved,
     SemanticFragmentRouteOracleComparedObserved,
 )
@@ -439,6 +440,44 @@ def persist_semantic_output_verified(
     return event_id
 
 
+def persist_pass_contract_evidence(
+    conn: sqlite3.Connection,
+    event: PassContractEvidencePublished,
+) -> int:
+    """Persist an accepted pass output without serializing its live value."""
+    event_id = persist_lifecycle_event(
+        conn,
+        LifecycleEventObserved(
+            session_id=event.session_id,
+            func_ea=event.func_ea,
+            event_kind="pass_contract_evidence",
+            provider=f"d810.pass:{event.pass_id}",
+            maturity=event.maturity,
+            phase="contract_evidence",
+            evidence_generation=event.evidence_generation,
+            correlation_id=event.evidence_token,
+            summary=event.summary,
+            timestamp=event.timestamp,
+        ),
+        snapshot_id=None,
+    )
+    conn.execute(
+        "INSERT INTO pass_contract_evidence_publications "
+        "(event_id,pass_id,evidence_token,evidence_generation,maturity,summary,"
+        "native_anchor_eas_json) VALUES (?,?,?,?,?,?,?)",
+        (
+            event_id,
+            event.pass_id,
+            event.evidence_token,
+            int(event.evidence_generation),
+            event.maturity,
+            event.summary,
+            json.dumps(list(event.native_anchor_eas), separators=(",", ":")),
+        ),
+    )
+    return event_id
+
+
 __all__ = [
     "persist_diagnostic_session",
     "persist_diagnostic_session_transition",
@@ -446,6 +485,7 @@ __all__ = [
     "persist_frontend_normalization_plan_intent",
     "persist_identity_decision",
     "persist_lifecycle_event",
+    "persist_pass_contract_evidence",
     "persist_semantic_output_verified",
 ]
 

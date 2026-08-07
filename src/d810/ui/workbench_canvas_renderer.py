@@ -6,6 +6,13 @@ import dataclasses
 
 from d810.core import typing
 from d810.qt_shim import QT_GRAPHICS_AVAILABLE, QtGui, QtWidgets
+from d810.ui.workbench_canvas_graphics import (
+    ReadOnlyCanvasConnectionItem,
+    ReadOnlyCanvasNodeItem,
+    ReadOnlyDataflowScene,
+    active_theme_color,
+)
+from d810.ui.workbench_canvas_graphics_logic import contract_bezier, edge_presentation
 from d810.ui.workbench_canvas_models import (
     CanvasEdge,
     CanvasMaturity,
@@ -22,12 +29,35 @@ _PORT_COLORS = {
     "fact": "#54a24b",
     "pipeline": "#9d755d",
 }
+_NODE_FILLS = {
+    "blocked": "#5b3030",
+    "carried": "#303f5b",
+    "disabled": "#3b3b3b",
+    "evidence_produced": "#6b5423",
+}
 _STAGE_WIDTH = 980.0
 _NODE_WIDTH = 210.0
 _NODE_GAP = 18.0
+_NODE_ROW_GAP = 14.0
+_NODES_PER_ROW = 4
+_NODE_MIN_HEIGHT = 88.0
+_NODE_PORT_ROW_HEIGHT = 12.0
 _STAGE_GAP = 14.0
 _SUBGRAPH_GAP = 10.0
 _SUBGRAPH_HEADER_HEIGHT = 24.0
+
+
+def _node_fill(state: str) -> str:
+    """Return the compact semantic color for a projected node state."""
+
+    return _NODE_FILLS.get(state, "#294f3b")
+
+
+def _node_height(node: CanvasNode) -> float:
+    """Reserve room for the fixed card header and each typed port marker."""
+
+    port_count = max(len(node.inputs), len(node.outputs))
+    return _NODE_MIN_HEIGHT + _NODE_PORT_ROW_HEIGHT * max(0, port_count - 1)
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -130,6 +160,7 @@ def _layout_projection(
         nodes_by_stage.setdefault(node.maturity.stage_id, []).append(node)
 
     port_positions: dict[tuple[str, str, str], tuple[float, float]] = {}
+    node_geometries_by_id: dict[str, _NodeGeometry] = {}
     stages: list[_StageGeometry] = []
     stage_y = 8.0
     for stage in sorted(
@@ -148,41 +179,48 @@ def _layout_projection(
                 stage,
                 stage_nodes,
             ):
-                node_height = max(
-                    58.0 + 12.0 * max(len(node.inputs), len(node.outputs))
-                    for node in subgraph_nodes
-                )
                 subgraph_x = 14.0
                 subgraph_width = max(
                     _STAGE_WIDTH - 20.0,
                     20.0
-                    + len(subgraph_nodes) * _NODE_WIDTH
-                    + max(0, len(subgraph_nodes) - 1) * _NODE_GAP,
+                    + min(_NODES_PER_ROW, len(subgraph_nodes)) * _NODE_WIDTH
+                    + max(0, min(_NODES_PER_ROW, len(subgraph_nodes)) - 1)
+                    * _NODE_GAP,
                 )
-                subgraph_height = _SUBGRAPH_HEADER_HEIGHT + node_height + 14.0
                 group_nodes: list[_NodeGeometry] = []
-                for column, node in enumerate(subgraph_nodes):
-                    node_x = subgraph_x + 10.0 + column * (_NODE_WIDTH + _NODE_GAP)
-                    node_y = subgraph_y + _SUBGRAPH_HEADER_HEIGHT
-                    node_geometry = _NodeGeometry(
-                        node=node,
-                        x=node_x,
-                        y=node_y,
-                        width=_NODE_WIDTH,
-                        height=node_height,
-                    )
-                    group_nodes.append(node_geometry)
-                    node_geometries.append(node_geometry)
-                    for index, port in enumerate(node.inputs):
-                        port_positions[(node.node_id, port.port_id, "input")] = (
-                            node_x,
-                            node_y + 34.0 + index * 12.0,
+                row_y = subgraph_y + _SUBGRAPH_HEADER_HEIGHT
+                for row_start in range(0, len(subgraph_nodes), _NODES_PER_ROW):
+                    row_nodes = subgraph_nodes[row_start : row_start + _NODES_PER_ROW]
+                    row_height = max(_node_height(node) for node in row_nodes)
+                    for column, node in enumerate(row_nodes):
+                        node_x = subgraph_x + 10.0 + column * (_NODE_WIDTH + _NODE_GAP)
+                        node_geometry = _NodeGeometry(
+                            node=node,
+                            x=node_x,
+                            y=row_y,
+                            width=_NODE_WIDTH,
+                            height=row_height,
                         )
-                    for index, port in enumerate(node.outputs):
-                        port_positions[(node.node_id, port.port_id, "output")] = (
-                            node_x + _NODE_WIDTH,
-                            node_y + 34.0 + index * 12.0,
-                        )
+                        group_nodes.append(node_geometry)
+                        node_geometries.append(node_geometry)
+                        node_geometries_by_id[node.node_id] = node_geometry
+                        for index, port in enumerate(node.inputs):
+                            port_positions[(node.node_id, port.port_id, "input")] = (
+                                node_x,
+                                row_y + 78.0 + index * _NODE_PORT_ROW_HEIGHT,
+                            )
+                        for index, port in enumerate(node.outputs):
+                            port_positions[(node.node_id, port.port_id, "output")] = (
+                                node_x + _NODE_WIDTH,
+                                row_y + 78.0 + index * _NODE_PORT_ROW_HEIGHT,
+                            )
+                    row_y += row_height + _NODE_ROW_GAP
+                subgraph_height = (
+                    row_y
+                    - subgraph_y
+                    - _NODE_ROW_GAP
+                    + 14.0
+                )
                 subgraph_geometries.append(
                     _SubgraphGeometry(
                         subgraph=subgraph,
@@ -213,10 +251,31 @@ def _layout_projection(
 
     edges: list[_EdgeGeometry] = []
     for edge in projection.edges:
-        source = port_positions.get(
-            (edge.source_node_id, edge.source_port_id, "output")
-        )
+        presentation = edge_presentation(edge.relation)
+        source = port_positions.get((edge.source_node_id, edge.source_port_id, "output"))
         target = port_positions.get((edge.target_node_id, edge.target_port_id, "input"))
+        if not presentation.uses_ports:
+            source_node = node_geometries_by_id.get(edge.source_node_id)
+            target_node = node_geometries_by_id.get(edge.target_node_id)
+            if source_node is not None and target_node is not None:
+                if target_node.y > source_node.y:
+                    source = (
+                        source_node.x + source_node.width / 2.0,
+                        source_node.y + source_node.height,
+                    )
+                    target = (
+                        target_node.x + target_node.width / 2.0,
+                        target_node.y,
+                    )
+                else:
+                    source = (
+                        source_node.x + source_node.width,
+                        source_node.y + source_node.height / 2.0,
+                    )
+                    target = (
+                        target_node.x,
+                        target_node.y + target_node.height / 2.0,
+                    )
         if source is not None and target is not None:
             edges.append(_EdgeGeometry(edge=edge, source=source, target=target))
     return _CanvasLayout(
@@ -232,7 +291,7 @@ if QT_GRAPHICS_AVAILABLE:
         """Paint one compact, stage-ordered workspace from a projection."""
 
         def __init__(self, scene: typing.Any | None = None) -> None:
-            self.scene = scene if scene is not None else QtWidgets.QGraphicsScene()
+            self.scene = scene if scene is not None else ReadOnlyDataflowScene()
             self._collapsed_stages: frozenset[str] = frozenset()
             self._select_node: typing.Callable[[str | None], None] | None = None
             self._add_pass: typing.Callable[[str, str], None] | None = None
@@ -282,11 +341,6 @@ if QT_GRAPHICS_AVAILABLE:
             except AttributeError:
                 return QtWidgets.QGraphicsItem.ItemIsSelectable
 
-        @staticmethod
-        def _port_brush(artifact_type: str) -> typing.Any:
-            color = _PORT_COLORS.get(artifact_type, "#bab0ac")
-            return QtGui.QBrush(QtGui.QColor(color))
-
         def render(self, projection: MaturityCanvasProjection) -> None:
             """Replace scene items using only the supplied immutable projection."""
             self._projection = projection
@@ -298,14 +352,15 @@ if QT_GRAPHICS_AVAILABLE:
                 collapsed = stage_geometry.collapsed
                 header = self.scene.addText(("+ " if collapsed else "- ") + stage.label)
                 header.setPos(12.0, stage_y)
-                header.setDefaultTextColor(QtGui.QColor("#e5e9f0"))
+                header.setDefaultTextColor(active_theme_color("Text"))
+                header.setZValue(2.0)
                 stage_box = self.scene.addRect(
                     stage_geometry.x,
                     stage_y,
                     stage_geometry.width,
                     stage_geometry.height,
-                    QtGui.QPen(QtGui.QColor("#7f8c8d")),
-                    QtGui.QBrush(QtGui.QColor("#20252b")),
+                    QtGui.QPen(active_theme_color("Mid")),
+                    QtGui.QBrush(active_theme_color("Window")),
                 )
                 stage_box.setZValue(-2.0)
                 for subgraph_geometry in stage_geometry.subgraphs:
@@ -315,8 +370,8 @@ if QT_GRAPHICS_AVAILABLE:
                         subgraph_geometry.y,
                         subgraph_geometry.width,
                         subgraph_geometry.height,
-                        QtGui.QPen(QtGui.QColor("#53606d")),
-                        QtGui.QBrush(QtGui.QColor("#27313d")),
+                        QtGui.QPen(active_theme_color("Midlight")),
+                        QtGui.QBrush(active_theme_color("AlternateBase")),
                     )
                     subgraph_box.setZValue(-1.5)
                     subgraph_label = self.scene.addText(subgraph.label)
@@ -324,75 +379,43 @@ if QT_GRAPHICS_AVAILABLE:
                         subgraph_geometry.x + 8.0,
                         subgraph_geometry.y + 3.0,
                     )
-                    subgraph_label.setDefaultTextColor(QtGui.QColor("#c8d3df"))
+                    subgraph_label.setDefaultTextColor(active_theme_color("Text"))
+                    subgraph_label.setZValue(2.0)
                 for node_geometry in stage_geometry.nodes:
                     node = node_geometry.node
-                    fill = {
-                        "blocked": "#5b3030",
-                        "carried": "#303f5b",
-                        "disabled": "#3b3b3b",
-                    }.get(node.state, "#294f3b")
-                    item = self.scene.addRect(
-                        node_geometry.x,
-                        node_geometry.y,
+                    item = ReadOnlyCanvasNodeItem(
+                        node,
                         node_geometry.width,
                         node_geometry.height,
-                        QtGui.QPen(QtGui.QColor("#b8c2cc")),
-                        QtGui.QBrush(QtGui.QColor(fill)),
                     )
-                    item.setData(0, node.node_id)
-                    item.setFlag(self._selectable_flag(), True)
-                    item.setToolTip(node.detail)
-                    label = self.scene.addText(node.label)
-                    label.setParentItem(item)
-                    label.setPos(10.0, 5.0)
-                    label.setDefaultTextColor(QtGui.QColor("#eceff4"))
-                    for port in node.inputs:
-                        position = layout.port_positions[
-                            (node.node_id, port.port_id, "input")
-                        ]
-                        dot = self.scene.addEllipse(
-                            position[0] - 4.0,
-                            position[1] - 4.0,
-                            8.0,
-                            8.0,
-                            QtGui.QPen(QtGui.QColor("#d8dee9")),
-                            self._port_brush(port.artifact_type),
-                        )
-                        dot.setToolTip(f"input {port.artifact_type}: {port.label}")
-                    for port in node.outputs:
-                        position = layout.port_positions[
-                            (node.node_id, port.port_id, "output")
-                        ]
-                        dot = self.scene.addEllipse(
-                            position[0] - 4.0,
-                            position[1] - 4.0,
-                            8.0,
-                            8.0,
-                            QtGui.QPen(QtGui.QColor("#d8dee9")),
-                            self._port_brush(port.artifact_type),
-                        )
-                        dot.setToolTip(f"output {port.artifact_type}: {port.label}")
+                    item.setPos(node_geometry.x, node_geometry.y)
+                    item.setZValue(1.0)
+                    self.scene.addItem(item)
 
             for edge_geometry in layout.edges:
                 edge = edge_geometry.edge
-                line = self.scene.addLine(
-                    edge_geometry.source[0],
-                    edge_geometry.source[1],
-                    edge_geometry.target[0],
-                    edge_geometry.target[1],
-                    QtGui.QPen(QtGui.QColor(_PORT_COLORS.get(edge.kind, "#bab0ac"))),
+                connection = ReadOnlyCanvasConnectionItem(
+                    edge,
+                    contract_bezier(
+                        source=edge_geometry.source,
+                        target=edge_geometry.target,
+                    ),
                 )
-                line.setZValue(-1.0)
-                line.setToolTip(edge.kind)
-            bounds = self.scene.itemsBoundingRect()
-            self.scene.setSceneRect(bounds.adjusted(-8.0, -8.0, 8.0, 8.0))
+                self.scene.addItem(connection)
+            if layout.stages:
+                right = max(stage.x + stage.width for stage in layout.stages) + 24.0
+                bottom = max(stage.y + stage.height for stage in layout.stages) + 24.0
+                self.scene.setSceneRect(0.0, 0.0, right, bottom)
+            else:
+                self.scene.setSceneRect(0.0, 0.0, 1.0, 1.0)
 
         def _selection_changed(self) -> None:
             if self._select_node is None:
                 return
             selected = self.scene.selectedItems()
             node_id = selected[0].data(0) if selected else None
+            if not isinstance(node_id, str):
+                node_id = None
             self._select_node(str(node_id) if node_id else None)
 
 else:

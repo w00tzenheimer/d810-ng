@@ -13,12 +13,14 @@ from d810.core.diag.lifecycle import (
     persist_diagnostic_session_transition,
     persist_frontend_normalization_plan_intent,
     persist_lifecycle_event,
+    persist_pass_contract_evidence,
     persist_semantic_output_verified,
 )
 from d810.core.observability_events import (
     DiagnosticSessionObserved,
     FrontendNormalizationPlanIntentObserved,
     LifecycleEventObserved,
+    PassContractEvidencePublished,
     SemanticOutputVerifiedObserved,
 )
 
@@ -261,6 +263,22 @@ def _semantic_output(conn, *, session_id: str = "session-1") -> int:
     )
 
 
+def _pass_contract_evidence(conn, *, session_id: str = "session-1") -> int:
+    return persist_pass_contract_evidence(
+        conn,
+        PassContractEvidencePublished(
+            session_id=session_id,
+            func_ea=FUNC_EA,
+            evidence_generation=3,
+            maturity="ir.canonical",
+            pass_id="resolve-native-indirect-transfers",
+            evidence_token="ir.branch_target",
+            native_anchor_eas=(0x180001008, 0x180001020),
+            summary="Two native indirect transfers were recovered.",
+        ),
+    )
+
+
 def _closed_case(conn, session_id: str) -> tuple:
     return conn.execute(
         "SELECT verdict_level, first_blocked_obligation, semantic_witness "
@@ -304,6 +322,41 @@ def test_terminal_session_without_typed_evidence_is_c0(conn) -> None:
         "FROM deobfuscation_case_findings WHERE case_id=?",
         (case_id,),
     ).fetchone() == ("observation", "c0_environment", FUNC_EA, 2)
+
+
+def test_projects_anchored_pass_contract_evidence_with_exact_producer_provenance(conn) -> None:
+    _active(conn)
+    event_id = _pass_contract_evidence(conn)
+    _finish(conn)
+
+    case_id = materialize_closed_deobfuscation_case(conn, "session-1")
+
+    assert conn.execute(
+        "SELECT finding_id,finding_kind,evidence_level,native_anchor_ea_i64,detail "
+        "FROM deobfuscation_case_findings WHERE case_id=? ORDER BY finding_index",
+        (case_id,),
+    ).fetchall() == [
+        (
+            f"pass-contract-evidence:{event_id}:0",
+            "portable_evidence",
+            "c1_discovery",
+            0x180001008,
+            (
+                '{"evidence_generation":3,"evidence_token":"ir.branch_target",'
+                '"maturity":"ir.canonical","pass_id":"resolve-native-indirect-transfers"}'
+            ),
+        ),
+        (
+            f"pass-contract-evidence:{event_id}:1",
+            "portable_evidence",
+            "c1_discovery",
+            0x180001020,
+            (
+                '{"evidence_generation":3,"evidence_token":"ir.branch_target",'
+                '"maturity":"ir.canonical","pass_id":"resolve-native-indirect-transfers"}'
+            ),
+        ),
+    ]
 
 
 def test_rejected_receipt_is_a_c5_blocker_and_materialization_is_idempotent(conn) -> None:

@@ -12,9 +12,9 @@ from __future__ import annotations
 from d810._vendor.peewee import SqliteDatabase
 from d810.core.diag.models import DiagnosticSchemaVersion, MODELS
 
-# LREA portable-CFG integration consumed schema v9.  The closed, versioned
-# deobfuscation-case producer is the next disposable hard cut.
-DIAGNOSTIC_SCHEMA_VERSION = 10
+# The closed-case producer consumed schema v10. Pass-contract output receipts
+# add one typed table and therefore require the next disposable hard cut.
+DIAGNOSTIC_SCHEMA_VERSION = 11
 
 # Recovered-CFG tables were historically named ``dag_*``.  The modeled
 # schema now owns ``state_cfg_*`` tables; this mapping is retained for the

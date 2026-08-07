@@ -32,7 +32,7 @@ from d810.ui.workbench_workflow_logic import recommended_attack_transition
 logger = getLogger("D810.ui")
 
 
-def _should_open_build_canvas(
+def _should_open_build_workspace(
     snapshot: typing.Any,
     result: WorkbenchCommandResult | None,
     current_snapshot: typing.Any,
@@ -50,8 +50,8 @@ def _should_open_build_canvas(
     )
 
 
-def _canvas_panel_can_reuse(panel: typing.Any) -> bool:
-    """Return whether an existing native canvas still owns a live session."""
+def _workspace_panel_can_reuse(panel: typing.Any) -> bool:
+    """Return whether an existing primary workspace still owns a live session."""
     return panel is not None and not bool(getattr(panel, "closed", True))
 
 
@@ -97,7 +97,7 @@ if IDA_AVAILABLE:
             self._command_adapter: typing.Any = None
             self._comparison_dialog: typing.Any = None
             self._recipe_panel: typing.Any = None
-            self._build_canvas_panel: typing.Any = None
+            self._build_workspace_panel: typing.Any = None
             self._config_v2_editor: typing.Any = None
             self._diagnostics_panel: typing.Any = None
             self._case_running_command: str | None = None
@@ -281,9 +281,9 @@ if IDA_AVAILABLE:
             if self._recipe_panel is not None:
                 self._recipe_panel.close()
                 self._recipe_panel = None
-            if self._build_canvas_panel is not None:
-                self._build_canvas_panel.close()
-                self._build_canvas_panel = None
+            if self._build_workspace_panel is not None:
+                self._build_workspace_panel.close()
+                self._build_workspace_panel = None
             if self._config_v2_editor is not None:
                 self._config_v2_editor.close()
                 self._config_v2_editor = None
@@ -406,7 +406,7 @@ if IDA_AVAILABLE:
             self._case_result = result
             self._render_case_workflow()
             current_snapshot = self._snapshot
-            if not _should_open_build_canvas(snapshot, result, current_snapshot):
+            if not _should_open_build_workspace(snapshot, result, current_snapshot):
                 return
             snapshot = current_snapshot
             adapter = self._command_adapter
@@ -416,10 +416,10 @@ if IDA_AVAILABLE:
             try:
                 recipe_adapter = recipe(snapshot)
             except Exception as exc:
-                logger.warning("Maturity Canvas failed: %s", exc)
-                self.detail.setPlainText(f"Maturity Canvas failed: {exc}")
+                logger.warning("Build Deobfuscator workspace failed: %s", exc)
+                self.detail.setPlainText(f"Build Deobfuscator workspace failed: {exc}")
                 return
-            self._show_build_canvas(recipe_adapter)
+            self._show_build_workspace(recipe_adapter)
 
         def _run_deobfuscate_function(self, checked: bool = False) -> None:
             del checked
@@ -504,21 +504,24 @@ if IDA_AVAILABLE:
             self._recipe_panel = panel
             panel.show()
 
-        def _show_build_canvas(self, adapter: typing.Any) -> None:
-            from d810.ui.workbench_canvas_panel import WorkbenchCanvasPanel
+        def _show_build_workspace(self, adapter: typing.Any) -> None:
+            from d810.ui.workbench_build_panel import BuildDeobfuscatorPanel
 
             snapshot = self._snapshot
             if snapshot is None:
                 return
-            panel = self._build_canvas_panel
-            if not _canvas_panel_can_reuse(panel):
-                panel = WorkbenchCanvasPanel(
+            panel = self._build_workspace_panel
+            if not _workspace_panel_can_reuse(panel):
+                panel = BuildDeobfuscatorPanel(
                     adapter,
                     snapshot,
+                    refresh_build=self._run_build_deobfuscator,
+                    deobfuscate_function=self._run_deobfuscate_function,
+                    open_diagnostics=self._run_diagnostics,
                     refresh_workbench=self.refresh,
                     open_diagnostic_record=self._open_diagnostic_record,
                 )
-                self._build_canvas_panel = panel
+                self._build_workspace_panel = panel
             else:
                 panel.set_session(adapter, snapshot)
             panel.show()
