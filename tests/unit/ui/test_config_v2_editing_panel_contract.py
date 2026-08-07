@@ -38,6 +38,19 @@ def _source(name: str) -> str:
     return ast.unparse(_method(name))
 
 
+def _string_arguments(name: str, call_name: str) -> list[str]:
+    values: list[str] = []
+    for node in ast.walk(_method(name)):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        if node.func.attr != call_name or not node.args:
+            continue
+        first = node.args[0]
+        if isinstance(first, ast.Constant) and isinstance(first.value, str):
+            values.append(first.value)
+    return values
+
+
 def test_panel_projects_one_draft_into_a_stacked_builder_and_inspector() -> None:
     init_source = _source("__init__")
     create_source = _source("OnCreate")
@@ -125,12 +138,12 @@ def test_panel_remains_a_thin_adapter_and_explicit_save_surface() -> None:
         *(
             _calls(_method(name))
             for name in (
-                "_set_description",
+                "_edit_description",
                 "_add_pass",
                 "_remove_pass",
                 "_move_pass",
-                "_edit_routing",
-                "_reset",
+                "_apply_routing_rows",
+                "_discard_unsaved",
                 "_validate",
                 "_save_as",
                 "_save",
@@ -142,3 +155,115 @@ def test_panel_remains_a_thin_adapter_and_explicit_save_surface() -> None:
     assert "d810.manager.config_v2_editing" not in imports
     assert "d810.core.project_config_persistence" not in imports
     assert {"retarget", "save", "validate"}.issubset(calls)
+
+
+def test_builder_is_a_compact_ordered_active_pass_editor() -> None:
+    source = PANEL.read_text(encoding="utf-8")
+    init_source = _source("__init__")
+    create_source = _source("OnCreate")
+    description_source = _source("_edit_description")
+    add_source = _source("_add_pass")
+
+    assert "self.pipeline_list" in init_source
+    assert "row.index + 1" in _source("_render")
+    for label in (
+        "Add pass...",
+        "Remove",
+        "Move up",
+        "Move down",
+        "Open Inspector",
+        "Edit description...",
+    ):
+        assert label in source
+    assert "getMultiLineText" in description_source
+    assert "set_description" in description_source
+    assert "QLineEdit" in add_source
+    assert "self._catalog" in add_source
+    assert "manifest_list" not in create_source
+    assert "complete_document" not in create_source
+    assert "unsupported_document" not in create_source
+    assert "catalog_combo" not in init_source
+    assert "description_edit" not in init_source
+
+
+def test_routing_group_exposes_structured_registered_family_controls() -> None:
+    source = PANEL.read_text(encoding="utf-8")
+    controls_source = _source("_build_routing_controls")
+    apply_source = _source("_apply_routing_rows")
+    render_source = _source("_render_routing")
+
+    assert "registered_families" in source
+    assert "setCheckable(True)" in controls_source
+    assert "setChecked(False)" in controls_source
+    assert "QDoubleSpinBox" in controls_source
+    assert "Auto" in controls_source
+    assert "Require" in controls_source
+    assert "Prefer" in controls_source
+    assert "Exclude" in controls_source
+    assert "Automatic" in controls_source
+    assert "set_routing_override" in apply_source
+    assert "prefer=prefer" in apply_source
+    assert "require=require" in apply_source
+    assert "deny=deny" in apply_source
+    assert "Auto routing" in render_source
+    assert "Routing override" in render_source
+    assert "routing_view" not in source
+
+
+def test_raw_document_starts_readonly_and_all_edits_use_replace_document() -> None:
+    show_source = _source("_show_raw_document")
+    apply_source = _source("_apply_raw_document")
+
+    assert show_source.count("JsonTreeEditor") >= 2
+    assert show_source.count("editable=False") >= 2
+    assert "Structured document" in show_source
+    assert "Preserved fields" in show_source
+    assert "Edit raw" in show_source
+    assert "Open raw JSON..." in show_source
+    assert (
+        "Only declared config-v2 fields may change; all edits are fully validated before save."
+        in show_source
+    )
+    assert "editable=True" in show_source
+    assert "RawJsonDialog" in show_source
+    assert "on_apply=self._apply_raw_document" in show_source
+    assert "replace_document" in apply_source
+    assert "set_description" not in apply_source
+    assert "set_pass_options" not in apply_source
+
+
+def test_footer_has_only_compact_status_overflow_and_save_controls() -> None:
+    source = PANEL.read_text(encoding="utf-8")
+    footer_source = _source("_build_footer")
+    render_source = _source("_render_footer")
+    overflow = _string_arguments("_build_footer", "addAction")
+
+    assert overflow == [
+        "Validate",
+        "Discard unsaved",
+        "Save as new...",
+        "View raw",
+        "Developer help",
+    ]
+    assert _string_arguments("_build_footer", "QPushButton") == ["Save"]
+    assert "QToolButton()" in footer_source
+    assert "..." in _string_arguments("_build_footer", "setText")
+    assert "Clean" in render_source
+    assert "Unsaved changes" in render_source
+    assert "Ready" in render_source
+    assert "Blocked" in render_source
+    assert "Validate before saving" in render_source
+    assert "QLabel" in _source("__init__")
+    assert "status_detail" not in source
+    assert "Reset draft" not in source
+    assert "Save atomically and reload" not in source
+    assert "QPlainTextEdit" not in _source("__init__")
+
+
+def test_serializer_manifest_is_available_only_from_developer_help() -> None:
+    source = PANEL.read_text(encoding="utf-8")
+    help_source = _source("_show_developer_help")
+
+    assert source.count("Serializer manifest") == 1
+    assert "Serializer manifest" in help_source
+    assert "project_serializer_rows" in help_source
