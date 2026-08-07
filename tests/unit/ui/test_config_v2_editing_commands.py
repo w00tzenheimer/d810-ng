@@ -4,9 +4,59 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+from d810.core.config import ProjectConfiguration
 from d810.manager.config_v2_edit_models import ConfigV2ProjectDraft
+from d810.manager.config_v2_editing import ConfigV2EditingService
+from d810.manager.workbench_recipe_models import PassCatalogEntry
 from d810.ui.config_v2_editing_commands import ConfigV2EditingAdapter
-from d810.ui.config_v2_editing_logic import _routing_view
+from d810.ui.config_v2_editing_logic import (
+    _routing_view,
+    project_config_v2_editor_view,
+)
+
+
+def _task_1_catalog() -> tuple[PassCatalogEntry, ...]:
+    return (
+        PassCatalogEntry(
+            pass_id="constant-simplification",
+            display_name="Constant simplification",
+            contract_json="{}",
+            option_template_json="{}",
+            granularity="function",
+            maturity="MMAT_LOCOPT",
+            backend_route="mutation_backend",
+            safety_policy="default",
+            transform_ids=(),
+            stage_ids=("constant-fold",),
+            configured=True,
+        ),
+        PassCatalogEntry(
+            pass_id="mba-simplify",
+            display_name="MBA simplify",
+            contract_json="{}",
+            option_template_json="{}",
+            granularity="function",
+            maturity="MMAT_LOCOPT",
+            backend_route="mutation_backend",
+            safety_policy="default",
+            transform_ids=("add-xor-1",),
+            stage_ids=("simplify-mba",),
+            configured=True,
+        ),
+        PassCatalogEntry(
+            pass_id="jump-fixer",
+            display_name="Jump fixer",
+            contract_json="{}",
+            option_template_json="{}",
+            granularity="function",
+            maturity="MMAT_GLBOPT1",
+            backend_route="mutation_backend",
+            safety_policy="default",
+            transform_ids=(),
+            stage_ids=("fix-jumps",),
+            configured=True,
+        ),
+    )
 
 
 def test_adapter_delegates_every_edit_to_state_and_revalidates() -> None:
@@ -148,6 +198,34 @@ def test_adapter_clear_routing_override_delegates_once_then_revalidates_once() -
     assert _routing_view(
         json.loads(edited.document_json)["additional_configuration"]
     ).is_auto is True
+
+
+def test_clear_routing_override_projects_as_task_1_auto_routing(tmp_path: Path) -> None:
+    document = json.loads(
+        Path("src/d810/conf/default_instruction_only_config_v2_canary.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    source = tmp_path / "runtime.json"
+    source.write_text(json.dumps(document), encoding="utf-8")
+    service = ConfigV2EditingService()
+    draft = service.create_draft(
+        ProjectConfiguration.from_file(source),
+        destination=tmp_path / "edited.json",
+    )
+    overridden = service.set_routing_override(
+        draft,
+        prefer={"approov": 4.0},
+        require=None,
+        deny=("tigress",),
+    )
+
+    cleared = service.clear_routing_override(overridden)
+    validation = service.validate(cleared)
+    view = project_config_v2_editor_view(cleared, validation, _task_1_catalog())
+
+    assert validation.valid is True
+    assert view.routing.is_auto is True
 
 
 def test_adapter_replace_document_delegates_once_then_revalidates_once() -> None:
