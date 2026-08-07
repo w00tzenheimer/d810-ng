@@ -8,11 +8,14 @@ import pathlib
 from d810.core import typing
 from d810.core.logging import getLogger
 from d810.ui.config_v2_editing_logic import (
+    ConfigV2EditorScreen,
     config_v2_action_states,
     project_config_v2_document,
+    project_config_v2_editor_view,
     project_serializer_rows,
 )
 from d810.ui.project_config_logic import ConfigV2FocusTarget
+from d810.ui.workbench_structured_details_logic import DetailField, DetailSection
 
 logger = getLogger("D810.ui")
 
@@ -27,12 +30,44 @@ except ImportError:
 
 if IDA_AVAILABLE:
     from d810.qt_shim import QtCore, QtWidgets
+    from d810.ui.workbench_structured_details import (
+        JsonTreeEditor,
+        RawJsonDialog,
+        StructuredDetailsView,
+    )
 
     WOPN_NOT_CLOSED_BY_ESC = getattr(
         ida_kernwin,
         "WOPN_NOT_CLOSED_BY_ESC",
         0x100,
     )
+
+    def _user_role() -> typing.Any:
+        try:
+            return QtCore.Qt.ItemDataRole.UserRole
+        except AttributeError:
+            return QtCore.Qt.UserRole
+
+
+    def _checkable_flag() -> typing.Any:
+        try:
+            return QtCore.Qt.ItemFlag.ItemIsUserCheckable
+        except AttributeError:
+            return QtCore.Qt.ItemIsUserCheckable
+
+
+    def _checked_state() -> typing.Any:
+        try:
+            return QtCore.Qt.CheckState.Checked
+        except AttributeError:
+            return QtCore.Qt.Checked
+
+
+    def _unchecked_state() -> typing.Any:
+        try:
+            return QtCore.Qt.CheckState.Unchecked
+        except AttributeError:
+            return QtCore.Qt.Unchecked
 
     class ConfigV2EditingPanel(ida_kernwin.PluginForm):
         """Render typed serializers while leaving policy in the state service."""
@@ -44,17 +79,30 @@ if IDA_AVAILABLE:
             adapter: typing.Any,
             *,
             on_saved: typing.Callable[[], None] | None = None,
+            screen: ConfigV2EditorScreen = ConfigV2EditorScreen.BUILDER,
             focus_target: ConfigV2FocusTarget | None = None,
         ) -> None:
             ida_kernwin.PluginForm.__init__(self)
+            screen = ConfigV2EditorScreen(screen)
             self._adapter = adapter
             self._on_saved = on_saved
+            self._screen = screen
             self._focus_target = focus_target
             self._focus_applied = False
+            self._selected_pass_index: int | None = None
+            self._rendering_inspector = False
             self._manifest = tuple(adapter.manifest())
             self._catalog = tuple(adapter.catalog())
+            self._catalog_by_pass_id = {
+                entry.pass_id: entry for entry in self._catalog
+            }
             self._draft, self._validation = adapter.reset()
             self._view = project_config_v2_document(self._draft)
+            self._editor_view = project_config_v2_editor_view(
+                self._draft,
+                self._validation,
+                self._catalog,
+            )
             self._closed = False
             self.parent: typing.Any = None
 
@@ -113,6 +161,29 @@ if IDA_AVAILABLE:
             self.unsupported_document = QtWidgets.QPlainTextEdit()
             self.unsupported_document.setReadOnly(True)
 
+            self.screen_stack = QtWidgets.QStackedWidget()
+            self.builder_page = QtWidgets.QWidget()
+            self.inspector_page = QtWidgets.QWidget()
+            self.screen_stack.addWidget(self.builder_page)
+            self.screen_stack.addWidget(self.inspector_page)
+
+            self.inspector_details = StructuredDetailsView()
+            self.contract_chip_labels = {
+                name: QtWidgets.QLabel() for name in ("Scope", "Backend", "Safety")
+            }
+            self.transform_picker = QtWidgets.QListWidget()
+            self.no_transforms_label = QtWidgets.QLabel(
+                "No individually selectable transforms."
+            )
+            self.options_tree = JsonTreeEditor()
+            self.options_tree.set_on_value_changed(self._apply_inspector_options)
+            self.contract_tree = JsonTreeEditor()
+            self.raw_options_button = QtWidgets.QToolButton()
+            self.raw_options_button.setText("Edit raw options")
+            self.raw_contract_button = QtWidgets.QToolButton()
+            self.raw_contract_button.setText("View raw contract")
+            self.edit_pipeline_button = QtWidgets.QPushButton("Edit pipeline...")
+
             self.validate_button = QtWidgets.QPushButton("Validate full pipeline")
             self.reset_button = QtWidgets.QPushButton("Reset draft")
             self.reset_button.setToolTip(
@@ -132,6 +203,12 @@ if IDA_AVAILABLE:
             )
             self.pass_buttons["options"].clicked.connect(self._edit_pass_options)
             self.routing_button.clicked.connect(self._edit_routing)
+            self.transform_picker.itemChanged.connect(
+                self._apply_selected_transforms
+            )
+            self.raw_options_button.clicked.connect(self._show_raw_options)
+            self.raw_contract_button.clicked.connect(self._show_raw_contract)
+            self.edit_pipeline_button.clicked.connect(self._show_builder)
             self.validate_button.clicked.connect(self._validate)
             self.reset_button.clicked.connect(self._reset)
             self.save_as_button.clicked.connect(self._save_as)
@@ -141,8 +218,8 @@ if IDA_AVAILABLE:
         def OnCreate(self, form: typing.Any) -> None:
             self.parent = self.FormToPyQtWidget(form)
 
-            identity_group = QtWidgets.QGroupBox("Project", self.parent)
-            identity_layout = QtWidgets.QFormLayout(identity_group)
+            project_identity_group = QtWidgets.QGroupBox("Project", self.parent)
+            identity_layout = QtWidgets.QFormLayout(project_identity_group)
             identity_layout.setContentsMargins(4, 4, 4, 4)
             identity_layout.setSpacing(4)
             identity_layout.addRow("Destination:", self.destination_label)
@@ -205,6 +282,62 @@ if IDA_AVAILABLE:
             outer_splitter.setStretchFactor(1, 1)
             outer_splitter.setSizes([450, 550])
 
+            builder_layout = QtWidgets.QVBoxLayout(self.builder_page)
+            builder_layout.setContentsMargins(0, 0, 0, 0)
+            builder_layout.setSpacing(4)
+            builder_layout.addWidget(outer_splitter, stretch=1)
+
+            inspector_layout = QtWidgets.QVBoxLayout(self.inspector_page)
+            inspector_layout.setContentsMargins(4, 4, 4, 4)
+            inspector_layout.setSpacing(6)
+
+            inspector_identity_group = QtWidgets.QGroupBox("Pass inspector")
+            inspector_identity_layout = QtWidgets.QFormLayout(
+                inspector_identity_group
+            )
+            inspector_identity_layout.setContentsMargins(4, 4, 4, 4)
+            inspector_identity_layout.setSpacing(4)
+            inspector_identity_layout.addRow(self.inspector_details)
+            inspector_layout.addWidget(inspector_identity_group)
+
+            chip_row = QtWidgets.QHBoxLayout()
+            chip_row.setSpacing(4)
+            for name in ("Scope", "Backend", "Safety"):
+                chip_row.addWidget(self.contract_chip_labels[name])
+            chip_row.addStretch(1)
+            inspector_layout.addLayout(chip_row)
+
+            transforms_group = QtWidgets.QGroupBox("Transforms")
+            transforms_layout = QtWidgets.QVBoxLayout(transforms_group)
+            transforms_layout.setContentsMargins(4, 4, 4, 4)
+            transforms_layout.setSpacing(4)
+            transforms_layout.addWidget(self.transform_picker)
+            transforms_layout.addWidget(self.no_transforms_label)
+            inspector_layout.addWidget(transforms_group, stretch=1)
+
+            options_group = QtWidgets.QGroupBox("Options")
+            options_layout = QtWidgets.QVBoxLayout(options_group)
+            options_layout.setContentsMargins(4, 4, 4, 4)
+            options_layout.setSpacing(4)
+            options_layout.addWidget(self.options_tree)
+            options_controls = QtWidgets.QHBoxLayout()
+            options_controls.addStretch(1)
+            options_controls.addWidget(self.raw_options_button)
+            options_layout.addLayout(options_controls)
+            inspector_layout.addWidget(options_group, stretch=1)
+
+            contract_group = QtWidgets.QGroupBox("Pass contract (read-only)")
+            contract_layout = QtWidgets.QVBoxLayout(contract_group)
+            contract_layout.setContentsMargins(4, 4, 4, 4)
+            contract_layout.setSpacing(4)
+            contract_layout.addWidget(self.contract_tree)
+            contract_controls = QtWidgets.QHBoxLayout()
+            contract_controls.addStretch(1)
+            contract_controls.addWidget(self.raw_contract_button)
+            contract_layout.addLayout(contract_controls)
+            inspector_layout.addWidget(contract_group, stretch=1)
+            inspector_layout.addWidget(self.edit_pipeline_button)
+
             action_row = QtWidgets.QHBoxLayout()
             action_row.addWidget(self.routing_button)
             action_row.addWidget(self.reset_button)
@@ -216,8 +349,8 @@ if IDA_AVAILABLE:
             layout = QtWidgets.QVBoxLayout(self.parent)
             layout.setContentsMargins(4, 4, 4, 4)
             layout.setSpacing(6)
-            layout.addWidget(identity_group)
-            layout.addWidget(outer_splitter, stretch=1)
+            layout.addWidget(project_identity_group)
+            layout.addWidget(self.screen_stack, stretch=1)
             layout.addWidget(self.status_detail)
             layout.addLayout(action_row)
             self._render()
@@ -256,6 +389,11 @@ if IDA_AVAILABLE:
 
         def _render(self) -> None:
             self._view = project_config_v2_document(self._draft)
+            self._editor_view = project_config_v2_editor_view(
+                self._draft,
+                self._validation,
+                self._catalog,
+            )
             self.destination_label.setText(str(self._adapter.destination))
             serializer_rows = project_serializer_rows(self._manifest)
             actions = {
@@ -273,18 +411,31 @@ if IDA_AVAILABLE:
                 )
                 self.manifest_list.addItem(item)
 
-            selected = self.pipeline_list.currentRow()
+            selected = self._selected_pass_index
+            if selected is None and self._screen is ConfigV2EditorScreen.BUILDER:
+                selected = self.pipeline_list.currentRow()
             self.pipeline_list.clear()
             for row in self._view.pipeline_rows:
                 item = QtWidgets.QListWidgetItem(f"{row.index + 1}. {row.pass_id}")
                 item.setToolTip(row.config_json)
                 self.pipeline_list.addItem(item)
-            if self._view.pipeline_rows:
-                self.pipeline_list.setCurrentRow(
-                    min(max(selected, 0), len(self._view.pipeline_rows) - 1)
-                )
-
             self._apply_focus_target()
+
+            if self._editor_view.inspectors:
+                if self._selected_pass_index is None and self._screen is ConfigV2EditorScreen.BUILDER:
+                    self._selected_pass_index = min(
+                        max(selected if selected is not None else 0, 0),
+                        len(self._editor_view.inspectors) - 1,
+                    )
+                elif (
+                    self._selected_pass_index is not None
+                    and self._selected_pass_index >= len(self._editor_view.inspectors)
+                ):
+                    self._selected_pass_index = len(self._editor_view.inspectors) - 1
+            else:
+                self._selected_pass_index = None
+            if self._selected_pass_index is not None:
+                self.pipeline_list.setCurrentRow(self._selected_pass_index)
 
             if not self.description_edit.hasFocus():
                 self.description_edit.setPlainText(self._view.description)
@@ -303,6 +454,12 @@ if IDA_AVAILABLE:
             save = actions["save_project"]
             self.save_button.setEnabled(save.enabled)
             self.save_button.setToolTip(save.reason)
+            self._render_inspector()
+            self.screen_stack.setCurrentWidget(
+                self.inspector_page
+                if self._screen is ConfigV2EditorScreen.INSPECTOR
+                else self.builder_page
+            )
 
         def _apply_focus_target(self) -> None:
             """Select one requested pass, or report why focus was not possible."""
@@ -310,29 +467,131 @@ if IDA_AVAILABLE:
             if self._focus_applied or self._focus_target is None:
                 return
             target = self._focus_target
-            if target.pass_id is None:
+            if (
+                not target.unambiguous
+                or target.pass_id is None
+                or target.pass_index is None
+            ):
                 self._set_status(target.message)
                 self._focus_applied = True
                 return
-            matches = [
-                row.index
-                for row in self._view.pipeline_rows
-                if row.pass_id == target.pass_id
-            ]
-            if len(matches) == 1:
-                self.pipeline_list.setCurrentRow(matches[0])
+            if 0 <= target.pass_index < len(self._editor_view.inspectors):
+                inspector = self._editor_view.inspectors[target.pass_index]
+            else:
+                inspector = None
+            if (
+                inspector is not None
+                and inspector.pass_index == target.pass_index
+                and inspector.pass_id == target.pass_id
+            ):
+                self._selected_pass_index = target.pass_index
                 self._set_status(target.message)
             else:
                 self._set_status(
-                    f"{target.message} The pass row was not uniquely present in this draft."
+                    f"{target.message} The exact pass row does not match this draft."
                 )
             self._focus_applied = True
 
-        def _selected_pass_index(self) -> int | None:
+        def _builder_selected_pass_index(self) -> int | None:
             index = self.pipeline_list.currentRow()
             if not 0 <= index < len(self._view.pipeline_rows):
                 return None
+            self._selected_pass_index = index
             return index
+
+        def _current_inspector(self) -> typing.Any | None:
+            index = self._selected_pass_index
+            if index is None or not 0 <= index < len(self._editor_view.inspectors):
+                return None
+            inspector = self._editor_view.inspectors[index]
+            if inspector.pass_index != index:
+                return None
+            return inspector
+
+        def _render_inspector(self) -> None:
+            inspector = self._current_inspector()
+            self._rendering_inspector = True
+            try:
+                self.transform_picker.clear()
+                if inspector is None:
+                    self.inspector_details.set_sections(
+                        (
+                            DetailSection(
+                                "selection",
+                                "Pass",
+                                (DetailField("Pass", "No pass selected"),),
+                            ),
+                        )
+                    )
+                    for label in self.contract_chip_labels.values():
+                        label.setText("")
+                    self.transform_picker.setVisible(False)
+                    self.no_transforms_label.setVisible(True)
+                    self.options_tree.set_json({}, editable=False)
+                    self.contract_tree.set_json({}, editable=False)
+                    self.raw_options_button.setEnabled(False)
+                    self.raw_contract_button.setEnabled(False)
+                    return
+
+                self.inspector_details.set_sections(
+                    (
+                        DetailSection(
+                            "identity",
+                            "Pass",
+                            (
+                                DetailField(
+                                    "Pass",
+                                    f"{inspector.display_name} ({inspector.pass_id})",
+                                ),
+                                DetailField("Purpose", inspector.purpose),
+                                DetailField("Runs during", inspector.runs_during),
+                            ),
+                        ),
+                    )
+                )
+                for name, value in inspector.contract_chips:
+                    self.contract_chip_labels[name].setText(f"{name}: {value}")
+
+                self.transform_picker.setVisible(inspector.transforms_editable)
+                self.no_transforms_label.setVisible(not inspector.transforms_editable)
+                if inspector.transforms_editable:
+                    for row in inspector.selected_transforms:
+                        item = QtWidgets.QListWidgetItem(row.transform_id)
+                        item.setFlags(item.flags() | _checkable_flag())
+                        item.setData(0, _user_role(), row.transform_id)
+                        item.setCheckState(
+                            _checked_state() if row.selected else _unchecked_state()
+                        )
+                        self.transform_picker.addItem(item)
+                else:
+                    self.no_transforms_label.setText(
+                        "No individually selectable transforms."
+                    )
+
+                self.options_tree.set_json(inspector.options, editable=True)
+                self.contract_tree.set_json(inspector.contract, editable=False)
+                self.raw_options_button.setEnabled(True)
+                self.raw_contract_button.setEnabled(True)
+            finally:
+                self._rendering_inspector = False
+
+        def _show_inspector(self, pass_index: int) -> None:
+            index = int(pass_index)
+            if not 0 <= index < len(self._editor_view.inspectors):
+                self._set_status(f"Pass row {index} is not present in this draft.")
+                return
+            inspector = self._editor_view.inspectors[index]
+            if inspector.pass_index != index:
+                self._set_status(f"Pass row {index} does not match this draft.")
+                return
+            self._selected_pass_index = index
+            self._screen = ConfigV2EditorScreen.INSPECTOR
+            self._render()
+
+        def _show_builder(self, checked: bool = False) -> None:
+            del checked
+            self._screen = ConfigV2EditorScreen.BUILDER
+            self._render()
 
         def _set_status(self, message: str) -> None:
             self.status_detail.setPlainText(message)
@@ -346,11 +605,82 @@ if IDA_AVAILABLE:
                 self._draft, self._validation = operation()
             except Exception as exc:
                 logger.warning("Config-v2 edit failed: %s", exc)
+                self._render()
                 self._set_status(f"Edit failed: {exc}")
                 return False
             self._set_status("")
             self._render()
             return True
+
+        def _apply_selected_transforms(
+            self,
+            changed_item: typing.Any = None,
+        ) -> None:
+            del changed_item
+            if self._rendering_inspector:
+                return
+            inspector = self._current_inspector()
+            if inspector is None or not inspector.transforms_editable:
+                self._render()
+                return
+            checked_ids = {
+                str(self.transform_picker.item(index).data(0, _user_role()))
+                for index in range(self.transform_picker.count())
+                if self.transform_picker.item(index).checkState() == _checked_state()
+            }
+            transform_ids = tuple(
+                row.transform_id
+                for row in inspector.selected_transforms
+                if row.transform_id in checked_ids
+            )
+            self._apply_edit(
+                lambda: self._adapter.set_pass_transforms(
+                    self._draft,
+                    pass_index=inspector.pass_index,
+                    transform_ids=transform_ids,
+                )
+            )
+
+        def _apply_inspector_options(self, value: object) -> None:
+            inspector = self._current_inspector()
+            if inspector is None or not isinstance(value, dict):
+                self._render()
+                self._set_status("Pass options must be a JSON object.")
+                return
+            self._apply_edit(
+                lambda: self._adapter.set_pass_options(
+                    self._draft,
+                    pass_index=inspector.pass_index,
+                    options=value,
+                )
+            )
+
+        def _show_raw_options(self, checked: bool = False) -> None:
+            del checked
+            inspector = self._current_inspector()
+            if inspector is None:
+                return
+            dialog = RawJsonDialog(
+                f"Edit raw options for {inspector.pass_id}",
+                inspector.options,
+                editable=True,
+                on_apply=self._apply_inspector_options,
+                parent=self.parent,
+            )
+            dialog.exec_()
+
+        def _show_raw_contract(self, checked: bool = False) -> None:
+            del checked
+            inspector = self._current_inspector()
+            if inspector is None:
+                return
+            dialog = RawJsonDialog(
+                f"View raw contract for {inspector.pass_id}",
+                inspector.contract,
+                editable=False,
+                parent=self.parent,
+            )
+            dialog.exec_()
 
         def _set_description(self, checked: bool = False) -> None:
             del checked
@@ -362,7 +692,7 @@ if IDA_AVAILABLE:
             pass_id = self.catalog_combo.currentData()
             if not pass_id:
                 return
-            selected = self._selected_pass_index()
+            selected = self._builder_selected_pass_index()
             insertion = None if selected is None else selected + 1
             self._apply_edit(
                 lambda: self._adapter.add_pass(
@@ -374,12 +704,12 @@ if IDA_AVAILABLE:
 
         def _remove_pass(self, checked: bool = False) -> None:
             del checked
-            index = self._selected_pass_index()
+            index = self._builder_selected_pass_index()
             if index is not None:
                 self._apply_edit(lambda: self._adapter.remove_pass(self._draft, index))
 
         def _move_pass(self, delta: int) -> None:
-            index = self._selected_pass_index()
+            index = self._builder_selected_pass_index()
             if index is None:
                 return
             target = index + int(delta)
@@ -395,7 +725,7 @@ if IDA_AVAILABLE:
 
         def _edit_pass_options(self, checked: bool = False) -> None:
             del checked
-            index = self._selected_pass_index()
+            index = self._builder_selected_pass_index()
             if index is None:
                 return
             row = self._view.pipeline_rows[index]
