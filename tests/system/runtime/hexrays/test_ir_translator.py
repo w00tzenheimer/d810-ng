@@ -815,6 +815,18 @@ class _FakeDeferredGraphModifier:
         self.transaction_complete = False
         self.bound_plan = None
         self.mutation_gateway = None
+        self.superseded_count = 0
+
+    def take_superseded_count(self) -> int:
+        """Mirror the real modifier: one-shot read of the coalescing tally.
+
+        ``lower`` reports this to the gateway so the realization inventory can
+        reconcile ``applied + superseded == planned``. The double consumes it
+        the same way, so a test that sets a tally sees it read exactly once.
+        """
+        count = int(self.superseded_count)
+        self.superseded_count = 0
+        return count
 
     def configure_patch_bindings(
         self,

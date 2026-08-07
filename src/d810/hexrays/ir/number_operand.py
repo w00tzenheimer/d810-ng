@@ -33,8 +33,13 @@ def _anchor(ea) -> int | None:
     return anchor
 
 
-def safe_make_number(mop, value, size, ea=None) -> None:
+def safe_make_number(mop, value, size, ea=None) -> bool:
     """Create a number operand with a size ``make_number`` can actually store.
+
+    Returns whether the operand carries the *requested* width. A caller that
+    needs the exact width - anything emitting ``m_ldc``, whose ``l`` operand
+    must be a real ``mop_n`` - must check this and abstain when it is False,
+    rather than emit an instruction whose operand sizes disagree.
 
     If *size* is not one of the valid IDA operand sizes (1, 2, 4, 8, 16), it is
     replaced with 4 (32-bit) to prevent a zero-size ``mop_n`` from crashing
@@ -42,22 +47,30 @@ def safe_make_number(mop, value, size, ea=None) -> None:
 
     A size above 8 is only expressible when *ea* names a real instruction, which
     lets Hex-Rays anchor the widening ``m_xds``. Without one the size is clamped
-    to 8 rather than raising INTERR 51617.
+    to 8 rather than raising INTERR 51617 - but note that the widened form is a
+    ``mop_d`` holding a nested instruction, not a number, so it is not a
+    substitute for a wide constant everywhere a number is required.
 
     >>> class _Mop:
     ...     def make_number(self, value, size, *rest):
     ...         print(value, size, rest)
     >>> safe_make_number(_Mop(), 0xFFFF, 16)
     65535 8 ()
+    False
     >>> safe_make_number(_Mop(), 0xFFFF, 16, ea=0x401000)
     65535 16 (4198400,)
+    True
+    >>> safe_make_number(_Mop(), 0xFF, 4)
+    255 4 ()
+    True
     """
+    requested = size
     if size not in VALID_MOP_SIZES:
         logger.warning("Invalid mop size %s, defaulting to 4", size)
         size = 4
     anchor = _anchor(ea)
     if size > MAX_MAKE_NUMBER_SIZE and anchor is None:
-        logger.warning(
+        logger.debug(
             "mop size %d exceeds make_number's %d-byte limit and no anchor ea "
             "was supplied; clamping (INTERR 51617 avoidance)",
             size,
@@ -69,6 +82,7 @@ def safe_make_number(mop, value, size, ea=None) -> None:
         mop.make_number(masked, size)
     else:
         mop.make_number(masked, size, anchor)
+    return size == requested
 
 
 __all__ = [

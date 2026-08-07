@@ -1085,6 +1085,12 @@ class IDAIRTranslator:
             )
             raise
 
+        # Coalescing collapses queued modifications that describe the same edge,
+        # so fewer operations apply than the plan has steps. Hand that tally to
+        # the gateway before observation, or the realization inventory reads a
+        # benign deduplication as a lost operation and poisons the generation.
+        patch_gateway.record_coalesced_supersessions(modifier.take_superseded_count())
+
         # If verify failed (even after rollback attempt), signal the pipeline
         # to stop by returning 0. A positive result with verify_failed=True
         # means rollback also failed - the MBA may be corrupted.

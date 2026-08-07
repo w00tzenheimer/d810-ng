@@ -215,7 +215,14 @@ class ConstantSubtreeFoldRule(PeepholeSimplificationRule):
             new_ins.opcode = ida_hexrays.m_ldc
 
             cst = ida_hexrays.mop_t()
-            safe_make_number(cst, value, dst_size)
+            if not safe_make_number(cst, value, dst_size):
+                # m_ldc's l operand must be a real mop_n, and make_number cannot
+                # build one wider than 8 bytes. Hex-Rays already represents a
+                # wider constant as xds/xdu of an 8-byte one - which is what
+                # this instruction usually already is - so there is nothing to
+                # fold. Emitting anyway produces `ldc #0.8, xmm6.16`, whose
+                # operand sizes disagree and which the optimizer rejects.
+                return None
             new_ins.l = cst
 
             new_ins.d = ida_hexrays.mop_t()
