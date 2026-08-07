@@ -30,11 +30,22 @@ def _plugin_method(name: str) -> ast.FunctionDef:
     raise AssertionError(f"PluginConfigurationFileForm_t.{name} not found")
 
 
-def test_pass_tree_owns_the_project_pipeline_pane() -> None:
+def test_active_pipeline_overview_owns_the_project_pipeline_pane() -> None:
     source = ast.unparse(_method("OnCreate"))
 
-    assert "self._pass_tree = PassTreeWidget(" in source
-    assert "main_layout.addWidget(self._pass_tree, stretch=1)" in source
+    assert (
+        "self._pipeline_overview = ConfigV2PipelineOverviewWidget(" in source
+    )
+    assert (
+        "self._pipeline_overview.inspect_requested.connect("
+        "self._inspect_config_v2_pass)" in source
+    )
+    assert (
+        "self._pipeline_overview.edit_pipeline_requested.connect("
+        "self._edit_config)" in source
+    )
+    assert "main_layout.addWidget(self._pipeline_overview, stretch=1)" in source
+    assert "PassTreeWidget" not in source
     assert "RuleDetailPanel" not in source
 
 
@@ -82,7 +93,8 @@ def test_density_plan_comes_from_the_pure_logic_layer() -> None:
 
     assert "self._density_host = _DensityHost(self._apply_panel_density" in source
     assert "plan = plan_panel_density(" in density
-    assert "self._pass_tree.set_filter_visible(plan.show_filter)" in density
+    assert "row_px=self._pipeline_overview.row_height()" in density
+    assert "filter_has_text=False" in density
 
 
 def test_occasional_engine_controls_live_in_one_overflow_menu() -> None:
