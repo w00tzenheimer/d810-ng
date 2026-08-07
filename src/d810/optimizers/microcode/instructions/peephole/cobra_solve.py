@@ -213,6 +213,26 @@ class CobraSolveRule(PeepholeSimplificationRule):
         )
 
     def check_and_replace(self, blk, ins):
+        """Never let an exception reach Hex-Rays.
+
+        ``check_and_replace`` is invoked from the C++ optimizer callback. A
+        Python exception crossing that boundary does not surface as a
+        traceback -- it takes the process down. That is exactly how the z3
+        context-mismatch bug presented: SIGSEGV (EXIT=139) after two
+        applications, with no INTERR and no assertion. The guard is
+        belt-and-braces on top of the context fix, because *any* future bug in
+        this path would otherwise have the same catastrophic presentation.
+        """
+        try:
+            return self._check_and_replace(blk, ins)
+        except Exception:  # noqa: BLE001 - see docstring; must not propagate
+            logger.exception(
+                "cobra-solve raised at %#x; skipping this instruction",
+                getattr(ins, "ea", 0),
+            )
+            return None
+
+    def _check_and_replace(self, blk, ins):
         if not binding_available():
             return None
 

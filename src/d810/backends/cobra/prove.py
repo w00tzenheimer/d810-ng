@@ -60,18 +60,21 @@ def z3_available() -> bool:
     return _Z3_AVAILABLE
 
 
-def _to_z3(tree: dict, env: dict, bits: int):
+def _to_z3(tree: dict, env: dict, bits: int, ctx=None):
     kind = tree["kind"]
     if kind == "const":
-        return z3.BitVecVal(tree["value"] & ((1 << bits) - 1), bits)
+        # The context must be threaded all the way down: a term built in the
+        # default context and combined with one built elsewhere raises
+        # "Z3Exception: context mismatch".
+        return z3.BitVecVal(tree["value"] & ((1 << bits) - 1), bits, ctx=ctx)
     if kind == "var":
         return env[tree["name"]]
     if kind == "un":
-        operand = _to_z3(tree["a"], env, bits)
+        operand = _to_z3(tree["a"], env, bits, ctx)
         return (-operand) if tree["op"] == "-" else (~operand)
 
-    left = _to_z3(tree["a"], env, bits)
-    right = _to_z3(tree["b"], env, bits)
+    left = _to_z3(tree["a"], env, bits, ctx)
+    right = _to_z3(tree["b"], env, bits, ctx)
     op = tree["op"]
     if op == "+":
         return left + right
@@ -95,15 +98,29 @@ def prove_equivalent(
     bitwidth: int,
     *,
     timeout_ms: int = DEFAULT_TIMEOUT_MS,
+    ctx=None,
 ) -> ProofResult:
-    """Return whether *rewrite* is equivalent to *original* for all inputs."""
+    """Return whether *rewrite* is equivalent to *original* for all inputs.
+
+    ``ctx`` is a ``z3.Context``.  **Every thread must supply its own.**  z3
+    terms belong to a context and a context is not thread-safe: sharing the
+    default one between the inline proof on the main thread and the escalation
+    worker raises "Z3Exception: context mismatch", and inside IDA that
+    exception escapes the rule into the Hex-Rays C++ callback and takes the
+    process down with SIGSEGV.  Measured: EXIT=139 after two applications.
+    """
     if not _Z3_AVAILABLE:
         return ProofResult.UNAVAILABLE
 
-    env = {name: z3.BitVec(f"v{i}", bitwidth) for i, name in enumerate(leaf_names)}
-    solver = z3.Solver()
+    env = {
+        name: z3.BitVec(f"v{i}", bitwidth, ctx=ctx)
+        for i, name in enumerate(leaf_names)
+    }
+    solver = z3.Solver(ctx=ctx)
     solver.set("timeout", timeout_ms)
-    solver.add(_to_z3(original, env, bitwidth) != _to_z3(rewrite, env, bitwidth))
+    solver.add(
+        _to_z3(original, env, bitwidth, ctx) != _to_z3(rewrite, env, bitwidth, ctx)
+    )
 
     verdict = solver.check()
     if verdict == z3.unsat:
