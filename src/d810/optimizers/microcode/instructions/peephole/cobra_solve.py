@@ -60,6 +60,19 @@ _ARITH_OPS = frozenset({"-", "+", "*"})
 #: rewrite the whole table for every candidate.
 _FLUSH_EVERY = 16
 
+#: Portable IRMaturity name -> IDA maturity. The pass layer speaks the portable
+#: vocabulary because it must stay hexrays-agnostic; the mapping belongs here,
+#: on the IDA side of the seam.
+_MATURITY_BY_NAME = {
+    "LIFTED": ida_hexrays.MMAT_GENERATED,
+    "CANONICAL": ida_hexrays.MMAT_PREOPTIMIZED,
+    "LOCAL_OPTIMIZED": ida_hexrays.MMAT_LOCOPT,
+    "CALL_MODELED": ida_hexrays.MMAT_CALLS,
+    "GLOBAL_ANALYZED": ida_hexrays.MMAT_GLBOPT1,
+    "GLOBAL_OPTIMIZED": ida_hexrays.MMAT_GLBOPT2,
+    "STRUCTURED": ida_hexrays.MMAT_LVARS,
+}
+
 _LEAF_TYPES = frozenset(
     {ida_hexrays.mop_r, ida_hexrays.mop_l, ida_hexrays.mop_S, ida_hexrays.mop_v}
 )
@@ -110,6 +123,20 @@ class CobraSolveRule(PeepholeSimplificationRule):
         super().configure(kwargs)
         self.max_leaves = int(self.config.get("max_leaves", DEFAULT_MAX_LEAVES))
         self.require_proof = bool(self.config.get("require_proof", True))
+        names = self.config.get("maturities")
+        if names:
+            mapped = [_MATURITY_BY_NAME[n] for n in names if n in _MATURITY_BY_NAME]
+            if mapped:
+                self.maturities = mapped
+            else:
+                logger.warning(
+                    "cobra-solve: no usable maturity in %s; keeping %s",
+                    names, self.maturities,
+                )
+        logger.info(
+            "cobra-solve configured: maturities=%s max_leaves=%d proof=%s",
+            self.maturities, self.max_leaves, self.require_proof,
+        )
         # Only an activated rule gets configured, so this is the first point at
         # which a worker is known to be wanted. start() is idempotent.
         self.escalator.start()
