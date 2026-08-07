@@ -619,9 +619,16 @@ def project_closed_case_rows(
             "WHERE event_id=? ORDER BY identity_index",
             (int(event_id),),
         ).fetchall()
-        if not identity_rows or any(row[0] is None for row in identity_rows):
-            raise ValueError("mutation receipt has no anchored identity")
-        anchor = int(identity_rows[0][0])
+        # Both anchor columns are NOT NULL, so a recorded row always carries an
+        # anchor; only the presence of rows is in question here.
+        #
+        # No identity rows at all is legitimate, not corruption. MbaBlockHandle
+        # forbids synthetic and ephemeral handles from carrying a stable
+        # identity (block_identity.py __post_init__: "synthetic MBA handle must
+        # not claim stable identity"), and _record_handle only records handles
+        # that have one. A receipt whose affected blocks were all synthetic
+        # therefore has nothing to anchor to but the function itself.
+        anchor = int(identity_rows[0][0]) if identity_rows else int(function_ea)
         accepted = _accepted(outcome)
         add(
             event_id=int(event_id),
