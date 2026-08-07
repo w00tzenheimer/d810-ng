@@ -86,21 +86,20 @@ class CobraSolveRule(PeepholeSimplificationRule):
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        # GLBOPT1 is where the candidates were measured; by GLBOPT2 Hex-Rays
-        # has already folded much of what this targets (55 candidates at
-        # GLBOPT1 versus 10 at GLBOPT2).
+        # MMAT_GLBOPT2 only. Measured end-to-end on VM_DecryptPacket:
         #
-        # MMAT_CALLS is a MEASURED PROBLEM, not a free extra maturity.  On
-        # VM_DecryptPacket it applied 61 rewrites but consumed 87.6 minutes
-        # without finishing, so GLBOPT1 was never reached at all -- every one
-        # of those 61 was at MMAT_CALLS.  The cost is the inline Z3 proof
-        # (prove.DEFAULT_TIMEOUT_MS is 120s and 24 of 78 accepted rewrites did
-        # not come back PROVED).  Do not treat this list as tuned until proving
-        # is off the critical path.
-        self.maturities = [
-            ida_hexrays.MMAT_CALLS,
-            ida_hexrays.MMAT_GLBOPT1,
-        ]
+        #   MMAT_CALLS    61 rewrites,  87.6 min, NEVER COMPLETED
+        #   MMAT_GLBOPT1  40 rewrites,  26+  min, NEVER COMPLETED
+        #   MMAT_GLBOPT2  17 rewrites,  46.2 s,   completed, 626 -> 563 lines
+        #
+        # The earlier list was chosen on candidate count (55 at GLBOPT1 vs 10
+        # at GLBOPT2), which is the wrong measure: by GLBOPT2 Hex-Rays has
+        # already folded aggressively, so there is far less microcode to walk
+        # and far less re-optimisation churn over the same addresses. 17
+        # rewrites that finish beat 40 that never do.
+        #
+        # Overridable via config; see mba_solve.DEFAULT_MATURITIES.
+        self.maturities = [ida_hexrays.MMAT_GLBOPT2]
         self.max_leaves = DEFAULT_MAX_LEAVES
         self.require_proof = True
         # One table and one escalator per rule instance. Both are pure-data and

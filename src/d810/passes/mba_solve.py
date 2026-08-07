@@ -49,12 +49,23 @@ DEFAULT_MAX_LEAVES = 8
 #: Maturities the rule runs at, in the portable ``IRMaturity`` vocabulary --
 #: this layer must stay hexrays-agnostic, so the rule maps these to ``MMAT_*``.
 #:
-#: CALL_MODELED is included by default but is a MEASURED PROBLEM: on
-#: VM_DecryptPacket it applied 61 rewrites across 87.6 minutes without
-#: finishing a decompile, so GLOBAL_ANALYZED -- the maturity the design was
-#: justified on (55 candidates there versus 10 at GLOBAL_OPTIMIZED) -- was
-#: never reached at all.  Configurable precisely so the two can be compared.
-DEFAULT_MATURITIES = ("CALL_MODELED", "GLOBAL_ANALYZED")
+#: GLOBAL_OPTIMIZED (MMAT_GLBOPT2) only, and this is the single most important
+#: setting in the pass.  Measured on VM_DecryptPacket, decompiling one function:
+#:
+#:     CALL_MODELED      61 rewrites,  87.6 min, NEVER COMPLETED
+#:     GLOBAL_ANALYZED   40 rewrites,  26+  min, NEVER COMPLETED
+#:     GLOBAL_OPTIMIZED  17 rewrites,  46.2 s,   completed, 626 -> 563 lines
+#:
+#: The earlier choice was made on CANDIDATE COUNT -- 55 candidates at
+#: GLOBAL_ANALYZED versus 10 at GLOBAL_OPTIMIZED -- which is the wrong measure.
+#: By GLOBAL_OPTIMIZED Hex-Rays has already folded aggressively, so the
+#: microcode is far smaller: fewer instructions to walk, fewer re-optimisation
+#: passes over the same addresses, and a much better cost per useful rewrite.
+#: 17 rewrites that finish beat 40 that never do.
+#:
+#: Adding an earlier maturity back is not free capability -- it is what made
+#: this pass unusable.  Re-measure end-to-end before changing this.
+DEFAULT_MATURITIES = ("GLOBAL_OPTIMIZED",)
 
 
 @dataclass(frozen=True)
