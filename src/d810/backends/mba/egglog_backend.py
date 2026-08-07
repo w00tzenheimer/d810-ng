@@ -888,3 +888,49 @@ class EgglogBackendProvider(EgglogProvider):
 #     if passed == len(test_cases):
 #         print("\nE-graph successfully proves all MBA equivalences!")
 #         print("This eliminates the need for explicit commuted rule variants.")
+
+def symbolic_to_pattern_expr(expr) -> "PatternExpr":
+    """Convert a DSL ``SymbolicExpression`` into an egglog ``PatternExpr``.
+
+    Lives here rather than in the IDA backend because it constructs an egglog
+    type: the conversion belongs with the thing it converts *to*.  Keeping it
+    in ``backends/mba/ida.py`` forced that module to import this one, which is
+    the cross-backend coupling reported in issue #23.
+
+    Raises ``ImportError`` when egglog is absent and ``ValueError`` for
+    operations outside the supported set (shl, shr, sar, lnot, ...).
+    """
+    if not EGGLOG_AVAILABLE:
+        raise ImportError("egglog not available")
+
+    # is_variable()/is_constant() are METHODS on the DSL nodes, not properties.
+    # Treating them as properties makes every node look like a variable -- a
+    # bug that once collapsed 188 rules to 4 signatures before it was caught.
+    if expr.is_variable():
+        return PatternExpr.var(expr.name)
+    if expr.is_constant():
+        # Constants become named variables: pattern matching cares about
+        # structure, and a distinct name per value preserves distinctness.
+        return PatternExpr.var(f"const_{expr.value}")
+
+    op = expr.operation
+    left = symbolic_to_pattern_expr(expr.left)
+    right = symbolic_to_pattern_expr(expr.right) if expr.right else None
+
+    if op == "add":
+        return left + right
+    if op == "sub":
+        return left - right
+    if op == "mul":
+        return left * right
+    if op == "and":
+        return left & right
+    if op == "or":
+        return left | right
+    if op == "xor":
+        return left ^ right
+    if op == "neg":
+        return -left
+    if op == "bnot":
+        return ~left
+    raise ValueError(f"Unsupported operation for egglog pattern gen: {op}")
