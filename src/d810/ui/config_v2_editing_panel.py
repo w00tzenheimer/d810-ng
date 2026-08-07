@@ -558,7 +558,7 @@ if IDA_AVAILABLE:
                     for row in inspector.selected_transforms:
                         item = QtWidgets.QListWidgetItem(row.transform_id)
                         item.setFlags(item.flags() | _checkable_flag())
-                        item.setData(0, _user_role(), row.transform_id)
+                        item.setData(_user_role(), row.transform_id)
                         item.setCheckState(
                             _checked_state() if row.selected else _unchecked_state()
                         )
@@ -624,7 +624,7 @@ if IDA_AVAILABLE:
                 self._render()
                 return
             checked_ids = {
-                str(self.transform_picker.item(index).data(0, _user_role()))
+                str(self.transform_picker.item(index).data(_user_role()))
                 for index in range(self.transform_picker.count())
                 if self.transform_picker.item(index).checkState() == _checked_state()
             }
