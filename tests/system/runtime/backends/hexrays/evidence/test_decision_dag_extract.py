@@ -214,6 +214,91 @@ def test_extract_accepts_register_when_value_numbers_are_unavailable():
     assert set(dag.nodes) == {4, 58}
 
 
+def test_extract_completes_a_reg_only_identity_from_the_entry_load():
+    """Regression, ticket lpccp-w81p (sub_7FFE50C44430).
+
+    A dual-homed dispatcher compares the STACK slot at its BST root and the
+    REGISTER at every deeper node.  Recovery hands down only the register (its
+    contract treats ``state_var_reg`` as "register with no stack home"), so the
+    root failed to parse; ``_descend_to_root`` cannot walk past a 2-way block,
+    and the whole chain collapsed to an empty DAG -- 59 matchable nodes lost to
+    one unmatched root.  The entry block's own ``xdu stack -> reg`` proves the
+    missing half.
+    """
+    STATE_REG, STATE_VN, DEFAULT_ARM = 8, 7, 191
+    blocks = {
+        # entry: xdu %var_310 -> eax{7}, then a root comparing the STACK slot
+        4: _entry_load(STATE_REG, STATE_VN, 11, 58, 0x3BC233F2),
+        # deeper node: compares the REGISTER
+        58: _Blk(
+            SimpleNamespace(
+                opcode=ida_hexrays.m_jnz,
+                l=_reg(STATE_REG, STATE_VN),
+                r=_const(0x402FE6E3),
+                d=_target(DEFAULT_ARM),
+            ),
+            [59, DEFAULT_ARM],
+        ),
+        11: _leaf(),
+        59: _leaf(),
+        DEFAULT_ARM: _leaf(),
+    }
+    dag = extract_decision_dag(
+        _mba(blocks),
+        dispatcher_entry_serial=4,
+        state_var_stkoff=None,
+        state_var_reg=STATE_REG,
+    )
+
+    assert set(dag.nodes) == {4, 58}, "reg-only identity must still parse the stack root"
+    assert dag.route(0x402FE6E3) == 59
+
+
+def test_reg_only_identity_still_rejects_a_different_value_number():
+    """The lpccp-htcb gate must stay armed on the explicit-register path.
+
+    Supplying ``state_var_reg`` used to skip alias detection entirely, leaving
+    the value number unknown and the impostor gate disarmed -- so fixing
+    lpccp-w81p by passing the register through would have silently undone
+    lpccp-htcb.  The entry load supplies the valnum either way.
+    """
+    STATE_REG, STATE_VN, IMPOSTOR_VN, DEFAULT_ARM = 8, 7, 131, 191
+    blocks = {
+        4: _entry_load(STATE_REG, STATE_VN, 11, 58, 0x3BC233F2),
+        58: _Blk(
+            SimpleNamespace(
+                opcode=ida_hexrays.m_jnz,
+                l=_reg(STATE_REG, STATE_VN),
+                r=_const(0x402FE6E3),
+                d=_target(DEFAULT_ARM),
+            ),
+            [59, DEFAULT_ARM],
+        ),
+        # handler whose entry recomputes into the same register
+        59: _Blk(
+            SimpleNamespace(
+                opcode=ida_hexrays.m_jnz,
+                l=_reg(STATE_REG, IMPOSTOR_VN),
+                r=_const(0),
+                d=_target(DEFAULT_ARM),
+            ),
+            [100, DEFAULT_ARM],
+        ),
+        11: _leaf(),
+        100: _leaf(),
+        DEFAULT_ARM: _leaf(),
+    }
+    dag = extract_decision_dag(
+        _mba(blocks),
+        dispatcher_entry_serial=4,
+        state_var_stkoff=None,
+        state_var_reg=STATE_REG,
+    )
+
+    assert 59 not in dag.nodes
+    assert set(dag.nodes) == {4, 58}
+
+
 def test_extract_register_resident_state_var_without_stack_slot():
     state_reg = 20
     tail = SimpleNamespace(

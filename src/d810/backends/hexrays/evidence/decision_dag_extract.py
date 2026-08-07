@@ -107,24 +107,35 @@ def _is_state_var(
     return False
 
 
-def _detect_state_var_reg(
-    mba, dispatcher_entry_serial: int, state_var_stkoff: int
-) -> tuple[Optional[int], Optional[int]]:
-    """``(mreg, valnum)`` the state var is loaded into at the dispatcher entry.
+def _entry_state_alias(
+    mba,
+    dispatcher_entry_serial: int,
+    *,
+    state_var_stkoff: Optional[int] = None,
+    state_var_reg: Optional[int] = None,
+) -> tuple[Optional[int], Optional[int], Optional[int]]:
+    """``(stkoff, mreg, valnum)`` for the entry block's stack->register state load.
 
-    Scans the entry block for ``<load> mop_S(state_var_stkoff) -> mop_r(R)`` (e.g.
-    ``xdu var_694, rax``); the condition-chain children then compare ``R``.  The
-    destination's value number is returned alongside so
-    :func:`_is_state_var` can tell that register-and-value from a same-named
-    register redefined inside a handler.  Returns ``(None, None)`` when no such
-    load exists.
+    The dispatcher entry homes the state variable in BOTH places: it loads the
+    stack slot into a register (``xdu %var_310.4, rax.8``) and the condition
+    chain below then compares that register.  A dispatcher like
+    sub_7FFE50C44430 is therefore DUAL-HOMED -- its BST root compares the STACK
+    slot while every deeper node compares the REGISTER -- so an identity that
+    carries only one half cannot match the whole chain.
+
+    Scans that one instruction and reports every identity it proves, matching on
+    whichever half the caller already knows (or the first such load when it
+    knows neither).  The destination's value number rides along so
+    :func:`_is_state_var` can tell the dispatcher's register-and-value from the
+    same register redefined inside a handler.  ``(None, None, None)`` when the
+    entry block has no such load.
     """
     try:
         blk = mba.get_mblock(int(dispatcher_entry_serial))
     except Exception:
-        return None, None
+        return None, None, None
     if blk is None:
-        return None, None
+        return None, None, None
     cur = getattr(blk, "head", None)
     while cur is not None:
         d = getattr(cur, "d", None)
@@ -134,11 +145,19 @@ def _detect_state_var_reg(
             and getattr(d, "t", None) == ida_hexrays.mop_r
             and l is not None
             and getattr(l, "t", None) == ida_hexrays.mop_S
-            and getattr(getattr(l, "s", None), "off", None) == int(state_var_stkoff)
         ):
-            return int(getattr(d, "r", -1)), int(getattr(d, "valnum", 0) or 0) or None
+            off = getattr(getattr(l, "s", None), "off", None)
+            reg = getattr(d, "r", None)
+            if off is not None and reg is not None:
+                stkoff_matches = (
+                    state_var_stkoff is None or int(off) == int(state_var_stkoff)
+                )
+                reg_matches = state_var_reg is None or int(reg) == int(state_var_reg)
+                if stkoff_matches and reg_matches:
+                    valnum = int(getattr(d, "valnum", 0) or 0) or None
+                    return int(off), int(reg), valnum
         cur = getattr(cur, "next", None)
-    return None, None
+    return None, None, None
 
 
 def _const_value(mop, mask: int) -> Optional[int]:
@@ -273,11 +292,30 @@ def extract_decision_dag(
     # Register-resident dispatchers compare the state var in a register below the
     # root; detect it so the comparison nodes are recognized (else the DAG
     # collapses to the root leaf and routing degrades to exact-only).
+    # Complete the identity from the entry block's stack->register load, in
+    # WHICHEVER direction is missing.  Recovery hands down only one half (its
+    # contract treats ``state_var_reg`` as "register with no stack home"), but a
+    # dual-homed dispatcher needs both: sub_7FFE50C44430's BST root compares the
+    # stack slot while its 59 deeper nodes compare the register, so a reg-only
+    # identity fails to parse the root, ``_descend_to_root`` cannot walk past a
+    # 2-way block, and the whole chain collapses to an empty DAG (lpccp-w81p).
+    # Deriving the valnum here regardless of which half the caller supplied also
+    # keeps the lpccp-htcb impostor gate armed on the explicit-register path.
     state_var_valnum: Optional[int] = None
-    if state_var_reg is None and state_var_stkoff is not None:
-        state_var_reg, state_var_valnum = _detect_state_var_reg(
-            mba, int(dispatcher_entry_serial), int(state_var_stkoff)
+    if state_var_stkoff is not None or state_var_reg is not None:
+        entry_stkoff, entry_reg, entry_valnum = _entry_state_alias(
+            mba,
+            int(dispatcher_entry_serial),
+            state_var_stkoff=state_var_stkoff,
+            state_var_reg=state_var_reg,
         )
+        if entry_reg is not None:
+            if state_var_stkoff is None:
+                state_var_stkoff = entry_stkoff
+            if state_var_reg is None:
+                state_var_reg = entry_reg
+            if int(entry_reg) == int(state_var_reg):
+                state_var_valnum = entry_valnum
     root = _descend_to_root(
         mba,
         int(dispatcher_entry_serial),
