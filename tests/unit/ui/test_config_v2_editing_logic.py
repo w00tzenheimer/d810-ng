@@ -11,6 +11,7 @@ from d810.manager.config_v2_edit_models import (
     ConfigV2ProjectDraft,
     ConfigV2ProjectValidation,
 )
+from d810.manager.workbench_recipe_models import PassCatalogEntry
 from d810.ui import config_v2_editing_logic as logic
 
 
@@ -43,6 +44,84 @@ def _validation(*, valid: bool = True, revision: int = 2) -> ConfigV2ProjectVali
         transform_ids=("add-xor-1",),
         routing_policy_json="{}",
         diagnostics=diagnostics,
+    )
+
+
+def _catalog() -> tuple[PassCatalogEntry, ...]:
+    return (
+        PassCatalogEntry(
+            pass_id="mba-simplify",
+            display_name="MBA simplify",
+            contract_json='{"pass":"mba-simplify"}',
+            option_template_json="{}",
+            granularity="function",
+            maturity="MMAT_LOCOPT",
+            backend_route="mutation_backend",
+            safety_policy="verified",
+            transform_ids=("add-xor-1", "sub-xor-1", "and-or-1"),
+            stage_ids=("simplify-mba",),
+            configured=True,
+        ),
+        PassCatalogEntry(
+            pass_id="constant-simplification",
+            display_name="Constant simplification",
+            contract_json='{"pass":"constant-simplification"}',
+            option_template_json="{}",
+            granularity="function",
+            maturity="MMAT_LOCOPT",
+            backend_route="mutation_backend",
+            safety_policy="default",
+            transform_ids=(),
+            stage_ids=("constant-fold",),
+            configured=True,
+        ),
+        PassCatalogEntry(
+            pass_id="jump-fixer",
+            display_name="Jump fixer",
+            contract_json='{"pass":"jump-fixer"}',
+            option_template_json="{}",
+            granularity="function",
+            maturity="MMAT_GLBOPT1",
+            backend_route="mutation_backend",
+            safety_policy="conservative",
+            transform_ids=(),
+            stage_ids=("fix-jumps",),
+            configured=True,
+        ),
+    )
+
+
+def _draft_with_pipeline(
+    *, document: dict[str, object] | None = None
+) -> ConfigV2ProjectDraft:
+    payload = document or {
+        "description": "OLLVM profile",
+        "migration_metadata": {"schema": 7},
+        "additional_configuration": {
+            "pipeline_v2": [
+                {
+                    "pass_id": "mba-simplify",
+                    "options": {"transforms": ["add-xor-1", "sub-xor-1", "unknown"]},
+                },
+                {"pass_id": "jump-fixer", "options": {"transforms": ["add-xor-1"]}},
+            ],
+            "router_resolution": {
+                "require": None,
+                "prefer": {"ollvm": 4.0},
+                "deny": ["tigress"],
+            },
+            "analysis_priors": {"opaque": True},
+        },
+    }
+    serialized = json.dumps(payload)
+    return ConfigV2ProjectDraft(
+        draft_id="draft",
+        revision=2,
+        source_path=Path("/source.json"),
+        destination_path=Path("/destination.json"),
+        source_sha256="abc",
+        original_document_json=serialized,
+        document_json=serialized,
     )
 
 
@@ -160,3 +239,102 @@ def test_config_v2_logic_has_no_qt_ida_registry_or_persistence_imports():
     assert not any(
         token in name for name in imports for token in ("registry", "persistence")
     )
+
+
+def test_editor_overview_lists_only_configured_passes_and_real_selection():
+    view = logic.project_config_v2_editor_view(
+        _draft_with_pipeline(), _validation(), _catalog()
+    )
+
+    assert [row.pass_id for row in view.overview.rows] == [
+        "mba-simplify",
+        "jump-fixer",
+    ]
+    assert view.overview.rows[0].selected_transform_summary == "2 selected transforms"
+    assert view.overview.rows[1].selected_transform_summary == (
+        "No individually selectable transforms"
+    )
+
+
+def test_editor_inspector_uses_catalog_contract_and_presentation_purpose():
+    view = logic.project_config_v2_editor_view(
+        _draft_with_pipeline(), _validation(), _catalog()
+    )
+    inspector = view.inspectors[0]
+
+    assert inspector.runs_during == "MMAT_LOCOPT"
+    assert inspector.purpose == "Simplify selected mixed-boolean arithmetic transforms."
+    assert inspector.contract_chips == (
+        ("Scope", "function"),
+        ("Backend", "mutation_backend"),
+        ("Safety", "verified"),
+    )
+    assert [row.transform_id for row in inspector.selected_transforms] == [
+        "add-xor-1",
+        "sub-xor-1",
+        "and-or-1",
+    ]
+    assert [row.selected for row in inspector.selected_transforms] == [
+        True,
+        True,
+        False,
+    ]
+    assert inspector.transforms_editable is True
+
+
+def test_editor_routing_raw_document_and_footer_are_lossless_and_current():
+    document = {
+        "description": "profile",
+        "unknown_top_level": {"keep": [1, 2]},
+        "additional_configuration": {
+            "pipeline_v2": [],
+            "router_resolution": {"prefer": {"ollvm": 4}},
+            "unknown_additional": {"keep": True},
+        },
+    }
+    original = json.dumps(document)
+    changed = dict(document)
+    changed["description"] = "changed"
+    draft = ConfigV2ProjectDraft(
+        draft_id="draft",
+        revision=2,
+        source_path=Path("/source.json"),
+        destination_path=Path("/destination.json"),
+        source_sha256="abc",
+        original_document_json=original,
+        document_json=json.dumps(changed),
+    )
+    view = logic.project_config_v2_editor_view(
+        draft, _validation(valid=False), _catalog()
+    )
+
+    assert view.routing.is_auto is False
+    assert view.routing.require is None
+    assert view.routing.preferred == (("ollvm", 4.0),)
+    assert view.routing.denied == ()
+    assert view.raw_document.document == changed
+    assert view.raw_document.preserved_fields == {
+        "unknown_top_level": {"keep": [1, 2]},
+        "additional_configuration": {"unknown_additional": {"keep": True}},
+    }
+    assert view.footer.dirty is True
+    assert view.footer.validation_label == "Validate before saving."
+    assert view.footer.save_enabled is False
+
+
+def test_editor_missing_routing_is_auto_and_stale_validation_cannot_save():
+    document = {
+        "description": "profile",
+        "additional_configuration": {"pipeline_v2": []},
+    }
+    view = logic.project_config_v2_editor_view(
+        _draft_with_pipeline(document=document), _validation(revision=1), _catalog()
+    )
+
+    assert view.routing.is_auto is True
+    assert view.routing.require is None
+    assert view.routing.preferred == ()
+    assert view.routing.denied == ()
+    assert view.footer.dirty is False
+    assert view.footer.validation_label == "Validate before saving."
+    assert view.footer.save_enabled is False
