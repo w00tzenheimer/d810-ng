@@ -33,8 +33,14 @@ from d810.backends.cobra.detect import (
     _TreeBuilder,
     _walk,
 )
+from d810.backends.cobra.escalate import EscalationProver
 from d810.backends.cobra.expr import accept_rewrite, node_count
-from d810.backends.cobra.prove import ProofResult, prove_equivalent
+from d810.backends.cobra.prove import (
+    INLINE_TIMEOUT_MS,
+    ProofResult,
+    prove_equivalent,
+)
+from d810.backends.cobra.table import Outcome, RewriteTable
 from d810.backends.cobra.solve import (
     SolveStatus,
     binding_available,
@@ -79,11 +85,40 @@ class CobraSolveRule(PeepholeSimplificationRule):
         ]
         self.max_leaves = DEFAULT_MAX_LEAVES
         self.require_proof = True
+        # One table and one escalator per rule instance. Both are pure-data and
+        # carry no IDA reference, so the worker thread never reaches Hex-Rays.
+        #
+        # NOT started here. d810's reload machinery leaves several distinct
+        # copies of a class in one process, and rules are constructed whether
+        # or not a project activates them -- starting in __init__ would spawn a
+        # worker thread per dead copy.
+        self.table = RewriteTable()
+        self.escalator = EscalationProver(self.table)
 
     def configure(self, kwargs) -> None:
         super().configure(kwargs)
         self.max_leaves = int(self.config.get("max_leaves", DEFAULT_MAX_LEAVES))
         self.require_proof = bool(self.config.get("require_proof", True))
+        # Only an activated rule gets configured, so this is the first point at
+        # which a worker is known to be wanted. start() is idempotent.
+        self.escalator.start()
+
+    def log_stats(self) -> None:
+        """Report table accounting.
+
+        The intra-run hit rate is the number this whole design was missing: the
+        0% tree reuse measured earlier came from a single-pass offline
+        detection, which by construction cannot repeat.  The live rule is
+        re-invoked on the same addresses as Hex-Rays re-optimises (61
+        applications across 44 EAs), so this is where reuse actually shows up.
+        """
+        s = self.table.stats
+        logger.info(
+            "cobra-solve table: lookups=%d hits=%d negative=%d pending=%d "
+            "misses=%d balanced=%s",
+            s.lookups, s.hits, s.negative_hits, s.pending_hits, s.misses,
+            s.balanced,
+        )
 
     def check_and_replace(self, blk, ins):
         if not binding_available():
@@ -124,16 +159,32 @@ class CobraSolveRule(PeepholeSimplificationRule):
             dest_size=dest_size,
         )
 
+        # --- tier 1: the table. A hit skips BOTH solving and proving. -------
+        entry = self.table.lookup(candidate.tree, candidate.bitwidth)
+        if entry is not None:
+            outcome = getattr(entry.outcome, "value", None)
+            if outcome != Outcome.PROVED.value:
+                # NO_REWRITE: settled, nothing better exists.
+                # PENDING: the escalation prover owns it; asking again this
+                # pass would just re-solve work already in flight.
+                return None
+            return self._install(candidate, entry.rewrite, ins)
+
+        # --- tier 2: solve, then accept, then a BOUNDED proof ---------------
         result = solve_signature(
             candidate.tree, candidate.leaf_names, candidate.bitwidth
         )
         if getattr(result.status, "value", None) != SolveStatus.SOLVED.value \
                 or result.tree is None:
+            # Negative caching is what stops this candidate being re-solved on
+            # every pass; 46 of 60 measured candidates end here.
+            self.table.record_no_rewrite(candidate.tree, candidate.bitwidth)
             return None
 
         # Accept before proving: a rejected rewrite is never used, so proving
         # it first is pure waste.
         if not accept_rewrite(candidate.tree, result.tree):
+            self.table.record_no_rewrite(candidate.tree, candidate.bitwidth)
             return None
 
         if self.require_proof:
@@ -142,22 +193,42 @@ class CobraSolveRule(PeepholeSimplificationRule):
                 result.tree,
                 candidate.leaf_names,
                 candidate.bitwidth,
+                timeout_ms=INLINE_TIMEOUT_MS,
             )
             # Compare by value: d810's reload machinery can leave two distinct
             # ProofResult classes in one process, and `is` then fails for a
             # verdict that really is PROVED.
-            if getattr(verdict, "value", None) != ProofResult.PROVED.value:
-                if getattr(verdict, "value", None) == ProofResult.REFUTED.value:
-                    logger.warning(
-                        "cobra-solve REFUTED a rewrite at %#x; not applying", ins.ea
-                    )
+            value = getattr(verdict, "value", None)
+            if value == ProofResult.REFUTED.value:
+                logger.warning(
+                    "cobra-solve REFUTED a rewrite at %#x; not applying", ins.ea
+                )
+                self.table.record_no_rewrite(candidate.tree, candidate.bitwidth)
+                return None
+            if value != ProofResult.PROVED.value:
+                # --- tier 3: starved, not disproved. Hand it to the off-path
+                # prover and skip it this pass. Measured, this is where the
+                # expensive minority goes: 98% of proof time sat in 4 of 14
+                # proofs, the worst at 93.6s.
+                self.escalator.submit(
+                    candidate.tree,
+                    candidate.bitwidth,
+                    result.tree,
+                    candidate.leaf_names,
+                )
                 return None
 
+        self.table.record_proved(candidate.tree, candidate.bitwidth, result.tree)
+        return self._install(candidate, result.tree, ins)
+
+    def _install(self, candidate, rewrite, ins):
+        if rewrite is None:
+            return None
         try:
-            out = build_replacement(candidate, result.tree, ins)
+            out = build_replacement(candidate, rewrite, ins)
             logger.info(
                 "cobra-solve applied @ %#x  %d -> %d nodes",
-                ins.ea, candidate.node_count, node_count(result.tree),
+                ins.ea, candidate.node_count, node_count(rewrite),
             )
             return out
         except ReconstructionError as exc:
