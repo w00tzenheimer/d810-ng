@@ -162,7 +162,19 @@ def _receipt(
     session_id: str = "session-1",
     batch_id: str = "batch-1",
     outcome: str = "committed",
+    identity: bool = True,
+    anchor: int | None = FUNC_EA,
 ) -> int:
+    """Insert a mutation receipt.
+
+    ``identity=False`` models a receipt whose affected blocks were all
+    synthetic: ``MbaBlockHandle`` forbids synthetic and ephemeral handles from
+    carrying a stable identity, so nothing is recorded for them and the receipt
+    legitimately has no anchored identity rows.
+
+    ``anchor=None`` models genuine corruption - a recorded identity row with no
+    anchor, which the writer never produces.
+    """
     event_id = _lifecycle(
         conn,
         session_id=session_id,
@@ -188,12 +200,19 @@ def _receipt(
             "fixture",
         ),
     )
-    conn.execute(
-        "INSERT INTO mutation_receipt_identities "
-        "(event_id,identity_index,identity_json,primary_anchor_ea_hex,"
-        "primary_anchor_ea_i64) VALUES (?,?,?,?,?)",
-        (event_id, 0, NATIVE_KEY, "0x0000000180001000", FUNC_EA),
-    )
+    if identity:
+        conn.execute(
+            "INSERT INTO mutation_receipt_identities "
+            "(event_id,identity_index,identity_json,primary_anchor_ea_hex,"
+            "primary_anchor_ea_i64) VALUES (?,?,?,?,?)",
+            (
+                event_id,
+                0,
+                NATIVE_KEY,
+                None if anchor is None else "0x0000000180001000",
+                anchor,
+            ),
+        )
     return event_id
 
 
@@ -453,3 +472,49 @@ def test_receipt_without_correlated_plan_is_a_projection_error(conn) -> None:
 
     with pytest.raises(ValueError, match="correlated plan"):
         materialize_closed_deobfuscation_case(conn, "session-1")
+
+
+def test_receipt_without_anchored_identity_projects_against_the_function(conn) -> None:
+    """A receipt whose affected blocks were all synthetic is not corruption.
+
+    ``MbaBlockHandle.__post_init__`` requires ``stable_identity is None`` for
+    synthetic and ephemeral handles, and ``_record_handle`` only records handles
+    that carry one - so a receipt can legitimately have zero identity rows. The
+    projection used to raise "mutation receipt has no anchored identity" here,
+    which the observability layer swallowed, so the closed case was silently
+    never materialized. Observed live on 0x7FFFBD56E080 (d81-b4ys).
+    """
+    _active(conn)
+    _identity(conn)
+    _plan(conn)
+    _receipt(conn, identity=False)
+    _finish(conn)
+
+    case_id = materialize_closed_deobfuscation_case(conn, "session-1")
+
+    anchors = conn.execute(
+        "SELECT native_anchor_ea_i64 FROM deobfuscation_case_findings "
+        "WHERE case_id=?",
+        (case_id,),
+    ).fetchall()
+    assert anchors, "the case must materialize instead of raising"
+    assert all(row[0] == FUNC_EA for row in anchors), (
+        "with no block identity to anchor to, the function itself is the anchor"
+    )
+
+
+def test_the_schema_forbids_an_identity_row_without_an_anchor(conn) -> None:
+    """Why the projection has no NULL-anchor branch.
+
+    Both anchor columns are NOT NULL, so an identity row without an anchor
+    cannot be stored. The original guard tested for one anyway, which made its
+    only reachable condition the legitimate no-rows case above - a check that
+    could only ever produce false positives.
+    """
+    columns = {
+        row[1]: row[3]
+        for row in conn.execute("PRAGMA table_info(mutation_receipt_identities)")
+    }
+
+    assert columns["primary_anchor_ea_i64"] == 1
+    assert columns["primary_anchor_ea_hex"] == 1
