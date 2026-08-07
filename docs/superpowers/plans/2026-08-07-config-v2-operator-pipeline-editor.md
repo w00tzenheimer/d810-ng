@@ -35,7 +35,7 @@
 | `src/d810/ui/config_v2_editing_commands.py` | Thin adapter delegation and a named non-mutating draft load. |
 | `src/d810/ui/config_v2_pipeline_overview.py` | Active-pass-only configuration-dock widget with inspect/builder signals. |
 | `src/d810/ui/config_v2_editing_panel.py` | Compact Inspector/Builder screens, routing controls, JSON dialog, footer. |
-| `src/d810/ui/ida_ui.py`, `src/d810/ui/project_config_logic.py` | Configure active-pipeline routing; reject ambiguous focus. |
+| `src/d810/ui/ida_ui.py`, `src/d810/ui/workbench_panel.py`, `src/d810/ui/project_config_logic.py` | Configure active-pipeline routing; reject ambiguous focus. |
 | `tests/unit/ui/test_config_v2_editing_logic.py` | Qt-free view-model tests. |
 | `tests/unit/manager/test_config_v2_editing.py` | Transform and raw-replacement losslessness tests. |
 | `tests/unit/manager/test_config_v2_editing_facade.py` | State/manager facade contracts. |
@@ -65,6 +65,11 @@ class ConfigV2EditorScreen(str, enum.Enum):
 class ConfigV2PipelineOverview:
     description: str
     rows: tuple[ConfigV2PipelineRow, ...]
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class ConfigV2TransformRow:
+    transform_id: str
+    selected: bool
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class ConfigV2PassInspectorView:
@@ -334,6 +339,7 @@ Expected: PASS.
 **Files:**
 - Create: `src/d810/ui/config_v2_pipeline_overview.py`
 - Modify: `src/d810/ui/ida_ui.py`
+- Modify: `src/d810/ui/workbench_panel.py`
 - Create: `tests/unit/ui/test_config_v2_pipeline_overview_contract.py`
 - Modify: `tests/unit/ui/test_project_config_adapter_contract.py`
 
