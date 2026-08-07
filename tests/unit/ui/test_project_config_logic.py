@@ -118,7 +118,10 @@ def test_focus_target_uses_stable_pass_id_without_private_mapping() -> None:
     assert focus.unambiguous is True
     assert focus.pass_id == "pass-b"
     assert focus.pass_index == 1
+    assert missing.pass_id is None
+    assert missing.pass_index is None
     assert missing.unambiguous is False
+    assert "not present" in missing.message
 
 
 def test_focus_target_refuses_duplicate_pipeline_pass_without_row_index() -> None:
@@ -126,8 +129,10 @@ def test_focus_target_refuses_duplicate_pipeline_pass_without_row_index() -> Non
         "mba-simplify", ("mba-simplify", "mba-simplify")
     )
 
+    assert target.pass_id is None
     assert target.pass_index is None
     assert target.unambiguous is False
+    assert "more than once" in target.message
 
 
 def test_focus_target_accepts_a_matching_explicit_row_index() -> None:
@@ -145,8 +150,10 @@ def test_focus_target_refuses_an_index_for_another_pass() -> None:
         "mba-simplify", ("other", "mba-simplify"), pass_index=0
     )
 
+    assert target.pass_id is None
     assert target.pass_index is None
     assert target.unambiguous is False
+    assert "not present at pipeline row 0" in target.message
 
 
 def test_logic_module_imports_no_ida_or_qt_modules() -> None:
