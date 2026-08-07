@@ -575,6 +575,7 @@ if IDA_AVAILABLE:
 
         def _open_recipe_project_profile(self, recipe: typing.Any) -> None:
             from d810.ui.config_v2_editing_commands import ConfigV2EditingAdapter
+            from d810.ui.config_v2_editing_logic import ConfigV2EditorScreen
             from d810.ui.config_v2_editing_panel import ConfigV2EditingPanel
 
             config_dir = pathlib.Path(self._state.d810_config.config_dir)
@@ -593,16 +594,17 @@ if IDA_AVAILABLE:
                     destination=pathlib.Path(destination),
                     recipe=recipe,
                 )
-                if self._config_v2_editor is not None:
-                    self._config_v2_editor.close()
                 editor = ConfigV2EditingPanel(
                     adapter,
                     on_saved=self.refresh,
+                    screen=ConfigV2EditorScreen.BUILDER,
                 )
             except Exception as exc:
                 logger.warning("Config-v2 project editor failed: %s", exc)
                 self.detail.setPlainText(f"Project profile editor failed: {exc}")
                 return
+            if self._config_v2_editor is not None:
+                self._config_v2_editor.close()
             self._config_v2_editor = editor
             editor.show()
 
