@@ -2182,6 +2182,31 @@ class LowerStateMachine(PipelinePass):
             materialized_computed_goto_profile=materialized_computed_goto_profile,
             materialized_state_var_reg=materialized_state_var_reg,
         )
+        # Ticket lpccp-w81p: this is where a recovered STACK identity can be
+        # replaced wholesale by a resolver-materialized REGISTER. When the
+        # substitute matches nothing, the DecisionDag comes out empty and the
+        # dispatcher degrades to a single catch-all row with no other signal.
+        # Log every input so the choice is attributable per generation.
+        logger.info(
+            "STATE_IDENTITY_CHOICE maturity=%s entry=%s recovered=(stkoff=%s, reg=%s) "
+            "materialized=(profile=%s, reg=%s) -> chosen=(stkoff=%s, reg=%s)%s",
+            _maturity_label(context),
+            dispatcher_entry,
+            getattr(recovery, "state_var_stkoff", None),
+            getattr(recovery, "state_var_reg", None),
+            materialized_computed_goto_profile,
+            materialized_state_var_reg,
+            state_var_stkoff,
+            state_var_reg,
+            (
+                " REPLACED"
+                if (
+                    materialized_computed_goto_profile
+                    and materialized_state_var_reg is not None
+                )
+                else ""
+            ),
+        )
         # A register-resident state variable that is never stack-homed has
         # ``state_var_stkoff is None`` but a
         # recovered ``state_var_reg``. The primary emit path below opens to EITHER
