@@ -51,6 +51,14 @@ class ConfigV2EditingAdapter:
             )
         return self._edited(draft)
 
+    def load_view(
+        self,
+    ) -> tuple[ConfigV2ProjectDraft, ConfigV2ProjectValidation]:
+        """Load an ordinary draft for a view without applying the recipe."""
+
+        draft = self._state.create_config_v2_project_draft(self._destination)
+        return self._edited(draft)
+
     def _edited(
         self, draft: ConfigV2ProjectDraft
     ) -> tuple[ConfigV2ProjectDraft, ConfigV2ProjectValidation]:
@@ -104,6 +112,21 @@ class ConfigV2EditingAdapter:
             )
         )
 
+    def set_pass_transforms(
+        self,
+        draft: ConfigV2ProjectDraft,
+        *,
+        pass_index: int,
+        transform_ids: Sequence[str],
+    ) -> tuple[ConfigV2ProjectDraft, ConfigV2ProjectValidation]:
+        return self._edited(
+            self._state.set_config_v2_pass_transforms(
+                draft,
+                pass_index=pass_index,
+                transform_ids=transform_ids,
+            )
+        )
+
     def set_routing_override(
         self,
         draft: ConfigV2ProjectDraft,
@@ -119,6 +142,15 @@ class ConfigV2EditingAdapter:
                 require=require,
                 deny=deny,
             )
+        )
+
+    def replace_document(
+        self,
+        draft: ConfigV2ProjectDraft,
+        document: Mapping[str, object],
+    ) -> tuple[ConfigV2ProjectDraft, ConfigV2ProjectValidation]:
+        return self._edited(
+            self._state.replace_config_v2_document(draft, document)
         )
 
     def retarget(
