@@ -40,8 +40,14 @@ def test_adapter_delegates_every_edit_to_state_and_revalidates() -> None:
         set_config_v2_pass_options=lambda candidate, **kwargs: (
             events.append(("options", candidate, kwargs)) or edited
         ),
+        set_config_v2_pass_transforms=lambda candidate, **kwargs: (
+            events.append(("transforms", candidate, kwargs)) or edited
+        ),
         set_config_v2_routing_override=lambda candidate, **kwargs: (
             events.append(("routing", candidate, kwargs)) or edited
+        ),
+        replace_config_v2_document=lambda candidate, document: (
+            events.append(("document", candidate, document)) or edited
         ),
         save_and_reload_config_v2_project=lambda candidate, checked: (
             events.append(("save", candidate, checked)) or "saved"
@@ -62,20 +68,52 @@ def test_adapter_delegates_every_edit_to_state_and_revalidates() -> None:
         pass_index=0,
         options={"x": 1},
     ) == (edited, validation)
+    assert adapter.set_pass_transforms(
+        draft,
+        pass_index=0,
+        transform_ids=("add-xor-1",),
+    ) == (edited, validation)
     assert adapter.set_routing_override(
         draft,
         prefer={"approov": 5},
         require=None,
         deny=("tigress",),
     ) == (edited, validation)
+    assert adapter.replace_document(draft, {"description": "new"}) == (
+        edited,
+        validation,
+    )
     assert adapter.save(edited, validation) == "saved"
     assert events[:3] == [
         ("create", destination),
         ("materialize", draft, recipe),
         ("validate", edited),
     ]
-    assert sum(event[0] == "validate" for event in events) == 7
+    assert sum(event[0] == "validate" for event in events) == 9
     assert events[-1] == ("save", edited, validation)
+
+
+def test_adapter_load_view_creates_and_validates_an_ordinary_draft() -> None:
+    draft = SimpleNamespace(revision=0)
+    validation = object()
+    recipe = object()
+    events: list[object] = []
+    state = SimpleNamespace(
+        create_config_v2_project_draft=lambda destination: (
+            events.append(("create", destination)) or draft
+        ),
+        validate_config_v2_project_draft=lambda candidate: (
+            events.append(("validate", candidate)) or validation
+        ),
+        materialize_recipe_as_config_v2=lambda candidate, value: (
+            events.append(("materialize", candidate, value)) or draft
+        ),
+    )
+    destination = Path("/tmp/profile.json")
+    adapter = ConfigV2EditingAdapter(state, destination=destination, recipe=recipe)
+
+    assert adapter.load_view() == (draft, validation)
+    assert events == [("create", destination), ("validate", draft)]
 
 
 def test_adapter_retargets_a_draft_and_revalidates_without_reloading() -> None:
