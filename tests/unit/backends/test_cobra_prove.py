@@ -93,5 +93,66 @@ class TestTimeoutSemantics(unittest.TestCase):
         )
 
 
+
+class TestThreadSafety(unittest.TestCase):
+    """z3 objects are bound to a context, and a context is not thread-safe.
+
+    The escalation prover runs on a worker thread while the rule proves inline
+    on the main thread. Sharing the default context across the two raises
+    "Z3Exception: context mismatch" -- and inside IDA that exception escapes
+    check_and_replace into the Hex-Rays C++ callback, where it manifests as
+    SIGSEGV rather than a traceback. Measured: EXIT=139 after two applications.
+
+    Each thread must therefore build its own Context and create every term in
+    it.
+    """
+
+    def setUp(self):
+        if not z3_available():
+            self.skipTest("z3 not installed")
+
+    def test_accepts_an_explicit_context(self):
+        import z3
+
+        ctx = z3.Context()
+        a, b = V("a"), V("b")
+        verdict = prove_equivalent(
+            B("+", B("&", a, b), B("|", a, b)),
+            B("+", a, b),
+            ["a", "b"],
+            32,
+            ctx=ctx,
+        )
+        self.assertIs(verdict, ProofResult.PROVED)
+
+    def test_concurrent_proofs_with_per_thread_contexts_do_not_collide(self):
+        import threading
+
+        import z3
+
+        errors: list[str] = []
+        orig = B("*", B("+", V("a"), V("b")), B("+", V("a"), V("b")))
+        rew = B(
+            "+",
+            B("+", B("*", V("a"), V("a")), B("*", C(2), B("*", V("a"), V("b")))),
+            B("*", V("b"), V("b")),
+        )
+
+        def worker(n: int) -> None:
+            ctx = z3.Context()
+            try:
+                for _ in range(15):
+                    prove_equivalent(orig, rew, ["a", "b"], 32,
+                                     timeout_ms=2000, ctx=ctx)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"thread {n}: {type(exc).__name__}: {exc}")
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(errors, [])
+
 if __name__ == "__main__":
     unittest.main()

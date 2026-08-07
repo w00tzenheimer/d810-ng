@@ -61,6 +61,7 @@ class EscalationProver:
         self._queue: queue.Queue = queue.Queue(maxsize=max_queue)
         self._thread: threading.Thread | None = None
         self._stopping = threading.Event()
+        self._ctx = None
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -116,6 +117,17 @@ class EscalationProver:
     # -- worker ------------------------------------------------------------
 
     def _run(self) -> None:
+        # Own z3 context, created ON this thread. z3 terms belong to a context
+        # and a context is not thread-safe; sharing the default one with the
+        # rule's inline proof raises "Z3Exception: context mismatch", which
+        # inside IDA escapes into the Hex-Rays C++ callback as SIGSEGV.
+        # Measured: EXIT=139 after two applications.
+        try:
+            import z3
+
+            self._ctx = z3.Context()
+        except ImportError:
+            self._ctx = None
         while not self._stopping.is_set():
             item = self._queue.get()
             if item is None:
@@ -136,12 +148,16 @@ class EscalationProver:
         rewrite: dict,
         leaf_names: tuple[str, ...],
     ) -> None:
+        kwargs = {"timeout_ms": self._timeout_ms}
+        ctx = getattr(self, "_ctx", None)
+        if ctx is not None:
+            kwargs["ctx"] = ctx
         verdict = self._prover(
             original,
             rewrite,
             list(leaf_names),
             bitwidth,
-            timeout_ms=self._timeout_ms,
+            **kwargs,
         )
         if getattr(verdict, "value", None) == ProofResult.PROVED.value:
             self._table.record_proved(original, bitwidth, rewrite)
