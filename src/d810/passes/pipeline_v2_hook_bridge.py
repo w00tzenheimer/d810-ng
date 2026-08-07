@@ -22,6 +22,7 @@ from d810.passes.constant_simplification import (
 )
 from d810.passes.hook_transform_passes import build_hook_transform_pass
 from d810.passes.mba_simplify import MBA_SIMPLIFY_PASS_ID, build_mba_simplify_pass
+from d810.passes.mba_solve import MBA_SOLVE_PASS_ID, build_mba_solve_pass
 from d810.passes.pass_pipeline import PipelineConfig, PipelineConfigError
 from d810.passes.pipeline_config_parser import (
     PipelineV2Mode,
@@ -110,6 +111,19 @@ def _instruction_rules_from(config: PipelineConfig) -> tuple[RuleConfiguration, 
             strict=True,
         )
     )
+
+
+#: The instruction rule that implements ``mba-solve``.
+MBA_SOLVE_RULE_NAME = "CobraSolveRule"
+
+
+def _mba_solve_options(config: PipelineConfig) -> dict[str, object]:
+    """Validate ``mba-solve`` options through its pass and pass them to the rule."""
+    adapter = build_mba_solve_pass(config)
+    return {
+        "max_leaves": adapter.max_leaves,
+        "require_proof": adapter.require_proof,
+    }
 
 
 def _flow_rule_from(config: PipelineConfig) -> RuleConfiguration:
@@ -203,6 +217,15 @@ def pipeline_v2_hook_activation(project_config) -> PipelineV2HookActivation:
             continue
         if pass_id == MBA_SIMPLIFY_PASS_ID:
             instruction_rules.extend(_instruction_rules_from(config))
+            continue
+        if pass_id == MBA_SOLVE_PASS_ID:
+            # Solver-backed simplification is a single instruction rule rather
+            # than a transform list, so it needs its own branch: without one it
+            # falls through to _flow_rule_from below and is misfiled as a block
+            # rule, which silently never runs.
+            instruction_rules.append(
+                _rule_config(MBA_SOLVE_RULE_NAME, _mba_solve_options(config))
+            )
             continue
         if pass_id in STATE_MACHINE_NATIVE_PASS_IDS:
             continue
