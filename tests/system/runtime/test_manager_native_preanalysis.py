@@ -668,16 +668,40 @@ def test_calls_native_body_companion_request_queues_range_and_restart(
     }
 
 
-def test_manager_rejects_unsupported_native_body_materializer_maturity() -> None:
-    mba = SimpleNamespace(maturity=ida_hexrays.MMAT_GLBOPT2)
+@pytest.mark.parametrize(
+    "maturity",
+    [
+        ida_hexrays.MMAT_LOCOPT,
+        ida_hexrays.MMAT_GLBOPT2,
+        ida_hexrays.MMAT_GLBOPT3,
+    ],
+)
+def test_manager_returns_none_for_maturity_without_a_materializer(maturity) -> None:
+    """A recognized maturity with no materializer is routine, not an error.
 
+    MMAT_GLBOPT2 is reached on EVERY decompile.  Raising made the sole consumer
+    (DecompilationLifecycleCoordinator.new_semantic_native_body_materializer)
+    swallow the ValueError and log a full traceback at DEBUG every run, which
+    reads as a failure in any debug-logged dump while nothing has failed.
+    """
+    assert (
+        _new_semantic_native_body_materializer(
+            session=SimpleNamespace(function_ea=0x40A560),
+            mba=SimpleNamespace(maturity=maturity),
+        )
+        is None
+    )
+
+
+def test_manager_rejects_unrecognized_native_body_materializer_maturity() -> None:
+    """A maturity id Hex-Rays does not define IS a programming error."""
     with pytest.raises(
         ValueError,
-        match="unsupported semantic native-body materializer maturity",
+        match="unrecognized semantic native-body materializer maturity",
     ):
         _new_semantic_native_body_materializer(
             session=SimpleNamespace(function_ea=0x40A560),
-            mba=mba,
+            mba=SimpleNamespace(maturity=0xBADF00D),
         )
 
 

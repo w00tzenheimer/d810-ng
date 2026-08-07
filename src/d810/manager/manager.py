@@ -357,8 +357,27 @@ def _new_current_mba_mutation_gateway(
     )
 
 
+#: Maturities that have a native-body materializer.  Every other RECOGNIZED
+#: maturity (``MMAT_LOCOPT``, ``MMAT_GLBOPT2``, ``MMAT_GLBOPT3``, ...) simply has
+#: no capability to build -- that is a routine "not available at this stage",
+#: not an error, and callers already fail closed on ``None``.
+_SEMANTIC_NATIVE_BODY_MATURITIES: frozenset[HexRaysMaturity] = frozenset(
+    {
+        HexRaysMaturity.MMAT_GENERATED,
+        HexRaysMaturity.MMAT_PREOPTIMIZED,
+        HexRaysMaturity.MMAT_GLBOPT1,
+        HexRaysMaturity.MMAT_CALLS,
+    }
+)
+
+
 def _new_semantic_native_body_materializer(*, session, mba):
-    """Construct the sole Hex-Rays native-body materialization capability."""
+    """Construct the sole Hex-Rays native-body materialization capability.
+
+    Returns ``None`` when the live maturity simply has no materializer.  A
+    ``ValueError`` is reserved for a maturity id Hex-Rays does not define, which
+    is a programming error rather than a pipeline stage without a capability.
+    """
     from d810.hexrays.mutation.detached_handler_island import (
         CallsSemanticNativeBodyMaterializer,
         PreoptUnionSemanticNativeBodyMaterializer,
@@ -366,6 +385,21 @@ def _new_semantic_native_body_materializer(*, session, mba):
 
     maturity = int(mba.maturity)
     native_maturity = HexRaysMaturity.from_id(maturity)
+    if native_maturity is None:
+        raise ValueError(
+            f"unrecognized semantic native-body materializer maturity: {maturity}"
+        )
+    if native_maturity not in _SEMANTIC_NATIVE_BODY_MATURITIES:
+        # Routine: MMAT_GLBOPT2 is reached on EVERY decompile.  Raising here made
+        # the sole consumer (DecompilationLifecycleCoordinator
+        # .new_semantic_native_body_materializer) swallow a ValueError and log a
+        # full traceback at DEBUG on every run -- exception-as-control-flow for an
+        # expected condition, and a standing red herring in any debug-logged dump.
+        logger.debug(
+            "no semantic native-body materializer at maturity %s; failing closed",
+            native_maturity.name,
+        )
+        return None
     if native_maturity in {
         HexRaysMaturity.MMAT_GENERATED,
         HexRaysMaturity.MMAT_PREOPTIMIZED,
@@ -470,9 +504,12 @@ def _new_semantic_native_body_materializer(*, session, mba):
             function_ea=int(session.function_ea),
             request_call_companions=request_call_companions,
         )
+    # Unreachable: _SEMANTIC_NATIVE_BODY_MATURITIES is exactly the set handled
+    # above, so anything else already returned None. Kept as a wiring assertion
+    # so adding a maturity to that set without a branch fails loudly.
     raise ValueError(
-        "unsupported semantic native-body materializer maturity: "
-        f"{maturity if native_maturity is None else native_maturity.name}"
+        "semantic native-body materializer maturity has no branch: "
+        f"{native_maturity.name}"
     )
 
 
