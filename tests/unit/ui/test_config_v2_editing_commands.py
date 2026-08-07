@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
 from d810.manager.config_v2_edit_models import ConfigV2ProjectDraft
 from d810.ui.config_v2_editing_commands import ConfigV2EditingAdapter
+from d810.ui.config_v2_editing_logic import _routing_view
 
 
 def test_adapter_delegates_every_edit_to_state_and_revalidates() -> None:
@@ -46,6 +48,9 @@ def test_adapter_delegates_every_edit_to_state_and_revalidates() -> None:
         set_config_v2_routing_override=lambda candidate, **kwargs: (
             events.append(("routing", candidate, kwargs)) or edited
         ),
+        clear_config_v2_routing_override=lambda candidate: (
+            events.append(("clear-routing", candidate)) or edited
+        ),
         replace_config_v2_document=lambda candidate, document: (
             events.append(("document", candidate, document)) or edited
         ),
@@ -74,13 +79,14 @@ def test_adapter_delegates_every_edit_to_state_and_revalidates() -> None:
         require=None,
         deny=("tigress",),
     ) == (edited, validation)
+    assert adapter.clear_routing_override(draft) == (edited, validation)
     assert adapter.save(edited, validation) == "saved"
     assert events[:3] == [
         ("create", destination),
         ("materialize", draft, recipe),
         ("validate", edited),
     ]
-    assert sum(event[0] == "validate" for event in events) == 7
+    assert sum(event[0] == "validate" for event in events) == 8
     assert events[-1] == ("save", edited, validation)
 
 
@@ -112,6 +118,36 @@ def test_adapter_set_pass_transforms_delegates_once_then_revalidates_once() -> N
         ),
         ("validate", edited),
     ]
+
+
+def test_adapter_clear_routing_override_delegates_once_then_revalidates_once() -> None:
+    draft = SimpleNamespace(revision=0)
+    edited = ConfigV2ProjectDraft(
+        draft_id="draft",
+        revision=1,
+        source_path=Path("/tmp/source.json"),
+        destination_path=Path("/tmp/profile.json"),
+        source_sha256="source-hash",
+        original_document_json='{"additional_configuration": {"pipeline_v2": []}}',
+        document_json='{"additional_configuration": {"pipeline_v2": []}}',
+    )
+    validation = object()
+    events: list[object] = []
+    state = SimpleNamespace(
+        clear_config_v2_routing_override=lambda candidate: (
+            events.append(("clear-routing", candidate)) or edited
+        ),
+        validate_config_v2_project_draft=lambda candidate: (
+            events.append(("validate", candidate)) or validation
+        ),
+    )
+    adapter = ConfigV2EditingAdapter(state, destination=Path("/tmp/profile.json"))
+
+    assert adapter.clear_routing_override(draft) == (edited, validation)
+    assert events == [("clear-routing", draft), ("validate", edited)]
+    assert _routing_view(
+        json.loads(edited.document_json)["additional_configuration"]
+    ).is_auto is True
 
 
 def test_adapter_replace_document_delegates_once_then_revalidates_once() -> None:

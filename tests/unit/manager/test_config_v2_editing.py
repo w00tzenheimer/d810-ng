@@ -331,6 +331,36 @@ def test_routing_policy_and_stale_validation_fail_closed(tmp_path: Path):
         service.save(changed, validation)
 
 
+def test_clear_routing_override_removes_only_the_override_and_restores_auto(
+    tmp_path: Path,
+):
+    service, draft = _service_and_draft(tmp_path)
+    document = json.loads(draft.document_json)
+    document["future_top_level"] = {"retained": ["value"]}
+    document["additional_configuration"]["future_additional"] = {"kept": True}
+    draft = dataclasses.replace(
+        draft,
+        original_document_json=json.dumps(document),
+        document_json=json.dumps(document),
+    )
+    overridden = service.set_routing_override(
+        draft,
+        prefer={"approov": 4.0},
+        require=None,
+        deny=("tigress",),
+    )
+
+    cleared = service.clear_routing_override(overridden)
+    cleared_document = json.loads(cleared.document_json)
+
+    assert "router_resolution" not in cleared_document["additional_configuration"]
+    assert cleared_document["future_top_level"] == {"retained": ["value"]}
+    assert cleared_document["additional_configuration"]["future_additional"] == {
+        "kept": True
+    }
+    assert service.validate(cleared).valid is True
+
+
 def test_forged_unsupported_change_and_source_drift_are_validation_errors(
     tmp_path: Path,
 ):

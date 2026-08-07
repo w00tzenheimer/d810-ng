@@ -1065,6 +1065,11 @@ class D810Manager:
             deny=deny,
         )
 
+    def clear_config_v2_routing_override(
+        self, draft: ConfigV2ProjectDraft
+    ) -> ConfigV2ProjectDraft:
+        return self.config_v2_editing_service.clear_routing_override(draft)
+
     def replace_config_v2_document(
         self,
         draft: ConfigV2ProjectDraft,
