@@ -67,8 +67,13 @@ _SERIALIZERS = (
 )
 
 
-def _canonical_json(value: object) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+def _canonical_json(value: object, *, sort_keys: bool = True) -> str:
+    return json.dumps(
+        value,
+        sort_keys=sort_keys,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
 
 
 def _document(value: str) -> dict[str, object]:
@@ -172,7 +177,7 @@ class ConfigV2EditingService:
         return dataclasses.replace(
             draft,
             revision=draft.revision + 1,
-            document_json=_canonical_json(document),
+            document_json=_canonical_json(document, sort_keys=False),
         )
 
     def set_field(
@@ -315,9 +320,9 @@ class ConfigV2EditingService:
         transform_options = edited_options.get("transform_options")
         if isinstance(transform_options, Mapping):
             edited_options["transform_options"] = {
-                transform_id: copy.deepcopy(value)
-                for transform_id, value in transform_options.items()
-                if transform_id in selected
+                transform_id: copy.deepcopy(transform_options[transform_id])
+                for transform_id in ordered
+                if transform_id in transform_options
             }
         return self.set_pass_options(
             draft,
