@@ -304,7 +304,6 @@ class _Widget:
             "addStretch",
             "addTab",
             "addWidget",
-            "clear",
             "expandAll",
         }:
             return lambda *args, **kwargs: None
@@ -315,6 +314,10 @@ class _Widget:
 
     def count(self) -> int:
         return len(self._items)
+
+    def clear(self) -> None:
+        self._items.clear()
+        self._row = -1
 
     def currentData(self) -> object | None:
         return None
@@ -342,13 +345,13 @@ class _ListItem:
     def __init__(self, text: str = "") -> None:
         self._text = text
         self._check_state = 0
-        self._data: dict[tuple[int, object], object] = {}
+        self._data: dict[object, object] = {}
 
     def checkState(self) -> int:
         return self._check_state
 
-    def data(self, column: int, role: object) -> object | None:
-        return self._data.get((column, role))
+    def data(self, role: object) -> object | None:
+        return self._data.get(role)
 
     def flags(self) -> int:
         return 0
@@ -356,8 +359,8 @@ class _ListItem:
     def setCheckState(self, state: int) -> None:
         self._check_state = state
 
-    def setData(self, column: int, role: object, value: object) -> None:
-        self._data[(column, role)] = value
+    def setData(self, role: object, value: object) -> None:
+        self._data[role] = value
 
     def setFlags(self, flags: int) -> None:
         del flags
@@ -388,6 +391,7 @@ class _RouteAdapter:
 
     def __init__(self) -> None:
         self.reset_count = 0
+        self.transform_edits: list[tuple[int, tuple[str, ...]]] = []
         document = {
             "description": "route proof",
             "additional_configuration": {
@@ -440,6 +444,17 @@ class _RouteAdapter:
 
     def reset(self) -> tuple[ConfigV2ProjectDraft, ConfigV2ProjectValidation]:
         self.reset_count += 1
+        return self.draft, self.validation
+
+    def set_pass_transforms(
+        self,
+        draft: ConfigV2ProjectDraft,
+        *,
+        pass_index: int,
+        transform_ids: tuple[str, ...],
+    ) -> tuple[ConfigV2ProjectDraft, ConfigV2ProjectValidation]:
+        assert draft is self.draft
+        self.transform_edits.append((pass_index, transform_ids))
         return self.draft, self.validation
 
 
@@ -544,6 +559,8 @@ def test_task4_routes_construct_both_screens_and_focus_duplicate_by_exact_row(
     assert inspector_adapter.reset_count == 1
     assert inspector._screen is ConfigV2EditorScreen.INSPECTOR
     assert inspector._selected_pass_index == 0
+    inspector._apply_selected_transforms()
+    assert inspector_adapter.transform_edits == [(0, ("a",))]
 
     ambiguous_focus = resolve_config_v2_focus_target(
         "mba-simplify",
