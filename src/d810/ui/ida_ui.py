@@ -1249,6 +1249,13 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
             )
         project = self.state.load_project(index)
         self.update_cfg_select()
+        if project is None:
+            # Malformed project: keep the panel responsive and say why rather
+            # than raising into the Qt slot (ticket lpccp-8c87).
+            name = projects[index].path.name if index < len(projects) else str(index)
+            reason = self.state.invalid_projects.get(name, "unknown error")
+            self.cfg_description.setText(f"Cannot load {name} - {reason}")
+            return
         snapshot = self.state.get_project_runtime_snapshot()
         view = build_project_config_view(snapshot)
         self.cfg_description.setText(project.description or "No description")
