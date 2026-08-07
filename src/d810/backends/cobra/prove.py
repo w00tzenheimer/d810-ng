@@ -34,8 +34,26 @@ class ProofResult(enum.Enum):
     UNAVAILABLE = "unavailable"
 
 
-#: Multiplication is where bitvector reasoning gets hard; be generous.
+#: Multiplication is where bitvector reasoning gets hard; be generous.  This
+#: is the budget for the OFF-critical-path prover, which nobody is waiting on.
 DEFAULT_TIMEOUT_MS = 120_000
+
+#: Budget for a proof that a live decompilation is blocked on.
+#:
+#: Set from measurement, not taste.  Sorted proof times (ms) over the 14
+#: accepted candidates on VM_DecryptPacket:
+#:
+#:     0  1  3  8  115  197  284  440  701  1611  6213  18554  68113  93610
+#:
+#: 98% of total proof time sits in 4 of those 14, so a tight budget sheds
+#: almost all the cost and little of the value: 500ms keeps 8/14 for 4.05s of
+#: inline time, while 1000ms buys exactly one more proof for +2.7s and 2000ms
+#: buys two more for +7.3s.  500ms is the knee.
+#:
+#: Shortening this is SAFE but not free: a starved proof yields UNKNOWN, which
+#: the caller must treat as "skip", so the cost is coverage.  Anything that
+#: still needs proving escalates to DEFAULT_TIMEOUT_MS off the critical path.
+INLINE_TIMEOUT_MS = 500
 
 
 def z3_available() -> bool:
