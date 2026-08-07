@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import json
+import copy
 import pathlib
 
 from d810.core import typing
@@ -270,16 +270,21 @@ if IDA_AVAILABLE:
             routing_layout = QtWidgets.QVBoxLayout(self.routing_group)
             routing_layout.setContentsMargins(6, 6, 6, 6)
             routing_layout.setSpacing(4)
+            self.routing_body = QtWidgets.QWidget(self.routing_group)
+            routing_layout.addWidget(self.routing_body)
+            body_layout = QtWidgets.QVBoxLayout(self.routing_body)
+            body_layout.setContentsMargins(0, 0, 0, 0)
+            body_layout.setSpacing(4)
 
             self.routing_auto_check = QtWidgets.QCheckBox("Auto")
-            routing_layout.addWidget(self.routing_auto_check)
+            body_layout.addWidget(self.routing_auto_check)
 
             require_row = QtWidgets.QHBoxLayout()
             require_row.addWidget(QtWidgets.QLabel("Require"))
             self.routing_require_combo = QtWidgets.QComboBox()
             self.routing_require_combo.addItem("Automatic", None)
             require_row.addWidget(self.routing_require_combo, stretch=1)
-            routing_layout.addLayout(require_row)
+            body_layout.addLayout(require_row)
 
             self.routing_family_names = tuple(
                 str(family.name) for family in registered_families()
@@ -287,7 +292,7 @@ if IDA_AVAILABLE:
             for family_name in self.routing_family_names:
                 self.routing_require_combo.addItem(family_name, family_name)
 
-            routing_layout.addWidget(QtWidgets.QLabel("Prefer"))
+            body_layout.addWidget(QtWidgets.QLabel("Prefer"))
             self.routing_prefer_table = QtWidgets.QTableWidget(
                 len(self.routing_family_names), 2
             )
@@ -304,9 +309,9 @@ if IDA_AVAILABLE:
                 self.routing_prefer_table.setItem(row_index, 0, family_item)
                 self.routing_prefer_table.setCellWidget(row_index, 1, bias)
                 self.routing_prefer_rows[family_name] = (family_item, bias)
-            routing_layout.addWidget(self.routing_prefer_table)
+            body_layout.addWidget(self.routing_prefer_table)
 
-            routing_layout.addWidget(QtWidgets.QLabel("Exclude"))
+            body_layout.addWidget(QtWidgets.QLabel("Exclude"))
             self.routing_exclude_list = QtWidgets.QListWidget()
             for family_name in self.routing_family_names:
                 item = QtWidgets.QListWidgetItem(family_name)
@@ -314,12 +319,14 @@ if IDA_AVAILABLE:
                 item.setData(_user_role(), family_name)
                 item.setCheckState(_unchecked_state())
                 self.routing_exclude_list.addItem(item)
-            routing_layout.addWidget(self.routing_exclude_list)
+            body_layout.addWidget(self.routing_exclude_list)
 
             self.apply_routing_button = QtWidgets.QPushButton("Apply routing")
             self.apply_routing_button.clicked.connect(self._apply_routing_rows)
-            routing_layout.addWidget(self.apply_routing_button)
+            body_layout.addWidget(self.apply_routing_button)
             self.routing_auto_check.toggled.connect(self._routing_auto_changed)
+            self.routing_group.toggled.connect(self._set_routing_expanded)
+            self._set_routing_expanded(self.routing_group.isChecked())
 
         def _build_footer(self) -> typing.Any:
             self.footer_dirty_label = QtWidgets.QLabel()
@@ -501,6 +508,9 @@ if IDA_AVAILABLE:
             ):
                 widget.setEnabled(enabled)
 
+        def _set_routing_expanded(self, expanded: bool) -> None:
+            self.routing_body.setVisible(bool(expanded))
+
         def _render_footer(self) -> None:
             if not hasattr(self, "footer_dirty_label"):
                 return
@@ -528,7 +538,7 @@ if IDA_AVAILABLE:
             preserved_tree = getattr(self, "_raw_preserved_tree", None)
             if document_tree is not None:
                 document_tree.set_json(
-                    self._editor_view.raw_document.document,
+                    self._structured_raw_document(),
                     editable=bool(getattr(self, "_raw_document_editable", False)),
                 )
             if preserved_tree is not None:
@@ -536,6 +546,54 @@ if IDA_AVAILABLE:
                     self._editor_view.raw_document.preserved_fields,
                     editable=False,
                 )
+
+        def _structured_raw_document(self) -> dict[str, object]:
+            """Project only fields declared editable by config-v2 serializers."""
+
+            document = self._editor_view.raw_document.document
+            structured: dict[str, object] = {}
+            if "description" in document:
+                structured["description"] = copy.deepcopy(document["description"])
+            additional = document.get("additional_configuration")
+            if isinstance(additional, dict):
+                structured_additional: dict[str, object] = {}
+                for field in ("pipeline_v2", "router_resolution"):
+                    if field in additional:
+                        structured_additional[field] = copy.deepcopy(additional[field])
+                structured["additional_configuration"] = structured_additional
+            return structured
+
+        @staticmethod
+        def _is_structured_raw_document(value: object) -> bool:
+            if not isinstance(value, dict):
+                return False
+            if set(value).difference({"description", "additional_configuration"}):
+                return False
+            additional = value.get("additional_configuration", {})
+            return isinstance(additional, dict) and not set(additional).difference(
+                {"pipeline_v2", "router_resolution"}
+            )
+
+        def _complete_document_from_structured_raw(
+            self, structured: dict[str, object]
+        ) -> dict[str, object]:
+            document = copy.deepcopy(self._editor_view.raw_document.document)
+            if "description" in structured:
+                document["description"] = structured["description"]
+            else:
+                document.pop("description", None)
+            additional = document.get("additional_configuration")
+            structured_additional = structured.get("additional_configuration", {})
+            if not isinstance(additional, dict) or not isinstance(
+                structured_additional, dict
+            ):
+                raise ValueError("config-v2 additional_configuration must be an object")
+            for field in ("pipeline_v2", "router_resolution"):
+                if field in structured_additional:
+                    additional[field] = copy.deepcopy(structured_additional[field])
+                else:
+                    additional.pop(field, None)
+            return document
 
         def _apply_focus_target(self) -> None:
             """Select one requested pass, or report why focus was not possible."""
@@ -856,12 +914,8 @@ if IDA_AVAILABLE:
         def _apply_routing_rows(self, checked: bool = False) -> None:
             del checked
             if self.routing_auto_check.isChecked():
-                document = json.loads(self._draft.document_json)
-                additional = document.get("additional_configuration")
-                if isinstance(additional, dict):
-                    additional.pop("router_resolution", None)
                 self._apply_edit(
-                    lambda: self._adapter.replace_document(self._draft, document)
+                    lambda: self._adapter.clear_routing_override(self._draft)
                 )
                 return
             prefer = {
@@ -889,11 +943,11 @@ if IDA_AVAILABLE:
         def _show_raw_document(self, checked: bool = False) -> None:
             del checked
             dialog = QtWidgets.QDialog(self.parent)
-            dialog.setWindowTitle("Config-v2 document")
+            dialog.setWindowTitle("Config-v2 structured fields")
             document_tree = JsonTreeEditor(dialog)
             preserved_tree = JsonTreeEditor(dialog)
             document_tree.set_json(
-                self._editor_view.raw_document.document,
+                self._structured_raw_document(),
                 editable=False,
             )
             preserved_tree.set_json(
@@ -909,7 +963,7 @@ if IDA_AVAILABLE:
             tabs.addTab(document_tree, "Structured document")
             tabs.addTab(preserved_tree, "Preserved fields")
             edit_raw_button = QtWidgets.QPushButton("Edit raw")
-            open_json_button = QtWidgets.QPushButton("Open raw JSON...")
+            open_json_button = QtWidgets.QPushButton("Open structured JSON...")
             close_button = QtWidgets.QPushButton("Close")
 
             def confirm_raw_edit() -> bool:
@@ -936,7 +990,7 @@ if IDA_AVAILABLE:
                     return False
                 self._raw_document_editable = True
                 document_tree.set_json(
-                    self._editor_view.raw_document.document,
+                    self._structured_raw_document(),
                     editable=True,
                 )
                 return True
@@ -948,8 +1002,8 @@ if IDA_AVAILABLE:
                 if not confirm_raw_edit():
                     return
                 raw_dialog = RawJsonDialog(
-                    "Edit raw config-v2 document",
-                    self._editor_view.raw_document.document,
+                    "Edit config-v2 structured fields",
+                    self._structured_raw_document(),
                     editable=True,
                     on_apply=self._apply_raw_document,
                     parent=dialog,
@@ -975,11 +1029,20 @@ if IDA_AVAILABLE:
                 self._raw_document_editable = False
 
         def _apply_raw_document(self, value: object) -> None:
-            if not isinstance(value, dict):
+            if not self._is_structured_raw_document(value):
                 self._render_raw_document_trees()
-                self._set_status("The config-v2 document must remain a JSON object.")
+                self._set_status("Only declared config-v2 fields may change.")
                 return
-            self._apply_edit(lambda: self._adapter.replace_document(self._draft, value))
+            assert isinstance(value, dict)
+            try:
+                document = self._complete_document_from_structured_raw(value)
+            except ValueError as exc:
+                self._render_raw_document_trees()
+                self._set_status(f"Edit failed: {exc}")
+                return
+            self._apply_edit(
+                lambda: self._adapter.replace_document(self._draft, document)
+            )
 
         def _discard_unsaved(self, checked: bool = False) -> None:
             del checked
