@@ -62,6 +62,11 @@ from d810.core.typing import TYPE_CHECKING, Any, Dict
 
 from d810.core import getLogger
 from d810.errors import D810Z3Exception
+# Top-level, not deferred. The comment this replaces claimed a circular
+# import, but SymbolicExpressionProtocol now lives in d810.ir.expr.dsl
+# (a leaf module) and imports cleanly at module scope -- verified by
+# importing this module standalone.
+from d810.mba.dsl import SymbolicExpressionProtocol
 from d810.mba.backend_registry import VerificationEngineProvider
 
 logger = getLogger(__name__)
@@ -568,8 +573,7 @@ class Z3VerificationVisitor:
         Returns:
             Z3 BitVecRef
         """
-        from d810.mba.dsl import SymbolicExpressionProtocol
-
+    
         # Use Protocol for hot-reload safety
         if isinstance(expr, SymbolicExpressionProtocol):
             return self.visit(expr)
@@ -759,8 +763,6 @@ def verify_rule(
         f"Verifying {getattr(rule, 'name', 'unknown')} with bit_width={bit_width}"
     )
 
-    # Import here to avoid circular imports
-    from d810.mba.dsl import SymbolicExpressionProtocol
 
     pattern = rule.pattern
     replacement = rule.replacement
@@ -961,7 +963,6 @@ def _constraint_expr_to_z3(expr, z3_vars: dict[str, z3.BitVecRef]) -> z3.BitVecR
     Raises:
         ValueError: If expr is not a SymbolicExpression
     """
-    from d810.mba.dsl import SymbolicExpressionProtocol
 
     # Use Protocol for hot-reload safety
     if isinstance(expr, SymbolicExpressionProtocol):
@@ -1016,7 +1017,6 @@ def _collect_symbolic_names(expr, names: set) -> None:
         expr: A SymbolicExpression to traverse.
         names: Set to add discovered names to.
     """
-    from d810.mba.dsl import SymbolicExpressionProtocol
 
     # Use Protocol for hot-reload safety
     if expr is None or not isinstance(expr, SymbolicExpressionProtocol):
