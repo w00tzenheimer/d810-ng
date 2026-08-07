@@ -34,6 +34,21 @@ def _service() -> ConfigV2EditingService:
     return ConfigV2EditingService()
 
 
+def _service_and_draft(tmp_path: Path) -> tuple[ConfigV2EditingService, object]:
+    project, _ = _runtime_project(tmp_path)
+    service = _service()
+    return service, service.create_draft(project, destination=tmp_path / "edited.json")
+
+
+def _pipeline_entry(draft: object, pass_id: str) -> dict[str, object]:
+    document = json.loads(draft.document_json)
+    return next(
+        entry
+        for entry in document["additional_configuration"]["pipeline_v2"]
+        if entry["pass_id"] == pass_id
+    )
+
+
 def test_serializer_manifest_is_explicit_immutable_and_bounded():
     serializers = _service().serializer_manifest()
 
@@ -121,6 +136,75 @@ def test_unsupported_generic_field_edits_are_refused(tmp_path: Path):
 
     with pytest.raises(ConfigV2EditError, match="serializer"):
         _service().set_field(draft, "future_top_level", {"destroy": True})
+
+
+def test_selecting_mba_transforms_is_ordered_lossless_and_validated(tmp_path: Path):
+    service, draft = _service_and_draft(tmp_path)
+    changed = service.set_pass_transforms(
+        draft,
+        pass_index=1,
+        transform_ids=("add-ollvm-1", "add-xor-1"),
+    )
+
+    options = _pipeline_entry(changed, "mba-simplify")["options"]
+    assert options["transforms"] == ["add-xor-1", "add-ollvm-1"]
+    assert options["transform_options"] == {}
+    assert service.validate(changed).valid is True
+
+
+@pytest.mark.parametrize(
+    "transform_ids, error",
+    [
+        (("add-xor-1", "add-xor-1"), "duplicate"),
+        (("not-registered",), "unknown"),
+        ((1,), "string"),
+    ],
+)
+def test_selecting_mba_transforms_rejects_invalid_ids(
+    tmp_path: Path, transform_ids: tuple[object, ...], error: str
+):
+    service, draft = _service_and_draft(tmp_path)
+
+    with pytest.raises(ConfigV2EditError, match=error):
+        service.set_pass_transforms(draft, pass_index=1, transform_ids=transform_ids)
+
+
+def test_selecting_transforms_requires_a_list_valued_options_field(tmp_path: Path):
+    service, draft = _service_and_draft(tmp_path)
+
+    with pytest.raises(ConfigV2EditError, match="list"):
+        service.set_pass_transforms(draft, pass_index=2, transform_ids=())
+
+
+def test_replacing_complete_document_validates_supported_semantic_edits(tmp_path: Path):
+    service, draft = _service_and_draft(tmp_path)
+    document = json.loads(draft.document_json)
+    document["description"] = "raw complete-document edit"
+    document["additional_configuration"]["pipeline_v2"][1]["options"] = {
+        "transforms": ["add-xor-1"],
+        "transform_options": {},
+    }
+    document["additional_configuration"]["router_resolution"] = {
+        "prefer": {"approov": 10.0},
+        "require": None,
+        "deny": ["tigress"],
+    }
+
+    changed = service.replace_document(draft, document)
+
+    assert service.validate(changed).valid is True
+    assert _pipeline_entry(changed, "mba-simplify")["options"]["transforms"] == [
+        "add-xor-1"
+    ]
+
+
+def test_replacing_document_rejects_unsupported_field_changes(tmp_path: Path):
+    service, draft = _service_and_draft(tmp_path)
+    document = json.loads(draft.document_json)
+    document["migration_metadata"] = {"revision": 2}
+
+    with pytest.raises(ConfigV2EditError, match="outside declared serializers"):
+        service.replace_document(draft, document)
 
 
 def test_bundled_runtime_project_cannot_be_overwritten_in_place():
