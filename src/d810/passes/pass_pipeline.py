@@ -172,6 +172,34 @@ class FunctionPipelineContext:
 
 
 @dataclass(frozen=True)
+class ContractEvidencePublication:
+    """Anchored metadata safe to retain for one published evidence token.
+
+    ``evidence_outputs`` remains the live, in-memory value channel.  This
+    record is deliberately smaller: it contains only stable native anchors and
+    a concise producer summary, so diagnostics never serialize arbitrary pass
+    values or Hex-Rays objects.
+    """
+
+    summary: str
+    native_anchor_eas: tuple[int, ...]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.summary, str) or not self.summary.strip():
+            raise ValueError("contract evidence publication summary must be non-empty")
+        anchors = tuple(int(anchor) for anchor in self.native_anchor_eas)
+        if not anchors:
+            raise ValueError("contract evidence publication requires native anchors")
+        if any(anchor < 0 for anchor in anchors):
+            raise ValueError("contract evidence publication anchors must be non-negative")
+        if anchors != tuple(sorted(set(anchors))):
+            raise ValueError(
+                "contract evidence publication anchors must be ordered and unique"
+            )
+        object.__setattr__(self, "native_anchor_eas", anchors)
+
+
+@dataclass(frozen=True)
 class CapabilityPolicy:
     """Capabilities a pass requires from the backend (keys like ``"live_mba"``,
     ``"valranges"``, ``"condition_chain_walkers"``). Empty == no special requirements."""
@@ -798,6 +826,7 @@ class PassResult:
     run_later: tuple[RunLater, ...]
     analysis_outputs: Mapping[str, object]
     evidence_outputs: Mapping[str, object]
+    evidence_publications: Mapping[str, ContractEvidencePublication]
     _preserved_explicit: bool = field(default=False, repr=False, compare=False)
 
     def __init__(
@@ -810,6 +839,7 @@ class PassResult:
         run_later: tuple[RunLater, ...] = (),
         analysis_outputs: Mapping[str, object] | None = None,
         evidence_outputs: Mapping[str, object] | None = None,
+        evidence_publications: Mapping[str, ContractEvidencePublication] | None = None,
     ) -> None:
         preserved_explicit = preserved is not _PRESERVED_UNSET
         preserved_value = preserved if preserved_explicit else PreservedAnalyses.all()
@@ -837,6 +867,21 @@ class PassResult:
             MappingProxyType(
                 {} if evidence_outputs is None else dict(evidence_outputs)
             ),
+        )
+        publications = {} if evidence_publications is None else dict(evidence_publications)
+        if any(
+            not isinstance(token, str)
+            or not token.strip()
+            or not isinstance(publication, ContractEvidencePublication)
+            for token, publication in publications.items()
+        ):
+            raise TypeError(
+                "evidence_publications must map non-empty tokens to ContractEvidencePublication"
+            )
+        object.__setattr__(
+            self,
+            "evidence_publications",
+            MappingProxyType(publications),
         )
         object.__setattr__(self, "_preserved_explicit", preserved_explicit)
 

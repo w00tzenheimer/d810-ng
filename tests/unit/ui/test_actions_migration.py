@@ -202,6 +202,44 @@ def test_stats_compatibility_action_opens_evidence_focused_workbench(
     DeobfuscationStats._panel = None
 
 
+def test_stats_compatibility_action_without_current_function_opens_workbench(
+    monkeypatch,
+) -> None:
+    """The workbench must tolerate invocation outside a pseudocode widget."""
+    class FakePanel:
+        def __init__(self, state) -> None:
+            self.function_calls: list[tuple[object, object, object]] = []
+            self._closed = False
+
+        def set_function(self, func_ea, func_name, fingerprint=None) -> None:
+            self.function_calls.append((func_ea, func_name, fingerprint))
+
+        def set_command_adapter(self, adapter) -> None:
+            pass
+
+        def show(self, focus_section=None) -> bool:
+            return True
+
+    workbench_module = ModuleType("d810.ui.workbench_panel")
+    workbench_module.DeobfuscationWorkbenchPanel = FakePanel
+    monkeypatch.setitem(sys.modules, "d810.ui.workbench_panel", workbench_module)
+
+    idaapi = SimpleNamespace(
+        get_widget_vdui=lambda widget: None,
+        get_func=lambda ea: None,
+        get_func_name=lambda ea: None,
+        warning=lambda message: None,
+        info=lambda message: None,
+    )
+    state = SimpleNamespace(manager=SimpleNamespace(stats=SimpleNamespace(last_report=lambda: {})))
+    action = DeobfuscationStats(state, ida_modules={"idaapi": idaapi})
+    DeobfuscationStats._panel = None
+
+    assert action.execute(SimpleNamespace(widget=object())) == 1
+    assert DeobfuscationStats._panel.function_calls == [(None, None, None)]
+    DeobfuscationStats._panel = None
+
+
 def test_stats_action_teardown_closes_and_releases_workbench_panel() -> None:
     class FakePanel:
         def __init__(self) -> None:

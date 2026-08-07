@@ -306,6 +306,55 @@ def test_build_deobfuscator_passes_current_mba_without_deobfuscating(
     assert deobfuscate_action_calls == []
 
 
+def test_build_deobfuscator_reacquires_microcode_after_pseudocode_closes() -> None:
+    """Build owns a transient decompile when its original pseudocode closed."""
+
+    mba = SimpleNamespace(maturity=5)
+    cfunc = SimpleNamespace(entry_ea=0x401000, mba=mba)
+    decompile_calls: list[int] = []
+    dirty_calls: list[tuple[int, bool]] = []
+    manager_calls: list[tuple[int, object, object]] = []
+    state_calls: list[tuple[object, object, object]] = []
+
+    def decompile_with_native_preanalysis(function_ea, decompile, mark_dirty):
+        manager_calls.append((function_ea, decompile, mark_dirty))
+        mark_dirty()
+        return decompile()
+
+    def execute_build(request, *, target, provider_phase):
+        state_calls.append((request, target, provider_phase))
+        return _result(request)
+
+    state = SimpleNamespace(
+        manager=SimpleNamespace(
+            decompile_with_native_preanalysis=decompile_with_native_preanalysis
+        ),
+        execute_workbench_build_deobfuscator=execute_build,
+    )
+    shim = SimpleNamespace(
+        get_widget_vdui=lambda widget: None,
+        decompile=lambda function_ea: decompile_calls.append(function_ea) or cfunc,
+        mark_cfunc_dirty=lambda function_ea, close: dirty_calls.append(
+            (function_ea, close)
+        ),
+    )
+    adapter = command_module.WorkbenchCommandAdapter(
+        state,
+        shim,
+        SimpleNamespace(widget=object()),
+    )
+    request = _request("build_deobfuscator")
+
+    result = adapter.build_deobfuscator(request)
+
+    assert result.succeeded is True
+    assert len(manager_calls) == 1
+    assert decompile_calls == [0x401000]
+    assert dirty_calls == [(0x401000, False)]
+    assert state_calls == [(request, mba, state_calls[0][2])]
+    assert state_calls[0][2].provider_level == 5
+
+
 def test_analyze_adapter_source_does_not_refresh_decompile_or_import_actions() -> None:
     path = Path(command_module.__file__)
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))

@@ -32,6 +32,9 @@ class CanvasNode:
     detail: str
     workflow_stage_id: str = ""
     workflow_stage_label: str = ""
+    provenance: str = "recipe"
+    recipe_item_id: str | None = None
+    execution_maturity_ids: tuple[str, ...] = ()
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -41,6 +44,7 @@ class CanvasEdge:
     target_node_id: str
     target_port_id: str
     kind: str
+    relation: str = "contract"
 
 
 @dataclasses.dataclass(frozen=True, slots=True)

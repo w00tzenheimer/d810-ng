@@ -411,6 +411,29 @@ class SemanticOutputVerdict(BaseModel):
         indexes = ((('verifier_id', 'witness_id'), False),)
 
 
+class PassContractEvidencePublication(BaseModel):
+    """Typed pass output retained without serializing the live evidence value."""
+
+    event = ForeignKeyField(
+        LifecycleEvent,
+        field="event_id",
+        column_name="event_id",
+        primary_key=True,
+        index=False,
+        null=False,
+    )
+    pass_id = TextField()
+    evidence_token = TextField()
+    evidence_generation = IntegerField()
+    maturity = TextField()
+    summary = TextField()
+    native_anchor_eas_json = TextField()
+
+    class Meta:
+        table_name = "pass_contract_evidence_publications"
+        indexes = ((('pass_id', 'evidence_token'), False),)
+
+
 class DeobfuscationCase(BaseModel):
     """One closed, versioned case owned by a terminal diagnostic session."""
 
@@ -1673,6 +1696,7 @@ MODELS = (
     MutationPlanItem,
     FrontendNormalizationPlanIntent,
     SemanticOutputVerdict,
+    PassContractEvidencePublication,
     DeobfuscationCase,
     DeobfuscationCaseFinding,
     DeobfuscationCaseSemanticWitness,

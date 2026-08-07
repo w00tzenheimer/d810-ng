@@ -39,9 +39,45 @@ def _live_workbench() -> object:
     return _process_until(lambda: DeobfuscationStats._panel)
 
 
-def _build_canvas(workbench: object) -> object:
+def _build_workspace(workbench: object) -> object:
     workbench.build_deobfuscator_button.click()
-    return _process_until(lambda: workbench._build_canvas_panel)
+    return _process_until(lambda: workbench._build_workspace_panel)
+
+
+def _left_button_release_event() -> object:
+    """Create one binding-neutral left-button release for the dataflow view."""
+
+    from d810.qt_shim import QtCore, QtGui
+
+    mouse_button = getattr(QtCore.Qt, "MouseButton", QtCore.Qt)
+    keyboard_modifier = getattr(QtCore.Qt, "KeyboardModifier", QtCore.Qt)
+    event_type = getattr(QtCore.QEvent, "Type", QtCore.QEvent)
+    left_button = getattr(mouse_button, "LeftButton")
+    no_modifier = getattr(keyboard_modifier, "NoModifier")
+    mouse_release = getattr(event_type, "MouseButtonRelease")
+    return QtGui.QMouseEvent(
+        mouse_release,
+        QtCore.QPointF(4.0, 4.0),
+        left_button,
+        left_button,
+        no_modifier,
+    )
+
+
+def _assert_space_pan_stops_on_left_release(canvas: object) -> None:
+    """A Space + left drag must not turn later clicks into continued panning."""
+
+    from d810.qt_shim import QtCore
+
+    view = canvas.canvas_view
+    mouse_button = getattr(QtCore.Qt, "MouseButton", QtCore.Qt)
+    view._space_pan = True
+    view._panning = True
+    view._pan_button = getattr(mouse_button, "LeftButton")
+
+    view.mouseReleaseEvent(_left_button_release_event())
+
+    assert view._panning is False
 
 
 def _legal_add(canvas: object) -> str:
@@ -103,7 +139,7 @@ def test_native_build_canvas_recipe_reload_and_linked_diagnostic() -> None:
     import ida_kernwin
     import idaapi
 
-    from d810.qt_shim import QT_BINDING, QT_GRAPHICS_AVAILABLE
+    from d810.qt_shim import QT_BINDING, QT_GRAPHICS_AVAILABLE, QtWidgets
     from d810.ui.workbench_canvas_logic import linked_case_findings
 
     expected_binding = os.environ["D810_EXPECTED_QT_BINDING"]
@@ -114,11 +150,38 @@ def test_native_build_canvas_recipe_reload_and_linked_diagnostic() -> None:
     )
 
     workbench = _live_workbench()
-    canvas = _build_canvas(workbench)
+    canvas = _build_workspace(workbench)
+
+    before_visual_navigation = canvas._draft.revision
+    canvas.canvas_view.reset_zoom()
+    assert canvas.canvas_view.transform().m11() == pytest.approx(1.0)
+    canvas.fit_workspace_button.click()
+    assert canvas.canvas_scene.sceneRect().isValid()
+    _assert_space_pan_stops_on_left_release(canvas)
+    selected_item = next(
+        item
+        for item in canvas.canvas_scene.items()
+        if isinstance(item.data(0), str) and item.data(0)
+    )
+    selected_item.setSelected(True)
+    QtWidgets.QApplication.processEvents()
+    assert canvas._selected_node_id == selected_item.data(0)
+    assert canvas.node_inspector.currentWidget() is canvas.node_inspector._details_page
+    assert canvas.node_inspector.contract_tree.topLevelItemCount() > 0
+    assert canvas._draft.revision == before_visual_navigation
+
+    left_width = canvas.left_rail.expanded_width
+    canvas.left_rail.set_expanded(False)
+    QtWidgets.QApplication.processEvents()
+    assert canvas.left_rail.expanded is False
+    canvas.left_rail.set_expanded(True)
+    QtWidgets.QApplication.processEvents()
+    assert canvas.left_rail.expanded is True
+    assert canvas.left_rail.expanded_width == left_width
 
     stage_id = canvas._projection.maturities[0].stage_id
-    stage_index = canvas.stage_selector.findData(stage_id)
-    canvas.stage_selector.setCurrentIndex(stage_index)
+    canvas._select_stage(stage_id)
+    assert canvas._selected_stage_id() == stage_id
     canvas.collapse_button.click()
     assert stage_id in canvas._collapsed_stages
     canvas.collapse_button.click()
@@ -140,7 +203,7 @@ def test_native_build_canvas_recipe_reload_and_linked_diagnostic() -> None:
     )
     assert ida_kernwin.process_ui_action("d810ng:deobfuscation_stats", 0)
     reloaded_workbench = _live_workbench()
-    reloaded_canvas = _build_canvas(reloaded_workbench)
+    reloaded_canvas = _build_workspace(reloaded_workbench)
     _assert_saved_projection(
         reloaded_canvas,
         added_pass_id,

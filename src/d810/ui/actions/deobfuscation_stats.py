@@ -73,6 +73,7 @@ class DeobfuscationStats(D810ActionHandler):
 
         # Get the current function EA and name
         func_ea = _get_current_func_ea(ctx, idaapi_shim)
+        func = None
         func_name = None
         if func_ea is not None:
             func = idaapi_shim.get_func(func_ea)
