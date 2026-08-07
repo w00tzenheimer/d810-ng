@@ -46,6 +46,16 @@ MBA_SOLVE_STAGE_ID = "cobra-solve"
 #: throttle: 256 evaluations at 8 versus 65,536 at 16.
 DEFAULT_MAX_LEAVES = 8
 
+#: Maturities the rule runs at, in the portable ``IRMaturity`` vocabulary --
+#: this layer must stay hexrays-agnostic, so the rule maps these to ``MMAT_*``.
+#:
+#: CALL_MODELED is included by default but is a MEASURED PROBLEM: on
+#: VM_DecryptPacket it applied 61 rewrites across 87.6 minutes without
+#: finishing a decompile, so GLOBAL_ANALYZED -- the maturity the design was
+#: justified on (55 candidates there versus 10 at GLOBAL_OPTIMIZED) -- was
+#: never reached at all.  Configurable precisely so the two can be compared.
+DEFAULT_MATURITIES = ("CALL_MODELED", "GLOBAL_ANALYZED")
+
 
 @dataclass(frozen=True)
 class MbaSolveRequest:
@@ -70,6 +80,7 @@ class MbaSolvePass(PipelinePass):
 
     max_leaves: int = DEFAULT_MAX_LEAVES
     require_proof: bool = True
+    maturities: tuple[str, ...] = DEFAULT_MATURITIES
     name: str = MBA_SOLVE_PASS_ID
 
     def __post_init__(self) -> None:
@@ -93,10 +104,12 @@ class MbaSolvePass(PipelinePass):
         )
 
 
-def parse_mba_solve_options(config: PipelineConfig) -> tuple[int, bool]:
+def parse_mba_solve_options(
+    config: PipelineConfig,
+) -> tuple[int, bool, tuple[str, ...]]:
     """Validate ``mba-solve`` options, rejecting unknown keys loudly."""
     options: Mapping[str, object] = config.options or {}
-    unknown = set(options) - {"max_leaves", "require_proof"}
+    unknown = set(options) - {"max_leaves", "require_proof", "maturities"}
     if unknown:
         raise ValueError(f"mba-solve has unknown options: {sorted(unknown)}")
 
@@ -108,12 +121,32 @@ def parse_mba_solve_options(config: PipelineConfig) -> tuple[int, bool]:
     if not isinstance(require_proof, bool):
         raise ValueError("mba-solve options.require_proof must be a boolean")
 
-    return max_leaves, require_proof
+    raw = options.get("maturities", DEFAULT_MATURITIES)
+    if isinstance(raw, str) or not isinstance(raw, (list, tuple)):
+        raise ValueError("mba-solve options.maturities must be a list of names")
+    maturities = tuple(str(name) for name in raw)
+    if not maturities:
+        # An empty list would disable the rule everywhere while still looking
+        # configured -- refuse rather than silently do nothing.
+        raise ValueError("mba-solve options.maturities must not be empty")
+    valid = {member.name for member in IRMaturity}
+    bad = sorted(set(maturities) - valid)
+    if bad:
+        raise ValueError(
+            f"mba-solve options.maturities has unknown names: {bad}; "
+            f"valid names are {sorted(valid)}"
+        )
+
+    return max_leaves, require_proof, maturities
 
 
 def build_mba_solve_pass(config: PipelineConfig) -> MbaSolvePass:
-    max_leaves, require_proof = parse_mba_solve_options(config)
-    return MbaSolvePass(max_leaves=max_leaves, require_proof=require_proof)
+    max_leaves, require_proof, maturities = parse_mba_solve_options(config)
+    return MbaSolvePass(
+        max_leaves=max_leaves,
+        require_proof=require_proof,
+        maturities=maturities,
+    )
 
 
 def mba_solve_stages() -> tuple[ExecutionStageDescriptor, ...]:
@@ -144,7 +177,11 @@ def register_mba_solve_pass(registry: PassRegistry) -> PassRegistry:
         config_template=PipelineConfig(
             pass_id=MBA_SOLVE_PASS_ID,
             workflow_stage=StrategyWorkflowStage.FRONTEND_NORMALIZATION,
-            options={"max_leaves": DEFAULT_MAX_LEAVES, "require_proof": True},
+            options={
+                "max_leaves": DEFAULT_MAX_LEAVES,
+                "require_proof": True,
+                "maturities": list(DEFAULT_MATURITIES),
+            },
         ),
         stages=stages,
         transform_ids=tuple(stage.stage_id for stage in stages),
@@ -157,6 +194,7 @@ def mba_solve_pass_registry() -> PassRegistry:
 
 
 __all__ = [
+    "DEFAULT_MATURITIES",
     "DEFAULT_MAX_LEAVES",
     "MBA_SOLVE_PASS_ID",
     "MbaSolveCapability",

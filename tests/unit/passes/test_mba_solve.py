@@ -26,20 +26,26 @@ def _config(options: dict | None = None) -> PipelineConfig:
 
 class TestOptions(unittest.TestCase):
     def test_defaults(self):
-        max_leaves, require_proof = parse_mba_solve_options(_config())
+        max_leaves, require_proof, maturities = parse_mba_solve_options(_config())
         self.assertEqual(max_leaves, DEFAULT_MAX_LEAVES)
         self.assertTrue(require_proof)
+        self.assertEqual(maturities, ("CALL_MODELED", "GLOBAL_ANALYZED"))
 
     def test_default_leaf_cap_is_8_not_16(self):
         # Signature cost is 2**n: 256 evaluations at 8, 65,536 at 16.
         self.assertEqual(DEFAULT_MAX_LEAVES, 8)
 
     def test_explicit_values(self):
-        max_leaves, require_proof = parse_mba_solve_options(
-            _config({"max_leaves": 4, "require_proof": False})
+        max_leaves, require_proof, maturities = parse_mba_solve_options(
+            _config({
+                "max_leaves": 4,
+                "require_proof": False,
+                "maturities": ["GLOBAL_ANALYZED"],
+            })
         )
         self.assertEqual(max_leaves, 4)
         self.assertFalse(require_proof)
+        self.assertEqual(maturities, ("GLOBAL_ANALYZED",))
 
     def test_unknown_option_is_rejected(self):
         with self.assertRaises(ValueError) as ctx:
@@ -98,3 +104,61 @@ class TestRegistry(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestMaturitiesOption(unittest.TestCase):
+    """Maturity must be config-driven, not hardcoded.
+
+    Config speaks the portable IRMaturity vocabulary (CALL_MODELED,
+    GLOBAL_ANALYZED), not IDA's MMAT_* -- the passes layer must stay
+    hexrays-agnostic, and the rule does the mapping.
+
+    Measured on VM_DecryptPacket: with CALL_MODELED (MMAT_CALLS) in the list
+    the rule applied 61 rewrites over 87.6 minutes without finishing a
+    decompile, so GLOBAL_ANALYZED (MMAT_GLBOPT1) -- the maturity the design was
+    actually justified on -- was never reached. Comparing the two lists needs them selectable from config;
+    monkeypatching the rule is unreliable because d810's reload machinery
+    leaves several class copies in one process and a patch can miss the
+    instance the manager built.
+    """
+
+    def test_defaults_to_calls_and_glbopt1(self):
+        pass_ = build_mba_solve_pass(
+            PipelineConfig(
+                pass_id=MBA_SOLVE_PASS_ID,
+                workflow_stage=StrategyWorkflowStage.FRONTEND_NORMALIZATION,
+                options={},
+            )
+        )
+        self.assertEqual(pass_.maturities, ("CALL_MODELED", "GLOBAL_ANALYZED"))
+
+    def test_accepts_an_explicit_single_maturity(self):
+        pass_ = build_mba_solve_pass(
+            PipelineConfig(
+                pass_id=MBA_SOLVE_PASS_ID,
+                workflow_stage=StrategyWorkflowStage.FRONTEND_NORMALIZATION,
+                options={"maturities": ["GLOBAL_ANALYZED"]},
+            )
+        )
+        self.assertEqual(pass_.maturities, ("GLOBAL_ANALYZED",))
+
+    def test_rejects_an_unknown_maturity_name(self):
+        with self.assertRaises(ValueError):
+            build_mba_solve_pass(
+                PipelineConfig(
+                    pass_id=MBA_SOLVE_PASS_ID,
+                    workflow_stage=StrategyWorkflowStage.FRONTEND_NORMALIZATION,
+                    options={"maturities": ["NOT_A_MATURITY"]},
+                )
+            )
+
+    def test_rejects_an_empty_maturity_list(self):
+        """An empty list would silently disable the rule everywhere."""
+        with self.assertRaises(ValueError):
+            build_mba_solve_pass(
+                PipelineConfig(
+                    pass_id=MBA_SOLVE_PASS_ID,
+                    workflow_stage=StrategyWorkflowStage.FRONTEND_NORMALIZATION,
+                    options={"maturities": []},
+                )
+            )

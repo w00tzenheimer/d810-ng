@@ -123,6 +123,9 @@ def _mba_solve_options(config: PipelineConfig) -> dict[str, object]:
     return {
         "max_leaves": adapter.max_leaves,
         "require_proof": adapter.require_proof,
+        # Portable IRMaturity names; the rule maps them to MMAT_* so this layer
+        # stays hexrays-agnostic.
+        "maturities": list(adapter.maturities),
     }
 
 
