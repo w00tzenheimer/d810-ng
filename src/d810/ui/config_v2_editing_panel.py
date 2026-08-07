@@ -7,9 +7,9 @@ import pathlib
 
 from d810.core import typing
 from d810.core.logging import getLogger
+from d810.families.registry import registered_families
 from d810.ui.config_v2_editing_logic import (
     ConfigV2EditorScreen,
-    config_v2_action_states,
     project_config_v2_document,
     project_config_v2_editor_view,
     project_serializer_rows,
@@ -48,20 +48,17 @@ if IDA_AVAILABLE:
         except AttributeError:
             return QtCore.Qt.UserRole
 
-
     def _checkable_flag() -> typing.Any:
         try:
             return QtCore.Qt.ItemFlag.ItemIsUserCheckable
         except AttributeError:
             return QtCore.Qt.ItemIsUserCheckable
 
-
     def _checked_state() -> typing.Any:
         try:
             return QtCore.Qt.CheckState.Checked
         except AttributeError:
             return QtCore.Qt.Checked
-
 
     def _unchecked_state() -> typing.Any:
         try:
@@ -91,11 +88,10 @@ if IDA_AVAILABLE:
             self._focus_applied = False
             self._selected_pass_index: int | None = None
             self._rendering_inspector = False
+            self._rendering_routing = False
             self._manifest = tuple(adapter.manifest())
             self._catalog = tuple(adapter.catalog())
-            self._catalog_by_pass_id = {
-                entry.pass_id: entry for entry in self._catalog
-            }
+            self._catalog_by_pass_id = {entry.pass_id: entry for entry in self._catalog}
             self._draft, self._validation = adapter.reset()
             self._view = project_config_v2_document(self._draft)
             self._editor_view = project_config_v2_editor_view(
@@ -107,59 +103,27 @@ if IDA_AVAILABLE:
             self.parent: typing.Any = None
 
             self.destination_label = QtWidgets.QLabel(str(adapter.destination))
+            self.destination_label.setToolTip(str(adapter.destination))
             self.validation_label = QtWidgets.QLabel()
-            self.status_detail = QtWidgets.QPlainTextEdit()
-            self.status_detail.setReadOnly(True)
-            self.status_detail.setMaximumHeight(90)
+            self.error_label = QtWidgets.QLabel()
+            self.error_label.setWordWrap(True)
+            self.error_label.setMaximumHeight(44)
             self._set_status("")
 
-            self.manifest_list = QtWidgets.QListWidget()
-            self.manifest_list.setToolTip(
-                "Only these fields have declared lossless structured serializers"
-            )
-
-            self.description_edit = QtWidgets.QPlainTextEdit()
-            self.description_edit.setFixedHeight(64)
-            try:
-                wrap_mode = QtWidgets.QPlainTextEdit.LineWrapMode.WidgetWidth
-                vertical_policy = QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded
-                horizontal_policy = QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-            except AttributeError:
-                wrap_mode = QtWidgets.QPlainTextEdit.WidgetWidth
-                vertical_policy = QtCore.Qt.ScrollBarAsNeeded
-                horizontal_policy = QtCore.Qt.ScrollBarAlwaysOff
-            self.description_edit.setLineWrapMode(wrap_mode)
-            self.description_edit.setVerticalScrollBarPolicy(vertical_policy)
-            self.description_edit.setHorizontalScrollBarPolicy(horizontal_policy)
-            self.description_button = QtWidgets.QPushButton("Set description")
-
-            self.catalog_combo = QtWidgets.QComboBox()
-            for entry in sorted(self._catalog, key=lambda item: item.pass_id):
-                self.catalog_combo.addItem(
-                    f"{entry.display_name} ({entry.pass_id})",
-                    entry.pass_id,
-                )
+            self.description_label = QtWidgets.QLabel()
+            self.description_label.setWordWrap(True)
+            self.edit_description_button = QtWidgets.QPushButton("Edit description...")
             self.pipeline_list = QtWidgets.QListWidget()
             self.pipeline_list.setToolTip("Execution order is top to bottom")
             self.pass_buttons: dict[str, typing.Any] = {}
             for action_id, label in (
-                ("add", "Add registered pass"),
+                ("add", "Add pass..."),
                 ("remove", "Remove"),
                 ("up", "Move up"),
                 ("down", "Move down"),
-                ("options", "Edit pass options"),
+                ("inspector", "Open Inspector"),
             ):
                 self.pass_buttons[action_id] = QtWidgets.QPushButton(label)
-
-            self.routing_button = QtWidgets.QPushButton("Edit routing override")
-            self.routing_view = QtWidgets.QPlainTextEdit()
-            self.routing_view.setReadOnly(True)
-            self.routing_view.setMaximumHeight(130)
-
-            self.complete_document = QtWidgets.QPlainTextEdit()
-            self.complete_document.setReadOnly(True)
-            self.unsupported_document = QtWidgets.QPlainTextEdit()
-            self.unsupported_document.setReadOnly(True)
 
             self.screen_stack = QtWidgets.QStackedWidget()
             self.builder_page = QtWidgets.QWidget()
@@ -184,15 +148,7 @@ if IDA_AVAILABLE:
             self.raw_contract_button.setText("View raw contract")
             self.edit_pipeline_button = QtWidgets.QPushButton("Edit pipeline...")
 
-            self.validate_button = QtWidgets.QPushButton("Validate full pipeline")
-            self.reset_button = QtWidgets.QPushButton("Reset draft")
-            self.reset_button.setToolTip(
-                "Restore the complete runtime source and any originating recipe seed"
-            )
-            self.save_as_button = QtWidgets.QPushButton("Save as another config...")
-            self.save_button = QtWidgets.QPushButton("Save atomically and reload")
-
-            self.description_button.clicked.connect(self._set_description)
+            self.edit_description_button.clicked.connect(self._edit_description)
             self.pass_buttons["add"].clicked.connect(self._add_pass)
             self.pass_buttons["remove"].clicked.connect(self._remove_pass)
             self.pass_buttons["up"].clicked.connect(
@@ -201,100 +157,58 @@ if IDA_AVAILABLE:
             self.pass_buttons["down"].clicked.connect(
                 lambda checked=False: self._move_pass(1)
             )
-            self.pass_buttons["options"].clicked.connect(self._edit_pass_options)
-            self.routing_button.clicked.connect(self._edit_routing)
-            self.transform_picker.itemChanged.connect(
-                self._apply_selected_transforms
+            self.pass_buttons["inspector"].clicked.connect(
+                self._open_selected_inspector
             )
+            self.transform_picker.itemChanged.connect(self._apply_selected_transforms)
             self.raw_options_button.clicked.connect(self._show_raw_options)
             self.raw_contract_button.clicked.connect(self._show_raw_contract)
             self.edit_pipeline_button.clicked.connect(self._show_builder)
-            self.validate_button.clicked.connect(self._validate)
-            self.reset_button.clicked.connect(self._reset)
-            self.save_as_button.clicked.connect(self._save_as)
-            self.save_button.clicked.connect(self._save)
             self._render()
 
         def OnCreate(self, form: typing.Any) -> None:
             self.parent = self.FormToPyQtWidget(form)
 
-            project_identity_group = QtWidgets.QGroupBox("Project", self.parent)
-            identity_layout = QtWidgets.QFormLayout(project_identity_group)
-            identity_layout.setContentsMargins(4, 4, 4, 4)
-            identity_layout.setSpacing(4)
-            identity_layout.addRow("Destination:", self.destination_label)
-            identity_layout.addRow("Validation:", self.validation_label)
+            project_header = QtWidgets.QWidget(self.parent)
+            identity_layout = QtWidgets.QHBoxLayout(project_header)
+            identity_layout.setContentsMargins(4, 2, 4, 2)
+            identity_layout.setSpacing(8)
+            identity_layout.addWidget(self.destination_label, stretch=1)
+            identity_layout.addWidget(self.validation_label)
 
             description_row = QtWidgets.QHBoxLayout()
             description_row.setSpacing(4)
             description_row.addWidget(QtWidgets.QLabel("Description:"))
-            description_row.addWidget(self.description_edit)
-            description_row.addWidget(self.description_button)
+            description_row.addWidget(self.description_label, stretch=1)
+            description_row.addWidget(self.edit_description_button)
 
             pass_row = QtWidgets.QHBoxLayout()
             pass_row.setSpacing(4)
-            pass_row.addWidget(self.catalog_combo, stretch=1)
-            for action_id in ("add", "remove", "up", "down", "options"):
+            for action_id in ("add", "remove", "up", "down", "inspector"):
                 pass_row.addWidget(self.pass_buttons[action_id])
 
-            typed_splitter = QtWidgets.QSplitter()
-            try:
-                typed_splitter.setOrientation(QtCore.Qt.Orientation.Horizontal)
-            except AttributeError:
-                typed_splitter.setOrientation(QtCore.Qt.Horizontal)
-            typed_splitter.addWidget(self.manifest_list)
-            typed_splitter.addWidget(self.pipeline_list)
-            typed_splitter.addWidget(self.routing_view)
-            self.manifest_list.setMinimumWidth(180)
-            self.pipeline_list.setMinimumWidth(280)
-            self.routing_view.setMinimumWidth(280)
-            typed_splitter.setStretchFactor(0, 1)
-            typed_splitter.setStretchFactor(1, 2)
-            typed_splitter.setStretchFactor(2, 2)
-            typed_splitter.setSizes([200, 400, 400])
-
-            raw_tabs = QtWidgets.QTabWidget()
-            raw_tabs.addTab(self.unsupported_document, "Unsupported fields (read-only)")
-            raw_tabs.addTab(self.complete_document, "Complete document (read-only)")
-
-            editing_group = QtWidgets.QGroupBox("Structured fields", self.parent)
+            editing_group = QtWidgets.QGroupBox("Active ordered passes", self.parent)
             editing_layout = QtWidgets.QVBoxLayout(editing_group)
             editing_layout.setContentsMargins(4, 4, 4, 4)
             editing_layout.setSpacing(4)
             editing_layout.addLayout(description_row)
+            editing_layout.addWidget(self.pipeline_list, stretch=1)
             editing_layout.addLayout(pass_row)
-            editing_layout.addWidget(typed_splitter, stretch=1)
 
-            raw_group = QtWidgets.QGroupBox("Preserved document", self.parent)
-            raw_layout = QtWidgets.QVBoxLayout(raw_group)
-            raw_layout.setContentsMargins(4, 4, 4, 4)
-            raw_layout.setSpacing(4)
-            raw_layout.addWidget(raw_tabs)
-
-            outer_splitter = QtWidgets.QSplitter()
-            try:
-                outer_splitter.setOrientation(QtCore.Qt.Orientation.Vertical)
-            except AttributeError:
-                outer_splitter.setOrientation(QtCore.Qt.Vertical)
-            outer_splitter.addWidget(editing_group)
-            outer_splitter.addWidget(raw_group)
-            outer_splitter.setStretchFactor(0, 1)
-            outer_splitter.setStretchFactor(1, 1)
-            outer_splitter.setSizes([450, 550])
+            self._build_routing_controls()
 
             builder_layout = QtWidgets.QVBoxLayout(self.builder_page)
             builder_layout.setContentsMargins(0, 0, 0, 0)
             builder_layout.setSpacing(4)
-            builder_layout.addWidget(outer_splitter, stretch=1)
+            builder_layout.addWidget(editing_group, stretch=1)
+            builder_layout.addWidget(self.routing_group)
 
             inspector_layout = QtWidgets.QVBoxLayout(self.inspector_page)
             inspector_layout.setContentsMargins(4, 4, 4, 4)
             inspector_layout.setSpacing(6)
 
             inspector_identity_group = QtWidgets.QGroupBox("Pass inspector")
-            inspector_identity_layout = QtWidgets.QFormLayout(
-                inspector_identity_group
-            )
+            inspector_identity_layout = QtWidgets.QFormLayout(inspector_identity_group)
             inspector_identity_layout.setContentsMargins(4, 4, 4, 4)
             inspector_identity_layout.setSpacing(4)
             inspector_identity_layout.addRow(self.inspector_details)
@@ -338,22 +252,110 @@ if IDA_AVAILABLE:
             inspector_layout.addWidget(contract_group, stretch=1)
             inspector_layout.addWidget(self.edit_pipeline_button)
 
-            action_row = QtWidgets.QHBoxLayout()
-            action_row.addWidget(self.routing_button)
-            action_row.addWidget(self.reset_button)
-            action_row.addStretch(1)
-            action_row.addWidget(self.validate_button)
-            action_row.addWidget(self.save_as_button)
-            action_row.addWidget(self.save_button)
+            footer = self._build_footer()
 
             layout = QtWidgets.QVBoxLayout(self.parent)
             layout.setContentsMargins(4, 4, 4, 4)
             layout.setSpacing(6)
-            layout.addWidget(project_identity_group)
+            layout.addWidget(project_header)
             layout.addWidget(self.screen_stack, stretch=1)
-            layout.addWidget(self.status_detail)
-            layout.addLayout(action_row)
+            layout.addWidget(self.error_label)
+            layout.addLayout(footer)
             self._render()
+
+        def _build_routing_controls(self) -> None:
+            self.routing_group = QtWidgets.QGroupBox("Auto routing", self.parent)
+            self.routing_group.setCheckable(True)
+            self.routing_group.setChecked(False)
+            routing_layout = QtWidgets.QVBoxLayout(self.routing_group)
+            routing_layout.setContentsMargins(6, 6, 6, 6)
+            routing_layout.setSpacing(4)
+
+            self.routing_auto_check = QtWidgets.QCheckBox("Auto")
+            routing_layout.addWidget(self.routing_auto_check)
+
+            require_row = QtWidgets.QHBoxLayout()
+            require_row.addWidget(QtWidgets.QLabel("Require"))
+            self.routing_require_combo = QtWidgets.QComboBox()
+            self.routing_require_combo.addItem("Automatic", None)
+            require_row.addWidget(self.routing_require_combo, stretch=1)
+            routing_layout.addLayout(require_row)
+
+            self.routing_family_names = tuple(
+                str(family.name) for family in registered_families()
+            )
+            for family_name in self.routing_family_names:
+                self.routing_require_combo.addItem(family_name, family_name)
+
+            routing_layout.addWidget(QtWidgets.QLabel("Prefer"))
+            self.routing_prefer_table = QtWidgets.QTableWidget(
+                len(self.routing_family_names), 2
+            )
+            self.routing_prefer_table.setHorizontalHeaderLabels(["Family", "Bias"])
+            self.routing_prefer_rows: dict[str, tuple[typing.Any, typing.Any]] = {}
+            for row_index, family_name in enumerate(self.routing_family_names):
+                family_item = QtWidgets.QTableWidgetItem(family_name)
+                family_item.setFlags(family_item.flags() | _checkable_flag())
+                family_item.setCheckState(_unchecked_state())
+                bias = QtWidgets.QDoubleSpinBox()
+                bias.setRange(-1000000.0, 1000000.0)
+                bias.setDecimals(3)
+                bias.setValue(0.0)
+                self.routing_prefer_table.setItem(row_index, 0, family_item)
+                self.routing_prefer_table.setCellWidget(row_index, 1, bias)
+                self.routing_prefer_rows[family_name] = (family_item, bias)
+            routing_layout.addWidget(self.routing_prefer_table)
+
+            routing_layout.addWidget(QtWidgets.QLabel("Exclude"))
+            self.routing_exclude_list = QtWidgets.QListWidget()
+            for family_name in self.routing_family_names:
+                item = QtWidgets.QListWidgetItem(family_name)
+                item.setFlags(item.flags() | _checkable_flag())
+                item.setData(_user_role(), family_name)
+                item.setCheckState(_unchecked_state())
+                self.routing_exclude_list.addItem(item)
+            routing_layout.addWidget(self.routing_exclude_list)
+
+            self.apply_routing_button = QtWidgets.QPushButton("Apply routing")
+            self.apply_routing_button.clicked.connect(self._apply_routing_rows)
+            routing_layout.addWidget(self.apply_routing_button)
+            self.routing_auto_check.toggled.connect(self._routing_auto_changed)
+
+        def _build_footer(self) -> typing.Any:
+            self.footer_dirty_label = QtWidgets.QLabel()
+            self.footer_validation_label = QtWidgets.QLabel()
+            self.footer_overflow_button = QtWidgets.QToolButton()
+            self.footer_overflow_button.setText("...")
+            self.footer_overflow_menu = QtWidgets.QMenu(self.footer_overflow_button)
+            self.footer_overflow_menu.addAction("Validate", self._validate)
+            self.footer_overflow_menu.addAction(
+                "Discard unsaved", self._discard_unsaved
+            )
+            self.footer_overflow_menu.addAction("Save as new...", self._save_as)
+            self.footer_overflow_menu.addAction("View raw", self._show_raw_document)
+            self.footer_overflow_menu.addAction(
+                "Developer help", self._show_developer_help
+            )
+            self.footer_overflow_button.setMenu(self.footer_overflow_menu)
+            try:
+                self.footer_overflow_button.setPopupMode(
+                    QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup
+                )
+            except AttributeError:
+                self.footer_overflow_button.setPopupMode(
+                    QtWidgets.QToolButton.InstantPopup
+                )
+            self.save_button = QtWidgets.QPushButton("Save")
+            self.save_button.clicked.connect(self._save)
+
+            footer = QtWidgets.QHBoxLayout()
+            footer.addWidget(self.footer_dirty_label)
+            footer.addWidget(QtWidgets.QLabel("|"))
+            footer.addWidget(self.footer_validation_label)
+            footer.addStretch(1)
+            footer.addWidget(self.footer_overflow_button)
+            footer.addWidget(self.save_button)
+            return footer
 
         def OnClose(self, form: typing.Any) -> None:
             del form
@@ -394,22 +396,20 @@ if IDA_AVAILABLE:
                 self._validation,
                 self._catalog,
             )
-            self.destination_label.setText(str(self._adapter.destination))
-            serializer_rows = project_serializer_rows(self._manifest)
-            actions = {
-                item.action_id: item
-                for item in config_v2_action_states(self._draft, self._validation)
-            }
-
-            self.manifest_list.clear()
-            for row in serializer_rows:
-                item = QtWidgets.QListWidgetItem(
-                    f"{row.label}\n{row.value_kind}: {row.path}"
+            destination = str(self._adapter.destination)
+            try:
+                try:
+                    elide = QtCore.Qt.TextElideMode.ElideMiddle
+                except AttributeError:
+                    elide = QtCore.Qt.ElideMiddle
+                destination = self.destination_label.fontMetrics().elidedText(
+                    destination, elide, 420
                 )
-                item.setToolTip(
-                    "Declared structured serializer; all other fields are read-only"
-                )
-                self.manifest_list.addItem(item)
+            except (AttributeError, TypeError):
+                pass
+            self.destination_label.setText(destination)
+            self.destination_label.setToolTip(str(self._adapter.destination))
+            self.description_label.setText(self._view.description or "No description")
 
             selected = self._selected_pass_index
             if selected is None and self._screen is ConfigV2EditorScreen.BUILDER:
@@ -422,7 +422,10 @@ if IDA_AVAILABLE:
             self._apply_focus_target()
 
             if self._editor_view.inspectors:
-                if self._selected_pass_index is None and self._screen is ConfigV2EditorScreen.BUILDER:
+                if (
+                    self._selected_pass_index is None
+                    and self._screen is ConfigV2EditorScreen.BUILDER
+                ):
                     self._selected_pass_index = min(
                         max(selected if selected is not None else 0, 0),
                         len(self._editor_view.inspectors) - 1,
@@ -437,29 +440,102 @@ if IDA_AVAILABLE:
             if self._selected_pass_index is not None:
                 self.pipeline_list.setCurrentRow(self._selected_pass_index)
 
-            if not self.description_edit.hasFocus():
-                self.description_edit.setPlainText(self._view.description)
-            self.routing_view.setPlainText(self._view.routing_json)
-            self.unsupported_document.setPlainText(self._view.unsupported_document_json)
-            self.complete_document.setPlainText(self._view.complete_document_json)
-
             if self._validation.valid:
                 self.validation_label.setText(
-                    f"Full config-v2 validation: ready; {len(self._validation.pass_ids)} pass(es)"
+                    f"Ready | {len(self._validation.pass_ids)} pass(es)"
                 )
             else:
                 self.validation_label.setText(
-                    f"Full config-v2 validation: blocked; {len(self._validation.diagnostics)} diagnostic(s)"
+                    f"Blocked | {len(self._validation.diagnostics)} diagnostic(s)"
                 )
-            save = actions["save_project"]
-            self.save_button.setEnabled(save.enabled)
-            self.save_button.setToolTip(save.reason)
+            self._render_routing()
+            self._render_footer()
+            self._render_raw_document_trees()
             self._render_inspector()
             self.screen_stack.setCurrentWidget(
                 self.inspector_page
                 if self._screen is ConfigV2EditorScreen.INSPECTOR
                 else self.builder_page
             )
+
+        def _render_routing(self) -> None:
+            if not hasattr(self, "routing_group"):
+                return
+            routing = self._editor_view.routing
+            self._rendering_routing = True
+            try:
+                self.routing_group.setTitle(
+                    "Auto routing" if routing.is_auto else "Routing override"
+                )
+                self.routing_auto_check.setChecked(routing.is_auto)
+                required_index = self.routing_require_combo.findData(routing.require)
+                self.routing_require_combo.setCurrentIndex(
+                    required_index if required_index >= 0 else 0
+                )
+                preferred = dict(routing.preferred)
+                for family_name, (item, bias) in self.routing_prefer_rows.items():
+                    item.setCheckState(
+                        _checked_state()
+                        if family_name in preferred
+                        else _unchecked_state()
+                    )
+                    bias.setValue(float(preferred.get(family_name, 0.0)))
+                denied = set(routing.denied)
+                for index in range(self.routing_exclude_list.count()):
+                    item = self.routing_exclude_list.item(index)
+                    item.setCheckState(
+                        _checked_state()
+                        if str(item.data(_user_role())) in denied
+                        else _unchecked_state()
+                    )
+                self._routing_auto_changed(routing.is_auto)
+            finally:
+                self._rendering_routing = False
+
+        def _routing_auto_changed(self, checked: bool) -> None:
+            enabled = not bool(checked)
+            for widget in (
+                self.routing_require_combo,
+                self.routing_prefer_table,
+                self.routing_exclude_list,
+            ):
+                widget.setEnabled(enabled)
+
+        def _render_footer(self) -> None:
+            if not hasattr(self, "footer_dirty_label"):
+                return
+            footer = self._editor_view.footer
+            self.footer_dirty_label.setText(
+                "Unsaved changes" if footer.dirty else "Clean"
+            )
+            validation_is_current = (
+                self._validation.draft_id == self._draft.draft_id
+                and self._validation.revision == self._draft.revision
+            )
+            if footer.save_enabled:
+                validation_state = "Ready"
+            elif validation_is_current:
+                validation_state = "Blocked"
+            else:
+                validation_state = "Validate before saving"
+            self.footer_validation_label.setText(validation_state)
+            self.footer_validation_label.setToolTip(footer.validation_detail)
+            self.save_button.setEnabled(footer.save_enabled)
+            self.save_button.setToolTip(footer.validation_detail)
+
+        def _render_raw_document_trees(self) -> None:
+            document_tree = getattr(self, "_raw_document_tree", None)
+            preserved_tree = getattr(self, "_raw_preserved_tree", None)
+            if document_tree is not None:
+                document_tree.set_json(
+                    self._editor_view.raw_document.document,
+                    editable=bool(getattr(self, "_raw_document_editable", False)),
+                )
+            if preserved_tree is not None:
+                preserved_tree.set_json(
+                    self._editor_view.raw_document.preserved_fields,
+                    editable=False,
+                )
 
         def _apply_focus_target(self) -> None:
             """Select one requested pass, or report why focus was not possible."""
@@ -498,6 +574,12 @@ if IDA_AVAILABLE:
                 return None
             self._selected_pass_index = index
             return index
+
+        def _open_selected_inspector(self, checked: bool = False) -> None:
+            del checked
+            index = self._builder_selected_pass_index()
+            if index is not None:
+                self._show_inspector(index)
 
         def _current_inspector(self) -> typing.Any | None:
             index = self._selected_pass_index
@@ -594,8 +676,8 @@ if IDA_AVAILABLE:
             self._render()
 
         def _set_status(self, message: str) -> None:
-            self.status_detail.setPlainText(message)
-            self.status_detail.setVisible(bool(message))
+            self.error_label.setText(message)
+            self.error_label.setVisible(bool(message))
 
         def _apply_edit(
             self,
@@ -682,16 +764,64 @@ if IDA_AVAILABLE:
             )
             dialog.exec_()
 
-        def _set_description(self, checked: bool = False) -> None:
+        def _edit_description(self, checked: bool = False) -> None:
             del checked
-            value = self.description_edit.toPlainText()
-            self._apply_edit(lambda: self._adapter.set_description(self._draft, value))
+            value, accepted = QtWidgets.QInputDialog.getMultiLineText(
+                self.parent,
+                "Edit description",
+                "Description:",
+                self._view.description,
+            )
+            if accepted:
+                self._apply_edit(
+                    lambda: self._adapter.set_description(self._draft, str(value))
+                )
 
         def _add_pass(self, checked: bool = False) -> None:
             del checked
-            pass_id = self.catalog_combo.currentData()
-            if not pass_id:
+            dialog = QtWidgets.QDialog(self.parent)
+            dialog.setWindowTitle("Add pass")
+            query = QtWidgets.QLineEdit(dialog)
+            query.setPlaceholderText("Filter public pass catalog")
+            catalog_list = QtWidgets.QListWidget(dialog)
+
+            def populate(filter_text: str) -> None:
+                catalog_list.clear()
+                needle = str(filter_text).strip().casefold()
+                for entry in sorted(self._catalog, key=lambda item: item.pass_id):
+                    label = f"{entry.display_name} ({entry.pass_id})"
+                    if needle and needle not in label.casefold():
+                        continue
+                    item = QtWidgets.QListWidgetItem(label)
+                    item.setData(_user_role(), entry.pass_id)
+                    catalog_list.addItem(item)
+                if catalog_list.count():
+                    catalog_list.setCurrentRow(0)
+
+            populate("")
+            query.textChanged.connect(populate)
+            add_button = QtWidgets.QPushButton("Add")
+            cancel_button = QtWidgets.QPushButton("Cancel")
+            add_button.clicked.connect(dialog.accept)
+            cancel_button.clicked.connect(dialog.reject)
+            controls = QtWidgets.QHBoxLayout()
+            controls.addStretch(1)
+            controls.addWidget(cancel_button)
+            controls.addWidget(add_button)
+            layout = QtWidgets.QVBoxLayout(dialog)
+            layout.addWidget(query)
+            layout.addWidget(catalog_list, stretch=1)
+            layout.addLayout(controls)
+            try:
+                accepted_code = QtWidgets.QDialog.DialogCode.Accepted
+            except AttributeError:
+                accepted_code = QtWidgets.QDialog.Accepted
+            if dialog.exec_() != accepted_code:
                 return
+            selected_item = catalog_list.currentItem()
+            if selected_item is None:
+                return
+            pass_id = selected_item.data(_user_role())
             selected = self._builder_selected_pass_index()
             insertion = None if selected is None else selected + 1
             self._apply_edit(
@@ -723,74 +853,30 @@ if IDA_AVAILABLE:
                 )
                 self.pipeline_list.setCurrentRow(target)
 
-        def _edit_pass_options(self, checked: bool = False) -> None:
+        def _apply_routing_rows(self, checked: bool = False) -> None:
             del checked
-            index = self._builder_selected_pass_index()
-            if index is None:
-                return
-            row = self._view.pipeline_rows[index]
-            payload = json.loads(row.options_json)
-            text, accepted = QtWidgets.QInputDialog.getMultiLineText(
-                self.parent,
-                f"Options for {row.pass_id}",
-                "Typed pass options JSON object:",
-                json.dumps(payload, indent=2, sort_keys=True),
-            )
-            if not accepted:
-                return
-            try:
-                value = json.loads(str(text))
-                if not isinstance(value, dict):
-                    raise ValueError("pass options must be an object")
-            except (json.JSONDecodeError, ValueError) as exc:
-                self._set_status(f"Invalid pass options: {exc}")
-                return
-            self._apply_edit(
-                lambda: self._adapter.set_pass_options(
-                    self._draft,
-                    pass_index=index,
-                    options=value,
+            if self.routing_auto_check.isChecked():
+                document = json.loads(self._draft.document_json)
+                additional = document.get("additional_configuration")
+                if isinstance(additional, dict):
+                    additional.pop("router_resolution", None)
+                self._apply_edit(
+                    lambda: self._adapter.replace_document(self._draft, document)
                 )
-            )
-
-        def _edit_routing(self, checked: bool = False) -> None:
-            del checked
-            current = json.loads(self._view.routing_json)
-            if not current:
-                current = {"prefer": {}, "require": None, "deny": []}
-            text, accepted = QtWidgets.QInputDialog.getMultiLineText(
-                self.parent,
-                "Profile routing override",
-                "Typed JSON object with prefer, require, and deny:",
-                json.dumps(current, indent=2, sort_keys=True),
-            )
-            if not accepted:
                 return
-            try:
-                value = json.loads(str(text))
-                if not isinstance(value, dict) or set(value) != {
-                    "prefer",
-                    "require",
-                    "deny",
-                }:
-                    raise ValueError(
-                        "routing must contain exactly prefer, require, and deny"
-                    )
-                prefer = value["prefer"]
-                require = value["require"]
-                deny = value["deny"]
-                if (
-                    not isinstance(prefer, dict)
-                    or (require is not None and not isinstance(require, str))
-                    or not isinstance(deny, list)
-                    or not all(isinstance(item, str) for item in deny)
-                ):
-                    raise ValueError(
-                        "prefer must be an object, require a string/null, and deny a string list"
-                    )
-            except (json.JSONDecodeError, ValueError) as exc:
-                self._set_status(f"Invalid routing override: {exc}")
-                return
+            prefer = {
+                family_name: float(bias.value())
+                for family_name, (item, bias) in self.routing_prefer_rows.items()
+                if item.checkState() == _checked_state()
+            }
+            require_data = self.routing_require_combo.currentData()
+            require = str(require_data) if require_data is not None else None
+            deny = tuple(
+                str(self.routing_exclude_list.item(index).data(_user_role()))
+                for index in range(self.routing_exclude_list.count())
+                if self.routing_exclude_list.item(index).checkState()
+                == _checked_state()
+            )
             self._apply_edit(
                 lambda: self._adapter.set_routing_override(
                     self._draft,
@@ -800,12 +886,135 @@ if IDA_AVAILABLE:
                 )
             )
 
-        def _reset(self, checked: bool = False) -> None:
+        def _show_raw_document(self, checked: bool = False) -> None:
             del checked
-            if self._apply_edit(lambda: self._adapter.reset()):
-                self._set_status(
-                    "Draft reset to its complete runtime source and recipe seed."
+            dialog = QtWidgets.QDialog(self.parent)
+            dialog.setWindowTitle("Config-v2 document")
+            document_tree = JsonTreeEditor(dialog)
+            preserved_tree = JsonTreeEditor(dialog)
+            document_tree.set_json(
+                self._editor_view.raw_document.document,
+                editable=False,
+            )
+            preserved_tree.set_json(
+                self._editor_view.raw_document.preserved_fields,
+                editable=False,
+            )
+            document_tree.set_on_value_changed(self._apply_raw_document)
+            self._raw_document_tree = document_tree
+            self._raw_preserved_tree = preserved_tree
+            self._raw_document_editable = False
+
+            tabs = QtWidgets.QTabWidget(dialog)
+            tabs.addTab(document_tree, "Structured document")
+            tabs.addTab(preserved_tree, "Preserved fields")
+            edit_raw_button = QtWidgets.QPushButton("Edit raw")
+            open_json_button = QtWidgets.QPushButton("Open raw JSON...")
+            close_button = QtWidgets.QPushButton("Close")
+
+            def confirm_raw_edit() -> bool:
+                if self._raw_document_editable:
+                    return True
+                warning = (
+                    "Only declared config-v2 fields may change; all edits are fully "
+                    "validated before save."
                 )
+                try:
+                    yes = QtWidgets.QMessageBox.StandardButton.Yes
+                    no = QtWidgets.QMessageBox.StandardButton.No
+                except AttributeError:
+                    yes = QtWidgets.QMessageBox.Yes
+                    no = QtWidgets.QMessageBox.No
+                response = QtWidgets.QMessageBox.question(
+                    dialog,
+                    "Edit raw config-v2 fields?",
+                    warning,
+                    yes | no,
+                    no,
+                )
+                if response != yes:
+                    return False
+                self._raw_document_editable = True
+                document_tree.set_json(
+                    self._editor_view.raw_document.document,
+                    editable=True,
+                )
+                return True
+
+            def edit_raw() -> None:
+                confirm_raw_edit()
+
+            def open_raw_json() -> None:
+                if not confirm_raw_edit():
+                    return
+                raw_dialog = RawJsonDialog(
+                    "Edit raw config-v2 document",
+                    self._editor_view.raw_document.document,
+                    editable=True,
+                    on_apply=self._apply_raw_document,
+                    parent=dialog,
+                )
+                raw_dialog.exec_()
+
+            edit_raw_button.clicked.connect(edit_raw)
+            open_json_button.clicked.connect(open_raw_json)
+            close_button.clicked.connect(dialog.accept)
+            controls = QtWidgets.QHBoxLayout()
+            controls.addWidget(edit_raw_button)
+            controls.addWidget(open_json_button)
+            controls.addStretch(1)
+            controls.addWidget(close_button)
+            layout = QtWidgets.QVBoxLayout(dialog)
+            layout.addWidget(tabs, stretch=1)
+            layout.addLayout(controls)
+            try:
+                dialog.exec_()
+            finally:
+                self._raw_document_tree = None
+                self._raw_preserved_tree = None
+                self._raw_document_editable = False
+
+        def _apply_raw_document(self, value: object) -> None:
+            if not isinstance(value, dict):
+                self._render_raw_document_trees()
+                self._set_status("The config-v2 document must remain a JSON object.")
+                return
+            self._apply_edit(lambda: self._adapter.replace_document(self._draft, value))
+
+        def _discard_unsaved(self, checked: bool = False) -> None:
+            del checked
+            if not self._editor_view.footer.dirty:
+                return
+            try:
+                discard = QtWidgets.QMessageBox.StandardButton.Discard
+                cancel = QtWidgets.QMessageBox.StandardButton.Cancel
+            except AttributeError:
+                discard = QtWidgets.QMessageBox.Discard
+                cancel = QtWidgets.QMessageBox.Cancel
+            response = QtWidgets.QMessageBox.question(
+                self.parent,
+                "Discard unsaved changes?",
+                "Discard every unsaved change and restore the current source?",
+                discard | cancel,
+                cancel,
+            )
+            if response == discard:
+                self._apply_edit(lambda: self._adapter.reset())
+
+        def _show_developer_help(self, checked: bool = False) -> None:
+            del checked
+            rows = project_serializer_rows(self._manifest)
+            details = (
+                "\n".join(
+                    f"{row.label}: {row.value_kind} at {row.path}" for row in rows
+                )
+                or "No declared editable fields."
+            )
+            QtWidgets.QMessageBox.information(
+                self.parent,
+                "Config-v2 developer help",
+                "Serializer manifest\n" + details,
+            )
 
         def _validate(self, checked: bool = False) -> None:
             del checked
@@ -814,13 +1023,13 @@ if IDA_AVAILABLE:
             except Exception as exc:
                 self._set_status(f"Validation failed: {exc}")
                 return
+            self._render()
             if self._validation.valid:
-                self._set_status("Full pipeline validation passed.")
+                self._set_status("")
             else:
                 self._set_status(
                     "\n".join(item.message for item in self._validation.diagnostics)
                 )
-            self._render()
 
         def _save_as(self, checked: bool = False) -> None:
             del checked
@@ -841,10 +1050,8 @@ if IDA_AVAILABLE:
                 logger.warning("Config-v2 Save As failed: %s", exc)
                 self._set_status(f"Save As failed: {exc}")
                 return
-            self._set_status(
-                f"Draft destination changed to {self._adapter.destination}."
-            )
             self._render()
+            self._set_status("")
 
         def _save(self, checked: bool = False) -> None:
             del checked
@@ -869,8 +1076,8 @@ if IDA_AVAILABLE:
                     f"Reopen the editor to refresh this draft: {exc}"
                 )
                 return
-            self._set_status(f"Saved atomically, validated, and reloaded: {path}")
             self._render()
+            self._set_status("")
 
 else:
 
