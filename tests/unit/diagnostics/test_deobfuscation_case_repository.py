@@ -141,7 +141,7 @@ def _closed_case_database(
         );
         """
     )
-    connection.execute("INSERT INTO diagnostic_schema VALUES (1, 10)")
+    connection.execute("INSERT INTO diagnostic_schema VALUES (1, 11)")
     connection.execute("INSERT INTO diagnostic_sessions VALUES ('run-1', ?)", (0x1800020F0,))
     connection.execute(
         "INSERT INTO deobfuscation_cases VALUES "

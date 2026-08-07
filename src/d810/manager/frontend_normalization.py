@@ -13,6 +13,7 @@ from d810.analyses.control_flow.native_preanalysis_session import (
 from d810.capabilities.frontend_normalization import (
     FrontendNormalizationEvidenceCapability,
 )
+from d810.capabilities.pass_contract_evidence import PassContractEvidenceObserver
 from d810.capabilities.resolver import CapabilitySet
 from d810.capabilities.semantic_routes import (
     SemanticRouteReferenceOracleCapability,
@@ -549,6 +550,7 @@ def run_frontend_normalization_pipeline(
     reference_oracle_provider: SemanticRouteReferenceOracleCapability | None = None,
     project_config: object | None = None,
     pass_manager: FunctionPassManager | None = None,
+    pass_contract_evidence_observer: PassContractEvidenceObserver | None = None,
 ) -> FrontendNormalizationRunResult:
     """Run the generic PREOPT tier and accept only receipt-backed publication."""
     if not isinstance(lifecycle_state, NativePreanalysisSessionState):
@@ -600,6 +602,11 @@ def run_frontend_normalization_pipeline(
         FrontendNormalizationEvidenceCapability,
         _FixedEvidenceProvider(current_evidence),
     )
+    if pass_contract_evidence_observer is not None:
+        capabilities = capabilities.with_capability(
+            PassContractEvidenceObserver,
+            pass_contract_evidence_observer,
+        )
     if reference_oracle_provider is not None:
         capabilities = capabilities.with_capability(
             SemanticRouteReferenceOracleCapability,

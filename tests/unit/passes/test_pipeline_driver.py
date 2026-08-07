@@ -13,12 +13,17 @@ import pytest
 
 from d810.passes.analysis_manager import AnalysisManager
 from d810.analyses.value_flow.contract_evidence import contract_evidence_payload
+from d810.capabilities.pass_contract_evidence import (
+    PassContractEvidenceObserver,
+)
+from d810.capabilities.resolver import CapabilitySet
 from d810.passes.pass_pipeline import (
     AnalysisContract,
     BackendRoute,
     FactRequirement,
     PipelineConfigError,
     PassContract,
+    ContractEvidencePublication,
     PassInvalidates,
     PassOutputs,
     PassResult,
@@ -172,6 +177,7 @@ def _run_specs(
     project_config=None,
     pipeline_v2_shadow_registry=None,
     require_pipeline_v2_shadow_match=False,
+    capabilities=None,
 ):
     class _OneShot:
         name = "one_shot"
@@ -189,6 +195,7 @@ def _run_specs(
         facts=facts if facts is not None else AnalysisManager(_GRAPH),
         project_config=project_config,
         maturity=maturity,
+        capabilities=capabilities,
         pipeline_v2_shadow_registry=pipeline_v2_shadow_registry,
         require_pipeline_v2_shadow_match=require_pipeline_v2_shadow_match,
     )
@@ -1431,6 +1438,123 @@ def test_native_contract_output_evidence_publishes_for_later_required_evidence()
     )
 
     _run_specs(specs)
+
+
+def test_native_contract_evidence_publication_records_exact_pass_token_and_anchors():
+    marker = object()
+
+    class _RecordingObserver:
+        def __init__(self) -> None:
+            self.observations = []
+
+        def observe_contract_evidence(self, **kwargs) -> None:
+            self.observations.append(kwargs)
+
+    class _PublishEvidence:
+        name = "publish_evidence"
+
+        def run(self, ctx) -> PassResult:
+            return PassResult(
+                evidence_outputs={"ir.branch_target": marker},
+                evidence_publications={
+                    "ir.branch_target": ContractEvidencePublication(
+                        summary="Two native indirect transfers were recovered.",
+                        native_anchor_eas=(0x1008, 0x1010),
+                    )
+                },
+            )
+
+    observer = _RecordingObserver()
+    specs = (
+        PassSpec(
+            "publish_evidence",
+            _PublishEvidence,
+            no_caps,
+            default,
+            contract=PassContract(
+                outputs=PassOutputs(evidence=frozenset({"ir.branch_target"}))
+            ),
+        ),
+    )
+
+    _run_specs(
+        specs,
+        capabilities=CapabilitySet().with_capability(
+            PassContractEvidenceObserver,
+            observer,
+        ),
+    )
+
+    assert observer.observations == [
+        {
+            "pass_id": "publish_evidence",
+            "evidence_token": "ir.branch_target",
+            "function_ea": 0x1000,
+            "producer_stage_id": "ir.canonical",
+            "publication": ContractEvidencePublication(
+                summary="Two native indirect transfers were recovered.",
+                native_anchor_eas=(0x1008, 0x1010),
+            ),
+        }
+    ]
+
+
+def test_contract_evidence_observer_failure_does_not_change_pass_execution():
+    marker = object()
+
+    class _FailingObserver:
+        def observe_contract_evidence(self, **_kwargs) -> None:
+            raise RuntimeError("diagnostic sink is unavailable")
+
+    class _PublishEvidence:
+        name = "publish_evidence"
+
+        def run(self, _ctx) -> PassResult:
+            return PassResult(
+                evidence_outputs={"ir.branch_target": marker},
+                evidence_publications={
+                    "ir.branch_target": ContractEvidencePublication(
+                        summary="One native indirect transfer was recovered.",
+                        native_anchor_eas=(0x1008,),
+                    )
+                },
+            )
+
+    class _ConsumeEvidence:
+        name = "consume_evidence"
+
+        def run(self, ctx) -> PassResult:
+            assert ctx.facts.get_evidence("ir.branch_target") == (marker,)
+            return PassResult()
+
+    specs = (
+        PassSpec(
+            "publish_evidence",
+            _PublishEvidence,
+            no_caps,
+            default,
+            contract=PassContract(
+                outputs=PassOutputs(evidence=frozenset({"ir.branch_target"}))
+            ),
+        ),
+        PassSpec(
+            "consume_evidence",
+            _ConsumeEvidence,
+            no_caps,
+            default,
+            contract=PassContract(
+                requires=PassRequires(evidence=frozenset({"ir.branch_target"}))
+            ),
+        ),
+    )
+
+    _run_specs(
+        specs,
+        capabilities=CapabilitySet().with_capability(
+            PassContractEvidenceObserver,
+            _FailingObserver(),
+        ),
+    )
 
 
 def test_ollvm_candidate_output_evidence_feeds_later_validation_as_evidence():

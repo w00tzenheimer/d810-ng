@@ -19,6 +19,7 @@ from d810.passes.pass_pipeline import (
     BackendRoute,
     MaturityRange,
     PassContract,
+    ContractEvidencePublication,
     PassOutputs,
     PassPreserves,
     PassRequires,
@@ -80,6 +81,19 @@ class ResolveNativeIndirectTransfers:
         return PassResult(
             analysis_outputs={FRONTEND_NORMALIZATION_EVIDENCE: evidence},
             evidence_outputs={NATIVE_INDIRECT_TRANSFER_EVIDENCE: evidence},
+            evidence_publications={
+                NATIVE_INDIRECT_TRANSFER_EVIDENCE: ContractEvidencePublication(
+                    summary="Native indirect transfer evidence was recovered.",
+                    native_anchor_eas=tuple(
+                        sorted(
+                            {
+                                proof.source_transfer_ea
+                                for proof in evidence.transfer_proofs
+                            }
+                        )
+                    ),
+                )
+            },
         )
 
 

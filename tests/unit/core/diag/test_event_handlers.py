@@ -31,6 +31,7 @@ from d810.core.observability_events import (
     DiagnosticSessionObserved,
     FrontendNormalizationPlanIntentObserved,
     ModificationsObserved,
+    PassContractEvidencePublished,
     SemanticOutputVerifiedObserved,
 )
 from d810.core.observability_models import (
@@ -186,6 +187,35 @@ def test_semantic_output_verification_requires_an_explicit_typed_event(fake_conn
         "SELECT verifier_id, witness_id, native_anchor_ea_i64 "
         "FROM semantic_output_verdicts"
     ).fetchone() == ("verifier:fixture", "verifier:fixture:1", 0x180001000)
+
+
+def test_pass_contract_evidence_receipt_is_queryable(fake_conn):
+    emit(
+        PassContractEvidencePublished(
+            session_id="session-1",
+            func_ea=0x180001000,
+            evidence_generation=5,
+            maturity="ir.canonical",
+            pass_id="resolve-native-indirect-transfers",
+            evidence_token="ir.branch_target",
+            native_anchor_eas=(0x180001020, 0x180001030),
+            summary="Two native indirect transfers were recovered.",
+        )
+    )
+
+    assert fake_conn.execute(
+        "SELECT pass_id,evidence_token,evidence_generation,maturity,"
+        "native_anchor_eas_json FROM pass_contract_evidence_publications"
+    ).fetchone() == (
+        "resolve-native-indirect-transfers",
+        "ir.branch_target",
+        5,
+        "ir.canonical",
+        "[6442455072,6442455088]",
+    )
+    assert fake_conn.execute(
+        "SELECT event_kind,correlation_id FROM lifecycle_events"
+    ).fetchone() == ("pass_contract_evidence", "ir.branch_target")
 
 
 def test_terminal_session_materializes_one_closed_case(fake_conn):

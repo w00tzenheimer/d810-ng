@@ -4,6 +4,7 @@ import ast
 import importlib
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 from d810.ui.workbench_canvas_models import (
     CanvasEdge,
@@ -90,6 +91,65 @@ def test_canvas_modules_are_headless_safe_and_use_only_the_qt_shim() -> None:
         importlib.import_module(module_name)
 
 
+def test_reset_canvas_view_origin_returns_both_scrollbars_to_the_scene_start() -> None:
+    """A wider canvas must open at its first stage, not the viewport center."""
+
+    panel = importlib.import_module("d810.ui.workbench_canvas_panel")
+    reset_origin = getattr(panel, "reset_canvas_view_origin", None)
+
+    class _ScrollBar:
+        def __init__(self, minimum: int, value: int) -> None:
+            self._minimum = minimum
+            self.value = value
+
+        def minimum(self) -> int:
+            return self._minimum
+
+        def setValue(self, value: int) -> None:
+            self.value = value
+
+    class _View:
+        def __init__(self) -> None:
+            self.horizontal = _ScrollBar(-4, 277)
+            self.vertical = _ScrollBar(-1, 83)
+
+        def horizontalScrollBar(self) -> _ScrollBar:
+            return self.horizontal
+
+        def verticalScrollBar(self) -> _ScrollBar:
+            return self.vertical
+
+    view = _View()
+
+    assert callable(reset_origin)
+    reset_origin(view)
+
+    assert view.horizontal.value == -4
+    assert view.vertical.value == -1
+
+
+def test_single_any_maturity_stage_is_presented_as_an_explanatory_static_state() -> None:
+    panel = importlib.import_module("d810.ui.workbench_canvas_panel")
+    presentation = getattr(panel, "stage_selector_presentation", None)
+    stage = CanvasMaturity("any", "Any maturity", -1)
+
+    assert callable(presentation)
+    label, tooltip, has_choices = presentation((stage,), stage.stage_id)
+
+    assert label == "Any maturity - all active passes"
+    assert tooltip == "All active recipe nodes support Any maturity."
+    assert has_choices is False
+
+
+def test_receipted_evidence_nodes_have_a_distinct_canvas_state_color() -> None:
+    renderer = importlib.import_module("d810.ui.workbench_canvas_renderer")
+
+    node_fill = getattr(renderer, "_node_fill", None)
+    assert callable(node_fill)
+    assert node_fill("evidence_produced") != node_fill("ready")
+    assert node_fill("evidence_produced") != node_fill("blocked")
+
+
 def test_canvas_panel_uses_popup_then_preserves_renderer_add_intent() -> None:
     source = PANEL.read_text(encoding="utf-8")
 
@@ -105,11 +165,13 @@ def test_renderer_draws_projection_as_one_vertical_read_only_workspace() -> None
     source = RENDERER.read_text(encoding="utf-8")
     render_source = _method_source(RENDERER, "MaturityCanvasRenderer", "render")
 
-    assert "QGraphicsScene" in source
+    assert "ReadOnlyDataflowScene" in source
+    assert "ReadOnlyCanvasNodeItem" in source
+    assert "ReadOnlyCanvasConnectionItem" in source
     assert "addText" in render_source
     assert "addRect" in render_source
-    assert "addEllipse" in render_source
-    assert "addLine" in render_source
+    assert "addEllipse" not in render_source
+    assert "addLine" not in render_source
     assert "stage_y" in render_source
     assert "_layout_projection(projection" in render_source
     assert "layout.stages" in render_source
@@ -120,6 +182,17 @@ def test_renderer_draws_projection_as_one_vertical_read_only_workspace() -> None
     assert "adapter" not in render_source
     assert "drag" not in source.lower()
     assert "connect_nodes" not in source
+
+
+def test_renderer_places_self_painting_node_items_at_their_scene_geometry() -> (
+    None
+):
+    render_source = _method_source(RENDERER, "MaturityCanvasRenderer", "render")
+
+    assert "item = ReadOnlyCanvasNodeItem(" in render_source
+    assert "item.setPos(node_geometry.x, node_geometry.y)" in render_source
+    assert "self.scene.addItem(item)" in render_source
+    assert "label.setParentItem(item)" not in render_source
 
 
 def test_carrier_edges_use_distinct_direction_aware_port_positions() -> None:
@@ -169,11 +242,37 @@ def test_nine_node_stage_expands_to_contain_every_node() -> None:
 
     stage_geometry = layout.stages[0]
     assert len(stage_geometry.nodes) == 9
-    assert stage_geometry.width > 980.0
+    assert len({node.y for node in stage_geometry.nodes}) == 3
+    assert stage_geometry.height > 300.0
     assert all(
         node.x >= stage_geometry.x
         and node.x + node.width <= stage_geometry.x + stage_geometry.width
         for node in stage_geometry.nodes
+    )
+
+
+def test_stage_layout_wraps_dense_cards_without_losing_declared_order() -> None:
+    renderer_module = importlib.import_module("d810.ui.workbench_canvas_renderer")
+    stage = CanvasMaturity("any", "Any maturity", -1)
+    nodes = tuple(_node(f"node-{index}", stage) for index in range(7))
+    projection = MaturityCanvasProjection(
+        maturities=(stage,),
+        nodes=nodes,
+        edges=(),
+        diagnostics=(),
+    )
+
+    layout = renderer_module._layout_projection(projection, ())
+    geometries = layout.stages[0].nodes
+
+    assert [geometry.node.node_id for geometry in geometries] == [
+        f"node-{index}" for index in range(7)
+    ]
+    assert len({geometry.y for geometry in geometries}) == 2
+    assert all(
+        geometry.x >= layout.stages[0].x
+        and geometry.x + geometry.width <= layout.stages[0].x + layout.stages[0].width
+        for geometry in geometries
     )
 
 
@@ -249,8 +348,8 @@ def test_panel_owns_three_panes_manual_collapse_and_compact_add_action() -> None
     init_source = _method_source(PANEL, "WorkbenchCanvasPanel", "__init__")
     create_source = _method_source(PANEL, "WorkbenchCanvasPanel", "OnCreate")
 
-    assert "QGraphicsScene" in init_source
-    assert "QGraphicsView" in init_source
+    assert "ReadOnlyDataflowScene" in init_source
+    assert "ReadOnlyDataflowView" in init_source
     assert "self._collapsed_stages" in init_source
     assert "Add registered node" in init_source
     assert "evidence_summary" in init_source
@@ -262,6 +361,49 @@ def test_panel_owns_three_panes_manual_collapse_and_compact_add_action() -> None
     assert "self.node_inspector" in create_source
     assert "_toggle_stage" in source
     assert "auto_collapse" not in source
+
+
+def test_panel_uses_a_native_maturity_menu_and_top_left_canvas_alignment() -> None:
+    source = PANEL.read_text(encoding="utf-8")
+    init_source = _method_source(PANEL, "WorkbenchCanvasPanel", "__init__")
+    create_source = _method_source(PANEL, "WorkbenchCanvasPanel", "OnCreate")
+
+    assert "QtWidgets.QMenu" in init_source
+    assert "QComboBox" not in source
+    assert "setMenu" in init_source
+    assert "setPopupMode" in init_source
+    assert "_select_stage" in source
+    assert "setAlignment" in create_source
+    assert "AlignLeft" in source
+    assert "AlignTop" in source
+
+
+def test_panel_uses_dataflow_navigation_without_resetting_each_projection() -> None:
+    source = PANEL.read_text(encoding="utf-8")
+    init_source = _method_source(PANEL, "WorkbenchCanvasPanel", "__init__")
+    create_source = _method_source(PANEL, "WorkbenchCanvasPanel", "OnCreate")
+    render_source = _method_source(PANEL, "WorkbenchCanvasPanel", "_render_projection")
+
+    assert "ReadOnlyDataflowScene" in source
+    assert "ReadOnlyDataflowView" in source
+    assert '"Fit workspace"' in init_source
+    assert '"100%"' in init_source
+    assert "fit_workspace_button" in create_source
+    assert "reset_zoom_button" in create_source
+    assert "reset_canvas_view_origin(self.canvas_view)" not in render_source
+
+
+def test_canvas_controls_are_owned_by_side_rails_not_a_top_toolbar() -> None:
+    create_source = _method_source(PANEL, "WorkbenchCanvasPanel", "OnCreate")
+
+    assert "navigation_controls = QtWidgets.QVBoxLayout()" in create_source
+    assert "navigation_controls.addWidget(self.stage_selector)" in create_source
+    assert "navigation_controls.addWidget(self.add_registered_node_button)" in create_source
+    assert "inspector_controls = QtWidgets.QHBoxLayout()" in create_source
+    assert "inspector_controls.addWidget(self.edit_options_button)" in create_source
+    assert "inspector_controls.addWidget(self.open_diagnostic_button)" in create_source
+    assert "inspector_layout.addWidget(self.save_recipe_button)" in create_source
+    assert "layout.addLayout(controls)" not in create_source
 
 
 def test_panel_reprojects_after_adapter_owned_add_and_edit_then_reuses_save() -> None:
@@ -288,15 +430,25 @@ def test_panel_reprojects_after_adapter_owned_add_and_edit_then_reuses_save() ->
         assert forbidden not in source
 
 
-def test_selected_node_inspector_includes_contract_options_prerequisites_and_evidence() -> (
-    None
-):
+def test_selected_node_inspector_is_structured_with_read_only_contract_opt_in() -> None:
     source = _method_source(PANEL, "WorkbenchCanvasPanel", "_select_node")
+    panel_source = PANEL.read_text(encoding="utf-8")
 
-    assert "Contract" in source
-    assert "Options" in source
-    assert "Prerequisites" in source
-    assert "Evidence references" in source
+    assert "build_node_sections" in source
+    assert "self.node_inspector.show_node" in source
+    assert "View pass contract" in panel_source
+    assert "node.detail" in source
+
+
+def test_generic_pipeline_evidence_summary_makes_absent_case_evidence_explicit() -> None:
+    panel = importlib.import_module("d810.ui.workbench_canvas_panel")
+    summary_lines = getattr(panel, "evidence_summary_lines", None)
+
+    assert callable(summary_lines)
+    lines = summary_lines(SimpleNamespace(case=None), ())
+
+    assert "Generic cleanup pipeline" in "\n".join(lines)
+    assert "No protection-specific case evidence captured yet." in lines
 
 
 def test_selected_evidence_node_delegates_opening_without_owning_diagnostics() -> None:

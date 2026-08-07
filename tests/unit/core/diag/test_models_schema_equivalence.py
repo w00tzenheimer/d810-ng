@@ -187,6 +187,15 @@ EXPECTED_TABLE_INFO = {
         ("summary", "TEXT", 1, 0),
         ("native_anchor_ea_i64", "INTEGER", 1, 0),
     ],
+    "pass_contract_evidence_publications": [
+        ("event_id", "INTEGER", 1, 1),
+        ("pass_id", "TEXT", 1, 0),
+        ("evidence_token", "TEXT", 1, 0),
+        ("evidence_generation", "INTEGER", 1, 0),
+        ("maturity", "TEXT", 1, 0),
+        ("summary", "TEXT", 1, 0),
+        ("native_anchor_eas_json", "TEXT", 1, 0),
+    ],
     "deobfuscation_cases": [
         ("case_id", "TEXT", 1, 1),
         ("session_id", "TEXT", 1, 0),
@@ -715,6 +724,9 @@ EXPECTED_INDEXES = {
     "semantic_output_verdicts": [
         ("c", ("verifier_id", "witness_id")),
     ],
+    "pass_contract_evidence_publications": [
+        ("c", ("pass_id", "evidence_token")),
+    ],
     "deobfuscation_cases": [
         ("c", ("session_id", "closed_at")),
         ("c", ("session_id",)),
@@ -1009,4 +1021,4 @@ class TestModeledSchemaEquivalence:
 
     def test_modeled_count(self) -> None:
         # Phase A models the non-slice-1, non-view tables plus case sources.
-        assert len(EXPECTED_TABLE_INFO) == 43
+        assert len(EXPECTED_TABLE_INFO) == 44
