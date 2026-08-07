@@ -832,11 +832,6 @@ class D810Manager:
         # exposes the complete rebound route closure; the fifth round binds
         # that closure into GENERATED/PREOPT and must reach a fixed point.
         for _round in range(5):
-            consumed_before = (
-                self.decompilation_lifecycle.generated_restart_consumed_count(
-                    function_ea
-                )
-            )
             self.prepare_native_preanalysis(function_ea)
             from d810.optimizers.microcode.flow.jumps.computed_goto_resolver import (
                 acquire_detached_call_stack_capacity_witness,
@@ -866,21 +861,6 @@ class D810Manager:
                 function_ea
             ):
                 break
-            # A restart that no callback consumed will not be consumed by
-            # repeating the identical round, so spending the rest of the budget
-            # only replaces the real cause with "budget exhausted".
-            if (
-                self.decompilation_lifecycle.generated_restart_consumed_count(
-                    function_ea
-                )
-                == consumed_before
-            ):
-                raise RuntimeError(
-                    "native preanalysis staged a generated restart that no "
-                    f"flowchart callback consumed for 0x{function_ea:X}; "
-                    "the decompile round completed without reaching "
-                    "consume_generated_restart"
-                )
         else:
             raise RuntimeError(
                 "native preanalysis generated-restart budget exhausted with "

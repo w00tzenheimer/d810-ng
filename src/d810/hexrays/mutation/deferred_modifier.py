@@ -7840,6 +7840,25 @@ class DeferredGraphModifier:
             )
         return repaired
 
+    def take_superseded_count(self) -> int:
+        """Consume the count of modifications coalescing removed before apply.
+
+        Conflict resolution legitimately collapses several queued modifications
+        that describe the same edge into one, so an applied count alone cannot
+        be reconciled against the number of planned PatchPlan steps. A caller
+        checking that inventory must add this back:
+        ``applied + superseded == planned``.
+
+        Reading is one-shot, and ``apply`` zeroes it at the start of every
+        cycle. Both exist so a stale value can never silently *balance* an
+        inventory belonging to a later transaction: a reader that arrives
+        without a fresh apply sees 0 and the reconciliation fails loudly, which
+        is the safe direction for a corruption check.
+        """
+        count = int(getattr(self, "_superseded_count", 0))
+        self._superseded_count = 0
+        return count
+
     def apply(
         self,
         run_optimize_local: bool = True,
@@ -7854,6 +7873,9 @@ class DeferredGraphModifier:
         staged_atomic: bool = False,
     ) -> int:
         """Apply queued work and close its receipt on every exit path."""
+        # Scope the coalescing tally to this cycle: a count left over from an
+        # earlier transaction must never reconcile a later inventory.
+        self._superseded_count = 0
         try:
             return self._apply(
                 run_optimize_local=run_optimize_local,
@@ -8110,7 +8132,7 @@ class DeferredGraphModifier:
                 self._pre_snapshot = None
 
         # Coalesce duplicates and detect conflicts before applying
-        self.coalesce()
+        self._superseded_count = self.coalesce()
 
         if not self.modifications:
             logger.debug("No modifications after coalescing")
