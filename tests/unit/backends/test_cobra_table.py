@@ -241,3 +241,75 @@ class TestPersistence(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestConcurrency(unittest.TestCase):
+    """The escalation prover shares this table with the decompiling thread.
+
+    HONEST SCOPE: these are regression guards, not demonstrations.  Neither
+    test could be made to fail against the unlocked implementation, even at a
+    1us switch interval with 40,000 lookups across 8 threads -- CPython checks
+    the eval-breaker mainly at backward jumps and calls, so an inline ``+=``
+    is practically atomic.  Do not read a pass here as proof of safety.
+
+    The lock is justified by a specific reachable interleaving in
+    ``record_pending`` rather than by these tests:
+
+        B: existing = self._entries.get(key)   -> None
+        A: self._entries[key] = Entry(PROVED)
+        B: self._entries[key] = Entry(PENDING) -> the proof is destroyed
+
+    ``Entry(Outcome.PENDING)`` is a call, and calls *are* eval-breaker
+    checkpoints, so the switch is reachable; the window is simply narrow.
+    """
+
+    def test_stats_stay_balanced_under_concurrent_lookups(self):
+        import threading
+
+        table = RewriteTable()
+        tree = B("+", V("a"), V("b"))
+        table.record_proved(tree, 32, V("a"))
+
+        def hammer():
+            for _ in range(2000):
+                table.lookup(tree, 32)
+
+        threads = [threading.Thread(target=hammer) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(table.stats.lookups, 8000)
+        self.assertTrue(
+            table.stats.balanced,
+            f"stats lost updates: {table.stats}",
+        )
+
+    def test_pending_never_downgrades_a_proof_under_contention(self):
+        import threading
+
+        table = RewriteTable()
+        trees = [B("+", V("a"), C(i)) for i in range(500)]
+
+        def prove_all():
+            for t in trees:
+                table.record_proved(t, 32, V("a"))
+
+        def pend_all():
+            for t in trees:
+                table.record_pending(t, 32)
+
+        threads = [
+            threading.Thread(target=prove_all),
+            threading.Thread(target=pend_all),
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        # Whatever the interleaving, a proof must survive a concurrent pending.
+        for t in trees:
+            table.record_pending(t, 32)
+            self.assertEqual(table.lookup(t, 32).outcome, Outcome.PROVED)

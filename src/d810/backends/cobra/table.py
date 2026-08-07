@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import dataclasses
 import enum
+import threading
 
 from d810.core.typing import Any, Mapping
 
@@ -159,6 +160,7 @@ class RewriteTable:
 
     def __init__(self) -> None:
         self._entries: dict[tuple, Entry] = {}
+        self._lock = threading.Lock()
         self.stats = TableStats()
 
     def lookup(self, tree: Mapping[str, Any], bitwidth: int) -> Entry | None:
@@ -169,20 +171,21 @@ class RewriteTable:
         verbatim would return an expression over some earlier caller's
         variables -- silently wrong output, which is worse than a miss.
         """
-        self.stats.lookups += 1
         key, order = _keyed(tree, bitwidth)
-        entry = self._entries.get(key)
-        if entry is None:
-            self.stats.misses += 1
-            return None
-        if entry.outcome is Outcome.PROVED:
-            self.stats.hits += 1
-            if entry.rewrite is not None:
-                return Entry(Outcome.PROVED, _instantiate(entry.rewrite, order))
-        elif entry.outcome is Outcome.NO_REWRITE:
-            self.stats.negative_hits += 1
-        else:
-            self.stats.pending_hits += 1
+        with self._lock:
+            self.stats.lookups += 1
+            entry = self._entries.get(key)
+            if entry is None:
+                self.stats.misses += 1
+                return None
+            if entry.outcome is Outcome.PROVED:
+                self.stats.hits += 1
+            elif entry.outcome is Outcome.NO_REWRITE:
+                self.stats.negative_hits += 1
+            else:
+                self.stats.pending_hits += 1
+        if entry.outcome is Outcome.PROVED and entry.rewrite is not None:
+            return Entry(Outcome.PROVED, _instantiate(entry.rewrite, order))
         return entry
 
     def record_proved(
@@ -190,10 +193,14 @@ class RewriteTable:
     ) -> None:
         names: dict[str, int] = {}
         key = (bitwidth, _canon(tree, names))
-        self._entries[key] = Entry(Outcome.PROVED, _to_positional(rewrite, names))
+        positional = _to_positional(rewrite, names)
+        with self._lock:
+            self._entries[key] = Entry(Outcome.PROVED, positional)
 
     def record_no_rewrite(self, tree: Mapping[str, Any], bitwidth: int) -> None:
-        self._entries[canonical_key(tree, bitwidth)] = Entry(Outcome.NO_REWRITE)
+        key = canonical_key(tree, bitwidth)
+        with self._lock:
+            self._entries[key] = Entry(Outcome.NO_REWRITE)
 
     def record_pending(self, tree: Mapping[str, Any], bitwidth: int) -> None:
         """Mark as escalated, without clobbering a result already known.
@@ -202,10 +209,11 @@ class RewriteTable:
         concurrently; a late PENDING must not erase a proof that landed first.
         """
         key = canonical_key(tree, bitwidth)
-        existing = self._entries.get(key)
-        if existing is not None and existing.outcome is not Outcome.PENDING:
-            return
-        self._entries[key] = Entry(Outcome.PENDING)
+        with self._lock:
+            existing = self._entries.get(key)
+            if existing is not None and existing.outcome is not Outcome.PENDING:
+                return
+            self._entries[key] = Entry(Outcome.PENDING)
 
     def to_dict(self) -> dict:
         """Serialise settled results only.
