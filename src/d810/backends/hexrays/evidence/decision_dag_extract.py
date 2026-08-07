@@ -66,6 +66,7 @@ def _is_state_var(
     state_var_stkoff: Optional[int],
     state_var_lvar_idx: Optional[int],
     state_var_reg: Optional[int] = None,
+    state_var_valnum: Optional[int] = None,
 ) -> bool:
     if mop is None:
         return False
@@ -85,24 +86,45 @@ def _is_state_var(
     # Register-resident dispatchers (MASM/non-spilled builds) load the state var
     # into a register once and compare that register (``jg eax, #const``).
     if t == ida_hexrays.mop_r and state_var_reg is not None:
-        return int(getattr(mop, "r", -1)) == int(state_var_reg)
+        if int(getattr(mop, "r", -1)) != int(state_var_reg):
+            return False
+        # Register NUMBER alone is not identity: a handler that recomputes into
+        # the same register still reads as ``eax``.  Hex-Rays value numbering
+        # (``mop_t::valnum``, rendered as ``{N}``) discriminates them -- e.g. in
+        # sub_7FFE50C44430 the chain compares ``eax.4{7}`` (the entry load of
+        # var_310) while an MBA opaque predicate inside handler blk 99 compares
+        # ``eax.4{131}``, locally defined by that block's own ``m_xdu``.  Without
+        # this check blk 99 is mistaken for a chain node ``state != 0 -> @default``,
+        # and its whole 165,391,921-state cell is credited to the default arm.
+        # Gate only when BOTH value numbers are known (non-zero): a caller that
+        # supplied ``state_var_reg`` explicitly has no valnum to match against,
+        # and mba's value numbering is not always populated, so an unknown valnum
+        # must not reject a genuine chain node (ticket lpccp-htcb).
+        mop_valnum = int(getattr(mop, "valnum", 0) or 0)
+        if state_var_valnum and mop_valnum:
+            return mop_valnum == int(state_var_valnum)
+        return True
     return False
 
 
 def _detect_state_var_reg(
     mba, dispatcher_entry_serial: int, state_var_stkoff: int
-) -> Optional[int]:
-    """Mreg the state var is loaded into at the dispatcher entry, or ``None``.
+) -> tuple[Optional[int], Optional[int]]:
+    """``(mreg, valnum)`` the state var is loaded into at the dispatcher entry.
 
     Scans the entry block for ``<load> mop_S(state_var_stkoff) -> mop_r(R)`` (e.g.
-    ``xdu var_694, rax``); the condition-chain children then compare ``R``.
+    ``xdu var_694, rax``); the condition-chain children then compare ``R``.  The
+    destination's value number is returned alongside so
+    :func:`_is_state_var` can tell that register-and-value from a same-named
+    register redefined inside a handler.  Returns ``(None, None)`` when no such
+    load exists.
     """
     try:
         blk = mba.get_mblock(int(dispatcher_entry_serial))
     except Exception:
-        return None
+        return None, None
     if blk is None:
-        return None
+        return None, None
     cur = getattr(blk, "head", None)
     while cur is not None:
         d = getattr(cur, "d", None)
@@ -114,9 +136,9 @@ def _detect_state_var_reg(
             and getattr(l, "t", None) == ida_hexrays.mop_S
             and getattr(getattr(l, "s", None), "off", None) == int(state_var_stkoff)
         ):
-            return int(getattr(d, "r", -1))
+            return int(getattr(d, "r", -1)), int(getattr(d, "valnum", 0) or 0) or None
         cur = getattr(cur, "next", None)
-    return None
+    return None, None
 
 
 def _const_value(mop, mask: int) -> Optional[int]:
@@ -135,7 +157,13 @@ def _block_succs(blk) -> tuple:
 
 
 def _parse_state_comparison(
-    blk, op_map, state_var_stkoff, state_var_lvar_idx, mask, state_var_reg=None
+    blk,
+    op_map,
+    state_var_stkoff,
+    state_var_lvar_idx,
+    mask,
+    state_var_reg=None,
+    state_var_valnum=None,
 ):
     """``(op, const, true_target)`` if *blk*'s tail compares the state var, else ``None``."""
     tail = getattr(blk, "tail", None)
@@ -146,9 +174,13 @@ def _parse_state_comparison(
         return None
     left = getattr(tail, "l", None)
     right = getattr(tail, "r", None)
-    if _is_state_var(left, state_var_stkoff, state_var_lvar_idx, state_var_reg):
+    if _is_state_var(
+        left, state_var_stkoff, state_var_lvar_idx, state_var_reg, state_var_valnum
+    ):
         const = _const_value(right, mask)
-    elif _is_state_var(right, state_var_stkoff, state_var_lvar_idx, state_var_reg):
+    elif _is_state_var(
+        right, state_var_stkoff, state_var_lvar_idx, state_var_reg, state_var_valnum
+    ):
         const = _const_value(left, mask)
         op = _FLIP.get(op, op)  # state var on the right -> mirror the relation
     else:
@@ -171,6 +203,7 @@ def _descend_to_root(
     mask,
     max_hops=8,
     state_var_reg=None,
+    state_var_valnum=None,
 ):
     """Follow single-successor blocks from *entry* to the first state-var comparison.
 
@@ -194,6 +227,7 @@ def _descend_to_root(
                 state_var_lvar_idx,
                 mask,
                 state_var_reg,
+                state_var_valnum,
             )
             is not None
         ):
@@ -239,8 +273,9 @@ def extract_decision_dag(
     # Register-resident dispatchers compare the state var in a register below the
     # root; detect it so the comparison nodes are recognized (else the DAG
     # collapses to the root leaf and routing degrades to exact-only).
+    state_var_valnum: Optional[int] = None
     if state_var_reg is None and state_var_stkoff is not None:
-        state_var_reg = _detect_state_var_reg(
+        state_var_reg, state_var_valnum = _detect_state_var_reg(
             mba, int(dispatcher_entry_serial), int(state_var_stkoff)
         )
     root = _descend_to_root(
@@ -251,6 +286,7 @@ def extract_decision_dag(
         state_var_lvar_idx,
         mask,
         state_var_reg=state_var_reg,
+        state_var_valnum=state_var_valnum,
     )
     nodes: dict[int, RouteComparison] = {}
     visited: set[int] = set()
@@ -273,6 +309,7 @@ def extract_decision_dag(
             state_var_lvar_idx,
             mask,
             state_var_reg,
+            state_var_valnum,
         )
         if parsed is None:
             continue  # leaf / handler -- not a state-var comparison node
