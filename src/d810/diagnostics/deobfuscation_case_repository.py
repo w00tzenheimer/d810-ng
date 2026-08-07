@@ -1,6 +1,6 @@
 """Read-only projection of normalized producer-owned deobfuscation cases.
 
-The producer materializes one closed, versioned case in schema 10.  The UI
+The producer materializes one closed, versioned case in schema 11. The UI
 must consume those rows directly; it must not infer a case by replaying raw
 lifecycle events or parsing diagnostic log text.
 """

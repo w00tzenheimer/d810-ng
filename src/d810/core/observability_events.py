@@ -158,6 +158,47 @@ class SemanticOutputVerifiedObserved:
 
 
 @dataclass(frozen=True)
+class PassContractEvidencePublished:
+    """One anchored native pass-contract output accepted by the driver."""
+
+    session_id: str
+    func_ea: int
+    evidence_generation: int
+    maturity: str
+    pass_id: str
+    evidence_token: str
+    native_anchor_eas: tuple[int, ...]
+    summary: str
+    timestamp: float = 0.0
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "session_id",
+            "maturity",
+            "pass_id",
+            "evidence_token",
+            "summary",
+        ):
+            value = getattr(self, field_name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{field_name} must be non-empty")
+        if int(self.func_ea) < 0:
+            raise ValueError("func_ea must be non-negative")
+        if int(self.evidence_generation) < 0:
+            raise ValueError("evidence_generation must be non-negative")
+        anchors = tuple(int(anchor) for anchor in self.native_anchor_eas)
+        if not anchors:
+            raise ValueError("pass contract evidence requires native anchors")
+        if any(anchor < 0 for anchor in anchors):
+            raise ValueError("pass contract evidence anchors must be non-negative")
+        if anchors != tuple(sorted(set(anchors))):
+            raise ValueError(
+                "pass contract evidence anchors must be ordered and unique"
+            )
+        object.__setattr__(self, "native_anchor_eas", anchors)
+
+
+@dataclass(frozen=True)
 class EvidenceGenerationObserved:
     session_id: str
     func_ea: int
@@ -1058,6 +1099,7 @@ __all__ = [
     "CaptureMbaSnapshotRequested",
     "DiagnosticSessionObserved",
     "FrontendNormalizationPlanIntentObserved",
+    "PassContractEvidencePublished",
     "FragmentRootPublicationGroupObserved",
     "SemanticOutputVerifiedObserved",
     "SemanticFragmentFailureObserved",

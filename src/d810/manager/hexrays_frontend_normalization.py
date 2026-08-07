@@ -21,6 +21,7 @@ from d810.manager.frontend_normalization import (
     SessionFrontendNormalizationEvidenceProvider,
     run_frontend_normalization_pipeline,
 )
+from d810.manager.pass_contract_evidence import SessionPassContractEvidenceObserver
 from d810.transforms.fragment_plan import (
     FragmentBlockRole,
     FragmentPlanRejected,
@@ -194,6 +195,11 @@ def run_live_frontend_normalization(
             native_key=session.native_key,
             reference_oracle_provider=(
                 resolver_state.semantic_route_reference_oracle_provider
+            ),
+            pass_contract_evidence_observer=SessionPassContractEvidenceObserver(
+                session_id=session.identity_key,
+                function_ea=int(function_ea),
+                evidence_generation=int(session.native_preanalysis.evidence_generation),
             ),
         )
     except CfgGenerationPoisoned as exc:

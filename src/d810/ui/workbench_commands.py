@@ -64,6 +64,39 @@ class WorkbenchCommandAdapter:
             return self._ctx
         return SimpleNamespace(widget=self._widget)
 
+    def _decompile_for_build(self, function_ea: int) -> object:
+        """Acquire one transient cfunc when the original pseudocode was closed.
+
+        Build is tied to its immutable workbench request, not to a docked
+        pseudocode widget that may no longer exist.  The manager-owned
+        controller preserves the normal native-preanalysis lifecycle while
+        deliberately avoiding the Deobfuscate action and its recipe mutation.
+        """
+
+        decompile = getattr(self._idaapi, "decompile", None)
+        if not callable(decompile):
+            raise RuntimeError("IDA decompile is unavailable")
+        function_ea = int(function_ea)
+        mark_dirty = getattr(self._idaapi, "mark_cfunc_dirty", None)
+
+        def invalidate_cached_cfunc() -> None:
+            if callable(mark_dirty):
+                mark_dirty(function_ea, False)
+
+        manager = getattr(self._state, "manager", None)
+        lifecycle_decompile = getattr(
+            manager,
+            "decompile_with_native_preanalysis",
+            None,
+        )
+        if callable(lifecycle_decompile):
+            return lifecycle_decompile(
+                function_ea,
+                lambda: decompile(function_ea),
+                invalidate_cached_cfunc,
+            )
+        return decompile(function_ea)
+
     def analyze(
         self,
         request: WorkbenchCommandRequest,
@@ -154,10 +187,21 @@ class WorkbenchCommandAdapter:
         cfunc = getattr(vdui, "cfunc", None) if vdui is not None else None
         target = getattr(cfunc, "mba", None) if cfunc is not None else None
         if target is None:
-            return _failed_result(
-                request,
-                "Build Deobfuscator requires a current pseudocode function with microcode",
-            )
+            try:
+                cfunc = self._decompile_for_build(request.function_ea)
+            except Exception as exc:
+                return _failed_result(
+                    request,
+                    "Build Deobfuscator could not acquire microcode for "
+                    f"0x{request.function_ea:X}: {exc}",
+                )
+            target = getattr(cfunc, "mba", None)
+            if target is None:
+                return _failed_result(
+                    request,
+                    "Build Deobfuscator could not acquire microcode for "
+                    f"0x{request.function_ea:X}",
+                )
         entry_ea = getattr(cfunc, "entry_ea", None)
         if entry_ea is not None and int(entry_ea) != request.function_ea:
             return _failed_result(

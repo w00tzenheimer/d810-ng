@@ -33,9 +33,9 @@ def _live_workbench() -> object:
     return _process_until(lambda: DeobfuscationStats._panel)
 
 
-def _build_canvas(workbench: object) -> object:
+def _build_workspace(workbench: object) -> object:
     workbench.build_deobfuscator_button.click()
-    return _process_until(lambda: workbench._build_canvas_panel)
+    return _process_until(lambda: workbench._build_workspace_panel)
 
 
 def _stage_with_legal_palette_row(canvas: object) -> tuple[str, object]:
@@ -64,12 +64,10 @@ def test_native_canvas_palette_uses_actual_popup_controls() -> None:
         "9.1" if expected_binding == "PyQt5" else "9.3"
     )
 
-    canvas = _build_canvas(_live_workbench())
+    canvas = _build_workspace(_live_workbench())
     stage_id, expected = _stage_with_legal_palette_row(canvas)
-    stage_index = canvas.stage_selector.findData(stage_id)
-    assert stage_index >= 0
-    canvas.stage_selector.setCurrentIndex(stage_index)
-    assert canvas.stage_selector.currentData() == stage_id
+    canvas._select_stage(stage_id)
+    assert canvas._selected_stage_id() == stage_id
 
     before = len(canvas._draft.passes)
     canvas.add_registered_node_button.click()

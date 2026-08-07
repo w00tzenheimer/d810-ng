@@ -333,6 +333,35 @@ def test_pipeline_reports_modification_only_after_current_receipt_generation() -
     assert plan_authority.plan_for(0x1001, GENERATION) is None
 
 
+def test_pipeline_reports_accepted_pass_evidence_to_optional_observer() -> None:
+    class _Observer:
+        def __init__(self) -> None:
+            self.observations: list[dict[str, object]] = []
+
+        def observe_contract_evidence(self, **kwargs: object) -> None:
+            self.observations.append(kwargs)
+
+    observer = _Observer()
+    state = _state()
+    run_frontend_normalization_pipeline(
+        source=_source(_graph(normalized=False)),
+        backend=_Backend(state, publish_receipt=True),
+        evidence_provider=_Provider(_evidence()),
+        plan_authority=_plan_authority(),
+        lifecycle_state=state,
+        native_key=NATIVE_KEY,
+        pass_contract_evidence_observer=observer,
+    )
+
+    assert len(observer.observations) == 1
+    observation = observer.observations[0]
+    assert observation["pass_id"] == "resolve_native_indirect_transfers"
+    assert observation["evidence_token"] == "ir.branch_target"
+    assert observation["function_ea"] == 0x1000
+    publication = observation["publication"]
+    assert getattr(publication, "native_anchor_eas") == (0x1100,)
+
+
 def test_pipeline_exposes_reference_oracle_to_portable_frontend_passes() -> None:
     graph = _graph(normalized=False)
     provider = SimpleNamespace(
