@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+from types import SimpleNamespace
 
 
 IDA_UI = Path(__file__).resolve().parents[3] / "src" / "d810" / "ui" / "ida_ui.py"
@@ -28,6 +29,44 @@ def _plugin_method(name: str) -> ast.FunctionDef:
                 if isinstance(item, ast.FunctionDef) and item.name == name:
                     return item
     raise AssertionError(f"PluginConfigurationFileForm_t.{name} not found")
+
+
+def _compiled_config_form_method(name: str):
+    method = _method(name)
+    class_node = ast.ClassDef(
+        name="ConfigFormHarness",
+        bases=[],
+        keywords=[],
+        body=[method],
+        decorator_list=[],
+    )
+    module = ast.fix_missing_locations(ast.Module(body=[class_node], type_ignores=[]))
+    namespace = {
+        "logger": SimpleNamespace(debug=lambda *args: None),
+        "ida_kernwin": SimpleNamespace(
+            PluginForm=SimpleNamespace(WCLS_SAVE=1),
+        ),
+    }
+    exec(compile(module, filename=str(IDA_UI), mode="exec"), namespace)
+    return getattr(namespace["ConfigFormHarness"], name)
+
+
+class _Signal:
+    def __init__(self) -> None:
+        self.disconnect_count = 0
+
+    def disconnect(self) -> None:
+        self.disconnect_count += 1
+
+
+class _Button:
+    def __init__(self) -> None:
+        self.clicked = _Signal()
+
+
+class _Action:
+    def __init__(self) -> None:
+        self.triggered = _Signal()
 
 
 def test_active_pipeline_overview_owns_the_project_pipeline_pane() -> None:
@@ -109,6 +148,48 @@ def test_occasional_engine_controls_live_in_one_overflow_menu() -> None:
         assert f"self._engine_menu.addAction('{label}')" in source
     # Menu actions need the same finalization teardown as the buttons.
     assert "action.triggered.disconnect()" in close_source
+
+
+def test_close_disconnects_menu_actions_without_treating_them_as_buttons() -> None:
+    close = _compiled_config_form_method("OnClose")
+    form = SimpleNamespace(
+        shown=True,
+        cfg_select=None,
+        _pipeline_overview=None,
+        _config_v2_overview=None,
+        _details_toggle=None,
+        _engine_menu=object(),
+        _density_host=object(),
+        _details_panel=object(),
+        _config_mode_value=object(),
+        _config_source_value=object(),
+        _config_runtime_value=object(),
+        _config_passes_value=object(),
+        btn_new_cfg=None,
+        btn_duplicate_cfg=None,
+        btn_edit_cfg=None,
+        btn_delele_cfg=None,
+        btn_start=_Button(),
+        btn_stop=None,
+        btn_config=_Action(),
+        btn_logger_cfg=_Action(),
+        btn_start_profiling=_Action(),
+        btn_test_runner=None,
+        test_runner=None,
+        _config_v2_editor=None,
+    )
+    actions = (
+        form.btn_config,
+        form.btn_logger_cfg,
+        form.btn_start_profiling,
+    )
+    form._engine_actions = actions
+
+    close(form, None)
+
+    assert form.btn_start.clicked.disconnect_count == 1
+    for action in actions:
+        assert action.triggered.disconnect_count == 1
 
 
 def test_project_row_has_a_distinct_diagnostics_capture_indicator() -> None:

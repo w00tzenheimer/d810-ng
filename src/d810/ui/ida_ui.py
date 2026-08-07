@@ -615,10 +615,6 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
                 "btn_delele_cfg",
                 "btn_start",
                 "btn_stop",
-                "btn_config",
-                "btn_logger_cfg",
-                "btn_start_profiling",
-                "btn_test_runner",
             ]:
                 btn = getattr(self, btn_attr, None)
                 if btn is not None:
