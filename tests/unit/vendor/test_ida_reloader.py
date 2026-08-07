@@ -228,3 +228,48 @@ def test_reload_package_reloads_relative_dependency_before_its_reexporter(
                 f"{package_name}."
             ):
                 sys.modules.pop(module_name, None)
+
+
+def test_reload_package_defers_new_consumers_until_dependencies_are_reloaded(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    """A newly discovered consumer must not execute against a stale dependency."""
+    package_name = "d810_reload_new_consumer_probe"
+    source_root = tmp_path / "source"
+    package_root = source_root / package_name
+
+    _write_module(package_root / "__init__.py", "")
+    _write_module(package_root / "dependency.py", "EXISTING = 1\n")
+
+    monkeypatch.syspath_prepend(str(source_root))
+    package = importlib.import_module(package_name)
+    dependency = importlib.import_module(f"{package_name}.dependency")
+    assert dependency.EXISTING == 1
+
+    _write_module(
+        package_root / "dependency.py",
+        "EXISTING = 2\nPassContractEvidencePublished = 42\n",
+    )
+    _write_module(
+        package_root / "consumer.py",
+        f"from {package_name}.dependency import PassContractEvidencePublished\n"
+        "RESULT = PassContractEvidencePublished\n",
+    )
+    importlib.invalidate_caches()
+
+    try:
+        reload_package(package)
+
+        consumer = importlib.import_module(f"{package_name}.consumer")
+        dependency = importlib.import_module(f"{package_name}.dependency")
+        assert consumer.RESULT == 42
+        assert dependency.EXISTING == 2
+        assert "Error while loading extension" not in capsys.readouterr().err
+    finally:
+        for module_name in tuple(sys.modules):
+            if module_name == package_name or module_name.startswith(
+                f"{package_name}."
+            ):
+                sys.modules.pop(module_name, None)
