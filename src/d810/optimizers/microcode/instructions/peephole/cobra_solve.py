@@ -40,6 +40,7 @@ from d810.backends.cobra.prove import (
     ProofResult,
     prove_equivalent,
 )
+from d810.backends.cobra.store import ProofCacheStore, proof_cache_db_path
 from d810.backends.cobra.table import Outcome, RewriteTable
 from d810.backends.cobra.solve import (
     SolveStatus,
@@ -55,6 +56,10 @@ logger = getLogger(__name__)
 
 _BOOL_OPS = frozenset({"~", "|", "&", "^"})
 _ARITH_OPS = frozenset({"-", "+", "*"})
+#: Persist after this many newly-settled entries. Flushing per write would
+#: rewrite the whole table for every candidate.
+_FLUSH_EVERY = 16
+
 _LEAF_TYPES = frozenset(
     {ida_hexrays.mop_r, ida_hexrays.mop_l, ida_hexrays.mop_S, ida_hexrays.mop_v}
 )
@@ -94,6 +99,12 @@ class CobraSolveRule(PeepholeSimplificationRule):
         # worker thread per dead copy.
         self.table = RewriteTable()
         self.escalator = EscalationProver(self.table)
+        # The durable cache is loaded lazily, not here: the manager assigns
+        # ``log_dir`` *after* construction, so resolving the path now would
+        # silently fall back to the temp directory.
+        self._store: ProofCacheStore | None = None
+        self._store_loaded = False
+        self._unflushed = 0
 
     def configure(self, kwargs) -> None:
         super().configure(kwargs)
@@ -102,6 +113,60 @@ class CobraSolveRule(PeepholeSimplificationRule):
         # Only an activated rule gets configured, so this is the first point at
         # which a worker is known to be wanted. start() is idempotent.
         self.escalator.start()
+
+    def _ensure_store(self) -> None:
+        """Load the durable proof cache once, on first use.
+
+        Deferred to first call rather than done in configure() because the
+        manager sets ``log_dir`` on the rule after construction, and the rule
+        is only ever invoked once setup is complete.
+        """
+        if self._store_loaded:
+            return
+        self._store_loaded = True
+        try:
+            self._store = ProofCacheStore(
+                proof_cache_db_path(getattr(self, "log_dir", None))
+            )
+            loaded = self._store.load()
+            # Seed the live table with everything already proved. A cold cache
+            # is normal and simply means paying the solve once more.
+            for key, entry in loaded._entries.items():  # noqa: SLF001
+                self.table._entries.setdefault(key, entry)  # noqa: SLF001
+            logger.info(
+                "cobra-solve proof cache: %d entries from %s",
+                len(loaded._entries),  # noqa: SLF001
+                self._store.db_path,
+            )
+        except Exception:  # noqa: BLE001 - a bad cache must never break a decompile
+            logger.exception("cobra-solve could not load its proof cache")
+            self._store = None
+
+    def _record_and_maybe_flush(self) -> None:
+        """Persist settled entries in batches.
+
+        Flushing on every write would rewrite the whole table per candidate;
+        batching keeps the cost proportional to new knowledge rather than to
+        traffic.
+        """
+        self._unflushed += 1
+        if self._store is None or self._unflushed < _FLUSH_EVERY:
+            return
+        self._unflushed = 0
+        try:
+            self._store.flush(self.table)
+        except Exception:  # noqa: BLE001
+            logger.exception("cobra-solve could not flush its proof cache")
+
+    def flush_store(self) -> None:
+        """Force a flush. Safe to call when no store was ever opened."""
+        if self._store is None:
+            return
+        try:
+            self._store.flush(self.table)
+            self._unflushed = 0
+        except Exception:  # noqa: BLE001
+            logger.exception("cobra-solve could not flush its proof cache")
 
     def log_stats(self) -> None:
         """Report table accounting.
@@ -160,6 +225,7 @@ class CobraSolveRule(PeepholeSimplificationRule):
         )
 
         # --- tier 1: the table. A hit skips BOTH solving and proving. -------
+        self._ensure_store()
         entry = self.table.lookup(candidate.tree, candidate.bitwidth)
         if entry is not None:
             outcome = getattr(entry.outcome, "value", None)
@@ -179,12 +245,14 @@ class CobraSolveRule(PeepholeSimplificationRule):
             # Negative caching is what stops this candidate being re-solved on
             # every pass; 46 of 60 measured candidates end here.
             self.table.record_no_rewrite(candidate.tree, candidate.bitwidth)
+            self._record_and_maybe_flush()
             return None
 
         # Accept before proving: a rejected rewrite is never used, so proving
         # it first is pure waste.
         if not accept_rewrite(candidate.tree, result.tree):
             self.table.record_no_rewrite(candidate.tree, candidate.bitwidth)
+            self._record_and_maybe_flush()
             return None
 
         if self.require_proof:
@@ -204,6 +272,7 @@ class CobraSolveRule(PeepholeSimplificationRule):
                     "cobra-solve REFUTED a rewrite at %#x; not applying", ins.ea
                 )
                 self.table.record_no_rewrite(candidate.tree, candidate.bitwidth)
+                self._record_and_maybe_flush()
                 return None
             if value != ProofResult.PROVED.value:
                 # --- tier 3: starved, not disproved. Hand it to the off-path
@@ -219,6 +288,7 @@ class CobraSolveRule(PeepholeSimplificationRule):
                 return None
 
         self.table.record_proved(candidate.tree, candidate.bitwidth, result.tree)
+        self._record_and_maybe_flush()
         return self._install(candidate, result.tree, ins)
 
     def _install(self, candidate, rewrite, ins):
