@@ -398,25 +398,43 @@ def get_cobra_ext_modules():
         )
     root = pathlib.Path(cobra_root)
 
-    # Pick ONE dependency prefix and one core build; globbing several and
-    # merging them silently mixes incompatible trees.
-    deps_prefix = _first_existing(
-        root, ("build-deps/install", "build-deps-nollvm/install")
-    )
-    core_dir = _first_existing(root, ("build/lib/core", "build-nollvm/lib/core"))
-    if deps_prefix is None or core_dir is None:
-        raise RuntimeError(
-            f"COBRA_ROOT={root} does not look built: expected build-deps/install "
-            "and build/lib/core (see CoBRA BUILD.md)"
-        )
-
     here = pathlib.Path(__file__).parent / "src" / "d810" / "backends" / "cobra"
-    include_dirs = [str(here), str(root / "include"), str(deps_prefix / "include")]
-    # lib vs lib64: manylinux is RHEL-based, where CMAKE_INSTALL_LIBDIR
-    # defaults to lib64, so never hardcode "lib".
-    library_dirs = [str(core_dir)] + [
-        str(p) for p in sorted(deps_prefix.glob("lib*")) if p.is_dir()
-    ]
+
+    # TWO accepted layouts. The flat one exists so a released/CI static-lib
+    # bundle can be consumed directly -- requiring callers to reshape a
+    # download into a fake build tree is pure friction, and reshaping inside CI
+    # just relocates it.
+    #
+    #   FLAT (release / CI artifact):  <root>/lib/*.{a,lib}   <root>/include/
+    #   BUILD TREE (local checkout):   <root>/build/lib/core/
+    #                                  <root>/build-deps/install/{lib*,include}/
+    flat_lib = root / "lib"
+    flat_inc = root / "include"
+    is_flat = flat_lib.is_dir() and any(flat_lib.glob("*cobra-core*"))
+
+    if is_flat:
+        include_dirs = [str(here), str(flat_inc)]
+        library_dirs = [str(flat_lib)]
+    else:
+        # Pick ONE dependency prefix and one core build; globbing several and
+        # merging them silently mixes incompatible trees.
+        deps_prefix = _first_existing(
+            root, ("build-deps/install", "build-deps-nollvm/install")
+        )
+        core_dir = _first_existing(root, ("build/lib/core", "build-nollvm/lib/core"))
+        if deps_prefix is None or core_dir is None:
+            raise RuntimeError(
+                f"COBRA_ROOT={root} does not look built. Accepted layouts:\n"
+                f"  flat:       {root}/lib/*cobra-core* + {root}/include/\n"
+                f"  build tree: {root}/build/lib/core + {root}/build-deps/install\n"
+                "(see CoBRA BUILD.md, or use a cobra-core-<platform> bundle)"
+            )
+        include_dirs = [str(here), str(root / "include"), str(deps_prefix / "include")]
+        # lib vs lib64: manylinux is RHEL-based, where CMAKE_INSTALL_LIBDIR
+        # defaults to lib64, so never hardcode "lib".
+        library_dirs = [str(core_dir)] + [
+            str(p) for p in sorted(deps_prefix.glob("lib*")) if p.is_dir()
+        ]
 
     std_args = ["/std:c++latest"] if OSTYPE == "Windows" else ["-std=c++23"]
 
