@@ -96,23 +96,34 @@ class TestUiLevelChangePropagates(unittest.TestCase):
         """
         import json, logging, tempfile
         from d810.core import getLogger, LoggerConfigurator
-        NAME = "d810.hexrays.expr.p_ast"
-        getLogger(NAME)
+
+        # Created BEFORE configure_loggers: dictConfig resets it to NOTSET.
+        EARLY = "d810.hexrays.expr.p_ast"
+        getLogger(EARLY)
         from d810.core.logging import configure_loggers
         configure_loggers(tempfile.mkdtemp())
 
-        before = logging.getLogger(NAME).getEffectiveLevel()
+        # Created AFTER: getLogger stamps an explicit INFO level on it. d810
+        # imports modules lazily during decompilation, so both kinds coexist
+        # and the UI must move them together.
+        LATE = "d810.some.lazily.imported.module"
+        getLogger(LATE)
+
+        def levels():
+            return [logging.getLogger(n).getEffectiveLevel() for n in (EARLY, LATE)]
+
+        before = levels()
         LoggerConfigurator.set_level("d810", "DEBUG")
-        after_debug = logging.getLogger(NAME).getEffectiveLevel()
+        after_debug = levels()
         LoggerConfigurator.set_level("d810", "INFO")
-        after_info = logging.getLogger(NAME).getEffectiveLevel()
+        after_info = levels()
 
         print(json.dumps({
             "before": before,
             "after_debug": after_debug,
             "after_info": after_info,
         }))
-        """
+"""
     )
 
     def _probe(self) -> dict:
@@ -132,15 +143,16 @@ class TestUiLevelChangePropagates(unittest.TestCase):
 
     def test_setting_parent_level_reaches_children(self):
         result = self._probe()
-        self.assertEqual(result["before"], logging.INFO)
+        self.assertEqual(result["before"], [logging.INFO, logging.INFO])
         self.assertEqual(
             result["after_debug"],
-            logging.DEBUG,
-            "setting d810 -> DEBUG from the UI must reach child loggers",
+            [logging.DEBUG, logging.DEBUG],
+            "setting d810 -> DEBUG from the UI must reach EVERY descendant, "
+            "including loggers created after configure_loggers",
         )
         self.assertEqual(
             result["after_info"],
-            logging.INFO,
+            [logging.INFO, logging.INFO],
             "and setting it back must restore them",
         )
 
