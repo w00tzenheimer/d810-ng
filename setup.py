@@ -428,11 +428,23 @@ def get_cobra_ext_modules():
     # namespace", which is much harder to diagnose.  Force every abseil archive
     # in and let the linker dead-strip the remainder; resolving the symbols one
     # at a time is whack-a-mole.
+    # MSVC emits absl_base.lib; Unix toolchains emit libabsl_base.a. Globbing
+    # only the Unix shape silently yields NOTHING on Windows, link_args ends up
+    # empty, and the force-load below never happens -- which does not fail the
+    # link, it fails later at load time with a missing-symbol error that is far
+    # harder to trace back to here.
+    _absl_pattern = "absl_*.lib" if OSTYPE == "Windows" else "libabsl_*.a"
     absl_archives = [
         str(p)
         for d in library_dirs
-        for p in sorted(pathlib.Path(d).glob("libabsl_*.a"))
+        for p in sorted(pathlib.Path(d).glob(_absl_pattern))
     ]
+    if not absl_archives:
+        raise RuntimeError(
+            f"no abseil archives matched {_absl_pattern!r} under {library_dirs}. "
+            "Without force-loading them the extension links but fails at import "
+            "with missing absl symbols; refusing to build a broken binding."
+        )
     if OSTYPE == "Darwin":
         link_args = [f"-Wl,-force_load,{a}" for a in absl_archives]
         link_args.append("-Wl,-dead_strip")
