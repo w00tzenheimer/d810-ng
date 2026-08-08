@@ -104,9 +104,14 @@ jobs:
                   # Report, do not enforce. This workflow exists to FIND OUT
                   # whether the binding builds; failing the job would hide the
                   # wheel that would tell us. deploy.yml is where it is fatal.
+                  #
+                  # Prints every backend with a reason for any that is not
+                  # usable, so a wheel that installs cleanly and simplifies
+                  # nothing is legible in the log rather than a bare False.
                   CIBW_TEST_COMMAND: >-
-                      python -c "from d810.backends.cobra.solve import binding_available;
-                      print('COBRA BINDING:', binding_available())"
+                      python -c "from d810.backends import registry;
+                      from d810.core.plugins import format_report;
+                      print(format_report(registry().probe_all()))"
               with:
                   package-dir: .
                   output-dir: wheelhouse

@@ -137,17 +137,32 @@ print(simple)  # x ^ y ^ z
 
 ## Backend Selection
 
-Backends are **optional** and can be used independently:
+Backends are **optional** and can be used independently. Ask the registry
+rather than reaching for a per-module flag:
 
 ```python
-# Check what's available
-from d810.backends import Z3_INSTALLED
+from d810.backends import registry
 
-if Z3_INSTALLED:
-    print("Z3 verification available")
+solver = registry().optional("cobra")   # None if unusable; never raises
+if solver is not None:
+    ...
 ```
 
-Each backend handles its own imports gracefully:
+To find out *why* something is unusable:
+
+```console
+$ python tools/d810cli.py backends
+d810: /path/to/checkout/src/d810/__init__.py
+cobra  unavailable   builtin
+       -> native _cobra extension not built (rebuild with D810_BUILD_COBRA=1, ...)
+```
+
+Exit code 0 means every backend is usable or expectedly absent; 1 means a
+backend is `BROKEN` (raised on import) or `INCOMPATIBLE` (built against a
+protocol version this d810 no longer speaks). A missing optional dependency is
+**not** a failure.
+
+Each backend degrades gracefully:
 - Missing Z3 → verification disabled, but DSL still works
 - Missing IDA → pure Python mode, standalone tools work
 - Missing e-graph → pattern matching fallback
@@ -190,20 +205,52 @@ Example structure (MBA-domain backend):
 # src/d810/backends/mba/mybackend.py
 """My custom backend for MBA expressions."""
 
-# Check optional dependency
 try:
     import mylib
-    MYLIB_AVAILABLE = True
-except ImportError:
-    MYLIB_AVAILABLE = False
+except ImportError as exc:
+    mylib = None
+    _WHY = str(exc)
 
-def my_function(expr):
-    if not MYLIB_AVAILABLE:
-        raise ImportError("mylib not installed")
-    # Implementation...
 
-__all__ = ["MYLIB_AVAILABLE", "my_function"]
+def d810_backend_probe() -> str | None:
+    """Plugin protocol hook: None if usable, else a human-readable reason."""
+    return None if mylib is not None else f"mylib not installed: {_WHY}"
+
+
+def my_function(expr): ...
 ```
+
+Then add it to `BUILTIN_BACKENDS` in `d810/backends/__init__.py`.
+
+**Why the probe hook and not just a module flag.** Importing successfully is
+not evidence a backend works: `d810.backends.cobra.solve` imports fine whether
+or not its compiled `_cobra` extension exists. A flag also collapses two
+different events -- "optional dependency absent" (normal) and "this plugin is
+buggy" (someone must fix it) -- so a backend raising `AttributeError` on import
+gets silently filed as "not installed". The registry keeps them apart as
+`UNAVAILABLE` vs `BROKEN`.
+
+### Out-of-tree backends
+
+A separate distribution announces itself with an entry point. The API version
+is part of the **group name**, so a stale plugin is rejected without being
+imported:
+
+```toml
+# pyproject.toml of some d810-backend-mything distribution
+[project.entry-points."d810.backends.v1"]
+mything = "d810_backend_mything:api"
+```
+
+Discovery is lazy (an `entry_points()` scan measures ~31 ms cold) and failure
+is contained: a plugin that explodes on import is reported as `BROKEN` and
+degrades only itself.
+
+In-tree backends are a **static table**, not entry points, because d810 is
+deployed as a symlink into a source checkout while `pip` metadata for `d810-ng`
+may separately exist at a *different version* -- trusting entry points for
+builtins would let the backend list describe one version while another
+executes.
 
 ## Future Backends
 

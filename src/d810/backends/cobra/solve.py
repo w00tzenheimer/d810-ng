@@ -27,9 +27,14 @@ try:  # the in-process binding is built only when D810_BUILD_COBRA=1
     from d810.backends.cobra import _cobra
 
     _BINDING_AVAILABLE = True
-except ImportError:  # pragma: no cover - depends on build configuration
+    _BINDING_ERROR = ""
+except ImportError as exc:  # pragma: no cover - depends on build configuration
     _cobra = None  # type: ignore[assignment]
     _BINDING_AVAILABLE = False
+    # Keep the message. A wheel built with D810_BUILD_COBRA=0 and a wheel whose
+    # extension failed to link are indistinguishable without it, and both
+    # present as "mba-solve quietly does nothing".
+    _BINDING_ERROR = str(exc)
 
 
 class SolveStatus(enum.Enum):
@@ -53,6 +58,23 @@ class SolveResult:
 def binding_available() -> bool:
     """Whether the in-process solver binding was built."""
     return _BINDING_AVAILABLE
+
+
+def d810_backend_probe() -> str | None:
+    """Backend plugin protocol hook: ``None`` if usable, else why not.
+
+    This module imports fine with or without the compiled extension, so import
+    success is not evidence the backend works -- see
+    :mod:`d810.core.plugins`.
+    """
+    if _BINDING_AVAILABLE:
+        return None
+    detail = f": {_BINDING_ERROR}" if _BINDING_ERROR else ""
+    return (
+        "native _cobra extension not built "
+        "(rebuild with D810_BUILD_COBRA=1, or install a wheel that ships it)"
+        f"{detail}"
+    )
 
 
 def solve_signature(
