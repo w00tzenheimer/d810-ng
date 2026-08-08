@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
-import json
+import copy
 import pathlib
 
 from d810.core import typing
 from d810.core.logging import getLogger
+from d810.families.registry import registered_families
 from d810.ui.config_v2_editing_logic import (
-    config_v2_action_states,
+    ConfigV2EditorScreen,
     project_config_v2_document,
+    project_config_v2_editor_view,
     project_serializer_rows,
 )
 from d810.ui.project_config_logic import ConfigV2FocusTarget
+from d810.ui.workbench_structured_details_logic import DetailField, DetailSection
 
 logger = getLogger("D810.ui")
 
@@ -26,13 +29,42 @@ except ImportError:
 
 
 if IDA_AVAILABLE:
-    from d810.qt_shim import QtCore, QtWidgets
+    from d810.qt_shim import QtCore, QtWidgets, qt_flag_or
+    from d810.ui.workbench_structured_details import (
+        JsonTreeEditor,
+        RawJsonDialog,
+        StructuredDetailsView,
+    )
 
     WOPN_NOT_CLOSED_BY_ESC = getattr(
         ida_kernwin,
         "WOPN_NOT_CLOSED_BY_ESC",
         0x100,
     )
+
+    def _user_role() -> typing.Any:
+        try:
+            return QtCore.Qt.ItemDataRole.UserRole
+        except AttributeError:
+            return QtCore.Qt.UserRole
+
+    def _checkable_flag() -> typing.Any:
+        try:
+            return QtCore.Qt.ItemFlag.ItemIsUserCheckable
+        except AttributeError:
+            return QtCore.Qt.ItemIsUserCheckable
+
+    def _checked_state() -> typing.Any:
+        try:
+            return QtCore.Qt.CheckState.Checked
+        except AttributeError:
+            return QtCore.Qt.Checked
+
+    def _unchecked_state() -> typing.Any:
+        try:
+            return QtCore.Qt.CheckState.Unchecked
+        except AttributeError:
+            return QtCore.Qt.Unchecked
 
     class ConfigV2EditingPanel(ida_kernwin.PluginForm):
         """Render typed serializers while leaving policy in the state service."""
@@ -44,84 +76,79 @@ if IDA_AVAILABLE:
             adapter: typing.Any,
             *,
             on_saved: typing.Callable[[], None] | None = None,
+            screen: ConfigV2EditorScreen = ConfigV2EditorScreen.BUILDER,
             focus_target: ConfigV2FocusTarget | None = None,
         ) -> None:
             ida_kernwin.PluginForm.__init__(self)
+            screen = ConfigV2EditorScreen(screen)
             self._adapter = adapter
             self._on_saved = on_saved
+            self._screen = screen
             self._focus_target = focus_target
             self._focus_applied = False
+            self._selected_pass_index: int | None = None
+            self._rendering_inspector = False
+            self._rendering_routing = False
             self._manifest = tuple(adapter.manifest())
             self._catalog = tuple(adapter.catalog())
+            self._catalog_by_pass_id = {entry.pass_id: entry for entry in self._catalog}
             self._draft, self._validation = adapter.reset()
             self._view = project_config_v2_document(self._draft)
+            self._editor_view = project_config_v2_editor_view(
+                self._draft,
+                self._validation,
+                self._catalog,
+            )
             self._closed = False
             self.parent: typing.Any = None
 
             self.destination_label = QtWidgets.QLabel(str(adapter.destination))
+            self.destination_label.setToolTip(str(adapter.destination))
             self.validation_label = QtWidgets.QLabel()
-            self.status_detail = QtWidgets.QPlainTextEdit()
-            self.status_detail.setReadOnly(True)
-            self.status_detail.setMaximumHeight(90)
+            self.error_label = QtWidgets.QLabel()
+            self.error_label.setWordWrap(True)
+            self.error_label.setMaximumHeight(44)
             self._set_status("")
 
-            self.manifest_list = QtWidgets.QListWidget()
-            self.manifest_list.setToolTip(
-                "Only these fields have declared lossless structured serializers"
-            )
-
-            self.description_edit = QtWidgets.QPlainTextEdit()
-            self.description_edit.setFixedHeight(64)
-            try:
-                wrap_mode = QtWidgets.QPlainTextEdit.LineWrapMode.WidgetWidth
-                vertical_policy = QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded
-                horizontal_policy = QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-            except AttributeError:
-                wrap_mode = QtWidgets.QPlainTextEdit.WidgetWidth
-                vertical_policy = QtCore.Qt.ScrollBarAsNeeded
-                horizontal_policy = QtCore.Qt.ScrollBarAlwaysOff
-            self.description_edit.setLineWrapMode(wrap_mode)
-            self.description_edit.setVerticalScrollBarPolicy(vertical_policy)
-            self.description_edit.setHorizontalScrollBarPolicy(horizontal_policy)
-            self.description_button = QtWidgets.QPushButton("Set description")
-
-            self.catalog_combo = QtWidgets.QComboBox()
-            for entry in sorted(self._catalog, key=lambda item: item.pass_id):
-                self.catalog_combo.addItem(
-                    f"{entry.display_name} ({entry.pass_id})",
-                    entry.pass_id,
-                )
+            self.description_label = QtWidgets.QLabel()
+            self.description_label.setWordWrap(True)
+            self.edit_description_button = QtWidgets.QPushButton("Edit description...")
             self.pipeline_list = QtWidgets.QListWidget()
             self.pipeline_list.setToolTip("Execution order is top to bottom")
             self.pass_buttons: dict[str, typing.Any] = {}
             for action_id, label in (
-                ("add", "Add registered pass"),
+                ("add", "Add pass..."),
                 ("remove", "Remove"),
                 ("up", "Move up"),
                 ("down", "Move down"),
-                ("options", "Edit pass options"),
+                ("inspector", "Open Inspector"),
             ):
                 self.pass_buttons[action_id] = QtWidgets.QPushButton(label)
 
-            self.routing_button = QtWidgets.QPushButton("Edit routing override")
-            self.routing_view = QtWidgets.QPlainTextEdit()
-            self.routing_view.setReadOnly(True)
-            self.routing_view.setMaximumHeight(130)
+            self.screen_stack = QtWidgets.QStackedWidget()
+            self.builder_page = QtWidgets.QWidget()
+            self.inspector_page = QtWidgets.QWidget()
+            self.screen_stack.addWidget(self.builder_page)
+            self.screen_stack.addWidget(self.inspector_page)
 
-            self.complete_document = QtWidgets.QPlainTextEdit()
-            self.complete_document.setReadOnly(True)
-            self.unsupported_document = QtWidgets.QPlainTextEdit()
-            self.unsupported_document.setReadOnly(True)
-
-            self.validate_button = QtWidgets.QPushButton("Validate full pipeline")
-            self.reset_button = QtWidgets.QPushButton("Reset draft")
-            self.reset_button.setToolTip(
-                "Restore the complete runtime source and any originating recipe seed"
+            self.inspector_details = StructuredDetailsView()
+            self.contract_chip_labels = {
+                name: QtWidgets.QLabel() for name in ("Scope", "Backend", "Safety")
+            }
+            self.transform_picker = QtWidgets.QListWidget()
+            self.no_transforms_label = QtWidgets.QLabel(
+                "No individually selectable transforms."
             )
-            self.save_as_button = QtWidgets.QPushButton("Save as another config...")
-            self.save_button = QtWidgets.QPushButton("Save atomically and reload")
+            self.options_tree = JsonTreeEditor()
+            self.options_tree.set_on_value_changed(self._apply_inspector_options)
+            self.contract_tree = JsonTreeEditor()
+            self.raw_options_button = QtWidgets.QToolButton()
+            self.raw_options_button.setText("Edit raw options")
+            self.raw_contract_button = QtWidgets.QToolButton()
+            self.raw_contract_button.setText("View raw contract")
+            self.edit_pipeline_button = QtWidgets.QPushButton("Edit pipeline...")
 
-            self.description_button.clicked.connect(self._set_description)
+            self.edit_description_button.clicked.connect(self._edit_description)
             self.pass_buttons["add"].clicked.connect(self._add_pass)
             self.pass_buttons["remove"].clicked.connect(self._remove_pass)
             self.pass_buttons["up"].clicked.connect(
@@ -130,97 +157,214 @@ if IDA_AVAILABLE:
             self.pass_buttons["down"].clicked.connect(
                 lambda checked=False: self._move_pass(1)
             )
-            self.pass_buttons["options"].clicked.connect(self._edit_pass_options)
-            self.routing_button.clicked.connect(self._edit_routing)
-            self.validate_button.clicked.connect(self._validate)
-            self.reset_button.clicked.connect(self._reset)
-            self.save_as_button.clicked.connect(self._save_as)
-            self.save_button.clicked.connect(self._save)
+            self.pass_buttons["inspector"].clicked.connect(
+                self._open_selected_inspector
+            )
+            self.transform_picker.itemChanged.connect(self._apply_selected_transforms)
+            self.raw_options_button.clicked.connect(self._show_raw_options)
+            self.raw_contract_button.clicked.connect(self._show_raw_contract)
+            self.edit_pipeline_button.clicked.connect(self._show_builder)
             self._render()
 
         def OnCreate(self, form: typing.Any) -> None:
             self.parent = self.FormToPyQtWidget(form)
 
-            identity_group = QtWidgets.QGroupBox("Project", self.parent)
-            identity_layout = QtWidgets.QFormLayout(identity_group)
-            identity_layout.setContentsMargins(4, 4, 4, 4)
-            identity_layout.setSpacing(4)
-            identity_layout.addRow("Destination:", self.destination_label)
-            identity_layout.addRow("Validation:", self.validation_label)
+            project_header = QtWidgets.QWidget(self.parent)
+            identity_layout = QtWidgets.QHBoxLayout(project_header)
+            identity_layout.setContentsMargins(4, 2, 4, 2)
+            identity_layout.setSpacing(8)
+            identity_layout.addWidget(self.destination_label, stretch=1)
+            identity_layout.addWidget(self.validation_label)
 
             description_row = QtWidgets.QHBoxLayout()
             description_row.setSpacing(4)
             description_row.addWidget(QtWidgets.QLabel("Description:"))
-            description_row.addWidget(self.description_edit)
-            description_row.addWidget(self.description_button)
+            description_row.addWidget(self.description_label, stretch=1)
+            description_row.addWidget(self.edit_description_button)
 
             pass_row = QtWidgets.QHBoxLayout()
             pass_row.setSpacing(4)
-            pass_row.addWidget(self.catalog_combo, stretch=1)
-            for action_id in ("add", "remove", "up", "down", "options"):
+            for action_id in ("add", "remove", "up", "down", "inspector"):
                 pass_row.addWidget(self.pass_buttons[action_id])
 
-            typed_splitter = QtWidgets.QSplitter()
-            try:
-                typed_splitter.setOrientation(QtCore.Qt.Orientation.Horizontal)
-            except AttributeError:
-                typed_splitter.setOrientation(QtCore.Qt.Horizontal)
-            typed_splitter.addWidget(self.manifest_list)
-            typed_splitter.addWidget(self.pipeline_list)
-            typed_splitter.addWidget(self.routing_view)
-            self.manifest_list.setMinimumWidth(180)
-            self.pipeline_list.setMinimumWidth(280)
-            self.routing_view.setMinimumWidth(280)
-            typed_splitter.setStretchFactor(0, 1)
-            typed_splitter.setStretchFactor(1, 2)
-            typed_splitter.setStretchFactor(2, 2)
-            typed_splitter.setSizes([200, 400, 400])
-
-            raw_tabs = QtWidgets.QTabWidget()
-            raw_tabs.addTab(self.unsupported_document, "Unsupported fields (read-only)")
-            raw_tabs.addTab(self.complete_document, "Complete document (read-only)")
-
-            editing_group = QtWidgets.QGroupBox("Structured fields", self.parent)
+            editing_group = QtWidgets.QGroupBox("Active ordered passes", self.parent)
             editing_layout = QtWidgets.QVBoxLayout(editing_group)
             editing_layout.setContentsMargins(4, 4, 4, 4)
             editing_layout.setSpacing(4)
             editing_layout.addLayout(description_row)
+            editing_layout.addWidget(self.pipeline_list, stretch=1)
             editing_layout.addLayout(pass_row)
-            editing_layout.addWidget(typed_splitter, stretch=1)
 
-            raw_group = QtWidgets.QGroupBox("Preserved document", self.parent)
-            raw_layout = QtWidgets.QVBoxLayout(raw_group)
-            raw_layout.setContentsMargins(4, 4, 4, 4)
-            raw_layout.setSpacing(4)
-            raw_layout.addWidget(raw_tabs)
+            self._build_routing_controls()
 
-            outer_splitter = QtWidgets.QSplitter()
-            try:
-                outer_splitter.setOrientation(QtCore.Qt.Orientation.Vertical)
-            except AttributeError:
-                outer_splitter.setOrientation(QtCore.Qt.Vertical)
-            outer_splitter.addWidget(editing_group)
-            outer_splitter.addWidget(raw_group)
-            outer_splitter.setStretchFactor(0, 1)
-            outer_splitter.setStretchFactor(1, 1)
-            outer_splitter.setSizes([450, 550])
+            builder_layout = QtWidgets.QVBoxLayout(self.builder_page)
+            builder_layout.setContentsMargins(0, 0, 0, 0)
+            builder_layout.setSpacing(4)
+            builder_layout.addWidget(editing_group, stretch=1)
+            builder_layout.addWidget(self.routing_group)
 
-            action_row = QtWidgets.QHBoxLayout()
-            action_row.addWidget(self.routing_button)
-            action_row.addWidget(self.reset_button)
-            action_row.addStretch(1)
-            action_row.addWidget(self.validate_button)
-            action_row.addWidget(self.save_as_button)
-            action_row.addWidget(self.save_button)
+            inspector_layout = QtWidgets.QVBoxLayout(self.inspector_page)
+            inspector_layout.setContentsMargins(4, 4, 4, 4)
+            inspector_layout.setSpacing(6)
+
+            inspector_identity_group = QtWidgets.QGroupBox("Pass inspector")
+            inspector_identity_layout = QtWidgets.QFormLayout(inspector_identity_group)
+            inspector_identity_layout.setContentsMargins(4, 4, 4, 4)
+            inspector_identity_layout.setSpacing(4)
+            inspector_identity_layout.addRow(self.inspector_details)
+            inspector_layout.addWidget(inspector_identity_group)
+
+            chip_row = QtWidgets.QHBoxLayout()
+            chip_row.setSpacing(4)
+            for name in ("Scope", "Backend", "Safety"):
+                chip_row.addWidget(self.contract_chip_labels[name])
+            chip_row.addStretch(1)
+            inspector_layout.addLayout(chip_row)
+
+            transforms_group = QtWidgets.QGroupBox("Transforms")
+            transforms_layout = QtWidgets.QVBoxLayout(transforms_group)
+            transforms_layout.setContentsMargins(4, 4, 4, 4)
+            transforms_layout.setSpacing(4)
+            transforms_layout.addWidget(self.transform_picker)
+            transforms_layout.addWidget(self.no_transforms_label)
+            inspector_layout.addWidget(transforms_group, stretch=1)
+
+            options_group = QtWidgets.QGroupBox("Options")
+            options_layout = QtWidgets.QVBoxLayout(options_group)
+            options_layout.setContentsMargins(4, 4, 4, 4)
+            options_layout.setSpacing(4)
+            options_layout.addWidget(self.options_tree)
+            options_controls = QtWidgets.QHBoxLayout()
+            options_controls.addStretch(1)
+            options_controls.addWidget(self.raw_options_button)
+            options_layout.addLayout(options_controls)
+            inspector_layout.addWidget(options_group, stretch=1)
+
+            contract_group = QtWidgets.QGroupBox("Pass contract (read-only)")
+            contract_layout = QtWidgets.QVBoxLayout(contract_group)
+            contract_layout.setContentsMargins(4, 4, 4, 4)
+            contract_layout.setSpacing(4)
+            contract_layout.addWidget(self.contract_tree)
+            contract_controls = QtWidgets.QHBoxLayout()
+            contract_controls.addStretch(1)
+            contract_controls.addWidget(self.raw_contract_button)
+            contract_layout.addLayout(contract_controls)
+            inspector_layout.addWidget(contract_group, stretch=1)
+            inspector_layout.addWidget(self.edit_pipeline_button)
+
+            footer = self._build_footer()
 
             layout = QtWidgets.QVBoxLayout(self.parent)
             layout.setContentsMargins(4, 4, 4, 4)
             layout.setSpacing(6)
-            layout.addWidget(identity_group)
-            layout.addWidget(outer_splitter, stretch=1)
-            layout.addWidget(self.status_detail)
-            layout.addLayout(action_row)
+            layout.addWidget(project_header)
+            layout.addWidget(self.screen_stack, stretch=1)
+            layout.addWidget(self.error_label)
+            layout.addLayout(footer)
             self._render()
+
+        def _build_routing_controls(self) -> None:
+            self.routing_group = QtWidgets.QGroupBox("Auto routing", self.parent)
+            self.routing_group.setCheckable(True)
+            self.routing_group.setChecked(False)
+            routing_layout = QtWidgets.QVBoxLayout(self.routing_group)
+            routing_layout.setContentsMargins(6, 6, 6, 6)
+            routing_layout.setSpacing(4)
+            self.routing_body = QtWidgets.QWidget(self.routing_group)
+            routing_layout.addWidget(self.routing_body)
+            body_layout = QtWidgets.QVBoxLayout(self.routing_body)
+            body_layout.setContentsMargins(0, 0, 0, 0)
+            body_layout.setSpacing(4)
+
+            self.routing_auto_check = QtWidgets.QCheckBox("Auto")
+            body_layout.addWidget(self.routing_auto_check)
+
+            require_row = QtWidgets.QHBoxLayout()
+            require_row.addWidget(QtWidgets.QLabel("Require"))
+            self.routing_require_combo = QtWidgets.QComboBox()
+            self.routing_require_combo.addItem("Automatic", None)
+            require_row.addWidget(self.routing_require_combo, stretch=1)
+            body_layout.addLayout(require_row)
+
+            self.routing_family_names = tuple(
+                str(family.name) for family in registered_families()
+            )
+            for family_name in self.routing_family_names:
+                self.routing_require_combo.addItem(family_name, family_name)
+
+            body_layout.addWidget(QtWidgets.QLabel("Prefer"))
+            self.routing_prefer_table = QtWidgets.QTableWidget(
+                len(self.routing_family_names), 2
+            )
+            self.routing_prefer_table.setHorizontalHeaderLabels(["Family", "Bias"])
+            self.routing_prefer_rows: dict[str, tuple[typing.Any, typing.Any]] = {}
+            for row_index, family_name in enumerate(self.routing_family_names):
+                family_item = QtWidgets.QTableWidgetItem(family_name)
+                family_item.setFlags(
+                    qt_flag_or(family_item.flags(), _checkable_flag())
+                )
+                family_item.setCheckState(_unchecked_state())
+                bias = QtWidgets.QDoubleSpinBox()
+                bias.setRange(-1000000.0, 1000000.0)
+                bias.setDecimals(3)
+                bias.setValue(0.0)
+                self.routing_prefer_table.setItem(row_index, 0, family_item)
+                self.routing_prefer_table.setCellWidget(row_index, 1, bias)
+                self.routing_prefer_rows[family_name] = (family_item, bias)
+            body_layout.addWidget(self.routing_prefer_table)
+
+            body_layout.addWidget(QtWidgets.QLabel("Exclude"))
+            self.routing_exclude_list = QtWidgets.QListWidget()
+            for family_name in self.routing_family_names:
+                item = QtWidgets.QListWidgetItem(family_name)
+                item.setFlags(qt_flag_or(item.flags(), _checkable_flag()))
+                item.setData(_user_role(), family_name)
+                item.setCheckState(_unchecked_state())
+                self.routing_exclude_list.addItem(item)
+            body_layout.addWidget(self.routing_exclude_list)
+
+            self.apply_routing_button = QtWidgets.QPushButton("Apply routing")
+            self.apply_routing_button.clicked.connect(self._apply_routing_rows)
+            body_layout.addWidget(self.apply_routing_button)
+            self.routing_auto_check.toggled.connect(self._routing_auto_changed)
+            self.routing_group.toggled.connect(self._set_routing_expanded)
+            self._set_routing_expanded(self.routing_group.isChecked())
+
+        def _build_footer(self) -> typing.Any:
+            self.footer_dirty_label = QtWidgets.QLabel()
+            self.footer_validation_label = QtWidgets.QLabel()
+            self.footer_overflow_button = QtWidgets.QToolButton()
+            self.footer_overflow_button.setText("...")
+            self.footer_overflow_menu = QtWidgets.QMenu(self.footer_overflow_button)
+            self.footer_overflow_menu.addAction("Validate", self._validate)
+            self.footer_overflow_menu.addAction(
+                "Discard unsaved", self._discard_unsaved
+            )
+            self.footer_overflow_menu.addAction("Save as new...", self._save_as)
+            self.footer_overflow_menu.addAction("View raw", self._show_raw_document)
+            self.footer_overflow_menu.addAction(
+                "Developer help", self._show_developer_help
+            )
+            self.footer_overflow_button.setMenu(self.footer_overflow_menu)
+            try:
+                self.footer_overflow_button.setPopupMode(
+                    QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup
+                )
+            except AttributeError:
+                self.footer_overflow_button.setPopupMode(
+                    QtWidgets.QToolButton.InstantPopup
+                )
+            self.save_button = QtWidgets.QPushButton("Save")
+            self.save_button.clicked.connect(self._save)
+
+            footer = QtWidgets.QHBoxLayout()
+            footer.addWidget(self.footer_dirty_label)
+            footer.addWidget(QtWidgets.QLabel("|"))
+            footer.addWidget(self.footer_validation_label)
+            footer.addStretch(1)
+            footer.addWidget(self.footer_overflow_button)
+            footer.addWidget(self.save_button)
+            return footer
 
         def OnClose(self, form: typing.Any) -> None:
             del form
@@ -256,53 +400,202 @@ if IDA_AVAILABLE:
 
         def _render(self) -> None:
             self._view = project_config_v2_document(self._draft)
-            self.destination_label.setText(str(self._adapter.destination))
-            serializer_rows = project_serializer_rows(self._manifest)
-            actions = {
-                item.action_id: item
-                for item in config_v2_action_states(self._draft, self._validation)
-            }
-
-            self.manifest_list.clear()
-            for row in serializer_rows:
-                item = QtWidgets.QListWidgetItem(
-                    f"{row.label}\n{row.value_kind}: {row.path}"
+            self._editor_view = project_config_v2_editor_view(
+                self._draft,
+                self._validation,
+                self._catalog,
+            )
+            destination = str(self._adapter.destination)
+            try:
+                try:
+                    elide = QtCore.Qt.TextElideMode.ElideMiddle
+                except AttributeError:
+                    elide = QtCore.Qt.ElideMiddle
+                destination = self.destination_label.fontMetrics().elidedText(
+                    destination, elide, 420
                 )
-                item.setToolTip(
-                    "Declared structured serializer; all other fields are read-only"
-                )
-                self.manifest_list.addItem(item)
+            except (AttributeError, TypeError):
+                pass
+            self.destination_label.setText(destination)
+            self.destination_label.setToolTip(str(self._adapter.destination))
+            self.description_label.setText(self._view.description or "No description")
 
-            selected = self.pipeline_list.currentRow()
+            selected = self._selected_pass_index
+            if selected is None and self._screen is ConfigV2EditorScreen.BUILDER:
+                selected = self.pipeline_list.currentRow()
             self.pipeline_list.clear()
             for row in self._view.pipeline_rows:
                 item = QtWidgets.QListWidgetItem(f"{row.index + 1}. {row.pass_id}")
                 item.setToolTip(row.config_json)
                 self.pipeline_list.addItem(item)
-            if self._view.pipeline_rows:
-                self.pipeline_list.setCurrentRow(
-                    min(max(selected, 0), len(self._view.pipeline_rows) - 1)
-                )
-
             self._apply_focus_target()
 
-            if not self.description_edit.hasFocus():
-                self.description_edit.setPlainText(self._view.description)
-            self.routing_view.setPlainText(self._view.routing_json)
-            self.unsupported_document.setPlainText(self._view.unsupported_document_json)
-            self.complete_document.setPlainText(self._view.complete_document_json)
+            if self._editor_view.inspectors:
+                if (
+                    self._selected_pass_index is None
+                    and self._screen is ConfigV2EditorScreen.BUILDER
+                ):
+                    self._selected_pass_index = min(
+                        max(selected if selected is not None else 0, 0),
+                        len(self._editor_view.inspectors) - 1,
+                    )
+                elif (
+                    self._selected_pass_index is not None
+                    and self._selected_pass_index >= len(self._editor_view.inspectors)
+                ):
+                    self._selected_pass_index = len(self._editor_view.inspectors) - 1
+            else:
+                self._selected_pass_index = None
+            if self._selected_pass_index is not None:
+                self.pipeline_list.setCurrentRow(self._selected_pass_index)
 
             if self._validation.valid:
                 self.validation_label.setText(
-                    f"Full config-v2 validation: ready; {len(self._validation.pass_ids)} pass(es)"
+                    f"Ready | {len(self._validation.pass_ids)} pass(es)"
                 )
             else:
                 self.validation_label.setText(
-                    f"Full config-v2 validation: blocked; {len(self._validation.diagnostics)} diagnostic(s)"
+                    f"Blocked | {len(self._validation.diagnostics)} diagnostic(s)"
                 )
-            save = actions["save_project"]
-            self.save_button.setEnabled(save.enabled)
-            self.save_button.setToolTip(save.reason)
+            self._render_routing()
+            self._render_footer()
+            self._render_raw_document_trees()
+            self._render_inspector()
+            self.screen_stack.setCurrentWidget(
+                self.inspector_page
+                if self._screen is ConfigV2EditorScreen.INSPECTOR
+                else self.builder_page
+            )
+
+        def _render_routing(self) -> None:
+            if not hasattr(self, "routing_group"):
+                return
+            routing = self._editor_view.routing
+            self._rendering_routing = True
+            try:
+                self.routing_group.setTitle(
+                    "Auto routing" if routing.is_auto else "Routing override"
+                )
+                self.routing_auto_check.setChecked(routing.is_auto)
+                required_index = self.routing_require_combo.findData(routing.require)
+                self.routing_require_combo.setCurrentIndex(
+                    required_index if required_index >= 0 else 0
+                )
+                preferred = dict(routing.preferred)
+                for family_name, (item, bias) in self.routing_prefer_rows.items():
+                    item.setCheckState(
+                        _checked_state()
+                        if family_name in preferred
+                        else _unchecked_state()
+                    )
+                    bias.setValue(float(preferred.get(family_name, 0.0)))
+                denied = set(routing.denied)
+                for index in range(self.routing_exclude_list.count()):
+                    item = self.routing_exclude_list.item(index)
+                    item.setCheckState(
+                        _checked_state()
+                        if str(item.data(_user_role())) in denied
+                        else _unchecked_state()
+                    )
+                self._routing_auto_changed(routing.is_auto)
+            finally:
+                self._rendering_routing = False
+
+        def _routing_auto_changed(self, checked: bool) -> None:
+            enabled = not bool(checked)
+            for widget in (
+                self.routing_require_combo,
+                self.routing_prefer_table,
+                self.routing_exclude_list,
+            ):
+                widget.setEnabled(enabled)
+
+        def _set_routing_expanded(self, expanded: bool) -> None:
+            self.routing_body.setVisible(bool(expanded))
+
+        def _render_footer(self) -> None:
+            if not hasattr(self, "footer_dirty_label"):
+                return
+            footer = self._editor_view.footer
+            self.footer_dirty_label.setText(
+                "Unsaved changes" if footer.dirty else "Clean"
+            )
+            validation_is_current = (
+                self._validation.draft_id == self._draft.draft_id
+                and self._validation.revision == self._draft.revision
+            )
+            if footer.save_enabled:
+                validation_state = "Ready"
+            elif validation_is_current:
+                validation_state = "Blocked"
+            else:
+                validation_state = "Validate before saving"
+            self.footer_validation_label.setText(validation_state)
+            self.footer_validation_label.setToolTip(footer.validation_detail)
+            self.save_button.setEnabled(footer.save_enabled)
+            self.save_button.setToolTip(footer.validation_detail)
+
+        def _render_raw_document_trees(self) -> None:
+            document_tree = getattr(self, "_raw_document_tree", None)
+            preserved_tree = getattr(self, "_raw_preserved_tree", None)
+            if document_tree is not None:
+                document_tree.set_json(
+                    self._structured_raw_document(),
+                    editable=bool(getattr(self, "_raw_document_editable", False)),
+                )
+            if preserved_tree is not None:
+                preserved_tree.set_json(
+                    self._editor_view.raw_document.preserved_fields,
+                    editable=False,
+                )
+
+        def _structured_raw_document(self) -> dict[str, object]:
+            """Project only fields declared editable by config-v2 serializers."""
+
+            document = self._editor_view.raw_document.document
+            structured: dict[str, object] = {}
+            if "description" in document:
+                structured["description"] = copy.deepcopy(document["description"])
+            additional = document.get("additional_configuration")
+            if isinstance(additional, dict):
+                structured_additional: dict[str, object] = {}
+                for field in ("pipeline_v2", "router_resolution"):
+                    if field in additional:
+                        structured_additional[field] = copy.deepcopy(additional[field])
+                structured["additional_configuration"] = structured_additional
+            return structured
+
+        @staticmethod
+        def _is_structured_raw_document(value: object) -> bool:
+            if not isinstance(value, dict):
+                return False
+            if set(value).difference({"description", "additional_configuration"}):
+                return False
+            additional = value.get("additional_configuration", {})
+            return isinstance(additional, dict) and not set(additional).difference(
+                {"pipeline_v2", "router_resolution"}
+            )
+
+        def _complete_document_from_structured_raw(
+            self, structured: dict[str, object]
+        ) -> dict[str, object]:
+            document = copy.deepcopy(self._editor_view.raw_document.document)
+            if "description" in structured:
+                document["description"] = structured["description"]
+            else:
+                document.pop("description", None)
+            additional = document.get("additional_configuration")
+            structured_additional = structured.get("additional_configuration", {})
+            if not isinstance(additional, dict) or not isinstance(
+                structured_additional, dict
+            ):
+                raise ValueError("config-v2 additional_configuration must be an object")
+            for field in ("pipeline_v2", "router_resolution"):
+                if field in structured_additional:
+                    additional[field] = copy.deepcopy(structured_additional[field])
+                else:
+                    additional.pop(field, None)
+            return document
 
         def _apply_focus_target(self) -> None:
             """Select one requested pass, or report why focus was not possible."""
@@ -310,33 +603,141 @@ if IDA_AVAILABLE:
             if self._focus_applied or self._focus_target is None:
                 return
             target = self._focus_target
-            if target.pass_id is None:
+            if (
+                not target.unambiguous
+                or target.pass_id is None
+                or target.pass_index is None
+            ):
                 self._set_status(target.message)
                 self._focus_applied = True
                 return
-            matches = [
-                row.index
-                for row in self._view.pipeline_rows
-                if row.pass_id == target.pass_id
-            ]
-            if len(matches) == 1:
-                self.pipeline_list.setCurrentRow(matches[0])
+            if 0 <= target.pass_index < len(self._editor_view.inspectors):
+                inspector = self._editor_view.inspectors[target.pass_index]
+            else:
+                inspector = None
+            if (
+                inspector is not None
+                and inspector.pass_index == target.pass_index
+                and inspector.pass_id == target.pass_id
+            ):
+                self._selected_pass_index = target.pass_index
                 self._set_status(target.message)
             else:
                 self._set_status(
-                    f"{target.message} The pass row was not uniquely present in this draft."
+                    f"{target.message} The exact pass row does not match this draft."
                 )
             self._focus_applied = True
 
-        def _selected_pass_index(self) -> int | None:
+        def _builder_selected_pass_index(self) -> int | None:
             index = self.pipeline_list.currentRow()
             if not 0 <= index < len(self._view.pipeline_rows):
                 return None
+            self._selected_pass_index = index
             return index
 
+        def _open_selected_inspector(self, checked: bool = False) -> None:
+            del checked
+            index = self._builder_selected_pass_index()
+            if index is not None:
+                self._show_inspector(index)
+
+        def _current_inspector(self) -> typing.Any | None:
+            index = self._selected_pass_index
+            if index is None or not 0 <= index < len(self._editor_view.inspectors):
+                return None
+            inspector = self._editor_view.inspectors[index]
+            if inspector.pass_index != index:
+                return None
+            return inspector
+
+        def _render_inspector(self) -> None:
+            inspector = self._current_inspector()
+            self._rendering_inspector = True
+            try:
+                self.transform_picker.clear()
+                if inspector is None:
+                    self.inspector_details.set_sections(
+                        (
+                            DetailSection(
+                                "selection",
+                                "Pass",
+                                (DetailField("Pass", "No pass selected"),),
+                            ),
+                        )
+                    )
+                    for label in self.contract_chip_labels.values():
+                        label.setText("")
+                    self.transform_picker.setVisible(False)
+                    self.no_transforms_label.setVisible(True)
+                    self.options_tree.set_json({}, editable=False)
+                    self.contract_tree.set_json({}, editable=False)
+                    self.raw_options_button.setEnabled(False)
+                    self.raw_contract_button.setEnabled(False)
+                    return
+
+                self.inspector_details.set_sections(
+                    (
+                        DetailSection(
+                            "identity",
+                            "Pass",
+                            (
+                                DetailField(
+                                    "Pass",
+                                    f"{inspector.display_name} ({inspector.pass_id})",
+                                ),
+                                DetailField("Purpose", inspector.purpose),
+                                DetailField("Runs during", inspector.runs_during),
+                            ),
+                        ),
+                    )
+                )
+                for name, value in inspector.contract_chips:
+                    self.contract_chip_labels[name].setText(f"{name}: {value}")
+
+                self.transform_picker.setVisible(inspector.transforms_editable)
+                self.no_transforms_label.setVisible(not inspector.transforms_editable)
+                if inspector.transforms_editable:
+                    for row in inspector.selected_transforms:
+                        item = QtWidgets.QListWidgetItem(row.transform_id)
+                        item.setFlags(qt_flag_or(item.flags(), _checkable_flag()))
+                        item.setData(_user_role(), row.transform_id)
+                        item.setCheckState(
+                            _checked_state() if row.selected else _unchecked_state()
+                        )
+                        self.transform_picker.addItem(item)
+                else:
+                    self.no_transforms_label.setText(
+                        "No individually selectable transforms."
+                    )
+
+                self.options_tree.set_json(inspector.options, editable=True)
+                self.contract_tree.set_json(inspector.contract, editable=False)
+                self.raw_options_button.setEnabled(True)
+                self.raw_contract_button.setEnabled(True)
+            finally:
+                self._rendering_inspector = False
+
+        def _show_inspector(self, pass_index: int) -> None:
+            index = int(pass_index)
+            if not 0 <= index < len(self._editor_view.inspectors):
+                self._set_status(f"Pass row {index} is not present in this draft.")
+                return
+            inspector = self._editor_view.inspectors[index]
+            if inspector.pass_index != index:
+                self._set_status(f"Pass row {index} does not match this draft.")
+                return
+            self._selected_pass_index = index
+            self._screen = ConfigV2EditorScreen.INSPECTOR
+            self._render()
+
+        def _show_builder(self, checked: bool = False) -> None:
+            del checked
+            self._screen = ConfigV2EditorScreen.BUILDER
+            self._render()
+
         def _set_status(self, message: str) -> None:
-            self.status_detail.setPlainText(message)
-            self.status_detail.setVisible(bool(message))
+            self.error_label.setText(message)
+            self.error_label.setVisible(bool(message))
 
         def _apply_edit(
             self,
@@ -346,23 +747,142 @@ if IDA_AVAILABLE:
                 self._draft, self._validation = operation()
             except Exception as exc:
                 logger.warning("Config-v2 edit failed: %s", exc)
+                self._render()
                 self._set_status(f"Edit failed: {exc}")
                 return False
             self._set_status("")
             self._render()
             return True
 
-        def _set_description(self, checked: bool = False) -> None:
+        def _apply_selected_transforms(
+            self,
+            changed_item: typing.Any = None,
+        ) -> None:
+            del changed_item
+            if self._rendering_inspector:
+                return
+            inspector = self._current_inspector()
+            if inspector is None or not inspector.transforms_editable:
+                self._render()
+                return
+            checked_ids = {
+                str(self.transform_picker.item(index).data(_user_role()))
+                for index in range(self.transform_picker.count())
+                if self.transform_picker.item(index).checkState() == _checked_state()
+            }
+            transform_ids = tuple(
+                row.transform_id
+                for row in inspector.selected_transforms
+                if row.transform_id in checked_ids
+            )
+            self._apply_edit(
+                lambda: self._adapter.set_pass_transforms(
+                    self._draft,
+                    pass_index=inspector.pass_index,
+                    transform_ids=transform_ids,
+                )
+            )
+
+        def _apply_inspector_options(self, value: object) -> None:
+            inspector = self._current_inspector()
+            if inspector is None or not isinstance(value, dict):
+                self._render()
+                self._set_status("Pass options must be a JSON object.")
+                return
+            self._apply_edit(
+                lambda: self._adapter.set_pass_options(
+                    self._draft,
+                    pass_index=inspector.pass_index,
+                    options=value,
+                )
+            )
+
+        def _show_raw_options(self, checked: bool = False) -> None:
             del checked
-            value = self.description_edit.toPlainText()
-            self._apply_edit(lambda: self._adapter.set_description(self._draft, value))
+            inspector = self._current_inspector()
+            if inspector is None:
+                return
+            dialog = RawJsonDialog(
+                f"Edit raw options for {inspector.pass_id}",
+                inspector.options,
+                editable=True,
+                on_apply=self._apply_inspector_options,
+                parent=self.parent,
+            )
+            dialog.exec_()
+
+        def _show_raw_contract(self, checked: bool = False) -> None:
+            del checked
+            inspector = self._current_inspector()
+            if inspector is None:
+                return
+            dialog = RawJsonDialog(
+                f"View raw contract for {inspector.pass_id}",
+                inspector.contract,
+                editable=False,
+                parent=self.parent,
+            )
+            dialog.exec_()
+
+        def _edit_description(self, checked: bool = False) -> None:
+            del checked
+            value, accepted = QtWidgets.QInputDialog.getMultiLineText(
+                self.parent,
+                "Edit description",
+                "Description:",
+                self._view.description,
+            )
+            if accepted:
+                self._apply_edit(
+                    lambda: self._adapter.set_description(self._draft, str(value))
+                )
 
         def _add_pass(self, checked: bool = False) -> None:
             del checked
-            pass_id = self.catalog_combo.currentData()
-            if not pass_id:
+            dialog = QtWidgets.QDialog(self.parent)
+            dialog.setWindowTitle("Add pass")
+            query = QtWidgets.QLineEdit(dialog)
+            query.setPlaceholderText("Filter public pass catalog")
+            catalog_list = QtWidgets.QListWidget(dialog)
+
+            def populate(filter_text: str) -> None:
+                catalog_list.clear()
+                needle = str(filter_text).strip().casefold()
+                for entry in sorted(self._catalog, key=lambda item: item.pass_id):
+                    label = f"{entry.display_name} ({entry.pass_id})"
+                    if needle and needle not in label.casefold():
+                        continue
+                    item = QtWidgets.QListWidgetItem(label)
+                    item.setData(_user_role(), entry.pass_id)
+                    catalog_list.addItem(item)
+                if catalog_list.count():
+                    catalog_list.setCurrentRow(0)
+
+            populate("")
+            query.textChanged.connect(populate)
+            add_button = QtWidgets.QPushButton("Add")
+            cancel_button = QtWidgets.QPushButton("Cancel")
+            add_button.clicked.connect(dialog.accept)
+            cancel_button.clicked.connect(dialog.reject)
+            controls = QtWidgets.QHBoxLayout()
+            controls.addStretch(1)
+            controls.addWidget(cancel_button)
+            controls.addWidget(add_button)
+            layout = QtWidgets.QVBoxLayout(dialog)
+            layout.addWidget(query)
+            layout.addWidget(catalog_list, stretch=1)
+            layout.addLayout(controls)
+            try:
+                accepted_code = QtWidgets.QDialog.DialogCode.Accepted
+            except AttributeError:
+                accepted_code = QtWidgets.QDialog.Accepted
+            if dialog.exec_() != accepted_code:
                 return
-            selected = self._selected_pass_index()
+            selected_item = catalog_list.currentItem()
+            if selected_item is None:
+                return
+            pass_id = selected_item.data(_user_role())
+            selected = self._builder_selected_pass_index()
             insertion = None if selected is None else selected + 1
             self._apply_edit(
                 lambda: self._adapter.add_pass(
@@ -374,12 +894,12 @@ if IDA_AVAILABLE:
 
         def _remove_pass(self, checked: bool = False) -> None:
             del checked
-            index = self._selected_pass_index()
+            index = self._builder_selected_pass_index()
             if index is not None:
                 self._apply_edit(lambda: self._adapter.remove_pass(self._draft, index))
 
         def _move_pass(self, delta: int) -> None:
-            index = self._selected_pass_index()
+            index = self._builder_selected_pass_index()
             if index is None:
                 return
             target = index + int(delta)
@@ -393,74 +913,26 @@ if IDA_AVAILABLE:
                 )
                 self.pipeline_list.setCurrentRow(target)
 
-        def _edit_pass_options(self, checked: bool = False) -> None:
+        def _apply_routing_rows(self, checked: bool = False) -> None:
             del checked
-            index = self._selected_pass_index()
-            if index is None:
-                return
-            row = self._view.pipeline_rows[index]
-            payload = json.loads(row.options_json)
-            text, accepted = QtWidgets.QInputDialog.getMultiLineText(
-                self.parent,
-                f"Options for {row.pass_id}",
-                "Typed pass options JSON object:",
-                json.dumps(payload, indent=2, sort_keys=True),
-            )
-            if not accepted:
-                return
-            try:
-                value = json.loads(str(text))
-                if not isinstance(value, dict):
-                    raise ValueError("pass options must be an object")
-            except (json.JSONDecodeError, ValueError) as exc:
-                self._set_status(f"Invalid pass options: {exc}")
-                return
-            self._apply_edit(
-                lambda: self._adapter.set_pass_options(
-                    self._draft,
-                    pass_index=index,
-                    options=value,
+            if self.routing_auto_check.isChecked():
+                self._apply_edit(
+                    lambda: self._adapter.clear_routing_override(self._draft)
                 )
-            )
-
-        def _edit_routing(self, checked: bool = False) -> None:
-            del checked
-            current = json.loads(self._view.routing_json)
-            if not current:
-                current = {"prefer": {}, "require": None, "deny": []}
-            text, accepted = QtWidgets.QInputDialog.getMultiLineText(
-                self.parent,
-                "Profile routing override",
-                "Typed JSON object with prefer, require, and deny:",
-                json.dumps(current, indent=2, sort_keys=True),
-            )
-            if not accepted:
                 return
-            try:
-                value = json.loads(str(text))
-                if not isinstance(value, dict) or set(value) != {
-                    "prefer",
-                    "require",
-                    "deny",
-                }:
-                    raise ValueError(
-                        "routing must contain exactly prefer, require, and deny"
-                    )
-                prefer = value["prefer"]
-                require = value["require"]
-                deny = value["deny"]
-                if (
-                    not isinstance(prefer, dict)
-                    or (require is not None and not isinstance(require, str))
-                    or not isinstance(deny, list)
-                    or not all(isinstance(item, str) for item in deny)
-                ):
-                    raise ValueError(
-                        "prefer must be an object, require a string/null, and deny a string list"
-                    )
-            except (json.JSONDecodeError, ValueError) as exc:
-                self._set_status(f"Invalid routing override: {exc}")
-                return
+            prefer = {
+                family_name: float(bias.value())
+                for family_name, (item, bias) in self.routing_prefer_rows.items()
+                if item.checkState() == _checked_state()
+            }
+            require_data = self.routing_require_combo.currentData()
+            require = str(require_data) if require_data is not None else None
+            deny = tuple(
+                str(self.routing_exclude_list.item(index).data(_user_role()))
+                for index in range(self.routing_exclude_list.count())
+                if self.routing_exclude_list.item(index).checkState()
+                == _checked_state()
+            )
             self._apply_edit(
                 lambda: self._adapter.set_routing_override(
                     self._draft,
@@ -470,12 +942,144 @@ if IDA_AVAILABLE:
                 )
             )
 
-        def _reset(self, checked: bool = False) -> None:
+        def _show_raw_document(self, checked: bool = False) -> None:
             del checked
-            if self._apply_edit(lambda: self._adapter.reset()):
-                self._set_status(
-                    "Draft reset to its complete runtime source and recipe seed."
+            dialog = QtWidgets.QDialog(self.parent)
+            dialog.setWindowTitle("Config-v2 structured fields")
+            document_tree = JsonTreeEditor(dialog)
+            preserved_tree = JsonTreeEditor(dialog)
+            document_tree.set_json(
+                self._structured_raw_document(),
+                editable=False,
+            )
+            preserved_tree.set_json(
+                self._editor_view.raw_document.preserved_fields,
+                editable=False,
+            )
+            document_tree.set_on_value_changed(self._apply_raw_document)
+            self._raw_document_tree = document_tree
+            self._raw_preserved_tree = preserved_tree
+            self._raw_document_editable = False
+
+            tabs = QtWidgets.QTabWidget(dialog)
+            tabs.addTab(document_tree, "Structured document")
+            tabs.addTab(preserved_tree, "Preserved fields")
+            edit_raw_button = QtWidgets.QPushButton("Edit raw")
+            open_json_button = QtWidgets.QPushButton("Open structured JSON...")
+            close_button = QtWidgets.QPushButton("Close")
+
+            def confirm_raw_edit() -> bool:
+                if self._raw_document_editable:
+                    return True
+                warning = (
+                    "Only declared config-v2 fields may change; all edits are fully "
+                    "validated before save."
                 )
+                try:
+                    yes = QtWidgets.QMessageBox.StandardButton.Yes
+                    no = QtWidgets.QMessageBox.StandardButton.No
+                except AttributeError:
+                    yes = QtWidgets.QMessageBox.Yes
+                    no = QtWidgets.QMessageBox.No
+                response = QtWidgets.QMessageBox.question(
+                    dialog,
+                    "Edit raw config-v2 fields?",
+                    warning,
+                    yes | no,
+                    no,
+                )
+                if response != yes:
+                    return False
+                self._raw_document_editable = True
+                document_tree.set_json(
+                    self._structured_raw_document(),
+                    editable=True,
+                )
+                return True
+
+            def edit_raw() -> None:
+                confirm_raw_edit()
+
+            def open_raw_json() -> None:
+                if not confirm_raw_edit():
+                    return
+                raw_dialog = RawJsonDialog(
+                    "Edit config-v2 structured fields",
+                    self._structured_raw_document(),
+                    editable=True,
+                    on_apply=self._apply_raw_document,
+                    parent=dialog,
+                )
+                raw_dialog.exec_()
+
+            edit_raw_button.clicked.connect(edit_raw)
+            open_json_button.clicked.connect(open_raw_json)
+            close_button.clicked.connect(dialog.accept)
+            controls = QtWidgets.QHBoxLayout()
+            controls.addWidget(edit_raw_button)
+            controls.addWidget(open_json_button)
+            controls.addStretch(1)
+            controls.addWidget(close_button)
+            layout = QtWidgets.QVBoxLayout(dialog)
+            layout.addWidget(tabs, stretch=1)
+            layout.addLayout(controls)
+            try:
+                dialog.exec_()
+            finally:
+                self._raw_document_tree = None
+                self._raw_preserved_tree = None
+                self._raw_document_editable = False
+
+        def _apply_raw_document(self, value: object) -> None:
+            if not self._is_structured_raw_document(value):
+                self._render_raw_document_trees()
+                self._set_status("Only declared config-v2 fields may change.")
+                return
+            assert isinstance(value, dict)
+            try:
+                document = self._complete_document_from_structured_raw(value)
+            except ValueError as exc:
+                self._render_raw_document_trees()
+                self._set_status(f"Edit failed: {exc}")
+                return
+            self._apply_edit(
+                lambda: self._adapter.replace_document(self._draft, document)
+            )
+
+        def _discard_unsaved(self, checked: bool = False) -> None:
+            del checked
+            if not self._editor_view.footer.dirty:
+                return
+            try:
+                discard = QtWidgets.QMessageBox.StandardButton.Discard
+                cancel = QtWidgets.QMessageBox.StandardButton.Cancel
+            except AttributeError:
+                discard = QtWidgets.QMessageBox.Discard
+                cancel = QtWidgets.QMessageBox.Cancel
+            response = QtWidgets.QMessageBox.question(
+                self.parent,
+                "Discard unsaved changes?",
+                "Discard every unsaved change and restore the current source?",
+                discard | cancel,
+                cancel,
+            )
+            if response == discard:
+                self._apply_edit(lambda: self._adapter.reset())
+
+        def _show_developer_help(self, checked: bool = False) -> None:
+            del checked
+            rows = project_serializer_rows(self._manifest)
+            details = (
+                "\n".join(
+                    f"{row.label}: {row.value_kind} at {row.path}" for row in rows
+                )
+                or "No declared editable fields."
+            )
+            QtWidgets.QMessageBox.information(
+                self.parent,
+                "Config-v2 developer help",
+                "Serializer manifest\n" + details,
+            )
 
         def _validate(self, checked: bool = False) -> None:
             del checked
@@ -484,13 +1088,13 @@ if IDA_AVAILABLE:
             except Exception as exc:
                 self._set_status(f"Validation failed: {exc}")
                 return
+            self._render()
             if self._validation.valid:
-                self._set_status("Full pipeline validation passed.")
+                self._set_status("")
             else:
                 self._set_status(
                     "\n".join(item.message for item in self._validation.diagnostics)
                 )
-            self._render()
 
         def _save_as(self, checked: bool = False) -> None:
             del checked
@@ -511,10 +1115,8 @@ if IDA_AVAILABLE:
                 logger.warning("Config-v2 Save As failed: %s", exc)
                 self._set_status(f"Save As failed: {exc}")
                 return
-            self._set_status(
-                f"Draft destination changed to {self._adapter.destination}."
-            )
             self._render()
+            self._set_status("")
 
         def _save(self, checked: bool = False) -> None:
             del checked
@@ -539,8 +1141,8 @@ if IDA_AVAILABLE:
                     f"Reopen the editor to refresh this draft: {exc}"
                 )
                 return
-            self._set_status(f"Saved atomically, validated, and reloaded: {path}")
             self._render()
+            self._set_status("")
 
 else:
 

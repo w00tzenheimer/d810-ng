@@ -65,12 +65,26 @@ def test_manager_owns_config_v2_editor_and_exposes_structured_operations():
         "remove_config_v2_pass": "remove_pass",
         "reorder_config_v2_pass": "reorder_pass",
         "set_config_v2_pass_options": "set_pass_options",
+        "set_config_v2_pass_transforms": "set_pass_transforms",
         "set_config_v2_routing_override": "set_routing_override",
+        "clear_config_v2_routing_override": "clear_routing_override",
+        "replace_config_v2_document": "replace_document",
         "materialize_recipe_as_config_v2": "materialize_recipe",
         "save_config_v2_project": "save",
     }
     for method_name, call_name in expected.items():
         assert call_name in _calls(_method(path, "D810Manager", method_name))
+
+
+def test_state_exposes_config_v2_transform_and_raw_document_facades():
+    path = _ROOT / "src/d810/manager/state.py"
+    expected = {
+        "set_config_v2_pass_transforms": "set_config_v2_pass_transforms",
+        "clear_config_v2_routing_override": "clear_config_v2_routing_override",
+        "replace_config_v2_document": "replace_config_v2_document",
+    }
+    for method_name, call_name in expected.items():
+        assert call_name in _calls(_method(path, "D810State", method_name))
 
 
 def test_state_save_registers_and_reloads_through_normal_project_lifecycle():

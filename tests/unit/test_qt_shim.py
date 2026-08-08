@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import types
+import warnings
 from pathlib import Path
 
 from d810 import qt_shim
@@ -34,3 +35,34 @@ def test_pyqt5_branch_imports_qpixmap_from_qtgui() -> None:
 
 def test_headless_shim_reports_graphics_unavailable() -> None:
     assert qt_shim.QT_GRAPHICS_AVAILABLE is False
+
+
+def test_qt_flag_or_uses_values_instead_of_pyside_enum_bitwise_or(
+    monkeypatch,
+) -> None:
+    class _WarningFlag:
+        def __init__(self, value: int) -> None:
+            self.value = value
+
+        def __or__(self, other: object) -> object:
+            del other
+            warnings.warn(
+                "PySide6 compatibility bitwise operation",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return self
+
+    class _ItemFlag:
+        def __init__(self, value: int) -> None:
+            self.value = value
+
+    monkeypatch.setattr(qt_shim, "QT6", True)
+    monkeypatch.setattr(qt_shim, "Qt", types.SimpleNamespace(ItemFlag=_ItemFlag))
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        combined = qt_shim.qt_flag_or(_WarningFlag(0x01), _WarningFlag(0x10))
+
+    assert isinstance(combined, _ItemFlag)
+    assert combined.value == 0x11

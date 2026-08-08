@@ -59,6 +59,13 @@ def test_recipe_options_are_editable_but_pass_contracts_are_read_only() -> None:
     assert "View raw contract" in source
 
 
+def test_json_tree_editor_combines_item_flags_through_qt_compatibility() -> None:
+    item_source = _method_source(DETAILS, "JsonTreeEditor", "_item_for_node")
+
+    assert "qt_flag_or(item.flags(), _item_editable_flag())" in item_source
+    assert "item.flags() | _item_editable_flag()" not in item_source
+
+
 def test_canvas_panel_uses_structured_inspector_not_plain_text_selection() -> None:
     source = CANVAS_PANEL.read_text(encoding="utf-8")
     init_source = _method_source(CANVAS_PANEL, "WorkbenchCanvasPanel", "__init__")
