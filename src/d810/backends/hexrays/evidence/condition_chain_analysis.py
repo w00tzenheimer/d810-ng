@@ -2222,6 +2222,20 @@ def analyze_condition_chain_dispatcher(
         except Exception:
             logger.warning("INTERVAL_MAP: build_dispatch_tree failed", exc_info=True)
             dispatcher = None
+    if _is_degenerate_self_routing_table(dispatcher, dispatcher_entry_serial):
+        # A single row spanning the whole state space whose target IS the
+        # dispatcher entry says "every state routes back to the dispatcher" --
+        # a no-op, not a routing table. It is what both recovery paths emit when
+        # they find nothing, and it used to be published (and logged) exactly
+        # like a healthy table, so total failure was indistinguishable from
+        # success downstream. Report it and recover NOTHING instead (lpccp-w81p).
+        logger.warning(
+            "INTERVAL_MAP: discarding degenerate dispatcher table for entry %s "
+            "(one row covering the whole state space routing back to the entry); "
+            "treating this function as having no recovered condition chain",
+            dispatcher_entry_serial,
+        )
+        dispatcher = None
     result.dispatcher = dispatcher
     if dispatcher is not None:
         logger.info("INTERVAL_DISPATCHER_ROWS: %s", dispatcher.to_json())
@@ -2511,6 +2525,45 @@ def decode_dispatch_cond(
         imm=imm,
         taken_serial=taken_serial,
         fall_serial=fall_serial,
+    )
+
+
+#: Exclusive upper bound of the 32-bit state space the interval rows span.
+_STATE_SPACE_HI = 1 << 32
+
+
+def _is_degenerate_self_routing_table(
+    dispatcher, dispatcher_entry_serial: int | None
+) -> bool:
+    """True for the one table shape that cannot be a real dispatcher.
+
+    ``[0, 2**32) -> dispatcher_entry`` routes every state back to the block that
+    does the routing.  No dispatcher has that shape: a real one sends states to
+    handlers, and even a single-handler table names the handler rather than the
+    entry.  Both recovery paths emit exactly this when they find nothing -- an
+    empty :class:`DecisionDag` falls through to ``build_dispatch_tree``, which
+    yields one catch-all row -- so this is the signature of total failure, not of
+    a degenerate-but-valid recovery.
+
+    Deliberately narrow: it does NOT judge multi-row tables, tables whose single
+    row names some other block, or an absent dispatcher.  Those have legitimate
+    forms and are left alone.
+    """
+    if dispatcher is None or dispatcher_entry_serial is None:
+        return False
+    rows = getattr(dispatcher, "_rows", None)
+    if not rows or len(rows) != 1:
+        return False
+    row = rows[0]
+    lo = getattr(row, "lo", None)
+    hi = getattr(row, "hi", None)
+    target = getattr(row, "target", None)
+    if lo is None or hi is None or target is None:
+        return False
+    return (
+        int(lo) == 0
+        and int(hi) >= _STATE_SPACE_HI
+        and int(target) == int(dispatcher_entry_serial)
     )
 
 

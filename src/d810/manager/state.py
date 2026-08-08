@@ -139,6 +139,11 @@ class D810State(metaclass=SingletonMeta):
         self.last_pipeline_v2_hook_pass_ids: tuple[str, ...] = ()
         self.last_pipeline_v2_hook_mode: str | None = None
         self.last_config_v2_default_selection: ConfigV2DefaultSelection | None = None
+        #: ``project file name -> one-line reason`` for every project whose
+        #: activation raised.  A malformed project is SKIPPED, never fatal, so one
+        #: bad file in the config directory cannot leave the plugin with no
+        #: project at all (ticket lpccp-8c87).
+        self.invalid_projects: dict[str, str] = {}
         self.current_runtime_project: ProjectConfiguration | None = None
         self.current_project_runtime_snapshot: ProjectRuntimeSnapshot | None = None
         self._is_loaded: bool = False
@@ -198,20 +203,71 @@ class D810State(metaclass=SingletonMeta):
     def del_project(self, config: ProjectConfiguration):
         self.project_manager.delete(config)
 
-    def load_project(self, project_index: int) -> ProjectConfiguration:
+    def load_project(self, project_index: int) -> ProjectConfiguration | None:
+        """Activate one project, or return ``None`` when it is malformed.
+
+        A project whose routing/pipeline payload cannot be resolved is recorded in
+        :attr:`invalid_projects` and SKIPPED.  It must never abort the caller:
+        ``load()`` enumerates every file in the config directory, so one bad
+        project used to leave the plugin with no project at all (lpccp-8c87).
+        """
         next_project = self.project_manager.get(project_index)
-        default_selection = select_config_v2_default_project(next_project)
-        runtime_project = (
-            default_selection.runtime_project
-            if default_selection is not None
-            else next_project
+        try:
+            default_selection = select_config_v2_default_project(next_project)
+            runtime_project = (
+                default_selection.runtime_project
+                if default_selection is not None
+                else next_project
+            )
+            activated = self._activate_runtime_project(
+                project_index=project_index,
+                source_project=next_project,
+                runtime_project=runtime_project,
+                default_selection=default_selection,
+            )
+        except Exception as exc:  # noqa: BLE001 - any malformed project is skippable
+            self._record_invalid_project(next_project, exc)
+            return None
+        self.invalid_projects.pop(next_project.path.name, None)
+        return activated
+
+    def _load_first_valid_project(
+        self, preferred_index: int
+    ) -> ProjectConfiguration | None:
+        """Activate *preferred_index*, else the first project that activates.
+
+        The persisted ``last_project_index`` can point at a file that has since
+        become malformed.  Falling back keeps the plugin usable instead of idle,
+        and every skipped project is reported in :attr:`invalid_projects`.
+        """
+        total = len(self.project_manager)
+        if total <= 0:
+            return None
+        order = [preferred_index] + [i for i in range(total) if i != preferred_index]
+        for index in order:
+            project = self.load_project(index)
+            if project is not None:
+                if index != preferred_index:
+                    logger.warning(
+                        "Project index %d is unusable; fell back to %d (%s)",
+                        preferred_index,
+                        index,
+                        project.path.name,
+                    )
+                return project
+        return None
+
+    def _record_invalid_project(
+        self, project: ProjectConfiguration, exc: BaseException
+    ) -> None:
+        """Mark *project* unusable and say why, without taking the plugin down."""
+        name = project.path.name
+        reason = f"{type(exc).__name__}: {exc}"
+        self.invalid_projects[name] = reason
+        logger.warning(
+            "Skipping malformed project configuration %s: %s", project.path, reason
         )
-        return self._activate_runtime_project(
-            project_index=project_index,
-            source_project=next_project,
-            runtime_project=runtime_project,
-            default_selection=default_selection,
-        )
+        logger.debug("project activation traceback for %s", project.path, exc_info=True)
 
     def _activate_runtime_project(
         self,
@@ -222,6 +278,12 @@ class D810State(metaclass=SingletonMeta):
         default_selection: ConfigV2DefaultSelection | None,
     ) -> ProjectConfiguration:
         """Configure one explicit source/runtime pair without rediscovering it."""
+        # Resolve the hook activation BEFORE touching any state: it is the step
+        # that validates the pipeline payload and therefore the step that can
+        # raise.  Doing it first keeps a malformed project from leaving the
+        # previous project half-replaced (lpccp-8c87).
+        hook_activation = pipeline_v2_hook_activation(runtime_project)
+
         old_project_name = (
             self.current_project.path.name
             if getattr(self, "current_project", None) is not None
@@ -249,7 +311,6 @@ class D810State(metaclass=SingletonMeta):
                 ),
             )
 
-        hook_activation = pipeline_v2_hook_activation(runtime_project)
         if hook_activation.enabled:
             self.last_pipeline_v2_hook_mode = "config-v2"
             self.last_pipeline_v2_hook_pass_ids = hook_activation.configured_pass_ids
@@ -511,6 +572,19 @@ class D810State(metaclass=SingletonMeta):
             options=options,
         )
 
+    def set_config_v2_pass_transforms(
+        self,
+        draft: ConfigV2ProjectDraft,
+        *,
+        pass_index: int,
+        transform_ids: typing.Sequence[str],
+    ) -> ConfigV2ProjectDraft:
+        return self.manager.set_config_v2_pass_transforms(
+            draft,
+            pass_index=pass_index,
+            transform_ids=transform_ids,
+        )
+
     def set_config_v2_routing_override(
         self,
         draft: ConfigV2ProjectDraft,
@@ -525,6 +599,18 @@ class D810State(metaclass=SingletonMeta):
             require=require,
             deny=deny,
         )
+
+    def clear_config_v2_routing_override(
+        self, draft: ConfigV2ProjectDraft
+    ) -> ConfigV2ProjectDraft:
+        return self.manager.clear_config_v2_routing_override(draft)
+
+    def replace_config_v2_document(
+        self,
+        draft: ConfigV2ProjectDraft,
+        document: typing.Mapping[str, object],
+    ) -> ConfigV2ProjectDraft:
+        return self.manager.replace_config_v2_document(draft, document)
 
     def materialize_recipe_as_config_v2(
         self,
@@ -892,10 +978,16 @@ class D810State(metaclass=SingletonMeta):
         ]
 
         if projects := len(self.project_manager):
-            self.current_project_index = max(
-                0, min(self.current_project_index, projects - 1)
-            )
-            self._is_loaded = self.load_project(self.current_project_index) is not None
+            preferred = max(0, min(self.current_project_index, projects - 1))
+            self._is_loaded = self._load_first_valid_project(preferred) is not None
+            if not self._is_loaded:
+                logger.warning(
+                    "No loadable project configuration among %d file(s); "
+                    "plugin is idle. Invalid: %s",
+                    projects,
+                    ", ".join(sorted(self.invalid_projects)) or "<none>",
+                )
+                self.current_project = None  # type: ignore[assignment]
         else:
             logger.warning("No project configurations available; plugin is idle.")
             self.current_project = None  # type: ignore[assignment]

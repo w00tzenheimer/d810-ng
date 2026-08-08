@@ -61,6 +61,7 @@ class ConfigV2FocusTarget:
     """Stable pass focus for the structured config-v2 editor."""
 
     pass_id: str | None
+    pass_index: int | None
     message: str
     unambiguous: bool
 
@@ -68,16 +69,51 @@ class ConfigV2FocusTarget:
 def resolve_config_v2_focus_target(
     pass_id: str,
     pipeline_pass_ids: tuple[str, ...],
+    pass_index: int | None = None,
 ) -> ConfigV2FocusTarget:
     normalized = str(pass_id).strip()
-    if normalized and normalized in pipeline_pass_ids:
+    if pass_index is not None:
+        if (
+            0 <= pass_index < len(pipeline_pass_ids)
+            and pipeline_pass_ids[pass_index] == normalized
+        ):
+            return ConfigV2FocusTarget(
+                pass_id=normalized,
+                pass_index=pass_index,
+                message=f"Editing config-v2 pass {normalized!r} at row {pass_index}.",
+                unambiguous=True,
+            )
+        return ConfigV2FocusTarget(
+            pass_id=None,
+            pass_index=None,
+            message=(
+                f"Pass {normalized!r} is not present at pipeline row {pass_index}."
+            ),
+            unambiguous=False,
+        )
+    matches = tuple(
+        index for index, candidate in enumerate(pipeline_pass_ids) if candidate == normalized
+    )
+    if len(matches) == 1:
         return ConfigV2FocusTarget(
             pass_id=normalized,
+            pass_index=matches[0],
             message=f"Editing config-v2 pass {normalized!r}.",
             unambiguous=True,
         )
+    if len(matches) > 1:
+        return ConfigV2FocusTarget(
+            pass_id=None,
+            pass_index=None,
+            message=(
+                f"Pass {normalized!r} occurs more than once in the effective pipeline; "
+                "select a pipeline row."
+            ),
+            unambiguous=False,
+        )
     return ConfigV2FocusTarget(
         pass_id=None,
+        pass_index=None,
         message=f"Pass {normalized!r} is not present in the effective pipeline.",
         unambiguous=False,
     )

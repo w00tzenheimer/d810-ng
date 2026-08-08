@@ -67,8 +67,13 @@ _SERIALIZERS = (
 )
 
 
-def _canonical_json(value: object) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+def _canonical_json(value: object, *, sort_keys: bool = True) -> str:
+    return json.dumps(
+        value,
+        sort_keys=sort_keys,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
 
 
 def _document(value: str) -> dict[str, object]:
@@ -172,7 +177,7 @@ class ConfigV2EditingService:
         return dataclasses.replace(
             draft,
             revision=draft.revision + 1,
-            document_json=_canonical_json(document),
+            document_json=_canonical_json(document, sort_keys=False),
         )
 
     def set_field(
@@ -273,6 +278,80 @@ class ConfigV2EditingService:
         pipeline[pass_index] = config.to_dict()
         return self._updated(draft, document)
 
+    def set_pass_transforms(
+        self,
+        draft: ConfigV2ProjectDraft,
+        *,
+        pass_index: int,
+        transform_ids: Sequence[str],
+    ) -> ConfigV2ProjectDraft:
+        if isinstance(transform_ids, str) or not isinstance(transform_ids, Sequence):
+            raise ConfigV2EditError("transform IDs must be a sequence of strings")
+        if any(not isinstance(item, str) for item in transform_ids):
+            raise ConfigV2EditError("transform IDs must contain only strings")
+        requested = tuple(str(item) for item in transform_ids)
+        if len(set(requested)) != len(requested):
+            raise ConfigV2EditError("transform IDs must not contain duplicates")
+        document = _document(draft.document_json)
+        pipeline = _pipeline(document)
+        if not 0 <= pass_index < len(pipeline):
+            raise ConfigV2EditError("pass index is out of range")
+        entry = pipeline[pass_index]
+        options = entry.get("options")
+        if not isinstance(options, Mapping) or not isinstance(
+            options.get("transforms"), list
+        ):
+            raise ConfigV2EditError("pass options.transforms must be a list")
+        pass_id = _pass_id(entry)
+        registered = self._registry.transform_ids_for(pass_id)
+        unknown = sorted(set(requested).difference(registered))
+        if unknown:
+            raise ConfigV2EditError(
+                "unknown transform ID(s): " + ", ".join(unknown)
+            )
+        selected = set(requested)
+        ordered = [
+            transform_id
+            for transform_id in self._registry.transform_ids_for(pass_id)
+            if transform_id in selected
+        ]
+        edited_options = copy.deepcopy(dict(options))
+        edited_options["transforms"] = ordered
+        transform_options = edited_options.get("transform_options")
+        if isinstance(transform_options, Mapping):
+            edited_options["transform_options"] = {
+                transform_id: copy.deepcopy(transform_options[transform_id])
+                for transform_id in ordered
+                if transform_id in transform_options
+            }
+        return self.set_pass_options(
+            draft,
+            pass_index=pass_index,
+            options=edited_options,
+        )
+
+    def replace_document(
+        self,
+        draft: ConfigV2ProjectDraft,
+        document: Mapping[str, object],
+    ) -> ConfigV2ProjectDraft:
+        if not isinstance(document, Mapping):
+            raise ConfigV2EditError("project document must be an object")
+        candidate = copy.deepcopy(dict(document))
+        current = _document(draft.document_json)
+        if _unsupported_projection(candidate) != _unsupported_projection(current):
+            raise ConfigV2EditError("document fields outside declared serializers changed")
+        try:
+            self._validate_semantics(candidate, draft.destination_path)
+        except (
+            PipelineConfigError,
+            PassRegistryError,
+            TypeError,
+            ValueError,
+        ) as error:
+            raise ConfigV2EditError(str(error)) from error
+        return self._updated(draft, candidate)
+
     @staticmethod
     def _routing_policy(
         *,
@@ -322,6 +401,14 @@ class ConfigV2EditingService:
         policy = self._routing_policy(prefer=prefer, require=require, deny=deny)
         document = _document(draft.document_json)
         _additional(document)["router_resolution"] = policy
+        return self._updated(draft, document)
+
+    def clear_routing_override(
+        self, draft: ConfigV2ProjectDraft
+    ) -> ConfigV2ProjectDraft:
+        document = copy.deepcopy(_document(draft.document_json))
+        _additional(document).pop("router_resolution", None)
+        self._validate_semantics(document, draft.destination_path)
         return self._updated(draft, document)
 
     def materialize_recipe(

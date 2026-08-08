@@ -20,6 +20,12 @@ from d810.core.function_storage_config import (
 )
 from d810.ui.icon_assets import bundled_icon
 from d810.ui.panel_density_logic import plan_panel_density
+from d810.ui.config_v2_editing_logic import (
+    ConfigV2EditorScreen,
+    ConfigV2PipelineOverview,
+    project_config_v2_editor_view,
+)
+from d810.ui.config_v2_pipeline_overview import ConfigV2PipelineOverviewWidget
 from d810.ui.project_config_logic import (
     ConfigEditMode,
     ConfigV2FocusTarget,
@@ -36,7 +42,6 @@ from d810.ui.qt_layout_policy import (
     configure_left_aligned_form,
     configure_overflow_menu_button,
 )
-from d810.ui.pass_tree import PassTreeWidget
 from d810.ui.testbed import TestRunnerForm
 
 logger = getLogger("D810.ui")
@@ -533,6 +538,7 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         self.parent = None
         self.test_runner: TestRunnerForm | None = None
         self._config_v2_editor = None
+        self._config_v2_overview: ConfigV2PipelineOverview | None = None
 
         self._view_passes_title = "Pass pipeline"
 
@@ -565,7 +571,7 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         self._config_runtime_value = None
         self._config_passes_value = None
         self.cfg_description = None
-        self._pass_tree = None
+        self._pipeline_overview = None
         self.btn_start = None
         self.btn_stop = None
         self.btn_config = None
@@ -583,8 +589,12 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
             if hasattr(self, "cfg_select") and self.cfg_select is not None:
                 self.cfg_select.clicked.disconnect()
 
-            if hasattr(self, "_pass_tree") and self._pass_tree is not None:
-                self._pass_tree.edit_requested.disconnect()
+            if (
+                hasattr(self, "_pipeline_overview")
+                and self._pipeline_overview is not None
+            ):
+                self._pipeline_overview.inspect_requested.disconnect()
+                self._pipeline_overview.edit_pipeline_requested.disconnect()
 
             if self._details_toggle is not None:
                 self._details_toggle.toggled.disconnect()
@@ -605,10 +615,6 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
                 "btn_delele_cfg",
                 "btn_start",
                 "btn_stop",
-                "btn_config",
-                "btn_logger_cfg",
-                "btn_start_profiling",
-                "btn_test_runner",
             ]:
                 btn = getattr(self, btn_attr, None)
                 if btn is not None:
@@ -623,7 +629,8 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
             logger.debug("Signal disconnect error (expected during shutdown): %s", e)
 
         # Clear widget references
-        self._pass_tree = None
+        self._pipeline_overview = None
+        self._config_v2_overview = None
         self.cfg_select = None
         self._engine_menu = None
         self._engine_actions = ()
@@ -809,11 +816,11 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         divider.setFrameShadow(QFrame.Sunken)
         main_layout.addWidget(divider)
 
-        self._pass_tree = PassTreeWidget(self.parent)
-        self._pass_tree.setAccessibleName(self._view_passes_title)
-        self._pass_tree.set_read_only(False)
-        self._pass_tree.edit_requested.connect(self._edit_pass)
-        main_layout.addWidget(self._pass_tree, stretch=1)
+        self._pipeline_overview = ConfigV2PipelineOverviewWidget(self.parent)
+        self._pipeline_overview.setAccessibleName(self._view_passes_title)
+        self._pipeline_overview.inspect_requested.connect(self._inspect_config_v2_pass)
+        self._pipeline_overview.edit_pipeline_requested.connect(self._edit_config)
+        main_layout.addWidget(self._pipeline_overview, stretch=1)
 
         # =====================================================================
         # Engine bar (always visible, compact)
@@ -899,7 +906,7 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
 
     def _apply_panel_density(self) -> None:
         """Show or hide optional chrome for the height the dock actually has."""
-        if self._pass_tree is None or self._density_host is None:
+        if self._pipeline_overview is None or self._density_host is None:
             return
         if self._details_panel is None or self._details_toggle is None:
             return
@@ -915,13 +922,12 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
 
         plan = plan_panel_density(
             available_px=available_px,
-            row_px=self._pass_tree.row_height(),
-            filter_has_text=self._pass_tree.filter_has_text(),
+            row_px=self._pipeline_overview.row_height(),
+            filter_has_text=False,
             details_requested=self._details_requested,
             identity_is_divergent=self._identity_is_divergent,
         )
 
-        self._pass_tree.set_filter_visible(plan.show_filter)
         self._details_panel.setVisible(plan.show_details)
         self._details_toggle.setEnabled(not plan.details_locked)
         self._details_toggle.setToolTip(
@@ -1039,7 +1045,10 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
             duplicate=True,
         )
         if destination is not None:
-            self._open_config_v2_editor(destination)
+            self._open_config_v2_editor(
+                destination,
+                screen=ConfigV2EditorScreen.BUILDER,
+            )
 
     def _edit_config(self):
         logger.debug("Calling _edit_config")
@@ -1057,9 +1066,20 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
             duplicate=False,
         )
         if destination is not None:
-            self._open_config_v2_editor(destination)
+            self._open_config_v2_editor(
+                destination,
+                screen=ConfigV2EditorScreen.BUILDER,
+            )
 
-    def _edit_pass(self, pass_id: str) -> None:
+    def _inspect_config_v2_pass(self, index: int) -> None:
+        if self._config_v2_overview is None:
+            return
+        rows = self._config_v2_overview.rows
+        if not 0 <= index < len(rows):
+            return
+        row = rows[index]
+        if row.index != index:
+            return
         snapshot = self.state.get_project_runtime_snapshot()
         policy = select_config_edit_policy(ConfigEditMode.EDIT, snapshot)
         if not policy.allowed:
@@ -1067,12 +1087,20 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         destination = self._choose_config_v2_destination(snapshot, duplicate=False)
         if destination is None:
             return
+        focus_target = resolve_config_v2_focus_target(
+            row.pass_id,
+            tuple(candidate.pass_id for candidate in rows),
+            pass_index=index,
+        )
+        if not focus_target.unambiguous:
+            logger.warning(
+                "Config-v2 pass inspection refused: %s", focus_target.message
+            )
+            return
         self._open_config_v2_editor(
             destination,
-            focus_target=resolve_config_v2_focus_target(
-                pass_id,
-                tuple(snapshot.effective_pass_ids),
-            ),
+            screen=ConfigV2EditorScreen.INSPECTOR,
+            focus_target=focus_target,
         )
 
     def _choose_config_v2_destination(
@@ -1099,6 +1127,7 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         self,
         destination: pathlib.Path,
         *,
+        screen: ConfigV2EditorScreen,
         focus_target: ConfigV2FocusTarget | None = None,
     ) -> None:
         from d810.ui.config_v2_editing_commands import ConfigV2EditingAdapter
@@ -1109,11 +1138,10 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
                 self.state,
                 destination=destination,
             )
-            if self._config_v2_editor is not None:
-                self._config_v2_editor.close()
             editor = ConfigV2EditingPanel(
                 adapter,
                 on_saved=self._refresh_config_v2_project_view,
+                screen=screen,
                 focus_target=focus_target,
             )
         except Exception as exc:
@@ -1124,6 +1152,8 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
                 str(exc),
             )
             return
+        if self._config_v2_editor is not None:
+            self._config_v2_editor.close()
         self._config_v2_editor = editor
         editor.show()
 
@@ -1158,11 +1188,31 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         self.btn_edit_cfg.setEnabled(view.edit_enabled)
         self.btn_edit_cfg.setToolTip(view.edit_tooltip)
         self._view_passes_title = view.pass_tree_title
-        self._pass_tree.setAccessibleName(view.pass_tree_title)
-        self._pass_tree.set_passes(
-            self.state.get_workbench_recipe_catalog(),
-            view.effective_pass_ids,
-        )
+        self._pipeline_overview.setAccessibleName(view.pass_tree_title)
+
+        overview = None
+        if view.edit_enabled:
+            from d810.ui.config_v2_editing_commands import ConfigV2EditingAdapter
+
+            config_dir = pathlib.Path(self.state.d810_config.config_dir).resolve()
+            runtime_path = pathlib.Path(view.runtime_tooltip).resolve()
+            destination = config_v2_user_destination(config_dir, runtime_path)
+            try:
+                adapter = ConfigV2EditingAdapter(
+                    self.state,
+                    destination=destination,
+                )
+                draft, validation = adapter.load_view()
+                catalog = adapter.catalog()
+                overview = project_config_v2_editor_view(
+                    draft,
+                    validation,
+                    catalog,
+                ).overview
+            except Exception as exc:
+                logger.warning("Config-v2 pipeline overview failed: %s", exc)
+        self._config_v2_overview = overview
+        self._pipeline_overview.set_overview(overview)
         self._identity_is_divergent = view.identity_is_divergent
         self._apply_panel_density()
 
@@ -1195,6 +1245,13 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
             )
         project = self.state.load_project(index)
         self.update_cfg_select()
+        if project is None:
+            # Malformed project: keep the panel responsive and say why rather
+            # than raising into the Qt slot (ticket lpccp-8c87).
+            name = projects[index].path.name if index < len(projects) else str(index)
+            reason = self.state.invalid_projects.get(name, "unknown error")
+            self.cfg_description.setText(f"Cannot load {name} - {reason}")
+            return
         snapshot = self.state.get_project_runtime_snapshot()
         view = build_project_config_view(snapshot)
         self.cfg_description.setText(project.description or "No description")

@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import ast
+import copy
+import importlib.util
+import sys
+import types
 from pathlib import Path
 
 PANEL = (
@@ -34,121 +38,888 @@ def _calls(method: ast.FunctionDef) -> set[str]:
     }
 
 
-def test_panel_is_thin_and_projects_only_through_pure_logic() -> None:
+def _source(name: str) -> str:
+    return ast.unparse(_method(name))
+
+
+def _string_arguments(name: str, call_name: str) -> list[str]:
+    values: list[str] = []
+    for node in ast.walk(_method(name)):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        if node.func.attr != call_name or not node.args:
+            continue
+        first = node.args[0]
+        if isinstance(first, ast.Constant) and isinstance(first.value, str):
+            values.append(first.value)
+    return values
+
+
+def test_panel_projects_one_draft_into_a_stacked_builder_and_inspector() -> None:
+    init_source = _source("__init__")
+    create_source = _source("OnCreate")
+    render_calls = _calls(_method("_render"))
+
+    assert "ConfigV2EditorScreen.BUILDER" in init_source
+    assert "self._screen = screen" in init_source
+    assert "self._selected_pass_index" in init_source
+    assert "self._editor_view" in init_source
+    assert "QStackedWidget" in init_source
+    assert "builder_page" in create_source
+    assert "inspector_page" in create_source
+    assert "project_config_v2_editor_view" in render_calls
+
+
+def test_inspector_uses_structured_identity_options_and_contract_controls() -> None:
+    source = PANEL.read_text(encoding="utf-8")
+    init_calls = _calls(_method("__init__"))
+
+    assert "StructuredDetailsView" in source
+    assert "JsonTreeEditor" in source
+    assert "RawJsonDialog" in source
+    assert "Pass" in source
+    assert "Purpose" in source
+    assert "Runs during" in source
+    assert "Scope" in source
+    assert "Backend" in source
+    assert "Safety" in source
+    assert "QListWidget" in source
+    assert "set_on_value_changed" in init_calls
+    assert "View raw contract" in source
+    assert "Edit raw options" in source
+    assert "Edit pipeline..." in source
+
+
+def test_inspector_transform_picker_is_projection_driven_and_fail_closed() -> None:
+    render_source = _source("_render_inspector")
+
+    assert "inspector.transforms_editable" in render_source
+    assert "inspector.selected_transforms" in render_source
+    assert "No individually selectable transforms." in render_source
+    assert "stage_ids" not in render_source
+    assert "transform_ids" not in render_source
+
+
+def test_checkable_items_combine_flags_through_qt_compatibility() -> None:
+    source = PANEL.read_text(encoding="utf-8")
+
+    assert source.count("qt_flag_or(item.flags(), _checkable_flag())") == 2
+    assert (
+        "qt_flag_or(family_item.flags(), _checkable_flag())" in source
+    )
+    assert "flags() | _checkable_flag()" not in source
+
+
+def test_inspector_callbacks_delegate_typed_edits_and_rerender_rejections() -> None:
+    transform_source = _source("_apply_selected_transforms")
+    options_source = _source("_apply_inspector_options")
+    apply_source = _source("_apply_edit")
+
+    assert "set_pass_transforms" in transform_source
+    assert "selected_transforms" in transform_source
+    assert "set_pass_options" in options_source
+    assert "isinstance(value, dict)" in options_source
+    assert "self._render()" in apply_source
+
+
+def test_screen_switches_preserve_the_current_draft_without_io() -> None:
+    for method_name in ("_show_inspector", "_show_builder"):
+        source = _source(method_name)
+        calls = _calls(_method(method_name))
+
+        assert "self._draft =" not in source
+        assert not {"reset", "save", "load_view"} & calls
+        assert "_render" in calls
+
+
+def test_exact_focus_uses_the_requested_row_and_rejects_mismatches() -> None:
+    source = _source("_apply_focus_target")
+
+    assert "target.unambiguous" in source
+    assert "target.pass_index" in source
+    assert "inspector.pass_index" in source
+    assert "inspector.pass_id == target.pass_id" in source
+    assert "self._selected_pass_index = target.pass_index" in source
+
+
+def test_panel_remains_a_thin_adapter_and_explicit_save_surface() -> None:
     imports = {
         node.module
         for node in ast.walk(_tree())
         if isinstance(node, ast.ImportFrom) and node.module
     }
+    calls = set().union(
+        *(
+            _calls(_method(name))
+            for name in (
+                "_edit_description",
+                "_add_pass",
+                "_remove_pass",
+                "_move_pass",
+                "_apply_routing_rows",
+                "_discard_unsaved",
+                "_validate",
+                "_save_as",
+                "_save",
+            )
+        )
+    )
+
     assert "d810.ui.config_v2_editing_logic" in imports
     assert "d810.manager.config_v2_editing" not in imports
     assert "d810.core.project_config_persistence" not in imports
-    assert "project_config_v2_document" in _calls(_method("_render"))
-    assert "config_v2_action_states" in _calls(_method("_render"))
+    assert {"retarget", "save", "validate"}.issubset(calls)
 
 
-def test_panel_forwards_typed_mutations_and_save_to_adapter() -> None:
-    methods = (
-        "_set_description",
-        "_add_pass",
-        "_remove_pass",
-        "_move_pass",
-        "_edit_pass_options",
-        "_edit_routing",
-        "_reset",
-        "_validate",
-        "_save",
+def test_builder_is_a_compact_ordered_active_pass_editor() -> None:
+    source = PANEL.read_text(encoding="utf-8")
+    init_source = _source("__init__")
+    create_source = _source("OnCreate")
+    description_source = _source("_edit_description")
+    add_source = _source("_add_pass")
+
+    assert "self.pipeline_list" in init_source
+    assert "row.index + 1" in _source("_render")
+    for label in (
+        "Add pass...",
+        "Remove",
+        "Move up",
+        "Move down",
+        "Open Inspector",
+        "Edit description...",
+    ):
+        assert label in source
+    assert "getMultiLineText" in description_source
+    assert "set_description" in description_source
+    assert "QLineEdit" in add_source
+    assert "self._catalog" in add_source
+    assert "manifest_list" not in create_source
+    assert "complete_document" not in create_source
+    assert "unsupported_document" not in create_source
+    assert "catalog_combo" not in init_source
+    assert "description_edit" not in init_source
+
+
+def test_routing_group_exposes_structured_registered_family_controls() -> None:
+    source = PANEL.read_text(encoding="utf-8")
+    controls_source = _source("_build_routing_controls")
+    apply_source = _source("_apply_routing_rows")
+    render_source = _source("_render_routing")
+
+    assert "registered_families" in source
+    assert "setCheckable(True)" in controls_source
+    assert "setChecked(False)" in controls_source
+    assert "QDoubleSpinBox" in controls_source
+    assert "Auto" in controls_source
+    assert "Require" in controls_source
+    assert "Prefer" in controls_source
+    assert "Exclude" in controls_source
+    assert "Automatic" in controls_source
+    assert "set_routing_override" in apply_source
+    assert "prefer=prefer" in apply_source
+    assert "require=require" in apply_source
+    assert "deny=deny" in apply_source
+    assert "Auto routing" in render_source
+    assert "Routing override" in render_source
+    assert "routing_view" not in source
+
+
+def test_raw_document_starts_readonly_and_all_edits_use_replace_document() -> None:
+    show_source = _source("_show_raw_document")
+    apply_source = _source("_apply_raw_document")
+
+    assert show_source.count("JsonTreeEditor") >= 2
+    assert show_source.count("editable=False") >= 2
+    assert "Structured document" in show_source
+    assert "Preserved fields" in show_source
+    assert "Edit raw" in show_source
+    assert "Open structured JSON..." in show_source
+    assert (
+        "Only declared config-v2 fields may change; all edits are fully validated before save."
+        in show_source
     )
-    calls = set().union(*(_calls(_method(name)) for name in methods))
-    assert {
-        "set_description",
-        "add_pass",
-        "remove_pass",
-        "reorder_pass",
-        "set_pass_options",
-        "set_routing_override",
-        "reset",
-        "validate",
-        "save",
-    }.issubset(calls)
+    assert "editable=True" in show_source
+    assert "RawJsonDialog" in show_source
+    assert "on_apply=self._apply_raw_document" in show_source
+    assert "replace_document" in apply_source
+    assert "set_description" not in apply_source
+    assert "set_pass_options" not in apply_source
 
 
-def test_panel_accepts_focus_and_exposes_explicit_save_as() -> None:
-    init_source = ast.unparse(_method("__init__"))
-    create_source = ast.unparse(_method("OnCreate"))
-
-    assert "focus_target" in init_source
-    assert "Save as another config" in init_source
-    assert "save_as" in create_source
-
-
-def test_panel_save_as_retargets_the_current_draft() -> None:
-    method = _method("_save_as")
-    calls = _calls(method)
-
-    assert "getSaveFileName" in calls
-    assert "retarget" in calls
-
-
-def test_complete_and_unsupported_documents_are_read_only() -> None:
-    init_calls = _calls(_method("__init__"))
-    assert "setReadOnly" in init_calls
-
-
-def test_registered_pass_catalog_uses_the_manager_record_display_name() -> None:
+def test_footer_has_only_compact_status_overflow_and_save_controls() -> None:
     source = PANEL.read_text(encoding="utf-8")
+    footer_source = _source("_build_footer")
+    render_source = _source("_render_footer")
+    overflow = _string_arguments("_build_footer", "addAction")
 
-    assert "entry.display_name" in source
-    assert "entry.label" not in source
+    assert overflow == [
+        "Validate",
+        "Discard unsaved",
+        "Save as new...",
+        "View raw",
+        "Developer help",
+    ]
+    assert _string_arguments("_build_footer", "QPushButton") == ["Save"]
+    assert "QToolButton()" in footer_source
+    assert "..." in _string_arguments("_build_footer", "setText")
+    assert "Clean" in render_source
+    assert "Unsaved changes" in render_source
+    assert "Ready" in render_source
+    assert "Blocked" in render_source
+    assert "Validate before saving" in render_source
+    assert "QLabel" in _source("__init__")
+    assert "status_detail" not in source
+    assert "Reset draft" not in source
+    assert "Save atomically and reload" not in source
+    assert "QPlainTextEdit" not in _source("__init__")
 
 
-def test_description_is_a_wrapped_scrollable_multiline_editor() -> None:
+def test_serializer_manifest_is_available_only_from_developer_help() -> None:
     source = PANEL.read_text(encoding="utf-8")
-    init_calls = _calls(_method("__init__"))
+    help_source = _source("_show_developer_help")
 
-    assert "QPlainTextEdit" in source
-    assert "setLineWrapMode" in init_calls
-    assert "setVerticalScrollBarPolicy" in init_calls
-    assert "setHorizontalScrollBarPolicy" in init_calls
-    assert "toPlainText" in _calls(_method("_set_description"))
+    assert source.count("Serializer manifest") == 1
+    assert "Serializer manifest" in help_source
+    assert "project_serializer_rows" in help_source
 
 
-def test_empty_status_area_does_not_consume_editor_space() -> None:
-    calls = _calls(_method("_set_status"))
+class _BehaviorSignal:
+    def __init__(self) -> None:
+        self._callbacks: list[object] = []
 
-    assert "setPlainText" in calls
-    assert "setVisible" in calls
+    def connect(self, callback: object) -> None:
+        self._callbacks.append(callback)
 
-
-def test_editor_uses_a_resizable_outer_splitter_that_favors_preserved_text() -> None:
-    source = ast.unparse(_method("OnCreate"))
-
-    assert "outer_splitter = QtWidgets.QSplitter()" in source
-    assert "outer_splitter.setOrientation(QtCore.Qt.Orientation.Vertical)" in source
-    assert "outer_splitter.addWidget(editing_group)" in source
-    assert "outer_splitter.addWidget(raw_group)" in source
-    assert "outer_splitter.setStretchFactor(0, 1)" in source
-    assert "outer_splitter.setStretchFactor(1, 1)" in source
-    assert "outer_splitter.setSizes([450, 550])" in source
-    assert "layout.addWidget(outer_splitter, stretch=1)" in source
+    def emit(self, *args: object) -> None:
+        for callback in tuple(self._callbacks):
+            callback(*args)
 
 
-def test_typed_editor_panes_have_explicit_resizable_geometry() -> None:
-    source = ast.unparse(_method("OnCreate"))
+class _BehaviorWidget:
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        self._visible = True
+        self._enabled = True
+        self._text = ""
+        self.clicked = _BehaviorSignal()
+        self.toggled = _BehaviorSignal()
+        self.textChanged = _BehaviorSignal()
 
-    for pane in ("manifest_list", "pipeline_list", "routing_view"):
-        assert f"self.{pane}.setMinimumWidth(" in source
-    assert "typed_splitter.setStretchFactor(0, 1)" in source
-    assert "typed_splitter.setStretchFactor(1, 2)" in source
-    assert "typed_splitter.setStretchFactor(2, 2)" in source
-    assert "typed_splitter.setSizes([200, 400, 400])" in source
+    def setVisible(self, visible: bool) -> None:
+        self._visible = bool(visible)
+
+    def isVisible(self) -> bool:
+        return self._visible
+
+    def setEnabled(self, enabled: bool) -> None:
+        self._enabled = bool(enabled)
+
+    def isEnabled(self) -> bool:
+        return self._enabled
+
+    def setText(self, text: str) -> None:
+        self._text = str(text)
+
+    def text(self) -> str:
+        return self._text
+
+    def setToolTip(self, tooltip: str) -> None:
+        del tooltip
+
+    def setContentsMargins(self, *args: object) -> None:
+        del args
+
+    def setSpacing(self, spacing: int) -> None:
+        del spacing
+
+    def setWindowTitle(self, title: str) -> None:
+        self._text = title
 
 
-def test_editor_uses_compact_local_layouts_for_dense_information() -> None:
-    source = ast.unparse(_method("OnCreate"))
+class _BehaviorLayout(_BehaviorWidget):
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)
+        self.children: list[object] = []
 
-    for layout_name in ("identity_layout", "editing_layout", "raw_layout"):
-        assert f"{layout_name}.setContentsMargins(4, 4, 4, 4)" in source
-        assert f"{layout_name}.setSpacing(4)" in source
-    assert "description_row.setSpacing(4)" in source
-    assert "pass_row.setSpacing(4)" in source
+    def addWidget(self, widget: object, **kwargs: object) -> None:
+        del kwargs
+        self.children.append(widget)
+
+    def addLayout(self, layout: object) -> None:
+        self.children.append(layout)
+
+    def addStretch(self, *args: object) -> None:
+        del args
+
+
+class _BehaviorGroupBox(_BehaviorWidget):
+    def __init__(self, title: str = "", *args: object, **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)
+        self._text = title
+        self._checked = False
+
+    def setCheckable(self, checkable: bool) -> None:
+        self._checkable = bool(checkable)
+
+    def setChecked(self, checked: bool) -> None:
+        changed = self._checked != bool(checked)
+        self._checked = bool(checked)
+        if changed:
+            self.toggled.emit(self._checked)
+
+    def isChecked(self) -> bool:
+        return self._checked
+
+    def setTitle(self, title: str) -> None:
+        self._text = title
+
+
+class _BehaviorCheckBox(_BehaviorGroupBox):
+    pass
+
+
+class _BehaviorComboBox(_BehaviorWidget):
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)
+        self._items: list[tuple[str, object]] = []
+        self._index = -1
+
+    def addItem(self, label: str, value: object = None) -> None:
+        self._items.append((label, value))
+        if self._index < 0:
+            self._index = 0
+
+    def currentData(self) -> object:
+        return self._items[self._index][1] if self._index >= 0 else None
+
+    def findData(self, value: object) -> int:
+        return next(
+            (
+                index
+                for index, (_, item_value) in enumerate(self._items)
+                if item_value == value
+            ),
+            -1,
+        )
+
+    def setCurrentIndex(self, index: int) -> None:
+        self._index = int(index)
+
+
+class _BehaviorListItem:
+    def __init__(self, text: str = "") -> None:
+        self._text = text
+        self._data: dict[object, object] = {}
+        self._checked = 0
+
+    def flags(self) -> int:
+        return 0
+
+    def setFlags(self, flags: int) -> None:
+        del flags
+
+    def setCheckState(self, checked: int) -> None:
+        self._checked = checked
+
+    def checkState(self) -> int:
+        return self._checked
+
+    def setData(self, role: object, value: object) -> None:
+        self._data[role] = value
+
+    def data(self, role: object) -> object:
+        return self._data.get(role)
+
+    def text(self) -> str:
+        return self._text
+
+
+class _BehaviorListWidget(_BehaviorWidget):
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)
+        self._items: list[_BehaviorListItem] = []
+        self._row = -1
+
+    def addItem(self, item: _BehaviorListItem) -> None:
+        self._items.append(item)
+
+    def count(self) -> int:
+        return len(self._items)
+
+    def item(self, index: int) -> _BehaviorListItem:
+        return self._items[index]
+
+    def clear(self) -> None:
+        self._items.clear()
+        self._row = -1
+
+    def setCurrentRow(self, row: int) -> None:
+        self._row = row
+
+    def currentItem(self) -> _BehaviorListItem | None:
+        return self._items[self._row] if 0 <= self._row < len(self._items) else None
+
+
+class _BehaviorTableWidget(_BehaviorWidget):
+    def __init__(
+        self, rows: int, columns: int, *args: object, **kwargs: object
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self.rows = rows
+        self.columns = columns
+        self.items: dict[tuple[int, int], object] = {}
+        self.widgets: dict[tuple[int, int], object] = {}
+
+    def setHorizontalHeaderLabels(self, labels: list[str]) -> None:
+        self.labels = labels
+
+    def setItem(self, row: int, column: int, item: object) -> None:
+        self.items[(row, column)] = item
+
+    def setCellWidget(self, row: int, column: int, widget: object) -> None:
+        self.widgets[(row, column)] = widget
+
+
+class _BehaviorSpinBox(_BehaviorWidget):
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)
+        self._value = 0.0
+
+    def setRange(self, minimum: float, maximum: float) -> None:
+        self.minimum = minimum
+        self.maximum = maximum
+
+    def setDecimals(self, decimals: int) -> None:
+        self.decimals = decimals
+
+    def setValue(self, value: float) -> None:
+        self._value = float(value)
+
+    def value(self) -> float:
+        return self._value
+
+
+class _BehaviorButton(_BehaviorWidget):
+    instances: list["_BehaviorButton"] = []
+
+    def __init__(self, text: str = "", *args: object, **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)
+        self._text = text
+        self.instances.append(self)
+
+    def click(self) -> None:
+        self.clicked.emit()
+
+
+class _BehaviorDialog(_BehaviorWidget):
+    Accepted = 1
+    next_exec: object | None = None
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)
+        self._result = 0
+
+    def accept(self) -> None:
+        self._result = self.Accepted
+
+    def reject(self) -> None:
+        self._result = 0
+
+    def exec_(self) -> int:
+        callback = _BehaviorDialog.next_exec
+        if callback is not None:
+            callback(self)
+        return self._result
+
+
+class _BehaviorTabs(_BehaviorWidget):
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)
+        self.tabs: list[tuple[object, str]] = []
+
+    def addTab(self, widget: object, label: str) -> None:
+        self.tabs.append((widget, label))
+
+
+class _BehaviorTree:
+    instances: list["_BehaviorTree"] = []
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+        self.history: list[tuple[object, bool]] = []
+        self.callback: object | None = None
+        self.instances.append(self)
+
+    def set_json(self, value: object, *, editable: bool) -> None:
+        self.history.append((copy.deepcopy(value), editable))
+
+    def set_on_value_changed(self, callback: object) -> None:
+        self.callback = callback
+
+
+class _BehaviorRawDialog(_BehaviorDialog):
+    instances: list["_BehaviorRawDialog"] = []
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        super().__init__()
+        self.args = args
+        self.kwargs = kwargs
+        self.instances.append(self)
+
+
+class _BehaviorMessageBox:
+    class StandardButton:
+        Yes = 1
+        No = 2
+        Discard = 4
+        Cancel = 8
+
+    Yes = StandardButton.Yes
+    No = StandardButton.No
+    Discard = StandardButton.Discard
+    Cancel = StandardButton.Cancel
+    response = No
+    questions: list[tuple[object, ...]] = []
+
+    @classmethod
+    def question(cls, *args: object) -> int:
+        cls.questions.append(args)
+        return cls.response
+
+    @classmethod
+    def information(cls, *args: object) -> None:
+        del args
+
+
+class _BehaviorFileDialog:
+    destination = ""
+
+    @classmethod
+    def getSaveFileName(cls, *args: object) -> tuple[str, str]:
+        del args
+        return cls.destination, ""
+
+
+def _load_behavior_panel(monkeypatch):
+    _BehaviorButton.instances = []
+    _BehaviorDialog.next_exec = None
+    _BehaviorTree.instances = []
+    _BehaviorRawDialog.instances = []
+    _BehaviorMessageBox.questions = []
+    _BehaviorMessageBox.response = _BehaviorMessageBox.No
+    plugin_form = type("PluginForm", (), {"__init__": lambda self: None})
+    qt = types.SimpleNamespace(
+        Qt=types.SimpleNamespace(
+            CheckState=types.SimpleNamespace(Checked=2, Unchecked=0),
+            ItemDataRole=types.SimpleNamespace(UserRole=32),
+            ItemFlag=types.SimpleNamespace(ItemIsUserCheckable=1),
+        )
+    )
+    widgets = types.SimpleNamespace(
+        QCheckBox=_BehaviorCheckBox,
+        QComboBox=_BehaviorComboBox,
+        QDialog=_BehaviorDialog,
+        QDoubleSpinBox=_BehaviorSpinBox,
+        QFileDialog=_BehaviorFileDialog,
+        QGroupBox=_BehaviorGroupBox,
+        QHBoxLayout=_BehaviorLayout,
+        QLabel=_BehaviorWidget,
+        QListWidget=_BehaviorListWidget,
+        QListWidgetItem=_BehaviorListItem,
+        QMessageBox=_BehaviorMessageBox,
+        QPushButton=_BehaviorButton,
+        QTableWidget=_BehaviorTableWidget,
+        QTableWidgetItem=_BehaviorListItem,
+        QTabWidget=_BehaviorTabs,
+        QToolButton=_BehaviorButton,
+        QVBoxLayout=_BehaviorLayout,
+        QWidget=_BehaviorWidget,
+    )
+    monkeypatch.setitem(
+        sys.modules, "ida_kernwin", types.SimpleNamespace(PluginForm=plugin_form)
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "d810.qt_shim",
+        types.SimpleNamespace(
+            QtCore=qt,
+            QtWidgets=widgets,
+            qt_flag_or=lambda *flags: int(flags[0]) | int(flags[1]),
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "d810.ui.workbench_structured_details",
+        types.SimpleNamespace(
+            JsonTreeEditor=_BehaviorTree,
+            RawJsonDialog=_BehaviorRawDialog,
+            StructuredDetailsView=_BehaviorWidget,
+        ),
+    )
+    module_name = "d810.ui._task6_behavior_panel"
+    spec = importlib.util.spec_from_file_location(module_name, PANEL)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, module_name, module)
+    spec.loader.exec_module(module)
+    module.registered_families = lambda: (
+        types.SimpleNamespace(name="approov"),
+        types.SimpleNamespace(name="tigress"),
+    )
+    return module, module.ConfigV2EditingPanel
+
+
+class _BehaviorAdapter:
+    def __init__(self, *, reject_replace: bool = False) -> None:
+        self.reject_replace = reject_replace
+        self.clear_calls: list[object] = []
+        self.routing_calls: list[
+            tuple[object, dict[str, float], str | None, tuple[str, ...]]
+        ] = []
+        self.replace_calls: list[tuple[object, object]] = []
+        self.reset_calls = 0
+        self.retarget_calls: list[tuple[object, Path]] = []
+        self.save_calls: list[tuple[object, object]] = []
+
+    def clear_routing_override(self, draft: object) -> tuple[object, object]:
+        self.clear_calls.append(draft)
+        return draft, object()
+
+    def set_routing_override(
+        self,
+        draft: object,
+        *,
+        prefer: dict[str, float],
+        require: str | None,
+        deny: tuple[str, ...],
+    ) -> tuple[object, object]:
+        self.routing_calls.append((draft, prefer, require, deny))
+        return draft, object()
+
+    def replace_document(
+        self, draft: object, document: object
+    ) -> tuple[object, object]:
+        self.replace_calls.append((draft, copy.deepcopy(document)))
+        if self.reject_replace:
+            raise RuntimeError("rejected replacement")
+        return draft, object()
+
+    def reset(self) -> tuple[object, object]:
+        self.reset_calls += 1
+        return types.SimpleNamespace(), object()
+
+    def retarget(self, draft: object, destination: Path) -> tuple[object, object]:
+        self.retarget_calls.append((draft, destination))
+        return draft, object()
+
+    def save(self, draft: object, validation: object) -> object:
+        self.save_calls.append((draft, validation))
+        return types.SimpleNamespace(path=Path("/tmp/saved.json"))
+
+    @property
+    def destination(self) -> Path:
+        return Path("/tmp/config.json")
+
+
+def _behavior_panel(panel_type, adapter: _BehaviorAdapter, document: dict[str, object]):
+    panel = object.__new__(panel_type)
+    panel.parent = None
+    panel._adapter = adapter
+    panel._on_saved = None
+    panel._draft = types.SimpleNamespace(document_json="not JSON")
+    panel._validation = object()
+    panel._editor_view = types.SimpleNamespace(
+        raw_document=types.SimpleNamespace(
+            document=copy.deepcopy(document),
+            preserved_fields={"unsupported": copy.deepcopy(document["unsupported"])},
+        ),
+        footer=types.SimpleNamespace(dirty=True),
+    )
+    panel._raw_document_tree = None
+    panel._raw_preserved_tree = None
+    panel._raw_document_editable = False
+    panel.statuses: list[str] = []
+    panel._set_status = panel.statuses.append
+    panel._render = panel._render_raw_document_trees
+    return panel
+
+
+def _behavior_document() -> dict[str, object]:
+    return {
+        "description": "before",
+        "unsupported": {"audit": "preserve me"},
+        "additional_configuration": {
+            "pipeline_v2": [{"pass_id": "mba-simplify", "options": {}}],
+            "router_resolution": {"prefer": {}, "require": None, "deny": []},
+            "unrelated": {"must": "stay"},
+        },
+    }
+
+
+def test_routing_group_body_visibility_tracks_expansion(monkeypatch) -> None:
+    _, panel_type = _load_behavior_panel(monkeypatch)
+    panel = object.__new__(panel_type)
+    panel.parent = None
+    panel._build_routing_controls()
+
+    assert panel.routing_body.isVisible() is False
+    panel.routing_group.setChecked(True)
+    assert panel.routing_body.isVisible() is True
+    panel.routing_group.setChecked(False)
+    assert panel.routing_body.isVisible() is False
+
+
+def test_auto_routing_uses_typed_clear_and_structured_rows_send_payload(
+    monkeypatch,
+) -> None:
+    module, panel_type = _load_behavior_panel(monkeypatch)
+    adapter = _BehaviorAdapter()
+    panel = _behavior_panel(panel_type, adapter, _behavior_document())
+    panel.routing_auto_check = _BehaviorCheckBox("Auto")
+    panel.routing_auto_check.setChecked(True)
+
+    panel._apply_routing_rows()
+
+    assert adapter.clear_calls == [panel._draft]
+    assert adapter.replace_calls == []
+
+    panel.routing_auto_check.setChecked(False)
+    prefer_item = _BehaviorListItem("approov")
+    prefer_item.setCheckState(module._checked_state())
+    panel.routing_prefer_rows = {
+        "approov": (prefer_item, _BehaviorSpinBox()),
+        "tigress": (_BehaviorListItem("tigress"), _BehaviorSpinBox()),
+    }
+    panel.routing_prefer_rows["approov"][1].setValue(2.5)
+    panel.routing_require_combo = _BehaviorComboBox()
+    panel.routing_require_combo.addItem("Automatic", None)
+    panel.routing_require_combo.addItem("approov", "approov")
+    panel.routing_require_combo.setCurrentIndex(1)
+    panel.routing_exclude_list = _BehaviorListWidget()
+    excluded = _BehaviorListItem("tigress")
+    excluded.setData(module._user_role(), "tigress")
+    excluded.setCheckState(module._checked_state())
+    panel.routing_exclude_list.addItem(excluded)
+
+    panel._apply_routing_rows()
+
+    assert adapter.routing_calls == [
+        (panel._draft, {"approov": 2.5}, "approov", ("tigress",))
+    ]
+
+
+def test_structured_raw_surface_excludes_preserved_fields_and_rejects_them(
+    monkeypatch,
+) -> None:
+    _, panel_type = _load_behavior_panel(monkeypatch)
+    adapter = _BehaviorAdapter()
+    document = _behavior_document()
+    panel = _behavior_panel(panel_type, adapter, document)
+    panel._raw_document_tree = _BehaviorTree()
+    panel._raw_preserved_tree = _BehaviorTree()
+    panel._raw_document_editable = True
+
+    panel._render_raw_document_trees()
+
+    structured, editable = panel._raw_document_tree.history[-1]
+    preserved, preserved_editable = panel._raw_preserved_tree.history[-1]
+    assert editable is True
+    assert preserved_editable is False
+    assert "unsupported" not in structured
+    assert structured["additional_configuration"] == {
+        "pipeline_v2": [{"pass_id": "mba-simplify", "options": {}}],
+        "router_resolution": {"prefer": {}, "require": None, "deny": []},
+    }
+    assert preserved == {"unsupported": {"audit": "preserve me"}}
+
+    structured["description"] = "after"
+    panel._apply_raw_document(structured)
+
+    assert adapter.replace_calls[-1][1]["description"] == "after"
+    assert adapter.replace_calls[-1][1]["unsupported"] == {"audit": "preserve me"}
+    panel._apply_raw_document({"unsupported": {"audit": "changed"}})
+    assert len(adapter.replace_calls) == 1
+    assert panel.statuses[-1] == "Only declared config-v2 fields may change."
+
+
+def test_raw_warning_cancel_and_rejection_restore_authoritative_structured_tree(
+    monkeypatch,
+) -> None:
+    module, panel_type = _load_behavior_panel(monkeypatch)
+    document = _behavior_document()
+    panel = _behavior_panel(panel_type, _BehaviorAdapter(), document)
+
+    _BehaviorMessageBox.response = _BehaviorMessageBox.No
+    _BehaviorDialog.next_exec = lambda dialog: next(
+        button for button in _BehaviorButton.instances if button.text() == "Edit raw"
+    ).click()
+    panel._show_raw_document()
+
+    cancelled_tree = _BehaviorTree.instances[0]
+    assert cancelled_tree.history == [
+        (
+            {
+                "description": "before",
+                "additional_configuration": {
+                    "pipeline_v2": [{"pass_id": "mba-simplify", "options": {}}],
+                    "router_resolution": {"prefer": {}, "require": None, "deny": []},
+                },
+            },
+            False,
+        )
+    ]
+
+    module, panel_type = _load_behavior_panel(monkeypatch)
+    panel = _behavior_panel(panel_type, _BehaviorAdapter(reject_replace=True), document)
+    _BehaviorMessageBox.response = _BehaviorMessageBox.Yes
+
+    def edit_then_reject(dialog: object) -> None:
+        next(
+            button
+            for button in _BehaviorButton.instances
+            if button.text() == "Edit raw"
+        ).click()
+        _BehaviorTree.instances[0].callback(
+            {
+                "description": "rejected",
+                "additional_configuration": {
+                    "pipeline_v2": [{"pass_id": "mba-simplify", "options": {}}],
+                    "router_resolution": {"prefer": {}, "require": None, "deny": []},
+                },
+            }
+        )
+
+    _BehaviorDialog.next_exec = edit_then_reject
+    panel._show_raw_document()
+
+    restored_value, restored_editable = _BehaviorTree.instances[0].history[-1]
+    assert restored_editable is True
+    assert restored_value["description"] == "before"
+    assert "unsupported" not in restored_value
+    assert panel.statuses[-1] == "Edit failed: rejected replacement"
+
+
+def test_discard_confirmation_and_save_as_do_not_save_current_destination(
+    monkeypatch,
+) -> None:
+    _, panel_type = _load_behavior_panel(monkeypatch)
+    adapter = _BehaviorAdapter()
+    panel = _behavior_panel(panel_type, adapter, _behavior_document())
+
+    _BehaviorMessageBox.response = _BehaviorMessageBox.Cancel
+    panel._discard_unsaved()
+    assert adapter.reset_calls == 0
+    _BehaviorMessageBox.response = _BehaviorMessageBox.Discard
+    panel._discard_unsaved()
+    assert adapter.reset_calls == 1
+
+    _BehaviorFileDialog.destination = "/tmp/retargeted.json"
+    panel._save_as()
+    assert [destination for _, destination in adapter.retarget_calls] == [
+        Path("/tmp/retargeted.json")
+    ]
+    assert adapter.save_calls == []
+    saving_draft = panel._draft
+    saving_validation = panel._validation
+    panel._save()
+    assert adapter.save_calls == [(saving_draft, saving_validation)]
