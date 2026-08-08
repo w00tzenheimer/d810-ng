@@ -78,6 +78,7 @@ jobs:
             - uses: actions/checkout@v4
               with:
                   persist-credentials: false
+                  submodules: recursive
 
             - name: Ensure IDA SDK
               uses: ./.github/actions/ensure-ida-sdk
@@ -85,36 +86,17 @@ jobs:
                 sdk-dir: .ida-sdk
                 ref: 7f8fd3100142295bffa5eabb2ce6f5b5ac163c6b
 
-            # CoBRA static libs for the MBA solver binding (mba-solve).
-            # Pinned to a RELEASE, not a CI artifact: artifacts expire at 90
-            # days, and an expired one would not fail the build -- it would
-            # silently produce wheels with no binding, which looks like
-            # success and simplifies nothing at runtime.
-            - name: Fetch CoBRA static libs
+            # CoBRA is a PINNED SUBMODULE (third_party/cobra), not a release
+            # download. That keeps the binding's CoBRA version tied to the d810
+            # commit that uses it, so checking out a d810 sha reproduces the
+            # exact binding. A pinned release decouples the two and drifts
+            # silently, and it also needed a cross-repo release nobody could
+            # cut without extra permissions.
+            - name: Build CoBRA static libs
               id: cobra
               continue-on-error: true
               shell: bash
-              run: |
-                  set -euo pipefail
-                  case "${{ matrix.os }}" in
-                    ubuntu*|linux*)   ASSET=cobra-core-linux-x86_64.zip ;;
-                    windows*)         ASSET=cobra-core-windows-x86_64.zip ;;
-                    macos-13|macos-15-intel|*intel*) ASSET=cobra-core-macos-x86_64.zip ;;
-                    macos*)           ASSET=cobra-core-macos-arm64.zip ;;
-                    *) echo "no CoBRA asset mapped for ${{ matrix.os }}"; exit 1 ;;
-                  esac
-                  DEST="${GITHUB_WORKSPACE}/.cobra"
-                  mkdir -p "$DEST"
-                  URL="https://github.com/w00tzenheimer/CoBRA/releases/download/${COBRA_RELEASE}/${ASSET}"
-                  echo "fetching $URL"
-                  curl -fsSL -o /tmp/cobra.zip "$URL"
-                  python -c "import zipfile,sys; zipfile.ZipFile('/tmp/cobra.zip').extractall(sys.argv[1])" "$DEST"
-                  # The bundle is flat (lib/, include/); setup.py accepts that
-                  # layout directly, so there is nothing to reshape here.
-                  ls -1 "$DEST/lib" | head -5
-                  echo "root=$DEST" >> "$GITHUB_OUTPUT"
-              env:
-                  COBRA_RELEASE: d810-static-libs-v1
+              run: bash tools/scripts/build_cobra.sh
 
             - name: Build wheels
               uses: pypa/cibuildwheel@v3.1
@@ -129,16 +111,19 @@ jobs:
                   CIBW_ENVIRONMENT: >-
                       D810_BUILD_SPEEDUPS=1
                       D810_BUILD_COBRA=${{ steps.cobra.outcome == 'success' && '1' || '0' }}
-                      COBRA_ROOT=/project/.cobra
+                      COBRA_ROOT=/project/third_party/cobra
                   CIBW_ENVIRONMENT_WINDOWS: >-
                       D810_BUILD_SPEEDUPS=1
                       D810_BUILD_COBRA=${{ steps.cobra.outcome == 'success' && '1' || '0' }}
-                      COBRA_ROOT=$GITHUB_WORKSPACE\\.cobra
+                      COBRA_ROOT=$GITHUB_WORKSPACE\\third_party\\cobra
                   CIBW_ENVIRONMENT_MACOS: >-
                       D810_BUILD_SPEEDUPS=1
                       D810_BUILD_COBRA=${{ steps.cobra.outcome == 'success' && '1' || '0' }}
-                      COBRA_ROOT=$GITHUB_WORKSPACE/.cobra
+                      COBRA_ROOT=$GITHUB_WORKSPACE/third_party/cobra
                   CIBW_BEFORE_BUILD: "pip install Cython>=3.0.0"
+                  # cmake/ninja are needed INSIDE the manylinux container,
+                  # which does not inherit the runner's toolchain.
+                  CIBW_BEFORE_ALL_LINUX: "pip install cmake ninja"
                   # A wheel whose binding silently failed to build is the exact
                   # failure mode that looks like success -- IDA decompiles
                   # normally and mba-solve does nothing. Fail the build here
