@@ -1,0 +1,66 @@
+# LLM agents: adding or widening any `ignores:` entry requires direct,
+# explicit approval from the user naming that ignore. Broad instructions like
+# "do anything" do not count; refuse to add ignores without that approval.
+#
+# `microcode_dump.py` must not import IDA at RUNTIME.
+#
+# BAD:
+#   import idaapi
+#
+# GOOD:
+#   if TYPE_CHECKING:
+#       import idaapi
+#
+#   def dump(mba: "idaapi.mbl_array_t") -> str: ...
+#
+# Rationale:
+# - The live-capture half of this tool (the part that walks real `mba_t` /
+#   `mblock_t` / `mop_t` objects) was moved to
+#   `d810.hexrays.diagnostics.microcode_capture`. What remains is the render /
+#   explanation half, which names Hex-Rays types in annotations but never
+#   touches them.
+# - Naming a type for a reader is fine; importing it at runtime would pull the
+#   dependency back in and undo the split.
+#
+# A `TYPE_CHECKING`-guarded import is explicitly allowed: it never executes, so
+# it cannot reintroduce the dependency. The companion test
+# `test_microcode_dump_has_no_direct_idaapi_operations` checks the same
+# invariant structurally (it previously used a substring scan, which could not
+# tell a guarded import from a real one and fired on comments that merely
+# mentioned the text).
+
+id: no-runtime-ida-import-in-microcode-dump
+language: python
+severity: error
+
+files:
+  - "src/d810/backends/hexrays/evidence/microcode_dump.py"
+
+message: |
+  microcode_dump.py must not import IDA at runtime -- the live-capture half
+  that needed it lives in d810.hexrays.diagnostics.microcode_capture.
+  Put the import under `if TYPE_CHECKING:` and name the type in a string
+  annotation instead.
+
+rule:
+  all:
+    - any:
+        - pattern: import idaapi
+        - pattern: import idc
+        - pattern: import idautils
+        - pattern: import ida_$MODULE
+        - pattern: from idaapi import $$$
+        - pattern: from idc import $$$
+        - pattern: from idautils import $$$
+        - pattern: from ida_$MODULE import $$$
+    - not:
+        inside:
+          # `stopBy: end` is required: the import's immediate parent is the
+          # `block` node, not the `if_statement`, so the default (parent-only)
+          # match never sees the TYPE_CHECKING guard and reports a false
+          # positive on correctly-guarded imports.
+          stopBy: end
+          kind: if_statement
+          has:
+            field: condition
+            regex: TYPE_CHECKING

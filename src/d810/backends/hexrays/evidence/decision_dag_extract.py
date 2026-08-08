@@ -139,14 +139,14 @@ def _entry_state_alias(
     cur = getattr(blk, "head", None)
     while cur is not None:
         d = getattr(cur, "d", None)
-        l = getattr(cur, "l", None)
+        left = getattr(cur, "l", None)
         if (
             d is not None
             and getattr(d, "t", None) == ida_hexrays.mop_r
-            and l is not None
-            and getattr(l, "t", None) == ida_hexrays.mop_S
+            and left is not None
+            and getattr(left, "t", None) == ida_hexrays.mop_S
         ):
-            off = getattr(getattr(l, "s", None), "off", None)
+            off = getattr(getattr(left, "s", None), "off", None)
             reg = getattr(d, "r", None)
             if off is not None and reg is not None:
                 stkoff_matches = (

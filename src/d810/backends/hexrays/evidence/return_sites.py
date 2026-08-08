@@ -20,7 +20,6 @@ from d810.analyses.control_flow.return_sites import (
 
 if TYPE_CHECKING:
     from d810.backends.hexrays.evidence.datamodel import (
-        DispatcherStateMachine,
         HandlerPathResult,
     )
     from d810.transforms.snapshot import AnalysisSnapshot

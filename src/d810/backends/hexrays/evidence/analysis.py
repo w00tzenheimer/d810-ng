@@ -10,7 +10,6 @@ of one analysis pass and is passed to every strategy's ``plan()`` method.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 
 import ida_hexrays
 
@@ -27,7 +26,6 @@ from d810.evaluator.hexrays_microcode.chains import (
     DefSite,
     _scan_block_for_reg_defs,
     _scan_block_for_stkvar_defs,
-    collect_pred_defs_for_block,
     ensure_graph_and_lists_ready,
     find_reaching_defs_for_reg,
     find_reaching_defs_for_stkvar,
@@ -37,13 +35,8 @@ from d810.evaluator.hexrays_microcode.tracker import (
     get_all_possibles_values,
 )
 from d810.hexrays.ir.minsn_utils import minsn_to_ast
-from d810.evaluator.hexrays_microcode.def_search import resolve_mop_via_predecessors
-from d810.hexrays.utils.hexrays_formatters import format_mop_t
 from d810.hexrays.utils.hexrays_helpers import (
-    append_mop_if_not_in_list,
-    equal_mops_ignore_size,
     extract_num_mop,
-    get_mop_index,
 )
 from d810.backends.hexrays.evidence.datamodel import (
     DispatcherStateMachine,
@@ -59,6 +52,10 @@ from d810.analyses.control_flow.transition_builder import (
     StateHandler,
     StateTransition,
     StateUpdateSite,
+)
+from d810.transforms.snapshot import (
+    AnalysisSnapshot,
+    ReachabilityInfo,
 )
 
 unflat_logger = logging.getLogger("D810.unflat.hodur", logging.DEBUG)
@@ -98,10 +95,6 @@ HODUR_STATE_UPDATE_OPCODES = {
     ida_hexrays.m_xds,
 }
 
-from d810.transforms.snapshot import (
-    AnalysisSnapshot,
-    ReachabilityInfo,
-)
 
 __all__ = [
     "MIN_STATE_CONSTANT",

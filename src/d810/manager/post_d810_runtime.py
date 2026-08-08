@@ -7,7 +7,7 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from d810.backends.hexrays.evidence.microcode_dump import mba_to_dict
+from d810.hexrays.diagnostics.microcode_capture import mba_to_dict
 from d810.core.logging import getLogger
 from d810.core.provider_phase import ProviderPhaseSnapshot
 from d810.core.settings import get_settings

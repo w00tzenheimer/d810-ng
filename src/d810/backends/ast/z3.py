@@ -53,10 +53,9 @@ import functools
 import sys
 
 import ida_hexrays
-import idaapi
 
 from d810.core import getLogger, typing
-from d810.core.typing import TYPE_CHECKING, Dict, Tuple
+from d810.core.typing import Dict
 from d810.errors import D810Z3Exception
 from d810.evaluator.hexrays_microcode.def_search import (
     recursively_resolve_ast as _recursively_resolve_ast,
@@ -68,7 +67,6 @@ from d810.hexrays.expr.ast import AstLeaf, AstNode
 from d810.hexrays.ir.mop_snapshot import MopSnapshot
 from d810.hexrays.ir.mop_utils import mop_to_ast
 from d810.hexrays.utils.hexrays_formatters import (
-    format_minsn_t,
     format_mop_t,
     opcode_to_string,
 )

@@ -38,13 +38,13 @@ from d810.analyses.control_flow.linearized_state_dag import (
 from d810.backends.hexrays.evidence.microcode_dump import (
     build_live_linearized_program,
     dump_dispatcher_tree,
-    dump_function_microcode,
     dump_linearized_dag,
     dump_linearized_program,
     dump_linearized_dag_dot,
     dump_state_machine_graph,
     mba_to_human_readable,
 )
+from d810.hexrays.diagnostics.microcode_capture import dump_function_microcode
 from d810.testing.runner import _resolve_test_project_index
 from d810.testing.skip_controls import unskip_cases_enabled
 
@@ -817,7 +817,7 @@ class TestDumpFunctionPseudocode:
 
         if dump_d810:
             # d810-active mode: decompile with d810 running, dump cfunc.mba
-            from d810.backends.hexrays.evidence.microcode_dump import mba_to_dict
+            from d810.hexrays.diagnostics.microcode_capture import mba_to_dict
 
             use_project = not request.config.getoption("--dump-no-project")
             project_name = request.config.getoption("--dump-project")

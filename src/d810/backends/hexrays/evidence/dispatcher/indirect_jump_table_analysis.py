@@ -16,12 +16,12 @@ from d810.analyses.control_flow.indirect_jump_table_analysis import (
     build_state_dispatcher_map_from_indirect_entries,
 )
 
-logger = getLogger("D810.optimizers.indirect_jump_table")
-
 from d810.hexrays.preanalysis.indirect_jump_discovery import (
     DiscoveredIndirectJumpTable,
     discover_indirect_jump_table,
 )
+logger = getLogger("D810.optimizers.indirect_jump_table")
+
 
 
 def _parse_int(value: object, *, default: int | None = None) -> int | None:

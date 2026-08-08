@@ -42,9 +42,6 @@ from d810.analyses.control_flow.condition_chain_model import (
     ConditionChainAnalysisResult,
 )
 from d810.analyses.control_flow.condition_chain_model import ConditionChainNodeMap
-from d810.analyses.control_flow.condition_chain_model import (
-    resolve_target_via_condition_chain,
-)
 from d810.analyses.control_flow.interval_map import (
     Node,
     NodeKind,
@@ -197,15 +194,11 @@ def find_condition_chain_default_block(
 
 # Compat re-export.  The canonical home for the snapshot-only condition-chain
 # default-block discovery is `d810.analyses.control_flow.condition_chain_snapshot` (axis-C
-# slice 5a).  Keeping the name re-exported here so any prod consumer
-# that finds it through `condition_chain_analysis` keeps working; tests import
-# from the canonical location directly.
+# slice 5a).  Consumers import it from the canonical location directly; it is
+# deliberately NOT re-exported here.
 #
 # One-way dependency: condition_chain_analysis -> condition_chain_snapshot.  Do NOT add an
 # import in the reverse direction.
-from d810.analyses.control_flow.condition_chain_snapshot import (
-    find_condition_chain_default_block_snapshot,
-)
 
 
 def resolve_via_condition_chain_walk(
@@ -1471,14 +1464,14 @@ def _extract_state_from_block(
                 mba=mba,
                 state_var_reg=state_var_reg,
             ):
-                l = getattr(insn, "l", None)
-                val = _get_mop_const_value(l)
+                left = getattr(insn, "l", None)
+                val = _get_mop_const_value(left)
                 if val is not None:
                     if diag_lines is not None:
                         diag_lines.append(f"  -> FOUND m_mov state write: 0x{val:x}")
                     return val
                 # Fallback: source is non-constant — try MBA constant folding.
-                folded = _resolve_mop_value_in_block(l, blk, insn)
+                folded = _resolve_mop_value_in_block(left, blk, insn)
                 if folded is not None:
                     if diag_lines is not None:
                         diag_lines.append(
@@ -1498,14 +1491,14 @@ def _extract_state_from_block(
                 mba=mba,
                 state_var_reg=state_var_reg,
             ):
-                l = getattr(insn, "l", None)
-                val = _get_mop_const_value(l)
+                left = getattr(insn, "l", None)
+                val = _get_mop_const_value(left)
                 if val is not None:
                     if diag_lines is not None:
                         diag_lines.append(f"  -> FOUND m_stx state write: 0x{val:x}")
                     return val
                 # Fallback: source is non-constant — try MBA constant folding.
-                folded = _resolve_mop_value_in_block(l, blk, insn)
+                folded = _resolve_mop_value_in_block(left, blk, insn)
                 if folded is not None:
                     if diag_lines is not None:
                         diag_lines.append(
@@ -1749,7 +1742,7 @@ def _walk_handler_chain(
                     # At least one branch is unresolvable — conservative unknown
                     if diag_lines is not None:
                         diag_lines.append(
-                            f"  walker: branch merge: some unresolvable -> unknown"
+                            "  walker: branch merge: some unresolvable -> unknown"
                         )
                     break
 
@@ -1774,13 +1767,13 @@ def _walk_handler_chain(
                         result["next_state"] = sub_states[0]
                     if diag_lines is not None:
                         diag_lines.append(
-                            f"  walker: branch merge: mixed exit+transition"
-                            f" -> conditional exit"
+                            "  walker: branch merge: mixed exit+transition"
+                            " -> conditional exit"
                         )
                 elif all_exit:
                     result["exit"] = True
                     if diag_lines is not None:
-                        diag_lines.append(f"  walker: branch merge: all exit -> exit")
+                        diag_lines.append("  walker: branch merge: all exit -> exit")
             else:
                 if diag_lines is not None:
                     diag_lines.append(

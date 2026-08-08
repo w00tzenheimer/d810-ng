@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -74,9 +75,68 @@ def test_stack_frame_overview_delegates_saved_register_live_formatting(
     assert calls == [(saved_register, 8)]
 
 
+def _is_type_checking_guard(test: ast.expr) -> bool:
+    """Whether an ``if`` test is ``TYPE_CHECKING`` / ``typing.TYPE_CHECKING``."""
+    if isinstance(test, ast.Name):
+        return test.id == "TYPE_CHECKING"
+    if isinstance(test, ast.Attribute):
+        return test.attr == "TYPE_CHECKING"
+    return False
+
+
+def _ida_imports_outside_type_checking(source: str) -> list[str]:
+    """IDA imports that actually execute, i.e. not under ``if TYPE_CHECKING``."""
+    tree = ast.parse(source)
+
+    guarded: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.If) and _is_type_checking_guard(node.test):
+            for child in ast.walk(node):
+                guarded.add(id(child))
+
+    offenders: list[str] = []
+    for node in ast.walk(tree):
+        if id(node) in guarded:
+            continue
+        if isinstance(node, ast.Import):
+            modules = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            modules = [node.module or ""]
+        else:
+            continue
+        for module in modules:
+            root = module.split(".")[0]
+            if root in {"idaapi", "idc", "idautils"} or root.startswith("ida_"):
+                offenders.append(f"line {node.lineno}: {module}")
+    return offenders
+
+
+def _runtime_idaapi_name_uses(source: str) -> list[str]:
+    """Places where the *name* ``idaapi`` is evaluated at runtime.
+
+    String annotations (``mba: "idaapi.mbl_array_t"``) are ``Constant`` nodes,
+    never ``Name`` nodes, so they cannot show up here -- which is the point:
+    naming a Hex-Rays type for a reader is fine, touching it is not.
+    """
+    return [
+        f"line {node.lineno}"
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Name)
+        and node.id == "idaapi"
+        and isinstance(node.ctx, ast.Load)
+    ]
+
+
 def test_microcode_dump_has_no_direct_idaapi_operations() -> None:
+    """This module is idaapi-free: the half that needed it moved to
+    ``d810.hexrays.diagnostics.microcode_capture``.
+
+    Checked structurally rather than by substring. A substring check cannot
+    tell a real import from one under ``if TYPE_CHECKING`` (which never
+    executes), and it fires on any comment or docstring that merely mentions
+    the text -- both of which produced false failures here.
+    """
     source = Path(microcode_dump.__file__).read_text(encoding="utf-8")
 
-    assert "import idaapi" not in source
-    assert "idaapi.mlist_t" not in source
-    assert "idaapi.rlist_t" not in source
+    assert _ida_imports_outside_type_checking(source) == []
+    assert _runtime_idaapi_name_uses(source) == []

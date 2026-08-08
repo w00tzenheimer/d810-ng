@@ -201,7 +201,7 @@ class ExportMicrocode(D810ActionHandler):
 
         try:
             # Import microcode dump utility
-            from d810.backends.hexrays.evidence.microcode_dump import (
+            from d810.hexrays.diagnostics.microcode_capture import (
                 dump_function_microcode,
             )
 

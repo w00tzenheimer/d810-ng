@@ -651,7 +651,7 @@ def prove_equivalence(
     try:
         pattern_z3 = visitor.visit(pattern)
         replacement_z3 = visitor.visit(replacement)
-    except Exception as e:
+    except Exception:
         # Conversion failed - expressions are invalid or contain unsupported operations
         return False, None
 
