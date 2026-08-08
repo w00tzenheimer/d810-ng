@@ -77,6 +77,74 @@ class TestModuleLoggerLevelAfterConfigure(unittest.TestCase):
         self.assertEqual(self._probe()["parent"], "d810")
 
 
+class TestUiLevelChangePropagates(unittest.TestCase):
+    """Raising a parent's level from the UI must reach its children.
+
+    ``LoggerConfigurator.set_level`` is what the D810 logger panel calls. It
+    goes through ``getLogger``, which builds a *new* D810Logger and swaps it
+    into ``loggerDict``. Children still hold a reference to the object it
+    replaced, so without re-linking they keep resolving against a stale parent
+    and the level change silently does nothing -- the same object-identity flaw
+    that broke the parent chain in configure_loggers, just with the opposite
+    symptom (nothing happens instead of everything happens).
+
+    Selecting DEBUG on "d810" is the obvious way to turn debug logging on. If
+    it no-ops, the missing output looks exactly like code that never ran.
+    """
+
+    SCRIPT = textwrap.dedent(
+        """
+        import json, logging, tempfile
+        from d810.core import getLogger, LoggerConfigurator
+        NAME = "d810.hexrays.expr.p_ast"
+        getLogger(NAME)
+        from d810.core.logging import configure_loggers
+        configure_loggers(tempfile.mkdtemp())
+
+        before = logging.getLogger(NAME).getEffectiveLevel()
+        LoggerConfigurator.set_level("d810", "DEBUG")
+        after_debug = logging.getLogger(NAME).getEffectiveLevel()
+        LoggerConfigurator.set_level("d810", "INFO")
+        after_info = logging.getLogger(NAME).getEffectiveLevel()
+
+        print(json.dumps({
+            "before": before,
+            "after_debug": after_debug,
+            "after_info": after_info,
+        }))
+        """
+    )
+
+    def _probe(self) -> dict:
+        import json
+
+        env = dict(os.environ)
+        env["PYTHONPATH"] = os.pathsep.join(sys.path)
+        env.pop("D810_DEBUG_LOGGING", None)
+        proc = subprocess.run(
+            [sys.executable, "-c", self.SCRIPT],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        return json.loads(proc.stdout.strip().splitlines()[-1])
+
+    def test_setting_parent_level_reaches_children(self):
+        result = self._probe()
+        self.assertEqual(result["before"], logging.INFO)
+        self.assertEqual(
+            result["after_debug"],
+            logging.DEBUG,
+            "setting d810 -> DEBUG from the UI must reach child loggers",
+        )
+        self.assertEqual(
+            result["after_info"],
+            logging.INFO,
+            "and setting it back must restore them",
+        )
+
+
 class TestLoggerConfigurator(unittest.TestCase):
     def setUp(self):
         # Ensure a test logger exists under our D810 prefix
