@@ -232,25 +232,59 @@ gets silently filed as "not installed". The registry keeps them apart as
 
 ### Out-of-tree backends
 
-A separate distribution announces itself with an entry point. The API version
-is part of the **group name**, so a stale plugin is rejected without being
-imported:
+A separate distribution announces itself with an entry point in the
+`d810.backends` group. The group name carries **no version** -- versioning it
+would churn the group on every protocol bump and force every extension author
+to notice. The version belongs to the extension, declared in its **manifest**:
 
 ```toml
 # pyproject.toml of some d810-backend-mything distribution
-[project.entry-points."d810.backends.v1"]
-mything = "d810_backend_mything:api"
+[project.entry-points."d810.backends"]
+mything = "d810_backend_mything:MANIFEST"
 ```
+
+```python
+# d810_backend_mything/__init__.py
+MANIFEST = {
+    "name": "mything",
+    "api_version": 1,
+    "provides": "d810_backend_mything.heavy:api",   # resolved LAZILY
+}
+```
+
+The entry point resolves to the *manifest*, not the backend, and the manifest
+must be cheap to import. `provides` is resolved only after the version check
+passes, so **a rejected plugin never imports its heavy half** -- no native
+extension, no z3, nothing. The module named by `provides` may import d810
+freely; it runs long after d810 has finished loading.
+
+`BackendManifest` is importable from `d810.core.plugins` if you want a typed
+declaration; a plain dict works identically.
 
 Discovery is lazy (an `entry_points()` scan measures ~31 ms cold) and failure
 is contained: a plugin that explodes on import is reported as `BROKEN` and
 degrades only itself.
+
+**A stale plugin will not disable a working builtin.** Candidates are tried in
+order -- entry points first, builtin last -- and an unusable one falls through
+with the reason recorded:
+
+```console
+cobra  available     builtin
+       !! rejected d810-backend-cobra 0.1: built for plugin API v99; this d810 speaks v1
+```
+
+That still exits 1, so degrading to a fallback cannot pass silently in CI.
 
 In-tree backends are a **static table**, not entry points, because d810 is
 deployed as a symlink into a source checkout while `pip` metadata for `d810-ng`
 may separately exist at a *different version* -- trusting entry points for
 builtins would let the backend list describe one version while another
 executes.
+
+One caveat for extension authors: the reloader will not evict your module (its
+name is not `d810.*`), so **do not cache d810 objects at module scope** -- they
+go stale across a hot reload. Resolve them inside functions.
 
 ## Future Backends
 
