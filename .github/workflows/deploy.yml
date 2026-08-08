@@ -85,15 +85,73 @@ jobs:
                 sdk-dir: .ida-sdk
                 ref: 7f8fd3100142295bffa5eabb2ce6f5b5ac163c6b
 
+            # CoBRA static libs for the MBA solver binding (mba-solve).
+            # Pinned to a RELEASE, not a CI artifact: artifacts expire at 90
+            # days, and an expired one would not fail the build -- it would
+            # silently produce wheels with no binding, which looks like
+            # success and simplifies nothing at runtime.
+            - name: Fetch CoBRA static libs
+              id: cobra
+              continue-on-error: true
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  case "${{ matrix.os }}" in
+                    ubuntu*|linux*)   ASSET=cobra-core-linux-x86_64.zip ;;
+                    windows*)         ASSET=cobra-core-windows-x86_64.zip ;;
+                    macos-13|macos-15-intel|*intel*) ASSET=cobra-core-macos-x86_64.zip ;;
+                    macos*)           ASSET=cobra-core-macos-arm64.zip ;;
+                    *) echo "no CoBRA asset mapped for ${{ matrix.os }}"; exit 1 ;;
+                  esac
+                  DEST="${GITHUB_WORKSPACE}/.cobra"
+                  mkdir -p "$DEST"
+                  URL="https://github.com/w00tzenheimer/CoBRA/releases/download/${COBRA_RELEASE}/${ASSET}"
+                  echo "fetching $URL"
+                  curl -fsSL -o /tmp/cobra.zip "$URL"
+                  python -c "import zipfile,sys; zipfile.ZipFile('/tmp/cobra.zip').extractall(sys.argv[1])" "$DEST"
+                  # The bundle is flat (lib/, include/); setup.py accepts that
+                  # layout directly, so there is nothing to reshape here.
+                  ls -1 "$DEST/lib" | head -5
+                  echo "root=$DEST" >> "$GITHUB_OUTPUT"
+              env:
+                  COBRA_RELEASE: d810-static-libs-v1
+
             - name: Build wheels
               uses: pypa/cibuildwheel@v3.1
               env:
                   CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-*"
                   # IDA SDK is 64-bit only — skip 32-bit wheels
                   CIBW_SKIP: "*-win32 *-musllinux_*"
-                  # Enable optional Cython speedups during wheel build
-                  CIBW_ENVIRONMENT: "D810_BUILD_SPEEDUPS=1"
+                  # Enable optional Cython speedups during wheel build.
+                  # D810_BUILD_COBRA is set only when the static libs were
+                  # fetched: the binding is OPTIONAL, and a wheel that fails to
+                  # import is far worse than one where mba-solve is inert.
+                  CIBW_ENVIRONMENT: >-
+                      D810_BUILD_SPEEDUPS=1
+                      D810_BUILD_COBRA=${{ steps.cobra.outcome == 'success' && '1' || '0' }}
+                      COBRA_ROOT=/project/.cobra
+                  CIBW_ENVIRONMENT_WINDOWS: >-
+                      D810_BUILD_SPEEDUPS=1
+                      D810_BUILD_COBRA=${{ steps.cobra.outcome == 'success' && '1' || '0' }}
+                      COBRA_ROOT=$GITHUB_WORKSPACE\\.cobra
+                  CIBW_ENVIRONMENT_MACOS: >-
+                      D810_BUILD_SPEEDUPS=1
+                      D810_BUILD_COBRA=${{ steps.cobra.outcome == 'success' && '1' || '0' }}
+                      COBRA_ROOT=$GITHUB_WORKSPACE/.cobra
                   CIBW_BEFORE_BUILD: "pip install Cython>=3.0.0"
+                  # A wheel whose binding silently failed to build is the exact
+                  # failure mode that looks like success -- IDA decompiles
+                  # normally and mba-solve does nothing. Fail the build here
+                  # instead of shipping it.
+                  CIBW_TEST_COMMAND: >-
+                      python -c "from d810.backends.cobra.solve import binding_available;
+                      import os, sys;
+                      want = os.environ.get('D810_EXPECT_COBRA') == '1';
+                      got = binding_available();
+                      print('cobra binding:', got);
+                      sys.exit(0 if got or not want else 1)"
+                  CIBW_TEST_ENVIRONMENT: >-
+                      D810_EXPECT_COBRA=${{ steps.cobra.outcome == 'success' && '1' || '0' }}
               with:
                   package-dir: .
                   output-dir: wheelhouse
