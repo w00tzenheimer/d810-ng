@@ -18,10 +18,12 @@ from d810.core.plugins import (
     BackendRegistry,
     BackendSpec,
     BackendStatus,
+    BackendManifest,
     BackendUnavailable,
-    entry_point_group,
+    ENTRY_POINT_GROUP,
     format_report,
     has_defects,
+    manifest_of,
 )
 
 
@@ -41,9 +43,13 @@ class Recorder:
 
 
 def spec(name, load, *, api_version=PLUGIN_API_VERSION, origin="test"):
-    return BackendSpec(
-        name=name, load=load, api_version=api_version, origin=origin
-    )
+    """A discovered backend whose manifest is already resolvable.
+
+    ``provides`` accepts a callable as well as an import string so tests can
+    hand over a Recorder without going through the import machinery.
+    """
+    manifest = BackendManifest(name=name, api_version=api_version, provides=load)
+    return BackendSpec(name=name, origin=origin, load_manifest=lambda: manifest)
 
 
 def registry(specs=(), builtins=()):
@@ -52,11 +58,12 @@ def registry(specs=(), builtins=()):
 
 
 class TestGroupNaming(unittest.TestCase):
-    def test_group_encodes_api_version(self):
-        # Version lives in the GROUP so an incompatible plugin can be rejected
-        # without importing it -- importing to read a version defeats the point.
-        self.assertEqual(entry_point_group(), f"d810.backends.v{PLUGIN_API_VERSION}")
-        self.assertEqual(entry_point_group(3), "d810.backends.v3")
+    def test_group_carries_no_version(self):
+        # The group name is stable forever; the version is declared by the
+        # extension's manifest. Encoding it here would churn the group on every
+        # protocol bump and force every extension author to notice.
+        self.assertEqual(ENTRY_POINT_GROUP, "d810.backends")
+        self.assertNotIn("v1", ENTRY_POINT_GROUP)
 
 
 class TestDiscovery(unittest.TestCase):
@@ -176,12 +183,20 @@ class TestFailureClassification(unittest.TestCase):
 
 
 class TestVersionGate(unittest.TestCase):
-    def test_incompatible_version_is_reported_and_never_imported(self):
+    """The version is declared by the extension's manifest, not the group name.
+
+    The manifest is contractually cheap to import, so reading it costs a
+    dataclass literal -- and the heavy half (native extension, z3, ...) is
+    never touched for a plugin we are about to reject.
+    """
+
+    def test_incompatible_version_rejected_without_resolving_the_backend(self):
         load = Recorder()
         reg = registry([spec("old", load, api_version=PLUGIN_API_VERSION - 1)])
-        info = reg.info("old")
+        info = reg.probe("old")
         self.assertEqual(info.status, BackendStatus.INCOMPATIBLE)
-        self.assertEqual(load.calls, 0, "must reject without importing")
+        self.assertEqual(load.calls, 0, "heavy half must never be resolved")
+        self.assertIn(str(PLUGIN_API_VERSION), info.reason)
         # Reported, not silently dropped: a user with a stale plugin installed
         # needs to be told, not left wondering why nothing happens.
         self.assertIn("old", {i.name for i in reg.report()})
@@ -191,6 +206,69 @@ class TestVersionGate(unittest.TestCase):
         self.assertIsNone(reg.optional("old"))
         with self.assertRaises(BackendUnavailable):
             reg.load("old")
+
+    def test_version_is_unknown_until_probed(self):
+        reg = registry([spec("acme", Recorder())])
+        self.assertIsNone(reg.info("acme").api_version)
+        self.assertEqual(reg.probe("acme").api_version, PLUGIN_API_VERSION)
+
+
+class TestManifest(unittest.TestCase):
+    """A manifest may be declared with or without importing d810.
+
+    ``BackendManifest`` gives a typed declaration; a plain mapping or any
+    object with the three fields works identically, so an extension that wants
+    no import-time dependency on d810 can have one. Both are supported because
+    supporting both costs one coercion function.
+    """
+
+    def test_plain_dict_is_a_valid_manifest(self):
+        got = manifest_of({"name": "acme", "api_version": 1, "provides": "pkg:obj"})
+        self.assertEqual((got.name, got.api_version, got.provides),
+                         ("acme", 1, "pkg:obj"))
+
+    def test_any_object_with_the_fields_is_a_valid_manifest(self):
+        class Declared:
+            name = "acme"
+            api_version = 1
+            provides = "pkg:obj"
+
+        self.assertEqual(manifest_of(Declared).api_version, 1)
+
+    def test_manifest_missing_api_version_is_broken_with_a_clear_reason(self):
+        bad = BackendSpec(
+            name="acme",
+            origin="test",
+            load_manifest=lambda: {"name": "acme", "provides": "pkg:obj"},
+        )
+        info = BackendRegistry(source=lambda: [bad]).probe("acme")
+        self.assertEqual(info.status, BackendStatus.BROKEN)
+        self.assertIn("api_version", info.reason)
+
+    def test_manifest_that_fails_to_import_is_unavailable(self):
+        bad = BackendSpec(
+            name="acme",
+            origin="test",
+            load_manifest=Recorder(raises=ImportError("no d810_backend_acme")),
+        )
+        info = BackendRegistry(source=lambda: [bad]).probe("acme")
+        self.assertEqual(info.status, BackendStatus.UNAVAILABLE)
+        self.assertIn("d810_backend_acme", info.reason)
+
+    def test_manifest_is_not_imported_during_discovery(self):
+        load_manifest = Recorder(
+            result=BackendManifest("acme", PLUGIN_API_VERSION, lambda: object())
+        )
+        reg = BackendRegistry(
+            source=lambda: [
+                BackendSpec(name="acme", origin="test", load_manifest=load_manifest)
+            ]
+        )
+        self.assertEqual(reg.names(), ["acme"])
+        reg.report()
+        self.assertEqual(load_manifest.calls, 0, "discovery and report stay free")
+        reg.probe("acme")
+        self.assertEqual(load_manifest.calls, 1)
 
 
 class TestBackendProbeHook(unittest.TestCase):
@@ -269,6 +347,65 @@ class TestShadowing(unittest.TestCase):
     def test_no_conflict_means_no_shadowed_entry(self):
         reg = registry([spec("acme", Recorder())])
         self.assertEqual(reg.info("acme").shadowed, ())
+
+    def test_unusable_entry_point_falls_back_to_the_builtin(self):
+        """A stale third-party plugin must not disable a working builtin.
+
+        Found by installing a real dist declaring api_version 99: it won the
+        name, failed the version gate, and took cobra down with it.
+        """
+        in_tree = Recorder()
+        reg = registry(
+            specs=[spec("cobra", Recorder(), api_version=99, origin="ext 0.1")],
+            builtins=[spec("cobra", in_tree, origin="builtin")],
+        )
+        self.assertIs(reg.load("cobra"), in_tree.result)
+
+        info = reg.info("cobra")
+        self.assertEqual(info.status, BackendStatus.AVAILABLE)
+        self.assertEqual(info.origin, "builtin")
+
+    def test_falling_back_still_surfaces_the_rejected_candidate(self):
+        # Degrading silently would be the same class of bug as the wheel that
+        # installs cleanly and simplifies nothing.
+        reg = registry(
+            specs=[spec("cobra", Recorder(), api_version=99, origin="ext 0.1")],
+            builtins=[spec("cobra", Recorder(), origin="builtin")],
+        )
+        info = reg.probe("cobra")
+        self.assertEqual([origin for origin, _ in info.rejected], ["ext 0.1"])
+        self.assertIn("v99", info.rejected[0][1])
+        self.assertTrue(has_defects([info]), "a rejected candidate is a defect")
+
+    def test_fallback_does_not_report_itself_as_shadowed(self):
+        # "available  builtin (shadows builtin)" -- shadowed must be relative to
+        # whichever candidate actually settled, not a fixed offset.
+        reg = registry(
+            specs=[spec("cobra", Recorder(), api_version=99, origin="ext 0.1")],
+            builtins=[spec("cobra", Recorder(), origin="builtin")],
+        )
+        info = reg.probe("cobra")
+        self.assertEqual(info.origin, "builtin")
+        self.assertEqual(info.shadowed, (), "nothing remains below the builtin")
+
+    def test_a_healthy_backend_has_no_rejected_candidates(self):
+        reg = registry([spec("acme", Recorder())])
+        info = reg.probe("acme")
+        self.assertEqual(info.rejected, ())
+        self.assertFalse(has_defects([info]))
+
+    def test_all_candidates_unusable_reports_the_last_failure_and_lists_the_rest(self):
+        reg = registry(
+            specs=[spec("cobra", Recorder(), api_version=99, origin="ext 0.1")],
+            builtins=[
+                spec("cobra", Recorder(raises=ImportError("no _cobra")),
+                     origin="builtin")
+            ],
+        )
+        info = reg.probe("cobra")
+        self.assertEqual(info.status, BackendStatus.UNAVAILABLE)
+        self.assertIn("_cobra", info.reason)
+        self.assertEqual([o for o, _ in info.rejected], ["ext 0.1"])
 
 
 class TestReport(unittest.TestCase):
@@ -353,6 +490,22 @@ class TestFormatReport(unittest.TestCase):
 
     def test_empty_report_is_not_a_crash(self):
         self.assertIsInstance(format_report([]), str)
+
+    def test_report_explains_a_fallback(self):
+        # has_defects() makes the CLI exit 1 here, so the text must say why.
+        text = format_report(
+            [
+                BackendInfo(
+                    name="cobra",
+                    status=BackendStatus.AVAILABLE,
+                    origin="builtin",
+                    api_version=PLUGIN_API_VERSION,
+                    rejected=(("d810-backend-cobra 0.1", "built for API v99"),),
+                )
+            ]
+        )
+        for fragment in ("d810-backend-cobra 0.1", "v99", "rejected"):
+            self.assertIn(fragment, text)
 
 
 class TestBuiltinCobraBackend(unittest.TestCase):
