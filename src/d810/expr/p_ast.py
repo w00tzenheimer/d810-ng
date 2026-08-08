@@ -865,6 +865,13 @@ class AstLeaf(AstBase):
             new_leaf.expected_value = self.expected_value
         if hasattr(self, "expected_size"):
             new_leaf.expected_size = self.expected_size
+        # Propagate the "initial" snapshot so the clone's reset_mops() also
+        # restores correctly. Without this, cloned candidates lose their
+        # initial state and reset becomes a no-op.
+        if hasattr(self, "_initial_expected_value"):
+            new_leaf._initial_expected_value = self._initial_expected_value
+        if hasattr(self, "_initial_expected_size"):
+            new_leaf._initial_expected_size = self._initial_expected_size
 
         # Initialize transient state
         new_leaf.z3_var = None
@@ -1001,6 +1008,11 @@ class AstLeaf(AstBase):
         self.z3_var = None
         self.z3_var_name = NOT_GIVEN
         self.mop = None
+        # Clear dynamic .value set by update_leafs_mop (line ~986). Without this,
+        # a Const placeholder whose first match bound it to e.g. 8 keeps that
+        # value for every subsequent match and silently rejects other constants.
+        if "value" in self.__dict__:
+            del self.__dict__["value"]
 
     def _copy_mops_from_ast(self, other, read_only: bool = False):
         if other.mop is None:
@@ -1096,6 +1108,17 @@ class AstConstant(AstLeaf):
         super().__init__(name)
         self.expected_value = expected_value
         self.expected_size = expected_size
+        # Remember constructor-provided values so reset_mops() can restore them
+        # after a successful match. _copy_mops_from_ast mutates expected_value
+        # for free Const placeholders (line ~1138); without restoring on reset,
+        # the pattern stays bound to the first match's literal forever.
+        self._initial_expected_value = expected_value
+        self._initial_expected_size = expected_size
+
+    def reset_mops(self):
+        super().reset_mops()
+        self.expected_value = self._initial_expected_value
+        self.expected_size = self._initial_expected_size
 
     @property
     def value(self):
