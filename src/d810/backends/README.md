@@ -153,9 +153,21 @@ To find out *why* something is unusable:
 ```console
 $ python tools/d810cli.py backends
 d810: /path/to/checkout/src/d810/__init__.py
-cobra  unavailable   builtin
-       -> native _cobra extension not built (rebuild with D810_BUILD_COBRA=1, ...)
+ast.z3             unavailable   builtin
+                   -> No module named 'ida_hexrays'
+cobra              available     builtin
+emulation.triton   available     builtin
+emulation.unicorn  available     builtin
+llvm               available     builtin
+mba.egglog         unavailable   builtin
+                   -> No module named 'ida_hexrays'
+mba.z3             available     builtin
 ```
+
+Backends are named `<domain>.<vendor>`, mirroring the module layout -- which
+also makes the two-Z3 distinction warned about above visible here rather than
+buried in a docstring. `facts` and `hexrays` are deliberately not registered:
+they are the IDA vendor spine, not optional backends.
 
 Exit code 0 means every backend is usable or expectedly absent; 1 means a
 backend is `BROKEN` (raised on import) or `INCOMPATIBLE` (built against a
@@ -223,12 +235,21 @@ def my_function(expr): ...
 Then add it to `BUILTIN_BACKENDS` in `d810/backends/__init__.py`.
 
 **Why the probe hook and not just a module flag.** Importing successfully is
-not evidence a backend works: `d810.backends.cobra.solve` imports fine whether
-or not its compiled `_cobra` extension exists. A flag also collapses two
-different events -- "optional dependency absent" (normal) and "this plugin is
-buggy" (someone must fix it) -- so a backend raising `AttributeError` on import
-gets silently filed as "not installed". The registry keeps them apart as
-`UNAVAILABLE` vs `BROKEN`.
+not evidence a backend works. Every backend here imports cleanly whether or not
+its dependency is present -- `mba.z3` sets `Z3_INSTALLED = False` and carries
+on, `emulation.triton` sets `TRITON_AVAILABLE = False`, `cobra.solve` works
+with or without its compiled `_cobra` extension. Without a hook the registry
+would report all of them `available`.
+
+A flag also collapses two different events -- "optional dependency absent"
+(normal) and "this plugin is buggy" (someone must fix it) -- so a backend
+raising `AttributeError` on import gets silently filed as "not installed". The
+registry keeps them apart as `UNAVAILABLE` vs `BROKEN`, and only the latter
+exits non-zero.
+
+The legacy flags (`Z3_INSTALLED`, `TRITON_AVAILABLE`, `UNICORN_AVAILABLE`,
+`EGGLOG_AVAILABLE`) are unchanged and remain authoritative; the hooks read
+them. Existing code keeps working.
 
 ### Out-of-tree backends
 

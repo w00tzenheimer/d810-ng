@@ -508,6 +508,91 @@ class TestFormatReport(unittest.TestCase):
             self.assertIn(fragment, text)
 
 
+class TestBuiltinBackends(unittest.TestCase):
+    """Every in-tree backend registers, so the protocol cannot rot.
+
+    One registered backend would exercise one code path; these keep the whole
+    thing honest and turn six hand-rolled ``X_AVAILABLE`` flags into one
+    reportable surface.
+    """
+
+    EXPECTED = {
+        "cobra",
+        "mba.z3",
+        "mba.egglog",
+        "emulation.triton",
+        "emulation.unicorn",
+        "ast.z3",
+        "llvm",
+    }
+
+    def make(self):
+        from d810.backends import BUILTIN_BACKENDS
+
+        return BackendRegistry(builtins=BUILTIN_BACKENDS, source=lambda: [])
+
+    def test_expected_backends_are_registered(self):
+        self.assertEqual(set(self.make().names()), self.EXPECTED)
+
+    def test_no_builtin_is_broken(self):
+        """BROKEN means a defect, and flips `d810cli backends` to exit 1.
+
+        An absent optional dependency must classify as UNAVAILABLE; anything
+        reaching BROKEN here is an in-tree bug, not a deployment fact.
+        """
+        broken = [
+            (info.name, info.reason)
+            for info in self.make().probe_all()
+            if info.status is BackendStatus.BROKEN
+        ]
+        self.assertEqual(broken, [])
+
+    def test_every_builtin_settles_with_a_reason_when_unusable(self):
+        for info in self.make().probe_all():
+            with self.subTest(backend=info.name):
+                self.assertNotEqual(info.status, BackendStatus.NOT_LOADED)
+                if info.status is BackendStatus.UNAVAILABLE:
+                    self.assertTrue(info.reason, "UNAVAILABLE needs a reason")
+
+    def test_probe_hooks_agree_with_the_legacy_flags(self):
+        """Backwards compatible: the old flags stay and remain authoritative.
+
+        Only backends importable outside IDA are checked here; ``ast.z3`` and
+        ``mba.egglog`` need ``ida_hexrays`` to import at all.
+        """
+        import importlib
+
+        cases = [
+            ("d810.backends.mba.z3", "Z3_INSTALLED"),
+            ("d810.backends.emulation.triton", "TRITON_AVAILABLE"),
+            ("d810.backends.emulation.unicorn", "UNICORN_AVAILABLE"),
+        ]
+        for target, flag in cases:
+            module = importlib.import_module(target)
+            with self.subTest(backend=target):
+                self.assertTrue(
+                    callable(getattr(module, "d810_backend_probe", None)),
+                    f"{target} must expose the protocol hook",
+                )
+                usable = module.d810_backend_probe() is None
+                self.assertIs(usable, getattr(module, flag))
+
+    def test_unavailable_dependency_is_named_in_the_reason(self):
+        """"unavailable" with no dependency name is useless to a user."""
+        import importlib
+
+        for target, dep in [
+            ("d810.backends.emulation.triton", "triton"),
+            ("d810.backends.emulation.unicorn", "unicorn"),
+            ("d810.backends.mba.z3", "z3"),
+        ]:
+            module = importlib.import_module(target)
+            reason = module.d810_backend_probe()
+            if reason is not None:
+                with self.subTest(backend=target):
+                    self.assertIn(dep, reason.lower())
+
+
 class TestBuiltinCobraBackend(unittest.TestCase):
     """The protocol against a real backend, not a fake.
 

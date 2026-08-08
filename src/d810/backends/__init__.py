@@ -45,8 +45,22 @@ __all__ = ["BUILTIN_BACKENDS", "registry"]
 #: Targets are strings, resolved on first use, so listing a backend here costs
 #: nothing until someone asks for it -- and importing this package never drags
 #: in z3, IDA, or a native extension.
+#: Named ``<domain>.<vendor>`` to mirror the module layout -- which also makes
+#: the two-Z3 distinction warned about above visible in the report rather than
+#: buried in a docstring.
+#:
+#: ``facts`` and ``hexrays`` are deliberately absent: they are the IDA vendor
+#: spine, not optional backends. A registry row saying "unavailable: no
+#: ida_hexrays" outside IDA would be a tautology, and inside IDA they are never
+#: not there.
 BUILTIN_BACKENDS: tuple[BackendSpec, ...] = (
     builtin("cobra", "d810.backends.cobra.solve"),
+    builtin("mba.z3", "d810.backends.mba.z3"),
+    builtin("mba.egglog", "d810.backends.mba.egglog_backend"),
+    builtin("ast.z3", "d810.backends.ast.z3"),
+    builtin("emulation.triton", "d810.backends.emulation.triton"),
+    builtin("emulation.unicorn", "d810.backends.emulation.unicorn"),
+    builtin("llvm", "d810.backends.llvm"),
 )
 
 

@@ -477,3 +477,13 @@ class UnicornEmulator:
                 self._uc.mem_map(start, end - start)
             except Exception:
                 pass
+
+
+def d810_backend_probe() -> str | None:
+    """Backend plugin protocol hook: ``None`` if usable, else why not.
+
+    This module imports cleanly whether or not unicorn is installed -- it only
+    sets UNICORN_AVAILABLE -- so import success is not evidence the backend works.
+    UNICORN_AVAILABLE stays authoritative; this just exposes it uniformly.
+    """
+    return None if UNICORN_AVAILABLE else ("unicorn not installed; concrete emulation disabled")
