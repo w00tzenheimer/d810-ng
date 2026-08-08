@@ -886,3 +886,13 @@ class Z3MopProver:
         self._neq_cache.clear()
         self._always_zero_cache.clear()
         self._always_nonzero_cache.clear()
+
+
+def d810_backend_probe() -> str | None:
+    """Backend plugin protocol hook: ``None`` if usable, else why not.
+
+    This module imports cleanly whether or not z3 is installed -- it only
+    sets Z3_INSTALLED -- so import success is not evidence the backend works.
+    Z3_INSTALLED stays authoritative; this just exposes it uniformly.
+    """
+    return None if Z3_INSTALLED else ("z3 not installed or failed to import (pip install z3-solver)")

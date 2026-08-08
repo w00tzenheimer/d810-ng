@@ -934,3 +934,13 @@ def symbolic_to_pattern_expr(expr) -> "PatternExpr":
     if op == "bnot":
         return ~left
     raise ValueError(f"Unsupported operation for egglog pattern gen: {op}")
+
+
+def d810_backend_probe() -> str | None:
+    """Backend plugin protocol hook: ``None`` if usable, else why not.
+
+    This module imports cleanly whether or not egglog is installed -- it only
+    sets EGGLOG_AVAILABLE -- so import success is not evidence the backend works.
+    EGGLOG_AVAILABLE stays authoritative; this just exposes it uniformly.
+    """
+    return None if EGGLOG_AVAILABLE else ("egglog not installed; e-graph simplification disabled")

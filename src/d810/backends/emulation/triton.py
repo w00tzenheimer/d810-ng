@@ -132,3 +132,13 @@ class TritonEmulator:
             }
             return arch_map.get(arch.lower(), Architecture.X86_64)
         return Architecture.X86_64
+
+
+def d810_backend_probe() -> str | None:
+    """Backend plugin protocol hook: ``None`` if usable, else why not.
+
+    This module imports cleanly whether or not triton is installed -- it only
+    sets TRITON_AVAILABLE -- so import success is not evidence the backend works.
+    TRITON_AVAILABLE stays authoritative; this just exposes it uniformly.
+    """
+    return None if TRITON_AVAILABLE else ("triton not installed; concrete emulation disabled")
