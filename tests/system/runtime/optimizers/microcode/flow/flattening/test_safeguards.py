@@ -33,6 +33,6 @@ class TestEdgeCountSafeguard(unittest.TestCase):
         assert should_apply_bulk_cfg_modifications(50, 50)
 
     def test_context_logged(self):
-        with self.assertLogs("D810.unflat.safeguard") as cm:
+        with self.assertLogs("d810.unflat.safeguard") as cm:
             should_apply_bulk_cfg_modifications(1, 10, context="hodur")
         self.assertIn("SAFEGUARD [hodur]", cm.output[0])
