@@ -313,3 +313,67 @@ class TestConcurrency(unittest.TestCase):
         for t in trees:
             table.record_pending(t, 32)
             self.assertEqual(table.lookup(t, 32).outcome, Outcome.PROVED)
+
+
+class TestBoundedAndEvicting(unittest.TestCase):
+    """The table must not grow without limit, and eviction must not lose data.
+
+    The original implementation was an unbounded dict: on a large binary that
+    is unbounded memory. A single function banked 207 entries, so the cap has
+    to be sized against real traffic, not CacheImpl's 256 default.
+
+    FLUSH-BEFORE-EVICT, not load-on-miss. A miss is the thing the table exists
+    to avoid: an evicted NO_REWRITE would return None, the rule would re-solve
+    it (~84ms measured), and only then discover the disk already knew. Writing
+    on the way out keeps the durable store authoritative without ever paying a
+    solve to find out.
+    """
+
+    def test_respects_max_size(self):
+        table = RewriteTable(max_size=8)
+        for i in range(40):
+            table.record_no_rewrite(B("+", V("a"), C(i)), 32)
+        self.assertLessEqual(table.size, 8)
+
+    def test_evicted_entries_are_handed_to_the_sink(self):
+        evicted = []
+        table = RewriteTable(max_size=4, on_evict=lambda k, e: evicted.append((k, e)))
+        for i in range(20):
+            table.record_no_rewrite(B("+", V("a"), C(i)), 32)
+        self.assertTrue(evicted, "eviction must notify, or entries are lost")
+        key, entry = evicted[0]
+        self.assertEqual(entry.outcome, Outcome.NO_REWRITE)
+
+    def test_a_proved_rewrite_survives_eviction_via_the_sink(self):
+        evicted = []
+        table = RewriteTable(max_size=2, on_evict=lambda k, e: evicted.append((k, e)))
+        tree = B("+", B("&", V("a"), V("b")), B("|", V("a"), V("b")))
+        table.record_proved(tree, 32, B("+", V("a"), V("b")))
+        for i in range(10):
+            table.record_no_rewrite(B("^", V("a"), C(i)), 32)
+        proved = [e for _, e in evicted if e.outcome == Outcome.PROVED]
+        self.assertTrue(proved, "a proved rewrite was dropped without notice")
+        self.assertIsNotNone(proved[0].rewrite)
+
+    def test_stats_still_account_for_every_outcome(self):
+        """CacheImpl.Stats has only hits/misses; the three-way outcome
+        accounting must stay in RewriteTable or negatives get folded away."""
+        table = RewriteTable(max_size=64)
+        t = B("+", V("a"), V("b"))
+        table.record_proved(t, 32, V("a"))
+        table.record_no_rewrite(B("^", V("a"), V("b")), 32)
+        table.record_pending(B("*", V("a"), V("b")), 32)
+        table.lookup(t, 32)
+        table.lookup(B("^", V("a"), V("b")), 32)
+        table.lookup(B("*", V("a"), V("b")), 32)
+        table.lookup(B("-", V("a"), V("b")), 32)
+        s = table.stats
+        self.assertEqual(s.lookups, 4)
+        self.assertEqual(s.hits + s.negative_hits + s.pending_hits + s.misses, 4)
+
+    def test_default_cap_is_sized_for_real_traffic(self):
+        """A single function banked 207 entries; CacheImpl's 256 default would
+        evict constantly across a whole binary."""
+        from d810.backends.cobra.table import DEFAULT_MAX_ENTRIES
+
+        self.assertGreaterEqual(DEFAULT_MAX_ENTRIES, 4096)

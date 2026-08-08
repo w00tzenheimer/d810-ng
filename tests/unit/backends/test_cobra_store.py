@@ -159,3 +159,68 @@ class TestRoundTrip(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSingleEntryWrite(unittest.TestCase):
+    """Eviction needs a one-entry write; flush() rewrites the whole table.
+
+    This is the durable half of flush-before-evict: an entry pushed out of the
+    bounded in-memory table must land on disk immediately, or the rule will
+    re-solve it later at ~84ms and only then find the answer was already known.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.db = Path(self._tmp.name) / "proofs.db"
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_put_entry_persists_a_single_proved_rewrite(self):
+        from d810.backends.cobra.table import Entry, canonical_key
+
+        store = ProofCacheStore(self.db)
+        key = canonical_key(TREE, 32)
+        store.put_entry(key, Entry(Outcome.PROVED, {"kind": "var", "name": "@0"}))
+        store.close()
+
+        restored = ProofCacheStore(self.db).load()
+        entry = restored.lookup(TREE, 32)
+        self.assertIsNotNone(entry)
+        self.assertEqual(entry.outcome, Outcome.PROVED)
+
+    def test_put_entry_persists_a_negative(self):
+        from d810.backends.cobra.table import Entry, canonical_key
+
+        store = ProofCacheStore(self.db)
+        store.put_entry(canonical_key(DEAD, 32), Entry(Outcome.NO_REWRITE))
+        store.close()
+        self.assertEqual(
+            ProofCacheStore(self.db).load().lookup(DEAD, 32).outcome,
+            Outcome.NO_REWRITE,
+        )
+
+    def test_put_entry_refuses_pending(self):
+        """PENDING is in-flight state; evicting it must not persist it."""
+        from d810.backends.cobra.table import Entry, canonical_key
+
+        store = ProofCacheStore(self.db)
+        store.put_entry(canonical_key(TREE, 32), Entry(Outcome.PENDING))
+        store.close()
+        self.assertIsNone(ProofCacheStore(self.db).load().lookup(TREE, 32))
+
+    def test_eviction_from_a_bounded_table_reaches_disk(self):
+        """End-to-end: the wiring, not just the pieces."""
+        from d810.backends.cobra.table import RewriteTable
+
+        store = ProofCacheStore(self.db)
+        table = RewriteTable(max_size=2, on_evict=store.put_entry)
+        table.record_proved(TREE, 32, B("+", V("a"), V("b")))
+        for i in range(12):
+            table.record_no_rewrite(B("^", V("a"), C(i)), 32)
+        store.close()
+
+        restored = ProofCacheStore(self.db).load()
+        entry = restored.lookup(TREE, 32)
+        self.assertIsNotNone(entry, "the proved rewrite was evicted and lost")
+        self.assertEqual(entry.outcome, Outcome.PROVED)

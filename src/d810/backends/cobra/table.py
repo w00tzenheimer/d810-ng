@@ -35,7 +35,13 @@ import dataclasses
 import enum
 import threading
 
-from d810.core.typing import Any, Mapping
+from d810.core.cache import CacheImpl
+from d810.core.typing import Any, Callable, Mapping
+
+#: Cap on live entries. CacheImpl defaults to 256, which is far too small here:
+#: a SINGLE function (VM_DecryptPacket) banked 207 entries, so 256 would evict
+#: continuously across a whole binary and turn hits back into 84ms solves.
+DEFAULT_MAX_ENTRIES = 8192
 
 
 class Outcome(enum.Enum):
@@ -158,10 +164,53 @@ def _instantiate(tree: Mapping[str, Any], order: list[str]) -> dict:
 class RewriteTable:
     """In-memory rewrite cache with explicit negative and pending states."""
 
-    def __init__(self) -> None:
-        self._entries: dict[tuple, Entry] = {}
+    def __init__(
+        self,
+        *,
+        max_size: int = DEFAULT_MAX_ENTRIES,
+        on_evict: Callable[[tuple, Entry], None] | None = None,
+    ) -> None:
+        # Storage, locking and eviction come from d810's own CacheImpl rather
+        # than a hand-rolled dict. Two things that buys, both of which were
+        # real defects here: a BOUNDED size (this table previously grew without
+        # limit) and a removal_listener so eviction cannot silently drop work.
+        self._on_evict = on_evict
+        self._entries: CacheImpl = CacheImpl(
+            max_size=max_size,
+            removal_listener=self._on_removal,
+        )
         self._lock = threading.Lock()
         self.stats = TableStats()
+
+    def _on_removal(self, key, value) -> None:
+        """FLUSH-BEFORE-EVICT.
+
+        Deliberately not load-on-miss: a miss is the very thing this table
+        exists to prevent. An evicted NO_REWRITE would return None, the rule
+        would re-solve it (~84ms measured) and only then discover the durable
+        store already held the answer. Writing on the way out keeps disk
+        authoritative without ever paying a solve to find out.
+        """
+        if self._on_evict is None or value is None:
+            return
+        try:
+            self._on_evict(key, value)
+        except Exception:  # noqa: BLE001 - eviction must never break a lookup
+            pass
+
+    def set_evict_sink(self, sink: Callable[[tuple, Entry], None] | None) -> None:
+        """Attach the durable store AFTER construction.
+
+        Not a constructor argument on purpose: the table is a candidate for
+        ``survives_reload``, whose shared-instance wrapper silently ignores
+        constructor args on every call after the first. A setter keeps the
+        wiring explicit and re-attachable.
+        """
+        self._on_evict = sink
+
+    @property
+    def size(self) -> int:
+        return len(self._entries)
 
     def lookup(self, tree: Mapping[str, Any], bitwidth: int) -> Entry | None:
         """Look a tree up, returning any rewrite bound to *this* tree's leaves.

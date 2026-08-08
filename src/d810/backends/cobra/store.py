@@ -29,7 +29,7 @@ import sqlite3
 import tempfile
 from pathlib import Path
 
-from d810.backends.cobra.table import Outcome, RewriteTable
+from d810.backends.cobra.table import Outcome, RewriteTable, _key_to_json
 from d810.core import getLogger
 
 logger = getLogger(__name__)
@@ -130,6 +130,40 @@ class ProofCacheStore:
         return RewriteTable.from_dict(
             {"version": SCHEMA_VERSION, "entries": entries}
         )
+
+    def put_entry(self, key: tuple, entry) -> None:
+        """Persist ONE entry. This is the eviction path.
+
+        ``flush`` rewrites the whole table, which is the wrong shape when a
+        single key is being pushed out of the bounded in-memory cache. Wire
+        this to ``RewriteTable(on_evict=...)`` so an evicted entry reaches disk
+        on its way out -- otherwise the rule re-solves it later (~84ms measured)
+        only to discover the answer was already known.
+
+        PENDING is refused: it is in-flight state, and persisting it would make
+        a killed session look like it had escalated work outstanding forever,
+        permanently suppressing that candidate.
+        """
+        outcome = getattr(entry.outcome, "value", None)
+        if outcome is None or outcome == Outcome.PENDING.value:
+            return
+        conn = self._connect()
+        if conn is None:
+            return
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO cobra_proofs "
+                "(key, schema_version, outcome, rewrite_json) VALUES (?, ?, ?, ?)",
+                (
+                    json.dumps(_key_to_json(key)),
+                    SCHEMA_VERSION,
+                    outcome,
+                    json.dumps(entry.rewrite) if entry.rewrite else None,
+                ),
+            )
+            conn.commit()
+        except sqlite3.Error as exc:
+            logger.debug("cobra proof cache single-entry write failed: %s", exc)
 
     def flush(self, table: RewriteTable) -> int:
         """Upsert every settled entry. Returns the number written.
