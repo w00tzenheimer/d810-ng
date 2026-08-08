@@ -95,8 +95,7 @@ jobs:
             - name: Build CoBRA static libs
               id: cobra
               continue-on-error: true
-              shell: bash
-              run: bash tools/scripts/build_cobra.sh
+              run: python tools/scripts/build_cobra.py
 
             - name: Build wheels
               uses: pypa/cibuildwheel@v3.1
