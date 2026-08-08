@@ -8,7 +8,7 @@ from d810.core import getLogger
 from d810.qt_shim import QHeaderView, QPalette, QtCore, QtWidgets, qt_flag_or
 from d810.ui.pass_tree_logic import PassTreeNodeKind, project_pass_tree
 
-logger = getLogger("D810.ui.pass_tree")
+logger = getLogger("d810.ui.pass_tree")
 
 # Plain ASCII markers rather than glyphs: the panel is hosted by IDA on
 # platforms whose fonts silently substitute for box and check characters.

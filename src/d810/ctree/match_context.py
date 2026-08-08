@@ -17,7 +17,7 @@ from d810.core import getLogger
 if typing.TYPE_CHECKING:
     from d810.ctree.patterns.base_pattern import BasePat
 
-logger = getLogger("D810.ctree")
+logger = getLogger("d810.ctree")
 
 
 class MatchContext:

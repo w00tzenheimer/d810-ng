@@ -31,8 +31,8 @@ from d810.hexrays.mutation.return_carrier_corruption import (
 from d810.hexrays.mutation.block_retention import synchronize_explicit_goto_flag
 from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 
-main_logger = getLogger("D810")
-optimizer_logger = getLogger("D810.optimizer")
+main_logger = getLogger("d810")
+optimizer_logger = getLogger("d810.optimizer")
 _RUN_LATER_DOMAIN_OPTIMIZER_RULE = "optimizer_rule"
 _PROJECT_CONFIG_KEYS = frozenset(
     {

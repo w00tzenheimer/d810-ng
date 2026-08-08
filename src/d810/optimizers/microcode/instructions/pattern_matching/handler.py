@@ -27,8 +27,8 @@ from d810.optimizers.microcode.instructions.pattern_matching.engine import (
     _USING_CYTHON as _ENGINE_CYTHON,
 )
 
-optimizer_logger = getLogger("D810.optimizer")
-pattern_search_logger = getLogger("D810.pattern_search")
+optimizer_logger = getLogger("d810.optimizer")
+pattern_search_logger = getLogger("d810.pattern_search")
 
 if typing.TYPE_CHECKING:
     from d810.core import OptimizationStatistics

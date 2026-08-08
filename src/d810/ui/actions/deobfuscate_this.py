@@ -16,7 +16,7 @@ from d810.capabilities.detached_handler_snippets import (
 )
 from d810.ui.actions.base import D810ActionHandler
 
-logger = getLogger("D810.ui")
+logger = getLogger("d810.ui")
 
 
 def _get_current_func_ea(ctx: typing.Any, idaapi_shim: typing.Any) -> int | None:

@@ -12,7 +12,7 @@ import idaapi
 
 from d810.core import getLogger
 
-logger = getLogger("D810.ctree")
+logger = getLogger("d810.ctree")
 
 # ---------------------------------------------------------------------------
 # IDA imports are optional so the module can be tested without IDA.

@@ -44,7 +44,7 @@ from d810.passes.preanalysis_runtime import PreanalysisRuntime
 from d810.passes.runtime import DecompilationAnalysisRuntime
 from d810.passes.store import PreanalysisStore
 
-logger = getLogger("D810.passes.factory")
+logger = getLogger("d810.passes.factory")
 
 DEFAULT_PREANALYSIS_COLLECTOR_FACTORIES = (
     CFGShapeCollector,

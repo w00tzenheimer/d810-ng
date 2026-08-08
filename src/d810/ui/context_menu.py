@@ -22,7 +22,7 @@ from d810.ui.action_loader import ActionLoader
 
 from d810.ui.actions.ida_handler import make_ida_handler
 
-logger = getLogger("D810.ui")
+logger = getLogger("d810.ui")
 
 # ---------------------------------------------------------------------------
 # IDA imports -- optional so unit tests can import without IDA present.

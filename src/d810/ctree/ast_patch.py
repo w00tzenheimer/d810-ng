@@ -18,7 +18,7 @@ from d810.core import getLogger
 from d810.ctree.ast_iteration import collect_gotos, collect_labels
 from d810.ctree.ast_context import ASTContext
 
-logger = getLogger("D810.ctree")
+logger = getLogger("d810.ctree")
 
 
 def _replace_instr(item: typing.Any, new_item: typing.Any) -> bool:

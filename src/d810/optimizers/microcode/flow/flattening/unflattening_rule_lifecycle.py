@@ -13,7 +13,7 @@ from d810.optimizers.microcode.flow.handler import (
     FlowRulePriority,
 )
 
-unflat_logger = getLogger("D810.unflat")
+unflat_logger = getLogger("d810.unflat")
 
 
 class ComposedUnflatteningRule(FlowOptimizationRule):

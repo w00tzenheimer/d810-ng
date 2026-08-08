@@ -19,7 +19,7 @@ from d810.ctree.match_context import MatchContext
 from d810.ctree.patterns.expressions import AsgPat, CallPat
 from d810.ctree.patterns.instructions import ExprInsPat
 
-logger = getLogger("D810.ctree")
+logger = getLogger("d810.ctree")
 
 
 class IntPat(BasePat):

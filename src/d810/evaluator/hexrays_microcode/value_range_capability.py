@@ -32,7 +32,7 @@ from d810.evaluator.hexrays_microcode.valrange_dataflow import (
 )
 from d810.analyses.data_flow.exceptions import FixpointDidNotConverge
 
-logger = logging.getLogger("D810.capability.value_range")
+logger = logging.getLogger("d810.capability.value_range")
 
 __all__ = ["HexRaysValRangeCapability"]
 

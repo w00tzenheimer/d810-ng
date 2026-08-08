@@ -47,7 +47,7 @@ from d810.core.config import ProjectConfiguration
 from d810.core.logging import getLogger
 
 
-logger = getLogger("D810.testing.runner")
+logger = getLogger("d810.testing.runner")
 
 
 def _resolve_test_project_index(state: Any, project_name: str) -> int:

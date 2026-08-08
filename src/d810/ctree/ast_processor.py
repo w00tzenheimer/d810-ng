@@ -17,7 +17,7 @@ from d810.ctree.ast_iteration import get_children
 from d810.ctree.ast_patch import ASTPatch
 from d810.ctree.ast_context import ASTContext
 
-logger = getLogger("D810.ctree")
+logger = getLogger("d810.ctree")
 
 
 def build_path(ast: typing.Any) -> list[tuple[typing.Any, int]]:

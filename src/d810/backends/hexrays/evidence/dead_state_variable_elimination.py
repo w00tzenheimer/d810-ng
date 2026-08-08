@@ -41,7 +41,7 @@ if TYPE_CHECKING:
         AnalysisSnapshot,
     )
 
-logger = logging.getLogger("D810.hodur.strategy.dead_state_var_elim")
+logger = logging.getLogger("d810.hodur.strategy.dead_state_var_elim")
 
 __all__ = ["DeadStateVariableEliminationStrategy"]
 

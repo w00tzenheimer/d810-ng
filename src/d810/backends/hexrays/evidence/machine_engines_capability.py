@@ -62,7 +62,7 @@ def _hex_or_none(x) -> str:
     return "None" if x is None else f"0x{int(x):x}"
 
 
-logger = getLogger("D810.backends.machine_engines_capability")
+logger = getLogger("d810.backends.machine_engines_capability")
 
 __all__ = ["HexRaysMachineRecoveryEnginesCapability"]
 

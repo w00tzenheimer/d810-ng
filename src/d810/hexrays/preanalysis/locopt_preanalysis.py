@@ -6,7 +6,7 @@ from collections.abc import Callable, MutableMapping
 
 from d810.core.logging import getLogger
 
-logger = getLogger("D810.hexrays.preanalysis.locopt")
+logger = getLogger("d810.hexrays.preanalysis.locopt")
 
 LocoptPreanalysisHandler = Callable[..., None]
 

@@ -18,7 +18,7 @@ from d810.ui.workbench_recipe_logic import (
     state_cff_minimum_constant_from_config_json,
 )
 
-logger = getLogger("D810.ui")
+logger = getLogger("d810.ui")
 
 try:
     import ida_kernwin

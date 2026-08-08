@@ -28,7 +28,7 @@ from d810.hexrays.utils.hexrays_helpers import dup_mop
 if TYPE_CHECKING:
     from d810.evaluator.hexrays_microcode.tracker import MopHistory
 
-logger = getLogger("D810.computed_state_transition")
+logger = getLogger("d810.computed_state_transition")
 
 
 @dataclass

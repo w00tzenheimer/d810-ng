@@ -30,7 +30,7 @@ if TYPE_CHECKING:
     from d810.ir.flowgraph import FlowGraph
 
 
-logger = getLogger("D810.flow.context")
+logger = getLogger("d810.flow.context")
 
 
 def _flowgraph_from_live_mba(

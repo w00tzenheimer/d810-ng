@@ -107,7 +107,7 @@ from d810.analyses.control_flow.safeguards import (
 )
 from d810.analyses.control_flow.terminal_return_audit import build_terminal_return_audit
 
-executor_logger = logging.getLogger("D810.unflat.hodur.executor")
+executor_logger = logging.getLogger("d810.unflat.hodur.executor")
 
 # ---------- MBA-to-BlockSnapshot helper (shared, IDA-dependent) ----------
 # Phase 5 of the observability-boundary plan will move the serializer

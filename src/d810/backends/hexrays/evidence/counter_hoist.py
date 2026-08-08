@@ -48,7 +48,7 @@ if TYPE_CHECKING:
         AnalysisSnapshot,
     )
 
-logger = logging.getLogger("D810.hodur.strategy.counter_hoist", logging.DEBUG)
+logger = logging.getLogger("d810.hodur.strategy.counter_hoist", logging.DEBUG)
 
 __all__ = ["CounterHoistStrategy"]
 

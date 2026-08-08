@@ -31,7 +31,7 @@ from d810.analyses.control_flow.frontier_override_discovery import (
 )
 
 logger = logging.getLogger(
-    "D810.analyses.control_flow.structured_region_fidelity_report",
+    "d810.analyses.control_flow.structured_region_fidelity_report",
     logging.DEBUG,
 )
 

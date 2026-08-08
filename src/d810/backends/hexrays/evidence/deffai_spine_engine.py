@@ -33,7 +33,7 @@ from d810.analyses.control_flow.dispatcher_recovery import MIN_STATE_CONSTANT
 from d810.core.logging import getLogger
 from d810.ir.flowgraph import FlowGraph
 
-logger = getLogger("D810.backends.deffai_spine_engine")
+logger = getLogger("d810.backends.deffai_spine_engine")
 
 __all__ = ["DeffaiSpineEngine"]
 

@@ -7,7 +7,7 @@ from enum import Enum
 
 from d810.core import getLogger
 
-logger = getLogger("D810.emulation")
+logger = getLogger("d810.emulation")
 
 
 class Architecture(Enum):

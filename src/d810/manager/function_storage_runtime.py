@@ -16,7 +16,7 @@ from d810.core.function_storage_config import (
 )
 
 
-logger = getLogger("D810")
+logger = getLogger("d810")
 
 
 class FunctionStorageRuntime:

@@ -115,7 +115,7 @@ from d810.core.observability_events import (
     WatchBlockTransitionObserved,
 )
 
-_logger = _d810_logging.getLogger("D810.diag.event_handlers")
+_logger = _d810_logging.getLogger("d810.diag.event_handlers")
 
 
 # ---------------------------------------------------------------------------

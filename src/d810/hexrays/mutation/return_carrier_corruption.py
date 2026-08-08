@@ -37,7 +37,7 @@ from d810.analyses.value_flow.return_carrier_corruption import (
 )
 from d810.core.logging import getLogger
 
-logger = getLogger("D810.return_carrier_corruption")
+logger = getLogger("d810.return_carrier_corruption")
 
 try:
     import ida_hexrays

@@ -18,7 +18,7 @@ from d810.transforms.reconstruction_planning import (
 )
 from d810.analyses.control_flow.shared_corridor import resolve_old_target
 
-logger = logging.getLogger("D810.hodur.strategy.state_write_reconstruction")
+logger = logging.getLogger("d810.hodur.strategy.state_write_reconstruction")
 
 _SUB7FFD_POLL_SUFFIX_SHARED_BLOCK = 45
 _SUB7FFD_POLL_SUFFIX_OLD_TARGET = 2

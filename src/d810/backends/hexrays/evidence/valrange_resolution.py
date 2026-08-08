@@ -35,7 +35,7 @@ if TYPE_CHECKING:
         AnalysisSnapshot,
     )
 
-logger = logging.getLogger("D810.hodur.strategy.valrange_resolution")
+logger = logging.getLogger("d810.hodur.strategy.valrange_resolution")
 
 __all__ = ["ValrangeResolutionStrategy"]
 

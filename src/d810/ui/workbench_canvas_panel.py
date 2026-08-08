@@ -26,7 +26,7 @@ from d810.ui.workbench_structured_details_logic import (
     parse_contract_detail,
 )
 
-logger = getLogger("D810.ui")
+logger = getLogger("d810.ui")
 
 try:
     import ida_kernwin

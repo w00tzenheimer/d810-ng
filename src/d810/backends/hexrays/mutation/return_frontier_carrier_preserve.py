@@ -56,7 +56,7 @@ if TYPE_CHECKING:
     )
 
 logger = logging.getLogger(
-    "D810.hodur.strategy.return_frontier_carrier_preserve",
+    "d810.hodur.strategy.return_frontier_carrier_preserve",
     logging.DEBUG,
 )
 

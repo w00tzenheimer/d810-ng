@@ -126,7 +126,7 @@ from d810.analyses.data_flow.concolic import EmulationCapability
 from d810.core import logging
 from d810.core.observability_preanalysis import observe_state_dispatcher_rows
 
-logger = logging.getLogger("D810.passes.unflatten.state_machine")
+logger = logging.getLogger("d810.passes.unflatten.state_machine")
 
 LOWER_STATE_MACHINE_PLAN_METADATA = "lower_state_machine_plan_metadata"
 CANONICAL_SEMANTIC_EVIDENCE = "canonical_semantic_evidence"

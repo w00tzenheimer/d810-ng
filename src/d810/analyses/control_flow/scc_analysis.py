@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from d810.core import logging
 from d810.analyses.control_flow.dispatch_region import DispatchRegionDetector
 
-logger = logging.getLogger("D810.analyses.control_flow.scc_analysis", logging.INFO)
+logger = logging.getLogger("d810.analyses.control_flow.scc_analysis", logging.INFO)
 
 
 @dataclass(frozen=True, slots=True)

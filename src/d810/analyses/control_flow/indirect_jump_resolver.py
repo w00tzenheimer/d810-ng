@@ -47,7 +47,7 @@ from d810.analyses.control_flow.indirect_jump_table_analysis import (
 )
 from d810.ir.flowgraph import FlowGraph, InsnKind
 
-logger = getLogger("D810.analyses.indirect_jump_resolver")
+logger = getLogger("d810.analyses.indirect_jump_resolver")
 
 
 def _graph_has_indirect_jump(graph: FlowGraph) -> bool:

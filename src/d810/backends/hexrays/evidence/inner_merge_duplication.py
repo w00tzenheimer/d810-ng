@@ -42,7 +42,7 @@ if TYPE_CHECKING:
         AnalysisSnapshot,
     )
 
-logger = logging.getLogger("D810.hodur.strategy.inner_merge_duplication")
+logger = logging.getLogger("d810.hodur.strategy.inner_merge_duplication")
 
 __all__ = ["InnerMergeDuplicationStrategy"]
 

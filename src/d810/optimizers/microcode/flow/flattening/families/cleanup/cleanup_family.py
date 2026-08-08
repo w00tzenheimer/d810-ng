@@ -108,7 +108,7 @@ from d810.analyses.control_flow.side_effect_select_loop import (
     serialize_side_effect_select_loop_fixes,
 )
 
-family_logger = getLogger("D810.unflat.cleanup_family")
+family_logger = getLogger("d810.unflat.cleanup_family")
 
 CLEANUP_FAMILY_METADATA_KEY = "simple_flattening_cleanup"
 

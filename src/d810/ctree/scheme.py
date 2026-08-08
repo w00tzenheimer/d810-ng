@@ -16,7 +16,7 @@ from d810.ctree.match_context import MatchContext
 from d810.ctree.patterns.base_pattern import BasePat
 from d810.ctree.ast_patch import ASTPatch
 
-logger = getLogger("D810.ctree")
+logger = getLogger("d810.ctree")
 
 
 class Scheme:

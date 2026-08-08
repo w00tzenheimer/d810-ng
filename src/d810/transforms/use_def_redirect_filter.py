@@ -22,7 +22,7 @@ from d810.transforms.graph_modification import (
     to_redirect_intent,
 )
 
-logger = logging.getLogger("D810.transforms.use_def_filter")
+logger = logging.getLogger("d810.transforms.use_def_filter")
 
 
 def _veto_enabled() -> bool:

@@ -136,7 +136,7 @@ from d810.manager.workbench_recipe_service import RecipeService
 
 D810_LOG_DIR_NAME = "d810_logs"
 
-logger = getLogger("D810")
+logger = getLogger("d810")
 
 
 def _load_semantic_route_reference_oracle_registry(

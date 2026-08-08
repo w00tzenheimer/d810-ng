@@ -13,7 +13,7 @@ import pathlib
 from d810.core import typing
 from d810.core.logging import getLogger
 
-logger = getLogger("D810.headless")
+logger = getLogger("d810.headless")
 
 _state: typing.Any | None = None
 _configured = False

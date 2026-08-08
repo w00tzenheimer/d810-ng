@@ -90,7 +90,7 @@ if TYPE_CHECKING:
     from d810.manager.workbench_comparison import ComparisonIdentity
     from d810.ui.ida_ui import D810GUI
 
-logger = getLogger("D810")
+logger = getLogger("d810")
 D810_LOG_DIR_NAME = "d810_logs"
 
 

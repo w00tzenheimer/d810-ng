@@ -44,7 +44,7 @@ from d810.ir.insn_projection import (
 )
 from d810.ir.varnode import Varnode
 
-logger = logging.getLogger("D810.analyses.control_flow.branch_witness")
+logger = logging.getLogger("d810.analyses.control_flow.branch_witness")
 
 
 class BranchWitnessProofKind(str, Enum):

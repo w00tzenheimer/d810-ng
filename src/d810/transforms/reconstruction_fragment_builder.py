@@ -34,7 +34,7 @@ __all__ = (
 )
 
 logger = logging.getLogger(
-    "D810.hodur.strategy.state_write_reconstruction",
+    "d810.hodur.strategy.state_write_reconstruction",
     logging.DEBUG,
 )
 

@@ -11,7 +11,7 @@ from d810.hexrays.mutation.return_carrier_corruption import (
 )
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 
-main_logger = getLogger("D810")
+main_logger = getLogger("d810")
 
 _RCCC_APPLY = True
 

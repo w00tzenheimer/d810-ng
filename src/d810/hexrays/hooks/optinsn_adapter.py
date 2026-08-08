@@ -32,9 +32,9 @@ from d810.hexrays.utils.hexrays_formatters import (
 from d810.hexrays.utils.hexrays_helpers import check_ins_mop_size_are_ok
 from d810.mba.backend_registry import get_egglog_provider
 
-main_logger = getLogger("D810")
-optimizer_logger = getLogger("D810.optimizer")
-z3_file_logger = getLogger("D810.z3_test")
+main_logger = getLogger("d810")
+optimizer_logger = getLogger("d810.optimizer")
+z3_file_logger = getLogger("d810.z3_test")
 _RUN_LATER_DOMAIN_OPTIMIZER_RULE = "optimizer_rule"
 
 # ---------------------------------------------------------------------------

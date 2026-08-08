@@ -14,7 +14,7 @@ from d810.core import typing
 from d810.core import getLogger
 from d810.ctree.ast_iteration import collect_gotos, collect_labels
 
-logger = getLogger("D810.ctree")
+logger = getLogger("d810.ctree")
 
 
 class ASTContext:

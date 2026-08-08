@@ -14,7 +14,7 @@ from d810.core import typing
 from d810.core import getLogger
 from d810.ctree.consts import binary_expressions_ops, unary_expressions_ops
 
-logger = getLogger("D810.ctree")
+logger = getLogger("d810.ctree")
 
 # Handler mapping: item_op -> children_items_getter
 op2func: dict[int, typing.Callable] = {

@@ -66,7 +66,7 @@ from d810.hexrays.utils.table_utils import (
 from d810.optimizers.microcode.handler import ConfigParam
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
 
-logger = getLogger("D810.optimizer")
+logger = getLogger("d810.optimizer")
 
 # ---------------------------------------------------------------------------
 # Constants

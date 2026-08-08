@@ -24,7 +24,7 @@ from d810.hexrays.mutation.terminal_return_lifecycle import (
     release_scalar_return_register,
 )
 
-main_logger = getLogger("D810")
+main_logger = getLogger("d810")
 
 if typing.TYPE_CHECKING:
     from d810.hexrays.hooks.optblock_adapter import BlockOptimizerManager

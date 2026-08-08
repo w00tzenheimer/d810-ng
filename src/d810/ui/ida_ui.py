@@ -52,7 +52,7 @@ from d810.ui.qt_layout_policy import (
 )
 from d810.ui.testbed import TestRunnerForm
 
-logger = getLogger("D810.ui")
+logger = getLogger("d810.ui")
 
 
 def _config_action_icon(name: str):

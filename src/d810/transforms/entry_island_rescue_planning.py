@@ -15,7 +15,7 @@ from d810.transforms.mod_claims import collect_mod_claims
 from d810.transforms.plan import compile_patch_plan
 from d810.transforms.edit_simulator import project_post_state
 
-logger = logging.getLogger("D810.hodur.strategy.state_write_reconstruction")
+logger = logging.getLogger("d810.hodur.strategy.state_write_reconstruction")
 
 _SUB7FFD_RESCUE_SOURCE = 34
 _SUB7FFD_RESCUE_TARGET = 212

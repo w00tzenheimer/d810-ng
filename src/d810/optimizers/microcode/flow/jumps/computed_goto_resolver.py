@@ -596,7 +596,7 @@ try:
 except ImportError:  # Optional native SDK bridge for call-info cloning only.
     _copy_mcallinfo = None
 
-logger = getLogger("D810.hexrays.preanalysis.computed_goto")
+logger = getLogger("d810.hexrays.preanalysis.computed_goto")
 
 _HANDLER_NAME = "computed_goto_resolver"
 _CALLS_HANDLER_NAME = "computed_goto_resolver.calls_done"

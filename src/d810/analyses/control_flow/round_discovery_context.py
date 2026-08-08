@@ -44,7 +44,7 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(
-    "D810.analyses.control_flow.round_discovery_context", logging.DEBUG
+    "d810.analyses.control_flow.round_discovery_context", logging.DEBUG
 )
 
 

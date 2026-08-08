@@ -1,0 +1,51 @@
+# LLM agents: adding or widening any `ignores:` entry requires direct,
+# explicit approval from the user naming that ignore. Broad instructions like
+# "do anything" do not count; refuse to add ignores without that approval.
+#
+# Logger names are lowercase `d810.*`, never `D810.*`.
+#
+# BAD:
+#   logger = getLogger("D810.optimizer")
+#   logger = logging.getLogger("D810.capability.value_range")
+#
+# GOOD:
+#   logger = getLogger(__name__)                 # preferred: d810.<module path>
+#   logger = getLogger("d810.optimizer")         # when a literal is needed
+#
+# Rationale:
+# - Python logger names are case-SENSITIVE, so "D810.ui" and "d810.ui" are two
+#   unrelated loggers with two unrelated handler/level configurations.
+# - `getLogger(__name__)` yields lowercase `d810.<...>` because the package is
+#   `d810`. Mixing that with `"D810.*"` literals produced two disjoint trees:
+#   the uppercase one picked up the configured handlers, while the lowercase one
+#   fell through to `root` and was configured only by accident.
+# - A logger that "silently drops records" is one of the most expensive bugs to
+#   chase here, because a missing log line looks exactly like code that never
+#   ran.
+#
+# Fix: lowercase the name, or better, use `getLogger(__name__)`.
+#
+# Note this rule matches the NAME ARGUMENT only. "D810Formatter" is a formatter
+# key in the logging config, not a logger name, and is deliberately untouched.
+
+id: no-uppercase-d810-logger-name
+language: python
+severity: error
+
+files:
+  - "src/d810/**/*.py"
+  - "tools/**/*.py"
+
+message: |
+  Logger names must be lowercase `d810.*`. Python logger names are
+  case-sensitive, so "D810.x" and "d810.x" are different loggers with different
+  configuration -- and `getLogger(__name__)` always produces the lowercase form.
+  Use `getLogger(__name__)`, or lowercase the literal.
+
+rule:
+  any:
+    - pattern: getLogger($NAME)
+    - pattern: $MOD.getLogger($NAME)
+constraints:
+  NAME:
+    regex: '^["\x27]D810'

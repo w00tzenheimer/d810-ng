@@ -20,7 +20,7 @@ from d810.analyses.control_flow.switch_table_analysis import (
 )
 from d810.core.observability_preanalysis import observe_state_dispatcher_rows
 
-logger = getLogger("D810.switch_table_adapter")
+logger = getLogger("d810.switch_table_adapter")
 
 
 @dataclass(frozen=True)

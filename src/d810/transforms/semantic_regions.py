@@ -15,7 +15,7 @@ from d810.analyses.control_flow.dag_region_detection import (
     detect_linear_transition_regions,
 )
 
-logger = logging.getLogger("D810.unflat.regions")
+logger = logging.getLogger("d810.unflat.regions")
 
 
 @dataclass(frozen=True, slots=True)

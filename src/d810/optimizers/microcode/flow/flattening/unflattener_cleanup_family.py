@@ -31,7 +31,7 @@ from d810.optimizers.microcode.flow.flattening.unflattening_rule_lifecycle impor
     ComposedUnflatteningRule,
 )
 
-unflat_logger = getLogger("D810.unflat.cleanup_family.engine")
+unflat_logger = getLogger("d810.unflat.cleanup_family.engine")
 
 __all__ = ["SimpleFlatteningCleanupUnflattener"]
 

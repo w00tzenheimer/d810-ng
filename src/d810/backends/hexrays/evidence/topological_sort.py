@@ -38,7 +38,7 @@ if TYPE_CHECKING:
         AnalysisSnapshot,
     )
 
-logger = logging.getLogger("D810.hodur.strategy.topological_sort")
+logger = logging.getLogger("d810.hodur.strategy.topological_sort")
 
 __all__ = ["TopologicalSortStrategy"]
 

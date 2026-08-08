@@ -57,7 +57,7 @@ from d810.analyses.control_flow.transition_report import (
 )
 
 logger = logging.getLogger(
-    "D810.analyses.control_flow.linearized_state_dag", logging.INFO
+    "d810.analyses.control_flow.linearized_state_dag", logging.INFO
 )
 
 _SUPPLEMENTAL_ANCHOR_DEBUG_STATES = frozenset(

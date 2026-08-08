@@ -69,7 +69,7 @@ from d810.analyses.control_flow.return_corridor_discovery import (
     collect_common_return_corridor,
 )
 
-logger = logging.getLogger("D810.transforms.unflat_lower")
+logger = logging.getLogger("d810.transforms.unflat_lower")
 
 # Edges that advance the state machine (a back-edge to an earlier state is still a TRANSITION,
 # so loops are preserved as cycles in the reconstructed graph).

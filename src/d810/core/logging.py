@@ -293,42 +293,49 @@ conf: dict[str, typing.Any] = {
         },
     },
     "loggers": {
-        "D810": {
+        "d810": {
             "level": "INFO",
             "handlers": ["consoleHandler", "defaultFileHandler"],
             "propagate": False,
         },
-        "D810.ui": {
-            "level": "ERROR",
-            "handlers": ["defaultFileHandler"],
+        "d810.ui": {
+            # WARNING, not ERROR: lowercasing merged the two logger trees, so
+            # module-derived ui loggers (ui/testbed.py) now inherit this. ERROR
+            # would swallow their warnings, which reach the console today.
+            "level": "WARNING",
+            # console + file, matching "d810" and "d810.unflat". File-only was
+            # survivable while this tree was disjoint from the module-derived
+            # one; after the merge it silently removed ui/testbed.py's console
+            # output, which reached root before.
+            "handlers": ["consoleHandler", "defaultFileHandler"],
             "propagate": False,
         },
-        "D810.optimizer": {
+        "d810.optimizer": {
             "level": "INFO",
             "handlers": ["defaultFileHandler"],
             "propagate": False,
         },
-        "D810.chain": {
+        "d810.chain": {
             "level": "INFO",
             "handlers": ["defaultFileHandler"],
             "propagate": False,
         },
-        "D810.branch_fixer": {
+        "d810.branch_fixer": {
             "level": "INFO",
             "handlers": ["defaultFileHandler"],
             "propagate": False,
         },
-        "D810.unflat": {
+        "d810.unflat": {
             "level": "INFO",
             "handlers": ["consoleHandler", "defaultFileHandler"],
             "propagate": False,
         },
-        "D810.tracker": {
+        "d810.tracker": {
             "level": "INFO",
             "handlers": ["defaultFileHandler"],
             "propagate": False,
         },
-        "D810.emulator": {
+        "d810.emulator": {
             "level": "WARNING",
             "handlers": ["defaultFileHandler"],
             "propagate": False,
@@ -342,22 +349,22 @@ conf: dict[str, typing.Any] = {
             "handlers": ["defaultFileHandler"],
             "propagate": False,
         },
-        "D810.helper": {
+        "d810.helper": {
             "level": "INFO",
             "handlers": ["defaultFileHandler"],
             "propagate": False,
         },
-        "D810.pattern_search": {
+        "d810.pattern_search": {
             "level": "INFO",
             "handlers": ["defaultFileHandler"],
             "propagate": False,
         },
-        "D810.z3_test": {
+        "d810.z3_test": {
             "level": "INFO",
             "handlers": ["z3FileHandler"],
             "propagate": False,
         },
-        "D810.ir.provenance": {
+        "d810.ir.provenance": {
             "level": "INFO",
             "handlers": ["defaultFileHandler"],
             "propagate": False,
@@ -555,7 +562,7 @@ def configure_loggers(log_dir: str | pathlib.Path) -> None:
     # Apply the configuration
     logging.config.dictConfig(conf)
 
-    z3_file_logger = logging.getLogger("D810.z3_test")
+    z3_file_logger = logging.getLogger("d810.z3_test")
     z3_file_logger.info(
         "from z3 import BitVec, BitVecVal, UDiv, URem, LShR, UGT, UGE, ULT, ULE, prove\n\n"
     )

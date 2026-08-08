@@ -51,7 +51,7 @@ from d810.optimizers.microcode.handler import ConfigParam
 from d810.hexrays.mutation.cfg_verify import safe_verify
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
 
-logger = getLogger("D810.optimizer")
+logger = getLogger("d810.optimizer")
 
 # ---------------------------------------------------------------------------
 # Constants

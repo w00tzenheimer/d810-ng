@@ -28,7 +28,7 @@ if TYPE_CHECKING:
         AnalysisSnapshot,
     )
 
-logger = logging.getLogger("D810.hodur.strategy.conditional_fork_fallback")
+logger = logging.getLogger("d810.hodur.strategy.conditional_fork_fallback")
 
 __all__ = ["ConditionalForkFallbackStrategy"]
 

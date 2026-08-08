@@ -44,7 +44,7 @@ if TYPE_CHECKING:
     )
     from d810.passes.flow_hints import FlowContextHintSummary
 
-logger = getLogger("D810.passes.runtime")
+logger = getLogger("d810.passes.runtime")
 
 
 @dataclass(frozen=True, slots=True)

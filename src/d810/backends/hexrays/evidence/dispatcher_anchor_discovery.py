@@ -45,7 +45,7 @@ from d810.backends.hexrays.evidence.emulation_dispatcher_resolver import (
 from d810.core.logging import getLogger
 from d810.ir.flowgraph import FlowGraph
 
-logger = getLogger("D810.analyses.dispatcher_anchor_discovery")
+logger = getLogger("d810.analyses.dispatcher_anchor_discovery")
 
 __all__ = ["discover_anchors"]
 

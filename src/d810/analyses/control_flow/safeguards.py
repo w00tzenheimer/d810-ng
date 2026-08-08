@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from d810.core import getLogger
 
-logger = getLogger("D810.unflat.safeguard")
+logger = getLogger("d810.unflat.safeguard")
 
 MIN_ABSOLUTE_EDGES = 3
 MIN_EDGE_RATIO = 3  # Denominator: require at least 1/3 of case blocks

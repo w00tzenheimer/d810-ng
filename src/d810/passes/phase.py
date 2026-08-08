@@ -17,7 +17,7 @@ from d810.analyses.control_flow.collection_context import PreanalysisCollectionC
 from d810.analyses.control_flow.models import PreanalysisResult
 from d810.passes.store import PreanalysisStore, get_preanalysis_writer
 
-logger = getLogger("D810.passes.phase")
+logger = getLogger("d810.passes.phase")
 
 ALL_MATURITIES: frozenset[int] | None = None
 
