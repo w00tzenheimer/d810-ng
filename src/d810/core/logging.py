@@ -562,6 +562,32 @@ def configure_loggers(log_dir: str | pathlib.Path) -> None:
     # Apply the configuration
     logging.config.dictConfig(conf)
 
+    # Re-link every d810.* logger to its real parent.
+    #
+    # Two things combine here, and neither is visible on its own:
+    #
+    #   1. dictConfig resets existing loggers that are children of a *named*
+    #      logger back to NOTSET, so they resolve their level through the
+    #      parent chain. "d810" is a named logger, so every module logger
+    #      qualifies.
+    #   2. getLogger() installs its D810Logger wrapper into loggerDict
+    #      directly. That bypasses the PlaceHolder bookkeeping Manager uses to
+    #      re-parent children when an ancestor is created later, so the
+    #      wrapper can still point at `root` while the *original* object it
+    #      replaced is the one that got re-parented.
+    #
+    # Together they send module loggers to root (DEBUG) instead of d810
+    # (INFO), which turns on every logger.debug() in the codebase. Measured
+    # cost when this regressed: d810.log 14 MB -> 3.2 GB on one system-suite
+    # run, the suite 2.1x slower, and a MemoryError mid-decompilation.
+    #
+    # _fixupParents is private but has been stable across CPython releases,
+    # and there is no public equivalent for repairing the hierarchy.
+    manager = logging.Logger.manager
+    for _logger_name, _logger in list(manager.loggerDict.items()):
+        if _logger_name.startswith("d810.") and isinstance(_logger, logging.Logger):
+            manager._fixupParents(_logger)
+
     z3_file_logger = logging.getLogger("d810.z3_test")
     z3_file_logger.info(
         "from z3 import BitVec, BitVecVal, UDiv, URem, LShR, UGT, UGE, ULT, ULE, prove\n\n"
