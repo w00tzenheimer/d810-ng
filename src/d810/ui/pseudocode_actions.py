@@ -23,7 +23,7 @@ from d810.ui.actions_logic import (
     get_deobfuscation_stats,
 )
 
-logger = getLogger("D810.ui")
+logger = getLogger("d810.ui")
 
 # Backward compatibility: Legacy action lists
 # These are maintained for any code that still references them

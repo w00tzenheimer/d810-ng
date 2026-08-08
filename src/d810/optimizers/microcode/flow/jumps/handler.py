@@ -22,8 +22,8 @@ from d810.optimizers.microcode.instructions.pattern_matching.handler import (
 from d810.transforms.graph_modification import ConvertToGoto
 from d810.core import Registrant
 
-logger = getLogger("D810.branch_fixer")
-optimizer_logger = getLogger("D810.optimizer")
+logger = getLogger("d810.branch_fixer")
+optimizer_logger = getLogger("d810.optimizer")
 
 
 def _iter_block_insns(blk: ida_hexrays.mblock_t, *, max_insns: int = 512):

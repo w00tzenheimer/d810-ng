@@ -7,7 +7,7 @@ from collections.abc import Callable, MutableMapping
 from d810.core.logging import getLogger
 from d810.transforms.cfg_transaction import CfgGenerationPoisoned
 
-logger = getLogger("D810.hexrays.preanalysis.preopt")
+logger = getLogger("d810.hexrays.preanalysis.preopt")
 
 PreoptPreanalysisHandler = Callable[..., None]
 

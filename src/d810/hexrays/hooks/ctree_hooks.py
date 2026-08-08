@@ -13,7 +13,7 @@ from d810.core.provider_phase import ProviderPhaseSnapshot
 from d810.core.registry import Registrant
 from d810.core.stats import OptimizationStatistics
 
-logger = getLogger("D810.optimizer")
+logger = getLogger("d810.optimizer")
 HEXRAYS_CTREE_PROVIDER = "hexrays_ctree"
 
 # ---------------------------------------------------------------------------

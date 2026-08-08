@@ -45,7 +45,7 @@ if TYPE_CHECKING:
     )
 
 logger = logging.getLogger(
-    "D810.hodur.strategy.spurious_backedge_redirect", logging.INFO
+    "d810.hodur.strategy.spurious_backedge_redirect", logging.INFO
 )
 
 __all__ = ["SpuriousBackedgeRedirectStrategy"]

@@ -72,7 +72,7 @@ from d810.core.logging import getLogger
 from d810.core.observability_labels import live_block_label
 from d810.ir.flowgraph import FlowGraph
 
-logger = getLogger("D810.analyses.concolic_emulation_engine")
+logger = getLogger("d810.analyses.concolic_emulation_engine")
 
 __all__ = ["RecoveryCaps", "ConcolicProvenance", "ConcolicEmulationEngine"]
 

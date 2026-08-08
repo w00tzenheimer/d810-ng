@@ -17,7 +17,7 @@ from d810.analyses.control_flow.dispatcher_resolution import (
     StateDispatcherRow,
 )
 
-logger = getLogger("D810.analyses.control_flow.switch_table")
+logger = getLogger("d810.analyses.control_flow.switch_table")
 
 # Diag sink for observed dispatcher rows. A pure analyses module must not import
 # the diagnostics-layer observability wrapper; the live caller injects the real

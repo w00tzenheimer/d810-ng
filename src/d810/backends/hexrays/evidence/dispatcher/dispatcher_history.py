@@ -34,7 +34,7 @@ from d810.analyses.control_flow.dispatcher_analysis import (
 )
 from d810.capabilities.dispatcher import RouterKind
 
-logger = getLogger("D810.dispatcher")
+logger = getLogger("d810.dispatcher")
 
 __all__ = [
     # Re-export so consumers import analysis + access in one place.

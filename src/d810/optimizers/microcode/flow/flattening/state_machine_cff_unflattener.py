@@ -223,7 +223,7 @@ from d810.transforms.minimal_unflatten_emit import (
 )
 from d810.transforms.state_machine_unflatten import lower_to_direct_graph
 
-logger = logging.getLogger("D810.unflat", logging.DEBUG)
+logger = logging.getLogger("d810.unflat", logging.DEBUG)
 
 
 def _unflatten_recovery_epoch_generation(

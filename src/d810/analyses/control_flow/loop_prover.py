@@ -38,7 +38,7 @@ from d810.core import getLogger
 if TYPE_CHECKING:
     pass
 
-logger = getLogger("D810.loop_prover")
+logger = getLogger("d810.loop_prover")
 
 # Try to import Z3, fall back to simple comparison if unavailable
 try:

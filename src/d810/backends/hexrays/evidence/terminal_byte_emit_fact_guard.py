@@ -54,7 +54,7 @@ from d810.analyses.control_flow.return_frontier_artifacts import (
     is_protected_non_carrier_return_writer,
 )
 
-logger = logging.getLogger("D810.unflat.hodur.terminal_byte_emit_fact_guard")
+logger = logging.getLogger("d810.unflat.hodur.terminal_byte_emit_fact_guard")
 
 # State variable whose stack identity marks a block as state-flow scaffolding
 # for the OLLVM-style flattened functions we protect.  Stored lower-cased to

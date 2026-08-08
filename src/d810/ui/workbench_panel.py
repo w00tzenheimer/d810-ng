@@ -29,7 +29,7 @@ from d810.ui.workbench_logic import (
 from d810.ui.qt_layout_policy import configure_left_aligned_form
 from d810.ui.workbench_workflow_logic import recommended_attack_transition
 
-logger = getLogger("D810.ui")
+logger = getLogger("d810.ui")
 
 
 def _should_open_build_workspace(

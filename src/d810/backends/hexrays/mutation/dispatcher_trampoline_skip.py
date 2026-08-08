@@ -57,7 +57,7 @@ if TYPE_CHECKING:
     )
 
 logger = logging.getLogger(
-    "D810.hodur.strategy.dispatcher_trampoline_skip", logging.DEBUG
+    "d810.hodur.strategy.dispatcher_trampoline_skip", logging.DEBUG
 )
 
 __all__ = ["DispatcherTrampolineSkipStrategy"]

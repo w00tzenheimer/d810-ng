@@ -20,7 +20,7 @@ from d810.ctree.match_context import MatchContext
 from d810.ctree.scheme import Scheme
 from d810.ctree import utils
 
-logger = getLogger("D810.ctree")
+logger = getLogger("d810.ctree")
 
 
 class Matcher:

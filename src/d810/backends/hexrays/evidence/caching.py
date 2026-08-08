@@ -46,7 +46,7 @@ from d810.core.persistence import (
 from d810.core.provider_phase import ProviderPhaseSnapshot
 from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 
-logger = getLogger("D810.caching")
+logger = getLogger("d810.caching")
 
 HEXRAYS_MICROCODE_PROVIDER = "hexrays_microcode"
 

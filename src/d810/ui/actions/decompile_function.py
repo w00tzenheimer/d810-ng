@@ -10,7 +10,7 @@ from d810.core import typing
 from d810.core.logging import getLogger
 from d810.ui.actions.base import D810ActionHandler
 
-logger = getLogger("D810.ui")
+logger = getLogger("d810.ui")
 
 
 class DecompileFunction(D810ActionHandler):

@@ -21,7 +21,7 @@ except ImportError:
     pyinstrument = None
 
 
-logger = getLogger("D810")
+logger = getLogger("d810")
 
 
 class CProfileWrapper:

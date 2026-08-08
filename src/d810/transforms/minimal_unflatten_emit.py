@@ -132,7 +132,7 @@ from d810.transforms.use_def_redirect_filter import (
     severance_bail_enabled,
 )
 
-logger = logging.getLogger("D810.transforms.minimal_unflatten_emit")
+logger = logging.getLogger("d810.transforms.minimal_unflatten_emit")
 
 TERMINAL_CARRIER_CONVERGENCE_METADATA = "terminal_carrier_convergence"
 TERMINAL_CARRIER_CONVERGENCE_REASON_METADATA = "terminal_carrier_convergence_reason"

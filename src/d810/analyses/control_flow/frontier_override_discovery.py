@@ -27,7 +27,7 @@ from d810.core import logging
 from d810.analyses.control_flow.edge_metadata import make_edge_metadata
 
 logger = logging.getLogger(
-    "D810.hodur.strategy.state_write_reconstruction",
+    "d810.hodur.strategy.state_write_reconstruction",
     logging.DEBUG,
 )
 

@@ -30,7 +30,7 @@ from d810.transforms.fragment_plan import (
 from d810.transforms.cfg_transaction import CfgGenerationPoisoned
 
 
-logger = getLogger("D810.manager.frontend_normalization")
+logger = getLogger("d810.manager.frontend_normalization")
 _HANDLER_NAME = "manager.frontend_normalization"
 
 

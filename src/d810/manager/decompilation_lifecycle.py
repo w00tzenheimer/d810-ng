@@ -30,7 +30,7 @@ from d810.manager.frontend_normalization import (
     SessionFrontendNormalizationPlanAuthority,
 )
 
-logger = getLogger("D810.decompilation_lifecycle")
+logger = getLogger("d810.decompilation_lifecycle")
 
 
 @dataclass(slots=True)

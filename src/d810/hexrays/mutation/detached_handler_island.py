@@ -104,7 +104,7 @@ from d810.ir.semantics import PredicateKind, inverted_predicate_kind
 from d810.ir.expressions import ValueOpKind
 from d810.ir.storage_identity import StorageIdentity, StorageIdentityKind
 
-logger = getLogger("D810.mutation.detached_handler_island")
+logger = getLogger("d810.mutation.detached_handler_island")
 _MISSING_BOUNDARY_PORT_SERIAL = object()
 
 

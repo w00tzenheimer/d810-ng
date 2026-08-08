@@ -62,7 +62,7 @@ from d810.transforms.materialization_payload import CapturedBlockBody
 # every RedirectGoto goes through this — the log volume is only
 # manageable for targeted investigations.
 _redirect_goto_tracer = logging.getLogger(
-    "D810.transforms.graph_modification.redirect_goto_trace", logging.DEBUG
+    "d810.transforms.graph_modification.redirect_goto_trace", logging.DEBUG
 )
 _TRACE_REDIRECT_GOTO = (
     os.environ.get("D810_TRACE_REDIRECT_GOTO_CONSTRUCTION", "").strip() == "1"

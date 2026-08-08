@@ -31,7 +31,7 @@ from d810.ui.workbench_diagnostics_logic import (
 from d810.ui.diagnostics_capture_logic import diagnostics_capture_presentation
 from d810.ui.icon_assets import bundled_icon
 
-logger = getLogger("D810.ui")
+logger = getLogger("d810.ui")
 
 
 def _case_record_row_index(

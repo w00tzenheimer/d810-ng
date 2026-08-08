@@ -22,7 +22,7 @@ import re
 from d810.core.logging import getLogger
 from d810.ui.actions.export_disasm_logic import MasmPrinter, masm_sext64
 
-logger = getLogger("D810.ui")
+logger = getLogger("d810.ui")
 
 try:
     import ida_allins

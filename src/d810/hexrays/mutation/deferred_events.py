@@ -58,7 +58,7 @@ from d810.core.events import EventEmitter as CoreEventEmitter
 from d810.core.logging import getLogger
 from d810.core.typing import Callable
 
-_logger = getLogger("D810.deferred_events")
+_logger = getLogger("d810.deferred_events")
 
 
 class DeferredEvent(Enum):

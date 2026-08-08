@@ -30,7 +30,7 @@ import uuid
 from d810.core import logging as _d810_logging
 from d810.core.typing import Any, Callable
 
-_logger = _d810_logging.getLogger("D810.observability")
+_logger = _d810_logging.getLogger("d810.observability")
 
 
 @dataclasses.dataclass(frozen=True)

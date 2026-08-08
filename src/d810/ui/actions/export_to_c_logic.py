@@ -17,7 +17,7 @@ from d810.core.clang_loader import load_clang_index
 from d810.core.logging import getLogger
 from d810.core.typing import Any
 
-logger = getLogger("D810.ui")
+logger = getLogger("d810.ui")
 
 # Strip #include directives for headers we replace with inline preamble,
 # so clang parses a self-contained unit.

@@ -10,7 +10,7 @@ from d810.core.typing import Iterable
 import ida_hexrays
 
 logger = logging.getLogger(
-    "D810.evaluator.hexrays_microcode.dynamic_state_write_backend", logging.INFO
+    "d810.evaluator.hexrays_microcode.dynamic_state_write_backend", logging.INFO
 )
 
 

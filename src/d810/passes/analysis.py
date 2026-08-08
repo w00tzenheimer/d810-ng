@@ -26,7 +26,7 @@ from d810.analyses.control_flow.models import (
 if TYPE_CHECKING:
     from d810.passes.store import PreanalysisStore
 
-logger = getLogger("D810.passes.analysis")
+logger = getLogger("d810.passes.analysis")
 
 
 # ---------------------------------------------------------------------------

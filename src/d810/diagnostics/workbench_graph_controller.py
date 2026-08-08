@@ -17,7 +17,7 @@ from d810.diagnostics.workbench_graph_projection import project_diagnostic_graph
 from d810.diagnostics.workbench_models import DiagnosticRecord
 
 
-logger = getLogger("D810.diagnostics.graph")
+logger = getLogger("d810.diagnostics.graph")
 
 
 class DiagnosticGraphRecordPort(Protocol):

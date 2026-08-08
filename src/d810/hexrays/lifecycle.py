@@ -5,7 +5,7 @@ from d810.core.decompilation_session import DecompilationEvent as _Decompilation
 from d810.hexrays.mutation.ir_translator import lift as lift_mba_to_flowgraph
 from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 
-optimizer_logger = getLogger("D810.optimizer")
+optimizer_logger = getLogger("d810.optimizer")
 
 HEXRAYS_MICROCODE_PROVIDER = "hexrays_microcode"
 

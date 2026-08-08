@@ -28,7 +28,7 @@ from d810.core import typing
 from d810.core.logging import getLogger
 from d810.core.persistence import Netnode
 
-logger = getLogger("D810.backends.hexrays.global_const_annotation")
+logger = getLogger("d810.backends.hexrays.global_const_annotation")
 
 _RECEIPT_NODE_NAME = "$ d810.global_const_annotations.v1"
 _RECEIPT_SCHEMA_VERSION = 1

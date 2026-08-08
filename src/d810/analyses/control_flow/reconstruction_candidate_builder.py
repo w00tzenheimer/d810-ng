@@ -35,7 +35,7 @@ from d810.analyses.control_flow.state_machine_analysis import (
     StateWriteSite,
 )
 
-logger = logging.getLogger("D810.hodur.strategy.state_write_reconstruction")
+logger = logging.getLogger("d810.hodur.strategy.state_write_reconstruction")
 _SUB7FFD_PROBE_TARGET_STATE = 0x24E2E77A
 _SUB7FFD_PROBE_SOURCE_BLOCK = 93
 _SUB7FFD_PROBE_SHARED_BLOCK = 95

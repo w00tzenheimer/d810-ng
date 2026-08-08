@@ -16,7 +16,7 @@ from d810.optimizers.microcode.instructions.analysis.handler import (
 )
 from d810.optimizers.microcode.instructions.analysis.utils import get_possible_patterns
 
-optimizer_logger = getLogger("D810.optimizer")
+optimizer_logger = getLogger("d810.optimizer")
 
 
 class ExampleGuessingRule(InstructionAnalysisRule):

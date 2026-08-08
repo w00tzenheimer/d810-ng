@@ -39,7 +39,7 @@ if TYPE_CHECKING:
         AnalysisSnapshot,
     )
 
-logger = logging.getLogger("D810.hodur.strategy.state_const_return_fixup")
+logger = logging.getLogger("d810.hodur.strategy.state_const_return_fixup")
 
 __all__ = ["StateConstantReturnFixupStrategy"]
 

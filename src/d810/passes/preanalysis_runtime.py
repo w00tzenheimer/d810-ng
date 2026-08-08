@@ -36,7 +36,7 @@ if TYPE_CHECKING:
     )
     from d810.core.observability import SnapshotRef
 
-logger = getLogger("D810.passes.preanalysis.runtime")
+logger = getLogger("d810.passes.preanalysis.runtime")
 
 
 class FactObservationSink(Protocol):

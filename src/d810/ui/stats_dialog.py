@@ -15,7 +15,7 @@ from d810.core import typing
 
 from d810.core.logging import getLogger
 
-logger = getLogger("D810.ui")
+logger = getLogger("d810.ui")
 
 # ---------------------------------------------------------------------------
 # IDA imports -- optional so unit tests can import without IDA present.

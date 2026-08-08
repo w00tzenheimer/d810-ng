@@ -13,7 +13,7 @@ from d810.hexrays.utils.hexrays_helpers import (
 from d810.optimizers.microcode.instructions.chain.handler import ChainSimplificationRule
 from d810.hexrays.ir.number_operand import safe_make_number
 
-rules_chain_logger = getLogger("D810.rules.chain")
+rules_chain_logger = getLogger("d810.rules.chain")
 
 
 class ChainSimplification(object):

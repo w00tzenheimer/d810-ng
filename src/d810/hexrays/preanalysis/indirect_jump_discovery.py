@@ -28,7 +28,7 @@ from dataclasses import dataclass
 
 from d810.core.logging import getLogger
 
-logger = getLogger("D810.hexrays.preanalysis.indirect_jump_discovery")
+logger = getLogger("d810.hexrays.preanalysis.indirect_jump_discovery")
 
 
 @dataclass(frozen=True)

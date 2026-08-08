@@ -13,7 +13,7 @@ from d810.core.provider_phase import ProviderPhaseSnapshot
 from d810.core.settings import get_settings
 from d810.core.typing import Any, Callable
 
-logger = getLogger("D810.runtime.post_d810")
+logger = getLogger("d810.runtime.post_d810")
 
 
 def _default_maturity_name(maturity: int) -> str:

@@ -17,8 +17,8 @@ from d810.passes.scheduler import RunLater
 if typing.TYPE_CHECKING:
     from d810.core import OptimizationStatistics
 
-d810_logger = getLogger("D810")
-optimizer_logger = getLogger("D810.optimizer")
+d810_logger = getLogger("d810")
+optimizer_logger = getLogger("d810.optimizer")
 
 
 class InstructionOptimizationRule(OptimizationRule, Registrant, abc.ABC):

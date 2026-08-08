@@ -34,7 +34,7 @@ if TYPE_CHECKING:
         AnalysisSnapshot,
     )
 
-logger = logging.getLogger("D810.hodur.strategy.terminal_loop_cleanup")
+logger = logging.getLogger("d810.hodur.strategy.terminal_loop_cleanup")
 
 __all__ = ["TerminalLoopCleanupStrategy"]
 

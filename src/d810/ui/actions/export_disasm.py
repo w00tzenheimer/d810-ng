@@ -22,7 +22,7 @@ from d810.ui.export_disasm_masm_emit import (
     generate_masm_for_function,
 )
 
-logger = getLogger("D810.ui")
+logger = getLogger("d810.ui")
 
 # ---------------------------------------------------------------------------
 # Qt imports -- optional, will fail gracefully if not in GUI mode

@@ -16,7 +16,7 @@ from d810.core import typing
 from d810.core import getLogger
 from d810.ctree.ast_iteration import get_children
 
-logger = getLogger("D810.ctree")
+logger = getLogger("d810.ctree")
 
 
 def get_func_calls_to(fea: int) -> list[int]:

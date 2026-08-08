@@ -29,7 +29,7 @@ from d810.backends.hexrays.evidence.dispatcher.indirect_jump_table_analysis impo
     analyze_tigress_indirect_dispatcher_from_config,
 )
 
-logger = getLogger("D810.backends.indirect_jump_capability")
+logger = getLogger("d810.backends.indirect_jump_capability")
 
 
 @dataclass

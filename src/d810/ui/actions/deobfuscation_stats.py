@@ -14,7 +14,7 @@ from d810.ui.actions_logic import (
     get_deobfuscation_stats,
 )
 
-logger = getLogger("D810.ui")
+logger = getLogger("d810.ui")
 
 
 def _get_current_func_ea(ctx: typing.Any, idaapi_shim: typing.Any) -> int | None:

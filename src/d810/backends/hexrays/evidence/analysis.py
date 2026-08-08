@@ -58,7 +58,7 @@ from d810.transforms.snapshot import (
     ReachabilityInfo,
 )
 
-unflat_logger = logging.getLogger("D810.unflat.hodur", logging.DEBUG)
+unflat_logger = logging.getLogger("d810.unflat.hodur", logging.DEBUG)
 
 # ---------------------------------------------------------------------------
 # Module-level constants used by the detector

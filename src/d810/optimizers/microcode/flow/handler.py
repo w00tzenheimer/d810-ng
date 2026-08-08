@@ -16,7 +16,7 @@ from d810.optimizers.microcode.handler import (
     OptimizationRule,
 )
 
-logger = getLogger("D810.optimizer")
+logger = getLogger("d810.optimizer")
 
 if TYPE_CHECKING:
     from d810.optimizers.microcode.flow.context import FlowMaturityContext

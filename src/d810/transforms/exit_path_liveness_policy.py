@@ -22,7 +22,7 @@ from d810.ir.storage_identity import (
     storage_identity_from_mop_snapshot,
 )
 
-logger = logging.getLogger("D810.transforms.exit_path_liveness_policy")
+logger = logging.getLogger("d810.transforms.exit_path_liveness_policy")
 
 
 @dataclass(frozen=True, slots=True)

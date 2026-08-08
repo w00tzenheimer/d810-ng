@@ -20,7 +20,7 @@ from d810.transforms.loop_bound_writer_guard import (
 from d810.core import logging
 from d810.core.typing import Any
 
-logger = logging.getLogger("D810.unflat.hodur.return_carrier_fact_guard")
+logger = logging.getLogger("d810.unflat.hodur.return_carrier_fact_guard")
 
 
 @dataclass(frozen=True)

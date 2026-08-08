@@ -33,7 +33,7 @@ from d810.ui.workbench_workspace_layout_logic import (
 from d810.ui.workbench_workspace_rail import CollapsibleWorkspaceRail
 
 
-logger = getLogger("D810.ui")
+logger = getLogger("d810.ui")
 
 
 def _horizontal_orientation() -> typing.Any:

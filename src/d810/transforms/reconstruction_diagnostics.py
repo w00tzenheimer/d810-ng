@@ -21,7 +21,7 @@ from d810.transforms.cfg_transaction import LogicalBlockRef, NativeBlockRef
 from d810.transforms.plan import compile_patch_plan
 
 logger = logging.getLogger(
-    "D810.hodur.strategy.state_write_reconstruction",
+    "d810.hodur.strategy.state_write_reconstruction",
     logging.DEBUG,
 )
 

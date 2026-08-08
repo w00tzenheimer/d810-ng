@@ -29,7 +29,7 @@ from d810.analyses.control_flow.target_entry_resolution import resolve_edge_targ
 
 _SUB7FFD_POLL_TARGET_STATE = 0x00C0C59F
 _SUB7FFD_CORRIDOR_TARGET_STATES = frozenset({0x0B2FECE0, 0x385BBE2D})
-logger = logging.getLogger("D810.hodur.strategy.state_write_reconstruction")
+logger = logging.getLogger("d810.hodur.strategy.state_write_reconstruction")
 
 
 def _is_sub7ffd_poll_target_edge(edge: StateDagEdge) -> bool:

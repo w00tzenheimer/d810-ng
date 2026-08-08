@@ -15,7 +15,7 @@ from d810.ui import actions
 from d810.ui.actions.base import D810ActionHandler
 from d810._vendor.ida_reloader.ida_reloader import Scanner
 
-logger = getLogger("D810.ui")
+logger = getLogger("d810.ui")
 
 
 class ActionLoader:

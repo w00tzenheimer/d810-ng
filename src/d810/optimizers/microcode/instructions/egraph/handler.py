@@ -65,8 +65,8 @@ if typing.TYPE_CHECKING:
     from d810.core import OptimizationStatistics
 
 # Reuse the same loggers as the original implementation.
-optimizer_logger = getLogger("D810.optimizer")
-pattern_search_logger = getLogger("D810.pattern_search")
+optimizer_logger = getLogger("d810.optimizer")
+pattern_search_logger = getLogger("d810.pattern_search")
 
 
 COMMUTATIVE_OPCODES = {

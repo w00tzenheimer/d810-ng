@@ -17,7 +17,7 @@ from d810.analyses.control_flow.sese_hammock import (
 )
 
 logger = logging.getLogger(
-    "D810.transforms.semantic_conditional_lowering", logging.DEBUG
+    "d810.transforms.semantic_conditional_lowering", logging.DEBUG
 )
 
 __all__ = [

@@ -9,7 +9,7 @@ from d810.optimizers.microcode.instructions.handler import (
     InstructionOptimizer,
 )
 
-optimizer_logger = getLogger("D810.optimizer")
+optimizer_logger = getLogger("d810.optimizer")
 
 
 class InstructionAnalysisRule(InstructionOptimizationRule):

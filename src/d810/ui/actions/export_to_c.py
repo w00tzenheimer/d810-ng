@@ -23,7 +23,7 @@ from d810.ui.actions.export_to_c_logic import (
 )
 from d810.ui.actions_logic import get_deobfuscation_stats
 
-logger = getLogger("D810.ui")
+logger = getLogger("d810.ui")
 
 # ---------------------------------------------------------------------------
 # Qt imports -- optional, will fail gracefully if not in GUI mode

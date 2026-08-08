@@ -20,7 +20,7 @@ from d810.hexrays.preanalysis.indirect_jump_discovery import (
     DiscoveredIndirectJumpTable,
     discover_indirect_jump_table,
 )
-logger = getLogger("D810.optimizers.indirect_jump_table")
+logger = getLogger("d810.optimizers.indirect_jump_table")
 
 
 

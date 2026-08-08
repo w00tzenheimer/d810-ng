@@ -9,7 +9,7 @@ import ida_range
 
 from d810.core.logging import getLogger
 
-logger = getLogger("D810.semantic_fragment_backend")
+logger = getLogger("d810.semantic_fragment_backend")
 
 from d810.core.typing import Mapping, Protocol, TYPE_CHECKING, runtime_checkable
 from d810.hexrays.ir.exact_data_flow import (

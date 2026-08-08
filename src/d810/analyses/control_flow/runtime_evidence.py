@@ -9,7 +9,7 @@ from d810.core.provider_phase import provider_phase_snapshot_from_level
 from d810.core.typing import Any
 from d810.analyses.fact_collection_context import FactCollectionContext
 
-logger = getLogger("D810.analyses.control_flow.runtime_evidence")
+logger = getLogger("d810.analyses.control_flow.runtime_evidence")
 
 _LATEST_RECONSTRUCTION_DAG_BY_FUNC: dict[int, Any] = {}
 

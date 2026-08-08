@@ -99,7 +99,7 @@ def add_logger_import_to_edit_simulator(src: str) -> str:
 
 def add_logger_to_edit_simulator(src: str) -> str:
     """Add logger instance to edit_simulator.py after _BLT_2WAY definition."""
-    if 'logger = getLogger("D810.cfg.flow.edit_simulator")' in src:
+    if 'logger = getLogger("d810.cfg.flow.edit_simulator")' in src:
         return src  # Already added
 
     lines = src.splitlines(keepends=True)
@@ -108,7 +108,7 @@ def add_logger_to_edit_simulator(src: str) -> str:
     for line in lines:
         new_lines.append(line)
         if not added and "_BLT_2WAY = int(getattr(ida_hexrays" in line:
-            new_lines.append('\nlogger = getLogger("D810.cfg.flow.edit_simulator")\n')
+            new_lines.append('\nlogger = getLogger("d810.cfg.flow.edit_simulator")\n')
             added = True
 
     return "".join(new_lines)
@@ -309,7 +309,7 @@ def add_reorder_debug_logging(src: str) -> str:
 
 def add_logger_to_deferred_modifier(src: str) -> str:
     """Ensure logger is present in deferred_modifier.py (it should already be there)."""
-    if 'logger = getLogger("D810.deferred_modifier")' not in src:
+    if 'logger = getLogger("d810.deferred_modifier")' not in src:
         # This should already exist, but just in case
         return src
     return src

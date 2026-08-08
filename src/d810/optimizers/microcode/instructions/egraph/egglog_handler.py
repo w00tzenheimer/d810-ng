@@ -50,7 +50,7 @@ if EGGLOG_AVAILABLE:
         MBAEGraph,
     )
 
-optimizer_logger = getLogger("D810.optimizer")
+optimizer_logger = getLogger("d810.optimizer")
 
 
 class EgglogOptimizer(InstructionOptimizer):

@@ -295,7 +295,7 @@ from d810.transforms.fragment_plan import FragmentPlan
 if TYPE_CHECKING:
     pass
 
-logger = getLogger("D810.deferred_modifier")
+logger = getLogger("d810.deferred_modifier")
 
 _MAX_CAPTURE_HISTORY = 12
 

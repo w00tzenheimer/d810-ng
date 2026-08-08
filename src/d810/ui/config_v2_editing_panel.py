@@ -17,7 +17,7 @@ from d810.ui.config_v2_editing_logic import (
 from d810.ui.project_config_logic import ConfigV2FocusTarget
 from d810.ui.workbench_structured_details_logic import DetailField, DetailSection
 
-logger = getLogger("D810.ui")
+logger = getLogger("d810.ui")
 
 try:
     import ida_kernwin

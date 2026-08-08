@@ -26,7 +26,7 @@ import ida_hexrays
 
 from d810.core import getLogger
 
-logger = getLogger("D810.heuristics")
+logger = getLogger("d810.heuristics")
 
 
 @dataclass

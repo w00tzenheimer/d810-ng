@@ -54,7 +54,7 @@ from d810.analyses.control_flow.native_preanalysis_session import (
 )
 from d810.core.logging import getLogger
 
-logger = getLogger("D810.hexrays.preanalysis.indirect_jump_labels")
+logger = getLogger("d810.hexrays.preanalysis.indirect_jump_labels")
 
 from d810.hexrays.preanalysis.indirect_jump_discovery import (
     discover_indirect_jump_table,

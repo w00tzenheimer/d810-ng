@@ -61,7 +61,7 @@ from d810.evaluator.hexrays_microcode.emulator import (
 from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 from d810.ir.flowgraph import FlowGraph
 
-logger = getLogger("D810.analyses.emulation_dispatcher_resolver")
+logger = getLogger("d810.analyses.emulation_dispatcher_resolver")
 
 __all__ = ["EmulationDispatcherResolver"]
 
