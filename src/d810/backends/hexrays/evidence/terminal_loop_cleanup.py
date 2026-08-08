@@ -13,9 +13,11 @@ from d810.core.typing import TYPE_CHECKING
 from d810.capabilities.providers import get_microcode_evidence
 from d810.core import logging
 from d810.ir.flowgraph import BlockSnapshot
-from d810.backends.hexrays.evidence._helpers import (
-    collect_state_machine_blocks,
+from d810.analyses.control_flow.state_machine_analysis import (
     find_terminal_exit_target_snapshot,
+)
+from d810.backends.hexrays.evidence.datamodel import (
+    collect_state_machine_blocks,
 )
 from d810.transforms.plan_fragment import (
     FAMILY_CLEANUP,
