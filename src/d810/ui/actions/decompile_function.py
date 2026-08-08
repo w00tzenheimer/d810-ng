@@ -47,15 +47,22 @@ class DecompileFunction(D810ActionHandler):
 
         logger.info("Decompiling function at %s from disassembly view", hex(func_ea))
 
-        # Trigger decompilation (D810ng hooks will run automatically)
+        # Trigger decompilation (D810ng hooks will run automatically).
+        #
+        # ``open_pseudocode`` IS a decompilation request, so it has to be the
+        # callable the controller drives rather than a follow-up call. Doing
+        # both decompiles the function twice: ``decompile()`` requests flags
+        # 0x0 while ``open_pseudocode`` requests DECOMP_WARNINGS (0x8), so the
+        # view never reuses the first cfunc -- it rebuilds and re-unflattens
+        # from scratch and the first result is discarded without ever being
+        # rendered. Measured on a 219-block flattened function: two identical
+        # 25 s passes, each applying the same 65 graph modifications.
         try:
             self._state.manager.decompile_with_native_preanalysis(
                 int(func_ea),
-                lambda: idaapi_shim.decompile(func_ea),
+                lambda: idaapi_shim.open_pseudocode(func_ea, 0),
                 lambda: idaapi_shim.mark_cfunc_dirty(func_ea, False),
             )
-            # Open the pseudocode window
-            idaapi_shim.open_pseudocode(func_ea, 0)
         except Exception as exc:
             logger.error("Failed to decompile function: %s", exc)
             idaapi_shim.warning(f"Failed to decompile function:\n{exc}")
