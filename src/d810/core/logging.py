@@ -464,12 +464,35 @@ class LoggerConfigurator:
     def set_level(logger_name: str, level_name: str) -> None:
         """
         Change the level for `logger_name` to one of DEBUG, INFO, WARNING, ERROR, CRITICAL.
+
+        The level is applied to `logger_name` *and every descendant*, which is
+        what a tree control implies: picking DEBUG on "d810" turns on DEBUG for
+        d810.* rather than for one logger nobody logs through.
+
+        Relying on hierarchy alone would only move part of the tree. Loggers
+        that ``dictConfig`` reset to NOTSET do inherit from their parent, but
+        ones created afterwards carry an explicit level from :func:`getLogger`
+        and would silently ignore the change -- and d810 imports modules lazily
+        during decompilation, so both kinds coexist at runtime with nothing in
+        the UI to distinguish them.
+
+        Note this necessarily overrides levels set on individual descendants
+        earlier, and that selecting DEBUG at the top is genuinely expensive:
+        it is what took d810.log from 14 MB to 3.2 GB on one system-suite run.
         """
         lvl = getattr(logging, level_name.upper(), None)
         if lvl is None:
             raise ValueError(f"Unknown logging level: {level_name}")
-        # print(f"Setting level for {logger_name} to {level_name}")
         getLogger(logger_name, lvl).setLevel(lvl)
+
+        # Snapshot first: setLevel does not mutate loggerDict, but getLogger
+        # above may have, and iterating a live dict is not worth the risk.
+        prefix = f"{logger_name}."
+        for name, obj in list(logging.Logger.manager.loggerDict.items()):
+            # PlaceHolder entries have no level to set; skip them.
+            if name.startswith(prefix) and isinstance(obj, logging.Logger):
+                obj.setLevel(lvl)
+
         # invalidate all LevelFlags
         LevelFlag.bump_config_version()
 
