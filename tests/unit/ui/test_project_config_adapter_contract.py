@@ -506,7 +506,11 @@ def _load_gui_panel(monkeypatch):
     monkeypatch.setitem(
         sys.modules,
         "d810.qt_shim",
-        types.SimpleNamespace(QtCore=qt, QtWidgets=widgets),
+        types.SimpleNamespace(
+            QtCore=qt,
+            QtWidgets=widgets,
+            qt_flag_or=lambda *flags: int(flags[0]) | int(flags[1]),
+        ),
     )
     monkeypatch.setitem(
         sys.modules,

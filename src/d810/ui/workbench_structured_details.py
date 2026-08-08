@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 from d810.core import typing
-from d810.qt_shim import QT_GRAPHICS_AVAILABLE, QtCore, QtWidgets
+from d810.qt_shim import QT_GRAPHICS_AVAILABLE, QtCore, QtWidgets, qt_flag_or
 from d810.ui.workbench_structured_details_logic import (
     DetailSection,
     JsonTreeNode,
@@ -138,7 +138,7 @@ if QT_GRAPHICS_AVAILABLE:
             item.setData(0, _user_role(), node.path)
             item.setData(1, _user_role(), node.editable and node.is_scalar)
             if node.editable and node.is_scalar:
-                item.setFlags(item.flags() | _item_editable_flag())
+                item.setFlags(qt_flag_or(item.flags(), _item_editable_flag()))
             for child in node.children:
                 item.addChild(self._item_for_node(child))
             return item

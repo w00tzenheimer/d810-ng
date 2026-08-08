@@ -29,7 +29,7 @@ except ImportError:
 
 
 if IDA_AVAILABLE:
-    from d810.qt_shim import QtCore, QtWidgets
+    from d810.qt_shim import QtCore, QtWidgets, qt_flag_or
     from d810.ui.workbench_structured_details import (
         JsonTreeEditor,
         RawJsonDialog,
@@ -300,7 +300,9 @@ if IDA_AVAILABLE:
             self.routing_prefer_rows: dict[str, tuple[typing.Any, typing.Any]] = {}
             for row_index, family_name in enumerate(self.routing_family_names):
                 family_item = QtWidgets.QTableWidgetItem(family_name)
-                family_item.setFlags(family_item.flags() | _checkable_flag())
+                family_item.setFlags(
+                    qt_flag_or(family_item.flags(), _checkable_flag())
+                )
                 family_item.setCheckState(_unchecked_state())
                 bias = QtWidgets.QDoubleSpinBox()
                 bias.setRange(-1000000.0, 1000000.0)
@@ -315,7 +317,7 @@ if IDA_AVAILABLE:
             self.routing_exclude_list = QtWidgets.QListWidget()
             for family_name in self.routing_family_names:
                 item = QtWidgets.QListWidgetItem(family_name)
-                item.setFlags(item.flags() | _checkable_flag())
+                item.setFlags(qt_flag_or(item.flags(), _checkable_flag()))
                 item.setData(_user_role(), family_name)
                 item.setCheckState(_unchecked_state())
                 self.routing_exclude_list.addItem(item)
@@ -697,7 +699,7 @@ if IDA_AVAILABLE:
                 if inspector.transforms_editable:
                     for row in inspector.selected_transforms:
                         item = QtWidgets.QListWidgetItem(row.transform_id)
-                        item.setFlags(item.flags() | _checkable_flag())
+                        item.setFlags(qt_flag_or(item.flags(), _checkable_flag()))
                         item.setData(_user_role(), row.transform_id)
                         item.setCheckState(
                             _checked_state() if row.selected else _unchecked_state()
