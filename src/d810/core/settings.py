@@ -91,6 +91,16 @@ class D810Settings:
     fact_lifecycle: bool = True
     """Enable maturity fact lifecycle capture hooks (D810_FACT_LIFECYCLE=0 disables)."""
 
+    trace_decompile_callers: bool = False
+    """Log a Python stack for every top-level decompilation (D810_TRACE_DECOMPILE_CALLERS).
+
+    Answers "who asked for this decompilation?" when the same function is
+    decompiled more than once for a single user action. ``hxe_prolog`` fires
+    once per microcode-generation pass, so the stack captured there names the
+    requester. Off by default: capturing a stack on every decompilation is
+    pure overhead once the question is answered.
+    """
+
     @classmethod
     def _from_env(cls) -> D810Settings:
         return cls(
@@ -106,6 +116,7 @@ class D810Settings:
                 "D810_CAPTURE_POST_FILE", "/tmp/d810_capture.txt"
             ),
             fact_lifecycle=_env_bool("D810_FACT_LIFECYCLE", default=True),
+            trace_decompile_callers=_env_bool("D810_TRACE_DECOMPILE_CALLERS"),
         )
 
 

@@ -30,6 +30,35 @@ if typing.TYPE_CHECKING:
     from d810.hexrays.hooks.optblock_adapter import BlockOptimizerManager
 
 
+def _log_decompile_requester(function_ea: int) -> None:
+    """Log who requested this decompilation, when tracing is enabled.
+
+    ``hxe_prolog`` fires once per microcode-generation pass, so one stack per
+    call identifies each distinct requester. Use this when a single user action
+    produces more than one full decompilation of the same function: the frames
+    below IDA's callback name the caller, which distinguishes a d810-initiated
+    re-decompile from one IDA issued on its own.
+
+    Enable with ``D810_TRACE_DECOMPILE_CALLERS=1``. Never raises: a diagnostic
+    must not be able to fail a decompilation.
+    """
+    try:
+        if not get_settings().trace_decompile_callers:
+            return
+        import traceback
+
+        # Drop this helper's own frame; keep the rest, innermost last.
+        frames = traceback.extract_stack()[:-1]
+        rendered = "".join(traceback.format_list(frames)).rstrip()
+        main_logger.info(
+            "decompile requester for 0x%x (innermost last):\n%s",
+            int(function_ea),
+            rendered or "  <no Python frames: requested from IDA native code>",
+        )
+    except Exception:
+        main_logger.debug("decompile requester trace failed", exc_info=True)
+
+
 class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
     def __init__(
         self,
@@ -384,6 +413,7 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
             fn_name = idaapi.get_func_name(function_ea)
         prologue = f"{fn_name} @ {hex(function_ea)}"
         main_logger.info("Starting decompilation of function %s", prologue)
+        _log_decompile_requester(function_ea)
         session = HexraysDecompilationHook._ensure_lifecycle_session(
             self,
             mba,

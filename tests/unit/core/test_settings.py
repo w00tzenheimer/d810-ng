@@ -28,6 +28,18 @@ class TestD810Settings:
         assert s.capture_post_maturity is None
         assert s.capture_post_file == "/tmp/d810_capture.txt"
         assert s.fact_lifecycle is True
+        assert s.trace_decompile_callers is False
+
+    def test_from_env_reads_trace_decompile_callers(self, monkeypatch):
+        monkeypatch.setenv("D810_TRACE_DECOMPILE_CALLERS", "1")
+        reset_settings()
+        assert get_settings().trace_decompile_callers is True
+
+    def test_trace_decompile_callers_defaults_off_without_env(self, monkeypatch):
+        """Stack capture on every decompilation is overhead; keep it opt-in."""
+        monkeypatch.delenv("D810_TRACE_DECOMPILE_CALLERS", raising=False)
+        reset_settings()
+        assert get_settings().trace_decompile_callers is False
 
     def test_from_env_reads_diag_snapshot(self, monkeypatch):
         monkeypatch.setenv("D810_DIAG_SNAPSHOT", "1")
