@@ -38,7 +38,7 @@ if IDA_AVAILABLE:
 
 
 if IDA_AVAILABLE:
-    from d810.qt_shim import QtCore, QtGui, QtWidgets
+    from d810.qt_shim import QtCore, QtGui, QtWidgets, qt_flag_or
 
 
 class StatsTreeWidget(QtWidgets.QTreeView):
@@ -359,8 +359,10 @@ class DeobfuscationStatsPanel(ida_kernwin.PluginForm):
 
             # Right-align count column for numeric readability
             count_item.setTextAlignment(
-                QtCore.Qt.AlignmentFlag.AlignRight
-                | QtCore.Qt.AlignmentFlag.AlignVCenter
+                qt_flag_or(
+                    QtCore.Qt.AlignmentFlag.AlignRight,
+                    QtCore.Qt.AlignmentFlag.AlignVCenter,
+                )
             )
 
             items = [category_item, name_item, count_item]

@@ -21,9 +21,12 @@ from d810.core.plugins import (
     BackendManifest,
     BackendUnavailable,
     ENTRY_POINT_GROUP,
+    ManifestError,
+    PluginCapabilityOffer,
     format_report,
     has_defects,
     manifest_of,
+    offers_capability,
 )
 
 
@@ -420,6 +423,171 @@ class TestReport(unittest.TestCase):
         reg = registry([spec("acme", load)])
         reg.report()
         self.assertEqual(load.calls, 0, "report must stay cheap")
+
+
+class TestPluginCapabilityOffer(unittest.TestCase):
+    """A backend declares which capability Protocols it can satisfy.
+
+    Typed, not stringly: the offer carries the Protocol *class*, so a type
+    checker verifies at the plugin author's site that the factory returns
+    something of that type. An earlier draft used import strings for laziness --
+    unnecessary, because a closure defers the heavy import just as well while
+    staying checkable.
+    """
+
+    def test_offer_carries_the_protocol_and_a_factory(self):
+        class Thing:
+            pass
+
+        def make(source):
+            return Thing()
+
+        offer = PluginCapabilityOffer(Thing, make)
+        self.assertIs(offer.capability, Thing)
+        self.assertIs(offer.factory, make)
+
+    def test_offers_capability_builds_an_equivalent_offer(self):
+        """The curried form is what plugin authors should use.
+
+        Verified with pyright that bare ``PluginCapabilityOffer(Cap, factory)``
+        does NOT flag a factory returning the wrong type -- C is solved from
+        both arguments and widens to a union. Currying pins C from the
+        capability, so the factory is checked. Runtime shape must match.
+        """
+
+        class Thing:
+            pass
+
+        def make(source):
+            return Thing()
+
+        offer = offers_capability(Thing)(make)
+        self.assertIsInstance(offer, PluginCapabilityOffer)
+        self.assertIs(offer.capability, Thing)
+        self.assertIs(offer.factory, make)
+
+    def test_offers_capability_works_as_a_decorator(self):
+        class Thing:
+            pass
+
+        @offers_capability(Thing)
+        def make(source):
+            return Thing()
+
+        self.assertIsInstance(make, PluginCapabilityOffer)
+        self.assertIs(make.capability, Thing)
+
+    def test_manifest_defaults_to_no_offers(self):
+        manifest = BackendManifest("acme", PLUGIN_API_VERSION, "pkg:obj")
+        self.assertEqual(manifest.capabilities, ())
+
+    def test_manifest_carries_offers_through_coercion(self):
+        class Thing:
+            pass
+
+        offer = PluginCapabilityOffer(Thing, lambda source: Thing())
+        got = manifest_of(
+            {
+                "name": "acme",
+                "api_version": PLUGIN_API_VERSION,
+                "provides": "pkg:obj",
+                "capabilities": [offer],
+            }
+        )
+        self.assertEqual(got.capabilities, (offer,))
+
+    def test_a_non_offer_in_capabilities_is_a_manifest_error(self):
+        # Catch it at declaration, not deep inside a pass.
+        with self.assertRaises(ManifestError) as ctx:
+            manifest_of(
+                {
+                    "name": "acme",
+                    "api_version": PLUGIN_API_VERSION,
+                    "provides": "pkg:obj",
+                    "capabilities": ["d810.capabilities.x:Y"],
+                }
+            )
+        self.assertIn("PluginCapabilityOffer", str(ctx.exception))
+
+    def test_the_factory_is_not_called_at_declaration_time(self):
+        class Thing:
+            pass
+
+        factory = Recorder(result=Thing())
+        manifest = BackendManifest(
+            "acme", PLUGIN_API_VERSION, "pkg:obj",
+            capabilities=(PluginCapabilityOffer(Thing, factory),),
+        )
+        self.assertEqual(factory.calls, 0, "the heavy import must stay deferred")
+        self.assertEqual(len(manifest.capabilities), 1)
+
+
+class TestRegistryCapabilityOffers(unittest.TestCase):
+    def make(self, *, api_version=PLUGIN_API_VERSION, offers=()):
+        class Backend:
+            pass
+
+        manifest = BackendManifest(
+            name="acme",
+            api_version=api_version,
+            provides=lambda: Backend,
+            capabilities=tuple(offers),
+        )
+        return BackendRegistry(
+            source=lambda: [
+                BackendSpec(name="acme", origin="test", load_manifest=lambda: manifest)
+            ]
+        )
+
+    def test_offers_come_only_from_usable_backends(self):
+        class Thing:
+            pass
+
+        offer = PluginCapabilityOffer(Thing, lambda source: Thing())
+        self.assertEqual(self.make(offers=[offer]).capability_offers(), (offer,))
+
+    def test_an_incompatible_backend_offers_nothing(self):
+        class Thing:
+            pass
+
+        offer = PluginCapabilityOffer(Thing, lambda source: Thing())
+        reg = self.make(api_version=PLUGIN_API_VERSION + 1, offers=[offer])
+        self.assertEqual(reg.capability_offers(), ())
+
+    def test_an_unusable_backend_offers_nothing(self):
+        """The case that actually exercises the usability gate.
+
+        An INCOMPATIBLE backend is rejected before its manifest is even
+        recorded, so it would yield no offers regardless. A version-compatible
+        backend whose probe reports it cannot run DOES get its manifest read --
+        only the usability check keeps its capabilities out of the pipeline.
+        """
+
+        class Thing:
+            pass
+
+        class Backend:
+            @staticmethod
+            def d810_backend_probe():
+                return "native half missing"
+
+        offer = PluginCapabilityOffer(Thing, lambda source: Thing())
+        manifest = BackendManifest(
+            name="acme",
+            api_version=PLUGIN_API_VERSION,
+            provides=lambda: Backend,
+            capabilities=(offer,),
+        )
+        reg = BackendRegistry(
+            source=lambda: [
+                BackendSpec(name="acme", origin="test", load_manifest=lambda: manifest)
+            ]
+        )
+        self.assertEqual(reg.probe("acme").status, BackendStatus.UNAVAILABLE)
+        self.assertEqual(reg.capability_offers(), ())
+
+    def test_no_offers_is_an_empty_tuple_not_none(self):
+        self.assertEqual(self.make().capability_offers(), ())
 
 
 class TestHealth(unittest.TestCase):

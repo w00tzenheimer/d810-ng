@@ -53,16 +53,29 @@ def test_qt_flag_or_uses_values_instead_of_pyside_enum_bitwise_or(
             )
             return self
 
+    monkeypatch.setattr(qt_shim, "QT6", True)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        combined = qt_shim.qt_flag_or(_WarningFlag(0x01), _WarningFlag(0x10))
+
+    assert isinstance(combined, _WarningFlag)
+    assert combined.value == 0x11
+
+
+def test_qt_flag_or_preserves_the_pyside_flag_family(monkeypatch) -> None:
     class _ItemFlag:
+        def __init__(self, value: int) -> None:
+            self.value = value
+
+    class _AlignmentFlag:
         def __init__(self, value: int) -> None:
             self.value = value
 
     monkeypatch.setattr(qt_shim, "QT6", True)
     monkeypatch.setattr(qt_shim, "Qt", types.SimpleNamespace(ItemFlag=_ItemFlag))
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", RuntimeWarning)
-        combined = qt_shim.qt_flag_or(_WarningFlag(0x01), _WarningFlag(0x10))
+    combined = qt_shim.qt_flag_or(_AlignmentFlag(0x01), _AlignmentFlag(0x10))
 
-    assert isinstance(combined, _ItemFlag)
+    assert isinstance(combined, _AlignmentFlag)
     assert combined.value == 0x11

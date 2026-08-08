@@ -6,7 +6,7 @@ import json
 
 from d810.core import typing
 from d810.core.logging import getLogger
-from d810.qt_shim import QT_GRAPHICS_AVAILABLE, QtCore, QtWidgets
+from d810.qt_shim import QT_GRAPHICS_AVAILABLE, QtCore, QtWidgets, qt_flag_or
 from d810.ui.workbench_canvas_graphics import (
     ReadOnlyDataflowScene,
     ReadOnlyDataflowView,
@@ -88,9 +88,12 @@ def evidence_summary_lines(
 
 def _top_left_alignment() -> typing.Any:
     try:
-        return QtCore.Qt.AlignmentFlag.AlignLeft | QtCore.Qt.AlignmentFlag.AlignTop
+        return qt_flag_or(
+            QtCore.Qt.AlignmentFlag.AlignLeft,
+            QtCore.Qt.AlignmentFlag.AlignTop,
+        )
     except AttributeError:
-        return QtCore.Qt.AlignLeft | QtCore.Qt.AlignTop
+        return qt_flag_or(QtCore.Qt.AlignLeft, QtCore.Qt.AlignTop)
 
 
 def reset_canvas_view_origin(view: typing.Any) -> None:

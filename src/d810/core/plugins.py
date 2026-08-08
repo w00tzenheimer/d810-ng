@@ -87,7 +87,15 @@ import importlib
 import threading
 from dataclasses import dataclass, field
 
-from d810.core.typing import Any, Callable, Iterable, Mapping, Sequence
+from d810.core.typing import (
+    Any,
+    Callable,
+    Generic,
+    Iterable,
+    Mapping,
+    Sequence,
+    TypeVar,
+)
 
 from .logging import getLogger
 
@@ -103,11 +111,14 @@ __all__ = [
     "BackendSpec",
     "BackendStatus",
     "BackendUnavailable",
+    "ManifestError",
+    "PluginCapabilityOffer",
     "builtin",
     "entry_point_source",
     "format_report",
     "has_defects",
     "make_singleton",
+    "offers_capability",
     "manifest_of",
 ]
 
@@ -149,6 +160,80 @@ class BackendStatus(enum.Enum):
     """Raised something other than ImportError, or shipped a bad manifest."""
 
 
+C = TypeVar("C")
+
+
+@dataclass(frozen=True)
+class PluginCapabilityOffer(Generic[C]):
+    """A backend declaring it can satisfy one capability Protocol.
+
+    Typed rather than stringly on purpose. ``capability`` is the Protocol
+    *class*, so at the plugin author's site a type checker infers ``C`` from
+    ``type[C]`` and then verifies the factory returns it::
+
+        def _make_engine(source: FunctionSource) -> ConcolicEngine:
+            from d810_backend_cobra.concolic import Engine   # deferred
+            return Engine(source.live_source)
+
+        PluginCapabilityOffer(ConcolicEngine, _make_engine)
+
+    An import string would have moved that error to runtime for no gain: the
+    closure above already defers the heavy import, so laziness never required
+    giving up the type.
+
+    **Construct via :func:`offers_capability`, not this class directly.**
+    Verified with pyright: calling the constructor bare,
+    ``PluginCapabilityOffer(Engine, wrong_factory)``, is NOT an error -- ``C``
+    is solved from both arguments at once, so a mismatch widens the result to
+    ``PluginCapabilityOffer[Engine | str]`` instead of failing. Direct
+    construction is only checked when ``C`` is pinned, either by annotating the
+    target or by writing ``PluginCapabilityOffer[Engine](...)``.
+    :func:`offers_capability` pins it from the capability alone, so the factory
+    is always checked.
+
+    ``factory`` is called **per function**, not once at activation. Every
+    capability in this codebase is built from live per-function state (a live
+    ``mba_t`` reached through ``FunctionSource.live_source``), so an instance
+    handed over at activation time would be wrong for every other function --
+    and would be exactly the kind of stale cross-reload reference the hot
+    reloader cannot clear.
+
+    Neither the capability Protocol nor the factory's argument type is named
+    here: ``d810.core`` is the bottom layer and may not import
+    ``d810.capabilities`` or ``d810.passes``. The concrete types live at the
+    author's call site, which is where checking matters.
+    """
+
+    capability: type[C]
+    factory: Callable[[Any], C]
+
+
+def offers_capability(
+    capability: type[C],
+) -> Callable[[Callable[[Any], C]], PluginCapabilityOffer[C]]:
+    """Declare a capability offer with the factory actually type-checked.
+
+    Curried so ``C`` is solved from *capability* alone; the returned binder then
+    checks the factory against it. Calling
+    :class:`PluginCapabilityOffer` directly does not achieve this -- see its
+    docstring.
+
+    Usable as a decorator::
+
+        @offers_capability(ConcolicEngine)
+        def make_engine(source: FunctionSource) -> ConcolicEngine:
+            from d810_backend_cobra.concolic import Engine   # deferred
+            return Engine(source.live_source)
+
+        MANIFEST = BackendManifest(..., capabilities=(make_engine,))
+    """
+
+    def bind(factory: Callable[[Any], C]) -> PluginCapabilityOffer[C]:
+        return PluginCapabilityOffer(capability, factory)
+
+    return bind
+
+
 @dataclass(frozen=True)
 class BackendManifest:
     """What an extension declares about itself.
@@ -166,6 +251,7 @@ class BackendManifest:
     name: str
     api_version: int
     provides: str | Callable[[], Any]
+    capabilities: tuple[PluginCapabilityOffer[Any], ...] = ()
 
 
 _MANIFEST_FIELDS = ("name", "api_version", "provides")
@@ -206,11 +292,38 @@ def manifest_of(raw: Any) -> BackendManifest:
             f"manifest api_version must be an int, got {values['api_version']!r}"
         ) from exc
 
+    offers = _coerce_offers(raw)
+
     return BackendManifest(
         name=str(values["name"]),
         api_version=api_version,
         provides=values["provides"],
+        capabilities=offers,
     )
+
+
+def _coerce_offers(raw: Any) -> tuple[PluginCapabilityOffer[Any], ...]:
+    """Read the optional ``capabilities`` field and check its shape.
+
+    Rejecting a bad entry here means the plugin author learns at declaration
+    time; the alternative is a pass discovering mid-run that its capability is
+    a string.
+    """
+    try:
+        declared = raw["capabilities"] if isinstance(raw, Mapping) else raw.capabilities
+    except (KeyError, AttributeError):
+        return ()
+    if declared is None:
+        return ()
+
+    offers = tuple(declared)
+    for offer in offers:
+        if not isinstance(offer, PluginCapabilityOffer):
+            raise ManifestError(
+                f"capabilities entries must be PluginCapabilityOffer, "
+                f"got {type(offer).__name__}: {offer!r}"
+            )
+    return offers
 
 
 @dataclass(frozen=True)
@@ -330,6 +443,8 @@ class BackendRegistry:
         self._status: dict[str, BackendStatus] = {}
         self._reason: dict[str, str | None] = {}
         self._api_version: dict[str, int | None] = {}
+        #: manifest of whichever candidate settled, for capability offers
+        self._manifests: dict[str, BackendManifest] = {}
         self._loaded: dict[str, Any] = {}
         self._errors: dict[str, BaseException] = {}
 
@@ -373,6 +488,7 @@ class BackendRegistry:
             self._status = {name: BackendStatus.NOT_LOADED for name in candidates}
             self._reason = {name: None for name in candidates}
             self._api_version = {name: None for name in candidates}
+            self._manifests = {}
             self._loaded = {}
             self._errors = {}
             self._discovered = True
@@ -423,6 +539,24 @@ class BackendRegistry:
     def probe_all(self) -> list[BackendInfo]:
         """Ground truth for every backend. Imports; use for diagnostics."""
         return [self.probe(name) for name in self.names()]
+
+    def capability_offers(self) -> tuple[PluginCapabilityOffer[Any], ...]:
+        """Every offer from backends that actually resolved.
+
+        Probes, because an offer from a backend that turns out UNAVAILABLE or
+        INCOMPATIBLE must not reach the pipeline -- binding a capability slot
+        to something that cannot run is worse than leaving the slot empty,
+        which callers already handle via ``CapabilitySet.optional``.
+        """
+        offers: list[PluginCapabilityOffer[Any]] = []
+        for name in self.names():
+            if not self.probe(name).usable:
+                continue
+            with self._lock:
+                manifest = self._manifests.get(name)
+            if manifest is not None:
+                offers.extend(manifest.capabilities)
+        return tuple(offers)
 
     def load(self, name: str) -> Any:
         """Return the backend object, or raise :class:`BackendUnavailable`."""
@@ -502,6 +636,8 @@ class BackendRegistry:
                 f"this d810 speaks v{PLUGIN_API_VERSION}"
             )
             return BackendStatus.INCOMPATIBLE, reason, None, None, version
+
+        self._manifests[name] = manifest
 
         try:
             obj = _resolve_provides(manifest.provides)
