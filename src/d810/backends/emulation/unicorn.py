@@ -6,7 +6,6 @@ import struct
 
 from d810.backends.emulation.common import (
     Architecture,
-    BoundaryKind,
     CorridorEvent,
     CorridorEventKind,
     CorridorTraceResult,

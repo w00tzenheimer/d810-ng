@@ -275,7 +275,6 @@ class _Classifier:
     def classify(self) -> list[UnsupportedLiftReason]:
         self._check_boundary()
         for serial in sorted(self.flow_graph.blocks):
-            block = self.flow_graph.blocks[serial]
             instructions = self.instructions[serial]
             for index, instruction in enumerate(instructions):
                 self._check_instruction(serial, index, instruction)
@@ -1218,7 +1217,6 @@ class _Emitter:
         return lines
 
     def _emit_block(self, serial: int) -> list[str]:
-        block = self.flow_graph.blocks[serial]
         instructions = self.instructions[serial]
         lines = [f"bb{serial}:"]
         body = instructions
@@ -1483,7 +1481,6 @@ class _Emitter:
             instruction.control is None or instruction.control.return_value is None
         ) and self.boundary.return_cell is None:
             return ["  ret i32 0"]
-        lines: list[str] = []
         if (
             self.boundary.return_policy is LlvmLiftBoundaryReturnPolicy.OVERRIDE
             and self.boundary.return_cell is not None

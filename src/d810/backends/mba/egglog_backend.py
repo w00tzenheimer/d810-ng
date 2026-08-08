@@ -30,6 +30,11 @@ from d810.hexrays.expr.ast import (
     AstNodeProtocol,
 )
 
+import idaapi
+
+from d810.mba.backend_registry import EgglogProvider
+
+
 egglog_logger = logging.getLogger("egglog", default_level=logging.WARNING)
 logger = logging.getLogger(__name__)
 
@@ -43,11 +48,6 @@ except ImportError:
     class egglog:
         class Expr:
             pass
-
-
-import idaapi
-
-from d810.mba.backend_registry import EgglogProvider
 
 
 def check_egglog_available() -> bool:
@@ -491,12 +491,12 @@ class AstToBitExprConverter:
     # IDA opcode to BitExpr operation mapping
     # Only populated when ida_hexrays is available (inside IDA)
     OPCODE_TO_BITEXPR_BINARY = {
-        idaapi.m_add: lambda l, r: l + r,
-        idaapi.m_sub: lambda l, r: l - r,
-        idaapi.m_mul: lambda l, r: l * r,
-        idaapi.m_and: lambda l, r: l & r,
-        idaapi.m_or: lambda l, r: l | r,
-        idaapi.m_xor: lambda l, r: l ^ r,
+        idaapi.m_add: lambda left, right: left + right,
+        idaapi.m_sub: lambda left, right: left - right,
+        idaapi.m_mul: lambda left, right: left * right,
+        idaapi.m_and: lambda left, right: left & right,
+        idaapi.m_or: lambda left, right: left | right,
+        idaapi.m_xor: lambda left, right: left ^ right,
     }
 
     OPCODE_TO_BITEXPR_UNARY = {

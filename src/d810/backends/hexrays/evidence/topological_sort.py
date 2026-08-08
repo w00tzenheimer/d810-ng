@@ -160,8 +160,6 @@ class TopologicalSortStrategy:
         if reorder is None:
             return None
 
-        mba = snapshot.mba
-
         # Empty ownership — ReorderBlocks copies blocks to new serials and
         # remaps references; it does not claim exclusive ownership of the
         # originals (LFG already owns the redirect edges on those blocks).

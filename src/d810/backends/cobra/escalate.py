@@ -35,7 +35,7 @@ from d810.backends.cobra.prove import (
 )
 from d810.backends.cobra.table import RewriteTable
 from d810.core import getLogger
-from d810.core.typing import Any, Callable, Sequence
+from d810.core.typing import Callable, Sequence
 
 logger = getLogger(__name__)
 

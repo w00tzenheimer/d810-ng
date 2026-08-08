@@ -447,9 +447,9 @@ class EmulationDispatcherResolver:
             insn = blk.head
             while insn is not None:
                 if insn.opcode in _COMPARE_OPS:
-                    l = self._peel_widen(insn.l)
-                    r = self._peel_widen(insn.r)
-                    for a, c in ((l, r), (r, l)):
+                    left = self._peel_widen(insn.l)
+                    right = self._peel_widen(insn.r)
+                    for a, c in ((left, right), (right, left)):
                         if (
                             a is not None
                             and a.t == ida_hexrays.mop_S

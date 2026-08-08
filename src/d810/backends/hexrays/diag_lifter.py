@@ -276,7 +276,7 @@ def _diag_row_to_insn_snapshot(row: object) -> InsnSnapshot:
     rebuilt into the snapshot; the caller (or ``from_block``) then projects it.
     """
     meta = _diag_meta_payload(row)
-    l = parse_diag_meta_operand(meta.get("l"))
+    left = parse_diag_meta_operand(meta.get("l"))
     r = parse_diag_meta_operand(meta.get("r"))
     d = parse_diag_meta_operand(meta.get("d"))
 
@@ -297,7 +297,7 @@ def _diag_row_to_insn_snapshot(row: object) -> InsnSnapshot:
         ea=ea,
         operands=(),
         display_text=dstr,
-        l=l,
+        l=left,
         r=r,
         d=d,
         kind=kind,

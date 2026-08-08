@@ -1,4 +1,4 @@
-"Microcode dump tool \u2014 render/explanation half + compat facade.\n\nThis module hosts the RENDER / DISPATCHER-OVERLAY / DAG-DUMP half of\nthe historical ``d810.backends.hexrays.evidence.microcode_dump`` tool.  These functions\nbuild human-readable strings, dispatcher-tree visualisations, and\nlinearized-state-DAG dumps; they consume preanalysis and evaluator analyses\nto annotate the live Hex-Rays MBA with semantic information.\n\nAxis-C slice 1 (first half of the ``microcode_dump`` split):\n\n* The LIVE-CAPTURE half (``mba_to_dict`` / ``dump_function_microcode`` /\n  ``dump_microcode_json`` / ``dump_mba_json`` and the four dict-shaped\n  dataclasses) was moved to ``d810.hexrays.diagnostics.microcode_capture``\n  -- a layer-honest home for live-IDA capture per the\n  ``no-live-runtime-in-diagnostics`` rule's lawful-fix list.\n* The seven moved symbols (plus the constant tables) are re-exported\n  below as a compatibility facade so the existing import sites at\n  ``d810.backends.hexrays.evidence.microcode_dump`` keep working.\n* Dependency direction is **one-way**:\n  ``d810.backends.hexrays.evidence.microcode_dump -> d810.hexrays.diagnostics.microcode_capture``,\n  never the reverse.  Do not add an import from microcode_capture\n  back into this module.\n\nThe render half + dispatcher / DAG / state-machine dumpers stay here\nfor a follow-up slice -- they import preanalysis / evaluator and therefore\ncannot live below those layers.\n"
+"Microcode dump tool \u2014 render/explanation half.\n\nThis module hosts the RENDER / DISPATCHER-OVERLAY / DAG-DUMP half of\nthe historical ``d810.backends.hexrays.evidence.microcode_dump`` tool.  These functions\nbuild human-readable strings, dispatcher-tree visualisations, and\nlinearized-state-DAG dumps; they consume preanalysis and evaluator analyses\nto annotate the live Hex-Rays MBA with semantic information.\n\nAxis-C slice 1 (first half of the ``microcode_dump`` split):\n\n* The LIVE-CAPTURE half (``mba_to_dict`` / ``dump_function_microcode`` /\n  ``dump_microcode_json`` / ``dump_mba_json`` and the four dict-shaped\n  dataclasses) was moved to ``d810.hexrays.diagnostics.microcode_capture``\n  -- a layer-honest home for live-IDA capture per the\n  ``no-live-runtime-in-diagnostics`` rule's lawful-fix list.\n* Consumers import those symbols from their canonical home\n  (``d810.hexrays.diagnostics.microcode_capture``) directly. This module\n  does NOT re-export them -- a facade here would mean two import paths\n  for one symbol and an unused-import finding on every lint run.\n* Dependency direction is **one-way**:\n  ``d810.backends.hexrays.evidence.microcode_dump -> d810.hexrays.diagnostics.microcode_capture``,\n  never the reverse.  Do not add an import from microcode_capture\n  back into this module.\n\nThe render half + dispatcher / DAG / state-machine dumpers stay here\nfor a follow-up slice -- they import preanalysis / evaluator and therefore\ncannot live below those layers.\n"
 
 from __future__ import annotations
 
@@ -7,7 +7,18 @@ import re
 from dataclasses import replace
 
 from d810.core.logging import getLogger
-from d810.core.typing import Any, Dict, List, Optional, Tuple, cast
+from d810.core.typing import TYPE_CHECKING, Dict, List, Optional, Tuple, cast
+
+# This module is idaapi-free at RUNTIME: the half that needed live Hex-Rays
+# objects moved to d810.hexrays.diagnostics.microcode_capture. The guarded
+# import below binds the names used in string annotations without executing;
+# test_microcode_dump_has_no_direct_idaapi_operations enforces the boundary
+# structurally (imports outside TYPE_CHECKING, and runtime uses of the name).
+if TYPE_CHECKING:
+    import idaapi
+
+    from d810.core.observability import SnapshotRef
+
 from d810.evaluator.hexrays_microcode.valrange_dataflow import (
     format_valrange_env,
     run_valrange_fixpoint,
@@ -16,34 +27,17 @@ from d810.evaluator.hexrays_microcode.valranges import (
     collect_instruction_valrange_records,
 )
 
-# Compatibility facade: the live-capture half moved to
-# ``d810.hexrays.diagnostics.microcode_capture`` (axis-C slice 1).
-# These re-exports preserve the seven existing
-# ``d810.backends.hexrays.evidence.microcode_dump`` import sites without touching them.
+# Only what this module actually uses. The live-capture half lives in
+# microcode_capture (axis-C slice 1); consumers import it from there.
 from d810.hexrays.diagnostics.microcode_capture import (
-    BlockInfo,
-    FunctionMicrocode,
-    InstructionInfo,
     MATURITY_NAMES,
-    MOP_TYPE_MAP,
-    MopInfo,
-    OPCODE_MAP,
-    block_to_dict,
-    dump_function_microcode,
-    dump_mba_json,
     dump_microcode_json,
     format_may_only_mlist,
     format_saved_register_slot,
-    instruction_to_dict,
-    mba_to_dict,
-    mop_to_dict,
 )
 from d810.hexrays.mutation.ir_translator import IDAIRTranslator
 from d810.hexrays.utils.hexrays_helpers import (
     BLT_NAMES,
-    MATURITY_TO_STRING_DICT,
-    MOP_INFO,
-    OPCODES_INFO,
     STRING_TO_MATURITY_DICT,
     BlockType,
     MicrocodeBasicBlockFlag,
@@ -59,20 +53,16 @@ from d810.backends.hexrays.evidence.condition_chain_analysis import (
 from d810.analyses.control_flow.linearized_state_dag import (
     BoundaryInlineMode,
     LabelRenderMode,
-    LinearizedStateDag,
     ProgramCommentMode,
     ProgramRenderStrategy,
     RedirectSourceKind,
     RenderedProgramSnapshot,
     RenderOrderStrategy,
     SemanticEdgeKind,
-    StateAnchorDivergence,
     StateDagEdge,
     StateRedirectAnchor,
     build_linearized_state_program,
     build_live_linearized_state_dag_from_graph,
-    compute_dag_anchor_divergence,
-    render_dag_anchor_divergence,
     render_linearized_state_program,
     render_linearized_state_dag,
     render_linearized_state_dag_dot,
