@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import sys
 
-from d810.core.typing import Any, Literal, Union, cast
+from d810.core.typing import Any, Literal
 
 
 def _is_ida_gui_available() -> bool:
@@ -833,19 +833,20 @@ def get_text_margins_as_tuple(line_edit: "QLineEdit") -> tuple[int, int, int, in
         return margins
 
 
-def qt_flag_or(*flags) -> Union[int, "Qt.ItemFlag"]:  # type: ignore[valid-type]
+def qt_flag_or(*flags: Any) -> Any:
     """
     Helper function to combine Qt flags that works with both PyQt5 and PySide6.
 
     In PySide6, enum flags need to use .value for bitwise operations, and the result
-    must be converted back to the enum type using Qt.ItemFlag.
-    In PyQt5, flags can be used directly as integers.
+    must be converted back to the original flag family. In PyQt5, values are
+    generally integers but may still be a QFlags wrapper.
 
     Args:
         *flags: Variable number of Qt flag enum values to combine.
 
     Returns:
-        Combined flags as an integer (PyQt5) or ItemFlag enum type (PySide6).
+        Combined flags in the same family as the first argument, or an integer
+        when the binding does not expose a constructible flag wrapper.
     """
     if not flags:
         return 0
@@ -856,21 +857,12 @@ def qt_flag_or(*flags) -> Union[int, "Qt.ItemFlag"]:  # type: ignore[valid-type]
         flag_value = flag.value if hasattr(flag, "value") else int(flag)
         result |= flag_value
 
-    # In PySide6, convert the integer result back to Qt.ItemFlag enum type
-    if QT6:
-        try:
-            # Use Qt.ItemFlag to construct the enum from the combined integer value
-            item_flag = Qt.ItemFlag(result)  # type: ignore[call-overload]
-            return cast("Qt.ItemFlag", item_flag)
-        except (ValueError, TypeError, AttributeError):
-            # If conversion fails, return int (fallback)
-            return result
-
-    # PyQt5: Attempt to return Qt.ItemFlags object to satisfy strict type checks
-    # Some bindings (like IDA's) are strict about types and don't accept raw ints
+    # Preserve the first flag's family.  Qt uses distinct wrappers for item,
+    # alignment, dialog, and text-interaction flags; coercing every result to
+    # ItemFlag works only for item.setFlags() and breaks other Qt setters.
     try:
-        return Qt.ItemFlags(result)  # type: ignore[attr-defined]
-    except (AttributeError, TypeError):
+        return type(flags[0])(result)
+    except (ValueError, TypeError):
         return result
 
 

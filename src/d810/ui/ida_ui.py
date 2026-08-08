@@ -8,7 +8,15 @@ import ida_kernwin
 import idaapi
 
 from d810.core import logging, typing
-from d810.qt_shim import QFrame, QGroupBox, QMenu, QtCore, QToolButton, QtWidgets
+from d810.qt_shim import (
+    QFrame,
+    QGroupBox,
+    QMenu,
+    QtCore,
+    QToolButton,
+    QtWidgets,
+    qt_flag_or,
+)
 
 if typing.TYPE_CHECKING:
     from d810.manager import D810State, ProjectRuntimeSnapshot
@@ -446,8 +454,10 @@ class PluginConfigurationFileForm_t(QtWidgets.QDialog):
             self,
             "Open Directory",
             os.path.expanduser("~"),
-            QtWidgets.QFileDialog.ShowDirsOnly
-            | QtWidgets.QFileDialog.DontResolveSymlinks,
+            qt_flag_or(
+                QtWidgets.QFileDialog.ShowDirsOnly,
+                QtWidgets.QFileDialog.DontResolveSymlinks,
+            ),
         )
         if log_dir != "":
             self.log_dir = log_dir

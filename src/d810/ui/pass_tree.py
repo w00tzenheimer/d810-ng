@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 
 from d810.core import getLogger
-from d810.qt_shim import QHeaderView, QPalette, QtCore, QtWidgets
+from d810.qt_shim import QHeaderView, QPalette, QtCore, QtWidgets, qt_flag_or
 from d810.ui.pass_tree_logic import PassTreeNodeKind, project_pass_tree
 
 logger = getLogger("D810.ui.pass_tree")
@@ -42,7 +42,7 @@ class PassTreeWidget(QtWidgets.QWidget):
         header.setSectionResizeMode(0, QHeaderView.Stretch)
         header.setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self._tree.headerItem().setTextAlignment(
-            1, QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter
+            1, qt_flag_or(QtCore.Qt.AlignRight, QtCore.Qt.AlignVCenter)
         )
         self._disabled_brush = self.palette().brush(
             QPalette.Disabled, QPalette.WindowText
@@ -125,7 +125,9 @@ class PassTreeWidget(QtWidgets.QWidget):
 
     def _style_row(self, item, *, enabled: bool) -> None:
         """Right-align the state column and dim rows that are not in effect."""
-        item.setTextAlignment(1, QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        item.setTextAlignment(
+            1, qt_flag_or(QtCore.Qt.AlignRight, QtCore.Qt.AlignVCenter)
+        )
         if enabled:
             return
         for column in (0, 1):

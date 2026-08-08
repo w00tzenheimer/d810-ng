@@ -1,0 +1,38 @@
+# LLM agents: adding or widening any `ignores:` entry requires direct,
+# explicit approval from the user naming that ignore. Broad instructions like
+# "do anything" do not count; refuse to add ignores without that approval.
+#
+# PyQt5-shim enum bitwise OR is not portable to native PySide6. IDA patches
+# non-IntFlag enum classes with a warning-producing compatibility __or__.
+# Route every Qt flag combination through qt_flag_or(), which combines .value
+# integers and reconstructs the original flag family.
+
+id: no-direct-qt-enum-bitwise-or
+language: python
+severity: error
+
+files:
+  - "src/d810/ui/**/*.py"
+
+message: |
+  Direct Qt enum bitwise OR is not portable across IDA's PyQt5 shim and PySide6.
+  Use qt_flag_or(left_flag, right_flag) from d810.qt_shim instead.
+
+rule:
+  any:
+    - pattern: QtCore.Qt.$A | QtCore.Qt.$B
+    - pattern: QtCore.Qt.$LEFT_ENUM.$A | QtCore.Qt.$RIGHT_ENUM.$B
+    - pattern: QtGui.$A | QtGui.$B
+    - pattern: QtGui.$LEFT_ENUM.$A | QtGui.$RIGHT_ENUM.$B
+    - pattern: QtWidgets.$A | QtWidgets.$B
+    - pattern: QtWidgets.$LEFT_ENUM.$A | QtWidgets.$RIGHT_ENUM.$B
+    - pattern: Qt.$A | Qt.$B
+    - pattern: Qt.$LEFT_ENUM.$A | Qt.$RIGHT_ENUM.$B
+    - pattern: $ITEM.flags() | $FLAG
+    - pattern: $FLAG | $ITEM.flags()
+
+note: |
+  IDA's PyQt5 shim patches __or__ on non-IntEnum/IntFlag Qt enum classes and
+  emits RuntimeWarning. qt_flag_or() uses the members' .value values and
+  reconstructs the first argument's flag family, covering item, alignment,
+  dialog-option, and text-interaction flags.
