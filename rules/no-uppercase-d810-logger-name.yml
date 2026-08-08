@@ -27,6 +27,17 @@
 #
 # Note this rule matches the NAME ARGUMENT only. "D810Formatter" is a formatter
 # key in the logging config, not a logger name, and is deliberately untouched.
+#
+# Tests name loggers too, and they must be covered. A test that LISTENS on the
+# uppercase name is the same case-sensitivity bug seen from the other side:
+#
+#   src:   logger = getLogger("d810.unflat.safeguard")     # emits here
+#   test:  with self.assertLogs("D810.unflat.safeguard")   # listens there
+#
+# Nothing is wired together, so the assertion fails with the maximally confusing
+# "no logs of level INFO or higher triggered on ..." -- which reads as "the code
+# never ran". An earlier version of this rule scanned only src/ and tools/ and
+# matched only getLogger, so it let exactly that failure through the gate.
 
 id: no-uppercase-d810-logger-name
 language: python
@@ -35,6 +46,7 @@ severity: error
 files:
   - "src/d810/**/*.py"
   - "tools/**/*.py"
+  - "tests/**/*.py"
 
 message: |
   Logger names must be lowercase `d810.*`. Python logger names are
@@ -44,8 +56,17 @@ message: |
 
 rule:
   any:
+    # Emitting side.
     - pattern: getLogger($NAME)
     - pattern: $MOD.getLogger($NAME)
+    # Listening side: unittest and pytest both take the logger name as a plain
+    # string, so the same typo lands here and fails as "code never ran".
+    - pattern: $OBJ.assertLogs($NAME)
+    - pattern: $OBJ.assertLogs($NAME, $$$)
+    - pattern: $OBJ.assertNoLogs($NAME)
+    - pattern: $OBJ.assertNoLogs($NAME, $$$)
+    - pattern: $OBJ.at_level($$$, logger=$NAME)
+    - pattern: $OBJ.set_level($$$, logger=$NAME)
 constraints:
   NAME:
     regex: '^["\x27]D810'
