@@ -654,7 +654,22 @@ def getLogger(name: str, default_level: int = logging.INFO) -> D810Logger:
         new.propagate = True
 
     # replace it in the manager so future getLogger(...) calls return the subclass
-    logging.Logger.manager.loggerDict[name] = new
+    manager = logging.Logger.manager
+    manager.loggerDict[name] = new
+
+    # Re-point any child that still references the object we just replaced.
+    #
+    # Children cache their parent as an *object*, not by name, so swapping an
+    # entry in loggerDict leaves them pointing at the old logger. Level lookups
+    # then resolve against a stale parent: LoggerConfigurator.set_level("d810",
+    # "DEBUG") -- what the UI logger panel calls -- would build a new DEBUG
+    # wrapper while all 133 module loggers kept consulting the INFO one, so the
+    # control silently did nothing. A log line that never appears is
+    # indistinguishable from code that never ran, which makes this an expensive
+    # failure to debug.
+    for _child in list(manager.loggerDict.values()):
+        if isinstance(_child, logging.Logger) and _child.parent is base:
+            _child.parent = new
     return new
 
 
