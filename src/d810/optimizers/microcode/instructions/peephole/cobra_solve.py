@@ -155,14 +155,21 @@ class CobraSolveRule(PeepholeSimplificationRule):
                 proof_cache_db_path(getattr(self, "log_dir", None))
             )
             loaded = self._store.load()
-            # Seed the live table with everything already proved. A cold cache
+            # Seed the live table with everything already settled. A cold cache
             # is normal and simply means paying the solve once more.
+            n = 0
             for key, entry in loaded._entries.items():  # noqa: SLF001
-                self.table._entries.setdefault(key, entry)  # noqa: SLF001
+                if key not in self.table._entries:  # noqa: SLF001
+                    self.table._entries[key] = entry  # noqa: SLF001
+                    n += 1
+            # FLUSH-BEFORE-EVICT: the table is bounded, so anything pushed out
+            # must reach disk on its way. The alternative -- load-on-miss --
+            # is worse here because a miss is precisely what the table exists
+            # to prevent: an evicted NO_REWRITE would be re-solved (~84ms) only
+            # to find the store already knew.
+            self.table.set_evict_sink(self._store.put_entry)
             logger.info(
-                "cobra-solve proof cache: %d entries from %s",
-                len(loaded._entries),  # noqa: SLF001
-                self._store.db_path,
+                "cobra-solve proof cache: %d entries from %s", n, self._store.db_path
             )
         except Exception:  # noqa: BLE001 - a bad cache must never break a decompile
             logger.exception("cobra-solve could not load its proof cache")
