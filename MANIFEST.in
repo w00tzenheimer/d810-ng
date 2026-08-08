@@ -6,10 +6,31 @@
 include src/d810/backends/cobra/_cobra.pyx
 include src/d810/backends/cobra/cobra_shim.cpp
 include src/d810/backends/cobra/cobra_shim.h
-
-# CoBRA itself is a submodule and deliberately NOT vendored: an sdist carries
-# no submodule contents, so a source install gets an inert mba-solve unless the
-# user inits the submodule or points COBRA_ROOT at their own tree. That is the
-# designed degradation -- binding_available() returns False and the rule is a
-# no-op, rather than the install failing.
 include tools/scripts/build_cobra.sh
+
+# CoBRA source, taken from the pinned submodule at sdist time.
+#
+# This is NOT vendoring: nothing is committed to this repo, the submodule stays
+# the single source of truth, and the pin still ties the binding's CoBRA
+# version to the d810 commit. But sdist is built where the submodule IS checked
+# out, so these files land in the tarball and a source install can actually
+# build the binding instead of silently getting an inert mba-solve.
+#
+# TARGETED, not `recursive-include third_party/cobra *`: that tree is 43MB, of
+# which test/ alone is 41MB. What a build actually needs is ~2.2MB.
+# LICENSE and THIRD_PARTY_LICENSES travel with it because we are
+# redistributing Apache-2.0 source.
+include third_party/cobra/CMakeLists.txt
+include third_party/cobra/LICENSE
+include third_party/cobra/THIRD_PARTY_LICENSES
+recursive-include third_party/cobra/lib *
+recursive-include third_party/cobra/include *
+recursive-include third_party/cobra/dependencies *
+recursive-include third_party/cobra/cmake *
+
+# Never ship build output or VCS metadata, whatever state the tree is in.
+prune third_party/cobra/build
+prune third_party/cobra/build-deps
+prune third_party/cobra/build-nollvm
+prune third_party/cobra/.git
+global-exclude *.o *.a *.lib *.so *.dylib *.pyc
