@@ -100,6 +100,16 @@ def test_inspector_transform_picker_is_projection_driven_and_fail_closed() -> No
     assert "transform_ids" not in render_source
 
 
+def test_checkable_items_combine_flags_through_qt_compatibility() -> None:
+    source = PANEL.read_text(encoding="utf-8")
+
+    assert source.count("qt_flag_or(item.flags(), _checkable_flag())") == 2
+    assert (
+        "qt_flag_or(family_item.flags(), _checkable_flag())" in source
+    )
+    assert "flags() | _checkable_flag()" not in source
+
+
 def test_inspector_callbacks_delegate_typed_edits_and_rerender_rejections() -> None:
     transform_source = _source("_apply_selected_transforms")
     options_source = _source("_apply_inspector_options")
@@ -631,7 +641,11 @@ def _load_behavior_panel(monkeypatch):
     monkeypatch.setitem(
         sys.modules,
         "d810.qt_shim",
-        types.SimpleNamespace(QtCore=qt, QtWidgets=widgets),
+        types.SimpleNamespace(
+            QtCore=qt,
+            QtWidgets=widgets,
+            qt_flag_or=lambda *flags: int(flags[0]) | int(flags[1]),
+        ),
     )
     monkeypatch.setitem(
         sys.modules,
