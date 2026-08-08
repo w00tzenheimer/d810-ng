@@ -72,6 +72,17 @@ class DispatcherStateMachine:
 HodurStateMachine = DispatcherStateMachine
 
 
+def collect_state_machine_blocks(state_machine: DispatcherStateMachine) -> set[int]:
+    """Collect all block serials that are part of the state machine."""
+    if state_machine is None:
+        return set()
+    blocks: set[int] = set()
+    for handler in state_machine.handlers.values():
+        blocks.add(handler.check_block)
+        blocks.update(handler.handler_blocks)
+    return blocks
+
+
 @dataclass
 class Pass0RedirectRecord:
     """Compact redirect ledger row for pass-0 linearization diagnostics."""

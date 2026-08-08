@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from d810.backends.hexrays.evidence._helpers import blk_label
+from d810.hexrays.utils.hexrays_formatters import blk_label
 
 
 def log_residual_dispatcher_handoff_outcomes(
