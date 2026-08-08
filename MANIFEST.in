@@ -1,0 +1,15 @@
+# The CoBRA binding is compiled from these; without them an sdist install can
+# never build mba-solve even with COBRA_ROOT set. They are NOT picked up
+# automatically because get_cobra_ext_modules() returns [] unless
+# D810_BUILD_COBRA=1, so at sdist time setuptools never learns they are
+# extension sources.
+include src/d810/backends/cobra/_cobra.pyx
+include src/d810/backends/cobra/cobra_shim.cpp
+include src/d810/backends/cobra/cobra_shim.h
+
+# CoBRA itself is a submodule and deliberately NOT vendored: an sdist carries
+# no submodule contents, so a source install gets an inert mba-solve unless the
+# user inits the submodule or points COBRA_ROOT at their own tree. That is the
+# designed degradation -- binding_available() returns False and the rule is a
+# no-op, rather than the install failing.
+include tools/scripts/build_cobra.sh
