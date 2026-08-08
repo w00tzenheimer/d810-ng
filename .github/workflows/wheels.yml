@@ -1,0 +1,121 @@
+name: Build wheels (no publish)
+
+# Build installable wheels from ANY branch, without touching PyPI.
+#
+# deploy.yml cannot serve this purpose: its workflow_dispatch trigger runs the
+# upload_to_pypi job, so there is no way to exercise the wheel build without
+# also attempting a release. That matters most for the CoBRA binding, whose
+# build path (submodule + cmake + C++23, four platforms) had never executed in
+# CI at all -- the first run should not also be a publish.
+#
+# Outputs artifacts you can download and `pip install` directly, which is also
+# the least painful way to get mba-solve onto a Windows box: no MSVC, no CMake,
+# no submodule checkout.
+
+on:
+    workflow_dispatch:
+        inputs:
+            platforms:
+                description: "Which platforms to build"
+                required: false
+                default: "all"
+                type: choice
+                options: ["all", "windows", "linux", "macos"]
+    pull_request:
+        types: [synchronize, opened, reopened, ready_for_review]
+
+concurrency:
+    group: ${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: true
+
+jobs:
+    build_wheels:
+        name: ${{ matrix.os }}
+        runs-on: ${{ matrix.runs-on }}
+        env:
+            IDA_SDK: ${{ github.workspace }}/.ida-sdk
+        strategy:
+            fail-fast: false # one platform failing must not hide the others
+            matrix:
+                include:
+                    - os: linux
+                      runs-on: ubuntu-latest
+                    - os: windows
+                      runs-on: windows-latest
+                    - os: macos-x86_64
+                      runs-on: macos-15-intel
+                    - os: macos-arm64
+                      runs-on: macos-latest
+        steps:
+            - uses: actions/checkout@v4
+              with:
+                  persist-credentials: false
+                  submodules: recursive
+
+            - name: Skip unselected platform
+              id: gate
+              shell: bash
+              run: |
+                  want="${{ inputs.platforms || 'all' }}"
+                  got="${{ matrix.os }}"
+                  if [ "$want" = "all" ] || [[ "$got" == "$want"* ]]; then
+                    echo "run=true" >> "$GITHUB_OUTPUT"
+                  else
+                    echo "run=false" >> "$GITHUB_OUTPUT"
+                    echo "skipping $got (requested: $want)"
+                  fi
+
+            - name: Ensure IDA SDK
+              if: steps.gate.outputs.run == 'true'
+              uses: ./.github/actions/ensure-ida-sdk
+              with:
+                  sdk-dir: .ida-sdk
+                  ref: 7f8fd3100142295bffa5eabb2ce6f5b5ac163c6b
+
+            # Soft-fail: a platform whose CoBRA build breaks should still
+            # produce a usable wheel with mba-solve inert, rather than no wheel
+            # at all. The test command below records which way it went.
+            - name: Build CoBRA static libs
+              id: cobra
+              if: steps.gate.outputs.run == 'true'
+              continue-on-error: true
+              shell: bash
+              run: bash tools/scripts/build_cobra.sh
+
+            - name: Build wheels
+              if: steps.gate.outputs.run == 'true'
+              uses: pypa/cibuildwheel@v3.1
+              env:
+                  CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-*"
+                  CIBW_SKIP: "*-win32 *-musllinux_*"
+                  CIBW_ENVIRONMENT: >-
+                      D810_BUILD_SPEEDUPS=1
+                      D810_BUILD_COBRA=${{ steps.cobra.outcome == 'success' && '1' || '0' }}
+                      COBRA_ROOT=/project/third_party/cobra
+                  CIBW_ENVIRONMENT_WINDOWS: >-
+                      D810_BUILD_SPEEDUPS=1
+                      D810_BUILD_COBRA=${{ steps.cobra.outcome == 'success' && '1' || '0' }}
+                      COBRA_ROOT=$GITHUB_WORKSPACE\\third_party\\cobra
+                  CIBW_ENVIRONMENT_MACOS: >-
+                      D810_BUILD_SPEEDUPS=1
+                      D810_BUILD_COBRA=${{ steps.cobra.outcome == 'success' && '1' || '0' }}
+                      COBRA_ROOT=$GITHUB_WORKSPACE/third_party/cobra
+                  CIBW_BEFORE_BUILD: "pip install Cython>=3.0.0"
+                  CIBW_BEFORE_ALL_LINUX: "pip install cmake ninja"
+                  # Report, do not enforce. This workflow exists to FIND OUT
+                  # whether the binding builds; failing the job would hide the
+                  # wheel that would tell us. deploy.yml is where it is fatal.
+                  CIBW_TEST_COMMAND: >-
+                      python -c "from d810.backends.cobra.solve import binding_available;
+                      print('COBRA BINDING:', binding_available())"
+              with:
+                  package-dir: .
+                  output-dir: wheelhouse
+                  config-file: "{package}/pyproject.toml"
+
+            - uses: actions/upload-artifact@v4
+              if: steps.gate.outputs.run == 'true'
+              with:
+                  name: wheels-${{ matrix.os }}
+                  path: ./wheelhouse/*.whl
+                  retention-days: 30
