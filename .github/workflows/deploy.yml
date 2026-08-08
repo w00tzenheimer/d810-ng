@@ -127,13 +127,19 @@ jobs:
                   # failure mode that looks like success -- IDA decompiles
                   # normally and mba-solve does nothing. Fail the build here
                   # instead of shipping it.
+                  # Goes through the backend plugin protocol so a failure says
+                  # WHY, not just False -- "cobra binding: False" gave no clue
+                  # whether the extension was skipped, failed to link, or
+                  # failed to load.
                   CIBW_TEST_COMMAND: >-
-                      python -c "from d810.backends.cobra.solve import binding_available;
+                      python -c "from d810.backends import registry;
+                      from d810.core.plugins import format_report;
                       import os, sys;
+                      infos = registry().probe_all();
+                      print(format_report(infos));
                       want = os.environ.get('D810_EXPECT_COBRA') == '1';
-                      got = binding_available();
-                      print('cobra binding:', got);
-                      sys.exit(0 if got or not want else 1)"
+                      cobra = next((i for i in infos if i.name == 'cobra'), None);
+                      sys.exit(0 if (cobra is not None and cobra.usable) or not want else 1)"
                   CIBW_TEST_ENVIRONMENT: >-
                       D810_EXPECT_COBRA=${{ steps.cobra.outcome == 'success' && '1' || '0' }}
               with:

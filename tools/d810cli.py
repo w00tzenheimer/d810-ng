@@ -301,6 +301,38 @@ def _ensure_src_on_path() -> None:
         sys.path.insert(0, src_path)
 
 
+def cmd_backends(args: argparse.Namespace) -> int:
+    """Report which backends are registered, and why any of them aren't usable.
+
+    Probes rather than merely listing: a backend that imports cleanly can still
+    be unusable because its native half is missing, which is precisely the case
+    that otherwise presents as "the pass ran and changed nothing".
+
+    Exit code is a health signal, so this is usable as a CI gate -- non-zero
+    only for defects (a plugin that raises, or one built against a protocol
+    version this d810 no longer speaks), never for an optional dependency
+    that simply isn't installed.
+    """
+    # Deliberately NOT _ensure_src_on_path(): that pins REPO_ROOT/src, so from a
+    # worktree it would report on the root repo's backends. Worse, an editable
+    # install puts REPO_ROOT/src on sys.path anyway, so the wrong answer would
+    # look plausible.
+    src = worktree_dir(args.worktree) / "src"
+    if not (src / "d810").is_dir():
+        _die(f"no d810 source at {src}")
+    sys.path.insert(0, str(src))
+
+    from d810.backends import registry
+    from d810.core.plugins import format_report, has_defects
+
+    import d810
+
+    print(f"d810: {d810.__file__}")
+    infos = registry().probe_all()
+    print(format_report(infos))
+    return 1 if has_defects(infos) else 0
+
+
 def cmd_pseudocode_capture(args: argparse.Namespace) -> int:
     """Capture before/after pseudocode into the shared SQLite DB.
 
@@ -1328,6 +1360,21 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("paths", help="print resolved latest DUMP= and DB= paths")
     _add_worktree(sp)
     sp.set_defaults(func=cmd_paths)
+
+    sp = sub.add_parser(
+        "backends",
+        help="report registered backends and why any are unusable",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Exit code is a health signal:\n"
+            "  0  every backend is usable or expectedly absent\n"
+            "  1  a backend is BROKEN (raises on import) or INCOMPATIBLE\n\n"
+            "An absent optional dependency is NOT a failure. A wheel built\n"
+            "without the CoBRA extension reports cobra=unavailable and exits 0."
+        ),
+    )
+    _add_worktree(sp)
+    sp.set_defaults(func=cmd_backends)
 
     sp = sub.add_parser(
         "dump",
