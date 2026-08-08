@@ -6,7 +6,7 @@
 include src/d810/backends/cobra/_cobra.pyx
 include src/d810/backends/cobra/cobra_shim.cpp
 include src/d810/backends/cobra/cobra_shim.h
-include tools/scripts/build_cobra.sh
+include tools/scripts/build_cobra.py
 
 # CoBRA source, taken from the pinned submodule at sdist time.
 #
