@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from d810.core.config import RuleConfiguration
 from d810.core.deobfuscation_case import StrategyWorkflowStage
+from d810.core.pass_ids import PassId
 from d810.passes.pass_pipeline import (
     FunctionPipelineContext,
     PipelineConfig,
@@ -16,7 +17,8 @@ from d810.passes.pass_pipeline import (
 from d810.passes.registry import PassRegistry
 from d810.passes.execution_stages import ExecutionPipeline, ExecutionStageDescriptor
 
-CONSTANT_SIMPLIFICATION_PASS_ID = "constant-simplification"
+#: Back-reference to the shared vocabulary; see :mod:`d810.core.pass_ids`.
+CONSTANT_SIMPLIFICATION_PASS_ID = PassId.CONSTANT_SIMPLIFICATION
 STRICT_MEMORY_POLICY = "strict"
 AGGRESSIVE_MEMORY_POLICY = "aggressive_no_direct_writes"
 _MEMORY_POLICIES = frozenset({STRICT_MEMORY_POLICY, AGGRESSIVE_MEMORY_POLICY})

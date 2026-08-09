@@ -68,11 +68,11 @@ An out-of-tree extension looks like this (dependency-free flavour; using
 
     # pyproject.toml
     [project.entry-points."d810.backends"]
-    cobra = "d810_backend_cobra:MANIFEST"
+    cobra = "d810_cobra:MANIFEST"
 
-    # d810_backend_cobra/__init__.py
+    # d810_cobra/__init__.py
     MANIFEST = {"name": "cobra", "api_version": 1,
-                "provides": "d810_backend_cobra.binding:api"}
+                "provides": "d810_cobra.binding:api"}
 
 The module named by ``provides`` may import d810 freely: it is resolved long
 after d810 has finished loading. It must not, however, cache d810 objects at
@@ -84,9 +84,11 @@ from __future__ import annotations
 
 import enum
 import importlib
+import types
 import threading
 from dataclasses import dataclass, field
 
+from d810.core.pass_ids import PassId
 from d810.core.typing import (
     Any,
     Callable,
@@ -172,7 +174,7 @@ class PluginCapabilityOffer(Generic[C]):
     ``type[C]`` and then verifies the factory returns it::
 
         def _make_engine(source: FunctionSource) -> ConcolicEngine:
-            from d810_backend_cobra.concolic import Engine   # deferred
+            from d810_cobra.concolic import Engine   # deferred
             return Engine(source.live_source)
 
         PluginCapabilityOffer(ConcolicEngine, _make_engine)
@@ -222,7 +224,7 @@ def offers_capability(
 
         @offers_capability(ConcolicEngine)
         def make_engine(source: FunctionSource) -> ConcolicEngine:
-            from d810_backend_cobra.concolic import Engine   # deferred
+            from d810_cobra.concolic import Engine   # deferred
             return Engine(source.live_source)
 
         MANIFEST = BackendManifest(..., capabilities=(make_engine,))
@@ -265,6 +267,15 @@ class BackendManifest:
     #: binding and ida_hexrays) during discovery, which is what ``provides``
     #: being lazily resolved exists to avoid.
     rules: tuple[str, ...] = ()
+    #: Which d810 pass each contributed rule implements: ``{pass_id: class}``.
+    #:
+    #: d810 derives a pass's ``allowed_rule_names`` from its stage descriptors,
+    #: and a rule outside that allowlist is skipped at dispatch. Naming the
+    #: class in d810 would mean core code hardcoding one vendor's class -- and
+    #: d810 could then host exactly one solver, forever.
+    #:
+    #: The extension knows what it implements; d810 asks.
+    implements: Mapping[str, str] = types.MappingProxyType({})
 
 
 _MANIFEST_FIELDS = ("name", "api_version", "provides")
@@ -307,6 +318,7 @@ def manifest_of(raw: Any) -> BackendManifest:
 
     offers = _coerce_offers(raw)
     rules = _coerce_rules(raw)
+    implements = _coerce_implements(raw)
 
     return BackendManifest(
         name=str(values["name"]),
@@ -314,6 +326,7 @@ def manifest_of(raw: Any) -> BackendManifest:
         provides=values["provides"],
         capabilities=offers,
         rules=rules,
+        implements=implements,
     )
 
 
@@ -368,6 +381,29 @@ def _coerce_rules(raw: Any) -> tuple[str, ...]:
                 f"got {type(module).__name__}: {module!r}"
             )
     return modules
+
+
+def _coerce_implements(raw: Any) -> Mapping[str, str]:
+    """Read the optional ``implements`` mapping: ``{pass_id: rule class name}``."""
+    try:
+        declared = raw["implements"] if isinstance(raw, Mapping) else raw.implements
+    except (KeyError, AttributeError):
+        return types.MappingProxyType({})
+    if declared is None:
+        return types.MappingProxyType({})
+
+    if not isinstance(declared, Mapping):
+        raise ManifestError(
+            f"implements must be a mapping of pass id -> rule class name, "
+            f"got {type(declared).__name__}: {declared!r}"
+        )
+    for pass_id, rule_name in declared.items():
+        if not isinstance(pass_id, str) or not isinstance(rule_name, str):
+            raise ManifestError(
+                f"implements entries must be str -> str, "
+                f"got {pass_id!r} -> {rule_name!r}"
+            )
+    return types.MappingProxyType(dict(declared))
 
 
 @dataclass(frozen=True)
@@ -601,6 +637,44 @@ class BackendRegistry:
             if manifest is not None:
                 offers.extend(manifest.capabilities)
         return tuple(offers)
+
+    def implementation_for(self, pass_id: PassId | str) -> str | None:
+        """The rule class name an installed extension declares for ``pass_id``.
+
+        d810 derives a pass's ``allowed_rule_names`` from its stage
+        descriptors, so it needs the implementing rule's *name* at pass
+        registration time -- long before rules are imported. Hardcoding it
+        (``MBA_SOLVE_IMPLEMENTATION = "CobraSolveRule"``) put one vendor's class
+        name in core, which meant d810 could host exactly one solver and the
+        name survived the backend being extracted into its own distribution.
+
+        Reads manifests only. It deliberately does NOT probe: probing resolves
+        ``provides`` and imports the backend, and this runs during pass
+        registration, well before d810 is ready for that. A declared
+        implementation whose binding turns out to be missing simply leaves an
+        allowlist entry with no registered rule, which is inert -- the same
+        state as no extension at all.
+
+        Version-incompatible backends contribute nothing: their manifest is
+        read, rejected, and never trusted for anything else.
+        """
+        self.discover()
+        with self._lock:
+            candidates = {n: list(c) for n, c in self._candidates.items()}
+        for specs in candidates.values():
+            for spec in specs:
+                try:
+                    manifest = manifest_of(spec.load_manifest())
+                except Exception:
+                    # Classification is probe()'s job and it reports properly
+                    # there; here a bad manifest simply contributes nothing.
+                    continue
+                if manifest.api_version != PLUGIN_API_VERSION:
+                    continue
+                found = manifest.implements.get(pass_id)
+                if found:
+                    return found
+        return None
 
     def rule_modules(self) -> tuple[str, ...]:
         """Optimizer rule modules contributed by backends that resolved.

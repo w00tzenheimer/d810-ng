@@ -6,6 +6,7 @@ from collections.abc import Mapping as ABCMapping
 from dataclasses import dataclass
 from types import MappingProxyType
 
+from d810.core.pass_ids import PassId
 from d810.core.typing import Mapping
 from d810.mba.rules import VerifiableRule
 from d810.passes.execution_stages import (
@@ -16,7 +17,10 @@ from d810.passes.execution_stages import (
 from d810.passes.pass_pipeline import PipelineConfig, PipelineConfigError
 from d810.passes.registry import PassRegistry
 
-MBA_SIMPLIFY_PASS_ID = "mba-simplify"
+#: Back-reference to the shared vocabulary; see :mod:`d810.core.pass_ids`.
+#: This module and ``mba_simplify`` each spelled the literal out independently,
+#: which is two sources of truth for one identity.
+MBA_SIMPLIFY_PASS_ID = PassId.MBA_SIMPLIFY
 
 # These implementations still live in the Hex-Rays instruction backend and
 # therefore cannot be imported into the portable pass layer. Their bindings

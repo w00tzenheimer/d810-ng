@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from d810.core.deobfuscation_case import StrategyWorkflowStage
+from d810.core.pass_ids import PassId
 from d810.core.typing import Mapping, Protocol
 from d810.ir.maturity import IRMaturity
 from d810.passes.pass_pipeline import (
@@ -18,7 +19,8 @@ from d810.passes.registry import PassRegistry
 from d810.passes.execution_stages import ExecutionPipeline, ExecutionStageDescriptor
 
 CLEANUP_FAMILY_ADAPTER_CAPABILITY = "cleanup_family_adapter"
-SIMPLE_FLATTENING_CLEANUP_PASS_ID = "simple-flattening-cleanup-unflattener"
+#: Back-reference to the shared vocabulary; see :mod:`d810.core.pass_ids`.
+SIMPLE_FLATTENING_CLEANUP_PASS_ID = PassId.SIMPLE_FLATTENING_CLEANUP
 SIMPLE_FLATTENING_CLEANUP_RULE = "SimpleFlatteningCleanupUnflattener"
 
 

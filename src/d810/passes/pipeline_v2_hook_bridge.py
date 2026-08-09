@@ -22,7 +22,11 @@ from d810.passes.constant_simplification import (
 )
 from d810.passes.hook_transform_passes import build_hook_transform_pass
 from d810.passes.mba_simplify import MBA_SIMPLIFY_PASS_ID, build_mba_simplify_pass
-from d810.passes.mba_solve import MBA_SOLVE_PASS_ID, build_mba_solve_pass
+from d810.passes.mba_solve import (
+    MBA_SOLVE_PASS_ID,
+    build_mba_solve_pass,
+    mba_solve_implementation,
+)
 from d810.passes.pass_pipeline import PipelineConfig, PipelineConfigError
 from d810.passes.pipeline_config_parser import (
     PipelineV2Mode,
@@ -113,8 +117,8 @@ def _instruction_rules_from(config: PipelineConfig) -> tuple[RuleConfiguration, 
     )
 
 
-#: The instruction rule that implements ``mba-solve``.
-MBA_SOLVE_RULE_NAME = "CobraSolveRule"
+# The rule implementing ``mba-solve`` is declared by whichever extension
+# provides it; d810 ships no solver. See ``mba_solve.mba_solve_implementation``.
 
 
 def _mba_solve_options(config: PipelineConfig) -> dict[str, object]:
@@ -226,8 +230,15 @@ def pipeline_v2_hook_activation(project_config) -> PipelineV2HookActivation:
             # than a transform list, so it needs its own branch: without one it
             # falls through to _flow_rule_from below and is misfiled as a block
             # rule, which silently never runs.
+            rule_name = mba_solve_implementation()
+            if rule_name is None:
+                # Nothing installed implements it. Emitting a rule config for a
+                # class that will never register would put an unresolvable name
+                # into the hook pipeline; skipping leaves mba-solve simply
+                # absent, which is what "no solver installed" means.
+                continue
             instruction_rules.append(
-                _rule_config(MBA_SOLVE_RULE_NAME, _mba_solve_options(config))
+                _rule_config(rule_name, _mba_solve_options(config))
             )
             continue
         if pass_id in STATE_MACHINE_NATIVE_PASS_IDS:

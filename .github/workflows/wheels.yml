@@ -81,7 +81,7 @@ jobs:
                   CIBW_BEFORE_BUILD: "pip install Cython>=3.0.0"
                   # Prints every backend with a reason for any that is not
                   # usable. Optional backends live in their own distributions
-                  # now (d810-backend-cobra), so this reports what THIS wheel
+                  # now (d810-cobra), so this reports what THIS wheel
                   # carries; an absent extension is expected, not a failure.
                   CIBW_TEST_COMMAND: >-
                       python -c "from d810.backends import registry;

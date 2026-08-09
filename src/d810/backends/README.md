@@ -291,8 +291,8 @@ order -- entry points first, builtin last -- and an unusable one falls through
 with the reason recorded:
 
 ```console
-cobra  available     builtin
-       !! rejected d810-backend-cobra 0.1: built for plugin API v99; this d810 speaks v1
+mba.z3  available     builtin
+        !! rejected d810-z3ng 0.1: built for plugin API v99; this d810 speaks v1
 ```
 
 That still exits 1, so degrading to a fallback cannot pass silently in CI.
