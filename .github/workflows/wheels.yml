@@ -72,6 +72,17 @@ jobs:
                   sdk-dir: .ida-sdk
                   ref: 7f8fd3100142295bffa5eabb2ce6f5b5ac163c6b
 
+            # Put MSVC on PATH before CMake configures anything. `-G Ninja`
+            # with no compiler pinned picks the first one in PATH, which on
+            # this runner is C:/mingw64/bin/cc.exe -- so the deps built
+            # cleanly as libabsl_*.a and the wheel build then refused them,
+            # because cibuildwheel uses MSVC and setup.py force-loads
+            # absl_*.lib via /WHOLEARCHIVE:. Widening the glob would not help;
+            # MinGW's C++ ABI does not match an MSVC-built .pyd.
+            - name: Set up MSVC (Windows deps must match the wheel toolchain)
+              if: runner.os == 'Windows' && steps.gate.outputs.run == 'true'
+              uses: ilammy/msvc-dev-cmd@v1
+
             # Soft-fail: a platform whose CoBRA build breaks should still
             # produce a usable wheel with mba-solve inert, rather than no wheel
             # at all. The test command below records which way it went.

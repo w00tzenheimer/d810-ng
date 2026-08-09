@@ -43,6 +43,31 @@ DEFAULT_ROOT = REPO_ROOT / "third_party" / "cobra"
 #: "succeeds" on the other platform with nothing built.
 CORE_LIB_NAMES = ("libcobra-core.a", "cobra-core.lib")
 
+#: Windows must build these deps with MSVC, not MinGW.
+#:
+#: cibuildwheel compiles the extension with MSVC, and setup.py force-loads the
+#: abseil archives with /WHOLEARCHIVE:, which only consumes MSVC-style
+#: absl_*.lib. A MinGW toolchain emits libabsl_*.a instead -- and even if the
+#: glob were widened, MinGW's C++ ABI does not match an MSVC-built .pyd, so the
+#: result would fail at import rather than at link.
+#:
+#: `-G Ninja` with no compiler pinned takes whatever is first in PATH. On the
+#: GitHub Windows runner that is C:/mingw64/bin/cc.exe, so the deps built
+#: cleanly in the wrong toolchain and the wheel build then refused them:
+#:
+#:   RuntimeError: no abseil archives matched 'absl_*.lib' ...
+#:   refusing to build a broken binding.
+#:
+#: Pinning cl here makes a missing MSVC environment fail at configure with a
+#: clear "compiler not found", instead of quietly producing archives that
+#: cannot be linked. The workflow supplies that environment (msvc-dev-cmd);
+#: this is the assertion that it actually did.
+MSVC_ARGS: tuple[str, ...] = (
+    ("-DCMAKE_C_COMPILER=cl", "-DCMAKE_CXX_COMPILER=cl")
+    if sys.platform == "win32"
+    else ()
+)
+
 
 def fail(message: str) -> "NoReturn":  # type: ignore[valid-type]
     print(f"error: {message}", file=sys.stderr)
@@ -121,6 +146,7 @@ def main() -> int:
                 "-DCOBRA_BUILD_LLVM_PASS=OFF",
                 "-DCOBRA_ENABLE_Z3=OFF",
                 f"-DCOBRA_INSTALL_PREFIX={deps_prefix}",
+                *MSVC_ARGS,
             ],
             cwd=root,
         )
@@ -137,6 +163,7 @@ def main() -> int:
                 "-DCOBRA_ENABLE_Z3=OFF",
                 "-DCMAKE_DISABLE_FIND_PACKAGE_Z3=ON",
                 f"-DCMAKE_PREFIX_PATH={deps_prefix}",
+                *MSVC_ARGS,
             ],
             cwd=root,
         )
