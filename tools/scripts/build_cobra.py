@@ -98,6 +98,21 @@ def main() -> int:
     core_build = root / "build"
 
     # Dependencies first: CoBRA's own CMakeLists expects them installed.
+    #
+    # dependencies/ is an ExternalProject *superbuild*: each dep runs its own
+    # configure/build/install as part of the default target. There is no
+    # aggregate `install` target, and asking for one fails the whole step with
+    # "ninja: error: unknown target 'install'" -- which is what it did on every
+    # platform. The step is continue-on-error, so that surfaced only as
+    # D810_BUILD_COBRA=0 and a wheel shipping _cobra.pyx with no compiled
+    # binding, green. dependencies/CMakeLists.txt documents the correct
+    # invocation in its own header: `cmake --build build-deps`.
+    #
+    # The prefix comes from COBRA_INSTALL_PREFIX (superbuild.cmake), which is
+    # what gets forwarded to every ExternalProject. CMAKE_INSTALL_PREFIX is not
+    # read here; it only appeared to work because COBRA_INSTALL_PREFIX defaults
+    # to ${CMAKE_BINARY_DIR}/install, which is the same path. Set the one that
+    # is actually authoritative.
     if args.force or not deps_prefix.is_dir():
         run(
             [
@@ -105,12 +120,11 @@ def main() -> int:
                 "-DCMAKE_BUILD_TYPE=Release",
                 "-DCOBRA_BUILD_LLVM_PASS=OFF",
                 "-DCOBRA_ENABLE_Z3=OFF",
-                f"-DCMAKE_INSTALL_PREFIX={deps_prefix}",
+                f"-DCOBRA_INSTALL_PREFIX={deps_prefix}",
             ],
             cwd=root,
         )
-        run(["cmake", "--build", "build-deps", "--target", "install",
-             "-j", str(args.jobs)], cwd=root)
+        run(["cmake", "--build", "build-deps", "-j", str(args.jobs)], cwd=root)
     else:
         print(f"==> deps already present at {deps_prefix} (use --force to rebuild)")
 
