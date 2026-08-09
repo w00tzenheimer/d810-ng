@@ -92,6 +92,15 @@ jobs:
             # exact binding. A pinned release decouples the two and drifts
             # silently, and it also needed a cross-repo release nobody could
             # cut without extra permissions.
+            # Same reason as wheels.yml: `-G Ninja` with no compiler pinned
+            # takes MinGW off this runner's PATH, producing libabsl_*.a that
+            # cibuildwheel's MSVC extension can neither /WHOLEARCHIVE: nor
+            # safely link against. Without this the Windows release wheel
+            # simply ships without the binding.
+            - name: Set up MSVC (Windows deps must match the wheel toolchain)
+              if: runner.os == 'Windows'
+              uses: ilammy/msvc-dev-cmd@v1
+
             - name: Build CoBRA static libs
               id: cobra
               continue-on-error: true
