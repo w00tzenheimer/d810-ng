@@ -30,9 +30,14 @@ See the module docstrings in each file for full details.
 =============================================================================
 """
 
+import importlib
+
+from d810.core import getLogger
 from d810.core.plugins import BackendRegistry, BackendSpec, builtin, make_singleton
 
-__all__ = ["BUILTIN_BACKENDS", "registry"]
+__all__ = ["BUILTIN_BACKENDS", "load_extension_rules", "registry"]
+
+logger = getLogger(__name__)
 
 #: Backends that ship inside d810.
 #:
@@ -53,8 +58,12 @@ __all__ = ["BUILTIN_BACKENDS", "registry"]
 #: spine, not optional backends. A registry row saying "unavailable: no
 #: ida_hexrays" outside IDA would be a tautology, and inside IDA they are never
 #: not there.
+#: ``cobra`` is deliberately absent: it ships as the separate distribution
+#: ``d810-backend-cobra`` and arrives through the ``d810.backends`` entry
+#: point. Keeping a builtin row for it would mean d810's wheel carrying a
+#: C++23 build of abseil, highway and cobra-core, and would pin CoBRA's version
+#: to a d810 commit.
 BUILTIN_BACKENDS: tuple[BackendSpec, ...] = (
-    builtin("cobra", "d810.backends.cobra.solve"),
     builtin("mba.z3", "d810.backends.mba.z3"),
     builtin("mba.egglog", "d810.backends.mba.egglog_backend"),
     builtin("ast.z3", "d810.backends.ast.z3"),
@@ -69,3 +78,37 @@ BUILTIN_BACKENDS: tuple[BackendSpec, ...] = (
 registry = make_singleton(
     lambda: BackendRegistry(builtins=BUILTIN_BACKENDS)
 )
+
+
+def load_extension_rules() -> None:
+    """Import optimizer rules contributed by installed backend extensions.
+
+    d810 loads its own rules by scanning ``d810.optimizers.__path__`` and
+    letting ``Registrant`` self-register on import. That scan is path-scoped,
+    so it cannot reach a rule that lives inside an installed extension package.
+    Without this, an extension's backend probes ``available`` while the rule it
+    ships never registers -- the pass is simply absent, which is
+    indistinguishable from a pass that ran and matched nothing.
+
+    Lives here rather than in ``d810.optimizers`` because the registry is what
+    knows which extensions resolved; the optimizer package only knows how to
+    walk its own tree.
+
+    Only backends that resolved contribute paths (see
+    ``BackendRegistry.rule_modules``), so a rule whose binding is missing is
+    never registered rather than registered-and-failing.
+
+    A rule that cannot import must not take the rest of the optimizer catalogue
+    with it: an extension is optional by construction, and d810 has to start
+    without it.
+    """
+    for module_name in registry().rule_modules():
+        try:
+            importlib.import_module(module_name)
+        except Exception:
+            logger.exception(
+                "extension rule module failed to import, rule not registered: %s",
+                module_name,
+            )
+        else:
+            logger.info("extension rule module loaded: %s", module_name)

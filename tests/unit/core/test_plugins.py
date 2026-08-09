@@ -684,8 +684,11 @@ class TestBuiltinBackends(unittest.TestCase):
     reportable surface.
     """
 
+    #: ``cobra`` is deliberately NOT here: it ships as the separate
+    #: distribution ``d810-backend-cobra`` and arrives via the entry point, so
+    #: asserting it as a builtin would fail on any machine without that package
+    #: installed -- and pass for the wrong reason on one that has it.
     EXPECTED = {
-        "cobra",
         "mba.z3",
         "mba.egglog",
         "emulation.triton",
@@ -761,74 +764,67 @@ class TestBuiltinBackends(unittest.TestCase):
                     self.assertIn(dep, reason.lower())
 
 
-class TestBuiltinCobraBackend(unittest.TestCase):
-    """The protocol against a real backend, not a fake.
+class TestExtensionRuleModules(unittest.TestCase):
+    """A backend must be able to contribute optimizer rules from its own package.
 
-    Builtins-only (``source`` returns nothing) so the result does not depend on
-    what happens to be pip-installed on the machine running the suite.
+    d810 loads rules by scanning ``d810.optimizers.__path__`` and letting
+    ``Registrant`` self-register on import. That scan is path-scoped, so a rule
+    shipped by an installed extension is never imported and never registers --
+    the backend reports ``available`` while its pass silently does nothing,
+    which is indistinguishable from the pass simply not firing.
+
+    Manifests therefore declare their rule modules, and the registry hands back
+    only those belonging to backends that actually probed AVAILABLE: importing
+    the rule module of a backend whose binding is missing would register a rule
+    that cannot work.
     """
 
-    def make(self):
-        from d810.backends import BUILTIN_BACKENDS
-
-        return BackendRegistry(builtins=BUILTIN_BACKENDS, source=lambda: [])
-
-    def test_cobra_is_registered_without_any_installed_metadata(self):
-        self.assertIn("cobra", self.make().names())
-
-    def test_cobra_declares_a_probe_hook(self):
-        from d810.backends.cobra import solve
-
-        self.assertTrue(callable(getattr(solve, "d810_backend_probe", None)))
-
-    def test_cobra_probe_reflects_native_binding_availability(self):
-        from d810.backends.cobra import solve
-
-        reason = solve.d810_backend_probe()
-        if solve.binding_available():
-            self.assertIsNone(reason)
-        else:
-            # Must name the missing piece. "unavailable" with no reason is the
-            # failure this protocol exists to eliminate.
-            self.assertIn("_cobra", reason)
-
-    def test_cobra_status_is_definite_and_explained(self):
-        info = self.make().probe("cobra")
-        self.assertIn(
-            info.status,
-            {BackendStatus.AVAILABLE, BackendStatus.UNAVAILABLE},
-            f"unexpected status {info.status} ({info.reason})",
+    def test_available_backend_contributes_its_rule_modules(self):
+        manifest = BackendManifest(
+            name="cobra",
+            api_version=PLUGIN_API_VERSION,
+            provides=Recorder(result=object()),
+            rules=("acme_ext.rules.solve",),
         )
-        if info.status is BackendStatus.UNAVAILABLE:
-            self.assertTrue(info.reason, "UNAVAILABLE must carry a reason")
+        reg = registry(
+            [BackendSpec(name="cobra", origin="test", load_manifest=lambda: manifest)]
+        )
+        self.assertEqual(reg.rule_modules(), ("acme_ext.rules.solve",))
 
-    def test_registry_agrees_with_the_module_flag(self):
-        from d810.backends.cobra import solve
+    def test_unavailable_backend_contributes_nothing(self):
+        class Backend:
+            @staticmethod
+            def d810_backend_probe():
+                return "native extension not built"
 
-        info = self.make().probe("cobra")
-        self.assertEqual(info.usable, solve.binding_available())
+        manifest = BackendManifest(
+            name="cobra",
+            api_version=PLUGIN_API_VERSION,
+            provides=Recorder(result=Backend),
+            rules=("acme_ext.rules.solve",),
+        )
+        reg = registry(
+            [BackendSpec(name="cobra", origin="test", load_manifest=lambda: manifest)]
+        )
+        self.assertEqual(reg.rule_modules(), ())
 
-    def test_missing_extension_is_reported_not_silent(self):
-        """The fresh-worktree / D810_BUILD_COBRA=0 case, forced.
+    def test_rules_are_optional_and_default_empty(self):
+        """Backends that ship no rules must not have to say so."""
+        reg = registry([spec("plain", Recorder(result=object()))])
+        self.assertEqual(reg.rule_modules(), ())
 
-        A checkout without the compiled ``.so`` (it is gitignored) currently
-        looks identical to a working one until you notice nothing was
-        simplified. Asserted here rather than left to whichever machine runs
-        the suite.
-        """
-        from unittest import mock
-
-        from d810.backends.cobra import solve
-
-        with mock.patch.object(solve, "_BINDING_AVAILABLE", False), mock.patch.object(
-            solve, "_BINDING_ERROR", "No module named 'd810.backends.cobra._cobra'"
-        ):
-            info = self.make().probe("cobra")
-
-        self.assertEqual(info.status, BackendStatus.UNAVAILABLE)
-        self.assertIn("_cobra", info.reason)
-        self.assertIn("D810_BUILD_COBRA=1", info.reason)
-        self.assertFalse(info.usable)
+    def test_duck_typed_manifest_may_declare_rules(self):
+        """An extension must not need to import BackendManifest to do this."""
+        raw = {
+            "name": "cobra",
+            "api_version": PLUGIN_API_VERSION,
+            "provides": Recorder(result=object()),
+            "rules": ["acme_ext.rules.solve"],
+        }
+        reg = registry(
+            [BackendSpec(name="cobra", origin="test", load_manifest=lambda: raw)]
+        )
+        self.assertEqual(reg.rule_modules(), ("acme_ext.rules.solve",))
 
 
 if __name__ == "__main__":

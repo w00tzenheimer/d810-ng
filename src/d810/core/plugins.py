@@ -252,6 +252,19 @@ class BackendManifest:
     api_version: int
     provides: str | Callable[[], Any]
     capabilities: tuple[PluginCapabilityOffer[Any], ...] = ()
+    #: Optimizer rule modules this backend contributes, as import paths.
+    #:
+    #: d810 loads rules by scanning ``d810.optimizers.__path__`` and letting
+    #: ``Registrant`` self-register on import. That scan is path-scoped, so a
+    #: rule shipped inside an installed extension is never imported and never
+    #: registers -- the backend reports ``available`` while its pass silently
+    #: does nothing, which looks exactly like the pass not matching anything.
+    #:
+    #: Declared rather than discovered: importing an extension's whole package
+    #: to find rules would drag in its heavy half (for CoBRA, the compiled
+    #: binding and ida_hexrays) during discovery, which is what ``provides``
+    #: being lazily resolved exists to avoid.
+    rules: tuple[str, ...] = ()
 
 
 _MANIFEST_FIELDS = ("name", "api_version", "provides")
@@ -293,12 +306,14 @@ def manifest_of(raw: Any) -> BackendManifest:
         ) from exc
 
     offers = _coerce_offers(raw)
+    rules = _coerce_rules(raw)
 
     return BackendManifest(
         name=str(values["name"]),
         api_version=api_version,
         provides=values["provides"],
         capabilities=offers,
+        rules=rules,
     )
 
 
@@ -324,6 +339,35 @@ def _coerce_offers(raw: Any) -> tuple[PluginCapabilityOffer[Any], ...]:
                 f"got {type(offer).__name__}: {offer!r}"
             )
     return offers
+
+
+def _coerce_rules(raw: Any) -> tuple[str, ...]:
+    """Read the optional ``rules`` field: import paths, checked at declaration.
+
+    A non-string here would otherwise surface much later as an obscure failure
+    inside ``import_module``, long after the manifest that caused it.
+    """
+    try:
+        declared = raw["rules"] if isinstance(raw, Mapping) else raw.rules
+    except (KeyError, AttributeError):
+        return ()
+    if declared is None:
+        return ()
+
+    if isinstance(declared, str):
+        raise ManifestError(
+            f"rules must be a sequence of import paths, not a bare string: "
+            f"{declared!r} (did you mean ({declared!r},)?)"
+        )
+
+    modules = tuple(declared)
+    for module in modules:
+        if not isinstance(module, str):
+            raise ManifestError(
+                f"rules entries must be import-path strings, "
+                f"got {type(module).__name__}: {module!r}"
+            )
+    return modules
 
 
 @dataclass(frozen=True)
@@ -557,6 +601,28 @@ class BackendRegistry:
             if manifest is not None:
                 offers.extend(manifest.capabilities)
         return tuple(offers)
+
+    def rule_modules(self) -> tuple[str, ...]:
+        """Optimizer rule modules contributed by backends that resolved.
+
+        d810's rule loader scans ``d810.optimizers.__path__``, which cannot
+        reach a rule shipped inside an installed extension. These paths are
+        what closes that gap; see :attr:`BackendManifest.rules`.
+
+        Gated on ``usable`` for the same reason as :meth:`capability_offers`: a
+        rule whose backend is UNAVAILABLE would register and then fail on every
+        invocation, which is worse than never registering -- d810 already
+        handles a missing rule, but not one that raises mid-pass.
+        """
+        modules: list[str] = []
+        for name in self.names():
+            if not self.probe(name).usable:
+                continue
+            with self._lock:
+                manifest = self._manifests.get(name)
+            if manifest is not None:
+                modules.extend(manifest.rules)
+        return tuple(modules)
 
     def load(self, name: str) -> Any:
         """Return the backend object, or raise :class:`BackendUnavailable`."""

@@ -1,4 +1,0 @@
-[submodule "third_party/cobra"]
-	path = third_party/cobra
-	url = https://github.com/w00tzenheimer/CoBRA.git
-	branch = master

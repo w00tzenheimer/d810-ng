@@ -50,7 +50,6 @@ jobs:
             - uses: actions/checkout@v4
               with:
                   persist-credentials: false
-                  submodules: recursive
 
             - name: Skip unselected platform
               id: gate
@@ -72,53 +71,18 @@ jobs:
                   sdk-dir: .ida-sdk
                   ref: 7f8fd3100142295bffa5eabb2ce6f5b5ac163c6b
 
-            # Put MSVC on PATH before CMake configures anything. `-G Ninja`
-            # with no compiler pinned picks the first one in PATH, which on
-            # this runner is C:/mingw64/bin/cc.exe -- so the deps built
-            # cleanly as libabsl_*.a and the wheel build then refused them,
-            # because cibuildwheel uses MSVC and setup.py force-loads
-            # absl_*.lib via /WHOLEARCHIVE:. Widening the glob would not help;
-            # MinGW's C++ ABI does not match an MSVC-built .pyd.
-            - name: Set up MSVC (Windows deps must match the wheel toolchain)
-              if: runner.os == 'Windows' && steps.gate.outputs.run == 'true'
-              uses: ilammy/msvc-dev-cmd@v1
-
-            # Soft-fail: a platform whose CoBRA build breaks should still
-            # produce a usable wheel with mba-solve inert, rather than no wheel
-            # at all. The test command below records which way it went.
-            - name: Build CoBRA static libs
-              id: cobra
-              if: steps.gate.outputs.run == 'true'
-              continue-on-error: true
-              run: python tools/scripts/build_cobra.py
-
             - name: Build wheels
               if: steps.gate.outputs.run == 'true'
               uses: pypa/cibuildwheel@v3.1
               env:
                   CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-*"
                   CIBW_SKIP: "*-win32 *-musllinux_*"
-                  CIBW_ENVIRONMENT: >-
-                      D810_BUILD_SPEEDUPS=1
-                      D810_BUILD_COBRA=${{ steps.cobra.outcome == 'success' && '1' || '0' }}
-                      COBRA_ROOT=/project/third_party/cobra
-                  CIBW_ENVIRONMENT_WINDOWS: >-
-                      D810_BUILD_SPEEDUPS=1
-                      D810_BUILD_COBRA=${{ steps.cobra.outcome == 'success' && '1' || '0' }}
-                      COBRA_ROOT=$GITHUB_WORKSPACE\\third_party\\cobra
-                  CIBW_ENVIRONMENT_MACOS: >-
-                      D810_BUILD_SPEEDUPS=1
-                      D810_BUILD_COBRA=${{ steps.cobra.outcome == 'success' && '1' || '0' }}
-                      COBRA_ROOT=$GITHUB_WORKSPACE/third_party/cobra
+                  CIBW_ENVIRONMENT: "D810_BUILD_SPEEDUPS=1"
                   CIBW_BEFORE_BUILD: "pip install Cython>=3.0.0"
-                  CIBW_BEFORE_ALL_LINUX: "pip install cmake ninja"
-                  # Report, do not enforce. This workflow exists to FIND OUT
-                  # whether the binding builds; failing the job would hide the
-                  # wheel that would tell us. deploy.yml is where it is fatal.
-                  #
                   # Prints every backend with a reason for any that is not
-                  # usable, so a wheel that installs cleanly and simplifies
-                  # nothing is legible in the log rather than a bare False.
+                  # usable. Optional backends live in their own distributions
+                  # now (d810-backend-cobra), so this reports what THIS wheel
+                  # carries; an absent extension is expected, not a failure.
                   CIBW_TEST_COMMAND: >-
                       python -c "from d810.backends import registry;
                       from d810.core.plugins import format_report;
