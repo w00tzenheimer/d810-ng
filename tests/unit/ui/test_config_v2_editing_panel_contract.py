@@ -70,9 +70,8 @@ def test_panel_projects_one_draft_into_a_stacked_builder_and_inspector() -> None
     assert "project_config_v2_editor_view" in render_calls
 
 
-def test_inspector_uses_structured_identity_options_and_contract_controls() -> None:
+def test_inspector_uses_structured_identity_typed_options_and_contract_controls() -> None:
     source = PANEL.read_text(encoding="utf-8")
-    init_calls = _calls(_method("__init__"))
 
     assert "StructuredDetailsView" in source
     assert "JsonTreeEditor" in source
@@ -83,18 +82,17 @@ def test_inspector_uses_structured_identity_options_and_contract_controls() -> N
     assert "Scope" in source
     assert "Backend" in source
     assert "Safety" in source
-    assert "QListWidget" in source
-    assert "set_on_value_changed" in init_calls
+    assert "ConfigV2TransformCatalogWidget" in source
+    assert "_render_typed_options" in source
     assert "View raw contract" in source
-    assert "Edit raw options" in source
+    assert "Edit raw options" not in source
     assert "Edit pipeline..." in source
 
 
-def test_inspector_transform_picker_is_projection_driven_and_fail_closed() -> None:
+def test_inspector_transform_catalog_is_projection_driven_and_fail_closed() -> None:
     render_source = _source("_render_inspector")
 
-    assert "inspector.transforms_editable" in render_source
-    assert "inspector.selected_transforms" in render_source
+    assert "inspector.transform_catalog" in render_source
     assert "No individually selectable transforms." in render_source
     assert "stage_ids" not in render_source
     assert "transform_ids" not in render_source
@@ -103,22 +101,22 @@ def test_inspector_transform_picker_is_projection_driven_and_fail_closed() -> No
 def test_checkable_items_combine_flags_through_qt_compatibility() -> None:
     source = PANEL.read_text(encoding="utf-8")
 
-    assert source.count("qt_flag_or(item.flags(), _checkable_flag())") == 2
+    assert source.count("qt_flag_or(item.flags(), _checkable_flag())") == 1
     assert (
         "qt_flag_or(family_item.flags(), _checkable_flag())" in source
     )
     assert "flags() | _checkable_flag()" not in source
 
 
-def test_inspector_callbacks_delegate_typed_edits_and_rerender_rejections() -> None:
-    transform_source = _source("_apply_selected_transforms")
-    options_source = _source("_apply_inspector_options")
+def test_inspector_callbacks_delegate_closed_typed_edits_and_rerender_rejections() -> None:
+    transform_source = _source("_apply_transform_catalog_selection")
+    options_source = _source("_apply_typed_option")
     apply_source = _source("_apply_edit")
 
     assert "set_pass_transforms" in transform_source
-    assert "selected_transforms" in transform_source
+    assert "apply_transform_catalog_selection" in transform_source
     assert "set_pass_options" in options_source
-    assert "isinstance(value, dict)" in options_source
+    assert "apply_typed_field_option" in options_source
     assert "self._render()" in apply_source
 
 
@@ -185,7 +183,7 @@ def test_builder_is_a_compact_ordered_active_pass_editor() -> None:
         "Remove",
         "Move up",
         "Move down",
-        "Open Inspector",
+        "Open in editor...",
         "Edit description...",
     ):
         assert label in source

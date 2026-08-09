@@ -387,6 +387,18 @@ class _StructuredDetailsView(_Widget):
         self.sections = sections
 
 
+class _TransformCatalogWidget(_Widget):
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)
+        self.catalog: object | None = None
+
+    def set_catalog(self, catalog: object | None) -> None:
+        self.catalog = catalog
+
+    def current_catalog(self) -> object | None:
+        return self.catalog
+
+
 class _RouteAdapter:
     destination = Path("/tmp/task-5-route.json")
 
@@ -523,6 +535,11 @@ def _load_gui_panel(monkeypatch):
             StructuredDetailsView=_StructuredDetailsView,
         ),
     )
+    monkeypatch.setitem(
+        sys.modules,
+        "d810.ui.config_v2_transform_catalog",
+        types.SimpleNamespace(ConfigV2TransformCatalogWidget=_TransformCatalogWidget),
+    )
     module_name = "d810.ui._task5_gui_panel"
     spec = importlib.util.spec_from_file_location(
         module_name,
@@ -565,8 +582,7 @@ def test_task4_routes_construct_both_screens_and_focus_duplicate_by_exact_row(
     assert inspector_adapter.reset_count == 1
     assert inspector._screen is ConfigV2EditorScreen.INSPECTOR
     assert inspector._selected_pass_index == 0
-    inspector._apply_selected_transforms()
-    assert inspector_adapter.transform_edits == [(0, ("a",))]
+    assert inspector_adapter.transform_edits == []
 
     ambiguous_focus = resolve_config_v2_focus_target(
         "mba-simplify",

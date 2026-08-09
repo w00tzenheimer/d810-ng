@@ -7,6 +7,13 @@ import dataclasses
 import enum
 import json
 
+from d810.core.pass_editor_spec import (
+    FieldControlKind,
+    FieldEditorSpec,
+    PassEditorKind,
+    PassEditorSpec,
+)
+from d810.core.typing import AbstractSet
 from d810.manager.config_v2_edit_models import (
     ConfigV2FieldSerializer,
     ConfigV2ProjectDraft,
@@ -80,9 +87,61 @@ class ConfigV2PipelineOverview:
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
-class ConfigV2TransformRow:
+class ConfigV2TransformView:
+    """One visible leaf in a fixed pass-owned transform catalog."""
+
     transform_id: str
+    label: str
+    description: str
+    reference: str
+    maturities: tuple[str, ...]
     selected: bool
+    default_selected: bool
+    verification: str
+    verification_reason: str
+    advisory: str
+    advisory_reason: str
+    cost: str
+    cost_detail: str
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class ConfigV2TransformSubfamilyView:
+    """Visible descendants for one explicit transform subfamily."""
+
+    family_id: str
+    subfamily_id: str
+    label: str
+    target_id: str
+    selected_count: int
+    visible_count: int
+    check_state: str
+    transforms: tuple[ConfigV2TransformView, ...]
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class ConfigV2TransformFamilyView:
+    """Visible descendants for one explicit transform family."""
+
+    family_id: str
+    label: str
+    target_id: str
+    selected_count: int
+    visible_count: int
+    check_state: str
+    subfamilies: tuple[ConfigV2TransformSubfamilyView, ...]
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class ConfigV2TransformCatalogView:
+    """Qt-free tree model and action scope for one transform editor."""
+
+    pass_editor_spec: PassEditorSpec
+    query: str
+    selected_ids: tuple[str, ...]
+    all_transform_ids: tuple[str, ...]
+    visible_transform_ids: tuple[str, ...]
+    families: tuple[ConfigV2TransformFamilyView, ...]
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -92,8 +151,7 @@ class ConfigV2PassInspectorView:
     display_name: str
     purpose: str
     runs_during: str
-    selected_transforms: tuple[ConfigV2TransformRow, ...]
-    transforms_editable: bool
+    transform_catalog: ConfigV2TransformCatalogView | None
     options: dict[str, object]
     contract: dict[str, object]
     contract_chips: tuple[tuple[str, str], ...]
@@ -247,6 +305,263 @@ def _transform_summary(entry: PassCatalogEntry, selected_ids: set[str] | None) -
     return f"{selected_count} selected transforms"
 
 
+def _catalog_check_state(*, selected_count: int, visible_count: int) -> str:
+    if not selected_count:
+        return "unchecked"
+    if selected_count == visible_count:
+        return "checked"
+    return "partial"
+
+
+def _matches_transform_query(
+    transform: object,
+    query: str,
+) -> bool:
+    if not query:
+        return True
+    fields = (
+        transform.transform_id,
+        transform.label,
+        transform.family_id,
+        transform.family_label,
+        transform.subfamily_id or "",
+        transform.subfamily_label or "",
+        transform.description,
+        transform.reference,
+        transform.verification.value,
+        transform.advisory.value,
+        transform.cost.value,
+    )
+    return any(query in field.casefold() for field in fields)
+
+
+def project_transform_catalog(
+    spec: PassEditorSpec,
+    selected_ids: AbstractSet[str],
+    *,
+    query: str,
+) -> ConfigV2TransformCatalogView:
+    """Project explicit metadata into a filterable family/subfamily tree.
+
+    Defaults are presentation-only.  The caller's existing selection is never
+    expanded or otherwise mutated while the catalog is projected.
+    """
+    if spec.kind is not PassEditorKind.TRANSFORM_CATALOG:
+        raise ValueError("transform catalog projection requires a transform_catalog spec")
+    normalized_query = str(query).strip().casefold()
+    all_transform_ids = tuple(item.transform_id for item in spec.transforms)
+    known_selected_ids = frozenset(selected_ids).intersection(all_transform_ids)
+    family_specs: dict[str, dict[str, object]] = {}
+    visible_transform_ids: list[str] = []
+    for item in spec.transforms:
+        if not _matches_transform_query(item, normalized_query):
+            continue
+        visible_transform_ids.append(item.transform_id)
+        family = family_specs.setdefault(
+            item.family_id,
+            {
+                "label": item.family_label,
+                "subfamilies": {},
+            },
+        )
+        subfamily_id = item.subfamily_id or "__ungrouped__"
+        subfamily_label = item.subfamily_label or item.family_label
+        subfamilies = family["subfamilies"]
+        assert isinstance(subfamilies, dict)
+        leaves = subfamilies.setdefault(subfamily_id, (subfamily_label, []))
+        leaves[1].append(item)
+
+    families: list[ConfigV2TransformFamilyView] = []
+    for family_id, family in family_specs.items():
+        subfamilies = family["subfamilies"]
+        assert isinstance(subfamilies, dict)
+        projected_subfamilies: list[ConfigV2TransformSubfamilyView] = []
+        family_selected_count = 0
+        family_visible_count = 0
+        for subfamily_id, (subfamily_label, transforms) in subfamilies.items():
+            leaf_views = tuple(
+                ConfigV2TransformView(
+                    transform_id=item.transform_id,
+                    label=item.label,
+                    description=item.description,
+                    reference=item.reference,
+                    maturities=item.maturities,
+                    selected=item.transform_id in known_selected_ids,
+                    default_selected=item.default_selected,
+                    verification=item.verification.value,
+                    verification_reason=item.verification_reason,
+                    advisory=item.advisory.value,
+                    advisory_reason=item.advisory_reason,
+                    cost=item.cost.value,
+                    cost_detail=item.cost_detail,
+                )
+                for item in transforms
+            )
+            selected_count = sum(item.selected for item in leaf_views)
+            visible_count = len(leaf_views)
+            family_selected_count += selected_count
+            family_visible_count += visible_count
+            projected_subfamilies.append(
+                ConfigV2TransformSubfamilyView(
+                    family_id=family_id,
+                    subfamily_id=subfamily_id,
+                    label=subfamily_label,
+                    target_id=f"subfamily:{family_id}:{subfamily_id}",
+                    selected_count=selected_count,
+                    visible_count=visible_count,
+                    check_state=_catalog_check_state(
+                        selected_count=selected_count,
+                        visible_count=visible_count,
+                    ),
+                    transforms=leaf_views,
+                )
+            )
+        families.append(
+            ConfigV2TransformFamilyView(
+                family_id=family_id,
+                label=str(family["label"]),
+                target_id=f"family:{family_id}",
+                selected_count=family_selected_count,
+                visible_count=family_visible_count,
+                check_state=_catalog_check_state(
+                    selected_count=family_selected_count,
+                    visible_count=family_visible_count,
+                ),
+                subfamilies=tuple(projected_subfamilies),
+            )
+        )
+    return ConfigV2TransformCatalogView(
+        pass_editor_spec=spec,
+        query=normalized_query,
+        selected_ids=tuple(
+            transform_id
+            for transform_id in all_transform_ids
+            if transform_id in known_selected_ids
+        ),
+        all_transform_ids=all_transform_ids,
+        visible_transform_ids=tuple(visible_transform_ids),
+        families=tuple(families),
+    )
+
+
+def apply_transform_catalog_selection(
+    view: ConfigV2TransformCatalogView,
+    selected_ids: AbstractSet[str],
+    *,
+    target_id: str,
+    selected: bool,
+) -> tuple[str, ...]:
+    """Apply one operator selection to the catalog action scope.
+
+    ``visible`` and family/subfamily targets intentionally operate on the
+    current filtered tree; ``all`` is the explicit whole-pass overflow action.
+    """
+    if target_id == "all":
+        targets = view.all_transform_ids
+    elif target_id == "visible":
+        targets = view.visible_transform_ids
+    elif target_id.startswith("family:"):
+        family_id = target_id.removeprefix("family:")
+        family = next(
+            (item for item in view.families if item.family_id == family_id),
+            None,
+        )
+        if family is None:
+            raise ValueError(f"unknown visible transform family {family_id!r}")
+        targets = tuple(
+            transform.transform_id
+            for subfamily in family.subfamilies
+            for transform in subfamily.transforms
+        )
+    elif target_id.startswith("subfamily:"):
+        subfamily = next(
+            (
+                item
+                for family in view.families
+                for item in family.subfamilies
+                if item.target_id == target_id
+            ),
+            None,
+        )
+        if subfamily is None:
+            raise ValueError(f"unknown visible transform subfamily {target_id!r}")
+        targets = tuple(item.transform_id for item in subfamily.transforms)
+    elif target_id in view.all_transform_ids:
+        targets = (target_id,)
+    else:
+        raise ValueError(f"unknown transform catalog target {target_id!r}")
+
+    updated = set(selected_ids).intersection(view.all_transform_ids)
+    if selected:
+        updated.update(targets)
+    else:
+        updated.difference_update(targets)
+    return tuple(
+        transform_id for transform_id in view.all_transform_ids if transform_id in updated
+    )
+
+
+def typed_field_option_value(
+    options: dict[str, object],
+    field: FieldEditorSpec,
+) -> object:
+    """Read a declared field path without treating absent values as data."""
+
+    value: object = options
+    for item in field.path:
+        if not isinstance(value, dict) or item not in value:
+            return None
+        value = value[item]
+    return value
+
+
+def _normalize_typed_field_value(field: FieldEditorSpec, value: object) -> object:
+    if field.control is FieldControlKind.BOOLEAN:
+        return bool(value)
+    if field.control is FieldControlKind.INTEGER:
+        if isinstance(value, bool):
+            raise ValueError(f"{field.label} must be an integer")
+        try:
+            number = int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{field.label} must be an integer") from exc
+        if field.minimum is not None and number < field.minimum:
+            raise ValueError(f"{field.label} must be at least {field.minimum}")
+        if field.maximum is not None and number > field.maximum:
+            raise ValueError(f"{field.label} must be at most {field.maximum}")
+        return number
+    if field.control is FieldControlKind.ENUM:
+        if value not in field.choices:
+            raise ValueError(f"{field.label} must be one of the declared choices")
+        return str(value)
+    if field.control is FieldControlKind.TEXT:
+        return str(value)
+    if field.control is FieldControlKind.STRING_LIST:
+        return [
+            item.strip() for item in str(value).split(",") if item.strip()
+        ]
+    raise ValueError(f"{field.label} has an unsupported editor control")
+
+
+def apply_typed_field_option(
+    options: dict[str, object],
+    field: FieldEditorSpec,
+    value: object,
+) -> dict[str, object]:
+    """Apply one declared typed value while preserving all other options."""
+
+    updated = copy.deepcopy(options)
+    target = updated
+    for item in field.path[:-1]:
+        child = target.get(item)
+        if not isinstance(child, dict):
+            child = {}
+            target[item] = child
+        target = child
+    target[field.path[-1]] = _normalize_typed_field_value(field, value)
+    return updated
+
+
 def _option_summary(options: dict[str, object]) -> str:
     if not options:
         return "No options"
@@ -344,14 +659,16 @@ def project_config_v2_editor_view(
                 display_name=catalog_entry.display_name,
                 purpose=purpose,
                 runs_during=catalog_entry.maturity,
-                selected_transforms=tuple(
-                    ConfigV2TransformRow(
-                        transform_id, transform_id in (selected_ids or set())
+                transform_catalog=(
+                    project_transform_catalog(
+                        catalog_entry.editor_spec,
+                        selected_ids or frozenset(),
+                        query="",
                     )
-                    for transform_id in catalog_entry.transform_ids
+                    if catalog_entry.editor_spec.kind
+                    is PassEditorKind.TRANSFORM_CATALOG
+                    else None
                 ),
-                transforms_editable=bool(catalog_entry.transform_ids)
-                and selected_ids is not None,
                 options=options,
                 contract=_contract(catalog_entry),
                 contract_chips=(
@@ -428,9 +745,16 @@ __all__ = [
     "ConfigV2RawDocumentView",
     "ConfigV2RoutingView",
     "ConfigV2SerializerRow",
-    "ConfigV2TransformRow",
+    "ConfigV2TransformCatalogView",
+    "ConfigV2TransformFamilyView",
+    "ConfigV2TransformSubfamilyView",
+    "ConfigV2TransformView",
+    "apply_typed_field_option",
+    "apply_transform_catalog_selection",
     "config_v2_action_states",
     "project_config_v2_document",
     "project_config_v2_editor_view",
+    "project_transform_catalog",
     "project_serializer_rows",
+    "typed_field_option_value",
 ]

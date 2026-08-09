@@ -4,6 +4,8 @@ import ast
 import json
 from pathlib import Path
 
+import pytest
+
 from d810.manager.config_v2_edit_models import (
     ConfigV2EditDiagnostic,
     ConfigV2EditableField,
@@ -13,6 +15,8 @@ from d810.manager.config_v2_edit_models import (
 )
 from d810.core.pass_editor_spec import (
     AdvisoryTone,
+    FieldControlKind,
+    FieldEditorSpec,
     PassEditorSpec,
     TransformCost,
     TransformEditorSpec,
@@ -304,17 +308,53 @@ def test_editor_inspector_uses_catalog_contract_and_presentation_purpose():
         ("Backend", "mutation_backend"),
         ("Safety", "verified"),
     )
-    assert [row.transform_id for row in inspector.selected_transforms] == [
+    assert inspector.transform_catalog is not None
+    assert inspector.transform_catalog.selected_ids == ("add-xor-1", "sub-xor-1")
+    assert inspector.transform_catalog.visible_transform_ids == (
         "add-xor-1",
         "sub-xor-1",
         "and-or-1",
-    ]
-    assert [row.selected for row in inspector.selected_transforms] == [
-        True,
-        True,
-        False,
-    ]
-    assert inspector.transforms_editable is True
+    )
+
+
+def test_typed_field_actions_normalize_values_without_mutating_other_options():
+    field = FieldEditorSpec(
+        field_id="maturities",
+        label="Maturities",
+        path=("runtime", "maturities"),
+        control=FieldControlKind.STRING_LIST,
+        description="Selected Hex-Rays maturities.",
+    )
+    original = {"keep": {"this": True}, "runtime": {"other": "value"}}
+
+    updated = logic.apply_typed_field_option(
+        original,
+        field,
+        "MMAT_PREOPTIMIZED, MMAT_LOCOPT",
+    )
+
+    assert original == {"keep": {"this": True}, "runtime": {"other": "value"}}
+    assert updated == {
+        "keep": {"this": True},
+        "runtime": {
+            "other": "value",
+            "maturities": ["MMAT_PREOPTIMIZED", "MMAT_LOCOPT"],
+        },
+    }
+
+
+def test_typed_field_actions_reject_out_of_contract_values() -> None:
+    field = FieldEditorSpec(
+        field_id="max_leaves",
+        label="Maximum leaves",
+        path=("max_leaves",),
+        control=FieldControlKind.INTEGER,
+        minimum=1,
+        maximum=16,
+    )
+
+    with pytest.raises(ValueError, match="Maximum leaves"):
+        logic.apply_typed_field_option({}, field, 17)
 
 
 def test_editor_routing_raw_document_and_footer_are_lossless_and_current():

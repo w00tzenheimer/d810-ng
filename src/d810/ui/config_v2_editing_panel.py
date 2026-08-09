@@ -6,13 +6,18 @@ import copy
 import pathlib
 
 from d810.core import typing
+from d810.core.pass_editor_spec import FieldControlKind, FieldEditorSpec, PassEditorKind
 from d810.core.logging import getLogger
 from d810.families.registry import registered_families
 from d810.ui.config_v2_editing_logic import (
     ConfigV2EditorScreen,
+    apply_typed_field_option,
+    apply_transform_catalog_selection,
+    project_transform_catalog,
     project_config_v2_document,
     project_config_v2_editor_view,
     project_serializer_rows,
+    typed_field_option_value,
 )
 from d810.ui.project_config_logic import ConfigV2FocusTarget
 from d810.ui.workbench_structured_details_logic import DetailField, DetailSection
@@ -35,6 +40,7 @@ if IDA_AVAILABLE:
         RawJsonDialog,
         StructuredDetailsView,
     )
+    from d810.ui.config_v2_transform_catalog import ConfigV2TransformCatalogWidget
 
     WOPN_NOT_CLOSED_BY_ESC = getattr(
         ida_kernwin,
@@ -121,7 +127,7 @@ if IDA_AVAILABLE:
                 ("remove", "Remove"),
                 ("up", "Move up"),
                 ("down", "Move down"),
-                ("inspector", "Open Inspector"),
+                ("inspector", "Open in editor..."),
             ):
                 self.pass_buttons[action_id] = QtWidgets.QPushButton(label)
 
@@ -135,15 +141,22 @@ if IDA_AVAILABLE:
             self.contract_chip_labels = {
                 name: QtWidgets.QLabel() for name in ("Scope", "Backend", "Safety")
             }
-            self.transform_picker = QtWidgets.QListWidget()
+            self._transform_catalog_query = ""
+            self.transform_catalog_widget = ConfigV2TransformCatalogWidget(
+                on_query_changed=self._transform_catalog_query_changed,
+                on_selection_changed=self._apply_transform_catalog_selection,
+            )
             self.no_transforms_label = QtWidgets.QLabel(
                 "No individually selectable transforms."
             )
-            self.options_tree = JsonTreeEditor()
-            self.options_tree.set_on_value_changed(self._apply_inspector_options)
+            self.typed_options_body = QtWidgets.QWidget()
+            self.typed_options_layout = QtWidgets.QFormLayout(self.typed_options_body)
+            self.typed_options_layout.setContentsMargins(4, 4, 4, 4)
+            self.typed_options_layout.setSpacing(4)
+            self.no_options_label = QtWidgets.QLabel(
+                "This pass exposes no additional typed options."
+            )
             self.contract_tree = JsonTreeEditor()
-            self.raw_options_button = QtWidgets.QToolButton()
-            self.raw_options_button.setText("Edit raw options")
             self.raw_contract_button = QtWidgets.QToolButton()
             self.raw_contract_button.setText("View raw contract")
             self.edit_pipeline_button = QtWidgets.QPushButton("Edit pipeline...")
@@ -160,8 +173,6 @@ if IDA_AVAILABLE:
             self.pass_buttons["inspector"].clicked.connect(
                 self._open_selected_inspector
             )
-            self.transform_picker.itemChanged.connect(self._apply_selected_transforms)
-            self.raw_options_button.clicked.connect(self._show_raw_options)
             self.raw_contract_button.clicked.connect(self._show_raw_contract)
             self.edit_pipeline_button.clicked.connect(self._show_builder)
             self._render()
@@ -225,7 +236,7 @@ if IDA_AVAILABLE:
             transforms_layout = QtWidgets.QVBoxLayout(transforms_group)
             transforms_layout.setContentsMargins(4, 4, 4, 4)
             transforms_layout.setSpacing(4)
-            transforms_layout.addWidget(self.transform_picker)
+            transforms_layout.addWidget(self.transform_catalog_widget)
             transforms_layout.addWidget(self.no_transforms_label)
             inspector_layout.addWidget(transforms_group, stretch=1)
 
@@ -233,11 +244,8 @@ if IDA_AVAILABLE:
             options_layout = QtWidgets.QVBoxLayout(options_group)
             options_layout.setContentsMargins(4, 4, 4, 4)
             options_layout.setSpacing(4)
-            options_layout.addWidget(self.options_tree)
-            options_controls = QtWidgets.QHBoxLayout()
-            options_controls.addStretch(1)
-            options_controls.addWidget(self.raw_options_button)
-            options_layout.addLayout(options_controls)
+            options_layout.addWidget(self.typed_options_body)
+            options_layout.addWidget(self.no_options_label)
             inspector_layout.addWidget(options_group, stretch=1)
 
             contract_group = QtWidgets.QGroupBox("Pass contract (read-only)")
@@ -654,7 +662,6 @@ if IDA_AVAILABLE:
             inspector = self._current_inspector()
             self._rendering_inspector = True
             try:
-                self.transform_picker.clear()
                 if inspector is None:
                     self.inspector_details.set_sections(
                         (
@@ -667,11 +674,11 @@ if IDA_AVAILABLE:
                     )
                     for label in self.contract_chip_labels.values():
                         label.setText("")
-                    self.transform_picker.setVisible(False)
+                    self.transform_catalog_widget.setVisible(False)
+                    self.transform_catalog_widget.set_catalog(None)
                     self.no_transforms_label.setVisible(True)
-                    self.options_tree.set_json({}, editable=False)
+                    self._render_typed_options(None)
                     self.contract_tree.set_json({}, editable=False)
-                    self.raw_options_button.setEnabled(False)
                     self.raw_contract_button.setEnabled(False)
                     return
 
@@ -694,25 +701,27 @@ if IDA_AVAILABLE:
                 for name, value in inspector.contract_chips:
                     self.contract_chip_labels[name].setText(f"{name}: {value}")
 
-                self.transform_picker.setVisible(inspector.transforms_editable)
-                self.no_transforms_label.setVisible(not inspector.transforms_editable)
-                if inspector.transforms_editable:
-                    for row in inspector.selected_transforms:
-                        item = QtWidgets.QListWidgetItem(row.transform_id)
-                        item.setFlags(qt_flag_or(item.flags(), _checkable_flag()))
-                        item.setData(_user_role(), row.transform_id)
-                        item.setCheckState(
-                            _checked_state() if row.selected else _unchecked_state()
-                        )
-                        self.transform_picker.addItem(item)
-                else:
+                transform_catalog = inspector.transform_catalog
+                if transform_catalog is None:
+                    self.transform_catalog_widget.setVisible(False)
                     self.no_transforms_label.setText(
                         "No individually selectable transforms."
                     )
+                    self.no_transforms_label.setVisible(True)
+                    self.transform_catalog_widget.set_catalog(None)
+                else:
+                    self.no_transforms_label.setVisible(False)
+                    self.transform_catalog_widget.setVisible(True)
+                    self.transform_catalog_widget.set_catalog(
+                        project_transform_catalog(
+                            transform_catalog.pass_editor_spec,
+                            set(transform_catalog.selected_ids),
+                            query=self._transform_catalog_query,
+                        )
+                    )
 
-                self.options_tree.set_json(inspector.options, editable=True)
+                self._render_typed_options(inspector)
                 self.contract_tree.set_json(inspector.contract, editable=False)
-                self.raw_options_button.setEnabled(True)
                 self.raw_contract_button.setEnabled(True)
             finally:
                 self._rendering_inspector = False
@@ -754,26 +763,28 @@ if IDA_AVAILABLE:
             self._render()
             return True
 
-        def _apply_selected_transforms(
+        def _transform_catalog_query_changed(self, query: str) -> None:
+            self._transform_catalog_query = str(query)
+            if not self._rendering_inspector:
+                self._render_inspector()
+
+        def _apply_transform_catalog_selection(
             self,
-            changed_item: typing.Any = None,
+            target_id: str,
+            selected: bool,
         ) -> None:
-            del changed_item
             if self._rendering_inspector:
                 return
             inspector = self._current_inspector()
-            if inspector is None or not inspector.transforms_editable:
+            catalog = self.transform_catalog_widget.current_catalog()
+            if inspector is None or catalog is None:
                 self._render()
                 return
-            checked_ids = {
-                str(self.transform_picker.item(index).data(_user_role()))
-                for index in range(self.transform_picker.count())
-                if self.transform_picker.item(index).checkState() == _checked_state()
-            }
-            transform_ids = tuple(
-                row.transform_id
-                for row in inspector.selected_transforms
-                if row.transform_id in checked_ids
+            transform_ids = apply_transform_catalog_selection(
+                catalog,
+                set(catalog.selected_ids),
+                target_id=target_id,
+                selected=bool(selected),
             )
             self._apply_edit(
                 lambda: self._adapter.set_pass_transforms(
@@ -783,33 +794,134 @@ if IDA_AVAILABLE:
                 )
             )
 
-        def _apply_inspector_options(self, value: object) -> None:
+        def _apply_typed_option(
+            self,
+            field: FieldEditorSpec,
+            value: object,
+        ) -> None:
             inspector = self._current_inspector()
-            if inspector is None or not isinstance(value, dict):
+            if inspector is None:
                 self._render()
-                self._set_status("Pass options must be a JSON object.")
+                return
+            try:
+                options = apply_typed_field_option(inspector.options, field, value)
+            except ValueError as exc:
+                self._render()
+                self._set_status(f"Invalid value for {field.label}: {exc}")
                 return
             self._apply_edit(
                 lambda: self._adapter.set_pass_options(
                     self._draft,
                     pass_index=inspector.pass_index,
-                    options=value,
+                    options=options,
                 )
             )
 
-        def _show_raw_options(self, checked: bool = False) -> None:
-            del checked
-            inspector = self._current_inspector()
+        def _render_typed_options(self, inspector: typing.Any | None) -> None:
+            while self.typed_options_layout.count():
+                item = self.typed_options_layout.takeAt(0)
+                widget = item.widget()
+                if widget is not None:
+                    widget.hide()
+                    widget.setParent(None)
+                    widget.deleteLater()
             if inspector is None:
+                self.typed_options_body.setVisible(False)
+                self.no_options_label.setText(
+                    "Select a pass to view its typed configuration."
+                )
+                self.no_options_label.setVisible(True)
                 return
-            dialog = RawJsonDialog(
-                f"Edit raw options for {inspector.pass_id}",
-                inspector.options,
-                editable=True,
-                on_apply=self._apply_inspector_options,
-                parent=self.parent,
+            entry = self._catalog_by_pass_id.get(inspector.pass_id)
+            spec = entry.editor_spec if entry is not None else None
+            if spec is None or not spec.fields:
+                self.typed_options_body.setVisible(False)
+                self.no_options_label.setText(
+                    "Transform selection is this pass's only exposed configuration."
+                    if spec is not None
+                    and spec.kind is PassEditorKind.TRANSFORM_CATALOG
+                    else "This pass exposes no additional typed options."
+                )
+                self.no_options_label.setVisible(True)
+                return
+            self.no_options_label.setVisible(False)
+            self.typed_options_body.setVisible(True)
+            for field in spec.fields:
+                control = self._typed_option_control(
+                    field,
+                    typed_field_option_value(inspector.options, field),
+                )
+                control.setToolTip(field.description)
+                self.typed_options_layout.addRow(field.label, control)
+
+        def _typed_option_control(
+            self,
+            field: FieldEditorSpec,
+            value: object,
+        ) -> typing.Any:
+            if field.control is FieldControlKind.BOOLEAN:
+                control = QtWidgets.QCheckBox()
+                control.setChecked(bool(value))
+                control.toggled.connect(
+                    lambda checked, field=field: self._apply_typed_option(
+                        field, bool(checked)
+                    )
+                )
+                return control
+            if field.control is FieldControlKind.INTEGER:
+                minimum = field.minimum if field.minimum is not None else -2147483648
+                maximum = field.maximum if field.maximum is not None else 2147483647
+                # Qt's QSpinBox is limited to a signed 32-bit range.  Several
+                # Hex-Rays pass settings are deliberately wider (for example,
+                # state constants), so use the same fixed numeric control with
+                # the pure field validator rather than silently narrowing them.
+                if minimum < -2147483648 or maximum > 2147483647:
+                    control = QtWidgets.QLineEdit()
+                    control.setText(str(value) if isinstance(value, int) else "")
+                    control.setPlaceholderText(f"{minimum} to {maximum}")
+                    control.editingFinished.connect(
+                        lambda control=control, field=field: self._apply_typed_option(
+                            field, control.text()
+                        )
+                    )
+                    return control
+                control = QtWidgets.QSpinBox()
+                control.setRange(minimum, maximum)
+                control.setValue(int(value) if isinstance(value, int) else 0)
+                control.valueChanged.connect(
+                    lambda number, field=field: self._apply_typed_option(
+                        field, int(number)
+                    )
+                )
+                return control
+            if field.control is FieldControlKind.ENUM:
+                control = QtWidgets.QComboBox()
+                for choice in field.choices:
+                    control.addItem(choice, choice)
+                index = control.findData(value)
+                control.setCurrentIndex(index if index >= 0 else 0)
+                control.currentIndexChanged.connect(
+                    lambda _index, control=control, field=field: self._apply_typed_option(
+                        field, control.currentData()
+                    )
+                )
+                return control
+            control = QtWidgets.QLineEdit()
+            if field.control is FieldControlKind.STRING_LIST:
+                initial = (
+                    ", ".join(str(item) for item in value)
+                    if isinstance(value, (list, tuple))
+                    else ""
+                )
+            else:
+                initial = str(value) if isinstance(value, str) else ""
+            control.setText(initial)
+            control.editingFinished.connect(
+                lambda control=control, field=field: self._apply_typed_option(
+                    field, control.text()
+                )
             )
-            dialog.exec_()
+            return control
 
         def _show_raw_contract(self, checked: bool = False) -> None:
             del checked
