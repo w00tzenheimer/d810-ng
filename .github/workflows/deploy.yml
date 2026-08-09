@@ -78,33 +78,12 @@ jobs:
             - uses: actions/checkout@v4
               with:
                   persist-credentials: false
-                  submodules: recursive
 
             - name: Ensure IDA SDK
               uses: ./.github/actions/ensure-ida-sdk
               with:
                 sdk-dir: .ida-sdk
                 ref: 7f8fd3100142295bffa5eabb2ce6f5b5ac163c6b
-
-            # CoBRA is a PINNED SUBMODULE (third_party/cobra), not a release
-            # download. That keeps the binding's CoBRA version tied to the d810
-            # commit that uses it, so checking out a d810 sha reproduces the
-            # exact binding. A pinned release decouples the two and drifts
-            # silently, and it also needed a cross-repo release nobody could
-            # cut without extra permissions.
-            # Same reason as wheels.yml: `-G Ninja` with no compiler pinned
-            # takes MinGW off this runner's PATH, producing libabsl_*.a that
-            # cibuildwheel's MSVC extension can neither /WHOLEARCHIVE: nor
-            # safely link against. Without this the Windows release wheel
-            # simply ships without the binding.
-            - name: Set up MSVC (Windows deps must match the wheel toolchain)
-              if: runner.os == 'Windows'
-              uses: ilammy/msvc-dev-cmd@v1
-
-            - name: Build CoBRA static libs
-              id: cobra
-              continue-on-error: true
-              run: python tools/scripts/build_cobra.py
 
             - name: Build wheels
               uses: pypa/cibuildwheel@v3.1
@@ -113,44 +92,23 @@ jobs:
                   # IDA SDK is 64-bit only — skip 32-bit wheels
                   CIBW_SKIP: "*-win32 *-musllinux_*"
                   # Enable optional Cython speedups during wheel build.
-                  # D810_BUILD_COBRA is set only when the static libs were
-                  # fetched: the binding is OPTIONAL, and a wheel that fails to
-                  # import is far worse than one where mba-solve is inert.
-                  CIBW_ENVIRONMENT: >-
-                      D810_BUILD_SPEEDUPS=1
-                      D810_BUILD_COBRA=${{ steps.cobra.outcome == 'success' && '1' || '0' }}
-                      COBRA_ROOT=/project/third_party/cobra
-                  CIBW_ENVIRONMENT_WINDOWS: >-
-                      D810_BUILD_SPEEDUPS=1
-                      D810_BUILD_COBRA=${{ steps.cobra.outcome == 'success' && '1' || '0' }}
-                      COBRA_ROOT=$GITHUB_WORKSPACE\\third_party\\cobra
-                  CIBW_ENVIRONMENT_MACOS: >-
-                      D810_BUILD_SPEEDUPS=1
-                      D810_BUILD_COBRA=${{ steps.cobra.outcome == 'success' && '1' || '0' }}
-                      COBRA_ROOT=$GITHUB_WORKSPACE/third_party/cobra
+                  CIBW_ENVIRONMENT: "D810_BUILD_SPEEDUPS=1"
                   CIBW_BEFORE_BUILD: "pip install Cython>=3.0.0"
-                  # cmake/ninja are needed INSIDE the manylinux container,
-                  # which does not inherit the runner's toolchain.
-                  CIBW_BEFORE_ALL_LINUX: "pip install cmake ninja"
-                  # A wheel whose binding silently failed to build is the exact
-                  # failure mode that looks like success -- IDA decompiles
-                  # normally and mba-solve does nothing. Fail the build here
-                  # instead of shipping it.
-                  # Goes through the backend plugin protocol so a failure says
-                  # WHY, not just False -- "cobra binding: False" gave no clue
-                  # whether the extension was skipped, failed to link, or
-                  # failed to load.
+                  # Report every backend with a reason for any that is not
+                  # usable. The wheel must import cleanly; optional backends now
+                  # ship as their own distributions (d810-backend-cobra), so an
+                  # absent one is expected rather than a build failure.
+                  #
+                  # A defect IS fatal: BROKEN or INCOMPATIBLE means a backend
+                  # this wheel claims to carry is mis-declared, which would
+                  # otherwise reach PyPI silently.
                   CIBW_TEST_COMMAND: >-
                       python -c "from d810.backends import registry;
-                      from d810.core.plugins import format_report;
-                      import os, sys;
+                      from d810.core.plugins import format_report, has_defects;
+                      import sys;
                       infos = registry().probe_all();
                       print(format_report(infos));
-                      want = os.environ.get('D810_EXPECT_COBRA') == '1';
-                      cobra = next((i for i in infos if i.name == 'cobra'), None);
-                      sys.exit(0 if (cobra is not None and cobra.usable) or not want else 1)"
-                  CIBW_TEST_ENVIRONMENT: >-
-                      D810_EXPECT_COBRA=${{ steps.cobra.outcome == 'success' && '1' || '0' }}
+                      sys.exit(1 if has_defects(infos) else 0)"
               with:
                   package-dir: .
                   output-dir: wheelhouse
