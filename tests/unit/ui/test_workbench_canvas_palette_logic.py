@@ -5,6 +5,7 @@ import json
 import pytest
 
 from d810.core.deobfuscation_case import StrategyWorkflowStage
+from d810.core.pass_editor_spec import PassEditorSpec
 from d810.manager.workbench_recipe_models import (
     PassCatalogEntry,
     PipelineRecipeDraft,
@@ -39,6 +40,7 @@ def _entry(
         transform_ids=(),
         stage_ids=(),
         configured=configured,
+        editor_spec=PassEditorSpec.summary(),
         workflow_stage=workflow_stage,
     )
 

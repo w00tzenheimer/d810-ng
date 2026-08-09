@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from d810.core.deobfuscation_case import StrategyWorkflowStage
 from d810.core.pass_ids import PassId
+from d810.passes.mba_transform_catalog import mba_transform_editor_spec
 from d810.core.typing import Mapping, Protocol
 from d810.ir.maturity import IRMaturity
 from d810.passes.pass_pipeline import (
@@ -116,6 +117,7 @@ def register_mba_simplify_pass(registry: PassRegistry) -> PassRegistry:
         ),
         stages=stages,
         transform_ids=tuple(stage.stage_id for stage in stages),
+        editor_spec=mba_transform_editor_spec(),
     )
     return registry
 

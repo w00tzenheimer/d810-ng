@@ -8,6 +8,7 @@ import pytest
 
 from d810.core.config import ProjectConfiguration
 from d810.core.config_v2_defaults import CONFIG_V2_SUPPORTED_DEFAULT_MAPPINGS
+from d810.core.pass_editor_spec import PassEditorSpec
 from d810.passes.module_pass_manager import ModulePassManager
 from d810.passes.operational_config_v2 import (
     CONFIG_V2_OPERATIONAL_REGISTRY_NAME,
@@ -147,4 +148,13 @@ def test_operational_registry_catalog_templates_all_build_and_explain_stages():
     ).options
     assert not {"legacy_rule", "legacy_rule_options", "native_pipeline"}.intersection(
         cleanup_options
+    )
+
+
+def test_all_public_config_v2_passes_declare_closed_editor_specs():
+    registry = operational_config_v2_pass_registry()
+
+    assert all(
+        isinstance(registry.editor_spec_for(pass_id), PassEditorSpec)
+        for pass_id in registry.public_pass_ids()
     )

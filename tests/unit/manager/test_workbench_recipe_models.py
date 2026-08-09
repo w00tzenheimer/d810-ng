@@ -5,6 +5,7 @@ import dataclasses
 import pytest
 
 from d810.core.deobfuscation_case import StrategyWorkflowStage
+from d810.core.pass_editor_spec import PassEditorSpec
 from d810.manager.workbench_recipe_models import (
     FunctionPipelineOverride,
     PassCatalogEntry,
@@ -31,6 +32,7 @@ def test_recipe_records_are_frozen_and_keep_ordered_tuple_payloads() -> None:
         transform_ids=(),
         stage_ids=("recover_dispatcher",),
         configured=False,
+        editor_spec=PassEditorSpec.summary(),
     )
     recipe_pass = RecipePass(
         item_id="item-1",

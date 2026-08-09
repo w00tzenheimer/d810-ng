@@ -11,6 +11,11 @@ from __future__ import annotations
 import dataclasses
 
 from d810.core.deobfuscation_case import StrategyWorkflowStage
+from d810.core.pass_editor_spec import (
+    FieldControlKind,
+    FieldEditorSpec,
+    PassEditorSpec,
+)
 from d810.passes.pass_pipeline import (
     AnalysisContract,
     BackendRoute,
@@ -217,6 +222,36 @@ _WORKFLOW_STAGE_BY_PASS_ID = {
     "cleanup_residual_dispatcher": StrategyWorkflowStage.BACKEND_PUBLICATION,
 }
 
+_STATE_MACHINE_EDITOR_SPEC = PassEditorSpec.fields_editor(
+    (
+        FieldEditorSpec(
+            field_id="min_state_constant",
+            label="Minimum state constant",
+            path=("min_state_constant",),
+            control=FieldControlKind.INTEGER,
+            description="Minimum value accepted as a dispatcher state constant.",
+            minimum=0,
+            maximum=(1 << 64) - 1,
+        ),
+        FieldEditorSpec(
+            field_id="family",
+            label="Protection family",
+            path=("family",),
+            control=FieldControlKind.ENUM,
+            description="Select the state-machine recovery family.",
+            choices=("auto", "tigress-indirect"),
+        ),
+        FieldEditorSpec(
+            field_id="recovery_strategy",
+            label="Recovery strategy",
+            path=("recovery_strategy",),
+            control=FieldControlKind.ENUM,
+            description="Select the typed dispatcher-recovery strategy.",
+            choices=("family", "reduced-product"),
+        ),
+    )
+)
+
 
 def state_machine_pass_spec(
     pass_id: str,
@@ -267,6 +302,7 @@ def register_state_machine_passes(registry: PassRegistry) -> PassRegistry:
                     spec.pass_factory.__name__,
                 ),
             ),
+            editor_spec=_STATE_MACHINE_EDITOR_SPEC,
         )
     return registry
 

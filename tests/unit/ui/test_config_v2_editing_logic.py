@@ -11,6 +11,13 @@ from d810.manager.config_v2_edit_models import (
     ConfigV2ProjectDraft,
     ConfigV2ProjectValidation,
 )
+from d810.core.pass_editor_spec import (
+    AdvisoryTone,
+    PassEditorSpec,
+    TransformCost,
+    TransformEditorSpec,
+    VerificationStatus,
+)
 from d810.manager.workbench_recipe_models import PassCatalogEntry
 from d810.ui import config_v2_editing_logic as logic
 
@@ -47,6 +54,31 @@ def _validation(*, valid: bool = True, revision: int = 2) -> ConfigV2ProjectVali
     )
 
 
+def _transform_catalog_spec() -> PassEditorSpec:
+    return PassEditorSpec.transform_catalog(
+        tuple(
+            TransformEditorSpec(
+                transform_id=transform_id,
+                label=transform_id,
+                family_id="mba",
+                family_label="MBA",
+                subfamily_id="examples",
+                subfamily_label="Examples",
+                description="Test-only registered transform.",
+                reference="Test catalog",
+                maturities=("any",),
+                default_selected=True,
+                verification=VerificationStatus.UNAVAILABLE,
+                verification_reason="Test-only catalog.",
+                advisory=AdvisoryTone.NONE,
+                advisory_reason="",
+                cost=TransformCost.UNKNOWN,
+            )
+            for transform_id in ("add-xor-1", "sub-xor-1", "and-or-1")
+        )
+    )
+
+
 def _catalog() -> tuple[PassCatalogEntry, ...]:
     return (
         PassCatalogEntry(
@@ -61,6 +93,7 @@ def _catalog() -> tuple[PassCatalogEntry, ...]:
             transform_ids=("add-xor-1", "sub-xor-1", "and-or-1"),
             stage_ids=("simplify-mba",),
             configured=True,
+            editor_spec=_transform_catalog_spec(),
         ),
         PassCatalogEntry(
             pass_id="constant-simplification",
@@ -74,6 +107,7 @@ def _catalog() -> tuple[PassCatalogEntry, ...]:
             transform_ids=(),
             stage_ids=("constant-fold",),
             configured=True,
+            editor_spec=PassEditorSpec.summary(),
         ),
         PassCatalogEntry(
             pass_id="jump-fixer",
@@ -87,6 +121,7 @@ def _catalog() -> tuple[PassCatalogEntry, ...]:
             transform_ids=(),
             stage_ids=("fix-jumps",),
             configured=True,
+            editor_spec=PassEditorSpec.summary(),
         ),
     )
 

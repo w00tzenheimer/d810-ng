@@ -23,6 +23,11 @@ from dataclasses import dataclass
 from d810.core import getLogger
 from d810.core.deobfuscation_case import StrategyWorkflowStage
 from d810.core.pass_ids import PassId
+from d810.core.pass_editor_spec import (
+    FieldControlKind,
+    FieldEditorSpec,
+    PassEditorSpec,
+)
 from d810.core.typing import Mapping, Protocol
 from d810.ir.maturity import IRMaturity
 from d810.passes.pass_pipeline import (
@@ -227,6 +232,33 @@ def register_mba_solve_pass(registry: PassRegistry) -> PassRegistry:
         ),
         stages=stages,
         transform_ids=tuple(stage.stage_id for stage in stages),
+        editor_spec=PassEditorSpec.fields_editor(
+            (
+                FieldEditorSpec(
+                    field_id="max_leaves",
+                    label="Maximum leaves",
+                    path=("max_leaves",),
+                    control=FieldControlKind.INTEGER,
+                    description="Limits solver signature growth per candidate.",
+                    minimum=1,
+                    maximum=16,
+                ),
+                FieldEditorSpec(
+                    field_id="require_proof",
+                    label="Require proof",
+                    path=("require_proof",),
+                    control=FieldControlKind.BOOLEAN,
+                    description="Reject a solver rewrite unless its proof is available.",
+                ),
+                FieldEditorSpec(
+                    field_id="maturities",
+                    label="Maturities",
+                    path=("maturities",),
+                    control=FieldControlKind.STRING_LIST,
+                    description="Hex-Rays maturities at which solver work may run.",
+                ),
+            )
+        ),
     )
     return registry
 

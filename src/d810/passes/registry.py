@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from d810.core.pass_editor_spec import PassEditorSpec
 from d810.core.typing import Callable
 from d810.passes.execution_stages import ExecutionStageDescriptor
 from d810.passes.pass_pipeline import PipelineConfig, PipelinePass, PassSpec
@@ -30,6 +31,7 @@ class PassRegistry:
         self._config_templates: dict[str, PipelineConfig] = {}
         self._stages: dict[str, tuple[ExecutionStageDescriptor, ...]] = {}
         self._transform_ids: dict[str, tuple[str, ...]] = {}
+        self._editor_specs: dict[str, PassEditorSpec | None] = {}
         self._public: set[str] = set()
 
     def _record_catalog_metadata(
@@ -39,6 +41,7 @@ class PassRegistry:
         config_template: PipelineConfig | None,
         stages: tuple[ExecutionStageDescriptor, ...],
         transform_ids: tuple[str, ...],
+        editor_spec: PassEditorSpec | None,
         public: bool,
     ) -> None:
         template = config_template or PipelineConfig(pass_id=pass_id)
@@ -79,6 +82,7 @@ class PassRegistry:
         self._config_templates[pass_id] = template
         self._stages[pass_id] = tuple(stages)
         self._transform_ids[pass_id] = normalized_transform_ids
+        self._editor_specs[pass_id] = editor_spec
         if public:
             self._public.add(pass_id)
 
@@ -90,6 +94,7 @@ class PassRegistry:
         config_template: PipelineConfig | None = None,
         stages: tuple[ExecutionStageDescriptor, ...] = (),
         transform_ids: tuple[str, ...] = (),
+        editor_spec: PassEditorSpec | None = None,
         public: bool = True,
     ) -> None:
         """Register ``pass_factory`` under ``pass_id``."""
@@ -102,6 +107,7 @@ class PassRegistry:
             config_template=config_template,
             stages=stages,
             transform_ids=transform_ids,
+            editor_spec=editor_spec,
             public=public,
         )
         self._factories[pass_id] = pass_factory
@@ -114,6 +120,7 @@ class PassRegistry:
         config_template: PipelineConfig | None = None,
         stages: tuple[ExecutionStageDescriptor, ...] = (),
         transform_ids: tuple[str, ...] = (),
+        editor_spec: PassEditorSpec | None = None,
         public: bool = True,
     ) -> None:
         """Register a pass factory that is built from its ``PipelineConfig``."""
@@ -126,6 +133,7 @@ class PassRegistry:
             config_template=config_template,
             stages=stages,
             transform_ids=transform_ids,
+            editor_spec=editor_spec,
             public=public,
         )
         self._configured_factories[pass_id] = pass_factory
@@ -154,6 +162,11 @@ class PassRegistry:
         """Return stable user-selectable transform IDs owned by one pass."""
         self.config_template_for(pass_id)
         return self._transform_ids[pass_id]
+
+    def editor_spec_for(self, pass_id: str) -> PassEditorSpec | None:
+        """Return the closed config-v2 editor contract for one pass."""
+        self.config_template_for(pass_id)
+        return self._editor_specs[pass_id]
 
     def is_configured(self, pass_id: str) -> bool:
         self.config_template_for(pass_id)

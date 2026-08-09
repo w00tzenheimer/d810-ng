@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from d810.core.deobfuscation_case import StrategyWorkflowStage
+from d810.core.pass_editor_spec import PassEditorSpec
 from d810.core.typing import Mapping, Protocol
 from d810.ir.maturity import IRMaturity
 from d810.passes.pass_pipeline import (
@@ -123,6 +124,7 @@ def register_hook_transform_passes(registry: PassRegistry) -> PassRegistry:
                     implementation_name,
                 ),
             ),
+            editor_spec=PassEditorSpec.summary(),
             public=pass_id != "forward-constant-propagation",
         )
     return registry

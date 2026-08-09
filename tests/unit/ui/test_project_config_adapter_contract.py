@@ -11,6 +11,7 @@ from d810.manager.config_v2_edit_models import (
     ConfigV2ProjectDraft,
     ConfigV2ProjectValidation,
 )
+from d810.core.pass_editor_spec import PassEditorSpec
 from d810.manager.workbench_recipe_models import PassCatalogEntry
 from d810.ui.config_v2_editing_logic import ConfigV2EditorScreen
 from d810.ui.project_config_logic import resolve_config_v2_focus_target
@@ -439,6 +440,7 @@ class _RouteAdapter:
                 transform_ids=("a", "b"),
                 stage_ids=(),
                 configured=True,
+                editor_spec=PassEditorSpec.summary(),
             ),
         )
 

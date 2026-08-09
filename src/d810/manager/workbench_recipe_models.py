@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 
 from d810.core.deobfuscation_case import StrategyWorkflowStage
+from d810.core.pass_editor_spec import PassEditorSpec
 from d810.manager.workbench_models import OutcomeStatus
 
 
@@ -21,6 +22,7 @@ class PassCatalogEntry:
     transform_ids: tuple[str, ...]
     stage_ids: tuple[str, ...]
     configured: bool
+    editor_spec: PassEditorSpec
     workflow_stage: StrategyWorkflowStage = StrategyWorkflowStage.CANONICAL_PIPELINE
 
 

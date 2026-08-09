@@ -4,6 +4,7 @@ import sys
 from types import ModuleType, SimpleNamespace
 import dataclasses
 
+from d810.core.pass_editor_spec import PassEditorSpec
 from d810.manager.workbench_recipe_models import PassCatalogEntry
 from d810.passes.state_machine_options import (
     StateMachineCffFamily,
@@ -231,6 +232,7 @@ def _canvas_catalog() -> tuple[PassCatalogEntry, ...]:
             (),
             (),
             True,
+            PassEditorSpec.summary(),
         ),
     )
 

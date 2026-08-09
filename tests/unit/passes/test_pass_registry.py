@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from d810.core.deobfuscation_case import StrategyWorkflowStage
+from d810.core.pass_editor_spec import PassEditorSpec
 from d810.families.state_machine_cff.pipeline import (
     standard_state_machine_passes,
     state_machine_pass_registry,
@@ -234,3 +235,14 @@ def test_registry_separates_public_catalog_from_compatibility_ids():
     assert registry.registered_pass_ids() == ("compat", "public")
     assert registry.public_pass_ids() == ("public",)
     assert registry.build_spec(PipelineConfig(pass_id="compat")).pass_id == "compat"
+
+
+def test_registry_retains_the_explicit_editor_spec_for_a_registered_pass():
+    registry = PassRegistry()
+    editor_spec = PassEditorSpec.summary()
+
+    registry.register("public", _FakePass, editor_spec=editor_spec)
+    registry.register("compat", _FakePass, public=False)
+
+    assert registry.editor_spec_for("public") is editor_spec
+    assert registry.editor_spec_for("compat") is None

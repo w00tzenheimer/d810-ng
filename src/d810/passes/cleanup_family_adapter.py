@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from d810.core.deobfuscation_case import StrategyWorkflowStage
+from d810.core.pass_editor_spec import PassEditorSpec
 from d810.core.pass_ids import PassId
 from d810.core.typing import Mapping, Protocol
 from d810.ir.maturity import IRMaturity
@@ -105,6 +106,7 @@ def register_cleanup_family_adapter_passes(registry: PassRegistry) -> PassRegist
                 SIMPLE_FLATTENING_CLEANUP_RULE,
             ),
         ),
+        editor_spec=PassEditorSpec.summary(),
     )
     return registry
 

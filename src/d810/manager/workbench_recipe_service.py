@@ -99,6 +99,11 @@ class RecipeService:
         for pass_id in self._registry.public_pass_ids():
             config = self._registry.config_template_for(pass_id)
             spec = self._registry.build_spec(config)
+            editor_spec = self._registry.editor_spec_for(pass_id)
+            if editor_spec is None:
+                raise RecipeEditError(
+                    f"public pass {pass_id!r} is missing a config-v2 editor spec"
+                )
             entries.append(
                 PassCatalogEntry(
                     pass_id=pass_id,
@@ -114,6 +119,7 @@ class RecipeService:
                         stage.stage_id for stage in self._registry.stages_for(pass_id)
                     ),
                     configured=self._registry.is_configured(pass_id),
+                    editor_spec=editor_spec,
                     workflow_stage=config.workflow_stage,
                 )
             )

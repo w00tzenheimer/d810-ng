@@ -10,6 +10,7 @@ from d810.core.deobfuscation_case import (
     StrategyRecommendation,
     StrategyWorkflowStage,
 )
+from d810.core.pass_editor_spec import PassEditorSpec
 from d810.manager.workbench_models import OutcomeStatus
 from d810.manager.workbench_recipe_models import (
     PassCatalogEntry,
@@ -49,6 +50,7 @@ def _catalog() -> tuple[PassCatalogEntry, ...]:
             ("RuleZ",),
             ("TransformZ",),
             True,
+            PassEditorSpec.summary(),
         ),
         PassCatalogEntry(
             "a-pass",
@@ -62,6 +64,7 @@ def _catalog() -> tuple[PassCatalogEntry, ...]:
             (),
             (),
             False,
+            PassEditorSpec.summary(),
         ),
     )
 

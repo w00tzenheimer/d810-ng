@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from d810.core.config import ProjectConfiguration
+from d810.core.pass_editor_spec import PassEditorSpec
 from d810.manager.config_v2_edit_models import ConfigV2ProjectDraft
 from d810.manager.config_v2_editing import ConfigV2EditingService
 from d810.manager.workbench_recipe_models import PassCatalogEntry
@@ -29,6 +30,7 @@ def _task_1_catalog() -> tuple[PassCatalogEntry, ...]:
             transform_ids=(),
             stage_ids=("constant-fold",),
             configured=True,
+            editor_spec=PassEditorSpec.summary(),
         ),
         PassCatalogEntry(
             pass_id="mba-simplify",
@@ -42,6 +44,7 @@ def _task_1_catalog() -> tuple[PassCatalogEntry, ...]:
             transform_ids=("add-xor-1",),
             stage_ids=("simplify-mba",),
             configured=True,
+            editor_spec=PassEditorSpec.summary(),
         ),
         PassCatalogEntry(
             pass_id="jump-fixer",
@@ -55,6 +58,7 @@ def _task_1_catalog() -> tuple[PassCatalogEntry, ...]:
             transform_ids=(),
             stage_ids=("fix-jumps",),
             configured=True,
+            editor_spec=PassEditorSpec.summary(),
         ),
     )
 

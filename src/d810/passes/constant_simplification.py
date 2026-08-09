@@ -7,6 +7,11 @@ from dataclasses import dataclass
 from d810.core.config import RuleConfiguration
 from d810.core.deobfuscation_case import StrategyWorkflowStage
 from d810.core.pass_ids import PassId
+from d810.core.pass_editor_spec import (
+    FieldControlKind,
+    FieldEditorSpec,
+    PassEditorSpec,
+)
 from d810.passes.pass_pipeline import (
     FunctionPipelineContext,
     PipelineConfig,
@@ -149,6 +154,25 @@ def register_constant_simplification_pass(registry: PassRegistry) -> PassRegistr
                 ExecutionPipeline.FLOW,
                 "ForwardConstantPropagationRule",
             ),
+        ),
+        editor_spec=PassEditorSpec.fields_editor(
+            (
+                FieldEditorSpec(
+                    field_id="memory_policy",
+                    label="Memory policy",
+                    path=("memory_policy",),
+                    control=FieldControlKind.ENUM,
+                    description="Controls which read-only memory values may be materialized.",
+                    choices=(STRICT_MEMORY_POLICY, AGGRESSIVE_MEMORY_POLICY),
+                ),
+                FieldEditorSpec(
+                    field_id="allow_executable_readonly",
+                    label="Allow executable read-only memory",
+                    path=("allow_executable_readonly",),
+                    control=FieldControlKind.BOOLEAN,
+                    description="Very dangerous override for executable read-only memory.",
+                ),
+            )
         ),
     )
     return registry

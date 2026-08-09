@@ -9,9 +9,9 @@ from d810.core.deobfuscation_case import StrategyWorkflowStage
 from d810.manager.workbench_recipe_models import FunctionPipelineOverride, RecipePass
 from d810.manager.workbench_recipe_service import RecipeEditError, RecipeService
 from d810.passes.operational_config_v2 import operational_config_v2_pass_registry
-from d810.passes.pass_pipeline import PipelineConfig
+from d810.passes.pass_pipeline import PassResult, PipelineConfig
 from d810.passes.pipeline_v2_hook_bridge import STATE_MACHINE_NATIVE_PASS_IDS
-from d810.passes.registry import UnknownPassIdError
+from d810.passes.registry import PassRegistry, UnknownPassIdError
 from d810.passes.state_machine_options import (
     StateMachineCffFamily,
     StateMachineCffOptions,
@@ -52,6 +52,13 @@ class _Facts:
 
 def _service() -> RecipeService:
     return RecipeService(operational_config_v2_pass_registry())
+
+
+class _PassWithoutEditorSpec:
+    name = "public-without-editor-spec"
+
+    def run(self, context):
+        return PassResult()
 
 
 def _draft(service: RecipeService):
@@ -109,6 +116,14 @@ def test_catalog_exposes_only_the_consolidated_constant_operation():
     assert "forward-constant-propagation" not in pass_ids
     with pytest.raises(UnknownPassIdError, match="global-constant-inliner"):
         registry.config_template_for("global-constant-inliner")
+
+
+def test_public_recipe_catalog_rejects_missing_editor_spec() -> None:
+    registry = PassRegistry()
+    registry.register("public-pass", _PassWithoutEditorSpec, public=True)
+
+    with pytest.raises(RecipeEditError, match="editor spec"):
+        RecipeService(registry).catalog()
 
 
 def test_catalog_exposes_stable_selectable_transforms_without_private_names():
