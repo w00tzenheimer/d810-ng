@@ -258,6 +258,15 @@ if not _QT_AVAILABLE:
 
         class QDialog(QWidget): ...
 
+        class QDialogButtonBox(QWidget):
+            # StandardButton enum values
+            Ok: int = ...  # type: ignore[assignment]
+            Cancel: int = ...  # type: ignore[assignment]
+
+            def __init__(self, buttons: int = ..., parent: Any = ...) -> None: ...
+            def accepted(self): ...  # Signal
+            def rejected(self): ...  # Signal
+
         class QColorDialog(QDialog): ...
 
         class QAbstractItemView(QWidget): ...
@@ -447,6 +456,13 @@ if not _QT_AVAILABLE:
             def getExistingDirectory(
                 parent: Any = ..., caption: str = ..., directory: str = ...
             ) -> str: ...
+            @staticmethod
+            def getSaveFileName(
+                parent: Any = ...,
+                caption: str = ...,
+                directory: str = ...,
+                filter: str = ...,
+            ) -> tuple[str, str]: ...
 
         class QCheckBox(QWidget):
             def __init__(self, text: str = ..., parent: Any = ...) -> None: ...
@@ -507,6 +523,7 @@ if not _QT_AVAILABLE:
     QCheckBox = QtWidgets.QCheckBox
     QComboBox = QtWidgets.QComboBox
     QDialog = QtWidgets.QDialog
+    QDialogButtonBox = QtWidgets.QDialogButtonBox
     QFileDialog = QtWidgets.QFileDialog
     QFrame = QtWidgets.QFrame
     QHBoxLayout = QtWidgets.QHBoxLayout
@@ -569,6 +586,7 @@ else:
             QCheckBox,
             QComboBox,
             QDialog,
+            QDialogButtonBox,
             QDoubleSpinBox,
             QFileDialog,
             QFrame,
@@ -638,6 +656,7 @@ else:
                 QCheckBox,
                 QComboBox,
                 QDialog,
+                QDialogButtonBox,
                 QDoubleSpinBox,
                 QFileDialog,
                 QFrame,
@@ -927,6 +946,7 @@ __all__ = [
     "QCheckBox",
     "QComboBox",
     "QDialog",
+    "QDialogButtonBox",
     "QFileDialog",
     "QFrame",
     "QGroupBox",
