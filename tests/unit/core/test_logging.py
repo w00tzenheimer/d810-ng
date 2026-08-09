@@ -159,15 +159,25 @@ class TestUiLevelChangePropagates(unittest.TestCase):
 
 class TestLoggerConfigurator(unittest.TestCase):
     def setUp(self):
-        # Ensure a test logger exists under our D810 prefix
-        self.prefix = "D810"
+        # Lowercase: logger names are case-sensitive, and the tree d810 code
+        # actually logs through is `d810.*`. Asserting against "D810" built an
+        # orphan tree nobody logs to, so these checks proved nothing about the
+        # configuration the plugin really runs under.
+        self.prefix = "d810"
         self.test_logger_name = f"{self.prefix}.testunit"
-        # Create and reset the test logger
-        self.logger = getLogger(self.test_logger_name)
-        self.logger.setLevel(logging.WARNING)
-        # Also ensure the root prefix logger exists
+        # Now that this is the live tree, restore its level afterwards --
+        # leaking WARNING into `d810` would silence unrelated tests, and a
+        # missing log line reads as code that never ran.
         self.root_logger = logging.getLogger(self.prefix)
+        self._saved_root_level = self.root_logger.level
+        self.logger = getLogger(self.test_logger_name)
+        self._saved_test_level = self.logger.level
+        self.logger.setLevel(logging.WARNING)
         self.root_logger.setLevel(logging.WARNING)
+
+    def tearDown(self):
+        self.root_logger.setLevel(self._saved_root_level)
+        self.logger.setLevel(self._saved_test_level)
 
     def test_available_loggers_with_prefix(self):
         names = LoggerConfigurator.available_loggers(self.prefix)
@@ -177,8 +187,8 @@ class TestLoggerConfigurator(unittest.TestCase):
 
     def test_available_loggers_without_prefix(self):
         names = LoggerConfigurator.available_loggers()
-        # At minimum, core D810 logger should appear
-        self.assertIn("D810", names)
+        # At minimum, the core d810 logger should appear
+        self.assertIn("d810", names)
 
     def test_set_level_changes_level(self):
         # Change to DEBUG and verify
