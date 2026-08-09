@@ -96,7 +96,7 @@ jobs:
                   CIBW_BEFORE_BUILD: "pip install Cython>=3.0.0"
                   # Report every backend with a reason for any that is not
                   # usable. The wheel must import cleanly; optional backends now
-                  # ship as their own distributions (d810-backend-cobra), so an
+                  # ship as their own distributions (d810-cobra), so an
                   # absent one is expected rather than a build failure.
                   #
                   # A defect IS fatal: BROKEN or INCOMPATIBLE means a backend

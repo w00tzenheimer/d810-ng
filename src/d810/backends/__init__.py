@@ -59,7 +59,7 @@ logger = getLogger(__name__)
 #: ida_hexrays" outside IDA would be a tautology, and inside IDA they are never
 #: not there.
 #: ``cobra`` is deliberately absent: it ships as the separate distribution
-#: ``d810-backend-cobra`` and arrives through the ``d810.backends`` entry
+#: ``d810-cobra`` and arrives through the ``d810.backends`` entry
 #: point. Keeping a builtin row for it would mean d810's wheel carrying a
 #: C++23 build of abseil, highway and cobra-core, and would pin CoBRA's version
 #: to a d810 commit.

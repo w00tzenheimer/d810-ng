@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from d810.core.deobfuscation_case import StrategyWorkflowStage
+from d810.core.pass_ids import PassId
 from d810.core.typing import Mapping, Protocol
 from d810.ir.maturity import IRMaturity
 from d810.passes.pass_pipeline import (
@@ -20,7 +21,8 @@ from d810.passes.mba_transform_options import (
     parse_mba_simplify_options,
 )
 
-MBA_SIMPLIFY_PASS_ID = "mba-simplify"
+#: Back-reference to the shared vocabulary; see :mod:`d810.core.pass_ids`.
+MBA_SIMPLIFY_PASS_ID = PassId.MBA_SIMPLIFY
 
 
 @dataclass(frozen=True)

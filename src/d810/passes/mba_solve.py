@@ -20,7 +20,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from d810.core import getLogger
 from d810.core.deobfuscation_case import StrategyWorkflowStage
+from d810.core.pass_ids import PassId
 from d810.core.typing import Mapping, Protocol
 from d810.ir.maturity import IRMaturity
 from d810.passes.pass_pipeline import (
@@ -35,12 +37,29 @@ from d810.passes.execution_stages import (
 )
 from d810.passes.registry import PassRegistry
 
-MBA_SOLVE_PASS_ID = "mba-solve"
+logger = getLogger(__name__)
 
-#: The instruction rule that implements this pass.
-MBA_SOLVE_IMPLEMENTATION = "CobraSolveRule"
+#: Back-reference to the shared vocabulary; see :mod:`d810.core.pass_ids`.
+MBA_SOLVE_PASS_ID = PassId.MBA_SOLVE
+
 #: Stable stage id, mirroring ``mba-simplify``'s ``mba_transform_id`` scheme.
-MBA_SOLVE_STAGE_ID = "cobra-solve"
+MBA_SOLVE_STAGE_ID = "mba-solve"
+
+
+def mba_solve_implementation() -> str | None:
+    """The rule class implementing this pass, as declared by an extension.
+
+    d810 ships no MBA solver. Naming one here (``"CobraSolveRule"``) put a
+    vendor's class name in core: d810 could host exactly one solver, and the
+    name outlived the backend being extracted into its own distribution.
+
+    Returns None when no extension declares an implementation -- the honest
+    answer, and what stops this pass from claiming a rule that will never
+    register.
+    """
+    from d810.backends import registry
+
+    return registry().implementation_for(MBA_SOLVE_PASS_ID)
 
 #: Signature cost is 2**n evaluations for n leaves, so this is the real
 #: throttle: 256 evaluations at 8 versus 65,536 at 16.
@@ -169,12 +188,24 @@ def mba_solve_stages() -> tuple[ExecutionStageDescriptor, ...]:
     without stages therefore produces a pass whose rule is loaded, configured
     and accepted by an optimizer -- and then silently never invoked.
     """
+    implementation = mba_solve_implementation()
+    if implementation is None:
+        # No installed extension implements mba-solve, so there is no rule to
+        # allowlist. Returning a descriptor naming a class that will never
+        # register would produce a pass that is loaded, configured and then
+        # silently never invoked -- the exact failure this docstring warns
+        # about. `d810cli backends` is where the absence is visible.
+        logger.info(
+            "mba-solve has no implementation: no installed backend declares "
+            "one (install d810-cobra to enable it)"
+        )
+        return ()
     return (
         ExecutionStageDescriptor(
             pass_id=MBA_SOLVE_PASS_ID,
             stage_id=MBA_SOLVE_STAGE_ID,
             pipeline=ExecutionPipeline.INSTRUCTION,
-            implementation_name=MBA_SOLVE_IMPLEMENTATION,
+            implementation_name=implementation,
         ),
     )
 

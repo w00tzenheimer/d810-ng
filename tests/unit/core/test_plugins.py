@@ -1,6 +1,6 @@
 """Tests for the d810 backend plugin protocol.
 
-The protocol exists so an out-of-tree distribution (e.g. ``d810-backend-cobra``)
+The protocol exists so an out-of-tree distribution (e.g. ``d810-cobra``)
 can supply a backend without d810 knowing its name at build time, while the
 in-tree backends keep working in the deployment d810 actually ships in: a
 symlink into a source checkout, where installed dist metadata may describe a
@@ -337,14 +337,14 @@ class TestShadowing(unittest.TestCase):
         builtin = Recorder()
         external = Recorder()
         reg = registry(
-            specs=[spec("cobra", external, origin="d810-backend-cobra 1.0")],
+            specs=[spec("cobra", external, origin="d810-cobra 1.0")],
             builtins=[spec("cobra", builtin, origin="builtin")],
         )
         self.assertIs(reg.load("cobra"), external.result)
         self.assertEqual(builtin.calls, 0)
 
         info = reg.info("cobra")
-        self.assertEqual(info.origin, "d810-backend-cobra 1.0")
+        self.assertEqual(info.origin, "d810-cobra 1.0")
         self.assertEqual(info.shadowed, ("builtin",))
 
     def test_no_conflict_means_no_shadowed_entry(self):
@@ -647,7 +647,7 @@ class TestFormatReport(unittest.TestCase):
                 BackendInfo(
                     name="cobra",
                     status=BackendStatus.AVAILABLE,
-                    origin="d810-backend-cobra 1.0",
+                    origin="d810-cobra 1.0",
                     api_version=PLUGIN_API_VERSION,
                     shadowed=("builtin",),
                 )
@@ -668,11 +668,11 @@ class TestFormatReport(unittest.TestCase):
                     status=BackendStatus.AVAILABLE,
                     origin="builtin",
                     api_version=PLUGIN_API_VERSION,
-                    rejected=(("d810-backend-cobra 0.1", "built for API v99"),),
+                    rejected=(("d810-cobra 0.1", "built for API v99"),),
                 )
             ]
         )
-        for fragment in ("d810-backend-cobra 0.1", "v99", "rejected"):
+        for fragment in ("d810-cobra 0.1", "v99", "rejected"):
             self.assertIn(fragment, text)
 
 
@@ -685,7 +685,7 @@ class TestBuiltinBackends(unittest.TestCase):
     """
 
     #: ``cobra`` is deliberately NOT here: it ships as the separate
-    #: distribution ``d810-backend-cobra`` and arrives via the entry point, so
+    #: distribution ``d810-cobra`` and arrives via the entry point, so
     #: asserting it as a builtin would fail on any machine without that package
     #: installed -- and pass for the wrong reason on one that has it.
     EXPECTED = {
@@ -825,6 +825,95 @@ class TestExtensionRuleModules(unittest.TestCase):
             [BackendSpec(name="cobra", origin="test", load_manifest=lambda: raw)]
         )
         self.assertEqual(reg.rule_modules(), ("acme_ext.rules.solve",))
+
+
+class TestPassImplementations(unittest.TestCase):
+    """Which rule implements a pass is the EXTENSION's declaration, not d810's.
+
+    d810 derives a pass's ``allowed_rule_names`` from its stage descriptors, and
+    a rule outside that allowlist is skipped at dispatch. Naming the class in
+    d810 -- ``MBA_SOLVE_IMPLEMENTATION = "CobraSolveRule"`` -- meant core code
+    hardcoding one vendor's class, so d810 could not host a second solver and
+    the extraction left the coupling behind.
+
+    Read from the manifest, which the registry already parses to gate versions,
+    so this costs no extra import: the backend's heavy half stays untouched.
+    """
+
+    def manifest(self, implements):
+        return BackendManifest(
+            name="cobra",
+            api_version=PLUGIN_API_VERSION,
+            provides=Recorder(result=object()),
+            implements=implements,
+        )
+
+    def test_declared_implementation_is_found_by_pass_id(self):
+        reg = registry(
+            [
+                BackendSpec(
+                    name="cobra",
+                    origin="test",
+                    load_manifest=lambda: self.manifest({"mba-solve": "CobraSolveRule"}),
+                )
+            ]
+        )
+        self.assertEqual(reg.implementation_for("mba-solve"), "CobraSolveRule")
+
+    def test_no_extension_means_no_implementation(self):
+        """d810 alone ships no solver, and must say so rather than guess."""
+        self.assertIsNone(registry().implementation_for("mba-solve"))
+
+    def test_unrelated_pass_id_is_not_matched(self):
+        reg = registry(
+            [
+                BackendSpec(
+                    name="cobra",
+                    origin="test",
+                    load_manifest=lambda: self.manifest({"mba-solve": "CobraSolveRule"}),
+                )
+            ]
+        )
+        self.assertIsNone(reg.implementation_for("unflatten"))
+
+    def test_duck_typed_manifest_may_declare_implementations(self):
+        raw = {
+            "name": "cobra",
+            "api_version": PLUGIN_API_VERSION,
+            "provides": Recorder(result=object()),
+            "implements": {"mba-solve": "CobraSolveRule"},
+        }
+        reg = registry(
+            [BackendSpec(name="cobra", origin="test", load_manifest=lambda: raw)]
+        )
+        self.assertEqual(reg.implementation_for("mba-solve"), "CobraSolveRule")
+
+    def test_resolution_does_not_import_the_backend(self):
+        """The whole point of manifest indirection: no heavy half, no IDA."""
+        load = Recorder(result=object())
+        manifest = BackendManifest(
+            name="cobra",
+            api_version=PLUGIN_API_VERSION,
+            provides=load,
+            implements={"mba-solve": "CobraSolveRule"},
+        )
+        reg = registry(
+            [BackendSpec(name="cobra", origin="test", load_manifest=lambda: manifest)]
+        )
+        reg.implementation_for("mba-solve")
+        self.assertEqual(load.calls, 0, "reading a manifest must not import the backend")
+
+    def test_an_incompatible_backend_contributes_no_implementation(self):
+        manifest = BackendManifest(
+            name="cobra",
+            api_version=PLUGIN_API_VERSION - 1,
+            provides=Recorder(result=object()),
+            implements={"mba-solve": "CobraSolveRule"},
+        )
+        reg = registry(
+            [BackendSpec(name="cobra", origin="test", load_manifest=lambda: manifest)]
+        )
+        self.assertIsNone(reg.implementation_for("mba-solve"))
 
 
 if __name__ == "__main__":

@@ -6,14 +6,17 @@ import dataclasses
 import enum
 
 from d810.analyses.control_flow.dispatcher_recovery import MIN_STATE_CONSTANT
+from d810.core.pass_ids import PassId
 from d810.passes.pass_pipeline import PipelineConfig, PipelineConfigError
 
+#: The native spine, in the order the runtime requires. Back-references to the
+#: shared vocabulary; see :mod:`d810.core.pass_ids`.
 STATE_MACHINE_NATIVE_PASS_IDS = (
-    "recover_dispatcher",
-    "recover_state_transitions",
-    "plan_semantic_regions",
-    "lower_state_machine",
-    "cleanup_residual_dispatcher",
+    PassId.RECOVER_DISPATCHER,
+    PassId.RECOVER_STATE_TRANSITIONS,
+    PassId.PLAN_SEMANTIC_REGIONS,
+    PassId.LOWER_STATE_MACHINE,
+    PassId.CLEANUP_RESIDUAL_DISPATCHER,
 )
 MAX_STATE_CONSTANT = (1 << 64) - 1
 
