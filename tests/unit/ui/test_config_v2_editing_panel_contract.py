@@ -70,31 +70,45 @@ def test_panel_projects_one_draft_into_a_stacked_builder_and_inspector() -> None
     assert "project_config_v2_editor_view" in render_calls
 
 
-def test_inspector_uses_structured_identity_typed_options_and_contract_controls() -> None:
-    source = PANEL.read_text(encoding="utf-8")
+def test_inspector_shell_is_capability_driven_and_contract_is_on_demand() -> None:
+    create_source = _source("OnCreate")
+    render_source = _source("_render_inspector")
 
-    assert "StructuredDetailsView" in source
-    assert "JsonTreeEditor" in source
-    assert "RawJsonDialog" in source
-    assert "Pass" in source
-    assert "Purpose" in source
-    assert "Runs during" in source
-    assert "Scope" in source
-    assert "Backend" in source
-    assert "Safety" in source
-    assert "ConfigV2TransformCatalogWidget" in source
-    assert "ConfigV2RuleCatalogWidget" in source
-    assert "_render_typed_options" in source
-    assert "View raw contract" in source
-    assert "Edit raw options" not in source
-    assert "Edit pipeline..." in source
+    assert "ConfigV2InspectorPrimarySection" in PANEL.read_text(encoding="utf-8")
+    assert "inspector.layout" in render_source
+    assert "setVisible(layout.show_rule_catalog)" in render_source
+    assert "setVisible(layout.show_transform_catalog)" in render_source
+    assert "setVisible(layout.show_options)" in render_source
+    assert "RawJsonDialog" in _source("_show_raw_contract")
+    assert "JsonTreeEditor" not in create_source
+    assert "No individually selectable transforms." not in create_source
+    assert "No individually selectable rules." not in create_source
+
+
+def test_inspector_primary_region_or_elastic_sink_owns_available_height() -> None:
+    create_source = _source("OnCreate")
+    render_source = _source("_render_inspector")
+
+    assert "self._set_primary_workspace(layout.primary_section)" in render_source
+    assert (
+        render_source.count(
+            "self._set_primary_workspace(ConfigV2InspectorPrimarySection.NONE)"
+        )
+        == 2
+    )
+    assert "self.inspector_elastic_sink" in create_source
+    assert "self.options_group.setVisible(layout.show_options)" in render_source
+    assert (
+        "self.summary_message_label.setVisible(layout.show_summary_message)"
+        in render_source
+    )
 
 
 def test_inspector_transform_catalog_is_projection_driven_and_fail_closed() -> None:
     render_source = _source("_render_inspector")
 
     assert "inspector.transform_catalog" in render_source
-    assert "No individually selectable transforms." in render_source
+    assert "self.transform_catalog_widget.set_catalog(None)" in render_source
     assert "stage_ids" not in render_source
     assert "transform_ids" not in render_source
 
@@ -104,7 +118,7 @@ def test_inspector_rule_catalog_uses_the_typed_projection_and_closed_adapter_wri
     callback_source = _source("_apply_rule_catalog_selection")
 
     assert "inspector.rule_catalog" in render_source
-    assert "No individually selectable rules." in render_source
+    assert "self.rule_catalog_widget.set_catalog(None)" in render_source
     assert "project_rule_catalog" in render_source
     assert "apply_rule_catalog_selection" in callback_source
     assert "apply_rule_catalog_selection_to_options" in callback_source
@@ -361,16 +375,49 @@ class _BehaviorLayout(_BehaviorWidget):
     def __init__(self, *args: object, **kwargs: object) -> None:
         super().__init__(*args, **kwargs)
         self.children: list[object] = []
+        self.stretches: dict[int, int] = {}
+        self.stretch_calls: list[tuple[int, int]] = []
 
     def addWidget(self, widget: object, **kwargs: object) -> None:
-        del kwargs
         self.children.append(widget)
+        if "stretch" in kwargs:
+            self.stretches[len(self.children) - 1] = int(kwargs["stretch"])
 
     def addLayout(self, layout: object) -> None:
         self.children.append(layout)
 
     def addStretch(self, *args: object) -> None:
         del args
+
+    def indexOf(self, widget: object) -> int:
+        try:
+            return self.children.index(widget)
+        except ValueError:
+            return -1
+
+    def setStretch(self, index: int, stretch: int) -> None:
+        value = (int(index), int(stretch))
+        self.stretch_calls.append(value)
+        self.stretches[value[0]] = value[1]
+
+
+class _BehaviorStackedWidget(_BehaviorWidget):
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)
+        self.pages: list[object] = []
+        self._current: object | None = None
+
+    def addWidget(self, widget: object) -> None:
+        self.pages.append(widget)
+        if self._current is None:
+            self._current = widget
+
+    def setCurrentWidget(self, widget: object) -> None:
+        assert widget in self.pages
+        self._current = widget
+
+    def currentWidget(self) -> object | None:
+        return self._current
 
 
 class _BehaviorGroupBox(_BehaviorWidget):
@@ -653,6 +700,7 @@ def _load_behavior_panel(monkeypatch):
         QTableWidgetItem=_BehaviorListItem,
         QTabWidget=_BehaviorTabs,
         QToolButton=_BehaviorButton,
+        QStackedWidget=_BehaviorStackedWidget,
         QVBoxLayout=_BehaviorLayout,
         QWidget=_BehaviorWidget,
     )
@@ -775,6 +823,48 @@ def _behavior_document() -> dict[str, object]:
             "unrelated": {"must": "stay"},
         },
     }
+
+
+def test_inspector_stretch_moves_between_catalog_workspace_and_elastic_sink(
+    monkeypatch,
+) -> None:
+    module, panel_type = _load_behavior_panel(monkeypatch)
+    panel = object.__new__(panel_type)
+    panel.primary_workspace = _BehaviorStackedWidget()
+    panel.rules_group = _BehaviorWidget()
+    panel.transforms_group = _BehaviorWidget()
+    panel.primary_workspace.addWidget(panel.transforms_group)
+    panel.primary_workspace.addWidget(panel.rules_group)
+    panel.inspector_elastic_sink = _BehaviorWidget()
+    panel._inspector_layout = _BehaviorLayout()
+    panel._inspector_layout.addWidget(panel.primary_workspace, stretch=1)
+    panel._inspector_layout.addWidget(panel.inspector_elastic_sink, stretch=0)
+
+    for primary, page in (
+        (module.ConfigV2InspectorPrimarySection.RULES, panel.rules_group),
+        (
+            module.ConfigV2InspectorPrimarySection.TRANSFORMS,
+            panel.transforms_group,
+        ),
+    ):
+        panel._inspector_layout.stretch_calls.clear()
+        panel._set_primary_workspace(primary)
+
+        assert panel.primary_workspace.isVisible() is True
+        assert panel.primary_workspace.currentWidget() is page
+        assert panel.inspector_elastic_sink.isVisible() is False
+        assert panel._inspector_layout.stretch_calls == [(0, 1), (1, 0)]
+
+    for primary in (
+        module.ConfigV2InspectorPrimarySection.OPTIONS,
+        module.ConfigV2InspectorPrimarySection.NONE,
+    ):
+        panel._inspector_layout.stretch_calls.clear()
+        panel._set_primary_workspace(primary)
+
+        assert panel.primary_workspace.isVisible() is False
+        assert panel.inspector_elastic_sink.isVisible() is True
+        assert panel._inspector_layout.stretch_calls == [(0, 0), (1, 1)]
 
 
 def test_routing_group_body_visibility_tracks_expansion(monkeypatch) -> None:

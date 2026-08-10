@@ -6,11 +6,12 @@ import copy
 import pathlib
 
 from d810.core import typing
-from d810.core.pass_editor_spec import FieldControlKind, FieldEditorSpec, PassEditorKind
+from d810.core.pass_editor_spec import FieldControlKind, FieldEditorSpec
 from d810.core.logging import getLogger
 from d810.families.registry import registered_families
 from d810.ui.config_v2_editing_logic import (
     ConfigV2EditorScreen,
+    ConfigV2InspectorPrimarySection,
     apply_rule_catalog_selection,
     apply_rule_catalog_selection_to_options,
     apply_typed_field_option,
@@ -24,7 +25,6 @@ from d810.ui.config_v2_editing_logic import (
     transform_option_fields,
 )
 from d810.ui.project_config_logic import ConfigV2FocusTarget
-from d810.ui.workbench_structured_details_logic import DetailField, DetailSection
 
 logger = getLogger("d810.ui")
 
@@ -39,11 +39,7 @@ except ImportError:
 
 if IDA_AVAILABLE:
     from d810.qt_shim import QtCore, QtWidgets, qt_flag_or
-    from d810.ui.workbench_structured_details import (
-        JsonTreeEditor,
-        RawJsonDialog,
-        StructuredDetailsView,
-    )
+    from d810.ui.workbench_structured_details import JsonTreeEditor, RawJsonDialog
     from d810.ui.config_v2_transform_catalog import ConfigV2TransformCatalogWidget
     from d810.ui.config_v2_rule_catalog import ConfigV2RuleCatalogWidget
 
@@ -142,7 +138,16 @@ if IDA_AVAILABLE:
             self.screen_stack.addWidget(self.builder_page)
             self.screen_stack.addWidget(self.inspector_page)
 
-            self.inspector_details = StructuredDetailsView()
+            self.inspector_identity_label = QtWidgets.QLabel()
+            self.inspector_identity_label.setWordWrap(True)
+            self.summary_message_label = QtWidgets.QLabel()
+            self.summary_message_label.setWordWrap(True)
+            self.primary_workspace = QtWidgets.QStackedWidget()
+            self.transforms_group = QtWidgets.QGroupBox("Transforms")
+            self.rules_group = QtWidgets.QGroupBox("Rules")
+            self.options_group = QtWidgets.QGroupBox("Options")
+            self.inspector_elastic_sink = QtWidgets.QWidget()
+            self._inspector_layout: typing.Any | None = None
             self.contract_chip_labels = {
                 name: QtWidgets.QLabel() for name in ("Scope", "Backend", "Safety")
             }
@@ -151,25 +156,17 @@ if IDA_AVAILABLE:
                 on_query_changed=self._transform_catalog_query_changed,
                 on_selection_changed=self._apply_transform_catalog_selection,
             )
-            self.no_transforms_label = QtWidgets.QLabel(
-                "No individually selectable transforms."
-            )
             self._rule_catalog_query = ""
             self.rule_catalog_widget = ConfigV2RuleCatalogWidget(
                 on_query_changed=self._rule_catalog_query_changed,
                 on_selection_changed=self._apply_rule_catalog_selection,
             )
-            self.no_rules_label = QtWidgets.QLabel("No individually selectable rules.")
             self.typed_options_body = QtWidgets.QWidget()
             self.typed_options_layout = QtWidgets.QFormLayout(self.typed_options_body)
             self.typed_options_layout.setContentsMargins(4, 4, 4, 4)
             self.typed_options_layout.setSpacing(4)
-            self.no_options_label = QtWidgets.QLabel(
-                "This pass exposes no additional typed options."
-            )
-            self.contract_tree = JsonTreeEditor()
             self.raw_contract_button = QtWidgets.QToolButton()
-            self.raw_contract_button.setText("View raw contract")
+            self.raw_contract_button.setText("View contract...")
             self.edit_pipeline_button = QtWidgets.QPushButton("Edit pipeline...")
 
             self.edit_description_button.clicked.connect(self._edit_description)
@@ -228,56 +225,43 @@ if IDA_AVAILABLE:
             inspector_layout = QtWidgets.QVBoxLayout(self.inspector_page)
             inspector_layout.setContentsMargins(4, 4, 4, 4)
             inspector_layout.setSpacing(6)
+            self._inspector_layout = inspector_layout
 
-            inspector_identity_group = QtWidgets.QGroupBox("Pass inspector")
-            inspector_identity_layout = QtWidgets.QFormLayout(inspector_identity_group)
-            inspector_identity_layout.setContentsMargins(4, 4, 4, 4)
+            inspector_identity_strip = QtWidgets.QWidget(self.inspector_page)
+            inspector_identity_layout = QtWidgets.QHBoxLayout(
+                inspector_identity_strip
+            )
+            inspector_identity_layout.setContentsMargins(0, 0, 0, 0)
             inspector_identity_layout.setSpacing(4)
-            inspector_identity_layout.addRow(self.inspector_details)
-            inspector_layout.addWidget(inspector_identity_group)
-
-            chip_row = QtWidgets.QHBoxLayout()
-            chip_row.setSpacing(4)
+            inspector_identity_layout.addWidget(
+                self.inspector_identity_label, stretch=1
+            )
             for name in ("Scope", "Backend", "Safety"):
-                chip_row.addWidget(self.contract_chip_labels[name])
-            chip_row.addStretch(1)
-            inspector_layout.addLayout(chip_row)
+                inspector_identity_layout.addWidget(self.contract_chip_labels[name])
+            inspector_identity_layout.addWidget(self.raw_contract_button)
+            inspector_identity_layout.addWidget(self.edit_pipeline_button)
+            inspector_layout.addWidget(inspector_identity_strip)
+            inspector_layout.addWidget(self.summary_message_label)
 
-            transforms_group = QtWidgets.QGroupBox("Transforms")
-            transforms_layout = QtWidgets.QVBoxLayout(transforms_group)
+            transforms_layout = QtWidgets.QVBoxLayout(self.transforms_group)
             transforms_layout.setContentsMargins(4, 4, 4, 4)
             transforms_layout.setSpacing(4)
             transforms_layout.addWidget(self.transform_catalog_widget)
-            transforms_layout.addWidget(self.no_transforms_label)
-            inspector_layout.addWidget(transforms_group, stretch=1)
 
-            rules_group = QtWidgets.QGroupBox("Rules")
-            rules_layout = QtWidgets.QVBoxLayout(rules_group)
+            rules_layout = QtWidgets.QVBoxLayout(self.rules_group)
             rules_layout.setContentsMargins(4, 4, 4, 4)
             rules_layout.setSpacing(4)
             rules_layout.addWidget(self.rule_catalog_widget)
-            rules_layout.addWidget(self.no_rules_label)
-            inspector_layout.addWidget(rules_group, stretch=1)
+            self.primary_workspace.addWidget(self.transforms_group)
+            self.primary_workspace.addWidget(self.rules_group)
+            inspector_layout.addWidget(self.primary_workspace, stretch=1)
 
-            options_group = QtWidgets.QGroupBox("Options")
-            options_layout = QtWidgets.QVBoxLayout(options_group)
+            options_layout = QtWidgets.QVBoxLayout(self.options_group)
             options_layout.setContentsMargins(4, 4, 4, 4)
             options_layout.setSpacing(4)
             options_layout.addWidget(self.typed_options_body)
-            options_layout.addWidget(self.no_options_label)
-            inspector_layout.addWidget(options_group, stretch=1)
-
-            contract_group = QtWidgets.QGroupBox("Pass contract (read-only)")
-            contract_layout = QtWidgets.QVBoxLayout(contract_group)
-            contract_layout.setContentsMargins(4, 4, 4, 4)
-            contract_layout.setSpacing(4)
-            contract_layout.addWidget(self.contract_tree)
-            contract_controls = QtWidgets.QHBoxLayout()
-            contract_controls.addStretch(1)
-            contract_controls.addWidget(self.raw_contract_button)
-            contract_layout.addLayout(contract_controls)
-            inspector_layout.addWidget(contract_group, stretch=1)
-            inspector_layout.addWidget(self.edit_pipeline_button)
+            inspector_layout.addWidget(self.options_group, stretch=0)
+            inspector_layout.addWidget(self.inspector_elastic_sink, stretch=0)
 
             footer = self._build_footer()
 
@@ -677,63 +661,85 @@ if IDA_AVAILABLE:
                 return None
             return inspector
 
+        def _set_primary_workspace(
+            self, primary: ConfigV2InspectorPrimarySection
+        ) -> None:
+            pages = {
+                ConfigV2InspectorPrimarySection.RULES: self.rules_group,
+                ConfigV2InspectorPrimarySection.TRANSFORMS: self.transforms_group,
+            }
+            page = pages.get(primary)
+            primary_visible = page is not None
+            self.primary_workspace.setVisible(primary_visible)
+            self.inspector_elastic_sink.setVisible(not primary_visible)
+            if self._inspector_layout is not None:
+                primary_index = self._inspector_layout.indexOf(self.primary_workspace)
+                sink_index = self._inspector_layout.indexOf(
+                    self.inspector_elastic_sink
+                )
+                if primary_index >= 0:
+                    self._inspector_layout.setStretch(
+                        primary_index, 1 if primary_visible else 0
+                    )
+                if sink_index >= 0:
+                    self._inspector_layout.setStretch(
+                        sink_index, 0 if primary_visible else 1
+                    )
+            if page is not None:
+                self.primary_workspace.setCurrentWidget(page)
+
         def _render_inspector(self) -> None:
             inspector = self._current_inspector()
             self._rendering_inspector = True
             try:
                 if inspector is None:
-                    self.inspector_details.set_sections(
-                        (
-                            DetailSection(
-                                "selection",
-                                "Pass",
-                                (DetailField("Pass", "No pass selected"),),
-                            ),
-                        )
-                    )
+                    self.inspector_identity_label.setText("No pass selected")
                     for label in self.contract_chip_labels.values():
                         label.setText("")
-                    self.transform_catalog_widget.setVisible(False)
+                    self.transforms_group.setVisible(False)
                     self.transform_catalog_widget.set_catalog(None)
-                    self.no_transforms_label.setVisible(True)
-                    self.rule_catalog_widget.setVisible(False)
+                    self.rules_group.setVisible(False)
                     self.rule_catalog_widget.set_catalog(None)
-                    self.no_rules_label.setVisible(True)
+                    self._set_primary_workspace(
+                        ConfigV2InspectorPrimarySection.NONE
+                    )
                     self._render_typed_options(None)
-                    self.contract_tree.set_json({}, editable=False)
+                    self.summary_message_label.setText(
+                        "Select a pass to inspect its declared controls."
+                    )
+                    self.summary_message_label.setVisible(True)
                     self.raw_contract_button.setEnabled(False)
                     return
 
-                self.inspector_details.set_sections(
-                    (
-                        DetailSection(
-                            "identity",
-                            "Pass",
-                            (
-                                DetailField(
-                                    "Pass",
-                                    f"{inspector.display_name} ({inspector.pass_id})",
-                                ),
-                                DetailField("Purpose", inspector.purpose),
-                                DetailField("Runs during", inspector.runs_during),
-                            ),
-                        ),
-                    )
+                self.inspector_identity_label.setText(
+                    f"{inspector.display_name} ({inspector.pass_id}) - "
+                    f"{inspector.purpose}"
                 )
+                for label in self.contract_chip_labels.values():
+                    label.setText("")
                 for name, value in inspector.contract_chips:
                     self.contract_chip_labels[name].setText(f"{name}: {value}")
 
-                transform_catalog = inspector.transform_catalog
-                if transform_catalog is None:
-                    self.transform_catalog_widget.setVisible(False)
-                    self.no_transforms_label.setText(
-                        "No individually selectable transforms."
-                    )
-                    self.no_transforms_label.setVisible(True)
+                layout = inspector.layout
+                if layout is None:
+                    self.transforms_group.setVisible(False)
                     self.transform_catalog_widget.set_catalog(None)
-                else:
-                    self.no_transforms_label.setVisible(False)
-                    self.transform_catalog_widget.setVisible(True)
+                    self.rules_group.setVisible(False)
+                    self.rule_catalog_widget.set_catalog(None)
+                    self._set_primary_workspace(
+                        ConfigV2InspectorPrimarySection.NONE
+                    )
+                    self._render_typed_options(None)
+                    self.summary_message_label.setText(
+                        "Pass presentation data is unavailable; reopen the editor after reload."
+                    )
+                    self.summary_message_label.setVisible(True)
+                    self.raw_contract_button.setEnabled(False)
+                    return
+
+                transform_catalog = inspector.transform_catalog
+                self.transforms_group.setVisible(layout.show_transform_catalog)
+                if layout.show_transform_catalog and transform_catalog is not None:
                     self.transform_catalog_widget.set_catalog(
                         project_transform_catalog(
                             transform_catalog.pass_editor_spec,
@@ -741,16 +747,12 @@ if IDA_AVAILABLE:
                             query=self._transform_catalog_query,
                         )
                     )
+                else:
+                    self.transform_catalog_widget.set_catalog(None)
 
                 rule_catalog = inspector.rule_catalog
-                if rule_catalog is None:
-                    self.rule_catalog_widget.setVisible(False)
-                    self.no_rules_label.setText("No individually selectable rules.")
-                    self.no_rules_label.setVisible(True)
-                    self.rule_catalog_widget.set_catalog(None)
-                else:
-                    self.no_rules_label.setVisible(False)
-                    self.rule_catalog_widget.setVisible(True)
+                self.rules_group.setVisible(layout.show_rule_catalog)
+                if layout.show_rule_catalog and rule_catalog is not None:
                     self.rule_catalog_widget.set_catalog(
                         project_rule_catalog(
                             rule_catalog.pass_editor_spec,
@@ -758,10 +760,15 @@ if IDA_AVAILABLE:
                             query=self._rule_catalog_query,
                         )
                     )
+                else:
+                    self.rule_catalog_widget.set_catalog(None)
 
                 self._render_typed_options(inspector)
-                self.contract_tree.set_json(inspector.contract, editable=False)
-                self.raw_contract_button.setEnabled(True)
+                self.summary_message_label.setText(layout.summary_message)
+                self.summary_message_label.setVisible(layout.show_summary_message)
+                self._set_primary_workspace(layout.primary_section)
+                self.options_group.setVisible(layout.show_options)
+                self.raw_contract_button.setEnabled(layout.can_view_contract)
             finally:
                 self._rendering_inspector = False
 
@@ -905,12 +912,9 @@ if IDA_AVAILABLE:
                     widget.hide()
                     widget.setParent(None)
                     widget.deleteLater()
+            self.typed_options_body.setVisible(False)
+            self.options_group.setVisible(False)
             if inspector is None:
-                self.typed_options_body.setVisible(False)
-                self.no_options_label.setText(
-                    "Select a pass to view its typed configuration."
-                )
-                self.no_options_label.setVisible(True)
                 return
             entry = self._catalog_by_pass_id.get(inspector.pass_id)
             spec = entry.editor_spec if entry is not None else None
@@ -921,17 +925,9 @@ if IDA_AVAILABLE:
                     set(inspector.transform_catalog.selected_ids),
                 )
             if spec is None or not fields:
-                self.typed_options_body.setVisible(False)
-                self.no_options_label.setText(
-                    "Transform selection is this pass's only exposed configuration."
-                    if spec is not None
-                    and spec.kind is PassEditorKind.TRANSFORM_CATALOG
-                    else "This pass exposes no additional typed options."
-                )
-                self.no_options_label.setVisible(True)
                 return
-            self.no_options_label.setVisible(False)
             self.typed_options_body.setVisible(True)
+            self.options_group.setVisible(True)
             for field in fields:
                 control = self._typed_option_control(
                     field,
