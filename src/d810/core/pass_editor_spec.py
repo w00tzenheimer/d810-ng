@@ -83,8 +83,15 @@ class FieldEditorSpec:
             raise ValueError("control must be a FieldControlKind")
         if self.control is FieldControlKind.ENUM and not self.choices:
             raise ValueError("enum field choices must be non-empty")
-        if self.control is not FieldControlKind.ENUM and self.choices:
-            raise ValueError("only enum fields may declare choices")
+        # STRING_LIST may offer a vocabulary too: "pick several of these" is a
+        # list with choices. Without it the only option is a free-text list,
+        # which is how every jump-fixer rule stayed undiscoverable in the UI.
+        if (
+            self.control
+            not in (FieldControlKind.ENUM, FieldControlKind.STRING_LIST)
+            and self.choices
+        ):
+            raise ValueError("only enum and string-list fields may declare choices")
         if self.minimum is not None and self.maximum is not None and self.minimum > self.maximum:
             raise ValueError("field minimum must not exceed maximum")
 

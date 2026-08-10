@@ -5,7 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from d810.core.deobfuscation_case import StrategyWorkflowStage
-from d810.core.pass_editor_spec import PassEditorSpec
+from d810.core.pass_editor_spec import (
+    FieldControlKind,
+    FieldEditorSpec,
+    PassEditorSpec,
+)
 from d810.core.typing import Mapping, Protocol
 from d810.ir.maturity import IRMaturity
 from d810.passes.pass_pipeline import (
@@ -29,6 +33,47 @@ _IMPLEMENTATION_BY_PASS_ID: Mapping[str, str] = {
     "jump-fixer": "JumpFixer",
     "single-trip-loop-peel": "SingleTripLoopPeel",
 }
+
+#: The jump-fixer pass id, named because its editor spec is built specially.
+JUMP_FIXER_PASS_ID = "jump-fixer"
+
+#: Rule names selectable in the jump-fixer pass.
+#:
+#: Declared as data rather than imported from
+#: ``d810.optimizers.microcode.flow.jumps``: this layer must not import
+#: optimizers (enforced by the "Layered architecture prevents upward imports"
+#: import-linter contract), and ``_IMPLEMENTATION_BY_PASS_ID`` above already
+#: names implementation classes the same way. Keep in sync when adding a rule --
+#: an unlisted rule still works from JSON, it is only invisible in the UI.
+JUMP_FIXER_RULE_NAMES: tuple[str, ...] = (
+    "CompareConstantRule1",
+    "CompareConstantRule2",
+    "CompareConstantRule3",
+    "CompareConstantRule4",
+    "JaeRule1",
+    "JbRule1",
+    "JmpRuleFlagsOpaquePredicate",
+    "JmpRuleReachingConst",
+    "JmpRuleZ3Const",
+    "JnzRule1",
+    "JnzRule2",
+    "JnzRule3",
+    "JnzRule4",
+    "JnzRule5",
+    "JnzRule6",
+    "JnzRule7",
+    "JnzRule8",
+    "JnzRuleModIdentity",
+    "JnzRuleSmodSubIdentity",
+    "JnzRuleUmodAddIdentity",
+    "JnzRuleUmodSubIdentity",
+)
+
+#: Enabled by default: the historical set, which excludes the newer rules so
+#: that adding one never changes behaviour for an existing project silently.
+_JUMP_FIXER_DEFAULT_RULES: tuple[str, ...] = tuple(
+    name for name in JUMP_FIXER_RULE_NAMES if name != "JmpRuleFlagsOpaquePredicate"
+)
 
 _WORKFLOW_STAGE_BY_PASS_ID: Mapping[str, StrategyWorkflowStage] = {
     "forward-constant-propagation": StrategyWorkflowStage.FRONTEND_NORMALIZATION,
@@ -104,6 +149,27 @@ def build_hook_transform_pass(config: PipelineConfig) -> HookTransformPass:
     )
 
 
+def _editor_spec_for(pass_id: str) -> PassEditorSpec:
+    """Only jump-fixer has anything to edit; the rest stay summary-only."""
+    if pass_id != JUMP_FIXER_PASS_ID:
+        return PassEditorSpec.summary()
+    return PassEditorSpec.fields_editor(
+        (
+            FieldEditorSpec(
+                field_id="enabled_rules",
+                label="Enabled rules",
+                path=("enabled_rules",),
+                control=FieldControlKind.STRING_LIST,
+                description=(
+                    "Which jump rewrites run. Rules not listed here never fire, "
+                    "whatever the microcode looks like."
+                ),
+                choices=JUMP_FIXER_RULE_NAMES,
+            ),
+        )
+    )
+
+
 def register_hook_transform_passes(registry: PassRegistry) -> PassRegistry:
     """Register simple config-aware hook-transform pass IDs."""
     for pass_id in sorted(_IMPLEMENTATION_BY_PASS_ID):
@@ -114,7 +180,11 @@ def register_hook_transform_passes(registry: PassRegistry) -> PassRegistry:
             config_template=PipelineConfig(
                 pass_id=pass_id,
                 workflow_stage=_WORKFLOW_STAGE_BY_PASS_ID[pass_id],
-                options={},
+                options=(
+                    {"enabled_rules": list(_JUMP_FIXER_DEFAULT_RULES)}
+                    if pass_id == JUMP_FIXER_PASS_ID
+                    else {}
+                ),
             ),
             stages=(
                 ExecutionStageDescriptor(
@@ -124,7 +194,7 @@ def register_hook_transform_passes(registry: PassRegistry) -> PassRegistry:
                     implementation_name,
                 ),
             ),
-            editor_spec=PassEditorSpec.summary(),
+            editor_spec=_editor_spec_for(pass_id),
             public=pass_id != "forward-constant-propagation",
         )
     return registry
