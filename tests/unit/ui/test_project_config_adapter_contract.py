@@ -295,9 +295,11 @@ class _Widget:
         del args, kwargs
         self.clicked = _Signal()
         self.itemChanged = _Signal()
+        self.toggled = _Signal()
         self._row = -1
         self._items: list[object] = []
         self._text = ""
+        self._checked = False
 
     def __getattr__(self, name: str):
         if name.startswith("set") or name in {
@@ -335,11 +337,47 @@ class _Widget:
     def setCurrentRow(self, index: int) -> None:
         self._row = index
 
+    def setCheckable(self, checkable: bool) -> None:
+        self._checkable = bool(checkable)
+
+    def setChecked(self, checked: bool) -> None:
+        self._checked = bool(checked)
+
+    def isChecked(self) -> bool:
+        return self._checked
+
     def setPlainText(self, text: str) -> None:
         self._text = text
 
     def toPlainText(self) -> str:
         return self._text
+
+
+class _StackedWidget(_Widget):
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        super().__init__(*args, **kwargs)
+        self.pages: list[object] = []
+        self.current: object | None = None
+        self.set_current_calls: list[object] = []
+
+    def addWidget(self, widget: object) -> None:
+        self.pages.append(widget)
+        if self.current is None:
+            self.current = widget
+
+    def indexOf(self, widget: object) -> int:
+        try:
+            return self.pages.index(widget)
+        except ValueError:
+            return -1
+
+    def setCurrentWidget(self, widget: object) -> None:
+        self.set_current_calls.append(widget)
+        assert widget in self.pages
+        self.current = widget
+
+    def currentWidget(self) -> object | None:
+        return self.current
 
 
 class _ListItem:
@@ -511,13 +549,13 @@ def _load_gui_panel(monkeypatch):
                 "QListWidget",
                 "QPlainTextEdit",
                 "QPushButton",
-                "QStackedWidget",
                 "QTabWidget",
                 "QToolButton",
                 "QVBoxLayout",
                 "QWidget",
             )
         },
+        QStackedWidget=_StackedWidget,
         QListWidgetItem=_ListItem,
     )
     monkeypatch.setitem(sys.modules, "ida_kernwin", ida)
@@ -561,7 +599,7 @@ def _load_gui_panel(monkeypatch):
     return module.ConfigV2EditingPanel
 
 
-def test_task4_routes_construct_both_screens_and_focus_duplicate_by_exact_row(
+def test_routes_focus_duplicate_by_exact_row_and_share_draft_across_screens(
     monkeypatch,
 ) -> None:
     panel_type = _load_gui_panel(monkeypatch)
@@ -581,16 +619,20 @@ def test_task4_routes_construct_both_screens_and_focus_duplicate_by_exact_row(
     )
 
     assert builder._screen is ConfigV2EditorScreen.BUILDER
+    assert builder.screen_stack.currentWidget() is builder.builder_page
     assert inspector._screen is ConfigV2EditorScreen.INSPECTOR
     assert inspector._selected_pass_index == 1
+    assert inspector.screen_stack.currentWidget() is inspector.inspector_page
     assert builder_adapter.reset_count == inspector_adapter.reset_count == 1
     owned_draft = inspector._draft
     inspector._show_builder()
-    inspector._show_inspector(0)
+    assert inspector.screen_stack.currentWidget() is inspector.builder_page
+    inspector._show_inspector(1)
     assert inspector._draft is owned_draft
     assert inspector_adapter.reset_count == 1
     assert inspector._screen is ConfigV2EditorScreen.INSPECTOR
-    assert inspector._selected_pass_index == 0
+    assert inspector._selected_pass_index == 1
+    assert inspector.screen_stack.currentWidget() is inspector.inspector_page
     assert inspector_adapter.transform_edits == []
 
     ambiguous_focus = resolve_config_v2_focus_target(

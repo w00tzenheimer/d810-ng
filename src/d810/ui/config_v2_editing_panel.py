@@ -138,8 +138,12 @@ if IDA_AVAILABLE:
             self.screen_stack.addWidget(self.builder_page)
             self.screen_stack.addWidget(self.inspector_page)
 
-            self.inspector_identity_label = QtWidgets.QLabel()
-            self.inspector_identity_label.setWordWrap(True)
+            self.pass_title_label = QtWidgets.QLabel()
+            self.pass_title_label.setWordWrap(False)
+            self.pass_purpose_label = QtWidgets.QLabel()
+            self.pass_purpose_label.setWordWrap(True)
+            self.inspector_actions = QtWidgets.QWidget()
+            self.details_body = QtWidgets.QWidget()
             self.summary_message_label = QtWidgets.QLabel()
             self.summary_message_label.setWordWrap(True)
             self.primary_workspace = QtWidgets.QStackedWidget()
@@ -148,9 +152,15 @@ if IDA_AVAILABLE:
             self.options_group = QtWidgets.QGroupBox("Options")
             self.inspector_elastic_sink = QtWidgets.QWidget()
             self._inspector_layout: typing.Any | None = None
-            self.contract_chip_labels = {
-                name: QtWidgets.QLabel() for name in ("Scope", "Backend", "Safety")
-            }
+            self._contract_metadata_tooltip = (
+                "Read-only registered pass contract metadata; it cannot be changed "
+                "in a project."
+            )
+            self.contract_chip_labels = {}
+            for name in ("Scope", "Backend", "Safety"):
+                label = QtWidgets.QLabel()
+                label.setToolTip(self._contract_metadata_tooltip)
+                self.contract_chip_labels[name] = label
             self._transform_catalog_query = ""
             self.transform_catalog_widget = ConfigV2TransformCatalogWidget(
                 on_query_changed=self._transform_catalog_query_changed,
@@ -167,7 +177,12 @@ if IDA_AVAILABLE:
             self.typed_options_layout.setSpacing(4)
             self.raw_contract_button = QtWidgets.QToolButton()
             self.raw_contract_button.setText("View contract...")
-            self.edit_pipeline_button = QtWidgets.QPushButton("Edit pipeline...")
+            self.pipeline_button = QtWidgets.QToolButton()
+            self.pipeline_button.setText("Pipeline")
+            self.details_toggle = QtWidgets.QToolButton()
+            self.details_toggle.setText("Details")
+            self.details_toggle.setCheckable(True)
+            self.details_toggle.setChecked(False)
 
             self.edit_description_button.clicked.connect(self._edit_description)
             self.pass_buttons["add"].clicked.connect(self._add_pass)
@@ -182,7 +197,8 @@ if IDA_AVAILABLE:
                 self._open_selected_inspector
             )
             self.raw_contract_button.clicked.connect(self._show_raw_contract)
-            self.edit_pipeline_button.clicked.connect(self._show_builder)
+            self.pipeline_button.clicked.connect(self._show_builder)
+            self.details_toggle.toggled.connect(self._set_details_expanded)
             self._render()
 
         def OnCreate(self, form: typing.Any) -> None:
@@ -227,20 +243,32 @@ if IDA_AVAILABLE:
             inspector_layout.setSpacing(6)
             self._inspector_layout = inspector_layout
 
-            inspector_identity_strip = QtWidgets.QWidget(self.inspector_page)
-            inspector_identity_layout = QtWidgets.QHBoxLayout(
-                inspector_identity_strip
-            )
-            inspector_identity_layout.setContentsMargins(0, 0, 0, 0)
-            inspector_identity_layout.setSpacing(4)
-            inspector_identity_layout.addWidget(
-                self.inspector_identity_label, stretch=1
-            )
+            inspector_header = QtWidgets.QWidget(self.inspector_page)
+            inspector_header_layout = QtWidgets.QVBoxLayout(inspector_header)
+            inspector_header_layout.setContentsMargins(0, 0, 0, 0)
+            inspector_header_layout.setSpacing(4)
+            inspector_header_layout.addWidget(self.pass_title_label)
+            inspector_header_layout.addWidget(self.pass_purpose_label)
+
+            inspector_action_layout = QtWidgets.QHBoxLayout(self.inspector_actions)
+            inspector_action_layout.setContentsMargins(0, 0, 0, 0)
+            inspector_action_layout.setSpacing(4)
+            inspector_action_layout.addWidget(self.pipeline_button)
+            inspector_action_layout.addWidget(self.details_toggle)
+            inspector_action_layout.addWidget(self.raw_contract_button)
+            inspector_action_layout.addStretch(1)
+            inspector_header_layout.addWidget(self.inspector_actions)
+            inspector_layout.addWidget(inspector_header)
+
+            details_layout = QtWidgets.QFormLayout(self.details_body)
+            details_layout.setContentsMargins(4, 2, 4, 2)
+            details_layout.setSpacing(4)
             for name in ("Scope", "Backend", "Safety"):
-                inspector_identity_layout.addWidget(self.contract_chip_labels[name])
-            inspector_identity_layout.addWidget(self.raw_contract_button)
-            inspector_identity_layout.addWidget(self.edit_pipeline_button)
-            inspector_layout.addWidget(inspector_identity_strip)
+                metadata_label = QtWidgets.QLabel(name)
+                metadata_label.setToolTip(self._contract_metadata_tooltip)
+                details_layout.addRow(metadata_label, self.contract_chip_labels[name])
+            inspector_layout.addWidget(self.details_body)
+            self._set_details_expanded(self.details_toggle.isChecked())
             inspector_layout.addWidget(self.summary_message_label)
 
             transforms_layout = QtWidgets.QVBoxLayout(self.transforms_group)
@@ -472,11 +500,20 @@ if IDA_AVAILABLE:
             self._render_footer()
             self._render_raw_document_trees()
             self._render_inspector()
-            self.screen_stack.setCurrentWidget(
+            self._set_current_screen()
+
+        def _set_current_screen(self) -> None:
+            page = (
                 self.inspector_page
                 if self._screen is ConfigV2EditorScreen.INSPECTOR
                 else self.builder_page
             )
+            if self.screen_stack.indexOf(page) < 0:
+                logger.warning(
+                    "Config-v2 editor screen is not attached: %r", self._screen
+                )
+                return
+            self.screen_stack.setCurrentWidget(page)
 
         def _render_routing(self) -> None:
             if not hasattr(self, "routing_group"):
@@ -688,12 +725,22 @@ if IDA_AVAILABLE:
             if page is not None:
                 self.primary_workspace.setCurrentWidget(page)
 
+        def _set_details_expanded(self, expanded: bool) -> None:
+            self.details_body.setVisible(
+                bool(expanded) and self._current_inspector() is not None
+            )
+
         def _render_inspector(self) -> None:
             inspector = self._current_inspector()
             self._rendering_inspector = True
             try:
                 if inspector is None:
-                    self.inspector_identity_label.setText("No pass selected")
+                    self.pass_title_label.setText("No pass selected")
+                    self.pass_title_label.setToolTip("")
+                    self.pass_purpose_label.setText("")
+                    self.pass_purpose_label.setToolTip("")
+                    self.inspector_actions.setVisible(False)
+                    self.details_body.setVisible(False)
                     for label in self.contract_chip_labels.values():
                         label.setText("")
                     self.transforms_group.setVisible(False)
@@ -711,14 +758,17 @@ if IDA_AVAILABLE:
                     self.raw_contract_button.setEnabled(False)
                     return
 
-                self.inspector_identity_label.setText(
-                    f"{inspector.display_name} ({inspector.pass_id}) - "
-                    f"{inspector.purpose}"
-                )
+                title = f"{inspector.display_name} ({inspector.pass_id})"
+                self.pass_title_label.setText(title)
+                self.pass_title_label.setToolTip(title)
+                self.pass_purpose_label.setText(inspector.purpose)
+                self.pass_purpose_label.setToolTip(inspector.purpose)
+                self.inspector_actions.setVisible(True)
                 for label in self.contract_chip_labels.values():
                     label.setText("")
                 for name, value in inspector.contract_chips:
-                    self.contract_chip_labels[name].setText(f"{name}: {value}")
+                    self.contract_chip_labels[name].setText(value)
+                self.details_body.setVisible(self.details_toggle.isChecked())
 
                 layout = inspector.layout
                 if layout is None:

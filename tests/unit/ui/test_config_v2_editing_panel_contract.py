@@ -85,6 +85,79 @@ def test_inspector_shell_is_capability_driven_and_contract_is_on_demand() -> Non
     assert "No individually selectable rules." not in create_source
 
 
+def test_inspector_header_separates_full_width_identity_from_compact_actions() -> None:
+    init_source = _source("__init__")
+    create_source = _source("OnCreate")
+
+    assert "self.pass_title_label = QtWidgets.QLabel()" in init_source
+    assert "self.pass_title_label.setWordWrap(False)" in init_source
+    assert "self.pass_purpose_label = QtWidgets.QLabel()" in init_source
+    assert "self.pass_purpose_label.setWordWrap(True)" in init_source
+    assert "inspector_header_layout.addWidget(self.pass_title_label)" in create_source
+    assert "inspector_header_layout.addWidget(self.pass_purpose_label)" in create_source
+    assert (
+        "inspector_action_layout.addWidget(self.pass_title_label)" not in create_source
+    )
+    assert (
+        "inspector_action_layout.addWidget(self.pass_purpose_label)"
+        not in create_source
+    )
+    assert "inspector_identity_label" not in init_source
+    assert "inspector_identity_strip" not in create_source
+
+
+def test_inspector_actions_use_pipeline_details_and_on_demand_contract() -> None:
+    source = PANEL.read_text(encoding="utf-8")
+    init_source = _source("__init__")
+    create_source = _source("OnCreate")
+
+    assert "self.pipeline_button = QtWidgets.QToolButton()" in init_source
+    assert "Pipeline" in _string_arguments("__init__", "setText")
+    assert "self.pipeline_button.clicked.connect(self._show_builder)" in init_source
+    assert "self.details_toggle = QtWidgets.QToolButton()" in init_source
+    assert "Details" in _string_arguments("__init__", "setText")
+    assert "self.raw_contract_button" in create_source
+    assert "RawJsonDialog" in _source("_show_raw_contract")
+    assert "JsonTreeEditor" not in create_source
+    assert "Edit pipeline..." not in source
+    assert "edit_pipeline_button" not in source
+
+
+def test_details_disclosure_is_collapsed_readonly_contract_metadata() -> None:
+    init_source = _source("__init__")
+    create_source = _source("OnCreate")
+    render_source = _source("_render_inspector")
+
+    assert "self.details_toggle.setCheckable(True)" in init_source
+    assert "self.details_toggle.setChecked(False)" in init_source
+    assert (
+        "self.details_toggle.toggled.connect(self._set_details_expanded)" in init_source
+    )
+    assert "self.details_body" in init_source
+    assert "QFormLayout(self.details_body)" in create_source
+    assert "registered pass contract" in init_source
+    assert "cannot be changed in a project" in init_source
+    for name in ("Scope", "Backend", "Safety"):
+        assert name in create_source
+    assert "self.details_toggle.setChecked" not in render_source
+    assert (
+        "self.details_body.setVisible(self.details_toggle.isChecked())" in render_source
+    )
+    assert "self.inspector_actions.setVisible(False)" in render_source
+    assert "self.details_body.setVisible(False)" in render_source
+
+
+def test_screen_transition_checks_stack_membership_before_switching() -> None:
+    source = _source("_set_current_screen")
+
+    assert "self.screen_stack.indexOf(page) < 0" in source
+    assert "Config-v2 editor screen is not attached" in source
+    assert source.index("self.screen_stack.indexOf(page)") < source.index(
+        "self.screen_stack.setCurrentWidget(page)"
+    )
+    assert "self._set_current_screen()" in _source("_render")
+
+
 def test_inspector_primary_region_or_elastic_sink_owns_available_height() -> None:
     create_source = _source("OnCreate")
     render_source = _source("_render_inspector")
@@ -406,6 +479,7 @@ class _BehaviorStackedWidget(_BehaviorWidget):
         super().__init__(*args, **kwargs)
         self.pages: list[object] = []
         self._current: object | None = None
+        self.set_current_calls: list[object] = []
 
     def addWidget(self, widget: object) -> None:
         self.pages.append(widget)
@@ -413,8 +487,15 @@ class _BehaviorStackedWidget(_BehaviorWidget):
             self._current = widget
 
     def setCurrentWidget(self, widget: object) -> None:
+        self.set_current_calls.append(widget)
         assert widget in self.pages
         self._current = widget
+
+    def indexOf(self, widget: object) -> int:
+        try:
+            return self.pages.index(widget)
+        except ValueError:
+            return -1
 
     def currentWidget(self) -> object | None:
         return self._current
@@ -865,6 +946,23 @@ def test_inspector_stretch_moves_between_catalog_workspace_and_elastic_sink(
         assert panel.primary_workspace.isVisible() is False
         assert panel.inspector_elastic_sink.isVisible() is True
         assert panel._inspector_layout.stretch_calls == [(0, 0), (1, 1)]
+
+
+def test_missing_screen_page_is_a_logged_noop_without_qt_transition(
+    monkeypatch,
+) -> None:
+    module, panel_type = _load_behavior_panel(monkeypatch)
+    panel = object.__new__(panel_type)
+    panel._screen = module.ConfigV2EditorScreen.INSPECTOR
+    panel.screen_stack = _BehaviorStackedWidget()
+    panel.builder_page = _BehaviorWidget()
+    panel.inspector_page = _BehaviorWidget()
+    panel.screen_stack.addWidget(panel.builder_page)
+    panel.screen_stack.indexOf = lambda widget: -1
+
+    panel._set_current_screen()
+
+    assert panel.screen_stack.set_current_calls == []
 
 
 def test_routing_group_body_visibility_tracks_expansion(monkeypatch) -> None:
