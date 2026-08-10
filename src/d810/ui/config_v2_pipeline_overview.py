@@ -57,10 +57,15 @@ class ConfigV2PipelineOverviewWidget(QtWidgets.QWidget):
             return
 
         for row in overview.rows:
+            selection_suffix = (
+                f" - {row.selected_transform_summary}"
+                if row.selected_transform_summary
+                else ""
+            )
             item = QtWidgets.QTreeWidgetItem(
                 (
                     f"{row.index + 1}.",
-                    f"{row.display_name} - {row.selected_transform_summary}",
+                    f"{row.display_name}{selection_suffix}",
                 )
             )
             item.setData(0, QtCore.Qt.UserRole, row.index)

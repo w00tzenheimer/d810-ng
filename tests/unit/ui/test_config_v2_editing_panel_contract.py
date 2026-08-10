@@ -906,7 +906,7 @@ def _behavior_document() -> dict[str, object]:
     }
 
 
-def test_inspector_stretch_moves_between_catalog_workspace_and_elastic_sink(
+def test_inspector_stretch_routes_each_primary_section_to_the_elastic_owner(
     monkeypatch,
 ) -> None:
     module, panel_type = _load_behavior_panel(monkeypatch)
@@ -916,9 +916,11 @@ def test_inspector_stretch_moves_between_catalog_workspace_and_elastic_sink(
     panel.transforms_group = _BehaviorWidget()
     panel.primary_workspace.addWidget(panel.transforms_group)
     panel.primary_workspace.addWidget(panel.rules_group)
+    panel.options_group = _BehaviorWidget()
     panel.inspector_elastic_sink = _BehaviorWidget()
     panel._inspector_layout = _BehaviorLayout()
     panel._inspector_layout.addWidget(panel.primary_workspace, stretch=1)
+    panel._inspector_layout.addWidget(panel.options_group, stretch=0)
     panel._inspector_layout.addWidget(panel.inspector_elastic_sink, stretch=0)
 
     for primary, page in (
@@ -934,18 +936,21 @@ def test_inspector_stretch_moves_between_catalog_workspace_and_elastic_sink(
         assert panel.primary_workspace.isVisible() is True
         assert panel.primary_workspace.currentWidget() is page
         assert panel.inspector_elastic_sink.isVisible() is False
-        assert panel._inspector_layout.stretch_calls == [(0, 1), (1, 0)]
+        assert panel._inspector_layout.stretch_calls == [(0, 1), (1, 0), (2, 0)]
 
-    for primary in (
-        module.ConfigV2InspectorPrimarySection.OPTIONS,
-        module.ConfigV2InspectorPrimarySection.NONE,
-    ):
-        panel._inspector_layout.stretch_calls.clear()
-        panel._set_primary_workspace(primary)
+    panel._inspector_layout.stretch_calls.clear()
+    panel._set_primary_workspace(module.ConfigV2InspectorPrimarySection.OPTIONS)
 
-        assert panel.primary_workspace.isVisible() is False
-        assert panel.inspector_elastic_sink.isVisible() is True
-        assert panel._inspector_layout.stretch_calls == [(0, 0), (1, 1)]
+    assert panel.primary_workspace.isVisible() is False
+    assert panel.inspector_elastic_sink.isVisible() is False
+    assert panel._inspector_layout.stretch_calls == [(0, 0), (1, 1), (2, 0)]
+
+    panel._inspector_layout.stretch_calls.clear()
+    panel._set_primary_workspace(module.ConfigV2InspectorPrimarySection.NONE)
+
+    assert panel.primary_workspace.isVisible() is False
+    assert panel.inspector_elastic_sink.isVisible() is True
+    assert panel._inspector_layout.stretch_calls == [(0, 0), (1, 0), (2, 1)]
 
 
 def test_missing_primary_workspace_page_is_a_logged_noop(

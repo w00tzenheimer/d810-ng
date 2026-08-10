@@ -706,21 +706,28 @@ if IDA_AVAILABLE:
                 ConfigV2InspectorPrimarySection.TRANSFORMS: self.transforms_group,
             }
             page = pages.get(primary)
-            primary_visible = page is not None
-            self.primary_workspace.setVisible(primary_visible)
-            self.inspector_elastic_sink.setVisible(not primary_visible)
+            catalog_primary = page is not None
+            options_primary = primary is ConfigV2InspectorPrimarySection.OPTIONS
+            has_primary = catalog_primary or options_primary
+            self.primary_workspace.setVisible(catalog_primary)
+            self.inspector_elastic_sink.setVisible(not has_primary)
             if self._inspector_layout is not None:
                 primary_index = self._inspector_layout.indexOf(self.primary_workspace)
+                options_index = self._inspector_layout.indexOf(self.options_group)
                 sink_index = self._inspector_layout.indexOf(
                     self.inspector_elastic_sink
                 )
                 if primary_index >= 0:
                     self._inspector_layout.setStretch(
-                        primary_index, 1 if primary_visible else 0
+                        primary_index, 1 if catalog_primary else 0
+                    )
+                if options_index >= 0:
+                    self._inspector_layout.setStretch(
+                        options_index, 1 if options_primary else 0
                     )
                 if sink_index >= 0:
                     self._inspector_layout.setStretch(
-                        sink_index, 0 if primary_visible else 1
+                        sink_index, 0 if has_primary else 1
                     )
             if page is not None:
                 if self.primary_workspace.indexOf(page) < 0:

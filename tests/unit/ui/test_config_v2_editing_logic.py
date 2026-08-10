@@ -353,6 +353,26 @@ def test_editor_overview_lists_only_configured_passes_and_real_selection():
     assert view.overview.rows[1].selected_transform_summary == "0 selected rules"
 
 
+def test_editor_overview_omits_selection_summary_without_a_selectable_catalog():
+    draft = _draft_with_pipeline(
+        document={
+            "description": "No-catalog passes",
+            "additional_configuration": {
+                "pipeline_v2": [
+                    {"pass_id": "constant-simplification", "options": {}},
+                    {"pass_id": "cleanup-residual-dispatcher", "options": {}},
+                ],
+            },
+        }
+    )
+
+    view = logic.project_config_v2_editor_view(draft, _validation(), _catalog())
+
+    assert tuple(
+        row.selected_transform_summary for row in view.overview.rows
+    ) == ("", "")
+
+
 def test_editor_inspector_uses_catalog_contract_and_presentation_purpose():
     view = logic.project_config_v2_editor_view(
         _draft_with_pipeline(), _validation(), _catalog()

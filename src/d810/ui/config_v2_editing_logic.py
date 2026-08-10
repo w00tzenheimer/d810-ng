@@ -405,7 +405,7 @@ def _selected_rule_ids(
 
 def _transform_summary(entry: PassCatalogEntry, selected_ids: set[str] | None) -> str:
     if not entry.transform_ids:
-        return "No individually selectable transforms"
+        return ""
     selected_count = len(set(entry.transform_ids) & (selected_ids or set()))
     if selected_count == 1:
         return "1 selected transform"
