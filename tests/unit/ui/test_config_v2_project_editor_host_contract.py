@@ -21,6 +21,10 @@ IDA_UI = UI_DIR / "ida_ui.py"
 PIPELINE_OVERVIEW = UI_DIR / "config_v2_pipeline_overview.py"
 PROJECT_EDITOR = UI_DIR / "config_v2_editing_panel.py"
 IDA_UI_TREE = ast.parse(IDA_UI.read_text(encoding="utf-8"), filename=str(IDA_UI))
+PIPELINE_OVERVIEW_TREE = ast.parse(
+    PIPELINE_OVERVIEW.read_text(encoding="utf-8"),
+    filename=str(PIPELINE_OVERVIEW),
+)
 
 
 class _Logger:
@@ -61,6 +65,55 @@ def _compiled_form_method(name: str, **extra_globals: object):
     namespace.update(extra_globals)
     exec(compile(module, filename=str(IDA_UI), mode="exec"), namespace)
     return getattr(namespace["ConfigFormHarness"], name)
+
+
+def _overview_method(name: str) -> ast.FunctionDef:
+    for node in PIPELINE_OVERVIEW_TREE.body:
+        if (
+            isinstance(node, ast.ClassDef)
+            and node.name == "ConfigV2PipelineOverviewWidget"
+        ):
+            for item in node.body:
+                if isinstance(item, ast.FunctionDef) and item.name == name:
+                    return item
+    raise AssertionError(f"ConfigV2PipelineOverviewWidget.{name} not found")
+
+
+def _compiled_overview_method(name: str):
+    class_node = ast.ClassDef(
+        name="PipelineOverviewHarness",
+        bases=[],
+        keywords=[],
+        body=[copy.deepcopy(_overview_method(name))],
+        decorator_list=[],
+    )
+    module = ast.fix_missing_locations(ast.Module(body=[class_node], type_ignores=[]))
+    namespace = {
+        "QtCore": SimpleNamespace(Qt=SimpleNamespace(UserRole=32)),
+    }
+    exec(compile(module, filename=str(PIPELINE_OVERVIEW), mode="exec"), namespace)
+    return getattr(namespace["PipelineOverviewHarness"], name)
+
+
+class _BehaviorSignal:
+    def __init__(self) -> None:
+        self._callbacks: list[object] = []
+
+    def connect(self, callback: object) -> None:
+        self._callbacks.append(callback)
+
+    def emit(self, *args: object) -> None:
+        for callback in tuple(self._callbacks):
+            callback(*args)
+
+
+class _OverviewItem:
+    def __init__(self, stored_row: int) -> None:
+        self._stored_row = stored_row
+
+    def data(self, column: int, role: int) -> int:
+        assert (column, role) == (0, 32)
+        return self._stored_row
 
 
 def _allowed_policy(_mode: object, _snapshot: object) -> SimpleNamespace:
@@ -106,7 +159,7 @@ def test_edit_pipeline_opens_the_project_editor_on_builder() -> None:
     assert opened == [(destination, ConfigV2EditorScreen.BUILDER, None)]
 
 
-def test_activated_pipeline_row_opens_exact_inspector_focus() -> None:
+def test_overview_activation_emits_stored_row_into_exact_host_inspector_focus() -> None:
     rows = (
         SimpleNamespace(index=0, pass_id="preflight"),
         SimpleNamespace(index=1, pass_id="jump-fixer"),
@@ -131,8 +184,15 @@ def test_activated_pipeline_row_opens_exact_inspector_focus() -> None:
         "_inspect_config_v2_pass",
         select_config_edit_policy=_allowed_policy,
     )
+    activate = _compiled_overview_method("_activate_item")
+    inspect_requested = _BehaviorSignal()
+    inspect_requested.connect(types.MethodType(inspect, form))
+    overview_widget = SimpleNamespace(
+        _overview=SimpleNamespace(rows=rows),
+        inspect_requested=inspect_requested,
+    )
 
-    inspect(form, 2)
+    activate(overview_widget, _OverviewItem(stored_row=2), 0)
 
     assert opened == [
         (
@@ -146,6 +206,103 @@ def test_activated_pipeline_row_opens_exact_inspector_focus() -> None:
             ),
         )
     ]
+
+
+def _successful_editor_harness(monkeypatch):
+    panel_instances = []
+
+    class Adapter:
+        def __init__(self, state: object, *, destination: pathlib.Path) -> None:
+            self.state = state
+            self.destination = destination
+
+    class Panel:
+        def __init__(
+            self,
+            adapter: Adapter,
+            *,
+            on_saved: object,
+            screen: ConfigV2EditorScreen,
+            focus_target: ConfigV2FocusTarget | None,
+        ) -> None:
+            self.adapter = adapter
+            self.on_saved = on_saved
+            self.screen = screen
+            self.focus_target = focus_target
+            self.show_count = 0
+            self.close_count = 0
+            panel_instances.append(self)
+
+        def show(self) -> None:
+            self.show_count += 1
+
+        def close(self) -> None:
+            self.close_count += 1
+
+    monkeypatch.setitem(
+        sys.modules,
+        "d810.ui.config_v2_editing_commands",
+        types.SimpleNamespace(ConfigV2EditingAdapter=Adapter),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "d810.ui.config_v2_editing_panel",
+        types.SimpleNamespace(ConfigV2EditingPanel=Panel),
+    )
+    form = SimpleNamespace(
+        state=object(),
+        parent=object(),
+        _config_v2_editor=None,
+        _refresh_config_v2_project_view=lambda: None,
+    )
+    return _compiled_form_method("_open_config_v2_editor"), form, panel_instances
+
+
+def test_successful_inspector_construction_forwards_exact_focus_target(
+    monkeypatch,
+) -> None:
+    open_editor, form, panel_instances = _successful_editor_harness(monkeypatch)
+    destination = pathlib.Path("/config/selected.json")
+    focus_target = ConfigV2FocusTarget(
+        pass_id="jump-fixer",
+        pass_index=2,
+        message="Editing config-v2 pass 'jump-fixer' at row 2.",
+        unambiguous=True,
+    )
+
+    open_editor(
+        form,
+        destination,
+        screen=ConfigV2EditorScreen.INSPECTOR,
+        focus_target=focus_target,
+    )
+
+    assert len(panel_instances) == 1
+    editor = panel_instances[0]
+    assert editor.adapter.state is form.state
+    assert editor.adapter.destination == destination
+    assert editor.screen is ConfigV2EditorScreen.INSPECTOR
+    assert editor.focus_target is focus_target
+    assert editor.on_saved is form._refresh_config_v2_project_view
+    assert editor.show_count == 1
+    assert form._config_v2_editor is editor
+
+
+def test_successful_builder_construction_has_no_focus_target(monkeypatch) -> None:
+    open_editor, form, panel_instances = _successful_editor_harness(monkeypatch)
+
+    open_editor(
+        form,
+        pathlib.Path("/config/selected.json"),
+        screen=ConfigV2EditorScreen.BUILDER,
+    )
+
+    assert len(panel_instances) == 1
+    editor = panel_instances[0]
+    assert editor.screen is ConfigV2EditorScreen.BUILDER
+    assert editor.focus_target is None
+    assert editor.show_count == 1
+    assert form._config_v2_editor is editor
 
 
 def test_failed_replacement_construction_keeps_the_old_editor_usable(
