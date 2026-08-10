@@ -46,6 +46,24 @@ class ConfigV2EditorScreen(str, enum.Enum):
     BUILDER = "builder"
 
 
+class ConfigV2InspectorPrimarySection(str, enum.Enum):
+    NONE = "none"
+    RULES = "rules"
+    TRANSFORMS = "transforms"
+    OPTIONS = "options"
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class ConfigV2PassInspectorLayoutView:
+    primary_section: ConfigV2InspectorPrimarySection
+    show_rule_catalog: bool
+    show_transform_catalog: bool
+    show_options: bool
+    show_summary_message: bool
+    summary_message: str
+    can_view_contract: bool
+
+
 @dataclasses.dataclass(frozen=True, slots=True)
 class ConfigV2SerializerRow:
     field_id: str
@@ -219,6 +237,7 @@ class ConfigV2PassInspectorView:
     # constructing inspector rows.  Keep the presentation-only addition
     # optional so an already-loaded overview cannot fail during a hot reload.
     rule_catalog: ConfigV2RuleCatalogView | None = None
+    layout: ConfigV2PassInspectorLayoutView | None = None
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -956,6 +975,39 @@ def _footer_view(
     )
 
 
+def project_pass_inspector_layout(
+    spec: PassEditorSpec,
+    *,
+    rule_catalog: ConfigV2RuleCatalogView | None,
+    transform_catalog: ConfigV2TransformCatalogView | None,
+    selected_transform_ids: AbstractSet[str],
+) -> ConfigV2PassInspectorLayoutView:
+    option_fields = tuple(spec.fields) + transform_option_fields(
+        spec, selected_transform_ids
+    )
+    if rule_catalog is not None:
+        primary = ConfigV2InspectorPrimarySection.RULES
+    elif transform_catalog is not None:
+        primary = ConfigV2InspectorPrimarySection.TRANSFORMS
+    elif option_fields:
+        primary = ConfigV2InspectorPrimarySection.OPTIONS
+    else:
+        primary = ConfigV2InspectorPrimarySection.NONE
+    return ConfigV2PassInspectorLayoutView(
+        primary_section=primary,
+        show_rule_catalog=rule_catalog is not None,
+        show_transform_catalog=transform_catalog is not None,
+        show_options=bool(option_fields),
+        show_summary_message=primary is ConfigV2InspectorPrimarySection.NONE,
+        summary_message=(
+            "This pass exposes no editable controls."
+            if primary is ConfigV2InspectorPrimarySection.NONE
+            else ""
+        ),
+        can_view_contract=True,
+    )
+
+
 def project_config_v2_editor_view(
     draft: ConfigV2ProjectDraft,
     validation: ConfigV2ProjectValidation,
@@ -972,8 +1024,26 @@ def project_config_v2_editor_view(
         catalog_entry = catalog_by_pass_id.get(pass_id)
         if catalog_entry is None:
             raise ValueError(f"pipeline_v2[{index}] has unknown pass ID {pass_id!r}")
-        selected_ids = _selected_transform_ids(options)
+        selected_transform_ids = _selected_transform_ids(options)
         selected_rule_ids = _selected_rule_ids(options, catalog_entry.editor_spec)
+        transform_catalog = (
+            project_transform_catalog(
+                catalog_entry.editor_spec,
+                selected_transform_ids or frozenset(),
+                query="",
+            )
+            if catalog_entry.editor_spec.kind is PassEditorKind.TRANSFORM_CATALOG
+            else None
+        )
+        rule_catalog = (
+            project_rule_catalog(
+                catalog_entry.editor_spec,
+                selected_rule_ids or frozenset(),
+                query="",
+            )
+            if catalog_entry.editor_spec.kind is PassEditorKind.RULE_CATALOG
+            else None
+        )
         purpose = _PASS_PURPOSES.get(pass_id, "Registered config-v2 pass.")
         overview_rows.append(
             ConfigV2PipelineRow(
@@ -993,24 +1063,13 @@ def project_config_v2_editor_view(
                 display_name=catalog_entry.display_name,
                 purpose=purpose,
                 runs_during=catalog_entry.maturity,
-                transform_catalog=(
-                    project_transform_catalog(
-                        catalog_entry.editor_spec,
-                        selected_ids or frozenset(),
-                        query="",
-                    )
-                    if catalog_entry.editor_spec.kind
-                    is PassEditorKind.TRANSFORM_CATALOG
-                    else None
-                ),
-                rule_catalog=(
-                    project_rule_catalog(
-                        catalog_entry.editor_spec,
-                        selected_rule_ids or frozenset(),
-                        query="",
-                    )
-                    if catalog_entry.editor_spec.kind is PassEditorKind.RULE_CATALOG
-                    else None
+                transform_catalog=transform_catalog,
+                rule_catalog=rule_catalog,
+                layout=project_pass_inspector_layout(
+                    catalog_entry.editor_spec,
+                    rule_catalog=rule_catalog,
+                    transform_catalog=transform_catalog,
+                    selected_transform_ids=(selected_transform_ids or frozenset()),
                 ),
                 options=options,
                 contract=_contract(catalog_entry),
@@ -1082,6 +1141,8 @@ __all__ = [
     "ConfigV2EditorScreen",
     "ConfigV2EditorView",
     "ConfigV2FooterView",
+    "ConfigV2InspectorPrimarySection",
+    "ConfigV2PassInspectorLayoutView",
     "ConfigV2PassInspectorView",
     "ConfigV2PipelineRow",
     "ConfigV2PipelineOverview",
@@ -1103,6 +1164,7 @@ __all__ = [
     "config_v2_action_states",
     "project_config_v2_document",
     "project_config_v2_editor_view",
+    "project_pass_inspector_layout",
     "project_rule_catalog",
     "project_transform_catalog",
     "project_serializer_rows",

@@ -18,6 +18,7 @@ from d810.core.pass_editor_spec import (
     FieldControlKind,
     FieldEditorSpec,
     PassEditorSpec,
+    RuleEditorSpec,
     TransformCost,
     TransformEditorSpec,
     VerificationStatus,
@@ -111,7 +112,25 @@ def _catalog() -> tuple[PassCatalogEntry, ...]:
             transform_ids=(),
             stage_ids=("constant-fold",),
             configured=True,
-            editor_spec=PassEditorSpec.summary(),
+            editor_spec=PassEditorSpec.fields_editor(
+                (
+                    FieldEditorSpec(
+                        field_id="memory_policy",
+                        label="Memory policy",
+                        path=("memory_policy",),
+                        control=FieldControlKind.ENUM,
+                        choices=("strict", "aggressive_no_direct_writes"),
+                        default="strict",
+                    ),
+                    FieldEditorSpec(
+                        field_id="allow_executable_readonly",
+                        label="Allow executable read-only memory",
+                        path=("allow_executable_readonly",),
+                        control=FieldControlKind.BOOLEAN,
+                        default=False,
+                    ),
+                )
+            ),
         ),
         PassCatalogEntry(
             pass_id="jump-fixer",
@@ -124,6 +143,33 @@ def _catalog() -> tuple[PassCatalogEntry, ...]:
             safety_policy="conservative",
             transform_ids=(),
             stage_ids=("fix-jumps",),
+            configured=True,
+            editor_spec=PassEditorSpec.rule_catalog(
+                (
+                    RuleEditorSpec(
+                        rule_id="jump-direct",
+                        label="Direct jump",
+                        family_id="jump-fixer",
+                        family_label="Jump fixer",
+                        subfamily_id=None,
+                        subfamily_label=None,
+                        description="A test-only selectable jump-fixer rule.",
+                        verification=VerificationStatus.VERIFIED,
+                    ),
+                )
+            ),
+        ),
+        PassCatalogEntry(
+            pass_id="cleanup-residual-dispatcher",
+            display_name="Cleanup residual dispatcher",
+            contract_json='{"pass":"cleanup-residual-dispatcher"}',
+            option_template_json="{}",
+            granularity="function",
+            maturity="MMAT_GLBOPT1",
+            backend_route="mutation_backend",
+            safety_policy="conservative",
+            transform_ids=(),
+            stage_ids=("cleanup-dispatcher",),
             configured=True,
             editor_spec=PassEditorSpec.summary(),
         ),
@@ -162,6 +208,20 @@ def _draft_with_pipeline(
         original_document_json=serialized,
         document_json=serialized,
     )
+
+
+def _inspector_for(pass_id: str) -> logic.ConfigV2PassInspectorView:
+    draft = _draft_with_pipeline(
+        document={
+            "description": "Test profile",
+            "additional_configuration": {
+                "pipeline_v2": [{"pass_id": pass_id, "options": {}}],
+            },
+        }
+    )
+    return logic.project_config_v2_editor_view(
+        draft, _validation(), _catalog()
+    ).inspectors[0]
 
 
 def test_serializer_rows_are_manifest_driven_and_preserve_declared_order():
@@ -290,9 +350,7 @@ def test_editor_overview_lists_only_configured_passes_and_real_selection():
         "jump-fixer",
     ]
     assert view.overview.rows[0].selected_transform_summary == "2 selected transforms"
-    assert view.overview.rows[1].selected_transform_summary == (
-        "No individually selectable transforms"
-    )
+    assert view.overview.rows[1].selected_transform_summary == "0 selected rules"
 
 
 def test_editor_inspector_uses_catalog_contract_and_presentation_purpose():
@@ -317,6 +375,45 @@ def test_editor_inspector_uses_catalog_contract_and_presentation_purpose():
     )
 
 
+def test_editor_inspector_layout_uses_declared_primary_capability() -> None:
+    view = logic.project_config_v2_editor_view(
+        _draft_with_pipeline(), _validation(), _catalog()
+    )
+    mba, jump = view.inspectors
+
+    assert mba.layout is not None
+    assert (
+        mba.layout.primary_section is logic.ConfigV2InspectorPrimarySection.TRANSFORMS
+    )
+    assert mba.layout.show_transform_catalog is True
+    assert mba.layout.show_rule_catalog is False
+    assert mba.layout.show_options is False
+
+    assert jump.layout is not None
+    assert jump.layout.primary_section is logic.ConfigV2InspectorPrimarySection.RULES
+    assert jump.layout.show_rule_catalog is True
+    assert jump.layout.show_transform_catalog is False
+
+
+def test_fields_and_summary_inspector_layouts_do_not_reserve_catalog_space() -> None:
+    fields = _inspector_for("constant-simplification")
+    summary = _inspector_for("cleanup-residual-dispatcher")
+
+    assert fields.layout is not None
+    assert (
+        fields.layout.primary_section is logic.ConfigV2InspectorPrimarySection.OPTIONS
+    )
+    assert fields.layout.show_options is True
+    assert fields.layout.show_rule_catalog is False
+    assert fields.layout.show_transform_catalog is False
+
+    assert summary.layout is not None
+    assert summary.layout.primary_section is logic.ConfigV2InspectorPrimarySection.NONE
+    assert summary.layout.show_options is False
+    assert summary.layout.show_summary_message is True
+    assert summary.layout.summary_message == "This pass exposes no editable controls."
+
+
 def test_pass_inspector_view_defaults_new_optional_catalogs_for_overview_callers():
     """A new optional inspector surface must not break an existing overview path."""
     inspector = logic.ConfigV2PassInspectorView(
@@ -332,6 +429,7 @@ def test_pass_inspector_view_defaults_new_optional_catalogs_for_overview_callers
     )
 
     assert inspector.rule_catalog is None
+    assert inspector.layout is None
 
 
 def test_typed_field_actions_normalize_values_without_mutating_other_options():
