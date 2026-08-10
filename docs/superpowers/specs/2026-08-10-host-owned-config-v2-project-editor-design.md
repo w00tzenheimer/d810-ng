@@ -138,6 +138,19 @@ splitter:
 - existing family/subfamily tri-state selection, filtering, experimental
   labels, and typed persistence remain intact.
 
+Every family and subfamily tree row also has a context menu with exactly these
+group actions:
+
+- `Select all in <group>`;
+- `Clear all in <group>`.
+
+Those commands apply to every registered descendant of that exact family or
+subfamily, including descendants hidden by the active text filter. This is
+different from the fixed `Select visible` and `Clear visible` controls, which
+are intentionally filter-scoped. The menu labels must retain `in <group>` so
+operators never mistake full-group actions for visible-only actions. Individual
+leaf rules remain ordinary independently tickable and clearable checkboxes.
+
 Rule metadata may show verification state, expensive/skipped-proof advisories,
 constraints, and experimental warnings. Experimental rules remain selectable;
 the operator retains the final decision.
@@ -197,6 +210,9 @@ the existing actionable validation result.
    Details is read-only.
 3. Rule-catalog tests prove fixed filter/bulk controls, independently scrollable
    tree/metadata panes, family selection, experimental labels, and metadata.
+   They also prove family/subfamily context-menu commands select or clear all
+   registered descendants despite an active filter, while leaves remain
+   individually tickable and fixed visible controls remain filter-scoped.
 4. Typed-control tests retain enum, boolean, integer, advisory, and
    manager-backed save behavior.
 5. IDA 9.4 smoke opens a disposable config, Pipeline, and a rule-catalog pass,
