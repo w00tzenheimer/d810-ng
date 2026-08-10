@@ -723,6 +723,12 @@ if IDA_AVAILABLE:
                         sink_index, 0 if primary_visible else 1
                     )
             if page is not None:
+                if self.primary_workspace.indexOf(page) < 0:
+                    logger.warning(
+                        "Config-v2 editor primary workspace is not attached: %r",
+                        primary,
+                    )
+                    return
                 self.primary_workspace.setCurrentWidget(page)
 
         def _set_details_expanded(self, expanded: bool) -> None:

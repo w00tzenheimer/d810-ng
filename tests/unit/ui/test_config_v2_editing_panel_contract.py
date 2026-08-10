@@ -948,6 +948,35 @@ def test_inspector_stretch_moves_between_catalog_workspace_and_elastic_sink(
         assert panel._inspector_layout.stretch_calls == [(0, 0), (1, 1)]
 
 
+def test_missing_primary_workspace_page_is_a_logged_noop(
+    monkeypatch,
+) -> None:
+    module, panel_type = _load_behavior_panel(monkeypatch)
+    panel = object.__new__(panel_type)
+    panel.primary_workspace = _BehaviorStackedWidget()
+    panel.rules_group = _BehaviorWidget()
+    panel.transforms_group = _BehaviorWidget()
+    panel.inspector_elastic_sink = _BehaviorWidget()
+    panel._inspector_layout = None
+    warnings: list[tuple[str, tuple[object, ...]]] = []
+    monkeypatch.setattr(
+        module.logger,
+        "warning",
+        lambda message, *args: warnings.append((message, args)),
+    )
+
+    primary = module.ConfigV2InspectorPrimarySection.RULES
+    panel._set_primary_workspace(primary)
+
+    assert panel.primary_workspace.set_current_calls == []
+    assert warnings == [
+        (
+            "Config-v2 editor primary workspace is not attached: %r",
+            (primary,),
+        )
+    ]
+
+
 def test_missing_screen_page_is_a_logged_noop_without_qt_transition(
     monkeypatch,
 ) -> None:
