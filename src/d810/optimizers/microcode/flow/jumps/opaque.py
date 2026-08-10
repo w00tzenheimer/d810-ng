@@ -5,6 +5,8 @@ from d810.core.bits import unsigned_to_signed
 from d810.hexrays.expr.ast import AstConstant, AstLeaf, AstNode
 from d810.hexrays.ir.mop_utils import mop_to_ast
 from d810.backends.ast.z3 import Z3MopProver
+from d810.core import getLogger
+from d810.analyses.flag_predicates import flags_compare_zero_is_taken
 from d810.optimizers.microcode.flow.jumps.handler import JumpOptimizationRule
 
 
@@ -714,4 +716,135 @@ class JmpRuleZ3Const(JumpOptimizationRule):
                 else self.direct_block_serial
             )
             return True
+        return False
+
+
+# NOT "d810.optimizer": that logger is filtered out of the dump entirely
+# (0 lines, including the framework's own "Rule %s matched"), so a log sent
+# there is invisible and its absence proves nothing about whether the rule ran.
+_opaque_logger = getLogger(__name__)
+
+
+def _helper_call_name(ins) -> str | None:
+    """Name of the helper *ins* calls, without the leading ``!``, else None."""
+    if ins is None or ins.opcode != ida_hexrays.m_call:
+        return None
+    left = ins.l
+    if left is None or left.t != ida_hexrays.mop_h:
+        return None
+    name = getattr(left, "helper", None)
+    return None if not name else str(name).lstrip("!")
+
+
+def _defines_mop(ins, mop) -> bool:
+    dest = getattr(ins, "d", None)
+    if dest is None or mop is None or dest.t != mop.t:
+        return False
+    try:
+        return bool(dest.equal_mops(mop, ida_hexrays.EQ_IGNSIZE))
+    except Exception:
+        return False
+
+
+def _is_flags_read(blk, stop_insn, mop) -> bool:
+    """Is *mop* defined, earlier in *blk*, by a full flags-register read?
+
+    Matches the GLBOPT1 shape::
+
+        mov call !__readeflags<fast:> => "unsigned __int64" .8, kr00_8.8
+        jz  kr00_8.8, #0.8, @target
+    """
+    if mop is None or blk is None:
+        return False
+    ins = blk.head
+    seen = None
+    while ins is not None and ins is not stop_insn:
+        if _defines_mop(ins, mop):
+            seen = ins
+        ins = ins.next
+    if seen is None:
+        return False
+    source = seen.l
+    # `mov <call ...>, dest` carries the call as a nested sub-instruction.
+    if source is not None and source.t == ida_hexrays.mop_d:
+        return _helper_call_name(source.d) in _FLAGS_READ_HELPERS
+    return _helper_call_name(seen) in _FLAGS_READ_HELPERS
+
+
+#: Hex-Rays helper names for a full EFLAGS/RFLAGS read.
+_FLAGS_READ_HELPERS = frozenset({"__readeflags", "__readflags"})
+
+
+class JmpRuleFlagsOpaquePredicate(JumpOptimizationRule):
+    """Decide ``jz``/``jnz`` against a full flags read compared with zero.
+
+    ``pushfq; pop rax; test rax, rax; jz`` is an opaque predicate: RFLAGS bit 1
+    is architecturally always 1, so the register is never zero. See
+    :mod:`d810.analyses.flag_predicates` for the fact itself.
+
+    Folds the BRANCH only. The ``__readeflags`` call is deliberately left in
+    place for ordinary DCE to remove once it has no users, so this rule stays a
+    pure control-flow decision and never deletes a call as a side effect.
+    """
+
+    ORIGINAL_JUMP_OPCODES = [ida_hexrays.m_jz, ida_hexrays.m_jnz]
+    LEFT_PATTERN = AstLeaf("x_0")
+    RIGHT_PATTERN = AstLeaf("x_1")
+    REPLACEMENT_OPCODE = ida_hexrays.m_goto
+
+    def _make_goto_ins(self, instruction, target_serial: int):
+        new_ins = ida_hexrays.minsn_t(instruction)
+        new_ins.opcode = ida_hexrays.m_goto
+        new_ins.l.erase()
+        new_ins.r.erase()
+        new_ins.d = ida_hexrays.mop_t()
+        new_ins.d.make_blkref(target_serial)
+        return new_ins
+
+    def check_pattern_and_replace(self, blk, instruction, left_ast, right_ast):
+        if instruction.opcode not in self.ORIGINAL_JUMP_OPCODES:
+            return None
+        if instruction.d is None or instruction.d.t != ida_hexrays.mop_b:
+            return None
+        if blk is None or blk.nextb is None:
+            return None
+
+        # One side must be the flags read, the other a literal zero. Accept
+        # either order; the obfuscator emits `test rax, rax` but the microcode
+        # normalises to a compare against #0 whose operand order is not fixed.
+        left, right = instruction.l, instruction.r
+        if _is_zero_constant(right) and _is_flags_read(blk, instruction, left):
+            pass
+        elif _is_zero_constant(left) and _is_flags_read(blk, instruction, right):
+            pass
+        else:
+            return None
+
+        taken = flags_compare_zero_is_taken(
+            equal_test=(instruction.opcode == ida_hexrays.m_jz)
+        )
+        target = int(instruction.d.b) if taken else int(blk.nextb.serial)
+        # Announce the decision. The framework's "Rule %s matched" line does not
+        # reach the dump on this path, and a fold nobody can attribute is a fold
+        # nobody can debug -- the same observability gap that cost hours on the
+        # constant-fold verdicts.
+        if _opaque_logger.debug_on:
+            _opaque_logger.debug(
+                "flags-opaque-predicate: blk[%d] %s vs #0 -> %s, goto blk[%d] "
+                "(ea=0x%X)",
+                int(blk.serial),
+                "jz" if instruction.opcode == ida_hexrays.m_jz else "jnz",
+                "always taken" if taken else "never taken",
+                target,
+                int(getattr(instruction, "ea", 0) or 0),
+            )
+        return self._make_goto_ins(instruction, target)
+
+
+def _is_zero_constant(mop) -> bool:
+    if mop is None or mop.t != ida_hexrays.mop_n:
+        return False
+    try:
+        return int(mop.nnn.value) == 0
+    except Exception:
         return False
