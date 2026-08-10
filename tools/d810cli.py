@@ -276,6 +276,18 @@ def cmd_dump(args: argparse.Namespace) -> int:
     env["D810_CAPTURE_POST_MATURITY"] = str(args.capture_post_maturity)
     env.setdefault("D810_REPO_ROOT", str(REPO_ROOT))
 
+    # Which binary/IDB the dump runs against. The harness resolves this by NAME
+    # (tests/system/conftest.py searches samples/bins, tests/_resources/bin,
+    # tests/bins) and the docker runner forwards D810_TEST_BINARY into the
+    # container.
+    #
+    # Assigned, not setdefault: D810_TEST_BINARY is commonly already exported or
+    # set in the repo .env, so a default-only write would silently keep dumping
+    # against the fixture while the caller believes they selected a target.
+    binary = getattr(args, "binary", None)
+    if binary:
+        env["D810_TEST_BINARY"] = binary
+
     print(f"d810cli: dump -> {tmp / out_name}", file=sys.stderr)
     print(
         f"d810cli: D810_CAPTURE_POST_MATURITY={env['D810_CAPTURE_POST_MATURITY']}",
@@ -1428,6 +1440,19 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "recommended for unflattening investigations: enable diag snapshots "
             "and use the full preanalysis/diagnostic microcode, valrange, and condition-chain dump set"
+        ),
+    )
+    sp.add_argument(
+        "--binary",
+        default=None,
+        help=(
+            "binary or IDB to dump against, by FILE NAME (not path). Sets "
+            "D810_TEST_BINARY. The file must sit in one of the harness search "
+            "dirs -- samples/bins (usual), tests/_resources/bin, tests/bins -- "
+            "inside the worktree, since only the worktree is mounted into the "
+            "container. Naming a .i64 opens that database directly and skips "
+            "re-analysis, which matters for large targets. "
+            "Example: --binary WowClassicT_loader-205.6.6818.4-devirt.dll.i64"
         ),
     )
     sp.add_argument(

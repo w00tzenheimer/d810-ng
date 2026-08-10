@@ -566,3 +566,113 @@ def test_d810cli_pseudocode_capture_from_existing_dump(tmp_path: Path) -> None:
     finally:
         conn.close()
     assert stored == ("test_xor", "example_libobfuscated.json", 1)
+
+
+def test_dump_binary_selects_target_database(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`dump --binary` must reach the container as D810_TEST_BINARY.
+
+    The dump harness resolves its target by NAME (tests/system/conftest.py looks
+    in samples/bins, tests/_resources/bin, tests/bins) and the docker runner
+    forwards D810_TEST_BINARY into the container. Without this flag every dump
+    runs against the default fixture, so investigating a function in any other
+    binary is impossible through the supported interface.
+
+    Naming a ``.i64`` is the point: ``idapro.open_database`` accepts an existing
+    database, which skips re-analysing a large binary from scratch.
+    """
+    wt = _make_temp_repo_worktree(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        d810cli, "DOCKER_RUNNER", tmp_path / "run_system_tests_docker.sh"
+    )
+    calls: list[tuple[list[str], dict[str, str], str]] = []
+
+    def fake_call(
+        argv: list[str],
+        *,
+        env: dict[str, str] | None = None,
+        cwd: str | None = None,
+    ) -> int:
+        assert env is not None and cwd is not None
+        calls.append((argv, env, cwd))
+        # full_diagnostics makes cmd_dump resolve a diag DB afterwards; without
+        # one it exits before the assertion under test and the test would fail
+        # for the wrong reason.
+        db = wt / ".tmp" / "logs" / "d810_logs" / "fresh.diag.sqlite3"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        db.write_bytes(b"sqlite data")
+        return 0
+
+    monkeypatch.setattr(subprocess, "call", fake_call)
+
+    rc = d810cli.cmd_dump(
+        argparse.Namespace(
+            worktree="wt",
+            function="sub_7FF85A9CD360",
+            project="hodur_flag2_s1a_config_v2_canary.json",
+            prefix="dump",
+            label="a9cd360",
+            capture_post_maturity="8",
+            no_debug_logging=False,
+            full_diagnostics=True,
+            extra=None,
+            binary="WowClassicT_loader-205.6.6818.4-devirt.dll.i64",
+        )
+    )
+
+    assert rc == 0
+    _argv, env, _cwd = calls[0]
+    assert env["D810_TEST_BINARY"] == "WowClassicT_loader-205.6.6818.4-devirt.dll.i64"
+    assert wt.exists()
+
+
+def test_dump_without_binary_leaves_test_binary_unset(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Omitting --binary must not pin a binary.
+
+    The runner supplies its own platform-aware default when D810_TEST_BINARY is
+    absent; injecting an empty or bogus value here would override that and make
+    every existing dump invocation resolve the wrong fixture.
+    """
+    wt = _make_temp_repo_worktree(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        d810cli, "DOCKER_RUNNER", tmp_path / "run_system_tests_docker.sh"
+    )
+    monkeypatch.delenv("D810_TEST_BINARY", raising=False)
+    calls: list[tuple[list[str], dict[str, str], str]] = []
+
+    def fake_call(
+        argv: list[str],
+        *,
+        env: dict[str, str] | None = None,
+        cwd: str | None = None,
+    ) -> int:
+        assert env is not None and cwd is not None
+        calls.append((argv, env, cwd))
+        return 0
+
+    monkeypatch.setattr(subprocess, "call", fake_call)
+
+    rc = d810cli.cmd_dump(
+        argparse.Namespace(
+            worktree="wt",
+            function="test_function",
+            project="default_unflattening_ollvm.json",
+            prefix="dump",
+            label="nobinary",
+            capture_post_maturity="8",
+            no_debug_logging=False,
+            full_diagnostics=False,
+            extra=None,
+            binary=None,
+        )
+    )
+
+    assert rc == 0
+    _argv, env, _cwd = calls[0]
+    assert "D810_TEST_BINARY" not in env
+    assert wt.exists()
