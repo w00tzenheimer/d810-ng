@@ -39,6 +39,7 @@ class GlobalConstReason(str, Enum):
     READ_OUT_OF_BOUNDS = "read_out_of_bounds"
     VALUE_UNAVAILABLE = "value_unavailable"
     POINTER_LIKE_VALUE = "pointer_like_value"
+    VALUE_REACHES_DEREFERENCE = "value_reaches_dereference"
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +59,10 @@ class GlobalConstEvidence:
     initializer_stable_at_read: bool
     value: int | None
     value_is_pointer_like: bool = False
+    # Tri-state answer to "is the loaded value USED as an address?".
+    # True/False come from def-use analysis; None means it was not run or could
+    # not be answered, which keeps the cheap value-shape test in charge.
+    value_reaches_dereference: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,19 +155,50 @@ def _reject(reason: GlobalConstReason) -> GlobalConstDecision:
     )
 
 
+def _pointer_use_veto(
+    evidence: GlobalConstEvidence,
+    rva_guard: bool,
+) -> GlobalConstReason | None:
+    """Decide whether the pointer objection blocks materializing this read.
+
+    ``rva_guard`` selects HOW the objection is answered, not whether pointers
+    matter:
+
+    ``False``
+        No veto. Inlining an address-shaped value stays semantically correct;
+        it only trades a symbolic reference for a bare number.
+    ``True``
+        Prefer the def-use answer when there is one. Absent it, fall back to
+        the value-shape test so the decision never becomes less conservative
+        than it was before this option existed.
+    """
+
+    if not rva_guard:
+        return None
+    if evidence.value_reaches_dereference is True:
+        return GlobalConstReason.VALUE_REACHES_DEREFERENCE
+    if evidence.value_reaches_dereference is False:
+        return None
+    if evidence.value_is_pointer_like:
+        return GlobalConstReason.POINTER_LIKE_VALUE
+    return None
+
+
 def _inline(
     evidence: GlobalConstEvidence,
     reason: GlobalConstReason,
     *,
     persist: bool = False,
     dangerous: bool = False,
+    rva_guard: bool = True,
 ) -> GlobalConstDecision:
-    if evidence.value_is_pointer_like:
+    veto = _pointer_use_veto(evidence, rva_guard)
+    if veto is not None:
         return GlobalConstDecision(
             can_inline_read=False,
             can_persist_const=persist,
             value=None,
-            reason=GlobalConstReason.POINTER_LIKE_VALUE,
+            reason=veto,
         )
     return GlobalConstDecision(
         can_inline_read=True,
@@ -178,6 +214,7 @@ def decide_global_const_read(
     policy: GlobalConstPolicy,
     *,
     allow_executable_readonly: bool = False,
+    rva_guard: bool = True,
 ) -> GlobalConstDecision:
     """Classify one read without inferring target platform or file format.
 
@@ -185,6 +222,10 @@ def decide_global_const_read(
     the item-kind guard for readable, non-writable executable memory. It does
     not bypass invalid reads, write evidence, or value availability, and it
     never authorizes persistent ``const``.
+
+    ``rva_guard`` selects how the pointer-like objection is answered; see
+    :func:`_pointer_use_veto`. It gates only that objection, so it can never
+    revive a read rejected on any other ground.
     """
 
     if evidence.read_size not in _SUPPORTED_WIDTHS:
@@ -204,6 +245,7 @@ def decide_global_const_read(
         return _inline(
             evidence,
             GlobalConstReason.INITIALIZER_STABLE_AT_READ,
+            rva_guard=rva_guard,
         )
     if evidence.has_direct_write:
         return _reject(GlobalConstReason.DIRECT_WRITE_WITHOUT_STABLE_READ)
@@ -216,6 +258,7 @@ def decide_global_const_read(
             return _inline(
                 evidence,
                 GlobalConstReason.AGGRESSIVE_NO_DIRECT_WRITES,
+                rva_guard=rva_guard,
             )
         return _reject(GlobalConstReason.WRITABLE_MEMORY)
 
@@ -224,6 +267,7 @@ def decide_global_const_read(
             evidence,
             GlobalConstReason.READONLY_DATA,
             persist=True,
+            rva_guard=rva_guard,
         )
 
     if evidence.executable and allow_executable_readonly:
@@ -231,6 +275,7 @@ def decide_global_const_read(
             evidence,
             GlobalConstReason.DANGEROUS_EXECUTABLE_READONLY_OVERRIDE,
             dangerous=True,
+            rva_guard=rva_guard,
         )
 
     if evidence.executable:

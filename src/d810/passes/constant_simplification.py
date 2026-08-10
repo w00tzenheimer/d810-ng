@@ -27,7 +27,7 @@ CONSTANT_SIMPLIFICATION_PASS_ID = PassId.CONSTANT_SIMPLIFICATION
 STRICT_MEMORY_POLICY = "strict"
 AGGRESSIVE_MEMORY_POLICY = "aggressive_no_direct_writes"
 _MEMORY_POLICIES = frozenset({STRICT_MEMORY_POLICY, AGGRESSIVE_MEMORY_POLICY})
-_OPTION_NAMES = frozenset({"memory_policy", "allow_executable_readonly"})
+_OPTION_NAMES = frozenset({"memory_policy", "allow_executable_readonly", "rva_guard"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +36,11 @@ class ConstantSimplificationOptions:
 
     memory_policy: str = STRICT_MEMORY_POLICY
     allow_executable_readonly: bool = False
+    #: How the pointer-like veto is answered. True keeps a veto but prefers a
+    #: def-use "is this value dereferenced?" answer over the value-shape guess;
+    #: False drops the veto entirely. Orthogonal to ``memory_policy``, which
+    #: decides which memory may be folded at all.
+    rva_guard: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,9 +83,15 @@ def _parse_options(config: PipelineConfig) -> ConstantSimplificationOptions:
         raise PipelineConfigError(
             "constant-simplification options.allow_executable_readonly must be boolean"
         )
+    rva_guard = config.options.get("rva_guard", True)
+    if not isinstance(rva_guard, bool):
+        raise PipelineConfigError(
+            "constant-simplification options.rva_guard must be boolean"
+        )
     return ConstantSimplificationOptions(
         memory_policy=memory_policy,
         allow_executable_readonly=dangerous,
+        rva_guard=rva_guard,
     )
 
 
@@ -108,6 +119,7 @@ def constant_simplification_hook_rules(
         # Private bundle-owned behavior. Direct/legacy activation of the
         # implementation rule does not persist IDB type metadata.
         "persist_global_const_annotations": True,
+        "rva_guard": options.rva_guard,
     }
     if options.memory_policy == AGGRESSIVE_MEMORY_POLICY:
         memory_options["fold_writable_constants"] = True

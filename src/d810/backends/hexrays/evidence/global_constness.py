@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 import ida_bytes
 import ida_segment
 import ida_xref
@@ -232,19 +234,31 @@ def decide_hexrays_global_read(
     allow_executable_readonly: bool = False,
     reaching_write: bool = False,
     initializer_stable_at_read: bool = False,
+    rva_guard: bool = True,
+    value_reaches_dereference: bool | None = None,
 ) -> GlobalConstDecision:
-    """Capture IDB facts and classify one read with the portable oracle."""
+    """Capture IDB facts and classify one read with the portable oracle.
 
-    evidence = capture_hexrays_global_const_evidence(
-        address,
-        size,
-        reaching_write=reaching_write,
-        initializer_stable_at_read=initializer_stable_at_read,
+    ``value_reaches_dereference`` is a caller-supplied def-use answer, in the
+    same spirit as ``reaching_write``: this module reads the IDB, not the
+    microcode, so the def-use fact has to arrive from the rule that holds the
+    instruction context. ``None`` means "not answered".
+    """
+
+    evidence = dataclasses.replace(
+        capture_hexrays_global_const_evidence(
+            address,
+            size,
+            reaching_write=reaching_write,
+            initializer_stable_at_read=initializer_stable_at_read,
+        ),
+        value_reaches_dereference=value_reaches_dereference,
     )
     return decide_global_const_read(
         evidence,
         policy,
         allow_executable_readonly=allow_executable_readonly,
+        rva_guard=rva_guard,
     )
 
 

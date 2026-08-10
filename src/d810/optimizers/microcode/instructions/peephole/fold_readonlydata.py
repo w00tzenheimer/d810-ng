@@ -74,9 +74,14 @@ this becomes: `(__ROL8__(MEMORY[0xB10000007FFE03FD]...)` which is obviously wron
 from d810.core.typing import Optional
 
 import ida_hexrays
+import idaapi
 from d810.analyses.value_flow.global_constness import (
     GlobalConstDecision,
     GlobalConstPolicy,
+    GlobalConstReason,
+)
+from d810.backends.hexrays.evidence.dereference_use import (
+    value_reaches_dereference,
 )
 from d810.backends.hexrays.evidence.global_constness import (
     decide_hexrays_global_read,
@@ -199,6 +204,12 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
             "Fold from writable segments with no write xrefs",
         ),
         ConfigParam(
+            "rva_guard",
+            bool,
+            True,
+            "Veto folds whose value is used as an address (def-use, not shape)",
+        ),
+        ConfigParam(
             "allow_executable_readonly",
             bool,
             False,
@@ -238,6 +249,9 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
         # write cross-references.  This is needed for hardened OLLVM where
         # opaque constant tables are placed in .data (writable) segments.
         self._fold_writable_constants: bool = False
+        self._rva_guard: bool = True
+        self._ctx_blk: ida_hexrays.mblock_t | None = None
+        self._ctx_ins: ida_hexrays.minsn_t | None = None
         # This is enabled by the public constant-simplification bundle only.
         # Direct/legacy activation of this private rule remains non-persistent.
         self._persist_global_const_annotations: bool = False
@@ -259,6 +273,10 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
             )
         # "fold_writable_constants": true
         self._fold_writable_constants = kwargs.get("fold_writable_constants", False)
+        # "rva_guard": how the pointer-like veto is answered. True keeps a veto
+        # but prefers a def-use "is it dereferenced?" answer over the
+        # value-shape guess; False drops the veto. See lpccp-suvl.
+        self._rva_guard = bool(kwargs.get("rva_guard", True))
         self._persist_global_const_annotations = kwargs.get(
             "persist_global_const_annotations",
             False,
@@ -369,23 +387,78 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
     # Helper functions                                                      #
     # --------------------------------------------------------------------- #
 
-    def _decision_for(self, addr: int, size: int) -> GlobalConstDecision:
-        """Ask the shared, architecture-neutral constness authority."""
+    def _decision_for(
+        self,
+        addr: int,
+        size: int,
+        blk: ida_hexrays.mblock_t | None = None,
+        ins: ida_hexrays.minsn_t | None = None,
+        site: str = "unknown",
+    ) -> GlobalConstDecision:
+        """Ask the shared, architecture-neutral constness authority.
+
+        ``blk``/``ins`` are optional context for the def-use dereference test.
+        The trace needs a built graph, so it runs only when the cheap
+        value-shape test would otherwise veto -- it refines that test rather
+        than replacing it, keeping the common path free of graph work.
+        """
         policy = (
             GlobalConstPolicy.AGGRESSIVE_NO_DIRECT_WRITES
             if self._fold_writable_constants
             else GlobalConstPolicy.STRICT
         )
-        return decide_hexrays_global_read(
+        if blk is None:
+            blk = getattr(self, "_ctx_blk", None)
+        if ins is None:
+            ins = getattr(self, "_ctx_ins", None)
+        reaches: bool | None = None
+        if self._rva_guard and (blk is None or ins is None) and peephole_logger.debug_on:
+            peephole_logger.debug(
+                "constant-simplification fold decision site=%s addr=0x%X: no "
+                "instruction context, def-use test skipped",
+                site,
+                addr,
+            )
+        if self._rva_guard and blk is not None and ins is not None:
+            probe = decide_hexrays_global_read(
+                addr,
+                size,
+                policy=policy,
+                allow_executable_readonly=self._allow_executable,
+            )
+            if probe.reason is GlobalConstReason.POINTER_LIKE_VALUE:
+                # Seed with the GLOBAL's address: the test tracks where the
+                # loaded value flows structurally, not what the value equals.
+                reaches = value_reaches_dereference(blk, ins, address=addr)
+        decision = decide_hexrays_global_read(
             addr,
             size,
             policy=policy,
             allow_executable_readonly=self._allow_executable,
+            rva_guard=self._rva_guard,
+            value_reaches_dereference=reaches,
         )
+        # The fold verdict was previously invisible: only the ANNOTATION path
+        # logged, and it answers a different question (persistent const), so a
+        # dump could not say why a given global did or did not fold.
+        if peephole_logger.debug_on:
+            peephole_logger.debug(
+                "constant-simplification fold decision site=%s addr=0x%X size=%d "
+                "policy=%s rva_guard=%s reaches_deref=%s -> inline=%s reason=%s",
+                site,
+                addr,
+                size,
+                policy.value,
+                self._rva_guard,
+                reaches,
+                decision.can_inline_read,
+                decision.reason.value,
+            )
+        return decision
 
     def _is_foldable_address(self, addr: int) -> bool:
         """Compatibility predicate; concrete rewrites use the true read width."""
-        return self._decision_for(addr, 1).can_inline_read
+        return self._decision_for(addr, 1, site="predicate").can_inline_read
 
     # ------------------------------------------------------------------ #
     # Main peephole implementation                                      #
@@ -398,6 +471,11 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
         """Try to rewrite *ins*.  Return modified instruction or None."""
 
         self._persist_proven_global_consts(blk, ins)
+        # The expression-fold path reaches _decision_for several frames down and
+        # cannot thread (blk, ins) through every operand recursion; stash it for
+        # the duration of this attempt so the def-use test is available there too.
+        self._ctx_blk = blk
+        self._ctx_ins = ins
 
         # Attempt the **direct displacement** form first ------------------ #
         ea = self._ea_from_direct_load(ins)
@@ -437,10 +515,20 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
         load_size = ins.d.size if (ins.d and ins.d.size) else ins.l.size
         if not load_size:
             return None
-        decision = self._decision_for(ea, load_size)
+        decision = self._decision_for(ea, load_size, blk, ins, site="ldc-replace")
         if not decision.can_inline_read or decision.value is None:
             return None
-        return make_ldc_replacement(ins, decision.value, load_size)
+        replacement = make_ldc_replacement(ins, decision.value, load_size)
+        if peephole_logger.debug_on:
+            peephole_logger.debug(
+                "constant-simplification fold APPLIED site=ldc-replace addr=0x%X "
+                "size=%d value=0x%X -> replacement=%s",
+                ea,
+                load_size,
+                decision.value,
+                "yes" if replacement is not None else "NONE",
+            )
+        return replacement
 
     # ------------------------------------------------------------------ #
     # EA reconstruction helpers                                           #
@@ -739,7 +827,7 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
                 if ea is not None:
                     out_size = getattr(op, "size", 0) or getattr(inner, "size", 0) or 0
                     if mem_size in (1, 2, 4, 8) and out_size in (1, 2, 4, 8):
-                        decision = self._decision_for(ea, mem_size)
+                        decision = self._decision_for(ea, mem_size, site="expr-mem")
                         if decision.can_inline_read and decision.value is not None:
                             val = decision.value
                             # Apply sign/zero extension
@@ -750,6 +838,14 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
                             mask = (1 << (out_size * 8)) - 1
                             folded = val & mask
                             replace_operand_with_immediate(op, folded, out_size)
+                            if peephole_logger.debug_on:
+                                peephole_logger.debug(
+                                    "constant-simplification fold APPLIED "
+                                    "site=expr-mem addr=0x%X size=%d value=0x%X",
+                                    ea,
+                                    out_size,
+                                    folded,
+                                )
                             return True
             # Otherwise, recurse into sub-operands of the inner instruction
             res_l = self._fold_readonly_inplace(inner.l)
@@ -767,9 +863,17 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
         if op.t == ida_hexrays.mop_v:
             ea = op.g
             if size in (1, 2, 4, 8):
-                decision = self._decision_for(ea, size)
+                decision = self._decision_for(ea, size, site="expr-direct")
                 if decision.can_inline_read and decision.value is not None:
                     replace_operand_with_immediate(op, decision.value, size)
+                    if peephole_logger.debug_on:
+                        peephole_logger.debug(
+                            "constant-simplification fold APPLIED site=expr-direct "
+                            "addr=0x%X size=%d value=0x%X",
+                            ea,
+                            size,
+                            decision.value,
+                        )
                     return True
             return False
         # Stack variables (mop_S) are NOT memory reads from global addresses.

@@ -31,6 +31,7 @@ def test_default_bundle_expands_to_one_ordered_memory_fold_flow_pipeline():
     ]
     assert rules.instruction_rules[0].config == {
         "persist_global_const_annotations": True,
+        "rva_guard": True,
     }
     assert rules.instruction_rules[1].config == {}
     assert rules.block_rules[0].config == {}
@@ -48,6 +49,7 @@ def test_bundle_maps_aggressive_and_dangerous_options_only_to_memory_stage():
         "fold_writable_constants": True,
         "allow_executable_readonly": True,
         "persist_global_const_annotations": True,
+        "rva_guard": True,
     }
     assert rules.instruction_rules[1].config == {}
     assert rules.block_rules[0].config == {}
