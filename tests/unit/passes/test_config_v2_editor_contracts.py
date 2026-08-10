@@ -8,12 +8,14 @@ from d810.core.pass_editor_spec import (
     AdvisoryTone,
     FieldControlKind,
     FieldEditorSpec,
+    PassEditorKind,
     PassEditorSpec,
     RuleEditorSpec,
     TransformCost,
     TransformEditorSpec,
     VerificationStatus,
 )
+from d810.manager.workbench_recipe_service import RecipeService
 from d810.passes.pass_pipeline import PipelineConfig, PipelineConfigError, PassResult
 from d810.passes.operational_config_v2 import operational_config_v2_pass_registry
 from d810.passes.registry import PassRegistry, PassRegistryError
@@ -57,6 +59,10 @@ def _rule_editor() -> PassEditorSpec:
             ),
         )
     )
+
+
+def registered_pass_catalog():
+    return RecipeService(operational_config_v2_pass_registry()).catalog()
 
 
 def test_public_config_registration_rejects_a_json_only_option() -> None:
@@ -285,3 +291,11 @@ def test_operational_config_v2_public_passes_have_complete_editor_contracts() ->
     registry = operational_config_v2_pass_registry()
 
     assert registry.validate_editor_contracts() == ()
+
+
+def test_shipped_passes_project_their_declared_primary_editor_surface() -> None:
+    by_pass_id = {entry.pass_id: entry for entry in registered_pass_catalog()}
+
+    assert by_pass_id["constant-simplification"].editor_spec.kind is PassEditorKind.FIELDS
+    assert by_pass_id["mba-simplify"].editor_spec.kind is PassEditorKind.TRANSFORM_CATALOG
+    assert by_pass_id["jump-fixer"].editor_spec.kind is PassEditorKind.RULE_CATALOG

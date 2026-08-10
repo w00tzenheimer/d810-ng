@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from d810.core.pass_editor_spec import PassEditorKind
 from d810.passes.hook_transform_passes import (
     JUMP_FIXER_PASS_ID,
     JUMP_FIXER_RULE_NAMES,
@@ -20,9 +21,13 @@ from d810.passes.hook_transform_passes import (
 )
 
 
+def _jump_fixer_spec():
+    return hook_transform_pass_registry().editor_spec_for(JUMP_FIXER_PASS_ID)
+
+
 @pytest.fixture(scope="module")
 def spec():
-    return hook_transform_pass_registry().editor_spec_for(JUMP_FIXER_PASS_ID)
+    return _jump_fixer_spec()
 
 
 def test_jump_fixer_rules_use_a_typed_rule_catalog(spec):
@@ -35,6 +40,15 @@ def test_every_declared_rule_is_offered_as_a_choice(spec):
     assert {item.rule_id for item in spec.rules} == set(JUMP_FIXER_RULE_NAMES)
     assert all(item.family_id and item.family_label for item in spec.rules)
     assert all(item.description for item in spec.rules)
+
+
+def test_jump_fixer_rule_editor_keeps_family_and_subfamily_metadata() -> None:
+    spec = _jump_fixer_spec()
+    families = {(rule.family_id, rule.subfamily_id) for rule in spec.rules}
+
+    assert spec.kind is PassEditorKind.RULE_CATALOG
+    assert families
+    assert all(rule.description for rule in spec.rules)
 
 
 def test_the_flags_opaque_predicate_rule_is_offered():
