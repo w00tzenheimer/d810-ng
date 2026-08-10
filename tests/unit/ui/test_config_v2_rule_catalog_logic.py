@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from d810.passes.hook_transform_passes import JUMP_FIXER_RULE_SPECS
 
 
@@ -31,7 +33,7 @@ def test_rule_catalog_groups_explicit_families_and_subfamilies() -> None:
     }
 
 
-def test_rule_family_actions_only_change_the_current_filtered_scope() -> None:
+def test_visible_rule_action_only_changes_the_current_filtered_scope() -> None:
     logic = _logic_module()
     from d810.core.pass_editor_spec import PassEditorSpec
 
@@ -44,7 +46,7 @@ def test_rule_family_actions_only_change_the_current_filtered_scope() -> None:
     assert logic.apply_rule_catalog_selection(
         view,
         {"CompareConstantRule1"},
-        target_id="family:opaque-predicates",
+        target_id="visible",
         selected=True,
     ) == (
         "CompareConstantRule1",
@@ -62,6 +64,113 @@ def test_rule_family_actions_only_change_the_current_filtered_scope() -> None:
         "JnzRuleUmodAddIdentity",
         "JnzRuleUmodSubIdentity",
     )
+
+
+def test_rule_group_actions_apply_to_all_registered_descendants() -> None:
+    logic = _logic_module()
+    from d810.core.pass_editor_spec import PassEditorSpec
+
+    jump_fixer_spec = PassEditorSpec.rule_catalog(JUMP_FIXER_RULE_SPECS)
+    filtered = logic.project_rule_catalog(
+        jump_fixer_spec,
+        selected_ids=frozenset(),
+        query="compare constant 1",
+    )
+
+    assert logic.apply_rule_catalog_selection(
+        filtered,
+        frozenset(),
+        target_id="family:comparison-rewrites",
+        selected=True,
+    ) == (
+        "CompareConstantRule1",
+        "CompareConstantRule2",
+        "CompareConstantRule3",
+        "CompareConstantRule4",
+        "JaeRule1",
+        "JbRule1",
+    )
+    assert logic.apply_rule_catalog_selection(
+        filtered,
+        frozenset(),
+        target_id="subfamily:comparison-rewrites:masked-constants",
+        selected=True,
+    ) == (
+        "CompareConstantRule1",
+        "CompareConstantRule2",
+        "CompareConstantRule3",
+        "CompareConstantRule4",
+    )
+    assert logic.apply_rule_catalog_selection(
+        filtered,
+        frozenset(),
+        target_id="visible",
+        selected=True,
+    ) == ("CompareConstantRule1",)
+    assert logic.apply_rule_catalog_selection(
+        filtered,
+        frozenset(),
+        target_id="CompareConstantRule1",
+        selected=True,
+    ) == ("CompareConstantRule1",)
+
+    assert logic.apply_rule_catalog_selection(
+        filtered,
+        filtered.all_rule_ids,
+        target_id="subfamily:comparison-rewrites:masked-constants",
+        selected=False,
+    ) == (
+        "JaeRule1",
+        "JbRule1",
+        "JmpRuleFlagsOpaquePredicate",
+        "JmpRuleReachingConst",
+        "JmpRuleZ3Const",
+        "JnzRule1",
+        "JnzRule2",
+        "JnzRule3",
+        "JnzRule4",
+        "JnzRule5",
+        "JnzRule6",
+        "JnzRule7",
+        "JnzRule8",
+        "JnzRuleModIdentity",
+        "JnzRuleSmodSubIdentity",
+        "JnzRuleUmodAddIdentity",
+        "JnzRuleUmodSubIdentity",
+    )
+
+
+def test_rule_catalog_selection_rejects_unknown_targets() -> None:
+    logic = _logic_module()
+    from d810.core.pass_editor_spec import PassEditorSpec
+
+    view = logic.project_rule_catalog(
+        PassEditorSpec.rule_catalog(JUMP_FIXER_RULE_SPECS),
+        selected_ids=frozenset(),
+        query="compare constant 1",
+    )
+
+    with pytest.raises(ValueError):
+        logic.apply_rule_catalog_selection(
+            view,
+            frozenset(),
+            target_id="family:not-registered",
+            selected=True,
+        )
+    with pytest.raises(ValueError):
+        logic.apply_rule_catalog_selection(
+            view,
+            frozenset(),
+            target_id="subfamily:comparison-rewrites:not-registered",
+            selected=True,
+        )
+    with pytest.raises(ValueError):
+        logic.apply_rule_catalog_selection(
+            view,
+            frozenset(),
+            target_id="NotARegisteredRule",
+            selected=True,
+        )
 
 
 def test_rule_projection_keeps_experimental_warning_metadata_visible() -> None:

@@ -774,6 +774,35 @@ def project_rule_catalog(
     )
 
 
+def _registered_rule_target_ids(
+    view: ConfigV2RuleCatalogView,
+    target_id: str,
+) -> tuple[str, ...]:
+    if target_id.startswith("family:"):
+        family_id = target_id.removeprefix("family:")
+        targets = tuple(
+            rule.rule_id
+            for rule in view.pass_editor_spec.rules
+            if rule.family_id == family_id
+        )
+    elif target_id.startswith("subfamily:"):
+        family_id, separator, subfamily_id = target_id.removeprefix(
+            "subfamily:"
+        ).partition(":")
+        targets = tuple(
+            rule.rule_id
+            for rule in view.pass_editor_spec.rules
+            if separator
+            and rule.family_id == family_id
+            and (rule.subfamily_id or "__ungrouped__") == subfamily_id
+        )
+    else:
+        raise ValueError(f"unsupported registered group target {target_id!r}")
+    if not targets:
+        raise ValueError(f"unknown registered rule catalog target {target_id!r}")
+    return targets
+
+
 def apply_rule_catalog_selection(
     view: ConfigV2RuleCatalogView,
     selected_ids: AbstractSet[str],
@@ -781,34 +810,13 @@ def apply_rule_catalog_selection(
     target_id: str,
     selected: bool,
 ) -> tuple[str, ...]:
-    """Apply one intentional selection to the current visible rule scope."""
+    """Apply one intentional selection to the catalog action scope."""
     if target_id == "all":
         targets = view.all_rule_ids
     elif target_id == "visible":
         targets = view.visible_rule_ids
-    elif target_id.startswith("family:"):
-        family_id = target_id.removeprefix("family:")
-        family = next((item for item in view.families if item.family_id == family_id), None)
-        if family is None:
-            raise ValueError(f"unknown visible rule family {family_id!r}")
-        targets = tuple(
-            rule.rule_id
-            for subfamily in family.subfamilies
-            for rule in subfamily.rules
-        )
-    elif target_id.startswith("subfamily:"):
-        subfamily = next(
-            (
-                item
-                for family in view.families
-                for item in family.subfamilies
-                if item.target_id == target_id
-            ),
-            None,
-        )
-        if subfamily is None:
-            raise ValueError(f"unknown visible rule subfamily {target_id!r}")
-        targets = tuple(item.rule_id for item in subfamily.rules)
+    elif target_id.startswith(("family:", "subfamily:")):
+        targets = _registered_rule_target_ids(view, target_id)
     elif target_id in view.all_rule_ids:
         targets = (target_id,)
     else:
