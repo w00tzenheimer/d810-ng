@@ -96,3 +96,60 @@ def test_memory_policy_does_not_alter_rva_guard():
     strict = _fold_rule_options(_config(memory_policy=STRICT_MEMORY_POLICY))
     aggressive = _fold_rule_options(_config(memory_policy=AGGRESSIVE_MEMORY_POLICY))
     assert strict["rva_guard"] == aggressive["rva_guard"] is True
+
+
+# --------------------------------------------------------------------------- #
+# the option must be reachable from the UI, not just from JSON                 #
+# --------------------------------------------------------------------------- #
+
+
+def _editor_fields():
+    from d810.passes.constant_simplification import (
+        register_constant_simplification_pass,
+    )
+    from d810.passes.registry import PassRegistry
+
+    registry = register_constant_simplification_pass(PassRegistry())
+    spec = registry.editor_spec_for(CONSTANT_SIMPLIFICATION_PASS_ID)
+    return {f.field_id: f for f in spec.fields}
+
+
+def test_rva_guard_is_exposed_in_the_pass_editor():
+    """Without this the option works from JSON but the UI cannot show it."""
+    assert "rva_guard" in _editor_fields()
+
+
+def test_rva_guard_editor_field_is_a_boolean_bound_to_the_option():
+    field = _editor_fields()["rva_guard"]
+    assert field.path == ("rva_guard",)
+    assert field.control.name == "BOOLEAN"
+    assert field.label
+    assert field.description
+
+
+def test_every_parsed_option_has_an_editor_field():
+    """Guards the class of bug this test file was extended for: an option added
+    to parsing but never surfaced in the editor."""
+    from d810.passes.constant_simplification import ConstantSimplificationOptions
+    import dataclasses
+
+    parsed = {f.name for f in dataclasses.fields(ConstantSimplificationOptions)}
+    assert parsed <= set(_editor_fields())
+
+
+def test_config_template_seeds_rva_guard_with_its_real_default():
+    """An absent template entry renders as an unchecked box, i.e. false --
+    the opposite of the effective default."""
+    from d810.passes.constant_simplification import (
+        register_constant_simplification_pass,
+    )
+    from d810.passes.registry import PassRegistry
+
+    registry = register_constant_simplification_pass(PassRegistry())
+    template = registry.config_template_for(CONSTANT_SIMPLIFICATION_PASS_ID)
+
+    assert template.options["rva_guard"] is True
+    assert (
+        template.options["rva_guard"]
+        is build_constant_simplification_pass(_config()).options.rva_guard
+    )

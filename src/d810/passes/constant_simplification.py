@@ -144,6 +144,7 @@ def register_constant_simplification_pass(registry: PassRegistry) -> PassRegistr
             workflow_stage=StrategyWorkflowStage.FRONTEND_NORMALIZATION,
             options={
                 "memory_policy": STRICT_MEMORY_POLICY,
+                "rva_guard": True,
                 "allow_executable_readonly": False,
             },
         ),
@@ -176,6 +177,18 @@ def register_constant_simplification_pass(registry: PassRegistry) -> PassRegistr
                     control=FieldControlKind.ENUM,
                     description="Controls which read-only memory values may be materialized.",
                     choices=(STRICT_MEMORY_POLICY, AGGRESSIVE_MEMORY_POLICY),
+                ),
+                FieldEditorSpec(
+                    field_id="rva_guard",
+                    label="RVA guard",
+                    path=("rva_guard",),
+                    control=FieldControlKind.BOOLEAN,
+                    description=(
+                        "Veto folds whose value is used as an address. On, the "
+                        "veto is answered by microcode def-use where provable "
+                        "and by the value-shape heuristic otherwise; off, there "
+                        "is no veto."
+                    ),
                 ),
                 FieldEditorSpec(
                     field_id="allow_executable_readonly",
