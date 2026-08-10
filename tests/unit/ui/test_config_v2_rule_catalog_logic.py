@@ -117,6 +117,29 @@ def test_rule_group_actions_apply_to_all_registered_descendants() -> None:
     assert logic.apply_rule_catalog_selection(
         filtered,
         filtered.all_rule_ids,
+        target_id="family:comparison-rewrites",
+        selected=False,
+    ) == (
+        "JmpRuleFlagsOpaquePredicate",
+        "JmpRuleReachingConst",
+        "JmpRuleZ3Const",
+        "JnzRule1",
+        "JnzRule2",
+        "JnzRule3",
+        "JnzRule4",
+        "JnzRule5",
+        "JnzRule6",
+        "JnzRule7",
+        "JnzRule8",
+        "JnzRuleModIdentity",
+        "JnzRuleSmodSubIdentity",
+        "JnzRuleUmodAddIdentity",
+        "JnzRuleUmodSubIdentity",
+    )
+
+    assert logic.apply_rule_catalog_selection(
+        filtered,
+        filtered.all_rule_ids,
         target_id="subfamily:comparison-rewrites:masked-constants",
         selected=False,
     ) == (

@@ -57,6 +57,27 @@ def _partial_state() -> typing.Any:
         return QtCore.Qt.PartiallyChecked
 
 
+def _custom_context_menu_policy() -> typing.Any:
+    try:
+        return QtCore.Qt.ContextMenuPolicy.CustomContextMenu
+    except AttributeError:
+        return QtCore.Qt.CustomContextMenu
+
+
+def _scrollbar_as_needed() -> typing.Any:
+    try:
+        return QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded
+    except AttributeError:
+        return QtCore.Qt.ScrollBarAsNeeded
+
+
+def _exec_menu(menu: typing.Any, position: typing.Any) -> typing.Any:
+    execute = getattr(menu, "exec", None)
+    if execute is None:
+        execute = menu.exec_
+    return execute(position)
+
+
 def _check_state(name: str) -> typing.Any:
     if name == "checked":
         return _checked_state()
@@ -88,6 +109,7 @@ if QT_GRAPHICS_AVAILABLE:
             self._rendering = False
             self._catalog: ConfigV2RuleCatalogView | None = None
             self._by_target: dict[str, ConfigV2RuleView] = {}
+            self._group_labels: dict[str, str] = {}
 
             self.query = QtWidgets.QLineEdit(self)
             self.query.setPlaceholderText(
@@ -98,6 +120,8 @@ if QT_GRAPHICS_AVAILABLE:
             self.tree.setHeaderLabels(["Rule family", "Selection"])
             self.tree.setAlternatingRowColors(True)
             self.tree.setExpandsOnDoubleClick(True)
+            self.tree.setContextMenuPolicy(_custom_context_menu_policy())
+            self.tree.setVerticalScrollBarPolicy(_scrollbar_as_needed())
             try:
                 self.tree.header().setStretchLastSection(False)
                 self.tree.header().setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
@@ -120,12 +144,13 @@ if QT_GRAPHICS_AVAILABLE:
                 self.overflow_button.setPopupMode(QtWidgets.QToolButton.InstantPopup)
 
             self.details = StructuredDetailsView(self)
-            split = QtWidgets.QSplitter(self)
+            self.details.setVerticalScrollBarPolicy(_scrollbar_as_needed())
+            self.splitter = QtWidgets.QSplitter(self)
             try:
-                split.setOrientation(QtCore.Qt.Orientation.Horizontal)
+                self.splitter.setOrientation(QtCore.Qt.Orientation.Horizontal)
             except AttributeError:
-                split.setOrientation(QtCore.Qt.Horizontal)
-            left = QtWidgets.QWidget(split)
+                self.splitter.setOrientation(QtCore.Qt.Horizontal)
+            left = QtWidgets.QWidget(self.splitter)
             left_layout = QtWidgets.QVBoxLayout(left)
             left_layout.setContentsMargins(0, 0, 0, 0)
             left_layout.setSpacing(4)
@@ -137,18 +162,20 @@ if QT_GRAPHICS_AVAILABLE:
             controls.addStretch(1)
             controls.addWidget(self.overflow_button)
             left_layout.addLayout(controls)
-            split.addWidget(left)
-            split.addWidget(self.details)
-            split.setStretchFactor(0, 3)
-            split.setStretchFactor(1, 2)
+            self.splitter.addWidget(left)
+            self.splitter.addWidget(self.details)
+            self.splitter.setChildrenCollapsible(False)
+            self.splitter.setStretchFactor(0, 3)
+            self.splitter.setStretchFactor(1, 2)
 
             layout = QtWidgets.QVBoxLayout(self)
             layout.setContentsMargins(0, 0, 0, 0)
-            layout.addWidget(split)
+            layout.addWidget(self.splitter)
 
             self.query.textChanged.connect(self._query_changed)
             self.tree.itemChanged.connect(self._item_changed)
             self.tree.currentItemChanged.connect(self._current_item_changed)
+            self.tree.customContextMenuRequested.connect(self._show_group_context_menu)
             self.select_visible_button.clicked.connect(self._select_visible)
             self.clear_visible_button.clicked.connect(self._clear_visible)
             self._render_empty()
@@ -160,6 +187,7 @@ if QT_GRAPHICS_AVAILABLE:
             try:
                 self.tree.clear()
                 self._by_target.clear()
+                self._group_labels.clear()
                 self.query.setText(catalog.query if catalog is not None else "")
                 if catalog is None:
                     self._render_empty()
@@ -170,6 +198,7 @@ if QT_GRAPHICS_AVAILABLE:
                         family.target_id,
                         family.check_state,
                     )
+                    self._group_labels[family.target_id] = family.label
                     self.tree.addTopLevelItem(family_item)
                     for subfamily in family.subfamilies:
                         subfamily_item = self._item(
@@ -177,6 +206,7 @@ if QT_GRAPHICS_AVAILABLE:
                             subfamily.target_id,
                             subfamily.check_state,
                         )
+                        self._group_labels[subfamily.target_id] = subfamily.label
                         family_item.addChild(subfamily_item)
                         for rule in subfamily.rules:
                             label = rule.label
@@ -234,6 +264,30 @@ if QT_GRAPHICS_AVAILABLE:
                 return
             self.details.set_sections(self._details_for(rule))
 
+        def _show_group_context_menu(self, position: typing.Any) -> None:
+            item = self.tree.itemAt(position)
+            if item is None:
+                return
+            target_id = item.data(0, _user_role())
+            if not isinstance(target_id, str):
+                return
+            if not target_id.startswith(("family:", "subfamily:")):
+                return
+            group_label = self._group_labels.get(target_id)
+            if group_label is None:
+                return
+            menu = QtWidgets.QMenu(self.tree)
+            select_action = menu.addAction(f"Select all in {group_label}")
+            clear_action = menu.addAction(f"Clear all in {group_label}")
+            selected_action = _exec_menu(
+                menu,
+                self.tree.viewport().mapToGlobal(position),
+            )
+            if selected_action is select_action:
+                self._on_selection_changed(target_id, True)
+            elif selected_action is clear_action:
+                self._on_selection_changed(target_id, False)
+
         def _details_for(
             self, rule: ConfigV2RuleView
         ) -> tuple[DetailSection, ...]:
@@ -284,11 +338,13 @@ if QT_GRAPHICS_AVAILABLE:
 
         def _select_visible(self, checked: bool = False) -> None:
             del checked
-            self._emit_scope("visible", True)
+            if self._catalog is not None:
+                self._on_selection_changed("visible", True)
 
         def _clear_visible(self, checked: bool = False) -> None:
             del checked
-            self._emit_scope("visible", False)
+            if self._catalog is not None:
+                self._on_selection_changed("visible", False)
 
         def _select_all(self, checked: bool = False) -> None:
             del checked
