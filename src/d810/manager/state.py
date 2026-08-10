@@ -943,6 +943,49 @@ class D810State(metaclass=SingletonMeta):
         logger.info("Stopping D-810...")
         self.manager.stop()
 
+    @staticmethod
+    def _ensure_extension_rules_registered() -> None:
+        """Import extension-contributed rules before the catalogue is read.
+
+        d810 registers its own rules by scanning ``d810.optimizers.__path__``,
+        which by construction cannot reach a rule shipped inside an installed
+        extension; ``load_extension_rules()`` closes that gap.  It used to run
+        only from ``manager.start()`` -- 88 ms *after* :meth:`load` had already
+        snapshotted the registry and matched configured rule names against it.
+        An extension's rule therefore never entered the catalogue, never
+        matched, and never had ``configure()`` called, leaving its pass
+        configured, routed and silently inert (ticket d81-ix9c).
+
+        Calling ``load_extension_rules()`` rather than the whole
+        ``load_optimizer_registries()`` is deliberate: the latter re-runs the
+        module scanner, and running that twice can leave two copies of one rule
+        class in a single process.  Module imports are cached, so the later
+        call from ``manager.start()`` stays correct and costs nothing.
+        """
+        from d810.backends import load_extension_rules
+
+        load_extension_rules()
+
+    def _build_known_instruction_rules(self) -> list:
+        """Every instruction rule available to be matched against a config."""
+        self._ensure_extension_rules_registered()
+        rules = [
+            rule_cls()
+            for rule_cls in InstructionOptimizationRule.registry.values()
+            if not inspect.isabstract(rule_cls)
+        ]
+        rules.extend(adapt_rules(VerifiableRule.instantiate_all()))
+        return rules
+
+    def _build_known_block_rules(self) -> list:
+        """Every block rule available to be matched against a config."""
+        self._ensure_extension_rules_registered()
+        return [
+            rule_cls()
+            for rule_cls in FlowOptimizationRule.registry.values()
+            if not inspect.isabstract(rule_cls)
+        ]
+
     def load(
         self,
         gui: bool = True,
@@ -962,20 +1005,8 @@ class D810State(metaclass=SingletonMeta):
         self.current_ins_rules = []
         self.current_blk_rules = []
 
-        self.known_ins_rules = [
-            rule_cls()
-            for rule_cls in InstructionOptimizationRule.registry.values()
-            if not inspect.isabstract(rule_cls)
-        ]
-
-        verifiable_instances = VerifiableRule.instantiate_all()
-        self.known_ins_rules.extend(adapt_rules(verifiable_instances))
-
-        self.known_blk_rules = [
-            rule_cls()
-            for rule_cls in FlowOptimizationRule.registry.values()
-            if not inspect.isabstract(rule_cls)
-        ]
+        self.known_ins_rules = self._build_known_instruction_rules()
+        self.known_blk_rules = self._build_known_block_rules()
 
         if projects := len(self.project_manager):
             preferred = max(0, min(self.current_project_index, projects - 1))
