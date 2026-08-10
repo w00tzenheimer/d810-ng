@@ -143,23 +143,45 @@ def test_selecting_mba_transforms_is_ordered_lossless_and_validated(tmp_path: Pa
     document = json.loads(draft.document_json)
     options = document["additional_configuration"]["pipeline_v2"][1]["options"]
     options["transform_options"] = {
-        "add-ollvm-1": {"retained": "ollvm"},
-        "z-3-constant-optimization": {"discarded": True},
-        "add-xor-1": {"retained": "xor"},
+        "add-xor-1": {"discarded": True},
+        "z-3-constant-optimization": {
+            "min_nb_opcode": 5,
+            "min_nb_constant": 4,
+        },
+        "example-guessing": {
+            "min_nb_var": 1,
+            "max_nb_var": 3,
+            "min_nb_diff_opcodes": 3,
+            "max_nb_diff_opcodes": 6,
+        },
     }
     draft = dataclasses.replace(draft, document_json=json.dumps(document))
     changed = service.set_pass_transforms(
         draft,
         pass_index=1,
-        transform_ids=("add-ollvm-1", "add-xor-1"),
+        transform_ids=("z-3-constant-optimization", "example-guessing"),
     )
 
     options = _pipeline_entry(changed, "mba-simplify")["options"]
-    assert options["transforms"] == ["add-xor-1", "add-ollvm-1"]
-    assert list(options["transform_options"]) == ["add-xor-1", "add-ollvm-1"]
+    assert options["transforms"] == [
+        "example-guessing",
+        "z-3-constant-optimization",
+    ]
+    assert list(options["transform_options"]) == [
+        "example-guessing",
+        "z-3-constant-optimization",
+    ]
     assert options["transform_options"] == {
-        "add-xor-1": {"retained": "xor"},
-        "add-ollvm-1": {"retained": "ollvm"},
+        "example-guessing": {
+            "min_nb_var": 1,
+            "max_nb_var": 3,
+            "min_nb_diff_opcodes": 3,
+            "max_nb_diff_opcodes": 6,
+        },
+        "z-3-constant-optimization": {
+            "min_nb_opcode": 5,
+            "min_nb_constant": 4,
+        },
     }
     assert service.validate(changed).valid is True
 

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 
 from d810.core.pass_ids import PassId
+from d810.core.pass_editor_spec import FieldControlKind, FieldEditorSpec
 from d810.core.typing import Mapping
 from d810.mba.rules import VerifiableRule
 from d810.passes.execution_stages import (
@@ -58,6 +59,77 @@ _PRIVATE_BINDING_OVERRIDES = {
     "Mul_MBA_2": "Mul_MbaRule_2",
     "Mul_MBA_3": "Mul_MbaRule_3",
     "Mul_MBA_4": "Mul_MbaRule_4",
+}
+
+
+# Runtime-owned schema for the small number of MBA transforms that accept
+# parameters. The pass catalog renders these fixed controls; raw JSON cannot
+# introduce another transform option.
+MBA_TRANSFORM_OPTION_FIELDS: Mapping[str, tuple[FieldEditorSpec, ...]] = {
+    "z-3-constant-optimization": (
+        FieldEditorSpec(
+            field_id="min_nb_opcode",
+            label="Minimum distinct opcodes",
+            path=("min_nb_opcode",),
+            control=FieldControlKind.INTEGER,
+            description="Require this many distinct opcodes before invoking Z3.",
+            minimum=1,
+            maximum=64,
+            default=4,
+        ),
+        FieldEditorSpec(
+            field_id="min_nb_constant",
+            label="Minimum constants",
+            path=("min_nb_constant",),
+            control=FieldControlKind.INTEGER,
+            description="Require this many constants before invoking Z3.",
+            minimum=1,
+            maximum=64,
+            default=3,
+        ),
+    ),
+    "example-guessing": (
+        FieldEditorSpec(
+            field_id="min_nb_var",
+            label="Minimum variables",
+            path=("min_nb_var",),
+            control=FieldControlKind.INTEGER,
+            description="Minimum symbolic variables in a guessed pattern.",
+            minimum=1,
+            maximum=255,
+            default=1,
+        ),
+        FieldEditorSpec(
+            field_id="max_nb_var",
+            label="Maximum variables",
+            path=("max_nb_var",),
+            control=FieldControlKind.INTEGER,
+            description="Maximum symbolic variables in a guessed pattern.",
+            minimum=-1,
+            maximum=255,
+            default=3,
+        ),
+        FieldEditorSpec(
+            field_id="min_nb_diff_opcodes",
+            label="Minimum distinct opcodes",
+            path=("min_nb_diff_opcodes",),
+            control=FieldControlKind.INTEGER,
+            description="Minimum operation diversity required for pattern guessing.",
+            minimum=1,
+            maximum=255,
+            default=3,
+        ),
+        FieldEditorSpec(
+            field_id="max_nb_diff_opcodes",
+            label="Maximum distinct opcodes",
+            path=("max_nb_diff_opcodes",),
+            control=FieldControlKind.INTEGER,
+            description="Maximum operation diversity considered by pattern guessing.",
+            minimum=-1,
+            maximum=255,
+            default=6,
+        ),
+    ),
 }
 
 
@@ -170,11 +242,21 @@ def parse_mba_simplify_options(
             raise PipelineConfigError(
                 f"mba-simplify transform options for {transform_id!r} must be a mapping"
             )
+        declared_fields = MBA_TRANSFORM_OPTION_FIELDS.get(transform_id, ())
+        allowed_names = {field.path[0] for field in declared_fields}
+        unknown_names = tuple(sorted(set(options).difference(allowed_names)))
+        if unknown_names:
+            raise PipelineConfigError(
+                "mba-simplify transform options for "
+                f"{transform_id!r} have option(s) that are not editor-visible: "
+                f"{list(unknown_names)}"
+            )
         transform_options[transform_id] = dict(options)
     return MbaSimplifyOptions(tuple(transform_ids), transform_options)
 
 
 __all__ = [
+    "MBA_TRANSFORM_OPTION_FIELDS",
     "MbaSimplifyOptions",
     "mba_transform_id",
     "mba_transform_stages",

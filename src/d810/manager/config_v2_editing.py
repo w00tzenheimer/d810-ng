@@ -315,15 +315,25 @@ class ConfigV2EditingService:
             for transform_id in self._registry.transform_ids_for(pass_id)
             if transform_id in selected
         ]
-        edited_options = copy.deepcopy(dict(options))
-        edited_options["transforms"] = ordered
-        transform_options = edited_options.get("transform_options")
-        if isinstance(transform_options, Mapping):
-            edited_options["transform_options"] = {
-                transform_id: copy.deepcopy(transform_options[transform_id])
-                for transform_id in ordered
-                if transform_id in transform_options
-            }
+        editor_spec = self._registry.editor_spec_for(pass_id)
+        if editor_spec is not None and editor_spec.kind.value == "transform_catalog":
+            try:
+                edited_options = editor_spec.options_with_transform_selection(
+                    options,
+                    ordered,
+                )
+            except ValueError as error:
+                raise ConfigV2EditError(str(error)) from error
+        else:
+            edited_options = copy.deepcopy(dict(options))
+            edited_options["transforms"] = ordered
+            transform_options = edited_options.get("transform_options")
+            if isinstance(transform_options, Mapping):
+                edited_options["transform_options"] = {
+                    transform_id: copy.deepcopy(transform_options[transform_id])
+                    for transform_id in ordered
+                    if transform_id in transform_options
+                }
         return self.set_pass_options(
             draft,
             pass_index=pass_index,

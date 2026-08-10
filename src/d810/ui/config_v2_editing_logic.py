@@ -145,6 +145,66 @@ class ConfigV2TransformCatalogView:
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
+class ConfigV2RuleView:
+    """One visible leaf in a fixed pass-owned rule catalog."""
+
+    rule_id: str
+    label: str
+    description: str
+    reference: str
+    maturities: tuple[str, ...]
+    selected: bool
+    default_selected: bool
+    experimental: bool
+    experimental_reason: str
+    verification: str
+    verification_reason: str
+    advisory: str
+    advisory_reason: str
+    cost: str
+    cost_detail: str
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class ConfigV2RuleSubfamilyView:
+    """Visible descendants for one explicit rule subfamily."""
+
+    family_id: str
+    subfamily_id: str
+    label: str
+    target_id: str
+    selected_count: int
+    visible_count: int
+    check_state: str
+    rules: tuple[ConfigV2RuleView, ...]
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class ConfigV2RuleFamilyView:
+    """Visible descendants for one explicit rule family."""
+
+    family_id: str
+    label: str
+    target_id: str
+    selected_count: int
+    visible_count: int
+    check_state: str
+    subfamilies: tuple[ConfigV2RuleSubfamilyView, ...]
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class ConfigV2RuleCatalogView:
+    """Qt-free tree model and action scope for one fixed rule editor."""
+
+    pass_editor_spec: PassEditorSpec
+    query: str
+    selected_ids: tuple[str, ...]
+    all_rule_ids: tuple[str, ...]
+    visible_rule_ids: tuple[str, ...]
+    families: tuple[ConfigV2RuleFamilyView, ...]
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
 class ConfigV2PassInspectorView:
     pass_index: int
     pass_id: str
@@ -155,6 +215,10 @@ class ConfigV2PassInspectorView:
     options: dict[str, object]
     contract: dict[str, object]
     contract_chips: tuple[tuple[str, str], ...]
+    # Rule catalogs were added after the lightweight pipeline overview began
+    # constructing inspector rows.  Keep the presentation-only addition
+    # optional so an already-loaded overview cannot fail during a hot reload.
+    rule_catalog: ConfigV2RuleCatalogView | None = None
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -296,6 +360,30 @@ def _selected_transform_ids(options: dict[str, object]) -> set[str] | None:
     }
 
 
+def _option_path_value(
+    options: dict[str, object], path: tuple[str, ...]
+) -> object | None:
+    value: object = options
+    for segment in path:
+        if not isinstance(value, dict) or segment not in value:
+            return None
+        value = value[segment]
+    return value
+
+
+def _selected_rule_ids(
+    options: dict[str, object], spec: PassEditorSpec
+) -> set[str] | None:
+    if spec.kind is not PassEditorKind.RULE_CATALOG:
+        return None
+    rules = _option_path_value(options, spec.rule_option_path)
+    if not isinstance(rules, list):
+        rules = _option_path_value(spec.default_options(), spec.rule_option_path)
+    if not isinstance(rules, list):
+        return None
+    return {rule_id for rule_id in rules if isinstance(rule_id, str)}
+
+
 def _transform_summary(entry: PassCatalogEntry, selected_ids: set[str] | None) -> str:
     if not entry.transform_ids:
         return "No individually selectable transforms"
@@ -303,6 +391,23 @@ def _transform_summary(entry: PassCatalogEntry, selected_ids: set[str] | None) -
     if selected_count == 1:
         return "1 selected transform"
     return f"{selected_count} selected transforms"
+
+
+def _rule_summary(entry: PassCatalogEntry, selected_ids: set[str] | None) -> str:
+    if entry.editor_spec.kind is not PassEditorKind.RULE_CATALOG:
+        return "No individually selectable rules"
+    selected_count = len(
+        {item.rule_id for item in entry.editor_spec.rules}.intersection(selected_ids or set())
+    )
+    if selected_count == 1:
+        return "1 selected rule"
+    return f"{selected_count} selected rules"
+
+
+def _selection_summary(entry: PassCatalogEntry, options: dict[str, object]) -> str:
+    if entry.editor_spec.kind is PassEditorKind.RULE_CATALOG:
+        return _rule_summary(entry, _selected_rule_ids(options, entry.editor_spec))
+    return _transform_summary(entry, _selected_transform_ids(options))
 
 
 def _catalog_check_state(*, selected_count: int, visible_count: int) -> str:
@@ -501,6 +606,236 @@ def apply_transform_catalog_selection(
     )
 
 
+def transform_option_fields(
+    spec: PassEditorSpec,
+    selected_ids: AbstractSet[str],
+) -> tuple[FieldEditorSpec, ...]:
+    """Return fixed controls for the transforms currently selected by an operator.
+
+    A transform owns these fields, but the project document owns their full
+    path.  The replacement retains the typed control and metadata while making
+    its label/path unambiguous in the pass inspector.
+    """
+    if spec.kind is not PassEditorKind.TRANSFORM_CATALOG:
+        return ()
+    selected = frozenset(selected_ids)
+    fields: list[FieldEditorSpec] = []
+    for transform in spec.transforms:
+        if transform.transform_id not in selected:
+            continue
+        for field in transform.option_fields:
+            fields.append(
+                dataclasses.replace(
+                    field,
+                    field_id=f"{transform.transform_id}:{field.field_id}",
+                    label=f"{transform.label}: {field.label}",
+                    path=("transform_options", transform.transform_id, *field.path),
+                )
+            )
+    return tuple(fields)
+
+
+def _matches_rule_query(rule: object, query: str) -> bool:
+    if not query:
+        return True
+    fields = (
+        rule.rule_id,
+        rule.label,
+        rule.family_id,
+        rule.family_label,
+        rule.subfamily_id or "",
+        rule.subfamily_label or "",
+        rule.description,
+        rule.reference,
+        rule.verification.value,
+        rule.advisory.value,
+        rule.cost.value,
+        rule.experimental_reason,
+    )
+    return any(query in field.casefold() for field in fields)
+
+
+def project_rule_catalog(
+    spec: PassEditorSpec,
+    selected_ids: AbstractSet[str],
+    *,
+    query: str,
+) -> ConfigV2RuleCatalogView:
+    """Project explicit rule metadata into a filterable family/subfamily tree."""
+    if spec.kind is not PassEditorKind.RULE_CATALOG:
+        raise ValueError("rule catalog projection requires a rule_catalog spec")
+    normalized_query = str(query).strip().casefold()
+    all_rule_ids = tuple(item.rule_id for item in spec.rules)
+    known_selected_ids = frozenset(selected_ids).intersection(all_rule_ids)
+    family_specs: dict[str, dict[str, object]] = {}
+    visible_rule_ids: list[str] = []
+    for item in spec.rules:
+        if not _matches_rule_query(item, normalized_query):
+            continue
+        visible_rule_ids.append(item.rule_id)
+        family = family_specs.setdefault(
+            item.family_id,
+            {"label": item.family_label, "subfamilies": {}},
+        )
+        subfamily_id = item.subfamily_id or "__ungrouped__"
+        subfamily_label = item.subfamily_label or item.family_label
+        subfamilies = family["subfamilies"]
+        assert isinstance(subfamilies, dict)
+        leaves = subfamilies.setdefault(subfamily_id, (subfamily_label, []))
+        leaves[1].append(item)
+
+    families: list[ConfigV2RuleFamilyView] = []
+    for family_id, family in family_specs.items():
+        subfamilies = family["subfamilies"]
+        assert isinstance(subfamilies, dict)
+        projected_subfamilies: list[ConfigV2RuleSubfamilyView] = []
+        family_selected_count = 0
+        family_visible_count = 0
+        for subfamily_id, (subfamily_label, rules) in subfamilies.items():
+            leaf_views = tuple(
+                ConfigV2RuleView(
+                    rule_id=item.rule_id,
+                    label=item.label,
+                    description=item.description,
+                    reference=item.reference,
+                    maturities=item.maturities,
+                    selected=item.rule_id in known_selected_ids,
+                    default_selected=item.default_selected,
+                    experimental=item.experimental,
+                    experimental_reason=item.experimental_reason,
+                    verification=item.verification.value,
+                    verification_reason=item.verification_reason,
+                    advisory=item.advisory.value,
+                    advisory_reason=item.advisory_reason,
+                    cost=item.cost.value,
+                    cost_detail=item.cost_detail,
+                )
+                for item in rules
+            )
+            selected_count = sum(item.selected for item in leaf_views)
+            visible_count = len(leaf_views)
+            family_selected_count += selected_count
+            family_visible_count += visible_count
+            projected_subfamilies.append(
+                ConfigV2RuleSubfamilyView(
+                    family_id=family_id,
+                    subfamily_id=subfamily_id,
+                    label=subfamily_label,
+                    target_id=f"subfamily:{family_id}:{subfamily_id}",
+                    selected_count=selected_count,
+                    visible_count=visible_count,
+                    check_state=_catalog_check_state(
+                        selected_count=selected_count,
+                        visible_count=visible_count,
+                    ),
+                    rules=leaf_views,
+                )
+            )
+        families.append(
+            ConfigV2RuleFamilyView(
+                family_id=family_id,
+                label=str(family["label"]),
+                target_id=f"family:{family_id}",
+                selected_count=family_selected_count,
+                visible_count=family_visible_count,
+                check_state=_catalog_check_state(
+                    selected_count=family_selected_count,
+                    visible_count=family_visible_count,
+                ),
+                subfamilies=tuple(projected_subfamilies),
+            )
+        )
+    return ConfigV2RuleCatalogView(
+        pass_editor_spec=spec,
+        query=normalized_query,
+        selected_ids=tuple(rule_id for rule_id in all_rule_ids if rule_id in known_selected_ids),
+        all_rule_ids=all_rule_ids,
+        visible_rule_ids=tuple(visible_rule_ids),
+        families=tuple(families),
+    )
+
+
+def apply_rule_catalog_selection(
+    view: ConfigV2RuleCatalogView,
+    selected_ids: AbstractSet[str],
+    *,
+    target_id: str,
+    selected: bool,
+) -> tuple[str, ...]:
+    """Apply one intentional selection to the current visible rule scope."""
+    if target_id == "all":
+        targets = view.all_rule_ids
+    elif target_id == "visible":
+        targets = view.visible_rule_ids
+    elif target_id.startswith("family:"):
+        family_id = target_id.removeprefix("family:")
+        family = next((item for item in view.families if item.family_id == family_id), None)
+        if family is None:
+            raise ValueError(f"unknown visible rule family {family_id!r}")
+        targets = tuple(
+            rule.rule_id
+            for subfamily in family.subfamilies
+            for rule in subfamily.rules
+        )
+    elif target_id.startswith("subfamily:"):
+        subfamily = next(
+            (
+                item
+                for family in view.families
+                for item in family.subfamilies
+                if item.target_id == target_id
+            ),
+            None,
+        )
+        if subfamily is None:
+            raise ValueError(f"unknown visible rule subfamily {target_id!r}")
+        targets = tuple(item.rule_id for item in subfamily.rules)
+    elif target_id in view.all_rule_ids:
+        targets = (target_id,)
+    else:
+        raise ValueError(f"unknown rule catalog target {target_id!r}")
+
+    updated = set(selected_ids).intersection(view.all_rule_ids)
+    if selected:
+        updated.update(targets)
+    else:
+        updated.difference_update(targets)
+    return tuple(rule_id for rule_id in view.all_rule_ids if rule_id in updated)
+
+
+def apply_rule_catalog_selection_to_options(
+    options: dict[str, object],
+    spec: PassEditorSpec,
+    selected_rule_ids: tuple[str, ...],
+) -> dict[str, object]:
+    """Write a rule selection at its pass-declared config-v2 path only."""
+    if spec.kind is not PassEditorKind.RULE_CATALOG:
+        raise ValueError("rule selection requires a rule_catalog spec")
+    known_rule_ids = {item.rule_id for item in spec.rules}
+    unknown_rule_ids = set(selected_rule_ids).difference(known_rule_ids)
+    if unknown_rule_ids:
+        raise ValueError(
+            "rule selection contains unknown rule IDs: "
+            + ", ".join(sorted(unknown_rule_ids))
+        )
+    updated = copy.deepcopy(options)
+    target: dict[str, object] = updated
+    for segment in spec.rule_option_path[:-1]:
+        existing = target.get(segment)
+        if existing is None:
+            child: dict[str, object] = {}
+            target[segment] = child
+            target = child
+        elif isinstance(existing, dict):
+            target = existing
+        else:
+            raise ValueError(
+                f"rule option path segment {segment!r} must contain an object"
+            )
+    target[spec.rule_option_path[-1]] = list(selected_rule_ids)
+    return updated
+
+
 def typed_field_option_value(
     options: dict[str, object],
     field: FieldEditorSpec,
@@ -510,7 +845,7 @@ def typed_field_option_value(
     value: object = options
     for item in field.path:
         if not isinstance(value, dict) or item not in value:
-            return None
+            return copy.deepcopy(field.default) if field.has_default else None
         value = value[item]
     return value
 
@@ -638,6 +973,7 @@ def project_config_v2_editor_view(
         if catalog_entry is None:
             raise ValueError(f"pipeline_v2[{index}] has unknown pass ID {pass_id!r}")
         selected_ids = _selected_transform_ids(options)
+        selected_rule_ids = _selected_rule_ids(options, catalog_entry.editor_spec)
         purpose = _PASS_PURPOSES.get(pass_id, "Registered config-v2 pass.")
         overview_rows.append(
             ConfigV2PipelineRow(
@@ -646,9 +982,7 @@ def project_config_v2_editor_view(
                 display_name=catalog_entry.display_name,
                 purpose=purpose,
                 runs_during=catalog_entry.maturity,
-                selected_transform_summary=_transform_summary(
-                    catalog_entry, selected_ids
-                ),
+                selected_transform_summary=_selection_summary(catalog_entry, options),
                 option_summary=_option_summary(options),
             )
         )
@@ -667,6 +1001,15 @@ def project_config_v2_editor_view(
                     )
                     if catalog_entry.editor_spec.kind
                     is PassEditorKind.TRANSFORM_CATALOG
+                    else None
+                ),
+                rule_catalog=(
+                    project_rule_catalog(
+                        catalog_entry.editor_spec,
+                        selected_rule_ids or frozenset(),
+                        query="",
+                    )
+                    if catalog_entry.editor_spec.kind is PassEditorKind.RULE_CATALOG
                     else None
                 ),
                 options=options,
@@ -743,6 +1086,10 @@ __all__ = [
     "ConfigV2PipelineRow",
     "ConfigV2PipelineOverview",
     "ConfigV2RawDocumentView",
+    "ConfigV2RuleCatalogView",
+    "ConfigV2RuleFamilyView",
+    "ConfigV2RuleSubfamilyView",
+    "ConfigV2RuleView",
     "ConfigV2RoutingView",
     "ConfigV2SerializerRow",
     "ConfigV2TransformCatalogView",
@@ -750,11 +1097,15 @@ __all__ = [
     "ConfigV2TransformSubfamilyView",
     "ConfigV2TransformView",
     "apply_typed_field_option",
+    "apply_rule_catalog_selection",
+    "apply_rule_catalog_selection_to_options",
     "apply_transform_catalog_selection",
     "config_v2_action_states",
     "project_config_v2_document",
     "project_config_v2_editor_view",
+    "project_rule_catalog",
     "project_transform_catalog",
     "project_serializer_rows",
     "typed_field_option_value",
+    "transform_option_fields",
 ]

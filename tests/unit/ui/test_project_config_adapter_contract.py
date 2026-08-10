@@ -399,6 +399,10 @@ class _TransformCatalogWidget(_Widget):
         return self.catalog
 
 
+class _RuleCatalogWidget(_TransformCatalogWidget):
+    pass
+
+
 class _RouteAdapter:
     destination = Path("/tmp/task-5-route.json")
 
@@ -539,6 +543,11 @@ def _load_gui_panel(monkeypatch):
         sys.modules,
         "d810.ui.config_v2_transform_catalog",
         types.SimpleNamespace(ConfigV2TransformCatalogWidget=_TransformCatalogWidget),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "d810.ui.config_v2_rule_catalog",
+        types.SimpleNamespace(ConfigV2RuleCatalogWidget=_RuleCatalogWidget),
     )
     module_name = "d810.ui._task5_gui_panel"
     spec = importlib.util.spec_from_file_location(

@@ -12,8 +12,8 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 LAUNCHER = REPO_ROOT / "tools" / "scripts" / "run_ida_gui_docker.sh"
 CONNECTOR = REPO_ROOT / "tools" / "scripts" / "ida_gui_connect.py"
 GUI_IMAGE = "test-gui-image"
-GUI_RUNTIME_IMAGE = "idapro-9.3-speedups:x11-arm64"
-GUI_RUNTIME_LABEL = "x11-dev-emulation-z3-v1"
+GUI_RUNTIME_IMAGE = "idapro-9.4-speedups:x11"
+GUI_RUNTIME_LABEL = "x11"
 WORKTREE_NAME = "truthful-config-v2-project-ui"
 
 
@@ -125,7 +125,7 @@ set -eu
 if [ "${1:-}" = image ] && [ "${2:-}" = inspect ]; then
   [ "${MOCK_IMAGE_EXISTS:-1}" = 1 ] || exit 1
   case " $* " in
-    *" --format "*) printf '%s\n' "${MOCK_GUI_RUNTIME_LABEL-x11-dev-emulation-z3-v1}" ;;
+    *" --format "*) printf '%s\n' "${MOCK_GUI_RUNTIME_LABEL-x11}" ;;
   esac
 fi
 """,
@@ -756,6 +756,17 @@ def test_image_without_gui_runtime_dependencies_is_rejected(tmp_path: Path) -> N
     assert "D810 GUI runtime" in result.stderr
     assert GUI_RUNTIME_LABEL in result.stderr
     assert not any(call[:2] == ["run", "--rm"] for call in calls)
+
+
+def test_ida_94_x11_runtime_label_is_accepted(tmp_path: Path) -> None:
+    """IDA 9.4's X11 images use the shorter runtime label."""
+    result, calls, _paths = _run(
+        tmp_path,
+        extra_env={"MOCK_GUI_RUNTIME_LABEL": "x11"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert any(call[:2] == ["run", "--rm"] for call in calls)
 
 
 def test_runtime_dockerfile_can_label_an_x11_gui_image() -> None:

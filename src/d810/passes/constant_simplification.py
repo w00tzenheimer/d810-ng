@@ -8,6 +8,7 @@ from d810.core.config import RuleConfiguration
 from d810.core.deobfuscation_case import StrategyWorkflowStage
 from d810.core.pass_ids import PassId
 from d810.core.pass_editor_spec import (
+    AdvisoryTone,
     FieldControlKind,
     FieldEditorSpec,
     PassEditorSpec,
@@ -177,6 +178,7 @@ def register_constant_simplification_pass(registry: PassRegistry) -> PassRegistr
                     control=FieldControlKind.ENUM,
                     description="Controls which read-only memory values may be materialized.",
                     choices=(STRICT_MEMORY_POLICY, AGGRESSIVE_MEMORY_POLICY),
+                    default=STRICT_MEMORY_POLICY,
                 ),
                 FieldEditorSpec(
                     field_id="rva_guard",
@@ -189,6 +191,7 @@ def register_constant_simplification_pass(registry: PassRegistry) -> PassRegistr
                         "and by the value-shape heuristic otherwise; off, there "
                         "is no veto."
                     ),
+                    default=True,
                 ),
                 FieldEditorSpec(
                     field_id="allow_executable_readonly",
@@ -196,6 +199,13 @@ def register_constant_simplification_pass(registry: PassRegistry) -> PassRegistr
                     path=("allow_executable_readonly",),
                     control=FieldControlKind.BOOLEAN,
                     description="Very dangerous override for executable read-only memory.",
+                    default=False,
+                    advisory=AdvisoryTone.DANGER,
+                    advisory_reason=(
+                        "Executable read-only data may be code or mixed code/data. "
+                        "Enable only when you have independently established that the "
+                        "selected memory is safe to materialize."
+                    ),
                 ),
             )
         ),

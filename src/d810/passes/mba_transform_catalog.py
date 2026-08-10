@@ -13,7 +13,10 @@ from d810.core.pass_editor_spec import (
     TransformEditorSpec,
     VerificationStatus,
 )
-from d810.passes.mba_transform_options import mba_transform_stages
+from d810.passes.mba_transform_options import (
+    MBA_TRANSFORM_OPTION_FIELDS,
+    mba_transform_stages,
+)
 
 
 _FAMILY_MEMBERSHIP: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
@@ -227,6 +230,7 @@ _SPECIAL_TRANSFORM_METADATA = {
         "advisory": AdvisoryTone.WARNING,
         "advisory_reason": "SMT verification is skipped because the offline proof is expensive.",
         "cost": TransformCost.PROOF_EXPENSIVE,
+        "cost_detail": "Four multiplications make the offline SMT proof impractical.",
     },
     "mul-mba-2": {
         "description": "Known-incorrect MBA multiplication rewrite with a constant.",
@@ -254,6 +258,7 @@ _SPECIAL_TRANSFORM_METADATA = {
         "advisory": AdvisoryTone.WARNING,
         "advisory_reason": "SMT verification is skipped because the offline proof is expensive.",
         "cost": TransformCost.PROOF_EXPENSIVE,
+        "cost_detail": "Three multiplications make the offline SMT proof impractical.",
     },
 }
 
@@ -282,12 +287,17 @@ def _build_specs() -> tuple[TransformEditorSpec, ...]:
                     description=str(details.get("description", "Registered MBA simplification transform.")),
                     reference=str(details.get("reference", "D810 MBA transform catalog.")),
                     maturities=("any",),
-                    default_selected=bool(details.get("default_selected", True)),
+                    # A new mba-simplify pass starts conservatively. Existing
+                    # projects retain their explicit selection, while an
+                    # operator can select a family/subfamily intentionally.
+                    default_selected=bool(details.get("default_selected", False)),
                     verification=details.get("verification", VerificationStatus.UNAVAILABLE),
                     verification_reason=str(details.get("verification_reason", "No config-v2 verification classification is recorded.")),
                     advisory=details.get("advisory", AdvisoryTone.NONE),
                     advisory_reason=str(details.get("advisory_reason", "")),
                     cost=details.get("cost", TransformCost.UNKNOWN),
+                    cost_detail=str(details.get("cost_detail", "")),
+                    option_fields=MBA_TRANSFORM_OPTION_FIELDS.get(transform_id, ()),
                 )
             )
     registered_ids = tuple(stage.stage_id for stage in mba_transform_stages())

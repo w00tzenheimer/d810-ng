@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import enum
+from collections.abc import Mapping, Sequence
 from copy import deepcopy
 
 
@@ -79,6 +80,8 @@ class FieldEditorSpec:
     maximum: int | None = None
     experimental: bool = False
     experimental_reason: str = ""
+    advisory: AdvisoryTone = AdvisoryTone.NONE
+    advisory_reason: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "field_id", _required(self.field_id, name="field_id"))
@@ -100,6 +103,18 @@ class FieldEditorSpec:
             and self.choices
         ):
             raise ValueError("only enum and string-list fields may declare choices")
+        if any(not isinstance(choice, str) or not choice for choice in self.choices):
+            raise ValueError("field choices must contain non-empty strings")
+        if self.minimum is not None and (
+            self.control is not FieldControlKind.INTEGER
+            or type(self.minimum) is not int
+        ):
+            raise ValueError("field minimum is only supported by integer fields")
+        if self.maximum is not None and (
+            self.control is not FieldControlKind.INTEGER
+            or type(self.maximum) is not int
+        ):
+            raise ValueError("field maximum is only supported by integer fields")
         if self.minimum is not None and self.maximum is not None and self.minimum > self.maximum:
             raise ValueError("field minimum must not exceed maximum")
         if not isinstance(self.experimental, bool):
@@ -110,11 +125,58 @@ class FieldEditorSpec:
                 "experimental_reason",
                 _required(self.experimental_reason, name="experimental_reason"),
             )
+        if not isinstance(self.advisory, AdvisoryTone):
+            raise ValueError("advisory must be an AdvisoryTone")
+        if self.advisory is not AdvisoryTone.NONE:
+            object.__setattr__(
+                self,
+                "advisory_reason",
+                _required(self.advisory_reason, name="advisory_reason"),
+            )
+        if self.has_default:
+            self.validate_value(self.default)
 
     @property
     def has_default(self) -> bool:
         """Whether this public control declares its runtime-effective default."""
         return self.default is not _UNSET
+
+    def validate_value(self, value: object) -> None:
+        """Reject values that the declared fixed control cannot represent."""
+        if self.control is FieldControlKind.BOOLEAN:
+            if type(value) is not bool:
+                raise ValueError(f"{self.label} must be a boolean")
+            return
+        if self.control is FieldControlKind.INTEGER:
+            if type(value) is not int:
+                raise ValueError(f"{self.label} must be an integer")
+            if self.minimum is not None and value < self.minimum:
+                raise ValueError(f"{self.label} must be at least {self.minimum}")
+            if self.maximum is not None and value > self.maximum:
+                raise ValueError(f"{self.label} must be at most {self.maximum}")
+            return
+        if self.control is FieldControlKind.ENUM:
+            if not isinstance(value, str):
+                raise ValueError(f"{self.label} must be one of {list(self.choices)!r}")
+            if value not in self.choices:
+                raise ValueError(f"{self.label} must be one of {list(self.choices)!r}")
+            return
+        if self.control is FieldControlKind.TEXT:
+            if not isinstance(value, str):
+                raise ValueError(f"{self.label} must be text")
+            return
+        if self.control is FieldControlKind.STRING_LIST:
+            if not isinstance(value, (list, tuple)):
+                raise ValueError(f"{self.label} must be a list of strings")
+            if any(not isinstance(item, str) for item in value):
+                raise ValueError(f"{self.label} must be a list of strings")
+            unknown = sorted(set(value).difference(self.choices)) if self.choices else ()
+            if unknown:
+                raise ValueError(
+                    f"{self.label} contains values outside its declared choices: {unknown}"
+                )
+            return
+        raise AssertionError(f"unsupported field control: {self.control!r}")
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -228,6 +290,9 @@ class TransformEditorSpec:
     advisory_reason: str
     cost: TransformCost
     cost_detail: str = ""
+    #: Fixed controls for this transform's ``transform_options.<id>`` object.
+    #: Paths are relative to that object, never raw project-document paths.
+    option_fields: tuple[FieldEditorSpec, ...] = ()
 
     def __post_init__(self) -> None:
         for name in (
@@ -287,6 +352,16 @@ class TransformEditorSpec:
                 "cost_detail",
                 _required(self.cost_detail, name="cost_detail"),
             )
+        option_fields = tuple(self.option_fields)
+        option_field_ids = tuple(field.field_id for field in option_fields)
+        option_paths = tuple(field.path for field in option_fields)
+        if len(option_field_ids) != len(set(option_field_ids)):
+            raise ValueError("transform has duplicate option field_id")
+        if len(option_paths) != len(set(option_paths)):
+            raise ValueError("transform has duplicate option field path")
+        if any(not field.has_default for field in option_fields):
+            raise ValueError("transform option fields require defaults")
+        object.__setattr__(self, "option_fields", option_fields)
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -323,9 +398,9 @@ class PassEditorSpec:
             if not fields or transforms or rules:
                 raise ValueError("fields editor requires fields and no transforms or rules")
         elif self.kind is PassEditorKind.TRANSFORM_CATALOG:
-            if fields or rules or not transforms:
+            if rules or not transforms:
                 raise ValueError(
-                    "transform catalog requires transforms and no fields or rules"
+                    "transform catalog requires transforms and no rules"
                 )
             transform_ids = tuple(item.transform_id for item in transforms)
             if len(transform_ids) != len(set(transform_ids)):
@@ -384,20 +459,55 @@ class PassEditorSpec:
         if self.kind is PassEditorKind.FIELDS:
             return field_paths
         if self.kind is PassEditorKind.TRANSFORM_CATALOG:
-            return (("transforms",), ("transform_options",))
+            transform_option_paths = tuple(
+                ("transform_options", transform.transform_id, *field.path)
+                for transform in self.transforms
+                for field in transform.option_fields
+            )
+            return (
+                *field_paths,
+                ("transforms",),
+                ("transform_options",),
+                *transform_option_paths,
+            )
         return (*field_paths, self.rule_option_path)
+
+    def editable_option_paths(self) -> tuple[tuple[str, ...], ...]:
+        """Return scalar/list leaf paths, excluding structural JSON containers."""
+        if self.kind is not PassEditorKind.TRANSFORM_CATALOG:
+            return self.option_paths()
+        return (
+            *(field.path for field in self.fields),
+            ("transforms",),
+            *(
+                ("transform_options", transform.transform_id, *field.path)
+                for transform in self.transforms
+                for field in transform.option_fields
+            ),
+        )
+
+    def option_container_paths(self) -> tuple[tuple[str, ...], ...]:
+        """Return JSON objects used only to contain explicitly typed leaves."""
+        if self.kind is PassEditorKind.TRANSFORM_CATALOG:
+            return (("transform_options",),)
+        return ()
 
     def default_options(self) -> dict[str, object]:
         """Return the complete public default configuration rendered by this editor."""
         if self.kind is PassEditorKind.SUMMARY:
             return {}
         if self.kind is PassEditorKind.TRANSFORM_CATALOG:
-            return {
-                "transforms": [
-                    item.transform_id for item in self.transforms if item.default_selected
-                ],
-                "transform_options": {},
+            options = _field_defaults(self.fields)
+            selected = tuple(
+                item.transform_id for item in self.transforms if item.default_selected
+            )
+            options["transforms"] = list(selected)
+            options["transform_options"] = {
+                item.transform_id: _field_defaults(item.option_fields)
+                for item in self.transforms
+                if item.transform_id in selected and item.option_fields
             }
+            return options
         options = _field_defaults(self.fields)
         if self.kind is PassEditorKind.RULE_CATALOG:
             _set_path(
@@ -406,6 +516,55 @@ class PassEditorSpec:
                 [item.rule_id for item in self.rules if item.default_selected],
             )
         return options
+
+    def options_with_transform_selection(
+        self,
+        options: Mapping[str, object],
+        transform_ids: Sequence[str],
+    ) -> dict[str, object]:
+        """Apply a transform selection and seed its declared typed defaults.
+
+        Transform settings cannot outlive their transform: the runtime rejects
+        that shape, and retaining it would make a deselected transform's
+        invisible JSON affect a later edit.  A newly selected transform starts
+        from the default of each declared field rather than its implementation
+        class's incidental attribute value.
+        """
+        if self.kind is not PassEditorKind.TRANSFORM_CATALOG:
+            raise ValueError("transform selection requires a transform catalog")
+        if isinstance(transform_ids, str) or any(
+            not isinstance(item, str) for item in transform_ids
+        ):
+            raise ValueError("transform IDs must be a sequence of strings")
+        requested = tuple(transform_ids)
+        if len(set(requested)) != len(requested):
+            raise ValueError("transform IDs must not contain duplicates")
+        by_id = {item.transform_id: item for item in self.transforms}
+        unknown = sorted(set(requested).difference(by_id))
+        if unknown:
+            raise ValueError(f"unknown transform IDs: {unknown}")
+
+        raw_transform_options = options.get("transform_options", {})
+        if not isinstance(raw_transform_options, Mapping):
+            raise ValueError("transform_options must be an object")
+        selected = set(requested)
+        updated = deepcopy(dict(options))
+        ordered = [item.transform_id for item in self.transforms if item.transform_id in selected]
+        seeded_options: dict[str, object] = {}
+        for transform_id in ordered:
+            transform = by_id[transform_id]
+            current = raw_transform_options.get(transform_id, {})
+            if not isinstance(current, Mapping):
+                raise ValueError(f"transform options for {transform_id!r} must be an object")
+            transform_options = deepcopy(dict(current))
+            for field in transform.option_fields:
+                if _value_at_path(transform_options, field.path) is _UNSET:
+                    _set_path(transform_options, field.path, field.default)
+            if transform_options:
+                seeded_options[transform_id] = transform_options
+        updated["transforms"] = ordered
+        updated["transform_options"] = seeded_options
+        return updated
 
 
 def _set_path(options: dict[str, object], path: tuple[str, ...], value: object) -> None:
@@ -416,6 +575,15 @@ def _set_path(options: dict[str, object], path: tuple[str, ...], value: object) 
             raise ValueError(f"editor field path collides at {segment!r}")
         cursor = nested
     cursor[path[-1]] = deepcopy(value)
+
+
+def _value_at_path(options: object, path: tuple[str, ...]) -> object:
+    value = options
+    for segment in path:
+        if not isinstance(value, Mapping) or segment not in value:
+            return _UNSET
+        value = value[segment]
+    return value
 
 
 def _field_defaults(fields: tuple[FieldEditorSpec, ...]) -> dict[str, object]:

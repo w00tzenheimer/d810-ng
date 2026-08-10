@@ -321,67 +321,9 @@
             "replace-mov-high-context"
           ],
           "transform_options": {
-            "rotate-helper-inline": {
-              "dump_intermediate_microcode": null
-            },
-            "constant-call-result-fold": {
-              "dump_intermediate_microcode": null
-            },
-            "add-special-constant-1": {
-              "dump_intermediate_microcode": null
-            },
-            "add-special-constant-2": {
-              "dump_intermediate_microcode": null
-            },
-            "add-special-constant-3": {
-              "dump_intermediate_microcode": null
-            },
-            "add-ollvm-1": {
-              "dump_intermediate_microcode": null
-            },
-            "add-ollvm-2": {
-              "dump_intermediate_microcode": null
-            },
-            "add-xor-1": {
-              "dump_intermediate_microcode": null
-            },
-            "add-xor-2": {
-              "dump_intermediate_microcode": null
-            },
-            "set-global-variables-to-zero-if-detected-read-only": {
-              "dump_intermediate_microcode": null
-            },
-            "replace-readonly-address-of-with-immediate": {
-              "dump_intermediate_microcode": null
-            },
-            "xor-chain": {
-              "dump_intermediate_microcode": null
-            },
-            "and-chain": {
-              "dump_intermediate_microcode": null
-            },
-            "or-chain": {
-              "dump_intermediate_microcode": null
-            },
-            "arithmetic-chain": {
-              "dump_intermediate_microcode": null
-            },
-            "z-3-setz-generic": {
-              "dump_intermediate_microcode": null
-            },
-            "z-3-setnz-generic": {
-              "dump_intermediate_microcode": null
-            },
-            "z-3-lnot-generic": {
-              "dump_intermediate_microcode": null
-            },
-            "z-3-smod-generic": {
-              "dump_intermediate_microcode": null
-            },
             "z-3-constant-optimization": {
               "min_nb_opcode": 4,
-              "min_nb_constant": 3,
-              "dump_intermediate_microcode": null
+              "min_nb_constant": 3
             }
           }
         }
@@ -518,8 +460,7 @@
             "JnzRule7",
             "JnzRule8",
             "JmpRuleZ3Const"
-          ],
-          "dump_intermediate_microcode": null
+          ]
         }
       }
     ]

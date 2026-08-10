@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Launch native ARM64 IDA 9.3 through XQuartz with a selected D810 worktree.
+# Launch a compatible IDA GUI runtime through XQuartz with a selected D810 worktree.
 
 set -euo pipefail
 
@@ -44,7 +44,7 @@ Environment:
   D810_WORKTREE_ROOT     Worktree directory below the repository root.
                          Default: .worktrees
   D810_GUI_DOCKER_IMAGE  D810 GUI runtime image. Default:
-                         idapro-9.3-speedups:x11-arm64
+                         idapro-9.4-speedups:x11
   D810_DOCKER_MEMORY     Container memory limit. Default: 4g
   D810_IDA_USER_DIR      Host root for portable D810 config and logs.
                          Default: $HOME/.idapro
@@ -95,12 +95,13 @@ Automation artifacts:
   endpoint, request path when applicable, and audit path.
 
 Safety:
-  The GUI image must carry org.d810.gui-runtime=x11-dev-emulation-z3-v1.
+  The GUI image must carry org.d810.gui-runtime=x11 (IDA 9.4) or
+  x11-dev-emulation-z3-v1 (the compatible IDA 9.3 runtime).
   Build the default image with:
     docker build -f docker/Dockerfile.test-runtime \
-      --build-arg IDA_IMAGE=idapro-9.3:x11-arm64 \
-      --build-arg D810_GUI_RUNTIME_LABEL=x11-dev-emulation-z3-v1 \
-      -t idapro-9.3-speedups:x11-arm64 .
+      --build-arg IDA_IMAGE=idapro-9.4:x11 \
+      --build-arg D810_GUI_RUNTIME_LABEL=x11 \
+      -t idapro-9.4-speedups:x11 .
   A /samples/bins/*.i64 argument is copied to the selected checkout's
   .tmp/ida-gui directory. IDA opens the /work copy and cannot modify the source.
   The canonical witness is /samples/bins/libobfuscated.dll.2026-06-03.i64.
@@ -397,9 +398,9 @@ if [ -n "$CONNECT_MODE" ]; then
     python3 "$CONNECT_CLIENT" "${CONNECT_ARGS[@]}"
 fi
 
-DEFAULT_GUI_DOCKER_IMAGE="idapro-9.3-speedups:x11-arm64"
+DEFAULT_GUI_DOCKER_IMAGE="idapro-9.4-speedups:x11"
 GUI_RUNTIME_LABEL_KEY="org.d810.gui-runtime"
-GUI_RUNTIME_LABEL_VALUE="x11-dev-emulation-z3-v1"
+GUI_RUNTIME_LABEL_VALUES=("x11" "x11-dev-emulation-z3-v1")
 DOCKER_IMAGE="${D810_GUI_DOCKER_IMAGE-$DEFAULT_GUI_DOCKER_IMAGE}"
 DOCKER_MEMORY="${D810_DOCKER_MEMORY-4g}"
 GUI_DISPLAY="${D810_GUI_DISPLAY-host.docker.internal:0}"
@@ -490,8 +491,15 @@ if ! GUI_RUNTIME_LABEL="$(
 )"; then
   fail "Docker GUI image not found: $DOCKER_IMAGE"
 fi
-if [ "$GUI_RUNTIME_LABEL" != "$GUI_RUNTIME_LABEL_VALUE" ]; then
-  fail "Docker image $DOCKER_IMAGE is not a D810 GUI runtime; expected $GUI_RUNTIME_LABEL_KEY=$GUI_RUNTIME_LABEL_VALUE. Build it with the command shown by --help."
+GUI_RUNTIME_SUPPORTED=""
+for EXPECTED_GUI_RUNTIME_LABEL in "${GUI_RUNTIME_LABEL_VALUES[@]}"; do
+  if [ "$GUI_RUNTIME_LABEL" = "$EXPECTED_GUI_RUNTIME_LABEL" ]; then
+    GUI_RUNTIME_SUPPORTED=1
+    break
+  fi
+done
+if [ -z "$GUI_RUNTIME_SUPPORTED" ]; then
+  fail "Docker image $DOCKER_IMAGE is not a D810 GUI runtime; expected $GUI_RUNTIME_LABEL_KEY to be one of: ${GUI_RUNTIME_LABEL_VALUES[*]}. Build it with the command shown by --help."
 fi
 
 SAMPLES_DIR="$REPO_ROOT/samples/bins"

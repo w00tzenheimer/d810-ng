@@ -83,3 +83,19 @@ def test_select_all_and_clear_apply_only_to_current_visible_catalog() -> None:
         target_id="all",
         selected=True,
     ) == tuple(item.transform_id for item in mba_transform_editor_spec().transforms)
+
+
+def test_selected_transforms_expose_their_own_typed_option_fields() -> None:
+    logic = _logic_module()
+    fields = logic.transform_option_fields(
+        mba_transform_editor_spec(),
+        {"example-guessing"},
+    )
+
+    assert [field.path for field in fields] == [
+        ("transform_options", "example-guessing", "min_nb_var"),
+        ("transform_options", "example-guessing", "max_nb_var"),
+        ("transform_options", "example-guessing", "min_nb_diff_opcodes"),
+        ("transform_options", "example-guessing", "max_nb_diff_opcodes"),
+    ]
+    assert all(field.label.startswith("EXAMPLE GUESSING:") for field in fields)

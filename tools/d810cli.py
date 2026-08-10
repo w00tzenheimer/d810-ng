@@ -345,6 +345,16 @@ def cmd_backends(args: argparse.Namespace) -> int:
     return 1 if has_defects(infos) else 0
 
 
+def cmd_check_editor_contracts(_args: argparse.Namespace) -> int:
+    """Verify that every public config-v2 setting has a typed editor control."""
+    _ensure_src_on_path()
+    from d810.passes.operational_config_v2 import operational_config_v2_pass_registry
+
+    operational_config_v2_pass_registry().validate_editor_contracts()
+    print("editor contracts: OK")
+    return 0
+
+
 def cmd_pseudocode_capture(args: argparse.Namespace) -> int:
     """Capture before/after pseudocode into the shared SQLite DB.
 
@@ -1387,6 +1397,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_worktree(sp)
     sp.set_defaults(func=cmd_backends)
+
+    check = sub.add_parser("check", help="run source-level config-v2 checks")
+    check_sub = check.add_subparsers(dest="check_cmd", required=True)
+    sp = check_sub.add_parser(
+        "editor-contracts",
+        help="verify public config-v2 options and rules have typed editor controls",
+    )
+    sp.set_defaults(func=cmd_check_editor_contracts)
 
     sp = sub.add_parser(
         "dump",

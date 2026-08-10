@@ -317,6 +317,23 @@ def test_editor_inspector_uses_catalog_contract_and_presentation_purpose():
     )
 
 
+def test_pass_inspector_view_defaults_new_optional_catalogs_for_overview_callers():
+    """A new optional inspector surface must not break an existing overview path."""
+    inspector = logic.ConfigV2PassInspectorView(
+        pass_index=0,
+        pass_id="jump-fixer",
+        display_name="Jump fixer",
+        purpose="Fix configured jumps.",
+        runs_during="MMAT_GLBOPT1",
+        transform_catalog=None,
+        options={},
+        contract={},
+        contract_chips=(),
+    )
+
+    assert inspector.rule_catalog is None
+
+
 def test_typed_field_actions_normalize_values_without_mutating_other_options():
     field = FieldEditorSpec(
         field_id="maturities",

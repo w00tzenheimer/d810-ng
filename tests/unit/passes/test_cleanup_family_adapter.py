@@ -24,6 +24,7 @@ from d810.passes.pass_pipeline import (
     PipelineConfigError,
     PassResult,
 )
+from d810.passes.registry import PassRegistryError
 
 
 def _graph(func_ea: int = 0x1000) -> FlowGraph:
@@ -98,7 +99,7 @@ def test_cleanup_family_adapter_pass_invokes_typed_capability():
     capability = _CleanupCapability()
     adapter = CleanupFamilyAdapterPass(
         implementation_name=SIMPLE_FLATTENING_CLEANUP_RULE,
-        transform_options={"max_passes": 3},
+        transform_options={},
     )
 
     result = adapter.run(_context(capability))
@@ -111,7 +112,7 @@ def test_cleanup_family_adapter_pass_invokes_typed_capability():
     assert request.maturity is IRMaturity.GLOBAL_ANALYZED
     assert request.pass_id == SIMPLE_FLATTENING_CLEANUP_PASS_ID
     assert request.implementation_name == SIMPLE_FLATTENING_CLEANUP_RULE
-    assert request.transform_options == {"max_passes": 3}
+    assert request.transform_options == {}
 
 
 def test_cleanup_family_adapter_pass_requires_typed_capability():
@@ -131,7 +132,7 @@ def test_cleanup_family_adapter_registry_builds_cleanup_entry():
             "requirements": {
                 "required": [CLEANUP_FAMILY_ADAPTER_CAPABILITY],
             },
-            "options": {"max_passes": 3},
+            "options": {},
         }
     )
 
@@ -142,7 +143,7 @@ def test_cleanup_family_adapter_registry_builds_cleanup_entry():
     assert spec.requirements.required == frozenset({CLEANUP_FAMILY_ADAPTER_CAPABILITY})
     assert isinstance(adapter, CleanupFamilyAdapterPass)
     assert adapter.implementation_name == SIMPLE_FLATTENING_CLEANUP_RULE
-    assert adapter.transform_options == {"max_passes": 3}
+    assert adapter.transform_options == {}
 
 
 def test_cleanup_family_adapter_registry_rejects_former_legacy_rule_option():
@@ -153,7 +154,7 @@ def test_cleanup_family_adapter_registry_rejects_former_legacy_rule_option():
         }
     )
 
-    with pytest.raises(PipelineConfigError, match="former cleanup"):
+    with pytest.raises(PassRegistryError, match="editor-invisible option"):
         cleanup_family_adapter_pass_registry().build_spec(config)
 
 

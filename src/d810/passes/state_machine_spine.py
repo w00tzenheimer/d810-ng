@@ -232,6 +232,7 @@ _STATE_MACHINE_EDITOR_SPEC = PassEditorSpec.fields_editor(
             description="Minimum value accepted as a dispatcher state constant.",
             minimum=0,
             maximum=(1 << 64) - 1,
+            default=StateMachineCffOptions().min_state_constant,
         ),
         FieldEditorSpec(
             field_id="family",
@@ -240,6 +241,7 @@ _STATE_MACHINE_EDITOR_SPEC = PassEditorSpec.fields_editor(
             control=FieldControlKind.ENUM,
             description="Select the state-machine recovery family.",
             choices=("auto", "tigress-indirect"),
+            default=StateMachineCffOptions().family.value,
         ),
         FieldEditorSpec(
             field_id="recovery_strategy",
@@ -248,6 +250,7 @@ _STATE_MACHINE_EDITOR_SPEC = PassEditorSpec.fields_editor(
             control=FieldControlKind.ENUM,
             description="Select the typed dispatcher-recovery strategy.",
             choices=("family", "reduced-product"),
+            default=StateMachineCffOptions().recovery_strategy.value,
         ),
     )
 )
@@ -290,9 +293,7 @@ def register_state_machine_passes(registry: PassRegistry) -> PassRegistry:
             build,
             config_template=dataclasses.replace(
                 spec.config,
-                options={
-                    "min_state_constant": StateMachineCffOptions().min_state_constant
-                },
+                options=_STATE_MACHINE_EDITOR_SPEC.default_options(),
             ),
             stages=(
                 ExecutionStageDescriptor(

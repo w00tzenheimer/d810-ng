@@ -23,13 +23,13 @@ from d810.passes.operational_config_v2 import operational_config_v2_pass_registr
 from d810.passes.pass_pipeline import (
     FunctionPipelineContext,
     PipelineConfig,
-    PipelineConfigError,
     PassResult,
 )
 from d810.passes.pipeline_config_parser import (
     pass_specs_from_project_config,
     pipeline_configs_from_project_config,
 )
+from d810.passes.registry import PassRegistryError
 
 _CONF_DIR = Path("src/d810/conf")
 
@@ -190,22 +190,15 @@ def test_hook_transform_registry_builds_supported_simple_ids(
     pass_id,
     implementation_name,
 ):
-    config = PipelineConfig.from_dict(
-        {
-            "pass_id": pass_id,
-            "requirements": {
-                "required": [HOOK_TRANSFORM_CAPABILITY],
-            },
-            "options": {"limit": 3},
-        }
-    )
+    registry = hook_transform_pass_registry()
+    template = registry.config_template_for(pass_id)
 
-    adapter = hook_transform_pass_registry().build_spec(config).pass_factory()
+    adapter = registry.build_spec(template).pass_factory()
 
     assert isinstance(adapter, HookTransformPass)
     assert adapter.name == pass_id
     assert adapter.implementation_name == implementation_name
-    assert adapter.transform_options == {"limit": 3}
+    assert adapter.transform_options == template.options
 
 
 def test_global_constant_inliner_is_not_a_registered_pass():
@@ -222,7 +215,7 @@ def test_hook_transform_registry_rejects_former_legacy_rule_option():
         }
     )
 
-    with pytest.raises(PipelineConfigError, match="former hook-transform"):
+    with pytest.raises(PassRegistryError, match="editor-visible"):
         hook_transform_pass_registry().build_spec(config)
 
 

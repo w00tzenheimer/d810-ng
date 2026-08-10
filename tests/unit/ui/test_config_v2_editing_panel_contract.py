@@ -83,6 +83,7 @@ def test_inspector_uses_structured_identity_typed_options_and_contract_controls(
     assert "Backend" in source
     assert "Safety" in source
     assert "ConfigV2TransformCatalogWidget" in source
+    assert "ConfigV2RuleCatalogWidget" in source
     assert "_render_typed_options" in source
     assert "View raw contract" in source
     assert "Edit raw options" not in source
@@ -96,6 +97,28 @@ def test_inspector_transform_catalog_is_projection_driven_and_fail_closed() -> N
     assert "No individually selectable transforms." in render_source
     assert "stage_ids" not in render_source
     assert "transform_ids" not in render_source
+
+
+def test_inspector_rule_catalog_uses_the_typed_projection_and_closed_adapter_write() -> None:
+    render_source = _source("_render_inspector")
+    callback_source = _source("_apply_rule_catalog_selection")
+
+    assert "inspector.rule_catalog" in render_source
+    assert "No individually selectable rules." in render_source
+    assert "project_rule_catalog" in render_source
+    assert "apply_rule_catalog_selection" in callback_source
+    assert "apply_rule_catalog_selection_to_options" in callback_source
+    assert "set_pass_options" in callback_source
+
+
+def test_typed_option_controls_keep_experimental_and_advisory_metadata_visible() -> None:
+    source = _source("_render_typed_options")
+
+    assert "Experimental:" in source
+    assert "Advisory:" in source
+    assert "field.experimental_reason" in source
+    assert "field.advisory_reason" in source
+    assert "transform_option_fields" in source
 
 
 def test_checkable_items_combine_flags_through_qt_compatibility() -> None:

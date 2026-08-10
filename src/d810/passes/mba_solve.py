@@ -242,6 +242,7 @@ def register_mba_solve_pass(registry: PassRegistry) -> PassRegistry:
                     description="Limits solver signature growth per candidate.",
                     minimum=1,
                     maximum=16,
+                    default=DEFAULT_MAX_LEAVES,
                 ),
                 FieldEditorSpec(
                     field_id="require_proof",
@@ -249,6 +250,7 @@ def register_mba_solve_pass(registry: PassRegistry) -> PassRegistry:
                     path=("require_proof",),
                     control=FieldControlKind.BOOLEAN,
                     description="Reject a solver rewrite unless its proof is available.",
+                    default=True,
                 ),
                 FieldEditorSpec(
                     field_id="maturities",
@@ -256,6 +258,7 @@ def register_mba_solve_pass(registry: PassRegistry) -> PassRegistry:
                     path=("maturities",),
                     control=FieldControlKind.STRING_LIST,
                     description="Hex-Rays maturities at which solver work may run.",
+                    default=list(DEFAULT_MATURITIES),
                 ),
             )
         ),

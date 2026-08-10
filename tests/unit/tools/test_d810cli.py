@@ -109,6 +109,14 @@ def test_root_checkout_defaults_to_repo_root_without_worktree(
     assert d810cli.worktree_dir(args.worktree) == tmp_path
 
 
+def test_check_editor_contracts_reports_the_closed_public_schema(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert d810cli.main(["check", "editor-contracts"]) == 0
+
+    assert capsys.readouterr().out == "editor contracts: OK\n"
+
+
 def test_users_can_pass_worktree_by_short_or_long_option(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

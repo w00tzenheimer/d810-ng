@@ -113,7 +113,7 @@ def register_mba_simplify_pass(registry: PassRegistry) -> PassRegistry:
         config_template=PipelineConfig(
             pass_id=MBA_SIMPLIFY_PASS_ID,
             workflow_stage=StrategyWorkflowStage.FRONTEND_NORMALIZATION,
-            options={"transforms": [], "transform_options": {}},
+            options=mba_transform_editor_spec().default_options(),
         ),
         stages=stages,
         transform_ids=tuple(stage.stage_id for stage in stages),

@@ -24,6 +24,7 @@ from d810.passes.pass_pipeline import (
     PipelineConfigError,
     PassResult,
 )
+from d810.passes.registry import PassRegistryError
 from d810.passes.pipeline_config_parser import pipeline_configs_from_project_config
 
 _CONF_DIR = Path("src/d810/conf")
@@ -210,12 +211,14 @@ def test_mba_simplify_registry_rejects_options_for_unselected_transforms():
             "pass_id": "mba-simplify",
             "options": {
                 "transforms": ["add-xor-1"],
-                "transform_options": {"add-xor-2": {"limit": 3}},
+                "transform_options": {
+                    "z-3-constant-optimization": {"min_nb_opcode": 4}
+                },
             },
         }
     )
 
-    with pytest.raises(PipelineConfigError, match="add-xor-2"):
+    with pytest.raises(PassRegistryError, match="z-3-constant-optimization"):
         mba_simplify_pass_registry().build_spec(config)
 
 
@@ -226,7 +229,7 @@ def test_mba_simplify_pipeline_executes_when_string_and_typed_capabilities_exist
             "pass_id": "mba-simplify",
             "options": {
                 "transforms": ["add-xor-2", "add-xor-1"],
-                "transform_options": {"add-xor-1": {"limit": 3}},
+                "transform_options": {},
             },
         }
     )
@@ -248,4 +251,4 @@ def test_mba_simplify_pipeline_executes_when_string_and_typed_capabilities_exist
     assert out == _graph()
     assert len(capability.requests) == 1
     assert capability.requests[0].rule_names == ("AddXor_Rule_2", "AddXor_Rule_1")
-    assert capability.requests[0].rule_options["AddXor_Rule_1"] == {"limit": 3}
+    assert capability.requests[0].rule_options == {}

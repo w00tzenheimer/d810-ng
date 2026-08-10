@@ -38,7 +38,7 @@ def test_registry_rejects_duplicate_pass_ids():
 
 def test_registry_rejects_duplicate_configured_pass_ids():
     registry = PassRegistry()
-    registry.register_configured("fake", lambda config: _FakePass())
+    registry.register_configured("fake", lambda config: _FakePass(), public=False)
 
     with pytest.raises(DuplicatePassIdError, match="duplicate pass id"):
         registry.register("fake", _FakePass)
@@ -170,6 +170,7 @@ def test_registry_configured_factory_receives_full_pipeline_config():
     registry.register_configured(
         "configured",
         lambda config: seen.append(config) or _ConfiguredPass(config),
+        public=False,
     )
     config = PipelineConfig(
         pass_id="configured",
@@ -204,11 +205,13 @@ def test_registry_exposes_deterministic_read_only_catalog_metadata():
                 implementation_name="ZetaTransform",
             ),
         ),
+        public=False,
     )
     registry.register(
         "alpha",
         _FakePass,
         config_template=PipelineConfig(pass_id="alpha"),
+        public=False,
     )
 
     assert registry.registered_pass_ids() == ("alpha", "zeta")

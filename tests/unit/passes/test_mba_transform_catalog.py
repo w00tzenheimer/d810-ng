@@ -41,6 +41,7 @@ def test_mul_mba_1_describes_costly_proof_without_runtime_claim() -> None:
     assert item.advisory is catalog.AdvisoryTone.WARNING
     assert item.verification is catalog.VerificationStatus.SKIPPED
     assert item.cost is catalog.TransformCost.PROOF_EXPENSIVE
+    assert "four multiplications" in item.cost_detail.casefold()
     assert "runtime" not in item.advisory_reason.lower()
 
 
