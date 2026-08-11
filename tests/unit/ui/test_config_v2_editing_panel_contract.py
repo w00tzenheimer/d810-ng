@@ -382,6 +382,15 @@ def test_footer_has_only_compact_status_overflow_and_save_controls() -> None:
     assert "QPlainTextEdit" not in _source("__init__")
 
 
+def test_project_editor_footer_uses_the_configuration_overflow_policy() -> None:
+    footer_source = _source("_build_footer")
+
+    assert (
+        "configure_overflow_menu_button(self.footer_overflow_button)"
+        in footer_source
+    )
+
+
 def test_serializer_manifest_is_available_only_from_developer_help() -> None:
     source = PANEL.read_text(encoding="utf-8")
     help_source = _source("_show_developer_help")

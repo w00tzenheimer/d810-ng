@@ -39,6 +39,7 @@ except ImportError:
 
 if IDA_AVAILABLE:
     from d810.qt_shim import QtCore, QtWidgets, qt_flag_or
+    from d810.ui.qt_layout_policy import configure_overflow_menu_button
     from d810.ui.workbench_structured_details import JsonTreeEditor, RawJsonDialog
     from d810.ui.config_v2_transform_catalog import ConfigV2TransformCatalogWidget
     from d810.ui.config_v2_rule_catalog import ConfigV2RuleCatalogWidget
@@ -373,6 +374,7 @@ if IDA_AVAILABLE:
             self.footer_dirty_label = QtWidgets.QLabel()
             self.footer_validation_label = QtWidgets.QLabel()
             self.footer_overflow_button = QtWidgets.QToolButton()
+            configure_overflow_menu_button(self.footer_overflow_button)
             self.footer_overflow_button.setText("...")
             self.footer_overflow_menu = QtWidgets.QMenu(self.footer_overflow_button)
             self.footer_overflow_menu.addAction("Validate", self._validate)
