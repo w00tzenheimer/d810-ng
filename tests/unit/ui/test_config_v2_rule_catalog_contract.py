@@ -57,3 +57,10 @@ def test_rule_catalog_routes_group_actions_and_keeps_both_panes_scrollable() -> 
     assert "self.splitter.setChildrenCollapsible(False)" in source
     assert "self.splitter.setStretchFactor(0, 3)" in source
     assert "self.splitter.setStretchFactor(1, 2)" in source
+
+
+def test_rule_catalog_overflow_uses_the_shared_compact_geometry() -> None:
+    source = RULE_CATALOG.read_text(encoding="utf-8")
+
+    assert "from d810.ui.qt_layout_policy import configure_overflow_menu_button" in source
+    assert "configure_overflow_menu_button(self.overflow_button)" in source

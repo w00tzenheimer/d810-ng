@@ -6,6 +6,7 @@ import copy
 import dataclasses
 import enum
 import json
+import textwrap
 
 from d810.core.pass_editor_spec import (
     FieldControlKind,
@@ -38,6 +39,18 @@ _PASS_PURPOSES = {
     "simple-flattening-cleanup-unflattener": "Remove simple residual flattening structure.",
     "mba-state-preconditioner": "Prepare state facts for MBA-backed recovery.",
 }
+
+
+def project_description_preview(
+    description: str,
+    *,
+    maximum_length: int = 96,
+) -> str:
+    """Return one compact, readable line for the editable project description."""
+    normalized = " ".join(str(description).split())
+    if not normalized:
+        return "No description"
+    return textwrap.shorten(normalized, width=maximum_length, placeholder="...")
 
 
 class ConfigV2EditorScreen(str, enum.Enum):

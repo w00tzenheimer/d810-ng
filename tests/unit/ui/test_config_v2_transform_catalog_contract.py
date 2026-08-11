@@ -39,3 +39,10 @@ def test_transform_catalog_does_not_infer_families_or_create_arbitrary_widgets()
     assert "exec(" not in source
     assert "eval(" not in source
     assert "QPlainTextEdit" not in source
+
+
+def test_transform_catalog_overflow_uses_the_shared_compact_geometry() -> None:
+    source = WIDGET.read_text(encoding="utf-8")
+
+    assert "from d810.ui.qt_layout_policy import configure_overflow_menu_button" in source
+    assert "configure_overflow_menu_button(self.overflow_button)" in source

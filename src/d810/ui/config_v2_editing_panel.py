@@ -18,6 +18,7 @@ from d810.ui.config_v2_editing_logic import (
     apply_transform_catalog_selection,
     project_rule_catalog,
     project_transform_catalog,
+    project_description_preview,
     project_config_v2_document,
     project_config_v2_editor_view,
     project_serializer_rows,
@@ -122,7 +123,8 @@ if IDA_AVAILABLE:
             self._set_status("")
 
             self.description_label = QtWidgets.QLabel()
-            self.description_label.setWordWrap(True)
+            self.description_label.setWordWrap(False)
+            self.description_label.setMinimumWidth(0)
             self.edit_description_button = QtWidgets.QPushButton("Edit description...")
             self.pipeline_list = QtWidgets.QListWidget()
             self.pipeline_list.setToolTip("Execution order is top to bottom")
@@ -464,7 +466,10 @@ if IDA_AVAILABLE:
                 pass
             self.destination_label.setText(destination)
             self.destination_label.setToolTip(str(self._adapter.destination))
-            self.description_label.setText(self._view.description or "No description")
+            self.description_label.setText(
+                project_description_preview(self._view.description)
+            )
+            self.description_label.setToolTip(self._view.description or "No description")
 
             selected = self._selected_pass_index
             if selected is None and self._screen is ConfigV2EditorScreen.BUILDER:

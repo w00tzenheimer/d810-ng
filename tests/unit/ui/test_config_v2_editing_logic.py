@@ -27,6 +27,17 @@ from d810.manager.workbench_recipe_models import PassCatalogEntry
 from d810.ui import config_v2_editing_logic as logic
 
 
+def test_project_description_preview_is_single_line_bounded_and_preserves_empty_state() -> None:
+    assert logic.project_description_preview("  Fold\n  proven constants.  ") == (
+        "Fold proven constants."
+    )
+    assert logic.project_description_preview("") == "No description"
+    assert logic.project_description_preview(
+        "A very long project description that must remain a compact pipeline header.",
+        maximum_length=32,
+    ) == "A very long project..."
+
+
 def _draft() -> ConfigV2ProjectDraft:
     return ConfigV2ProjectDraft(
         draft_id="draft",

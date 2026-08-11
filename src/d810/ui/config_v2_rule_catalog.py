@@ -12,6 +12,7 @@ from d810.ui.config_v2_editing_logic import (
     ConfigV2RuleCatalogView,
     ConfigV2RuleView,
 )
+from d810.ui.qt_layout_policy import configure_overflow_menu_button
 from d810.ui.workbench_structured_details_logic import DetailField, DetailSection
 
 try:
@@ -131,6 +132,7 @@ if QT_GRAPHICS_AVAILABLE:
             self.select_visible_button = QtWidgets.QPushButton("Select visible", self)
             self.clear_visible_button = QtWidgets.QPushButton("Clear visible", self)
             self.overflow_button = QtWidgets.QToolButton(self)
+            configure_overflow_menu_button(self.overflow_button)
             self.overflow_button.setText("...")
             self.overflow_menu = QtWidgets.QMenu(self.overflow_button)
             self.overflow_menu.addAction("Select every rule", self._select_all)

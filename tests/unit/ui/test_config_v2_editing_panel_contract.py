@@ -106,6 +106,16 @@ def test_inspector_header_separates_full_width_identity_from_compact_actions() -
     assert "inspector_identity_strip" not in create_source
 
 
+def test_builder_description_is_a_compact_preview_with_the_full_text_on_hover() -> None:
+    init_source = _source("__init__")
+    render_source = _source("_render")
+
+    assert "self.description_label.setWordWrap(False)" in init_source
+    assert "self.description_label.setMinimumWidth(0)" in init_source
+    assert "project_description_preview(self._view.description)" in render_source
+    assert "setToolTip(self._view.description or 'No description')" in render_source
+
+
 def test_inspector_actions_use_pipeline_details_and_on_demand_contract() -> None:
     source = PANEL.read_text(encoding="utf-8")
     init_source = _source("__init__")
