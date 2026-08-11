@@ -102,10 +102,12 @@ def test_baked_runtime_validates_dependencies_in_every_mode(
     assert result.returncode == 0, result.stderr
     assert any(call.startswith("image inspect ") for call in calls)
     command = _container_run(calls)
-    assert "import setuptools" in command
+    assert "from d810.speedups import bootstrap" in command
+    assert "import pytest, unicorn, z3" in command
+    assert "z3.get_version()" in command
     assert "command -v git" in command
     assert "[dev,emulation]" in command
-    assert "d810.speedups.install" not in command
+    assert "d810.speedups.install" in command
     assert "baked runtime dependencies detected" in command
     assert "baked runtime is stale" in command
 

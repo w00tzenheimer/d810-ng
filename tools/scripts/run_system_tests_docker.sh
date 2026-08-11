@@ -443,10 +443,13 @@ IDA_VENV_PIP="/app/ida/.venv/bin/pip"
 IDA_VENV_PYTHON="/app/ida/.venv/bin/python"
 
 # Per-container setup exports the runtime environment and installs dependencies
-# when using an unlabelled base image. Images labelled as d810 test runtimes
-# already contain dev, emulation, and isolated Z3 dependencies, so their install
-# step is omitted. BEST-EFFORT Cython compilation remains independent and runs
-# when explicitly enabled. The default D810_NO_CYTHON=1 must skip this build: an
+# when using an unlabelled base image. A d810 runtime label is only a hint: local
+# tags can outlive the image contents they describe, so labelled images must
+# prove that pytest, Unicorn, and the isolated Z3 runtime all import before the
+# install step is omitted. A stale runtime is refreshed and then probed again;
+# an unusable solver must fail setup rather than surface as a collection error.
+# BEST-EFFORT Cython compilation remains independent and runs when explicitly
+# enabled. The default D810_NO_CYTHON=1 must skip this build: an
 # OOM kill of the build container cannot be caught by the shell's fallback.
 # (instead of silently falling back to pure-Python). The build needs a C++
 # toolchain + the IDA SDK; setup.py auto-downloads the SDK from GitHub when
@@ -460,10 +463,11 @@ if [ "$NO_CYTHON" = "1" ]; then
 else
   SPEEDUPS_BUILD_CMD="D810_BUILD_SPEEDUPS=1 $IDA_VENV_PIP install -e .[speedups] -q || echo '[speedups] build failed, falling back to pure-Python'"
 fi
+RUNTIME_PROBE="from d810.speedups import bootstrap; bootstrap.ensure_speedups_on_path(); import pytest, unicorn, z3; assert (4, 13) <= z3.get_version() < (4, 15, 5)"
 if _image_has_baked_runtime; then
-  DEPENDENCY_SETUP="if $IDA_VENV_PYTHON -c 'import setuptools' >/dev/null 2>&1 && command -v git >/dev/null 2>&1; then echo '[setup] baked runtime dependencies detected; install skipped'; else echo '[setup] baked runtime is stale; refreshing declared test dependencies'; if ! command -v git >/dev/null 2>&1; then apt-get update && apt-get install -y --no-install-recommends git; fi; $IDA_VENV_PIP install -e '.[dev,emulation]' -q; fi"
+  DEPENDENCY_SETUP="if $IDA_VENV_PYTHON -c '$RUNTIME_PROBE' >/dev/null 2>&1 && command -v git >/dev/null 2>&1; then echo '[setup] baked runtime dependencies detected; install skipped'; else echo '[setup] baked runtime is stale; refreshing declared test dependencies'; if ! command -v git >/dev/null 2>&1; then apt-get update && apt-get install -y --no-install-recommends git; fi; $IDA_VENV_PIP install -e '.[dev,emulation]' -q && $IDA_VENV_PYTHON -m d810.speedups.install && $IDA_VENV_PYTHON -c '$RUNTIME_PROBE'; fi"
 else
-  DEPENDENCY_SETUP="$IDA_VENV_PIP install -e '.[dev,emulation]' -q && $IDA_VENV_PYTHON -m d810.speedups.install"
+  DEPENDENCY_SETUP="$IDA_VENV_PIP install -e '.[dev,emulation]' -q && $IDA_VENV_PYTHON -m d810.speedups.install && $IDA_VENV_PYTHON -c '$RUNTIME_PROBE'"
 fi
 SETUP_CMD="$LLVM_OPT_SETUP${LLVM_OPT_SETUP:+ && }export $ENV_IDA $ENV_PYTHON $ENV_GIT && $DEPENDENCY_SETUP && { $SPEEDUPS_BUILD_CMD; }"
 
