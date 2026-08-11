@@ -11,14 +11,16 @@ _LEFT_ALIGNED_BUTTON_STYLESHEET = (
 )
 
 
-def _left_top_alignment() -> tuple[Any, Any]:
-    try:
-        alignment = QtCore.Qt.AlignmentFlag
-        left = alignment.AlignLeft
-        top = alignment.AlignTop
-    except AttributeError:
-        left = QtCore.Qt.AlignLeft
-        top = QtCore.Qt.AlignTop
+def _left_top_alignment() -> tuple[Any, Any] | None:
+    alignment = getattr(QtCore.Qt, "AlignmentFlag", None)
+    if alignment is not None:
+        left = getattr(alignment, "AlignLeft", None)
+        top = getattr(alignment, "AlignTop", None)
+    else:
+        left = getattr(QtCore.Qt, "AlignLeft", None)
+        top = getattr(QtCore.Qt, "AlignTop", None)
+    if left is None or top is None:
+        return None
     return left, left | top
 
 
@@ -31,7 +33,10 @@ def _all_non_fixed_fields_grow() -> Any:
 
 def configure_left_aligned_form(layout: Any) -> None:
     """Anchor a compact information form left and let value fields expand."""
-    left, left_top = _left_top_alignment()
+    alignment = _left_top_alignment()
+    if alignment is None:
+        return
+    left, left_top = alignment
     layout.setFormAlignment(left_top)
     layout.setLabelAlignment(left)
     layout.setFieldGrowthPolicy(_all_non_fixed_fields_grow())

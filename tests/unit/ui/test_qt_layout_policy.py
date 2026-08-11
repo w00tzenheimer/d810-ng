@@ -84,6 +84,28 @@ def test_form_policy_is_left_aligned_and_expands_fields(
     assert layout.field_growth_policy is growth_policy
 
 
+def test_form_policy_noops_when_a_narrow_qt_shim_has_no_alignment_symbols(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        qt_layout_policy,
+        "QtCore",
+        SimpleNamespace(Qt=SimpleNamespace()),
+    )
+    monkeypatch.setattr(
+        qt_layout_policy,
+        "QtWidgets",
+        SimpleNamespace(QFormLayout=SimpleNamespace()),
+    )
+    layout = _RecordingFormLayout()
+
+    qt_layout_policy.configure_left_aligned_form(layout)
+
+    assert layout.form_alignment is None
+    assert layout.label_alignment is None
+    assert layout.field_growth_policy is None
+
+
 def test_button_policy_preserves_project_row_height_while_left_aligned() -> None:
     button = _RecordingButton()
 
