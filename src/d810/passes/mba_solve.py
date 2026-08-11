@@ -116,6 +116,11 @@ class MbaSolvePass(PipelinePass):
     max_leaves: int = DEFAULT_MAX_LEAVES
     require_proof: bool = True
     maturities: tuple[str, ...] = DEFAULT_MATURITIES
+    #: Install the solver's proof dependency if it is missing. Off by default:
+    #: installing runs pip, which needs the network and can freeze the UI for
+    #: tens of seconds, so it is never done unprompted while a project loads.
+    #: The workbench "Install solver support" action is the discoverable path.
+    auto_install_solver: bool = False
     name: str = MBA_SOLVE_PASS_ID
 
     def __post_init__(self) -> None:
@@ -141,12 +146,21 @@ class MbaSolvePass(PipelinePass):
 
 def parse_mba_solve_options(
     config: PipelineConfig,
-) -> tuple[int, bool, tuple[str, ...]]:
+) -> tuple[int, bool, tuple[str, ...], bool]:
     """Validate ``mba-solve`` options, rejecting unknown keys loudly."""
     options: Mapping[str, object] = config.options or {}
-    unknown = set(options) - {"max_leaves", "require_proof", "maturities"}
+    unknown = set(options) - {
+        "max_leaves",
+        "require_proof",
+        "maturities",
+        "auto_install_solver",
+    }
     if unknown:
         raise ValueError(f"mba-solve has unknown options: {sorted(unknown)}")
+
+    auto_install_solver = options.get("auto_install_solver", False)
+    if not isinstance(auto_install_solver, bool):
+        raise ValueError("mba-solve options.auto_install_solver must be a boolean")
 
     max_leaves = options.get("max_leaves", DEFAULT_MAX_LEAVES)
     if not isinstance(max_leaves, int) or isinstance(max_leaves, bool):
@@ -172,15 +186,18 @@ def parse_mba_solve_options(
             f"valid names are {sorted(valid)}"
         )
 
-    return max_leaves, require_proof, maturities
+    return max_leaves, require_proof, maturities, auto_install_solver
 
 
 def build_mba_solve_pass(config: PipelineConfig) -> MbaSolvePass:
-    max_leaves, require_proof, maturities = parse_mba_solve_options(config)
+    max_leaves, require_proof, maturities, auto_install_solver = (
+        parse_mba_solve_options(config)
+    )
     return MbaSolvePass(
         max_leaves=max_leaves,
         require_proof=require_proof,
         maturities=maturities,
+        auto_install_solver=auto_install_solver,
     )
 
 
@@ -228,6 +245,7 @@ def register_mba_solve_pass(registry: PassRegistry) -> PassRegistry:
                 "max_leaves": DEFAULT_MAX_LEAVES,
                 "require_proof": True,
                 "maturities": list(DEFAULT_MATURITIES),
+                "auto_install_solver": False,
             },
         ),
         stages=stages,
@@ -259,6 +277,17 @@ def register_mba_solve_pass(registry: PassRegistry) -> PassRegistry:
                     control=FieldControlKind.STRING_LIST,
                     description="Hex-Rays maturities at which solver work may run.",
                     default=list(DEFAULT_MATURITIES),
+                ),
+                FieldEditorSpec(
+                    field_id="auto_install_solver",
+                    label="Install solver if missing",
+                    path=("auto_install_solver",),
+                    control=FieldControlKind.BOOLEAN,
+                    description=(
+                        "Install the proof solver on first use if absent. "
+                        "Runs pip and can block IDA for tens of seconds."
+                    ),
+                    default=False,
                 ),
             )
         ),

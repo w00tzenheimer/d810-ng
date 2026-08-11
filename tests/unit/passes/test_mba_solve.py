@@ -24,9 +24,75 @@ def _config(options: dict | None = None) -> PipelineConfig:
     )
 
 
+class TestAutoInstallSolver(unittest.TestCase):
+    """Opt-in installation of the solver the proof gate needs.
+
+    z3 is not a dependency: d810 keeps it in ~/.d810-speedups so the wheel and
+    the native libz3 stay pinned together. That leaves a state where everything
+    installs cleanly and no proof can be produced, so mba-solve applies nothing.
+    This option lets a project close that gap by itself.
+    """
+
+    def test_defaults_to_off(self):
+        """Installing runs pip: network, and tens of seconds of frozen UI.
+
+        Doing that unprompted while a project loads would be a surprise with no
+        way to decline, so it is opt-in and the workbench action is the
+        discoverable path.
+        """
+        _, _, _, auto_install = parse_mba_solve_options(_config())
+        self.assertFalse(auto_install)
+
+    def test_can_be_enabled(self):
+        _, _, _, auto_install = parse_mba_solve_options(
+            _config({"auto_install_solver": True})
+        )
+        self.assertTrue(auto_install)
+
+    def test_rejects_a_non_boolean(self):
+        with self.assertRaises(ValueError):
+            parse_mba_solve_options(_config({"auto_install_solver": "yes"}))
+
+    def test_reaches_the_built_pass(self):
+        built = build_mba_solve_pass(_config({"auto_install_solver": True}))
+        self.assertTrue(built.auto_install_solver)
+
+    def test_reaches_the_rule_through_the_hook_bridge(self):
+        """An option the bridge drops is an option that silently does nothing.
+
+        The pass validates it and the editor offers it, but the rule only ever
+        sees what the bridge forwards -- so a missing key here produces a
+        setting that looks configurable and has no effect.
+        """
+        from d810.passes.pipeline_v2_hook_bridge import _mba_solve_options
+
+        forwarded = _mba_solve_options(_config({"auto_install_solver": True}))
+        self.assertIs(forwarded["auto_install_solver"], True)
+
+    def test_every_validated_option_is_forwarded_to_the_rule(self):
+        """Guards the next option too, not just this one."""
+        from d810.passes.pipeline_v2_hook_bridge import _mba_solve_options
+
+        forwarded = set(_mba_solve_options(_config()))
+        registry = mba_solve_pass_registry()
+        template = registry.config_template_for(MBA_SOLVE_PASS_ID)
+        self.assertEqual(forwarded, set(template.options))
+
+    def test_is_offered_in_the_editor_and_seeded_in_the_template(self):
+        """A JSON-only option is one nobody discovers."""
+        registry = mba_solve_pass_registry()
+        editor = registry.editor_spec_for(MBA_SOLVE_PASS_ID)
+        template = registry.config_template_for(MBA_SOLVE_PASS_ID)
+
+        field_ids = {field.field_id for field in editor.fields}
+        self.assertIn("auto_install_solver", field_ids)
+        self.assertIn("auto_install_solver", template.options)
+        self.assertIs(template.options["auto_install_solver"], False)
+
+
 class TestOptions(unittest.TestCase):
     def test_defaults(self):
-        max_leaves, require_proof, maturities = parse_mba_solve_options(_config())
+        max_leaves, require_proof, maturities, _ = parse_mba_solve_options(_config())
         self.assertEqual(max_leaves, DEFAULT_MAX_LEAVES)
         self.assertTrue(require_proof)
         self.assertEqual(maturities, ("GLOBAL_OPTIMIZED",))
@@ -36,7 +102,7 @@ class TestOptions(unittest.TestCase):
         self.assertEqual(DEFAULT_MAX_LEAVES, 8)
 
     def test_explicit_values(self):
-        max_leaves, require_proof, maturities = parse_mba_solve_options(
+        max_leaves, require_proof, maturities, _ = parse_mba_solve_options(
             _config({
                 "max_leaves": 4,
                 "require_proof": False,

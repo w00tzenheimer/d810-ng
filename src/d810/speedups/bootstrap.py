@@ -8,6 +8,31 @@ from pathlib import Path
 
 DEFAULT_SPEEDUPS_DIR = Path.home() / ".d810-speedups"
 
+#: Bumped whenever the set of importable optional dependencies may have changed.
+#:
+#: Optional dependencies arrive LATE and can arrive DURING a session: the
+#: speedups directory may not exist at startup and may be created by an
+#: installer while IDA is running. Anything that caches "is X importable" must
+#: therefore be able to tell that its answer went stale, or a successful
+#: install looks like it did nothing until IDA restarts.
+#:
+#: A counter rather than a callback registry, and read rather than pushed, so
+#: d810 never has to name the consumers. Backends live out-of-tree; naming one
+#: here is the vendor coupling the plugin manifest exists to avoid.
+_OPTIONAL_DEPENDENCY_GENERATION = 0
+
+
+def optional_dependency_generation() -> int:
+    """Token that changes when optional-dependency availability may have."""
+    return _OPTIONAL_DEPENDENCY_GENERATION
+
+
+def invalidate_optional_dependency_cache() -> int:
+    """Declare that a cached import probe may now give a different answer."""
+    global _OPTIONAL_DEPENDENCY_GENERATION
+    _OPTIONAL_DEPENDENCY_GENERATION += 1
+    return _OPTIONAL_DEPENDENCY_GENERATION
+
 
 def get_speedups_dir() -> Path:
     """Return the configured directory where isolated speedups dependencies live."""

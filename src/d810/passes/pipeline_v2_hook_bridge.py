@@ -130,6 +130,10 @@ def _mba_solve_options(config: PipelineConfig) -> dict[str, object]:
         # Portable IRMaturity names; the rule maps them to MMAT_* so this layer
         # stays hexrays-agnostic.
         "maturities": list(adapter.maturities),
+        # The rule sees only what is forwarded here, so anything the pass
+        # validates and the editor offers must appear in this dict or it is a
+        # setting that looks configurable and silently does nothing.
+        "auto_install_solver": adapter.auto_install_solver,
     }
 
 
