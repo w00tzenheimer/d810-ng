@@ -21,6 +21,13 @@
 set -euo pipefail
 
 WORK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+# Pick up the same .env run_system_tests_docker.sh reads, so both agree on the
+# image and test binary. Non-overriding: anything already exported still wins.
+# shellcheck source=tools/scripts/lib/dotenv.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib/dotenv.sh"
+_load_dotenv_non_overriding "$WORK_DIR/.env" || exit 1
+
 NAME="${D810_WARM_NAME:-d810-warm}"
 IMAGE="${D810_DOCKER_IMAGE:-idapro-9.4}"
 MEMORY="${D810_DOCKER_MEMORY:-4g}"

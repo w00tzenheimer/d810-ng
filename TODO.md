@@ -13,7 +13,7 @@ for the next generated/PREOPT MBA must therefore live in d810-owned state,
 keyed by the function's decompilation session rather than by a discarded
 `mba_t`.
 
-## Existing pieces
+## Existing pieces (legacy baseline to be consolidated)
 
 - `FactCollectionContext` is an immutable, per-callback description of the
   function, provider phase, and pre/post-d810 capture phase.
@@ -1058,11 +1058,12 @@ The mutation gateway/executor performs: SDK mutation -> validate returned
 blocks -> `identity_index.apply(receipt)` synchronously -> emit
 `MbaMutationCommitted`. The synchronous application prevents a second
 modifier from observing stale bindings; event subscribers must treat the event
-as post-commit observation, not delayed correctness. The index listens for
-`SESSION_STARTED` (build/reset), `MbaMutationCommitted` (apply receipt), a
-typed maturity/rebuild event including `MERR_REDO` (discard serial bindings and
-rebind against the new MBA), and `SESSION_FINISHED` (release live references
-and transient handles).
+as post-commit observation, not delayed correctness. The index does not apply
+the receipt a second time from the emitted event. `SESSION_STARTED` creates or
+resets empty session-owned index state; the first callback that carries a live
+MBA builds its bindings. A typed maturity/rebuild event including `MERR_REDO`
+discards serial bindings and rebinds against the callback-local MBA, while
+`SESSION_FINISHED` releases transient handles and all live-only references.
 
 **Replacement sequence:**
 
@@ -1445,3 +1446,133 @@ authority that an earlier item is supposed to remove.
 Every commit must preserve direct reanalysis without an existing cache.  No
 commit may introduce a profile-independent import, a sample-specific address,
 or a cache-driven state/edge inference rule.
+
+
+## Appendix
+
+Some thoughts about the plan for persistence, serialized MBA snapshots, netnodes, cache reuse, or B2–B5.
+
+Persistence is worth doing, but it is not a new deobfuscation capability by itself. It turns already-correct PREOPT evidence into a reusable source artifact. The payoff is faster repeat decompilation, survival across IDA restarts, reproducible debugging, and optional transfer between compatible IDBs.
+
+It should only begin after the fresh, cache-disabled path is correct. Otherwise we will make incorrect evidence durable.
+
+### What B2–B5 unlock
+
+| Stage | Required work | Functionality unlocked |
+|---|---|---|
+| B2: eager preflight | Add the capability seam, invoke it before D810-owned decompiles, retain the universal flowchart fallback, and keep it idempotent across redo | Evidence or a cache hit can be available for the first PREOPT pass, including direct/F5 decompilation |
+| B3: snapshot envelope | Serialize a detached PREOPT MBA, attach an exact manifest, validate fingerprints/SDK/anchors, and safely deserialize it | A PREOPT template becomes an immutable, inspectable, testable in-memory artifact |
+| B4: netnode persistence | Store validated envelopes in a dedicated netnode, implement atomic replacement, strict import/export, corruption handling, and invalidation | Templates survive plugin reloads and IDA restarts; optional JSON artifacts can move between compatible IDBs |
+| B5: cache reuse | Select validated snapshot → fresh generation → abstention, live-rebind every endpoint, import through the normal gateway, and fail open | Actual cache hits: avoid regenerating/capturing source PREOPT microcode while preserving fresh-path behavior |
+
+These boundaries already appear in [TODO.md](/Users/mahmoud/src/idapro/d810/TODO.md:1046), [B3](/Users/mahmoud/src/idapro/d810/TODO.md:1089), [B4](/Users/mahmoud/src/idapro/d810/TODO.md:1145), and [B5](/Users/mahmoud/src/idapro/d810/TODO.md:1181).
+
+### Important corrections to the current design
+
+1. Do not build PREOPT reuse on the existing `OptimizationCache`.
+
+   Its current fingerprint is effectively `mba.qty:mba.maturity`; it does not hash native bytes, profile configuration, closure ranges, or SDK state. It is also designed around replaying patch descriptions, which is the wrong abstraction for PREOPT source reuse. See [caching.py](/Users/mahmoud/src/idapro/d810/src/d810/backends/hexrays/evidence/caching.py:118).
+
+   We can reuse the generic netnode primitive, but `PreoptTemplateCache` should be a separate typed cache.
+
+2. The existing netnode write is not atomic.
+
+   String replacement deletes the prior value before writing the new one. A failed write can therefore lose the previous valid record, contradicting B4’s contract. See [persistence.py](/Users/mahmoud/src/idapro/d810/src/d810/core/persistence.py:346).
+
+   B4 needs either:
+
+   - a two-slot generation scheme with an active-record pointer, or
+   - a staging record that is written, read back, validated, and only then promoted.
+
+   Fault-injection tests should prove that every interrupted step leaves the previous record readable.
+
+3. The manifest should embed `NativePreanalysisKey`.
+
+   The proposed manifest repeats the seven fields already owned by the new key: input identity, processor, bitness, function RVA, function fingerprint, profile fingerprint, and SDK fingerprint. See [native_preanalysis_key.py](/Users/mahmoud/src/idapro/d810/.worktrees/decomp-session-foundation/src/d810/core/native_preanalysis_key.py:37).
+
+   Duplicating them creates two schemas that can drift. I would use:
+
+   ```text
+   PreoptTemplateManifest
+     schema_version
+     native_key: NativePreanalysisKey
+     maturity
+     decompiler_flags
+     evidence_epoch
+     native_anchor_rvas
+     closure_fingerprint
+     payload_sha256
+     payload_length
+   ```
+
+4. We must decide whether we are caching only source microcode or all evidence.
+
+   The current B3–B5 design caches only the PREOPT source MBA. That avoids `gen_microcode()` and template capture, but native resolver facts and boundary evidence may still need to be recovered each session.
+
+   That is the right first version. Persisting the complete `NativePreanalysisFacts` aggregate would eliminate more work, but adds another schema and a substantially larger invalidation surface. I would defer full fact caching until source-template equivalence is proven.
+
+5. Deserialization is the largest technical uncertainty.
+
+   Hex-Rays exposes `mba_t.serialize()` and `mba_t.deserialize()` directly, returning a newly allocated MBA ([IDA binding](/Users/mahmoud/src/idapro/d810/_gitless/resource/9.3/ida/python/ida_hexrays.py:9914)). Python exception handling cannot protect us if malformed input crashes inside the native SDK.
+
+   Before broad implementation, run a narrow Docker runtime probe covering:
+
+   - repeated serialize/deserialize/verify/destruction cycles;
+   - empty, truncated, and corrupted payloads;
+   - ownership and cleanup;
+   - exact supported IDA/Hex-Rays version;
+   - detached source use after the original MBA is gone.
+
+   Initial cache compatibility should be same-SDK only. Cross-SDK deserialization should be rejected through `sdk_fingerprint`.
+
+### Recommended implementation sequence
+
+1. Finish the fresh-path foundation and B2.
+
+   Preflight, flowchart fallback, lifecycle ownership, identity rebinding, and one controlled redo must be green with caching disabled.
+
+2. Land the pure B3 manifest.
+
+   Deterministic encoding, exact key matching, closure-range fingerprinting, anchor normalization, payload digest/length, size limits, and strict schema rejection. No Hex-Rays imports.
+
+3. Land the Hex-Rays snapshot backend.
+
+   Capture bytes from a detached PREOPT source; deserialize into a new MBA; verify maturity, anchors, instruction count, graph integrity, and ownership. Return `None` on supported failures.
+
+4. Land the atomic B4 cache.
+
+   Dedicated `$ d810.preopt_template_cache`, staging/promotion, malformed-record handling, blob fallback, replacement, deletion, and garbage collection. Then add explicit JSON/base64 export/import.
+
+5. Integrate cache loading during B2 preflight.
+
+   A miss, corrupt record, mismatch, or deserialization failure must silently fall through to fresh analysis without requesting a redo merely because the cache failed.
+
+6. Implement B5 source selection.
+
+   Use:
+
+   ```text
+   validated current-session snapshot
+       -> freshly generated PREOPT template
+       -> abstain
+   ```
+
+   Rebind every source, target, and conditional boundary through the live identity index before scheduling any mutation. Fictitious EAs remain provenance only.
+
+7. Write only after success.
+
+   Cache a fresh template only after source import, live-MBA verification, D810 verification, and semantic checks succeed. Never cache merely because serialization succeeded.
+
+8. Run the three-way oracle matrix.
+
+   For each Rhad target:
+
+   ```text
+   cache disabled
+   fresh capture + cache write
+   cache load
+   ```
+
+   All three must produce equivalent semantic output. Then run Hodur, Sub7ffd, Tigress, and Approov with the cache code inert outside the opted-in computed-goto profile, as required by [TODO.md](/Users/mahmoud/src/idapro/d810/TODO.md:1227).
+
+I would expect roughly 7–9 logical commits. B3 serialization and B5 live rebinding are the high-risk pieces; B4 storage is mechanically straightforward once atomic replacement is designed correctly.
