@@ -807,6 +807,27 @@ DAC_MASM_CASES = [
         skip_if_function_absent=True,
     ),
     DeobfuscationCase(
+        function="sub_7FF859C06F60",
+        description=(
+            "Hodur-like state-machine fixture exported from a live IDB. "
+            "Guards removal of the comparison dispatcher while preserving "
+            "the allocated-object initialization and event-handle publication."
+        ),
+        project="hodur_flag2_s1a_config_v2_canary_constant_simplification.json",
+        obfuscated_contains=["0x7E174EE2", "while ( 1 )", "0x78CAFFE"],
+        deobfuscated_contains=[
+            "0xB7C0299C2BBEFEEF",
+            "0x5C9FE1F0",
+            "0x70D4D8C7",
+            "0xEB87C50AC31977ED",
+        ],
+        deobfuscated_not_contains=["0x7E174EE2", "while ( 1 )", "0x78CAFFE"],
+        must_change=True,
+        required_rules=[],
+        expected_rules=["ConstantSubtreeFoldRule"],
+        skip_if_function_absent=True,
+    ),
+    DeobfuscationCase(
         function="sub_1815C8C30",
         description="dac.dll rand()%3 helper (issue #48, MASM-extracted). Full "
         "golden: `return rand() % 3u;`. Guards two facts: (1) the "
