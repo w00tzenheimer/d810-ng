@@ -209,7 +209,7 @@ def system_dump_mode(
             return 1
 
     work_dir = work_dir.resolve()
-    docker_image = os.environ.get("D810_DOCKER_IMAGE", "idapro-9.3")
+    docker_image = os.environ.get("D810_DOCKER_IMAGE", "idapro-9.4")
     env_no_cython = os.environ.get("D810_NO_CYTHON", "1")
     env_test_binary = os.environ.get("D810_TEST_BINARY", "libobfuscated.dll")
 

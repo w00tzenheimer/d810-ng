@@ -166,7 +166,7 @@ def test_dotenv_image_overrides_hardcoded_default(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 0, result.stderr
-    assert "source=.env, overrides default=idapro-9.3" in result.stdout
+    assert "source=.env, overrides default=idapro-9.4" in result.stdout
     assert "dotenv-runtime-image" in _container_run(calls)
 
 

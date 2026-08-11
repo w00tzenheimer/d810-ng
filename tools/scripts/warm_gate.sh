@@ -22,7 +22,7 @@ set -euo pipefail
 
 WORK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 NAME="${D810_WARM_NAME:-d810-warm}"
-IMAGE="${D810_DOCKER_IMAGE:-idapro-9.3}"
+IMAGE="${D810_DOCKER_IMAGE:-idapro-9.4}"
 MEMORY="${D810_DOCKER_MEMORY:-4g}"
 MEM_BYTES=4294967296
 PYBIN="/app/ida/.venv/bin/python"

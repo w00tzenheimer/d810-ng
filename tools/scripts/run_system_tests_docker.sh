@@ -61,7 +61,7 @@
 #   Precedence: exported process environment > repository .env > defaults.
 #   When one source displaces another, the runner prints the winning source and
 #   value. Sensitive values are redacted.
-#   D810_DOCKER_IMAGE       Docker image (default: idapro-9.3)
+#   D810_DOCKER_IMAGE       Docker image (default: idapro-9.4)
 #   D810_REPO_ROOT         Repo root (default: git rev-parse --show-toplevel from cwd)
 #   D810_WORKTREE_ROOT     Dir under repo root for worktrees (default: .worktrees)
 #   D810_NO_CYTHON         Passed into container (default: 1)
@@ -195,13 +195,13 @@ if [ -n "$DOTENV_ROOT" ]; then
   _load_dotenv_non_overriding "$DOTENV_ROOT/.env" || exit 1
 fi
 
-_trace_default_override D810_DOCKER_IMAGE idapro-9.3
+_trace_default_override D810_DOCKER_IMAGE idapro-9.4
 _trace_default_override D810_DOCKER_MEMORY 4g
 _trace_default_override D810_NO_CYTHON 1
 _trace_default_override D810_TEST_BINARY libobfuscated.dll
 _trace_default_override D810_WORKTREE_ROOT .worktrees
 
-DOCKER_IMAGE="${D810_DOCKER_IMAGE-idapro-9.3}"
+DOCKER_IMAGE="${D810_DOCKER_IMAGE-idapro-9.4}"
 DOCKER_MEMORY="${D810_DOCKER_MEMORY-4g}"
 NO_CYTHON="${D810_NO_CYTHON-1}"
 TEST_BINARY="${D810_TEST_BINARY-libobfuscated.dll}"
