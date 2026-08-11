@@ -601,6 +601,26 @@ def test_finish_session_allows_analysis_outcome_reset() -> None:
     assert rt.begin_session(_event(epoch=2)) is True
 
 
+def test_flush_active_session_persists_outcomes_when_structural_finish_is_missing() -> None:
+    """Manager shutdown must not lose a callback chain lacking hxe_structural."""
+    rt, _mock_phase, _mock_analysis, mock_store = _make_runtime()
+    rt.begin_session(_event())
+    rt.record_execution_scope_outcome(
+        func_ea=_FUNC_EA,
+        hints=_make_hints(),
+        apply_result=None,
+        source="analyzed",
+    )
+
+    assert rt.flush_active_session() is True
+    assert rt.flush_active_session() is False
+
+    mock_store.save_consumer_outcome.assert_called_once()
+    outcome_call = mock_store.save_consumer_outcome.call_args
+    assert outcome_call.kwargs["func_ea"] == _FUNC_EA
+    assert outcome_call.kwargs["consumer_name"] == "execution_scope"
+
+
 def test_begin_session_flushes_previous_outcomes() -> None:
     """Switching to func B flushes persisted outcomes for func A.
 

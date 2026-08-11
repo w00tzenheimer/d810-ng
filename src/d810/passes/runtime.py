@@ -150,6 +150,22 @@ class DecompilationAnalysisRuntime:
             int(resume_event.function_ea) if resume_event is not None else -1
         )
 
+    def flush_active_session(self) -> bool:
+        """Durably finish the active outcome session during manager shutdown.
+
+        Hex-Rays does not guarantee an ``hxe_structural`` callback for every
+        successful decompilation.  A manager stop is therefore also a session
+        boundary: persist the outcomes already observed before the runtime and
+        its writer are discarded.
+        """
+        func_ea = self._current_func_ea
+        if func_ea == -1:
+            return False
+        self._persist_outcomes(func_ea)
+        get_preanalysis_writer(self._store.db_path).flush()
+        self._current_func_ea = -1
+        return True
+
     def _persist_outcomes(self, func_ea: int) -> None:
         """Persist consumer outcomes to store.
 

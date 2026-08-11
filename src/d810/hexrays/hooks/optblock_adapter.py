@@ -4,6 +4,7 @@ import math
 import pathlib
 import sqlite3
 import time
+import traceback
 from collections import defaultdict
 
 import ida_hexrays
@@ -24,6 +25,7 @@ from d810.hexrays.hooks.callback_mutation_diagnostics import (
     capture_live_nop_sites,
 )
 from d810.hexrays.lifecycle import _emit_flowgraph_ready_event
+from d810.hexrays.observability import observe_optblock_callback_exception
 from d810.hexrays.ir_maturity import ida_maturity_to_ir
 from d810.hexrays.mutation.return_carrier_corruption import (
     snapshot_return_reg_consumer_def_eas,
@@ -49,6 +51,89 @@ def _current_mba_runtime_identity(mba: object) -> int:
         return int(mba.this)
     except (AttributeError, TypeError, ValueError):
         return id(mba)
+
+
+def _safe_callback_int(value: object) -> int | None:
+    """Best-effort numeric context for an exception-path diagnostic."""
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _safe_callback_attr(value: object, name: str) -> object | None:
+    try:
+        return getattr(value, name, None)
+    except Exception:
+        return None
+
+
+def _optblock_callback_exception_context(
+    blk: object,
+) -> tuple[int, str, int | None, int | None, str]:
+    """Build context without allowing a damaged SWIG object to mask failure."""
+    mba = _safe_callback_attr(blk, "mba")
+    func_ea = _safe_callback_int(_safe_callback_attr(mba, "entry_ea")) or 0
+    maturity_value = _safe_callback_int(_safe_callback_attr(mba, "maturity"))
+    try:
+        maturity = (
+            str(maturity_to_string(maturity_value))
+            if maturity_value is not None
+            else "UNKNOWN"
+        )
+    except Exception:
+        maturity = "UNKNOWN"
+    block_serial = _safe_callback_int(_safe_callback_attr(blk, "serial"))
+    block_ea = _safe_callback_int(_safe_callback_attr(blk, "start"))
+    if block_serial is None or block_ea is None:
+        # A serial is snapshot-local.  It is only a usable diagnostic identity
+        # when the same damaged callback object also supplies its EA anchor.
+        block_serial = None
+        block_ea = None
+    block_anchor = (
+        f"blk{block_serial}@0x{block_ea:x}"
+        if block_serial is not None and block_ea is not None
+        else "unknown"
+    )
+    return func_ea, maturity, block_serial, block_ea, block_anchor
+
+
+def _report_optblock_callback_exception(blk: object, error: Exception) -> None:
+    """Log and publish one callback exception before the SWIG bridge rethrows."""
+    try:
+        func_ea, maturity, block_serial, block_ea, block_anchor = (
+            _optblock_callback_exception_context(blk)
+        )
+        optimizer_logger.exception(
+            "Unhandled optblock callback exception func=0x%x maturity=%s %s %s: %s",
+            func_ea,
+            maturity,
+            block_anchor,
+            type(error).__name__,
+            error,
+        )
+        traceback_text = traceback.format_exc()
+        try:
+            observe_optblock_callback_exception(
+                func_ea=func_ea,
+                maturity=maturity,
+                block_serial=block_serial,
+                block_ea=block_ea,
+                error_type=type(error).__name__,
+                error_message=str(error) or type(error).__name__,
+                traceback_text=traceback_text,
+            )
+        except Exception:
+            optimizer_logger.exception(
+                "Failed to publish optblock callback exception func=0x%x %s",
+                func_ea,
+                block_anchor,
+            )
+    except BaseException:
+        # This reporter runs on a SWIG callback exception path.  Diagnostics
+        # are strictly best-effort: even a damaged logger or publisher must
+        # never replace the exact optimizer exception that ``func`` rethrows.
+        return
 
 
 if typing.TYPE_CHECKING:
@@ -349,14 +434,18 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         )
 
     def func(self, blk: ida_hexrays.mblock_t):
-        result = self._func(blk)
-        if (
-            int(result) == 0
-            and not self._pipeline_just_fired
-            and synchronize_explicit_goto_flag(blk)
-        ):
-            result = 1
-        return result
+        try:
+            result = self._func(blk)
+            if (
+                int(result) == 0
+                and not self._pipeline_just_fired
+                and synchronize_explicit_goto_flag(blk)
+            ):
+                result = 1
+            return result
+        except Exception as error:
+            _report_optblock_callback_exception(blk, error)
+            raise
 
     def _func(self, blk: ida_hexrays.mblock_t):
         if self.log_info_on_input(blk):

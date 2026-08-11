@@ -29,6 +29,7 @@ from d810.core.observability import (
 # facade re-exports it so call sites don't have to know where it lives.
 from d810.core.observability_events import (
     CaptureMbaSnapshotRequested as CaptureMbaSnapshotRequested,
+    OptblockCallbackExceptionObserved as OptblockCallbackExceptionObserved,
 )
 from d810.core.observability_models import (
     BlockSnapshot as BlockSnapshot,
@@ -100,6 +101,30 @@ def diagnostics_enabled() -> bool:
     return _has_subscribers(CaptureMbaSnapshotRequested)
 
 
+def observe_optblock_callback_exception(
+    *,
+    func_ea: int,
+    maturity: str,
+    block_serial: int | None,
+    block_ea: int | None,
+    error_type: str,
+    error_message: str,
+    traceback_text: str,
+) -> None:
+    """Publish one top-level optblock callback failure for diagnostics."""
+    _emit(
+        OptblockCallbackExceptionObserved(
+            func_ea=int(func_ea),
+            maturity=str(maturity),
+            block_serial=(int(block_serial) if block_serial is not None else None),
+            block_ea=(int(block_ea) if block_ea is not None else None),
+            error_type=str(error_type),
+            error_message=str(error_message),
+            traceback_text=str(traceback_text),
+        )
+    )
+
+
 # `mba_to_block_snapshots` lives in `d810.hexrays.mba_serializer`
 # (same layer); the facade re-export is for callers that already
 # import from hexrays.observability and don't want to pull from
@@ -112,8 +137,10 @@ from d810.hexrays.mba_serializer import (
 __all__ = [
     # Event dataclasses
     "CaptureMbaSnapshotRequested",
+    "OptblockCallbackExceptionObserved",
     # Request/response command API
     "diagnostics_enabled",
+    "observe_optblock_callback_exception",
     "request_capture_mba_snapshot",
     # Neutral models (kept here for callers that construct them)
     "BlockSnapshot",

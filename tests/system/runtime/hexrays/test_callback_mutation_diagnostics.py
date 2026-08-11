@@ -4,8 +4,10 @@ from pathlib import Path
 from types import MethodType, SimpleNamespace
 
 import ida_hexrays
+import pytest
 
 from d810.core.stats import OptimizationStatistics
+from d810.hexrays.hooks import optblock_adapter
 from d810.hexrays.hooks.callback_mutation_diagnostics import (
     build_callback_nop_delta_records,
     build_callback_nop_inventory_records,
@@ -305,6 +307,167 @@ def test_callback_nop_delta_captures_nested_mop_d_instruction() -> None:
     assert len(records) == 1
     assert records[0].payload["instruction_path"] == "top[0].l.d"
     assert records[0].payload["instruction_ea"] == "0x401014"
+
+
+def test_optblock_callback_exception_logs_typed_context_before_rethrow(
+    monkeypatch,
+) -> None:
+    """The SWIG boundary must not hide the callback traceback or its anchor."""
+    block = _Block(
+        serial=45,
+        start=0x7FF859C07656,
+        end=0x7FF859C07670,
+        head=None,
+    )
+    _Mba(
+        (block,),
+        entry_ea=0x7FF859C06F60,
+        maturity=ida_hexrays.MMAT_GLBOPT1,
+    )
+    observed = []
+    logged = []
+
+    monkeypatch.setattr(
+        optblock_adapter,
+        "observe_optblock_callback_exception",
+        lambda **kwargs: observed.append(kwargs),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        optblock_adapter,
+        "optimizer_logger",
+        SimpleNamespace(exception=lambda *args, **kwargs: logged.append((args, kwargs))),
+    )
+    monkeypatch.setattr(
+        optblock_adapter,
+        "maturity_to_string",
+        lambda _maturity: "MMAT_GLBOPT1",
+    )
+
+    class _FailingManager:
+        _pipeline_just_fired = False
+
+        @staticmethod
+        def _func(_blk):
+            raise TypeError("deliberate callback failure")
+
+    with pytest.raises(TypeError, match="deliberate callback failure"):
+        BlockOptimizerManager.func(_FailingManager(), block)
+
+    assert len(logged) == 1
+    message, *args = logged[0][0]
+    rendered = message % tuple(args)
+    assert "func=0x7ff859c06f60" in rendered
+    assert "maturity=MMAT_GLBOPT1" in rendered
+    assert "blk45@0x7ff859c07656" in rendered
+    assert "TypeError: deliberate callback failure" in rendered
+    assert len(observed) == 1
+    assert observed[0].items() >= {
+        "func_ea": 0x7FF859C06F60,
+        "maturity": "MMAT_GLBOPT1",
+        "block_serial": 45,
+        "block_ea": 0x7FF859C07656,
+        "error_type": "TypeError",
+        "error_message": "deliberate callback failure",
+    }.items()
+    assert "TypeError: deliberate callback failure" in observed[0]["traceback_text"]
+
+
+def test_optblock_callback_damaged_start_clears_unpaired_block_serial(
+    monkeypatch,
+) -> None:
+    """A damaged SWIG start accessor must not emit a serial without an EA."""
+
+    class _DamagedStartBlock:
+        serial = 45
+        end = 0x7FF859C07670
+        head = None
+
+        @property
+        def start(self) -> int:
+            raise RuntimeError("damaged SWIG block start")
+
+    block = _DamagedStartBlock()
+    _Mba(
+        (block,),
+        entry_ea=0x7FF859C06F60,
+        maturity=ida_hexrays.MMAT_GLBOPT1,
+    )
+    observed = []
+    monkeypatch.setattr(
+        optblock_adapter,
+        "observe_optblock_callback_exception",
+        lambda **kwargs: observed.append(kwargs),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        optblock_adapter,
+        "optimizer_logger",
+        SimpleNamespace(exception=lambda *_args, **_kwargs: None),
+    )
+    monkeypatch.setattr(
+        optblock_adapter,
+        "maturity_to_string",
+        lambda _maturity: "MMAT_GLBOPT1",
+    )
+    original = TypeError("original callback error")
+
+    class _FailingManager:
+        _pipeline_just_fired = False
+
+        @staticmethod
+        def _func(_blk):
+            raise original
+
+    with pytest.raises(TypeError) as raised:
+        BlockOptimizerManager.func(_FailingManager(), block)
+
+    assert raised.value is original
+    assert len(observed) == 1
+    assert observed[0]["block_serial"] is None
+    assert observed[0]["block_ea"] is None
+
+
+@pytest.mark.parametrize("failure_site", ("traceback", "logger", "publisher"))
+def test_optblock_callback_diagnostic_failure_never_masks_original_error(
+    monkeypatch,
+    failure_site: str,
+) -> None:
+    """The SWIG boundary must preserve the original exception object exactly."""
+    block = _Block(serial=45, start=0x401000, end=0x401020, head=None)
+    _Mba((block,))
+    original = TypeError("original optimizer callback failure")
+
+    def _fail(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError(f"diagnostic {failure_site} failure")
+
+    if failure_site == "traceback":
+        monkeypatch.setattr(optblock_adapter.traceback, "format_exc", _fail)
+    elif failure_site == "logger":
+        monkeypatch.setattr(
+            optblock_adapter,
+            "optimizer_logger",
+            SimpleNamespace(exception=_fail),
+        )
+    else:
+        monkeypatch.setattr(
+            optblock_adapter,
+            "observe_optblock_callback_exception",
+            _fail,
+            raising=False,
+        )
+
+    class _FailingManager:
+        _pipeline_just_fired = False
+
+        @staticmethod
+        def _func(_blk):
+            raise original
+
+    with pytest.raises(TypeError) as raised:
+        BlockOptimizerManager.func(_FailingManager(), block)
+
+    assert raised.value is original
 
 
 def test_block_optimizer_reports_a_rule_nop_write_that_returns_zero() -> None:

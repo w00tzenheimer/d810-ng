@@ -15,6 +15,7 @@ from d810.core.observability import (
     subscribe,
     unsubscribe,
 )
+from d810.core.observability_events import OptblockCallbackExceptionObserved
 
 
 @dataclasses.dataclass(frozen=True)
@@ -150,3 +151,24 @@ def test_snapshot_ref_equality_by_value():
     c = SnapshotRef(key="different", func_ea=1, label="L", maturity="M", phase="p")
     assert a == b
     assert a != c
+
+
+@pytest.mark.parametrize(
+    ("block_serial", "block_ea"),
+    ((45, None), (None, 0x7FF859C07656)),
+)
+def test_optblock_callback_exception_requires_paired_block_anchor(
+    block_serial: int | None,
+    block_ea: int | None,
+) -> None:
+    """A diagnostic event cannot persist a bare snapshot-local serial."""
+    with pytest.raises(ValueError, match="provided together"):
+        OptblockCallbackExceptionObserved(
+            func_ea=0x7FF859C06F60,
+            maturity="MMAT_GLBOPT1",
+            block_serial=block_serial,
+            block_ea=block_ea,
+            error_type="TypeError",
+            error_message="callback failed",
+            traceback_text="TypeError: callback failed",
+        )

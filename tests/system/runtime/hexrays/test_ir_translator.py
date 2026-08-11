@@ -740,6 +740,98 @@ def _lower_bound(
     return result
 
 
+def test_queue_bound_patch_plan_resolves_current_transaction_authority_after_reload(
+    monkeypatch,
+) -> None:
+    """A translator kept live across a module reload must not reject authority.
+
+    The normal D810 reload lifecycle may refresh ``patch_transaction`` while a
+    live translator still holds its former module-global import.  The current
+    transaction type remains authoritative; the stale imported class does not.
+    """
+    import d810.hexrays.mutation.ir_translator as ir_translator_module
+    from d810.hexrays.mutation import patch_transaction as patch_transaction_module
+
+    class _StaleBoundPatchCfgTransaction:
+        pass
+
+    class _CurrentBoundPatchCfgTransaction:
+        def __init__(self, plan: object, attempt: object) -> None:
+            self.plan = plan
+            self.prepared = SimpleNamespace(attempt_id=attempt)
+            # Deliberately fail the next exact-authority check.  Reaching this
+            # ValueError proves the class-authority check accepted the current
+            # transaction type rather than the translator's stale import.
+            self.patch_binding = SimpleNamespace(plan=object())
+
+    plan = object()
+    attempt = object()
+    bound = _CurrentBoundPatchCfgTransaction(plan, attempt)
+    monkeypatch.setattr(
+        patch_transaction_module,
+        "BoundPatchCfgTransaction",
+        _CurrentBoundPatchCfgTransaction,
+    )
+    monkeypatch.setattr(
+        ir_translator_module,
+        "BoundPatchCfgTransaction",
+        _StaleBoundPatchCfgTransaction,
+        raising=False,
+    )
+
+    translator = IDAIRTranslator.__new__(IDAIRTranslator)
+    with pytest.raises(ValueError, match="authority differs from binding"):
+        translator._queue_bound_patch_plan(
+            plan,
+            object(),
+            mutation_gateway=SimpleNamespace(current_transaction_attempt=attempt),
+            bound_transaction=bound,
+            deferred_modifier_module=object(),
+        )
+
+
+def test_queue_bound_patch_plan_rejects_stale_transaction_authority_after_reload(
+    monkeypatch,
+) -> None:
+    """Reload safety must retain the exact current class-authority boundary."""
+    import d810.hexrays.mutation.ir_translator as ir_translator_module
+    from d810.hexrays.mutation import patch_transaction as patch_transaction_module
+
+    class _StaleBoundPatchCfgTransaction:
+        def __init__(self, plan: object, attempt: object) -> None:
+            self.plan = plan
+            self.prepared = SimpleNamespace(attempt_id=attempt)
+            self.patch_binding = SimpleNamespace(plan=object())
+
+    class _CurrentBoundPatchCfgTransaction:
+        pass
+
+    plan = object()
+    attempt = object()
+    stale_bound = _StaleBoundPatchCfgTransaction(plan, attempt)
+    monkeypatch.setattr(
+        patch_transaction_module,
+        "BoundPatchCfgTransaction",
+        _CurrentBoundPatchCfgTransaction,
+    )
+    monkeypatch.setattr(
+        ir_translator_module,
+        "BoundPatchCfgTransaction",
+        _StaleBoundPatchCfgTransaction,
+        raising=False,
+    )
+
+    translator = IDAIRTranslator.__new__(IDAIRTranslator)
+    with pytest.raises(TypeError, match="requires bound transaction authority"):
+        translator._queue_bound_patch_plan(
+            plan,
+            object(),
+            mutation_gateway=SimpleNamespace(current_transaction_attempt=attempt),
+            bound_transaction=stale_bound,
+            deferred_modifier_module=object(),
+        )
+
+
 def _compile_for_gateway(
     backend: IDAIRTranslator,
     mba: object,

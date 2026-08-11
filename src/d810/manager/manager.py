@@ -2638,6 +2638,13 @@ class D810Manager:
         self.instruction_optimizer.remove()
         self.block_optimizer.remove()
         self.hx_decompiler_hook.unhook()
+        if self._analysis_runtime is not None:
+            try:
+                self._analysis_runtime.flush_active_session()
+            except Exception:
+                logger.exception(
+                    "Failed to flush active preanalysis outcome session during stop"
+                )
         shutdown_all_writers()
         self.event_emitter.clear()
         self.stop_profiling()

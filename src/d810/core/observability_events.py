@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import json
+from uuid import uuid4
 
 from d810.core.observability import SnapshotRef
 from d810.core.observability_models import (
@@ -902,6 +903,61 @@ class StateDispatcherRowsObserved:
 
 
 @dataclass(frozen=True)
+class OptblockCallbackExceptionObserved:
+    """One exception that escaped an optblock callback toward the SWIG boundary.
+
+    The callback adapter records the function and block context before it
+    re-raises, allowing the diagnostic subscriber to persist the traceback
+    without giving runtime code any SQLite dependency.
+    """
+
+    func_ea: int
+    maturity: str
+    block_serial: int | None
+    block_ea: int | None
+    error_type: str
+    error_message: str
+    traceback_text: str
+    occurrence_id: str = field(default_factory=lambda: uuid4().hex)
+
+    def __post_init__(self) -> None:
+        if int(self.func_ea) < 0:
+            raise ValueError("func_ea must be non-negative")
+        if (self.block_serial is None) != (self.block_ea is None):
+            raise ValueError("block_serial and block_ea must be provided together")
+        if self.block_serial is not None and int(self.block_serial) < 0:
+            raise ValueError("block_serial must be non-negative")
+        if self.block_ea is not None and int(self.block_ea) < 0:
+            raise ValueError("block_ea must be non-negative")
+        for field_name in (
+            "maturity",
+            "error_type",
+            "error_message",
+            "traceback_text",
+            "occurrence_id",
+        ):
+            value = getattr(self, field_name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{field_name} must be non-empty")
+
+
+@dataclass(frozen=True)
+class UnflattenDispatcherCorridorCoverageObserved:
+    """Preanalysis observed covered and residual dispatcher-entry corridors.
+
+    Lowering has no fresh :class:`SnapshotRef` at this point.  The diagnostic
+    sink therefore binds the typed observations to the latest capture for the
+    function, buffering planned observations until that capture exists when
+    necessary.  A terminal ``applied`` or ``rejected_preflight`` batch without
+    a capture receives an explicit diagnostic-only anchor snapshot, so the
+    planned-to-final transaction history cannot disappear.
+    """
+
+    func_ea: int
+    observations: tuple[Any, ...]
+
+
+@dataclass(frozen=True)
 class StateTransitionDispatchResolutionsObserved:
     "Preanalysis observed transition resolutions through exact dispatcher rows."
 
@@ -1119,7 +1175,9 @@ __all__ = [
     "ModificationsObserved",
     "ReachabilityObserved",
     "RenderedProgramObserved",
+    "OptblockCallbackExceptionObserved",
     "StateDispatcherRowsObserved",
+    "UnflattenDispatcherCorridorCoverageObserved",
     "StateTransitionDispatchResolutionsObserved",
     "SwitchCaseTransitionFactsObserved",
     # CFG

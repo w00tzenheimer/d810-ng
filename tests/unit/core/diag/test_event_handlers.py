@@ -4,6 +4,7 @@ from __future__ import annotations
 from d810.core.diag import create_diag_database
 
 import json
+import sqlite3
 from unittest.mock import patch
 
 import pytest
@@ -31,9 +32,12 @@ from d810.core.observability_events import (
     DiagnosticSessionObserved,
     FrontendNormalizationPlanIntentObserved,
     ModificationsObserved,
+    MutationPlanObserved,
+    MutationReceiptObserved,
     PassContractEvidencePublished,
     SemanticOutputVerifiedObserved,
 )
+import d810.core.observability_events as observability_events
 from d810.core.observability_models import (
     BlockSnapshot,
     DagEdge,
@@ -49,6 +53,18 @@ from d810.core.observability_preanalysis import (
     observe_reachability,
     observe_state_dispatcher_rows,
     observe_state_transition_dispatch_resolutions,
+    observe_unflatten_dispatcher_corridor_coverage,
+)
+from d810.analyses.value_flow.observation import FactObservation
+from d810.transforms.dispatcher_corridor_coverage import (
+    DISPATCHER_CORRIDOR_COVERAGE_METADATA,
+    DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA,
+    DispatcherBlockAnchor,
+    DispatcherCorridorCoverageValidation,
+    DispatcherRemovalPreflightProof,
+    DispatcherRemovalPreflightValidation,
+    RetiredDispatcherInfrastructure,
+    collect_unflatten_dispatcher_outcome_observations_from_metadata,
 )
 
 
@@ -447,6 +463,718 @@ def test_state_dispatcher_rows_buffer_until_snapshot(fake_conn):
         None,
         "handler_state_map",
     )
+
+
+def test_unflatten_dispatcher_corridor_coverage_buffers_then_persists_typed_fact(
+    fake_conn,
+):
+    """A residual corridor must survive the event bus into the diagnostic DB."""
+    observe_unflatten_dispatcher_corridor_coverage(
+        func_ea=0x7FF859C06F60,
+        observations=(
+            FactObservation(
+                fact_id=(
+                    "unflatten-dispatcher-corridor:residual:"
+                    "blk45@0x7ff859c07656->blk123@0x7ff859c08d35"
+                    "->blk3@0x7ff859c070c0->blk4@0x7ff859c070c4"
+                ),
+                kind="UnflattenDispatcherCorridorCoverage",
+                semantic_key="unflatten_dispatcher_corridor:residual",
+                maturity="MMAT_GLBOPT1",
+                phase="lower_state_machine",
+                confidence=1.0,
+                source_block=45,
+                source_ea=0x7FF859C07656,
+                payload={
+                    "coverage": "residual",
+                    "completion_status": "partial_residual_dispatcher",
+                    "state_merge": {
+                        "serial": 123,
+                        "ea": 0x7FF859C08D35,
+                        "label": "blk123@0x7ff859c08d35",
+                    },
+                    "path": [
+                        {"serial": 45, "ea": 0x7FF859C07656},
+                        {"serial": 123, "ea": 0x7FF859C08D35},
+                        {"serial": 3, "ea": 0x7FF859C070C0},
+                        {"serial": 4, "ea": 0x7FF859C070C4},
+                    ],
+                },
+                evidence=(
+                    "blk45@0x7ff859c07656",
+                    "blk123@0x7ff859c08d35",
+                    "blk3@0x7ff859c070c0",
+                    "blk4@0x7ff859c070c4",
+                ),
+            ),
+        ),
+    )
+
+    assert fake_conn.execute("SELECT COUNT(*) FROM fact_observations").fetchone() == (0,)
+
+    request_capture_mba_snapshot(
+        blocks=_make_snap_blocks(),
+        label="unflat_recovery_status",
+        func_ea=0x7FF859C06F60,
+        maturity="MMAT_GLBOPT1",
+        phase="post_pipeline",
+    )
+
+    row = fake_conn.execute(
+        "SELECT kind, source_block, source_ea_i64, payload "
+        "FROM fact_observations"
+    ).fetchone()
+    assert row[:3] == (
+        "UnflattenDispatcherCorridorCoverage",
+        45,
+        0x7FF859C07656,
+    )
+    payload = json.loads(row[3])
+    assert payload["coverage"] == "residual"
+    assert payload["completion_status"] == "partial_residual_dispatcher"
+    assert payload["state_merge"] == {
+        "ea": 0x7FF859C08D35,
+        "label": "blk123@0x7ff859c08d35",
+        "serial": 123,
+    }
+    assert payload["path"][-1] == {"ea": 0x7FF859C070C4, "serial": 4}
+
+
+def test_terminal_outcome_flushes_pending_after_callback_snapshot(fake_conn):
+    """A callback-created snapshot must not strand a pending plan outcome."""
+    func_ea = 0x7FF859C06F60
+    pending = FactObservation(
+        fact_id="unflatten-corridor:plan-a:pending",
+        kind="UnflattenDispatcherCorridorCoverage",
+        semantic_key="unflatten_dispatcher_corridor:plan-a",
+        maturity="MMAT_GLBOPT1",
+        phase="lower_state_machine",
+        confidence=1.0,
+        source_block=45,
+        source_ea=0x7FF859C07656,
+        payload={
+            "application_status": "pending",
+            "coverage": "pending",
+            "plan_id": "plan-a",
+        },
+        evidence=("blk45@0x7ff859c07656",),
+    )
+    final = FactObservation(
+        fact_id="unflatten-corridor:plan-a:rejected",
+        kind="UnflattenDispatcherCorridorCoverage",
+        semantic_key="unflatten_dispatcher_corridor:plan-a",
+        maturity="MMAT_GLBOPT1",
+        phase="patch_transaction",
+        confidence=1.0,
+        source_block=45,
+        source_ea=0x7FF859C07656,
+        payload={
+            "application_status": "rejected_preflight",
+            "coverage": "residual",
+            "plan_id": "plan-a",
+        },
+        evidence=("blk45@0x7ff859c07656",),
+    )
+    observe_unflatten_dispatcher_corridor_coverage(
+        func_ea=func_ea,
+        observations=(pending,),
+    )
+    event_type = observability_events.OptblockCallbackExceptionObserved
+    emit(
+        event_type(
+            func_ea=func_ea,
+            maturity="MMAT_GLBOPT1",
+            block_serial=45,
+            block_ea=0x7FF859C07656,
+            error_type="RuntimeError",
+            error_message="callback snapshot first",
+            traceback_text="RuntimeError: callback snapshot first",
+        )
+    )
+    observe_unflatten_dispatcher_corridor_coverage(
+        func_ea=func_ea,
+        observations=(final,),
+    )
+
+    rows = fake_conn.execute(
+        "SELECT fact_id, payload FROM fact_observations "
+        "WHERE kind='UnflattenDispatcherCorridorCoverage' ORDER BY fact_id"
+    ).fetchall()
+    assert [row[0] for row in rows] == [
+        "unflatten-corridor:plan-a:pending",
+        "unflatten-corridor:plan-a:rejected",
+    ]
+    assert {json.loads(row[1])["application_status"] for row in rows} == {
+        "pending",
+        "rejected_preflight",
+    }
+
+
+def test_dispatcher_outcome_fact_ids_are_scoped_by_plan_id(fake_conn):
+    """Two plan attempts at one snapshot must not overwrite each other."""
+    metadata = {
+        "function_ea": 0x401000,
+        "dispatcher": {"serial": 2, "ea": 0x401080, "label": "blk2@0x401080"},
+        "enumeration_complete": True,
+        "covered_corridors": [],
+        "residual_corridors": [],
+    }
+    request_capture_mba_snapshot(
+        blocks=_make_snap_blocks(),
+        label="scoped_outcomes",
+        func_ea=0x401000,
+        maturity="MMAT_GLBOPT1",
+        phase="post_d810",
+    )
+    for plan_id in ("plan-one", "plan-two"):
+        observe_unflatten_dispatcher_corridor_coverage(
+            func_ea=0x401000,
+            observations=collect_unflatten_dispatcher_outcome_observations_from_metadata(
+                {DISPATCHER_CORRIDOR_COVERAGE_METADATA: metadata},
+                maturity="MMAT_GLBOPT1",
+                phase="lower_state_machine",
+                plan_id=plan_id,
+            ),
+        )
+
+    rows = fake_conn.execute(
+        "SELECT fact_id, payload FROM fact_observations "
+        "WHERE kind='UnflattenDispatcherCorridorCoverageSummary' ORDER BY fact_id"
+    ).fetchall()
+    assert len(rows) == 2
+    assert {json.loads(row[1])["plan_id"] for row in rows} == {
+        "plan-one",
+        "plan-two",
+    }
+    assert all("plan=" in row[0] for row in rows)
+
+
+def test_dispatcher_outcome_retry_attempts_persist_separate_terminal_rows(fake_conn):
+    """Same-plan terminal retries retain both reasons at one SQLite snapshot."""
+    metadata = {
+        "function_ea": 0x401000,
+        "dispatcher": {"serial": 2, "ea": 0x401080, "label": "blk2@0x401080"},
+        "enumeration_complete": True,
+        "covered_corridors": [],
+        "residual_corridors": [],
+    }
+    request_capture_mba_snapshot(
+        blocks=_make_snap_blocks(),
+        label="retry_attempt_outcomes",
+        func_ea=0x401000,
+        maturity="MMAT_GLBOPT1",
+        phase="post_d810",
+    )
+    for attempt_id, reason in (
+        ("retry-attempt-one", "binding retry one"),
+        ("retry-attempt-two", "binding retry two"),
+    ):
+        observe_unflatten_dispatcher_corridor_coverage(
+            func_ea=0x401000,
+            observations=collect_unflatten_dispatcher_outcome_observations_from_metadata(
+                {DISPATCHER_CORRIDOR_COVERAGE_METADATA: metadata},
+                maturity="MMAT_GLBOPT1",
+                phase="patch_transaction",
+                application_status="rejected_clean",
+                outcome_reason=reason,
+                plan_id="immutable-retry-plan",
+                attempt_id=attempt_id,
+            ),
+        )
+
+    rows = fake_conn.execute(
+        "SELECT fact_id, payload FROM fact_observations "
+        "WHERE kind='UnflattenDispatcherCorridorCoverageSummary' ORDER BY fact_id"
+    ).fetchall()
+    assert len(rows) == 2
+    payloads = [json.loads(row[1]) for row in rows]
+    assert {payload["plan_id"] for payload in payloads} == {"immutable-retry-plan"}
+    assert {payload["attempt_id"] for payload in payloads} == {
+        "retry-attempt-one",
+        "retry-attempt-two",
+    }
+    assert {payload["outcome_reason"] for payload in payloads} == {
+        "binding retry one",
+        "binding retry two",
+    }
+    assert all("plan=immutable-retry-plan:attempt=retry-attempt-" in row[0] for row in rows)
+
+
+def test_unflatten_persistence_failure_is_logged_not_silently_dropped(monkeypatch):
+    """Closed/unavailable diagnostic connections remain observable failures."""
+    from d810.core.diag import event_handlers
+
+    logged = []
+    monkeypatch.setattr(
+        event_handlers,
+        "get_diag_conn",
+        lambda _func_ea: (_ for _ in ()).throw(sqlite3.ProgrammingError("closed")),
+    )
+    monkeypatch.setattr(
+        event_handlers,
+        "_logger",
+        type("_Logger", (), {"exception": lambda *_args, **_kwargs: logged.append(1)})(),
+    )
+    event_handlers._handle_unflatten_dispatcher_corridor_coverage(
+        observability_events.UnflattenDispatcherCorridorCoverageObserved(
+            func_ea=0x401000,
+            observations=(
+                FactObservation(
+                    fact_id="closed-db",
+                    kind="UnflattenDispatcherCorridorCoverage",
+                    semantic_key="closed-db",
+                    maturity="MMAT_GLBOPT1",
+                    phase="patch_transaction",
+                    confidence=1.0,
+                    payload={"application_status": "rejected_preflight"},
+                    evidence=(),
+                ),
+            ),
+        )
+    )
+    assert logged == [1]
+
+
+def test_optblock_callback_exception_persists_typed_traceback_and_anchor(fake_conn):
+    """A top-level callback failure must survive as a queryable typed fact."""
+    event_type = getattr(
+        observability_events,
+        "OptblockCallbackExceptionObserved",
+        None,
+    )
+    assert event_type is not None, "optblock callback failures need a typed event"
+    request_capture_mba_snapshot(
+        blocks=_make_snap_blocks(),
+        label="callback_failure_capture",
+        func_ea=0x7FF859C06F60,
+        maturity="MMAT_GLBOPT1",
+        phase="post_d810",
+    )
+    emit(
+        event_type(
+            func_ea=0x7FF859C06F60,
+            maturity="MMAT_GLBOPT1",
+            block_serial=45,
+            block_ea=0x7FF859C07656,
+            error_type="TypeError",
+            error_message="PatchPlan lowering requires bound transaction authority",
+            traceback_text=(
+                "Traceback (most recent call last):\\n"
+                "TypeError: PatchPlan lowering requires bound transaction authority"
+            ),
+        )
+    )
+
+    row = fake_conn.execute(
+        "SELECT fact_id, kind, semantic_key, maturity, phase, source_block, "
+        "source_ea_i64, payload, evidence FROM fact_observations"
+    ).fetchone()
+    assert row[0].startswith(
+        "optblock-callback-exception:func=0x7ff859c06f60:"
+        "maturity=MMAT_GLBOPT1:blk45@0x7ff859c07656:TypeError:occurrence="
+    )
+    assert row[1:7] == (
+        "OptblockCallbackException",
+        "optblock_callback_exception:blk45@0x7ff859c07656:TypeError",
+        "MMAT_GLBOPT1",
+        "optblock_callback",
+        45,
+        0x7FF859C07656,
+    )
+    payload = json.loads(row[7])
+    assert payload["block_anchor"] == "blk45@0x7ff859c07656"
+    assert payload["error_type"] == "TypeError"
+    assert payload["occurrence_id"]
+    assert "requires bound transaction authority" in payload["traceback_text"]
+    assert json.loads(row[8]) == [
+        "blk45@0x7ff859c07656",
+        "optblock_callback_exception",
+    ]
+
+
+def test_optblock_callback_exception_occurrences_do_not_overwrite_each_other(
+    fake_conn,
+):
+    """Same-anchor callback failures retain each independently published trace."""
+    request_capture_mba_snapshot(
+        blocks=_make_snap_blocks(),
+        label="callback_failure_occurrences",
+        func_ea=0x7FF859C06F60,
+        maturity="MMAT_GLBOPT1",
+        phase="post_d810",
+    )
+    event_type = observability_events.OptblockCallbackExceptionObserved
+    for message in ("first callback failure", "second callback failure"):
+        emit(
+            event_type(
+                func_ea=0x7FF859C06F60,
+                maturity="MMAT_GLBOPT1",
+                block_serial=45,
+                block_ea=0x7FF859C07656,
+                error_type="TypeError",
+                error_message=message,
+                traceback_text=f"TypeError: {message}",
+            )
+        )
+
+    rows = fake_conn.execute(
+        "SELECT fact_id, payload FROM fact_observations "
+        "WHERE kind='OptblockCallbackException' ORDER BY fact_id"
+    ).fetchall()
+    assert len(rows) == 2
+    payloads = [json.loads(row[1]) for row in rows]
+    assert {payload["error_message"] for payload in payloads} == {
+        "first callback failure",
+        "second callback failure",
+    }
+    assert len({payload["occurrence_id"] for payload in payloads}) == 2
+
+
+@pytest.mark.parametrize(
+    ("application_status", "outcome_reason", "expected_coverage"),
+    (
+        (
+            "rejected_preflight",
+            "entry=entry reachability collapsed",
+            "residual",
+        ),
+        (
+            "poisoned_restart_required",
+            "observed reachability rejected: terminal=; entry=entry reachability collapsed",
+            "residual",
+        ),
+        ("applied", None, "covered"),
+    ),
+)
+def test_unflatten_dispatcher_terminal_outcome_persists_pending_and_final_status(
+    fake_conn,
+    application_status,
+    outcome_reason,
+    expected_coverage,
+):
+    """A final transaction outcome must not depend on a later MBA capture."""
+    source = {"serial": 45, "ea": 0x7FF859C07656, "label": "blk45@0x7ff859c07656"}
+    merge = {"serial": 123, "ea": 0x7FF859C08D35, "label": "blk123@0x7ff859c08d35"}
+    feeder = {"serial": 3, "ea": 0x7FF859C070C0, "label": "blk3@0x7ff859c070c0"}
+    dispatcher = {"serial": 4, "ea": 0x7FF859C070C4, "label": "blk4@0x7ff859c070c4"}
+    handler = {"serial": 121, "ea": 0x7FF859C08B37, "label": "blk121@0x7ff859c08b37"}
+    terminal = {"serial": 34, "ea": 0x7FF859C0747A, "label": "blk34@0x7ff859c0747a"}
+    plan_metadata = {
+        DISPATCHER_CORRIDOR_COVERAGE_METADATA: {
+            "function_ea": 0x7FF859C06F60,
+            "dispatcher": dispatcher,
+            "enumeration_complete": True,
+            "covered_corridors": [
+                {
+                    "source": source,
+                    "state_merge": merge,
+                    "dispatcher_feeder": feeder,
+                    "dispatcher": dispatcher,
+                    "path": [source, merge, feeder, dispatcher],
+                }
+            ],
+            "residual_corridors": [],
+        },
+        DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA: {
+            "function_ea": 0x7FF859C06F60,
+            "dispatcher": dispatcher,
+            "proof_status": "accepted",
+            "reason": "typed_dispatcher_infrastructure_removed",
+            "authoritative_handlers": [handler],
+            "post_reachable_handlers": [handler],
+            "pre_reachable_terminals": [terminal],
+            "post_reachable_terminals": [terminal],
+            "retired_infrastructure": [
+                {"role": "comparison_dispatcher", "anchor": dispatcher},
+                {"role": "dispatcher_feeder", "anchor": feeder},
+                {"role": "state_merge", "anchor": merge},
+            ],
+            "lost_blocks": [merge, feeder, dispatcher],
+            "state_plumbing": [feeder],
+            "producer_safety": {
+                "fragment_atomic": True,
+                "non_state_use_def_veto": True,
+                "non_state_use_def_checked": True,
+                "non_state_use_def_severances_zero": True,
+            },
+            "coverage_enumeration_complete": True,
+            "residual_corridor_count": 0,
+        },
+    }
+    observed_validation = None
+    projected_validation = None
+    if application_status in {
+        "rejected_preflight",
+        "poisoned_restart_required",
+    }:
+        merge_anchor = DispatcherBlockAnchor(serial=123, ea=0x7FF859C08D35)
+        feeder_anchor = DispatcherBlockAnchor(serial=3, ea=0x7FF859C070C0)
+        dispatcher_anchor = DispatcherBlockAnchor(serial=4, ea=0x7FF859C070C4)
+        handler_anchor = DispatcherBlockAnchor(serial=121, ea=0x7FF859C08B37)
+        terminal_anchor = DispatcherBlockAnchor(serial=34, ea=0x7FF859C0747A)
+        rejected_validation = DispatcherRemovalPreflightValidation(
+            passed=False,
+            reason="dispatcher_removal_proof_drift",
+            proof=DispatcherRemovalPreflightProof(
+                function_ea=0x7FF859C06F60,
+                dispatcher=dispatcher_anchor,
+                authoritative_handlers=(handler_anchor,),
+                post_reachable_handlers=(),
+                pre_reachable_terminals=(terminal_anchor,),
+                post_reachable_terminals=(terminal_anchor,),
+                retired_infrastructure=(
+                    RetiredDispatcherInfrastructure(
+                        role="state_merge",
+                        anchor=merge_anchor,
+                    ),
+                    RetiredDispatcherInfrastructure(
+                        role="dispatcher_feeder",
+                        anchor=feeder_anchor,
+                    ),
+                    RetiredDispatcherInfrastructure(
+                        role="comparison_dispatcher",
+                        anchor=dispatcher_anchor,
+                    ),
+                ),
+                lost_blocks=frozenset({3, 4, 123}),
+                    lost_block_anchors=(
+                    feeder_anchor,
+                    dispatcher_anchor,
+                        merge_anchor,
+                    ),
+                    state_plumbing=(feeder_anchor,),
+                    producer_safety=(
+                        ("fragment_atomic", True),
+                        ("non_state_use_def_veto", True),
+                        ("non_state_use_def_checked", True),
+                        ("non_state_use_def_severances_zero", True),
+                ),
+                coverage_enumeration_complete=True,
+                residual_corridor_count=0,
+                passed=False,
+                reason="authoritative_handler_lost",
+            ),
+        )
+        if application_status == "rejected_preflight":
+            projected_validation = rejected_validation
+        else:
+            observed_validation = rejected_validation
+
+    observe_unflatten_dispatcher_corridor_coverage(
+        func_ea=0x7FF859C06F60,
+        observations=collect_unflatten_dispatcher_outcome_observations_from_metadata(
+            plan_metadata,
+            maturity="MMAT_GLBOPT1",
+            phase="lower_state_machine",
+        ),
+    )
+    assert fake_conn.execute("SELECT COUNT(*) FROM fact_observations").fetchone() == (0,)
+
+    if application_status == "poisoned_restart_required":
+        emit(
+            DiagnosticSessionObserved(
+                session_id="diag-test-session",
+                func_ea=0x7FF859C06F60,
+                top_level_epoch=0,
+                native_key_json="{}",
+                status="active",
+            )
+        )
+        emit(
+            MutationPlanObserved(
+                session_id="diag-test-session",
+                func_ea=0x7FF859C06F60,
+                mutation_batch_id="diag-test-attempt",
+                mutation_kind="block_replace",
+                planned_operation_count=62,
+                mba_generation=0,
+                evidence_generation=0,
+                maturity="MMAT_GLBOPT1",
+                description="PatchPlan diag-test-attempt",
+            )
+        )
+        emit(
+            MutationReceiptObserved(
+                session_id="diag-test-session",
+                func_ea=0x7FF859C06F60,
+                mutation_batch_id="diag-test-attempt",
+                mutation_kind="block_replace",
+                pre_generation=0,
+                post_generation=0,
+                planned_operation_count=62,
+                applied_operation_count=62,
+                evidence_generation=0,
+                maturity="MMAT_GLBOPT1",
+                outcome="aborted",
+                description="PatchPlan diag-test-attempt",
+                reason=outcome_reason,
+            )
+        )
+
+    observe_unflatten_dispatcher_corridor_coverage(
+        func_ea=0x7FF859C06F60,
+        observations=collect_unflatten_dispatcher_outcome_observations_from_metadata(
+            plan_metadata,
+            maturity="MMAT_GLBOPT1",
+            phase="patch_transaction",
+            application_status=application_status,
+            outcome_reason=outcome_reason,
+            observed_validation=observed_validation,
+            projected_validation=projected_validation,
+        ),
+    )
+
+    snapshot = fake_conn.execute(
+        "SELECT label, block_count, maturity, phase FROM snapshots"
+    ).fetchone()
+    assert snapshot == (
+        f"unflatten_dispatcher_outcome:{application_status}",
+        0,
+        "MMAT_GLBOPT1",
+        "post_d810",
+    )
+    rows = fake_conn.execute(
+        "SELECT kind, payload FROM fact_observations ORDER BY fact_id"
+    ).fetchall()
+    assert {row[0] for row in rows} == {
+        "UnflattenDispatcherCorridorCoverage",
+        "UnflattenDispatcherCorridorCoverageSummary",
+        "UnflattenDispatcherRemovalPreflightProof",
+    }
+    payloads = [json.loads(row[1]) for row in rows]
+    final_corridor = next(
+        payload
+        for payload in payloads
+        if payload.get("application_status") == application_status
+        and payload.get("state_merge") is not None
+    )
+    assert final_corridor["coverage"] == expected_coverage
+    assert final_corridor["state_merge"] == merge
+    final_proof = next(
+        payload
+        for payload in payloads
+        if payload.get("application_status") == application_status
+        and payload.get("retired_infrastructure")
+    )
+    assert {entry["anchor"]["serial"] for entry in final_proof["retired_infrastructure"]} == {
+        3,
+        4,
+        123,
+    }
+    if application_status in {"rejected_preflight", "poisoned_restart_required"}:
+        validation_key = (
+            "projected_validation"
+            if application_status == "rejected_preflight"
+            else "observed_validation"
+        )
+        assert final_proof[validation_key] == {
+            "validation_status": "rejected",
+            "reason": "dispatcher_removal_proof_drift",
+            "proof": {
+                "function_ea": 0x7FF859C06F60,
+                "dispatcher": dispatcher,
+                "proof_status": "rejected",
+                "reason": "authoritative_handler_lost",
+                "authoritative_handlers": [handler],
+                "post_reachable_handlers": [],
+                "pre_reachable_terminals": [terminal],
+                "post_reachable_terminals": [terminal],
+                "retired_infrastructure": [
+                    {"role": "state_merge", "anchor": merge},
+                    {"role": "dispatcher_feeder", "anchor": feeder},
+                    {"role": "comparison_dispatcher", "anchor": dispatcher},
+                ],
+                "lost_blocks": [feeder, dispatcher, merge],
+                "state_plumbing": [feeder],
+                "producer_safety": {
+                    "fragment_atomic": True,
+                    "non_state_use_def_veto": True,
+                    "non_state_use_def_checked": True,
+                    "non_state_use_def_severances_zero": True,
+                },
+                "coverage_enumeration_complete": True,
+                "residual_corridor_count": 0,
+            },
+        }
+    if application_status == "poisoned_restart_required":
+        assert fake_conn.execute(
+            "SELECT mutation_kind, planned_operation_count, "
+            "applied_operation_count, outcome, reason FROM mutation_receipts"
+        ).fetchone() == (
+            "block_replace",
+            62,
+            62,
+            "aborted",
+            outcome_reason,
+        )
+    assert any(
+        payload.get("application_status") == "pending"
+        and payload.get("coverage") == "pending"
+        for payload in payloads
+    )
+
+
+def test_missing_dispatcher_removal_proof_persists_validation_only_fact(fake_conn):
+    """A missing proof verdict remains queryable without invented proof inputs."""
+    source = {"serial": 45, "ea": 0x7FF859C07656, "label": "blk45@0x7ff859c07656"}
+    dispatcher = {"serial": 4, "ea": 0x7FF859C070C4, "label": "blk4@0x7ff859c070c4"}
+    plan_metadata = {
+        DISPATCHER_CORRIDOR_COVERAGE_METADATA: {
+            "function_ea": 0x7FF859C06F60,
+            "dispatcher": dispatcher,
+            "enumeration_complete": True,
+            "covered_corridors": [
+                {
+                    "source": source,
+                    "state_merge": None,
+                    "dispatcher_feeder": source,
+                    "dispatcher": dispatcher,
+                    "path": [source, dispatcher],
+                }
+            ],
+            "residual_corridors": [],
+        }
+    }
+    projected_validation = DispatcherRemovalPreflightValidation(
+        passed=False,
+        reason="dispatcher_removal_proof_missing",
+    )
+    projected_coverage_validation = DispatcherCorridorCoverageValidation(
+        passed=True,
+        reason="dispatcher_corridor_coverage_matches_observed",
+    )
+
+    observe_unflatten_dispatcher_corridor_coverage(
+        func_ea=0x7FF859C06F60,
+        observations=collect_unflatten_dispatcher_outcome_observations_from_metadata(
+            plan_metadata,
+            maturity="MMAT_GLBOPT1",
+            phase="patch_transaction",
+            application_status="rejected_preflight",
+            outcome_reason="dispatcher_removal=dispatcher_removal_proof_missing",
+            projected_validation=projected_validation,
+            projected_coverage_validation=projected_coverage_validation,
+            plan_id="missing-proof-plan",
+            attempt_id="missing-proof-attempt",
+        ),
+    )
+
+    row = fake_conn.execute(
+        "SELECT source_block, source_ea_i64, payload FROM fact_observations "
+        "WHERE kind='UnflattenDispatcherRemovalPreflightProof'"
+    ).fetchone()
+    assert row is not None
+    assert row[:2] == (4, 0x7FF859C070C4)
+    payload = json.loads(row[2])
+    assert payload["validation_only"] is True
+    assert payload["raw_proof_present"] is False
+    assert payload["dispatcher"] == dispatcher
+    assert payload["projected_validation"] == {
+        "validation_status": "rejected",
+        "reason": "dispatcher_removal_proof_missing",
+        "proof": None,
+    }
+    assert "authoritative_handlers" not in payload
 
 
 def test_state_transition_dispatch_resolutions_write_under_snapshot(fake_conn):
@@ -891,3 +1619,234 @@ def test_handler_exception_is_swallowed_by_bus(fake_conn, caplog):
             modifications=(Modification(mod_index=0, mod_type="goto_redirect"),),
         )
     )
+
+
+def test_use_def_severance_observations_persist_exact_anchors_without_overwrite(
+    fake_conn,
+):
+    """Each heuristic severance keeps its complete source/target/use evidence."""
+    func_ea = 0x7FF85A850000
+    source = {
+        "serial": 45,
+        "ea": 0x7FF85A852A00,
+        "label": "blk45@0x7ff85a852a00",
+    }
+    old_target = {
+        "serial": 46,
+        "ea": 0x7FF85A852A10,
+        "label": "blk46@0x7ff85a852a10",
+    }
+    new_target = {
+        "serial": 47,
+        "ea": 0x7FF85A852A20,
+        "label": "blk47@0x7ff85a852a20",
+    }
+    use = {
+        "serial": 88,
+        "ea": 0x7FF85A853300,
+        "label": "blk88@0x7ff85a853300",
+    }
+    use_instruction_ea = 0x7FF85A8533AA
+    violations = [
+        {
+            "source": source,
+            "old_target": old_target,
+            "new_target": new_target,
+            "stack_offset": 0x70 + index,
+            "stack_size": 4,
+            "use": use,
+            "use_instruction_ea": use_instruction_ea,
+        }
+        for index in range(3)
+    ]
+    plan_metadata = {
+        DISPATCHER_CORRIDOR_COVERAGE_METADATA: {
+            "function_ea": func_ea,
+            "dispatcher": {
+                "serial": 2,
+                "ea": 0x7FF85A850100,
+                "label": "blk2@0x7ff85a850100",
+            },
+            "enumeration_complete": True,
+            "covered_corridors": [],
+            "residual_corridors": [],
+        },
+        "use_def_severance_audit": {
+            "function_ea": func_ea,
+            "executed": True,
+            "clean": False,
+            "severance_count": 3,
+            "failure_reason": None,
+            "enforced": False,
+            "enforcement_enabled": False,
+            "enforcement_status": "heuristic_observed",
+            "violations": violations,
+        },
+    }
+    request_capture_mba_snapshot(
+        blocks=_make_snap_blocks(),
+        label="use_def_severances",
+        func_ea=func_ea,
+        maturity="MMAT_GLBOPT1",
+        phase="post_d810",
+    )
+
+    observe_unflatten_dispatcher_corridor_coverage(
+        func_ea=func_ea,
+        observations=collect_unflatten_dispatcher_outcome_observations_from_metadata(
+            plan_metadata,
+            maturity="MMAT_GLBOPT1",
+            phase="lower_state_machine",
+            plan_id="use-def-plan",
+            attempt_id="use-def-attempt",
+        ),
+    )
+
+    rows = fake_conn.execute(
+        "SELECT fact_id, payload FROM fact_observations "
+        "WHERE kind='UnflattenUseDefSeverance' ORDER BY fact_id"
+    ).fetchall()
+    assert len(rows) == 3
+    assert len({row[0] for row in rows}) == 3
+    payloads = [json.loads(row[1]) for row in rows]
+    assert all(payload["source"] == source for payload in payloads)
+    assert all(payload["old_target"]["serial"] is not None for payload in payloads)
+    assert all(payload["old_target"]["ea"] is not None for payload in payloads)
+    assert all(payload["new_target"]["serial"] is not None for payload in payloads)
+    assert all(payload["new_target"]["ea"] is not None for payload in payloads)
+    assert all(payload["use"] == use for payload in payloads)
+    assert {payload["use_instruction_ea"] for payload in payloads} == {
+        use_instruction_ea
+    }
+    assert {payload["enforcement_status"] for payload in payloads} == {
+        "heuristic_observed"
+    }
+    assert {payload["stack_offset"] for payload in payloads} == {0x70, 0x71, 0x72}
+    assert all(payload["stack_size"] == 4 for payload in payloads)
+    summary = fake_conn.execute(
+        "SELECT payload FROM fact_observations "
+        "WHERE kind='UnflattenUseDefSeveranceSummary'"
+    ).fetchone()
+    assert summary is not None
+    assert json.loads(summary[0])["severance_count"] == 3
+
+
+def test_partial_use_def_severance_persists_safety_unavailable(fake_conn):
+    """Partial evidence is durable without claiming an authoritative veto."""
+    func_ea = 0x401000
+    request_capture_mba_snapshot(
+        blocks=_make_snap_blocks(),
+        label="partial_use_def_severance",
+        func_ea=func_ea,
+        maturity="MMAT_GLBOPT1",
+        phase="post_d810",
+    )
+    observe_unflatten_dispatcher_corridor_coverage(
+        func_ea=func_ea,
+        observations=collect_unflatten_dispatcher_outcome_observations_from_metadata(
+            {
+                "use_def_severance_audit": {
+                    "function_ea": func_ea,
+                    "executed": False,
+                    "clean": False,
+                    "severance_count": 1,
+                    "failure_reason": "query_failed:LookupError",
+                    "enforced": True,
+                    "enforcement_enabled": True,
+                    "violations": [
+                        {
+                            "source": {
+                                "serial": 1,
+                                "ea": 0x401100,
+                                "label": "blk1@0x401100",
+                            },
+                            "old_target": {
+                                "serial": 2,
+                                "ea": 0x401200,
+                                "label": "blk2@0x401200",
+                            },
+                            "new_target": {
+                                "serial": 3,
+                                "ea": 0x401300,
+                                "label": "blk3@0x401300",
+                            },
+                            "stack_offset": 0x70,
+                            "stack_size": 4,
+                            "use": {
+                                "serial": 4,
+                                "ea": 0x401400,
+                                "label": "blk4@0x401400",
+                            },
+                            "use_instruction_ea": 0x4014AA,
+                        }
+                    ],
+                }
+            },
+            maturity="MMAT_GLBOPT1",
+            phase="lower_state_machine",
+        ),
+    )
+
+    rows = fake_conn.execute(
+        "SELECT kind, payload FROM fact_observations "
+        "WHERE kind IN ('UnflattenUseDefSeverance', "
+        "'UnflattenUseDefSeveranceSummary') ORDER BY fact_id"
+    ).fetchall()
+    assert len(rows) == 2
+    payloads = [json.loads(row[1]) for row in rows]
+    assert {payload["enforcement_status"] for payload in payloads} == {
+        "safety_unavailable"
+    }
+    assert {payload["severance_count"] for payload in payloads} == {1}
+    violation_payloads = [
+        payload
+        for (kind, _), payload in zip(rows, payloads)
+        if kind == "UnflattenUseDefSeverance"
+    ]
+    assert [payload["use_instruction_ea"] for payload in violation_payloads] == [
+        0x4014AA
+    ]
+
+
+def test_use_def_observation_clears_serial_when_anchor_ea_is_missing(fake_conn):
+    """A serial without its EA is not persisted as a falsely stable anchor."""
+    func_ea = 0x401000
+    request_capture_mba_snapshot(
+        blocks=_make_snap_blocks(),
+        label="missing_use_def_ea",
+        func_ea=func_ea,
+        maturity="MMAT_GLBOPT1",
+        phase="post_d810",
+    )
+    observe_unflatten_dispatcher_corridor_coverage(
+        func_ea=func_ea,
+        observations=collect_unflatten_dispatcher_outcome_observations_from_metadata(
+            {
+                "use_def_severance_audit": {
+                    "function_ea": func_ea,
+                    "executed": True,
+                    "clean": False,
+                    "severance_count": 1,
+                    "enforced": True,
+                    "violations": [
+                        {
+                            "source": {"serial": 45, "ea": None, "label": "unknown"},
+                            "old_target": {"serial": 46, "ea": 0x4020},
+                            "new_target": {"serial": 47, "ea": 0x4030},
+                            "stack_offset": 0x70,
+                            "stack_size": 4,
+                            "use": {"serial": 88, "ea": 0x4040},
+                        }
+                    ],
+                }
+            },
+            maturity="MMAT_GLBOPT1",
+            phase="lower_state_machine",
+        ),
+    )
+    row = fake_conn.execute(
+        "SELECT payload FROM fact_observations "
+        "WHERE kind='UnflattenUseDefSeverance'"
+    ).fetchone()
+    assert row is not None
+    assert json.loads(row[0])["source"]["serial"] is None

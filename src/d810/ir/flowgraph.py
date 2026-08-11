@@ -158,6 +158,8 @@ class MopSnapshot:
     # operands; ``sub_l`` / ``sub_r`` recurse for deeper nesting.
     sub_kind: "InsnKind | None" = None
     sub_value_op_kind: "ValueOpKind | None" = None
+    sub_raw_opcode: int | None = None
+    sub_predicate_kind: "PredicateKind | None" = None
     sub_l: "MopSnapshot | None" = None
     sub_r: "MopSnapshot | None" = None
     # Function call argument lists (Hex-Rays mop_f) projected as nested

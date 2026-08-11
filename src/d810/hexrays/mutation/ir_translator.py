@@ -73,7 +73,6 @@ from d810.hexrays.mutation.mba_mutation_events import StructuralMutationKind
 from d810.hexrays.mutation.patch_binding import (
     BoundModifier,
 )
-from d810.hexrays.mutation.patch_transaction import BoundPatchCfgTransaction
 from d810.transforms.cfg_transaction import CfgGenerationPoisoned
 
 if TYPE_CHECKING:
@@ -81,6 +80,7 @@ if TYPE_CHECKING:
     from d810.hexrays.mutation.deferred_modifier import (
         DeferredGraphModifier as DeferredGraphModifierType,
     )
+    from d810.hexrays.mutation.patch_transaction import BoundPatchCfgTransaction
 
 logger = getLogger(__name__)
 
@@ -449,7 +449,8 @@ def capture_mop_snapshot(
         # analyses can read the compared/computed expression structure, not
         # just the flattened ``stack_refs``.  ``sub_l``/``sub_r`` recurse.
         inner = getattr(mop, "d", None)
-        sub_kind = sub_value_op_kind = sub_l = sub_r = None
+        sub_kind = sub_value_op_kind = sub_raw_opcode = sub_predicate_kind = None
+        sub_l = sub_r = None
         if inner is not None:
             # Match the defensive ``getattr`` used for ``l``/``r`` below so a
             # partial sub-instruction (a minsn without an opcode, or a test
@@ -465,6 +466,12 @@ def capture_mop_snapshot(
                 if sub_opcode is None
                 else opcode_lift.value_op_from_opcode(sub_opcode)
             )
+            sub_raw_opcode = None if sub_opcode is None else int(sub_opcode)
+            sub_predicate_kind = (
+                None
+                if sub_opcode is None
+                else opcode_lift.predicate_from_opcode(sub_opcode)
+            )
             sub_l = capture_mop_snapshot(getattr(inner, "l", None), lvar_stkoff_map)
             sub_r = capture_mop_snapshot(getattr(inner, "r", None), lvar_stkoff_map)
         return CfgMopSnapshot(
@@ -473,6 +480,8 @@ def capture_mop_snapshot(
             stack_refs=_stack_refs_from_mop(mop),
             sub_kind=sub_kind,
             sub_value_op_kind=sub_value_op_kind,
+            sub_raw_opcode=sub_raw_opcode,
+            sub_predicate_kind=sub_predicate_kind,
             sub_l=sub_l,
             sub_r=sub_r,
             kind=kind,
@@ -1183,7 +1192,14 @@ class IDAIRTranslator:
         deferred_modifier_module: object,
     ) -> tuple["DeferredGraphModifierType", MbaMutationGateway]:
         """Queue one already-preflighted and exactly bound PatchPlan."""
-        if not isinstance(bound_transaction, BoundPatchCfgTransaction):
+        # The supported D810 reload lifecycle can refresh patch_transaction
+        # while this translator remains live. Resolve the canonical current
+        # class at the authority boundary instead of retaining a stale import.
+        from d810.hexrays.mutation.patch_transaction import (
+            BoundPatchCfgTransaction as CurrentBoundPatchCfgTransaction,
+        )
+
+        if not isinstance(bound_transaction, CurrentBoundPatchCfgTransaction):
             raise TypeError("PatchPlan lowering requires bound transaction authority")
         if (
             bound_transaction.plan is not patch_plan
