@@ -19,7 +19,10 @@ from d810.ir.flowgraph import FlowGraph
 from d810.hexrays.mutation.semantic_fragment_profile import (
     SemanticFragmentPublicationProfile,
 )
-from d810.transforms.cfg_transaction import PatchPlanExecutionResult
+from d810.transforms.cfg_transaction import (
+    PatchPlanExecutionResult,
+    TransactionAttemptId,
+)
 from d810.transforms.fragment_plan import FragmentPlan
 from d810.transforms.plan import PatchPlan
 
@@ -179,14 +182,24 @@ class HexRaysMutationBackend:
         """Execute one already-lowered PatchPlan through the shared coordinator."""
         del safety_policy
         from d810.hexrays.mutation.patch_transaction import (
+            PatchTransactionPostObservationRejected,
             PatchTransactionPreflightRejected,
             execute_patch_transaction,
         )
+        from d810.transforms.cfg_transaction import CfgGenerationPoisoned
 
         if pre_cfg is None:
             pre_cfg = self._translator.lift(live_source)
         elif not isinstance(pre_cfg, FlowGraph):
             raise TypeError("PatchPlan execution requires an immutable pre-CFG")
+        identity_index = getattr(self._mutation_gateway, "identity_index", None)
+        if identity_index is None:
+            raise TypeError("Hex-Rays mutation backend requires an identity index")
+        attempt_authority = TransactionAttemptId.new(
+            rewrite_plan.plan_id,
+            str(identity_index.session_id),
+            int(identity_index.generation),
+        )
         self._last_patch_execution = None
         self._last_patch_failure = None
         try:
@@ -197,12 +210,153 @@ class HexRaysMutationBackend:
                 live_source,
                 pre_cfg=pre_cfg,
                 contract=getattr(self._translator, "contract", None),
+                attempt_id=attempt_authority,
             )
         except PatchTransactionPreflightRejected as error:
             self._last_patch_failure = error
+            self._observe_dispatcher_transaction_outcome(
+                rewrite_plan,
+                pre_cfg=pre_cfg,
+                application_status="rejected_preflight",
+                outcome_reason=str(error),
+                attempt_id=attempt_authority.attempt_id,
+                projected_validation=(
+                    error.projected_dispatcher_removal_validation
+                ),
+                projected_coverage_validation=(
+                    error.projected_dispatcher_coverage_validation
+                ),
+            )
             logger.warning("Rejecting Hex-Rays PatchPlan preflight: %s", error)
             return pre_cfg
+        except CfgGenerationPoisoned as error:
+            self._last_patch_failure = error
+            observed_validation = getattr(
+                error,
+                "observed_dispatcher_removal_validation",
+                None,
+            )
+            observed_coverage_validation = getattr(
+                error,
+                "observed_dispatcher_coverage_validation",
+                None,
+            )
+            cause = error.__cause__
+            if isinstance(cause, PatchTransactionPostObservationRejected):
+                observed_validation = cause.observed_dispatcher_removal_validation
+                observed_coverage_validation = (
+                    cause.observed_dispatcher_coverage_validation
+                )
+            self._observe_dispatcher_transaction_outcome(
+                rewrite_plan,
+                pre_cfg=pre_cfg,
+                application_status="poisoned_restart_required",
+                outcome_reason=str(error.failure.reason),
+                attempt_id=attempt_authority.attempt_id,
+                observed_validation=observed_validation,
+                observed_coverage_validation=observed_coverage_validation,
+            )
+            raise
+        except Exception as error:
+            # Projection/contract/binding failures happen before mutation, but
+            # a coverage-bearing plan still needs a terminal diagnostic record
+            # rather than a permanently pending corridor fact.  Preserve the
+            # original exception contract for callers.
+            self._last_patch_failure = error
+            self._observe_dispatcher_transaction_outcome(
+                rewrite_plan,
+                pre_cfg=pre_cfg,
+                application_status="rejected_clean",
+                outcome_reason=str(error) or type(error).__name__,
+                attempt_id=attempt_authority.attempt_id,
+                projected_validation=getattr(
+                    error,
+                    "projected_dispatcher_removal_validation",
+                    None,
+                ),
+                projected_coverage_validation=getattr(
+                    error,
+                    "projected_dispatcher_coverage_validation",
+                    None,
+                ),
+            )
+            raise
+        self._observe_dispatcher_transaction_outcome(
+            rewrite_plan,
+            pre_cfg=pre_cfg,
+            application_status="applied",
+            attempt_id=attempt_authority.attempt_id,
+            projected_validation=getattr(
+                self._last_patch_execution,
+                "projected_dispatcher_removal_validation",
+                None,
+            ),
+            projected_coverage_validation=getattr(
+                self._last_patch_execution,
+                "projected_dispatcher_coverage_validation",
+                None,
+            ),
+            observed_validation=getattr(
+                self._last_patch_execution,
+                "observed_dispatcher_removal_validation",
+                None,
+            ),
+            observed_coverage_validation=getattr(
+                self._last_patch_execution,
+                "observed_dispatcher_coverage_validation",
+                None,
+            ),
+        )
         return self._last_patch_execution.graph
+
+    @staticmethod
+    def _observe_dispatcher_transaction_outcome(
+        rewrite_plan: PatchPlan,
+        *,
+        pre_cfg: FlowGraph,
+        application_status: str,
+        outcome_reason: str | None = None,
+        attempt_id: str | None = None,
+        observed_validation: object | None = None,
+        observed_coverage_validation: object | None = None,
+        projected_validation: object | None = None,
+        projected_coverage_validation: object | None = None,
+    ) -> None:
+        """Publish immutable plan outcome facts; SQLite remains subscriber-owned."""
+        try:
+            from d810.core.observability_preanalysis import (
+                observe_unflatten_dispatcher_corridor_coverage,
+            )
+            from d810.transforms.dispatcher_corridor_coverage import (
+                collect_unflatten_dispatcher_outcome_observations_from_metadata,
+            )
+
+            envelope = rewrite_plan.source_maturity
+            ir = None if envelope is None else getattr(envelope, "ir", None)
+            maturity = str(getattr(ir, "value", None) or ir or "unknown")
+            observations = collect_unflatten_dispatcher_outcome_observations_from_metadata(
+                rewrite_plan.metadata_dict(),
+                maturity=maturity,
+                phase="patch_transaction",
+                application_status=application_status,
+                outcome_reason=outcome_reason,
+                observed_validation=observed_validation,
+                observed_coverage_validation=observed_coverage_validation,
+                projected_validation=projected_validation,
+                projected_coverage_validation=projected_coverage_validation,
+                plan_id=rewrite_plan.plan_id,
+                attempt_id=attempt_id,
+            )
+            if observations:
+                observe_unflatten_dispatcher_corridor_coverage(
+                    func_ea=int(pre_cfg.func_ea),
+                    observations=observations,
+                )
+        except Exception:  # noqa: BLE001 - diagnostics must not mask transaction state
+            try:
+                logger.exception("Failed to publish dispatcher transaction outcome")
+            except Exception:
+                pass
 
     def _apply_fragment(
         self,

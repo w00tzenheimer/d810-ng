@@ -1410,10 +1410,10 @@ class TransactionalExecutor:
             source_generation=source_generation,
             block_refs_by_serial=block_refs_by_serial,
         )
-        simulated_edits = sorted(
-            patch_plan_to_simulated_edits(patch_plan),
-            key=_preflight_simulated_priority,
-        )
+        # The converter returns the exact stable priority/source order used by
+        # DeferredGraphModifier, including source-descending conditional
+        # lowerings whose helper insertions shift later live serials.
+        simulated_edits = patch_plan_to_simulated_edits(patch_plan)
         sim_result = simulate_edits(pre_adj, simulated_edits)
         sim_adj = sim_result.adj
         terminal_targets = self._derive_terminal_targets(

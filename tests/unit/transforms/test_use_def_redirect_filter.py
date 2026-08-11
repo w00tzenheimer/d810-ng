@@ -2,8 +2,15 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from d810.capabilities.use_def_safety import SeveranceViolation
+from d810.analyses.control_flow.linearized_state_dag import (
+    RedirectSourceKind,
+    SemanticEdgeKind,
+)
 from d810.transforms.graph_modification import RedirectGoto
+from d810.transforms.state_machine_unflatten import _spine_redirects_from_dag
 from d810.transforms.use_def_redirect_filter import (
     filter_use_def_severing_redirects,
 )
@@ -23,6 +30,22 @@ class _FakeUseDef:
 
     def redirect_use_def_violations(self, mod, live_function, pre_cfg):
         return self._violations
+
+
+class _SourceSelectiveUseDef:
+    def redirect_use_def_violations(self, mod, live_function, pre_cfg):
+        del live_function, pre_cfg
+        if int(mod.from_serial) == 1:
+            return (_violation(0x100),)
+        return ()
+
+
+class _FailOnSecondUseDef:
+    def redirect_use_def_violations(self, mod, live_function, pre_cfg):
+        del live_function, pre_cfg
+        if int(mod.from_serial) == 1:
+            return (_violation(0x100),)
+        raise LookupError("live use-def authority unavailable")
 
 
 def _violation(var_stkoff: int) -> SeveranceViolation:
@@ -80,6 +103,95 @@ def test_vetoes_non_state_var_severance(monkeypatch):
         state_var_stkoff=STATE_VAR,
     )
     assert out == []
+
+
+def test_veto_is_fragment_atomic_across_sibling_redirects(monkeypatch):
+    """One actionable sibling veto rejects the complete redirect batch."""
+    monkeypatch.setenv("D810_USE_DEF_VETO", "1")
+    mods = [_goto(1), _goto(2)]
+    out = filter_use_def_severing_redirects(
+        mods,
+        use_def_safety=_SourceSelectiveUseDef(),
+        live_function=object(),
+        pre_cfg=None,
+        state_var_stkoff=STATE_VAR,
+    )
+    assert out == []
+
+
+def test_veto_off_keeps_the_complete_advisory_sibling_batch(monkeypatch):
+    monkeypatch.delenv("D810_USE_DEF_VETO", raising=False)
+    mods = [_goto(1), _goto(2)]
+    out = filter_use_def_severing_redirects(
+        mods,
+        use_def_safety=_SourceSelectiveUseDef(),
+        live_function=object(),
+        pre_cfg=None,
+        state_var_stkoff=STATE_VAR,
+    )
+    assert out == mods
+
+
+def test_query_failure_keeps_the_complete_batch_without_authoritative_filtering(
+    monkeypatch,
+):
+    """A partial audit must never become a partial hard veto."""
+    monkeypatch.setenv("D810_USE_DEF_VETO", "1")
+    mods = [_goto(1), _goto(2)]
+    out = filter_use_def_severing_redirects(
+        mods,
+        use_def_safety=_FailOnSecondUseDef(),
+        live_function=object(),
+        pre_cfg=None,
+        state_var_stkoff=STATE_VAR,
+    )
+    assert out == mods
+
+
+def test_state_machine_unflatten_spine_uses_atomic_filter_boundary(monkeypatch):
+    """The real fallback caller cannot retain a clean sibling after a veto."""
+    monkeypatch.setenv("D810_USE_DEF_VETO", "1")
+    dag = SimpleNamespace(
+        edges=(
+            SimpleNamespace(
+                kind=SemanticEdgeKind.TRANSITION,
+                source_anchor=SimpleNamespace(
+                    block_serial=1,
+                    branch_arm=None,
+                    kind=RedirectSourceKind.UNCONDITIONAL,
+                ),
+                target_entry_anchor=3,
+                ordered_path=(1, 3),
+            ),
+            SimpleNamespace(
+                kind=SemanticEdgeKind.TRANSITION,
+                source_anchor=SimpleNamespace(
+                    block_serial=2,
+                    branch_arm=None,
+                    kind=RedirectSourceKind.UNCONDITIONAL,
+                ),
+                target_entry_anchor=4,
+                ordered_path=(2, 4),
+            ),
+        )
+    )
+    graph = SimpleNamespace(
+        blocks={
+            1: SimpleNamespace(nsucc=1, succs=(9,)),
+            2: SimpleNamespace(nsucc=1, succs=(9,)),
+        }
+    )
+
+    out = _spine_redirects_from_dag(
+        dag,
+        dispatcher_entry_serial=9,
+        graph=graph,
+        use_def_safety=_SourceSelectiveUseDef(),
+        live_function=object(),
+        state_var_stkoff=STATE_VAR,
+    )
+
+    assert out == ()
 
 
 def test_state_var_severance_is_kept(monkeypatch):

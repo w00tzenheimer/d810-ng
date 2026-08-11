@@ -51,6 +51,7 @@ from d810.analyses.control_flow.state_machine_analysis import (
 from d810.analyses.value_flow.global_init_fold import (
     compute_initializer_stable_global_reads,
 )
+from d810.analyses.value_flow.state_write import forward_eval_instruction
 from d810.analyses.data_flow.concolic import (
     AbstractEvidence,
     ConcolicValue,
@@ -84,7 +85,10 @@ from d810.ir.insn_projection import (
     operand_stack_refs,
     operand_storages,
     project_instruction,
+    project_instruction_sequence,
 )
+from d810.ir.expressions import ValueOpKind
+from d810.ir.instructions import Instruction
 from d810.ir.locations import WeakStackSlot
 from d810.ir.semantics import PredicateKind
 from d810.ir.varnode import Space, Varnode
@@ -1891,25 +1895,215 @@ def _block_folds_strictly(ctx, blk, in_stk, in_reg) -> bool:
     stk_map = dict(in_stk)
     reg_map = dict(in_reg)
     for insn in blk.insn_snapshots:
-        if _constant_dest_locator_snapshot(insn) is None:
+        dest_locator = _constant_dest_locator_snapshot(insn)
+        if dest_locator is None:
             continue
-        left, right, _dest = operand_storages(insn)
-        left_kind, right_kind, _dk = operand_kinds(insn)
-        for storage, kind in ((left, left_kind), (right, right_kind)):
-            if storage is None:
-                continue
-            if _storage_const_value(storage) is not None:
-                continue
-            locator = _storage_dest_locator(storage, kind)
-            if locator is None:
+        projected_sequence = project_instruction_sequence(insn)
+        # The canonical sequence contains one extra TEMP-producing instruction
+        # per nested SUBINSN.  This is intentionally the projection boundary:
+        # portable analyses must not inspect InsnSnapshot operand slots.
+        nested_subinsn = len(projected_sequence) > 1
+        expected_nested_value: int | None = None
+        if nested_subinsn:
+            expected_nested_value = _projected_nested_output_value(
+                projected_sequence, stk_map, reg_map
+            )
+            if expected_nested_value is None:
                 return False
-            space, ident = locator
-            source_map = stk_map if space == 'stk' else reg_map
-            if source_map.get(int(ident)) is None:
-                return False
+        else:
+            left, right, _dest = operand_storages(insn)
+            left_kind, right_kind, _dk = operand_kinds(insn)
+            for storage, kind in ((left, left_kind), (right, right_kind)):
+                if storage is None:
+                    continue
+                if _storage_const_value(storage) is not None:
+                    continue
+                locator = _storage_dest_locator(storage, kind)
+                if locator is None:
+                    return False
+                space, ident = locator
+                source_map = stk_map if space == 'stk' else reg_map
+                if source_map.get(int(ident)) is None:
+                    return False
+        if nested_subinsn:
+            # The shared evaluator stores TEMP and REGISTER cells in the same
+            # map.  Never replay a canonical nested TEMP sequence into the
+            # real recovery map: TEMP 0/1 would alias r0/r1 and change a later
+            # state write.  The shadow proof above has already evaluated the
+            # expression exactly, so materialize only its proven destination.
+            space, ident = dest_locator
+            output_map = stk_map if space == "stk" else reg_map
+            output_map[int(ident)] = int(expected_nested_value)
+            continue
         _forward_eval_insn(insn, stk_map, reg_map, ctx.effective_stkoff,
                            mba=None, state_var_lvar_idx=None)
     return True
+
+
+_STRICT_PROJECTED_VALUE_OPS = frozenset(
+    {
+        ValueOpKind.MOVE,
+        ValueOpKind.ZEXT,
+        ValueOpKind.SEXT,
+        ValueOpKind.ADD,
+        ValueOpKind.SUB,
+        ValueOpKind.AND,
+        ValueOpKind.OR,
+        ValueOpKind.XOR,
+        ValueOpKind.MUL,
+    }
+)
+
+
+def _projected_nested_output_value(
+    sequence: tuple[Instruction, ...],
+    stk_map,
+    reg_map,
+) -> int | None:
+    """Prove a nested expression and return its canonical output value.
+
+    ``operand_storages`` deliberately represents a ``SUBINSN`` root as
+    ``UNKNOWN``. Treating that storage as an ordinary unlocatable leaf rejects a
+    supported expression *before* the canonical sequence can evaluate its
+    temporary producer. Here we only admit operations the portable evaluator
+    implements and require every projected input to be known. The parent result
+    is redirected to a fresh proof TEMP in a shadow map, so an in-place
+    ``edx = f(edx, ...)`` can still read the old ``edx`` while the proof remains
+    independent of a stale destination-map value.
+    """
+    known_temps: set[Varnode] = set()
+    if not sequence:
+        return None
+    for projected in sequence:
+        operation = projected.operation
+        if operation not in _STRICT_PROJECTED_VALUE_OPS:
+            return None
+        expected_inputs = (
+            1
+            if operation in {ValueOpKind.MOVE, ValueOpKind.ZEXT, ValueOpKind.SEXT}
+            else 2
+        )
+        if len(projected.inputs) != expected_inputs or projected.result is None:
+            return None
+        for value in projected.inputs:
+            if value.space is Space.CONST:
+                continue
+            if value.space is Space.STACK:
+                if stk_map.get(int(value.offset)) is not None:
+                    continue
+                return None
+            if value.space is Space.REGISTER:
+                if reg_map.get(int(value.offset)) is not None:
+                    continue
+                return None
+            if value.space is Space.TEMP and value in known_temps:
+                continue
+            return None
+        if projected.result.space is Space.TEMP:
+            known_temps.add(projected.result)
+    proof_stk_map = dict(stk_map)
+    proof_reg_map = dict(reg_map)
+    shadow_sequence, proof_temp_offset = _shadow_nested_temp_sequence(
+        sequence,
+        occupied_register_offsets=frozenset(int(offset) for offset in proof_reg_map),
+    )
+    for instruction in shadow_sequence:
+        forward_eval_instruction(
+            instruction,
+            proof_stk_map,
+            proof_reg_map,
+            state_var_stkoff=-(1 << 63),
+        )
+    return proof_reg_map.get(proof_temp_offset)
+
+
+def _shadow_nested_temp_sequence(
+    sequence: tuple[Instruction, ...],
+    *,
+    occupied_register_offsets: frozenset[int],
+) -> tuple[tuple[Instruction, ...], int]:
+    """Move every projected TEMP into a private evaluator namespace.
+
+    ``forward_eval_instruction`` intentionally shares one map for portable
+    registers and temporaries.  At this recovery boundary the surrounding map
+    is a live register environment, so canonical temporaries must be remapped
+    before proof evaluation.  The last instruction gets a dedicated result
+    TEMP; callers materialize only that value into the original destination.
+    """
+    occupied = set(int(offset) for offset in occupied_register_offsets)
+    next_offset = -1
+
+    def fresh() -> int:
+        nonlocal next_offset
+        while next_offset in occupied:
+            next_offset -= 1
+        value = next_offset
+        occupied.add(value)
+        next_offset -= 1
+        return value
+
+    replacements: dict[Varnode, Varnode] = {}
+    for instruction in sequence:
+        for value in (*instruction.inputs, instruction.result):
+            if value is None or value.space is not Space.TEMP:
+                continue
+            replacements.setdefault(
+                value,
+                Varnode(Space.TEMP, fresh(), int(value.size)),
+            )
+    parent = sequence[-1]
+    if parent.result is None:
+        raise ValueError("nested projected sequence lacks a parent result")
+    proof_offset = fresh()
+    proof_result = Varnode(Space.TEMP, proof_offset, int(parent.result.size))
+    shadow: list[Instruction] = []
+    for index, instruction in enumerate(sequence):
+        inputs = tuple(replacements.get(value, value) for value in instruction.inputs)
+        result = (
+            proof_result
+            if index == len(sequence) - 1
+            else replacements.get(instruction.result, instruction.result)
+        )
+        shadow.append(replace(instruction, inputs=inputs, result=result))
+    return tuple(shadow), proof_offset
+
+
+def _transfer_snapshot_constant_block_nested_safe(
+    block,
+    in_stk_map: dict[int, int],
+    in_reg_map: dict[int, int],
+    state_var_stkoff: int,
+    *,
+    state_var_gaddr: int | None = None,
+    foldable_global_reads: object | None = None,
+) -> tuple[dict[int, int], dict[int, int]]:
+    """Transfer a strictly admitted glue block without leaking TEMP aliases."""
+    stk_map = dict(in_stk_map)
+    reg_map = dict(in_reg_map)
+    for insn in block.insn_snapshots:
+        sequence = project_instruction_sequence(insn)
+        if len(sequence) <= 1:
+            _forward_eval_insn(
+                insn,
+                stk_map,
+                reg_map,
+                state_var_stkoff,
+                mba=None,
+                state_var_lvar_idx=None,
+                state_var_gaddr=state_var_gaddr,
+                foldable_global_reads=foldable_global_reads,
+            )
+            continue
+        destination = _constant_dest_locator_snapshot(insn)
+        value = _projected_nested_output_value(sequence, stk_map, reg_map)
+        if destination is None or value is None:
+            # The caller has already applied the strict admissibility gate;
+            # retain this defensive fail-closed transfer for future callers.
+            return dict(in_stk_map), dict(in_reg_map)
+        space, ident = destination
+        output_map = stk_map if space == "stk" else reg_map
+        output_map[int(ident)] = int(value)
+    return stk_map, reg_map
 
 
 def _transitive_glue_partition_transitions(ctx, pred, block, edge_states):
@@ -1935,7 +2129,7 @@ def _transitive_glue_partition_transitions(ctx, pred, block, edge_states):
             in_reg = dict(ctx.fp.out_reg_maps.get(gp, {}))
             if not _block_folds_strictly(ctx, glue, in_stk, in_reg):
                 break
-            g_stk, g_reg = _transfer_snapshot_constant_block(
+            g_stk, g_reg = _transfer_snapshot_constant_block_nested_safe(
                 glue, in_stk, in_reg, ctx.effective_stkoff,
                 state_var_gaddr=ctx.state_var_gaddr,
                 foldable_global_reads=ctx.foldable_global_reads)

@@ -50,7 +50,8 @@ class SimulatedEdit:
     """Abstract edit operation on adjacency list.
 
     Attributes:
-        kind: Type of edit - "goto_redirect", "conditional_redirect", or "convert_to_goto".
+        kind: Type of edit - "goto_redirect", "conditional_redirect",
+            "convert_to_goto", or "lower_conditional_state_transition".
         source: Block serial of the source block.
         old_target: Block serial of the original target being replaced.
         new_target: Block serial of the new target.
@@ -70,6 +71,9 @@ class SimulatedEdit:
     secondary_created_serial: int | None = None  # second block for multi-block creation
     stop_serial_before: int | None = None
     stop_serial_after: int | None = None
+    # Exact DeferredGraphModifier queue priority when this edit came from a
+    # PatchStep. ``None`` retains the kind-based fallback for other callers.
+    apply_priority: int | None = None
 
 
 def _apply_stop_relocation_once(
@@ -146,7 +150,17 @@ def simulate_edits(
                 result[edit.source] = new_succs
             # else: skip — anchor no longer targets shared_entry, no edit applied
 
-        elif edit.kind in ("goto_redirect", "conditional_redirect"):
+        elif edit.kind == "goto_redirect":
+            if len(succs) != 1:
+                raise ValueError(
+                    "goto_redirect requires a live one-way source: "
+                    f"source={edit.source} succs={succs}"
+                )
+            # Deferred BLOCK_GOTO_CHANGE binds source + new target and does
+            # not retain PatchRedirectGoto.old_target at apply time.
+            result[edit.source] = [edit.new_target]
+
+        elif edit.kind == "conditional_redirect":
             # Replace first occurrence of old_target with new_target
             new_succs = list(succs)
             try:
@@ -172,6 +186,23 @@ def simulate_edits(
         elif edit.kind == "convert_to_goto":
             # Replace ALL successors with single new_target
             result[edit.source] = [edit.new_target]
+
+        elif edit.kind == "lower_conditional_state_transition":
+            if edit.old_target not in succs:
+                raise ValueError(
+                    "lower_conditional_state_transition source does not retain "
+                    f"dispatcher {edit.old_target}: source={edit.source} succs={succs}"
+                )
+            if edit.fallthrough_target is None or edit.new_target is None:
+                raise ValueError(
+                    "lower_conditional_state_transition requires two ordered arms"
+                )
+            if edit.fallthrough_target == edit.new_target:
+                raise ValueError(
+                    "lower_conditional_state_transition requires distinct arms"
+                )
+            # Hex-Rays BLT_2WAY order is physical: [fallthrough, taken].
+            result[edit.source] = [edit.fallthrough_target, edit.new_target]
 
         elif edit.kind in {
             "edge_split_redirect",

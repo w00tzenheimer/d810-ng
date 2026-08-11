@@ -51,6 +51,7 @@ from d810.transforms.plan import (
     PatchEdgeSplitCorridor,
     PatchEdgeSplitTrampoline,
     PatchInsertBlock,
+    PatchLowerConditionalStateTransition,
     PatchPlan,
     PatchPrivateTerminalSuffix,
     PatchPrivateTerminalSuffixGroup,
@@ -187,6 +188,11 @@ def _tail_opcode_for_existing_block(
             case PatchRedirectBranch(from_serial=serial) if serial == block.serial:
                 tail_kind = block.tail_kind  # successor changes, not opcode
                 break
+            case PatchLowerConditionalStateTransition(source_serial=source) if (
+                snapshot_serial(source) == block.serial
+            ):
+                tail_kind = InsnKind.COND_JUMP
+                break
             case PatchReorderBlocks(copy_lineage=old_to_new_pairs):
                 trampoline_serials = frozenset(old for old, _new in old_to_new_pairs)
                 if block.serial in trampoline_serials:
@@ -215,6 +221,16 @@ def _block_kind_for_projected_shape(
     succs: tuple[int, ...],
     tail_kind: InsnKind | None,
 ) -> BlockKind:
+    # Existing explicit terminal identity survives an unrelated rewrite.  A
+    # zero-successor shape alone is not enough to invent a terminal, but
+    # downgrading a source STOP to ZERO_WAY loses a real return obligation and
+    # makes the safety preflight inspect the wrong portable graph.
+    if (
+        template_block is not None
+        and template_block.kind is BlockKind.STOP
+        and len(succs) == 0
+    ):
+        return BlockKind.STOP
     if (
         kind in {"conditional_redirect_clone", "duplicate_block_clone"}
         and len(succs) == 2
@@ -317,7 +333,7 @@ def _project_existing_blocks(
         succs = tuple(adj.get(projected_serial, ()))
         tail_kind = _tail_opcode_for_existing_block(block, patch_plan, succs)
         block_kind = _block_kind_for_projected_shape(
-            template_block=None,
+            template_block=block,
             kind=(
                 "reorder_block_2way_trampoline"
                 if block.serial in trampoline_serials
@@ -405,6 +421,9 @@ def _project_created_blocks(
 
 def project_post_state(pre_cfg: FlowGraph, patch_plan: PatchPlan) -> FlowGraph:
     """Project a PatchPlan onto a new FlowGraph without mutating live MBA state."""
+    plan_serials, stop_serial_before, stop_serial_after = _simulation_serials(
+        patch_plan
+    )
     simulated = simulate_edits(
         pre_cfg.as_adjacency_dict(),
         patch_plan_to_simulated_edits(patch_plan),
@@ -699,36 +718,186 @@ def _simulation_serials(
     return plan_serials, stop_before, stop_before + len(plan_serials)
 
 
+def _resolve_projection_serial(
+    ref: object,
+    patch_plan: PatchPlan,
+    *,
+    plan_serials: dict[PlanBlockRef, int],
+    stop_serial_before: int | None,
+    stop_serial_after: int | None,
+    field_name: str,
+) -> int | None:
+    """Resolve one typed plan reference in immutable projection coordinates."""
+    if ref is None or isinstance(ref, int):
+        return ref
+    if isinstance(ref, (NativeBlockRef, LogicalBlockRef)):
+        source_serial = dict(patch_plan.source_coordinates).get(ref)
+        if source_serial is None:
+            raise ValueError(
+                "PatchLowerConditionalStateTransition "
+                f"{field_name} lacks a projection coordinate"
+            )
+        if (
+            stop_serial_before is not None
+            and stop_serial_after is not None
+            and source_serial == stop_serial_before
+        ):
+            return stop_serial_after
+        return source_serial
+    if isinstance(ref, PlanBlockRef):
+        try:
+            return plan_serials[ref]
+        except KeyError as exc:
+            raise ValueError(
+                "PatchLowerConditionalStateTransition "
+                f"{field_name} lacks a planned block coordinate"
+            ) from exc
+    raise ValueError(
+        "PatchLowerConditionalStateTransition "
+        f"{field_name} has an unsupported projection reference"
+    )
+
+
+def _live_apply_priority(edit: SimulatedEdit) -> int:
+    """Mirror DeferredGraphModifier's queued modification priorities."""
+    if edit.apply_priority is not None:
+        return int(edit.apply_priority)
+    if edit.kind in {
+        "create_conditional_redirect",
+        "duplicate_block",
+        "clone_conditional_as_goto",
+    }:
+        return 5
+    if edit.kind == "edge_split_redirect":
+        return 12 if edit.clone_until is not None else 8
+    if edit.kind in {
+        "goto_redirect",
+        "conditional_redirect",
+        "lower_conditional_state_transition",
+    }:
+        return 10
+    if edit.kind == "convert_to_goto":
+        return 20
+    return 1000
+
+
+def order_simulated_edits_for_live_apply(
+    edits: list[SimulatedEdit],
+) -> list[SimulatedEdit]:
+    """Return edits in the exact stable order used by the live lowerer."""
+
+    def apply_order(item: tuple[int, SimulatedEdit]) -> tuple[int, int, int, int]:
+        index, edit = item
+        is_conditional_lowering = edit.kind == "lower_conditional_state_transition"
+        return (
+            _live_apply_priority(edit),
+            1 if is_conditional_lowering else 0,
+            -int(edit.source) if is_conditional_lowering else index,
+            index,
+        )
+
+    return [
+        edit
+        for _, edit in sorted(
+            enumerate(edits),
+            key=apply_order,
+        )
+    ]
+
+
 def patch_plan_to_simulated_edits(patch_plan: PatchPlan) -> list[SimulatedEdit]:
-    """Project PatchPlan steps to simulator-friendly edit ops."""
+    """Project PatchPlan steps into the live lowerer's deterministic order."""
     simulated: list[SimulatedEdit] = []
     plan_serials, stop_serial_before, stop_serial_after = _simulation_serials(
         patch_plan
     )
 
     def serial(ref):
-        if ref is None or isinstance(ref, int):
-            return ref
-        if isinstance(ref, (NativeBlockRef, LogicalBlockRef)):
-            source_serial = dict(patch_plan.source_coordinates).get(ref)
-            if source_serial is None:
-                raise ValueError("source reference lacks a projection coordinate")
-            if (
-                stop_serial_before is not None
-                and stop_serial_after is not None
-                and source_serial == stop_serial_before
+        return _resolve_projection_serial(
+            ref,
+            patch_plan,
+            plan_serials=plan_serials,
+            stop_serial_before=stop_serial_before,
+            stop_serial_after=stop_serial_after,
+            field_name="block",
+        )
+
+    def patch_step_priority(step: object) -> int:
+        match step:
+            case (
+                PatchEdgeSplitTrampoline()
+                | PatchConditionalRedirect()
+                | PatchInsertBlock()
+                | PatchDuplicateBlock()
+                | PatchCloneConditionalAsGoto()
+                | PatchCloneConditionalAsGotoFromBranchArm()
             ):
-                return stop_serial_after
-            return source_serial
-        if isinstance(ref, PlanBlockRef):
-            try:
-                return plan_serials[ref]
-            except KeyError as exc:
-                raise ValueError("unregistered PlanBlockRef in projection") from exc
-        raise ValueError("portable projection cannot resolve a live-only block ref")
+                return 5
+            case PatchEdgeSplitCorridor(clone_until=clone_until):
+                return 12 if clone_until is not None else 8
+            case (
+                PatchLowerConditionalStateTransition()
+                | PatchRedirectBranch()
+                | PatchRedirectGoto()
+            ):
+                return 10
+            case (
+                PatchPrivateTerminalSuffix()
+                | PatchPrivateTerminalSuffixGroup()
+                | PatchExitPathLoweringGroup()
+            ):
+                return 12
+            case PatchRemoveEdge():
+                return 15
+            case PatchConvertToGoto():
+                return 20
+            case PatchReorderBlocks():
+                return 9999
+            case _:
+                return 1000
 
     for step in patch_plan.steps:
+        first_edit = len(simulated)
         match step:
+            case PatchLowerConditionalStateTransition(
+                source_serial=src,
+                old_dispatcher_serial=old,
+                false_target_serial=false_target,
+                true_target_serial=true_target,
+                condition_operand=condition,
+            ):
+                source = serial(src)
+                old_dispatcher = serial(old)
+                false_serial = serial(false_target)
+                true_serial = serial(true_target)
+                marker = getattr(condition, "true_is_taken", True)
+                if marker not in (True, False):
+                    raise ValueError(
+                        "PatchLowerConditionalStateTransition has an untyped "
+                        "true_is_taken marker"
+                    )
+                fallthrough = false_serial if marker else true_serial
+                taken = true_serial if marker else false_serial
+                if source is None or old_dispatcher is None:
+                    raise ValueError(
+                        "PatchLowerConditionalStateTransition has an incomplete "
+                        "source or dispatcher coordinate"
+                    )
+                if fallthrough is None or taken is None:
+                    raise ValueError(
+                        "PatchLowerConditionalStateTransition has an incomplete "
+                        "arm coordinate"
+                    )
+                simulated.append(
+                    SimulatedEdit(
+                        kind="lower_conditional_state_transition",
+                        source=int(source),
+                        old_target=int(old_dispatcher),
+                        new_target=int(taken),
+                        fallthrough_target=int(fallthrough),
+                    )
+                )
+
             case PatchRedirectBranch(
                 from_serial=src,
                 old_target=old,
@@ -1156,6 +1325,13 @@ def patch_plan_to_simulated_edits(patch_plan: PatchPlan) -> list[SimulatedEdit]:
             case _:
                 continue
 
+        priority = patch_step_priority(step)
+        for index in range(first_edit, len(simulated)):
+            simulated[index] = replace(
+                simulated[index],
+                apply_priority=priority,
+            )
+
     scalar_fields = (
         "source",
         "old_target",
@@ -1175,4 +1351,4 @@ def patch_plan_to_simulated_edits(patch_plan: PatchPlan) -> list[SimulatedEdit]:
             serial(ref) for ref in edit.source_successors
         )
         normalized.append(replace(edit, **updates))
-    return normalized
+    return order_simulated_edits_for_live_apply(normalized)

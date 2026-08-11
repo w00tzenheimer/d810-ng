@@ -123,12 +123,21 @@ from d810.transforms.graph_modification import (
 )
 from d810.transforms.plan import PatchPlan, compile_patch_plan
 from d810.transforms.cfg_transaction import LogicalBlockRef, NativeBlockRef
+from d810.transforms.edit_simulator import project_patch_plan
 from d810.transforms.exit_path_effect_emission import (
     plan_state_exit_path_effect_lowerings,
 )
+from d810.transforms.dispatcher_corridor_coverage import (
+    DISPATCHER_CORRIDOR_COVERAGE_METADATA,
+    DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA,
+    FULL_UNFLATTENING_CLAIM_METADATA,
+    USE_DEF_SEVERANCE_AUDIT_METADATA,
+    UNFLATTEN_COMPLETION_STATUS_METADATA,
+    analyze_dispatcher_corridor_coverage,
+    build_dispatcher_removal_preflight_proof,
+)
 from d810.transforms.use_def_redirect_filter import (
-    count_use_def_severances,
-    filter_use_def_severing_redirects,
+    audit_use_def_severances,
     severance_bail_enabled,
 )
 
@@ -4897,6 +4906,73 @@ def _one_way_path_reaches(
     return False
 
 
+def _break_terminal_switch_dispatcher_cycle(
+    flow_graph,
+    modifications: list[object],
+    *,
+    dispatcher_entry_serial: int,
+) -> tuple[list[object], int | None]:
+    """Retire an N-way dispatcher without leaving a detached switch cycle.
+
+    When exactly one handler redirect replaces a path back to the dispatcher
+    with a one-way terminal path, redirect that shared backedge onto the same
+    terminal handler.  The extra edit is semantically inert after entry-path
+    rewiring, but it makes the detached dispatcher residue acyclic so Hex-Rays
+    can remove it instead of spinning in its global optimizer.
+    """
+    dispatcher_serial = int(dispatcher_entry_serial)
+    dispatcher_block = flow_graph.get_block(dispatcher_serial)
+    if dispatcher_block is None or dispatcher_block.kind is not BlockKind.N_WAY:
+        return list(modifications), None
+    stop_serials = tuple(
+        int(serial)
+        for serial, block in flow_graph.blocks.items()
+        if _is_stop_block(block)
+    )
+    if not stop_serials:
+        return list(modifications), None
+    candidates = [
+        modification
+        for modification in modifications
+        if isinstance(modification, RedirectGoto)
+        and _one_way_path_reaches(
+            flow_graph,
+            int(modification.old_target),
+            dispatcher_serial,
+        )
+        and any(
+            _one_way_path_reaches(
+                flow_graph,
+                int(modification.new_target),
+                stop_serial,
+            )
+            for stop_serial in stop_serials
+        )
+    ]
+    if len(candidates) != 1:
+        return list(modifications), None
+    preserved = candidates[0]
+    cleanup_source = int(preserved.old_target)
+    cleanup_block = flow_graph.get_block(cleanup_source)
+    if (
+        cleanup_block is None
+        or tuple(int(succ) for succ in cleanup_block.succs)
+        != (dispatcher_serial,)
+    ):
+        return list(modifications), None
+    return (
+        [
+            *modifications,
+            RedirectGoto(
+                from_serial=cleanup_source,
+                old_target=dispatcher_serial,
+                new_target=int(preserved.new_target),
+            ),
+        ],
+        cleanup_source,
+    )
+
+
 def _reconcile_conditional_bridge_target(
     flow_graph,
     exact_target: int | None,
@@ -7300,6 +7376,28 @@ def build_resolver_proven_indirect_call_neutralizations(
     ]
 
 
+def _must_reject_fragment_for_use_def_audit(
+    use_def_audit: object,
+    *,
+    legacy_bail: bool = False,
+) -> bool:
+    """Whether a confirmed non-state severance vetoes the whole fragment.
+
+    Coverage reporting may describe a full or partial dispatcher retirement, but
+    it never weakens this hard use-def safety boundary.  ``legacy_bail`` is the
+    S1A emitter-only compatibility policy; the global redirect-filter caller
+    does not pass it.
+    """
+    return bool(
+        getattr(use_def_audit, "executed", False)
+        and int(getattr(use_def_audit, "severance_count", 0)) > 0
+        and (
+            getattr(use_def_audit, "enforced", False)
+            or bool(legacy_bail)
+        )
+    )
+
+
 def emit_minimal_unflatten(
     flow_graph,
     dispatcher,
@@ -7364,14 +7462,26 @@ def emit_minimal_unflatten(
     serial->live-block resolver it steps.  Both ``None`` -> abstract-only (unchanged).
 
     ``use_def_safety`` / ``live_function`` (ticket llr-wlzb) inject the optional
-    use-def severance veto: a redirect that would orphan a NON-state-variable use
-    (handler-body accumulator carriers such as ``var_18 = var_378`` /
-    ``var_84 = var_378`` whose downstream readers are the terminal store and the loop
-    guard) is dropped, leaving that back-edge on the dispatcher so IDA's reaching-def
-    analysis cannot backfill the live carrier from the prologue and DCE the body.
-    Gated by ``D810_USE_DEF_VETO`` (default OFF -> byte-identical); the state variable
-    itself is intentionally severed (that is the unflattening) and never vetoed.
+    whole-fragment use-def audit.  Evidence for a redirect that would orphan a
+    NON-state-variable use is retained in plan metadata; when
+    ``D810_USE_DEF_VETO=1`` the complete fragment is rejected atomically.  The
+    legacy ``D810_S1A_SEVERANCE_BAIL=1`` applies the same whole-fragment
+    rejection only to this S1A emitter.  The state variable itself is
+    intentionally severed (that is the unflattening) and never counted as a
+    non-state violation.
     """
+
+    # These facts are intentionally false until the *final* whole-fragment
+    # audit has run.  A plan can still be a normal partial unflatten, but it
+    # cannot obtain the narrow dispatcher-retirement allowance from an absent
+    # capability, an environment toggle, or a per-redirect filtering pass.
+    dispatcher_removal_safety: dict[str, bool] = {
+        "fragment_atomic": False,
+        "non_state_use_def_veto": False,
+        "non_state_use_def_checked": False,
+        "non_state_use_def_severances_zero": False,
+    }
+    dispatcher_state_plumbing_serials: frozenset[int] = frozenset()
 
     def compile_modifications(modifications) -> PatchPlan:
         return compile_patch_plan(
@@ -7383,8 +7493,101 @@ def emit_minimal_unflatten(
             block_refs_by_serial=block_refs_by_serial,
         )
 
+    def attach_dispatcher_removal_preflight_proof(
+        plan: PatchPlan,
+        coverage,
+    ) -> PatchPlan:
+        """Attach a fail-closed exact proof for intended router removal.
+
+        This does not relax any producer safety gate.  It merely gives the
+        transaction preflight enough typed topology evidence to distinguish a
+        removed comparison forest from a lost handler/body island.
+        """
+        if dispatcher_entry_serial is None:
+            return plan
+        projected = project_patch_plan(
+            flow_graph,
+            plan,
+            snapshot_id=plan.snapshot_id,
+        )
+        authoritative_handlers = (
+            frozenset(int(serial) for serial in authoritative_handler_serials)
+            if authoritative_handler_serials
+            else frozenset(
+                int(row.target)
+                for row in getattr(dispatcher, "_rows", ())
+                if getattr(row, "target", None) is not None
+                and int(row.target) != int(dispatcher_entry_serial)
+            )
+        )
+        proof = build_dispatcher_removal_preflight_proof(
+            flow_graph,
+            post_graph=projected.graph,
+            coverage=coverage,
+            dispatcher_entry_serial=int(dispatcher_entry_serial),
+            authoritative_handler_serials=authoritative_handlers,
+            dispatcher_region_serials=frozenset(
+                int(serial) for serial in dispatcher_region_serials
+            ),
+            producer_safety=dispatcher_removal_safety,
+            state_plumbing_serials=dispatcher_state_plumbing_serials,
+        )
+        if logger.info_on:
+            logger.info(
+                "unflat dispatcher removal preflight proof: status=%s reason=%s "
+                "handlers=%d/%d terminals=%d/%d lost=%s",
+                "accepted" if proof.passed else "rejected",
+                proof.reason,
+                len(proof.post_reachable_handlers),
+                len(proof.authoritative_handlers),
+                len(proof.post_reachable_terminals),
+                len(proof.pre_reachable_terminals),
+                ",".join(anchor.label for anchor in proof.lost_block_anchors)
+                or "none",
+            )
+        return plan.with_metadata(
+            **{DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA: proof.to_metadata()}
+        )
+
+    def log_dispatcher_coverage(coverage) -> None:
+        if not logger.info_on:
+            return
+        residual_labels = ", ".join(
+            corridor.label for corridor in coverage.residual_corridors[:16]
+        )
+        logger.info(
+            "unflat dispatcher corridor coverage: status=%s planned_status=%s "
+            "covered=%d residual=%d "
+            "enumeration_complete=%s full_unflattening_claim=%s residual_paths=%s",
+            coverage.completion_status,
+            coverage.planned_completion_status,
+            len(coverage.covered_corridors),
+            len(coverage.residual_corridors),
+            coverage.enumeration_complete,
+            coverage.full_unflattening_claim,
+            residual_labels or "none",
+        )
+
+    def compile_with_dispatcher_coverage(modifications) -> PatchPlan:
+        coverage = analyze_dispatcher_corridor_coverage(
+            flow_graph,
+            modifications=tuple(modifications),
+            dispatcher_entry_serial=dispatcher_entry_serial,
+        )
+        plan = compile_modifications(modifications)
+        plan = plan.with_metadata(
+            **{
+                DISPATCHER_CORRIDOR_COVERAGE_METADATA: coverage.to_metadata(),
+                UNFLATTEN_COMPLETION_STATUS_METADATA: coverage.completion_status,
+                FULL_UNFLATTENING_CLAIM_METADATA: coverage.full_unflattening_claim,
+            }
+        )
+        plan = attach_dispatcher_removal_preflight_proof(plan, coverage)
+        log_dispatcher_coverage(coverage)
+        return plan
+
     if dispatcher_entry_serial is None:
-        return compile_modifications([])
+        return compile_with_dispatcher_coverage(())
     if materialized_computed_goto_profile and missing_materialized_handler_targets:
         if logger.info_on:
             logger.info(
@@ -7395,7 +7598,7 @@ def emit_minimal_unflatten(
                     for state, target_ea in missing_materialized_handler_targets
                 ),
             )
-        return compile_modifications([])
+        return compile_with_dispatcher_coverage(())
     # A register-resident state variable (``state_var_reg`` set and
     # ``state_var_stkoff`` None) carries no stack
     # offset. ``_soff`` is the None-safe int form threaded into the stkoff-keyed
@@ -7435,6 +7638,12 @@ def emit_minimal_unflatten(
             )
             else frozenset()
         ),
+    )
+    dispatcher_state_plumbing_serials = frozenset(
+        int(transition.write_block)
+        for transition in transitions
+        if getattr(transition, "proof", None) is not None
+        and bool(getattr(transition.proof, "trusted", False))
     )
     if materialized_computed_goto_profile:
         materialized_state_routes = _rebind_materialized_state_route_sources(
@@ -7772,7 +7981,7 @@ def emit_minimal_unflatten(
             )
         if unresolved_rows:
             logger.info(
-                "unflat unresolved transitions: %s",
+                "unflat unresolved transition rows: %s",
                 ", ".join(unresolved_rows),
             )
     # Recover the initial state from the prologue's own state-write fold when the
@@ -7914,7 +8123,7 @@ def emit_minimal_unflatten(
                         "initial_state=%s) -- leaving function intact",
                         initial_state,
                     )
-                return compile_modifications([])
+                return compile_with_dispatcher_coverage(())
     mods = build_state_write_redirects(
         flow_graph,
         dispatcher,
@@ -8311,51 +8520,9 @@ def emit_minimal_unflatten(
         list(mods),
         materialized_state_routes,
     )
-    # Use-def severance veto (ticket llr-wlzb): drop any redirect that would orphan a
-    # NON-state-variable use. For the shadow-carrier shape the accumulator reaches the
-    # terminal/guard only through carrier copies (``var_18 = var_378`` /
-    # ``var_84 = var_378``); bypassing those blocks lets IDA backfill the slot from the
-    # prologue (0 / failed-flag) and DCE the whole ``var_378`` computation (207->17).
-    # Vetoing such a redirect keeps that back-edge on the dispatcher (engine-style
-    # residual) so the carrier stays on-path. Gated ``D810_USE_DEF_VETO`` (default OFF
-    # -> byte-identical); the state variable's own severance is the unflattening and is
-    # never vetoed.
-    # d81-3rja: the use-def severance veto is stkoff-keyed (it identifies the state
-    # var by stack offset to allow severing it while protecting other stack carriers).
-    # A register-resident state var carries no stack offset, so the veto cannot run;
-    # skip it (register severance is the intended unflattening). Byte-identical for
-    # the stack path (``_soff is not None``).
-    if use_def_safety is not None and live_function is not None and _soff is not None:
-        # Conservative bail (ticket llr-wlzb): on a shape where unflattening would
-        # orphan a non-state carrier (the pointer-indirected accumulator whose
-        # setup/math handlers get severed), abandon the whole unflatten and leave the
-        # dispatcher as a residual loop. The shared instruction rules still fold the
-        # MBA/BCF noise, so the result is the engine-equivalent correct partial rather
-        # than a gutted function. Gated D810_S1A_SEVERANCE_BAIL (default OFF).
-        if severance_bail_enabled():
-            severed = count_use_def_severances(
-                mods,
-                use_def_safety=use_def_safety,
-                live_function=live_function,
-                pre_cfg=flow_graph,
-                state_var_stkoff=_soff,
-            )
-            if severed:
-                if logger.info_on:
-                    logger.info(
-                        "unflat minimal unflatten: conservative BAIL on %d carrier "
-                        "severance(s) -> empty plan (leave SM residual, "
-                        "engine-equivalent)",
-                        severed,
-                    )
-                return compile_modifications([])
-        mods = filter_use_def_severing_redirects(
-            mods,
-            use_def_safety=use_def_safety,
-            live_function=live_function,
-            pre_cfg=flow_graph,
-            state_var_stkoff=_soff,
-        )
+    # Do not filter individual sibling redirects here.  For the exceptional
+    # dispatcher-retirement allowance, use-def safety is fragment-atomic and
+    # is audited only after every lowering has been assembled below.
     if exit_path_effect_recovery and _soff is not None:
         exit_path_effect_plan = plan_state_exit_path_effect_lowerings(
             flow_graph=flow_graph,
@@ -8388,16 +8555,19 @@ def emit_minimal_unflatten(
                 )
     if logger.info_on:
         n_return = sum(1 for t in transitions if t.is_return)
-        n_unresolved = sum(1 for t in transitions if t.next_state is None)
+        n_transition_rows_unresolved = sum(
+            1 for t in transitions if t.next_state is None
+        )
         reached, total, unreached = _reachability(
             flow_graph, dispatcher, mods, int(dispatcher_entry_serial)
         )
         logger.info(
-            "unflat minimal unflatten: back_edges=%d return_edges=%d unresolved=%d "
+            "unflat minimal unflatten: back_edges=%d return_edges=%d "
+            "transition_rows_unresolved=%d "
             "redirects=%d reachable_handlers=%d/%d unreached=%s",
             len(transitions),
             n_return,
-            n_unresolved,
+            n_transition_rows_unresolved,
             len(mods),
             reached,
             total,
@@ -8475,8 +8645,74 @@ def emit_minimal_unflatten(
         list(mods),
         terminal_state_route_mods,
     )
+    mods, terminal_switch_cleanup_source = _break_terminal_switch_dispatcher_cycle(
+        flow_graph,
+        list(mods),
+        dispatcher_entry_serial=int(dispatcher_entry_serial),
+    )
+    if terminal_switch_cleanup_source is not None and logger.info_on:
+        logger.info(
+            "unflat switch retirement: breaking detached dispatcher cycle "
+            "cleanup_source=%s",
+            _format_block_label(flow_graph, terminal_switch_cleanup_source),
+        )
     mods = _normalize_degenerate_branch_redirects(flow_graph, list(mods))
-    plan = compile_modifications(list(mods))
+    legacy_severance_bail = severance_bail_enabled()
+    use_def_audit = audit_use_def_severances(
+        mods,
+        use_def_safety=use_def_safety,
+        live_function=live_function,
+        pre_cfg=flow_graph,
+        state_var_stkoff=_soff,
+        enforce=True if legacy_severance_bail else None,
+    )
+    dispatcher_removal_safety = {
+        "fragment_atomic": use_def_audit.clean,
+        "non_state_use_def_veto": use_def_audit.clean,
+        "non_state_use_def_checked": use_def_audit.executed,
+        "non_state_use_def_severances_zero": (
+            use_def_audit.executed and use_def_audit.severance_count == 0
+        ),
+    }
+    use_def_audit_metadata = use_def_audit.to_metadata(
+        function_ea=int(flow_graph.func_ea)
+    )
+    coverage = analyze_dispatcher_corridor_coverage(
+        flow_graph,
+        modifications=tuple(mods),
+        dispatcher_entry_serial=dispatcher_entry_serial,
+    )
+    if _must_reject_fragment_for_use_def_audit(
+        use_def_audit,
+        legacy_bail=legacy_severance_bail,
+    ):
+        if logger.info_on:
+            logger.info(
+                "unflat minimal unflatten: fragment-atomic dispatcher retirement "
+                "rejected %d non-state use-def severance(s)",
+                use_def_audit.severance_count,
+            )
+        return compile_with_dispatcher_coverage(()).with_metadata(
+            **{USE_DEF_SEVERANCE_AUDIT_METADATA: use_def_audit_metadata}
+        )
+    if not use_def_audit.clean and logger.info_on:
+        logger.info(
+            "unflat minimal unflatten: narrow dispatcher-retirement proof "
+            "abstained use_def_executed=%s severances=%d reason=%s",
+            use_def_audit.executed,
+            use_def_audit.severance_count,
+            use_def_audit.failure_reason or "none",
+        )
+    plan = compile_modifications(list(mods)).with_metadata(
+        **{
+            DISPATCHER_CORRIDOR_COVERAGE_METADATA: coverage.to_metadata(),
+            UNFLATTEN_COMPLETION_STATUS_METADATA: coverage.completion_status,
+            FULL_UNFLATTENING_CLAIM_METADATA: coverage.full_unflattening_claim,
+            USE_DEF_SEVERANCE_AUDIT_METADATA: use_def_audit_metadata,
+        }
+    )
+    plan = attach_dispatcher_removal_preflight_proof(plan, coverage)
+    log_dispatcher_coverage(coverage)
     if terminal_carrier_convergence:
         plan = plan.with_metadata(
             **{

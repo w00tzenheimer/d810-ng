@@ -30,11 +30,13 @@ from d810.transforms.graph_modification import (
     DuplicateBlock,
     EdgeRedirectViaPredSplit,
     InsertBlock,
+    LowerConditionalStateTransition,
     PrivateTerminalSuffixGroup,
     RedirectGoto,
     RemoveEdge,
 )
 from d810.transforms.cfg_transaction import PlanBlockRef
+from d810.transforms.graph_modification import PreserveLivePredicateCondition
 from d810.transforms.plan import PatchPlan
 from tests.typed_patch_authority import compile_patch_plan
 
@@ -61,6 +63,94 @@ def _block(
         start_ea=0,
         insn_snapshots=(),
     )
+
+
+def _conditional_lowering_plan(
+    cfg: FlowGraph, *modifications: object
+) -> PatchPlan:
+    return compile_patch_plan(list(modifications), cfg)
+
+
+def _conditional_lowering_step() -> LowerConditionalStateTransition:
+    return LowerConditionalStateTransition(
+        source_serial=0,
+        old_dispatcher_serial=1,
+        rewrite_from_ea=0x1005,
+        condition_operand=PreserveLivePredicateCondition(
+            predicate_ea=0x1005,
+            true_is_taken=True,
+        ),
+        false_target_serial=2,
+        true_target_serial=3,
+    )
+
+
+def _conditional_cfg() -> FlowGraph:
+    return FlowGraph(
+        blocks={
+            0: _block(0, (1,), ()),
+            1: _block(1, (), (0,)),
+            2: _block(2, (), ()),
+            3: _block(3, (), ()),
+            4: _block(4, (), ()),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+
+
+def test_patch_plan_lowering_is_a_typed_simulated_edit() -> None:
+    cfg = _conditional_cfg()
+    plan = _conditional_lowering_plan(cfg, _conditional_lowering_step())
+
+    edits = patch_plan_to_simulated_edits(plan)
+    assert [edit.kind for edit in edits] == [
+        "lower_conditional_state_transition",
+    ]
+    assert edits[0].fallthrough_target == 2
+    assert edits[0].new_target == 3
+    simulated = simulate_edits(cfg.as_adjacency_dict(), edits)
+    assert simulated.adj[0] == [2, 3]
+
+    projected = project_post_state(cfg, plan)
+    assert projected.blocks[0].succs == (2, 3)
+    assert projected.blocks[0].kind is BlockKind.TWO_WAY
+    assert projected.blocks[0].tail_kind is InsnKind.COND_JUMP
+
+
+def test_patch_plan_lowering_rejects_live_order_conflict() -> None:
+    cfg = _conditional_cfg()
+    plan = _conditional_lowering_plan(
+        cfg,
+        _conditional_lowering_step(),
+        RedirectGoto(from_serial=0, old_target=2, new_target=4),
+    )
+
+    edits = patch_plan_to_simulated_edits(plan)
+    assert [edit.kind for edit in edits] == [
+        "goto_redirect",
+        "lower_conditional_state_transition",
+    ]
+    with pytest.raises(ValueError, match="does not retain dispatcher"):
+        simulate_edits(cfg.as_adjacency_dict(), edits)
+    with pytest.raises(ValueError, match="does not retain dispatcher"):
+        project_post_state(cfg, plan)
+
+
+def test_patch_plan_insert_precedes_live_goto_change() -> None:
+    cfg = _conditional_cfg()
+    plan = compile_patch_plan(
+        [
+            InsertBlock(pred_serial=0, succ_serial=1),
+            RedirectGoto(from_serial=0, old_target=1, new_target=2),
+        ],
+        cfg,
+    )
+
+    edits = patch_plan_to_simulated_edits(plan)
+    assert [edit.kind for edit in edits] == ["insert_block", "goto_redirect"]
+    simulated = simulate_edits(cfg.as_adjacency_dict(), edits)
+    assert simulated.adj[0] == [2]
 
 
 class TestSimulateEdits:
@@ -373,6 +463,36 @@ class TestSimulateEdits:
 
 
 class TestProjectPostState:
+    def test_project_post_state_preserves_unchanged_stop_terminal_shape(self):
+        cfg = FlowGraph(
+            blocks={
+                0: _block(0, (1, 2), ()),
+                1: _block(1, (2,), (0,)),
+                2: BlockSnapshot(
+                    serial=2,
+                    block_type=0,
+                    succs=(),
+                    preds=(0, 1),
+                    flags=0,
+                    start_ea=0x1020,
+                    insn_snapshots=(),
+                    kind=BlockKind.STOP,
+                ),
+                3: _block(3, (), ()),
+            },
+            entry_serial=0,
+            func_ea=0x1000,
+        )
+        plan = compile_patch_plan(
+            [RedirectGoto(from_serial=1, old_target=2, new_target=3)],
+            cfg,
+        )
+
+        projected = project_post_state(cfg, plan)
+
+        assert projected.blocks[2].kind is BlockKind.STOP
+        assert projected.blocks[2].succs == ()
+
     def test_project_post_state_normalizes_one_way_redirect_tail_to_goto(self):
         cfg = FlowGraph(
             blocks={

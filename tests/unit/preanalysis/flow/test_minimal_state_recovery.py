@@ -187,6 +187,19 @@ def _xor(
     )
 
 
+def _nested_sub(left: MopSnapshot, right: MopSnapshot) -> MopSnapshot:
+    """Portable ``mop_d`` for a nested ``left - right`` expression."""
+    return MopSnapshot(
+        t=-1,
+        size=4,
+        kind=OperandKind.SUBINSN,
+        sub_kind=InsnKind.SUB,
+        sub_value_op_kind=ValueOpKind.SUB,
+        sub_l=left,
+        sub_r=right,
+    )
+
+
 def _jz_stack_const(ea: int, stkoff: int, const: int, target: int) -> InsnSnapshot:
     return InsnSnapshot(
         opcode=_OP_JZ,
@@ -2297,6 +2310,205 @@ def test_shared_store_partitions_through_a_bottom_glue_merge(_seam) -> None:
     assert by_write_block[50].next_state == 0x77
     assert by_write_block[50].target_handler == 80
     assert by_write_block[50].via_block == 40
+
+
+def _nested_transitive_merge_fg(*, supported: bool) -> FlowGraph:
+    """Real residual shape with the source and handler anchors from WowClassicT.
+
+    ``blk123@0x7FF859C08D35`` computes ``edx = eax ^ (edx - ecx)`` and
+    enters ``blk3@0x7FF859C070C0``, which writes the dispatcher state before
+    entering ``blk4@0x7FF859C070C4``.  Each source has a distinct concrete
+    register environment, so the producer must split the two incoming paths.
+    """
+    nested = _nested_sub(_reg(10), _reg(9))
+    if not supported:
+        nested = MopSnapshot(
+            t=-1,
+            size=4,
+            kind=OperandKind.SUBINSN,
+            sub_kind=InsnKind.CALL,
+            sub_l=_reg(10),
+            sub_r=_reg(9),
+        )
+    return FlowGraph(
+        blocks={
+            # dispatcher entry blk4@0x7FF859C070C4
+            4: _blk(4, (45, 122, 121, 34), (3,), (), ea=0x7FF859C070C4),
+            # source blk45@0x7FF859C07656 -> 0x764595C6 -> blk121
+            45: _blk(
+                45,
+                (123,),
+                (4,),
+                (
+                    _mov(0x7FF859C07656, _num(0), _reg(8)),
+                    _mov(0x7FF859C0765A, _num(0), _reg(9)),
+                    _mov(0x7FF859C0765E, _num(0x764595C6), _reg(10)),
+                ),
+                ea=0x7FF859C07656,
+            ),
+            # source blk122@0x7FF859C08BFE -> 0x078CAFFE -> blk34
+            122: _blk(
+                122,
+                (123,),
+                (4,),
+                (
+                    _mov(0x7FF859C08BFE, _num(0), _reg(8)),
+                    _mov(0x7FF859C08C02, _num(0), _reg(9)),
+                    _mov(0x7FF859C08C06, _num(0x078CAFFE), _reg(10)),
+                ),
+                ea=0x7FF859C08BFE,
+            ),
+            # merge blk123@0x7FF859C08D35: edx = eax ^ (edx - ecx)
+            123: _blk(
+                123,
+                (3,),
+                (45, 122),
+                (_xor(0x7FF859C08D35, _reg(8), nested, _reg(10)),),
+                ea=0x7FF859C08D35,
+            ),
+            # state writer blk3@0x7FF859C070C0 -> dispatcher blk4
+            3: _blk(
+                3,
+                (4,),
+                (123,),
+                (_mov(0x7FF859C070C0, _reg(10), _stk(_STATE_OFF)),),
+                ea=0x7FF859C070C0,
+            ),
+            # Routed targets are ordinary handlers rather than STOP/default rows.
+            121: _blk(121, (4,), (4,), (), ea=0x7FF859C08B37),
+            34: _blk(34, (4,), (4,), (), ea=0x7FF859C0747A),
+        },
+        entry_serial=4,
+        func_ea=0x7FF859C06F60,
+    )
+
+
+def test_nested_subinsn_transitive_merge_partitions_real_wowclassic_corridors(
+    _seam,
+) -> None:
+    """A supported nested expression must reach the canonical evaluator.
+
+    This is the regression for the two formerly uncovered corridors:
+    ``blk45@0x7FF859C07656 -> blk121@0x7FF859C08B37`` and
+    ``blk122@0x7FF859C08BFE -> blk34@0x7FF859C0747A``.  Both bypass
+    ``blk123@0x7FF859C08D35`` atomically through the predecessor split.
+    """
+    transitions = recover_state_write_transitions_via_partitioned_fixpoint(
+        _nested_transitive_merge_fg(supported=True),
+        _dispatcher({0x764595C6: 121, 0x078CAFFE: 34}, exit_block=99),
+        _STATE_OFF,
+        dispatcher_entry_serial=4,
+    )
+    by_source = {
+        int(transition.write_block): transition
+        for transition in transitions
+        if int(transition.via_block or -1) == 123
+    }
+
+    assert by_source[45].next_state == 0x764595C6
+    assert by_source[45].target_handler == 121
+    assert by_source[45].via_block == 123
+    assert by_source[45].proof is not None
+    assert by_source[45].proof.kind == "transitive_glue_partitioned"
+    assert by_source[122].next_state == 0x078CAFFE
+    assert by_source[122].target_handler == 34
+    assert by_source[122].via_block == 123
+    assert by_source[122].proof is not None
+    assert by_source[122].proof.kind == "transitive_glue_partitioned"
+
+
+def test_nested_subinsn_transitive_merge_abstains_for_unsupported_expression(
+    _seam,
+) -> None:
+    """Unsupported nested expression kinds cannot manufacture a bypass route."""
+    transitions = recover_state_write_transitions_via_partitioned_fixpoint(
+        _nested_transitive_merge_fg(supported=False),
+        _dispatcher({0x764595C6: 121, 0x078CAFFE: 34}, exit_block=99),
+        _STATE_OFF,
+        dispatcher_entry_serial=4,
+    )
+
+    assert not {
+        int(transition.write_block)
+        for transition in transitions
+        if int(transition.via_block or -1) == 123
+    }
+
+
+def test_nested_subinsn_temp_namespace_does_not_clobber_low_register_state(
+    _seam,
+) -> None:
+    """A nested TEMP 0 must not rewrite r0 before the later state store.
+
+    The glue expression itself writes r2, but the following state writer reads
+    r0.  Before the recovery-local shadow namespace, canonical TEMP 0 shared
+    the evaluator's register map with r0 and incorrectly changed each state to
+    ``r0 - r1``.
+    """
+    first_state = 0x764595C6
+    second_state = 0x078CAFFE
+    nested = _nested_sub(_reg(0), _reg(1))
+    fg = FlowGraph(
+        blocks={
+            4: _blk(4, (45, 122, 121, 34), (3,), (), ea=0x7FF859C070C4),
+            45: _blk(
+                45,
+                (123,),
+                (4,),
+                (
+                    _mov(0x7FF859C07656, _num(first_state), _reg(0)),
+                    _mov(0x7FF859C0765A, _num(1), _reg(1)),
+                ),
+                ea=0x7FF859C07656,
+            ),
+            122: _blk(
+                122,
+                (123,),
+                (4,),
+                (
+                    _mov(0x7FF859C08BFE, _num(second_state), _reg(0)),
+                    _mov(0x7FF859C08C02, _num(1), _reg(1)),
+                ),
+                ea=0x7FF859C08BFE,
+            ),
+            123: _blk(
+                123,
+                (3,),
+                (45, 122),
+                (_xor(0x7FF859C08D35, _reg(0), nested, _reg(2)),),
+                ea=0x7FF859C08D35,
+            ),
+            # Later dependent state instruction: must observe the original r0.
+            3: _blk(
+                3,
+                (4,),
+                (123,),
+                (_mov(0x7FF859C070C0, _reg(0), _stk(_STATE_OFF)),),
+                ea=0x7FF859C070C0,
+            ),
+            121: _blk(121, (4,), (4,), (), ea=0x7FF859C08B37),
+            34: _blk(34, (4,), (4,), (), ea=0x7FF859C0747A),
+        },
+        entry_serial=4,
+        func_ea=0x7FF859C06F60,
+    )
+
+    transitions = recover_state_write_transitions_via_partitioned_fixpoint(
+        fg,
+        _dispatcher({first_state: 121, second_state: 34}, exit_block=99),
+        _STATE_OFF,
+        dispatcher_entry_serial=4,
+    )
+    by_source = {
+        int(transition.write_block): transition
+        for transition in transitions
+        if int(transition.via_block or -1) == 123
+    }
+
+    assert by_source[45].next_state == first_state
+    assert by_source[45].target_handler == 121
+    assert by_source[122].next_state == second_state
+    assert by_source[122].target_handler == 34
 
 
 def test_glue_partition_rejects_a_merge_whose_inputs_are_unknown(_seam) -> None:

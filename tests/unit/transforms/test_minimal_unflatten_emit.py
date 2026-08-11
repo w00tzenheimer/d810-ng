@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
+
+from d810.transforms import minimal_unflatten_emit as minimal_unflatten_emit_module
 
 from d810.capabilities.dispatcher import RouterKind
 from d810.analyses.control_flow.branch_witness_provider import (
@@ -96,6 +99,12 @@ from d810.transforms.minimal_unflatten_emit import (
     _rebind_materialized_state_route_sources,
     build_source_keyed_handler_redirects,
     build_state_write_redirects,
+)
+from d810.transforms.dispatcher_corridor_coverage import (
+    DISPATCHER_CORRIDOR_COVERAGE_METADATA,
+    DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA,
+    FULL_UNFLATTENING_CLAIM_METADATA,
+    UNFLATTEN_COMPLETION_STATUS_METADATA,
 )
 from tests.native_preanalysis import make_native_key
 from tests.typed_patch_authority import emit_minimal_unflatten, graph_modifications
@@ -670,6 +679,293 @@ def test_emitter_uses_exact_materialized_state_route_for_default_router_miss(
         if isinstance(mod, RedirectGoto)
     }
     assert (10, 2, 20) in gotos
+
+
+def test_emitter_reports_reachable_dispatcher_corridors_as_partial_not_complete(
+    _seam,
+    monkeypatch,
+) -> None:
+    """`unresolved=0` cannot hide a still-reachable dispatcher feeder."""
+    from d810.transforms import minimal_unflatten_emit as emit_module
+
+    class _LogCapture:
+        info_on = True
+
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, tuple[object, ...]]] = []
+
+        def info(self, message: str, *args: object) -> None:
+            self.calls.append((message, args))
+
+    log_capture = _LogCapture()
+    monkeypatch.setattr(emit_module, "logger", log_capture)
+    fg = FlowGraph(
+        blocks={
+            0: replace(_b(0, (2,), ()), start_ea=0x7FF859C06F60),
+            2: replace(_b(2, (10, 20), (0, 10)), start_ea=0x7FF859C070C4),
+            # No foldable state write: this is intentionally a residual
+            # dispatcher feeder, not an unsafe forced redirect.
+            10: replace(_b(10, (2,), (2,)), start_ea=0x7FF859C08D35),
+            20: replace(_b(20, (), (2,)), start_ea=0x7FF859C08B37),
+        },
+        entry_serial=0,
+        func_ea=0x7FF859C06F60,
+    )
+
+    plan = emit_minimal_unflatten(
+        fg,
+        _disp({0x10: 20}, exit_block=99),
+        state_var_stkoff=_STATE,
+        dispatcher_entry_serial=2,
+    )
+
+    metadata = plan.metadata_dict()
+    assert metadata[UNFLATTEN_COMPLETION_STATUS_METADATA] == "pending_patch_application"
+    assert metadata[FULL_UNFLATTENING_CLAIM_METADATA] is False
+    coverage = metadata[DISPATCHER_CORRIDOR_COVERAGE_METADATA]
+    assert coverage["planned_completion_status"] == "planned_partial_residual_dispatcher"
+    assert coverage["residual_corridors"]
+    assert any(
+        "blk10@0x7ff859c08d35" in corridor["label"]
+        and "blk2@0x7ff859c070c4" in corridor["label"]
+        for corridor in coverage["residual_corridors"]
+    )
+    assert any(
+        message.startswith("unflat dispatcher corridor coverage:")
+        and args[:2]
+        == ("pending_patch_application", "planned_partial_residual_dispatcher")
+        for message, args in log_capture.calls
+    ), log_capture.calls
+    assert not any(" unresolved=%d " in message for message, _args in log_capture.calls)
+
+
+def test_emitter_proof_uses_caller_authoritative_handlers_not_dispatcher_rows(
+    _seam,
+) -> None:
+    """A materialized caller-only handler cannot disappear behind row fallback."""
+
+    class _CleanUseDefSafety:
+        @staticmethod
+        def redirect_use_def_violations(*_args: object) -> tuple[object, ...]:
+            return ()
+
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (2,), ()),
+            # The portable CFG includes imported handler blk30, but this
+            # interval adapter intentionally has no row that names it.
+            2: _b(2, (10, 20, 30), (0, 10, 20, 30)),
+            10: _b(10, (2,), (2,), (_mov_state(0x1280, 0x20),)),
+            20: _b(20, (2,), (2,), (_mov_state(0x1500, 0x10),)),
+            30: _b(30, (2,), (2,), (_mov_state(0x1780, 0x10),)),
+            99: _exit_block(99, ()),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+
+    plan = emit_minimal_unflatten(
+        fg,
+        _disp({0x10: 10, 0x20: 20}, exit_block=99),
+        state_var_stkoff=_STATE,
+        dispatcher_entry_serial=2,
+        initial_state=0x10,
+        authoritative_handler_serials=frozenset({10, 20, 30}),
+        use_def_safety=_CleanUseDefSafety(),
+        live_function=object(),
+    )
+
+    proof = plan.metadata_dict()[DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA]
+    assert {item["serial"] for item in proof["authoritative_handlers"]} == {
+        10,
+        20,
+        30,
+    }
+    assert proof["proof_status"] == "rejected"
+    assert proof["reason"] == "authoritative_handler_lost"
+
+
+def _complete_two_handler_dispatcher_graph() -> FlowGraph:
+    return FlowGraph(
+        blocks={
+            0: _b(0, (2,), ()),
+            2: _b(2, (10, 20), (0, 10, 20)),
+            10: _b(10, (2,), (2,), (_mov_state(0x1280, 0x20),)),
+            20: _b(20, (2,), (2,), (_mov_state(0x1500, 0x10),)),
+            99: _exit_block(99, ()),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+
+
+def test_emitter_narrow_proof_requires_executed_whole_fragment_use_def_check(
+    _seam,
+) -> None:
+    plan = emit_minimal_unflatten(
+        _complete_two_handler_dispatcher_graph(),
+        _disp({0x10: 10, 0x20: 20}, exit_block=99),
+        state_var_stkoff=_STATE,
+        dispatcher_entry_serial=2,
+        initial_state=0x10,
+        authoritative_handler_serials=frozenset({10, 20}),
+    )
+
+    proof = plan.metadata_dict()[DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA]
+    assert proof["proof_status"] == "rejected"
+    assert proof["reason"] == "producer_safety_missing"
+    assert proof["producer_safety"]["non_state_use_def_checked"] is False
+
+
+def test_emitter_narrow_proof_abstains_when_use_def_capability_raises(
+    _seam,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("D810_S1A_SEVERANCE_BAIL", "1")
+    monkeypatch.delenv("D810_USE_DEF_VETO", raising=False)
+
+    class _FailingUseDefSafety:
+        @staticmethod
+        def redirect_use_def_violations(*_args: object) -> tuple[object, ...]:
+            raise LookupError("live use-def authority unavailable")
+
+    plan = emit_minimal_unflatten(
+        _complete_two_handler_dispatcher_graph(),
+        _disp({0x10: 10, 0x20: 20}, exit_block=99),
+        state_var_stkoff=_STATE,
+        dispatcher_entry_serial=2,
+        initial_state=0x10,
+        authoritative_handler_serials=frozenset({10, 20}),
+        use_def_safety=_FailingUseDefSafety(),
+        live_function=object(),
+    )
+
+    proof = plan.metadata_dict()[DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA]
+    assert proof["proof_status"] == "rejected"
+    assert proof["reason"] == "producer_safety_missing"
+    assert proof["producer_safety"]["non_state_use_def_checked"] is False
+    assert proof["producer_safety"]["non_state_use_def_severances_zero"] is False
+    assert len(graph_modifications(plan)) == 3
+    audit = plan.metadata_dict()["use_def_severance_audit"]
+    assert audit["executed"] is False
+    assert audit["clean"] is False
+    assert audit["enforcement_status"] == "safety_unavailable"
+
+
+def test_partial_use_def_audit_retains_fragment_and_reports_unavailable_safety(
+    _seam,
+    monkeypatch,
+) -> None:
+    """A partial enforced audit is not an authoritative fragment rejection."""
+    monkeypatch.setenv("D810_S1A_SEVERANCE_BAIL", "1")
+    monkeypatch.delenv("D810_USE_DEF_VETO", raising=False)
+
+    class _PartialUseDefSafety:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def redirect_use_def_violations(
+            self, *_args: object
+        ) -> tuple[object, ...]:
+            if self.calls == 0:
+                self.calls += 1
+                return (SimpleNamespace(var_stkoff=_CARRIER_OFF),)
+            self.calls += 1
+            raise LookupError("live use-def authority unavailable")
+
+    plan = emit_minimal_unflatten(
+        _complete_two_handler_dispatcher_graph(),
+        _disp({0x10: 10, 0x20: 20}, exit_block=99),
+        state_var_stkoff=_STATE,
+        dispatcher_entry_serial=2,
+        initial_state=0x10,
+        authoritative_handler_serials=frozenset({10, 20}),
+        use_def_safety=_PartialUseDefSafety(),
+        live_function=object(),
+    )
+
+    assert len(graph_modifications(plan)) == 3
+    audit = plan.metadata_dict()["use_def_severance_audit"]
+    assert audit["executed"] is False
+    assert audit["clean"] is False
+    assert audit["severance_count"] == 1
+    assert audit["enforced"] is True
+    assert audit["enforcement_status"] == "safety_unavailable"
+    assert len(audit["violations"]) == 1
+
+
+def test_emitter_keeps_siblings_for_advisory_use_def_severance(
+    _seam,
+    monkeypatch,
+) -> None:
+    """Default heuristic findings are evidence, not a redirect filter."""
+    monkeypatch.delenv("D810_USE_DEF_VETO", raising=False)
+    monkeypatch.delenv("D810_S1A_SEVERANCE_BAIL", raising=False)
+
+    class _SeveringUseDefSafety:
+        @staticmethod
+        def redirect_use_def_violations(*_args: object) -> tuple[object, ...]:
+            return (SimpleNamespace(var_stkoff=_CARRIER_OFF),)
+
+    plan = emit_minimal_unflatten(
+        _complete_two_handler_dispatcher_graph(),
+        _disp({0x10: 10, 0x20: 20}, exit_block=99),
+        state_var_stkoff=_STATE,
+        dispatcher_entry_serial=2,
+        initial_state=0x10,
+        authoritative_handler_serials=frozenset({10, 20}),
+        use_def_safety=_SeveringUseDefSafety(),
+        live_function=object(),
+    )
+
+    assert len(graph_modifications(plan)) == 3
+    proof = plan.metadata_dict()[DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA]
+    assert proof["proof_status"] == "rejected"
+    assert proof["reason"] == "producer_safety_missing"
+    assert proof["producer_safety"]["fragment_atomic"] is False
+    assert proof["producer_safety"]["non_state_use_def_checked"] is True
+    assert proof["producer_safety"]["non_state_use_def_severances_zero"] is False
+
+
+def test_confirmed_use_def_severance_rejects_partial_fragment_atomically() -> None:
+    """Partial dispatcher coverage never weakens the hard fragment veto."""
+    from d810.transforms import minimal_unflatten_emit as emit_module
+
+    audit = SimpleNamespace(executed=True, severance_count=1, enforced=False)
+
+    assert not emit_module._must_reject_fragment_for_use_def_audit(audit)
+    assert emit_module._must_reject_fragment_for_use_def_audit(
+        audit, legacy_bail=True
+    )
+    audit.enforced = True
+    assert emit_module._must_reject_fragment_for_use_def_audit(audit)
+
+
+def test_emitter_narrow_proof_accepts_clean_executed_use_def_check(_seam) -> None:
+    class _CleanUseDefSafety:
+        @staticmethod
+        def redirect_use_def_violations(*_args: object) -> tuple[object, ...]:
+            return ()
+
+    plan = emit_minimal_unflatten(
+        _complete_two_handler_dispatcher_graph(),
+        _disp({0x10: 10, 0x20: 20}, exit_block=99),
+        state_var_stkoff=_STATE,
+        dispatcher_entry_serial=2,
+        initial_state=0x10,
+        authoritative_handler_serials=frozenset({10, 20}),
+        use_def_safety=_CleanUseDefSafety(),
+        live_function=object(),
+    )
+
+    proof = plan.metadata_dict()[DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA]
+    assert proof["proof_status"] == "accepted"
+    assert proof["producer_safety"] == {
+        "fragment_atomic": True,
+        "non_state_use_def_checked": True,
+        "non_state_use_def_severances_zero": True,
+        "non_state_use_def_veto": True,
+    }
 
 
 def test_emitter_scans_imported_materialized_handler_root(_seam) -> None:
@@ -8625,3 +8921,302 @@ def test_resolver_proven_indirect_call_neutralization_joins_planned_redirect() -
     ) == [
         NopInstructions(block_serial=83, insn_eas=(transfer_ea,)),
     ]
+
+
+def test_default_use_def_findings_are_advisory_and_keep_all_sibling_redirects(
+    _seam,
+    monkeypatch,
+) -> None:
+    """Heuristic severances must not silently drop sibling redirects by default."""
+
+    class _CleanUseDefSafety:
+        @staticmethod
+        def redirect_use_def_violations(*_args: object) -> tuple[object, ...]:
+            return ()
+
+    class _HeuristicUseDefSafety:
+        @staticmethod
+        def redirect_use_def_violations(*_args: object) -> tuple[object, ...]:
+            return (
+                SimpleNamespace(
+                    src_block=10,
+                    new_target=20,
+                    var_stkoff=_CARRIER_OFF,
+                    var_size=4,
+                    use_block=20,
+                    use_ea=0x1000,
+                ),
+            )
+
+    monkeypatch.delenv("D810_USE_DEF_VETO", raising=False)
+    monkeypatch.delenv("D810_S1A_SEVERANCE_BAIL", raising=False)
+    kwargs = {
+        "state_var_stkoff": _STATE,
+        "dispatcher_entry_serial": 2,
+        "initial_state": 0x10,
+        "authoritative_handler_serials": frozenset({10, 20}),
+        "live_function": object(),
+    }
+    clean_plan = emit_minimal_unflatten(
+        _complete_two_handler_dispatcher_graph(),
+        _disp({0x10: 10, 0x20: 20}, exit_block=99),
+        use_def_safety=_CleanUseDefSafety(),
+        **kwargs,
+    )
+    heuristic_plan = emit_minimal_unflatten(
+        _complete_two_handler_dispatcher_graph(),
+        _disp({0x10: 10, 0x20: 20}, exit_block=99),
+        use_def_safety=_HeuristicUseDefSafety(),
+        **kwargs,
+    )
+
+    assert len(graph_modifications(heuristic_plan)) == len(
+        graph_modifications(clean_plan)
+    )
+    proof = heuristic_plan.metadata_dict()[DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA]
+    assert proof["producer_safety"]["fragment_atomic"] is False
+    audit = heuristic_plan.metadata_dict()["use_def_severance_audit"]
+    assert audit["enforced"] is False
+    assert len(audit["violations"]) >= 1
+
+
+def test_legacy_s1a_severance_bail_rejects_the_whole_fragment(
+    _seam,
+    monkeypatch,
+) -> None:
+    """The legacy S1A gate rejects an executed actionable audit atomically."""
+
+    class _HeuristicUseDefSafety:
+        @staticmethod
+        def redirect_use_def_violations(*_args: object) -> tuple[object, ...]:
+            return (
+                SimpleNamespace(
+                    src_block=10,
+                    new_target=20,
+                    var_stkoff=_CARRIER_OFF,
+                    var_size=4,
+                    use_block=20,
+                    use_ea=0x1000,
+                ),
+            )
+
+    monkeypatch.setenv("D810_S1A_SEVERANCE_BAIL", "1")
+    monkeypatch.delenv("D810_USE_DEF_VETO", raising=False)
+    plan = emit_minimal_unflatten(
+        _complete_two_handler_dispatcher_graph(),
+        _disp({0x10: 10, 0x20: 20}, exit_block=99),
+        state_var_stkoff=_STATE,
+        dispatcher_entry_serial=2,
+        initial_state=0x10,
+        authoritative_handler_serials=frozenset({10, 20}),
+        use_def_safety=_HeuristicUseDefSafety(),
+        live_function=object(),
+    )
+
+    assert graph_modifications(plan) == []
+    audit = plan.metadata_dict()["use_def_severance_audit"]
+    assert audit["executed"] is True
+    assert audit["clean"] is False
+    assert audit["enforced"] is True
+    assert audit["enforcement_status"] == "fragment_rejected"
+
+
+def test_legacy_s1a_severance_bail_ignores_state_variable_findings(
+    _seam,
+    monkeypatch,
+) -> None:
+    class _StateOnlyUseDefSafety:
+        @staticmethod
+        def redirect_use_def_violations(*_args: object) -> tuple[object, ...]:
+            return (SimpleNamespace(var_stkoff=_STATE),)
+
+    monkeypatch.setenv("D810_S1A_SEVERANCE_BAIL", "1")
+    monkeypatch.delenv("D810_USE_DEF_VETO", raising=False)
+    plan = emit_minimal_unflatten(
+        _complete_two_handler_dispatcher_graph(),
+        _disp({0x10: 10, 0x20: 20}, exit_block=99),
+        state_var_stkoff=_STATE,
+        dispatcher_entry_serial=2,
+        initial_state=0x10,
+        authoritative_handler_serials=frozenset({10, 20}),
+        use_def_safety=_StateOnlyUseDefSafety(),
+        live_function=object(),
+    )
+
+    assert len(graph_modifications(plan)) == 3
+    audit = plan.metadata_dict()["use_def_severance_audit"]
+    assert audit["executed"] is True
+    assert audit["clean"] is True
+    assert audit["severance_count"] == 0
+
+
+def test_explicit_use_def_veto_rejects_the_whole_fragment_atomically(
+    _seam,
+    monkeypatch,
+) -> None:
+    """An enabled veto rejects all sibling redirects, never a filtered subset."""
+
+    class _HeuristicUseDefSafety:
+        @staticmethod
+        def redirect_use_def_violations(*_args: object) -> tuple[object, ...]:
+            return (
+                SimpleNamespace(
+                    src_block=10,
+                    new_target=20,
+                    var_stkoff=_CARRIER_OFF,
+                    var_size=4,
+                    use_block=20,
+                    use_ea=0x1000,
+                ),
+            )
+
+    monkeypatch.setenv("D810_USE_DEF_VETO", "1")
+    plan = emit_minimal_unflatten(
+        _complete_two_handler_dispatcher_graph(),
+        _disp({0x10: 10, 0x20: 20}, exit_block=99),
+        state_var_stkoff=_STATE,
+        dispatcher_entry_serial=2,
+        initial_state=0x10,
+        authoritative_handler_serials=frozenset({10, 20}),
+        use_def_safety=_HeuristicUseDefSafety(),
+        live_function=object(),
+    )
+
+    assert graph_modifications(plan) == []
+    audit = plan.metadata_dict()["use_def_severance_audit"]
+    assert audit["enforced"] is True
+    assert audit["enforcement_status"] == "fragment_rejected"
+
+
+def test_switch_retirement_breaks_unique_terminal_dispatcher_cycle() -> None:
+    """Full switch retirement must explicitly break its detached cycle."""
+    flow_graph = FlowGraph(
+        blocks={
+            0: _b(0, (1,), ()),
+            1: _b(1, (2,), (0,)),
+            2: replace(
+                _b(2, (3, 4, 5, 6, 7), (1, 8)),
+                kind=BlockKind.N_WAY,
+            ),
+            3: _b(3, (8,), (2,)),
+            4: _b(4, (8,), (2,)),
+            5: _b(5, (8,), (2,)),
+            6: _b(6, (9,), (2,)),
+            7: _b(7, (8,), (2,)),
+            8: _b(8, (2,), (3, 4, 5, 7)),
+            9: replace(_exit_block(9, (6,)), kind=BlockKind.STOP),
+        },
+        entry_serial=0,
+        func_ea=0x180001670,
+    )
+    modifications = [
+        RedirectGoto(from_serial=3, old_target=8, new_target=4),
+        RedirectGoto(from_serial=4, old_target=8, new_target=5),
+        RedirectGoto(from_serial=5, old_target=8, new_target=6),
+        RedirectGoto(from_serial=1, old_target=2, new_target=3),
+    ]
+
+    rewritten, cleanup_source = (
+        minimal_unflatten_emit_module._break_terminal_switch_dispatcher_cycle(
+            flow_graph,
+            modifications,
+            dispatcher_entry_serial=2,
+        )
+    )
+
+    assert cleanup_source == 8
+    assert [mod.from_serial for mod in rewritten if isinstance(mod, RedirectGoto)] == [
+        3,
+        4,
+        5,
+        1,
+        8,
+    ]
+    assert rewritten[-1] == RedirectGoto(
+        from_serial=8,
+        old_target=2,
+        new_target=6,
+    )
+
+
+def test_switch_retirement_abstains_when_terminal_corridor_is_ambiguous() -> None:
+    """Two terminal candidates provide no authority to choose a cleanup edge."""
+    flow_graph = FlowGraph(
+        blocks={
+            0: _b(0, (2,), ()),
+            2: replace(_b(2, (3, 4), (0, 5, 6)), kind=BlockKind.N_WAY),
+            3: _b(3, (9,), (2,)),
+            4: _b(4, (9,), (2,)),
+            5: _b(5, (2,), ()),
+            6: _b(6, (2,), ()),
+            9: replace(_exit_block(9, (3, 4)), kind=BlockKind.STOP),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    modifications = [
+        RedirectGoto(from_serial=5, old_target=2, new_target=3),
+        RedirectGoto(from_serial=6, old_target=2, new_target=4),
+    ]
+
+    rewritten, cleanup_source = (
+        minimal_unflatten_emit_module._break_terminal_switch_dispatcher_cycle(
+            flow_graph,
+            modifications,
+            dispatcher_entry_serial=2,
+        )
+    )
+
+    assert rewritten == modifications
+    assert cleanup_source is None
+
+
+def test_switch_emitter_breaks_terminal_dispatcher_cycle_before_compiling_plan(
+    _seam,
+) -> None:
+    """The abc-style plan must make its detached switch residue acyclic."""
+    flow_graph = FlowGraph(
+        blocks={
+            0: _b(0, (2,), ()),
+            2: replace(
+                _b(2, (3, 4, 5, 6, 7), (0, 8)),
+                kind=BlockKind.N_WAY,
+            ),
+            3: _b(3, (8,), (2,), (_mov_state(0x1300, 1),)),
+            4: _b(4, (8,), (2,), (_mov_state(0x1400, 2),)),
+            5: _b(5, (8,), (2,), (_mov_state(0x1500, 3),)),
+            6: _b(6, (9,), (2,)),
+            7: _b(7, (8,), (2,)),
+            8: _b(8, (2,), (3, 4, 5, 7)),
+            9: replace(_exit_block(9, (6,)), kind=BlockKind.STOP),
+        },
+        entry_serial=0,
+        func_ea=0x180001670,
+    )
+
+    plan = emit_minimal_unflatten(
+        flow_graph,
+        _disp({0: 3, 1: 4, 2: 5, 3: 6}, exit_block=7),
+        state_var_stkoff=_STATE,
+        dispatcher_entry_serial=2,
+        initial_state=0,
+        authoritative_handler_serials=frozenset({3, 4, 5, 6}),
+    )
+
+    modifications = graph_modifications(plan)
+    assert {
+        (mod.from_serial, mod.old_target, mod.new_target)
+        for mod in modifications
+        if isinstance(mod, RedirectGoto)
+    } == {
+        (0, 2, 3),
+        (3, 8, 4),
+        (4, 8, 5),
+        (5, 8, 6),
+        (8, 2, 6),
+    }
+    coverage = plan.metadata_dict()[DISPATCHER_CORRIDOR_COVERAGE_METADATA]
+    assert coverage["planned_completion_status"] == (
+        "planned_dispatcher_corridors_covered"
+    )
+    assert coverage["full_unflattening_claim"] is False

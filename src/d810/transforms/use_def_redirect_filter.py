@@ -14,6 +14,7 @@ the caller passes the opaque live function (``ida_hexrays.mba_t``) and the pre-m
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 
 from d810.core import logging
 from d810.transforms.graph_modification import (
@@ -23,6 +24,104 @@ from d810.transforms.graph_modification import (
 )
 
 logger = logging.getLogger("d810.transforms.use_def_filter")
+
+
+@dataclass(frozen=True, slots=True)
+class UseDefBlockAnchor:
+    """A serial/EA pair whose identity is invalid if either half is absent."""
+
+    serial: int | None
+    ea: int | None
+
+    def __post_init__(self) -> None:
+        serial = None if self.serial is None else int(self.serial)
+        ea = None if self.ea is None else int(self.ea)
+        if serial is None or ea is None:
+            serial = None
+            ea = None
+        object.__setattr__(self, "serial", serial)
+        object.__setattr__(self, "ea", ea)
+
+    @property
+    def label(self) -> str:
+        if self.serial is None or self.ea is None:
+            return "unknown"
+        return f"blk{self.serial}@0x{self.ea:x}"
+
+    def to_payload(self) -> dict[str, int | str | None]:
+        return {
+            "serial": self.serial,
+            "ea": self.ea,
+            "label": self.label,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class UseDefSeveranceEvidence:
+    """Immutable evidence for one non-state use-def severance."""
+
+    source: UseDefBlockAnchor
+    old_target: UseDefBlockAnchor
+    new_target: UseDefBlockAnchor
+    stack_offset: int | None
+    stack_size: int | None
+    use: UseDefBlockAnchor
+    use_instruction_ea: int | None = None
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "source": self.source.to_payload(),
+            "old_target": self.old_target.to_payload(),
+            "new_target": self.new_target.to_payload(),
+            "stack_offset": self.stack_offset,
+            "stack_size": self.stack_size,
+            "use": self.use.to_payload(),
+            "use_instruction_ea": self.use_instruction_ea,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class UseDefSeveranceAudit:
+    """Typed whole-fragment result for a non-state use-def safety query."""
+
+    executed: bool
+    severance_count: int
+    failure_reason: str | None = None
+    enforced: bool = False
+    violations: tuple[UseDefSeveranceEvidence, ...] = ()
+
+    @property
+    def clean(self) -> bool:
+        return self.executed and self.severance_count == 0
+
+    @property
+    def enforcement_enabled(self) -> bool:
+        """Compatibility spelling for consumers that describe policy state."""
+        return self.enforced
+
+    @property
+    def enforcement_status(self) -> str:
+        """Describe authority before policy so partial audits fail closed."""
+        if not self.executed:
+            return "safety_unavailable"
+        if self.severance_count > 0:
+            return "fragment_rejected" if self.enforced else "heuristic_observed"
+        return "clean"
+
+    def to_metadata(self, *, function_ea: int | None = None) -> dict[str, object]:
+        metadata: dict[str, object] = {
+            "executed": bool(self.executed),
+            "clean": bool(self.clean),
+            "severance_count": int(self.severance_count),
+            "failure_reason": self.failure_reason,
+            "enforced": bool(self.enforced),
+            "enforcement_enabled": bool(self.enforced),
+            "enforcement_status": self.enforcement_status,
+            "violations": [violation.to_payload() for violation in self.violations],
+        }
+        if function_ea is not None:
+            metadata["function_ea"] = int(function_ea)
+        return metadata
 
 
 def _veto_enabled() -> bool:
@@ -39,15 +138,14 @@ def _veto_enabled() -> bool:
 
 
 def severance_bail_enabled() -> bool:
-    """Conservative-bail mode (ticket llr-wlzb), OFF by default.
+    """Return the legacy S1A-only fragment-bail policy, OFF by default.
 
-    When ``D810_S1A_SEVERANCE_BAIL=1`` and the use-def check finds a redirect that
-    would orphan a non-state carrier, ``emit_minimal_unflatten`` abandons the whole
-    unflatten (emits an empty plan) rather than gutting the function — leaving the
-    dispatcher as a residual loop so the shared instruction rules still clean the
-    MBA/BCF noise.  This mirrors what the emulated engine does on the OLLVM
-    pointer-indirected-accumulator shape: it barely touches the state machine
-    (``edits_applied=1``) and lets the ins_rules produce the correct ~99-line partial.
+    ``D810_S1A_SEVERANCE_BAIL=1`` is consumed by
+    :func:`emit_minimal_unflatten`: an executed actionable audit rejects that
+    emitter's complete fragment.  It is deliberately not consumed by the
+    exported redirect filter or the legacy state-machine caller; those use the
+    global ``D810_USE_DEF_VETO`` policy.  This preserves the historical S1A
+    compatibility knob without widening its scope.
     """
     return os.environ.get("D810_S1A_SEVERANCE_BAIL", "0").strip() == "1"
 
@@ -60,17 +158,53 @@ def count_use_def_severances(
     pre_cfg,
     state_var_stkoff=None,
 ):
-    """Count redirects that would orphan a NON-state-variable use (ungated).
+    """Count redirects that would orphan a NON-state-variable use.
 
-    Unlike :func:`filter_use_def_severing_redirects` (which only acts when
-    ``D810_USE_DEF_VETO`` is set), this always computes the count when the capability
-    + live function are available.  The conservative-bail mode uses it to decide
-    whether §1a should abstain from unflattening this shape entirely.  The state
+    This compatibility helper performs the same typed whole-fragment audit as
+    :func:`filter_use_def_severing_redirects` but never applies either policy
+    gate.  Callers that need enforcement must retain the full audit result so
+    unavailable authority cannot be mistaken for a clean proof.  The state
     variable's own severance is the intended unflattening and is not counted.
     """
+    audit = audit_use_def_severances(
+        mods,
+        use_def_safety=use_def_safety,
+        live_function=live_function,
+        pre_cfg=pre_cfg,
+        state_var_stkoff=state_var_stkoff,
+    )
+    return audit.severance_count if audit.executed else 0
+
+
+def audit_use_def_severances(
+    mods,
+    *,
+    use_def_safety,
+    live_function,
+    pre_cfg,
+    state_var_stkoff=None,
+    enforce: bool | None = None,
+) -> UseDefSeveranceAudit:
+    """Audit every redirect or fail closed for the retirement allowance.
+
+    The audit always runs over the full final fragment.  The environment toggle
+    is recorded as policy state, but it never changes which evidence is
+    collected.  A capability/query failure is not equivalent to zero
+    severances.
+    """
+    # ``enforce`` is an explicit caller-scoped override.  The S1A emitter uses
+    # it for the legacy compatibility gate; the exported redirect filter leaves
+    # it unset and therefore remains controlled only by D810_USE_DEF_VETO.
+    enforced = _veto_enabled() if enforce is None else bool(enforce)
     if use_def_safety is None or live_function is None:
-        return 0
+        return UseDefSeveranceAudit(
+            False,
+            0,
+            "capability_unavailable",
+            enforced=enforced,
+        )
     severed = 0
+    evidence: list[UseDefSeveranceEvidence] = []
     for mod in mods:
         if not isinstance(mod, (RedirectGoto, RedirectBranch)):
             continue
@@ -78,20 +212,85 @@ def count_use_def_severances(
             violations = use_def_safety.redirect_use_def_violations(
                 to_redirect_intent(mod), live_function, pre_cfg
             )
-        except Exception:  # noqa: BLE001 — a failed safety check counts as no severance
-            continue
-        real = [
-            v
-            for v in violations
-            if state_var_stkoff is None or int(v.var_stkoff) != int(state_var_stkoff)
-        ]
-        if real:
-            severed += 1
-    return severed
+        except Exception as error:  # noqa: BLE001 - safety authority is unavailable
+            return UseDefSeveranceAudit(
+                False,
+                severed,
+                f"query_failed:{type(error).__name__}",
+                enforced=enforced,
+                violations=tuple(evidence),
+            )
+        real = []
+        for violation in violations:
+            var_stkoff = _optional_int(getattr(violation, "var_stkoff", None))
+            if (
+                state_var_stkoff is not None
+                and var_stkoff is not None
+                and var_stkoff == int(state_var_stkoff)
+            ):
+                continue
+            real.append(violation)
+        severed += len(real)
+        evidence.extend(
+            _severance_evidence(mod, violation, pre_cfg) for violation in real
+        )
+    return UseDefSeveranceAudit(
+        True,
+        severed,
+        enforced=enforced,
+        violations=tuple(evidence),
+    )
+
+
+def _optional_int(value: object) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _block_anchor(
+    pre_cfg: object,
+    serial: object,
+) -> UseDefBlockAnchor:
+    serial_int = _optional_int(serial)
+    if serial_int is None:
+        return UseDefBlockAnchor(None, None)
+    block = None
+    get_block = getattr(pre_cfg, "get_block", None)
+    if callable(get_block):
+        block = get_block(serial_int)
+    ea = None if block is None else getattr(block, "start_ea", None)
+    return UseDefBlockAnchor(serial_int, _optional_int(ea))
+
+
+def _severance_evidence(
+    mod: RedirectGoto | RedirectBranch,
+    violation: object,
+    pre_cfg: object,
+) -> UseDefSeveranceEvidence:
+    intent = to_redirect_intent(mod)
+    use_block = getattr(violation, "use_block", None)
+    use_instruction_ea = _optional_int(getattr(violation, "use_ea", None))
+    return UseDefSeveranceEvidence(
+        source=_block_anchor(pre_cfg, intent.from_serial),
+        old_target=_block_anchor(pre_cfg, intent.old_target),
+        new_target=_block_anchor(pre_cfg, intent.new_target),
+        stack_offset=_optional_int(getattr(violation, "var_stkoff", None)),
+        stack_size=_optional_int(getattr(violation, "var_size", None)),
+        use=_block_anchor(pre_cfg, use_block),
+        use_instruction_ea=use_instruction_ea,
+    )
 
 
 __all__ = [
     "filter_use_def_severing_redirects",
+    "UseDefBlockAnchor",
+    "UseDefSeveranceEvidence",
+    "UseDefSeveranceAudit",
+    "audit_use_def_severances",
     "count_use_def_severances",
     "severance_bail_enabled",
 ]
@@ -105,7 +304,7 @@ def filter_use_def_severing_redirects(
     pre_cfg,
     state_var_stkoff=None,
 ):
-    """Drop redirects whose application would orphan a non-state-variable use.
+    """Apply the use-def policy atomically to one complete redirect fragment.
 
     Args:
         mods: Iterable of ``GraphModification`` (only ``RedirectGoto`` / ``RedirectBranch`` are
@@ -118,54 +317,36 @@ def filter_use_def_severing_redirects(
             unflattening and are ignored.
 
     Returns:
-        The kept modifications (a list), in input order.
+        The complete input batch, or an empty batch when an enabled veto finds
+        any actionable non-state severance. Query failure keeps the complete
+        batch without claiming a clean authoritative audit.
     """
-    if use_def_safety is None or live_function is None or not _veto_enabled():
-        return list(mods)
-    kept: list = []
-    vetoed = 0
-    for mod in mods:
-        if not isinstance(mod, (RedirectGoto, RedirectBranch)):
-            kept.append(mod)
-            continue
-        try:
-            violations = use_def_safety.redirect_use_def_violations(
-                to_redirect_intent(mod), live_function, pre_cfg
-            )
-        except Exception:  # noqa: BLE001 — a failed safety check must not drop a redirect
-            logger.debug("use-def veto check raised for %r", mod, exc_info=True)
-            kept.append(mod)
-            continue
-        if not violations:
-            kept.append(mod)
-            continue
-        real_violations = [
-            v
-            for v in violations
-            if state_var_stkoff is None or int(v.var_stkoff) != int(state_var_stkoff)
-        ]
-        if not real_violations:
-            # Only the dispatcher state variable would be severed -- that is the unflattening.
-            kept.append(mod)
-            continue
-        vetoed += 1  # would orphan non-state-var (handler body) uses -> drop
-        if logger.debug_on:
-            intent = to_redirect_intent(mod)
-            detail = ", ".join(
-                "var_stkoff=0x{:x} size={} use_blk={} use_ea=0x{:x}".format(
-                    int(v.var_stkoff), int(v.var_size), int(v.use_block), int(v.use_ea)
-                )
-                for v in real_violations[:6]
-            )
-            logger.debug(
-                "USE_DEF_VETO_DETAIL: redirect src=%s old=%s new=%s would-veto by %d "
-                "real violation(s): %s",
-                getattr(intent, "from_serial", "?"),
-                getattr(intent, "old_target", "?"),
-                getattr(intent, "new_target", "?"),
-                len(real_violations),
-                detail,
-            )
-    if vetoed:
-        logger.info("use-def veto filtered %d redirect(s)", vetoed)
-    return kept
+    modifications = list(mods)
+    audit = audit_use_def_severances(
+        modifications,
+        use_def_safety=use_def_safety,
+        live_function=live_function,
+        pre_cfg=pre_cfg,
+        state_var_stkoff=state_var_stkoff,
+    )
+    if not audit.executed:
+        logger.debug(
+            "use-def audit unavailable; retaining complete redirect batch: %s",
+            audit.failure_reason,
+        )
+        return modifications
+    if audit.severance_count == 0:
+        return modifications
+    if not audit.enforced:
+        logger.info(
+            "use-def advisory observed %d non-state severance(s); retaining "
+            "complete redirect batch",
+            audit.severance_count,
+        )
+        return modifications
+    logger.info(
+        "use-def veto rejected complete redirect fragment with %d non-state "
+        "severance(s)",
+        audit.severance_count,
+    )
+    return []
