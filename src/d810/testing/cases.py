@@ -31,6 +31,7 @@ class BinaryOverride:
 
     # Override before assertions
     obfuscated_contains: Optional[list[str]] = None
+    obfuscated_regexes: Optional[list[str]] = None
     obfuscated_not_contains: Optional[list[str]] = None
 
     # Override after assertions
@@ -47,6 +48,7 @@ class BinaryOverride:
 
     # Override behavior
     must_change: Optional[bool] = None
+    allow_unchanged_pseudocode_if_rules_fired: Optional[bool] = None
     skip: Optional[str] = None  # Skip reason for this binary
     operator_complexity_mode: Optional[str] = None
     operator_complexity_ops: Optional[list[str]] = None
@@ -81,6 +83,7 @@ class DeobfuscationCase:
         description: Optional description of what this test verifies.
 
         obfuscated_contains: Patterns that MUST be present in obfuscated code.
+        obfuscated_regexes: Regex patterns that MUST match obfuscated code.
         obfuscated_not_contains: Patterns that MUST NOT be present in obfuscated code.
 
         expected_code: The exact expected deobfuscated code (normalized).
@@ -97,6 +100,10 @@ class DeobfuscationCase:
             <function>(int input)`` is compiled and diffed against the AFTER
             pseudocode (behavioral equivalence; single-int-arg only).
         must_change: Whether deobfuscation must change the code (default: True).
+        allow_unchanged_pseudocode_if_rules_fired: Permit an unchanged rendered
+            pseudocode string only when the explicitly required CFG rule(s)
+            recorded a native mutation. This is for SDK renderer no-ops, not a
+            general relaxation of ``must_change``.
         check_stats: Whether to verify rule firing statistics (default: True).
         skip: If set, skip this test with this reason.
         operator_complexity_mode: Optional complexity trend assertion mode:
@@ -123,6 +130,7 @@ class DeobfuscationCase:
 
     # Before assertions (obfuscated code)
     obfuscated_contains: list[str] = field(default_factory=list)
+    obfuscated_regexes: list[str] = field(default_factory=list)
     obfuscated_not_contains: list[str] = field(default_factory=list)
 
     # After assertions (deobfuscated code)
@@ -139,6 +147,12 @@ class DeobfuscationCase:
 
     # AST metrics baseline (from CodeComparator.count_ast_statements)
     expected_ast_stats: Optional[dict[str, int]] = None
+    # Hex-Rays rendering and ctree simplification can legitimately change
+    # statement shape across SDK releases without changing semantics.  Keep
+    # those baselines exact and explicit instead of weakening them to ranges.
+    expected_ast_stats_by_sdk: dict[int, dict[str, int]] = field(
+        default_factory=dict
+    )
 
     # Behavioral semantic-equivalence oracle: repo-root-relative path to a C
     # source file containing ``int <function>(int input){...}``.  When set, the
@@ -149,6 +163,7 @@ class DeobfuscationCase:
 
     # Behavior flags
     must_change: bool = True
+    allow_unchanged_pseudocode_if_rules_fired: bool = False
     check_stats: bool = True
     skip: Optional[str] = None
     # When True, a function absent from the current binary is a SKIP, not a
@@ -166,6 +181,12 @@ class DeobfuscationCase:
         """Normalize expected_code by dedenting."""
         if self.expected_code is not None:
             self.expected_code = textwrap.dedent(self.expected_code).strip()
+
+    def expected_ast_stats_for_sdk(self, sdk_version: int) -> Optional[dict[str, int]]:
+        """Return the exact AST baseline declared for one IDA SDK."""
+        return self.expected_ast_stats_by_sdk.get(
+            int(sdk_version), self.expected_ast_stats
+        )
 
     def get_effective_config(self, binary_suffix: str) -> DeobfuscationCase:
         """Get effective configuration with binary-specific overrides applied.
@@ -197,6 +218,11 @@ class DeobfuscationCase:
                 override.obfuscated_contains
                 if override.obfuscated_contains is not None
                 else self.obfuscated_contains
+            ),
+            obfuscated_regexes=(
+                override.obfuscated_regexes
+                if override.obfuscated_regexes is not None
+                else self.obfuscated_regexes
             ),
             obfuscated_not_contains=(
                 override.obfuscated_not_contains
@@ -243,13 +269,22 @@ class DeobfuscationCase:
                 if override.forbidden_rules is not None
                 else self.forbidden_rules
             ),
+            expected_ast_stats=self.expected_ast_stats,
+            expected_ast_stats_by_sdk=self.expected_ast_stats_by_sdk,
+            semantic_reference=self.semantic_reference,
             must_change=(
                 override.must_change
                 if override.must_change is not None
                 else self.must_change
             ),
+            allow_unchanged_pseudocode_if_rules_fired=(
+                override.allow_unchanged_pseudocode_if_rules_fired
+                if override.allow_unchanged_pseudocode_if_rules_fired is not None
+                else self.allow_unchanged_pseudocode_if_rules_fired
+            ),
             check_stats=self.check_stats,
             skip=override.skip if override.skip is not None else self.skip,
+            skip_if_function_absent=self.skip_if_function_absent,
             operator_complexity_mode=(
                 override.operator_complexity_mode
                 if override.operator_complexity_mode is not None

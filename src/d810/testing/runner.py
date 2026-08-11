@@ -30,6 +30,7 @@ except ImportError:
 
 from .assertions import (
     assert_code_changed,
+    assert_cfg_rules_patched,
     assert_code_equivalent,
     assert_contains,
     assert_not_contains,
@@ -201,6 +202,13 @@ def run_deobfuscation_test(
                 context="obfuscated code",
             )
 
+        if effective_case.obfuscated_regexes:
+            assert_regex_contains(
+                code_before,
+                effective_case.obfuscated_regexes,
+                context="obfuscated code",
+            )
+
         # Assert forbidden patterns are not present
         if effective_case.obfuscated_not_contains:
             assert_not_contains(
@@ -237,9 +245,29 @@ def run_deobfuscation_test(
 
         code_after = pseudocode_to_string(decompiled_after.get_pseudocode())
 
-        # Assert code changed (if required)
+        # Assert code changed (if required). Some SDK releases simplify a
+        # call in the renderer before D810 sees the nested MMAT_CALLS m_icall.
+        # A case may opt into the narrowly stronger native-mutation oracle:
+        # unchanged text is accepted only when its required block rule recorded
+        # an actual positive microcode patch.
         if effective_case.must_change:
-            assert_code_changed(code_before, code_after)
+            if code_before != code_after:
+                assert_code_changed(code_before, code_after)
+            elif not effective_case.allow_unchanged_pseudocode_if_rules_fired:
+                assert_code_changed(code_before, code_after)
+            else:
+                if (
+                    not effective_case.check_stats
+                    or not effective_case.required_rules
+                ):
+                    raise AssertionError(
+                        "allow_unchanged_pseudocode_if_rules_fired requires "
+                        "check_stats=True and at least one required rule"
+                    )
+                assert_cfg_rules_patched(
+                    state.stats,
+                    effective_case.required_rules,
+                )
 
         # Behavioral semantic-equivalence oracle (strictly stronger than
         # must_change, which has passed on real miscompiles): compile the AFTER
@@ -316,10 +344,12 @@ def run_deobfuscation_test(
         # ==========================================
         # AST METRICS: Verify structural regression
         # ==========================================
-        if effective_case.expected_ast_stats and code_comparator is not None:
+        sdk_version = int(getattr(idaapi, "IDA_SDK_VERSION", 0))
+        expected_ast_stats = effective_case.expected_ast_stats_for_sdk(sdk_version)
+        if expected_ast_stats and code_comparator is not None:
             actual_ast = code_comparator.count_ast_statements(code_after)
             diffs = {}
-            for metric, expected_val in effective_case.expected_ast_stats.items():
+            for metric, expected_val in expected_ast_stats.items():
                 actual_val = actual_ast.get(metric, 0)
                 if actual_val != expected_val:
                     diffs[metric] = (

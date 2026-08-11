@@ -201,6 +201,30 @@ def assert_rules_fired(
             )
 
 
+def assert_cfg_rules_patched(
+    stats: "OptimizationStatistics",
+    required_rules: list[str],
+) -> None:
+    """Require each named block rule to record at least one native patch.
+
+    ``assert_rules_fired`` intentionally accepts broader instruction and CFG
+    execution evidence. Renderer-noop cases need the narrower proof that the
+    optblock callback returned a positive mutation count.
+    """
+    cfg_rule_usages = getattr(stats, "cfg_rule_usages", {})
+    missing = [
+        rule_name
+        for rule_name in required_rules
+        if not any(int(count) > 0 for count in cfg_rule_usages.get(rule_name, ()))
+    ]
+    if missing:
+        raise AssertionError(
+            "Required CFG rules did not produce positive patches:\n"
+            f"  Missing: {missing}\n"
+            f"  Recorded: {dict(cfg_rule_usages)}"
+        )
+
+
 def assert_code_changed(before: str, after: str) -> None:
     """Assert that deobfuscation changed the code.
 

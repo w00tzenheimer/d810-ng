@@ -7,8 +7,10 @@ from d810.testing.assertions import (
     assert_contains,
     assert_not_contains,
     assert_code_changed,
+    assert_cfg_rules_patched,
     assert_regex_contains,
 )
+from d810.core.stats import OptimizationStatistics
 
 
 class TestDeobfuscationCase:
@@ -55,6 +57,7 @@ class TestDeobfuscationCase:
             project="custom_project.json",
             description="Test complex deobfuscation",
             obfuscated_contains=["0xDEADBEEF", "0xCAFEBABE"],
+            obfuscated_regexes=[r"0x(?:DEAD|CAFE)BEEF"],
             obfuscated_not_contains=["simple"],
             expected_code="int foo() { return 1; }",
             acceptable_patterns=["return 1", "return 0x1"],
@@ -71,8 +74,38 @@ class TestDeobfuscationCase:
         assert case.function == "complex_test"
         assert case.project == "custom_project.json"
         assert len(case.obfuscated_contains) == 2
+        assert case.obfuscated_regexes == [r"0x(?:DEAD|CAFE)BEEF"]
         assert len(case.required_rules) == 2
         assert case.deobfuscated_regexes == [r"return\s+1"]
+
+    def test_rendered_noop_requires_explicit_native_mutation_contract(self):
+        default_case = DeobfuscationCase(function="renderer_direct_call")
+        case = DeobfuscationCase(
+            function="renderer_direct_call",
+            required_rules=["IndirectCallResolver"],
+            allow_unchanged_pseudocode_if_rules_fired=True,
+        )
+
+        assert default_case.allow_unchanged_pseudocode_if_rules_fired is False
+        assert case.allow_unchanged_pseudocode_if_rules_fired is True
+
+    def test_sdk_specific_ast_stats_are_exact(self):
+        case = DeobfuscationCase(
+            function="sdk_rendered_function",
+            expected_ast_stats={"statements": 39, "ifs": 8},
+            expected_ast_stats_by_sdk={
+                940: {"statements": 36, "ifs": 5},
+            },
+        )
+
+        assert case.expected_ast_stats_for_sdk(930) == {
+            "statements": 39,
+            "ifs": 8,
+        }
+        assert case.expected_ast_stats_for_sdk(940) == {
+            "statements": 36,
+            "ifs": 5,
+        }
 
 
 class TestBinaryOverride:
@@ -148,6 +181,20 @@ class TestBinaryOverride:
         )
 
         assert case.get_effective_config(".dll").state_cff_min_state_constant == 0x1000
+
+    def test_override_preserves_obfuscated_regex_and_sdk_ast_stats(self):
+        case = DeobfuscationCase(
+            function="test_func",
+            obfuscated_regexes=[r"(?:!i|i == 0)"],
+            expected_ast_stats={"ifs": 8},
+            expected_ast_stats_by_sdk={940: {"ifs": 5}},
+            dll_override=BinaryOverride(required_rules=["DllRule"]),
+        )
+
+        effective = case.get_effective_config(".dll")
+
+        assert effective.obfuscated_regexes == [r"(?:!i|i == 0)"]
+        assert effective.expected_ast_stats_for_sdk(940) == {"ifs": 5}
 
 
 class TestAssertContains:
@@ -231,3 +278,18 @@ class TestAssertCodeChanged:
         code = "int foo() { return 42; }"
         with pytest.raises(AssertionError, match="did not change"):
             assert_code_changed(code, code)
+
+
+class TestAssertCfgRulesPatched:
+    def test_requires_a_positive_cfg_patch_count(self):
+        stats = OptimizationStatistics()
+        stats.record_cfg_rule_patches("IndirectCallResolver", 1)
+
+        assert_cfg_rules_patched(stats, ["IndirectCallResolver"])
+
+    def test_rejects_zero_or_missing_cfg_patch_counts(self):
+        stats = OptimizationStatistics()
+        stats.record_cfg_rule_patches("IndirectCallResolver", 0)
+
+        with pytest.raises(AssertionError, match="positive patches"):
+            assert_cfg_rules_patched(stats, ["IndirectCallResolver"])
