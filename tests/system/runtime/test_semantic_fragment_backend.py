@@ -412,7 +412,9 @@ class _Instruction:
         self.persistent = True
 
 
-def _fake_minsn(ea: int) -> _Instruction:
+def _fake_minsn(ea: int | _Instruction) -> _Instruction:
+    if isinstance(ea, _Instruction):
+        return deepcopy(ea)
     return _Instruction(ida_hexrays.m_nop, int(ea))
 
 
@@ -2602,6 +2604,7 @@ def test_backend_stages_native_body_inside_active_fragment_transaction(
     _connect(entry, original)
     _connect(original, dispatcher)
     mba = _Mba((entry, original, target, dispatcher, stop))
+    mba.mbr.ranges.clear()
     gateway = _fragment_gateway(mba)
     materializer = _RecordingNativeBodyMaterializer()
     monkeypatch.setattr(dm, "create_standalone_block", _create_fake_standalone_block)
@@ -2618,6 +2621,7 @@ def test_backend_stages_native_body_inside_active_fragment_transaction(
         dispatcher=3,
     )
     original_ranges = _outline_ranges(mba)
+    assert original_ranges == ()
     assert not int(mba.get_mba_flags2()) & int(ida_hexrays.MBA2_HAS_OUTLINES)
     prepared, patch_plan = _begin_preflight_fragment_batch(gateway, modifier, plan)
     transaction_id = gateway.active_batch_id
@@ -2645,13 +2649,31 @@ def test_backend_stages_native_body_inside_active_fragment_transaction(
         imported_proxy.resolve(transaction_id=transaction_id)
         is imported_runtime.version
     )
+    origins = state.instruction_origins_by_block_id["imported-terminal"]
+    assert len(origins) == 1
+    live_ea, native_ea = next(iter(origins.items()))
+    imported_block = sfb._live_block_for_binding(modifier, imported_runtime)
+    assert int(native_ea) == 0x500000
+    assert int(mba.map_fict_ea(int(live_ea))) == int(native_ea)
+    assert int(imported_block.start) <= int(mba.entry_ea) < int(imported_block.end)
     assert gateway.active
     assert gateway.receipts == ()
-    assert _outline_ranges(mba) == (
-        *original_ranges,
-        (0x500000, 0x500010),
-    )
-    assert int(mba.get_mba_flags2()) & int(ida_hexrays.MBA2_HAS_OUTLINES)
+    assert _outline_ranges(mba) == original_ranges
+    assert not int(mba.get_mba_flags2()) & int(ida_hexrays.MBA2_HAS_OUTLINES)
+
+    modifier._finalize_semantic_fragment_for_commit(plan)
+
+    finalized_origins = state.instruction_origins_by_block_id["imported-terminal"]
+    assert len(finalized_origins) == 1
+    finalized_live_ea, finalized_native_ea = next(iter(finalized_origins.items()))
+    assert int(finalized_live_ea) != int(live_ea)
+    assert int(finalized_native_ea) == int(native_ea)
+    assert int(mba.map_fict_ea(int(finalized_live_ea))) == int(mba.entry_ea)
+    assert tuple(
+        int(instruction.ea) for instruction in sfb._iter_block_instructions(imported_block)
+    ) == (int(finalized_live_ea),)
+    assert _outline_ranges(mba) == original_ranges
+    assert not int(mba.get_mba_flags2()) & int(ida_hexrays.MBA2_HAS_OUTLINES)
 
     modifier._discard_staged_semantic_fragment(plan)
     gateway.abort(reason="runtime imported native-body staging cleanup")
@@ -3447,7 +3469,7 @@ def test_backend_materializes_and_observes_terminal_effects_from_live_mba(
 def test_gateway_receipts_terminal_effects_in_atomic_publication_inventory(
     monkeypatch,
 ) -> None:
-    _mba, gateway, modifier, plan, _entry, _original = _terminal_effect_runtime_case(
+    mba, gateway, modifier, plan, _entry, _original = _terminal_effect_runtime_case(
         monkeypatch
     )
     emitter = EventEmitter()
@@ -3473,6 +3495,191 @@ def test_gateway_receipts_terminal_effects_in_atomic_publication_inventory(
         block.block_id for block in plan.blocks
     }
     assert committed[0].receipt.version_transitions
+    terminal_identity = plan.block("imported-return").stable_identity
+    assert terminal_identity is not None
+    terminal_serials = gateway.identity_index.serials_by_identity[terminal_identity]
+    assert len(terminal_serials) == 1
+    terminal = mba.get_mblock(terminal_serials[0])
+    stop = mba.get_mblock(int(mba.qty) - 1)
+    assert terminal is not None and stop is not None
+    assert terminal.tail is None
+    assert int(terminal.type) == int(ida_hexrays.BLT_1WAY)
+    assert tuple(int(value) for value in terminal.succset) == (int(stop.serial),)
+    assert int(terminal.serial) in tuple(int(value) for value in stop.predset)
+
+
+@pytest.mark.parametrize("failure_point", ("after_rebind", "after_terminal"))
+def test_commit_finalization_restores_live_authority_after_terminal_failure(
+    monkeypatch,
+    failure_point: str,
+) -> None:
+    mba, gateway, modifier, plan, _entry, _original = _terminal_effect_runtime_case(
+        monkeypatch
+    )
+    prepared, patch_plan = _begin_preflight_fragment_batch(gateway, modifier, plan)
+    projection = modifier._realize_semantic_patch_plan(patch_plan, prepared)
+    validation = validate_fragment_projection(plan, projection)
+    assert validation.passed, validation.failures
+    state = modifier._semantic_fragment_state
+    assert state is not None
+    origins_before = {
+        block_id: dict(origins)
+        for block_id, origins in state.instruction_origins_by_block_id.items()
+    }
+    instruction_eas_before = {
+        block_id: tuple(
+            int(instruction.ea)
+            for instruction in sfb._iter_block_instructions(
+                sfb._live_block_for_binding(modifier, state.binding(block_id))
+            )
+        )
+        for block_id in origins_before
+    }
+    predicates_before = dict(state.predicate_live_eas_by_operation_id)
+    rollbacks_before = tuple(state.constant_materialization_rollbacks)
+    terminal = plan.terminal_returns[0]
+    terminal_block = sfb._live_block_for_binding(
+        modifier,
+        state.binding(terminal.block_id),
+    )
+    stop = mba.get_mblock(int(mba.qty) - 1)
+    assert terminal_block.tail is not None and stop is not None
+    terminal_instruction_before = terminal_block.tail
+    set_terminal_address = terminal_instruction_before.setaddr
+    terminal_address_writes = 0
+
+    def observe_terminal_address_write(ea: int) -> None:
+        nonlocal terminal_address_writes
+        terminal_address_writes += 1
+        set_terminal_address(int(ea))
+
+    monkeypatch.setattr(
+        terminal_instruction_before,
+        "setaddr",
+        observe_terminal_address_write,
+    )
+    terminal_ea_before = int(terminal_block.tail.ea)
+    terminal_type_before = int(terminal_block.type)
+    terminal_successors_before = tuple(int(value) for value in terminal_block.succset)
+    stop_predecessors_before = tuple(int(value) for value in stop.predset)
+    allocator_history_before = dict(mba.fictitious_ea_map)
+    if failure_point == "after_rebind":
+        rebind = sfb._rebind_semantic_instruction_addresses_for_commit
+
+        def fail_after_address_rebind(*args) -> None:
+            rebind(*args)
+            raise RuntimeError("injected commit address-rebind failure")
+
+        monkeypatch.setattr(
+            sfb,
+            "_rebind_semantic_instruction_addresses_for_commit",
+            fail_after_address_rebind,
+        )
+        expected_failure = "injected commit address-rebind failure"
+    else:
+        canonicalize = sfb.canonicalize_explicit_return_to_stop_edge
+
+        def fail_after_terminal_mutation(block, final_block) -> bool:
+            assert canonicalize(block, final_block)
+            raise RuntimeError("injected commit terminal-conversion failure")
+
+        monkeypatch.setattr(
+            sfb,
+            "canonicalize_explicit_return_to_stop_edge",
+            fail_after_terminal_mutation,
+        )
+        expected_failure = "injected commit terminal-conversion failure"
+
+    with pytest.raises(RuntimeError, match=expected_failure):
+        modifier._finalize_semantic_fragment_for_commit(plan)
+
+    assert terminal_address_writes == (2 if failure_point == "after_rebind" else 1)
+    assert state.instruction_origins_by_block_id == origins_before
+    assert state.predicate_live_eas_by_operation_id == predicates_before
+    assert tuple(state.constant_materialization_rollbacks) == rollbacks_before
+    for block_id in origins_before:
+        block = sfb._live_block_for_binding(modifier, state.binding(block_id))
+        assert tuple(
+            int(instruction.ea) for instruction in sfb._iter_block_instructions(block)
+        ) == instruction_eas_before[block_id]
+    assert terminal_block.tail is not None
+    assert int(terminal_block.tail.ea) == terminal_ea_before
+    assert int(terminal_block.tail.opcode) == int(ida_hexrays.m_ret)
+    assert int(terminal_block.type) == terminal_type_before
+    assert tuple(int(value) for value in terminal_block.succset) == (
+        terminal_successors_before
+    )
+    assert tuple(int(value) for value in stop.predset) == stop_predecessors_before
+    assert allocator_history_before.items() <= mba.fictitious_ea_map.items()
+    assert len(mba.fictitious_ea_map) > len(allocator_history_before)
+    assert gateway.receipts == ()
+
+    modifier._discard_staged_semantic_fragment(plan)
+    gateway.abort(reason="commit finalization compensation cleanup")
+
+
+def test_commit_finalization_accepts_prefix_before_owned_return(monkeypatch) -> None:
+    prefix = _Instruction(ida_hexrays.m_nop, 0x401000)
+    owned_return = _Instruction(ida_hexrays.m_ret, 0x401004)
+    prefix.next = owned_return
+    terminal_block = _Block(
+        0,
+        start=0x401000,
+        block_type=ida_hexrays.BLT_0WAY,
+    )
+    terminal_block.head = prefix
+    terminal_block.tail = owned_return
+    stop = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_STOP)
+    mba = _Mba((terminal_block, stop))
+    modifier = SimpleNamespace(mba=mba)
+    terminal = FragmentTerminalReturn(
+        return_id="prefixed-return",
+        block_id="terminal",
+        instruction_ea=0x500100,
+        return_width=4,
+    )
+    state = SimpleNamespace(
+        binding=lambda _block_id: SimpleNamespace(block=terminal_block),
+        live_instruction_ea=lambda _block_id, _native_ea: 0x401004,
+        instruction_origins_by_block_id={"terminal": {0x401004: 0x500100}},
+    )
+
+    monkeypatch.setattr(
+        sfb,
+        "_rebind_semantic_instruction_addresses_for_commit",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(
+        sfb,
+        "_live_block_for_binding",
+        lambda _modifier, binding: binding.block,
+    )
+
+    def canonicalize(block, final_block) -> bool:
+        block.remove_from_block(block.tail)
+        block.type = int(ida_hexrays.BLT_1WAY)
+        block.succset.push_back(int(final_block.serial))
+        final_block.predset.push_back(int(block.serial))
+        return True
+
+    monkeypatch.setattr(
+        sfb,
+        "canonicalize_explicit_return_to_stop_edge",
+        canonicalize,
+    )
+
+    sfb._apply_semantic_fragment_commit_finalization(
+        modifier,
+        SimpleNamespace(terminal_returns=(terminal,)),
+        state,
+    )
+
+    assert terminal_block.head is prefix
+    assert terminal_block.tail is prefix
+    assert prefix.next is None
+    assert tuple(int(value) for value in terminal_block.succset) == (1,)
+    assert tuple(int(value) for value in stop.predset) == (0,)
+    assert state.instruction_origins_by_block_id == {"terminal": {}}
 
 
 def test_production_participant_preflights_before_realization_and_observes_live_state(
@@ -5619,11 +5826,8 @@ def test_gateway_publishes_native_body_in_one_balanced_receipt(monkeypatch) -> N
     assert gateway.active is False
     assert modifier._semantic_fragment_state is None
     assert gateway.receipts == (receipt,)
-    assert _outline_ranges(mba) == (
-        *original_ranges,
-        (0x500000, 0x500010),
-    )
-    assert int(mba.get_mba_flags2()) & int(ida_hexrays.MBA2_HAS_OUTLINES)
+    assert _outline_ranges(mba) == original_ranges
+    assert not int(mba.get_mba_flags2()) & int(ida_hexrays.MBA2_HAS_OUTLINES)
 
 
 def test_gateway_receipts_exact_native_body_identity_binding(monkeypatch) -> None:
@@ -5635,21 +5839,33 @@ def test_gateway_receipts_exact_native_body_identity_binding(monkeypatch) -> Non
 
     snapshot = receipt.current_mba_identity_binding
     assert isinstance(snapshot, CurrentMbaIdentityBindingSnapshot)
-    assert dict(snapshot.instruction_origins) == mba.fictitious_ea_map
-    assert set(dict(snapshot.instruction_origins).values()) == {
+    active_origins = dict(snapshot.instruction_origins)
+    allocator_history = mba.fictitious_ea_map
+    assert set(active_origins).issubset(allocator_history)
+    assert active_origins != allocator_history
+    assert all(
+        int(allocator_history[live_ea]) == int(mba.entry_ea)
+        for live_ea in active_origins
+    )
+    assert set(active_origins.values()) == {
         0x500000,
         0x500004,
-        0x500100,
     }
     assert {binding.stable_identity for binding in snapshot.block_bindings} == {
         plan.block("imported-carrier").stable_identity,
-        plan.block("imported-return").stable_identity,
     }
     assert {
         live_ea
         for binding in snapshot.block_bindings
         for live_ea in binding.live_instruction_eas
-    } == set(dict(snapshot.instruction_origins))
+    } == set(active_origins)
+    historical_native_eas = {
+        int(live_ea)
+        for live_ea, mapped_ea in allocator_history.items()
+        if int(mapped_ea) in {0x500000, 0x500004, 0x500100}
+    }
+    assert historical_native_eas
+    assert historical_native_eas.isdisjoint(active_origins)
     assert modifier._semantic_fragment_state is None
 
 

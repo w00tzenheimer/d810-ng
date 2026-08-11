@@ -1852,6 +1852,29 @@ class MbaMutationGateway:
         self._active_current_mba_identity_binding = binding
         self._active_current_mba_identity_binding_recorded = True
 
+    def _replace_fragment_current_mba_identity_binding(
+        self,
+        plan: FragmentPlan,
+        binding: CurrentMbaIdentityBindingSnapshot,
+    ) -> None:
+        """Refresh the pending receipt after postvalidated commit finalization."""
+        self._require_active_fragment(plan)
+        if (
+            not self._active_fragment_staged
+            or not self._active_current_mba_identity_binding_recorded
+        ):
+            raise RuntimeError(
+                "current-MBA identity binding replacement requires staged authority"
+            )
+        validation = self._active_postpublication_validation
+        if validation is None or not validation.passed:
+            raise RuntimeError(
+                "current-MBA identity binding replacement requires postvalidation"
+            )
+        if not isinstance(binding, CurrentMbaIdentityBindingSnapshot):
+            raise TypeError("current-MBA identity binding must be a portable snapshot")
+        self._active_current_mba_identity_binding = binding
+
     def _record_fragment_validation(
         self,
         *,

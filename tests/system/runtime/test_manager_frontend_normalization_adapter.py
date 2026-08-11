@@ -336,7 +336,7 @@ def test_live_adapter_rejects_modified_result_without_complete_plan_intent(
         )
 
 
-def test_live_adapter_binds_committed_import_identity_to_current_mba(
+def test_live_adapter_receipts_identity_without_rebinding_producer_callback(
     monkeypatch,
 ) -> None:
     from d810.hexrays.mutation import detached_handler_island
@@ -417,9 +417,9 @@ def test_live_adapter_binds_committed_import_identity_to_current_mba(
         unsubscribe(LifecycleEventObserved, observed.append)
         unsubscribe(FrontendNormalizationPlanIntentObserved, observed_intents.append)
 
-    assert state.current_mba_token == 0x1234
-    assert state.current_mba_identity_binding_for(0x1234) is imported_binding
-    assert state.imported_instruction_origins_for(0x1234) == imported_origins
+    assert state.current_mba_token is None
+    assert state.current_mba_identity_binding_for(0x1234) is None
+    assert state.imported_instruction_origins_for(0x1234) == ()
     assert len(observed) == 1
     assert len(observed_intents) == 1
     intent_event = observed_intents[0]
@@ -435,9 +435,10 @@ def test_live_adapter_binds_committed_import_identity_to_current_mba(
     assert '"plan_id":"frontend-normalization:0x1000:g3"' in (
         intent_event.complete_plan_json
     )
-    assert identity_event.event_kind == "current_mba_import_identity_bound"
+    assert identity_event.event_kind == "current_mba_import_identity_receipted"
     assert identity_event.payload == {
-        "outcome": "bound",
+        "outcome": "receipted",
+        "resolver_activation": "not_bound_in_producer_callback",
         "origin_count": 2,
         "native_ea_count": 2,
         "native_eas": [0x40A70E, 0x40A710],

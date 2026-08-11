@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 
 import ida_hexrays
-import ida_range
 
 from d810.core.logging import getLogger
 
@@ -28,6 +27,9 @@ from d810.hexrays.ir.flag_queries import (
     ConditionCodeQueryUnavailable,
     condition_code_write_eas,
     instruction_writes_condition_codes,
+)
+from d810.hexrays.mutation.cfg_mutations import (
+    canonicalize_explicit_return_to_stop_edge,
 )
 from d810.hexrays.mutation.ir_translator import capture_mop_snapshot
 from d810.hexrays.opcode_lift import (
@@ -887,9 +889,6 @@ class SemanticFragmentBackendState:
     )
     predicate_live_eas_by_operation_id: dict[str, int] = field(default_factory=dict)
     detached_operation_ids: set[str] = field(default_factory=set)
-    original_mba_outline_ranges: tuple[tuple[int, int], ...] | None = None
-    staged_mba_outline_ranges: tuple[tuple[int, int], ...] = ()
-    original_mba_had_outlines: bool | None = None
     projection: ProjectedFragment | None = None
     preflight_projection: ProjectedFragment | None = None
     clone_source_instructions_by_block_id: dict[
@@ -1261,6 +1260,7 @@ class SemanticNativeBodyStagingContext:
                 self._modifier,
                 self.state.binding(block_id),
             )
+            stable_identity = self.plan.block(block_id).stable_identity
             live_eas = tuple(
                 int(getattr(instruction, "ea", -1) or -1)
                 for instruction in _iter_block_instructions(live_block)
@@ -1282,15 +1282,20 @@ class SemanticNativeBodyStagingContext:
                 {},
             ).items():
                 mapped_ea = int(self._modifier.mba.map_fict_ea(int(live_ea)))
-                if mapped_ea != int(native_ea) or not _ranges_cover_interval(
-                    _mba_outline_ranges(self._modifier.mba),
-                    int(native_ea),
-                    int(native_ea) + 1,
+                if mapped_ea != int(native_ea):
+                    raise SemanticFragmentBackendRejected(
+                        "native body live instruction changed portable origin before "
+                        f"semantic validation: {block_id}@0x{int(native_ea):X} "
+                        f"live=0x{int(live_ea):X} mapped=0x{mapped_ea:X}"
+                    )
+                if (
+                    stable_identity is None
+                    or not stable_identity.native_ranges.contains(int(native_ea))
                 ):
                     raise SemanticFragmentBackendRejected(
-                        "native body instruction address is outside live MBA "
+                        "native body instruction origin changed outside portable "
                         f"ownership: {block_id}@0x{int(native_ea):X} "
-                        f"live=0x{int(live_ea):X} mapped=0x{mapped_ea:X}"
+                        f"live=0x{int(live_ea):X}"
                     )
         expected_predicate_operations = {
             operation.operation_id
@@ -1356,129 +1361,6 @@ def _transaction_id(modifier: DeferredGraphModifier) -> str:
             "semantic fragment staging has no active transaction id"
         )
     return batch_id
-
-
-def _mba_outline_ranges(mba: object) -> tuple[tuple[int, int], ...]:
-    ranges = mba.mbr.ranges
-    return tuple(
-        (
-            int(ranges[index].start_ea),
-            int(ranges[index].end_ea),
-        )
-        for index in range(int(ranges.size()))
-    )
-
-
-def _merge_native_ranges(
-    ranges: tuple[tuple[int, int], ...],
-) -> tuple[tuple[int, int], ...]:
-    merged: list[tuple[int, int]] = []
-    for start_ea, end_ea in sorted(
-        (int(start_ea), int(end_ea)) for start_ea, end_ea in ranges
-    ):
-        if start_ea < 0 or end_ea <= start_ea or end_ea >= _BADADDR:
-            raise SemanticFragmentBackendRejected(
-                "semantic native-body range is invalid"
-            )
-        if not merged or start_ea > merged[-1][1]:
-            merged.append((start_ea, end_ea))
-            continue
-        previous_start, previous_end = merged[-1]
-        merged[-1] = (
-            previous_start,
-            max(previous_end, end_ea),
-        )
-    return tuple(merged)
-
-
-def _replace_mba_outline_ranges(
-    mba: object,
-    ranges: tuple[tuple[int, int], ...],
-) -> None:
-    mba.mbr.ranges.clear()
-    for start_ea, end_ea in ranges:
-        mba.mbr.ranges.push_back(ida_range.range_t(int(start_ea), int(end_ea)))
-
-
-def _ranges_cover_interval(
-    ranges: tuple[tuple[int, int], ...],
-    start_ea: int,
-    end_ea: int,
-) -> bool:
-    return any(
-        int(owned_start) <= int(start_ea) and int(end_ea) <= int(owned_end)
-        for owned_start, owned_end in ranges
-    )
-
-
-def _stage_native_body_address_ranges(
-    modifier: DeferredGraphModifier,
-    plan: FragmentPlan,
-    state: SemanticFragmentBackendState,
-) -> None:
-    requested = tuple(
-        (int(native_range.start_ea), int(native_range.end_ea))
-        for native_body in plan.native_bodies
-        for native_range in native_body.native_ranges
-    )
-    if not requested:
-        return
-    if (
-        state.original_mba_outline_ranges is not None
-        or state.original_mba_had_outlines is not None
-    ):
-        raise SemanticFragmentBackendRejected(
-            "semantic native-body ranges were staged more than once"
-        )
-    original = _mba_outline_ranges(modifier.mba)
-    merged = _merge_native_ranges((*original, *requested))
-    had_outlines = bool(
-        int(modifier.mba.get_mba_flags2()) & int(ida_hexrays.MBA2_HAS_OUTLINES)
-    )
-    state.original_mba_outline_ranges = original
-    state.original_mba_had_outlines = had_outlines
-    try:
-        _replace_mba_outline_ranges(modifier.mba, merged)
-        modifier.mba.set_mba_flags2(int(ida_hexrays.MBA2_HAS_OUTLINES))
-        observed = _mba_outline_ranges(modifier.mba)
-        if observed != merged or any(
-            not _ranges_cover_interval(
-                observed,
-                int(start_ea),
-                int(end_ea),
-            )
-            for start_ea, end_ea in requested
-        ):
-            raise SemanticFragmentBackendRejected(
-                "semantic native-body range publication was incomplete"
-            )
-    except Exception:
-        _replace_mba_outline_ranges(modifier.mba, original)
-        if had_outlines:
-            modifier.mba.set_mba_flags2(int(ida_hexrays.MBA2_HAS_OUTLINES))
-        else:
-            modifier.mba.clr_mba_flags2(int(ida_hexrays.MBA2_HAS_OUTLINES))
-        raise
-    state.staged_mba_outline_ranges = merged
-
-
-def _restore_native_body_address_ranges(
-    modifier: DeferredGraphModifier,
-    state: SemanticFragmentBackendState,
-) -> None:
-    original = state.original_mba_outline_ranges
-    had_outlines = state.original_mba_had_outlines
-    if original is None or had_outlines is None:
-        return
-    _replace_mba_outline_ranges(modifier.mba, original)
-    if had_outlines:
-        modifier.mba.set_mba_flags2(int(ida_hexrays.MBA2_HAS_OUTLINES))
-    else:
-        modifier.mba.clr_mba_flags2(int(ida_hexrays.MBA2_HAS_OUTLINES))
-    if _mba_outline_ranges(modifier.mba) != original:
-        raise SemanticFragmentBackendRejected(
-            "semantic native-body range rollback was incomplete"
-        )
 
 
 def _native_body_materializer(
@@ -1575,8 +1457,6 @@ def _stage_native_bodies(
         )
     if native_body_id in state.materialized_native_body_ids:
         return
-    if not state.materialized_native_body_ids:
-        _stage_native_body_address_ranges(modifier, plan, state)
     context = SemanticNativeBodyStagingContext(
         _modifier=modifier,
         plan=plan,
@@ -7407,6 +7287,439 @@ def observe_staged_semantic_fragment(
     return _project_fragment(modifier, plan, state)
 
 
+@dataclass(frozen=True, slots=True)
+class _SemanticTerminalFinalizationSnapshot:
+    terminal: FragmentTerminalReturn
+    block: object
+    tail_copy: object
+    live_ea: int
+    block_type: int
+    successors: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _SemanticCommitFinalizationSnapshot:
+    instruction_addresses: tuple[tuple[object, int], ...]
+    instruction_origins_by_block_id: tuple[
+        tuple[str, tuple[tuple[int, int], ...]], ...
+    ]
+    predicate_live_eas_by_operation_id: tuple[tuple[str, int], ...]
+    constant_materialization_rollbacks: tuple[
+        SemanticConstantMaterializationRollback, ...
+    ]
+    terminals: tuple[_SemanticTerminalFinalizationSnapshot, ...]
+    stop: object | None
+    stop_predecessors: tuple[int, ...]
+
+
+def _snapshot_semantic_commit_finalization(
+    modifier: DeferredGraphModifier,
+    plan: FragmentPlan,
+    state: SemanticFragmentBackendState,
+) -> _SemanticCommitFinalizationSnapshot:
+    """Prevalidate and snapshot all active authority before finalization."""
+    stop = None
+    terminal_snapshots: list[_SemanticTerminalFinalizationSnapshot] = []
+    terminal_authorities: set[tuple[str, int]] = set()
+    if plan.terminal_returns:
+        quantity = int(getattr(modifier.mba, "qty", 0) or 0)
+        stop = None if quantity < 1 else modifier.mba.get_mblock(quantity - 1)
+        if stop is None or int(stop.type) != int(ida_hexrays.BLT_STOP):
+            raise SemanticFragmentBackendRejected(
+                "semantic fragment terminal finalization requires the canonical "
+                "BLT_STOP"
+            )
+        seen_terminal_blocks: set[str] = set()
+        for terminal in plan.terminal_returns:
+            if terminal.block_id in seen_terminal_blocks:
+                raise SemanticFragmentBackendRejected(
+                    "semantic fragment finalization contains duplicate terminal "
+                    f"authority: block={terminal.block_id!r}"
+                )
+            seen_terminal_blocks.add(terminal.block_id)
+            block = _live_block_for_binding(
+                modifier,
+                state.binding(terminal.block_id),
+            )
+            live_ea = state.live_instruction_ea(
+                terminal.block_id,
+                terminal.instruction_ea,
+            )
+            origins = state.instruction_origins_by_block_id.get(
+                terminal.block_id,
+                {},
+            )
+            tail = block.tail
+            if (
+                origins.get(int(live_ea)) != int(terminal.instruction_ea)
+                or tail is None
+                or int(tail.ea) != int(live_ea)
+                or int(tail.opcode) != int(ida_hexrays.m_ret)
+                or int(block.type) != int(ida_hexrays.BLT_0WAY)
+                or tuple(int(value) for value in block.succset)
+            ):
+                raise SemanticFragmentBackendRejected(
+                    "semantic fragment terminal changed after postpublication "
+                    f"validation: return={terminal.return_id!r} "
+                    f"block={terminal.block_id!r}@0x{int(terminal.instruction_ea):X} "
+                    f"live=0x{int(live_ea):X}"
+                )
+            terminal_snapshots.append(
+                _SemanticTerminalFinalizationSnapshot(
+                    terminal=terminal,
+                    block=block,
+                    tail_copy=ida_hexrays.minsn_t(tail),
+                    live_ea=int(live_ea),
+                    block_type=int(block.type),
+                    successors=tuple(int(value) for value in block.succset),
+                )
+            )
+            terminal_authorities.add((terminal.block_id, int(live_ea)))
+
+    # A terminal return is removed from its block during commit finalization.
+    # Retaining its live SWIG proxy here would leave compensation holding a
+    # potentially dangling object.  Terminal snapshots own a deep instruction
+    # copy; the generic address snapshot is therefore strictly nonterminal.
+    instruction_addresses: list[tuple[object, int]] = []
+    for block_id, origins in sorted(state.instruction_origins_by_block_id.items()):
+        block = _live_block_for_binding(modifier, state.binding(block_id))
+        instructions_by_ea: dict[int, list[object]] = {}
+        for instruction in _iter_block_instructions(block):
+            instructions_by_ea.setdefault(int(instruction.ea), []).append(instruction)
+        for live_ea in origins:
+            live_ea = int(live_ea)
+            matches = instructions_by_ea.get(live_ea, ())
+            if len(matches) != 1:
+                raise SemanticFragmentBackendRejected(
+                    "semantic fragment commit snapshot found ambiguous live "
+                    f"authority: block={block_id!r} live=0x{live_ea:X} "
+                    f"matches={len(matches)}"
+                )
+            if (block_id, live_ea) in terminal_authorities:
+                continue
+            instruction_addresses.append((matches[0], live_ea))
+
+    return _SemanticCommitFinalizationSnapshot(
+        instruction_addresses=tuple(instruction_addresses),
+        instruction_origins_by_block_id=tuple(
+            (
+                str(block_id),
+                tuple(
+                    sorted(
+                        (int(live_ea), int(native_ea))
+                        for live_ea, native_ea in origins.items()
+                    )
+                ),
+            )
+            for block_id, origins in sorted(
+                state.instruction_origins_by_block_id.items()
+            )
+        ),
+        predicate_live_eas_by_operation_id=tuple(
+            sorted(
+                (str(operation_id), int(live_ea))
+                for operation_id, live_ea in state.predicate_live_eas_by_operation_id.items()
+            )
+        ),
+        constant_materialization_rollbacks=tuple(
+            state.constant_materialization_rollbacks
+        ),
+        terminals=tuple(terminal_snapshots),
+        stop=stop,
+        stop_predecessors=(
+            () if stop is None else tuple(int(value) for value in stop.predset)
+        ),
+    )
+
+
+def _replace_serial_collection(values: object, serials: tuple[int, ...]) -> None:
+    values.clear()
+    for serial in serials:
+        values.push_back(int(serial))
+
+
+def _restore_semantic_commit_finalization(
+    modifier: DeferredGraphModifier,
+    state: SemanticFragmentBackendState,
+    snapshot: _SemanticCommitFinalizationSnapshot,
+) -> None:
+    """Restore active MBA/state authority while retaining allocator history."""
+    for terminal_snapshot in snapshot.terminals:
+        modifier._restore_semantic_terminal_finalization_now(
+            block=terminal_snapshot.block,
+            tail_copy=terminal_snapshot.tail_copy,
+            live_ea=terminal_snapshot.live_ea,
+            block_type=terminal_snapshot.block_type,
+            successors=terminal_snapshot.successors,
+        )
+
+    for instruction, live_ea in snapshot.instruction_addresses:
+        instruction.setaddr(int(live_ea))
+
+    modifier._restore_semantic_stop_finalization_now(
+        stop=snapshot.stop,
+        predecessors=snapshot.stop_predecessors,
+    )
+
+    state.instruction_origins_by_block_id = {
+        block_id: dict(origins)
+        for block_id, origins in snapshot.instruction_origins_by_block_id
+    }
+    state.predicate_live_eas_by_operation_id = dict(
+        snapshot.predicate_live_eas_by_operation_id
+    )
+    state.constant_materialization_rollbacks = list(
+        snapshot.constant_materialization_rollbacks
+    )
+
+    for instruction, live_ea in snapshot.instruction_addresses:
+        if int(instruction.ea) != int(live_ea):
+            raise SemanticFragmentBackendRejected(
+                "semantic fragment commit compensation could not restore an "
+                f"instruction address: live=0x{int(live_ea):X}"
+            )
+    for terminal_snapshot in snapshot.terminals:
+        block = terminal_snapshot.block
+        tail = block.tail
+        if (
+            tail is None
+            or int(tail.ea) != int(terminal_snapshot.live_ea)
+            or int(tail.opcode) != int(ida_hexrays.m_ret)
+            or int(block.type) != int(terminal_snapshot.block_type)
+            or tuple(int(value) for value in block.succset)
+            != terminal_snapshot.successors
+        ):
+            raise SemanticFragmentBackendRejected(
+                "semantic fragment commit compensation could not restore terminal "
+                f"shape: return={terminal_snapshot.terminal.return_id!r}"
+            )
+
+
+def _rebind_semantic_instruction_addresses_for_commit(
+    modifier: DeferredGraphModifier,
+    plan: FragmentPlan,
+    state: SemanticFragmentBackendState,
+) -> None:
+    """Move tracked semantics onto verifier-owned EAs after postvalidation."""
+    pending: list[tuple[str, object, object, int, int]] = []
+    seen_live_eas: set[int] = set()
+    for block_id in sorted(state.instruction_origins_by_block_id):
+        origins = state.instruction_origins_by_block_id[block_id]
+        if not origins:
+            continue
+        block = _live_block_for_binding(modifier, state.binding(block_id))
+        plan_block = plan.block(block_id)
+        identity = plan_block.stable_identity
+        instructions_by_ea: dict[int, list[object]] = {}
+        for instruction in _iter_block_instructions(block):
+            instructions_by_ea.setdefault(int(instruction.ea), []).append(instruction)
+        for live_ea, native_ea in sorted(origins.items()):
+            live_ea = int(live_ea)
+            native_ea = int(native_ea)
+            mapped_ea = int(modifier.mba.map_fict_ea(live_ea))
+            matches = instructions_by_ea.get(live_ea, ())
+            if (
+                live_ea in seen_live_eas
+                or mapped_ea != native_ea
+                or len(matches) != 1
+                or (
+                    identity is not None
+                    and not identity.native_ranges.contains(native_ea)
+                )
+            ):
+                raise SemanticFragmentBackendRejected(
+                    "semantic fragment instruction provenance changed before "
+                    f"commit finalization: {block_id}@0x{native_ea:X} "
+                    f"live=0x{live_ea:X} mapped=0x{mapped_ea:X} "
+                    f"matches={len(matches)}"
+                )
+            seen_live_eas.add(live_ea)
+            pending.append((block_id, block, matches[0], live_ea, native_ea))
+
+    entry_ea = int(modifier.mba.entry_ea)
+    for block_id, block, _instruction, _old_live_ea, native_ea in pending:
+        if not int(block.start) <= entry_ea < int(block.end):
+            raise SemanticFragmentBackendRejected(
+                "semantic fragment destination block does not own the commit "
+                f"anchor: {block_id}@0x{native_ea:X} entry=0x{entry_ea:X} "
+                f"block=[0x{int(block.start):X},0x{int(block.end):X})"
+            )
+    rebound_by_block_id: dict[str, dict[int, int]] = {
+        block_id: {}
+        for block_id, origins in state.instruction_origins_by_block_id.items()
+        if origins
+    }
+    rebound_live_eas: dict[int, int] = {}
+    for block_id, _block, instruction, old_live_ea, native_ea in pending:
+        new_live_ea = int(modifier.mba.alloc_fict_ea(entry_ea))
+        if (
+            new_live_ea < 0
+            or new_live_ea >= _BADADDR
+            or new_live_ea in rebound_live_eas.values()
+            or int(modifier.mba.map_fict_ea(new_live_ea)) != entry_ea
+        ):
+            raise SemanticFragmentBackendRejected(
+                "semantic fragment could not allocate a verifier-owned commit "
+                f"address: {block_id}@0x{native_ea:X} live=0x{new_live_ea:X}"
+            )
+        instruction.setaddr(new_live_ea)
+        rebound_by_block_id[block_id][new_live_ea] = native_ea
+        rebound_live_eas[old_live_ea] = new_live_ea
+
+    for block_id, origins in rebound_by_block_id.items():
+        state.instruction_origins_by_block_id[block_id] = origins
+    for operation_id, live_ea in tuple(
+        state.predicate_live_eas_by_operation_id.items()
+    ):
+        try:
+            state.predicate_live_eas_by_operation_id[operation_id] = (
+                rebound_live_eas[int(live_ea)]
+            )
+        except KeyError as exc:
+            raise SemanticFragmentBackendRejected(
+                "semantic fragment predicate lost its origin during commit "
+                f"finalization: operation={operation_id!r} live=0x{int(live_ea):X}"
+            ) from exc
+    state.constant_materialization_rollbacks = [
+        replace(
+            rollback,
+            instruction_ea=rebound_live_eas.get(
+                int(rollback.instruction_ea),
+                int(rollback.instruction_ea),
+            ),
+        )
+        for rollback in state.constant_materialization_rollbacks
+    ]
+
+    for block_id, origins in rebound_by_block_id.items():
+        block = _live_block_for_binding(modifier, state.binding(block_id))
+        identity = plan.block(block_id).stable_identity
+        instructions_by_ea: dict[int, list[object]] = {}
+        for instruction in _iter_block_instructions(block):
+            instructions_by_ea.setdefault(int(instruction.ea), []).append(instruction)
+        for live_ea, native_ea in origins.items():
+            if (
+                int(modifier.mba.map_fict_ea(int(live_ea))) != entry_ea
+                or not int(block.start) <= entry_ea < int(block.end)
+                or len(instructions_by_ea.get(int(live_ea), ())) != 1
+                or (
+                    identity is not None
+                    and not identity.native_ranges.contains(int(native_ea))
+                )
+            ):
+                raise SemanticFragmentBackendRejected(
+                    "semantic fragment commit address is outside destination "
+                    f"ownership: {block_id}@0x{int(native_ea):X} "
+                    f"live=0x{int(live_ea):X} entry=0x{entry_ea:X} "
+                    f"block=[0x{int(block.start):X},0x{int(block.end):X})"
+                )
+
+
+def _apply_semantic_fragment_commit_finalization(
+    modifier: DeferredGraphModifier,
+    plan: FragmentPlan,
+    state: SemanticFragmentBackendState,
+) -> None:
+    """Apply one fully prevalidated semantic commit batch."""
+    _rebind_semantic_instruction_addresses_for_commit(modifier, plan, state)
+    if not plan.terminal_returns:
+        return
+
+    quantity = int(getattr(modifier.mba, "qty", 0) or 0)
+    stop = None if quantity < 1 else modifier.mba.get_mblock(quantity - 1)
+    if stop is None or int(stop.type) != int(ida_hexrays.BLT_STOP):
+        raise SemanticFragmentBackendRejected(
+            "semantic fragment terminal finalization requires the canonical BLT_STOP"
+        )
+
+    for terminal in plan.terminal_returns:
+        block = _live_block_for_binding(
+            modifier,
+            state.binding(terminal.block_id),
+        )
+        live_ea = state.live_instruction_ea(
+            terminal.block_id,
+            terminal.instruction_ea,
+        )
+        tail = block.tail
+        if (
+            tail is None
+            or int(tail.ea) != int(live_ea)
+            or int(tail.opcode) != int(ida_hexrays.m_ret)
+            or int(block.type) != int(ida_hexrays.BLT_0WAY)
+            or tuple(int(value) for value in block.succset)
+        ):
+            raise SemanticFragmentBackendRejected(
+                "semantic fragment terminal changed after postpublication "
+                f"validation: return={terminal.return_id!r} "
+                f"block={terminal.block_id!r}@0x{int(terminal.instruction_ea):X} "
+                f"live=0x{int(live_ea):X}"
+            )
+        if not canonicalize_explicit_return_to_stop_edge(block, stop):
+            raise SemanticFragmentBackendRejected(
+                "semantic fragment terminal canonicalization failed after "
+                f"postpublication validation: return={terminal.return_id!r} "
+                f"block={terminal.block_id!r}@0x{int(terminal.instruction_ea):X}"
+            )
+        remaining_return = any(
+            int(instruction.opcode) == int(ida_hexrays.m_ret)
+            for instruction in _iter_block_instructions(block)
+        )
+        if (
+            remaining_return
+            or int(block.type) != int(ida_hexrays.BLT_1WAY)
+            or tuple(int(value) for value in block.succset) != (int(stop.serial),)
+            or int(block.serial)
+            not in tuple(int(value) for value in stop.predset)
+        ):
+            raise SemanticFragmentBackendRejected(
+                "semantic fragment terminal canonicalization produced an invalid "
+                f"STOP edge: return={terminal.return_id!r} "
+                f"block={terminal.block_id!r}@0x{int(terminal.instruction_ea):X}"
+            )
+        removed_origin = state.instruction_origins_by_block_id[
+            terminal.block_id
+        ].pop(int(live_ea), None)
+        if removed_origin != int(terminal.instruction_ea):
+            raise SemanticFragmentBackendRejected(
+                "semantic fragment terminal lost active provenance during commit "
+                f"finalization: return={terminal.return_id!r} "
+                f"live=0x{int(live_ea):X}"
+            )
+
+
+def finalize_semantic_fragment_for_commit(
+    modifier: DeferredGraphModifier,
+    plan: FragmentPlan,
+) -> None:
+    """Make plan-owned semantics verifier-safe as one compensated batch."""
+    state = modifier._semantic_fragment_state
+    if (
+        state is None
+        or state.plan_id != plan.plan_id
+        or state.atomic_group_id != plan.atomic_group_id
+    ):
+        raise SemanticFragmentBackendRejected(
+            "semantic fragment commit finalization has no matching staged state"
+        )
+    snapshot = _snapshot_semantic_commit_finalization(modifier, plan, state)
+    try:
+        _apply_semantic_fragment_commit_finalization(
+            modifier,
+            plan,
+            state,
+        )
+    except Exception as error:
+        try:
+            _restore_semantic_commit_finalization(modifier, state, snapshot)
+        except Exception as restore_error:
+            raise SemanticFragmentBackendRejected(
+                "semantic fragment commit finalization and compensation both "
+                f"failed: primary={error!r}; compensation={restore_error!r}"
+            ) from restore_error
+        raise
+
+
 def discard_staged_semantic_fragment(
     modifier: DeferredGraphModifier,
     plan: FragmentPlan,
@@ -7424,7 +7737,6 @@ def discard_staged_semantic_fragment(
                 state.binding(block_id).version for block_id in state.staged_block_ids
             )
         )
-        _restore_native_body_address_ranges(modifier, state)
     finally:
         modifier._semantic_fragment_state = None
 
@@ -7438,6 +7750,7 @@ __all__ = [
     "SemanticNativeBodyMaterializer",
     "SemanticNativeBodyStagingContext",
     "discard_staged_semantic_fragment",
+    "finalize_semantic_fragment_for_commit",
     "realize_semantic_patch_plan",
     "observe_staged_semantic_fragment",
     "observe_published_semantic_fragment_graph",

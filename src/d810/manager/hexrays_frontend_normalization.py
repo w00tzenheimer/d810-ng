@@ -53,20 +53,14 @@ def _new_live_backend(
     )
 
 
-def _bind_committed_live_import_identity(
+def _receipt_committed_live_import_identity(
     *,
     session: DecompilationSessionContext,
     mba: object,
     backend: object,
 ) -> CurrentMbaIdentityBindingSnapshot:
-    """Bind one receipt-backed imported identity snapshot to this live MBA."""
-    from d810.hexrays.mutation.detached_handler_island import (
-        stable_mba_identity,
-    )
-    from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
-        resolver_session_state,
-    )
-
+    """Read the committed audit snapshot without activating producer coordinates."""
+    del session, mba
     binding_provider = getattr(
         backend,
         "committed_current_mba_identity_binding",
@@ -81,10 +75,6 @@ def _bind_committed_live_import_identity(
         raise TypeError(
             "frontend normalization backend returned invalid committed identity"
         )
-    resolver_session_state(session).bind_current_imported_publication(
-        stable_mba_identity(mba),
-        binding,
-    )
     return binding
 
 
@@ -258,7 +248,7 @@ def run_live_frontend_normalization(
         "remaining_obligation_count": result.remaining_obligation_count,
     }
     decision["microcode_modified"] = True
-    committed_identity = _bind_committed_live_import_identity(
+    committed_identity = _receipt_committed_live_import_identity(
         session=session,
         mba=mba,
         backend=backend,
@@ -268,13 +258,14 @@ def run_live_frontend_normalization(
         LifecycleEventObserved(
             session_id=session.identity_key,
             func_ea=int(function_ea),
-            event_kind="current_mba_import_identity_bound",
+            event_kind="current_mba_import_identity_receipted",
             provider=_HANDLER_NAME,
             phase="frontend_normalization",
             evidence_generation=int(session.native_preanalysis.evidence_generation),
-            summary="receipt-backed current-MBA import identity bound",
+            summary="receipt-backed current-MBA import identity recorded",
             payload={
-                "outcome": "bound",
+                "outcome": "receipted",
+                "resolver_activation": "not_bound_in_producer_callback",
                 "origin_count": len(committed_origins),
                 "native_ea_count": len(
                     {int(native_ea) for _live_ea, native_ea in committed_origins}

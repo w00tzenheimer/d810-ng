@@ -74,6 +74,7 @@ _BACKEND_PORT = (
     "_rebuild_semantic_fragment_chains",
     "_observe_published_semantic_fragment_graph",
     "_rollback_semantic_fragment_roots",
+    "_finalize_semantic_fragment_for_commit",
     "_complete_semantic_fragment_publication",
 )
 
@@ -864,6 +865,13 @@ class _SemanticPatchLifecycle:
         return postpublication
 
     def commit(self, patch_plan, validated):
+        self.failure_phase = "commit_finalization"
+        self.backend._finalize_semantic_fragment_for_commit(self.plan)
+        self.failure_phase = "commit_identity_binding"
+        self.gateway._replace_fragment_current_mba_identity_binding(
+            self.plan,
+            self.backend._semantic_fragment_current_mba_identity_binding(self.plan),
+        )
         self.failure_phase = "commit"
         receipt = self.gateway.commit()
         _commit_lifecycle(self.lifecycle_authority, self.plan, receipt)

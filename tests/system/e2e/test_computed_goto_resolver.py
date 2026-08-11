@@ -57,7 +57,11 @@ def test_computed_goto_dispatcher_unflattens(monkeypatch) -> None:
         # baseline: IDA cannot resolve the computed goto -> truncated decompile
         base = ida_hexrays.decompile(func_ea)
         baseline = str(base) if base else "None"
-        assert "jmp" in baseline.lower() or baseline == "None", (
+        assert (
+            "jmp" in baseline.lower()
+            or "jumpout" in baseline.lower()
+            or baseline == "None"
+        ), (
             f"fixture no longer reproduces the unresolved computed goto:\n{baseline}"
         )
 
@@ -98,7 +102,11 @@ def test_computed_goto_dispatcher_unflattens(monkeypatch) -> None:
         )  # NEVER True: idalib writes patches through to the DLL
 
     # the flattened dispatcher is gone and each handler's side effect survives, in order
-    assert "__asm" not in recovered and "jmp" not in recovered.lower(), (
+    assert (
+        "__asm" not in recovered
+        and "jmp" not in recovered.lower()
+        and "jumpout" not in recovered.lower()
+    ), (
         f"computed goto not materialised/unflattened:\n{recovered}\n"
         f"failure={int(failure.code)}@0x{int(failure.errea):X}: {failure.desc()}"
     )

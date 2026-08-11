@@ -221,6 +221,7 @@ from d810.hexrays.mutation.semantic_fragment_backend import (
     SemanticFragmentRootPublicationToken,
     SemanticNativeBodyMaterializer,
     discard_staged_semantic_fragment,
+    finalize_semantic_fragment_for_commit,
     observe_published_semantic_fragment_graph,
     observe_staged_semantic_fragment,
     plan_semantic_fragment_root_inventory,
@@ -4957,6 +4958,49 @@ class DeferredGraphModifier:
         """Backend-only discard port for unpublished fragment versions."""
         discard_staged_semantic_fragment(self, plan)
 
+    def _finalize_semantic_fragment_for_commit(self, plan: FragmentPlan) -> None:
+        """Make postvalidated backend-owned semantics verifier-safe."""
+        finalize_semantic_fragment_for_commit(self, plan)
+
+    def _restore_semantic_terminal_finalization_now(
+        self,
+        *,
+        block: ida_hexrays.mblock_t,
+        tail_copy: ida_hexrays.minsn_t,
+        live_ea: int,
+        block_type: int,
+        successors: tuple[int, ...],
+    ) -> None:
+        """Restore one compensated terminal through the live mutation port."""
+        tail = block.tail
+        if tail is not None and int(tail.opcode) == int(ida_hexrays.m_ret):
+            # Failure can occur during address rebinding, before the terminal
+            # is removed.  Only touch the still-linked instruction then.
+            tail.setaddr(int(live_ea))
+        else:
+            # Once canonicalization removes the owned return, append its owned
+            # copy after any surviving value/prefix instructions.
+            block.insert_into_block(tail_copy, tail)
+        block.type = int(block_type)
+        block.succset.clear()
+        for serial in successors:
+            block.succset.push_back(int(serial))
+        block.mark_lists_dirty()
+
+    def _restore_semantic_stop_finalization_now(
+        self,
+        *,
+        stop: ida_hexrays.mblock_t | None,
+        predecessors: tuple[int, ...],
+    ) -> None:
+        """Restore the canonical STOP predecessor inventory and dirty state."""
+        if stop is not None:
+            stop.predset.clear()
+            for serial in predecessors:
+                stop.predset.push_back(int(serial))
+            stop.mark_lists_dirty()
+        self.mba.mark_chains_dirty()
+
     def _semantic_fragment_current_mba_identity_binding(
         self,
         plan: FragmentPlan,
@@ -4977,6 +5021,19 @@ class DeferredGraphModifier:
             origins = state.instruction_origins_by_block_id[block_id]
             if not origins:
                 continue
+            block = self._resolve_semantic_fragment_version(
+                state.binding(block_id).version
+            )
+            live_instruction_eas = {
+                int(instruction.ea) for instruction in self._block_instructions(block)
+            }
+            stale_live_eas = set(int(ea) for ea in origins) - live_instruction_eas
+            if stale_live_eas:
+                raise SemanticFragmentBackendRejected(
+                    "semantic fragment current identity contains inactive live "
+                    f"instructions: block={block_id!r} "
+                    f"eas={tuple(hex(ea) for ea in sorted(stale_live_eas))!r}"
+                )
             stable_identity = state.binding(block_id).version.handle.stable_identity
             if stable_identity is None:
                 raise SemanticFragmentBackendRejected(

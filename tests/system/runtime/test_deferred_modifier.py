@@ -10,6 +10,7 @@ import pytest
 
 from d810.hexrays.contracts.cfg_contract import CfgContractViolationError
 from d810.hexrays.mutation import cfg_mutations
+from d810.hexrays.mutation import semantic_fragment_backend as sfb
 from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
 from d810.hexrays.mutation.mba_mutation_events import (
     MbaMutationGateway,
@@ -23,6 +24,7 @@ from d810.ir.block_identity import (
 from d810.transforms.report import InvariantViolation
 from d810.ir.flowgraph import InsnSnapshot
 from d810.transforms.cfg_transaction import PlanBlockRef, TransactionAttemptId
+from d810.transforms.fragment_plan import FragmentTerminalReturn
 from d810.hexrays.mutation import deferred_modifier as dm
 from tests.system.runtime.conftest import gen_microcode_at_maturity, get_func_ea
 from tests.native_preanalysis import make_native_key
@@ -49,6 +51,151 @@ def _seed_current_serials(
             expected_serial=expected_serial,
             returned_serial=current_serial,
         )
+
+
+@pytest.mark.ida_required
+class TestRealTerminalCompensation:
+    binary_name = (
+        "libobfuscated.dylib"
+        if platform.system() == "Darwin"
+        else "libobfuscated.dll"
+    )
+
+    def test_restores_owned_return_copy(self, libobfuscated_setup) -> None:
+        """Never retain or dereference a removed SWIG instruction."""
+        func_ea = get_func_ea("test_cst_simplification")
+        mba = gen_microcode_at_maturity(func_ea, ida_hexrays.MMAT_PREOPTIMIZED)
+        assert mba is not None
+        mba.build_graph()
+        stop = mba.get_mblock(int(mba.qty) - 1)
+        assert stop is not None and int(stop.type) == int(ida_hexrays.BLT_STOP)
+        block = mba.get_mblock(0)
+        assert block is not None
+        original_successors = tuple(int(value) for value in block.succset)
+        tail = block.tail
+        if tail is not None and (
+            ida_hexrays.is_mcode_jcond(int(tail.opcode))
+            or int(tail.opcode)
+            in {
+                int(ida_hexrays.m_goto),
+                int(ida_hexrays.m_ijmp),
+                int(ida_hexrays.m_jtbl),
+                int(ida_hexrays.m_ret),
+            }
+        ):
+            block.remove_from_block(tail)
+        del tail
+        for successor in original_successors:
+            target = mba.get_mblock(successor)
+            assert target is not None
+            sfb._replace_serial_collection(
+                target.predset,
+                tuple(
+                    int(value)
+                    for value in target.predset
+                    if int(value) != int(block.serial)
+                ),
+            )
+        prefix_ea = int(mba.alloc_fict_ea(int(mba.entry_ea)))
+        prefix_instruction = ida_hexrays.minsn_t(prefix_ea)
+        prefix_instruction.opcode = int(ida_hexrays.m_nop)
+        prefix_instruction.l.erase()
+        prefix_instruction.r.erase()
+        prefix_instruction.d.erase()
+        block.insert_into_block(prefix_instruction, block.tail)
+        terminal_ea = int(mba.alloc_fict_ea(int(mba.entry_ea)))
+        terminal_instruction = ida_hexrays.minsn_t(terminal_ea)
+        terminal_instruction.opcode = int(ida_hexrays.m_ret)
+        terminal_instruction.l.erase()
+        terminal_instruction.r.erase()
+        terminal_instruction.d.erase()
+        block.insert_into_block(terminal_instruction, block.tail)
+        block.type = int(ida_hexrays.BLT_0WAY)
+        block.succset.clear()
+        stop_predecessors_without_terminal = tuple(
+            int(value)
+            for value in stop.predset
+            if int(value) != int(block.serial)
+        )
+        sfb._replace_serial_collection(
+            stop.predset,
+            stop_predecessors_without_terminal,
+        )
+        block.mark_lists_dirty()
+        stop.mark_lists_dirty()
+        mba.mark_chains_dirty()
+        tail = block.tail
+        assert tail is not None and int(tail.opcode) == int(ida_hexrays.m_ret)
+        tail_copy = ida_hexrays.minsn_t(tail)
+        block_type = int(block.type)
+        successors = tuple(int(value) for value in block.succset)
+        stop_predecessors = tuple(int(value) for value in stop.predset)
+        del tail
+
+        terminal = FragmentTerminalReturn(
+            return_id="real-runtime-terminal-compensation",
+            block_id="runtime-terminal",
+            instruction_ea=terminal_ea,
+            return_width=4,
+        )
+        snapshot = sfb._SemanticCommitFinalizationSnapshot(
+            instruction_addresses=(),
+            instruction_origins_by_block_id=(
+                ("runtime-terminal", ((terminal_ea, terminal_ea),)),
+            ),
+            predicate_live_eas_by_operation_id=(),
+            constant_materialization_rollbacks=(),
+            terminals=(
+                sfb._SemanticTerminalFinalizationSnapshot(
+                    terminal=terminal,
+                    block=block,
+                    tail_copy=tail_copy,
+                    live_ea=terminal_ea,
+                    block_type=block_type,
+                    successors=successors,
+                ),
+            ),
+            stop=stop,
+            stop_predecessors=stop_predecessors,
+        )
+        state = SimpleNamespace(
+            instruction_origins_by_block_id={
+                "runtime-terminal": {terminal_ea: terminal_ea}
+            },
+            predicate_live_eas_by_operation_id={},
+            constant_materialization_rollbacks=[],
+        )
+        modifier = SimpleNamespace(mba=mba)
+        modifier._restore_semantic_terminal_finalization_now = lambda **kwargs: (
+            dm.DeferredGraphModifier._restore_semantic_terminal_finalization_now(
+                modifier,
+                **kwargs,
+            )
+        )
+        modifier._restore_semantic_stop_finalization_now = lambda **kwargs: (
+            dm.DeferredGraphModifier._restore_semantic_stop_finalization_now(
+                modifier,
+                **kwargs,
+            )
+        )
+
+        assert cfg_mutations.canonicalize_explicit_return_to_stop_edge(block, stop)
+        assert block.tail is not None
+        assert int(block.tail.ea) == prefix_ea
+        assert int(block.tail.opcode) == int(ida_hexrays.m_nop)
+        sfb._restore_semantic_commit_finalization(modifier, state, snapshot)
+
+        assert block.tail is not None
+        assert int(block.tail.ea) == terminal_ea
+        assert int(block.tail.opcode) == int(ida_hexrays.m_ret)
+        assert int(block.type) == block_type
+        assert tuple(int(value) for value in block.succset) == successors
+        assert tuple(int(value) for value in stop.predset) == stop_predecessors
+        assert cfg_mutations.canonicalize_explicit_return_to_stop_edge(block, stop)
+        assert block.tail is not None
+        assert int(block.tail.ea) == prefix_ea
+        assert int(block.tail.opcode) == int(ida_hexrays.m_nop)
+        assert tuple(int(value) for value in block.succset) == (int(stop.serial),)
 
 
 class _FakeEdgeSet:

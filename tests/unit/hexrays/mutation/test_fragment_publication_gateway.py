@@ -498,6 +498,8 @@ class _FragmentBackend:
         raise_after_insertion: bool = False,
         raise_after_observation: bool = False,
         current_mba_identity_binding: CurrentMbaIdentityBindingSnapshot | None = None,
+        finalized_current_mba_identity_binding: CurrentMbaIdentityBindingSnapshot
+        | None = None,
         malformed_route_projection: bool = False,
         raise_during_generated_verify: bool = False,
     ) -> None:
@@ -524,6 +526,9 @@ class _FragmentBackend:
             CurrentMbaIdentityBindingSnapshot((), ())
             if current_mba_identity_binding is None
             else current_mba_identity_binding
+        )
+        self.finalized_current_mba_identity_binding = (
+            finalized_current_mba_identity_binding
         )
         self.malformed_route_projection = malformed_route_projection
         self.raise_during_generated_verify = raise_during_generated_verify
@@ -985,6 +990,16 @@ class _FragmentBackend:
     def _complete_semantic_fragment_publication(self, _plan: FragmentPlan) -> None:
         self.calls.append("complete")
 
+    def _finalize_semantic_fragment_for_commit(self, _plan: FragmentPlan) -> None:
+        assert self.gateway._active_postpublication_validation is not None
+        assert self.gateway._active_postpublication_validation.passed
+        assert self.gateway.receipts == ()
+        self.calls.append("finalize")
+        if self.finalized_current_mba_identity_binding is not None:
+            self.current_mba_identity_binding = (
+                self.finalized_current_mba_identity_binding
+            )
+
     def _verify_generated_semantic_fragment(self, _plan: FragmentPlan) -> None:
         self.calls.append("verify-generated")
         if self.raise_during_generated_verify:
@@ -1018,6 +1033,7 @@ def test_gateway_commits_only_after_pre_and_post_semantic_validation() -> None:
         "publish-roots",
         "rebuild",
         "observe",
+        "finalize",
         "complete",
     ]
     assert receipt.kind is StructuralMutationKind.FRAGMENT_PUBLICATION
@@ -1214,14 +1230,29 @@ def test_gateway_receipts_current_mba_identity_binding_only_after_commit() -> No
             ),
         ),
     )
+    finalized_origins = tuple(
+        (int(live_ea) + 0x10, int(native_ea)) for live_ea, native_ea in origins
+    )
+    finalized_snapshot = CurrentMbaIdentityBindingSnapshot(
+        instruction_origins=finalized_origins,
+        block_bindings=(
+            CurrentMbaBlockIdentityBinding(
+                stable_identity=identity,
+                live_instruction_eas=frozenset(
+                    live_ea for live_ea, _native_ea in finalized_origins
+                ),
+            ),
+        ),
+    )
     backend = _FragmentBackend(
         gateway,
         current_mba_identity_binding=snapshot,
+        finalized_current_mba_identity_binding=finalized_snapshot,
     )
 
     receipt = gateway.execute_patch_transaction(backend, plan)
 
-    assert receipt.current_mba_identity_binding == snapshot
+    assert receipt.current_mba_identity_binding == finalized_snapshot
     assert not hasattr(receipt, "current_mba_instruction_origins")
 
 
@@ -1664,7 +1695,7 @@ def test_inventory_divergence_poisons_without_recovery() -> None:
         gateway.execute_patch_transaction(backend, plan)
 
     assert backend.root_published
-    assert backend.calls[-1] == "observe"
+    assert backend.calls[-2:] == ["observe", "finalize"]
     assert "rollback-roots" not in backend.calls
     assert "discard" not in backend.calls
     assert gateway.generation == 5
