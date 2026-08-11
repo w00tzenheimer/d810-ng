@@ -12,7 +12,10 @@ from __future__ import annotations
 import pytest
 
 from d810.analyses.control_flow.dominator import compute_dom_tree
+from d810.evaluator.hexrays_microcode import use_def_dominance
+from d810.evaluator.hexrays_microcode.chains import UseSite
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph
+from d810.ir.redirect import RedirectGotoIntent
 from d810.transforms.graph_modification import RedirectBranch, RedirectGoto
 
 
@@ -168,6 +171,78 @@ class TestDominanceAfterRedirect:
         # Post-mod, 10 -> 50 -> 30 means 10 still does not dominate 30
         # (50 also reached via 0).
         assert not post_dom.dominates(10, 30)
+
+
+class TestUseDefSeveranceDelta:
+    """The live checker reports newly severed chains, not old SSA noise."""
+
+    @staticmethod
+    def _run(
+        monkeypatch: pytest.MonkeyPatch,
+        cfg: FlowGraph,
+        redirect: RedirectGotoIntent,
+        *,
+        use_block: int,
+    ):
+        monkeypatch.setattr(
+            use_def_dominance,
+            "_collect_stkvar_defs_in_block",
+            lambda _mba, _serial: [(0x40, 4)],
+        )
+        monkeypatch.setattr(
+            use_def_dominance,
+            "find_all_uses_of_stkvar",
+            lambda _mba, _stkoff, _size: [UseSite(use_block, 0x5000, 4)],
+        )
+        return use_def_dominance.check_redirect_severs_use_def(
+            redirect,
+            object(),
+            cfg,
+        )
+
+    def test_preexisting_nondominance_is_not_a_severance(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _make_cfg(
+            [
+                (0, (1, 2), ()),
+                (1, (3,), (0,)),
+                (2, (3,), (0,)),
+                (3, (), (1, 2)),
+            ]
+        )
+
+        violations = self._run(
+            monkeypatch,
+            cfg,
+            RedirectGotoIntent(from_serial=1, old_target=3, new_target=3),
+            use_block=3,
+        )
+
+        assert violations == ()
+
+    def test_previously_dominated_use_made_unreachable_is_a_severance(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = _make_cfg(
+            [
+                (0, (1,), ()),
+                (1, (2,), (0,)),
+                (2, (3,), (1,)),
+                (3, (), (2,)),
+                (4, (), ()),
+            ]
+        )
+
+        violations = self._run(
+            monkeypatch,
+            cfg,
+            RedirectGotoIntent(from_serial=1, old_target=2, new_target=4),
+            use_block=2,
+        )
+
+        assert len(violations) == 1
+        assert violations[0].use_block == 2
 
 
 @pytest.mark.parametrize(

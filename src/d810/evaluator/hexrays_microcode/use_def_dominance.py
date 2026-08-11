@@ -37,10 +37,11 @@ Algorithm
 3. Build the *post-modification* adjacency by copying the pre-mod CFG
    adjacency, removing the old target from the source's successor list,
    and appending the new target.
-4. Compute the dominator tree of the post-mod adjacency rooted at
-   the entry block (serial 0 by Hex-Rays convention).
-5. For every use, if the source block does **not** dominate the use
-   block in the post-mod tree, record a :class:`SeveranceViolation`.
+4. Compute dominator trees for both the immutable pre-mod CFG and the
+   post-mod adjacency, rooted at the function entry.
+5. For every use, record a :class:`SeveranceViolation` only when the source
+   block dominated it before the redirect and no longer dominates it after.
+   Pre-existing non-dominance is not a severance caused by the proposed edit.
 
 Returns an empty tuple when no violations exist.
 """
@@ -49,19 +50,20 @@ from __future__ import annotations
 
 import ida_hexrays
 
+from d810.analyses.control_flow.dominator import compute_dom_tree
+
 # Canonical home for the abstract capability + portable result type;
 # re-exported below for back-compat with the existing Hodur consumers.
 from d810.capabilities.use_def_safety import (
     SeveranceViolation,
     UseDefSafetyCapability,
 )
-from d810.analyses.control_flow.dominator import compute_dom_tree
-from d810.ir.flowgraph import FlowGraph
 from d810.core.logging import getLogger
 from d810.evaluator.hexrays_microcode.chains import (
     UseSite,
     find_all_uses_of_stkvar,
 )
+from d810.ir.flowgraph import FlowGraph
 from d810.ir.redirect import RedirectIntent
 
 logger = getLogger(__name__)
@@ -182,9 +184,11 @@ def check_redirect_severs_use_def(
     if not defs:
         return ()
 
+    pre_adj = pre_cfg.as_adjacency_dict()
     post_adj = _build_post_mod_adjacency(pre_cfg, mod)
     entry = int(getattr(pre_cfg, "entry_serial", 0))
-    dom_tree = compute_dom_tree(post_adj, entry=entry)
+    pre_dom_tree = compute_dom_tree(pre_adj, entry=entry)
+    post_dom_tree = compute_dom_tree(post_adj, entry=entry)
 
     violations: list[SeveranceViolation] = []
     for stkoff, size in defs:
@@ -193,7 +197,12 @@ def check_redirect_severs_use_def(
             if use.block_serial == src:
                 # In-block use — trivially dominated by src.
                 continue
-            if dom_tree.dominates(src, use.block_serial):
+            if not pre_dom_tree.dominates(src, use.block_serial):
+                # The definition already did not dominate this use.  Reporting
+                # it would turn old stack-slot/SSA imprecision into a false
+                # veto on an unrelated CFG redirect.
+                continue
+            if post_dom_tree.dominates(src, use.block_serial):
                 continue
             violations.append(
                 SeveranceViolation(

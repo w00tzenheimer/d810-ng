@@ -76,6 +76,8 @@ __all__ = [
     "DispatcherRemovalPreflightValidation",
     "IntervalStateNormalizerRetirementProof",
     "IntervalStateNormalizerRouteProof",
+    "StateTransitionPlumbingRetirementProof",
+    "StateTransitionPlumbingRouteProof",
     "TerminalSwitchCycleBreakProof",
     "RetiredDispatcherInfrastructure",
     "analyze_dispatcher_corridor_coverage",
@@ -285,6 +287,54 @@ class IntervalStateNormalizerRetirementProof:
 
 
 @dataclass(frozen=True, slots=True)
+class StateTransitionPlumbingRouteProof:
+    """One handler edge that bypasses a retired state-expression corridor."""
+
+    source: DispatcherBlockAnchor
+    path: tuple[DispatcherBlockAnchor, ...]
+    state_writer: DispatcherBlockAnchor
+    routed_handler: DispatcherBlockAnchor
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "source": self.source.to_payload(),
+            "path": [anchor.to_payload() for anchor in self.path],
+            "state_writer": self.state_writer.to_payload(),
+            "routed_handler": self.routed_handler.to_payload(),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class StateTransitionPlumbingRetirementProof:
+    """Independent authority for retiring pure dispatcher-state expressions."""
+
+    dispatcher: DispatcherBlockAnchor
+    state_identity: StorageIdentity
+    routes: tuple[StateTransitionPlumbingRouteProof, ...]
+    retired_state_plumbing: tuple[RetiredDispatcherInfrastructure, ...]
+    semantic_handlers: tuple[DispatcherBlockAnchor, ...]
+    post_reachable_handlers: tuple[DispatcherBlockAnchor, ...]
+    lost_blocks: tuple[DispatcherBlockAnchor, ...]
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "dispatcher": self.dispatcher.to_payload(),
+            "state_identity": self.state_identity.to_record(),
+            "routes": [route.to_payload() for route in self.routes],
+            "retired_state_plumbing": [
+                item.to_payload() for item in self.retired_state_plumbing
+            ],
+            "semantic_handlers": [
+                anchor.to_payload() for anchor in self.semantic_handlers
+            ],
+            "post_reachable_handlers": [
+                anchor.to_payload() for anchor in self.post_reachable_handlers
+            ],
+            "lost_blocks": [anchor.to_payload() for anchor in self.lost_blocks],
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class DispatcherRemovalPreflightValidation:
     """Result of recomputing a plan's narrow removal proof at preflight."""
 
@@ -294,6 +344,9 @@ class DispatcherRemovalPreflightValidation:
     terminal_switch_cycle_break: "TerminalSwitchCycleBreakProof | None" = None
     interval_state_normalizer_retirement: (
         IntervalStateNormalizerRetirementProof | None
+    ) = None
+    state_transition_plumbing_retirement: (
+        StateTransitionPlumbingRetirementProof | None
     ) = None
 
     def to_payload(self) -> dict[str, object]:
@@ -310,6 +363,10 @@ class DispatcherRemovalPreflightValidation:
         if self.interval_state_normalizer_retirement is not None:
             payload["interval_state_normalizer_retirement"] = (
                 self.interval_state_normalizer_retirement.to_payload()
+            )
+        if self.state_transition_plumbing_retirement is not None:
+            payload["state_transition_plumbing_retirement"] = (
+                self.state_transition_plumbing_retirement.to_payload()
             )
         return payload
 
@@ -2608,6 +2665,226 @@ def _interval_state_normalizer_retirement_allowance(
     )
 
 
+def _pure_state_transition_plumbing_role(
+    block: object,
+    *,
+    state_identity: StorageIdentity,
+    dispatcher_serial: int,
+    proved_downstream: frozenset[int],
+) -> str | None:
+    """Classify one pure one-way state expression without metadata authority."""
+    if block is None or getattr(block, "kind", None) is not BlockKind.ONE_WAY:
+        return None
+    successors = tuple(int(target) for target in getattr(block, "succs", ()) or ())
+    if len(successors) != 1:
+        return None
+    instructions = InstructionProjection.from_block(block)
+    if any(
+        instruction.control is not None
+        and instruction.control.transfer is not ControlTransferKind.GOTO
+        for instruction in instructions
+    ):
+        return None
+    values = tuple(
+        instruction for instruction in instructions if instruction.control is None
+    )
+    if not values:
+        return None
+    state_writes: list[int] = []
+    for index, instruction in enumerate(values):
+        if (
+            instruction.operation not in _STATE_WRITER_OPERATIONS
+            or instruction.effects
+            or instruction.memory is not None
+            or instruction.result is None
+            or any(value.space is Space.GLOBAL for value in instruction.inputs)
+        ):
+            return None
+        result_identity = storage_identity_from_varnode(instruction.result)
+        if result_identity == state_identity:
+            state_writes.append(index)
+            continue
+        if instruction.result.space not in {Space.REGISTER, Space.TEMP}:
+            return None
+    successor = successors[0]
+    if state_writes:
+        if state_writes != [len(values) - 1] or successor != int(dispatcher_serial):
+            return None
+        return "dispatcher_state_writer"
+    if successor in proved_downstream:
+        return "state_expression"
+    return None
+
+
+def _state_transition_plumbing_retirement_allowance(
+    pre_graph: FlowGraph,
+    *,
+    post_graph: FlowGraph,
+    raw_proof: Mapping[str, object],
+    proof: DispatcherRemovalPreflightProof,
+    coverage: DispatcherCorridorCoverage,
+) -> StateTransitionPlumbingRetirementProof | None:
+    """Independently prove pure state-expression corridors retired by routes.
+
+    This allowance does not trust producer ``state_plumbing`` labels or safety
+    booleans.  It derives the dispatcher state from the bound comparison,
+    accepts only side-effect-free one-way value expressions, requires every
+    component to end in an exact write to that state, and binds every incoming
+    handler edge to its exact projected handler target.
+    """
+    dispatcher = proof.dispatcher
+    if (
+        dispatcher is None
+        or not coverage.enumeration_complete
+        or coverage.residual_corridors
+        or not proof.authoritative_handlers
+    ):
+        return None
+    state_identity = _dispatcher_state_identity(
+        pre_graph,
+        int(dispatcher.serial),
+    )
+    if state_identity is None:
+        return None
+    comparison_region = _state_dispatcher_comparison_region(
+        pre_graph,
+        dispatcher_entry_serial=int(dispatcher.serial),
+        state_identity=state_identity,
+    )
+    if int(dispatcher.serial) not in comparison_region:
+        return None
+    pre_reachable = _reachable_from_entry(
+        pre_graph.as_adjacency_dict(),
+        int(pre_graph.entry_serial),
+    )
+    post_reachable = _reachable_from_entry(
+        post_graph.as_adjacency_dict(),
+        int(post_graph.entry_serial),
+    )
+    lost = frozenset(pre_reachable - post_reachable)
+    if lost != proof.lost_blocks:
+        return None
+    raw_lost = _payload_anchor_set(raw_proof.get("lost_blocks"))
+    if raw_lost != frozenset(proof.lost_block_anchors):
+        return None
+    raw_pre_terminals = _payload_anchor_set(raw_proof.get("pre_reachable_terminals"))
+    if raw_pre_terminals != frozenset(proof.pre_reachable_terminals):
+        return None
+    if (
+        raw_proof.get("coverage_enumeration_complete") is not True
+        or raw_proof.get("residual_corridor_count") != 0
+    ):
+        return None
+    handler_serials = frozenset(
+        int(anchor.serial) for anchor in proof.authoritative_handlers
+    )
+    post_handlers = _anchors_for_serials(
+        post_graph,
+        frozenset(serial for serial in handler_serials if serial in post_reachable),
+    )
+    if set(proof.authoritative_handlers) != set(post_handlers):
+        return None
+    if set(proof.pre_reachable_terminals) != set(proof.post_reachable_terminals):
+        return None
+
+    untyped = set(int(serial) for serial in lost - comparison_region)
+    if not untyped:
+        return None
+    roles: dict[int, str] = {}
+    changed = True
+    while changed:
+        changed = False
+        downstream = frozenset(roles)
+        for serial in sorted(untyped - set(roles)):
+            role = _pure_state_transition_plumbing_role(
+                pre_graph.get_block(serial),
+                state_identity=state_identity,
+                dispatcher_serial=int(dispatcher.serial),
+                proved_downstream=downstream,
+            )
+            if role is None:
+                continue
+            roles[serial] = role
+            changed = True
+    if set(roles) != untyped:
+        return None
+
+    routes: list[StateTransitionPlumbingRouteProof] = []
+    routed_plumbing: set[int] = set()
+    for root in sorted(roles):
+        block = pre_graph.get_block(root)
+        if block is None:
+            return None
+        for source in sorted(
+            int(pred) for pred in block.preds if int(pred) not in roles
+        ):
+            if source in comparison_region or source not in handler_serials:
+                return None
+            pre_source = pre_graph.get_block(source)
+            post_source = post_graph.get_block(source)
+            if (
+                pre_source is None
+                or post_source is None
+                or source not in post_reachable
+            ):
+                return None
+            before = set(int(target) for target in pre_source.succs)
+            after = set(int(target) for target in post_source.succs)
+            if root not in before or root in after:
+                return None
+            added = after - (before - {root})
+            if len(added) != 1 or after != (before - {root}) | added:
+                return None
+            routed_handler = next(iter(added))
+            if (
+                routed_handler not in handler_serials
+                or routed_handler not in post_reachable
+                or routed_handler == source
+            ):
+                return None
+
+            path: list[int] = []
+            current = root
+            state_writer: int | None = None
+            while current in roles and current not in path:
+                path.append(current)
+                if roles[current] == "dispatcher_state_writer":
+                    state_writer = current
+                current_block = pre_graph.get_block(current)
+                if current_block is None or len(current_block.succs) != 1:
+                    return None
+                current = int(current_block.succs[0])
+            if current != int(dispatcher.serial) or state_writer is None:
+                return None
+            routed_plumbing.update(path)
+            routes.append(
+                StateTransitionPlumbingRouteProof(
+                    source=_anchor(pre_graph, source),
+                    path=tuple(_anchor(pre_graph, serial) for serial in path),
+                    state_writer=_anchor(pre_graph, state_writer),
+                    routed_handler=_anchor(post_graph, routed_handler),
+                )
+            )
+    if not routes or routed_plumbing != set(roles):
+        return None
+    retired = tuple(
+        RetiredDispatcherInfrastructure(
+            role=role,
+            anchor=_anchor(pre_graph, serial),
+        )
+        for serial, role in sorted(roles.items())
+    )
+    return StateTransitionPlumbingRetirementProof(
+        dispatcher=dispatcher,
+        state_identity=state_identity,
+        routes=tuple(routes),
+        retired_state_plumbing=retired,
+        semantic_handlers=proof.authoritative_handlers,
+        post_reachable_handlers=post_handlers,
+        lost_blocks=_anchors_for_serials(pre_graph, lost),
+    )
+
+
 def validate_dispatcher_removal_preflight_proof(
     pre_graph: FlowGraph,
     *,
@@ -2789,6 +3066,20 @@ def validate_dispatcher_removal_preflight_proof(
             reason="interval_state_normalizer_retirement",
             proof=proof,
             interval_state_normalizer_retirement=interval_normalizer,
+        )
+    state_transition_plumbing = _state_transition_plumbing_retirement_allowance(
+        pre_graph,
+        post_graph=post_graph,
+        raw_proof=raw_proof,
+        proof=proof,
+        coverage=projected_coverage,
+    )
+    if state_transition_plumbing is not None:
+        return DispatcherRemovalPreflightValidation(
+            passed=True,
+            reason="state_transition_plumbing_retirement",
+            proof=proof,
+            state_transition_plumbing_retirement=state_transition_plumbing,
         )
     if dict(raw_proof) != proof.to_metadata():
         return DispatcherRemovalPreflightValidation(

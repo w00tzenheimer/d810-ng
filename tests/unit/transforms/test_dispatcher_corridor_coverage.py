@@ -21,15 +21,15 @@ from d810.ir.flowgraph import (
 )
 from d810.transforms import minimal_unflatten_emit as emit_module
 from d810.transforms.dispatcher_corridor_coverage import (
+    USE_DEF_SEVERANCE_AUDIT_METADATA,
     DispatcherRemovalPreflightProof,
+    analyze_dispatcher_corridor_coverage,
     build_dispatcher_removal_preflight_proof,
+    canonicalize_observed_dispatcher_graph,
     collect_dispatcher_corridor_coverage_observations,
     collect_dispatcher_corridor_coverage_observations_from_metadata,
     collect_dispatcher_removal_preflight_proof_observations_from_metadata,
     collect_use_def_severance_observations_from_metadata,
-    analyze_dispatcher_corridor_coverage,
-    canonicalize_observed_dispatcher_graph,
-    USE_DEF_SEVERANCE_AUDIT_METADATA,
     validate_dispatcher_corridor_coverage_metadata,
     validate_dispatcher_removal_preflight_proof,
 )
@@ -781,6 +781,216 @@ def _interval_state_normalizer_fixture(
         state_plumbing_serials=frozenset({3, 50, 65}),
     )
     return pre_graph, post_graph, coverage, proof
+
+
+def _state_transition_plumbing_fixture(
+    *,
+    semantic_side_effect: bool = False,
+    missing_state_write: bool = False,
+) -> tuple[FlowGraph, FlowGraph, object, object]:
+    """Pure transition expressions feeding the bound dispatcher state slot."""
+
+    def value(
+        operation: ValueOpKind,
+        ea: int,
+        left: MopSnapshot,
+        right: MopSnapshot | None,
+        destination: MopSnapshot,
+    ) -> InsnSnapshot:
+        return InsnSnapshot(
+            opcode=0x40,
+            ea=ea,
+            operands=(),
+            l=left,
+            r=right,
+            d=destination,
+            kind=InsnKind.UNKNOWN,
+            value_op_kind=operation,
+        )
+
+    state = MopSnapshot(kind=OperandKind.STACK, stkoff=40, size=4)
+    eax = MopSnapshot(kind=OperandKind.REGISTER, reg=8, size=4)
+    ecx = MopSnapshot(kind=OperandKind.REGISTER, reg=24, size=4)
+    edx = MopSnapshot(kind=OperandKind.REGISTER, reg=16, size=4)
+    feeder_destination = edx if missing_state_write else state
+    merge_destination = (
+        MopSnapshot(kind=OperandKind.GLOBAL, gaddr=0x140003000, size=4)
+        if semantic_side_effect
+        else edx
+    )
+    dispatcher_branch = InsnSnapshot(
+        opcode=42,
+        ea=0x1200,
+        operands=(),
+        l=state,
+        r=MopSnapshot(kind=OperandKind.NUMBER, value=0x12345678, size=4),
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=20),
+        kind=InsnKind.COND_JUMP,
+        predicate_kind=PredicateKind.EQ,
+    )
+    pre_graph = FlowGraph(
+        blocks={
+            0: _block(0, (10, 12), (), 0x1000, kind=BlockKind.N_WAY),
+            10: _block(10, (123,), (0,), 0x1010, kind=BlockKind.ONE_WAY),
+            12: _block(12, (112,), (0,), 0x1020, kind=BlockKind.ONE_WAY),
+            123: _block(
+                123,
+                (3,),
+                (10,),
+                0x1100,
+                kind=BlockKind.ONE_WAY,
+                insns=(
+                    value(ValueOpKind.XOR, 0x1100, eax, ecx, merge_destination),
+                ),
+                tail_kind=InsnKind.GOTO,
+            ),
+            3: _block(
+                3,
+                (4,),
+                (123,),
+                0x1110,
+                kind=BlockKind.ONE_WAY,
+                insns=(
+                    value(ValueOpKind.MOVE, 0x1110, edx, None, feeder_destination),
+                ),
+                tail_kind=InsnKind.GOTO,
+            ),
+            112: _block(
+                112,
+                (4,),
+                (12,),
+                0x1120,
+                kind=BlockKind.ONE_WAY,
+                insns=(
+                    value(ValueOpKind.ADD, 0x1120, eax, ecx, state),
+                ),
+                tail_kind=InsnKind.GOTO,
+            ),
+            4: _block(
+                4,
+                (21, 20),
+                (3, 112),
+                0x1200,
+                kind=BlockKind.TWO_WAY,
+                insns=(dispatcher_branch,),
+                tail_kind=InsnKind.COND_JUMP,
+            ),
+            20: _block(20, (), (4,), 0x1300, kind=BlockKind.STOP),
+            21: _block(21, (), (4,), 0x1310, kind=BlockKind.STOP),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    modifications = (
+        RedirectGoto(from_serial=10, old_target=123, new_target=20),
+        RedirectGoto(from_serial=12, old_target=112, new_target=21),
+    )
+    coverage = analyze_dispatcher_corridor_coverage(
+        pre_graph,
+        modifications=modifications,
+        dispatcher_entry_serial=4,
+    )
+    post_graph = _replace_observed_edges(
+        pre_graph,
+        {
+            **{
+                serial: tuple(block.succs)
+                for serial, block in pre_graph.blocks.items()
+            },
+            10: (20,),
+            12: (21,),
+        },
+    )
+    proof = build_dispatcher_removal_preflight_proof(
+        pre_graph,
+        post_graph=post_graph,
+        coverage=coverage,
+        dispatcher_entry_serial=4,
+        authoritative_handler_serials=frozenset({10, 12, 20, 21}),
+        dispatcher_region_serials=frozenset({4}),
+        producer_safety=_executed_fragment_safety(),
+        state_plumbing_serials=frozenset({3, 112, 123}),
+    )
+    return pre_graph, post_graph, coverage, proof
+
+
+def test_state_transition_plumbing_retirement_is_independently_proven() -> None:
+    pre_graph, post_graph, coverage, proof = _state_transition_plumbing_fixture()
+
+    validation = validate_dispatcher_removal_preflight_proof(
+        pre_graph,
+        post_graph=post_graph,
+        plan_metadata={
+            "dispatcher_corridor_coverage": coverage.to_metadata(),
+            "dispatcher_removal_preflight_proof": proof.to_metadata(),
+        },
+    )
+
+    assert validation.passed
+    assert validation.reason == "state_transition_plumbing_retirement"
+    payload = validation.to_payload()["state_transition_plumbing_retirement"]
+    assert {
+        (item["role"], item["anchor"]["serial"])
+        for item in payload["retired_state_plumbing"]
+    } == {
+        ("state_expression", 123),
+        ("dispatcher_state_writer", 3),
+        ("dispatcher_state_writer", 112),
+    }
+    assert {
+        (route["source"]["serial"], route["routed_handler"]["serial"])
+        for route in payload["routes"]
+    } == {(10, 20), (12, 21)}
+
+    collect_proof_observations = (
+        collect_dispatcher_removal_preflight_proof_observations_from_metadata
+    )
+    observations = collect_proof_observations(
+        proof.to_metadata(),
+        coverage_metadata=coverage.to_metadata(),
+        maturity="MMAT_GLBOPT1",
+        phase="patch_transaction",
+        application_status="applied",
+        projected_validation=validation,
+        observed_validation=validation,
+        plan_id="state-plumbing-plan",
+        attempt_id="state-plumbing-attempt",
+    )
+    assert len(observations) == 1
+    persisted = observations[0].payload["observed_validation"]
+    assert persisted["reason"] == "state_transition_plumbing_retirement"
+    assert persisted["state_transition_plumbing_retirement"]["routes"][0][
+        "source"
+    ]["ea"] in {0x1010, 0x1020}
+
+
+@pytest.mark.parametrize(
+    "fixture_overrides",
+    (
+        {"semantic_side_effect": True},
+        {"missing_state_write": True},
+    ),
+)
+def test_state_transition_plumbing_retirement_rejects_near_misses(
+    fixture_overrides: dict[str, bool],
+) -> None:
+    pre_graph, post_graph, coverage, proof = _state_transition_plumbing_fixture(
+        **fixture_overrides
+    )
+
+    validation = validate_dispatcher_removal_preflight_proof(
+        pre_graph,
+        post_graph=post_graph,
+        plan_metadata={
+            "dispatcher_corridor_coverage": coverage.to_metadata(),
+            "dispatcher_removal_preflight_proof": proof.to_metadata(),
+        },
+    )
+
+    assert not validation.passed
+    assert validation.reason == "dispatcher_removal_proof_drift"
+    assert validation.proof is not None
+    assert validation.proof.reason == "untyped_lost_block"
 
 
 def test_interval_state_normalizer_retirement_is_independently_proven() -> None:
