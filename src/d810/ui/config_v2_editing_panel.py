@@ -39,7 +39,10 @@ except ImportError:
 
 if IDA_AVAILABLE:
     from d810.qt_shim import QtCore, QtWidgets, qt_flag_or
-    from d810.ui.qt_layout_policy import configure_overflow_menu_button
+    from d810.ui.qt_layout_policy import (
+        configure_left_aligned_form,
+        configure_overflow_menu_button,
+    )
     from d810.ui.workbench_structured_details import JsonTreeEditor, RawJsonDialog
     from d810.ui.config_v2_transform_catalog import ConfigV2TransformCatalogWidget
     from d810.ui.config_v2_rule_catalog import ConfigV2RuleCatalogWidget
@@ -174,8 +177,9 @@ if IDA_AVAILABLE:
             )
             self.typed_options_body = QtWidgets.QWidget()
             self.typed_options_layout = QtWidgets.QFormLayout(self.typed_options_body)
-            self.typed_options_layout.setContentsMargins(4, 4, 4, 4)
+            self.typed_options_layout.setContentsMargins(0, 0, 0, 0)
             self.typed_options_layout.setSpacing(4)
+            configure_left_aligned_form(self.typed_options_layout)
             self.raw_contract_button = QtWidgets.QToolButton()
             self.raw_contract_button.setText("View contract...")
             self.pipeline_button = QtWidgets.QToolButton()
@@ -241,7 +245,7 @@ if IDA_AVAILABLE:
 
             inspector_layout = QtWidgets.QVBoxLayout(self.inspector_page)
             inspector_layout.setContentsMargins(4, 4, 4, 4)
-            inspector_layout.setSpacing(6)
+            inspector_layout.setSpacing(4)
             self._inspector_layout = inspector_layout
 
             inspector_header = QtWidgets.QWidget(self.inspector_page)
@@ -262,8 +266,9 @@ if IDA_AVAILABLE:
             inspector_layout.addWidget(inspector_header)
 
             details_layout = QtWidgets.QFormLayout(self.details_body)
-            details_layout.setContentsMargins(4, 2, 4, 2)
+            details_layout.setContentsMargins(0, 0, 0, 0)
             details_layout.setSpacing(4)
+            configure_left_aligned_form(details_layout)
             for name in ("Scope", "Backend", "Safety"):
                 metadata_label = QtWidgets.QLabel(name)
                 metadata_label.setToolTip(self._contract_metadata_tooltip)
@@ -296,7 +301,7 @@ if IDA_AVAILABLE:
 
             layout = QtWidgets.QVBoxLayout(self.parent)
             layout.setContentsMargins(4, 4, 4, 4)
-            layout.setSpacing(6)
+            layout.setSpacing(4)
             layout.addWidget(project_header)
             layout.addWidget(self.screen_stack, stretch=1)
             layout.addWidget(self.error_label)

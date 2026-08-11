@@ -147,6 +147,18 @@ def test_details_disclosure_is_collapsed_readonly_contract_metadata() -> None:
     assert "self.details_body.setVisible(False)" in render_source
 
 
+def test_inspector_details_and_typed_options_use_the_compact_form_policy() -> None:
+    init_source = _source("__init__")
+    create_source = _source("OnCreate")
+
+    assert "configure_left_aligned_form(self.typed_options_layout)" in init_source
+    assert "self.typed_options_layout.setContentsMargins(0, 0, 0, 0)" in init_source
+    assert "configure_left_aligned_form(details_layout)" in create_source
+    assert "details_layout.setContentsMargins(0, 0, 0, 0)" in create_source
+    assert "inspector_layout.setSpacing(4)" in create_source
+    assert "layout.setSpacing(4)" in create_source
+
+
 def test_screen_transition_checks_stack_membership_before_switching() -> None:
     source = _source("_set_current_screen")
 
