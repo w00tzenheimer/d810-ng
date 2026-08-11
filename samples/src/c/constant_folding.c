@@ -485,6 +485,14 @@ const unsigned __int64 qword_1802D2C99 = 0xDE03F46FCD0D7CAA;
 const unsigned __int32 dword_1802D2E48 = 0x88A8C6E5;
 const unsigned __int32 dword_1802D2DBC = 0xF4C84FC4;
 
+/* Keep the test2 inputs as dedicated writable initializers. Hex-Rays 9.4 can
+ * natively collapse the all-immediate instruction stream emitted for const
+ * globals, which erases the before/after oracle. At -O0 these objects remain
+ * real global reads; D810's aggressive_no_direct_writes policy must prove and
+ * materialize them before the constant subtree can collapse. */
+static unsigned __int64 constant_folding_test2_qword = 0xB76BFFAE3B3B94B8;
+static unsigned __int32 constant_folding_test2_dword = 0xF4C84FC4;
+
 void _InterlockedExchangeW(int a1, int a2, int a3, int a4, int a5) { (void)a1; (void)a2; (void)a3; (void)a4; (void)a5; }
 
 EXPORT unsigned __int64 constant_folding_test1()
@@ -529,14 +537,14 @@ EXPORT unsigned __int64 constant_folding_test2()
         0x18);
     unsigned __int64 v51 = __ROL4__(
                                __ROL4__(
-                                   qword_1802D2C51 ^ (__ROL4__(__ROL4__((__ROL4__(v45 + 0x2773BBB2, 6) ^ 0x74A2863C) - 0x1E9A0ECF, 0x15), 0xB) + 0x1E9A0ECF) ^ 0x4F991284,
+                                   constant_folding_test2_qword ^ (__ROL4__(__ROL4__((__ROL4__(v45 + 0x2773BBB2, 6) ^ 0x74A2863C) - 0x1E9A0ECF, 0x15), 0xB) + 0x1E9A0ECF) ^ 0x4F991284,
                                    0x1A) -
                                    0x2773BBB2,
                                8) +
                            0x5D8D7E02;
     unsigned __int64 v6 = (__ROL8__(
                                (__ROL8__(
-                                    (((v51 ^ dword_1802D2DBC) + 0x61BBE9D7149134B0LL) ^ 0xDFEE542C76A7AAF0uLL) - 0x1509678523D640EALL,
+                                    (((v51 ^ constant_folding_test2_dword) + 0x61BBE9D7149134B0LL) ^ 0xDFEE542C76A7AAF0uLL) - 0x1509678523D640EALL,
                                     0xE) ^
                                 0xF0LL) -
                                    0x57033546396F782ALL,

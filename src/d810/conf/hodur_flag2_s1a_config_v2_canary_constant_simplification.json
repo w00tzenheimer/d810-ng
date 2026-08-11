@@ -1,0 +1,537 @@
+{
+  "additional_configuration": {
+    "config_v2_canary": {
+      "runtime_source": "pipeline_v2",
+      "source_config": "hodur_flag2_s1a.json"
+    },
+    "pipeline_v2": [
+      {
+        "analyses": {
+          "provided": [
+            "dispatcher_model",
+            "recover_dispatcher",
+            "recovered_machine"
+          ],
+          "required": []
+        },
+        "backend_route": "mutation_backend",
+        "contract": {
+          "invalidates": {
+            "analyses": [],
+            "facts": []
+          },
+          "maturity": {
+            "max": "ir.global.analyzed",
+            "min": "ir.call.modeled",
+            "preferred": null
+          },
+          "outputs": {
+            "evidence": [],
+            "facts": [
+              "role.dispatcher"
+            ]
+          },
+          "preserves": {
+            "analyses": [],
+            "facts": []
+          },
+          "requires": {
+            "analyses": [],
+            "capabilities": [
+              "live_mba"
+            ],
+            "evidence": [],
+            "facts": {
+              "optional": [],
+              "required": []
+            }
+          },
+          "safety": {
+            "policy": "default",
+            "requires_oracle": false
+          },
+          "scope": "function"
+        },
+        "granularity": "function",
+        "maturity_gates": [],
+        "options": {
+          "min_state_constant": 16777216
+        },
+        "pass_id": "recover_dispatcher",
+        "preservation": {
+          "all_preserved": true,
+          "kept": []
+        },
+        "requirements": {
+          "required": []
+        },
+        "safety_policy": {
+          "golden_required": false,
+          "name": "default"
+        },
+        "scheduler_policy": "worklist",
+        "workflow_stage": "canonical_pipeline"
+      },
+      {
+        "analyses": {
+          "provided": [],
+          "required": []
+        },
+        "backend_route": "mutation_backend",
+        "contract": {
+          "invalidates": {
+            "analyses": [],
+            "facts": []
+          },
+          "maturity": {
+            "max": null,
+            "min": null,
+            "preferred": null
+          },
+          "outputs": {
+            "evidence": [],
+            "facts": []
+          },
+          "preserves": {
+            "analyses": [],
+            "facts": []
+          },
+          "requires": {
+            "analyses": [],
+            "capabilities": [],
+            "evidence": [],
+            "facts": {
+              "optional": [],
+              "required": []
+            }
+          },
+          "safety": {
+            "policy": "default",
+            "requires_oracle": false
+          },
+          "scope": "function"
+        },
+        "granularity": "function",
+        "maturity_gates": [],
+        "options": {
+          "allow_executable_readonly": false,
+          "memory_policy": "aggressive_no_direct_writes",
+          "rva_guard": false
+        },
+        "pass_id": "constant-simplification",
+        "preservation": {
+          "all_preserved": true,
+          "kept": []
+        },
+        "requirements": {
+          "required": []
+        },
+        "safety_policy": {
+          "golden_required": false,
+          "name": "default"
+        },
+        "scheduler_policy": "worklist",
+        "target": {
+          "exclude_eas": [],
+          "include_eas": [],
+          "tags_all": [],
+          "tags_any": []
+        },
+        "workflow_stage": "frontend_normalization"
+      },
+      {
+        "analyses": {
+          "provided": [
+            "recover_state_transitions",
+            "transition_result",
+            "valrange_confirmable_count"
+          ],
+          "required": [
+            "recover_dispatcher"
+          ]
+        },
+        "backend_route": "mutation_backend",
+        "contract": {
+          "invalidates": {
+            "analyses": [],
+            "facts": []
+          },
+          "maturity": {
+            "max": "ir.global.analyzed",
+            "min": "ir.call.modeled",
+            "preferred": null
+          },
+          "outputs": {
+            "evidence": [],
+            "facts": [
+              "recovered.state_transition"
+            ]
+          },
+          "preserves": {
+            "analyses": [],
+            "facts": []
+          },
+          "requires": {
+            "analyses": [
+              "recover_dispatcher"
+            ],
+            "capabilities": [
+              "live_mba"
+            ],
+            "evidence": [
+              "ir.branch_target",
+              "ir.state_variable_write"
+            ],
+            "facts": {
+              "optional": [],
+              "required": [
+                "role.dispatcher"
+              ]
+            }
+          },
+          "safety": {
+            "policy": "default",
+            "requires_oracle": false
+          },
+          "scope": "function"
+        },
+        "granularity": "function",
+        "maturity_gates": [],
+        "options": {
+          "min_state_constant": 16777216
+        },
+        "pass_id": "recover_state_transitions",
+        "preservation": {
+          "all_preserved": true,
+          "kept": []
+        },
+        "requirements": {
+          "required": []
+        },
+        "safety_policy": {
+          "golden_required": false,
+          "name": "default"
+        },
+        "scheduler_policy": "worklist",
+        "workflow_stage": "canonical_pipeline"
+      },
+      {
+        "analyses": {
+          "provided": [
+            "plan_semantic_regions"
+          ],
+          "required": [
+            "recover_dispatcher",
+            "transition_result"
+          ]
+        },
+        "backend_route": "mutation_backend",
+        "contract": {
+          "invalidates": {
+            "analyses": [],
+            "facts": []
+          },
+          "maturity": {
+            "max": "ir.global.analyzed",
+            "min": "ir.call.modeled",
+            "preferred": null
+          },
+          "outputs": {
+            "evidence": [],
+            "facts": [
+              "recovered.region"
+            ]
+          },
+          "preserves": {
+            "analyses": [],
+            "facts": []
+          },
+          "requires": {
+            "analyses": [
+              "recover_dispatcher",
+              "transition_result"
+            ],
+            "capabilities": [],
+            "evidence": [],
+            "facts": {
+              "optional": [],
+              "required": [
+                "recovered.state_transition",
+                "role.dispatcher"
+              ]
+            }
+          },
+          "safety": {
+            "policy": "default",
+            "requires_oracle": false
+          },
+          "scope": "function"
+        },
+        "granularity": "function",
+        "maturity_gates": [],
+        "options": {
+          "min_state_constant": 16777216
+        },
+        "pass_id": "plan_semantic_regions",
+        "preservation": {
+          "all_preserved": true,
+          "kept": []
+        },
+        "requirements": {
+          "required": []
+        },
+        "safety_policy": {
+          "golden_required": false,
+          "name": "default"
+        },
+        "scheduler_policy": "worklist",
+        "workflow_stage": "canonical_pipeline"
+      },
+      {
+        "analyses": {
+          "provided": [
+            "lower_state_machine_plan_metadata"
+          ],
+          "required": [
+            "plan_semantic_regions",
+            "recover_dispatcher",
+            "transition_result"
+          ]
+        },
+        "backend_route": "mutation_backend",
+        "contract": {
+          "invalidates": {
+            "analyses": [
+              "dominators",
+              "loop_info",
+              "postdominators",
+              "regions"
+            ],
+            "facts": [
+              "ir.cfg_shape.stale"
+            ]
+          },
+          "maturity": {
+            "max": "ir.global.analyzed",
+            "min": "ir.call.modeled",
+            "preferred": null
+          },
+          "outputs": {
+            "evidence": [],
+            "facts": [
+              "recovered.cfg_edge"
+            ]
+          },
+          "preserves": {
+            "analyses": [
+              "function_boundaries"
+            ],
+            "facts": [
+              "raw_instruction_addresses",
+              "recovered.cfg_edge"
+            ]
+          },
+          "requires": {
+            "analyses": [
+              "plan_semantic_regions",
+              "recover_dispatcher",
+              "transition_result"
+            ],
+            "capabilities": [],
+            "evidence": [],
+            "facts": {
+              "optional": [],
+              "required": [
+                "recovered.region",
+                "recovered.state_transition",
+                "role.dispatcher"
+              ]
+            }
+          },
+          "safety": {
+            "policy": "golden",
+            "requires_oracle": true
+          },
+          "scope": "function"
+        },
+        "granularity": "function",
+        "maturity_gates": [],
+        "options": {
+          "min_state_constant": 16777216
+        },
+        "pass_id": "lower_state_machine",
+        "preservation": {
+          "all_preserved": true,
+          "kept": []
+        },
+        "requirements": {
+          "required": []
+        },
+        "safety_policy": {
+          "golden_required": false,
+          "name": "default"
+        },
+        "scheduler_policy": "worklist",
+        "workflow_stage": "canonical_pipeline"
+      },
+      {
+        "analyses": {
+          "provided": [],
+          "required": []
+        },
+        "backend_route": "mutation_backend",
+        "contract": {
+          "invalidates": {
+            "analyses": [
+              "dominators",
+              "loop_info",
+              "postdominators",
+              "regions"
+            ],
+            "facts": [
+              "ir.cfg_shape.stale"
+            ]
+          },
+          "maturity": {
+            "max": "ir.global.analyzed",
+            "min": "ir.call.modeled",
+            "preferred": null
+          },
+          "outputs": {
+            "evidence": [],
+            "facts": []
+          },
+          "preserves": {
+            "analyses": [
+              "function_boundaries"
+            ],
+            "facts": [
+              "raw_instruction_addresses",
+              "recovered.cfg_edge"
+            ]
+          },
+          "requires": {
+            "analyses": [],
+            "capabilities": [],
+            "evidence": [],
+            "facts": {
+              "optional": [],
+              "required": []
+            }
+          },
+          "safety": {
+            "policy": "golden",
+            "requires_oracle": true
+          },
+          "scope": "function"
+        },
+        "granularity": "function",
+        "maturity_gates": [],
+        "options": {
+          "min_state_constant": 16777216
+        },
+        "pass_id": "cleanup_residual_dispatcher",
+        "preservation": {
+          "all_preserved": true,
+          "kept": []
+        },
+        "requirements": {
+          "required": []
+        },
+        "safety_policy": {
+          "golden_required": false,
+          "name": "default"
+        },
+        "scheduler_policy": "worklist",
+        "workflow_stage": "canonical_pipeline"
+      },
+      {
+        "analyses": {
+          "provided": [],
+          "required": []
+        },
+        "backend_route": "mutation_backend",
+        "contract": {
+          "invalidates": {
+            "analyses": [],
+            "facts": []
+          },
+          "maturity": {
+            "max": "ir.global.optimized",
+            "min": "ir.canonical",
+            "preferred": null
+          },
+          "outputs": {
+            "evidence": [],
+            "facts": []
+          },
+          "preserves": {
+            "analyses": [],
+            "facts": []
+          },
+          "requires": {
+            "analyses": [],
+            "capabilities": [
+              "hook_transform_adapter"
+            ],
+            "evidence": [],
+            "facts": {
+              "optional": [],
+              "required": []
+            }
+          },
+          "safety": {
+            "policy": "default",
+            "requires_oracle": false
+          },
+          "scope": "block"
+        },
+        "granularity": "function",
+        "maturity_gates": [],
+        "options": {
+          "enabled_rules": [
+            "CompareConstantRule1",
+            "CompareConstantRule2",
+            "CompareConstantRule3",
+            "JaeRule1",
+            "JbRule1",
+            "JmpRuleFlagsOpaquePredicate",
+            "JmpRuleZ3Const",
+            "JnzRule1",
+            "JnzRule2",
+            "JnzRule3",
+            "JnzRule4",
+            "JnzRule5",
+            "JnzRule6",
+            "JnzRule7",
+            "JnzRule8"
+          ]
+        },
+        "pass_id": "jump-fixer",
+        "preservation": {
+          "all_preserved": true,
+          "kept": []
+        },
+        "requirements": {
+          "required": []
+        },
+        "safety_policy": {
+          "golden_required": false,
+          "name": "default"
+        },
+        "scheduler_policy": "worklist",
+        "target": {
+          "exclude_eas": [],
+          "include_eas": [],
+          "tags_all": [],
+          "tags_any": []
+        },
+        "workflow_stage": "canonical_pipeline"
+      }
+    ],
+    "pipeline_v2_mode": "config-v2"
+  },
+  "blk_rules": [],
+  "description": "Config-v2 explicit opt-in canary for hodur_flag2_s1a.json. The existing project configuration path remains the default runtime; this project is selectable only when explicit config-v2 mode is desired.",
+  "ins_rules": []
+}

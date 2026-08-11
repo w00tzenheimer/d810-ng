@@ -67,8 +67,10 @@ GLOBAL_READ_CASES = [
             "complex bitwise expressions."
         ),
         project="default_instruction_only.json",
+        deobfuscated_regexes=[r"return 0x8B8D2D6A09D84F79u?LL;"],
         must_change=True,
         check_stats=True,
+        required_rules=["FoldReadonlyDataRule"],
         expected_rules=[],
     ),
     DeobfuscationCase(

@@ -5,6 +5,7 @@ import platform
 
 import pytest
 
+import ida_bytes
 import ida_hexrays
 import ida_nalt
 import ida_name
@@ -82,10 +83,22 @@ class TestGlobalConstAnnotation:
     ) -> None:
         access = _lookup_table_access()
 
-        assert access.item_head == 0x18001FB10
-        assert access.item_end == 0x18001FB30
+        assert access.item_end == access.item_head + 0x20
         assert access.element_size == 4
         assert access.element_count == 8
+        assert tuple(
+            int(ida_bytes.get_dword(access.item_head + index * 4))
+            for index in range(access.element_count)
+        ) == (
+            0x12345678,
+            0x9ABCDEF0,
+            0x13579BDF,
+            0x2468ACE0,
+            0xDEADBEEF,
+            0xCAFEBABE,
+            0xFEEDFACE,
+            0x8BADF00D,
+        )
 
     @pytest.mark.ida_required
     def test_function_reference_annotation_handles_defined_readonly_items(

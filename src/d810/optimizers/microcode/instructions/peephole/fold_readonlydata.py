@@ -430,13 +430,22 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
                 # Seed with the GLOBAL's address: the test tracks where the
                 # loaded value flows structurally, not what the value equals.
                 reaches = value_reaches_dereference(blk, ins, address=addr)
+        decision_options: dict[str, object] = {
+            "policy": policy,
+            "allow_executable_readonly": self._allow_executable,
+        }
+        # Preserve the pre-rva_guard call contract on the default/unanswered
+        # path.  Besides keeping legacy adapters and test doubles compatible,
+        # omitting these keywords is exact because the shared oracle defaults
+        # to ``rva_guard=True`` and an unanswered def-use fact.
+        if not self._rva_guard:
+            decision_options["rva_guard"] = False
+        if reaches is not None:
+            decision_options["value_reaches_dereference"] = reaches
         decision = decide_hexrays_global_read(
             addr,
             size,
-            policy=policy,
-            allow_executable_readonly=self._allow_executable,
-            rva_guard=self._rva_guard,
-            value_reaches_dereference=reaches,
+            **decision_options,
         )
         # The fold verdict was previously invisible: only the ANNOTATION path
         # logged, and it answers a different question (persistent const), so a

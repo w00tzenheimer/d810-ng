@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import os
 import platform
+from types import SimpleNamespace
 
 import pytest
 
@@ -64,6 +65,10 @@ INDIRECT_CALL_CASES = [
         ),
         project="default_indirect_resolution.json",
         must_change=True,
+        # IDA 9.4 renders this as a direct call before D810 sees the nested
+        # MMAT_CALLS m_icall. Require the real CFG patch instead of accepting a
+        # renderer-level visual no-op.
+        allow_unchanged_pseudocode_if_rules_fired=True,
         check_stats=True,
         required_rules=["IndirectCallResolver"],
     ),
@@ -88,6 +93,9 @@ INDIRECT_CALL_CASES = [
         ),
         project="default_indirect_resolution.json",
         must_change=True,
+        # See indirect_call_vtable_sub: the actual microcode mutation is the
+        # oracle when the renderer has already made the direct call visible.
+        allow_unchanged_pseudocode_if_rules_fired=True,
         check_stats=True,
         required_rules=["IndirectCallResolver"],
     ),
@@ -115,6 +123,108 @@ class TestIndirectCallResolver:
     """
 
     binary_name = _get_default_binary()
+
+    @staticmethod
+    def _calls_maturity_mba(function_name: str):
+        import ida_funcs
+        import ida_hexrays
+        import idc
+
+        func_ea = idc.get_name_ea_simple(function_name)
+        func = ida_funcs.get_func(func_ea)
+        assert func is not None, f"function {function_name!r} is missing"
+        ranges = ida_hexrays.mba_ranges_t(func)
+        failure = ida_hexrays.hexrays_failure_t()
+        mba = ida_hexrays.gen_microcode(
+            ranges,
+            failure,
+            None,
+            ida_hexrays.DECOMP_NO_WAIT,
+            ida_hexrays.MMAT_CALLS,
+        )
+        assert mba is not None, failure.desc()
+        return mba
+
+    @staticmethod
+    def _indirect_callees(mba, resolver):
+        """Return the indirect callees currently materialized in *mba*."""
+        candidates = []
+        for serial in range(mba.qty):
+            block = mba.get_mblock(serial)
+            owner = block.head
+            while owner is not None:
+                candidates.extend(
+                    candidate
+                    for candidate in resolver._call_candidates(owner)
+                    if resolver._is_indirect_call(candidate)
+                )
+                owner = owner.next
+        return candidates
+
+    @pytest.mark.ida_required
+    @pytest.mark.parametrize(
+        "function_name",
+        ("indirect_call_vtable_sub", "indirect_call_hikari_mov_sub"),
+    )
+    def test_calls_maturity_indirect_callee_rewrites_to_direct_call(
+        self,
+        function_name,
+        libobfuscated_setup,
+    ):
+        """A computed MMAT_CALLS callee must produce one native patch."""
+        mba = self._calls_maturity_mba(function_name)
+        resolver = IndirectCallResolver()
+        before = self._indirect_callees(mba, resolver)
+        assert len(before) == 1, "fixture must preserve one indirect MMAT_CALLS callee"
+
+        patches = sum(
+            resolver.optimize(mba.get_mblock(serial)) for serial in range(mba.qty)
+        )
+
+        assert patches == 1
+        assert not self._indirect_callees(mba, resolver)
+
+    @pytest.mark.ida_required
+    def test_config_v2_activates_indirect_call_resolver(
+        self,
+        libobfuscated_setup,
+        d810_state,
+    ):
+        """The config-v2 bridge must retain the resolver's live hook rule."""
+        with d810_state() as state:
+            import ida_hexrays
+            import idc
+
+            state.load_project(
+                state.project_manager.index("default_indirect_resolution.json")
+            )
+
+            assert "IndirectCallResolver" in [
+                rule.name for rule in state.current_blk_rules
+            ]
+            state.start_d810()
+            assert "IndirectCallResolver" in [
+                rule.name for rule in state.manager.block_optimizer.cfg_rules
+            ]
+            report = state.manager.get_effective_execution_report(
+                idc.get_name_ea_simple("indirect_call_vtable_sub")
+            )
+            assert any(
+                decision.pass_id == "indirect-call-resolver"
+                and decision.active
+                for decision in report.decisions
+            )
+            assert any(
+                stage.implementation is not None
+                and stage.pass_id == "indirect-call-resolver"
+                for stage in state.manager.execution_scope_service.active_stages(
+                    project_name=report.project_name,
+                    idb_key=report.idb_key,
+                    func_ea=report.function_ea,
+                    pipeline="flow",
+                    maturity=ida_hexrays.MMAT_CALLS,
+                )
+            )
 
     @pytest.mark.ida_required
     @pytest.mark.parametrize("case", INDIRECT_CALL_CASES, ids=lambda c: c.test_id)
@@ -148,6 +258,21 @@ class TestIndirectCallResolverAttributes:
     """Verify IndirectCallResolver class attributes with real IDA constants."""
 
     binary_name = _get_default_binary()
+
+    @pytest.mark.ida_required
+    def test_multiple_nested_indirect_calls_are_ambiguous(
+        self, libobfuscated_setup
+    ):
+        """A shared carrier with two nested calls must never pick one child."""
+        import ida_hexrays
+
+        owner = SimpleNamespace(opcode=ida_hexrays.m_mov)
+        nested_first = SimpleNamespace(opcode=ida_hexrays.m_icall)
+        nested_second = SimpleNamespace(opcode=ida_hexrays.m_icall)
+
+        assert IndirectCallResolver._has_ambiguous_nested_indirect_calls(
+            (owner, nested_first, nested_second)
+        )
 
     @pytest.mark.ida_required
     def test_name(self, libobfuscated_setup):

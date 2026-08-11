@@ -384,6 +384,8 @@ ABC_XOR_CASES = [
         description="OR-based state manipulation with mask operations",
         project="example_libobfuscated_abc.json",
         must_change=True,
+        deobfuscated_not_contains=["switch (", "while ("],
+        semantic_reference="samples/src/c/abc_xor_dispatch.c",
     ),
     DeobfuscationCase(
         function="abc_mixed_dispatch",
@@ -478,6 +480,8 @@ CONSTANT_FOLDING_CASES = [
         function="constant_folding_test2",
         description="Constant folding with bitwise operations",
         project="example_libobfuscated.json",
+        deobfuscated_regexes=[r"return 0x8B8D2D6A09D84F79u?LL;"],
+        required_rules=["FoldReadonlyDataRule"],
         must_change=True,
     ),
     DeobfuscationCase(
@@ -653,6 +657,18 @@ HODUR_CASES = [
             "gotos": 1,
             "ifs": 8,
         },
+        expected_ast_stats_by_sdk={
+            # IDA 9.4 folds three redundant ctree conditionals that 9.3 kept.
+            # Keep an exact per-SDK golden; the expected code and API/string
+            # preservation checks below remain unchanged.
+            940: {
+                "statements": 36,
+                "returns": 3,
+                "whiles": 0,
+                "gotos": 1,
+                "ifs": 5,
+            },
+        },
         # The deobfuscated code should be linear (no nested while loops)
         # Note: Import names may show as sub_* if IDA doesn't resolve them
         # (resolve_api checked via acceptable_patterns instead)
@@ -768,6 +784,28 @@ OLLVM_CASES = [
 # =============================================================================
 
 DAC_MASM_CASES = [
+    DeobfuscationCase(
+        function="sub_7FF85A5CB920",
+        description=(
+            "Hodur-like state-machine fixture exported from a live IDB. "
+            "Guards the interval-dispatcher recovery that removes the nested "
+            "comparison forest while preserving the mapped-image setup and the "
+            "two-word result publication."
+        ),
+        project="hodur_flag2_s1a_config_v2_canary_constant_simplification.json",
+        obfuscated_contains=["0x37E2E8EF", "while ( 1 )"],
+        deobfuscated_contains=[
+            "0x4160200",
+            "0x4AFFC000",
+            "*a1 =",
+            "a1[1] =",
+        ],
+        deobfuscated_not_contains=["0x37E2E8EF", "while ( 1 )"],
+        must_change=True,
+        required_rules=[],
+        expected_rules=["ConstantSubtreeFoldRule"],
+        skip_if_function_absent=True,
+    ),
     DeobfuscationCase(
         function="sub_1815C8C30",
         description="dac.dll rand()%3 helper (issue #48, MASM-extracted). Full "
@@ -890,7 +928,9 @@ UNWRAP_LOOPS_CASES = [
         function="bogus_loops",
         description="Bogus single-trip loop for(i=0;!i;i=1) PROVEN single-trip (Z3) and peeled to straight-line code by SingleTripLoopPeel",
         project="bogus_loops.json",
-        obfuscated_contains=["!i"],  # native decompile keeps the opaque loop guard
+        # IDA 9.3 renders the guard as ``!i`` while 9.4 canonicalizes the same
+        # native predicate to ``i == 0``.  Require either exact predicate form.
+        obfuscated_regexes=[r"(?:!\s*i\b|i\s*==\s*0)"],
         deobfuscated_not_contains=["!i", "for", "while"],  # loop fully removed
         must_change=True,
         check_stats=False,
@@ -995,12 +1035,15 @@ RESIZE_BUFFER_CFF_CASES = [
             "return nullptr",
         ],
         deobfuscated_contains=[
-            # The helper auto-name moves when the fixture binary is rebuilt.
-            "(a2, a4, 0xA, 0x44);",
             "*v5 = a4;",
             "return (unsigned int *)(a2 + 0x10);",
         ],
         deobfuscated_regexes=[
+            # The helper auto-name moves when the fixture is rebuilt. IDA 9.4
+            # also renders named argument slots; assert the same four ordered
+            # values while accepting either presentation.
+            r"\(\s*(?:a1:\s*)?a2,\s*(?:a2:\s*)?a4,\s*"
+            r"(?:a3:\s*)?0xA,\s*(?:a4:\s*)?0x44\s*\);",
             r"\*\(_BYTE \*\)\([^)]*\) = 0;",
         ],
         acceptable_patterns=[

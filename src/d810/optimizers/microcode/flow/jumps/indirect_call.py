@@ -147,20 +147,84 @@ class IndirectCallResolver(FlowOptimizationRule):
         count = 0
         insn = blk.head
         while insn is not None:
-            if insn.opcode in (ida_hexrays.m_icall, ida_hexrays.m_call):
-                logger.info(
-                    "IndirectCallResolver: inspect call ea=%#x op=%d l.t=%d r.t=%d d.t=%d",
+            # IDA 9.4 materializes a call-result carrier as
+            # ``mov <mop_d(m_icall)>, reg`` at MMAT_CALLS.  The call is still
+            # semantically an indirect call, but it is no longer a top-level
+            # instruction in the block.  Inspect nested subinstructions while
+            # retaining the top-level carrier as the data-flow boundary.
+            call_candidates = self._call_candidates(insn)
+            if self._has_ambiguous_nested_indirect_calls(call_candidates):
+                logger.debug(
+                    "IndirectCallResolver: owner at %#x contains multiple "
+                    "nested indirect calls; abstaining",
                     insn.ea,
-                    insn.opcode,
-                    insn.l.t,
-                    insn.r.t,
-                    insn.d.t,
                 )
-            if self._is_indirect_call(insn):
-                if self._resolve_indirect_call(blk, insn):
-                    count += 1
+                # A shared carrier can only establish one nested call's
+                # evaluation boundary. Do not select one arbitrarily.
+                call_candidates = (insn,)
+
+            for call_insn in call_candidates:
+                if call_insn.opcode in (ida_hexrays.m_icall, ida_hexrays.m_call):
+                    logger.info(
+                        "IndirectCallResolver: inspect call ea=%#x op=%d l.t=%d r.t=%d d.t=%d",
+                        call_insn.ea,
+                        call_insn.opcode,
+                        call_insn.l.t,
+                        call_insn.r.t,
+                        call_insn.d.t,
+                    )
+                if self._is_indirect_call(call_insn):
+                    if self._resolve_indirect_call(
+                        blk,
+                        call_insn,
+                        dataflow_boundary=insn,
+                        nested_call=call_insn is not insn,
+                    ):
+                        count += 1
             insn = insn.next
         return count
+
+    @staticmethod
+    def _call_candidates(insn: "minsn_t") -> Tuple["minsn_t", ...]:
+        """Return direct and nested call candidates owned by *insn*.
+
+        A nested ``mop_d`` is evaluated as part of its enclosing instruction,
+        so the enclosing instruction remains the correct point at which to
+        stop block-local data-flow.  Only recursively materialized
+        subinstructions are returned; ordinary operands are never reinterpreted
+        as calls.
+        """
+
+        candidates: list["minsn_t"] = [insn]
+
+        def _collect(mop) -> None:
+            if mop.t != ida_hexrays.mop_d or mop.d is None:
+                return
+            nested = mop.d
+            candidates.append(nested)
+            _collect(nested.l)
+            _collect(nested.r)
+            _collect(nested.d)
+
+        _collect(insn.l)
+        _collect(insn.r)
+        _collect(insn.d)
+        return tuple(candidates)
+
+    @classmethod
+    def _has_ambiguous_nested_indirect_calls(
+        cls,
+        candidates: Tuple["minsn_t", ...],
+    ) -> bool:
+        """Return whether one owner contains more than one nested indirect call.
+
+        Such an owner has no unique carrier boundary for the folded evaluator,
+        so resolving either child would be arbitrary. The caller must abstain.
+        """
+        nested_count = sum(
+            cls._is_indirect_call(candidate) for candidate in candidates[1:]
+        )
+        return nested_count > 1
 
     # ------------------------------------------------------------------
     # Detection
@@ -188,7 +252,14 @@ class IndirectCallResolver(FlowOptimizationRule):
     # ------------------------------------------------------------------
     # Orchestrator
     # ------------------------------------------------------------------
-    def _resolve_indirect_call(self, blk: "mblock_t", insn: "minsn_t") -> bool:
+    def _resolve_indirect_call(
+        self,
+        blk: "mblock_t",
+        insn: "minsn_t",
+        *,
+        dataflow_boundary: "minsn_t | None" = None,
+        nested_call: bool = False,
+    ) -> bool:
         """Orchestrate table finding, target computation, and replacement.
 
         Returns True if the call was successfully resolved and replaced.
@@ -202,7 +273,11 @@ class IndirectCallResolver(FlowOptimizationRule):
         # Fast path: many optimized samples fold table lookup/sub-offset into a
         # single callee expression (e.g., table_const[1] - 0x200000). Resolve
         # that expression directly before table/index tracing.
-        direct_target = self._resolve_folded_callee_target(blk, insn)
+        direct_target = self._resolve_folded_callee_target(
+            blk,
+            insn,
+            dataflow_boundary=dataflow_boundary,
+        )
         if direct_target is not None:
             logger.debug(
                 "IndirectCallResolver: folded callee resolved %#x at %#x",
@@ -224,6 +299,18 @@ class IndirectCallResolver(FlowOptimizationRule):
                 self._annotate_call(insn, direct_target)
                 return False
             return self._replace_call(insn, direct_target, blk)
+
+        # A nested call is evaluated as part of its enclosing instruction.  The
+        # legacy table and XOR fallbacks scan a whole block, and therefore can
+        # consume definitions after that enclosing instruction.  Do not use
+        # those unbounded fallbacks for the IDA 9.4 carrier form: exact folded
+        # evaluation above must prove the target, otherwise abstain.
+        if nested_call:
+            logger.debug(
+                "IndirectCallResolver: nested call at %#x has no exact folded target",
+                insn.ea,
+            )
+            return False
 
         # Step 1: Find the call table
         table_ea = self._find_call_table(blk, insn)
@@ -315,6 +402,8 @@ class IndirectCallResolver(FlowOptimizationRule):
         self,
         blk: "mblock_t",
         insn: "minsn_t",
+        *,
+        dataflow_boundary: "minsn_t | None" = None,
     ) -> Optional[int]:
         """Resolve folded call-target expressions to a concrete EA.
 
@@ -324,8 +413,9 @@ class IndirectCallResolver(FlowOptimizationRule):
         """
         reg_values: Dict[int, int] = {}
         scan = blk.head
-        while scan is not None and not (
-            scan.ea == insn.ea and scan.opcode == insn.opcode
+        boundary = dataflow_boundary if dataflow_boundary is not None else insn
+        while scan is not None and not self._same_instruction_position(
+            scan, boundary
         ):
             self._update_reg_value_map(scan, reg_values)
             scan = scan.next
@@ -340,6 +430,18 @@ class IndirectCallResolver(FlowOptimizationRule):
             if target is not None and is_valid_database_ea(target):
                 return target
         return None
+
+    @staticmethod
+    def _same_instruction_position(left: "minsn_t", right: "minsn_t") -> bool:
+        """Compare a native instruction position without wrapper identity.
+
+        SWIG can materialize a fresh Python wrapper for the same ``minsn_t``.
+        EA and opcode are the stable local position used by the existing
+        forward scans, and are sufficient here because the boundary is the
+        enclosing top-level instruction.
+        """
+
+        return left.ea == right.ea and left.opcode == right.opcode
 
     @staticmethod
     def _update_reg_value_map(insn: "minsn_t", reg_values: Dict[int, int]) -> None:
@@ -371,7 +473,10 @@ class IndirectCallResolver(FlowOptimizationRule):
             return read_global_value(mop.g, 8)
         if t == ida_hexrays.mop_a and mop.a is not None:
             if mop.a.t == ida_hexrays.mop_v:
-                return read_global_value(mop.a.g, 8)
+                # ``mop_a(mop_v)`` is the address of the global, not a load
+                # from it.  Keeping it as an EA lets a surrounding ``m_ldx``
+                # perform the one intended table-entry read.
+                return int(mop.a.g)
             return IndirectCallResolver._eval_operand_to_ea(mop.a, reg_values)
         if t == ida_hexrays.mop_d and mop.d is not None:
             return IndirectCallResolver._eval_insn_to_ea(mop.d, reg_values)
@@ -402,9 +507,18 @@ class IndirectCallResolver(FlowOptimizationRule):
         if op == ida_hexrays.m_ldx:
             base = IndirectCallResolver._eval_operand_to_ea(insn.l, reg_values)
             offs = IndirectCallResolver._eval_operand_to_ea(insn.r, reg_values)
-            if base is None or offs is None:
+            if base is not None and offs is not None:
+                entry_addr = (base + offs) & 0xFFFFFFFFFFFFFFFF
+            elif offs is not None:
+                # IDA 9.4 represents x64 ``ldx`` as ``ldx segment,
+                # address-expression``.  The segment register has no
+                # evaluable linear value; the right operand is already the
+                # complete effective address.  A missing address still
+                # abstains rather than treating an arbitrary register as a
+                # segment base.
+                entry_addr = offs
+            else:
                 return None
-            entry_addr = (base + offs) & 0xFFFFFFFFFFFFFFFF
             return read_global_value(entry_addr, 8)
         return None
 
