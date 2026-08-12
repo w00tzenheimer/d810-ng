@@ -31,6 +31,7 @@ from d810.core.observability_events import (
     DagObserved,
     DiagnosticSessionObserved,
     FrontendNormalizationPlanIntentObserved,
+    InputIdentityResolutionObserved,
     ModificationsObserved,
     MutationPlanObserved,
     MutationReceiptObserved,
@@ -148,6 +149,35 @@ def test_install_is_idempotent():
     # A second install should not crash.
     install_diag_event_handlers()
     assert is_installed()
+
+
+def test_input_identity_resolution_is_durable_in_the_session_timeline(fake_conn):
+    emit(
+        InputIdentityResolutionObserved(
+            session_id="identity-session",
+            func_ea=0x401000,
+            status="recovered_local_only",
+            provenance="recovered_from_d810_attestation",
+            mismatch_field=None,
+            external_evidence_allowed=False,
+            database_uuid="attested-db",
+        )
+    )
+
+    row = fake_conn.execute(
+        "SELECT event_kind,payload_json FROM lifecycle_events "
+        "WHERE session_id='identity-session'"
+    ).fetchone()
+
+    assert row is not None
+    assert row[0] == "input_identity_resolution"
+    assert json.loads(row[1]) == {
+        "database_uuid": "attested-db",
+        "external_evidence_allowed": False,
+        "mismatch_field": None,
+        "provenance": "recovered_from_d810_attestation",
+        "status": "recovered_local_only",
+    }
 
 
 def test_uninstall_clears_install_flag():

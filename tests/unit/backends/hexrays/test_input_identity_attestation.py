@@ -109,6 +109,9 @@ def test_loader_sha_capture_writes_authoritative_store_and_sqlite_mirror(
     assert store.attestation is not None
     assert store.attestation.input_sha256 == "11" * 32
     assert store.attestation.function_fingerprints[0][0] == 0x1000
+    assert (
+        resolved.identity_resolution.database_uuid == store.attestation.database_uuid
+    )
     assert SqliteInputIdentityAttestationMirror(mirror_path).load(
         store.attestation.database_uuid
     ) == store.attestation
@@ -293,4 +296,3 @@ def test_present_input_with_different_hash_fails_closed(
         recovered.identity_resolution.status
         is InputIdentityRecoveryStatus.INPUT_FILE_HASH_MISMATCH
     )
-

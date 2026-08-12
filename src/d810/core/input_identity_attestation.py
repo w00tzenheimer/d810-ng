@@ -282,6 +282,7 @@ class InputIdentityResolution:
     provenance: str | None
     external_evidence_allowed: bool
     mismatch_field: str | None = None
+    database_uuid: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.status, InputIdentityRecoveryStatus):
@@ -294,6 +295,10 @@ class InputIdentityResolution:
             )
         if self.external_evidence_allowed and self.input_identity is None:
             raise ValueError("external evidence requires an input identity")
+        if self.database_uuid is not None:
+            if not isinstance(self.database_uuid, str) or not self.database_uuid.strip():
+                raise ValueError("database_uuid must be a non-empty string when set")
+            object.__setattr__(self, "database_uuid", self.database_uuid.strip())
 
     @property
     def reason(self) -> str:

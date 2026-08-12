@@ -18,6 +18,10 @@ from d810.core.observability_events import (
     SemanticFragmentFailureObserved,
     SemanticFragmentRouteOracleComparedObserved,
 )
+from d810.core.input_identity_attestation import (
+    InputIdentityRecoveryStatus,
+    InputIdentityResolution,
+)
 from d810.core.config import ProjectConfiguration
 from d810.core.config_v2_defaults import select_config_v2_default_project
 from d810.core.semantic_route_oracle import RouteOracleComparison
@@ -131,6 +135,54 @@ def test_resolver_attachment_reads_manager_owned_reference_oracle_port() -> None
     )
 
     assert state.semantic_route_reference_oracle_provider is provider
+
+
+def test_resolver_attachment_gates_external_oracle_for_local_only_recovery() -> None:
+    native_key = make_native_key(input_identity="sha256:" + ("a" * 64))
+    session = DecompilationSessionContext(
+        function_ea=0x40A560,
+        database_identity="test",
+        top_level_epoch=1,
+        native_key=native_key,
+        input_identity_resolution=InputIdentityResolution(
+            status=InputIdentityRecoveryStatus.RECOVERED_LOCAL_ONLY,
+            input_identity=native_key.input_identity,
+            provenance="recovered_from_d810_attestation",
+            external_evidence_allowed=False,
+            database_uuid="attested-db",
+        ),
+    )
+
+    class _ReferenceOracleProvider:
+        @staticmethod
+        def reference_oracle_scope_for(*_args):
+            return object()
+
+        @staticmethod
+        def reference_oracle_for(*_args):
+            return object()
+
+    state = _initialize_resolver_attachment(
+        session,
+        semantic_route_reference_oracle_provider=_ReferenceOracleProvider(),
+    )
+
+    assert state.semantic_route_reference_oracle_provider is not None
+    assert (
+        state.semantic_route_reference_oracle_provider.reference_oracle_scope_for(
+            session.function_ea,
+            native_key,
+        )
+        is None
+    )
+    assert (
+        state.semantic_route_reference_oracle_provider.reference_oracle_for(
+            session.function_ea,
+            native_key,
+            (0x40A570,),
+        )
+        is None
+    )
 
 
 def test_manager_loads_only_configured_relative_oracle_manifests(tmp_path) -> None:

@@ -16,6 +16,9 @@ from d810.core.decompilation_session import (
     DecompilationSessionEvent,
 )
 from d810.core.logging import getLogger
+from d810.core.input_identity_attestation import (
+    InputIdentityResolution,
+)
 from d810.core.native_preanalysis_key import (
     NativePreanalysisKey,
     NativePreanalysisKeyMismatch,
@@ -25,12 +28,50 @@ from d810.core.observability import emit as emit_diagnostic
 from d810.core.observability_events import (
     DiagnosticSessionObserved,
     EvidenceGenerationObserved,
+    InputIdentityResolutionObserved,
 )
+from d810.capabilities.semantic_routes import SemanticRouteReferenceOracleCapability
 from d810.manager.frontend_normalization import (
     SessionFrontendNormalizationPlanAuthority,
 )
 
 logger = getLogger("d810.decompilation_lifecycle")
+
+
+@dataclass(frozen=True, slots=True)
+class AttestedExternalOracleGate:
+    """Allow SHA-bound route authority only after a verified identity verdict."""
+
+    delegate: SemanticRouteReferenceOracleCapability | None
+    identity_resolution: InputIdentityResolution
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.identity_resolution, InputIdentityResolution):
+            raise TypeError("external oracle gate requires an identity resolution")
+
+    def reference_oracle_scope_for(self, function_ea, native_key):
+        if not self.identity_resolution.external_evidence_allowed:
+            return None
+        delegate = self.delegate
+        return (
+            None
+            if delegate is None
+            else delegate.reference_oracle_scope_for(function_ea, native_key)
+        )
+
+    def reference_oracle_for(self, function_ea, native_key, rewrite_anchor_eas):
+        if not self.identity_resolution.external_evidence_allowed:
+            return None
+        delegate = self.delegate
+        return (
+            None
+            if delegate is None
+            else delegate.reference_oracle_for(
+                function_ea,
+                native_key,
+                rewrite_anchor_eas,
+            )
+        )
 
 
 @dataclass(slots=True)
@@ -45,6 +86,7 @@ class DecompilationSessionContext:
     database_identity: str
     top_level_epoch: int
     native_key: NativePreanalysisKey
+    input_identity_resolution: InputIdentityResolution | None = None
     native_preanalysis: NativePreanalysisSessionState = field(
         default_factory=NativePreanalysisSessionState
     )
@@ -62,6 +104,14 @@ class DecompilationSessionContext:
     )
 
     def __post_init__(self) -> None:
+        resolution = self.input_identity_resolution
+        if resolution is not None and not isinstance(resolution, InputIdentityResolution):
+            raise TypeError("session input identity resolution is invalid")
+        if (
+            resolution is not None
+            and resolution.input_identity != self.native_key.input_identity
+        ):
+            raise ValueError("session native key disagrees with input identity resolution")
         self.frontend_normalization_plan_authority = (
             SessionFrontendNormalizationPlanAuthority(
                 function_ea=int(self.function_ea),
@@ -121,7 +171,7 @@ class DecompilationLifecycleCoordinator:
     preanalysis_runtime: typing.Any | None
     analysis_runtime: typing.Any | None
     execution_scope_service: typing.Any | None
-    native_preanalysis_key_provider: typing.Callable[[int], NativePreanalysisKey]
+    native_preanalysis_key_provider: typing.Callable[[int], typing.Any]
     event_emitter: typing.Any | None = None
     current_mba_identity_index_builder: typing.Callable[..., object | None] | None = (
         None
@@ -160,6 +210,43 @@ class DecompilationLifecycleCoordinator:
                 status=status,
             )
         )
+        resolution = session.input_identity_resolution
+        if resolution is not None:
+            emit_diagnostic(
+                InputIdentityResolutionObserved(
+                    session_id=session.identity_key,
+                    func_ea=int(session.function_ea),
+                    status=resolution.status.value,
+                    provenance=resolution.provenance,
+                    mismatch_field=resolution.mismatch_field,
+                    external_evidence_allowed=resolution.external_evidence_allowed,
+                    database_uuid=resolution.database_uuid,
+                )
+            )
+
+    def _native_key_and_identity_resolution(
+        self,
+        function_ea: int,
+    ) -> tuple[NativePreanalysisKey, InputIdentityResolution | None]:
+        supplied = self.native_preanalysis_key_provider(int(function_ea))
+        if isinstance(supplied, NativePreanalysisKey):
+            return supplied, None
+        native_key = getattr(supplied, "native_key", None)
+        resolution = getattr(supplied, "identity_resolution", None)
+        if not isinstance(resolution, InputIdentityResolution):
+            raise TypeError("native preanalysis identity provider returned no resolution")
+        if native_key is None:
+            logger.warning(
+                "D810 native mutation abstained for func=0x%x: input identity %s",
+                int(function_ea),
+                resolution.reason,
+            )
+            raise ValueError("input identity unavailable: " + resolution.reason)
+        if not isinstance(native_key, NativePreanalysisKey):
+            raise TypeError("native preanalysis identity provider returned an invalid key")
+        if resolution.input_identity != native_key.input_identity:
+            raise ValueError("native key disagrees with input identity resolution")
+        return native_key, resolution
 
     def reobserve_active_diagnostic_session(self, function_ea: int) -> None:
         """Republish an active owner after the diagnostic sink is opened."""
@@ -353,11 +440,15 @@ class DecompilationLifecycleCoordinator:
         identity = (function_ea, database_identity)
         epoch = self._epochs_by_identity.get(identity, 0) + 1
         self._epochs_by_identity[identity] = epoch
+        native_key, identity_resolution = self._native_key_and_identity_resolution(
+            function_ea
+        )
         session = DecompilationSessionContext(
             function_ea=function_ea,
             database_identity=database_identity,
             top_level_epoch=epoch,
-            native_key=self.native_preanalysis_key_provider(function_ea),
+            native_key=native_key,
+            input_identity_resolution=identity_resolution,
         )
         session.native_preanalysis.event_observer = (
             lambda transition, owned_session=session: self._observe_evidence_transition(

@@ -49,6 +49,34 @@ class DiagnosticSessionObserved:
 
 
 @dataclass(frozen=True)
+class InputIdentityResolutionObserved:
+    """Durable identity provenance for one D810 decompilation session."""
+
+    session_id: str
+    func_ea: int
+    status: str
+    provenance: str | None
+    mismatch_field: str | None
+    external_evidence_allowed: bool
+    database_uuid: str | None
+    timestamp: float = 0.0
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.session_id, str) or not self.session_id.strip():
+            raise ValueError("session_id must be non-empty")
+        if int(self.func_ea) < 0:
+            raise ValueError("func_ea must be non-negative")
+        if not isinstance(self.status, str) or not self.status.strip():
+            raise ValueError("status must be non-empty")
+        for field_name in ("provenance", "mismatch_field", "database_uuid"):
+            value = getattr(self, field_name)
+            if value is not None and (not isinstance(value, str) or not value.strip()):
+                raise ValueError(f"{field_name} must be non-empty when set")
+        if not isinstance(self.external_evidence_allowed, bool):
+            raise TypeError("external_evidence_allowed must be a bool")
+
+
+@dataclass(frozen=True)
 class LifecycleEventObserved:
     """Portable event-native diagnostic record with optional snapshot context."""
 
@@ -1154,6 +1182,7 @@ __all__ = [
     # Hex-Rays
     "CaptureMbaSnapshotRequested",
     "DiagnosticSessionObserved",
+    "InputIdentityResolutionObserved",
     "FrontendNormalizationPlanIntentObserved",
     "PassContractEvidencePublished",
     "FragmentRootPublicationGroupObserved",

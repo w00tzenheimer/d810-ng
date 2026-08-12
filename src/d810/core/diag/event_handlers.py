@@ -103,6 +103,7 @@ from d810.core.observability_events import (
     ModificationsObserved,
     LifecycleEventObserved,
     IdentityDecisionObserved,
+    InputIdentityResolutionObserved,
     MutationPlanObserved,
     MutationReceiptObserved,
     OptblockCallbackExceptionObserved,
@@ -259,6 +260,33 @@ def _handle_diagnostic_session(ev: DiagnosticSessionObserved) -> None:
         if transitioned and ev.status in {"finished", "failed"}:
             with conn:
                 materialize_closed_deobfuscation_case(conn, ev.session_id)
+
+
+def _handle_input_identity_resolution(ev: InputIdentityResolutionObserved) -> None:
+    try:
+        conn = get_diag_conn(int(ev.func_ea))
+    except Exception:
+        return
+    if conn is None:
+        return
+    persist_lifecycle_event(
+        conn,
+        LifecycleEventObserved(
+            session_id=ev.session_id,
+            func_ea=int(ev.func_ea),
+            event_kind="input_identity_resolution",
+            summary=f"input identity {ev.status}",
+            payload={
+                "status": ev.status,
+                "provenance": ev.provenance,
+                "mismatch_field": ev.mismatch_field,
+                "external_evidence_allowed": ev.external_evidence_allowed,
+                "database_uuid": ev.database_uuid,
+            },
+            timestamp=ev.timestamp,
+        ),
+        snapshot_id=None,
+    )
 
 
 def _handle_lifecycle_event(ev: LifecycleEventObserved) -> None:
@@ -1168,6 +1196,7 @@ def _provenance_extra_json(
 # subscriber registration is symmetric.
 _HANDLERS: tuple[tuple[type, object], ...] = (
     (DiagnosticSessionObserved, _handle_diagnostic_session),
+    (InputIdentityResolutionObserved, _handle_input_identity_resolution),
     (LifecycleEventObserved, _handle_lifecycle_event),
     (EvidenceGenerationObserved, _handle_evidence_generation),
     (IdentityDecisionObserved, _handle_identity_decision),

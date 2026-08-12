@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from d810.analyses.control_flow.native_preanalysis_session import (
@@ -18,12 +20,18 @@ from d810.analyses.control_flow.materialized_indirect_transfer import (
 )
 from d810.analyses.control_flow.native_semantic_closure import NativeBlock, NativeCfg
 from d810.core.native_preanalysis_key import NativePreanalysisKeyMismatch
+from d810.core.input_identity_attestation import (
+    InputIdentityRecoveryStatus,
+    InputIdentityResolution,
+)
 from d810.core.provider_phase import ProviderPhaseSnapshot
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.manager.decompilation_lifecycle import (
+    AttestedExternalOracleGate,
     DecompilationLifecycleCoordinator,
     FlowgraphReadyPayload,
 )
+import d810.manager.decompilation_lifecycle as decompilation_lifecycle
 from tests.native_preanalysis import make_native_key
 
 NATIVE_KEY = make_native_key()
@@ -973,3 +981,123 @@ def test_analysis_without_hints_does_not_apply_or_record_execution_scope_outcome
     coordinator.analyze_current_function(function_ea=0x401000, source="ctree")
 
     assert calls == [("runtime.analyze", 0x401000)]
+
+
+def _local_only_resolution() -> InputIdentityResolution:
+    return InputIdentityResolution(
+        status=InputIdentityRecoveryStatus.RECOVERED_LOCAL_ONLY,
+        input_identity="sha256:" + ("a" * 64),
+        provenance="recovered_from_d810_attestation",
+        external_evidence_allowed=False,
+        database_uuid="attested-db",
+    )
+
+
+def test_attested_local_identity_blocks_external_oracle_calls() -> None:
+    calls: list[str] = []
+
+    class _Oracle:
+        def reference_oracle_scope_for(self, *_args):
+            calls.append("scope")
+            return object()
+
+        def reference_oracle_for(self, *_args):
+            calls.append("anchors")
+            return object()
+
+    gate = AttestedExternalOracleGate(
+        delegate=_Oracle(),
+        identity_resolution=_local_only_resolution(),
+    )
+
+    assert gate.reference_oracle_scope_for(0x401000, NATIVE_KEY) is None
+    assert gate.reference_oracle_for(0x401000, NATIVE_KEY, (0x401020,)) is None
+    assert calls == []
+
+
+def test_file_verified_identity_delegates_external_oracle_calls() -> None:
+    calls: list[str] = []
+
+    class _Oracle:
+        def reference_oracle_scope_for(self, *_args):
+            calls.append("scope")
+            return "scope-result"
+
+        def reference_oracle_for(self, *_args):
+            calls.append("anchors")
+            return "anchor-result"
+
+    gate = AttestedExternalOracleGate(
+        delegate=_Oracle(),
+        identity_resolution=InputIdentityResolution(
+            status=InputIdentityRecoveryStatus.RECOVERED_FILE_HASH_VERIFIED,
+            input_identity="sha256:" + ("b" * 64),
+            provenance="recovered_from_d810_attestation",
+            external_evidence_allowed=True,
+            database_uuid="attested-db",
+        ),
+    )
+
+    assert gate.reference_oracle_scope_for(0x401000, NATIVE_KEY) == "scope-result"
+    assert (
+        gate.reference_oracle_for(0x401000, NATIVE_KEY, (0x401020,))
+        == "anchor-result"
+    )
+    assert calls == ["scope", "anchors"]
+
+
+def test_missing_identity_logs_warning_and_abstains_before_session_creation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    warnings: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        decompilation_lifecycle,
+        "logger",
+        SimpleNamespace(warning=lambda *args: warnings.append(args)),
+    )
+    coordinator = DecompilationLifecycleCoordinator(
+        preanalysis_runtime=None,
+        analysis_runtime=None,
+        execution_scope_service=None,
+        native_preanalysis_key_provider=lambda _function_ea: SimpleNamespace(
+            native_key=None,
+            identity_resolution=InputIdentityResolution(
+                status=InputIdentityRecoveryStatus.RECOVERY_DISABLED,
+                input_identity=None,
+                provenance=None,
+                external_evidence_allowed=False,
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="input identity unavailable"):
+        coordinator.ensure_hexrays_session(
+            function_ea=0x401000,
+            database_identity="sample.i64",
+        )
+
+    assert warnings[0][0].startswith("D810 native mutation abstained")
+    assert coordinator.current_session(0x401000) is None
+
+
+def test_lifecycle_attaches_extended_identity_resolution_from_provider() -> None:
+    resolution = _local_only_resolution()
+    attested_key = make_native_key(input_identity=resolution.input_identity)
+    coordinator = DecompilationLifecycleCoordinator(
+        preanalysis_runtime=None,
+        analysis_runtime=None,
+        execution_scope_service=None,
+        native_preanalysis_key_provider=lambda _function_ea: SimpleNamespace(
+            native_key=attested_key,
+            identity_resolution=resolution,
+        ),
+    )
+
+    session, created = coordinator.ensure_hexrays_session(
+        function_ea=0x401000,
+        database_identity="sample.i64",
+    )
+
+    assert created is True
+    assert session.native_key is attested_key
+    assert session.input_identity_resolution is resolution

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import json
 from pathlib import Path
@@ -22,6 +22,7 @@ from d810.backends.hexrays.input_identity_attestation import (
     sha256_file,
 )
 from d810.core.input_identity_attestation import (
+    InputIdentityAttestation,
     InputIdentityRecoveryStatus,
     InputIdentityResolution,
     resolve_attested_input_identity,
@@ -86,9 +87,9 @@ def _refresh_attestation(
     current,
     loader_digest: str,
     ida_nalt: object,
-) -> None:
+) -> InputIdentityAttestation | None:
     if store is None:
-        return
+        return None
     try:
         previous = store.load()
     except InputIdentityAttestationMalformed as error:
@@ -104,13 +105,14 @@ def _refresh_attestation(
         store.save(attestation)
     except Exception as error:
         logger.warning("Failed to persist input identity attestation: %s", error)
-        return
+        return None
     if mirror_path is None:
-        return
+        return attestation
     try:
         SqliteInputIdentityAttestationMirror(mirror_path).save(attestation)
     except Exception as error:
         logger.warning("Failed to mirror input identity attestation: %s", error)
+    return attestation
 
 
 def resolve_native_preanalysis_identity(
@@ -150,7 +152,7 @@ def resolve_native_preanalysis_identity(
         else default_mirror_path()
     )
     if loader_digest is not None:
-        _refresh_attestation(
+        refreshed_attestation = _refresh_attestation(
             store=store,
             mirror_path=resolved_mirror_path,
             current=current,
@@ -165,7 +167,13 @@ def resolve_native_preanalysis_identity(
             input_file_exists=False,
             input_file_sha256=None,
         )
+        if refreshed_attestation is not None:
+            identity_resolution = replace(
+                identity_resolution,
+                database_uuid=refreshed_attestation.database_uuid,
+            )
     else:
+        attestation = None
         try:
             attestation = None if store is None else store.load()
         except InputIdentityAttestationMalformed:
@@ -189,6 +197,11 @@ def resolve_native_preanalysis_identity(
                     None if candidate_hash is None else candidate_hash[0]
                 ),
             )
+            if attestation is not None:
+                identity_resolution = replace(
+                    identity_resolution,
+                    database_uuid=attestation.database_uuid,
+                )
     if identity_resolution.input_identity is None:
         return NativePreanalysisIdentityResolution(None, identity_resolution)
     native_key = NativePreanalysisKey(

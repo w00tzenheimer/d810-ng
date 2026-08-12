@@ -85,6 +85,7 @@ from d810.passes.scheduler import PassScheduler
 from d810.passes.state_machine_options import StateMachineCffOptions
 from d810.passes.store import shutdown_all_writers
 from d810.manager.decompilation_lifecycle import (
+    AttestedExternalOracleGate,
     DecompilationLifecycleCoordinator,
     FlowgraphReadyPayload,
 )
@@ -184,12 +185,12 @@ def _load_semantic_route_reference_oracle_registry(
 
 
 def _build_native_preanalysis_key(*, function_ea, profile_config):
-    """Hex-Rays backend port for lifecycle-owned portable identity."""
+    """Hex-Rays backend port for lifecycle-owned identity provenance."""
     from d810.backends.hexrays.native_preanalysis_key import (
-        build_native_preanalysis_key,
+        resolve_native_preanalysis_identity,
     )
 
-    return build_native_preanalysis_key(
+    return resolve_native_preanalysis_identity(
         function_ea,
         profile_config=profile_config,
     )
@@ -209,8 +210,14 @@ def _initialize_resolver_attachment(
     state.frontend_normalization_plan_provider = (
         session.frontend_normalization_plan_authority
     )
+    resolution = session.input_identity_resolution
     state.semantic_route_reference_oracle_provider = (
         semantic_route_reference_oracle_provider
+        if resolution is None or resolution.external_evidence_allowed
+        else AttestedExternalOracleGate(
+            delegate=semantic_route_reference_oracle_provider,
+            identity_resolution=resolution,
+        )
     )
     return state
 
