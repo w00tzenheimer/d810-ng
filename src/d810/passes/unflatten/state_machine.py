@@ -295,6 +295,46 @@ def _effective_state_identity(
     return (recovered_stkoff, recovered_reg)
 
 
+def _adopt_range_evidence_stack_identity(
+    recovery: DispatcherRecovery,
+    range_evidence: object | None,
+) -> DispatcherRecovery:
+    """Adopt a live condition-chain DAG's proven stack selector when safe.
+
+    Equality-only recovery can select a secondary flag register. A non-empty
+    live decision DAG that independently identifies a stack selector is stronger
+    evidence; an absent or empty probe leaves true register dispatchers alone.
+    """
+    if recovery.state_var_stkoff is not None:
+        return recovery
+    dispatch_map = recovery.dispatch_map
+    if dispatch_map is None:
+        return recovery
+    stack_offset = getattr(range_evidence, "state_var_stkoff", None)
+    decision_dag = getattr(range_evidence, "decision_dag", None)
+    if not isinstance(stack_offset, int) or isinstance(stack_offset, bool):
+        return recovery
+    if not bool(getattr(decision_dag, "nodes", None)):
+        return recovery
+    initial_state = (
+        dispatch_map.initial_state
+        if dispatch_map.initial_state is not None
+        else getattr(range_evidence, "initial_state", None)
+    )
+    updated_map = replace(
+        dispatch_map,
+        state_var_stkoff=int(stack_offset),
+        state_var_reg=None,
+        initial_state=(int(initial_state) if initial_state is not None else None),
+    )
+    return replace(
+        recovery,
+        state_var_stkoff=int(stack_offset),
+        state_var_reg=None,
+        dispatch_map=updated_map,
+    )
+
+
 def _publish_observation_evidence(ctx: FunctionPipelineContext, observations) -> None:
     put_observation_evidence = getattr(ctx.facts, "put_observation_evidence", None)
     if not callable(put_observation_evidence):
@@ -595,6 +635,10 @@ class RecoverDispatcher(PipelinePass):
                 ),
             )
             analysis_outputs = {}
+        recovery = _adopt_range_evidence_stack_identity(
+            recovery,
+            _analysis(context, "range_evidence"),
+        )
         recovery = _materialized_dispatcher_recovery(context, recovery)
         _publish(context, self.name, recovery)
         analysis_outputs[self.name] = recovery

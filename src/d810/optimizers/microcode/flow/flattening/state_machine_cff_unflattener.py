@@ -2440,6 +2440,30 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     getattr(prelim, "state_var_stkoff", None),
                     state_var_reg=getattr(prelim, "state_var_reg", None),
                 )
+                # An equality-only scan may choose a secondary flag register
+                # while the dispatcher itself begins with a direct stack range
+                # comparison. Probe the extractor without that register only
+                # for this disagreement; an empty probe preserves the genuine
+                # register-resident path.
+                if (
+                    getattr(prelim, "state_var_stkoff", None) is None
+                    and getattr(prelim, "state_var_reg", None) is not None
+                ):
+                    stack_probe = analyze_condition_chain_dispatcher(
+                        mba,
+                        int(prelim.dispatcher_block_serial),
+                    )
+                    if (
+                        getattr(stack_probe, "state_var_stkoff", None) is not None
+                        and bool(
+                            getattr(
+                                getattr(stack_probe, "decision_dag", None),
+                                "nodes",
+                                None,
+                            )
+                        )
+                    ):
+                        range_evidence = stack_probe
                 if _capture_diagnostics_enabled():
                     self._log_lisa_discovery_diff(
                         source.flow_graph, prelim, range_evidence

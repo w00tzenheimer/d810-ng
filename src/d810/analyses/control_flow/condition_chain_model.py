@@ -216,6 +216,12 @@ class ConditionChainAnalysisResult:
     # it; verified to agree with the legacy interval/exact/range logic on every
     # sub_7FFD state (0 divergence), so this is golden-neutral consolidation.
     decision_dag: Optional[DecisionDag] = None
+    # Identity independently recovered by the live condition-chain extractor.
+    # This can disagree with equality-only portable recovery when a secondary
+    # flag comparison is mistaken for the dispatch selector.
+    state_var_stkoff: int | None = None
+    state_var_lvar_idx: int | None = None
+    state_var_reg: int | None = None
 
 
 def resolve_target_via_condition_chain(

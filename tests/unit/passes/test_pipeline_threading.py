@@ -44,9 +44,12 @@ from d810.passes.unflatten.state_machine import (
     PlanSemanticRegions,
     RecoverDispatcher,
     RecoverStateTransitions,
+    _adopt_range_evidence_stack_identity,
     _effective_state_identity,
 )
 from d810.analyses.control_flow.dispatcher_recovery import DispatcherRecovery
+from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap
+from d810.capabilities.dispatcher import RouterKind
 from d810.passes.unflatten import state_machine as state_machine_module
 from tests.native_preanalysis import make_native_key
 from tests.typed_patch_authority import block_refs_by_serial
@@ -79,6 +82,39 @@ def test_nonmaterialized_profile_keeps_recovered_stack_identity():
         materialized_computed_goto_profile=False,
         materialized_state_var_reg=20,
     ) == (112, None)
+
+
+def test_range_evidence_replaces_spurious_register_selector_with_proven_stack_state():
+    """A live range-DAG may prove the stack selector an equality scan missed."""
+    dispatch_map = StateDispatcherMap(
+        rows=(),
+        dispatcher_entry_block=3,
+        dispatcher_blocks=frozenset({3}),
+        state_var_stkoff=None,
+        state_var_lvar_idx=None,
+        router_kind=RouterKind.CONDITION_CHAIN,
+        state_var_reg=1184,
+    )
+    recovery = DispatcherRecovery(
+        dispatcher_block_serial=3,
+        state_var_stkoff=None,
+        state_var_reg=1184,
+        dispatch_map=dispatch_map,
+    )
+    range_evidence = SimpleNamespace(
+        state_var_stkoff=52,
+        initial_state=0x47EAC929,
+        decision_dag=SimpleNamespace(nodes={3: object()}),
+    )
+
+    updated = _adopt_range_evidence_stack_identity(recovery, range_evidence)
+
+    assert updated.state_var_stkoff == 52
+    assert updated.state_var_reg is None
+    assert updated.dispatch_map is not None
+    assert updated.dispatch_map.state_var_stkoff == 52
+    assert updated.dispatch_map.state_var_reg is None
+    assert updated.dispatch_map.initial_state == 0x47EAC929
 
 
 def _ne(const, target):

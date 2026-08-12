@@ -2098,6 +2098,14 @@ def analyze_condition_chain_dispatcher(
             if state_var_lvar_idx is None:
                 state_var_lvar_idx = detected_lvar_idx
 
+    result.state_var_stkoff = (
+        int(state_var_stkoff) if state_var_stkoff is not None else None
+    )
+    result.state_var_lvar_idx = (
+        int(state_var_lvar_idx) if state_var_lvar_idx is not None else None
+    )
+    result.state_var_reg = int(state_var_reg) if state_var_reg is not None else None
+
     # Path B: build the decision-DAG route oracle for this dispatcher and attach
     # it so resolve_target_via_condition_chain routes through it (golden-neutral
     # consolidation; the decision-DAG walks the real condition-chain comparison tree, verified
