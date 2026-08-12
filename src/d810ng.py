@@ -99,6 +99,12 @@ class D810Plugin(
         # microcode hooks do not install until start_d810() -- so the decompiler
         # load is deferred there. This avoids force-loading hexx64 on every IDB
         # open, which is unnecessary work on the first-decompile path.
+        # Announce the running build before anything can fail: a bug report is
+        # only actionable if it names a version (ticket d81-zijs).
+        version = getattr(d810, "__version__", "unknown")
+        print(f"d810-ng {version}")
+        _register_ida_addon(version)
+
         if decompiler_for_current_arch() is None:
             print(
                 f"{self.wanted_name}: no known Hex-Rays decompiler for this "
@@ -199,5 +205,25 @@ class D810Plugin(
 
 
 # noinspection PyPep8Naming
+def _register_ida_addon(version: str) -> None:
+    """List d810-ng in IDA's own About -> Addons box (ticket d81-zijs).
+
+    ``register_addon`` is documented in the SDK as "Register an add-on. Show
+    its info in the About box", which is exactly where users look to confirm
+    what is loaded. Best-effort: failing to appear in a list is never worth
+    blocking plugin init.
+    """
+    try:
+        info = ida_kernwin.addon_info_t()
+        info.id = "com.w00tzenheimer.d810ng"
+        info.name = "d810-ng"
+        info.producer = "w00tzenheimer, mahmoudimus"
+        info.version = version
+        info.url = "https://github.com/w00tzenheimer/d810-ng"
+        ida_kernwin.register_addon(info)
+    except Exception:  # noqa: BLE001 - cosmetic registration, never fatal
+        pass
+
+
 def PLUGIN_ENTRY():
     return D810Plugin()
