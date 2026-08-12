@@ -38,6 +38,7 @@ from d810.hexrays.utils.hexrays_helpers import (
     structural_mop_hash,
 )
 from d810.core import NOT_GIVEN
+from d810.hexrays.ir.mop_snapshot import MopSnapshot
 from d810.hexrays.ir.mop_ownership import mop_mba_owner_scope
 
 logger = getLogger(__name__)
@@ -664,7 +665,12 @@ cdef class AstLeaf(AstBase):
                 f"{repr(self)}'s mop is None in create_mop for {hex(ea)}"
             )
 
-        # 2. Otherwise, we need to create a new mop
+        # 2. Cached leaves may hold an immutable snapshot rather than a live
+        # mop_t. Materialize it before crossing the Cython/SWIG boundary.
+        if isinstance(self.mop, MopSnapshot):
+            return self.mop.to_mop()
+
+        # 3. Otherwise, clone the live mop_t.
         new_mop = ida_hexrays.mop_t()
         new_mop.assign(self.mop)
         return new_mop  # duplicates the C++ object

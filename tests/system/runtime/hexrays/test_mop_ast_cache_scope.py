@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import os
+import platform
 from types import SimpleNamespace
 
 import ida_hexrays
 import pytest
 
 from d810.core.cymode import CythonMode
+from d810.hexrays.ir.mop_snapshot import MopSnapshot
 from d810.hexrays.ir import mop_utils
 
 
@@ -68,3 +71,24 @@ def test_cython_ast_cache_key_scopes_stack_operands_by_mba(
         second = _nested_operand(second)
 
     assert c_ast._mop_ast_cache_key(first) != c_ast._mop_ast_cache_key(second)
+
+
+class TestCythonAstMopSnapshot:
+    binary_name = os.environ.get(
+        "D810_TEST_BINARY",
+        "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll",
+    )
+
+    def test_leaf_materializes_register_snapshot(self, ida_database) -> None:
+        """Cython replacements must turn a cached operand back into a live mop_t."""
+        if not CythonMode().is_enabled():
+            pytest.skip("Cython speedups are disabled for this runtime")
+        c_ast = pytest.importorskip("d810.speedups.expr.c_ast")
+        leaf = c_ast.AstLeaf("register")
+        leaf.mop = MopSnapshot(t=ida_hexrays.mop_r, size=4, reg=1)
+
+        materialized = leaf.create_mop(0x401000)
+
+        assert materialized.t == ida_hexrays.mop_r
+        assert materialized.r == 1
+        assert materialized.size == 4
