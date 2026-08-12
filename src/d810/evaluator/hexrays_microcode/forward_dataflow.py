@@ -493,13 +493,13 @@ def _get_written_var_name(ins: object) -> Optional[str]:
     except ImportError:
         return None
 
-    from d810.hexrays.ir.mop_utils import get_stack_var_name
+    from d810.hexrays.ir.mop_utils import constant_propagation_var_name
 
     d = ins.d  # type: ignore[attr-defined]
     if d is None:
         return None
     if d.t in {ida_hexrays.mop_S, ida_hexrays.mop_r}:
-        return get_stack_var_name(d)
+        return constant_propagation_var_name(d)
     return None
 
 
@@ -536,16 +536,16 @@ def _extract_assignment(
     except ImportError:
         return None
 
-    from d810.hexrays.ir.mop_utils import get_stack_var_name
+    from d810.hexrays.ir.mop_utils import constant_propagation_var_name
 
     if not _is_constant_stack_assignment(ins):
         return None
     value, size = ins.l.nnn.value, ins.l.size  # type: ignore[attr-defined]
     var: Optional[str] = None
     if ins.opcode == ida_hexrays.m_mov:  # type: ignore[attr-defined]
-        var = get_stack_var_name(ins.d)  # type: ignore[attr-defined]
+        var = constant_propagation_var_name(ins.d)  # type: ignore[attr-defined]
     elif ins.d.t in {ida_hexrays.mop_S, ida_hexrays.mop_r}:  # type: ignore[attr-defined]
-        var = get_stack_var_name(ins.d)  # type: ignore[attr-defined]
+        var = constant_propagation_var_name(ins.d)  # type: ignore[attr-defined]
     return (var, (value, size)) if var else None
 
 

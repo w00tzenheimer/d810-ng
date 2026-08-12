@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import ida_hexrays
 
 from d810.ir.lattice import TOP, Const
+from d810.hexrays.ir.mop_utils import constant_propagation_var_name
 from d810.optimizers.microcode.flow.constant_prop.forward_const_prop import (
     ForwardConstantPropagationRule,
 )
@@ -34,3 +35,35 @@ def test_unmaterialized_ldx_kills_destination(monkeypatch):
 
     assert environment["dst"] is TOP
     assert not hasattr(rule, "_try_resolve_readonly_ldx")
+
+
+def test_forward_fcp_can_be_scheduled_only_after_cfg_recovery():
+    rule = ForwardConstantPropagationRule()
+    rule.configure({"maturities": ["MMAT_GLBOPT2"], "cython_enabled": False})
+
+    assert rule.maturities == [ida_hexrays.MMAT_GLBOPT2]
+    assert rule.cython_enabled is False
+
+
+def test_constprop_stack_key_ignores_ssa_version_but_register_key_does_not(
+    monkeypatch,
+):
+    """A stack location survives SSA renumbering across recovered blocks."""
+    stack_definition = SimpleNamespace(t=ida_hexrays.mop_S, valnum=0)
+    stack_use = SimpleNamespace(t=ida_hexrays.mop_S, valnum=78)
+    register_definition = SimpleNamespace(t=ida_hexrays.mop_r, valnum=0)
+    register_use = SimpleNamespace(t=ida_hexrays.mop_r, valnum=78)
+
+    def render_name(mop):
+        prefix = "%var_2E0.4" if mop.t == ida_hexrays.mop_S else "rax"
+        return f"{prefix}{{{mop.valnum}}}"
+
+    monkeypatch.setattr(
+        "d810.hexrays.ir.mop_utils.get_stack_var_name",
+        render_name,
+    )
+
+    assert constant_propagation_var_name(stack_definition) == "%var_2E0.4"
+    assert constant_propagation_var_name(stack_use) == "%var_2E0.4"
+    assert constant_propagation_var_name(register_definition) == "rax{0}"
+    assert constant_propagation_var_name(register_use) == "rax{78}"

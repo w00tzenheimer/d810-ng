@@ -132,6 +132,24 @@ def get_stack_var_name(mop: ida_hexrays.mop_t) -> str | None:
     return name
 
 
+def constant_propagation_var_name(mop: ida_hexrays.mop_t) -> str | None:
+    """Return the identity used by forward constant propagation.
+
+    Hex-Rays can keep the same physical stack slot while assigning distinct SSA
+    value numbers to its definition and later use.  Constant propagation tracks
+    storage, not SSA def-use chains, so a ``mop_S`` key deliberately omits that
+    version.  Registers retain their versioned names: collapsing those would
+    let a constant cross an unrelated register write.
+    """
+    name = get_stack_var_name(mop)
+    if name is None or mop.t != ida_hexrays.mop_S:
+        return name
+    base, separator, suffix = name.rpartition("{")
+    if separator and suffix.endswith("}"):
+        return base
+    return name
+
+
 def extract_base_and_offset(
     mop: ida_hexrays.mop_t,
 ) -> tuple[ida_hexrays.mop_t | None, int]:
@@ -477,6 +495,7 @@ def mop_to_ast(mop: ida_hexrays.mop_t) -> AstProxy | None:
 __all__ = [
     "safe_make_number",
     "get_stack_var_name",
+    "constant_propagation_var_name",
     "extract_base_and_offset",
     "mop_to_ast",
     "mop_to_ast_internal",

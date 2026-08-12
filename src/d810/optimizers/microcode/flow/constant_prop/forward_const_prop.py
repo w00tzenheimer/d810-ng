@@ -27,7 +27,7 @@ from d810.evaluator.hexrays_microcode.dynamic_state_write_backend import (
 )
 from d810.hexrays.ir.mop_utils import _VALID_MOP_SIZES
 from d810.hexrays.ir.mop_utils import extract_base_and_offset
-from d810.hexrays.ir.mop_utils import get_stack_var_name
+from d810.hexrays.ir.mop_utils import constant_propagation_var_name
 from d810.hexrays.ir.mop_utils import safe_make_number
 from d810.hexrays.mutation.cfg_verify import safe_verify
 from d810.hexrays.utils.hexrays_formatters import maturity_to_string
@@ -602,7 +602,7 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
         sccp_val = sccp_overlay.get(key)
         if sccp_val is None:
             return  # SCCP has TOP/BOTTOM for this var — nothing to add
-        name = get_stack_var_name(op)
+        name = constant_propagation_var_name(op)
         if not name:
             return
         existing = consts.get(name, BOTTOM)
@@ -760,12 +760,12 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
     ) -> bool:
         changed = False
         if op.t == ida_hexrays.mop_S:
-            name = get_stack_var_name(op)
+            name = constant_propagation_var_name(op)
             if name:
                 lv = consts.get(name, BOTTOM)
                 if not isinstance(lv, Const):
                     return False  # skip TOP and BOTTOM
-                val, size = lv.value, lv.size
+                val = lv.value
                 if op.size not in _VALID_MOP_SIZES:
                     logger.warning(
                         "Skipping constprop rewrite: invalid op.size %d for var %s",
@@ -788,13 +788,13 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
                 addr = op.d.r
                 lv_info: LatticeValue = BOTTOM
                 if addr and addr.t == ida_hexrays.mop_S:
-                    name = get_stack_var_name(addr)
+                    name = constant_propagation_var_name(addr)
                     if name:
                         lv_info = consts.get(name, BOTTOM)
                 else:
                     base, off = extract_base_and_offset(addr)
                     if base:
-                        base_name = get_stack_var_name(base)
+                        base_name = constant_propagation_var_name(base)
                         name = f"{base_name}+{off:X}" if off else base_name
                         if name:
                             lv_info = consts.get(name, BOTTOM)
@@ -845,7 +845,7 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
         if d is None:
             return None
         if d.t in {ida_hexrays.mop_S, ida_hexrays.mop_r}:
-            return get_stack_var_name(d)
+            return constant_propagation_var_name(d)
         return None
 
     # is instruction a constant store into stack?
@@ -873,9 +873,9 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
         value, size = ins.l.nnn.value, ins.l.size
         var = None
         if ins.opcode == ida_hexrays.m_mov:
-            var = get_stack_var_name(ins.d)
+            var = constant_propagation_var_name(ins.d)
         elif ins.d.t in {ida_hexrays.mop_S, ida_hexrays.mop_r}:
-            var = get_stack_var_name(ins.d)
+            var = constant_propagation_var_name(ins.d)
         return (var, (value, size)) if var else None
 
 
