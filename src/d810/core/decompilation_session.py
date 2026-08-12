@@ -8,7 +8,9 @@ unit tests and layers that must not import the live Hex-Rays adapter.
 from __future__ import annotations
 
 import enum
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
+from d810.core.execution_journal import DecompilationSessionId
 
 
 class DecompilationEvent(enum.Enum):
@@ -35,3 +37,12 @@ class DecompilationSessionEvent:
     function_ea: int
     database_identity: str
     top_level_epoch: int
+    #: Correlation identity for the execution journal (see
+    #: ``d810.core.execution_journal``). Defaulted via a factory rather than
+    #: a fixed value so every event still mints its own fresh, globally-unique
+    #: session id, and so existing keyword-argument publishers (e.g.
+    #: ``DecompilationSessionContext.event`` in ``manager/decompilation_lifecycle.py``)
+    #: stay source-compatible without passing this field explicitly.
+    session_id: DecompilationSessionId = field(
+        default_factory=DecompilationSessionId.new
+    )
