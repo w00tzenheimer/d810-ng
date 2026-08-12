@@ -28,6 +28,45 @@ PYTHONPATH=src lint-imports --config .importlinter
 `.importlinter`. Running it from the root checkout does not validate a separate
 `.worktrees/<name>` checkout.
 
+## Running Tests
+
+Unit tests run locally. IDA-dependent tests (`tests/system/**`) run in the IDA 9.4
+Docker runtime via `tools/scripts/run_system_tests_docker.sh` — note
+`tools/scripts/`, not the repo root.
+
+```bash
+# always from the MAIN repo root, never from inside a worktree
+./tools/scripts/run_system_tests_docker.sh test   -w <worktree> -o out.txt -- tests/unit/... -q
+./tools/scripts/run_system_tests_docker.sh system -w <worktree> -l -o out.txt -- -k <expr>
+./tools/scripts/run_system_tests_docker.sh exec   -w <worktree> -- bash -c '$PYTHON -c "..."'
+```
+
+`system` runs `pytest tests/system -v`; `test` runs `pytest -v` so you pass your
+own path. `-w REL` mounts `REPO_ROOT/.worktrees/REL` as `/work`. `-o FILE` writes
+stdout+stderr to `<worktree>/.tmp/FILE` and takes a bare filename, not a path.
+`-l` mounts `.tmp/logs` at `/root/.idapro/logs`. The image is
+`idapro-9.4-speedups:latest` via the repo `.env`; the runner prints the override.
+
+Four things that reliably waste time:
+
+- **Invoke from the main repo root.** `D810_REPO_ROOT` defaults to
+  `git rev-parse --show-toplevel` from the current directory, and inside a
+  worktree that resolves to the worktree itself, breaking `-w`.
+- **Locally, prefix worktree commands with `PYTHONPATH=src`.** Otherwise
+  `import d810` resolves to the root checkout's `src/d810` and your worktree
+  edits are silently not under test. This applies to `pytest` as much as to
+  `lint-imports`.
+- **The runtime has unicorn but not capstone, keystone, or z3.** capstone is not
+  a declared dependency anywhere; unicorn is, as the `emulation` extra. A test
+  guarded by `pytest.importorskip("capstone")` disappears in CI while still
+  passing on a developer host, so do not let one carry a correctness guarantee
+  on its own.
+- **Worktrees share the root's git hooks but not its untracked files.** The
+  pre-commit `ida-plugin.json` check shells out to `tools/sync_plugin_version.py`;
+  when that file exists only in the root checkout it aborts by absence and blocks
+  the commit with a misleading "out of sync" message. Confirm the other gates
+  passed before reaching for `--no-verify`.
+
 ## Unflattening Safety Lessons
 
 - Never report a microcode block serial without an accompanying EA anchor
