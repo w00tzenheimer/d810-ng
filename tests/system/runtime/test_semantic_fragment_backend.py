@@ -3252,8 +3252,16 @@ def test_generated_setcc_preflight_rejects_wrong_physical_fallthrough_before_wri
     assert source.tail is branch
 
 
-def test_generated_graph_free_observer_accepts_published_setcc_table_route(
+@pytest.mark.parametrize(
+    "closure_block_ids",
+    (
+        ("native@0x40A77E", "native@0x40ABC6"),
+        ("missing-reference-closure",),
+    ),
+)
+def test_generated_graph_free_observer_requires_typed_imported_closure(
     monkeypatch,
+    closure_block_ids,
 ) -> None:
     plan = build_rhad_generated_reference_plan(
         native_key=make_native_key(
@@ -3271,10 +3279,7 @@ def test_generated_graph_free_observer_accepts_published_setcc_table_route(
         selected,
         reference_route_authority=replace(
             authority,
-            imported_closure_block_ids=(
-                "native@0x40A77E",
-                "native@0x40ABC6",
-            ),
+            imported_closure_block_ids=closure_block_ids,
         ),
     )
     source = _Block(0, start=0x40A766, block_type=ida_hexrays.BLT_NONE)
@@ -3341,6 +3346,18 @@ def test_generated_graph_free_observer_accepts_published_setcc_table_route(
             {},
         ),
     )
+
+    if closure_block_ids == ("missing-reference-closure",):
+        with pytest.raises(
+            sfb.SemanticFragmentBackendRejected,
+            match="lacks typed imported closure",
+        ):
+            sfb._observe_generated_graph_free_fragment(
+                SimpleNamespace(),
+                plan_view,
+                state,
+            )
+        return
 
     observed = sfb._observe_generated_graph_free_fragment(
         SimpleNamespace(),
