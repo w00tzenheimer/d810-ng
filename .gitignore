@@ -1824,3 +1824,9 @@ tools/equivalence/harness_x86.dSYM/
 /graphify-out/manifest.json
 
 .superpowers/
+
+# Local-only working state. Tracked before this rule and riding along on every
+# push; untracked in the same commit that added this entry. Previously ignored
+# ONLY by a personal global gitignore, so a fresh clone elsewhere saw all 1239
+# as untracked and re-addable.
+.tickets/

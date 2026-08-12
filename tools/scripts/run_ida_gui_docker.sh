@@ -97,11 +97,8 @@ Automation artifacts:
 Safety:
   The GUI image must carry org.d810.gui-runtime=x11 (IDA 9.4) or
   x11-dev-emulation-z3-v1 (the compatible IDA 9.3 runtime).
-  Build the default image with:
-    docker build -f docker/Dockerfile.test-runtime \
-      --build-arg IDA_IMAGE=idapro-9.4:x11 \
-      --build-arg D810_GUI_RUNTIME_LABEL=x11 \
-      -t idapro-9.4-speedups:x11 .
+  This script does not build images. It uses the prebuilt default
+  idapro-9.4-speedups:x11; override with D810_GUI_DOCKER_IMAGE.
   A /samples/bins/*.i64 argument is copied to the selected checkout's
   .tmp/ida-gui directory. IDA opens the /work copy and cannot modify the source.
   The canonical witness is /samples/bins/libobfuscated.dll.2026-06-03.i64.
