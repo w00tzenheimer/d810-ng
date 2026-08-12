@@ -143,7 +143,16 @@ def _fully_loaded(start_ea: int, end_ea: int) -> bool:
     return all(ida_bytes.is_loaded(ea) for ea in range(start_ea, end_ea))
 
 
-def _is_conditional_branch(insn, mnemonic: str) -> bool:
+def _is_conditional_branch(insn, mnemonic: str | None) -> bool:
+    """Whether this decodes as a conditional near branch.
+
+    ``print_insn_mnem`` returns None for bytes that decoded but are not a
+    recognised instruction head -- data embedded in a function range, which
+    obfuscated code produces routinely even though clean compiler output does
+    not.
+    """
+    if not mnemonic:
+        return False
     return (
         mnemonic.startswith("j")
         and mnemonic != "jmp"
