@@ -24,6 +24,9 @@ silently retarget the experiment at the wrong bytes.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 pytestmark = [pytest.mark.requires_ida, pytest.mark.runtime, pytest.mark.hexrays]
@@ -35,12 +38,17 @@ ida_gdl = pytest.importorskip("ida_gdl")
 ida_hexrays = pytest.importorskip("ida_hexrays")
 ida_ua = pytest.importorskip("ida_ua")
 idaapi = pytest.importorskip("idaapi")
+idautils = pytest.importorskip("idautils")
 
 from d810.backends.ida.native_patch.encoder import (  # noqa: E402
     plan_direct_jump_region,
 )
+from tests.system.runtime.support.mutation_witness import (  # noqa: E402
+    MutationWitness,
+)
 
 TARGET_FUNCTION = "fake_jump_opaque_predicate"
+_REPO_ROOT = Path(__file__).resolve().parents[5]
 
 
 def _find_conditional_site(func_name: str):
@@ -285,3 +293,335 @@ class TestLifecycleStrategyExperiment:
         print("\n[phase0.4] === measurement summary ===")
         for line in report:
             print(f"[phase0.4] {line}")
+
+
+# =============================================================================
+# Task 0.4 step 4: cache-scope measurement.
+#
+# The experiment above establishes that MERR_REDO refreshes Hex-Rays but does
+# not reanalyze the database, and that ``mark_cfunc_dirty(ea)`` plus
+# reanalysis converges the two. What it does not establish is *radius*:
+# ``mark_cfunc_dirty(ea)`` is documented as function-scoped, so patching
+# function F and marking F dirty says nothing about whether a *caller*'s
+# cached decompilation, or a function that shares a tail/chunk with F,
+# survives untouched or gets invalidated too. That is measured below rather
+# than inferred from the documentation.
+# =============================================================================
+
+
+def _callers_of(func_ea: int) -> set[int]:
+    """Distinct calling-function start EAs, found by decoding each xref site.
+
+    A call is identified by ``CF_CALL`` on the referring instruction's
+    decoded feature bits -- the same shape-based approach
+    ``_find_conditional_site`` above uses for ``CF_JUMP`` -- rather than by
+    xref *type* constants, so this does not depend on which xref-type enum a
+    given IDA build exposes.
+    """
+    callers: set[int] = set()
+    insn = ida_ua.insn_t()
+    for ref_ea in idautils.CodeRefsTo(func_ea, 0):
+        length = ida_ua.decode_insn(insn, ref_ea)
+        if length <= 0:
+            continue
+        if not (insn.get_canon_feature() & idaapi.CF_CALL):
+            continue
+        caller_func = ida_funcs.get_func(ref_ea)
+        if caller_func is None or caller_func.start_ea == func_ea:
+            continue
+        callers.add(caller_func.start_ea)
+    return callers
+
+
+def _find_skippable_instruction(func_ea: int) -> tuple[int, int, int] | None:
+    """A ``(start_ea, end_ea, target_ea)`` direct-jump normalization site.
+
+    Rather than requiring a two-byte conditional branch -- the fixture
+    functions that have a caller (see the class docstring below) are
+    straight-line, with no conditional at all -- this picks any instruction
+    strictly inside the function's body (not the entry prologue, not the
+    final instruction) that is at least 2 bytes long, so
+    ``plan_direct_jump_region`` can always fit at least a rel8 jump.
+    Collapsing ``[start_ea, end_ea)`` to a direct jump *to* ``end_ea`` elides
+    exactly that one instruction's effect, which is what makes the resulting
+    pseudocode observably different without needing a conditional at all --
+    it is still the same primitive (``plan_direct_jump_region``), applied to
+    a plain instruction instead of a ``jcc``.
+    """
+    func = ida_funcs.get_func(func_ea)
+    if func is None:
+        return None
+    insn = ida_ua.insn_t()
+    boundaries: list[tuple[int, int]] = []
+    cursor = func.start_ea
+    while cursor < func.end_ea:
+        length = ida_ua.decode_insn(insn, cursor)
+        if length <= 0:
+            break
+        boundaries.append((cursor, cursor + length))
+        cursor += length
+    if len(boundaries) < 3:
+        return None
+    candidates = [(s, e) for s, e in boundaries[1:-1] if e - s >= 2]
+    if not candidates:
+        return None
+    start, end = max(candidates, key=lambda pair: pair[1] - pair[0])
+    return start, end, end
+
+
+def _scan_shared_tail_chunks() -> list[tuple[int, list[int]]]:
+    """``(tail_chunk_ea, [owner_ea, ...])`` for every tail chunk with >1 owner.
+
+    A function tail with more than one referer is code genuinely shared by
+    more than one function (e.g. linker identical-code-folding) -- IDA's own
+    concept (``func_t.refqty`` / ``get_fchunk_referer``), not a d810 one.
+    This scans the whole binary rather than assuming a shared chunk exists.
+    """
+    shared: list[tuple[int, list[int]]] = []
+    for idx in range(ida_funcs.get_fchunk_qty()):
+        chunk = ida_funcs.getn_fchunk(idx)
+        if chunk is None or not ida_funcs.is_func_tail(chunk):
+            continue
+        if chunk.refqty <= 1:
+            continue
+        owners = [
+            ida_funcs.get_fchunk_referer(chunk.start_ea, i) for i in range(chunk.refqty)
+        ]
+        shared.append((chunk.start_ea, owners))
+    return shared
+
+
+def _pick_target_with_caller() -> tuple[int, set[int], tuple[int, int, int]]:
+    """First function (by ea) with a fixture-owned caller and a normalizable site.
+
+    "Fixture-owned" means at least one caller's name starts with
+    ``fake_jump`` -- the fixture's own authored surface -- rather than
+    accepting the first caller/callee edge found anywhere. Unfiltered, the
+    first such edge in this binary is compiler/CRT startup plumbing
+    (``_CRT_INIT`` called from ``__DllMainCRTStartup``), which is not a
+    function d810 could plausibly own and normalize; this experiment is
+    about the kind of edge d810's gateway would actually face. Restricting
+    by *name* is not the address-hardcoding the task warns against -- names
+    survive a fixture recompile the way addresses do not, and the existing
+    ``TARGET_FUNCTION`` constant above already relies on the same property.
+    Address order among the remaining candidates is deterministic for a
+    fixed binary and IDA version and is not chosen for any other reason.
+    """
+    for func_ea in idautils.Functions():
+        callers = _callers_of(func_ea)
+        fixture_callers = {
+            c
+            for c in callers
+            if (idaapi.get_func_name(c) or "").startswith("fake_jump")
+        }
+        if not fixture_callers:
+            continue
+        site = _find_skippable_instruction(func_ea)
+        if site is None:
+            continue
+        return func_ea, fixture_callers, site
+    pytest.skip(
+        "fake_jumps.dll offers no function with both a fixture-owned caller "
+        "and a normalizable instruction; try libobfuscated.dll instead"
+    )
+
+
+class TestCacheInvalidationRadius:
+    """Task 0.4 step 4: measure the cfunc cache invalidation radius.
+
+    ``mark_cfunc_dirty(ea)`` is documented as function-scoped. Whether a
+    caller's cached decompilation -- or a shared-tail owner's -- survives a
+    native patch to a *different* function is not stated anywhere and must
+    not be inferred from that scoping. It is measured here, empirically, on
+    this IDA build.
+
+    Fixture choice and why: fake_jumps.dll, the same binary the strategy
+    experiment above uses. Its eleven top-level ``fake_jump_*`` functions are
+    each self-contained -- nothing in the binary calls them, so none of them
+    can serve as F. Two of them, though (``fake_jump_after_call`` and
+    ``fake_jump_after_constant_call``), call a tiny ``static`` helper
+    (``always_returns_42`` / ``always_returns_99`` in the C source). The
+    compiler outlines each helper as its own call target with its own
+    prologue/epilogue rather than inlining it, and IDA recovers that as a
+    distinct function reachable from exactly one caller -- confirmed by
+    disassembling the actual compiled ``samples/bins/fake_jumps.dll``, not
+    assumed from the source. That is a genuine caller/callee pair produced by
+    the compiled shape, discovered below by decoding call xrefs at runtime --
+    not by hand-editing the fixture or hardcoding an address. No
+    multi-owner tail chunk (linker identical-code-folding or similar) was
+    found anywhere in this binary by the generic scan below, so the
+    "shared tail" leg of the measurement is reported absent rather than
+    faked; libobfuscated.dll was not needed because fake_jumps.dll did supply
+    the required caller relationship.
+    """
+
+    binary_name = "fake_jumps.dll"
+
+    def test_measure_cache_invalidation_radius(self, ida_database, configure_hexrays):
+        func_ea, callers, (skip_start, skip_end, skip_target) = (
+            _pick_target_with_caller()
+        )
+        caller_ea = sorted(callers)[0]
+
+        shared_chunks = _scan_shared_tail_chunks()
+        shared_tail_ea: int | None = None
+        shared_tail_note = "none found anywhere in this binary"
+        for chunk_ea, owners in shared_chunks:
+            if func_ea in owners or caller_ea in owners:
+                others = [o for o in owners if o not in (func_ea, caller_ea)]
+                if others:
+                    shared_tail_ea = others[0]
+                    shared_tail_note = (
+                        f"chunk {chunk_ea:#x} owners={[hex(o) for o in owners]}"
+                    )
+                break
+
+        probes: dict[str, int] = {"F": func_ea, "caller": caller_ea}
+        if shared_tail_ea is not None:
+            probes["shared_tail_owner"] = shared_tail_ea
+
+        report: list[str] = []
+
+        def note(line: str) -> None:
+            report.append(line)
+            print(f"[phase0.4-cachescope] {line}", flush=True)
+
+        note(f"F               {func_ea:#x} ({idaapi.get_func_name(func_ea)})")
+        note(f"F callers       {sorted(hex(c) for c in callers)}")
+        note(f"caller probe    {caller_ea:#x} ({idaapi.get_func_name(caller_ea)})")
+        note(f"shared tail     {shared_tail_note}")
+        note(f"skip site       {skip_start:#x}..{skip_end:#x} -> {skip_target:#x}")
+
+        original = ida_bytes.get_bytes(skip_start, skip_end - skip_start)
+        plan = plan_direct_jump_region(skip_start, skip_end, skip_target)
+        assert plan.ok, plan.reason
+        patched = plan.sequence.data
+        assert len(patched) == skip_end - skip_start, "region must be filled exactly"
+        note(f"bytes           {original.hex()} -> {patched.hex()}")
+
+        # ---------------- baseline: decompile every probe, cache must warm ---
+        # Wrapped in a MutationWitness: this phase must be read-only, or the
+        # "before" state compared against below would be contaminated by our
+        # own setup rather than reflecting the pre-patch database.
+        baseline_text: dict[str, str] = {}
+        with MutationWitness() as witness:
+            for label, ea in probes.items():
+                baseline_text[label] = _decompile_text(ea)
+            reading = witness.assert_clean("decompiling F/caller/shared-tail baselines")
+        note(reading.describe())
+
+        for label, ea in probes.items():
+            assert ida_hexrays.has_cached_cfunc(ea), (
+                f"decompile({label}@{ea:#x}) did not leave a cached cfunc; "
+                "the staleness probe below would be meaningless with a cold "
+                "cache to begin with"
+            )
+
+        # ---------------- the patch: F only -----------------------------------
+        ida_bytes.patch_bytes(skip_start, patched)
+        assert ida_bytes.get_bytes(skip_start, len(patched)) == patched
+
+        ida_funcs.reanalyze_function(ida_funcs.get_func(func_ea))
+        ida_auto.auto_wait()
+        erased = ida_hexrays.mark_cfunc_dirty(func_ea)
+        note(f"mark_cfunc_dirty(F) erased an existing cache entry: {erased}")
+        assert erased, (
+            "F had no cache entry to erase -- the baseline decompile above "
+            "did not stick, so this run cannot measure anything"
+        )
+
+        # ---------------- THE MEASUREMENT ---------------------------------
+        # has_cached_cfunc for every probe *before* calling decompile() again
+        # anywhere: the ambient cache state left behind by patch_bytes +
+        # reanalyze_function + auto_wait() + mark_cfunc_dirty(F) alone,
+        # untouched by any decompilation of ours since the patch. That is the
+        # invalidation radius -- which entries IDA/Hex-Rays itself discarded,
+        # and which it left exactly as they were.
+        pre_recompute_cached: dict[str, bool] = {}
+        for label, ea in probes.items():
+            pre_recompute_cached[label] = bool(ida_hexrays.has_cached_cfunc(ea))
+            note(
+                f"{label}@{ea:#x} has_cached_cfunc (before recompute) = "
+                f"{pre_recompute_cached[label]}"
+            )
+
+        post_text: dict[str, str] = {}
+        text_changed: dict[str, bool] = {}
+        for label, ea in probes.items():
+            post_text[label] = _decompile_text(ea)
+            text_changed[label] = post_text[label] != baseline_text[label]
+            note(f"{label}@{ea:#x} pseudocode changed = {text_changed[label]}")
+
+        # ---------------- artifact: the observed invalidation set ------------
+        artifact_dir = _REPO_ROOT / ".tmp" / "cfunc-cache-invalidation-radius"
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        summary = {
+            "ida_version": idaapi.get_kernel_version(),
+            "function_names": {
+                label: idaapi.get_func_name(ea) for label, ea in probes.items()
+            },
+            "addresses": {label: hex(ea) for label, ea in probes.items()},
+            "callers_of_F": sorted(hex(c) for c in callers),
+            "shared_tail": shared_tail_note,
+            "patch_site": {
+                "start_ea": hex(skip_start),
+                "end_ea": hex(skip_end),
+                "target_ea": hex(skip_target),
+                "before": original.hex(),
+                "after": patched.hex(),
+            },
+            "has_cached_cfunc_before_recompute": pre_recompute_cached,
+            "pseudocode_changed_after_patch": text_changed,
+        }
+        artifact_path = artifact_dir / "summary.json"
+        artifact_path.write_text(
+            json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8"
+        )
+        note(f"artifact written to {artifact_path}")
+
+        print("\n[phase0.4-cachescope] === measurement summary ===")
+        for line in report:
+            print(f"[phase0.4-cachescope] {line}")
+
+        # ---------------- assertions on what was actually observed -----------
+        # F is unconditionally expected to come back fresh: we erased its own
+        # cache entry and changed its own bytes.
+        assert pre_recompute_cached["F"] is False, (
+            "mark_cfunc_dirty(F) is documented to erase F's own cache entry; "
+            "has_cached_cfunc(F) should be False immediately afterward"
+        )
+        assert text_changed["F"], (
+            "F's pseudocode did not change after eliding an instruction and "
+            "reanalyzing; the patch had no effect Hex-Rays could see"
+        )
+
+        # EMPIRICAL AND VERSION-SPECIFIC. Everything below encodes what this
+        # IDA build was actually observed to do to a caller's (and, if this
+        # fixture ever grows one, a shared-tail owner's) cfunc cache when only
+        # the callee is patched, reanalyzed and marked dirty. It is not a
+        # specification of correct behavior -- d810's own gateway still has to
+        # invalidate every affected function explicitly rather than trust
+        # this. If a future IDA build changes this behavior, the assertion
+        # below fails on purpose so the change is caught, not silently
+        # assumed away; do not "fix" a failure here by relaxing it to a
+        # tautology.
+        assert pre_recompute_cached["caller"] is True, (
+            "expected the caller's pre-existing cfunc cache entry to survive "
+            "a patch to its callee -- patch_bytes + reanalyze_function + "
+            "auto_wait() + mark_cfunc_dirty(F) does not appear to widen its "
+            "reach to F's callers on this IDA build, which would mean a "
+            "future gateway can no longer assume caller caches need "
+            "separate invalidation"
+        )
+        assert not text_changed["caller"], (
+            "the caller's pseudocode changed even though it was served from "
+            "an untouched cache entry -- has_cached_cfunc() and the actual "
+            "decompiled text disagree, which should not happen"
+        )
+
+        if "shared_tail_owner" in probes:
+            note(
+                "shared-tail owner probe present: "
+                f"has_cached_cfunc={pre_recompute_cached['shared_tail_owner']} "
+                f"text_changed={text_changed['shared_tail_owner']}"
+            )
