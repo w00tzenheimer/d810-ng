@@ -1,0 +1,662 @@
+"""SQLite-backed write-ahead native-patch journal and recovery classifier.
+
+Implements ``NativePatchJournalStore`` (``d810.capabilities.native_patch``)
+for Task 2 of ``_gitless/profile-guided-native-mutation-implementer-plan.md``.
+This module owns:
+
+* durable transaction persistence (``prepare``/``transition``/``get``);
+* the byte-granular write-ahead log (``record_byte_event``) and its
+  reconstruction into a recovery verdict (``classify_recovery`` -- review
+  finding P0 #2, see ``d810.capabilities.native_patch``'s module docstring
+  for the design);
+* the netnode-mirror receipt lane (``record_mirror_receipt`` /
+  ``mirror_receipts``), kept strictly separate from transaction state
+  (design requirement 4).
+
+This module writes no IDB bytes and makes no live IDA call. It sits in
+``d810.backends.ida.native_patch`` (rank 6, may import IDA) because it is the
+IDA-specific recovery journal and will eventually be handed a real
+``ida_bytes``-backed byte reader by Task 6's gateway -- but Task 2 itself only
+needs an injected ``Callable[[int], int | None]``, so no ``ida_*`` import
+appears here yet. Fakes are used in the unit tests per this repository's
+"no IDA mocking in unit tests" rule (``tests/unit/conftest.py``): the reader
+is a plain Python callable, not a mocked IDA module.
+"""
+
+from __future__ import annotations
+
+import sqlite3
+import time
+from collections.abc import Callable
+from pathlib import Path
+
+from d810.capabilities.native_patch import (
+    IllegalNativeJournalTransition,
+    NativeByteEventPhase,
+    NativeByteRecoveryEntry,
+    NativeByteRecoveryVerdict,
+    NativeJournalState,
+    NativeMirrorOutcome,
+    NativeMirrorReceipt,
+    NativeOperationRecoveryReport,
+    NativeOperationRecoveryVerdict,
+    NativePatchPlanEnvelope,
+    NativePatchTransactionId,
+    NativePatchTransactionRecord,
+    NativeTransactionRecoveryReport,
+    is_legal_native_journal_transition,
+)
+from d810.core.execution_journal import DecompilationSessionId, ExecutionAttemptId
+
+__all__ = [
+    "NativeCurrentByteReader",
+    "NativePatchTransactionConflictError",
+    "SQLiteNativePatchJournal",
+]
+
+# A byte reader returns the current byte value at `ea`, or None when it
+# cannot be read (undefined/unmapped/inaccessible). `None` is treated as
+# NEITHER (interference) rather than silently skipped -- an unreadable byte
+# can confirm neither the before- nor the after-image.
+NativeCurrentByteReader = Callable[[int], "int | None"]
+
+
+class NativePatchTransactionConflictError(ValueError):
+    """A new plan's operation range overlaps an already-active transaction.
+
+    Invariant 6: "No active plan owns an overlapping range." A transaction
+    is "active" (blocks a new overlapping prepare) unless it is ``RESTORED``
+    -- the only state that verifiably frees its range for reuse.
+    ``RESTORE_FAILED`` deliberately still blocks: the range is in an unknown,
+    broken state that requires manual resolution, not reuse by a new plan.
+    """
+
+    def __init__(self, operation_id: str, start_ea: int, end_ea: int) -> None:
+        self.operation_id = operation_id
+        self.start_ea = start_ea
+        self.end_ea = end_ea
+        super().__init__(
+            f"operation {operation_id!r} range "
+            f"[0x{start_ea:x}, 0x{end_ea:x}) overlaps an active transaction"
+        )
+
+
+_POST_BYTES_STATES = frozenset(
+    {
+        NativeJournalState.BYTES_APPLIED,
+        NativeJournalState.METADATA_APPLIED,
+        NativeJournalState.ANALYSIS_PENDING,
+        NativeJournalState.ANALYSIS_VALIDATED,
+        NativeJournalState.CACHE_INVALIDATED,
+        NativeJournalState.CERTIFIED,
+    }
+)
+
+
+def _recommend_state(
+    recorded_state: NativeJournalState,
+    operation_reports: tuple[NativeOperationRecoveryReport, ...],
+) -> NativeJournalState:
+    """Reconcile the last durably recorded state against observed bytes.
+
+    Byte persistence and analysis certification are different failure
+    domains (design requirement 2): a recorded state past ``BYTES_APPLIED``
+    is never downgraded just because recovery is being classified -- bytes
+    that read back as fully applied leave that downstream state untouched.
+    """
+    verdicts = [report.verdict for report in operation_reports]
+
+    if any(v is NativeOperationRecoveryVerdict.INTERFERENCE for v in verdicts):
+        return NativeJournalState.INTERFERENCE_DETECTED
+
+    if all(v is NativeOperationRecoveryVerdict.NOT_APPLIED for v in verdicts):
+        if recorded_state in _POST_BYTES_STATES:
+            # The record says bytes should be there; they are not. Something
+            # reverted our applied bytes underneath us.
+            return NativeJournalState.INTERFERENCE_DETECTED
+        return NativeJournalState.PREPARED
+
+    if all(v is NativeOperationRecoveryVerdict.APPLIED for v in verdicts):
+        if recorded_state in _POST_BYTES_STATES:
+            return recorded_state
+        if recorded_state is NativeJournalState.PREPARED:
+            corroborated = all(
+                report.corroborated_by_write_applied_receipt
+                for report in operation_reports
+            )
+            return (
+                NativeJournalState.BYTES_APPLIED
+                if corroborated
+                else NativeJournalState.INTERFERENCE_DETECTED
+            )
+        # A restore/rollback-lane state (RESTORED, RESTORE_FAILED, ...) but
+        # bytes read back fully applied: inconsistent with the recorded
+        # outcome.
+        return NativeJournalState.INTERFERENCE_DETECTED
+
+    # A disambiguated mix (some NOT_APPLIED, some APPLIED, or a single
+    # PARTIALLY_APPLIED operation) with zero NEITHER verdicts anywhere: every
+    # byte is unambiguously identifiable, so automatic rollback is safe.
+    return NativeJournalState.ROLLING_BACK
+
+
+class SQLiteNativePatchJournal:
+    """The write-ahead journal's SQLite-backed concrete implementation."""
+
+    def __init__(self, db_path: str | Path) -> None:
+        self.db_path = Path(db_path)
+        self._conn = sqlite3.connect(str(self.db_path))
+        self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA foreign_keys = ON")
+        self._init_schema()
+
+    def close(self) -> None:
+        self._conn.close()
+
+    def __enter__(self) -> SQLiteNativePatchJournal:
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.close()
+
+    def _init_schema(self) -> None:
+        with self._conn:
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS native_patch_transactions (
+                    transaction_id TEXT PRIMARY KEY,
+                    plan_id TEXT NOT NULL,
+                    plan_hash TEXT NOT NULL,
+                    attempt_session TEXT NOT NULL,
+                    attempt_sequence INTEGER NOT NULL,
+                    state TEXT NOT NULL,
+                    has_metadata_actions INTEGER NOT NULL,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL
+                )
+                """
+            )
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS native_patch_operations (
+                    transaction_id TEXT NOT NULL,
+                    operation_id TEXT NOT NULL,
+                    start_ea INTEGER NOT NULL,
+                    end_ea INTEGER NOT NULL,
+                    PRIMARY KEY (transaction_id, operation_id)
+                )
+                """
+            )
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS native_patch_operation_bytes (
+                    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                    transaction_id TEXT NOT NULL,
+                    operation_id TEXT NOT NULL,
+                    ea INTEGER NOT NULL,
+                    expected_current INTEGER NOT NULL,
+                    expected_original INTEGER NOT NULL,
+                    replacement INTEGER NOT NULL,
+                    UNIQUE (transaction_id, operation_id, ea)
+                )
+                """
+            )
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS native_patch_byte_events (
+                    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                    transaction_id TEXT NOT NULL,
+                    operation_id TEXT NOT NULL,
+                    ea INTEGER NOT NULL,
+                    phase TEXT NOT NULL,
+                    expected_current INTEGER NOT NULL,
+                    expected_original INTEGER NOT NULL,
+                    replacement INTEGER NOT NULL,
+                    recorded_at REAL NOT NULL,
+                    UNIQUE (transaction_id, operation_id, ea, phase)
+                )
+                """
+            )
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS native_patch_transitions (
+                    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                    transaction_id TEXT NOT NULL,
+                    from_state TEXT,
+                    to_state TEXT NOT NULL,
+                    note TEXT,
+                    recorded_at REAL NOT NULL
+                )
+                """
+            )
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS native_patch_mirror_receipts (
+                    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                    transaction_id TEXT NOT NULL,
+                    outcome TEXT NOT NULL,
+                    at_state TEXT NOT NULL,
+                    reason TEXT,
+                    recorded_at REAL NOT NULL
+                )
+                """
+            )
+
+    # -- transaction lifecycle -------------------------------------------------
+
+    def _active_operation_ranges(self) -> list[tuple[int, int]]:
+        rows = self._conn.execute(
+            """
+            SELECT o.start_ea, o.end_ea
+            FROM native_patch_operations o
+            JOIN native_patch_transactions t ON t.transaction_id = o.transaction_id
+            WHERE t.state != ?
+            """,
+            (NativeJournalState.RESTORED.value,),
+        ).fetchall()
+        return [(row["start_ea"], row["end_ea"]) for row in rows]
+
+    def prepare(self, plan: NativePatchPlanEnvelope) -> NativePatchTransactionRecord:
+        active_ranges = self._active_operation_ranges()
+        for op in plan.operations:
+            op_start, op_end = op.range.start_ea, op.range.end_ea
+            for active_start, active_end in active_ranges:
+                if op_start < active_end and active_start < op_end:
+                    raise NativePatchTransactionConflictError(
+                        op.operation_id, op_start, op_end
+                    )
+
+        transaction_id = NativePatchTransactionId.new()
+        now = time.time()
+        has_metadata_actions = any(
+            len(op.metadata_actions) > 0 for op in plan.operations
+        )
+
+        # Everything below commits atomically (or not at all): the
+        # transaction row, every operation row, and every governed byte's
+        # planned before/after image must all land durably together before
+        # `prepare()` returns -- design requirement 3.
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO native_patch_transactions
+                    (transaction_id, plan_id, plan_hash, attempt_session,
+                     attempt_sequence, state, has_metadata_actions,
+                     created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    transaction_id.value,
+                    plan.plan_id,
+                    plan.plan_hash,
+                    plan.authorizing_attempt_id.session.value,
+                    plan.authorizing_attempt_id.sequence,
+                    NativeJournalState.PREPARED.value,
+                    int(has_metadata_actions),
+                    now,
+                    now,
+                ),
+            )
+            for op in plan.operations:
+                self._conn.execute(
+                    """
+                    INSERT INTO native_patch_operations
+                        (transaction_id, operation_id, start_ea, end_ea)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (
+                        transaction_id.value,
+                        op.operation_id,
+                        op.range.start_ea,
+                        op.range.end_ea,
+                    ),
+                )
+                for offset, ea in enumerate(range(op.range.start_ea, op.range.end_ea)):
+                    self._conn.execute(
+                        """
+                        INSERT INTO native_patch_operation_bytes
+                            (transaction_id, operation_id, ea,
+                             expected_current, expected_original, replacement)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            transaction_id.value,
+                            op.operation_id,
+                            ea,
+                            op.expected_current_bytes[offset],
+                            op.expected_original_bytes[offset],
+                            op.replacement_bytes[offset],
+                        ),
+                    )
+            self._conn.execute(
+                """
+                INSERT INTO native_patch_transitions
+                    (transaction_id, from_state, to_state, note, recorded_at)
+                VALUES (?, NULL, ?, ?, ?)
+                """,
+                (
+                    transaction_id.value,
+                    NativeJournalState.PREPARED.value,
+                    "prepare",
+                    now,
+                ),
+            )
+
+        record = self.get(transaction_id)
+        assert record is not None  # just committed; must be readable
+        return record
+
+    def _record_from_row(self, row: sqlite3.Row) -> NativePatchTransactionRecord:
+        return NativePatchTransactionRecord(
+            transaction_id=NativePatchTransactionId(value=row["transaction_id"]),
+            plan_id=row["plan_id"],
+            plan_hash=row["plan_hash"],
+            authorizing_attempt_id=ExecutionAttemptId(
+                session=DecompilationSessionId(value=row["attempt_session"]),
+                sequence=row["attempt_sequence"],
+            ),
+            state=NativeJournalState(row["state"]),
+            has_metadata_actions=bool(row["has_metadata_actions"]),
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+        )
+
+    def get(
+        self, transaction_id: NativePatchTransactionId
+    ) -> NativePatchTransactionRecord | None:
+        row = self._conn.execute(
+            "SELECT * FROM native_patch_transactions WHERE transaction_id = ?",
+            (transaction_id.value,),
+        ).fetchone()
+        if row is None:
+            return None
+        return self._record_from_row(row)
+
+    def transition(
+        self,
+        transaction_id: NativePatchTransactionId,
+        target_state: NativeJournalState,
+        *,
+        note: str | None = None,
+    ) -> NativePatchTransactionRecord:
+        row = self._conn.execute(
+            "SELECT state, has_metadata_actions FROM native_patch_transactions "
+            "WHERE transaction_id = ?",
+            (transaction_id.value,),
+        ).fetchone()
+        if row is None:
+            # No durable PREPARED row exists. `prepare()` is the only legal
+            # way to create one.
+            raise IllegalNativeJournalTransition(
+                None, target_state, detail="no durable record for this transaction"
+            )
+
+        current = NativeJournalState(row["state"])
+        if not is_legal_native_journal_transition(current, target_state):
+            raise IllegalNativeJournalTransition(current, target_state)
+
+        has_metadata_actions = bool(row["has_metadata_actions"])
+        if (
+            target_state is NativeJournalState.METADATA_APPLIED
+            and not has_metadata_actions
+        ):
+            raise IllegalNativeJournalTransition(
+                current,
+                target_state,
+                detail="plan owns no metadata actions",
+            )
+        if (
+            current is NativeJournalState.BYTES_APPLIED
+            and target_state is NativeJournalState.ANALYSIS_PENDING
+            and has_metadata_actions
+        ):
+            raise IllegalNativeJournalTransition(
+                current,
+                target_state,
+                detail="plan owns metadata actions; must pass through METADATA_APPLIED",
+            )
+
+        now = time.time()
+        with self._conn:
+            self._conn.execute(
+                "UPDATE native_patch_transactions SET state = ?, updated_at = ? "
+                "WHERE transaction_id = ?",
+                (target_state.value, now, transaction_id.value),
+            )
+            self._conn.execute(
+                """
+                INSERT INTO native_patch_transitions
+                    (transaction_id, from_state, to_state, note, recorded_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (transaction_id.value, current.value, target_state.value, note, now),
+            )
+
+        record = self.get(transaction_id)
+        assert record is not None
+        return record
+
+    # -- byte-granular write-ahead log ------------------------------------------
+
+    def record_byte_event(
+        self,
+        transaction_id: NativePatchTransactionId,
+        operation_id: str,
+        ea: int,
+        phase: NativeByteEventPhase,
+        *,
+        expected_current: int,
+        expected_original: int,
+        replacement: int,
+    ) -> None:
+        row = self._conn.execute(
+            """
+            SELECT expected_current, expected_original, replacement
+            FROM native_patch_operation_bytes
+            WHERE transaction_id = ? AND operation_id = ? AND ea = ?
+            """,
+            (transaction_id.value, operation_id, ea),
+        ).fetchone()
+        if row is None:
+            raise ValueError(
+                f"ea 0x{ea:x} is not governed by operation {operation_id!r} "
+                f"in transaction {transaction_id.value}"
+            )
+        planned = (
+            row["expected_current"],
+            row["expected_original"],
+            row["replacement"],
+        )
+        given = (expected_current, expected_original, replacement)
+        if planned != given:
+            raise ValueError(
+                f"byte event for ea 0x{ea:x} does not match the durably planned "
+                f"expected-before/original/after values {planned}, got {given}"
+            )
+
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO native_patch_byte_events
+                    (transaction_id, operation_id, ea, phase,
+                     expected_current, expected_original, replacement, recorded_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    transaction_id.value,
+                    operation_id,
+                    ea,
+                    phase.value,
+                    expected_current,
+                    expected_original,
+                    replacement,
+                    time.time(),
+                ),
+            )
+
+    # -- netnode mirror receipts (separate lane; never a state authority) ------
+
+    def record_mirror_receipt(
+        self,
+        transaction_id: NativePatchTransactionId,
+        outcome: NativeMirrorOutcome,
+        *,
+        reason: str | None = None,
+    ) -> NativeMirrorReceipt:
+        row = self._conn.execute(
+            "SELECT state FROM native_patch_transactions WHERE transaction_id = ?",
+            (transaction_id.value,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"unknown transaction {transaction_id.value}")
+        at_state = NativeJournalState(row["state"])
+        now = time.time()
+
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO native_patch_mirror_receipts
+                    (transaction_id, outcome, at_state, reason, recorded_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (transaction_id.value, outcome.value, at_state.value, reason, now),
+            )
+        # Deliberately no write to native_patch_transactions here: a mirror
+        # receipt -- written or failed -- never touches transaction state.
+        return NativeMirrorReceipt(
+            transaction_id=transaction_id,
+            outcome=outcome,
+            at_state=at_state,
+            reason=reason,
+            recorded_at=now,
+        )
+
+    def mirror_receipts(
+        self, transaction_id: NativePatchTransactionId
+    ) -> tuple[NativeMirrorReceipt, ...]:
+        rows = self._conn.execute(
+            """
+            SELECT outcome, at_state, reason, recorded_at
+            FROM native_patch_mirror_receipts
+            WHERE transaction_id = ?
+            ORDER BY seq
+            """,
+            (transaction_id.value,),
+        ).fetchall()
+        return tuple(
+            NativeMirrorReceipt(
+                transaction_id=transaction_id,
+                outcome=NativeMirrorOutcome(row["outcome"]),
+                at_state=NativeJournalState(row["at_state"]),
+                reason=row["reason"],
+                recorded_at=row["recorded_at"],
+            )
+            for row in rows
+        )
+
+    # -- byte-granular recovery classification ----------------------------------
+
+    def classify_recovery(
+        self,
+        transaction_id: NativePatchTransactionId,
+        read_current_bytes: NativeCurrentByteReader,
+    ) -> NativeTransactionRecoveryReport:
+        record = self.get(transaction_id)
+        if record is None:
+            raise ValueError(f"unknown transaction {transaction_id.value}")
+
+        operation_ids = [
+            row["operation_id"]
+            for row in self._conn.execute(
+                """
+                SELECT DISTINCT operation_id FROM native_patch_operations
+                WHERE transaction_id = ?
+                ORDER BY operation_id
+                """,
+                (transaction_id.value,),
+            ).fetchall()
+        ]
+
+        applied_receipt_eas = {
+            row["ea"]
+            for row in self._conn.execute(
+                """
+                SELECT ea FROM native_patch_byte_events
+                WHERE transaction_id = ? AND phase = ?
+                """,
+                (transaction_id.value, NativeByteEventPhase.WRITE_APPLIED.value),
+            ).fetchall()
+        }
+
+        operation_reports = []
+        for operation_id in operation_ids:
+            byte_rows = self._conn.execute(
+                """
+                SELECT ea, expected_current, replacement
+                FROM native_patch_operation_bytes
+                WHERE transaction_id = ? AND operation_id = ?
+                ORDER BY ea
+                """,
+                (transaction_id.value, operation_id),
+            ).fetchall()
+
+            entries = []
+            for byte_row in byte_rows:
+                ea = byte_row["ea"]
+                expected_current = byte_row["expected_current"]
+                replacement = byte_row["replacement"]
+                current = read_current_bytes(ea)
+                if current is None:
+                    verdict = NativeByteRecoveryVerdict.NEITHER
+                elif current == expected_current and current == replacement:
+                    verdict = NativeByteRecoveryVerdict.BOTH
+                elif current == expected_current:
+                    verdict = NativeByteRecoveryVerdict.BEFORE
+                elif current == replacement:
+                    verdict = NativeByteRecoveryVerdict.AFTER
+                else:
+                    verdict = NativeByteRecoveryVerdict.NEITHER
+                entries.append(
+                    NativeByteRecoveryEntry(
+                        ea=ea, verdict=verdict, current_value=current
+                    )
+                )
+
+            verdict_set = {entry.verdict for entry in entries}
+            if NativeByteRecoveryVerdict.NEITHER in verdict_set:
+                op_verdict = NativeOperationRecoveryVerdict.INTERFERENCE
+            elif verdict_set <= {
+                NativeByteRecoveryVerdict.BEFORE,
+                NativeByteRecoveryVerdict.BOTH,
+            }:
+                op_verdict = NativeOperationRecoveryVerdict.NOT_APPLIED
+            elif verdict_set <= {
+                NativeByteRecoveryVerdict.AFTER,
+                NativeByteRecoveryVerdict.BOTH,
+            }:
+                op_verdict = NativeOperationRecoveryVerdict.APPLIED
+            else:
+                op_verdict = NativeOperationRecoveryVerdict.PARTIALLY_APPLIED
+
+            corroborated = op_verdict is NativeOperationRecoveryVerdict.APPLIED and all(
+                entry.ea in applied_receipt_eas
+                for entry in entries
+                if entry.verdict is not NativeByteRecoveryVerdict.BOTH
+            )
+
+            operation_reports.append(
+                NativeOperationRecoveryReport(
+                    operation_id=operation_id,
+                    verdict=op_verdict,
+                    byte_entries=tuple(entries),
+                    corroborated_by_write_applied_receipt=corroborated,
+                )
+            )
+
+        recommended_state = _recommend_state(record.state, tuple(operation_reports))
+        return NativeTransactionRecoveryReport(
+            transaction_id=transaction_id,
+            recorded_state=record.state,
+            operation_reports=tuple(operation_reports),
+            recommended_state=recommended_state,
+        )
