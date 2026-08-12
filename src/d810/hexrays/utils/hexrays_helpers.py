@@ -1055,6 +1055,16 @@ def check_ins_mop_size_are_ok(ins: ida_hexrays.minsn_t) -> bool:
         ida_hexrays.m_low,
         ida_hexrays.m_high,
     ]:
+        # Hex-Rays verify.cpp requires extension sources to be strictly
+        # narrower than their destination (INTERR 50837).  This guard runs
+        # before ``InstructionOptimizerManager`` swaps a candidate into the
+        # live MBA, so accepting equal-width xdu/xds here corrupts the
+        # decompilation irreversibly.
+        if (
+            ins.opcode in (ida_hexrays.m_xdu, ida_hexrays.m_xds)
+            and ins.l.size >= ins_dest_size
+        ):
+            return False
         if (ins.l.t == ida_hexrays.mop_d) and (not check_ins_mop_size_are_ok(ins.l.d)):
             return False
         return True

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import ida_hexrays
+import pytest
 
 from d810.hexrays.utils.hexrays_helpers import check_ins_mop_size_are_ok
 
@@ -74,3 +75,16 @@ class TestCheckInsnMopSize:
             d=_FakeMop(size=0),
         )
         assert check_ins_mop_size_are_ok(ins) is False
+
+    @pytest.mark.parametrize("opcode", (ida_hexrays.m_xds, ida_hexrays.m_xdu))
+    def test_extension_requires_a_strictly_wider_destination(self, opcode):
+        """verify.cpp INTERR 50837: xds/xdu require l.size < d.size."""
+        assert check_ins_mop_size_are_ok(
+            _make_binary_ins(opcode, left_size=8, right_size=0, dest_size=8)
+        ) is False
+        assert check_ins_mop_size_are_ok(
+            _make_binary_ins(opcode, left_size=8, right_size=0, dest_size=4)
+        ) is False
+        assert check_ins_mop_size_are_ok(
+            _make_binary_ins(opcode, left_size=4, right_size=0, dest_size=8)
+        ) is True
