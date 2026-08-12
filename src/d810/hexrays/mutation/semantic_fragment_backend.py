@@ -28,9 +28,6 @@ from d810.hexrays.ir.flag_queries import (
     condition_code_write_eas,
     instruction_writes_condition_codes,
 )
-from d810.hexrays.mutation.cfg_mutations import (
-    canonicalize_explicit_return_to_stop_edge,
-)
 from d810.hexrays.mutation.ir_translator import capture_mop_snapshot
 from d810.hexrays.opcode_lift import (
     branch_opcode_for_predicate,
@@ -7655,7 +7652,10 @@ def _apply_semantic_fragment_commit_finalization(
                 f"block={terminal.block_id!r}@0x{int(terminal.instruction_ea):X} "
                 f"live=0x{int(live_ea):X}"
             )
-        if not canonicalize_explicit_return_to_stop_edge(block, stop):
+        if not modifier._canonicalize_semantic_terminal_return_now(
+            block=block,
+            stop=stop,
+        ):
             raise SemanticFragmentBackendRejected(
                 "semantic fragment terminal canonicalization failed after "
                 f"postpublication validation: return={terminal.return_id!r} "

@@ -4962,6 +4962,20 @@ class DeferredGraphModifier:
         """Make postvalidated backend-owned semantics verifier-safe."""
         finalize_semantic_fragment_for_commit(self, plan)
 
+    def _canonicalize_semantic_terminal_return_now(
+        self,
+        *,
+        block: ida_hexrays.mblock_t,
+        stop: ida_hexrays.mblock_t,
+    ) -> bool:
+        """Synchronously finalize a plan-owned terminal inside this gateway batch."""
+        gateway = self._mutation_gateway
+        if gateway is None or not gateway.active:
+            raise SemanticFragmentBackendRejected(
+                "semantic terminal finalization requires an active mutation gateway"
+            )
+        return _canonicalize_return_to_stop_edge(block, stop)
+
     def _restore_semantic_terminal_finalization_now(
         self,
         *,

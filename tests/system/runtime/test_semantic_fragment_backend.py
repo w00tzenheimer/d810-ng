@@ -3577,15 +3577,15 @@ def test_commit_finalization_restores_live_authority_after_terminal_failure(
         )
         expected_failure = "injected commit address-rebind failure"
     else:
-        canonicalize = sfb.canonicalize_explicit_return_to_stop_edge
+        canonicalize = modifier._canonicalize_semantic_terminal_return_now
 
-        def fail_after_terminal_mutation(block, final_block) -> bool:
-            assert canonicalize(block, final_block)
+        def fail_after_terminal_mutation(*, block, stop) -> bool:
+            assert canonicalize(block=block, stop=stop)
             raise RuntimeError("injected commit terminal-conversion failure")
 
         monkeypatch.setattr(
-            sfb,
-            "canonicalize_explicit_return_to_stop_edge",
+            modifier,
+            "_canonicalize_semantic_terminal_return_now",
             fail_after_terminal_mutation,
         )
         expected_failure = "injected commit terminal-conversion failure"
@@ -3632,6 +3632,7 @@ def test_commit_finalization_accepts_prefix_before_owned_return(monkeypatch) -> 
     stop = _Block(1, start=0x401010, block_type=ida_hexrays.BLT_STOP)
     mba = _Mba((terminal_block, stop))
     modifier = SimpleNamespace(mba=mba)
+    terminal_finalizations: list[tuple[object, object]] = []
     terminal = FragmentTerminalReturn(
         return_id="prefixed-return",
         block_id="terminal",
@@ -3662,10 +3663,12 @@ def test_commit_finalization_accepts_prefix_before_owned_return(monkeypatch) -> 
         final_block.predset.push_back(int(block.serial))
         return True
 
-    monkeypatch.setattr(
-        sfb,
-        "canonicalize_explicit_return_to_stop_edge",
-        canonicalize,
+    def canonicalize_through_modifier(*, block, stop) -> bool:
+        terminal_finalizations.append((block, stop))
+        return canonicalize(block, stop)
+
+    modifier._canonicalize_semantic_terminal_return_now = (
+        canonicalize_through_modifier
     )
 
     sfb._apply_semantic_fragment_commit_finalization(
@@ -3680,6 +3683,7 @@ def test_commit_finalization_accepts_prefix_before_owned_return(monkeypatch) -> 
     assert tuple(int(value) for value in terminal_block.succset) == (1,)
     assert tuple(int(value) for value in stop.predset) == (0,)
     assert state.instruction_origins_by_block_id == {"terminal": {}}
+    assert terminal_finalizations == [(terminal_block, stop)]
 
 
 def test_production_participant_preflights_before_realization_and_observes_live_state(
