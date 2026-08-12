@@ -26,6 +26,8 @@ from d810.core.function_storage_config import (
     FunctionStorageConfigurationError,
     parse_function_recipe_storage,
 )
+from d810.ui.about_dialog import show_about_dialog
+from d810.ui.about_logic import PRODUCT_NAME, package_version
 from d810.ui.icon_assets import bundled_icon
 from d810.ui.panel_density_logic import plan_panel_density
 from d810.ui.config_v2_editing_logic import (
@@ -666,7 +668,7 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         self.shown = True
         return ida_kernwin.PluginForm.Show(
             self,
-            "D-810 Configuration",
+            f"D-810 Configuration - {package_version()}",
             options=(
                 ida_kernwin.PluginForm.WOPN_PERSIST
                 | ida_kernwin.PluginForm.WCLS_SAVE
@@ -759,6 +761,15 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         self.btn_delele_cfg.setIconSize(QtCore.QSize(20, 20))
         self.btn_delele_cfg.clicked.connect(self._delete_config)
         config_row.addWidget(self.btn_delele_cfg)
+
+        # About (ticket d81-zijs). Last in the row so it reads as help rather
+        # than as another configuration action.
+        self.btn_about = QToolButton()
+        self.btn_about.setText("?")
+        self.btn_about.setToolTip(f"About {PRODUCT_NAME}")
+        self.btn_about.setFixedSize(32, 32)
+        self.btn_about.clicked.connect(self._show_about)
+        config_row.addWidget(self.btn_about)
 
         # Summary row: mode and pass count always visible, everything else
         # behind the disclosure.
@@ -1267,6 +1278,17 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         self.cfg_description.setText(project.description or "No description")
         self._apply_project_config_view(view)
         return
+
+    def _show_about(self):
+        """Open the About dialog (ticket d81-zijs).
+
+        Guarded: a failure here is cosmetic and must not raise into the Qt slot
+        and take the panel down -- same reasoning as ``_load_config``.
+        """
+        try:
+            show_about_dialog(self.parent)
+        except Exception:  # noqa: BLE001 - About is never worth a broken panel
+            logger.warning("Could not open the About dialog", exc_info=True)
 
     def _configure_plugin(self):
         editdlg = PluginConfigurationFileForm_t(self.parent, self.state)

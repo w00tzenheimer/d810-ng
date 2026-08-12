@@ -9,6 +9,26 @@ from d810.qt_shim import QtCore, QtGui
 _ICON_DIR = pathlib.Path(__file__).with_name("icons")
 _ICON_SIZE = 24
 
+#: Repository-root ``resources/`` -- the same directory ``ida-plugin.json``
+#: points ``logoPath`` at. Four parents up from ``src/d810/ui/icon_assets.py``.
+_RESOURCE_DIR = pathlib.Path(__file__).resolve().parents[3] / "resources"
+_LOGO_PATH = _RESOURCE_DIR / "d810ng-logo.png"
+
+
+def bundled_logo_pixmap(height: int) -> QtGui.QPixmap | None:
+    """Return the product logo scaled to *height*, or ``None`` if unavailable.
+
+    Scales by height only, so the source's 3:2 aspect ratio survives -- forcing
+    it into a square would visibly squash it. Returns ``None`` rather than a
+    null pixmap so callers can simply omit the logo.
+    """
+    if not _LOGO_PATH.is_file():
+        return None
+    pixmap = QtGui.QPixmap(str(_LOGO_PATH))
+    if pixmap.isNull():
+        return None
+    return pixmap.scaledToHeight(int(height), QtCore.Qt.SmoothTransformation)
+
 
 def bundled_icon(name: str) -> QtGui.QIcon:
     """Load a packaged SVG, drawing a compact fallback when Qt cannot rasterize it."""
