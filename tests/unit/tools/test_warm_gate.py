@@ -5,7 +5,8 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-WARM_GATE = REPO_ROOT / "tools" / "scripts" / "warm_gate.sh"
+SCRIPT_DIR = REPO_ROOT / "tools" / "scripts"
+WARM_GATE = SCRIPT_DIR / "warm_gate.sh"
 RUNTIME_LABEL = "dev-emulation-z3-v1"
 
 
@@ -13,6 +14,11 @@ def _make_harness(tmp_path: Path) -> tuple[Path, Path]:
     script = tmp_path / "tools" / "scripts" / "warm_gate.sh"
     script.parent.mkdir(parents=True)
     shutil.copy2(WARM_GATE, script)
+    # warm_gate.sh sources its sibling lib/dotenv.sh, so the copy needs the
+    # whole lib/ beside it. Copying the script alone made `source` fail under
+    # `set -e`: the script exited before touching docker, and every assertion
+    # here died on a missing docker.log instead of on the behaviour it tests.
+    shutil.copytree(SCRIPT_DIR / "lib", script.parent / "lib")
 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
