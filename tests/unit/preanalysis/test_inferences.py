@@ -19,12 +19,10 @@ class TestUnflatteningInference:
             suppress_stages=(),
         )
 
-    def test_high_confidence_suppresses_forward_constants(self) -> None:
+    def test_high_confidence_does_not_duplicate_fcp_early_safety_gate(self) -> None:
         hints = self._make_hints(confidence=0.8)
         deltas = unflattening_inference(hints)
-        suppressed = {d.target_id for d in deltas if d.action == "suppress"}
-        assert suppressed == {"forward-constants"}
-        assert "ForwardConstantPropagationRule" not in suppressed
+        assert deltas == []
 
     def test_low_confidence_no_deltas(self) -> None:
         hints = self._make_hints(confidence=0.3)
@@ -34,9 +32,7 @@ class TestUnflatteningInference:
     def test_threshold_boundary(self) -> None:
         hints = self._make_hints(confidence=0.7)
         deltas = unflattening_inference(hints)
-        suppressed = {d.target_id for d in deltas if d.action == "suppress"}
-        assert suppressed == {"forward-constants"}
-        assert "ForwardConstantPropagationRule" not in suppressed
+        assert deltas == []
 
     def test_just_below_threshold(self) -> None:
         hints = self._make_hints(confidence=0.69)

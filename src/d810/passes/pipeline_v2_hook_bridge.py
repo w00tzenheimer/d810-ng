@@ -12,6 +12,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from d810.core.config import RuleConfiguration
+from d810.core.maturity_labels import POST_STATE_MACHINE_FCP_MATURITIES
 from d810.passes.cleanup_family_adapter import (
     SIMPLE_FLATTENING_CLEANUP_PASS_ID,
     build_cleanup_family_adapter_pass,
@@ -222,7 +223,21 @@ def pipeline_v2_hook_activation(project_config) -> PipelineV2HookActivation:
     for config in configs:
         pass_id = config.pass_id
         if pass_id == CONSTANT_SIMPLIFICATION_PASS_ID:
-            bundle = constant_simplification_hook_rules(config)
+            bundle = constant_simplification_hook_rules(
+                config,
+                forward_constant_options=(
+                    {
+                        "maturities": list(POST_STATE_MACHINE_FCP_MATURITIES),
+                        # The accelerated path still identifies stack cells by
+                        # SSA valnum.  State-machine recovery creates the
+                        # post-recovery cross-block storage identity this pass
+                        # needs, so use the equivalent Python evaluator here.
+                        "cython_enabled": False,
+                    }
+                    if native_present
+                    else None
+                ),
+            )
             instruction_rules.extend(bundle.instruction_rules)
             block_rules.extend(bundle.block_rules)
             continue

@@ -13,6 +13,7 @@ from d810.core.execution_scope import (
     ExpandedExecutionStage,
     FunctionExecutionMetadata,
 )
+from d810.core.maturity_labels import IDA_MMAT_CALLS, IDA_MMAT_GLBOPT1, IDA_MMAT_GLBOPT2
 from d810.passes.execution_stages import ExecutionPipeline, ExecutionStageDescriptor
 from d810.passes.pass_pipeline import FunctionTarget
 
@@ -121,6 +122,37 @@ def test_wrong_maturity_and_hint_suppression_use_stable_stage_ids() -> None:
         project_name="proj", idb_key="idb", func_ea=0x402000, maturity=4
     )
     assert wrong.decisions[0].reason == "wrong-maturity"
+
+
+def test_legacy_flattening_forward_suppression_is_retired() -> None:
+    service = ExecutionScopeService()
+    service.configure(
+        (
+            _stage(
+                "constant-simplification",
+                "forward-constants",
+                maturities=frozenset(
+                    {IDA_MMAT_CALLS, IDA_MMAT_GLBOPT1, IDA_MMAT_GLBOPT2}
+                ),
+            ),
+        )
+    )
+    service.apply_hints(
+        SimpleNamespace(
+            func_ea=0x401000,
+            obfuscation_type="ollvm_flat",
+            recommended_inferences=("unflattening",),
+            suppress_stages=("forward-constants",),
+        )
+    )
+
+    post = service.explain(
+        project_name="proj",
+        idb_key="idb",
+        func_ea=0x401000,
+        maturity=IDA_MMAT_GLBOPT2,
+    )
+    assert post.decisions[0].reason == "active"
 
 
 def test_unknown_stable_targets_are_reported() -> None:

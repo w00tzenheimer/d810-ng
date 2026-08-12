@@ -113,6 +113,8 @@ def _rule(name: str, options: dict[str, object] | None = None) -> RuleConfigurat
 
 def constant_simplification_hook_rules(
     config: PipelineConfig,
+    *,
+    forward_constant_options: dict[str, object] | None = None,
 ) -> ConstantSimplificationHookRules:
     """Expand the logical pass into its ordered live Hex-Rays stages."""
     options = _parse_options(config)
@@ -131,7 +133,9 @@ def constant_simplification_hook_rules(
             _rule("FoldReadonlyDataRule", memory_options),
             _rule("ConstantSubtreeFoldRule"),
         ),
-        block_rules=(_rule("ForwardConstantPropagationRule"),),
+        block_rules=(
+            _rule("ForwardConstantPropagationRule", forward_constant_options),
+        ),
     )
 
 

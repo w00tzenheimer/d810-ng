@@ -12,11 +12,9 @@ from d810.passes.analysis import (
     _CONF_CLASSIFY_THRESHOLD,
     _FIXPRED_MIN_DISPATCHER_PREDS,
     _FLOW_PROFILE_MIN_CONFIDENCE,
-    _SUPPRESS_CONFIDENCE_THRESHOLD,
 )
 from d810.analyses.control_flow.models import (
     CandidateFlag,
-    DeobfuscationHints,
     PreanalysisResult,
 )
 from d810.passes.store import PreanalysisStore
@@ -351,12 +349,12 @@ class TestAllSupplementaryCombined:
 
 
 # ---------------------------------------------------------------------------
-# suppress_stages at high confidence
+# Flattening hints keep stage suppression empty
 # ---------------------------------------------------------------------------
 
 
-class TestSuppressRules:
-    def test_suppress_forward_constants_at_high_confidence(self) -> None:
+class TestFlatteningHints:
+    def test_no_stage_suppression_at_high_confidence(self) -> None:
         phase = AnalysisPhase()
         results = _base_flat_results()
         # Add supplementary signals to push confidence above threshold
@@ -379,12 +377,10 @@ class TestSuppressRules:
         )
         hints = phase.interpret(func_ea=0x401000, results=results)
         assert hints.obfuscation_type == "ollvm_flat"
-        assert hints.confidence >= _SUPPRESS_CONFIDENCE_THRESHOLD
-        assert hints.suppress_stages == ("forward-constants",)
-        assert "ForwardConstantPropagationRule" not in hints.suppress_stages
+        assert hints.suppress_stages == ()
 
-    def test_no_suppress_below_threshold(self) -> None:
-        """At baseline confidence (2 signals), no rule suppression."""
+    def test_no_stage_suppression_below_threshold(self) -> None:
+        """At baseline confidence (2 signals), no stage suppression."""
         phase = AnalysisPhase()
         hints = phase.interpret(func_ea=0x401000, results=_base_flat_results())
         assert hints.obfuscation_type == "ollvm_flat"
@@ -409,8 +405,8 @@ class TestSuppressRules:
         # with 2 signals it's 0.8). This is by design.
         assert hints.obfuscation_type == "ollvm_flat"
 
-    def test_no_suppress_when_not_classified(self) -> None:
-        """When not classified as ollvm_flat, no suppress_stages."""
+    def test_no_stage_suppression_when_not_classified(self) -> None:
+        """When not classified as ollvm_flat, no suppression is persisted."""
         phase = AnalysisPhase()
         results = [
             _preanalysis(
@@ -521,8 +517,7 @@ class TestUserOverride:
             assert hints.obfuscation_type == "ollvm_flat"
             assert hints.confidence == 1.0
             assert "unflattening" in hints.recommended_inferences
-            assert hints.suppress_stages == ("forward-constants",)
-            assert "ForwardConstantPropagationRule" not in hints.suppress_stages
+            assert hints.suppress_stages == ()
         finally:
             store.close()
 

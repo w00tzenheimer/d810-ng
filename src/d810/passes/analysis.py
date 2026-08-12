@@ -47,13 +47,10 @@ _COMPARE_CHAIN_MIN_LENGTH = 3
 _COMPARE_CHAIN_MIN_CONSTANTS = 4
 _FLOW_PROFILE_MIN_CONFIDENCE = 0.4
 
-# When confidence reaches this level with ollvm_flat, suppress the consolidated
-# pass's forward-constants stage. It can misread dispatcher-carried variables
-# before unflattening reconstructs path ownership. This is an internal,
-# evidence-derived stage gate; the public constant-simplification operation
-# remains enabled and its memory/subtree stages still prepare state constants.
-_SUPPRESS_CONFIDENCE_THRESHOLD = 0.7
-_FLATTENING_SUPPRESSED_STAGES = ("forward-constants",)
+# The executable early-maturity forward-constants gate belongs to the FCP rule
+# itself. Hints stay declarative and persist no flat stage suppression, because
+# a flat stage ID cannot express the safe post-unflatten ``MMAT_GLBOPT2``
+# boundary.
 
 
 class AnalysisPhase:
@@ -93,7 +90,6 @@ class AnalysisPhase:
                 suppress: tuple[str, ...] = ()
                 if override["override_value"] == "ollvm_flat":
                     inferences = ("unflattening",)
-                    suppress = _FLATTENING_SUPPRESSED_STAGES
                 return DeobfuscationHints(
                     func_ea=func_ea,
                     obfuscation_type=override["override_value"],
@@ -180,13 +176,10 @@ class AnalysisPhase:
         if confidence >= _CONF_CLASSIFY_THRESHOLD:
             obfuscation_type: str | None = "ollvm_flat"
             recommended_inferences: tuple[str, ...] = ("unflattening",)
-            # Suppress path-insensitive forward propagation at high confidence.
-            # Memory and constant-subtree folding remain available to recover
-            # opaque dispatcher state values.
-            if min(1.0, confidence) >= _SUPPRESS_CONFIDENCE_THRESHOLD:
-                suppress_stages: tuple[str, ...] = _FLATTENING_SUPPRESSED_STAGES
-            else:
-                suppress_stages = ()
+            # FCP applies its own early-maturity safety gate. Keep this
+            # persisted hint free of flat stage suppressions so the recovered
+            # GLBOPT2 pass can still run.
+            suppress_stages: tuple[str, ...] = ()
         else:
             obfuscation_type = None
             recommended_inferences = ()

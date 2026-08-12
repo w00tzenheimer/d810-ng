@@ -37,6 +37,22 @@ def test_default_bundle_expands_to_one_ordered_memory_fold_flow_pipeline():
     assert rules.block_rules[0].config == {}
 
 
+def test_state_machine_bundle_configures_one_post_unflatten_flow_rule():
+    rules = constant_simplification_hook_rules(
+        _config(),
+        forward_constant_options={
+            "maturities": ["MMAT_GLBOPT2"],
+            "cython_enabled": False,
+        },
+    )
+
+    assert [rule.name for rule in rules.block_rules] == ["ForwardConstantPropagationRule"]
+    assert rules.block_rules[0].config == {
+        "maturities": ["MMAT_GLBOPT2"],
+        "cython_enabled": False,
+    }
+
+
 def test_bundle_maps_aggressive_and_dangerous_options_only_to_memory_stage():
     rules = constant_simplification_hook_rules(
         _config(

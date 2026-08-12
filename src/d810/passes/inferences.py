@@ -2,35 +2,24 @@
 
 from __future__ import annotations
 
-from d810.core.execution_scope import (
-    ExecutionAdjustment,
-    ExecutionAdjustmentAction,
-    ExecutionTargetKind,
-)
+from d810.core.execution_scope import ExecutionAdjustment
 from d810.core.typing import Any
 
 
 def unflattening_inference(hints: Any) -> list[ExecutionAdjustment]:
-    """Infer execution adjustments for functions with detected control-flow flattening.
+    """Retain the public inference name without duplicating FCP's safety gate.
 
-    Confidence-gated: suppresses the stable ``forward-constants`` stage at >= 0.7
-    because path-insensitive scalar propagation can interfere with
-    dispatcher-state recovery before control-flow ownership is reconstructed.
+    ``ForwardConstantPropagationRule`` owns its narrow MMAT_CALLS dispatcher
+    guard. Config-v2 native state-machine projects schedule that rule only at
+    MMAT_GLBOPT2. An execution-scope suppression here would therefore be a
+    redundant second policy and can accidentally suppress post-unflatten FCP.
 
     Args:
         hints: ``DeobfuscationHints`` (duck-typed to avoid circular import).
 
     Returns:
-        List of ``ExecutionAdjustment`` objects to apply for this function.
+        No adjustments. The name remains registered for persisted hints and
+        execution diagnostics.
     """
-    deltas: list[ExecutionAdjustment] = []
-    confidence = getattr(hints, "confidence", 0.0)
-    if confidence >= 0.7:
-        deltas.append(
-            ExecutionAdjustment(
-                ExecutionTargetKind.STAGE,
-                "forward-constants",
-                ExecutionAdjustmentAction.SUPPRESS,
-            )
-        )
-    return deltas
+    del hints
+    return []

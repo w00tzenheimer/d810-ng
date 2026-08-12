@@ -85,7 +85,7 @@ def test_constant_simplification_bundle_expands_to_private_live_stages():
         "rva_guard": True,
     }
     assert [rule.name for rule in activation.block_rules] == [
-        "ForwardConstantPropagationRule"
+        "ForwardConstantPropagationRule",
     ]
 
 
@@ -177,6 +177,36 @@ def test_hodur_bridge_derives_unflattener_trigger_and_simple_flow_rule():
     ]
     unflattener = activation.block_rules[0]
     assert unflattener.config == {"min_state_constant": 16777216}
+
+
+def test_state_machine_plus_constant_bundle_schedules_one_late_flow_fold():
+    project = ProjectConfiguration(
+        path=Path("state-machine-constant.runtime-config-v2.json"),
+        additional_configuration={
+            "pipeline_v2_mode": "config-v2",
+            "pipeline_v2": [
+                *(
+                    {"pass_id": pass_id, "options": {}}
+                    for pass_id in STATE_MACHINE_NATIVE_PASS_IDS
+                ),
+                {
+                    "pass_id": "constant-simplification",
+                    "options": {"memory_policy": "strict"},
+                },
+            ],
+        },
+    )
+
+    activation = pipeline_v2_hook_activation(project)
+
+    assert [rule.name for rule in activation.block_rules] == [
+        STATE_MACHINE_UNFLATTENER_RULE,
+        "ForwardConstantPropagationRule",
+    ]
+    assert activation.block_rules[1].config == {
+        "maturities": ["MMAT_GLBOPT2"],
+        "cython_enabled": False,
+    }
 
 
 def test_state_cff_bridge_accepts_typed_direct_threshold_on_the_complete_spine():

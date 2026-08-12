@@ -84,6 +84,11 @@ _VALUE_BY_NAME: Mapping[MaturityNumbering, Mapping[str, int]] = MappingProxyType
 IDA_MATURITY_VALUES: Mapping[str, int] = MappingProxyType(
     {name: index for index, name in enumerate(IDA_MATURITY_NAMES)}
 )
+# Provider label owned at the core compatibility boundary. Portable pipeline
+# assembly refers to this policy name rather than embedding an MMAT spelling.
+POST_STATE_MACHINE_FCP_MATURITIES = (
+    IDA_MATURITY_NAMES[IDA_MMAT_GLBOPT2],
+)
 WITH_ZERO_MATURITY_VALUES: Mapping[str, int] = MappingProxyType(
     {name: index for index, name in enumerate(WITH_ZERO_MATURITY_NAMES)}
 )
@@ -246,6 +251,7 @@ __all__ = [
     "IDA_MATURITY_VALUES",
     "LOCAL_FACT_COLLECTION_MATURITIES",
     "MaturityNumbering",
+    "POST_STATE_MACHINE_FCP_MATURITIES",
     "WITH_ZERO_MATURITY_NAMES",
     "WITH_ZERO_MATURITY_VALUES",
     "WITH_ZERO_MMAT_CALLS",

@@ -275,8 +275,27 @@ class ExecutionScopeService:
             applied.append(name)
         if inferred:
             self._hint_inferences[func_ea] = tuple(inferred)
-        suppressed = tuple(
+        raw_suppressed = tuple(
             str(value) for value in getattr(hints, "suppress_stages", ())
+        )
+        # Older D810 databases persisted an OLLVM flattening hint as a flat
+        # suppression of forward-constants.  It predates config-v2's delayed
+        # FCP scheduling and the rule's own MMAT_CALLS safety gate, so retaining
+        # it would incorrectly block the GLBOPT2 recovery pass.  Consume only
+        # that precise stale encoding; every other explicit suppression keeps
+        # its unconditional meaning.
+        legacy_flattening_forward_suppression = (
+            getattr(hints, "obfuscation_type", None) == "ollvm_flat"
+            and "unflattening"
+            in tuple(getattr(hints, "recommended_inferences", ()))
+        )
+        suppressed = tuple(
+            stage_id
+            for stage_id in raw_suppressed
+            if not (
+                legacy_flattening_forward_suppression
+                and stage_id == "forward-constants"
+            )
         )
         if suppressed:
             self._hint_suppressions[func_ea] = frozenset(suppressed)
