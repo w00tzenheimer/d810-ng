@@ -765,6 +765,12 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
                 lv = consts.get(name, BOTTOM)
                 if not isinstance(lv, Const):
                     return False  # skip TOP and BOTTOM
+                # Stack keys intentionally identify storage rather than a
+                # particular mop width.  A narrower read is the low portion
+                # of a known wider value; a wider read after a narrow write
+                # would manufacture unknown high bytes and is unsound.
+                if op.size > lv.size:
+                    return False
                 val = lv.value
                 if op.size not in _VALID_MOP_SIZES:
                     logger.warning(

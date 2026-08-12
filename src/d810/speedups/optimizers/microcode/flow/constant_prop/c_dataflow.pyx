@@ -48,7 +48,6 @@ from d810.speedups.cythxr._chexrays cimport (
     mcallinfo_t,
     LOCOPT_FLAGS,
 )
-from d810.speedups.cythxr._chexrays_api cimport stack_var_name as _stack_var_name
 
 # ---------------------------------------------------------------------------
 #  Tiny helpers – still in C for speed
@@ -77,6 +76,22 @@ cdef sval_t _get_mba_frame_size(mba_t* mba):
     if mba.fullsize:
         return mba.fullsize
     return 0
+
+
+cdef inline qstring _constant_propagation_stack_name(mop_t* mop):
+    """Return a width- and SSA-independent identity for one stack slot."""
+    cdef:
+        qstring name
+        qstring empty
+        stkvar_ref_t* s_ptr
+
+    if mop.t != MOPT.STACK:
+        return empty
+    s_ptr = <stkvar_ref_t*> mop.s
+    if s_ptr == NULL:
+        return empty
+    name.sprnt("stack@%llX", <uint64> s_ptr.off)
+    return name
 
 # cdef inline qstring _stack_var_name(mop_t* mop):
 #     cdef qstring rname
@@ -160,7 +175,7 @@ cdef inline qstring _get_written_var_name(minsn_t* ins):
         qstring empty
 
     if d.t == MOPT.STACK:
-        return _stack_var_name(d)
+        return _constant_propagation_stack_name(d)
     return empty
 
 
@@ -267,11 +282,11 @@ cdef inline void _transfer_insn(mblock_t* blk, minsn_t* ins, CppConstMap& env):
     cdef mop_off_pair_t pair
 
     if ins.opcode == mcode_t.m_mov or ins.d.t == MOPT.STACK:
-        var_name = _stack_var_name(&ins.d)
+        var_name = _constant_propagation_stack_name(&ins.d)
     else:
         pair = _extract_base_and_offset(&ins.d)
         if pair.first != NULL:
-            var_name = _stack_var_name(pair.first)
+            var_name = _constant_propagation_stack_name(pair.first)
             if not var_name.empty() and pair.second:
                 var_name.cat_sprnt("+%llX", pair.second)
 
@@ -315,13 +330,13 @@ cdef void _transfer_block(mblock_t* blk, const CppConstMap& INb, CppConstMap& OU
                 OUTb.erase(name)
         else:
             if ins.opcode == mcode_t.m_mov:
-                var_name = _stack_var_name(&ins.d)
+                var_name = _constant_propagation_stack_name(&ins.d)
             elif ins.d.t == MOPT.STACK:
-                var_name = _stack_var_name(&ins.d)
+                var_name = _constant_propagation_stack_name(&ins.d)
             else:
                 res_pair = _extract_base_and_offset(&ins.d)
                 if res_pair.first != NULL:
-                    var_name = _stack_var_name(res_pair.first)
+                    var_name = _constant_propagation_stack_name(res_pair.first)
                     if not var_name.empty() and res_pair.second:
                         var_name.cat_sprnt("+%llX", res_pair.second)
 
@@ -386,13 +401,13 @@ cpdef cy_extract_assignment(object ins_py):
     cdef uint64 value = ins.l.nnn.value
     cdef int size = ins.l.size
     if ins.opcode == mcode_t.m_mov:
-        var_name = _stack_var_name(&ins.d)
+        var_name = _constant_propagation_stack_name(&ins.d)
     elif ins.d.t == MOPT.STACK:
-        var_name = _stack_var_name(&ins.d)
+        var_name = _constant_propagation_stack_name(&ins.d)
     else:
         result = _extract_base_and_offset(&ins.d)
         if result.first != NULL:
-            var_name = _stack_var_name(result.first)
+            var_name = _constant_propagation_stack_name(result.first)
             if not var_name.empty():
                 if result.second:
                     var_name.cat_sprnt("+%llX", result.second)
@@ -439,11 +454,13 @@ cdef bint _cy_process_operand(mop_t* op, CppConstMap& consts):
         bint const_info_found
 
     if op.t == MOPT.STACK:
-        name = _stack_var_name(op)
+        name = _constant_propagation_stack_name(op)
         if not name.empty():
             it = consts.find(name)
             if it != consts.end():
                 if op.size not in (1, 2, 4, 8, 16):
+                    return <bint>False
+                if op.size > deref(it).second.second:
                     return <bint>False
                 val = deref(it).second.first
                 temp_mop.make_number(val & _mask_for_bytes(op.size), op.size)
@@ -456,14 +473,14 @@ cdef bint _cy_process_operand(mop_t* op, CppConstMap& consts):
             const_info_found = <bint>False
 
             if addr.t == MOPT.STACK:
-                name = _stack_var_name(addr)
+                name = _constant_propagation_stack_name(addr)
                 it = consts.find(name)
                 if it != consts.end():
                     const_info_found = <bint>True
             else:
                 result = _extract_base_and_offset(addr)
                 if result.first != NULL:
-                    base_name = _stack_var_name(result.first)
+                    base_name = _constant_propagation_stack_name(result.first)
                     if not base_name.empty():
                         if result.second:
                             full_name = base_name
@@ -476,6 +493,8 @@ cdef bint _cy_process_operand(mop_t* op, CppConstMap& consts):
 
             if const_info_found:
                 if op.size not in (1, 2, 4, 8, 16):
+                    return <bint>False
+                if op.size > deref(it).second.second:
                     return <bint>False
                 val = deref(it).second.first
                 temp_mop.make_number(val & _mask_for_bytes(op.size), op.size)
