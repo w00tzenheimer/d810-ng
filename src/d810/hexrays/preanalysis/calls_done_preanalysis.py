@@ -5,20 +5,31 @@ from __future__ import annotations
 from collections.abc import Callable, MutableMapping
 
 from d810.core.logging import getLogger
+from d810.core.normalization_policy import Seam
+from d810.hexrays.preanalysis._seam_gate import (
+    RegisteredSeamHandler,
+    permitted_seam_handlers,
+)
 
 logger = getLogger("d810.hexrays.preanalysis.calls_done")
 
 CallsDonePreanalysisHandler = Callable[..., None]
 
-_CALLS_DONE_PREANALYSIS_HANDLERS: dict[str, CallsDonePreanalysisHandler] = {}
+_SEAM = Seam.CALLS_DONE
+
+_CALLS_DONE_PREANALYSIS_HANDLERS: dict[str, RegisteredSeamHandler] = {}
 
 
 def register_calls_done_preanalysis_handler(
     name: str,
     handler: CallsDonePreanalysisHandler,
+    *,
+    read_only: bool = False,
 ) -> None:
     """Register a named handler for the live MMAT_CALLS MBA."""
-    _CALLS_DONE_PREANALYSIS_HANDLERS[str(name)] = handler
+    _CALLS_DONE_PREANALYSIS_HANDLERS[str(name)] = RegisteredSeamHandler(
+        handler, read_only
+    )
 
 
 def unregister_calls_done_preanalysis_handler(name: str) -> None:
@@ -34,7 +45,9 @@ def run_calls_done_preanalysis_handlers(
     **_kwargs: object,
 ) -> None:
     """Run handlers over the live MBA after call analysis is complete."""
-    for name, handler in tuple(_CALLS_DONE_PREANALYSIS_HANDLERS.items()):
+    for name, handler in permitted_seam_handlers(
+        _SEAM, int(function_ea), _CALLS_DONE_PREANALYSIS_HANDLERS
+    ):
         try:
             handler(
                 function_ea=int(function_ea),

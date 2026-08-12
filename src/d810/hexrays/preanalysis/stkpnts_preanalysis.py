@@ -5,20 +5,29 @@ from __future__ import annotations
 from collections.abc import Callable, MutableMapping
 
 from d810.core.logging import getLogger
+from d810.core.normalization_policy import Seam
+from d810.hexrays.preanalysis._seam_gate import (
+    RegisteredSeamHandler,
+    permitted_seam_handlers,
+)
 
 logger = getLogger("d810.hexrays.preanalysis.stkpnts")
 
 StkpntsPreanalysisHandler = Callable[..., None]
 
-_STKPNTS_PREANALYSIS_HANDLERS: dict[str, StkpntsPreanalysisHandler] = {}
+_SEAM = Seam.STKPNTS
+
+_STKPNTS_PREANALYSIS_HANDLERS: dict[str, RegisteredSeamHandler] = {}
 
 
 def register_stkpnts_preanalysis_handler(
     name: str,
     handler: StkpntsPreanalysisHandler,
+    *,
+    read_only: bool = False,
 ) -> None:
     """Register a named provider for ``hxe_stkpnts``."""
-    _STKPNTS_PREANALYSIS_HANDLERS[str(name)] = handler
+    _STKPNTS_PREANALYSIS_HANDLERS[str(name)] = RegisteredSeamHandler(handler, read_only)
 
 
 def unregister_stkpnts_preanalysis_handler(name: str) -> None:
@@ -35,7 +44,9 @@ def run_stkpnts_preanalysis_handlers(
     **_kwargs: object,
 ) -> None:
     """Run providers while Hex-Rays' transient ``stkpnts_t`` is mutable."""
-    for name, handler in tuple(_STKPNTS_PREANALYSIS_HANDLERS.items()):
+    for name, handler in permitted_seam_handlers(
+        _SEAM, int(function_ea), _STKPNTS_PREANALYSIS_HANDLERS
+    ):
         try:
             handler(
                 function_ea=int(function_ea),

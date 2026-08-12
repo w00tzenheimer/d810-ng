@@ -5,21 +5,30 @@ from __future__ import annotations
 from collections.abc import Callable, MutableMapping
 
 from d810.core.logging import getLogger
+from d810.core.normalization_policy import Seam
+from d810.hexrays.preanalysis._seam_gate import (
+    RegisteredSeamHandler,
+    permitted_seam_handlers,
+)
 from d810.transforms.cfg_transaction import CfgGenerationPoisoned
 
 logger = getLogger("d810.hexrays.preanalysis.preopt")
 
 PreoptPreanalysisHandler = Callable[..., None]
 
-_PREOPT_PREANALYSIS_HANDLERS: dict[str, PreoptPreanalysisHandler] = {}
+_SEAM = Seam.PREOPT
+
+_PREOPT_PREANALYSIS_HANDLERS: dict[str, RegisteredSeamHandler] = {}
 
 
 def register_preopt_preanalysis_handler(
     name: str,
     handler: PreoptPreanalysisHandler,
+    *,
+    read_only: bool = False,
 ) -> None:
     """Register a named handler for the live MMAT_PREOPTIMIZED MBA."""
-    _PREOPT_PREANALYSIS_HANDLERS[str(name)] = handler
+    _PREOPT_PREANALYSIS_HANDLERS[str(name)] = RegisteredSeamHandler(handler, read_only)
 
 
 def unregister_preopt_preanalysis_handler(name: str) -> None:
@@ -35,7 +44,9 @@ def run_preopt_preanalysis_handlers(
     **_kwargs: object,
 ) -> None:
     """Run handlers after PREOPT and before local and call analysis."""
-    for name, handler in tuple(_PREOPT_PREANALYSIS_HANDLERS.items()):
+    for name, handler in permitted_seam_handlers(
+        _SEAM, int(function_ea), _PREOPT_PREANALYSIS_HANDLERS
+    ):
         try:
             handler(
                 function_ea=int(function_ea),

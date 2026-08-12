@@ -111,11 +111,15 @@ def test_manager_normalization_is_the_named_preopt_publication_authority(
 
     live_normalization.install_live_frontend_normalization()
 
-    assert preopt._PREOPT_PREANALYSIS_HANDLERS == {
-        "manager.frontend_normalization": (
-            live_normalization.run_live_frontend_normalization
-        ),
-    }
+    # Registered handlers are wrapped in a RegisteredSeamHandler so the seam
+    # policy gate can tell mutators from read-only observers; assert the
+    # authority and its declared kind rather than the bare callable.
+    assert list(preopt._PREOPT_PREANALYSIS_HANDLERS) == [
+        "manager.frontend_normalization"
+    ]
+    registered = preopt._PREOPT_PREANALYSIS_HANDLERS["manager.frontend_normalization"]
+    assert registered.handler is live_normalization.run_live_frontend_normalization
+    assert registered.read_only is False
 
     live_normalization.uninstall_live_frontend_normalization()
 

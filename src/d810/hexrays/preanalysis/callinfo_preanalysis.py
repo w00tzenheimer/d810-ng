@@ -5,20 +5,31 @@ from __future__ import annotations
 from collections.abc import Callable, MutableMapping
 
 from d810.core.logging import getLogger
+from d810.core.normalization_policy import Seam
+from d810.hexrays.preanalysis._seam_gate import (
+    RegisteredSeamHandler,
+    permitted_seam_handlers,
+)
 
 logger = getLogger("d810.hexrays.preanalysis.callinfo")
 
 CallinfoPreanalysisHandler = Callable[..., None]
 
-_CALLINFO_PREANALYSIS_HANDLERS: dict[str, CallinfoPreanalysisHandler] = {}
+_SEAM = Seam.CALLINFO
+
+_CALLINFO_PREANALYSIS_HANDLERS: dict[str, RegisteredSeamHandler] = {}
 
 
 def register_callinfo_preanalysis_handler(
     name: str,
     handler: CallinfoPreanalysisHandler,
+    *,
+    read_only: bool = False,
 ) -> None:
     """Register a named provider for ``hxe_build_callinfo``."""
-    _CALLINFO_PREANALYSIS_HANDLERS[str(name)] = handler
+    _CALLINFO_PREANALYSIS_HANDLERS[str(name)] = RegisteredSeamHandler(
+        handler, read_only
+    )
 
 
 def unregister_callinfo_preanalysis_handler(name: str) -> None:
@@ -35,7 +46,9 @@ def run_callinfo_preanalysis_handlers(
     **_kwargs: object,
 ) -> None:
     """Run providers before Hex-Rays guesses one call's prototype."""
-    for name, handler in tuple(_CALLINFO_PREANALYSIS_HANDLERS.items()):
+    for name, handler in permitted_seam_handlers(
+        _SEAM, int(function_ea), _CALLINFO_PREANALYSIS_HANDLERS
+    ):
         try:
             handler(
                 function_ea=int(function_ea),

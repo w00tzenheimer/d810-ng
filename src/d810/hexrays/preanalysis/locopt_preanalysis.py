@@ -5,20 +5,29 @@ from __future__ import annotations
 from collections.abc import Callable, MutableMapping
 
 from d810.core.logging import getLogger
+from d810.core.normalization_policy import Seam
+from d810.hexrays.preanalysis._seam_gate import (
+    RegisteredSeamHandler,
+    permitted_seam_handlers,
+)
 
 logger = getLogger("d810.hexrays.preanalysis.locopt")
 
 LocoptPreanalysisHandler = Callable[..., None]
 
-_LOCOPT_PREANALYSIS_HANDLERS: dict[str, LocoptPreanalysisHandler] = {}
+_SEAM = Seam.LOCOPT
+
+_LOCOPT_PREANALYSIS_HANDLERS: dict[str, RegisteredSeamHandler] = {}
 
 
 def register_locopt_preanalysis_handler(
     name: str,
     handler: LocoptPreanalysisHandler,
+    *,
+    read_only: bool = False,
 ) -> None:
     """Register a named handler for the live MMAT_LOCOPT MBA."""
-    _LOCOPT_PREANALYSIS_HANDLERS[str(name)] = handler
+    _LOCOPT_PREANALYSIS_HANDLERS[str(name)] = RegisteredSeamHandler(handler, read_only)
 
 
 def unregister_locopt_preanalysis_handler(name: str) -> None:
@@ -34,7 +43,9 @@ def run_locopt_preanalysis_handlers(
     **_kwargs: object,
 ) -> None:
     """Run handlers after LOCOPT and before Hex-Rays analyzes calls."""
-    for name, handler in tuple(_LOCOPT_PREANALYSIS_HANDLERS.items()):
+    for name, handler in permitted_seam_handlers(
+        _SEAM, int(function_ea), _LOCOPT_PREANALYSIS_HANDLERS
+    ):
         try:
             handler(
                 function_ea=int(function_ea),
