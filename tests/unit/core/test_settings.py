@@ -29,6 +29,12 @@ class TestD810Settings:
         assert s.capture_post_file == "/tmp/d810_capture.txt"
         assert s.fact_lifecycle is True
         assert s.trace_decompile_callers is False
+        assert s.allow_attested_input_identity_recovery is False
+
+    def test_from_env_reads_attested_input_identity_recovery(self, monkeypatch):
+        monkeypatch.setenv("D810_ALLOW_ATTESTED_INPUT_IDENTITY_RECOVERY", "1")
+        reset_settings()
+        assert get_settings().allow_attested_input_identity_recovery is True
 
     def test_from_env_reads_trace_decompile_callers(self, monkeypatch):
         monkeypatch.setenv("D810_TRACE_DECOMPILE_CALLERS", "1")
