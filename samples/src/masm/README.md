@@ -157,3 +157,5 @@ asserted AFTER the retarget made it real). Verify with:
   extraction loses the binary's extern/data context so it only PARTIALLY
   unflattens here; its case guards the no-INTERR + must-change property.
 - `sub_7FFD3338C040.asm` — earlier Hodur extraction.
+- `sub_7FF85A13D930.asm` — Hodur-like dispatcher with a cross-block constant
+  return chain; guards forward propagation before subtree folding.

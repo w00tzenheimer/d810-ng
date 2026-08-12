@@ -828,6 +828,23 @@ DAC_MASM_CASES = [
         skip_if_function_absent=True,
     ),
     DeobfuscationCase(
+        function="sub_7FF85A13D930",
+        description=(
+            "Hodur-like dispatcher fixture exported from a live IDB. "
+            "Guards cross-block propagation of a single stack constant into "
+            "the terminal opaque arithmetic chain, which must simplify to "
+            "the concrete zero result."
+        ),
+        project="hodur_flag2_s1a_config_v2_canary_constant_simplification.json",
+        obfuscated_contains=["0x7D0D862F", "0xC195E826"],
+        deobfuscated_contains=["result = 0;"],
+        deobfuscated_not_contains=["0x7D0D862F", "0xC195E826"],
+        must_change=True,
+        required_rules=["ForwardConstantPropagationRule"],
+        expected_rules=["ConstantSubtreeFoldRule"],
+        skip_if_function_absent=True,
+    ),
+    DeobfuscationCase(
         function="sub_1815C8C30",
         description="dac.dll rand()%3 helper (issue #48, MASM-extracted). Full "
         "golden: `return rand() % 3u;`. Guards two facts: (1) the "
