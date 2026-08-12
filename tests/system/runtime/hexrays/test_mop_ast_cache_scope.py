@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import ida_hexrays
 import pytest
 
+from d810.core.cymode import CythonMode
 from d810.hexrays.ir import mop_utils
 
 
@@ -56,6 +57,8 @@ def test_cython_ast_cache_key_scopes_stack_operands_by_mba(
     monkeypatch,
     nested: bool,
 ) -> None:
+    if not CythonMode().is_enabled():
+        pytest.skip("Cython speedups are disabled for this runtime")
     c_ast = pytest.importorskip("d810.speedups.expr.c_ast")
     monkeypatch.setattr(c_ast, "get_mop_key", lambda _mop: ("same",))
     first = _stack_operand(0x1111)
