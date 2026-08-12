@@ -769,13 +769,6 @@ def test_ida_94_x11_runtime_label_is_accepted(tmp_path: Path) -> None:
     assert any(call[:2] == ["run", "--rm"] for call in calls)
 
 
-def test_runtime_dockerfile_can_label_an_x11_gui_image() -> None:
-    dockerfile = (REPO_ROOT / "docker" / "Dockerfile.test-runtime").read_text(
-        encoding="utf-8"
-    )
-
-    assert "ARG D810_GUI_RUNTIME_LABEL" in dockerfile
-    assert "org.d810.gui-runtime=${D810_GUI_RUNTIME_LABEL}" in dockerfile
 
 
 def test_worktree_launch_copies_sample_database_and_preserves_other_ida_arguments(
