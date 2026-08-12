@@ -22,7 +22,9 @@ def _install_fake_ida(monkeypatch: pytest.MonkeyPatch) -> None:
     modules = {
         "ida_nalt": SimpleNamespace(
             retrieve_input_file_sha256=lambda: bytes.fromhex("11" * 32),
+            retrieve_input_file_size=lambda: 3,
             get_imagebase=lambda: 0x400000,
+            get_input_file_path=lambda: "",
         ),
         "ida_funcs": SimpleNamespace(
             get_func=lambda _ea: SimpleNamespace(start_ea=0x401000),
@@ -34,8 +36,18 @@ def _install_fake_ida(monkeypatch: pytest.MonkeyPatch) -> None:
             get_bytes=lambda ea, _size: item_bytes[ea],
         ),
         "ida_idp": SimpleNamespace(get_idp_name=lambda: "PC"),
-        "idaapi": SimpleNamespace(IDA_SDK_VERSION=930),
+        "idaapi": SimpleNamespace(IDA_SDK_VERSION=930, get_idb_ctime=lambda: 1700000000),
         "ida_hexrays": SimpleNamespace(get_hexrays_version=lambda: "9.3.0.250604"),
+        "ida_segment": SimpleNamespace(
+            get_segm_qty=lambda: 1,
+            getnseg=lambda _index: SimpleNamespace(
+                start_ea=0x400000,
+                end_ea=0x500000,
+                sel=1,
+                perm=5,
+                bitness=2,
+            ),
+        ),
     }
     for name, module in modules.items():
         monkeypatch.setitem(sys.modules, name, module)

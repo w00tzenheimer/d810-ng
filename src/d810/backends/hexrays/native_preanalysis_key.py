@@ -2,12 +2,48 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from dataclasses import dataclass
 import hashlib
 import json
-import struct
-from collections.abc import Mapping
+from pathlib import Path
 
+from d810.backends.hexrays.input_identity_attestation import (
+    InputIdentityAttestationMalformed,
+    InputIdentityAttestationStore,
+    NetnodeInputIdentityAttestationStore,
+    SqliteInputIdentityAttestationMirror,
+    collect_current_input_identity_evidence,
+    default_mirror_path,
+    input_file_path,
+    input_size,
+    loader_sha256,
+    make_attestation,
+    sha256_file,
+)
+from d810.core.input_identity_attestation import (
+    InputIdentityRecoveryStatus,
+    InputIdentityResolution,
+    resolve_attested_input_identity,
+)
+from d810.core.logging import getLogger
 from d810.core.native_preanalysis_key import NativePreanalysisKey
+from d810.core.settings import get_settings
+
+
+logger = getLogger("d810.native_preanalysis_key")
+
+
+@dataclass(frozen=True, slots=True)
+class NativePreanalysisIdentityResolution:
+    """A native key together with its loader or attestation provenance."""
+
+    native_key: NativePreanalysisKey | None
+    identity_resolution: InputIdentityResolution
+
+    @property
+    def external_evidence_allowed(self) -> bool:
+        return self.identity_resolution.external_evidence_allowed
 
 
 def fingerprint_profile_config(profile_config: Mapping[str, object]) -> str:
@@ -26,37 +62,148 @@ def fingerprint_profile_config(profile_config: Mapping[str, object]) -> str:
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
-def _input_identity(ida_nalt: object) -> str:
-    digest = ida_nalt.retrieve_input_file_sha256()
-    if not isinstance(digest, bytes) or len(digest) != hashlib.sha256().digest_size:
-        raise ValueError("current database has no valid input SHA-256")
-    return f"sha256:{digest.hex()}"
+def _default_attestation_store() -> InputIdentityAttestationStore | None:
+    try:
+        return NetnodeInputIdentityAttestationStore()
+    except Exception as error:
+        logger.warning("Input identity attestation netnode is unavailable: %s", error)
+        return None
 
 
-def _function_fingerprint(
+def _malformed_resolution() -> InputIdentityResolution:
+    return InputIdentityResolution(
+        status=InputIdentityRecoveryStatus.ATTESTATION_MALFORMED,
+        input_identity=None,
+        provenance=None,
+        external_evidence_allowed=False,
+    )
+
+
+def _refresh_attestation(
     *,
+    store: InputIdentityAttestationStore | None,
+    mirror_path: Path | None,
+    current,
+    loader_digest: str,
+    ida_nalt: object,
+) -> None:
+    if store is None:
+        return
+    try:
+        previous = store.load()
+    except InputIdentityAttestationMalformed as error:
+        logger.warning("Replacing malformed input identity attestation: %s", error)
+        previous = None
+    try:
+        attestation = make_attestation(
+            current=current,
+            input_sha256=loader_digest,
+            input_size_bytes=input_size(ida_nalt),
+            previous=previous,
+        )
+        store.save(attestation)
+    except Exception as error:
+        logger.warning("Failed to persist input identity attestation: %s", error)
+        return
+    if mirror_path is None:
+        return
+    try:
+        SqliteInputIdentityAttestationMirror(mirror_path).save(attestation)
+    except Exception as error:
+        logger.warning("Failed to mirror input identity attestation: %s", error)
+
+
+def resolve_native_preanalysis_identity(
     function_ea: int,
-    imagebase: int,
-    ida_bytes: object,
-    idautils: object,
-) -> str:
-    hasher = hashlib.sha256()
-    item_eas = tuple(sorted({int(ea) for ea in idautils.FuncItems(function_ea)}))
-    if not item_eas:
-        raise ValueError(f"function 0x{function_ea:X} has no native items")
-    for item_ea in item_eas:
-        size = int(ida_bytes.get_item_size(item_ea))
-        if size <= 0:
-            raise ValueError(f"function item 0x{item_ea:X} has invalid size")
-        body = ida_bytes.get_bytes(item_ea, size)
-        if not isinstance(body, bytes) or len(body) != size:
-            raise ValueError(f"function item 0x{item_ea:X} bytes are unavailable")
-        item_rva = item_ea - imagebase
-        if item_rva < 0:
-            raise ValueError(f"function item 0x{item_ea:X} precedes image base")
-        hasher.update(struct.pack(">QI", item_rva, size))
-        hasher.update(body)
-    return f"sha256:{hasher.hexdigest()}"
+    *,
+    profile_config: Mapping[str, object],
+    allow_attested_recovery: bool | None = None,
+    attestation_store: InputIdentityAttestationStore | None = None,
+    mirror_path: str | Path | None = None,
+) -> NativePreanalysisIdentityResolution:
+    """Derive a native key without treating input-path text as identity."""
+
+    import ida_bytes
+    import ida_funcs
+    import ida_hexrays
+    import ida_idp
+    import ida_nalt
+    import ida_segment
+    import idaapi
+    import idautils
+
+    current = collect_current_input_identity_evidence(
+        int(function_ea),
+        ida_bytes=ida_bytes,
+        ida_funcs=ida_funcs,
+        ida_idp=ida_idp,
+        ida_nalt=ida_nalt,
+        ida_segment=ida_segment,
+        idaapi=idaapi,
+        idautils=idautils,
+    )
+    loader_digest = loader_sha256(ida_nalt)
+    store = attestation_store if attestation_store is not None else _default_attestation_store()
+    resolved_mirror_path = (
+        Path(mirror_path)
+        if mirror_path is not None
+        else default_mirror_path()
+    )
+    if loader_digest is not None:
+        _refresh_attestation(
+            store=store,
+            mirror_path=resolved_mirror_path,
+            current=current,
+            loader_digest=loader_digest,
+            ida_nalt=ida_nalt,
+        )
+        identity_resolution = resolve_attested_input_identity(
+            loader_sha256=loader_digest,
+            allow_recovery=False,
+            attestation=None,
+            current=current,
+            input_file_exists=False,
+            input_file_sha256=None,
+        )
+    else:
+        try:
+            attestation = None if store is None else store.load()
+        except InputIdentityAttestationMalformed:
+            identity_resolution = _malformed_resolution()
+        else:
+            candidate_path = input_file_path(ida_nalt)
+            candidate_hash = (
+                None if candidate_path is None else sha256_file(candidate_path)
+            )
+            identity_resolution = resolve_attested_input_identity(
+                loader_sha256=None,
+                allow_recovery=(
+                    get_settings().allow_attested_input_identity_recovery
+                    if allow_attested_recovery is None
+                    else bool(allow_attested_recovery)
+                ),
+                attestation=attestation,
+                current=current,
+                input_file_exists=candidate_path is not None and candidate_path.is_file(),
+                input_file_sha256=(
+                    None if candidate_hash is None else candidate_hash[0]
+                ),
+            )
+    if identity_resolution.input_identity is None:
+        return NativePreanalysisIdentityResolution(None, identity_resolution)
+    native_key = NativePreanalysisKey(
+        input_identity=identity_resolution.input_identity,
+        processor=current.processor,
+        bitness=current.bitness,
+        function_rva=current.function_rva,
+        function_fingerprint=current.function_fingerprint,
+        profile_fingerprint=fingerprint_profile_config(profile_config),
+        sdk_fingerprint=(
+            f"ida-sdk:{int(idaapi.IDA_SDK_VERSION)}:"
+            f"hexrays:{ida_hexrays.get_hexrays_version()}"
+        ),
+    )
+    return NativePreanalysisIdentityResolution(native_key, identity_resolution)
 
 
 def build_native_preanalysis_key(
@@ -64,47 +211,23 @@ def build_native_preanalysis_key(
     *,
     profile_config: Mapping[str, object],
 ) -> NativePreanalysisKey:
-    """Derive every identity component from live loader and profile state.
+    """Preserve the legacy key-returning API and its fail-closed behavior."""
 
-    Missing loader metadata or unreadable function bytes are fatal.  This
-    function never substitutes a process-local path, block serial, or
-    ``unknown`` sentinel for a durable identity.
-    """
-    import ida_bytes
-    import ida_funcs
-    import ida_hexrays
-    import ida_idp
-    import ida_nalt
-    import idaapi
-    import idautils
-
-    function_ea = int(function_ea)
-    pfn = ida_funcs.get_func(function_ea)
-    if pfn is None:
-        raise ValueError(f"0x{function_ea:X} is not inside a function")
-    function_start = int(pfn.start_ea)
-    imagebase = int(ida_nalt.get_imagebase())
-    function_rva = function_start - imagebase
-    if function_rva < 0:
-        raise ValueError("function start precedes the current image base")
-
-    return NativePreanalysisKey(
-        input_identity=_input_identity(ida_nalt),
-        processor=str(ida_idp.get_idp_name() or ""),
-        bitness=int(ida_funcs.get_func_bits(pfn)),
-        function_rva=function_rva,
-        function_fingerprint=_function_fingerprint(
-            function_ea=function_start,
-            imagebase=imagebase,
-            ida_bytes=ida_bytes,
-            idautils=idautils,
-        ),
-        profile_fingerprint=fingerprint_profile_config(profile_config),
-        sdk_fingerprint=(
-            f"ida-sdk:{int(idaapi.IDA_SDK_VERSION)}:"
-            f"hexrays:{ida_hexrays.get_hexrays_version()}"
-        ),
+    resolution = resolve_native_preanalysis_identity(
+        function_ea,
+        profile_config=profile_config,
     )
+    if resolution.native_key is None:
+        raise ValueError(
+            "current database has no valid input SHA-256: "
+            + resolution.identity_resolution.reason
+        )
+    return resolution.native_key
 
 
-__all__ = ["build_native_preanalysis_key", "fingerprint_profile_config"]
+__all__ = [
+    "NativePreanalysisIdentityResolution",
+    "build_native_preanalysis_key",
+    "fingerprint_profile_config",
+    "resolve_native_preanalysis_identity",
+]
