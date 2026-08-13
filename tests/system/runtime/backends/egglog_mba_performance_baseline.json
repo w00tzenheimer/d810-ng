@@ -1,0 +1,27 @@
+{
+  "candidate_names": [
+    "add:Add_HackersDelightRule_2#1",
+    "add:Add_HackersDelightRule_3#1",
+    "add:Add_OllvmRule_1#1",
+    "xor:Xor_HackersDelightRule_3#1",
+    "sub:Sub_HackersDelightRule_2#1",
+    "add:Add_HackersDelightRule_2#2",
+    "add:Add_HackersDelightRule_3#2",
+    "add:Add_OllvmRule_1#2",
+    "xor:Xor_HackersDelightRule_3#2",
+    "sub:Sub_HackersDelightRule_2#2",
+    "add:Add_HackersDelightRule_2#3",
+    "add:Add_HackersDelightRule_3#3",
+    "add:Add_OllvmRule_1#3",
+    "xor:Xor_HackersDelightRule_3#3",
+    "sub:Sub_HackersDelightRule_2#3",
+    "add:Add_HackersDelightRule_2#4",
+    "add:Add_HackersDelightRule_3#4",
+    "add:Add_OllvmRule_1#4",
+    "xor:Xor_HackersDelightRule_3#4",
+    "sub:Sub_HackersDelightRule_2#4"
+  ],
+  "candidate_count": 20,
+  "baseline_p95_ms": 4.014116583857685,
+  "source": "native Egglog handler receipt telemetry; update only from this exact named corpus"
+}

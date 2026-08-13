@@ -1,5 +1,5 @@
 {
-  "description": "Bounded Egglog ADD/XOR/SUB MBA spike: no legacy pattern rules",
+  "description": "Bounded Egglog ADD/XOR/SUB MBA E2E receipt: 50 ms test-only budget; production default remains 3 ms",
   "additional_configuration": {
     "pipeline_v2_mode": "config-v2",
     "pipeline_v2": [
@@ -9,7 +9,13 @@
           "families": ["add", "xor", "sub"],
           "maturities": ["GLOBAL_ANALYZED"],
           "max_leaves": 2,
-          "rounds": 3,
+          "max_operator_nodes": 10,
+          "max_degree": 1,
+          "saturation_rounds": 2,
+          "max_eclasses": 64,
+          "max_enodes": 128,
+          "max_rule_firings": 32,
+          "time_budget_ms": 50,
           "require_proof": true
         }
       }

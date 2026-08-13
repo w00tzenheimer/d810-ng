@@ -59,6 +59,17 @@ _ADD_CASE = DeobfuscationCase(
 )
 
 
+def _assert_degree_one_success_receipt(metadata: dict[str, object]) -> None:
+    assert metadata["degree"] == 1
+    assert metadata["skip_reason"] is None
+    assert metadata["input_cost"] is not None
+    assert metadata["extracted_cost"] is not None
+    assert 0 < metadata["eclass_count"] <= 64
+    assert 0 < metadata["enode_count"] <= 128
+    assert 0 < metadata["rule_firings"] <= 32
+    assert metadata["elapsed_ms"] >= 0.0
+
+
 class TestEgglogAddSpike:
     binary_name = _get_default_binary()
 
@@ -68,7 +79,21 @@ class TestEgglogAddSpike:
             assert [rule.name for rule in state.current_ins_rules] == [
                 "EgglogOptimizer"
             ]
-            assert state.current_ins_rules[0].maturities == [ida_hexrays.MMAT_GLBOPT1]
+            assert state.current_blk_rules == []
+            assert state.last_pipeline_v2_hook_pass_ids == ("mba-egglog",)
+            optimizer = state.current_ins_rules[0]
+            assert optimizer.maturities == [ida_hexrays.MMAT_GLBOPT1]
+            assert (
+                optimizer.max_leaves,
+                optimizer.max_operator_nodes,
+                optimizer.max_degree,
+                optimizer.saturation_rounds,
+                optimizer.max_eclasses,
+                optimizer.max_enodes,
+                optimizer.max_rule_firings,
+                optimizer.time_budget_ms,
+                optimizer.require_proof,
+            ) == (2, 10, 1, 2, 64, 128, 32, 50, True)
 
     @pytest.mark.usefixtures("configure_hexrays", "setup_libobfuscated_funcs")
     def test_extracts_direct_and_guarded_add_rules_with_certified_provenance(
@@ -94,6 +119,14 @@ class TestEgglogAddSpike:
                 ("Add_HackersDelightRule_2", "Add_OllvmRule_3"),
                 ("Add_SpecialConstantRule_3",),
             )
+            executions = tuple(
+                execution
+                for execution in stats.rule_execution_log
+                if execution.rule_name == "EgglogOptimizer"
+            )
+            assert len(executions) == len(provenance)
+            for execution in executions:
+                _assert_degree_one_success_receipt(execution.metadata)
             return captured
 
         run_deobfuscation_test(
