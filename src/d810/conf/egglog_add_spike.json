@@ -1,5 +1,5 @@
 {
-  "description": "Bounded Egglog XOR MBA spike: no legacy pattern rules",
+  "description": "Bounded Egglog ADD MBA spike: no legacy pattern rules",
   "additional_configuration": {
     "pipeline_v2_mode": "config-v2",
     "pipeline_v2": [

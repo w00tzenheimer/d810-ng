@@ -120,6 +120,17 @@ EXPORT long test_chained_temps(long a, long b, long *out) {
     return out[0];
 }
 
+EXPORT long test_egglog_add_rules(long a, long b, long c, long *out) {
+  out[0] = 2 * (a & b) + (a ^ b);
+  out[1] = (a & b) + (a | b);
+  out[2] = 2 * (b | a) + ~(a ^ b);
+  out[3] = 2UL * ((unsigned long)a & 0x55555555UL) +
+           ((unsigned long)a ^ 0x55555555UL);
+  out[4] = 2UL * ((unsigned long)a | 1UL) +
+           ((unsigned long)a ^ 0xFFFFFFFEUL);
+  return out[0] + out[1] + out[2] + out[3] + out[4];
+}
+
 /**
  * MBA with complex arithmetic subexpressions
  *
