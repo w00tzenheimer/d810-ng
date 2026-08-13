@@ -10,12 +10,12 @@ from __future__ import annotations
 
 import ida_hexrays
 
-from d810.backends.mba.egglog_backend import (
-    EGGLOG_AVAILABLE,
-    AstToBitExprConverter,
-    BitExpr,
-    egglog,
+from d810.backends.mba.egglog_add_rule_compiler import (
+    EgglogAddSpecialization,
+    compile_add_rule_catalogue,
+    specialize,
 )
+from d810.backends.mba.egglog_backend import EGGLOG_AVAILABLE
 from d810.core import getLogger
 from d810.hexrays.expr.ast import AstNode
 from d810.hexrays.ir_maturity import ir_maturity_to_ida
@@ -49,9 +49,9 @@ _VALID_SIZES = frozenset({1, 2, 4, 8})
 class EgglogOptimizer(PeepholeSimplificationRule):
     """Extract one strictly smaller, proof-gated MBA rewrite with Egglog.
 
-    The initial rule set is deliberately one directional Hacker's Delight
-    identity.  It is enough to prove that Egglog 13.2 extraction can drive a
-    live D810 rewrite, without hiding cost in generic AC rules or saturation.
+    The rule set is the certified ADD catalogue.  Selection remains bounded and
+    deterministic: every specialization owns its fresh proof graph and the
+    first proof-bearing strict reduction wins.
     """
 
     DESCRIPTION = "Bounded Egglog MBA extraction (proof-gated)"
@@ -63,6 +63,9 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         self.max_leaves = 2
         self.rounds = 3
         self.require_proof = True
+        self._catalogue = compile_add_rule_catalogue()
+        self.last_rule_provenance: tuple[str, ...] | None = None
+        self.rule_provenance_history: list[tuple[str, ...]] = []
 
     def configure(self, kwargs) -> None:
         config = dict(kwargs or {})
@@ -100,28 +103,48 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         if ast is None or not self._is_candidate(ast, ins):
             return None
 
-        converter = AstToBitExprConverter()
-        original = converter.convert(ast)
-        leaf_mapping = converter.get_leaf_mapping()
-        if original is None or len(leaf_mapping) != 2:
-            return None
-
-        names = tuple(sorted(leaf_mapping))
-        target = BitExpr.var(names[0]) ^ BitExpr.var(names[1])
-        extracted = self._extract_xor(original, target)
-        if extracted is None:
-            return None
-
-        replacement = AstNode(
-            ida_hexrays.m_xor,
-            leaf_mapping[names[0]].clone(),
-            leaf_mapping[names[1]].clone(),
+        specialization = self._select_specialization(
+            ast, destination_size=int(ins.d.size)
         )
-        if self._node_count(replacement) >= self._node_count(ast):
+        if specialization is None:
             return None
-        if self.require_proof and not self._prove_xor_identity(ins.d.size):
+        new_ins = self._create_instruction(specialization.replacement_ast, ins)
+        if new_ins is None:
             return None
-        return self._create_instruction(replacement, ins)
+        provenance = specialization.source_names
+        self.last_rule_provenance = provenance
+        self.rule_provenance_history.append(provenance)
+        logger.info(
+            "egglog ADD rewrite at %#x: source=%s aliases=%s",
+            getattr(ins, "ea", 0),
+            specialization.rule.source_name,
+            specialization.rule.aliases,
+        )
+        return new_ins
+
+    def _select_specialization(
+        self, ast: AstNode, *, destination_size: int
+    ) -> EgglogAddSpecialization | None:
+        """Select the first certified strict reduction in catalogue order."""
+        width = int(destination_size) * 8
+        for rule in self._catalogue.compiled_rules:
+            specialization = specialize(
+                rule, ast, destination_size=int(destination_size)
+            )
+            if specialization is None:
+                continue
+            if self._node_count(specialization.replacement_ast) >= self._node_count(
+                ast
+            ):
+                continue
+            if width not in rule.proof_widths:
+                continue
+            if not self._prove_ast_equivalence(
+                ast, specialization.replacement_ast, width=width
+            ):
+                continue
+            return specialization
+        return None
 
     def _is_candidate(self, ast, ins) -> bool:
         if ins.d is None or int(ins.d.size) not in _VALID_SIZES:
@@ -156,24 +179,6 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         ast_index = getattr(leaf, "ast_index", None)
         return id(leaf) if ast_index is None else int(ast_index)
 
-    def _extract_xor(self, original: BitExpr, target: BitExpr) -> BitExpr | None:
-        """Run the single bounded directional rule and require extraction to it."""
-        egraph = egglog.EGraph()
-        x, y = egglog.vars_("x y", BitExpr)
-        egraph.register(
-            egglog.rewrite((x + y) - BitExpr(2) * (x & y)).to(x ^ y),
-        )
-        egraph.register(original)
-        egraph.run(self.rounds)
-        extracted = egraph.extract(original)
-        try:
-            egraph.check(egglog.eq(extracted).to(target))
-        except Exception:
-            return None
-        if str(extracted) != str(target):
-            return None
-        return extracted
-
     @staticmethod
     def _node_count(node) -> int:
         if node is None:
@@ -183,16 +188,50 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         return 1 + EgglogOptimizer._node_count(node.left) + EgglogOptimizer._node_count(node.right)
 
     @staticmethod
-    def _prove_xor_identity(dest_size: int) -> bool:
-        """Prove the exact rule at the native destination bit width."""
+    def _prove_ast_equivalence(
+        original: AstNode, replacement: AstNode, *, width: int
+    ) -> bool:
+        """Prove concrete native AST equivalence at the destination width."""
         try:
             import z3
 
-            width = int(dest_size) * 8
-            x, y = z3.BitVecs("egglog_x egglog_y", width)
+            variables = {}
+
+            def visit(node):
+                if node is None:
+                    raise ValueError("missing AST operand")
+                if node.is_leaf():
+                    if node.is_constant():
+                        return z3.BitVecVal(int(node.value), width)
+                    mop = getattr(node, "mop", None)
+                    try:
+                        hash(mop)
+                        key = ("mop", mop)
+                    except TypeError:
+                        key = ("mop", repr(mop))
+                    return variables.setdefault(
+                        key, z3.BitVec(f"egglog_leaf_{len(variables)}", width)
+                    )
+                left = visit(node.left)
+                right = visit(node.right) if node.right is not None else None
+                operations = {
+                    ida_hexrays.m_add: lambda: left + right,
+                    ida_hexrays.m_sub: lambda: left - right,
+                    ida_hexrays.m_mul: lambda: left * right,
+                    ida_hexrays.m_and: lambda: left & right,
+                    ida_hexrays.m_or: lambda: left | right,
+                    ida_hexrays.m_xor: lambda: left ^ right,
+                    ida_hexrays.m_neg: lambda: -left,
+                    ida_hexrays.m_bnot: lambda: ~left,
+                }
+                operation = operations.get(node.opcode)
+                if operation is None:
+                    raise ValueError(f"unsupported AST opcode: {node.opcode}")
+                return operation()
+
             solver = z3.Solver()
             solver.set(timeout=50)
-            solver.add((x + y) - z3.BitVecVal(2, width) * (x & y) != (x ^ y))
+            solver.add(visit(original) != visit(replacement))
             return solver.check() == z3.unsat
         except Exception:
             return False

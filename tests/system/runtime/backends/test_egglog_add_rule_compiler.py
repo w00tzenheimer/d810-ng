@@ -12,6 +12,9 @@ from d810.backends.mba.egglog_add_rule_compiler import (  # noqa: E402
 )
 from d810.hexrays.expr.p_ast import AstConstant, AstLeaf, AstNode  # noqa: E402
 from d810.hexrays.ir.mop_snapshot import MopSnapshot  # noqa: E402
+from d810.optimizers.microcode.instructions.egraph.egglog_handler import (  # noqa: E402
+    EgglogOptimizer,
+)
 
 
 def _catalogue_rule(name: str):
@@ -72,6 +75,28 @@ def test_specializes_direct_add_rule_and_proves_the_egglog_equation():
         "Add_HackersDelightRule_2",
         "Add_OllvmRule_3",
     )
+
+
+def test_live_handler_selects_certified_catalogue_rule_with_alias_provenance():
+    x, y = _leaf("x", 1), _leaf("y", 2)
+    candidate_ast = _node(
+        ida_hexrays.m_add,
+        _node(ida_hexrays.m_xor, x, y),
+        _node(
+            ida_hexrays.m_mul,
+            _constant(2),
+            _node(ida_hexrays.m_and, x.clone(), y.clone()),
+        ),
+    )
+
+    handler = EgglogOptimizer()
+    specialization = handler._select_specialization(
+        candidate_ast, destination_size=4
+    )
+
+    assert specialization is not None
+    assert specialization.rule.source_name == "Add_HackersDelightRule_2"
+    assert specialization.rule.aliases == ("Add_OllvmRule_3",)
 
 
 def test_rejects_guarded_rule_when_constant_constraint_is_false():
