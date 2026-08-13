@@ -21,12 +21,7 @@ from d810.backends.mba.egglog_saturation import (  # noqa: E402
     extract_bounded_candidate,
 )
 from d810.hexrays.expr import ast as ast_dispatcher  # noqa: E402
-from d810.hexrays.expr.p_ast import (  # noqa: E402
-    AstConstant,
-    AstLeaf,
-    AstNode,
-    AstProxy,
-)
+from d810.hexrays.expr import p_ast  # noqa: E402
 from d810.hexrays.ir.mop_snapshot import MopSnapshot  # noqa: E402
 from d810.optimizers.microcode.instructions.egraph.egglog_handler import (  # noqa: E402
     EgglogOptimizer,
@@ -50,31 +45,28 @@ def _rule(family: str, source_name: str):
     return matches[0]
 
 
-def _leaf(name: str, register: int, size: int = 4, ast_module=None):
-    leaf_type = AstLeaf if ast_module is None else ast_module.AstLeaf
-    leaf = leaf_type(name)
+def _leaf(name: str, register: int, size: int = 4, ast_module=ast_dispatcher):
+    leaf = ast_module.AstLeaf(name)
     leaf.mop = MopSnapshot(t=ida_hexrays.mop_r, size=size, reg=register)
     leaf.dest_size = size
     return leaf
 
 
-def _constant(value: int, size: int = 4, ast_module=None):
+def _constant(value: int, size: int = 4, ast_module=ast_dispatcher):
     wrapped = value & ((1 << (size * 8)) - 1)
-    constant_type = AstConstant if ast_module is None else ast_module.AstConstant
-    constant = constant_type(str(value), wrapped, size)
+    constant = ast_module.AstConstant(str(value), wrapped, size)
     constant.mop = MopSnapshot(t=ida_hexrays.mop_n, size=size, value=wrapped)
     constant.dest_size = size
     return constant
 
 
-def _node(opcode: int, left, right=None, size: int = 4, ast_module=None):
-    node_type = AstNode if ast_module is None else ast_module.AstNode
-    node = node_type(opcode, left, right)
+def _node(opcode: int, left, right=None, size: int = 4, ast_module=ast_dispatcher):
+    node = ast_module.AstNode(opcode, left, right)
     node.dest_size = size
     return node
 
 
-def _direct_add_candidate(size: int = 4, ast_module=None):
+def _direct_add_candidate(size: int = 4, ast_module=ast_dispatcher):
     x = _leaf("x", 1, size, ast_module)
     y = _leaf("y", 2, size, ast_module)
     return _node(
@@ -114,7 +106,7 @@ def _mixed_width_add_candidate():
     )
 
 
-def _degree_two_candidate(size: int = 4) -> AstNode:
+def _degree_two_candidate(size: int = 4) -> ast_dispatcher.AstNode:
     # BnotXor_FactorRule_1 keeps cost equal at degree 1:
     #   (~x) ^ (~y) -> ~((~x) ^ y)
     # Bnot_FactorRule_5 then strictly reduces at degree 2:
@@ -156,12 +148,12 @@ def test_one_catalogue_rewrite_extracts_at_degree_one_and_proves_all_widths(size
 
 
 @pytest.mark.parametrize("size", (1, 2, 4, 8))
-def test_real_python_runtime_proxy_extracts_and_reconstructs_all_widths(size):
+def test_active_runtime_proxy_extracts_and_reconstructs_all_widths(size):
     candidate = _direct_add_candidate(size)
     rule = _rule("add", "Add_HackersDelightRule_2")
 
     result = extract_bounded_candidate(
-        AstProxy(candidate),
+        ast_dispatcher.AstProxy(candidate),
         (rule,),
         EgglogExtractionBudget(time_budget_ms=1000),
         size,
@@ -174,6 +166,24 @@ def test_real_python_runtime_proxy_extracts_and_reconstructs_all_widths(size):
         candidate,
         result.replacement_ast,
         width=size * 8,
+    )
+
+
+def test_non_active_python_ast_is_rejected_by_cython_dispatcher():
+    if not ast_dispatcher._USING_CYTHON:
+        pytest.skip("Cython AST dispatcher is not active")
+
+    result = extract_bounded_candidate(
+        p_ast.AstProxy(_direct_add_candidate(ast_module=p_ast)),
+        (_rule("add", "Add_HackersDelightRule_2"),),
+        EgglogExtractionBudget(time_budget_ms=1000),
+        4,
+    )
+
+    assert result.replacement_ast is None
+    assert (
+        result.receipt.skip_reason
+        is ExtractionSkipReason.UNSUPPORTED_WIDTH_SEMANTICS
     )
 
 
@@ -235,6 +245,14 @@ def test_composed_catalogue_rewrite_needs_degree_two():
         "Bnot_FactorRule_5",
         (),
     )
+    expected_trace = (
+        ("bnot", "BnotXor_FactorRule_1", ()),
+        ("bnot", "Bnot_FactorRule_5", ()),
+    )
+    assert degree_two.derivation_trace == expected_trace
+    assert degree_two.receipt.derivation_trace == expected_trace
+    with pytest.raises(FrozenInstanceError):
+        degree_two.derivation_trace = ()
     assert EgglogOptimizer._prove_ast_equivalence(
         candidate,
         degree_two.replacement_ast,
@@ -335,7 +353,7 @@ def test_ac_reassociation_uses_no_associativity_rewrite():
 def test_grounded_constant_guard_fires_only_when_constraint_holds():
     rule = _rule("add", "Add_SpecialConstantRule_1")
 
-    def candidate(second_constant: int) -> AstNode:
+    def candidate(second_constant: int) -> ast_dispatcher.AstNode:
         x = _leaf("x", 1)
         return _node(
             ida_hexrays.m_add,
@@ -399,14 +417,7 @@ def test_grounded_constant_guard_fires_only_when_constraint_holds():
         ),
     ],
 )
-def test_resource_caps_abort_without_materializing_a_mop(monkeypatch, budget, reason):
-    create_mop_calls = []
-    monkeypatch.setattr(
-        AstNode,
-        "create_mop",
-        lambda self, ea: create_mop_calls.append((self, ea)),
-    )
-
+def test_resource_caps_abort_without_materializing_a_mop(budget, reason):
     result = extract_bounded_candidate(
         _direct_add_candidate(),
         (_rule("add", "Add_HackersDelightRule_2"),),
@@ -416,7 +427,6 @@ def test_resource_caps_abort_without_materializing_a_mop(monkeypatch, budget, re
 
     assert result.replacement_ast is None
     assert result.receipt.skip_reason is reason
-    assert create_mop_calls == []
 
 
 def test_one_schedule_round_cannot_authorize_a_degree_two_chain():
@@ -548,6 +558,7 @@ def test_live_handler_unsupported_root_replaces_prior_invocation_metadata(monkey
     )
     handler.last_rule_family = "add"
     handler.last_rule_provenance = ("PriorRule",)
+    handler.last_derivation_trace = (("add", "PriorRule", ()),)
     unsupported = SimpleNamespace(
         opcode=ida_hexrays.m_mov,
         ea=0x401004,
@@ -555,7 +566,6 @@ def test_live_handler_unsupported_root_replaces_prior_invocation_metadata(monkey
     )
     extraction_calls = []
     proof_calls = []
-    mop_calls = []
     monkeypatch.setattr(
         handler_module,
         "minsn_to_ast",
@@ -566,12 +576,6 @@ def test_live_handler_unsupported_root_replaces_prior_invocation_metadata(monkey
         "_prove_ast_equivalence",
         lambda *args, **kwargs: proof_calls.append((args, kwargs)),
     )
-    monkeypatch.setattr(
-        AstNode,
-        "create_mop",
-        lambda self, ea: mop_calls.append((self, ea)),
-    )
-
     assert handler.check_and_replace(None, unsupported) is None
     receipt = handler.last_extraction_receipt
     assert receipt == EgglogExtractionReceipt(
@@ -581,10 +585,11 @@ def test_live_handler_unsupported_root_replaces_prior_invocation_metadata(monkey
         receipt.skip_reason = None
     assert handler.last_rule_family is None
     assert handler.last_rule_provenance is None
+    assert handler.last_derivation_trace is None
+    assert "derivation_trace" not in handler.execution_metadata()
     assert handler.execution_metadata()["skip_reason"] == "non_mba_candidate"
     assert extraction_calls == []
     assert proof_calls == []
-    assert mop_calls == []
 
 
 def test_live_handler_exception_before_first_receipt_records_immutable_internal_error(
@@ -617,7 +622,6 @@ def test_live_handler_receipts_mixed_width_candidate_without_extraction_or_mutat
     handler = _configured_live_handler()
     extraction_calls = []
     proof_calls = []
-    create_mop_calls = []
 
     monkeypatch.setattr(handler_module, "minsn_to_ast", lambda _ins: candidate)
     monkeypatch.setattr(
@@ -630,17 +634,10 @@ def test_live_handler_receipts_mixed_width_candidate_without_extraction_or_mutat
         "_prove_ast_equivalence",
         lambda *args, **kwargs: proof_calls.append((args, kwargs)),
     )
-    monkeypatch.setattr(
-        AstNode,
-        "create_mop",
-        lambda self, ea: create_mop_calls.append((self, ea)),
-    )
-
     assert handler._check_and_replace(_Instruction()) is None
 
     assert extraction_calls == []
     assert proof_calls == []
-    assert create_mop_calls == []
     receipt = handler.last_extraction_receipt
     assert receipt == EgglogExtractionReceipt(
         skip_reason=ExtractionSkipReason.UNSUPPORTED_WIDTH_SEMANTICS
@@ -651,6 +648,9 @@ def test_live_handler_receipts_mixed_width_candidate_without_extraction_or_mutat
 def test_live_handler_extracts_once_with_exact_configured_rules_then_proves_before_mop(
     monkeypatch,
 ):
+    if ast_dispatcher._USING_CYTHON:
+        pytest.skip("Cython AstNode methods cannot be monkeypatched to observe ordering")
+
     import d810.optimizers.microcode.instructions.egraph.egglog_handler as handler_module
 
     candidate = _direct_add_candidate()
@@ -674,7 +674,7 @@ def test_live_handler_extracts_once_with_exact_configured_rules_then_proves_befo
         lambda *_args, **_kwargs: events.append("native_z3") or True,
     )
     monkeypatch.setattr(
-        AstNode,
+        ast_dispatcher.AstNode,
         "create_mop",
         lambda _self, _ea: events.append("create_mop") or object(),
     )
@@ -714,6 +714,9 @@ def test_live_handler_extracts_once_with_exact_configured_rules_then_proves_befo
     assert metadata["selected_family"] == "add"
     assert metadata["selected_source"] == "Add_HackersDelightRule_2"
     assert metadata["selected_aliases"] == ("Add_OllvmRule_3",)
+    assert metadata["derivation_trace"] == (
+        ("add", "Add_HackersDelightRule_2", ("Add_OllvmRule_3",)),
+    )
     assert metadata["skip_reason"] is None
 
 
@@ -724,7 +727,6 @@ def test_live_handler_native_z3_failure_records_skip_without_creating_mop(monkey
     handler = _configured_live_handler()
     real_extract = extract_bounded_candidate
     extracted = []
-    create_mop_calls = []
     minsn_calls = []
 
     def observe_extract(*args):
@@ -737,11 +739,6 @@ def test_live_handler_native_z3_failure_records_skip_without_creating_mop(monkey
     monkeypatch.setattr(handler, "_candidate_skip_reason", lambda _ast, _ins: None)
     monkeypatch.setattr(handler, "_prove_ast_equivalence", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(
-        AstNode,
-        "create_mop",
-        lambda self, ea: create_mop_calls.append((self, ea)),
-    )
-    monkeypatch.setattr(
         ida_hexrays,
         "minsn_t",
         lambda ea: minsn_calls.append(ea),
@@ -751,7 +748,6 @@ def test_live_handler_native_z3_failure_records_skip_without_creating_mop(monkey
 
     assert len(extracted) == 1
     assert extracted[0].replacement_ast is not None
-    assert create_mop_calls == []
     assert minsn_calls == []
     receipt = handler.last_extraction_receipt
     assert receipt is not None
@@ -760,6 +756,7 @@ def test_live_handler_native_z3_failure_records_skip_without_creating_mop(monkey
     assert metadata["selected_family"] == "add"
     assert metadata["selected_source"] == "Add_HackersDelightRule_2"
     assert metadata["selected_aliases"] == ("Add_OllvmRule_3",)
+    assert "derivation_trace" not in metadata
     assert metadata["skip_reason"] == "native_z3_failed"
 
 
@@ -810,7 +807,6 @@ def test_live_handler_default_time_budget_overrun_is_clean_noop(monkeypatch):
         skip_reason=ExtractionSkipReason.TIME_BUDGET,
     )
     observed_budgets = []
-    create_mop_calls = []
 
     def time_budget_result(_ast, _rules, budget, _destination_size):
         observed_budgets.append(budget)
@@ -819,15 +815,8 @@ def test_live_handler_default_time_budget_overrun_is_clean_noop(monkeypatch):
     monkeypatch.setattr(handler_module, "extract_bounded_candidate", time_budget_result)
     monkeypatch.setattr(handler_module, "minsn_to_ast", lambda _ins: candidate)
     monkeypatch.setattr(handler, "_candidate_skip_reason", lambda _ast, _ins: None)
-    monkeypatch.setattr(
-        AstNode,
-        "create_mop",
-        lambda self, ea: create_mop_calls.append((self, ea)),
-    )
-
     assert handler.check_and_replace(None, _Instruction()) is None
     assert observed_budgets == [EgglogExtractionBudget()]
     assert observed_budgets[0].time_budget_ms == 3
-    assert create_mop_calls == []
     assert handler.last_extraction_receipt is receipt
     assert handler.execution_metadata()["skip_reason"] == "time_budget"

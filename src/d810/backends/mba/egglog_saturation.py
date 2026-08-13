@@ -185,10 +185,19 @@ class EgglogExtractionReceipt:
     selected_family: str | None = None
     selected_source: str | None = None
     selected_aliases: tuple[str, ...] = ()
+    derivation_trace: tuple[tuple[str, str, tuple[str, ...]], ...] = ()
     skip_reason: ExtractionSkipReason | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "selected_aliases", tuple(self.selected_aliases))
+        object.__setattr__(
+            self,
+            "derivation_trace",
+            tuple(
+                (str(family), str(source_name), tuple(aliases))
+                for family, source_name, aliases in self.derivation_trace
+            ),
+        )
         if self.input_cost is not None:
             object.__setattr__(self, "input_cost", tuple(self.input_cost))
         if self.extracted_cost is not None:
@@ -202,8 +211,17 @@ class EgglogExtractionResult:
     replacement_ast: Any | None
     receipt: EgglogExtractionReceipt
     selected_provenance: tuple[str, str, tuple[str, ...]] | None = None
+    derivation_trace: tuple[tuple[str, str, tuple[str, ...]], ...] = ()
 
     def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "derivation_trace",
+            tuple(
+                (str(family), str(source_name), tuple(aliases))
+                for family, source_name, aliases in self.derivation_trace
+            ),
+        )
         if self.selected_provenance is None:
             return
         family, source_name, aliases = self.selected_provenance
@@ -757,6 +775,7 @@ def _extraction_result(
     enode_count: int | None = None,
     rule_firings: int = 0,
     provenance: tuple[str, str, tuple[str, ...]] | None = None,
+    derivation_trace: tuple[tuple[str, str, tuple[str, ...]], ...] = (),
     replacement_ast: Any | None = None,
     skip_reason: ExtractionSkipReason | None = None,
     elapsed_ms: float | None = None,
@@ -778,9 +797,11 @@ def _extraction_result(
             selected_family=family,
             selected_source=source_name,
             selected_aliases=aliases,
+            derivation_trace=derivation_trace,
             skip_reason=skip_reason,
         ),
         selected_provenance=provenance,
+        derivation_trace=derivation_trace,
     )
 
 
@@ -794,6 +815,7 @@ class _ReachableCandidate:
     expression: Any
     rule_decl: Any
     catalogue_index: int
+    derivation_trace: tuple[tuple[str, str, tuple[str, ...]], ...] = ()
 
     @property
     def provenance(self) -> tuple[str, str, tuple[str, ...]]:
@@ -896,13 +918,19 @@ def extract_bounded_candidate(
         )
 
         ordered_rules = tuple(rules)
-        frontier: dict[int, tuple[TypedBvTerm, ...]] = {0: (term,)}
+        frontier: dict[
+            int,
+            dict[TypedBvTerm, tuple[tuple[str, str, tuple[str, ...]], ...]],
+        ] = {0: {term: ()}}
         reachable: list[_ReachableCandidate] = []
         rewrites: list[Any] = []
         registration_work_unit_keys = set(_degree_expression_work_unit_keys(0, term))
         for degree in range(budget.max_degree):
-            next_terms: dict[TypedBvTerm, None] = {}
-            for source_term in frontier.get(degree, ()):
+            next_terms: dict[
+                TypedBvTerm,
+                tuple[tuple[str, str, tuple[str, ...]], ...],
+            ] = {}
+            for source_term, source_trace in frontier.get(degree, {}).items():
                 for catalogue_index, rule in enumerate(ordered_rules):
                     elapsed = _elapsed_ms(started)
                     if elapsed > budget.time_budget_ms:
@@ -970,11 +998,29 @@ def extract_bounded_candidate(
                             expression=target_expression,
                             rule_decl=executable_rewrite.decl,
                             catalogue_index=catalogue_index,
+                            derivation_trace=source_trace
+                            + (
+                                (
+                                    str(rule.family),
+                                    str(rule.source_name),
+                                    tuple(rule.aliases),
+                                ),
+                            ),
                         )
                     )
-                    next_terms[replacement] = None
+                    next_terms.setdefault(
+                        replacement,
+                        source_trace
+                        + (
+                            (
+                                str(rule.family),
+                                str(rule.source_name),
+                                tuple(rule.aliases),
+                            ),
+                        ),
+                    )
                     registration_work_unit_keys = projected_work_unit_keys
-            frontier[degree + 1] = tuple(next_terms)
+            frontier[degree + 1] = next_terms
 
         registration_work_units = len(registration_work_unit_keys)
         scheduled_work_units = registration_work_units + (
@@ -1147,6 +1193,7 @@ def extract_bounded_candidate(
             extracted_cost=(selection_key[0], selection_key[1]),
             degree=selected.degree,
             provenance=selected.provenance,
+            derivation_trace=selected.derivation_trace,
             replacement_ast=replacement_ast,
         )
     except Exception:

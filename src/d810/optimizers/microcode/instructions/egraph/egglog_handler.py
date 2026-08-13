@@ -95,6 +95,9 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         self.last_extraction_receipt: EgglogExtractionReceipt | None = None
         self.last_rule_family: str | None = None
         self.last_rule_provenance: tuple[str, ...] | None = None
+        self.last_derivation_trace: (
+            tuple[tuple[str, str, tuple[str, ...]], ...] | None
+        ) = None
         self.rule_provenance_history: list[tuple[str, ...]] = []
 
     def configure(self, kwargs) -> None:
@@ -185,6 +188,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         del blk
         self.last_rule_family = None
         self.last_rule_provenance = None
+        self.last_derivation_trace = None
         self.last_extraction_receipt = None
         if ins.opcode not in _SUPPORTED_ROOT_OPCODES:
             self._record_extraction_receipt(
@@ -213,6 +217,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
     def _check_and_replace(self, ins):
         self.last_rule_family = None
         self.last_rule_provenance = None
+        self.last_derivation_trace = None
         self.last_extraction_receipt = None
         ast = minsn_to_ast(ins)
         if ast is None:
@@ -268,6 +273,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         provenance = (source_name, *aliases)
         self.last_rule_family = family
         self.last_rule_provenance = provenance
+        self.last_derivation_trace = extraction.derivation_trace
         self.rule_provenance_history.append(provenance)
         logger.info(
             "egglog MBA rewrite at %#x: family=%s source=%s aliases=%s",
@@ -331,6 +337,8 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             )
         if receipt.selected_family is not None:
             metadata["family"] = receipt.selected_family
+        if self.last_derivation_trace is not None:
+            metadata["derivation_trace"] = self.last_derivation_trace
         return metadata
 
     def _select_extraction(
