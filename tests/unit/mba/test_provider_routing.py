@@ -16,6 +16,8 @@ from d810.mba.provider_routing import (
     provider_omission_reasons,
     provider_route,
 )
+from d810.mba.root_chain_descriptor import MbaRootChainDescriptor
+from d810.mba.root_chain_descriptor import MbaRootChainFamily
 
 
 def _profile(
@@ -42,6 +44,21 @@ def _profile(
     )
 
 
+def _chain_descriptor(
+    profile: MbaIslandProfile,
+    *,
+    family: MbaRootChainFamily = MbaRootChainFamily.SAME_OPERATION,
+    root_operation: str = "xor",
+    flattened_arity: int = 2,
+) -> MbaRootChainDescriptor:
+    return MbaRootChainDescriptor(
+        family=family,
+        root_operation=root_operation,
+        flattened_arity=flattened_arity,
+        fingerprint=profile.fingerprint,
+    )
+
+
 def test_small_linear_mba_routes_all_eligible_providers_in_portfolio_order() -> None:
     assert provider_route(_profile()) == (
         MbaProviderKind.CATALOGUE,
@@ -50,22 +67,37 @@ def test_small_linear_mba_routes_all_eligible_providers_in_portfolio_order() -> 
     )
 
 
-def test_homogeneous_supported_chain_precedes_catalogue_without_general_ac_grouping() -> None:
+def test_structural_chain_requires_a_root_chain_descriptor() -> None:
     profile = _profile(
         island_class=MbaIslandClass.NOT_MBA,
         operations=(("xor", 3),),
     )
 
-    assert provider_route(profile) == (
+    assert provider_route(profile) == (MbaProviderKind.CATALOGUE,)
+    assert provider_omission_reasons(profile)[MbaProviderKind.STRUCTURAL_CHAIN] is (
+        MbaProviderOmissionReason.ROOT_CHAIN_DESCRIPTOR_REQUIRED
+    )
+
+
+def test_root_chain_descriptor_precedes_catalogue_without_general_ac_grouping() -> None:
+    profile = _profile(
+        island_class=MbaIslandClass.NOT_MBA,
+        operations=(("xor", 3),),
+    )
+
+    assert provider_route(profile, chain_descriptor=_chain_descriptor(profile)) == (
         MbaProviderKind.STRUCTURAL_CHAIN,
         MbaProviderKind.CATALOGUE,
     )
 
-    mixed = replace(profile, operations=(("xor", 2), ("and", 1)))
-    assert provider_route(mixed) == (MbaProviderKind.CATALOGUE,)
-    assert provider_omission_reasons(mixed)[MbaProviderKind.STRUCTURAL_CHAIN] is (
-        MbaProviderOmissionReason.NOT_HOMOGENEOUS_CHAIN
+    mismatched = replace(profile, fingerprint="different-profile")
+    mismatch_descriptor = _chain_descriptor(mismatched)
+    assert provider_route(profile, chain_descriptor=mismatch_descriptor) == (
+        MbaProviderKind.CATALOGUE,
     )
+    assert provider_omission_reasons(profile, chain_descriptor=mismatch_descriptor)[
+        MbaProviderKind.STRUCTURAL_CHAIN
+    ] is MbaProviderOmissionReason.ROOT_CHAIN_FINGERPRINT_MISMATCH
 
 
 def test_egglog_stops_at_inclusive_leaf_and_operator_boundaries() -> None:

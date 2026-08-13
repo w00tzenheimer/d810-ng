@@ -6,6 +6,7 @@ import enum
 from dataclasses import dataclass
 
 from d810.mba.island_profile import MbaIslandClass, MbaIslandProfile
+from d810.mba.root_chain_descriptor import MbaRootChainDescriptor
 
 
 class MbaProviderKind(enum.StrEnum):
@@ -22,8 +23,8 @@ class MbaProviderOmissionReason(enum.StrEnum):
     """Stable pure reasons why a provider is not eligible for an island."""
 
     BLOCKED_SEMANTICS = "blocked_semantics"
-    NOT_HOMOGENEOUS_CHAIN = "not_homogeneous_chain"
-    UNSUPPORTED_CHAIN_OPERATION = "unsupported_chain_operation"
+    ROOT_CHAIN_DESCRIPTOR_REQUIRED = "root_chain_descriptor_required"
+    ROOT_CHAIN_FINGERPRINT_MISMATCH = "root_chain_fingerprint_mismatch"
     NOT_LINEAR_MBA = "not_linear_mba"
     NONLINEAR_ISLAND = "nonlinear_island"
     LEAF_BUDGET = "leaf_budget"
@@ -56,7 +57,6 @@ class MbaRoutingPolicy:
             raise ValueError("allow_nonlinear_solver must be a boolean")
 
 
-_CHAIN_OPERATIONS = frozenset({"add", "and", "or", "sub", "xor"})
 _AUTOMATIC_PROVIDERS = tuple(
     provider
     for provider in MbaProviderKind
@@ -66,12 +66,12 @@ _AUTOMATIC_PROVIDERS = tuple(
 
 def _structural_chain_omission(
     profile: MbaIslandProfile,
+    chain_descriptor: MbaRootChainDescriptor | None,
 ) -> MbaProviderOmissionReason | None:
-    if len(profile.operations) != 1:
-        return MbaProviderOmissionReason.NOT_HOMOGENEOUS_CHAIN
-    operation, _count = profile.operations[0]
-    if operation not in _CHAIN_OPERATIONS:
-        return MbaProviderOmissionReason.UNSUPPORTED_CHAIN_OPERATION
+    if chain_descriptor is None:
+        return MbaProviderOmissionReason.ROOT_CHAIN_DESCRIPTOR_REQUIRED
+    if chain_descriptor.fingerprint != profile.fingerprint:
+        return MbaProviderOmissionReason.ROOT_CHAIN_FINGERPRINT_MISMATCH
     return None
 
 
@@ -107,6 +107,8 @@ def _coefficient_solver_omission(
 def provider_omission_reasons(
     profile: MbaIslandProfile,
     policy: MbaRoutingPolicy = MbaRoutingPolicy(),
+    *,
+    chain_descriptor: MbaRootChainDescriptor | None = None,
 ) -> dict[MbaProviderKind, MbaProviderOmissionReason]:
     """Return deterministic omissions for every provider not in the route.
 
@@ -125,7 +127,7 @@ def provider_omission_reasons(
     omissions: dict[MbaProviderKind, MbaProviderOmissionReason] = {
         MbaProviderKind.EXTERNAL_REFERENCE: MbaProviderOmissionReason.EXPLICIT_ONLY,
     }
-    chain_omission = _structural_chain_omission(profile)
+    chain_omission = _structural_chain_omission(profile, chain_descriptor)
     if chain_omission is not None:
         omissions[MbaProviderKind.STRUCTURAL_CHAIN] = chain_omission
     egglog_omission = _egglog_omission(profile, policy)
@@ -140,10 +142,16 @@ def provider_omission_reasons(
 def provider_route(
     profile: MbaIslandProfile,
     policy: MbaRoutingPolicy = MbaRoutingPolicy(),
+    *,
+    chain_descriptor: MbaRootChainDescriptor | None = None,
 ) -> tuple[MbaProviderKind, ...]:
     """Return the ordered eligible providers without enabling or invoking any."""
 
-    omissions = provider_omission_reasons(profile, policy)
+    omissions = provider_omission_reasons(
+        profile,
+        policy,
+        chain_descriptor=chain_descriptor,
+    )
     if profile.blockers or profile.island_class is MbaIslandClass.UNSUPPORTED:
         return ()
     ordered = (
