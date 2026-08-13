@@ -495,6 +495,48 @@ class TestMinimalX86BranchEncoderSatisfiesEncodingProvider:
         assert len(result.expected_after_shape.heads) >= 1
         assert result.expected_after_shape.heads[0].mnemonic == "jmp"
 
+
+class TestEncodeNopFill:
+    """Erasing a branch, the other half of a proven one-directional edge.
+
+    A branch proven *never* taken is corrected by deleting it, not by
+    retargeting it: the region becomes NOP padding and control falls through
+    to ``end_ea``. Mode A's exact-region rule still applies -- the fill must
+    measure the region exactly, because a short fill would leave a fragment of
+    the old branch's displacement bytes to be decoded as a fresh instruction.
+    """
+
+    def test_fills_a_two_byte_region_exactly(self):
+        provider = MinimalX86BranchEncoder()
+        result = provider.encode_nop_fill(0x1000, 0x1002, bitness=64)
+
+        assert result.ok
+        assert len(result.replacement_bytes) == 2
+        assert all(h.mnemonic == "nop" for h in result.expected_after_shape.heads)
+
+    def test_fills_a_six_byte_rel32_region_exactly(self):
+        provider = MinimalX86BranchEncoder()
+        result = provider.encode_nop_fill(0x1000, 0x1006, bitness=64)
+
+        assert result.ok
+        assert len(result.replacement_bytes) == 6
+        assert sum(h.length for h in result.expected_after_shape.heads) == 6
+
+    def test_fill_is_decodable_by_the_providers_own_decoder(self):
+        provider = MinimalX86BranchEncoder()
+        result = provider.encode_nop_fill(0x1000, 0x1006, bitness=64)
+
+        shape = provider.decode(0x1000, result.replacement_bytes, bitness=64)
+        assert all(h.mnemonic == "nop" for h in shape.heads)
+        assert sum(h.length for h in shape.heads) == 6
+
+    def test_empty_region_abstains_rather_than_emitting_nothing(self):
+        provider = MinimalX86BranchEncoder()
+        result = provider.encode_nop_fill(0x1000, 0x1000, bitness=64)
+
+        assert not result.ok
+        assert result.reason is not None
+
     def test_encode_direct_jump_abstains_with_the_provider_reason(self):
         provider = MinimalX86BranchEncoder()
         # A single byte cannot fit any representable branch encoding.

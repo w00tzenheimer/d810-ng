@@ -33,6 +33,7 @@ from d810.transforms.native_patch_lowering import (
     NativeEdgeCaptureEvidence,
     lower_conditional_edge,
     lower_direct_edge,
+    lower_removed_edge,
 )
 from d810.transforms.native_patch_plan import (
     NativeAddressRange,
@@ -404,3 +405,105 @@ class TestLowerConditionalEdge:
         )
         assert not outcome.ok
         assert outcome.reason == NativeEdgeAbstentionReason.INSTRUCTION_SPLIT.value
+
+
+class TestLowerRemovedEdge:
+    """Lowering a branch proven *never* taken: erase it, fall through.
+
+    This is the second of the two corrections a branch-direction proof can
+    authorize (the first, force-taken, is ``lower_direct_edge`` with the taken
+    target). It takes no ``target_ea`` at all -- the surviving edge is the
+    region's own ``end_ea``, so there is no instruction-head lookup to do and
+    no ``INSTRUCTION_SPLIT`` case: falling off the end of a region that was
+    already one whole instruction lands on the next instruction by
+    construction.
+    """
+
+    def test_lowers_a_conditional_region_to_nop_fill(self) -> None:
+        span = _origin_span(0x1000, 0x1002, instructions=(_insn(0x1000, 2, "jne"),))
+        outcome = lower_removed_edge(
+            operation_id="op-20",
+            origin_span=span,
+            capture=_capture(0x1000, 2),
+            provider=_PROVIDER,
+            provider_id="minimal-x86",
+            provider_version="1",
+        )
+
+        assert outcome.ok
+        assert len(outcome.operation.replacement_bytes) == 2
+        assert all(
+            h.mnemonic == "nop" for h in outcome.operation.expected_after_shape.heads
+        )
+
+    def test_the_surviving_successor_is_the_fallthrough(self) -> None:
+        span = _origin_span(0x1000, 0x1006, instructions=(_insn(0x1000, 6, "jne"),))
+        outcome = lower_removed_edge(
+            operation_id="op-21",
+            origin_span=span,
+            capture=_capture(0x1000, 6),
+            provider=_PROVIDER,
+            provider_id="minimal-x86",
+            provider_version="1",
+        )
+
+        assert outcome.ok
+        assert outcome.operation.expected_after_successors == (0x1006,)
+
+    def test_partial_origin_span_abstains(self) -> None:
+        span = _origin_span(0x1000, 0x1002, coverage=NativeOriginCoverage.PARTIAL)
+        outcome = lower_removed_edge(
+            operation_id="op-22",
+            origin_span=span,
+            capture=_capture(0x1000, 2),
+            provider=_PROVIDER,
+            provider_id="minimal-x86",
+            provider_version="1",
+        )
+
+        assert not outcome.ok
+        assert outcome.reason == NativeEdgeAbstentionReason.PARTIAL_NATIVE_ORIGIN.value
+
+    def test_multi_instruction_span_abstains(self) -> None:
+        span = _origin_span(
+            0x1000,
+            0x1004,
+            instructions=(_insn(0x1000, 2, "jne"), _insn(0x1002, 2, "jmp")),
+        )
+        outcome = lower_removed_edge(
+            operation_id="op-23",
+            origin_span=span,
+            capture=_capture(0x1000, 4),
+            provider=_PROVIDER,
+            provider_id="minimal-x86",
+            provider_version="1",
+        )
+
+        assert not outcome.ok
+        assert (
+            outcome.reason
+            == NativeEdgeAbstentionReason.EDGE_STATE_CONTRACT_REQUIRED.value
+        )
+
+    def test_a_region_that_stores_state_abstains(self) -> None:
+        """Erasing is only safe over a pure control transfer.
+
+        NOP-filling an instruction that defines a register or writes memory
+        destroys that definition outright -- the exact failure the
+        ``EdgeStateContract`` exists to rule out.
+        """
+        span = _origin_span(0x1000, 0x1002, instructions=(_insn(0x1000, 2, "mov"),))
+        outcome = lower_removed_edge(
+            operation_id="op-24",
+            origin_span=span,
+            capture=_capture(0x1000, 2),
+            provider=_PROVIDER,
+            provider_id="minimal-x86",
+            provider_version="1",
+        )
+
+        assert not outcome.ok
+        assert (
+            outcome.reason
+            == NativeEdgeAbstentionReason.EDGE_STATE_CONTRACT_REQUIRED.value
+        )

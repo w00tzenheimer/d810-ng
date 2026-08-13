@@ -281,6 +281,21 @@ class EncodingProvider(Protocol):
         """Lower an owned region to ``jcc <true>; jmp <false>``."""
         ...
 
+    def encode_nop_fill(
+        self, start_ea: int, end_ea: int, *, bitness: int
+    ) -> NativeEncodingResult:
+        """Fill an owned ``[start_ea, end_ea)`` region with NOP padding.
+
+        The correction for a branch proven *never* taken: erase it so control
+        falls through to ``end_ea``. Distinct from ``encode_direct_jump`` --
+        there is no target, because the surviving edge is the region's own end.
+
+        The fill must measure the region exactly. A short fill would leave
+        trailing bytes of the erased branch to be decoded as a fresh
+        instruction, which is how a "safe" deletion silently becomes a rewrite.
+        """
+        ...
+
     def decode(
         self, ea: int, data: bytes, *, bitness: int
     ) -> NativeInstructionSequenceShape:

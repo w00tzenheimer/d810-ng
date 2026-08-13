@@ -82,6 +82,7 @@ __all__ = [
     "NativeEdgeLoweringOutcome",
     "lower_conditional_edge",
     "lower_direct_edge",
+    "lower_removed_edge",
 ]
 
 
@@ -309,6 +310,56 @@ def lower_direct_edge(
             operation_id=operation_id,
             origin_span=origin_span,
             successors=(target_ea,),
+            replacement_bytes=result.replacement_bytes,
+            expected_after_shape=result.expected_after_shape,
+            capture=capture,
+            provider=provider,
+            provider_id=provider_id,
+            provider_version=provider_version,
+            bitness=bitness,
+        )
+    )
+
+
+def lower_removed_edge(
+    *,
+    operation_id: str,
+    origin_span: NativeOriginSpan,
+    capture: NativeEdgeCaptureEvidence,
+    provider: EncodingProvider,
+    provider_id: str,
+    provider_version: str,
+    bitness: int = 64,
+) -> NativeEdgeLoweringOutcome:
+    """Erase an owned terminator region so control falls through.
+
+    The correction for a branch a direction proof shows is *never* taken. Its
+    counterpart is :func:`lower_direct_edge` with the taken target, for a
+    branch proven always taken.
+
+    Deliberately takes no ``target_ea`` and does no ``known_instruction_heads``
+    lookup. The surviving edge is ``origin_span.end_ea``, and the state check
+    below has already established the span is exactly one whole instruction --
+    so its end is the next instruction's head by construction, and there is no
+    ``INSTRUCTION_SPLIT`` case to guard. Adding a head lookup here would reject
+    valid regions whenever the caller's head set happened not to enumerate the
+    fallthrough.
+    """
+    reason = _origin_state_check(origin_span)
+    if reason is not None:
+        return NativeEdgeLoweringOutcome(reason=reason)
+
+    result = provider.encode_nop_fill(
+        origin_span.start_ea, origin_span.end_ea, bitness=bitness
+    )
+    if not result.ok:
+        return NativeEdgeLoweringOutcome(reason=result.reason)
+
+    return NativeEdgeLoweringOutcome(
+        operation=_build_operation(
+            operation_id=operation_id,
+            origin_span=origin_span,
+            successors=(origin_span.end_ea,),
             replacement_bytes=result.replacement_bytes,
             expected_after_shape=result.expected_after_shape,
             capture=capture,

@@ -384,6 +384,9 @@ class TestEncodingProviderProtocol:
             ):
                 return None
 
+            def encode_nop_fill(self, start_ea, end_ea, *, bitness):
+                return None
+
             def decode(self, ea, data, *, bitness):
                 return None
 

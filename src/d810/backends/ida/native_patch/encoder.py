@@ -666,6 +666,20 @@ class MinimalX86BranchEncoder:
         outcome = plan_direct_jump_region(start_ea, end_ea, target_ea, bitness=bitness)
         return _sequence_outcome_to_result(outcome, start_ea)
 
+    def encode_nop_fill(
+        self, start_ea: int, end_ea: int, *, bitness: int
+    ) -> NativeEncodingResult:
+        # An empty region abstains rather than succeeding with zero bytes: a
+        # caller that computed a degenerate region has a bug, and returning a
+        # vacuously-ok result would let it write nothing and record a receipt
+        # claiming the edge was erased.
+        if end_ea <= start_ea:
+            return NativeEncodingResult(
+                ok=False, reason=AbstentionReason.INVALID_REGION.value
+            )
+        outcome = encode_nop_padding(start_ea, end_ea - start_ea)
+        return _sequence_outcome_to_result(outcome, start_ea)
+
     def encode_conditional(
         self,
         start_ea: int,
