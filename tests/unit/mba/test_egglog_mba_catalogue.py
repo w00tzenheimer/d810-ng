@@ -34,9 +34,7 @@ _RULE_MODULE_BY_FAMILY = {
     "tigress": "tigress",
     "xor": "xor",
 }
-_CLOSED_FAMILIES = frozenset(
-    {"add", "xor", "sub", "and", "or", "bnot", "neg", "mul"}
-)
+_CLOSED_FAMILIES = frozenset({"add", "xor", "sub", "and", "or", "bnot", "neg", "mul"})
 
 
 @pytest.fixture(scope="module")
@@ -76,13 +74,7 @@ def test_family_manifest_covers_every_module_owned_rule_in_source_order():
 
     assert manifest_keys == discovered_keys
     assert len(discovered_keys) == 188
-    assert (
-        sum(
-            len(MBA_RULE_FAMILIES[family])
-            for family in _CLOSED_FAMILIES
-        )
-        == 118
-    )
+    assert sum(len(MBA_RULE_FAMILIES[family]) for family in _CLOSED_FAMILIES) == 118
 
 
 def test_whole_corpus_has_one_family_qualified_receipt_per_declaration(
@@ -98,11 +90,14 @@ def test_whole_corpus_has_one_family_qualified_receipt_per_declaration(
     assert len(catalogue.receipts) == 188
     assert set(catalogue.receipts_by_key) == expected_keys
     assert len(catalogue.receipts_by_key) == len(catalogue.receipts)
-    assert sum(
-        receipt.family not in _CLOSED_FAMILIES
-        and receipt.status is RuleCompilationStatus.REJECTED
-        for receipt in catalogue.receipts
-    ) == 70
+    assert (
+        sum(
+            receipt.family not in _CLOSED_FAMILIES
+            and receipt.status is RuleCompilationStatus.REJECTED
+            for receipt in catalogue.receipts
+        )
+        == 70
+    )
 
 
 def test_unsupported_family_and_custom_guard_reasons_are_stable(mba_catalogue):
@@ -172,16 +167,12 @@ def test_compiled_rules_are_family_qualified_and_cross_width_certified(
     catalogue = mba_catalogue
 
     assert catalogue.compiled_rules
+    assert all(rule.family in _CLOSED_FAMILIES for rule in catalogue.compiled_rules)
     assert all(
-        rule.family in _CLOSED_FAMILIES for rule in catalogue.compiled_rules
+        rule.proof_widths == CERTIFICATE_WIDTHS for rule in catalogue.compiled_rules
     )
     assert all(
-        rule.proof_widths == CERTIFICATE_WIDTHS
-        for rule in catalogue.compiled_rules
-    )
-    assert all(
-        receipt.compiled_rule is None
-        or receipt.compiled_rule.family == receipt.family
+        receipt.compiled_rule is None or receipt.compiled_rule.family == receipt.family
         for receipt in catalogue.receipts
     )
     assert all(
@@ -206,6 +197,63 @@ def test_add_catalogue_remains_a_source_name_compatible_view(mba_catalogue):
     assert len(add_catalogue.receipts) == 15
 
 
+def test_public_catalogue_compilers_reuse_immutable_certificates():
+    egglog_add_rule_compiler._compile_selected_rule_catalogue.cache_clear()
+
+    mba_catalogue = compile_mba_rule_catalogue()
+    add_catalogue = compile_add_rule_catalogue()
+
+    assert compile_mba_rule_catalogue() is mba_catalogue
+    assert compile_add_rule_catalogue() is add_catalogue
+
+
+def test_public_catalogue_cache_misses_changed_family_declarations(monkeypatch):
+    egglog_add_rule_compiler._compile_selected_rule_catalogue.cache_clear()
+    calls = []
+
+    def observe(rule_families):
+        calls.append(tuple(rule_families.items()))
+        return MbaRuleCatalogue(())
+
+    monkeypatch.setattr(egglog_add_rule_compiler, "_compile_rule_families", observe)
+    monkeypatch.setattr(
+        egglog_add_rule_compiler,
+        "MBA_RULE_FAMILIES",
+        {"add": ()},
+    )
+    monkeypatch.setattr(egglog_add_rule_compiler, "ADD_RULE_CLASSES", ())
+
+    mba_catalogue = compile_mba_rule_catalogue()
+    add_catalogue = compile_add_rule_catalogue()
+    assert compile_mba_rule_catalogue() is mba_catalogue
+    assert compile_add_rule_catalogue() is add_catalogue
+    assert len(calls) == 1
+
+    changed_rule = type(
+        "ChangedDeclarationRule",
+        (VerifiableRule,),
+        {"PATTERN": Var("x"), "REPLACEMENT": Var("x")},
+    )
+    monkeypatch.setattr(
+        egglog_add_rule_compiler,
+        "MBA_RULE_FAMILIES",
+        {"add": (changed_rule,)},
+    )
+    monkeypatch.setattr(
+        egglog_add_rule_compiler,
+        "ADD_RULE_CLASSES",
+        (changed_rule,),
+    )
+
+    changed_mba_catalogue = compile_mba_rule_catalogue()
+    changed_add_catalogue = compile_add_rule_catalogue()
+
+    assert changed_mba_catalogue is not mba_catalogue
+    assert changed_add_catalogue is not add_catalogue
+    assert changed_add_catalogue is changed_mba_catalogue
+    assert len(calls) == 2
+
+
 def test_live_family_selector_preserves_catalogue_order_and_add_compatibility(
     mba_catalogue,
 ):
@@ -219,9 +267,7 @@ def test_live_family_selector_preserves_catalogue_order_and_add_compatibility(
     )
 
     assert selected == expected
-    repeated = egglog_add_rule_compiler.compiled_rules_for_families(
-        requested_families
-    )
+    repeated = egglog_add_rule_compiler.compiled_rules_for_families(requested_families)
     assert all(left is right for left, right in zip(selected, repeated, strict=True))
     assert egglog_add_rule_compiler.compiled_rules_for_families(("add",)) == (
         compile_add_rule_catalogue().compiled_rules

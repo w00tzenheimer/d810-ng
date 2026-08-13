@@ -307,16 +307,14 @@ def _compile_rule_families(
     )
     if conflicting_families:
         raise ValueError(
-            "conflicting MBA rule family policies: "
-            + ", ".join(conflicting_families)
+            "conflicting MBA rule family policies: " + ", ".join(conflicting_families)
         )
     unclassified_families = sorted(
         family_names - EGGLOG_CLOSED_FAMILIES - rejection_family_names
     )
     if unclassified_families:
         raise ValueError(
-            "unclassified MBA rule families: "
-            + ", ".join(unclassified_families)
+            "unclassified MBA rule families: " + ", ".join(unclassified_families)
         )
 
     canonical_by_fingerprint: dict[tuple[Any, ...], CompiledEgglogRule] = {}
@@ -384,9 +382,7 @@ def _compile_rule_families(
                 for width in CERTIFICATE_WIDTHS:
                     _validate_declarative_constraints(rule, width)
                     if not verify_rule(rule, bit_width=width):
-                        raise ValueError(
-                            f"verification returned false at {width} bits"
-                        )
+                        raise ValueError(f"verification returned false at {width} bits")
             except (AssertionError, TypeError, ValueError) as exc:
                 staged_receipts.append(
                     (
@@ -444,15 +440,19 @@ def _compile_rule_families(
 
 
 def compile_mba_rule_catalogue() -> MbaRuleCatalogue:
-    return _compile_rule_families(MBA_RULE_FAMILIES)
+    declaration_version = tuple(
+        (family, tuple(rule_types)) for family, rule_types in MBA_RULE_FAMILIES.items()
+    )
+    return _compile_selected_rule_catalogue(
+        tuple(MBA_RULE_FAMILIES),
+        declaration_version,
+    )
 
 
 @functools.lru_cache(maxsize=32)
 def _compile_selected_rule_catalogue(
     families: tuple[str, ...],
-    declaration_version: tuple[
-        tuple[str, tuple[type[VerifiableRule], ...]], ...
-    ],
+    declaration_version: tuple[tuple[str, tuple[type[VerifiableRule], ...]], ...],
 ) -> MbaRuleCatalogue:
     """Cache immutable certificates, never mutable Egglog runtime state."""
     rule_families = dict(declaration_version)
@@ -473,8 +473,7 @@ def compiled_rules_for_families(
         family for family in MBA_RULE_FAMILIES if family in requested
     )
     declaration_version = tuple(
-        (family, tuple(MBA_RULE_FAMILIES[family]))
-        for family in canonical_families
+        (family, tuple(MBA_RULE_FAMILIES[family])) for family in canonical_families
     )
     catalogue = _compile_selected_rule_catalogue(
         canonical_families,
@@ -491,8 +490,10 @@ def compiled_rules_for_families(
 
 
 def compile_add_rule_catalogue() -> AddRuleCatalogue:
-    catalogue = _compile_rule_families({"add": ADD_RULE_CLASSES})
-    return AddRuleCatalogue(catalogue.receipts)
+    return _compile_selected_rule_catalogue(
+        ("add",),
+        (("add", tuple(ADD_RULE_CLASSES)),),
+    )
 
 
 def executable_rule_order_key(
@@ -578,8 +579,7 @@ def _iter_symbolic_term_matches(
                 ):
                     yield from match_items(
                         index + 1,
-                        remaining[:candidate_index]
-                        + remaining[candidate_index + 1 :],
+                        remaining[:candidate_index] + remaining[candidate_index + 1 :],
                         attempted,
                     )
 
