@@ -1,0 +1,124 @@
+[
+  {
+    "name": "Simplifier",
+    "url": "https://github.com/mazeworks-security/Simplifier",
+    "reviewed_commit": "813cdc7",
+    "license": "GPL-3.0",
+    "copy_allowed": false,
+    "retained_ideas": [
+      "classifier",
+      "known-bits",
+      "nonlinear-lifting"
+    ]
+  },
+  {
+    "name": "MSiMBA",
+    "url": "https://github.com/mazeworks-security/MSiMBA",
+    "reviewed_commit": "7a0fa6d",
+    "license": "GPL-3.0",
+    "copy_allowed": false,
+    "retained_ideas": [
+      "linear-basis-reduction",
+      "polynomial-refinement"
+    ]
+  },
+  {
+    "name": "mbased",
+    "url": "https://github.com/bliutech/mbased",
+    "reviewed_commit": "66a7472",
+    "license": "MIT",
+    "copy_allowed": true,
+    "retained_ideas": [
+      "grammar-bounded-search",
+      "solver-checking"
+    ]
+  },
+  {
+    "name": "inspecting-compiler-opts",
+    "url": "https://github.com/mbacompilation/inspecting-compiler-opts",
+    "reviewed_commit": "daf5ef2",
+    "license": null,
+    "copy_allowed": false,
+    "retained_ideas": [
+      "compiler-normalization-corpus",
+      "ground-truth-pairs"
+    ]
+  },
+  {
+    "name": "M3",
+    "url": "https://github.com/letonchanh/M3",
+    "reviewed_commit": "1f9931a",
+    "license": null,
+    "copy_allowed": false,
+    "retained_ideas": [
+      "dynamic-trace-reduction",
+      "mba-solver-corpus"
+    ]
+  },
+  {
+    "name": "arybo",
+    "url": "https://github.com/quarkslab/arybo",
+    "reviewed_commit": "89d9a42",
+    "license": "BSD-3-Clause",
+    "copy_allowed": true,
+    "retained_ideas": [
+      "boolean-vector-model",
+      "algebraic-normal-form"
+    ]
+  },
+  {
+    "name": "GAMBA",
+    "url": "https://github.com/DenuvoSoftwareSolutions/GAMBA",
+    "reviewed_commit": "96691c0",
+    "license": "GPL-3.0",
+    "copy_allowed": false,
+    "retained_ideas": [
+      "linear-nonlinear-partition",
+      "refinement-loop"
+    ]
+  },
+  {
+    "name": "SiMBA",
+    "url": "https://github.com/DenuvoSoftwareSolutions/SiMBA",
+    "reviewed_commit": "2281799",
+    "license": "GPL-3.0",
+    "copy_allowed": false,
+    "retained_ideas": [
+      "truth-table-signatures",
+      "linear-reconstruction"
+    ]
+  },
+  {
+    "name": "ferret",
+    "url": "https://github.com/Pusty/ferret",
+    "reviewed_commit": "6c91995",
+    "license": "BSL-1.0",
+    "copy_allowed": true,
+    "retained_ideas": [
+      "oracle-table-lookup",
+      "local-synthesis"
+    ]
+  },
+  {
+    "name": "MBA",
+    "url": "https://github.com/SynthesisLab/MBA",
+    "reviewed_commit": "4650495",
+    "license": null,
+    "copy_allowed": false,
+    "retained_ideas": [
+      "cost-ordered-enumeration",
+      "parallel-evaluation"
+    ]
+  },
+  {
+    "name": "SiMBA-",
+    "url": "https://github.com/pgarba/SiMBA-",
+    "reviewed_commit": "2681863",
+    "license": "GPL-3.0",
+    "copy_allowed": false,
+    "retained_ideas": [
+      "coefficient-recovery",
+      "llvm-expression-adapter"
+    ]
+  }
+]
