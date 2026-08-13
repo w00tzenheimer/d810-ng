@@ -19,12 +19,24 @@ from d810.backends.mba.egglog_statistics import (
     read_egraph_statistics,
     read_rule_firing_count,
 )
+from d810.mba import typed_term as _typed_term
+from d810.mba.typed_term import (
+    TypedBvTerm,
+    _leaf_key_fingerprint,
+    canonicalize_ac_term,
+    term_cost as _term_cost,
+    term_fingerprint,
+)
 
 
-_AC_OPERATIONS = frozenset({"add", "and", "mul", "or", "xor"})
+# One-release compatibility re-export. Keep this identity assertion close to
+# the import so plugin hot reloads cannot silently split the term type.
+assert TypedBvTerm is _typed_term.TypedBvTerm
+term_cost = _term_cost
+
+
 _UNARY_OPERATIONS = frozenset({"bnot", "neg"})
 _BINARY_OPERATIONS = frozenset({"add", "and", "mul", "or", "sub", "xor"})
-_SUPPORTED_OPERATIONS = _UNARY_OPERATIONS | _BINARY_OPERATIONS
 _VALID_DESTINATION_SIZES = frozenset({1, 2, 4, 8})
 
 # Public capability contract.  This spike explores rewrites of the candidate
@@ -230,145 +242,6 @@ class EgglogExtractionResult:
             "selected_provenance",
             (str(family), str(source_name), tuple(aliases)),
         )
-
-
-@dataclass(frozen=True)
-class TypedBvTerm:
-    """A fixed-width bit-vector term with constants or preserved live leaves."""
-
-    operation: str | None
-    width: int
-    value: int | None = None
-    leaf_key: tuple[object, ...] | None = None
-    children: tuple[TypedBvTerm, ...] = ()
-
-    def __post_init__(self) -> None:
-        if type(self.width) is not int or self.width <= 0:
-            raise ValueError("width must be a positive integer")
-        object.__setattr__(self, "children", tuple(self.children))
-        if self.leaf_key is not None:
-            object.__setattr__(self, "leaf_key", tuple(self.leaf_key))
-
-        if self.operation is None:
-            if self.children:
-                raise ValueError("leaf and constant terms cannot have children")
-            if (self.value is None) == (self.leaf_key is None):
-                raise ValueError(
-                    "a terminal term must have exactly one of value or leaf_key"
-                )
-            if self.value is not None:
-                if type(self.value) is not int:
-                    raise ValueError("constant value must be an integer")
-                mask = (1 << self.width) - 1
-                object.__setattr__(self, "value", self.value & mask)
-            else:
-                if not self.leaf_key:
-                    raise ValueError("leaf_key must not be empty")
-                try:
-                    hash(self.leaf_key)
-                except TypeError as exc:
-                    raise ValueError("leaf_key must be hashable") from exc
-                try:
-                    _leaf_key_fingerprint(self.leaf_key)
-                except ValueError as exc:
-                    raise ValueError(
-                        "leaf_key parts must be canonically representable"
-                    ) from exc
-            return
-
-        if self.operation not in _SUPPORTED_OPERATIONS:
-            raise ValueError(f"unsupported operation: {self.operation}")
-        if self.value is not None or self.leaf_key is not None:
-            raise ValueError("operator terms cannot carry a value or leaf_key")
-        expected_arity = 1 if self.operation in _UNARY_OPERATIONS else 2
-        if len(self.children) != expected_arity:
-            raise ValueError(
-                f"{self.operation} requires exactly {expected_arity} children"
-            )
-        if any(child.width != self.width for child in self.children):
-            raise ValueError("operator children must have the same width")
-
-
-def _leaf_key_part_fingerprint(value: object) -> tuple[object, ...]:
-    """Return a totally ordered representation for stable live-leaf key parts."""
-
-    if value is None:
-        return ("none",)
-    if type(value) is bool:
-        return ("bool", int(value))
-    if type(value) is int:
-        return ("int", value)
-    if type(value) is str:
-        return ("str", value)
-    if type(value) is bytes:
-        return ("bytes", value.hex())
-    if type(value) is tuple:
-        return (
-            "tuple",
-            tuple(_leaf_key_part_fingerprint(item) for item in value),
-        )
-    raise ValueError(f"unsupported leaf-key part type: {type(value).__qualname__}")
-
-
-def _leaf_key_fingerprint(
-    leaf_key: tuple[object, ...],
-) -> tuple[tuple[object, ...], ...]:
-    return tuple(_leaf_key_part_fingerprint(part) for part in leaf_key)
-
-
-def _term_fingerprint(term: TypedBvTerm) -> tuple[object, ...]:
-    if term.operation is None and term.value is not None:
-        return ("constant", term.width, term.value)
-    if term.operation is None:
-        assert term.leaf_key is not None
-        return (
-            "leaf",
-            term.width,
-            _leaf_key_fingerprint(term.leaf_key),
-        )
-    return (
-        "node",
-        term.operation,
-        term.width,
-        tuple(_term_fingerprint(child) for child in term.children),
-    )
-
-
-def canonicalize_ac_term(term: TypedBvTerm) -> TypedBvTerm:
-    """Canonicalize only homogeneous, same-width AC operator trees."""
-
-    if term.operation is None:
-        return term
-
-    normalized_children = tuple(canonicalize_ac_term(child) for child in term.children)
-    if term.operation not in _AC_OPERATIONS:
-        return TypedBvTerm(
-            operation=term.operation,
-            width=term.width,
-            children=normalized_children,
-        )
-
-    flattened: list[TypedBvTerm] = []
-
-    def collect(child: TypedBvTerm) -> None:
-        if child.operation == term.operation and child.width == term.width:
-            for grandchild in child.children:
-                collect(grandchild)
-        else:
-            flattened.append(child)
-
-    for child in normalized_children:
-        collect(child)
-    flattened.sort(key=_term_fingerprint)
-
-    rebuilt = flattened[0]
-    for child in flattened[1:]:
-        rebuilt = TypedBvTerm(
-            operation=term.operation,
-            width=term.width,
-            children=(rebuilt, child),
-        )
-    return rebuilt
 
 
 @dataclass(frozen=True)
@@ -638,16 +511,6 @@ def lower_term_to_native_ast(
         return rebuilt if isinstance(rebuilt, runtime.AstNode) else None
     except Exception:
         return None
-
-
-def _term_cost(term: TypedBvTerm) -> tuple[int, int]:
-    if term.operation is None:
-        return (0, 1)
-    child_costs = tuple(_term_cost(child) for child in term.children)
-    return (
-        1 + sum(cost[0] for cost in child_costs),
-        1 + sum(cost[1] for cost in child_costs),
-    )
 
 
 def _term_leafs(term: TypedBvTerm) -> frozenset[tuple[object, ...]]:
@@ -1222,4 +1085,6 @@ __all__ = [
     "extract_bounded_candidate",
     "lower_native_ast_to_term",
     "lower_term_to_native_ast",
+    "term_cost",
+    "term_fingerprint",
 ]

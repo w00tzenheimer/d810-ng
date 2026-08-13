@@ -24,6 +24,7 @@ from d810.backends.mba.egglog_saturation import (
     lower_native_ast_to_term,
     lower_term_to_native_ast,
 )
+from d810.mba import typed_term
 from d810.mba.rules._base import VerifiableRule
 from d810.mba.rules.xor import Xor_NestedStuff
 
@@ -132,6 +133,13 @@ def test_typed_term_masks_constants_and_rejects_mixed_width_children():
 
     with pytest.raises(ValueError, match="same width"):
         _node("add", _leaf("wide", width=32), _leaf("narrow", width=16))
+
+
+def test_egglog_compatibility_reexports_the_portable_term_contract():
+    assert egglog_saturation.TypedBvTerm is typed_term.TypedBvTerm
+    assert egglog_saturation.canonicalize_ac_term is typed_term.canonicalize_ac_term
+    assert egglog_saturation.term_cost is typed_term.term_cost
+    assert egglog_saturation.term_fingerprint is typed_term.term_fingerprint
 
 
 class _SameReprOpaqueKey:
