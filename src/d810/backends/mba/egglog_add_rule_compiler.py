@@ -26,6 +26,7 @@ _SUPPORTED_OPERATIONS = frozenset(
     }
 )
 _UNARY_OPERATIONS = frozenset({"bnot", "neg"})
+_SUPPORTED_COMPARISON_OPERATIONS = frozenset({"ne", "lt", "gt", "le", "ge"})
 
 
 class RuleCompilationStatus(enum.StrEnum):
@@ -118,6 +119,10 @@ def _expression_fingerprint(expression: Any) -> tuple[Any, ...]:
 
 def _constraint_fingerprint(constraint: Any) -> tuple[Any, ...]:
     if hasattr(constraint, "op_name"):
+        if constraint.op_name not in _SUPPORTED_COMPARISON_OPERATIONS:
+            raise ValueError(
+                f"unsupported comparison constraint operation: {constraint.op_name}"
+            )
         return (
             type(constraint).__name__,
             constraint.op_name,

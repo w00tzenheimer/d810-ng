@@ -6,6 +6,7 @@ from d810.backends.mba.egglog_add_rule_compiler import (
     compile_add_rule_catalogue,
 )
 from d810.backends.mba.z3 import verify_rule
+from d810.mba.constraints import ComparisonConstraint
 from d810.mba.dsl import Const, Var
 from d810.mba.rules._base import VerifiableRule
 
@@ -24,6 +25,29 @@ def test_add_catalogue_rejects_non_dsl_pattern_or_replacement(
     catalogue = compile_add_rule_catalogue()
 
     receipt = catalogue.receipt_for("MalformedRule")
+    assert receipt.status is RuleCompilationStatus.REJECTED
+    assert receipt.compiled_rule is None
+    assert receipt.canonical_name is None
+
+
+def test_add_catalogue_rejects_unknown_comparison_constraint_operation(monkeypatch):
+    malformed_rule = type(
+        "UnknownComparisonRule",
+        (VerifiableRule,),
+        {
+            "PATTERN": Var("x"),
+            "REPLACEMENT": Var("x"),
+            "CONSTRAINTS": [
+                ComparisonConstraint(Var("x"), Var("y"), "bogus", "bogus")
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        egglog_add_rule_compiler, "ADD_RULE_CLASSES", (malformed_rule,)
+    )
+
+    receipt = compile_add_rule_catalogue().receipt_for("UnknownComparisonRule")
+
     assert receipt.status is RuleCompilationStatus.REJECTED
     assert receipt.compiled_rule is None
     assert receipt.canonical_name is None
