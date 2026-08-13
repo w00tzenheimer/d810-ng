@@ -103,7 +103,8 @@ def test_baked_runtime_validates_dependencies_in_every_mode(
     assert any(call.startswith("image inspect ") for call in calls)
     command = _container_run(calls)
     assert "from d810.speedups import bootstrap" in command
-    assert "import pytest, unicorn, z3" in command
+    assert "import pytest, unicorn, z3, egglog" in command
+    assert "/app/ida/.venv/bin/python -c" in command
     assert "z3.get_version()" in command
     assert "command -v git" in command
     assert ".[dev,emulation,egraph]" in command

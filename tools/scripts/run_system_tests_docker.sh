@@ -463,9 +463,9 @@ if [ "$NO_CYTHON" = "1" ]; then
 else
   SPEEDUPS_BUILD_CMD="D810_BUILD_SPEEDUPS=1 $IDA_VENV_PIP install -e .[speedups] -q || echo '[speedups] build failed, falling back to pure-Python'"
 fi
-RUNTIME_PROBE="from d810.speedups import bootstrap; bootstrap.ensure_speedups_on_path(); import pytest, unicorn, z3; assert (4, 13) <= z3.get_version() < (4, 15, 5)"
+RUNTIME_PROBE="from d810.speedups import bootstrap; bootstrap.ensure_speedups_on_path(); import pytest, unicorn, z3, egglog; assert (4, 13) <= z3.get_version() < (4, 15, 5)"
 if _image_has_baked_runtime; then
-  DEPENDENCY_SETUP="if $IDA_VENV_PYTHON -c '$RUNTIME_PROBE' >/dev/null 2>&1 && $IDA_VENV_PYTHON -c 'import egglog' >/dev/null 2>&1 && command -v git >/dev/null 2>&1; then echo '[setup] baked runtime dependencies detected; install skipped'; else echo '[setup] baked runtime is stale; refreshing declared test dependencies'; if ! command -v git >/dev/null 2>&1; then apt-get update && apt-get install -y --no-install-recommends git; fi; $IDA_VENV_PIP install -e '.[dev,emulation,egraph]' -q && $IDA_VENV_PYTHON -m d810.speedups.install && $IDA_VENV_PYTHON -c '$RUNTIME_PROBE'; fi"
+  DEPENDENCY_SETUP="if $IDA_VENV_PYTHON -c '$RUNTIME_PROBE' >/dev/null 2>&1 && command -v git >/dev/null 2>&1; then echo '[setup] baked runtime dependencies detected; install skipped'; else echo '[setup] baked runtime is stale; refreshing declared test dependencies'; if ! command -v git >/dev/null 2>&1; then apt-get update && apt-get install -y --no-install-recommends git; fi; $IDA_VENV_PIP install -e '.[dev,emulation,egraph]' -q && $IDA_VENV_PYTHON -m d810.speedups.install && $IDA_VENV_PYTHON -c '$RUNTIME_PROBE'; fi"
 else
   DEPENDENCY_SETUP="$IDA_VENV_PIP install -e '.[dev,emulation,egraph]' -q && $IDA_VENV_PYTHON -m d810.speedups.install && $IDA_VENV_PYTHON -c '$RUNTIME_PROBE'"
 fi

@@ -1,11 +1,17 @@
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError, dataclass
+from dataclasses import FrozenInstanceError, dataclass, replace
 from types import SimpleNamespace
 
 import pytest
 
 from d810.backends.mba import egglog_saturation
+from d810.backends.mba.egglog_add_rule_compiler import (
+    CERTIFICATE_WIDTHS,
+    CompiledEgglogRule,
+    _compile_rule_families,
+    apply_compiled_rule_to_term,
+)
 from d810.backends.mba.egglog_saturation import (
     EgglogExtractionBudget,
     EgglogExtractionReceipt,
@@ -17,6 +23,8 @@ from d810.backends.mba.egglog_saturation import (
     lower_native_ast_to_term,
     lower_term_to_native_ast,
 )
+from d810.mba.rules._base import VerifiableRule
+from d810.mba.rules.xor import Xor_NestedStuff
 
 
 def _leaf(name: str, *, width: int = 32) -> TypedBvTerm:
@@ -36,6 +44,24 @@ def _node(
 ) -> TypedBvTerm:
     children = (left,) if right is None else (left, right)
     return TypedBvTerm(operation=operation, width=width, children=children)
+
+
+def _term_from_symbolic(expression, bindings=None, *, width: int = 32):
+    bindings = {} if bindings is None else bindings
+    if expression.operation is None:
+        if expression.value is not None:
+            return _constant(int(expression.value), width=width)
+        assert expression.name is not None
+        return bindings.setdefault(expression.name, _leaf(expression.name, width=width))
+    left = _term_from_symbolic(expression.left, bindings, width=width)
+    right = (
+        _term_from_symbolic(expression.right, bindings, width=width)
+        if expression.right is not None
+        else None
+    )
+    return canonicalize_ac_term(
+        _node(expression.operation, left, right, width=width)
+    )
 
 
 def test_ac_canonicalization_matches_swapped_operands_without_rewrite_rules():
@@ -595,6 +621,53 @@ def test_run_report_match_counts_are_never_guessed():
         is None
     )
     assert egglog_saturation._rule_firing_count(SimpleNamespace()) is None
+
+
+def test_actual_xor_nested_stuff_canonical_pattern_backtracks_ac_bindings():
+    catalogue = _compile_rule_families({"xor": (Xor_NestedStuff,)})
+    assert len(catalogue.compiled_rules) == 1
+    canonical = catalogue.compiled_rules[0]
+    candidate = _term_from_symbolic(canonical.pattern)
+
+    replacement = apply_compiled_rule_to_term(canonical, candidate)
+
+    assert replacement == _term_from_symbolic(canonical.replacement)
+
+
+def test_fabricated_skip_verification_compiled_rule_is_not_admitted():
+    class _FabricatedUnverifiedRule(VerifiableRule):
+        SKIP_VERIFICATION = True
+        PATTERN = Xor_NestedStuff.x9 ^ Xor_NestedStuff.x10
+        REPLACEMENT = Xor_NestedStuff.x9
+
+    fabricated = CompiledEgglogRule(
+        family="xor",
+        source_name="FabricatedUnverifiedRule",
+        aliases=(),
+        rule_type=_FabricatedUnverifiedRule,
+        proof_widths=CERTIFICATE_WIDTHS,
+        guarded=False,
+    )
+    candidate = _term_from_symbolic(fabricated.pattern)
+
+    assert apply_compiled_rule_to_term(fabricated, candidate) is None
+
+
+def test_admitted_compiled_rule_rejects_tampered_catalogue_metadata():
+    canonical = _compile_rule_families({"xor": (Xor_NestedStuff,)}).compiled_rules[0]
+    candidate = _term_from_symbolic(canonical.pattern)
+    tampered_fields = {
+        "family": "add",
+        "source_name": "FabricatedCanonicalName",
+        "aliases": ("FabricatedAlias",),
+        "rule_type": VerifiableRule,
+        "proof_widths": (32,),
+        "guarded": True,
+    }
+
+    for field, replacement in tampered_fields.items():
+        tampered = replace(canonical, **{field: replacement})
+        assert apply_compiled_rule_to_term(tampered, candidate) is None
 
 
 @pytest.mark.parametrize("malformation", ["run-report", "serialization"])

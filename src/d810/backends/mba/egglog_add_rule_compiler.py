@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import enum
 import importlib
-from collections.abc import Collection
-from dataclasses import dataclass, replace
+from collections.abc import Collection, Iterator
+from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 
 from d810.backends.mba.z3 import constraint_to_z3, create_z3_variables, verify_rule
@@ -36,6 +36,7 @@ _SUPPORTED_OPERATIONS = frozenset(
 _UNARY_OPERATIONS = frozenset({"bnot", "neg"})
 _AC_OPERATIONS = frozenset({"add", "and", "mul", "or", "xor"})
 _SUPPORTED_COMPARISON_OPERATIONS = frozenset({"ne", "lt", "gt", "le", "ge"})
+_ADMITTED_RULE_TOKEN = object()
 
 
 class RuleCompilationStatus(enum.StrEnum):
@@ -52,6 +53,12 @@ class CompiledEgglogAddRule:
     proof_widths: tuple[int, ...]
     guarded: bool
     family: str = "add"
+    _admission_token: object | None = field(default=None, repr=False, compare=False)
+    _admission_signature: tuple[Any, ...] | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
     @property
     def pattern(self) -> SymbolicExpressionProtocol:
@@ -231,6 +238,41 @@ def _rule_fingerprint(rule: VerifiableRule) -> tuple[Any, ...]:
     )
 
 
+def _compiled_rule_admission_signature(
+    rule: CompiledEgglogRule,
+) -> tuple[Any, ...]:
+    return (
+        rule.family,
+        rule.source_name,
+        tuple(rule.aliases),
+        rule.rule_type,
+        tuple(rule.proof_widths),
+        bool(rule.guarded),
+        _rule_fingerprint(rule.rule_type()),
+    )
+
+
+def _seal_admitted_rule(rule: CompiledEgglogRule) -> CompiledEgglogRule:
+    return replace(
+        rule,
+        _admission_token=_ADMITTED_RULE_TOKEN,
+        _admission_signature=_compiled_rule_admission_signature(rule),
+    )
+
+
+def is_admitted_compiled_rule(rule: object) -> bool:
+    """Validate the exact immutable compiler admission seal and rule identity."""
+
+    if type(rule) is not CompiledEgglogAddRule:
+        return False
+    if rule._admission_token is not _ADMITTED_RULE_TOKEN:
+        return False
+    try:
+        return rule._admission_signature == _compiled_rule_admission_signature(rule)
+    except (AssertionError, TypeError, ValueError):
+        return False
+
+
 def _expression_symbolic_names(expression: Any) -> set[str]:
     _expression_fingerprint(expression)
     if expression.operation is None:
@@ -391,6 +433,10 @@ def _compile_rule_families(
                 )
             )
 
+    canonical_by_fingerprint = {
+        fingerprint: _seal_admitted_rule(compiled)
+        for fingerprint, compiled in canonical_by_fingerprint.items()
+    }
     compiled_by_name = {
         (compiled.family, compiled.source_name): compiled
         for compiled in canonical_by_fingerprint.values()
@@ -467,84 +513,89 @@ def _flatten_term_ac(term: Any, operation: str) -> tuple[Any, ...]:
     return tuple(flattened)
 
 
-def _match_symbolic_term(
+def _iter_symbolic_term_matches(
     expression: Any,
     term: Any,
     bindings: dict[str, Any],
-) -> bool:
-    """Match one admitted symbolic pattern against a canonical typed term."""
+) -> Iterator[dict[str, Any]]:
+    """Yield every deterministic binding environment for one symbolic match."""
 
     operation = expression.operation
     if operation is None:
         name = expression.name
         if not name:
-            return False
+            return
         if bool(getattr(expression, "is_pattern_constant", False)):
             if term.operation is not None or term.value is None:
-                return False
+                return
         if expression.value is not None:
             if term.operation is not None or term.value is None:
-                return False
+                return
             mask = (1 << term.width) - 1
             if term.value != (int(expression.value) & mask):
-                return False
+                return
         existing = bindings.get(name)
         if existing is not None:
-            return existing == term
-        bindings[name] = term
-        return True
+            if existing == term:
+                yield bindings
+            return
+        matched = dict(bindings)
+        matched[name] = term
+        yield matched
+        return
 
     if operation != term.operation:
-        return False
+        return
     if operation in _AC_OPERATIONS:
         pattern_items = _flatten_symbolic_ac(expression, operation)
         term_items = _flatten_term_ac(term, operation)
         if len(pattern_items) != len(term_items):
-            return False
+            return
 
         def match_items(
             index: int,
             remaining: tuple[Any, ...],
             current: dict[str, Any],
-        ) -> dict[str, Any] | None:
+        ) -> Iterator[dict[str, Any]]:
             if index == len(pattern_items):
-                return current if not remaining else None
+                if not remaining:
+                    yield current
+                return
             pattern_item = pattern_items[index]
             for candidate_index, candidate_item in enumerate(remaining):
-                attempted = dict(current)
-                if not _match_symbolic_term(
+                for attempted in _iter_symbolic_term_matches(
                     pattern_item,
                     candidate_item,
-                    attempted,
+                    current,
                 ):
-                    continue
-                matched = match_items(
-                    index + 1,
-                    remaining[:candidate_index] + remaining[candidate_index + 1 :],
-                    attempted,
-                )
-                if matched is not None:
-                    return matched
-            return None
+                    yield from match_items(
+                        index + 1,
+                        remaining[:candidate_index]
+                        + remaining[candidate_index + 1 :],
+                        attempted,
+                    )
 
-        matched_bindings = match_items(0, term_items, dict(bindings))
-        if matched_bindings is None:
-            return False
-        bindings.clear()
-        bindings.update(matched_bindings)
-        return True
+        yield from match_items(0, term_items, dict(bindings))
+        return
 
     if expression.left is None or not term.children:
-        return False
-    if not _match_symbolic_term(expression.left, term.children[0], bindings):
-        return False
-    if operation in _UNARY_OPERATIONS:
-        return expression.right is None and len(term.children) == 1
-    return (
-        expression.right is not None
-        and len(term.children) == 2
-        and _match_symbolic_term(expression.right, term.children[1], bindings)
-    )
+        return
+    for left_bindings in _iter_symbolic_term_matches(
+        expression.left,
+        term.children[0],
+        bindings,
+    ):
+        if operation in _UNARY_OPERATIONS:
+            if expression.right is None and len(term.children) == 1:
+                yield left_bindings
+            continue
+        if expression.right is None or len(term.children) != 2:
+            continue
+        yield from _iter_symbolic_term_matches(
+            expression.right,
+            term.children[1],
+            left_bindings,
+        )
 
 
 @dataclass(frozen=True)
@@ -718,22 +769,29 @@ def apply_compiled_rule_to_term(
     schemas and never calls the legacy per-rule Egglog specialization path.
     """
 
+    if not is_admitted_compiled_rule(rule):
+        return None
     if term.width not in rule.proof_widths:
         return None
-    bindings: dict[str, Any] = {}
-    if not _match_symbolic_term(rule.pattern, term, bindings):
-        return None
-    if not _constraints_match_term(rule, bindings, width=term.width):
-        return None
-    try:
-        replacement = _materialize_symbolic_term(
-            rule.replacement,
-            bindings,
+    for bindings in _iter_symbolic_term_matches(rule.pattern, term, {}):
+        constrained_bindings = dict(bindings)
+        if not _constraints_match_term(
+            rule,
+            constrained_bindings,
             width=term.width,
-        )
-    except (TypeError, ValueError):
-        return None
-    return replacement if replacement.width == term.width else None
+        ):
+            continue
+        try:
+            replacement = _materialize_symbolic_term(
+                rule.replacement,
+                constrained_bindings,
+                width=term.width,
+            )
+        except (TypeError, ValueError):
+            continue
+        if replacement.width == term.width:
+            return replacement
+    return None
 
 
 _OPCODE_BY_OPERATION: dict[str, int] = {}
