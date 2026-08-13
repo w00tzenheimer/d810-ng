@@ -13,12 +13,19 @@ import time
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import partial
 
 from d810.core.typing import Any
 from d810.backends.mba.egglog_statistics import (
     read_egraph_statistics,
     read_rule_firing_count,
 )
+from d810.backends.mba.hexrays_island import (
+    HexRaysIslandLowering,
+    lower_hexrays_island,
+    rebuild_hexrays_island,
+)
+from d810.mba.island_profile import profile_typed_term
 from d810.mba import typed_term as _typed_term
 from d810.mba.typed_term import (
     TypedBvTerm,
@@ -34,10 +41,6 @@ from d810.mba.typed_term import (
 assert TypedBvTerm is _typed_term.TypedBvTerm
 term_cost = _term_cost
 
-
-_UNARY_OPERATIONS = frozenset({"bnot", "neg"})
-_BINARY_OPERATIONS = frozenset({"add", "and", "mul", "or", "sub", "xor"})
-_VALID_DESTINATION_SIZES = frozenset({1, 2, 4, 8})
 
 # Public capability contract.  This spike explores rewrites of the candidate
 # root only; it does not recursively close over eligible nested subterms.
@@ -198,10 +201,17 @@ class EgglogExtractionReceipt:
     selected_source: str | None = None
     selected_aliases: tuple[str, ...] = ()
     derivation_trace: tuple[tuple[str, str, tuple[str, ...]], ...] = ()
+    island_class: str | None = None
+    island_fingerprint: str | None = None
+    operator_count: int | None = None
+    distinct_leaf_count: int | None = None
+    nonlinear_product_count: int | None = None
+    blockers: tuple[str, ...] = ()
     skip_reason: ExtractionSkipReason | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "selected_aliases", tuple(self.selected_aliases))
+        object.__setattr__(self, "blockers", tuple(sorted(map(str, self.blockers))))
         object.__setattr__(
             self,
             "derivation_trace",
@@ -244,247 +254,14 @@ class EgglogExtractionResult:
         )
 
 
-@dataclass(frozen=True)
-class _NativeAstRuntime:
-    AstNode: type[Any]
-    AstLeaf: type[Any]
-    AstConstant: type[Any]
-    AstProxy: type[Any]
-    operation_by_opcode: Mapping[int, str]
-    opcode_by_operation: Mapping[str, int]
-    get_mop_key: Any
-
-
-def _unwrap_runtime_ast_node(
-    ast: Any,
-    runtime: _NativeAstRuntime,
-) -> Any | None:
-    """Unwrap only known live AST proxies to a concrete operator root."""
-
-    current = ast
-    seen: set[int] = set()
-    for _ in range(4):
-        if type(current) is not runtime.AstProxy:
-            return current if isinstance(current, runtime.AstNode) else None
-        identity = id(current)
-        if identity in seen:
-            return None
-        seen.add(identity)
-        try:
-            current = object.__getattribute__(current, "_target")
-        except (AttributeError, TypeError):
-            return None
-    return None
-
-
-def _load_native_runtime() -> _NativeAstRuntime:
-    """Resolve IDA-coupled AST types only at the native lowering boundary."""
-
-    ida_hexrays = importlib.import_module("ida_hexrays")
-    ast_module = importlib.import_module("d810.hexrays.expr.ast")
-    opcode_by_operation = {
-        "add": ida_hexrays.m_add,
-        "and": ida_hexrays.m_and,
-        "bnot": ida_hexrays.m_bnot,
-        "mul": ida_hexrays.m_mul,
-        "neg": ida_hexrays.m_neg,
-        "or": ida_hexrays.m_or,
-        "sub": ida_hexrays.m_sub,
-        "xor": ida_hexrays.m_xor,
-    }
-    return _NativeAstRuntime(
-        AstNode=ast_module.AstNode,
-        AstLeaf=ast_module.AstLeaf,
-        AstConstant=ast_module.AstConstant,
-        AstProxy=ast_module.AstProxy,
-        operation_by_opcode={
-            opcode: operation for operation, opcode in opcode_by_operation.items()
-        },
-        opcode_by_operation=opcode_by_operation,
-        get_mop_key=ast_module.get_mop_key,
-    )
-
-
-def _native_width_witnesses(ast: Any) -> tuple[int, ...] | None:
-    witnesses: list[int] = []
-    for attribute in ("size", "expected_size", "dest_size"):
-        try:
-            value = getattr(ast, attribute, None)
-        except Exception:
-            return None
-        if value is None:
-            continue
-        if type(value) is not int or value < 0:
-            return None
-        if value != 0:
-            witnesses.append(value)
-    return tuple(witnesses)
-
-
-def _native_width_matches(
-    ast: Any,
-    destination_size: int,
-    *,
-    require_destination_witness: bool = False,
-) -> bool:
-    witnesses = _native_width_witnesses(ast)
-    if witnesses is None or not witnesses:
-        return False
-    if require_destination_witness:
-        destination_witness = getattr(ast, "dest_size", None)
-        if type(destination_witness) is not int or destination_witness == 0:
-            return False
-    return all(witness == destination_size for witness in witnesses)
-
-
-def _live_leaf_key(leaf: Any, runtime: _NativeAstRuntime) -> tuple[object, ...] | None:
-    mop = getattr(leaf, "mop", None)
-    if mop is None:
-        return None
-    try:
-        to_cache_key = getattr(mop, "to_cache_key", None)
-        raw_key = to_cache_key() if callable(to_cache_key) else runtime.get_mop_key(mop)
-        key = tuple(raw_key)
-        hash(key)
-        live_key = ("mop", *key)
-        _leaf_key_fingerprint(live_key)
-    except Exception:
-        return None
-    return live_key
-
-
-def _lower_native(
-    ast: Any,
-    *,
-    destination_size: int,
-    runtime: _NativeAstRuntime,
-) -> TypedBvTerm | None:
-    width = destination_size * 8
-    if isinstance(ast, runtime.AstConstant):
-        value = getattr(ast, "value", None)
-        if type(value) is not int or not _native_width_matches(ast, destination_size):
-            return None
-        return TypedBvTerm(operation=None, width=width, value=value)
-    if isinstance(ast, runtime.AstLeaf):
-        if not _native_width_matches(ast, destination_size):
-            return None
-        leaf_key = _live_leaf_key(ast, runtime)
-        if leaf_key is None:
-            return None
-        return TypedBvTerm(operation=None, width=width, leaf_key=leaf_key)
-    if not isinstance(ast, runtime.AstNode):
-        return None
-
-    if not _native_width_matches(
-        ast,
-        destination_size,
-        require_destination_witness=True,
-    ):
-        return None
-    operation = runtime.operation_by_opcode.get(getattr(ast, "opcode", None))
-    if operation is None or getattr(ast, "left", None) is None:
-        return None
-    left = _lower_native(
-        ast.left,
-        destination_size=destination_size,
-        runtime=runtime,
-    )
-    if left is None:
-        return None
-    right_ast = getattr(ast, "right", None)
-    if operation in _UNARY_OPERATIONS:
-        if right_ast is not None:
-            return None
-        children = (left,)
-    else:
-        if right_ast is None:
-            return None
-        right = _lower_native(
-            right_ast,
-            destination_size=destination_size,
-            runtime=runtime,
-        )
-        if right is None or right.width != left.width:
-            return None
-        children = (left, right)
-    return TypedBvTerm(operation=operation, width=width, children=children)
-
-
 def lower_native_ast_to_term(
     ast: Any,
     *,
     destination_size: int,
 ) -> TypedBvTerm | None:
-    """Lower a width-preserving native AST, or fail closed with ``None``."""
+    """Deprecated compatibility facade delegating to the native adapter."""
 
-    if (
-        type(destination_size) is not int
-        or destination_size not in _VALID_DESTINATION_SIZES
-    ):
-        return None
-    try:
-        runtime = _load_native_runtime()
-        ast = _unwrap_runtime_ast_node(ast, runtime)
-        if ast is None:
-            return None
-        term = _lower_native(
-            ast,
-            destination_size=destination_size,
-            runtime=runtime,
-        )
-        return None if term is None else canonicalize_ac_term(term)
-    except Exception:
-        return None
-
-
-def _lower_term(
-    term: TypedBvTerm,
-    *,
-    leafs: Mapping[tuple[object, ...], Any],
-    destination_size: int,
-    runtime: _NativeAstRuntime,
-) -> Any | None:
-    if term.width != destination_size * 8:
-        return None
-    if term.operation is None and term.value is not None:
-        constant = runtime.AstConstant(str(term.value), term.value, destination_size)
-        constant.dest_size = destination_size
-        return constant
-    if term.operation is None:
-        assert term.leaf_key is not None
-        leaf = leafs.get(term.leaf_key)
-        if (
-            not isinstance(leaf, runtime.AstLeaf)
-            or isinstance(leaf, runtime.AstConstant)
-            or not _native_width_matches(leaf, destination_size)
-        ):
-            return None
-        live_leaf_key = _live_leaf_key(leaf, runtime)
-        if live_leaf_key is None or (
-            _leaf_key_fingerprint(live_leaf_key) != _leaf_key_fingerprint(term.leaf_key)
-        ):
-            return None
-        return leaf.clone()
-
-    opcode = runtime.opcode_by_operation.get(term.operation)
-    if opcode is None:
-        return None
-    rebuilt_children = tuple(
-        _lower_term(
-            child,
-            leafs=leafs,
-            destination_size=destination_size,
-            runtime=runtime,
-        )
-        for child in term.children
-    )
-    if any(child is None for child in rebuilt_children):
-        return None
-    left = rebuilt_children[0]
-    right = rebuilt_children[1] if len(rebuilt_children) == 2 else None
-    node = runtime.AstNode(opcode, left, right)
-    node.dest_size = destination_size
-    return node
+    return lower_hexrays_island(ast, destination_size=destination_size).term
 
 
 def lower_term_to_native_ast(
@@ -493,55 +270,25 @@ def lower_term_to_native_ast(
     leafs: Mapping[tuple[object, ...], Any],
     destination_size: int,
 ) -> Any | None:
-    """Rebuild a native operator tree from preserved leaves and constants."""
+    """Deprecated compatibility facade delegating to the native adapter."""
 
-    if (
-        type(destination_size) is not int
-        or destination_size not in _VALID_DESTINATION_SIZES
-    ):
-        return None
-    try:
-        runtime = _load_native_runtime()
-        rebuilt = _lower_term(
-            term,
-            leafs=leafs,
-            destination_size=destination_size,
-            runtime=runtime,
-        )
-        return rebuilt if isinstance(rebuilt, runtime.AstNode) else None
-    except Exception:
-        return None
+    lowering = HexRaysIslandLowering(
+        term=term,
+        profile=profile_typed_term(term),
+        leafs=leafs,
+        native_nodes_by_path={},
+    )
+    return rebuild_hexrays_island(
+        term,
+        lowering=lowering,
+        destination_size=destination_size,
+    )
 
 
 def _term_leafs(term: TypedBvTerm) -> frozenset[tuple[object, ...]]:
     if term.operation is None:
         return frozenset() if term.leaf_key is None else frozenset((term.leaf_key,))
     return frozenset().union(*(_term_leafs(child) for child in term.children))
-
-
-def _collect_native_leafs(
-    ast: Any,
-    *,
-    runtime: _NativeAstRuntime,
-) -> dict[tuple[object, ...], Any] | None:
-    leafs: dict[tuple[object, ...], Any] = {}
-
-    def collect(node: Any) -> bool:
-        if isinstance(node, runtime.AstConstant):
-            return True
-        if isinstance(node, runtime.AstLeaf):
-            key = _live_leaf_key(node, runtime)
-            if key is None:
-                return False
-            leafs.setdefault(key, node)
-            return True
-        if not isinstance(node, runtime.AstNode):
-            return False
-        left = getattr(node, "left", None)
-        right = getattr(node, "right", None)
-        return left is not None and collect(left) and (right is None or collect(right))
-
-    return leafs if collect(ast) else None
 
 
 def _leaf_key_string(leaf_key: tuple[object, ...]) -> str:
@@ -642,11 +389,13 @@ def _extraction_result(
     replacement_ast: Any | None = None,
     skip_reason: ExtractionSkipReason | None = None,
     elapsed_ms: float | None = None,
+    lowering: HexRaysIslandLowering | None = None,
 ) -> EgglogExtractionResult:
     elapsed = _elapsed_ms(started) if elapsed_ms is None else elapsed_ms
     family = provenance[0] if provenance is not None else None
     source_name = provenance[1] if provenance is not None else None
     aliases = provenance[2] if provenance is not None else ()
+    profile = None if lowering is None else lowering.profile
     return EgglogExtractionResult(
         replacement_ast=replacement_ast,
         receipt=EgglogExtractionReceipt(
@@ -661,10 +410,39 @@ def _extraction_result(
             selected_source=source_name,
             selected_aliases=aliases,
             derivation_trace=derivation_trace,
+            island_class=None if profile is None else profile.island_class.value,
+            island_fingerprint=None if profile is None else profile.fingerprint,
+            operator_count=None if profile is None else profile.operator_count,
+            distinct_leaf_count=None if profile is None else profile.distinct_leaf_count,
+            nonlinear_product_count=(
+                None if profile is None else profile.nonlinear_product_count
+            ),
+            blockers=() if profile is None else tuple(blocker.value for blocker in profile.blockers),
             skip_reason=skip_reason,
         ),
         selected_provenance=provenance,
         derivation_trace=derivation_trace,
+    )
+
+
+_build_extraction_result = _extraction_result
+
+
+def extraction_receipt_for_lowering(
+    lowering: HexRaysIslandLowering,
+    skip_reason: ExtractionSkipReason,
+) -> EgglogExtractionReceipt:
+    """Return a profile-bearing no-op receipt for a known native candidate."""
+
+    profile = lowering.profile
+    return EgglogExtractionReceipt(
+        island_class=profile.island_class.value,
+        island_fingerprint=profile.fingerprint,
+        operator_count=profile.operator_count,
+        distinct_leaf_count=profile.distinct_leaf_count,
+        nonlinear_product_count=profile.nonlinear_product_count,
+        blockers=tuple(blocker.value for blocker in profile.blockers),
+        skip_reason=skip_reason,
     )
 
 
@@ -719,6 +497,11 @@ def extract_bounded_candidate(
     except Exception:
         started = 0.0
     input_cost: tuple[int, int] | None = None
+    lowering = lower_hexrays_island(
+        candidate_ast,
+        destination_size=destination_size,
+    )
+    _extraction_result = partial(_build_extraction_result, lowering=lowering)
     egglog = _load_egglog_module()
     if egglog is None or _EGGLOG_MODULE is None:
         return _extraction_result(
@@ -730,10 +513,7 @@ def extract_bounded_candidate(
 
     try:
         egraph = egglog.EGraph()
-        term = lower_native_ast_to_term(
-            candidate_ast,
-            destination_size=destination_size,
-        )
+        term = lowering.term
         if term is None:
             return _extraction_result(
                 started=started,
@@ -760,20 +540,6 @@ def extract_bounded_candidate(
                 input_cost=input_cost,
                 skip_reason=ExtractionSkipReason.TIME_BUDGET,
                 elapsed_ms=elapsed,
-            )
-
-        runtime = _load_native_runtime()
-        concrete_candidate = _unwrap_runtime_ast_node(candidate_ast, runtime)
-        native_leafs = (
-            None
-            if concrete_candidate is None
-            else _collect_native_leafs(concrete_candidate, runtime=runtime)
-        )
-        if native_leafs is None:
-            return _extraction_result(
-                started=started,
-                input_cost=input_cost,
-                skip_reason=ExtractionSkipReason.LOWERING_FAILED,
             )
 
         from d810.backends.mba.egglog_add_rule_compiler import (
@@ -1021,9 +787,9 @@ def extract_bounded_candidate(
             candidate_cost = _term_cost(candidate.term)
             if candidate_cost >= input_cost:
                 continue
-            rebuilt = lower_term_to_native_ast(
+            rebuilt = rebuild_hexrays_island(
                 candidate.term,
-                leafs=native_leafs,
+                lowering=lowering,
                 destination_size=destination_size,
             )
             if rebuilt is None:

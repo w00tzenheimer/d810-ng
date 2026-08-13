@@ -24,8 +24,10 @@ from d810.backends.mba.egglog_saturation import (
     EgglogExtractionReceipt,
     EgglogExtractionResult,
     ExtractionSkipReason,
+    extraction_receipt_for_lowering,
     extract_bounded_candidate,
 )
+from d810.backends.mba.hexrays_island import lower_hexrays_island
 from d810.core import getLogger
 from d810.hexrays.expr.ast import AstNode
 from d810.hexrays.ir_maturity import ir_maturity_to_ida
@@ -222,10 +224,17 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         ast = minsn_to_ast(ins)
         if ast is None:
             return None
+        lowering = lower_hexrays_island(ast, destination_size=int(ins.d.size))
+        # Preserve the candidate profile if a later preflight step raises; the
+        # callback guard upgrades only the provider outcome to internal_error.
+        self.last_extraction_receipt = extraction_receipt_for_lowering(
+            lowering,
+            ExtractionSkipReason.INTERNAL_ERROR,
+        )
         candidate_skip_reason = self._candidate_skip_reason(ast, ins)
         if candidate_skip_reason is not None:
             self._record_extraction_receipt(
-                EgglogExtractionReceipt(skip_reason=candidate_skip_reason)
+                extraction_receipt_for_lowering(lowering, candidate_skip_reason)
             )
             return None
 
@@ -294,7 +303,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         logger.info(
             "egglog MBA extraction receipt: input_cost=%s extracted_cost=%s "
             "degree=%s eclasses=%s enodes=%s rule_firings=%s elapsed_ms=%s "
-            "family=%s source=%s aliases=%s skip=%s",
+            "family=%s source=%s aliases=%s island=%s fingerprint=%s blockers=%s skip=%s",
             receipt.input_cost,
             receipt.extracted_cost,
             receipt.degree,
@@ -305,6 +314,9 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             receipt.selected_family,
             receipt.selected_source,
             receipt.selected_aliases,
+            receipt.island_class,
+            receipt.island_fingerprint,
+            receipt.blockers,
             skip_reason,
         )
 
@@ -327,6 +339,12 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             "skip_reason": (
                 receipt.skip_reason.value if receipt.skip_reason is not None else None
             ),
+            "island_class": receipt.island_class,
+            "island_fingerprint": receipt.island_fingerprint,
+            "operator_count": receipt.operator_count,
+            "distinct_leaf_count": receipt.distinct_leaf_count,
+            "nonlinear_product_count": receipt.nonlinear_product_count,
+            "blockers": receipt.blockers,
         }
         if receipt.selected_source is not None:
             source_names = (receipt.selected_source, *receipt.selected_aliases)

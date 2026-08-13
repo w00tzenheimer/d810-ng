@@ -523,9 +523,11 @@ def test_live_handler_receipts_candidate_budget_before_extraction(monkeypatch):
 
     assert handler._check_and_replace(_Instruction()) is None
     assert extraction_calls == []
-    assert handler.last_extraction_receipt == EgglogExtractionReceipt(
-        skip_reason=ExtractionSkipReason.CANDIDATE_BUDGET
-    )
+    receipt = handler.last_extraction_receipt
+    assert receipt is not None
+    assert receipt.skip_reason is ExtractionSkipReason.CANDIDATE_BUDGET
+    assert receipt.island_class == "linear_mba"
+    assert receipt.island_fingerprint is not None
 
 
 def test_live_handler_receipts_non_mba_candidate_before_extraction(monkeypatch):
@@ -543,9 +545,11 @@ def test_live_handler_receipts_non_mba_candidate_before_extraction(monkeypatch):
 
     assert handler._check_and_replace(_Instruction()) is None
     assert extraction_calls == []
-    assert handler.last_extraction_receipt == EgglogExtractionReceipt(
-        skip_reason=ExtractionSkipReason.NON_MBA_CANDIDATE
-    )
+    receipt = handler.last_extraction_receipt
+    assert receipt is not None
+    assert receipt.skip_reason is ExtractionSkipReason.NON_MBA_CANDIDATE
+    assert receipt.island_class == "unsupported"
+    assert receipt.blockers == ("unsupported_opcode",)
 
 
 def test_live_handler_unsupported_root_replaces_prior_invocation_metadata(monkeypatch):
@@ -613,6 +617,28 @@ def test_live_handler_exception_before_first_receipt_records_immutable_internal_
         receipt.skip_reason = None
 
 
+def test_live_handler_preflight_exception_preserves_lowered_profile(monkeypatch):
+    import d810.optimizers.microcode.instructions.egraph.egglog_handler as handler_module
+
+    handler = _configured_live_handler()
+    monkeypatch.setattr(handler_module, "minsn_to_ast", lambda _ins: _direct_add_candidate())
+    monkeypatch.setattr(
+        handler,
+        "_candidate_skip_reason",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("preflight failed")),
+    )
+
+    assert handler.check_and_replace(None, _Instruction()) is None
+
+    receipt = handler.last_extraction_receipt
+    assert receipt is not None
+    assert receipt.skip_reason is ExtractionSkipReason.INTERNAL_ERROR
+    assert receipt.island_class == "linear_mba"
+    assert receipt.island_fingerprint is not None
+    assert receipt.operator_count == 4
+    assert receipt.distinct_leaf_count == 2
+
+
 def test_live_handler_receipts_mixed_width_candidate_without_extraction_or_mutation(
     monkeypatch,
 ):
@@ -639,9 +665,10 @@ def test_live_handler_receipts_mixed_width_candidate_without_extraction_or_mutat
     assert extraction_calls == []
     assert proof_calls == []
     receipt = handler.last_extraction_receipt
-    assert receipt == EgglogExtractionReceipt(
-        skip_reason=ExtractionSkipReason.UNSUPPORTED_WIDTH_SEMANTICS
-    )
+    assert receipt is not None
+    assert receipt.skip_reason is ExtractionSkipReason.UNSUPPORTED_WIDTH_SEMANTICS
+    assert receipt.island_class == "unsupported"
+    assert receipt.blockers == ("mixed_width",)
     assert handler.execution_metadata()["skip_reason"] == "unsupported_width_semantics"
 
 
@@ -717,6 +744,12 @@ def test_live_handler_extracts_once_with_exact_configured_rules_then_proves_befo
     assert metadata["selected_family"] == "add"
     assert metadata["selected_source"] == "Add_HackersDelightRule_2"
     assert metadata["selected_aliases"] == ("Add_OllvmRule_3",)
+    assert metadata["island_class"] == "linear_mba"
+    assert metadata["island_fingerprint"] == receipt.island_fingerprint
+    assert metadata["operator_count"] == receipt.operator_count
+    assert metadata["distinct_leaf_count"] == 2
+    assert metadata["nonlinear_product_count"] == 0
+    assert metadata["blockers"] == ()
     assert metadata["derivation_trace"] == (
         ("add", "Add_HackersDelightRule_2", ("Add_OllvmRule_3",)),
     )

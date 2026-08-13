@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from d810.backends.mba import egglog_add_rule_compiler, egglog_saturation
+from d810.backends.mba import hexrays_island
 from d810.backends.mba import egglog_statistics
 from d810.backends.mba.egglog_add_rule_compiler import (
     CERTIFICATE_WIDTHS,
@@ -336,7 +337,7 @@ def fake_native_runtime(monkeypatch: pytest.MonkeyPatch):
         get_mop_key=lambda mop: mop.to_cache_key(),
     )
     monkeypatch.setattr(
-        egglog_saturation,
+        hexrays_island,
         "_load_native_runtime",
         lambda *_args: runtime,
     )
@@ -634,6 +635,11 @@ def test_egglog_unavailability_returns_exact_noop_receipt(
 
     assert result.replacement_ast is None
     assert result.receipt.skip_reason is ExtractionSkipReason.EGGLOG_UNAVAILABLE
+    assert result.receipt.island_class == "not_mba"
+    assert result.receipt.island_fingerprint is not None
+    assert result.receipt.operator_count == 1
+    assert result.receipt.distinct_leaf_count == 2
+    assert result.receipt.blockers == ()
     assert result.selected_provenance is None
 
 
@@ -677,6 +683,8 @@ def test_operator_budget_returns_candidate_budget_before_registration(
 
     assert _FreshEGraph.instances == 1
     assert result.receipt.input_cost == (2, 5)
+    assert result.receipt.island_class == "linear_mba"
+    assert result.receipt.operator_count == 2
     assert result.receipt.skip_reason is ExtractionSkipReason.CANDIDATE_BUDGET
 
 
