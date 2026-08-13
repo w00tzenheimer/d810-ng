@@ -131,6 +131,14 @@ EXPORT long test_egglog_add_rules(long a, long b, long c, long *out) {
   return out[0] + out[1] + out[2] + out[3] + out[4];
 }
 
+EXPORT long test_egglog_mba_families(long a, long b, long *out) {
+  // Exact compiled catalogue forms with one 32-bit width throughout on Windows.
+  out[0] = 2 * (a & b) + (a ^ b);
+  out[1] = (a + b) - 2 * (a & b);
+  out[2] = (a ^ b) - 2 * (a & ~b);
+  return out[0] + out[1] + out[2];
+}
+
 /**
  * MBA with complex arithmetic subexpressions
  *
