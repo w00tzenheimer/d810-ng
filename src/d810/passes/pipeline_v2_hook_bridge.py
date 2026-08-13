@@ -28,6 +28,11 @@ from d810.passes.mba_solve import (
     build_mba_solve_pass,
     mba_solve_implementation,
 )
+from d810.passes.mba_egglog import (
+    MBA_EGGLOG_IMPLEMENTATION,
+    MBA_EGGLOG_PASS_ID,
+    build_mba_egglog_pass,
+)
 from d810.passes.pass_pipeline import PipelineConfig, PipelineConfigError
 from d810.passes.pipeline_config_parser import (
     PipelineV2Mode,
@@ -133,6 +138,18 @@ def _mba_solve_options(config: PipelineConfig) -> dict[str, object]:
         # validates and the editor offers must appear in this dict or it is a
         # setting that looks configurable and silently does nothing.
         "auto_install_solver": adapter.auto_install_solver,
+    }
+
+
+def _mba_egglog_options(config: PipelineConfig) -> dict[str, object]:
+    adapter = build_mba_egglog_pass(config)
+    return {
+        "max_leaves": adapter.max_leaves,
+        "rounds": adapter.rounds,
+        "require_proof": adapter.require_proof,
+        # Keep portable maturity vocabulary across the config-v2 boundary.
+        # The live Egglog rule resolves it through d810.hexrays.ir_maturity.
+        "maturities": list(adapter.maturities),
     }
 
 
@@ -256,6 +273,11 @@ def pipeline_v2_hook_activation(project_config) -> PipelineV2HookActivation:
                 continue
             instruction_rules.append(
                 _rule_config(rule_name, _mba_solve_options(config))
+            )
+            continue
+        if pass_id == MBA_EGGLOG_PASS_ID:
+            instruction_rules.append(
+                _rule_config(MBA_EGGLOG_IMPLEMENTATION, _mba_egglog_options(config))
             )
             continue
         if pass_id in STATE_MACHINE_NATIVE_PASS_IDS:

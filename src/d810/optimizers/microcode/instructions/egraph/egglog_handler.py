@@ -1,325 +1,209 @@
-"""E-Graph based instruction optimizer using egglog equality saturation.
+"""Bounded, proof-gated Egglog MBA instruction rule.
 
-This optimizer uses egglog (a Rust-based e-graph library with Python bindings)
-to simplify MBA (Mixed Boolean-Arithmetic) expressions via equality saturation.
-
-Key benefits over traditional pattern matching:
-1. O(1) rules instead of O(N!) pattern variations
-2. Automatic commutativity handling via rewrite rules
-3. More principled mathematical foundation
-4. Extensible with associativity, distributivity, etc.
-
-Requirements:
-    pip install egglog cloudpickle
-
-Usage:
-    In hexrays_hooks.py, add:
-
-    from d810.optimizers.microcode.instructions.egraph import EgglogOptimizer
-
-    self.add_optimizer(
-        EgglogOptimizer(
-            DEFAULT_OPTIMIZATION_PATTERN_MATURITIES,
-            stats=self.stats,
-        )
-    )
+This is intentionally *not* a second global instruction optimizer.  Egglog is
+an opt-in peephole rule, so the normal project configuration and execution
+scope decide when it may run.  Each candidate gets a fresh e-graph; no facts
+or expressions leak between instructions or decompilations.
 """
 
 from __future__ import annotations
 
-from d810.core import typing
-
 import ida_hexrays
 
+from d810.backends.mba.egglog_backend import (
+    EGGLOG_AVAILABLE,
+    AstToBitExprConverter,
+    BitExpr,
+    egglog,
+)
 from d810.core import getLogger
 from d810.hexrays.expr.ast import AstNode
+from d810.hexrays.ir_maturity import ir_maturity_to_ida
 from d810.hexrays.ir.minsn_utils import minsn_to_ast
-from d810.hexrays.utils.hexrays_formatters import format_minsn_t
-from d810.optimizers.microcode.instructions.handler import InstructionOptimizer
+from d810.ir.maturity import IRMaturity
+from d810.optimizers.microcode.instructions.peephole.handler import (
+    PeepholeSimplificationRule,
+)
 
-if typing.TYPE_CHECKING:
-    from d810.core import OptimizationStatistics
+logger = getLogger(__name__)
 
-# Import egglog backend
-from d810.backends.mba.egglog_backend import EGGLOG_AVAILABLE
+_SUPPORTED_ROOT_OPCODES = frozenset(
+    {
+        ida_hexrays.m_add,
+        ida_hexrays.m_sub,
+        ida_hexrays.m_mul,
+        ida_hexrays.m_and,
+        ida_hexrays.m_or,
+        ida_hexrays.m_xor,
+    }
+)
+_BOOL_OPCODES = frozenset(
+    {ida_hexrays.m_and, ida_hexrays.m_or, ida_hexrays.m_xor, ida_hexrays.m_bnot}
+)
+_ARITH_OPCODES = frozenset(
+    {ida_hexrays.m_add, ida_hexrays.m_sub, ida_hexrays.m_mul, ida_hexrays.m_neg}
+)
+_VALID_SIZES = frozenset({1, 2, 4, 8})
 
-if EGGLOG_AVAILABLE:
-    from d810.backends.mba.egglog_backend import (
-        AstToBitExprConverter,
-        BitExpr,
-        MBAEGraph,
-    )
 
-optimizer_logger = getLogger("d810.optimizer")
+class EgglogOptimizer(PeepholeSimplificationRule):
+    """Extract one strictly smaller, proof-gated MBA rewrite with Egglog.
 
-
-class EgglogOptimizer(InstructionOptimizer):
-    """IDA microcode optimizer using egglog equality saturation.
-
-    This optimizer replaces complex MBA expressions with their simplified
-    equivalents using e-graph based equivalence checking. It handles
-    commutativity automatically via rewrite rules, eliminating the need
-    for explicit commuted rule variants.
-
-    Example equivalences it can detect:
-    - (a & b) + (a ^ b) => a | b
-    - (a ^ b) + (a & b) => a | b  (commuted - handled automatically!)
-    - (a | b) - (a ^ b) => a & y
-    - (a | b) - (a & y) => a ^ b
-    - (a ^ b) ^ b => a  (XOR cancellation)
-
-    Performance Note:
-        The e-graph is cached and reused across instructions within a single
-        decompilation pass. This is much faster than creating a new e-graph
-        per instruction, but the graph grows over time. Call reset_egraph()
-        between decompilations if needed.
+    The initial rule set is deliberately one directional Hacker's Delight
+    identity.  It is enough to prove that Egglog 13.2 extraction can drive a
+    live D810 rewrite, without hiding cost in generic AC rules or saturation.
     """
 
-    RULE_CLASSES = []  # No traditional rules - uses e-graph rewriting
+    DESCRIPTION = "Bounded Egglog MBA extraction (proof-gated)"
+    CATEGORY = "MBA Solving"
 
-    # Cached e-graph instance (shared across all instances for performance)
-    _cached_egraph: typing.ClassVar["MBAEGraph | None"] = None
-    _cached_max_iterations: typing.ClassVar[int] = 10
+    def __init__(self) -> None:
+        super().__init__()
+        self.maturities = [ida_hexrays.MMAT_GLBOPT2]
+        self.max_leaves = 2
+        self.rounds = 3
+        self.require_proof = True
 
-    def __init__(
-        self,
-        maturities: list[int],
-        stats: "OptimizationStatistics",
-        log_dir=None,
-        max_iterations: int = 10,
-    ):
-        """Initialize the egglog optimizer.
+    def configure(self, kwargs) -> None:
+        config = dict(kwargs or {})
+        maturity_names = config.pop("maturities", None)
+        super().configure(config)
+        if maturity_names is not None:
+            try:
+                self.maturities = [
+                    ir_maturity_to_ida(IRMaturity[str(name)])
+                    for name in maturity_names
+                ]
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError("EgglogOptimizer maturities must be IRMaturity names") from exc
+        self.max_leaves = int(self.config.get("max_leaves", 2))
+        self.rounds = int(self.config.get("rounds", 3))
+        self.require_proof = bool(self.config.get("require_proof", True))
+        if self.max_leaves < 1 or self.max_leaves > 8:
+            raise ValueError("EgglogOptimizer max_leaves must be between 1 and 8")
+        if self.rounds < 1 or self.rounds > 6:
+            raise ValueError("EgglogOptimizer rounds must be between 1 and 6")
 
-        Args:
-            maturities: List of maturity levels to operate at.
-            stats: Statistics tracking object.
-            log_dir: Optional log directory.
-            max_iterations: Maximum saturation iterations per expression.
-        """
-        super().__init__(maturities, stats, log_dir=log_dir)
-        self.max_iterations = max_iterations
-        self._enabled = EGGLOG_AVAILABLE
-
-        if not EGGLOG_AVAILABLE:
-            optimizer_logger.warning(
-                "[EgglogOptimizer] egglog not installed - optimizer disabled. "
-                "Install with: pip install egglog cloudpickle"
-            )
-
-    @classmethod
-    def _get_egraph(cls, max_iterations: int = 10) -> "MBAEGraph":
-        """Get or create the cached MBAEGraph instance.
-
-        This caches the e-graph with all MBA rewrite rules registered.
-        Reusing the e-graph avoids the expensive rule registration on
-        every instruction, providing a significant speedup.
-
-        Args:
-            max_iterations: Maximum saturation iterations.
-
-        Returns:
-            Cached MBAEGraph instance.
-        """
-        if cls._cached_egraph is None or cls._cached_max_iterations != max_iterations:
-            cls._cached_egraph = MBAEGraph(max_iterations=max_iterations)
-            cls._cached_max_iterations = max_iterations
-        return cls._cached_egraph
-
-    @classmethod
-    def reset_egraph(cls):
-        """Reset the cached e-graph.
-
-        Call this between decompilations to prevent the e-graph from
-        growing too large. The next call to _get_egraph() will create
-        a fresh e-graph with all rules registered.
-        """
-        cls._cached_egraph = None
-
-    def get_optimized_instruction(
-        self,
-        blk: ida_hexrays.mblock_t,
-        ins: ida_hexrays.minsn_t,
-        *,
-        allowed_rule_names: frozenset[str] | None = None,
-        scheduled_rule_names: frozenset[str] | None = None,
-    ) -> ida_hexrays.minsn_t | None:
-        """Try to optimize an instruction using egglog equality saturation.
-
-        Args:
-            blk: The basic block containing the instruction.
-            ins: The instruction to optimize.
-
-        Returns:
-            Optimized instruction, or None if no optimization found.
-        """
-        if not self._enabled:
+    def check_and_replace(self, blk, ins):
+        """Return a replacement only after extraction, shrink, and proof."""
+        del blk
+        if not EGGLOG_AVAILABLE or ins.opcode not in _SUPPORTED_ROOT_OPCODES:
             return None
-
-        # Check maturity
-        if blk is not None:
-            self.cur_maturity = blk.mba.maturity
-        if self.cur_maturity not in self.maturities:
-            return None
-
-        # Only process relevant opcodes
-        if ins.opcode not in {
-            ida_hexrays.m_add,
-            ida_hexrays.m_sub,
-            ida_hexrays.m_and,
-            ida_hexrays.m_or,
-            ida_hexrays.m_xor,
-        }:
-            return None
-
-        # Convert instruction to AST
-        ast = minsn_to_ast(ins)
-        if ast is None:
-            return None
-
-        # Try to simplify using e-graph
-        simplified = self._try_simplify(ast, ins)
-        if simplified is None:
-            return None
-
-        # Create new instruction from simplified AST
-        new_ins = self._create_instruction(simplified, ins)
-        if new_ins is None:
-            return None
-
-        if optimizer_logger.info_on:
-            optimizer_logger.info(
-                "[EgglogOptimizer] Simplified in maturity %s:",
-                self.cur_maturity,
-            )
-            optimizer_logger.info("  orig: %s", format_minsn_t(ins))
-            optimizer_logger.info("  new : %s", format_minsn_t(new_ins))
-
-        # Record statistics
-        if self.stats is not None:
-            self.stats.record_rule_fired(
-                rule=None,  # E-graph doesn't use named rules
-                rule_name="EgglogSimplification",
-                optimizer=self.name,
-                maturity=self.cur_maturity,
-            )
-
-        return new_ins
-
-    def _try_simplify(self, ast, original_ins) -> AstNode | None:
-        """Try to simplify an AST using egglog equality saturation.
-
-        Args:
-            ast: The AST to simplify.
-            original_ins: Original instruction (for size info).
-
-        Returns:
-            Simplified AstNode, or None if no simplification found.
-        """
-        # Convert AST to BitExpr
-        converter = AstToBitExprConverter()
-        bit_expr = converter.convert(ast)
-        if bit_expr is None:
-            return None
-
-        # Get leaf mapping for reconstruction
-        leaf_mapping = converter.get_leaf_mapping()
-
-        # Only handle 2-variable expressions for now
-        if len(leaf_mapping) != 2:
-            return None
-
-        # Get cached e-graph (much faster than creating new one each time)
-        egraph = self._get_egraph(self.max_iterations)
-        egraph.add_expression("input", bit_expr)
-
-        # Find simplification
-        return self._find_simplification(egraph, bit_expr, leaf_mapping)
-
-    def _find_simplification(
-        self,
-        egraph: MBAEGraph,
-        original: "BitExpr",
-        leaf_mapping: dict[str, typing.Any],
-    ) -> AstNode | None:
-        """Find a simpler equivalent expression.
-
-        Args:
-            egraph: The e-graph with rules registered.
-            original: The original BitExpr.
-            leaf_mapping: Mapping from variable names to AST leaves.
-
-        Returns:
-            Simplified AstNode, or None if no simplification found.
-        """
-        var_names = sorted(leaf_mapping.keys())
-        x_name, y_name = var_names[0], var_names[1]
-        x_leaf, y_leaf = leaf_mapping[x_name], leaf_mapping[y_name]
-
-        x = BitExpr.var(x_name)
-        y = BitExpr.var(y_name)
-
-        # Candidate simplifications (from simple to complex)
-        # We check simpler forms first
-        candidates = [
-            (x, None, "X"),
-            (y, None, "Y"),
-            (x | y, ida_hexrays.m_or, "OR"),
-            (x & y, ida_hexrays.m_and, "AND"),
-            (x ^ y, ida_hexrays.m_xor, "XOR"),
-        ]
-
-        # Add all candidates to e-graph
-        for expr, _, _ in candidates:
-            egraph.add_expression("candidate", expr)
-
-        # Run saturation
-        egraph.saturate()
-
-        # Check each candidate for equivalence (simplest first)
-        for expr, opcode, name in candidates:
-            if egraph.check_equivalent(original, expr):
-                # Found a simplification!
-                if opcode is not None:
-                    # Binary operation result
-                    return AstNode(opcode, x_leaf.clone(), y_leaf.clone())
-                elif name == "X":
-                    return x_leaf.clone()
-                elif name == "Y":
-                    return y_leaf.clone()
-
-        return None
-
-    def _create_instruction(
-        self,
-        simplified_ast: AstNode,
-        original_ins: ida_hexrays.minsn_t,
-    ) -> ida_hexrays.minsn_t | None:
-        """Create a new instruction from simplified AST.
-
-        Args:
-            simplified_ast: The simplified AST.
-            original_ins: Original instruction (for size, EA, etc.).
-
-        Returns:
-            New minsn_t instruction, or None on failure.
-        """
         try:
-            # Create mop from simplified AST
-            new_mop = simplified_ast.create_mop(original_ins.ea)
-            if new_mop is None:
-                return None
-
-            # Create new instruction
-            new_ins = ida_hexrays.minsn_t(original_ins.ea)
-            new_ins.opcode = ida_hexrays.m_mov
-            new_ins.l = new_mop
-            new_ins.d = original_ins.d
-
-            return new_ins
-
-        except Exception as e:
-            if optimizer_logger.debug_on:
-                optimizer_logger.debug(
-                    "[EgglogOptimizer] Failed to create instruction: %s", e
-                )
+            return self._check_and_replace(ins)
+        except Exception:  # Never leak an exception through Hex-Rays' callback.
+            logger.exception("egglog MBA extraction failed at %#x", getattr(ins, "ea", 0))
             return None
+
+    def _check_and_replace(self, ins):
+        ast = minsn_to_ast(ins)
+        if ast is None or not self._is_candidate(ast, ins):
+            return None
+
+        converter = AstToBitExprConverter()
+        original = converter.convert(ast)
+        leaf_mapping = converter.get_leaf_mapping()
+        if original is None or len(leaf_mapping) != 2:
+            return None
+
+        names = tuple(sorted(leaf_mapping))
+        target = BitExpr.var(names[0]) ^ BitExpr.var(names[1])
+        extracted = self._extract_xor(original, target)
+        if extracted is None:
+            return None
+
+        replacement = AstNode(
+            ida_hexrays.m_xor,
+            leaf_mapping[names[0]].clone(),
+            leaf_mapping[names[1]].clone(),
+        )
+        if self._node_count(replacement) >= self._node_count(ast):
+            return None
+        if self.require_proof and not self._prove_xor_identity(ins.d.size):
+            return None
+        return self._create_instruction(replacement, ins)
+
+    def _is_candidate(self, ast, ins) -> bool:
+        if ins.d is None or int(ins.d.size) not in _VALID_SIZES:
+            return False
+        leaves = ast.get_leaf_list()
+        variable_leaves = [leaf for leaf in leaves if not leaf.is_constant()]
+        unique_variable_leaves = {
+            self._leaf_identity(leaf): leaf for leaf in variable_leaves
+        }
+        if not unique_variable_leaves or len(unique_variable_leaves) > self.max_leaves:
+            return False
+        if any(
+            int(getattr(leaf.mop, "size", 0)) != int(ins.d.size)
+            for leaf in unique_variable_leaves.values()
+        ):
+            return False
+        opcodes = self._opcodes(ast)
+        return bool(opcodes & _BOOL_OPCODES) and bool(opcodes & _ARITH_OPCODES)
+
+    @staticmethod
+    def _opcodes(node) -> set[int]:
+        if node is None or node.is_leaf():
+            return set()
+        return (
+            {int(node.opcode)}
+            | EgglogOptimizer._opcodes(node.left)
+            | EgglogOptimizer._opcodes(node.right)
+        )
+
+    @staticmethod
+    def _leaf_identity(leaf) -> int:
+        ast_index = getattr(leaf, "ast_index", None)
+        return id(leaf) if ast_index is None else int(ast_index)
+
+    def _extract_xor(self, original: BitExpr, target: BitExpr) -> BitExpr | None:
+        """Run the single bounded directional rule and require extraction to it."""
+        egraph = egglog.EGraph()
+        x, y = egglog.vars_("x y", BitExpr)
+        egraph.register(
+            egglog.rewrite((x + y) - BitExpr(2) * (x & y)).to(x ^ y),
+        )
+        egraph.register(original)
+        egraph.run(self.rounds)
+        extracted = egraph.extract(original)
+        try:
+            egraph.check(egglog.eq(extracted).to(target))
+        except Exception:
+            return None
+        if str(extracted) != str(target):
+            return None
+        return extracted
+
+    @staticmethod
+    def _node_count(node) -> int:
+        if node is None:
+            return 0
+        if node.is_leaf():
+            return 1
+        return 1 + EgglogOptimizer._node_count(node.left) + EgglogOptimizer._node_count(node.right)
+
+    @staticmethod
+    def _prove_xor_identity(dest_size: int) -> bool:
+        """Prove the exact rule at the native destination bit width."""
+        try:
+            import z3
+
+            width = int(dest_size) * 8
+            x, y = z3.BitVecs("egglog_x egglog_y", width)
+            solver = z3.Solver()
+            solver.set(timeout=50)
+            solver.add((x + y) - z3.BitVecVal(2, width) * (x & y) != (x ^ y))
+            return solver.check() == z3.unsat
+        except Exception:
+            return False
+
+    @staticmethod
+    def _create_instruction(replacement: AstNode, original_ins):
+        new_mop = replacement.create_mop(original_ins.ea)
+        if new_mop is None:
+            return None
+        new_ins = ida_hexrays.minsn_t(original_ins.ea)
+        new_ins.opcode = ida_hexrays.m_mov
+        new_ins.l = new_mop
+        new_ins.d = original_ins.d
+        return new_ins

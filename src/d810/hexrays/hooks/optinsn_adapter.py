@@ -35,7 +35,6 @@ from d810.hexrays.utils.hexrays_formatters import (
     maturity_to_string,
 )
 from d810.hexrays.utils.hexrays_helpers import check_ins_mop_size_are_ok
-from d810.mba.backend_registry import get_egglog_provider
 
 main_logger = getLogger("d810")
 optimizer_logger = getLogger("d810.optimizer")
@@ -87,12 +86,6 @@ def hash_minsn(ins: ida_hexrays.minsn_t, func_entry_ea: int = 0) -> int:
 # Note: VerifiableRule and adapt_rules are loaded/filtered in manager.py
 # Rules are added to PatternOptimizer via add_rule() based on project config
 
-# Try to import egglog-based optimizer (optional dependency)
-try:
-    EGGLOG_AVAILABLE = bool(get_egglog_provider("egglog").is_available())
-except ImportError:
-    EGGLOG_AVAILABLE = False
-
 DEFAULT_OPTIMIZATION_PATTERN_MATURITIES = [
     ida_hexrays.MMAT_PREOPTIMIZED,
     ida_hexrays.MMAT_LOCOPT,
@@ -135,7 +128,6 @@ if typing.TYPE_CHECKING:
 
 ChainOptimizer: typing.TypeAlias = typing.Any
 EarlyOptimizer: typing.TypeAlias = typing.Any
-EgglogOptimizer: typing.TypeAlias = typing.Any
 InstructionAnalyzer: typing.TypeAlias = typing.Any
 InstructionOptimizationRule: typing.TypeAlias = typing.Any
 InstructionOptimizer: typing.TypeAlias = typing.Any
@@ -229,40 +221,6 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                 log_dir=self.log_dir,
             )
         )
-
-        # EXPERIMENTAL: Egglog-based optimizer using equality saturation
-        # Currently DISABLED by default because egglog's saturation() is too slow
-        # for real-time IDA decompilation. The overhead of running equality saturation
-        # on every instruction makes decompilation impractically slow (>100x slower).
-        #
-        # The egglog backend still works correctly for batch/offline analysis.
-        # To enable for testing, set ENABLE_EGGLOG_OPTIMIZER = True below:
-        ENABLE_EGGLOG_OPTIMIZER = False  # Set to True to enable (SLOW!)
-
-        if ENABLE_EGGLOG_OPTIMIZER and EGGLOG_AVAILABLE:
-            EgglogOptimizer: type[EgglogOptimizer] = (
-                self._instruction_optimizer_type.get("EgglogOptimizer")
-            )
-            if EgglogOptimizer is not None:
-                self.add_optimizer(
-                    EgglogOptimizer(
-                        DEFAULT_OPTIMIZATION_PATTERN_MATURITIES,
-                        stats=self.stats,
-                        log_dir=self.log_dir,
-                    )
-                )
-                optimizer_logger.warning(
-                    "[EgglogOptimizer] ENABLED (experimental) - using equality saturation. "
-                    "Expect SLOW decompilation!"
-                )
-            else:
-                optimizer_logger.debug("[EgglogOptimizer] Not registered - skipping")
-        elif EGGLOG_AVAILABLE:
-            optimizer_logger.debug(
-                "[EgglogOptimizer] Disabled (set ENABLE_EGGLOG_OPTIMIZER=True to enable)"
-            )
-        else:
-            optimizer_logger.debug("[EgglogOptimizer] egglog not installed - skipping")
 
         self.add_optimizer(
             ChainOptimizer(

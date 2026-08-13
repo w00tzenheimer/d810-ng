@@ -1,0 +1,19 @@
+{
+  "description": "Bounded Egglog XOR MBA spike: no legacy pattern rules",
+  "additional_configuration": {
+    "pipeline_v2_mode": "config-v2",
+    "pipeline_v2": [
+      {
+        "pass_id": "mba-egglog",
+        "options": {
+          "maturities": ["GLOBAL_ANALYZED"],
+          "max_leaves": 2,
+          "rounds": 3,
+          "require_proof": true
+        }
+      }
+    ]
+  },
+  "ins_rules": [],
+  "blk_rules": []
+}

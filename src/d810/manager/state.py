@@ -969,6 +969,19 @@ class D810State(metaclass=SingletonMeta):
     def _build_known_instruction_rules(self) -> list:
         """Every instruction rule available to be matched against a config."""
         self._ensure_extension_rules_registered()
+        # Egglog is an optional dependency, so its rule cannot be imported at
+        # module load time.  Import it before taking the rule catalogue
+        # snapshot: importing only when D810Manager starts is too late for a
+        # configured project to find and configure the rule.
+        try:
+            from d810.backends.mba.egglog_backend import EGGLOG_AVAILABLE
+
+            if EGGLOG_AVAILABLE:
+                from d810.optimizers.microcode.instructions.egraph import (  # noqa: F401
+                    egglog_handler,
+                )
+        except ImportError as exc:
+            logger.info("Egglog instruction rule unavailable: %s", exc)
         rules = [
             rule_cls()
             for rule_cls in InstructionOptimizationRule.registry.values()

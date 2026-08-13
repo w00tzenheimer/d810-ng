@@ -8,6 +8,7 @@ from d810.passes.constant_simplification import (
 )
 from d810.passes.hook_transform_passes import register_hook_transform_passes
 from d810.passes.mba_simplify import register_mba_simplify_pass
+from d810.passes.mba_egglog import register_mba_egglog_pass
 from d810.passes.mba_solve import register_mba_solve_pass
 from d810.passes.registry import PassRegistry
 from d810.passes.state_machine_spine import register_state_machine_passes
@@ -18,6 +19,7 @@ CONFIG_V2_OPERATIONAL_REGISTRY_NAME = "config_v2_operational"
 def register_operational_config_v2_passes(registry: PassRegistry) -> PassRegistry:
     """Register currently executable config-v2 pass ids on ``registry``."""
     register_mba_simplify_pass(registry)
+    register_mba_egglog_pass(registry)
     register_mba_solve_pass(registry)
     register_constant_simplification_pass(registry)
     register_state_machine_passes(registry)

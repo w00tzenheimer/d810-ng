@@ -565,8 +565,10 @@ class AstToBitExprConverter:
                 # Convert to BitExpr constant literal
                 return BitExpr(value)
 
-        # Use ast_index as unique identifier if available
-        leaf_id = getattr(leaf, "ast_index", id(leaf))
+        # ``ast_index`` may exist but be None on synthetic leaves.  Those
+        # leaves must not collapse into one e-graph variable.
+        ast_index = getattr(leaf, "ast_index", None)
+        leaf_id = id(leaf) if ast_index is None else ast_index
 
         if leaf_id in self._leaf_to_var:
             return self._leaf_to_var[leaf_id]
