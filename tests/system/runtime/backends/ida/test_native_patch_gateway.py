@@ -52,7 +52,10 @@ from d810.backends.ida.native_patch.origin_mapper import (  # noqa: E402
     ida_decoded_range_reader,
 )
 from d810.backends.ida.native_patch.journal import SQLiteNativePatchJournal  # noqa: E402
-from d810.backends.ida.native_patch.reanalysis import IdaFunctionReanalyzer  # noqa: E402
+from d810.backends.ida.native_patch.reanalysis import (  # noqa: E402
+    IdaFunctionExtentRestorer,
+    IdaFunctionReanalyzer,
+)
 from d810.capabilities.native_patch import NativeJournalState  # noqa: E402
 from d810.core.execution_journal import (  # noqa: E402
     DecompilationSessionId,
@@ -233,13 +236,21 @@ def _capture_complete_native_state(function_ea: int, address_range: NativeAddres
     }
 
 
-def _build_gateway(journal, *, reanalyzer=None, cache_invalidator=None, redo=None):
+def _build_gateway(
+    journal,
+    *,
+    reanalyzer=None,
+    extent_restorer=None,
+    cache_invalidator=None,
+    redo=None,
+):
     return NativePatchGateway(
         journal=journal,
         reader=IdaLiveDatabaseReader(),
         writer=IdaNativeByteWriter(),
         decode_replacement=MinimalX86BranchEncoder().decode,
         reanalyzer=reanalyzer or IdaFunctionReanalyzer(),
+        extent_restorer=extent_restorer or IdaFunctionExtentRestorer(),
         cache_invalidator=cache_invalidator or IdaCfuncCacheInvalidator(),
         caller_discovery=IdaCallerDiscovery(),
         redo_decompiler=redo or IdaControlledRedoDecompiler(),
@@ -504,6 +515,7 @@ class TestGatewayFailureInjection:
                 writer=IdaNativeByteWriter(),
                 decode_replacement=_FaultyDecodeReplacement(),
                 reanalyzer=IdaFunctionReanalyzer(),
+                extent_restorer=IdaFunctionExtentRestorer(),
                 cache_invalidator=IdaCfuncCacheInvalidator(),
                 caller_discovery=IdaCallerDiscovery(),
                 redo_decompiler=IdaControlledRedoDecompiler(),
@@ -594,6 +606,7 @@ class TestGatewayFailureInjection:
                 writer=writer,
                 decode_replacement=MinimalX86BranchEncoder().decode,
                 reanalyzer=IdaFunctionReanalyzer(),
+                extent_restorer=IdaFunctionExtentRestorer(),
                 cache_invalidator=IdaCfuncCacheInvalidator(),
                 caller_discovery=IdaCallerDiscovery(),
                 redo_decompiler=IdaControlledRedoDecompiler(),
@@ -635,6 +648,7 @@ class TestGatewayFailureInjection:
                 writer=writer,
                 decode_replacement=MinimalX86BranchEncoder().decode,
                 reanalyzer=IdaFunctionReanalyzer(),
+                extent_restorer=IdaFunctionExtentRestorer(),
                 cache_invalidator=IdaCfuncCacheInvalidator(),
                 caller_discovery=IdaCallerDiscovery(),
                 redo_decompiler=IdaControlledRedoDecompiler(),

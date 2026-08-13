@@ -55,7 +55,10 @@ from d810.backends.ida.native_patch.origin_mapper import (  # noqa: E402
     correlate_native_span,
     ida_decoded_range_reader,
 )
-from d810.backends.ida.native_patch.reanalysis import IdaFunctionReanalyzer  # noqa: E402
+from d810.backends.ida.native_patch.reanalysis import (  # noqa: E402
+    IdaFunctionExtentRestorer,
+    IdaFunctionReanalyzer,
+)
 from d810.core.execution_journal import (  # noqa: E402
     DecompilationSessionId,
     ExecutionAttemptId,
@@ -187,6 +190,7 @@ def _build_gateway(journal) -> NativePatchGateway:
         writer=IdaNativeByteWriter(),
         decode_replacement=MinimalX86BranchEncoder().decode,
         reanalyzer=IdaFunctionReanalyzer(),
+        extent_restorer=IdaFunctionExtentRestorer(),
         cache_invalidator=IdaCfuncCacheInvalidator(),
         caller_discovery=IdaCallerDiscovery(),
         redo_decompiler=IdaControlledRedoDecompiler(),

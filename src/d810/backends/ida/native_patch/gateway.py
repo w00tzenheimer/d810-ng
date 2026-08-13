@@ -89,6 +89,7 @@ from d810.backends.ida.native_patch.preflight import (
     preflight_plan_live,
 )
 from d810.backends.ida.native_patch.reanalysis import (
+    FunctionExtentRestorer,
     FunctionReanalyzer,
     reanalyze_and_wait,
 )
@@ -291,6 +292,7 @@ class NativePatchGateway:
         writer: NativeByteWriter,
         decode_replacement: DecodeReplacement,
         reanalyzer: FunctionReanalyzer,
+        extent_restorer: FunctionExtentRestorer,
         cache_invalidator: CfuncCacheInvalidator,
         caller_discovery: CallerDiscovery,
         redo_decompiler: ControlledRedoDecompiler,
@@ -302,6 +304,10 @@ class NativePatchGateway:
         self._writer = writer
         self._decode_replacement = decode_replacement
         self._reanalyzer = reanalyzer
+        # Required, not optional-with-a-default: a gateway that silently
+        # skips extent restoration produces a RESTORED receipt for a database
+        # that was not restored, which is worse than failing to construct.
+        self._extent_restorer = extent_restorer
         self._cache_invalidator = cache_invalidator
         self._caller_discovery = caller_discovery
         self._redo_decompiler = redo_decompiler
@@ -652,12 +658,41 @@ class NativePatchGateway:
             )
             raise
 
+        # Re-establish the pre-patch function extent BEFORE reanalysis.
+        #
+        # Order matters. Restoring bytes is not restoring state: erasing a
+        # branch orphans its target block, IDA shrinks the owning function,
+        # and reanalysis cannot undo that because reanalysis is what did it.
+        # The remembered extent has to be asserted first, so the subsequent
+        # reanalyze+invalidate runs over the whole restored function rather
+        # than the truncated one.
+        unrestored_extents = self._restore_function_extents(transaction_id)
+
         for function_ea in self._function_eas_for_transaction(transaction_id):
             reanalyze_and_wait(function_ea, reanalyzer=self._reanalyzer)
             invalidate_target_and_callers(
                 function_ea,
                 invalidator=self._cache_invalidator,
                 discovery=self._caller_discovery,
+            )
+
+        if unrestored_extents:
+            # Bytes are back but the database shape is not. Say so rather than
+            # reporting RESTORED: a caller that trusts this receipt would
+            # believe a half-restored database is clean.
+            record = self._journal.transition(
+                transaction_id,
+                NativeJournalState.RECOVERY_REQUIRED,
+                note=(
+                    "bytes restored but function extent could not be "
+                    f"re-established for {unrestored_extents}"
+                ),
+            )
+            return NativeRestoreReceipt(
+                transaction_id=transaction_id,
+                state=record.state,
+                restored_eas=restored_eas,
+                interference_eas=(),
             )
 
         record = self._journal.transition(
@@ -669,6 +704,39 @@ class NativePatchGateway:
             restored_eas=restored_eas,
             interference_eas=(),
         )
+
+    def _restore_function_extents(
+        self, transaction_id: NativePatchTransactionId
+    ) -> tuple[str, ...]:
+        """Reassert every remembered function extent. Returns the entries that
+        could not be re-established, as ``"0x...:0x..."`` strings.
+
+        Ownership comes from the journal, never from a live read: by this
+        point the database reflects the *patched* shape, which is exactly what
+        is being undone. One function can own several operations; each
+        distinct (entry, end) is asserted once.
+        """
+        wanted: dict[int, int] = {}
+        for entry_ea, chunks in self._journal.operation_ownership(
+            transaction_id
+        ).values():
+            for start_ea, end_ea in chunks:
+                if start_ea != entry_ea:
+                    # A tail chunk, not the entry chunk. set_func_end governs
+                    # the entry chunk only; tail chunks are a separate
+                    # append_func_tail concern this does not attempt.
+                    continue
+                wanted[entry_ea] = max(wanted.get(entry_ea, 0), end_ea)
+
+        failed: list[str] = []
+        for entry_ea, end_ea in sorted(wanted.items()):
+            try:
+                ok = self._extent_restorer.restore_function_extent(entry_ea, end_ea)
+            except Exception:
+                ok = False
+            if not ok:
+                failed.append(f"{entry_ea:#x}:{end_ea:#x}")
+        return tuple(failed)
 
     def _restore_bytes(
         self,

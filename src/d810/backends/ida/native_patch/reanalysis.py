@@ -30,7 +30,9 @@ from dataclasses import dataclass
 from d810.core.typing import Protocol, runtime_checkable
 
 __all__ = [
+    "FunctionExtentRestorer",
     "FunctionReanalyzer",
+    "IdaFunctionExtentRestorer",
     "IdaFunctionReanalyzer",
     "ReanalysisReceipt",
     "reanalyze_and_wait",
@@ -119,3 +121,72 @@ class IdaFunctionReanalyzer:
         import ida_auto
 
         ida_auto.auto_wait()
+
+
+@runtime_checkable
+class FunctionExtentRestorer(Protocol):
+    """Re-establishes a function's pre-patch extent during restore.
+
+    Separate from :class:`FunctionReanalyzer` because it answers a different
+    question. Reanalysis asks IDA to recompute from the current bytes;
+    reanalysis is exactly what *shrank* the function, so asking it again
+    cannot undo that. This asserts a remembered extent over IDA's recomputed
+    opinion, using ownership captured before the patch.
+    """
+
+    def restore_function_extent(self, entry_ea: int, end_ea: int) -> bool:
+        """Force the function at ``entry_ea`` to end at ``end_ea``.
+
+        Returns whether the extent afterwards matches what was asked for.
+        """
+        ...
+
+
+class IdaFunctionExtentRestorer:
+    """:class:`FunctionExtentRestorer` backed by the live IDA database.
+
+    Exercised only by the Docker system-test suite; the unit-test suite never
+    constructs this class (per this repository's no-IDA-mocking rule).
+    """
+
+    def restore_function_extent(self, entry_ea: int, end_ea: int) -> bool:
+        import ida_auto
+        import ida_funcs
+
+        entry_ea, end_ea = int(entry_ea), int(end_ea)
+
+        # Deliberately does NOT del_items + create_insn across the extent.
+        # That was tried and measured worse on ``fake_jump_opaque_predicate``:
+        # it left the extent unrestored and the function decompiling to
+        # ``JUMPOUT(0x1800099D4)``, where asserting the extent alone restores
+        # bytes and boundaries exactly. Deleting items pulls the function
+        # record apart faster than re-decoding puts it back.
+        func = ida_funcs.get_func(entry_ea)
+        if func is None:
+            if not ida_funcs.add_func(entry_ea, end_ea):
+                return False
+        elif int(func.end_ea) != end_ea:
+            if not ida_funcs.set_func_end(entry_ea, end_ea):
+                return False
+
+        # Clear the truncation's side effects on the function record itself.
+        #
+        # Measured on ``fake_jump_opaque_predicate``: with bytes, boundaries
+        # and items all restored exactly, the function still decompiled to
+        # ``void f(int, int) { ; }``. While it was truncated mid-body it ended
+        # without a ``ret``, so IDA marked it FUNC_NORET and stored a guessed
+        # ``void`` prototype. Neither is derived from the bytes, so neither is
+        # undone by putting the bytes back -- they have to be cleared, and
+        # then the type re-guessed from the restored extent.
+        restored = ida_funcs.get_func(entry_ea)
+        if restored is not None and restored.flags & ida_funcs.FUNC_NORET:
+            restored.flags &= ~ida_funcs.FUNC_NORET
+            ida_funcs.update_func(restored)
+
+        import ida_nalt
+
+        ida_nalt.del_tinfo(entry_ea)
+
+        ida_auto.plan_and_wait(entry_ea, end_ea)
+        restored = ida_funcs.get_func(entry_ea)
+        return restored is not None and int(restored.end_ea) == end_ea

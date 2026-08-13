@@ -713,3 +713,17 @@ class NativePatchJournalStore(Protocol):
         original in-memory ``NativePatchPlan`` -- is what restore reads from.
         """
         ...
+
+    def operation_ownership(
+        self, transaction_id: NativePatchTransactionId
+    ) -> dict[str, tuple[int, tuple[tuple[int, int], ...]]]:
+        """Pre-patch function extent per operation:
+        ``{operation_id: (owning_function_entry_ea, ((start, end), ...))}``.
+
+        Durable for the same reason the bytes are. Restoring bytes is not
+        restoring state: erasing a branch orphans its target block, reanalysis
+        shrinks the owning function, and a restore that re-derives ownership
+        from the live database reads the already-shrunken extent -- so the
+        function never comes back.
+        """
+        ...

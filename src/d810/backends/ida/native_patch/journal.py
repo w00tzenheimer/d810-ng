@@ -188,6 +188,23 @@ class SQLiteNativePatchJournal:
                 )
                 """
             )
+            # Pre-patch function extent, captured while the database still
+            # holds the truth. A separate table rather than columns on
+            # native_patch_operations so an existing journal file picks it up
+            # under CREATE TABLE IF NOT EXISTS instead of needing an ALTER.
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS native_patch_operation_ownership (
+                    transaction_id TEXT NOT NULL,
+                    operation_id TEXT NOT NULL,
+                    chunk_index INTEGER NOT NULL,
+                    owning_function_entry_ea INTEGER NOT NULL,
+                    chunk_start_ea INTEGER NOT NULL,
+                    chunk_end_ea INTEGER NOT NULL,
+                    PRIMARY KEY (transaction_id, operation_id, chunk_index)
+                )
+                """
+            )
             self._conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS native_patch_operation_bytes (
@@ -312,6 +329,25 @@ class SQLiteNativePatchJournal:
                         op.range.end_ea,
                     ),
                 )
+                ownership = op.restore_snapshot.function_ownership
+                for chunk_index, chunk in enumerate(ownership.chunk_ranges):
+                    self._conn.execute(
+                        """
+                        INSERT INTO native_patch_operation_ownership
+                            (transaction_id, operation_id, chunk_index,
+                             owning_function_entry_ea, chunk_start_ea,
+                             chunk_end_ea)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            transaction_id.value,
+                            op.operation_id,
+                            chunk_index,
+                            ownership.owning_function_entry_ea,
+                            chunk.start_ea,
+                            chunk.end_ea,
+                        ),
+                    )
                 for offset, ea in enumerate(range(op.range.start_ea, op.range.end_ea)):
                     self._conn.execute(
                         """
@@ -554,6 +590,39 @@ class SQLiteNativePatchJournal:
             )
             for row in rows
         )
+
+    def operation_ownership(
+        self, transaction_id: NativePatchTransactionId
+    ) -> dict[str, tuple[int, tuple[tuple[int, int], ...]]]:
+        """Pre-patch function extent per operation.
+
+        Returns ``{operation_id: (owning_function_entry_ea, ((start, end),
+        ...))}``. Read from the journal rather than the live database on
+        purpose: by restore time the database has already been reanalyzed and
+        its ownership reflects the *patched* shape, which is precisely the
+        state a restore must undo.
+        """
+        rows = self._conn.execute(
+            """
+            SELECT operation_id, owning_function_entry_ea,
+                   chunk_start_ea, chunk_end_ea
+            FROM native_patch_operation_ownership
+            WHERE transaction_id = ?
+            ORDER BY operation_id, chunk_index
+            """,
+            (transaction_id.value,),
+        ).fetchall()
+        result: dict[str, tuple[int, tuple[tuple[int, int], ...]]] = {}
+        for row in rows:
+            operation_id = row["operation_id"]
+            entry_ea, chunks = result.get(
+                operation_id, (int(row["owning_function_entry_ea"]), ())
+            )
+            result[operation_id] = (
+                entry_ea,
+                chunks + ((int(row["chunk_start_ea"]), int(row["chunk_end_ea"])),),
+            )
+        return result
 
     # -- read back the durably-planned bytes (Task 6 restore; see
     # OperationByteRecord's docstring for why this -- not the in-memory plan

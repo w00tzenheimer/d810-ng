@@ -93,7 +93,10 @@ from d810.backends.ida.native_patch.origin_mapper import (  # noqa: E402
     correlate_native_span,
     ida_decoded_range_reader,
 )
-from d810.backends.ida.native_patch.reanalysis import IdaFunctionReanalyzer  # noqa: E402
+from d810.backends.ida.native_patch.reanalysis import (  # noqa: E402
+    IdaFunctionExtentRestorer,
+    IdaFunctionReanalyzer,
+)
 from d810.core.execution_journal import (  # noqa: E402
     DecompilationSessionId,
     ExecutionAttemptId,
@@ -176,6 +179,7 @@ def _build_gateway(journal) -> NativePatchGateway:
         writer=IdaNativeByteWriter(),
         decode_replacement=MinimalX86BranchEncoder().decode,
         reanalyzer=IdaFunctionReanalyzer(),
+        extent_restorer=IdaFunctionExtentRestorer(),
         cache_invalidator=IdaCfuncCacheInvalidator(),
         caller_discovery=IdaCallerDiscovery(),
         redo_decompiler=IdaControlledRedoDecompiler(),
@@ -614,15 +618,11 @@ class TestDeadEdgeOracleDemonstration:
                     restore_receipt = gateway.restore(apply_receipt.transaction_id)
                     assert restore_receipt.ok, restore_receipt
 
-                # Byte-level reversal is exact, and that is what the journal
-                # promises. Pseudocode-level reversal is NOT asserted here:
-                # for FORCE_FALLTHROUGH it currently fails, because erasing a
-                # branch orphans its target block, IDA's reanalysis shrinks the
-                # owning function, and restore never re-establishes the extent
-                # (the journal persists bytes, not the pre-patch ownership).
-                # That defect is pinned on its own by
-                # ``test_force_fallthrough_restore_does_not_yet_revert_the_function``
-                # below, as a strict xfail so it cannot be fixed silently.
+                # Byte-level reversal, then pseudocode-level reversal. Both
+                # are asserted because byte equality is not evidence of
+                # restoration on its own: this round-trip was byte-perfect
+                # while still decompiling to an empty function (see
+                # ``test_force_fallthrough_restore_reverts_the_function_completely``).
                 for site_ea, before in site_bytes_before.items():
                     size = len(before)
                     after = bytes(ida_bytes.get_bytes(site_ea, size) or b"")
@@ -630,6 +630,13 @@ class TestDeadEdgeOracleDemonstration:
                         f"{function_name}: site {site_ea:#x} bytes not restored: "
                         f"{before.hex()} -> {after.hex()}"
                     )
+
+                state.stop_d810()
+                reverted_off = _decompile_text(pseudocode_to_string, func_ea)
+                assert reverted_off == baseline_off, (
+                    f"{function_name}: post-restore pseudocode must revert to "
+                    "baseline_off exactly"
+                )
                 examined.append(function_name)
 
             assert examined, (
@@ -638,31 +645,35 @@ class TestDeadEdgeOracleDemonstration:
             )
             print(f"[opaque-demo] demonstrated on: {examined}")
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Known defect: restore reverts bytes but not function extent. "
-            "Erasing a branch orphans its target block; IDA's reanalysis "
-            "shrinks the owning function; the journal persists bytes only, so "
-            "restore re-reads ownership from the already-shrunken database "
-            "and never re-establishes the original extent. Measured on "
-            "fake_jump_opaque_predicate: [0x1800099d0,0x180009a1e) -> apply "
-            "-> [...,0x180009a00) -> restore -> [...,0x1800099fe). Fixing it "
-            "means persisting pre-patch ownership in the journal and "
-            "reasserting it on restore. When that lands this test XPASSes and "
-            "strict=True fails the suite, which is the signal to delete the "
-            "marker."
-        ),
-    )
-    def test_force_fallthrough_restore_does_not_yet_revert_the_function(
+    def test_force_fallthrough_restore_reverts_the_function_completely(
         self, copy_of_idb, d810_state, pseudocode_to_string, tmp_path
     ) -> None:
-        """Pins the reversibility gap that FORCE_FALLTHROUGH exposes.
+        """Full reversibility for the action that erases a branch.
 
-        Reversibility is this design's premise, so this is tracked as a
-        first-class failing expectation rather than a comment. The
-        single-trip-loop class never hit it: a retarget keeps a branch
-        instruction present and orphans no block.
+        Reversibility is this design's premise, and FORCE_FALLTHROUGH is the
+        action that stresses it: the single-trip-loop class never could,
+        because a retarget keeps a branch instruction present and orphans no
+        block.
+
+        This was a measured defect before three things were fixed, each of
+        which had to be undone explicitly because none of them is derived from
+        the bytes:
+
+        1. **Function extent.** Erasing the branch orphaned its target block
+           and IDA shrank the function. The journal persisted bytes only, so
+           restore re-read ownership from the already-shrunken database.
+           Measured: [0x1800099d0,0x180009a1e) -> apply -> [...,0x180009a00)
+           -> restore -> [...,0x1800099fe) -- it shrank *further* on restore.
+        2. **FUNC_NORET.** While truncated the function ended without a
+           ``ret``, so IDA marked it no-return.
+        3. **The guessed prototype.** Stored as ``void`` from the same
+           truncated shape.
+
+        With bytes, boundaries and items all restored exactly, (2) and (3)
+        alone still produced ``void f(int, int) { ; }`` -- a byte-perfect
+        database that decompiled to an empty function. That is why this test
+        asserts on *pseudocode*, not on bytes: byte equality was true the
+        whole time it was broken.
         """
         function_name = "fake_jump_opaque_predicate"
         with d810_state() as state:

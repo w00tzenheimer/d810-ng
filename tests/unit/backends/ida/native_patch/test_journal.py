@@ -418,3 +418,63 @@ class TestMirrorReceipts:
             store.record_mirror_receipt(
                 NativePatchTransactionId.new(), NativeMirrorOutcome.MIRROR_WRITTEN
             )
+
+
+class TestPrePatchFunctionOwnershipIsPersisted:
+    """The journal must persist the *pre-patch* function extent.
+
+    Restoring bytes is not restoring state. Erasing a branch orphans its
+    target block, IDA's reanalysis shrinks the owning function, and a restore
+    that re-derives ownership from the live database reads the already-shrunken
+    extent -- so the function never comes back. Measured on
+    ``fake_jump_opaque_predicate``: [0x1800099d0,0x180009a1e) -> apply ->
+    [...,0x180009a00) -> restore -> [...,0x1800099fe).
+
+    ``NativeRestoreSnapshot`` already carries the ownership; it just was not
+    durable. These tests pin that it is written at prepare time, when the
+    database still holds the truth, and is readable afterwards.
+    """
+
+    def test_prepare_persists_the_owning_entry_and_chunks(self, store) -> None:
+        record = store.prepare(fixtures.plan())
+
+        ownership = store.operation_ownership(record.transaction_id)
+
+        assert ownership, "prepare must persist function ownership per operation"
+        for entry_ea, chunks in ownership.values():
+            assert isinstance(entry_ea, int)
+            assert chunks and all(len(c) == 2 for c in chunks)
+
+    def test_persisted_ownership_matches_the_restore_snapshot(self, store) -> None:
+        plan = fixtures.plan()
+        record = store.prepare(plan)
+
+        ownership = store.operation_ownership(record.transaction_id)
+
+        for op in plan.operations:
+            expected = op.restore_snapshot.function_ownership
+            entry_ea, chunks = ownership[op.operation_id]
+            assert entry_ea == expected.owning_function_entry_ea
+            assert chunks == tuple(
+                (r.start_ea, r.end_ea) for r in expected.chunk_ranges
+            )
+
+    def test_ownership_survives_reopening_the_journal(self, tmp_path) -> None:
+        """Durability, not just in-memory bookkeeping -- a crash between apply
+        and restore is exactly when this record is needed."""
+        from d810.backends.ida.native_patch.journal import SQLiteNativePatchJournal
+
+        path = tmp_path / "durable.db"
+        first = SQLiteNativePatchJournal(path)
+        record = first.prepare(fixtures.plan())
+        expected = first.operation_ownership(record.transaction_id)
+        first.close()
+
+        second = SQLiteNativePatchJournal(path)
+        try:
+            assert second.operation_ownership(record.transaction_id) == expected
+        finally:
+            second.close()
+
+    def test_unknown_transaction_has_no_ownership(self, store) -> None:
+        assert store.operation_ownership(NativePatchTransactionId.new()) == {}

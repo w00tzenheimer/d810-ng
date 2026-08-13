@@ -144,6 +144,26 @@ class RecordingReanalyzer:
             raise RuntimeError("injected: auto_wait")
 
 
+class RecordingExtentRestorer:
+    """Fake :class:`FunctionExtentRestorer`.
+
+    ``succeeds=False`` models IDA refusing to re-establish the extent, which
+    must downgrade the restore receipt rather than report RESTORED over a
+    database whose shape was not restored.
+    """
+
+    def __init__(self, succeeds: bool = True, raise_always: bool = False):
+        self.calls: list[tuple[int, int]] = []
+        self._succeeds = succeeds
+        self._raise_always = raise_always
+
+    def restore_function_extent(self, entry_ea: int, end_ea: int) -> bool:
+        self.calls.append((entry_ea, end_ea))
+        if self._raise_always:
+            raise RuntimeError("injected: restore_function_extent")
+        return self._succeeds
+
+
 class RecordingCacheInvalidator:
     def __init__(self, raise_on_ea: int | None = None):
         self.calls: list[int] = []
@@ -207,6 +227,7 @@ class Gateway:
     journal: SQLiteNativePatchJournal
     db: FakeNativeDatabase
     reanalyzer: RecordingReanalyzer
+    extent_restorer: RecordingExtentRestorer
     invalidator: RecordingCacheInvalidator
     discovery: FakeCallerDiscovery
     redo: RecordingRedoDecompiler
@@ -219,6 +240,7 @@ def build_gateway(
     *,
     callers: frozenset[int] = frozenset(),
     reanalyzer: RecordingReanalyzer | None = None,
+    extent_restorer: RecordingExtentRestorer | None = None,
     invalidator: RecordingCacheInvalidator | None = None,
     decode_replacement=_decode_replacement,
     blobs: FakeBlobStore | None = None,
@@ -226,6 +248,7 @@ def build_gateway(
     journal = SQLiteNativePatchJournal(tmp_path / "journal.db")
     db = FakeNativeDatabase(operations)
     reanalyzer = reanalyzer or RecordingReanalyzer()
+    extent_restorer = extent_restorer or RecordingExtentRestorer()
     invalidator = invalidator or RecordingCacheInvalidator()
     discovery = FakeCallerDiscovery(callers)
     redo = RecordingRedoDecompiler()
@@ -236,6 +259,7 @@ def build_gateway(
         writer=db,
         decode_replacement=decode_replacement,
         reanalyzer=reanalyzer,
+        extent_restorer=extent_restorer,
         cache_invalidator=invalidator,
         caller_discovery=discovery,
         redo_decompiler=redo,
@@ -247,6 +271,7 @@ def build_gateway(
         journal=journal,
         db=db,
         reanalyzer=reanalyzer,
+        extent_restorer=extent_restorer,
         invalidator=invalidator,
         discovery=discovery,
         redo=redo,
@@ -424,6 +449,7 @@ class TestApplyFailureInjection:
             tmp_path,
             (op,),
             reanalyzer=RecordingReanalyzer(raise_on="reanalyze_function"),
+            extent_restorer=RecordingExtentRestorer(),
         )
         with pytest.raises(RuntimeError, match="injected: reanalyze_function"):
             rig.gateway.apply(fixtures.plan())
@@ -439,6 +465,7 @@ class TestApplyFailureInjection:
             tmp_path,
             (fixtures.operation(),),
             reanalyzer=RecordingReanalyzer(raise_on="auto_wait"),
+            extent_restorer=RecordingExtentRestorer(),
         )
         with pytest.raises(RuntimeError, match="injected: auto_wait"):
             rig.gateway.apply(fixtures.plan())
@@ -490,6 +517,7 @@ class TestApplyFailureInjection:
             writer=faulty_db,
             decode_replacement=_decode_replacement,
             reanalyzer=RecordingReanalyzer(),
+            extent_restorer=RecordingExtentRestorer(),
             cache_invalidator=RecordingCacheInvalidator(),
             caller_discovery=FakeCallerDiscovery(),
             redo_decompiler=RecordingRedoDecompiler(),
@@ -544,6 +572,7 @@ class TestApplyFailureInjection:
             writer=db,
             decode_replacement=_decode_replacement,
             reanalyzer=RecordingReanalyzer(),
+            extent_restorer=RecordingExtentRestorer(),
             cache_invalidator=RecordingCacheInvalidator(),
             caller_discovery=FakeCallerDiscovery(),
             redo_decompiler=RecordingRedoDecompiler(),
@@ -582,6 +611,70 @@ class TestRestore:
         assert restored.ok
         assert restored.state is NativeJournalState.RESTORED
         assert rig.db.bytes == before
+
+    def test_restore_reasserts_the_remembered_function_extent(self, rig) -> None:
+        """Restoring bytes is not restoring state.
+
+        Erasing a branch orphans its target block and IDA shrinks the owning
+        function; reanalysis cannot undo that because reanalysis is what did
+        it. The extent must be asserted from the journal's pre-patch record.
+        """
+        plan = fixtures.plan()
+        receipt = rig.gateway.apply(plan)
+        assert receipt.ok
+
+        rig.gateway.restore(receipt.transaction_id)
+
+        expected = {
+            (
+                op.restore_snapshot.function_ownership.owning_function_entry_ea,
+                op.restore_snapshot.function_ownership.chunk_ranges[0].end_ea,
+            )
+            for op in plan.operations
+        }
+        assert set(rig.extent_restorer.calls) == expected
+
+    def test_extent_is_reasserted_before_reanalysis(self, rig) -> None:
+        """Order matters: reanalysis must run over the restored function, not
+        the truncated one."""
+        receipt = rig.gateway.apply(fixtures.plan())
+        assert receipt.ok
+        rig.reanalyzer.calls.clear()
+        rig.extent_restorer.calls.clear()
+
+        rig.gateway.restore(receipt.transaction_id)
+
+        assert rig.extent_restorer.calls, "extent was never reasserted"
+        assert rig.reanalyzer.calls, "reanalysis never ran"
+
+    def test_a_failed_extent_restore_does_not_report_RESTORED(self, tmp_path) -> None:
+        """Bytes back but shape not back is a half-restored database. Reporting
+        RESTORED there would tell a caller it is clean when it is not."""
+        rig = build_gateway(
+            tmp_path,
+            fixtures.plan().operations,
+            extent_restorer=RecordingExtentRestorer(succeeds=False),
+        )
+        receipt = rig.gateway.apply(fixtures.plan())
+        assert receipt.ok
+
+        restored = rig.gateway.restore(receipt.transaction_id)
+
+        assert restored.state is NativeJournalState.RECOVERY_REQUIRED
+        assert not restored.ok
+
+    def test_a_raising_extent_restorer_is_treated_as_failure(self, tmp_path) -> None:
+        rig = build_gateway(
+            tmp_path,
+            fixtures.plan().operations,
+            extent_restorer=RecordingExtentRestorer(raise_always=True),
+        )
+        receipt = rig.gateway.apply(fixtures.plan())
+        assert receipt.ok
+
+        restored = rig.gateway.restore(receipt.transaction_id)
+
+        assert restored.state is NativeJournalState.RECOVERY_REQUIRED
 
     def test_restore_uses_patch_byte_for_a_byte_that_carried_an_inherited_patch(
         self, tmp_path
