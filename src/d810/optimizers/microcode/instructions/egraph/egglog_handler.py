@@ -183,7 +183,15 @@ class EgglogOptimizer(PeepholeSimplificationRule):
     def check_and_replace(self, blk, ins):
         """Return a replacement only after extraction, shrink, and proof."""
         del blk
+        self.last_rule_family = None
+        self.last_rule_provenance = None
+        self.last_extraction_receipt = None
         if ins.opcode not in _SUPPORTED_ROOT_OPCODES:
+            self._record_extraction_receipt(
+                EgglogExtractionReceipt(
+                    skip_reason=ExtractionSkipReason.NON_MBA_CANDIDATE
+                )
+            )
             return None
         try:
             return self._check_and_replace(ins)

@@ -536,6 +536,55 @@ def test_live_handler_receipts_non_mba_candidate_before_extraction(monkeypatch):
     )
 
 
+def test_live_handler_unsupported_root_replaces_prior_invocation_metadata(monkeypatch):
+    import d810.optimizers.microcode.instructions.egraph.egglog_handler as handler_module
+
+    handler = _configured_live_handler()
+    handler.last_extraction_receipt = EgglogExtractionReceipt(
+        selected_family="add",
+        selected_source="PriorRule",
+    )
+    handler.last_rule_family = "add"
+    handler.last_rule_provenance = ("PriorRule",)
+    unsupported = SimpleNamespace(
+        opcode=ida_hexrays.m_mov,
+        ea=0x401004,
+        d=_Destination(),
+    )
+    extraction_calls = []
+    proof_calls = []
+    mop_calls = []
+    monkeypatch.setattr(
+        handler_module,
+        "minsn_to_ast",
+        lambda _ins: extraction_calls.append(_ins),
+    )
+    monkeypatch.setattr(
+        handler,
+        "_prove_ast_equivalence",
+        lambda *args, **kwargs: proof_calls.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        AstNode,
+        "create_mop",
+        lambda self, ea: mop_calls.append((self, ea)),
+    )
+
+    assert handler.check_and_replace(None, unsupported) is None
+    receipt = handler.last_extraction_receipt
+    assert receipt == EgglogExtractionReceipt(
+        skip_reason=ExtractionSkipReason.NON_MBA_CANDIDATE
+    )
+    with pytest.raises(FrozenInstanceError):
+        receipt.skip_reason = None
+    assert handler.last_rule_family is None
+    assert handler.last_rule_provenance is None
+    assert handler.execution_metadata()["skip_reason"] == "non_mba_candidate"
+    assert extraction_calls == []
+    assert proof_calls == []
+    assert mop_calls == []
+
+
 def test_live_handler_exception_before_first_receipt_records_immutable_internal_error(
     monkeypatch,
 ):
