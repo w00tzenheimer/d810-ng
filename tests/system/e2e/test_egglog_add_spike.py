@@ -82,20 +82,18 @@ class TestEgglogAddSpike:
     ) -> None:
         def capture_and_assert_provenance(stats):
             captured = capture_stats(stats)
-            provenance = {
-                source_name
+            provenance = tuple(
+                tuple(execution.metadata.get("source_names", ()))
                 for execution in stats.rule_execution_log
                 if execution.rule_name == "EgglogOptimizer"
-                for source_name in execution.metadata.get("source_names", ())
-            }
-            assert {
-                "Add_HackersDelightRule_2",
-                "Add_OllvmRule_3",
-                "Add_HackersDelightRule_3",
-                "Add_OllvmRule_1",
-                "Add_OllvmRule_DynamicConst",
-                "Add_SpecialConstantRule_3",
-            } <= provenance
+            )
+            assert provenance == (
+                ("Add_HackersDelightRule_2", "Add_OllvmRule_3"),
+                ("Add_HackersDelightRule_3",),
+                ("Add_OllvmRule_1", "Add_OllvmRule_DynamicConst"),
+                ("Add_HackersDelightRule_2", "Add_OllvmRule_3"),
+                ("Add_SpecialConstantRule_3",),
+            )
             return captured
 
         run_deobfuscation_test(
