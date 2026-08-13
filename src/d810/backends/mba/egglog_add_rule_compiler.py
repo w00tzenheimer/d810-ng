@@ -5,12 +5,18 @@ from __future__ import annotations
 import enum
 import importlib
 from dataclasses import dataclass, replace
+from types import MappingProxyType
 
 from d810.backends.mba.z3 import constraint_to_z3, create_z3_variables, verify_rule
-from d810.core.typing import Any
+from d810.core.typing import Any, Mapping
 from d810.mba.dsl import SymbolicExpressionProtocol
 from d810.mba.rules._base import VerifiableRule
 from d810.mba.rules.add import ADD_RULE_CLASSES
+from d810.mba.rules.catalogue import (
+    EGGLOG_CLOSED_FAMILIES,
+    FAMILY_REJECTION_REASONS,
+    MBA_RULE_FAMILIES,
+)
 
 CERTIFICATE_WIDTHS = (8, 16, 32, 64)
 
@@ -43,6 +49,7 @@ class CompiledEgglogAddRule:
     rule_type: type[VerifiableRule]
     proof_widths: tuple[int, ...]
     guarded: bool
+    family: str = "add"
 
     @property
     def pattern(self) -> SymbolicExpressionProtocol:
@@ -55,6 +62,9 @@ class CompiledEgglogAddRule:
     @property
     def constraints(self) -> tuple[Any, ...]:
         return tuple(self.rule_type().CONSTRAINTS)
+
+
+CompiledEgglogRule = CompiledEgglogAddRule
 
 
 @dataclass(frozen=True)
@@ -70,6 +80,9 @@ class EgglogAddSpecialization:
         return (self.rule.source_name, *self.rule.aliases)
 
 
+EgglogMbaSpecialization = EgglogAddSpecialization
+
+
 @dataclass(frozen=True)
 class RuleCompilationReceipt:
     source_name: str
@@ -77,10 +90,15 @@ class RuleCompilationReceipt:
     canonical_name: str | None
     compiled_rule: CompiledEgglogAddRule | None
     reason: str | None = None
+    family: str = "add"
+
+    @property
+    def key(self) -> tuple[str, str]:
+        return (self.family, self.source_name)
 
 
 @dataclass(frozen=True)
-class AddRuleCatalogue:
+class MbaRuleCatalogue:
     receipts: tuple[RuleCompilationReceipt, ...]
 
     @property
@@ -88,7 +106,7 @@ class AddRuleCatalogue:
         return self.receipts
 
     @property
-    def compiled_rules(self) -> tuple[CompiledEgglogAddRule, ...]:
+    def compiled_rules(self) -> tuple[CompiledEgglogRule, ...]:
         return tuple(
             receipt.compiled_rule
             for receipt in self.receipts
@@ -96,11 +114,32 @@ class AddRuleCatalogue:
             and receipt.compiled_rule is not None
         )
 
-    def receipt_for(self, source_name: str) -> RuleCompilationReceipt:
+    @property
+    def receipts_by_key(self) -> Mapping[tuple[str, str], RuleCompilationReceipt]:
+        return MappingProxyType({receipt.key: receipt for receipt in self.receipts})
+
+    def receipt_for(
+        self, family: str, source_name: str | None = None
+    ) -> RuleCompilationReceipt:
+        add_compat_lookup = source_name is None
+        if source_name is None:
+            if any(receipt.family != "add" for receipt in self.receipts):
+                raise TypeError(
+                    "whole-corpus receipt lookup requires family and source_name"
+                )
+            source_name = family
+            family = "add"
         for receipt in self.receipts:
-            if receipt.source_name == source_name:
+            if receipt.family == family and receipt.source_name == source_name:
                 return receipt
-        raise KeyError(source_name)
+        if add_compat_lookup:
+            raise KeyError(source_name)
+        raise KeyError((family, source_name))
+
+
+@dataclass(frozen=True)
+class AddRuleCatalogue(MbaRuleCatalogue):
+    """Backward-compatible ADD-only view of the MBA catalogue."""
 
 
 def _expression_fingerprint(expression: Any) -> tuple[Any, ...]:
@@ -226,92 +265,147 @@ def _validate_declarative_constraints(rule: VerifiableRule, bit_width: int) -> N
         constraint_to_z3(constraint, z3_vars, bit_width=bit_width)
 
 
-def compile_add_rule_catalogue() -> AddRuleCatalogue:
-    canonical_by_fingerprint: dict[tuple[Any, ...], CompiledEgglogAddRule] = {}
+def _compile_rule_families(
+    rule_families: Mapping[str, tuple[type[VerifiableRule], ...]],
+) -> MbaRuleCatalogue:
+    canonical_by_fingerprint: dict[tuple[Any, ...], CompiledEgglogRule] = {}
     staged_receipts: list[
-        tuple[str, RuleCompilationStatus, str | None, str | None]
+        tuple[str, str, RuleCompilationStatus, str | None, str | None]
     ] = []
 
-    for rule_type in ADD_RULE_CLASSES:
-        source_name = rule_type.__name__
-        if getattr(rule_type, "SKIP_VERIFICATION", False):
-            staged_receipts.append(
-                (
-                    source_name,
-                    RuleCompilationStatus.REJECTED,
-                    None,
-                    "verification skipped",
-                )
-            )
-            continue
-        if rule_type.get_constraints is not VerifiableRule.get_constraints:
-            staged_receipts.append(
-                (
-                    source_name,
-                    RuleCompilationStatus.REJECTED,
-                    None,
-                    "custom get_constraints is not portable",
-                )
-            )
-            continue
-
-        rule = rule_type()
-        try:
-            fingerprint = _rule_fingerprint(rule)
-            canonical = canonical_by_fingerprint.get(fingerprint)
-            if canonical is not None:
-                canonical_by_fingerprint[fingerprint] = replace(
-                    canonical, aliases=canonical.aliases + (source_name,)
-                )
+    for family, rule_types in rule_families.items():
+        family_rejection_reason = FAMILY_REJECTION_REASONS.get(family)
+        for rule_type in rule_types:
+            source_name = rule_type.__name__
+            if rule_type.get_constraints is not VerifiableRule.get_constraints:
                 staged_receipts.append(
                     (
+                        family,
                         source_name,
-                        RuleCompilationStatus.DUPLICATE,
-                        canonical.source_name,
+                        RuleCompilationStatus.REJECTED,
                         None,
+                        "custom get_constraints is not portable",
+                    )
+                )
+                continue
+            if family_rejection_reason is not None:
+                staged_receipts.append(
+                    (
+                        family,
+                        source_name,
+                        RuleCompilationStatus.REJECTED,
+                        None,
+                        family_rejection_reason,
+                    )
+                )
+                continue
+            if family not in EGGLOG_CLOSED_FAMILIES:
+                staged_receipts.append(
+                    (
+                        family,
+                        source_name,
+                        RuleCompilationStatus.REJECTED,
+                        None,
+                        "family is not eligible for portable compilation",
+                    )
+                )
+                continue
+            if getattr(rule_type, "SKIP_VERIFICATION", False):
+                staged_receipts.append(
+                    (
+                        family,
+                        source_name,
+                        RuleCompilationStatus.REJECTED,
+                        None,
+                        "verification skipped",
                     )
                 )
                 continue
 
-            for width in CERTIFICATE_WIDTHS:
-                _validate_declarative_constraints(rule, width)
-                if not verify_rule(rule, bit_width=width):
-                    raise ValueError(f"verification returned false at {width} bits")
-        except (AssertionError, TypeError, ValueError) as exc:
-            staged_receipts.append(
-                (source_name, RuleCompilationStatus.REJECTED, None, str(exc))
-            )
-            continue
+            rule = rule_type()
+            try:
+                fingerprint = (family, _rule_fingerprint(rule))
+                canonical = canonical_by_fingerprint.get(fingerprint)
+                if canonical is not None:
+                    canonical_by_fingerprint[fingerprint] = replace(
+                        canonical, aliases=canonical.aliases + (source_name,)
+                    )
+                    staged_receipts.append(
+                        (
+                            family,
+                            source_name,
+                            RuleCompilationStatus.DUPLICATE,
+                            canonical.source_name,
+                            None,
+                        )
+                    )
+                    continue
 
-        canonical_by_fingerprint[fingerprint] = CompiledEgglogAddRule(
-            source_name=source_name,
-            aliases=(),
-            rule_type=rule_type,
-            proof_widths=CERTIFICATE_WIDTHS,
-            guarded=bool(rule.CONSTRAINTS),
-        )
-        staged_receipts.append(
-            (source_name, RuleCompilationStatus.COMPILED, source_name, None)
-        )
+                for width in CERTIFICATE_WIDTHS:
+                    _validate_declarative_constraints(rule, width)
+                    if not verify_rule(rule, bit_width=width):
+                        raise ValueError(
+                            f"verification returned false at {width} bits"
+                        )
+            except (AssertionError, TypeError, ValueError) as exc:
+                staged_receipts.append(
+                    (
+                        family,
+                        source_name,
+                        RuleCompilationStatus.REJECTED,
+                        None,
+                        str(exc),
+                    )
+                )
+                continue
+
+            canonical_by_fingerprint[fingerprint] = CompiledEgglogRule(
+                family=family,
+                source_name=source_name,
+                aliases=(),
+                rule_type=rule_type,
+                proof_widths=CERTIFICATE_WIDTHS,
+                guarded=bool(rule.CONSTRAINTS),
+            )
+            staged_receipts.append(
+                (
+                    family,
+                    source_name,
+                    RuleCompilationStatus.COMPILED,
+                    source_name,
+                    None,
+                )
+            )
 
     compiled_by_name = {
-        compiled.source_name: compiled for compiled in canonical_by_fingerprint.values()
+        (compiled.family, compiled.source_name): compiled
+        for compiled in canonical_by_fingerprint.values()
     }
     receipts = tuple(
         RuleCompilationReceipt(
+            family=family,
             source_name=source_name,
             status=status,
             canonical_name=canonical_name,
             compiled_rule=(
-                compiled_by_name.get(canonical_name)
+                compiled_by_name.get((family, canonical_name))
                 if canonical_name is not None
                 else None
             ),
             reason=reason,
         )
-        for source_name, status, canonical_name, reason in staged_receipts
+        for family, source_name, status, canonical_name, reason in staged_receipts
     )
-    return AddRuleCatalogue(receipts)
+    return MbaRuleCatalogue(receipts)
+
+
+def compile_mba_rule_catalogue() -> MbaRuleCatalogue:
+    return _compile_rule_families(MBA_RULE_FAMILIES)
+
+
+def compile_add_rule_catalogue() -> AddRuleCatalogue:
+    catalogue = _compile_rule_families({"add": ADD_RULE_CLASSES})
+    return AddRuleCatalogue(catalogue.receipts)
 
 
 _OPCODE_BY_OPERATION: dict[str, int] = {}
