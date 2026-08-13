@@ -1,0 +1,944 @@
+{
+  "schema_version": 1,
+  "fixture_kind": "post_lowering_semantic_shapes",
+  "authorship": "independently_authored",
+  "source_policy": "Each expression was authored from D810-certified bit-vector identities or a local algebraic proof; no external corpus expression or test was copied.",
+  "cases": [
+    {
+      "case_id": "chain_01",
+      "function": "mba_shape_chain_01",
+      "ground_truth_function": "mba_truth_chain_01",
+      "width": 8,
+      "stratum": "chain",
+      "expected_route": [
+        "structural_chain"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 810,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "chain_02",
+      "function": "mba_shape_chain_02",
+      "ground_truth_function": "mba_truth_chain_02",
+      "width": 16,
+      "stratum": "chain",
+      "expected_route": [
+        "structural_chain"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 811,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "chain_03",
+      "function": "mba_shape_chain_03",
+      "ground_truth_function": "mba_truth_chain_03",
+      "width": 32,
+      "stratum": "chain",
+      "expected_route": [
+        "structural_chain"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 812,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "chain_04",
+      "function": "mba_shape_chain_04",
+      "ground_truth_function": "mba_truth_chain_04",
+      "width": 64,
+      "stratum": "chain",
+      "expected_route": [
+        "structural_chain"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 813,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "chain_05",
+      "function": "mba_shape_chain_05",
+      "ground_truth_function": "mba_truth_chain_05",
+      "width": 8,
+      "stratum": "chain",
+      "expected_route": [
+        "structural_chain"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 814,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "chain_06",
+      "function": "mba_shape_chain_06",
+      "ground_truth_function": "mba_truth_chain_06",
+      "width": 16,
+      "stratum": "chain",
+      "expected_route": [
+        "structural_chain"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 815,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "chain_07",
+      "function": "mba_shape_chain_07",
+      "ground_truth_function": "mba_truth_chain_07",
+      "width": 32,
+      "stratum": "chain",
+      "expected_route": [
+        "structural_chain"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 816,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "chain_08",
+      "function": "mba_shape_chain_08",
+      "ground_truth_function": "mba_truth_chain_08",
+      "width": 64,
+      "stratum": "chain",
+      "expected_route": [
+        "structural_chain"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 817,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "catalogue_01",
+      "function": "mba_shape_catalogue_01",
+      "ground_truth_function": "mba_truth_catalogue_01",
+      "width": 8,
+      "stratum": "catalogue",
+      "expected_route": [
+        "catalogue"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 818,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "catalogue_02",
+      "function": "mba_shape_catalogue_02",
+      "ground_truth_function": "mba_truth_catalogue_02",
+      "width": 16,
+      "stratum": "catalogue",
+      "expected_route": [
+        "catalogue"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 819,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "catalogue_03",
+      "function": "mba_shape_catalogue_03",
+      "ground_truth_function": "mba_truth_catalogue_03",
+      "width": 32,
+      "stratum": "catalogue",
+      "expected_route": [
+        "catalogue"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 820,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "catalogue_04",
+      "function": "mba_shape_catalogue_04",
+      "ground_truth_function": "mba_truth_catalogue_04",
+      "width": 64,
+      "stratum": "catalogue",
+      "expected_route": [
+        "catalogue"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 821,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "catalogue_05",
+      "function": "mba_shape_catalogue_05",
+      "ground_truth_function": "mba_truth_catalogue_05",
+      "width": 8,
+      "stratum": "catalogue",
+      "expected_route": [
+        "catalogue"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 822,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "catalogue_06",
+      "function": "mba_shape_catalogue_06",
+      "ground_truth_function": "mba_truth_catalogue_06",
+      "width": 16,
+      "stratum": "catalogue",
+      "expected_route": [
+        "catalogue"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 823,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "catalogue_07",
+      "function": "mba_shape_catalogue_07",
+      "ground_truth_function": "mba_truth_catalogue_07",
+      "width": 32,
+      "stratum": "catalogue",
+      "expected_route": [
+        "catalogue"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 824,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "catalogue_08",
+      "function": "mba_shape_catalogue_08",
+      "ground_truth_function": "mba_truth_catalogue_08",
+      "width": 64,
+      "stratum": "catalogue",
+      "expected_route": [
+        "catalogue"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 825,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "catalogue_09",
+      "function": "mba_shape_catalogue_09",
+      "ground_truth_function": "mba_truth_catalogue_09",
+      "width": 8,
+      "stratum": "catalogue",
+      "expected_route": [
+        "catalogue"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 826,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "catalogue_10",
+      "function": "mba_shape_catalogue_10",
+      "ground_truth_function": "mba_truth_catalogue_10",
+      "width": 16,
+      "stratum": "catalogue",
+      "expected_route": [
+        "catalogue"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 827,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "reassociation_01",
+      "function": "mba_shape_reassociation_01",
+      "ground_truth_function": "mba_truth_reassociation_01",
+      "width": 32,
+      "stratum": "reassociation",
+      "expected_route": [
+        "catalogue"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 828,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "reassociation_02",
+      "function": "mba_shape_reassociation_02",
+      "ground_truth_function": "mba_truth_reassociation_02",
+      "width": 64,
+      "stratum": "reassociation",
+      "expected_route": [
+        "catalogue"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 829,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "reassociation_03",
+      "function": "mba_shape_reassociation_03",
+      "ground_truth_function": "mba_truth_reassociation_03",
+      "width": 8,
+      "stratum": "reassociation",
+      "expected_route": [
+        "catalogue"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 830,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "reassociation_04",
+      "function": "mba_shape_reassociation_04",
+      "ground_truth_function": "mba_truth_reassociation_04",
+      "width": 16,
+      "stratum": "reassociation",
+      "expected_route": [
+        "catalogue"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 831,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "reassociation_05",
+      "function": "mba_shape_reassociation_05",
+      "ground_truth_function": "mba_truth_reassociation_05",
+      "width": 32,
+      "stratum": "reassociation",
+      "expected_route": [
+        "catalogue"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 832,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "reassociation_06",
+      "function": "mba_shape_reassociation_06",
+      "ground_truth_function": "mba_truth_reassociation_06",
+      "width": 64,
+      "stratum": "reassociation",
+      "expected_route": [
+        "catalogue"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 833,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "reassociation_07",
+      "function": "mba_shape_reassociation_07",
+      "ground_truth_function": "mba_truth_reassociation_07",
+      "width": 8,
+      "stratum": "reassociation",
+      "expected_route": [
+        "catalogue"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 834,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "reassociation_08",
+      "function": "mba_shape_reassociation_08",
+      "ground_truth_function": "mba_truth_reassociation_08",
+      "width": 16,
+      "stratum": "reassociation",
+      "expected_route": [
+        "catalogue"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 835,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "degree2_01",
+      "function": "mba_shape_degree2_01",
+      "ground_truth_function": "mba_truth_degree2_01",
+      "width": 32,
+      "stratum": "degree2",
+      "expected_route": [
+        "catalogue",
+        "egglog",
+        "coefficient_solver"
+      ],
+      "expected_minimum_degree": 2,
+      "semantic_seed": 836,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "degree2_02",
+      "function": "mba_shape_degree2_02",
+      "ground_truth_function": "mba_truth_degree2_02",
+      "width": 64,
+      "stratum": "degree2",
+      "expected_route": [
+        "catalogue",
+        "egglog",
+        "coefficient_solver"
+      ],
+      "expected_minimum_degree": 2,
+      "semantic_seed": 837,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "degree2_03",
+      "function": "mba_shape_degree2_03",
+      "ground_truth_function": "mba_truth_degree2_03",
+      "width": 8,
+      "stratum": "degree2",
+      "expected_route": [
+        "catalogue",
+        "egglog",
+        "coefficient_solver"
+      ],
+      "expected_minimum_degree": 2,
+      "semantic_seed": 838,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "degree2_04",
+      "function": "mba_shape_degree2_04",
+      "ground_truth_function": "mba_truth_degree2_04",
+      "width": 16,
+      "stratum": "degree2",
+      "expected_route": [
+        "catalogue",
+        "egglog",
+        "coefficient_solver"
+      ],
+      "expected_minimum_degree": 2,
+      "semantic_seed": 839,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "degree2_05",
+      "function": "mba_shape_degree2_05",
+      "ground_truth_function": "mba_truth_degree2_05",
+      "width": 32,
+      "stratum": "degree2",
+      "expected_route": [
+        "catalogue",
+        "egglog",
+        "coefficient_solver"
+      ],
+      "expected_minimum_degree": 2,
+      "semantic_seed": 840,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "degree2_06",
+      "function": "mba_shape_degree2_06",
+      "ground_truth_function": "mba_truth_degree2_06",
+      "width": 64,
+      "stratum": "degree2",
+      "expected_route": [
+        "catalogue",
+        "egglog",
+        "coefficient_solver"
+      ],
+      "expected_minimum_degree": 2,
+      "semantic_seed": 841,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "degree2_07",
+      "function": "mba_shape_degree2_07",
+      "ground_truth_function": "mba_truth_degree2_07",
+      "width": 8,
+      "stratum": "degree2",
+      "expected_route": [
+        "catalogue",
+        "egglog",
+        "coefficient_solver"
+      ],
+      "expected_minimum_degree": 2,
+      "semantic_seed": 842,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "degree2_08",
+      "function": "mba_shape_degree2_08",
+      "ground_truth_function": "mba_truth_degree2_08",
+      "width": 16,
+      "stratum": "degree2",
+      "expected_route": [
+        "catalogue",
+        "egglog",
+        "coefficient_solver"
+      ],
+      "expected_minimum_degree": 2,
+      "semantic_seed": 843,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "degree2_09",
+      "function": "mba_shape_degree2_09",
+      "ground_truth_function": "mba_truth_degree2_09",
+      "width": 32,
+      "stratum": "degree2",
+      "expected_route": [
+        "catalogue",
+        "egglog",
+        "coefficient_solver"
+      ],
+      "expected_minimum_degree": 2,
+      "semantic_seed": 844,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "degree2_10",
+      "function": "mba_shape_degree2_10",
+      "ground_truth_function": "mba_truth_degree2_10",
+      "width": 64,
+      "stratum": "degree2",
+      "expected_route": [
+        "catalogue",
+        "egglog",
+        "coefficient_solver"
+      ],
+      "expected_minimum_degree": 2,
+      "semantic_seed": 845,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "coefficient_01",
+      "function": "mba_shape_coefficient_01",
+      "ground_truth_function": "mba_truth_coefficient_01",
+      "width": 8,
+      "stratum": "coefficient",
+      "expected_route": [
+        "coefficient_solver"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 846,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "coefficient_02",
+      "function": "mba_shape_coefficient_02",
+      "ground_truth_function": "mba_truth_coefficient_02",
+      "width": 16,
+      "stratum": "coefficient",
+      "expected_route": [
+        "coefficient_solver"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 847,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "coefficient_03",
+      "function": "mba_shape_coefficient_03",
+      "ground_truth_function": "mba_truth_coefficient_03",
+      "width": 32,
+      "stratum": "coefficient",
+      "expected_route": [
+        "coefficient_solver"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 848,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "coefficient_04",
+      "function": "mba_shape_coefficient_04",
+      "ground_truth_function": "mba_truth_coefficient_04",
+      "width": 64,
+      "stratum": "coefficient",
+      "expected_route": [
+        "coefficient_solver"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 849,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "coefficient_05",
+      "function": "mba_shape_coefficient_05",
+      "ground_truth_function": "mba_truth_coefficient_05",
+      "width": 8,
+      "stratum": "coefficient",
+      "expected_route": [
+        "coefficient_solver"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 850,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "coefficient_06",
+      "function": "mba_shape_coefficient_06",
+      "ground_truth_function": "mba_truth_coefficient_06",
+      "width": 16,
+      "stratum": "coefficient",
+      "expected_route": [
+        "coefficient_solver"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 851,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "coefficient_07",
+      "function": "mba_shape_coefficient_07",
+      "ground_truth_function": "mba_truth_coefficient_07",
+      "width": 32,
+      "stratum": "coefficient",
+      "expected_route": [
+        "coefficient_solver"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 852,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "coefficient_08",
+      "function": "mba_shape_coefficient_08",
+      "ground_truth_function": "mba_truth_coefficient_08",
+      "width": 64,
+      "stratum": "coefficient",
+      "expected_route": [
+        "coefficient_solver"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 853,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "coefficient_09",
+      "function": "mba_shape_coefficient_09",
+      "ground_truth_function": "mba_truth_coefficient_09",
+      "width": 8,
+      "stratum": "coefficient",
+      "expected_route": [
+        "coefficient_solver"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 854,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "coefficient_10",
+      "function": "mba_shape_coefficient_10",
+      "ground_truth_function": "mba_truth_coefficient_10",
+      "width": 16,
+      "stratum": "coefficient",
+      "expected_route": [
+        "coefficient_solver"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 855,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "nonlinear_01",
+      "function": "mba_shape_nonlinear_01",
+      "ground_truth_function": "mba_truth_nonlinear_01",
+      "width": 32,
+      "stratum": "nonlinear",
+      "expected_route": [
+        "coefficient_solver"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 856,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "nonlinear_02",
+      "function": "mba_shape_nonlinear_02",
+      "ground_truth_function": "mba_truth_nonlinear_02",
+      "width": 64,
+      "stratum": "nonlinear",
+      "expected_route": [
+        "coefficient_solver"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 857,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "nonlinear_03",
+      "function": "mba_shape_nonlinear_03",
+      "ground_truth_function": "mba_truth_nonlinear_03",
+      "width": 8,
+      "stratum": "nonlinear",
+      "expected_route": [
+        "coefficient_solver"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 858,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "nonlinear_04",
+      "function": "mba_shape_nonlinear_04",
+      "ground_truth_function": "mba_truth_nonlinear_04",
+      "width": 16,
+      "stratum": "nonlinear",
+      "expected_route": [
+        "coefficient_solver"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 859,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "nonlinear_05",
+      "function": "mba_shape_nonlinear_05",
+      "ground_truth_function": "mba_truth_nonlinear_05",
+      "width": 32,
+      "stratum": "nonlinear",
+      "expected_route": [
+        "coefficient_solver"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 860,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "nonlinear_06",
+      "function": "mba_shape_nonlinear_06",
+      "ground_truth_function": "mba_truth_nonlinear_06",
+      "width": 64,
+      "stratum": "nonlinear",
+      "expected_route": [
+        "coefficient_solver"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 861,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "nonlinear_07",
+      "function": "mba_shape_nonlinear_07",
+      "ground_truth_function": "mba_truth_nonlinear_07",
+      "width": 8,
+      "stratum": "nonlinear",
+      "expected_route": [
+        "coefficient_solver"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 862,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "nonlinear_08",
+      "function": "mba_shape_nonlinear_08",
+      "ground_truth_function": "mba_truth_nonlinear_08",
+      "width": 16,
+      "stratum": "nonlinear",
+      "expected_route": [
+        "coefficient_solver"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 863,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "unsafe_01",
+      "function": "mba_shape_unsafe_01",
+      "ground_truth_function": "mba_truth_unsafe_01",
+      "width": 32,
+      "stratum": "unsafe",
+      "expected_route": [
+        "refusal"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 864,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "unsafe_02",
+      "function": "mba_shape_unsafe_02",
+      "ground_truth_function": "mba_truth_unsafe_02",
+      "width": 64,
+      "stratum": "unsafe",
+      "expected_route": [
+        "refusal"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 865,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "unsafe_03",
+      "function": "mba_shape_unsafe_03",
+      "ground_truth_function": "mba_truth_unsafe_03",
+      "width": 8,
+      "stratum": "unsafe",
+      "expected_route": [
+        "refusal"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 866,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "unsafe_04",
+      "function": "mba_shape_unsafe_04",
+      "ground_truth_function": "mba_truth_unsafe_04",
+      "width": 16,
+      "stratum": "unsafe",
+      "expected_route": [
+        "refusal"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 867,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "unsafe_05",
+      "function": "mba_shape_unsafe_05",
+      "ground_truth_function": "mba_truth_unsafe_05",
+      "width": 32,
+      "stratum": "unsafe",
+      "expected_route": [
+        "refusal"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 868,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "unsafe_06",
+      "function": "mba_shape_unsafe_06",
+      "ground_truth_function": "mba_truth_unsafe_06",
+      "width": 64,
+      "stratum": "unsafe",
+      "expected_route": [
+        "refusal"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 869,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "unsafe_07",
+      "function": "mba_shape_unsafe_07",
+      "ground_truth_function": "mba_truth_unsafe_07",
+      "width": 8,
+      "stratum": "unsafe",
+      "expected_route": [
+        "refusal"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 870,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "unsafe_08",
+      "function": "mba_shape_unsafe_08",
+      "ground_truth_function": "mba_truth_unsafe_08",
+      "width": 16,
+      "stratum": "unsafe",
+      "expected_route": [
+        "refusal"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 871,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "unsafe_09",
+      "function": "mba_shape_unsafe_09",
+      "ground_truth_function": "mba_truth_unsafe_09",
+      "width": 32,
+      "stratum": "unsafe",
+      "expected_route": [
+        "refusal"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 872,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "unsafe_10",
+      "function": "mba_shape_unsafe_10",
+      "ground_truth_function": "mba_truth_unsafe_10",
+      "width": 64,
+      "stratum": "unsafe",
+      "expected_route": [
+        "refusal"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 873,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "matcher_refusal_01",
+      "function": "mba_shape_matcher_refusal_01",
+      "ground_truth_function": "mba_truth_matcher_refusal_01",
+      "width": 8,
+      "stratum": "matcher_refusal",
+      "expected_route": [
+        "refusal"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 874,
+      "authorship": "independently_authored",
+      "expected_stop_reason": "cardinality_mismatch"
+    },
+    {
+      "case_id": "matcher_refusal_02",
+      "function": "mba_shape_matcher_refusal_02",
+      "ground_truth_function": "mba_truth_matcher_refusal_02",
+      "width": 16,
+      "stratum": "matcher_refusal",
+      "expected_route": [
+        "refusal"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 875,
+      "authorship": "independently_authored",
+      "expected_stop_reason": "ambiguous_group_capture"
+    },
+    {
+      "case_id": "matcher_refusal_03",
+      "function": "mba_shape_matcher_refusal_03",
+      "ground_truth_function": "mba_truth_matcher_refusal_03",
+      "width": 32,
+      "stratum": "matcher_refusal",
+      "expected_route": [
+        "refusal"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 876,
+      "authorship": "independently_authored",
+      "expected_stop_reason": "comparison_budget"
+    },
+    {
+      "case_id": "matcher_refusal_04",
+      "function": "mba_shape_matcher_refusal_04",
+      "ground_truth_function": "mba_truth_matcher_refusal_04",
+      "width": 64,
+      "stratum": "matcher_refusal",
+      "expected_route": [
+        "refusal"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 877,
+      "authorship": "independently_authored",
+      "expected_stop_reason": "unsupported_heterogeneous_chain"
+    },
+    {
+      "case_id": "matcher_refusal_05",
+      "function": "mba_shape_matcher_refusal_05",
+      "ground_truth_function": "mba_truth_matcher_refusal_05",
+      "width": 8,
+      "stratum": "matcher_refusal",
+      "expected_route": [
+        "refusal"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 878,
+      "authorship": "independently_authored",
+      "expected_stop_reason": "cardinality_mismatch"
+    },
+    {
+      "case_id": "matcher_refusal_06",
+      "function": "mba_shape_matcher_refusal_06",
+      "ground_truth_function": "mba_truth_matcher_refusal_06",
+      "width": 16,
+      "stratum": "matcher_refusal",
+      "expected_route": [
+        "refusal"
+      ],
+      "expected_minimum_degree": 0,
+      "semantic_seed": 879,
+      "authorship": "independently_authored",
+      "expected_stop_reason": "comparison_budget"
+    }
+  ]
+}
