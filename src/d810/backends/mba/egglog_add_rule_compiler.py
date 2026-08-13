@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import enum
+import functools
 import importlib
 import weakref
 from collections.abc import Collection, Iterator
@@ -446,6 +447,20 @@ def compile_mba_rule_catalogue() -> MbaRuleCatalogue:
     return _compile_rule_families(MBA_RULE_FAMILIES)
 
 
+@functools.lru_cache(maxsize=32)
+def _compile_selected_rule_catalogue(
+    families: tuple[str, ...],
+    declaration_version: tuple[
+        tuple[str, tuple[type[VerifiableRule], ...]], ...
+    ],
+) -> MbaRuleCatalogue:
+    """Cache immutable certificates, never mutable Egglog runtime state."""
+    rule_families = dict(declaration_version)
+    if families == ("add",):
+        return AddRuleCatalogue(_compile_rule_families(rule_families).receipts)
+    return _compile_rule_families(rule_families)
+
+
 def compiled_rules_for_families(
     families: Collection[str],
 ) -> tuple[CompiledEgglogRule, ...]:
@@ -454,7 +469,17 @@ def compiled_rules_for_families(
     if unknown:
         raise ValueError("unknown MBA rule families: " + ", ".join(unknown))
 
-    catalogue = compile_mba_rule_catalogue()
+    canonical_families = tuple(
+        family for family in MBA_RULE_FAMILIES if family in requested
+    )
+    declaration_version = tuple(
+        (family, tuple(MBA_RULE_FAMILIES[family]))
+        for family in canonical_families
+    )
+    catalogue = _compile_selected_rule_catalogue(
+        canonical_families,
+        declaration_version,
+    )
     compiled_families = {rule.family for rule in catalogue.compiled_rules}
     receipts_only = sorted(requested - compiled_families)
     if receipts_only:

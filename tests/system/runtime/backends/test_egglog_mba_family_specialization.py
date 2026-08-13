@@ -349,6 +349,19 @@ def test_live_handler_xor_root_never_specializes_unrelated_root_buckets(monkeypa
     assert set(attempted_roots) == {"xor"}
 
 
+def test_live_handler_construction_does_not_compile_a_catalogue(monkeypatch):
+    monkeypatch.setattr(
+        "d810.optimizers.microcode.instructions.egraph.egglog_handler."
+        "compiled_rules_for_families",
+        lambda _families: (_ for _ in ()).throw(
+            AssertionError("disabled/unconfigured handlers must stay cold")
+        ),
+    )
+    handler = EgglogOptimizer()
+
+    assert handler.families == ("add",)
+
+
 def test_central_statistics_records_selected_family_provenance(monkeypatch):
     stats = OptimizationStatistics()
     optimizer = PeepholeOptimizer([ida_hexrays.MMAT_GLBOPT2], stats)

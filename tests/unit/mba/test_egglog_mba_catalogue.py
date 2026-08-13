@@ -7,6 +7,7 @@ import pytest
 from d810.backends.mba import egglog_add_rule_compiler
 from d810.backends.mba.egglog_add_rule_compiler import (
     CERTIFICATE_WIDTHS,
+    MbaRuleCatalogue,
     RuleCompilationStatus,
     compile_add_rule_catalogue,
     compile_mba_rule_catalogue,
@@ -218,9 +219,64 @@ def test_live_family_selector_preserves_catalogue_order_and_add_compatibility(
     )
 
     assert selected == expected
+    repeated = egglog_add_rule_compiler.compiled_rules_for_families(
+        requested_families
+    )
+    assert all(left is right for left, right in zip(selected, repeated, strict=True))
     assert egglog_add_rule_compiler.compiled_rules_for_families(("add",)) == (
         compile_add_rule_catalogue().compiled_rules
     )
+
+
+def test_add_only_live_selection_does_not_compile_the_whole_corpus(monkeypatch):
+    def reject_whole_corpus_compile():
+        raise AssertionError("ADD selection must not certify unrelated families")
+
+    monkeypatch.setattr(
+        egglog_add_rule_compiler,
+        "compile_mba_rule_catalogue",
+        reject_whole_corpus_compile,
+    )
+
+    selected = egglog_add_rule_compiler.compiled_rules_for_families(("add",))
+
+    assert selected == compile_add_rule_catalogue().compiled_rules
+
+
+def test_live_selection_cache_reuses_only_the_same_declaration_version(monkeypatch):
+    egglog_add_rule_compiler._compile_selected_rule_catalogue.cache_clear()
+    calls = []
+
+    def observe(rule_families):
+        calls.append(tuple(rule_families.items()))
+        return MbaRuleCatalogue(())
+
+    monkeypatch.setattr(egglog_add_rule_compiler, "_compile_rule_families", observe)
+    monkeypatch.setattr(
+        egglog_add_rule_compiler,
+        "MBA_RULE_FAMILIES",
+        {"add": ()},
+    )
+
+    with pytest.raises(ValueError, match="no compiled rules"):
+        egglog_add_rule_compiler.compiled_rules_for_families(("add",))
+    with pytest.raises(ValueError, match="no compiled rules"):
+        egglog_add_rule_compiler.compiled_rules_for_families(("add",))
+    assert len(calls) == 1
+
+    fake_rule = type(
+        "ChangedDeclarationRule",
+        (VerifiableRule,),
+        {"PATTERN": Var("x"), "REPLACEMENT": Var("x")},
+    )
+    monkeypatch.setattr(
+        egglog_add_rule_compiler,
+        "MBA_RULE_FAMILIES",
+        {"add": (fake_rule,)},
+    )
+    with pytest.raises(ValueError, match="no compiled rules"):
+        egglog_add_rule_compiler.compiled_rules_for_families(("add",))
+    assert len(calls) == 2
 
 
 @pytest.mark.parametrize(

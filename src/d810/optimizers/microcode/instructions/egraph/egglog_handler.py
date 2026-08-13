@@ -16,7 +16,6 @@ import ida_hexrays
 from d810.backends.mba.egglog_add_rule_compiler import (
     CompiledEgglogRule,
     EgglogAddSpecialization,
-    compile_add_rule_catalogue,
     compiled_rules_for_families,
     specialize,
 )
@@ -85,7 +84,10 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         self.extraction_budget = EgglogExtractionBudget()
         self._publish_budget_attributes(self.extraction_budget)
         self.families = _DEFAULT_FAMILIES
-        self._catalogue = compile_add_rule_catalogue()
+        self.__catalogue = _SelectedRuleCatalogue(())
+        self._compiled_rules: tuple[CompiledEgglogRule, ...] = ()
+        self._rules_by_root_opcode = MappingProxyType({})
+        self._catalogue_configured = False
         self.last_extraction_receipt: EgglogExtractionReceipt | None = None
         self.last_rule_family: str | None = None
         self.last_rule_provenance: tuple[str, ...] | None = None
@@ -133,10 +135,8 @@ class EgglogOptimizer(PeepholeSimplificationRule):
                 raise ValueError("EgglogOptimizer native proof is mandatory") from exc
             raise ValueError(f"EgglogOptimizer {exc}") from exc
 
-        selected_catalogue = (
-            compile_add_rule_catalogue()
-            if families == _DEFAULT_FAMILIES
-            else _SelectedRuleCatalogue(compiled_rules_for_families(families))
+        selected_catalogue = _SelectedRuleCatalogue(
+            compiled_rules_for_families(families)
         )
         self.extraction_budget = budget
         self._publish_budget_attributes(budget)
@@ -167,6 +167,14 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         self._rules_by_root_opcode = self._build_root_opcode_buckets(
             self._compiled_rules
         )
+        self._catalogue_configured = True
+
+    def _ensure_catalogue_configured(self) -> None:
+        """Compile the default selection only when a direct handler is used."""
+        if not self._catalogue_configured:
+            self._catalogue = _SelectedRuleCatalogue(
+                compiled_rules_for_families(self.families)
+            )
 
     def check_and_replace(self, blk, ins):
         """Return a replacement only after extraction, shrink, and proof."""
@@ -316,6 +324,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         self, ast: AstNode, *, destination_size: int
     ) -> EgglogExtractionResult:
         """Run one fresh bounded extraction with the configured rule objects."""
+        self._ensure_catalogue_configured()
         return extract_bounded_candidate(
             ast,
             self._compiled_rules,
@@ -327,6 +336,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         self, ast: AstNode, *, destination_size: int
     ) -> EgglogAddSpecialization | None:
         """Deprecated compatibility seam; the live handler uses one extraction."""
+        self._ensure_catalogue_configured()
         width = int(destination_size) * 8
         best: EgglogAddSpecialization | None = None
         best_cost: int | None = None
