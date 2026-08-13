@@ -115,7 +115,8 @@ def test_cold_catalogue_and_selected_root_work_have_separate_receipts(
 
     receipt = {
         "cold_catalogue_seconds": cold_seconds,
-        "compiled_rule_count": len(selected_rules),
+        "compiled_rule_count": len(catalogue.compiled_rules),
+        "selected_rule_count": len(selected_rules),
         "selected_root": "xor",
         "selected_root_bucket_candidates": len(root_bucket),
         "specialization_attempts": len(specialization_attempts),
@@ -125,7 +126,10 @@ def test_cold_catalogue_and_selected_root_work_have_separate_receipts(
     print("\nEGGLOG_MBA_PERFORMANCE_RECEIPT=" + json.dumps(receipt, sort_keys=True))
 
     assert len(catalogue.receipts) == 188
-    assert len(selected_rules) == 108
+    assert len(catalogue.compiled_rules) == 108
+    assert selected_rules == catalogue.compiled_rules
+    assert receipt["compiled_rule_count"] == len(catalogue.compiled_rules)
+    assert receipt["selected_rule_count"] == len(selected_rules)
     assert len(root_bucket) == 14
     assert tuple(specialization_attempts) == root_bucket
     assert all(rule.pattern.operation == "xor" for rule in specialization_attempts)

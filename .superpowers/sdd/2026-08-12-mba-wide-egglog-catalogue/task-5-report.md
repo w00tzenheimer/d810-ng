@@ -5,8 +5,9 @@
 Complete. Task 5 adds a non-flaky, profile-marked performance receipt that
 separates cold whole-catalogue certification from per-candidate root-bucket
 work. It records elapsed time with `time.perf_counter()` but gates only stable
-structural facts: 188 receipts, 108 compiled rules, 14 rules in the selected
-XOR-root bucket, and exactly 14 real `specialize()` calls in catalogue order.
+structural facts: 188 receipts, 108 whole-catalogue compiled rules, 108 selected
+closed-family rules, 14 rules in the selected XOR-root bucket, and exactly 14
+real `specialize()` calls in catalogue order.
 
 No production defect emerged, so no production file changed. The two deferred
 test-isolation concerns were both cheap and correct to repair:
@@ -31,10 +32,16 @@ The structural accounting is the correctness contract:
 | Metric | Asserted value |
 | --- | ---: |
 | Whole-corpus receipts | 188 |
-| Closed-family compiled rules | 108 |
+| Whole-catalogue compiled rules | 108 |
+| Selected closed-family rules | 108 |
 | Selected root | `xor` |
 | Selected root-bucket candidates | 14 |
 | Actual specialization attempts | 14 |
+
+The test asserts that the selected rules equal the full compiled catalogue
+under the current policy. The counts are nevertheless recorded separately so
+a future policy change cannot silently relabel a selected subset as the
+whole-catalogue total.
 
 The elapsed values are diagnostic evidence only:
 
@@ -78,7 +85,7 @@ PYTHONPATH=src pyenv exec python -u - <<'PY'
 PY
 ```
 
-Result: 23.903509 seconds, 108 compiled rules. Root counts were `add=24`,
+Result: 23.903509 seconds, 108 whole-catalogue compiled rules. Root counts were `add=24`,
 `and=10`, `bnot=2`, `or=20`, `sub=38`, and `xor=14`.
 
 An initial plain Docker `exec` probe was deliberately rejected as an authority
@@ -97,7 +104,9 @@ D810_REPO_ROOT=/Users/mahmoud/src/idapro/d810 \
 
 Result: `1 passed, 118 warnings in 28.53s`; receipt: cold 27.474665 seconds,
 14 XOR-root candidates, 14 specialization attempts, selected work 0.004968
-seconds.
+seconds. Whole-catalogue and selected totals were each 108, but the original
+receipt emitted only one field sourced from the selected tuple; fix round 1
+below corrects that accounting.
 
 Focused real-handler statistics transport:
 
@@ -136,7 +145,8 @@ D810_REPO_ROOT=/Users/mahmoud/src/idapro/d810 \
 
 Result: `44 passed, 118 warnings in 94.62s`; receipt: cold 47.392400
 seconds, 14 XOR-root candidates, 14 specialization attempts, selected work
-0.003091 seconds.
+0.003091 seconds. The original receipt still had the same one-field accounting
+defect even though both source collections contained 108 rules.
 
 Retained ADD plus native family e2e:
 
@@ -225,3 +235,52 @@ configuration, sample binary, or native fixture changed.
   `perf_counter()` receipts but increases command wall time.
 - Timings are machine-, load-, and test-order-dependent. The structural counts
   are the only regression gates.
+
+## Fix round 1/5: distinguish compiled and selected totals
+
+Review found that `compiled_rule_count` was populated from
+`len(selected_rules)`. The selected tuple currently equals the whole compiled
+catalogue because every compiled rule belongs to the closed policy, so the
+reported numeric value happened to be correct while its accounting source was
+not.
+
+The repair now:
+
+- records `compiled_rule_count` from `len(catalogue.compiled_rules)`;
+- records `selected_rule_count` independently from `len(selected_rules)`;
+- asserts the whole-catalogue compiled total is exactly 108;
+- asserts the selected tuple exactly equals the compiled catalogue under the
+  current closed-family policy; and
+- asserts each receipt field against its own source collection.
+
+TDD RED:
+
+```bash
+D810_REPO_ROOT=/Users/mahmoud/src/idapro/d810 \
+  tools/scripts/run_system_tests_docker.sh test -w egglog-mba-spike -- \
+  tests/system/runtime/backends/test_egglog_mba_performance.py \
+  -m profile -s -q
+```
+
+Result before adding the new receipt field: `1 failed, 118 warnings in 29.03s`
+with the expected `KeyError: 'selected_rule_count'`. The existing
+`compiled_rule_count` equality passed only because selected and full compiled
+tuples are equal today.
+
+GREEN after the two-field repair: `1 passed, 118 warnings in 28.37s`. The new
+receipt reported cold catalogue 27.330414 seconds, selected bucket 0.005868
+seconds, `compiled_rule_count=108`, `selected_rule_count=108`, 14 XOR-root
+candidates, and 14 specialization attempts.
+
+Relevant isolation checks:
+
+```bash
+D810_REPO_ROOT=/Users/mahmoud/src/idapro/d810 \
+  tools/scripts/run_system_tests_docker.sh test -w egglog-mba-spike -- \
+  tests/system/runtime/backends/test_egglog_mba_family_specialization.py::test_central_statistics_records_selected_family_provenance \
+  tests/system/e2e/test_egglog_mba_families_spike.py::TestEgglogMbaFamiliesSpike::test_config_v2_routes_only_selected_egglog_families \
+  -q
+```
+
+Result: `2 passed, 118 warnings in 64.28s`. No production file or unrelated
+test changed in this fix round.
