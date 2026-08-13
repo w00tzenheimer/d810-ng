@@ -353,21 +353,35 @@ def test_central_statistics_records_selected_family_provenance(monkeypatch):
     stats = OptimizationStatistics()
     optimizer = PeepholeOptimizer([ida_hexrays.MMAT_GLBOPT2], stats)
     handler = EgglogOptimizer()
-    handler.last_rule_family = "xor"
-    handler.last_rule_provenance = ("Xor_HackersDelightRule_5", "Xor_MbaRule_2")
+    rule = _catalogue_rule("xor", "Xor_HackersDelightRule_5")
+    candidate = _candidate_from_pattern(rule.pattern)
+
+    class _Catalogue:
+        compiled_rules = (rule,)
+
+    handler._catalogue = _Catalogue()
+
+    class _Destination:
+        size = 4
 
     class _Instruction:
-        opcode = ida_hexrays.m_xor
+        opcode = candidate.opcode
         ea = 0x401000
+        d = _Destination()
 
         @staticmethod
         def _print():
             return "fake xor instruction"
 
     monkeypatch.setattr(
+        "d810.optimizers.microcode.instructions.egraph.egglog_handler.minsn_to_ast",
+        lambda _ins: candidate,
+    )
+    monkeypatch.setattr(handler, "_is_candidate", lambda _ast, _ins: True)
+    monkeypatch.setattr(
         handler,
-        "check_and_replace",
-        lambda _blk, _ins: _Instruction(),
+        "_create_instruction",
+        lambda _replacement, _ins: _Instruction(),
     )
     optimizer.add_rule(handler)
 

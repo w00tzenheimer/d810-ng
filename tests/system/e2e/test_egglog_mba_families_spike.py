@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import platform
+import time
 
 import ida_hexrays
 import pytest
@@ -101,6 +102,8 @@ class TestEgglogMbaFamiliesSpike:
             assert [rule.name for rule in state.current_ins_rules] == [
                 "EgglogOptimizer"
             ]
+            assert state.current_blk_rules == []
+            assert state.last_pipeline_v2_hook_pass_ids == ("mba-egglog",)
             optimizer = state.current_ins_rules[0]
             assert optimizer.maturities == [ida_hexrays.MMAT_GLBOPT1]
             assert optimizer.families == ("add", "xor", "sub")
@@ -133,6 +136,7 @@ class TestEgglogMbaFamiliesSpike:
             )
             return captured
 
+        fixture_started = time.perf_counter()
         run_deobfuscation_test(
             case=_MBA_FAMILIES_CASE,
             d810_state=d810_state,
@@ -141,3 +145,5 @@ class TestEgglogMbaFamiliesSpike:
             capture_stats=capture_and_assert_provenance,
             load_expected_stats=load_expected_stats,
         )
+        fixture_seconds = time.perf_counter() - fixture_started
+        print(f"\nEGGLOG_MBA_NATIVE_FIXTURE_SECONDS={fixture_seconds:.6f}")
