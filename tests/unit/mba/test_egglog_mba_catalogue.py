@@ -205,6 +205,57 @@ def test_add_catalogue_remains_a_source_name_compatible_view(mba_catalogue):
     assert len(add_catalogue.receipts) == 15
 
 
+def test_live_family_selector_preserves_catalogue_order_and_add_compatibility(
+    mba_catalogue,
+):
+    requested_families = ("xor", "add", "mul", "add")
+
+    selected = egglog_add_rule_compiler.compiled_rules_for_families(requested_families)
+    expected = tuple(
+        rule
+        for rule in mba_catalogue.compiled_rules
+        if rule.family in set(requested_families)
+    )
+
+    assert selected == expected
+    assert egglog_add_rule_compiler.compiled_rules_for_families(("add",)) == (
+        compile_add_rule_catalogue().compiled_rules
+    )
+
+
+@pytest.mark.parametrize(
+    ("families", "message"),
+    [
+        (("imaginary",), "unknown MBA rule families: imaginary"),
+        (("predicates",), "MBA rule families have no compiled rules: predicates"),
+    ],
+)
+def test_live_family_selector_rejects_unknown_and_receipts_only_families(
+    families,
+    message,
+):
+    with pytest.raises(ValueError, match=message):
+        egglog_add_rule_compiler.compiled_rules_for_families(families)
+
+
+def test_live_family_selector_keeps_aliases_as_provenance_not_executable_rules():
+    selected = egglog_add_rule_compiler.compiled_rules_for_families(("add", "xor"))
+    aliases_by_canonical = {
+        rule.source_name: rule.aliases for rule in selected if rule.aliases
+    }
+
+    assert aliases_by_canonical == {
+        "Add_HackersDelightRule_2": ("Add_OllvmRule_3",),
+        "Add_OllvmRule_1": ("Add_OllvmRule_DynamicConst",),
+        "Xor_HackersDelightRule_5": ("Xor_MbaRule_2",),
+        "Xor_FactorRule_1": ("Xor_Rule_4",),
+    }
+    executable_names = {rule.source_name for rule in selected}
+    assert not executable_names.intersection(
+        alias for aliases in aliases_by_canonical.values() for alias in aliases
+    )
+
+
 def test_family_manifest_does_not_follow_the_mutable_rule_registry(monkeypatch):
     fake_rule = type(
         "RegistryOnlyRule",

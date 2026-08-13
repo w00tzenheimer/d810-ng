@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import enum
 import importlib
+from collections.abc import Collection
 from dataclasses import dataclass, replace
 from types import MappingProxyType
 
@@ -78,6 +79,10 @@ class EgglogAddSpecialization:
     @property
     def source_names(self) -> tuple[str, ...]:
         return (self.rule.source_name, *self.rule.aliases)
+
+    @property
+    def family(self) -> str:
+        return self.rule.family
 
 
 EgglogMbaSpecialization = EgglogAddSpecialization
@@ -409,6 +414,25 @@ def _compile_rule_families(
 
 def compile_mba_rule_catalogue() -> MbaRuleCatalogue:
     return _compile_rule_families(MBA_RULE_FAMILIES)
+
+
+def compiled_rules_for_families(
+    families: Collection[str],
+) -> tuple[CompiledEgglogRule, ...]:
+    requested = frozenset(families)
+    unknown = sorted(requested - set(MBA_RULE_FAMILIES))
+    if unknown:
+        raise ValueError("unknown MBA rule families: " + ", ".join(unknown))
+
+    catalogue = compile_mba_rule_catalogue()
+    compiled_families = {rule.family for rule in catalogue.compiled_rules}
+    receipts_only = sorted(requested - compiled_families)
+    if receipts_only:
+        raise ValueError(
+            "MBA rule families have no compiled rules: " + ", ".join(receipts_only)
+        )
+
+    return tuple(rule for rule in catalogue.compiled_rules if rule.family in requested)
 
 
 def compile_add_rule_catalogue() -> AddRuleCatalogue:
