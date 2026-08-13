@@ -882,13 +882,21 @@ class IdaNativeByteWriter:
     def patch_byte(self, ea: int, value: int) -> None:
         import ida_bytes
 
-        # Measured on IDA 9.4 (Docker system-test run, Task 6): patch_byte()
-        # returns a falsy value even on a fully successful write (readback
-        # matched immediately). Its return value is not a reliable success
-        # signal on this build, so this method never branches on it --
-        # NativePatchGateway._apply_operation_bytes() already performs its
-        # own mandatory readback verification right after every call here,
-        # which is the actual, trustworthy check.
+        # patch_byte()'s return value answers "did the database change?", not
+        # "did the write succeed?". Measured on IDA 9.4: writing a byte's
+        # existing value returns False with the value correctly in place;
+        # writing a new value returns True; writing that new value a second
+        # time returns False again. IDA is behaving correctly -- a no-op write
+        # genuinely changes nothing.
+        #
+        # That makes the return useless as a success signal here, because a
+        # legitimate operation may write a byte that already holds the target
+        # value (a partially-applied range recovered mid-write, or a stencil
+        # whose padding matches what was there). Branching on it would report
+        # failure for a correct write. This method therefore never inspects it;
+        # NativePatchGateway._apply_operation_bytes() performs a mandatory
+        # readback after every call, which is the check that actually means
+        # something.
         ida_bytes.patch_byte(ea, value)
 
     def revert_byte(self, ea: int) -> None:
