@@ -1,5 +1,5 @@
 {
-  "description": "Catalogue-only compiler-shaped MBA corpus route; direct certified rules remain the first non-chain provider.",
+  "description": "Catalogue-only compiler-shaped MBA corpus route. This selects the exact direct rule families used by the ten root-shaped catalogue fixtures.",
   "additional_configuration": {
     "pipeline_v2_mode": "config-v2",
     "pipeline_v2": [
@@ -9,9 +9,13 @@
           "transforms": [
             "add-hackers-delight-2",
             "add-hackers-delight-3",
-            "add-ollvm-3",
-            "add-xor-1",
-            "add-xor-2"
+            "add-hackers-delight-4",
+            "and-hackers-delight-4",
+            "or-hackers-delight-2",
+            "or-mba-1",
+            "sub-hackers-delight-2",
+            "xor-hackers-delight-1",
+            "xor-hackers-delight-3"
           ]
         }
       }

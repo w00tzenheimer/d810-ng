@@ -1,5 +1,5 @@
 {
-  "description": "Interactive-only Egglog compiler-shaped corpus route; the 3 ms production profile remains telemetry-only.",
+  "description": "Interactive-only degree-1 Egglog compiler-shaped corpus route; the 3 ms production profile remains telemetry-only.",
   "additional_configuration": {
     "pipeline_v2_mode": "config-v2",
     "pipeline_v2": [

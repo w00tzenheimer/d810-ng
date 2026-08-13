@@ -14,12 +14,55 @@ import shutil
 import subprocess
 from pathlib import Path
 
+import pytest
+
+from d810.testing.cases import DeobfuscationCase
+from d810.testing.runner import run_deobfuscation_test
+
 
 _ROOT = Path(__file__).resolve().parents[3]
 _SOURCE = _ROOT / "samples/src/c/mba_compiler_shapes.c"
 _MANIFEST = _ROOT / "tests/fixtures/mba_portfolio/compiler_shapes.json"
 _CATALOGUE_CONFIG = _ROOT / "src/d810/conf/mba_compiler_shape_catalogue.json"
 _EGGLOG_CONFIG = _ROOT / "src/d810/conf/mba_compiler_shape_egglog.json"
+_EGGLOG_DEGREE2_CONFIG = _ROOT / "src/d810/conf/mba_compiler_shape_egglog_degree2.json"
+_NATIVE_BINARY = _ROOT / "samples/bins/mba_compiler_shapes.dylib"
+
+_COMMON_COMPILER_SHAPE_BUILD_FLAGS = (
+    "-shared",
+    "-fPIC",
+    "-O0",
+    "-fno-inline",
+    "-fno-builtin",
+    "-fno-omit-frame-pointer",
+)
+
+_CATALOGUE_CASES = (
+    ("mba_shape_catalogue_01", "Add_HackersDelightRule_2"),
+    ("mba_shape_catalogue_02", "Add_HackersDelightRule_3"),
+    ("mba_shape_catalogue_03", "Xor_HackersDelightRule_3"),
+    ("mba_shape_catalogue_04", "Sub_HackersDelightRule_2"),
+    ("mba_shape_catalogue_05", "Or_MbaRule_1"),
+    ("mba_shape_catalogue_06", "And_HackersDelightRule_4"),
+    ("mba_shape_catalogue_07", "Add_HackersDelightRule_2"),
+    ("mba_shape_catalogue_08", "Add_HackersDelightRule_4"),
+    ("mba_shape_catalogue_09", "Or_HackersDelightRule_2"),
+    ("mba_shape_catalogue_10", "Xor_HackersDelightRule_1"),
+)
+
+# GCC's -O0 code reaches IDA as already-canonical roots for these five forms.
+# They remain semantically paired corpus samples, but do not constitute a
+# provider candidate on that compiler.  The Clang lowering contract in the
+# manifest preserves all ten roots for the pinned post-lowering proof.
+_GCC_PRE_SIMPLIFIED_CATALOGUE_FUNCTIONS = frozenset(
+    {
+        "mba_shape_catalogue_02",
+        "mba_shape_catalogue_05",
+        "mba_shape_catalogue_06",
+        "mba_shape_catalogue_09",
+        "mba_shape_catalogue_10",
+    }
+)
 
 
 def _ctype_for_width(width: int) -> type[ctypes._SimpleCData]:
@@ -49,18 +92,11 @@ def _input_vectors(width: int, seed: int) -> tuple[tuple[int, ...], ...]:
 
 def _load_compiler_shape_library(tmp_path: Path) -> ctypes.CDLL:
     library = tmp_path / "libmba_compiler_shapes.dylib"
-    compiler = next(
-        (candidate for candidate in ("clang", "gcc", "cc") if shutil.which(candidate)),
-        None,
-    )
-    if compiler is None:
-        raise RuntimeError("compiler-shaped corpus needs clang, gcc, or cc")
+    compiler = _find_c_compiler()
     subprocess.run(
         [
             compiler,
-            "-shared",
-            "-fPIC",
-            "-O0",
+            *_compiler_shape_build_flags(compiler),
             "-I",
             str(_ROOT / "samples/include"),
             "-o",
@@ -71,7 +107,88 @@ def _load_compiler_shape_library(tmp_path: Path) -> ctypes.CDLL:
         capture_output=True,
         text=True,
     )
+    _emit_compiler_shape_build_evidence(compiler, artifact="semantic_library")
     return ctypes.CDLL(str(library))
+
+
+def _find_c_compiler() -> str:
+    compiler = next(
+        (candidate for candidate in ("clang", "gcc", "cc") if shutil.which(candidate)),
+        None,
+    )
+    if compiler is None:
+        raise RuntimeError("compiler-shaped corpus needs clang, gcc, or cc")
+    return compiler
+
+
+def _compiler_shape_build_flags(compiler: str) -> tuple[str, ...]:
+    """Return the exact portable build flags used for a recorded artifact.
+
+    The lowering contract is deliberately Clang-specific because it inspects
+    LLVM IR.  The semantic and IDA-input receipts may run under GCC in the
+    pinned Linux image, where Clang's vectorizer spelling is not accepted.
+    """
+    if Path(compiler).name.startswith("clang"):
+        return (
+            *_COMMON_COMPILER_SHAPE_BUILD_FLAGS,
+            "-fno-vectorize",
+            "-fno-slp-vectorize",
+        )
+    return _COMMON_COMPILER_SHAPE_BUILD_FLAGS
+
+
+def _catalogue_reaches_provider(function: str) -> bool:
+    """Whether this compiler's native lowering still presents the MBA root."""
+    compiler = _find_c_compiler()
+    return not (
+        Path(compiler).name.startswith("gcc")
+        and function in _GCC_PRE_SIMPLIFIED_CATALOGUE_FUNCTIONS
+    )
+
+
+def _build_native_corpus_binary() -> None:
+    compiler = _find_c_compiler()
+    _NATIVE_BINARY.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [
+            compiler,
+            *_compiler_shape_build_flags(compiler),
+            "-I",
+            str(_ROOT / "samples/include"),
+            "-o",
+            str(_NATIVE_BINARY),
+            str(_SOURCE),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    _emit_compiler_shape_build_evidence(compiler, artifact="native_ida_input")
+
+
+def _emit_compiler_shape_build_evidence(compiler: str, *, artifact: str) -> None:
+    compiler_version = subprocess.run(
+        [compiler, "--version"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()[0]
+    print(
+        "MBA_COMPILER_SHAPE_BUILD_EVIDENCE="
+        + json.dumps(
+            {
+                "artifact": artifact,
+                "compiler": compiler,
+                "version": compiler_version,
+                "flags": [
+                    *_compiler_shape_build_flags(compiler),
+                    "-I samples/include",
+                ],
+            },
+            sort_keys=True,
+        )
+    )
 
 
 def test_all_compiler_shape_pairs_are_semantically_equivalent(tmp_path: Path) -> None:
@@ -107,6 +224,26 @@ def test_corpus_configs_are_provider_isolated_and_egglog_is_explicitly_interacti
     assert egglog_options["max_degree"] == 1
     assert egglog_options["time_budget_ms"] > 3
     assert "telemetry-only" in egglog["description"]
+    assert set(catalogue_passes[0]["options"]["transforms"]) == {
+        "add-hackers-delight-2",
+        "add-hackers-delight-3",
+        "add-hackers-delight-4",
+        "and-hackers-delight-4",
+        "or-hackers-delight-2",
+        "or-mba-1",
+        "sub-hackers-delight-2",
+        "xor-hackers-delight-1",
+        "xor-hackers-delight-3",
+    }
+
+    degree2 = json.loads(_EGGLOG_DEGREE2_CONFIG.read_text(encoding="utf-8"))
+    degree2_options = degree2["additional_configuration"]["pipeline_v2"][0][
+        "options"
+    ]
+    assert degree2_options["max_degree"] == 2
+    assert degree2_options["max_leaves"] == 4
+    assert degree2_options["time_budget_ms"] > 3
+    assert "root-only" in degree2["description"]
 
 
 def test_corpus_projects_register_their_one_intended_provider(
@@ -123,3 +260,87 @@ def test_corpus_projects_register_their_one_intended_provider(
         )
         assert state.last_pipeline_v2_hook_pass_ids == ("mba-egglog",)
         assert [rule.name for rule in state.current_ins_rules] == ["EgglogOptimizer"]
+
+        state.load_project(
+            state.project_manager.index("mba_compiler_shape_egglog_degree2.json")
+        )
+        assert state.last_pipeline_v2_hook_pass_ids == ("mba-egglog",)
+        optimizer = state.current_ins_rules[0]
+        assert optimizer.max_degree == 2
+        assert optimizer.families == ("add", "and", "or", "sub", "xor")
+
+
+@pytest.mark.usefixtures("configure_hexrays")
+class TestCompilerShapeCatalogueNative:
+    """Native receipt for the root-shaped, currently routed catalogue cases.
+
+    The binary is built from this task's source before the Docker invocation;
+    it is intentionally not checked in.  Composed degree-two roots are covered
+    only by explicit configuration until the root-only Egglog scheduler grows
+    subterm scheduling.
+    """
+
+    binary_name = "mba_compiler_shapes.dylib"
+
+    @classmethod
+    def setup_class(cls) -> None:
+        """Build before the shared IDA database fixture resolves ``binary_name``."""
+        _build_native_corpus_binary()
+
+    @pytest.mark.parametrize(
+        ("function", "rule_name"),
+        _CATALOGUE_CASES,
+        ids=[function for function, _ in _CATALOGUE_CASES],
+    )
+    def test_catalogue_route_matches_the_native_lowered_shape(
+        self,
+        function: str,
+        rule_name: str,
+        ida_database,
+        d810_state,
+        pseudocode_to_string,
+    ) -> None:
+        reaches_provider = _catalogue_reaches_provider(function)
+        run_deobfuscation_test(
+            DeobfuscationCase(
+                function=function,
+                description=(
+                    "catalogue rule fires on a corpus-owned native shape"
+                    if reaches_provider
+                    else "native compiler/IDA lowering already canonicalizes this root"
+                ),
+                project="mba_compiler_shape_catalogue.json",
+                must_change=reaches_provider,
+                required_rules=[rule_name] if reaches_provider else [],
+                forbidden_rules=[] if reaches_provider else [rule_name],
+            ),
+            d810_state=d810_state,
+            pseudocode_to_string=pseudocode_to_string,
+        )
+
+    def test_degree_two_profile_reaches_the_native_provider_but_root_only_abstains(
+        self,
+        ida_database,
+        d810_state,
+        pseudocode_to_string,
+    ) -> None:
+        """Pin the current degree-two live contract without inventing coverage.
+
+        ``mba_shape_degree2_01`` is a homogeneous 32-bit composition of two
+        certified ADD roots.  The configured provider receives it at degree 2,
+        but the present scheduler intentionally explores only the complete
+        root, so it cannot rewrite either nested root.  A successful mutation
+        here would mean that contract changed and this corpus must be upgraded
+        to assert its provenance rather than silently treating it as a route.
+        """
+        run_deobfuscation_test(
+            DeobfuscationCase(
+                function="mba_shape_degree2_01",
+                description="degree-2 profile is live but root-only on a composed root",
+                project="mba_compiler_shape_egglog_degree2.json",
+                must_change=False,
+                forbidden_rules=["EgglogOptimizer"],
+            ),
+            d810_state=d810_state,
+            pseudocode_to_string=pseudocode_to_string,
+        )

@@ -3,6 +3,30 @@
   "fixture_kind": "post_lowering_semantic_shapes",
   "authorship": "independently_authored",
   "source_policy": "Each expression was authored from D810-certified bit-vector identities or a local algebraic proof; no external corpus expression or test was copied.",
+  "lowering_contract": {
+    "compiler": "clang",
+    "flags": [
+      "-S",
+      "-emit-llvm",
+      "-O0",
+      "-fno-inline",
+      "-fno-builtin",
+      "-fno-vectorize",
+      "-fno-slp-vectorize",
+      "-fno-omit-frame-pointer",
+      "-I samples/include"
+    ],
+    "provider_eligible_strata": [
+      "catalogue",
+      "reassociation",
+      "degree2"
+    ],
+    "forbidden_ir_instructions": [
+      "zext",
+      "sext",
+      "trunc"
+    ]
+  },
   "cases": [
     {
       "case_id": "chain_01",
@@ -112,7 +136,7 @@
       "case_id": "catalogue_01",
       "function": "mba_shape_catalogue_01",
       "ground_truth_function": "mba_truth_catalogue_01",
-      "width": 8,
+      "width": 32,
       "stratum": "catalogue",
       "expected_route": [
         "catalogue"
@@ -125,7 +149,7 @@
       "case_id": "catalogue_02",
       "function": "mba_shape_catalogue_02",
       "ground_truth_function": "mba_truth_catalogue_02",
-      "width": 16,
+      "width": 64,
       "stratum": "catalogue",
       "expected_route": [
         "catalogue"
@@ -164,7 +188,7 @@
       "case_id": "catalogue_05",
       "function": "mba_shape_catalogue_05",
       "ground_truth_function": "mba_truth_catalogue_05",
-      "width": 8,
+      "width": 32,
       "stratum": "catalogue",
       "expected_route": [
         "catalogue"
@@ -177,7 +201,7 @@
       "case_id": "catalogue_06",
       "function": "mba_shape_catalogue_06",
       "ground_truth_function": "mba_truth_catalogue_06",
-      "width": 16,
+      "width": 64,
       "stratum": "catalogue",
       "expected_route": [
         "catalogue"
@@ -216,7 +240,7 @@
       "case_id": "catalogue_09",
       "function": "mba_shape_catalogue_09",
       "ground_truth_function": "mba_truth_catalogue_09",
-      "width": 8,
+      "width": 32,
       "stratum": "catalogue",
       "expected_route": [
         "catalogue"
@@ -229,7 +253,7 @@
       "case_id": "catalogue_10",
       "function": "mba_shape_catalogue_10",
       "ground_truth_function": "mba_truth_catalogue_10",
-      "width": 16,
+      "width": 64,
       "stratum": "catalogue",
       "expected_route": [
         "catalogue"
@@ -268,7 +292,7 @@
       "case_id": "reassociation_03",
       "function": "mba_shape_reassociation_03",
       "ground_truth_function": "mba_truth_reassociation_03",
-      "width": 8,
+      "width": 32,
       "stratum": "reassociation",
       "expected_route": [
         "catalogue"
@@ -281,7 +305,7 @@
       "case_id": "reassociation_04",
       "function": "mba_shape_reassociation_04",
       "ground_truth_function": "mba_truth_reassociation_04",
-      "width": 16,
+      "width": 64,
       "stratum": "reassociation",
       "expected_route": [
         "catalogue"
@@ -320,7 +344,7 @@
       "case_id": "reassociation_07",
       "function": "mba_shape_reassociation_07",
       "ground_truth_function": "mba_truth_reassociation_07",
-      "width": 8,
+      "width": 32,
       "stratum": "reassociation",
       "expected_route": [
         "catalogue"
@@ -333,7 +357,7 @@
       "case_id": "reassociation_08",
       "function": "mba_shape_reassociation_08",
       "ground_truth_function": "mba_truth_reassociation_08",
-      "width": 16,
+      "width": 64,
       "stratum": "reassociation",
       "expected_route": [
         "catalogue"
@@ -376,7 +400,7 @@
       "case_id": "degree2_03",
       "function": "mba_shape_degree2_03",
       "ground_truth_function": "mba_truth_degree2_03",
-      "width": 8,
+      "width": 32,
       "stratum": "degree2",
       "expected_route": [
         "catalogue",
@@ -391,7 +415,7 @@
       "case_id": "degree2_04",
       "function": "mba_shape_degree2_04",
       "ground_truth_function": "mba_truth_degree2_04",
-      "width": 16,
+      "width": 64,
       "stratum": "degree2",
       "expected_route": [
         "catalogue",
@@ -436,7 +460,7 @@
       "case_id": "degree2_07",
       "function": "mba_shape_degree2_07",
       "ground_truth_function": "mba_truth_degree2_07",
-      "width": 8,
+      "width": 32,
       "stratum": "degree2",
       "expected_route": [
         "catalogue",
@@ -451,7 +475,7 @@
       "case_id": "degree2_08",
       "function": "mba_shape_degree2_08",
       "ground_truth_function": "mba_truth_degree2_08",
-      "width": 16,
+      "width": 64,
       "stratum": "degree2",
       "expected_route": [
         "catalogue",

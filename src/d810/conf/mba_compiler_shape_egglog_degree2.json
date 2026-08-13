@@ -1,0 +1,34 @@
+{
+  "description": "Interactive-only degree-2 Egglog corpus experiment. It is an explicit non-default profile; the current root-only scheduler may safely abstain on composed roots.",
+  "additional_configuration": {
+    "pipeline_v2_mode": "config-v2",
+    "pipeline_v2": [
+      {
+        "pass_id": "mba-egglog",
+        "options": {
+          "families": [
+            "add",
+            "and",
+            "or",
+            "sub",
+            "xor"
+          ],
+          "maturities": [
+            "GLOBAL_ANALYZED"
+          ],
+          "max_leaves": 4,
+          "max_operator_nodes": 16,
+          "max_degree": 2,
+          "saturation_rounds": 3,
+          "max_eclasses": 128,
+          "max_enodes": 256,
+          "max_rule_firings": 64,
+          "time_budget_ms": 1000,
+          "require_proof": true
+        }
+      }
+    ]
+  },
+  "ins_rules": [],
+  "blk_rules": []
+}

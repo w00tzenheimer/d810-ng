@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import json
+import re
+import shutil
+import subprocess
 from collections import Counter
 from pathlib import Path
+
+import pytest
 
 
 _ROOT = Path(__file__).resolve().parents[3]
@@ -23,12 +28,26 @@ _EXPECTED_STRATA = {
 }
 
 
+def _llvm_definition(ir: str, function_name: str) -> str:
+    match = re.search(
+        rf"^define [^\n{{]* @{re.escape(function_name)}\([^\n]*\) #[0-9]+ \{{\n.*?^\}}",
+        ir,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    assert match is not None, f"missing LLVM definition for {function_name}"
+    return match.group(0)
+
+
 def _cases() -> list[dict[str, object]]:
     payload = json.loads(_MANIFEST.read_text(encoding="utf-8"))
     assert payload["schema_version"] == 1
     assert payload["fixture_kind"] == "post_lowering_semantic_shapes"
     assert payload["authorship"] == "independently_authored"
     return payload["cases"]
+
+
+def _payload() -> dict[str, object]:
+    return json.loads(_MANIFEST.read_text(encoding="utf-8"))
 
 
 def test_manifest_has_the_planned_independently_authored_strata() -> None:
@@ -38,6 +57,28 @@ def test_manifest_has_the_planned_independently_authored_strata() -> None:
     assert Counter(case["stratum"] for case in cases) == _EXPECTED_STRATA
     assert {case["width"] for case in cases} == {8, 16, 32, 64}
     assert all(case["authorship"] == "independently_authored" for case in cases)
+
+
+def test_manifest_declares_a_pinned_lowering_shape_contract() -> None:
+    contract = _payload()["lowering_contract"]
+    assert contract["compiler"] == "clang"
+    assert contract["flags"] == [
+        "-S",
+        "-emit-llvm",
+        "-O0",
+        "-fno-inline",
+        "-fno-builtin",
+        "-fno-vectorize",
+        "-fno-slp-vectorize",
+        "-fno-omit-frame-pointer",
+        "-I samples/include",
+    ]
+    assert contract["provider_eligible_strata"] == [
+        "catalogue",
+        "reassociation",
+        "degree2",
+    ]
+    assert contract["forbidden_ir_instructions"] == ["zext", "sext", "trunc"]
 
 
 def test_manifest_has_unique_exported_ground_truth_pairs_without_host_paths() -> None:
@@ -86,3 +127,62 @@ def test_every_manifest_pair_is_an_export_in_the_compiler_shape_sample() -> None
     for case in _cases():
         assert case["function"] in source
         assert case["ground_truth_function"] in source
+
+
+def test_provider_eligible_shapes_have_homogeneous_lowered_llvm_ir(
+    tmp_path: Path,
+) -> None:
+    compiler = shutil.which("clang")
+    if compiler is None:
+        pytest.skip("compiler-shape LLVM contract requires clang")
+    contract = _payload()["lowering_contract"]
+    ir_path = tmp_path / "mba_compiler_shapes.ll"
+    subprocess.run(
+        [
+            compiler,
+            "-S",
+            "-emit-llvm",
+            "-O0",
+            "-fno-inline",
+            "-fno-builtin",
+            "-fno-vectorize",
+            "-fno-slp-vectorize",
+            "-fno-omit-frame-pointer",
+            "-I",
+            str(_ROOT / "samples/include"),
+            "-o",
+            str(ir_path),
+            str(_SAMPLE),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    compiler_version = subprocess.run(
+        [compiler, "--version"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()[0]
+    print(
+        "MBA_COMPILER_SHAPE_LOWERING_EVIDENCE="
+        + json.dumps(
+            {
+                "compiler": compiler,
+                "version": compiler_version,
+                "flags": contract["flags"],
+            },
+            sort_keys=True,
+        )
+    )
+    ir = ir_path.read_text(encoding="utf-8")
+    eligible_strata = set(contract["provider_eligible_strata"])
+    forbidden = tuple(contract["forbidden_ir_instructions"])
+    for case in _cases():
+        if case["stratum"] not in eligible_strata:
+            continue
+        definition = _llvm_definition(ir, str(case["function"]))
+        assert not any(f" {instruction} " in definition for instruction in forbidden), (
+            case["case_id"],
+            definition,
+        )
