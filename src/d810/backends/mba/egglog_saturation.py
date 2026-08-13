@@ -413,11 +413,15 @@ def _extraction_result(
             island_class=None if profile is None else profile.island_class.value,
             island_fingerprint=None if profile is None else profile.fingerprint,
             operator_count=None if profile is None else profile.operator_count,
-            distinct_leaf_count=None if profile is None else profile.distinct_leaf_count,
+            distinct_leaf_count=None
+            if profile is None
+            else profile.distinct_leaf_count,
             nonlinear_product_count=(
                 None if profile is None else profile.nonlinear_product_count
             ),
-            blockers=() if profile is None else tuple(blocker.value for blocker in profile.blockers),
+            blockers=()
+            if profile is None
+            else tuple(blocker.value for blocker in profile.blockers),
             skip_reason=skip_reason,
         ),
         selected_provenance=provenance,
@@ -480,10 +484,10 @@ def extract_bounded_candidate(
 ) -> EgglogExtractionResult:
     """Extract one strictly cheaper candidate through exact catalogue layers.
 
-    One fresh e-graph is created for every invocation where Egglog is
-    available. Exploration is candidate-root-only; eligible nested subterms
-    are not traversed or claimed. Host-side grounding evaluates only the
-    already-admitted compiler constraints.
+    One fresh e-graph is created only after an invocation passes host-side
+    candidate and time admission. Exploration is candidate-root-only;
+    eligible nested subterms are not traversed or claimed. Host-side grounding
+    evaluates only the already-admitted compiler constraints.
 
     Egglog 13.2.0 cannot interrupt an individual Rust run. The time field is
     therefore an acceptance deadline plus a strict pre-run workload guard, not
@@ -502,17 +506,8 @@ def extract_bounded_candidate(
         destination_size=destination_size,
     )
     _extraction_result = partial(_build_extraction_result, lowering=lowering)
-    egglog = _load_egglog_module()
-    if egglog is None or _EGGLOG_MODULE is None:
-        return _extraction_result(
-            started=started,
-            input_cost=None,
-            skip_reason=ExtractionSkipReason.EGGLOG_UNAVAILABLE,
-            elapsed_ms=0.0,
-        )
 
     try:
-        egraph = egglog.EGraph()
         term = lowering.term
         if term is None:
             return _extraction_result(
@@ -533,6 +528,12 @@ def extract_bounded_candidate(
                 input_cost=input_cost,
                 skip_reason=ExtractionSkipReason.CANDIDATE_BUDGET,
             )
+        if budget.time_budget_ms < _MINIMUM_EGGLOG_RUN_BUDGET_MS:
+            return _extraction_result(
+                started=started,
+                input_cost=input_cost,
+                skip_reason=ExtractionSkipReason.TIME_BUDGET,
+            )
         elapsed = _elapsed_ms(started)
         if elapsed > budget.time_budget_ms:
             return _extraction_result(
@@ -541,6 +542,16 @@ def extract_bounded_candidate(
                 skip_reason=ExtractionSkipReason.TIME_BUDGET,
                 elapsed_ms=elapsed,
             )
+
+        egglog = _load_egglog_module()
+        if egglog is None or _EGGLOG_MODULE is None:
+            return _extraction_result(
+                started=started,
+                input_cost=input_cost,
+                skip_reason=ExtractionSkipReason.EGGLOG_UNAVAILABLE,
+                elapsed_ms=elapsed,
+            )
+        egraph = egglog.EGraph()
 
         from d810.backends.mba.egglog_add_rule_compiler import (
             apply_compiled_rule_to_term,
@@ -587,10 +598,12 @@ def extract_bounded_candidate(
                             input_cost=input_cost,
                             skip_reason=ExtractionSkipReason.RULE_FIRING_BUDGET,
                         )
-                    projected_work_unit_keys = registration_work_unit_keys | set(
-                        _degree_expression_work_unit_keys(degree, source_term)
-                    ) | set(
-                        _degree_expression_work_unit_keys(degree + 1, replacement)
+                    projected_work_unit_keys = (
+                        registration_work_unit_keys
+                        | set(_degree_expression_work_unit_keys(degree, source_term))
+                        | set(
+                            _degree_expression_work_unit_keys(degree + 1, replacement)
+                        )
                     )
                     projected_work_units = len(projected_work_unit_keys)
                     if projected_work_units > budget.max_eclasses:

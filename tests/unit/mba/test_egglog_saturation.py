@@ -629,7 +629,7 @@ def test_egglog_unavailability_returns_exact_noop_receipt(
     result = extract_bounded_candidate(
         candidate,
         (),
-        EgglogExtractionBudget(),
+        EgglogExtractionBudget(time_budget_ms=1000),
         4,
     )
 
@@ -681,7 +681,7 @@ def test_operator_budget_returns_candidate_budget_before_registration(
         4,
     )
 
-    assert _FreshEGraph.instances == 1
+    assert _FreshEGraph.instances == 0
     assert result.receipt.input_cost == (2, 5)
     assert result.receipt.island_class == "linear_mba"
     assert result.receipt.operator_count == 2
@@ -720,6 +720,34 @@ def test_injected_monotonic_clock_returns_time_budget_noop(
 
     assert result.replacement_ast is None
     assert result.receipt.elapsed_ms == pytest.approx(4.0)
+    assert result.receipt.skip_reason is ExtractionSkipReason.TIME_BUDGET
+
+
+def test_default_time_budget_does_not_load_or_construct_egglog(
+    fake_native_runtime,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    candidate = _FakeAstNode(
+        _OPCODE_BY_OPERATION["add"],
+        _FakeAstLeaf("x", _FakeMop("register", 1, 4)),
+        _FakeAstLeaf("y", _FakeMop("register", 2, 4)),
+    )
+    candidate.dest_size = 4
+
+    def unavailable_egglog() -> None:
+        raise AssertionError("the 3 ms telemetry/no-op path must not load Egglog")
+
+    monkeypatch.setattr(egglog_saturation, "_load_egglog_module", unavailable_egglog)
+
+    result = extract_bounded_candidate(
+        candidate,
+        (),
+        EgglogExtractionBudget(),
+        4,
+    )
+
+    assert result.replacement_ast is None
+    assert result.receipt.input_cost == (1, 3)
     assert result.receipt.skip_reason is ExtractionSkipReason.TIME_BUDGET
 
 
@@ -977,7 +1005,7 @@ def test_unknown_runtime_statistics_return_exact_unavailable_receipt(
     assert result.receipt.rule_firings == (0 if malformation == "run-report" else 2)
 
 
-def test_default_time_budget_exhaustion_stops_frontier_before_run(
+def test_frontier_time_exhaustion_stops_before_run(
     fake_native_runtime,
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -987,7 +1015,7 @@ def test_default_time_budget_exhaustion_stops_frontier_before_run(
         _FakeAstLeaf("y", _FakeMop("register", 2, 4)),
     )
     candidate.dest_size = 4
-    ticks = iter((10.0, 10.0, 10.0, 10.004, 10.004))
+    ticks = iter((10.0, 10.0, 10.0, 11.004, 11.004))
     applications: list[object] = []
 
     class _FreshEGraph:
@@ -1018,7 +1046,10 @@ def test_default_time_budget_exhaustion_stops_frontier_before_run(
     )
 
     result = extract_bounded_candidate(
-        candidate, (rule, rule), EgglogExtractionBudget(), 4
+        candidate,
+        (rule, rule),
+        EgglogExtractionBudget(time_budget_ms=1000),
+        4,
     )
 
     assert len(applications) == 1
