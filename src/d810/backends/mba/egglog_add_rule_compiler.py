@@ -317,6 +317,9 @@ def compile_add_rule_catalogue() -> AddRuleCatalogue:
 _OPCODE_BY_OPERATION: dict[str, int] = {}
 _OPERATION_BY_OPCODE: dict[int, str] = {}
 _VALID_DESTINATION_SIZES = frozenset({1, 2, 4, 8})
+_RUNTIME_AST_PROXY_MODULES = frozenset(
+    {"d810.hexrays.expr.p_ast", "d810.speedups.expr.c_ast"}
+)
 
 
 def _ensure_runtime() -> None:
@@ -404,9 +407,39 @@ def _candidate_is_supported(ast: AstBase, destination_size: int) -> bool:
     return _leaf_size(ast) == destination_size
 
 
+def _unwrap_runtime_ast(ast: Any) -> AstBase | None:
+    """Unwrap live copy-on-write AST proxies without importing their class.
+
+    ``AstProxy`` is a Hex-Rays-side adapter and can come from either the pure
+    Python or Cython AST implementation.  The portable compiler recognizes
+    only that exact adapter name and reads its private target directly, then
+    validates the resulting runtime AST class.  Unknown wrappers, missing
+    targets, proxy cycles, and nested proxy chains beyond the small defensive
+    bound fail closed.
+    """
+    _ensure_runtime()
+    current = ast
+    seen: set[int] = set()
+    for _ in range(4):
+        current_type = type(current)
+        if current_type.__name__ != "AstProxy":
+            return current if isinstance(current, AstBase) else None
+        if current_type.__module__ not in _RUNTIME_AST_PROXY_MODULES:
+            return None
+        identity = id(current)
+        if identity in seen:
+            return None
+        seen.add(identity)
+        try:
+            current = object.__getattribute__(current, "_target")
+        except (AttributeError, TypeError):
+            return None
+    return None
+
+
 def bind_symbolic_pattern(
     pattern: SymbolicExpressionProtocol,
-    candidate_ast: AstNode,
+    candidate_ast: Any,
     destination_size: int,
 ) -> dict[str, AstBase] | None:
     _ensure_runtime()
@@ -555,6 +588,9 @@ def specialize(
     rounds: int = 6,
 ) -> EgglogAddSpecialization | None:
     if not isinstance(rounds, int) or isinstance(rounds, bool) or not 1 <= rounds <= 6:
+        return None
+    candidate_ast = _unwrap_runtime_ast(candidate_ast)
+    if not isinstance(candidate_ast, AstNode):
         return None
     bindings = bind_symbolic_pattern(rule.pattern, candidate_ast, destination_size)
     if bindings is None or not constraints_hold(rule, bindings, destination_size):

@@ -11,7 +11,12 @@ from d810.backends.mba.egglog_add_rule_compiler import (  # noqa: E402
     specialize,
 )
 from d810.core.stats import OptimizationStatistics  # noqa: E402
-from d810.hexrays.expr.p_ast import AstConstant, AstLeaf, AstNode  # noqa: E402
+from d810.hexrays.expr.p_ast import (  # noqa: E402
+    AstConstant,
+    AstLeaf,
+    AstNode,
+    AstProxy,
+)
 from d810.hexrays.ir.mop_snapshot import MopSnapshot  # noqa: E402
 from d810.optimizers.microcode.instructions.egraph.egglog_handler import (  # noqa: E402
     EgglogOptimizer,
@@ -101,6 +106,30 @@ def test_live_handler_selects_certified_catalogue_rule_with_alias_provenance():
     assert specialization is not None
     assert specialization.rule.source_name == "Add_HackersDelightRule_2"
     assert specialization.rule.aliases == ("Add_OllvmRule_3",)
+
+
+def test_specializes_live_astproxy_without_changing_structural_semantics():
+    x, y = _leaf("x", 1), _leaf("y", 2)
+    candidate = _node(
+        ida_hexrays.m_add,
+        _node(ida_hexrays.m_xor, x, y),
+        _node(
+            ida_hexrays.m_mul,
+            _constant(2),
+            _node(ida_hexrays.m_and, x.clone(), y.clone()),
+        ),
+    )
+    proxied = AstProxy(candidate)
+
+    specialization = specialize(
+        _catalogue_rule("Add_HackersDelightRule_2"),
+        proxied,
+        destination_size=4,
+    )
+
+    assert specialization is not None
+    assert specialization.candidate_ast is candidate
+    assert specialization.rule.source_name == "Add_HackersDelightRule_2"
 
 
 def test_live_handler_threads_configured_rounds_into_specialization(monkeypatch):
