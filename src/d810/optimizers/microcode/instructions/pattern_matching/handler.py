@@ -730,6 +730,7 @@ class PatternOptimizer(InstructionOptimizer):
                             rule=rule_pattern_info.rule,
                             optimizer=self.name,
                             maturity=self.cur_maturity,
+                            **rule_pattern_info.rule.execution_metadata(),
                         )
 
                     return new_ins

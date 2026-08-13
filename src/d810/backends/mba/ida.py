@@ -12,6 +12,7 @@ the rule definitions in d810.mba.rules pure and backend-agnostic.
 from __future__ import annotations
 
 import itertools
+import time
 from d810.core.typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import ida_hexrays
@@ -32,6 +33,11 @@ from d810.mba.constraints import (
     ComparisonConstraintProtocol,
     EqualityConstraintProtocol,
     is_constraint_expr,
+)
+from d810.mba.provider_outcome import (
+    MbaProviderKind,
+    MbaProviderOutcome,
+    ProviderOutcomeStatus,
 )
 from d810.hexrays.ir.number_operand import safe_make_number
 
@@ -369,6 +375,88 @@ class IDAPatternAdapter:
         self._pattern_candidates_cache: Optional[List[AstNode]] = None
         self._replacement_pattern_cache: Optional[AstNode] = None
         self._visitor = IDANodeVisitor()
+        self._attempt_started: float | None = None
+        self._attempt_destination_size: int | None = None
+        self._last_provider_outcome: MbaProviderOutcome | None = None
+
+    def _reset_attempt_outcome(self, instruction: Any | None = None) -> None:
+        """Discard telemetry from the previous live pattern attempt."""
+
+        self._attempt_started = time.monotonic()
+        size = getattr(getattr(instruction, "d", None), "size", None)
+        self._attempt_destination_size = int(size) if type(size) is int and size > 0 else None
+        self._last_provider_outcome = None
+
+    @staticmethod
+    def _ast_cost(ast: Any) -> tuple[int, int] | None:
+        """Return the portable (operator, total node) cost for an AST shape."""
+
+        if ast is None:
+            return None
+        try:
+            if not ast.is_node():
+                return (0, 1)
+            children = (getattr(ast, "left", None), getattr(ast, "right", None))
+            child_costs = tuple(IDAPatternAdapter._ast_cost(child) for child in children if child is not None)
+            if any(cost is None for cost in child_costs):
+                return None
+            return (
+                1 + sum(cost[0] for cost in child_costs if cost is not None),
+                1 + sum(cost[1] for cost in child_costs if cost is not None),
+            )
+        except Exception:
+            return None
+
+    def _profile_fingerprint(self, ast: Any) -> str | None:
+        """Return an exact native boundary fingerprint, never a guessed fallback."""
+
+        destination_size = self._attempt_destination_size
+        if destination_size is None:
+            return None
+        try:
+            from d810.backends.mba.hexrays_island import lower_hexrays_island
+
+            lowering = lower_hexrays_island(
+                ast,
+                destination_size=int(destination_size),
+            )
+            return lowering.profile.fingerprint if lowering.term is not None else None
+        except Exception:
+            return None
+
+    def _record_catalogue_success(self, input_ast: Any, replacement_ast: Any) -> None:
+        """Publish a successful direct-rule attempt without adding generic Z3."""
+
+        canonical_source = str(getattr(self.rule, "CANONICAL_NAME", self.name))
+        aliases = tuple(str(item) for item in getattr(self.rule, "ALIASES", ()))
+        elapsed_ms = 0.0
+        if self._attempt_started is not None:
+            elapsed_ms = max(0.0, (time.monotonic() - self._attempt_started) * 1000.0)
+        fingerprint = self._profile_fingerprint(input_ast)
+        if fingerprint is None:
+            self._last_provider_outcome = MbaProviderOutcome(
+                provider=MbaProviderKind.CATALOGUE,
+                status=ProviderOutcomeStatus.RECONSTRUCTION_FAILED,
+                fingerprint="profile_unavailable",
+                input_cost=self._ast_cost(input_ast),
+                output_cost=self._ast_cost(replacement_ast),
+                elapsed_ms=elapsed_ms,
+                source_provenance=(canonical_source, *aliases),
+                refusal_reason="profile_unavailable",
+                metadata={"rule_name": self.name, "canonical_source": canonical_source},
+            )
+            return
+        self._last_provider_outcome = MbaProviderOutcome(
+            provider=MbaProviderKind.CATALOGUE,
+            status=ProviderOutcomeStatus.APPLIED,
+            fingerprint=fingerprint,
+            input_cost=self._ast_cost(input_ast),
+            output_cost=self._ast_cost(replacement_ast),
+            proof_verdict=None,
+            elapsed_ms=elapsed_ms,
+            source_provenance=(canonical_source, *aliases),
+            metadata={"rule_name": self.name, "canonical_source": canonical_source},
+        )
 
     # ==========================================================================
     # Properties delegated to the underlying rule
@@ -624,13 +712,17 @@ class IDAPatternAdapter:
         Returns:
             A new minsn_t if the rule matched, None otherwise.
         """
+        self._reset_attempt_outcome(instruction)
         setattr(self.rule, "_current_blk", blk)
         setattr(self.rule, "_current_ins", instruction)
         try:
             valid_candidates = self.get_valid_candidates(instruction, stop_early=True)
             if len(valid_candidates) == 0:
                 return None
-            new_instruction = self.get_replacement(valid_candidates[0])
+            candidate = valid_candidates[0]
+            new_instruction = self.get_replacement(candidate)
+            if new_instruction is not None:
+                self._record_catalogue_success(candidate, self.REPLACEMENT_PATTERN)
             return new_instruction
         finally:
             setattr(self.rule, "_current_blk", None)
@@ -645,6 +737,7 @@ class IDAPatternAdapter:
         conservative local constant evaluation.  Keep that context on the
         adapter boundary so the pure rule model remains backend-agnostic.
         """
+        self._reset_attempt_outcome(instruction)
         setattr(self.rule, "_current_blk", blk)
         setattr(self.rule, "_current_ins", instruction)
         setattr(
@@ -660,6 +753,8 @@ class IDAPatternAdapter:
         setattr(self.rule, "_current_blk", None)
         setattr(self.rule, "_current_ins", None)
         setattr(self.rule, "_runtime_constant_evaluator", None)
+        self._attempt_started = None
+        self._attempt_destination_size = None
 
     @staticmethod
     def _eval_runtime_constant(mop, bits: int, blk, instruction) -> int | None:
@@ -697,7 +792,15 @@ class IDAPatternAdapter:
 
         # Finally, create the replacement instruction
         new_instruction = self.get_replacement(candidate_pattern)
+        if new_instruction is not None:
+            self._record_catalogue_success(test_ast, self.REPLACEMENT_PATTERN)
         return new_instruction
+
+    def execution_metadata(self) -> dict[str, object]:
+        """Expose direct-catalogue outcome data for the existing statistics hook."""
+
+        outcome = self._last_provider_outcome
+        return {} if outcome is None else {"mba_provider_outcome": outcome.to_dict()}
 
     def check_candidate(self, candidate) -> bool:
         """Public interface for nomut matching path constraint checking.

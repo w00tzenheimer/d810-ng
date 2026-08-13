@@ -231,6 +231,28 @@ class TestOptimizationStatistics:
         ]
         assert execution.metadata["aliases"] == ["Add_OllvmRule_3"]
 
+    def test_catalogue_provider_outcome_reaches_central_statistics(self):
+        """The PatternOptimizer plumbing stores an adapter's report outcome."""
+
+        stats = OptimizationStatistics()
+        rule = MockRule("DirectCatalogue")
+        outcome = {
+            "provider": "catalogue",
+            "status": "applied",
+            "fingerprint": "native-island",
+        }
+
+        stats.record_rule_fired(
+            rule,
+            optimizer="PatternOptimizer",
+            maturity=3,
+            mba_provider_outcome=outcome,
+        )
+
+        execution = stats.get_rule_execution("DirectCatalogue")
+        assert execution is not None
+        assert execution.metadata["mba_provider_outcome"] == outcome
+
 
 class TestOptimizationEvent:
     """Tests for OptimizationEvent enum."""

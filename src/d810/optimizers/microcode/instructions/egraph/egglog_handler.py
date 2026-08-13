@@ -33,6 +33,8 @@ from d810.hexrays.expr.ast import AstNode
 from d810.hexrays.ir_maturity import ir_maturity_to_ida
 from d810.hexrays.ir.minsn_utils import minsn_to_ast
 from d810.ir.maturity import IRMaturity
+from d810.mba.differential_report import egglog_receipt_to_outcome
+from d810.mba.provider_outcome import MbaProviderOutcome
 from d810.optimizers.microcode.instructions.peephole.handler import (
     PeepholeSimplificationRule,
 )
@@ -359,7 +361,21 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             metadata["family"] = receipt.selected_family
         if self.last_derivation_trace is not None:
             metadata["derivation_trace"] = self.last_derivation_trace
+        outcome = self.provider_outcome()
+        if outcome is not None:
+            metadata["mba_provider_outcome"] = outcome.to_dict()
         return metadata
+
+    def provider_outcome(self) -> MbaProviderOutcome | None:
+        """Return the latest receipt as portable provider telemetry only.
+
+        Extraction, native proof, and mutation stay unchanged.  This is an
+        observation adapter for the common differential report boundary.
+        """
+
+        if self.last_extraction_receipt is None:
+            return None
+        return egglog_receipt_to_outcome(self.last_extraction_receipt)
 
     def _select_extraction(
         self, ast: AstNode, *, destination_size: int

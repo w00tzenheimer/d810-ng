@@ -465,9 +465,11 @@ class XorChain(ChainSimplificationRule):
     )
 
     def check_and_replace(self, blk, ins):
+        self._begin_chain_attempt()
         func_ea = getattr(getattr(blk, "mba", None), "entry_ea", 0)
         xor_simplifier = ChainSimplification(ida_hexrays.m_xor, func_entry_ea=func_ea)
         new_ins = xor_simplifier.simplify(ins)
+        self._publish_chain_result(ins, new_ins, opcode=ida_hexrays.m_xor)
         return new_ins
 
 
@@ -477,9 +479,11 @@ class AndChain(ChainSimplificationRule):
     )
 
     def check_and_replace(self, blk, ins):
+        self._begin_chain_attempt()
         func_ea = getattr(getattr(blk, "mba", None), "entry_ea", 0)
         and_simplifier = ChainSimplification(ida_hexrays.m_and, func_entry_ea=func_ea)
         new_ins = and_simplifier.simplify(ins)
+        self._publish_chain_result(ins, new_ins, opcode=ida_hexrays.m_and)
         return new_ins
 
 
@@ -489,9 +493,11 @@ class OrChain(ChainSimplificationRule):
     )
 
     def check_and_replace(self, blk, ins):
+        self._begin_chain_attempt()
         func_ea = getattr(getattr(blk, "mba", None), "entry_ea", 0)
         or_simplifier = ChainSimplification(ida_hexrays.m_or, func_entry_ea=func_ea)
         new_ins = or_simplifier.simplify(ins)
+        self._publish_chain_result(ins, new_ins, opcode=ida_hexrays.m_or)
         return new_ins
 
 
@@ -499,6 +505,8 @@ class ArithmeticChain(ChainSimplificationRule):
     DESCRIPTION = "Remove arithmetic chains with common terms. E.g. x + 4 + y - (6 + x - 5) ==>  y + 3"
 
     def check_and_replace(self, blk, ins):
+        self._begin_chain_attempt()
         arithmetic_simplifier = ArithmeticChainSimplification()
         new_ins = arithmetic_simplifier.simplify(ins)
+        self._publish_chain_result(ins, new_ins, opcode=ins.opcode)
         return new_ins

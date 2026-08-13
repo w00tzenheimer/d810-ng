@@ -14,7 +14,11 @@ pytest.importorskip("ida_hexrays", reason="IDA Pro SDK not available")
 
 from d810.optimizers.microcode.instructions.pattern_matching.handler import (
     PatternOptimizer,
+    RulePatternInfo,
 )
+from d810.core.stats import OptimizationStatistics
+from d810.backends.mba.ida import IDAPatternAdapter
+from d810.mba.provider_outcome import ProviderOutcomeStatus
 
 
 class TestNomutMatchingHotPath:
@@ -127,6 +131,86 @@ class TestNomutMatchingHotPath:
         assert optimizer._use_nomut_matching is True
         assert optimizer._use_legacy_storage is False
         # The hot loop will use _match_nomut + BindingsProxy
+
+
+def test_pattern_optimizer_forwards_catalogue_outcome_to_central_statistics():
+    """A direct-provider adapter's outcome survives the PatternOptimizer path."""
+
+    class Rule:
+        name = "DirectCatalogue"
+        maturities = [7]
+
+        @staticmethod
+        def check_pattern_and_replace(pattern, test_ast):
+            del pattern, test_ast
+            return Instruction()
+
+        @staticmethod
+        def execution_metadata():
+            return {
+                "mba_provider_outcome": {
+                    "provider": "catalogue",
+                    "status": "applied",
+                    "fingerprint": "native-island",
+                }
+            }
+
+    class Instruction:
+        ea = 0
+
+        @staticmethod
+        def _print():
+            return "unit-ins"
+
+    stats = OptimizationStatistics()
+    optimizer = object.__new__(PatternOptimizer)
+    optimizer.stats = stats
+    optimizer.cur_maturity = 7
+    optimizer._use_nomut_matching = False
+    optimizer._use_legacy_storage = False
+    optimizer._run_later_callback = None
+    optimizer._get_candidates = lambda _ast: [RulePatternInfo(Rule(), object())]
+
+    result = optimizer._try_matches(
+        None,
+        Instruction(),
+        object(),
+        allowed_rule_names=None,
+        scheduled_rule_names=None,
+        source_label="unit",
+    )
+
+    assert result is not None
+    execution = stats.get_rule_execution("DirectCatalogue")
+    assert execution is not None
+    assert execution.metadata["mba_provider_outcome"]["provider"] == "catalogue"
+
+
+def test_direct_catalogue_refuses_success_telemetry_without_exact_island_profile():
+    """A native adapter never replaces required profile identity with a guess."""
+
+    class Leaf:
+        def is_node(self) -> bool:
+            return False
+
+    class Rule:
+        name = "direct"
+        CANONICAL_NAME = "direct"
+        ALIASES = ()
+
+    adapter = object.__new__(IDAPatternAdapter)
+    adapter.rule = Rule()
+    adapter._attempt_started = None
+    adapter._attempt_destination_size = 4
+    adapter._last_provider_outcome = None
+    adapter._profile_fingerprint = lambda _ast: None
+
+    adapter._record_catalogue_success(Leaf(), Leaf())
+
+    outcome = adapter._last_provider_outcome
+    assert outcome is not None
+    assert outcome.status is ProviderOutcomeStatus.RECONSTRUCTION_FAILED
+    assert outcome.refusal_reason == "profile_unavailable"
 
     def test_feature_flags_are_independent(self, monkeypatch):
         """D810_NOMUT_MATCHING and D810_LEGACY_STORAGE control different aspects.
