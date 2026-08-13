@@ -67,13 +67,15 @@ def _json_ready(value: JsonValue) -> object:
 
 def _normalize_cost(
     name: str,
-    cost: tuple[int, int] | None,
+    cost: object,
 ) -> tuple[int, int] | None:
     if cost is None:
         return None
+    if not isinstance(cost, tuple):
+        raise ValueError(f"{name} must be a tuple")
     if len(cost) != 2 or any(type(value) is not int or value < 0 for value in cost):
         raise ValueError(f"{name} cost must contain two non-negative integers")
-    return tuple(cost)
+    return cost
 
 
 @dataclass(frozen=True)
@@ -125,8 +127,8 @@ class MbaProviderOutcome:
             raise ValueError("status must be a ProviderOutcomeStatus")
         if type(self.fingerprint) is not str or not self.fingerprint:
             raise ValueError("fingerprint must be a non-empty string")
-        object.__setattr__(self, "input_cost", _normalize_cost("input", self.input_cost))
-        object.__setattr__(self, "output_cost", _normalize_cost("output", self.output_cost))
+        object.__setattr__(self, "input_cost", _normalize_cost("input_cost", self.input_cost))
+        object.__setattr__(self, "output_cost", _normalize_cost("output_cost", self.output_cost))
         if self.proof_verdict is not None and type(self.proof_verdict) is not bool:
             raise ValueError("proof_verdict must be a boolean or None")
         if type(self.elapsed_ms) not in (int, float) or not math.isfinite(self.elapsed_ms):
@@ -134,7 +136,8 @@ class MbaProviderOutcome:
         if self.elapsed_ms < 0:
             raise ValueError("elapsed_ms must be non-negative")
         object.__setattr__(self, "elapsed_ms", float(self.elapsed_ms))
-        object.__setattr__(self, "source_provenance", tuple(self.source_provenance))
+        if not isinstance(self.source_provenance, tuple):
+            raise ValueError("source_provenance must be a tuple")
         if any(type(item) is not str for item in self.source_provenance):
             raise ValueError("source_provenance must contain only strings")
         if self.refusal_reason is not None and (

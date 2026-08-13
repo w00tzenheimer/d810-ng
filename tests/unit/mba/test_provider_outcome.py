@@ -125,6 +125,34 @@ def test_outcome_rejects_invalid_costs_and_non_string_provenance() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    [
+        ("input_cost", [1, 2]),
+        ("input_cost", {1, 2}),
+        ("output_cost", [1, 2]),
+        ("output_cost", {1, 2}),
+        ("source_provenance", ["rule.one"]),
+        ("source_provenance", {"rule.one"}),
+        ("source_provenance", "rule.one"),
+    ],
+)
+def test_outcome_rejects_non_tuple_ordered_fields(
+    field_name: str,
+    value: object,
+) -> None:
+    kwargs: dict[str, object] = {field_name: value}
+
+    with pytest.raises(ValueError, match=f"{field_name} must be a tuple"):
+        MbaProviderOutcome(
+            provider=MbaProviderKind.CATALOGUE,
+            status=ProviderOutcomeStatus.IMPROVED,
+            fingerprint="fingerprint",
+            elapsed_ms=0.0,
+            **kwargs,
+        )
+
+
 def test_matcher_metadata_requires_nonnegative_counts_and_a_stable_stop_reason() -> None:
     with pytest.raises(ValueError, match="non-negative"):
         MatcherOutcomeMetadata(
