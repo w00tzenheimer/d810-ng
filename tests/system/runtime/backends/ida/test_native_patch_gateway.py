@@ -10,7 +10,7 @@ d810's own deobfuscated output across the patch -- see
 Candidates are found by shape, not hardcoded, matching every other Task 5/6
 system test in this directory (``test_native_patch_capture_preflight.py``,
 ``test_lifecycle_strategy_experiment.py``): scan every function for a
-Mode-A-lowerable branch via the already-committed, already-tested
+Mode-A-encodable branch via the already-committed, already-tested
 ``observation.observe_function``, rather than assuming a specific function
 name survives a fixture recompile.
 """
@@ -94,39 +94,39 @@ def _bitness() -> int:
     return 64 if ida_ida.inf_is_64bit() else 32
 
 
-def _lowerable_candidates():
+def _encodable_candidates():
     for func_ea in idautils.Functions():
         observation = observe_function(func_ea)
         if observation is None:
             continue
         for branch in observation.branches:
-            if branch.lowerable:
+            if branch.encodable:
                 yield func_ea, branch
 
 
-def _first_lowerable_candidate():
-    for func_ea, branch in _lowerable_candidates():
+def _first_encodable_candidate():
+    for func_ea, branch in _encodable_candidates():
         return func_ea, branch
-    pytest.skip("no Mode-A-lowerable branch found anywhere in this binary")
+    pytest.skip("no Mode-A-encodable branch found anywhere in this binary")
 
 
-def _first_lowerable_candidate_with_caller():
-    for func_ea, branch in _lowerable_candidates():
+def _first_encodable_candidate_with_caller():
+    for func_ea, branch in _encodable_candidates():
         callers = IdaCallerDiscovery().callers_of(func_ea)
         if callers:
             return func_ea, branch, callers
-    pytest.skip("no Mode-A-lowerable branch with a real caller found in this binary")
+    pytest.skip("no Mode-A-encodable branch with a real caller found in this binary")
 
 
-def _widest_lowerable_candidate(min_size: int = 3):
+def _widest_encodable_candidate(min_size: int = 3):
     best = None
-    for func_ea, branch in _lowerable_candidates():
+    for func_ea, branch in _encodable_candidates():
         if branch.size < min_size:
             continue
         if best is None or branch.size > best[1].size:
             best = (func_ea, branch)
     if best is None:
-        pytest.skip(f"no Mode-A-lowerable branch with size >= {min_size} found")
+        pytest.skip(f"no Mode-A-encodable branch with size >= {min_size} found")
     return best
 
 
@@ -265,7 +265,7 @@ class TestGatewayApplyRestore:
     def test_gateway_restores_exact_owned_patch_on_disposable_idb(
         self, copy_of_idb, tmp_path
     ) -> None:
-        function_ea, branch = _first_lowerable_candidate()
+        function_ea, branch = _first_encodable_candidate()
         operation = _build_operation(function_ea, branch)
         plan = _build_plan(function_ea, operation)
         target_range = operation.range
@@ -378,7 +378,7 @@ class TestGatewayApplyRestore:
         """Task 4 measured that ``mark_cfunc_dirty(target)`` leaves a
         caller's cached cfunc alone. Assert the gateway's own invalidation
         step does not repeat that gap."""
-        function_ea, branch, callers = _first_lowerable_candidate_with_caller()
+        function_ea, branch, callers = _first_encodable_candidate_with_caller()
         caller_ea = sorted(callers)[0]
         operation = _build_operation(function_ea, branch)
         plan = _build_plan(function_ea, operation)
@@ -492,7 +492,7 @@ class TestGatewayFailureInjection:
     def test_failure_after_prepared_rolls_back_cleanly(
         self, copy_of_idb, tmp_path
     ) -> None:
-        function_ea, branch = _first_lowerable_candidate()
+        function_ea, branch = _first_encodable_candidate()
         operation = _build_operation(function_ea, branch)
         plan = _build_plan(function_ea, operation)
         before = ida_bytes.get_bytes(operation.range.start_ea, operation.range.size)
@@ -524,7 +524,7 @@ class TestGatewayFailureInjection:
         assert after == before
 
     def test_failure_after_ida_write_rolls_back(self, copy_of_idb, tmp_path) -> None:
-        function_ea, branch = _first_lowerable_candidate()
+        function_ea, branch = _first_encodable_candidate()
         operation = _build_operation(function_ea, branch)
         plan = _build_plan(function_ea, operation)
         before = ida_bytes.get_bytes(operation.range.start_ea, operation.range.size)
@@ -552,7 +552,7 @@ class TestGatewayFailureInjection:
     def test_failure_after_cache_invalidation_rolls_back(
         self, copy_of_idb, tmp_path
     ) -> None:
-        function_ea, branch = _first_lowerable_candidate()
+        function_ea, branch = _first_encodable_candidate()
         operation = _build_operation(function_ea, branch)
         plan = _build_plan(function_ea, operation)
         before = ida_bytes.get_bytes(operation.range.start_ea, operation.range.size)
@@ -581,7 +581,7 @@ class TestGatewayFailureInjection:
     def test_mid_write_failure_classifies_per_byte_and_rolls_back(
         self, copy_of_idb, tmp_path
     ) -> None:
-        function_ea, branch = _widest_lowerable_candidate(min_size=3)
+        function_ea, branch = _widest_encodable_candidate(min_size=3)
         operation = _build_operation(function_ea, branch)
         plan = _build_plan(function_ea, operation)
         before = ida_bytes.get_bytes(operation.range.start_ea, operation.range.size)
@@ -618,7 +618,7 @@ class TestGatewayFailureInjection:
     def test_mid_write_external_interference_is_never_auto_overwritten(
         self, copy_of_idb, tmp_path
     ) -> None:
-        function_ea, branch = _widest_lowerable_candidate(min_size=3)
+        function_ea, branch = _widest_encodable_candidate(min_size=3)
         operation = _build_operation(function_ea, branch)
         plan = _build_plan(function_ea, operation)
         # A byte this operation does NOT govern, elsewhere in the image --

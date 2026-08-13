@@ -60,12 +60,12 @@ def _target_ea() -> int:
 class TestNativeObservation:
     binary_name = "fake_jumps.dll"
 
-    def test_observation_finds_lowerable_candidates(self, ida_database):
+    def test_observation_finds_encodable_candidates(self, ida_database):
         observation = observe_function(_target_ea())
 
         assert observation is not None
         assert observation.branches, "fixture should contain conditional branches"
-        assert observation.lowerable_count >= 1, observation.describe()
+        assert observation.encodable_count >= 1, observation.describe()
 
     def test_every_proposal_fills_its_region_exactly(self, ida_database):
         observation = observe_function(_target_ea())
@@ -79,10 +79,10 @@ class TestNativeObservation:
 
     def test_proposal_preserves_the_taken_target(self, ida_database):
         observation = observe_function(_target_ea())
-        lowerable = [b for b in observation.branches if b.lowerable]
-        assert lowerable
+        encodable = [b for b in observation.branches if b.encodable]
+        assert encodable
 
-        for branch in lowerable:
+        for branch in encodable:
             # jmp rel8 = EB disp; the taken target must survive the rewrite.
             assert branch.proposed_bytes[0] == 0xEB
             disp = int.from_bytes(branch.proposed_bytes[1:2], "little", signed=True)

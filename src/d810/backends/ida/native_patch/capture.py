@@ -15,7 +15,7 @@ Relationship to ``observation.py`` -- extended, not superseded
 ``d810.backends.ida.native_patch.observation`` (Task 4, already committed) is
 a *narrower*, earlier-stage read: given a function EA, it decodes every
 conditional branch and reports whether Mode A could plausibly represent it
-(``BranchObservation.lowerable``), for the flowchart-preanalysis seam's
+(``BranchObservation.encodable``), for the flowchart-preanalysis seam's
 RUN/SUPPRESS decision. It never builds a restore snapshot, never reads patch
 rows, item shapes, or full incoming-ref/ownership evidence, and it is not
 meant to (its own docstring: "It proposes; it never writes and never requests

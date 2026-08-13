@@ -6,7 +6,7 @@ any of the machinery the rest of the plan is still arguing about: no journal, no
 gateway, no certificate. It proposes; it never writes and never requests a redo.
 
 It is also how the work gets sized honestly. The receipts say how many functions
-in a real sample would actually be lowerable under Mode A, before a gateway
+in a real sample would actually be encodable under Mode A, before a gateway
 exists to lower them.
 
 **Why this lives under ``d810.backends.ida`` and not in
@@ -85,12 +85,25 @@ class BranchObservation:
     fully_loaded: bool
 
     @property
-    def lowerable(self) -> bool:
-        """Representable *and* free of the preconditions that forbid a rewrite.
+    def encodable(self) -> bool:
+        """Whether a Mode A rewrite is *representable* here. NOT a safety check.
 
-        Encodability is necessary but not sufficient: a branch into the region's
-        interior means the bytes after the new instruction are still a jump
-        target, and an unloaded byte can never be authorized.
+        This says an encoder can emit a branch that fills the region exactly,
+        the region has no interior incoming reference, and every byte is
+        loaded. It says **nothing** about whether rewriting is semantically
+        correct, and in particular nothing about which way the branch resolves.
+
+        Measured counterexample (``libobfuscated.dll``,
+        ``single_iteration_simple`` at ``0x1800113b1``): this property is True
+        for a ``jnz`` guarding a once-executing loop. Lowering it to its taken
+        target skips the loop body, turning ``return a + 10`` into
+        ``return a`` -- and byte, item, ref and ownership preflight all pass,
+        so nothing downstream catches it.
+
+        Direction and permission must come from a proof issued by a named pass
+        (report section 6.2), which does not exist yet. Until it does, treat
+        this as a shortlist for a human or a prover to adjudicate, never as an
+        authorization.
         """
         return (
             self.proposed_bytes is not None
@@ -108,17 +121,17 @@ class FunctionObservation:
     branches: tuple[BranchObservation, ...]
 
     @property
-    def lowerable_count(self) -> int:
-        return sum(1 for branch in self.branches if branch.lowerable)
+    def encodable_count(self) -> int:
+        return sum(1 for branch in self.branches if branch.encodable)
 
     @property
     def abstained_count(self) -> int:
-        return sum(1 for branch in self.branches if not branch.lowerable)
+        return sum(1 for branch in self.branches if not branch.encodable)
 
     def describe(self) -> str:
         return (
             f"fn={self.function_ea:#x} branches={len(self.branches)} "
-            f"lowerable={self.lowerable_count} abstained={self.abstained_count}"
+            f"encodable={self.encodable_count} abstained={self.abstained_count}"
         )
 
 
@@ -230,7 +243,7 @@ def on_flowchart_preanalysis(*, function_ea: int, mba: object, decision, **_kw) 
         return
     decision["observation_receipt"] = observation
     decision["proposals"] = tuple(
-        branch for branch in observation.branches if branch.lowerable
+        branch for branch in observation.branches if branch.encodable
     )
     logger.debug("native observation: %s", observation.describe())
 

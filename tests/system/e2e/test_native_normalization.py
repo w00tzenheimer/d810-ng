@@ -90,15 +90,15 @@ def _bitness() -> int:
     return 64 if ida_ida.inf_is_64bit() else 32
 
 
-def _first_lowerable_candidate():
+def _first_encodable_candidate():
     for func_ea in idautils.Functions():
         observation = observe_function(func_ea)
         if observation is None:
             continue
         for branch in observation.branches:
-            if branch.lowerable:
+            if branch.encodable:
                 return func_ea, branch
-    pytest.skip("no Mode-A-lowerable branch found anywhere in this binary")
+    pytest.skip("no Mode-A-encodable branch found anywhere in this binary")
 
 
 def _build_operation(function_ea: int, branch):
@@ -201,7 +201,7 @@ class TestExplicitUserPolicyBoundary:
     def test_disabled_policy_never_writes_a_single_byte(
         self, copy_of_idb, tmp_path
     ) -> None:
-        function_ea, branch = _first_lowerable_candidate()
+        function_ea, branch = _first_encodable_candidate()
         operation = _build_operation(function_ea, branch)
         plan = _build_plan(function_ea, operation)
         before = ida_bytes.get_bytes(operation.range.start_ea, operation.range.size)
@@ -222,7 +222,7 @@ class TestExplicitUserPolicyBoundary:
     def test_explicit_enable_applies_once_and_a_second_request_short_circuits(
         self, copy_of_idb, tmp_path
     ) -> None:
-        function_ea, branch = _first_lowerable_candidate()
+        function_ea, branch = _first_encodable_candidate()
         operation = _build_operation(function_ea, branch)
         plan = _build_plan(function_ea, operation)
 

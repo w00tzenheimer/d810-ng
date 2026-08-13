@@ -69,13 +69,13 @@ def _target_ea() -> int:
     return ida_funcs.get_func(ea).start_ea
 
 
-def _first_lowerable_branch(function_ea: int):
+def _first_encodable_branch(function_ea: int):
     observation = observe_function(function_ea)
     assert observation is not None
     for branch in observation.branches:
-        if branch.lowerable:
+        if branch.encodable:
             return branch
-    pytest.skip("fixture has no Mode-A-lowerable branch to build a plan from")
+    pytest.skip("fixture has no Mode-A-encodable branch to build a plan from")
 
 
 def _bitness() -> int:
@@ -88,8 +88,8 @@ def _authorizing_attempt_id() -> ExecutionAttemptId:
 
 def _build_operation(function_ea: int):
     """Real end-to-end capture + origin correlation + lowering for one
-    lowerable conditional branch. Read-only throughout."""
-    branch = _first_lowerable_branch(function_ea)
+    encodable conditional branch. Read-only throughout."""
+    branch = _first_encodable_branch(function_ea)
     start_ea, end_ea = branch.site_ea, branch.site_ea + branch.size
 
     origin_span = correlate_native_span(
