@@ -1034,3 +1034,79 @@ def test_live_handler_default_time_budget_overrun_is_clean_noop(monkeypatch):
     assert observed_budgets[0].time_budget_ms == 3
     assert handler.last_extraction_receipt is receipt
     assert handler.execution_metadata()["skip_reason"] == "time_budget"
+
+
+def test_live_handler_opt_in_stage_timings_publish_after_reconstruction(monkeypatch):
+    import d810.optimizers.microcode.instructions.egraph.egglog_handler as handler_module
+
+    candidate = _direct_add_candidate()
+    replacement = _leaf("x", 1)
+    handler = _configured_live_handler(collect_stage_timings=True)
+    receipt = EgglogExtractionReceipt(
+        input_cost=(4, 9),
+        extracted_cost=(0, 1),
+        degree=1,
+        selected_family="add",
+        selected_source="Add_HackersDelightRule_2",
+        selected_aliases=("Add_OllvmRule_3",),
+    )
+    events = []
+
+    monkeypatch.setattr(handler_module, "minsn_to_ast", lambda _ins: candidate)
+    monkeypatch.setattr(handler, "_candidate_skip_reason", lambda _ast, _ins: None)
+    monkeypatch.setattr(
+        handler,
+        "_select_extraction",
+        lambda *_args, **_kwargs: EgglogExtractionResult(
+            replacement_ast=replacement,
+            receipt=receipt,
+            selected_provenance=(
+                "add",
+                "Add_HackersDelightRule_2",
+                ("Add_OllvmRule_3",),
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        handler,
+        "_prove_ast_equivalence",
+        lambda *_args, **_kwargs: events.append("native_z3") or True,
+    )
+    monkeypatch.setattr(
+        handler,
+        "_create_instruction",
+        lambda *_args: events.append("reconstruction") or object(),
+    )
+
+    assert handler.check_and_replace(None, _Instruction()) is not None
+    assert events == ["native_z3", "reconstruction"]
+    metadata = handler.execution_metadata()
+    assert tuple(metadata["stage_timings_ms"]) == (
+        "root_eligibility",
+        "ast_construction",
+        "native_preflight",
+        "egglog_extraction",
+        "native_z3",
+        "reconstruction",
+    )
+    assert handler.provider_outcome() is not None
+    assert (
+        handler.provider_outcome().metadata["stage_timings_ms"]
+        == metadata["stage_timings_ms"]
+    )
+
+
+def test_live_handler_disabled_stage_timings_do_not_construct_timer(monkeypatch):
+    import d810.optimizers.microcode.instructions.egraph.egglog_handler as handler_module
+
+    handler = _configured_live_handler()
+
+    def forbidden_timer(*_args, **_kwargs):
+        raise AssertionError("disabled stage timings must not construct a timer")
+
+    monkeypatch.setattr(handler_module, "MbaStageTimer", forbidden_timer)
+    unsupported = SimpleNamespace(opcode=ida_hexrays.m_mov, ea=0x401000)
+
+    assert handler.check_and_replace(None, unsupported) is None
+    assert handler.execution_metadata()["skip_reason"] == "non_mba_candidate"
+    assert "stage_timings_ms" not in handler.execution_metadata()
