@@ -696,6 +696,17 @@ class PatternOptimizer(InstructionOptimizer):
                 if bind_match_context is not None:
                     bind_match_context(blk, ins)
 
+                # Task 7 shadow only: ask the portable matcher for a bounded,
+                # read-only parity observation.  Its answer is telemetry; the
+                # registered legacy pattern remains the sole selection authority.
+                observe_structural_match = getattr(
+                    rule_pattern_info.rule,
+                    "observe_structural_match",
+                    None,
+                )
+                if observe_structural_match is not None:
+                    observe_structural_match(test_ast)
+
                 # PR4: Non-mutating match path (when enabled and using indexed storage)
                 if self._use_nomut_matching and not self._use_legacy_storage:
                     # Non-mutating match: pattern stays frozen, bindings go to separate object

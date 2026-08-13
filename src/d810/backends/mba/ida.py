@@ -36,6 +36,7 @@ from d810.mba.constraints import (
     is_constraint_expr,
 )
 from d810.mba.provider_outcome import (
+    MatcherOutcomeMetadata,
     MbaProviderKind,
     MbaProviderOutcome,
     ProviderOutcomeStatus,
@@ -382,6 +383,7 @@ class IDAPatternAdapter:
         self._last_provider_outcome: MbaProviderOutcome | None = None
         self.provider_outcome_history: list[MbaProviderOutcome] = []
         self._attempt_outcome_index: int | None = None
+        self._shadow_match_report = None
 
     def _reset_attempt_outcome(self, instruction: Any | None = None) -> None:
         """Discard telemetry from the previous live pattern attempt."""
@@ -399,6 +401,77 @@ class IDAPatternAdapter:
             self._attempt_input_ast = None
         self._last_provider_outcome = None
         self._attempt_outcome_index = None
+        self._shadow_match_report = None
+
+    def observe_structural_match(self, test_ast: Any, *, comparison_budget: int = 64):
+        """Record the bounded portable matcher result without changing selection.
+
+        The legacy AstNode matcher stays authoritative during the Task 7 shadow
+        period.  Binding paths must resolve to the lowerer's original native
+        objects; synthetic canonical paths are deliberately reported as a miss.
+        """
+
+        try:
+            from d810.backends.mba.hexrays_island import lower_hexrays_island
+            from d810.mba.ac_matching import (
+                AcMatchReport,
+                AcMatchStopReason,
+                match_ac_pattern,
+            )
+
+            destination_size = self._attempt_destination_size
+            if destination_size is None:
+                return None
+            lowering = lower_hexrays_island(
+                test_ast,
+                destination_size=int(destination_size),
+            )
+            if lowering.term is None or self.rule.pattern is None:
+                return None
+            report = match_ac_pattern(
+                self.rule.pattern,
+                lowering.term,
+                comparison_budget=comparison_budget,
+            )
+            if report.bindings is not None and not all(
+                path in lowering.native_nodes_by_path
+                for path in report.bindings.candidate_path_by_name.values()
+            ):
+                report = AcMatchReport(
+                    bindings=None,
+                    comparisons=report.comparisons,
+                    commuted_branches=report.commuted_branches,
+                    flattened_nodes=report.flattened_nodes,
+                    stop_reason=AcMatchStopReason.MISS,
+                )
+            self._shadow_match_report = report
+            return report
+        except Exception:
+            # Shadow telemetry must never widen the legacy callback failure set.
+            return None
+
+    def _matcher_metadata(self) -> MatcherOutcomeMetadata | None:
+        report = getattr(self, "_shadow_match_report", None)
+        if report is None:
+            return None
+        return MatcherOutcomeMetadata(
+            comparisons=report.comparisons,
+            lazy_swaps=report.commuted_branches,
+            flattened_arity=report.flattened_nodes,
+            stop_reason=report.stop_reason.value,
+        )
+
+    def _shadow_metadata(self, *, legacy_match: bool) -> dict[str, object]:
+        report = getattr(self, "_shadow_match_report", None)
+        structural_match = bool(report is not None and report.bindings is not None)
+        return {
+            "legacy_match": legacy_match,
+            "structural_match": structural_match,
+            # Legacy matching does not expose source paths, so binding parity is
+            # intentionally not claimed until Task 8's switch gate can compare it.
+            "same_rule": legacy_match and structural_match,
+            "same_bindings": None,
+        }
 
     def _publish_provider_outcome(self, outcome: MbaProviderOutcome) -> None:
         self._last_provider_outcome = outcome
@@ -471,6 +544,11 @@ class IDAPatternAdapter:
         canonical_source, aliases = self._catalogue_provenance()
         elapsed_ms = self._attempt_elapsed_ms()
         fingerprint = self._profile_fingerprint(input_ast)
+        metadata = {
+            "rule_name": self.name,
+            "canonical_source": canonical_source,
+            "shadow": self._shadow_metadata(legacy_match=True),
+        }
         if fingerprint is None:
             self._publish_provider_outcome(
                 MbaProviderOutcome(
@@ -482,10 +560,8 @@ class IDAPatternAdapter:
                     elapsed_ms=elapsed_ms,
                     source_provenance=(canonical_source, *aliases),
                     refusal_reason="profile_unavailable",
-                    metadata={
-                        "rule_name": self.name,
-                        "canonical_source": canonical_source,
-                    },
+                    metadata=metadata,
+                    matcher=self._matcher_metadata(),
                 )
             )
             return
@@ -499,7 +575,8 @@ class IDAPatternAdapter:
                 proof_verdict=None,
                 elapsed_ms=elapsed_ms,
                 source_provenance=(canonical_source, *aliases),
-                metadata={"rule_name": self.name, "canonical_source": canonical_source},
+                metadata=metadata,
+                matcher=self._matcher_metadata(),
             )
         )
 
@@ -546,6 +623,7 @@ class IDAPatternAdapter:
         canonical_source, aliases = self._catalogue_provenance()
         input_ast = self._attempt_input_ast
         fingerprint = self._profile_fingerprint(input_ast)
+        metadata = {"shadow": self._shadow_metadata(legacy_match=False)}
         if fingerprint is None:
             self._publish_provider_outcome(
                 MbaProviderOutcome(
@@ -556,6 +634,8 @@ class IDAPatternAdapter:
                     elapsed_ms=self._attempt_elapsed_ms(),
                     source_provenance=(canonical_source, *aliases),
                     refusal_reason="profile_unavailable",
+                    metadata=metadata,
+                    matcher=self._matcher_metadata(),
                 )
             )
             return
@@ -568,6 +648,8 @@ class IDAPatternAdapter:
                 elapsed_ms=self._attempt_elapsed_ms(),
                 source_provenance=(canonical_source, *aliases),
                 refusal_reason="no_match",
+                metadata=metadata,
+                matcher=self._matcher_metadata(),
             )
         )
 
@@ -589,7 +671,9 @@ class IDAPatternAdapter:
                 metadata={
                     "error_class": type(exc).__name__,
                     "error_message": str(exc),
+                    "shadow": self._shadow_metadata(legacy_match=False),
                 },
+                matcher=self._matcher_metadata(),
             )
         )
 

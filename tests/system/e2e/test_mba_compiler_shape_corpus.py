@@ -237,13 +237,24 @@ def test_corpus_configs_are_provider_isolated_and_egglog_is_explicitly_interacti
     }
 
     degree2 = json.loads(_EGGLOG_DEGREE2_CONFIG.read_text(encoding="utf-8"))
-    degree2_options = degree2["additional_configuration"]["pipeline_v2"][0][
-        "options"
-    ]
+    degree2_options = degree2["additional_configuration"]["pipeline_v2"][0]["options"]
     assert degree2_options["max_degree"] == 2
     assert degree2_options["max_leaves"] == 4
     assert degree2_options["time_budget_ms"] > 3
     assert "root-only" in degree2["description"]
+
+
+def test_catalogue_corpus_keeps_structural_matching_in_shadow_mode() -> None:
+    """Task 7 observes structural matches but does not select through them."""
+
+    catalogue = json.loads(_CATALOGUE_CONFIG.read_text(encoding="utf-8"))
+    description = catalogue["description"].lower()
+    assert "catalogue" in description
+    # The project remains the legacy `mba-simplify` pass until Task 8's parity
+    # gate replaces generated commutations with the structural matcher.
+    assert [
+        item["pass_id"] for item in catalogue["additional_configuration"]["pipeline_v2"]
+    ] == ["mba-simplify"]
 
 
 def test_corpus_projects_register_their_one_intended_provider(
