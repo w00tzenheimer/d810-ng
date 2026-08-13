@@ -207,6 +207,16 @@ def compile_add_rule_catalogue() -> AddRuleCatalogue:
                 (source_name, RuleCompilationStatus.REJECTED, None, "verification skipped")
             )
             continue
+        if rule_type.get_constraints is not VerifiableRule.get_constraints:
+            staged_receipts.append(
+                (
+                    source_name,
+                    RuleCompilationStatus.REJECTED,
+                    None,
+                    "custom get_constraints is not portable",
+                )
+            )
+            continue
 
         rule = rule_type()
         try:

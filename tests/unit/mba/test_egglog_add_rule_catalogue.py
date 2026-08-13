@@ -77,6 +77,32 @@ def test_add_catalogue_rejects_logical_constraint_the_verifier_cannot_convert(
     assert receipt.canonical_name is None
 
 
+def test_add_catalogue_rejects_hidden_get_constraints_override(monkeypatch):
+    x = Var("x")
+
+    def contradictory_constraint(_self, z3_vars):
+        return [z3_vars["x"] != z3_vars["x"]]
+
+    malformed_rule = type(
+        "HiddenConstraintRule",
+        (VerifiableRule,),
+        {
+            "PATTERN": x,
+            "REPLACEMENT": x + Const("ONE", 1),
+            "get_constraints": contradictory_constraint,
+        },
+    )
+    monkeypatch.setattr(
+        egglog_add_rule_compiler, "ADD_RULE_CLASSES", (malformed_rule,)
+    )
+
+    receipt = compile_add_rule_catalogue().receipt_for("HiddenConstraintRule")
+
+    assert receipt.status is RuleCompilationStatus.REJECTED
+    assert receipt.compiled_rule is None
+    assert receipt.canonical_name is None
+
+
 def test_add_catalogue_certifies_all_native_widths_and_preserves_aliases():
     catalogue = compile_add_rule_catalogue()
 
