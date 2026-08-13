@@ -16,6 +16,9 @@ from d810.optimizers.microcode.instructions.pattern_matching.handler import (
     PatternOptimizer,
     RulePatternInfo,
 )
+from d810.optimizers.microcode.instructions.pattern_matching import (
+    handler as pattern_handler,
+)
 from d810.core.stats import OptimizationStatistics
 from d810.backends.mba.ida import IDAPatternAdapter
 from d810.mba.provider_outcome import ProviderOutcomeStatus
@@ -186,6 +189,63 @@ def test_pattern_optimizer_forwards_catalogue_outcome_to_central_statistics():
     assert execution.metadata["mba_provider_outcome"]["provider"] == "catalogue"
 
 
+def test_nomut_success_records_the_bound_catalogue_replacement_outcome(monkeypatch):
+    """The supported nomut ``get_replacement`` path emits direct telemetry."""
+
+    class Instruction:
+        ea = 0
+
+        @staticmethod
+        def _print():
+            return "unit-ins"
+
+    class Adapter:
+        name = "DirectCatalogue"
+        maturities = [7]
+        REPLACEMENT_PATTERN = "replacement-pattern"
+
+        def __init__(self):
+            self.bound_replacements: list[object] = []
+
+        @staticmethod
+        def check_candidate(_proxy):
+            return True
+
+        @staticmethod
+        def get_replacement(_proxy):
+            return Instruction()
+
+        def record_bound_replacement_outcome(self, replacement):
+            self.bound_replacements.append(replacement)
+
+        @staticmethod
+        def execution_metadata():
+            return {}
+
+    adapter = Adapter()
+    optimizer = object.__new__(PatternOptimizer)
+    optimizer.stats = None
+    optimizer.cur_maturity = 7
+    optimizer._use_nomut_matching = True
+    optimizer._use_legacy_storage = False
+    optimizer._match_bindings = pattern_handler.MatchBindings()
+    optimizer._run_later_callback = None
+    optimizer._get_candidates = lambda _ast: [RulePatternInfo(adapter, object())]
+    monkeypatch.setattr(pattern_handler, "_match_nomut", lambda *_args: True)
+
+    result = optimizer._try_matches(
+        None,
+        Instruction(),
+        object(),
+        allowed_rule_names=None,
+        scheduled_rule_names=None,
+        source_label="unit",
+    )
+
+    assert result is not None
+    assert adapter.bound_replacements == ["replacement-pattern"]
+
+
 def test_direct_catalogue_refuses_success_telemetry_without_exact_island_profile():
     """A native adapter never replaces required profile identity with a guess."""
 
@@ -211,6 +271,33 @@ def test_direct_catalogue_refuses_success_telemetry_without_exact_island_profile
     assert outcome is not None
     assert outcome.status is ProviderOutcomeStatus.RECONSTRUCTION_FAILED
     assert outcome.refusal_reason == "profile_unavailable"
+
+
+def test_direct_catalogue_bound_nomut_success_uses_the_same_profiled_outcome():
+    class Leaf:
+        def is_node(self) -> bool:
+            return False
+
+    class Rule:
+        name = "direct"
+        CANONICAL_NAME = "direct"
+        ALIASES = ()
+
+    adapter = object.__new__(IDAPatternAdapter)
+    adapter.rule = Rule()
+    adapter._attempt_started = None
+    adapter._attempt_destination_size = 4
+    adapter._attempt_input_ast = Leaf()
+    adapter._last_provider_outcome = None
+    adapter.provider_outcome_history = []
+    adapter._attempt_outcome_index = None
+    adapter._profile_fingerprint = lambda _ast: "exact-native-island"
+
+    adapter.record_bound_replacement_outcome(Leaf())
+
+    outcome = adapter.provider_outcomes()[0]
+    assert outcome.status is ProviderOutcomeStatus.APPLIED
+    assert outcome.fingerprint == "exact-native-island"
 
     def test_feature_flags_are_independent(self, monkeypatch):
         """D810_NOMUT_MATCHING and D810_LEGACY_STORAGE control different aspects.

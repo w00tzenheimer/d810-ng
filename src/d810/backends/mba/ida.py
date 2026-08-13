@@ -377,7 +377,10 @@ class IDAPatternAdapter:
         self._visitor = IDANodeVisitor()
         self._attempt_started: float | None = None
         self._attempt_destination_size: int | None = None
+        self._attempt_input_ast: AstNode | None = None
         self._last_provider_outcome: MbaProviderOutcome | None = None
+        self.provider_outcome_history: list[MbaProviderOutcome] = []
+        self._attempt_outcome_index: int | None = None
 
     def _reset_attempt_outcome(self, instruction: Any | None = None) -> None:
         """Discard telemetry from the previous live pattern attempt."""
@@ -385,7 +388,38 @@ class IDAPatternAdapter:
         self._attempt_started = time.monotonic()
         size = getattr(getattr(instruction, "d", None), "size", None)
         self._attempt_destination_size = int(size) if type(size) is int and size > 0 else None
+        try:
+            self._attempt_input_ast = (
+                None if instruction is None else minsn_to_ast(instruction)
+            )
+        except Exception:
+            self._attempt_input_ast = None
         self._last_provider_outcome = None
+        self._attempt_outcome_index = None
+
+    def _publish_provider_outcome(self, outcome: MbaProviderOutcome) -> None:
+        self._last_provider_outcome = outcome
+        history = getattr(self, "provider_outcome_history", None)
+        if history is None:
+            history = []
+            self.provider_outcome_history = history
+        attempt_index = getattr(self, "_attempt_outcome_index", None)
+        if attempt_index is None:
+            history.append(outcome)
+            self._attempt_outcome_index = len(self.provider_outcome_history) - 1
+        else:
+            history[attempt_index] = outcome
+
+    def _attempt_elapsed_ms(self) -> float:
+        if self._attempt_started is None:
+            return 0.0
+        return max(0.0, (time.monotonic() - self._attempt_started) * 1000.0)
+
+    def _catalogue_provenance(self) -> tuple[str, tuple[str, ...]]:
+        return (
+            str(getattr(self.rule, "CANONICAL_NAME", self.name)),
+            tuple(str(item) for item in getattr(self.rule, "ALIASES", ())),
+        )
 
     @staticmethod
     def _ast_cost(ast: Any) -> tuple[int, int] | None:
@@ -427,14 +461,11 @@ class IDAPatternAdapter:
     def _record_catalogue_success(self, input_ast: Any, replacement_ast: Any) -> None:
         """Publish a successful direct-rule attempt without adding generic Z3."""
 
-        canonical_source = str(getattr(self.rule, "CANONICAL_NAME", self.name))
-        aliases = tuple(str(item) for item in getattr(self.rule, "ALIASES", ()))
-        elapsed_ms = 0.0
-        if self._attempt_started is not None:
-            elapsed_ms = max(0.0, (time.monotonic() - self._attempt_started) * 1000.0)
+        canonical_source, aliases = self._catalogue_provenance()
+        elapsed_ms = self._attempt_elapsed_ms()
         fingerprint = self._profile_fingerprint(input_ast)
         if fingerprint is None:
-            self._last_provider_outcome = MbaProviderOutcome(
+            self._publish_provider_outcome(MbaProviderOutcome(
                 provider=MbaProviderKind.CATALOGUE,
                 status=ProviderOutcomeStatus.RECONSTRUCTION_FAILED,
                 fingerprint="profile_unavailable",
@@ -444,9 +475,9 @@ class IDAPatternAdapter:
                 source_provenance=(canonical_source, *aliases),
                 refusal_reason="profile_unavailable",
                 metadata={"rule_name": self.name, "canonical_source": canonical_source},
-            )
+            ))
             return
-        self._last_provider_outcome = MbaProviderOutcome(
+        self._publish_provider_outcome(MbaProviderOutcome(
             provider=MbaProviderKind.CATALOGUE,
             status=ProviderOutcomeStatus.APPLIED,
             fingerprint=fingerprint,
@@ -456,7 +487,46 @@ class IDAPatternAdapter:
             elapsed_ms=elapsed_ms,
             source_provenance=(canonical_source, *aliases),
             metadata={"rule_name": self.name, "canonical_source": canonical_source},
-        )
+        ))
+
+    def _record_catalogue_nonmatch(self) -> None:
+        """Publish a direct-rule miss even though no rule-fired stat exists."""
+
+        if self._last_provider_outcome is not None:
+            return
+        canonical_source, aliases = self._catalogue_provenance()
+        input_ast = self._attempt_input_ast
+        fingerprint = self._profile_fingerprint(input_ast)
+        if fingerprint is None:
+            self._publish_provider_outcome(MbaProviderOutcome(
+                provider=MbaProviderKind.CATALOGUE,
+                status=ProviderOutcomeStatus.RECONSTRUCTION_FAILED,
+                fingerprint="profile_unavailable",
+                input_cost=self._ast_cost(input_ast),
+                elapsed_ms=self._attempt_elapsed_ms(),
+                source_provenance=(canonical_source, *aliases),
+                refusal_reason="profile_unavailable",
+            ))
+            return
+        self._publish_provider_outcome(MbaProviderOutcome(
+            provider=MbaProviderKind.CATALOGUE,
+            status=ProviderOutcomeStatus.UNCHANGED,
+            fingerprint=fingerprint,
+            input_cost=self._ast_cost(input_ast),
+            elapsed_ms=self._attempt_elapsed_ms(),
+            source_provenance=(canonical_source, *aliases),
+            refusal_reason="no_match",
+        ))
+
+    def record_bound_replacement_outcome(self, replacement_ast: Any) -> None:
+        """Publish the nomut path's success using its bound native input AST."""
+
+        self._record_catalogue_success(self._attempt_input_ast, replacement_ast)
+
+    def provider_outcomes(self) -> tuple[MbaProviderOutcome, ...]:
+        """Return one final outcome for each direct-catalogue attempt."""
+
+        return tuple(self.provider_outcome_history)
 
     # ==========================================================================
     # Properties delegated to the underlying rule
@@ -725,6 +795,7 @@ class IDAPatternAdapter:
                 self._record_catalogue_success(candidate, self.REPLACEMENT_PATTERN)
             return new_instruction
         finally:
+            self._record_catalogue_nonmatch()
             setattr(self.rule, "_current_blk", None)
             setattr(self.rule, "_current_ins", None)
 
@@ -750,11 +821,13 @@ class IDAPatternAdapter:
 
     def clear_match_context(self) -> None:
         """Clear live match-site state after a pattern-storage rule attempt."""
+        self._record_catalogue_nonmatch()
         setattr(self.rule, "_current_blk", None)
         setattr(self.rule, "_current_ins", None)
         setattr(self.rule, "_runtime_constant_evaluator", None)
         self._attempt_started = None
         self._attempt_destination_size = None
+        self._attempt_input_ast = None
 
     @staticmethod
     def _eval_runtime_constant(mop, bits: int, blk, instruction) -> int | None:

@@ -103,6 +103,13 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             tuple[tuple[str, str, tuple[str, ...]], ...] | None
         ) = None
         self.rule_provenance_history: list[tuple[str, ...]] = []
+        self.provider_outcome_history: list[MbaProviderOutcome] = []
+        self._attempt_outcome_index: int | None = None
+
+    def _begin_provider_attempt(self) -> None:
+        """Start one observable attempt, independent of whether it mutates."""
+
+        self._attempt_outcome_index = None
 
     def configure(self, kwargs) -> None:
         config = dict(kwargs or {})
@@ -194,6 +201,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         self.last_rule_provenance = None
         self.last_derivation_trace = None
         self.last_extraction_receipt = None
+        self._begin_provider_attempt()
         if ins.opcode not in _SUPPORTED_ROOT_OPCODES:
             self._record_extraction_receipt(
                 EgglogExtractionReceipt(
@@ -223,8 +231,12 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         self.last_rule_provenance = None
         self.last_derivation_trace = None
         self.last_extraction_receipt = None
+        self._begin_provider_attempt()
         ast = minsn_to_ast(ins)
         if ast is None:
+            self._record_extraction_receipt(
+                EgglogExtractionReceipt(skip_reason=ExtractionSkipReason.INTERNAL_ERROR)
+            )
             return None
         lowering = lower_hexrays_island(ast, destination_size=int(ins.d.size))
         # Preserve the candidate profile if a later preflight step raises; the
@@ -299,6 +311,12 @@ class EgglogOptimizer(PeepholeSimplificationRule):
 
     def _record_extraction_receipt(self, receipt: EgglogExtractionReceipt) -> None:
         self.last_extraction_receipt = receipt
+        outcome = egglog_receipt_to_outcome(receipt)
+        if self._attempt_outcome_index is None:
+            self.provider_outcome_history.append(outcome)
+            self._attempt_outcome_index = len(self.provider_outcome_history) - 1
+        else:
+            self.provider_outcome_history[self._attempt_outcome_index] = outcome
         skip_reason = (
             receipt.skip_reason.value if receipt.skip_reason is not None else None
         )
@@ -321,6 +339,11 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             receipt.blockers,
             skip_reason,
         )
+
+    def provider_outcomes(self) -> tuple[MbaProviderOutcome, ...]:
+        """Return one final outcome per attempted Egglog candidate."""
+
+        return tuple(self.provider_outcome_history)
 
     def execution_metadata(self) -> dict[str, object]:
         """Expose the latest extraction receipt and successful provenance."""

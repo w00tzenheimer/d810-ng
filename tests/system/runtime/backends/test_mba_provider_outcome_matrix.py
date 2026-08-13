@@ -1,0 +1,126 @@
+"""Runtime matrix for one outcome per MBA provider attempt.
+
+These checks exercise the native adapter boundaries but deliberately never
+apply a replacement.  Outcome publication must therefore be independent of
+the rule-fired statistics path.
+"""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+import ida_hexrays
+
+from d810.backends.mba.egglog_saturation import (
+    EgglogExtractionReceipt,
+    ExtractionSkipReason,
+)
+from d810.backends.mba.ida import IDAPatternAdapter
+from d810.mba.provider_outcome import ProviderOutcomeStatus
+from d810.optimizers.microcode.instructions.chain.handler import (
+    ChainSimplificationRule,
+)
+from d810.optimizers.microcode.instructions.chain import handler as chain_handler
+from d810.optimizers.microcode.instructions.egraph.egglog_handler import (
+    EgglogOptimizer,
+)
+
+
+def test_egglog_attempt_matrix_retains_one_final_row_per_skip_or_proof_result() -> None:
+    handler = EgglogOptimizer()
+    receipts = (
+        EgglogExtractionReceipt(skip_reason=ExtractionSkipReason.EGGLOG_UNAVAILABLE),
+        EgglogExtractionReceipt(skip_reason=ExtractionSkipReason.TIME_BUDGET),
+        EgglogExtractionReceipt(skip_reason=ExtractionSkipReason.NATIVE_Z3_FAILED),
+        EgglogExtractionReceipt(input_cost=(4, 7), extracted_cost=(4, 7)),
+    )
+
+    for receipt in receipts:
+        handler._begin_provider_attempt()
+        handler._record_extraction_receipt(receipt)
+
+    assert [outcome.status for outcome in handler.provider_outcomes()] == [
+        ProviderOutcomeStatus.UNAVAILABLE,
+        ProviderOutcomeStatus.OVER_BUDGET,
+        ProviderOutcomeStatus.PROOF_FAILED,
+        ProviderOutcomeStatus.UNCHANGED,
+    ]
+
+    handler._begin_provider_attempt()
+    handler._record_extraction_receipt(
+        EgglogExtractionReceipt(input_cost=(4, 7), extracted_cost=(2, 3))
+    )
+    handler._record_extraction_receipt(
+        EgglogExtractionReceipt(skip_reason=ExtractionSkipReason.NATIVE_Z3_FAILED)
+    )
+    assert len(handler.provider_outcomes()) == 5
+    assert handler.provider_outcomes()[-1].status is ProviderOutcomeStatus.PROOF_FAILED
+
+
+def test_direct_catalogue_nonmatch_is_published_without_rule_fired_statistics(monkeypatch) -> None:
+    class Rule:
+        name = "direct"
+        CANONICAL_NAME = "direct"
+        ALIASES = ()
+
+    adapter = IDAPatternAdapter(Rule())
+    input_ast = SimpleNamespace(is_node=lambda: False)
+    monkeypatch.setattr(
+        "d810.backends.mba.ida.minsn_to_ast", lambda _instruction: input_ast
+    )
+    monkeypatch.setattr(adapter, "_profile_fingerprint", lambda _ast: "direct-island")
+    instruction = SimpleNamespace(d=SimpleNamespace(size=4))
+
+    adapter.bind_match_context(None, instruction)
+    adapter.clear_match_context()
+
+    assert [outcome.status for outcome in adapter.provider_outcomes()] == [
+        ProviderOutcomeStatus.UNCHANGED
+    ]
+    assert adapter.provider_outcomes()[0].fingerprint == "direct-island"
+
+
+def test_arithmetic_chain_arity_follows_add_sub_and_neg_flattening() -> None:
+    def leaf() -> SimpleNamespace:
+        return SimpleNamespace(t=-1)
+
+    nested_subtraction = SimpleNamespace(
+        t=ida_hexrays.mop_d,
+        d=SimpleNamespace(opcode=ida_hexrays.m_sub, l=leaf(), r=leaf()),
+    )
+    instruction = SimpleNamespace(l=leaf(), r=nested_subtraction)
+
+    assert ChainSimplificationRule._flattened_arity(instruction, ida_hexrays.m_add) == 3
+
+
+def test_structural_chain_nonmatch_is_an_explicit_provider_row(monkeypatch) -> None:
+    class Rule(ChainSimplificationRule):
+        def check_and_replace(self, blk, ins):
+            del blk, ins
+            return None
+
+    rule = Rule()
+    instruction = SimpleNamespace(
+        d=SimpleNamespace(size=4),
+        l=SimpleNamespace(t=-1),
+        r=SimpleNamespace(t=-1),
+    )
+    profile = SimpleNamespace(
+        fingerprint="chain-island",
+        operator_count=1,
+        total_node_count=3,
+    )
+    monkeypatch.setattr(chain_handler, "minsn_to_ast", lambda _ins: object())
+    monkeypatch.setattr(
+        chain_handler,
+        "lower_hexrays_island",
+        lambda _ast, **_kwargs: SimpleNamespace(term=object(), profile=profile),
+    )
+
+    rule._begin_chain_attempt()
+    rule._publish_chain_result(instruction, None, opcode=ida_hexrays.m_add)
+
+    outcome = rule.provider_outcomes()[0]
+    assert outcome.status is ProviderOutcomeStatus.UNCHANGED
+    assert outcome.fingerprint == "chain-island"
+    assert outcome.metadata["rules_applied"] == 0

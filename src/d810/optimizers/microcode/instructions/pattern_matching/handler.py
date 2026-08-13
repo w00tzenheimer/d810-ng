@@ -706,6 +706,16 @@ class PatternOptimizer(InstructionOptimizer):
                     if not rule_pattern_info.rule.check_candidate(proxy):
                         continue
                     new_ins = rule_pattern_info.rule.get_replacement(proxy)
+                    if new_ins is not None:
+                        record_bound_replacement_outcome = getattr(
+                            rule_pattern_info.rule,
+                            "record_bound_replacement_outcome",
+                            None,
+                        )
+                        if record_bound_replacement_outcome is not None:
+                            record_bound_replacement_outcome(
+                                rule_pattern_info.rule.REPLACEMENT_PATTERN
+                            )
                 else:
                     # Legacy mutating path: pattern gets mop references copied into it
                     new_ins = rule_pattern_info.rule.check_pattern_and_replace(
