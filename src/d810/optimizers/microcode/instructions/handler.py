@@ -313,14 +313,6 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
                         self._run_later_callback(rule, self.cur_maturity)
                 if new_ins is not None:
                     self.last_matched_rule_name = rule_name
-                    if self.stats is not None:
-                        # Use new API with actual rule object
-                        self.stats.record_rule_fired(
-                            rule=rule,
-                            optimizer=self.name,
-                            maturity=self.cur_maturity,
-                            **rule.execution_metadata(),
-                        )
                     optimizer_logger.info(
                         "Rule %s matched in maturity %s:",
                         rule.name,
@@ -350,11 +342,18 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
         return None
 
     def record_mutation_accepted(self) -> None:
-        """Commit the selected rule's provider outcome after the real swap."""
+        """Publish a rule firing only after the outer owner accepts the swap."""
 
         rule = self._pending_replacement_rule
         if rule is not None:
             rule.record_mutation_accepted()
+            if self.stats is not None:
+                self.stats.record_rule_fired(
+                    rule=rule,
+                    optimizer=self.name,
+                    maturity=self.cur_maturity,
+                    **rule.execution_metadata(),
+                )
         self._pending_replacement_rule = None
 
     def record_mutation_rejected(self, reason: str) -> None:

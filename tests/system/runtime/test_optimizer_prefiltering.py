@@ -9,6 +9,7 @@ import ida_hexrays
 
 from d810.core.decompilation_session import DecompilationEvent
 from d810.core.stats import OptimizationStatistics
+from d810.hexrays.hooks import optinsn_adapter
 from d810.hexrays.hooks.optblock_adapter import BlockOptimizerManager
 from d810.hexrays.hooks.optinsn_adapter import InstructionOptimizerManager
 from d810.optimizers.microcode.instructions.handler import InstructionOptimizer
@@ -50,6 +51,64 @@ def _make_blk(maturity: int) -> SimpleNamespace:
 
 def _make_ins(opcode: int = ida_hexrays.m_mov) -> SimpleNamespace:
     return SimpleNamespace(opcode=opcode, ea=0x1000)
+
+
+class _MutationRule:
+    """Rule stub whose metadata changes only at the mutation boundary."""
+
+    name = "MutationRule"
+    maturities = [ida_hexrays.MMAT_LOCOPT]
+
+    def __init__(self, replacement):
+        self.replacement = replacement
+        self.accepted = False
+        self.rejected_reason = None
+
+    def check_and_replace(self, _blk, _ins):
+        return self.replacement
+
+    def record_mutation_accepted(self):
+        self.accepted = True
+
+    def record_mutation_rejected(self, reason: str):
+        self.rejected_reason = reason
+
+    def execution_metadata(self):
+        return {
+            "mba_provider_outcome": {
+                "provider": "catalogue",
+                "status": "applied" if self.accepted else "improved",
+            }
+        }
+
+
+class _SwappableInstruction:
+    def __init__(self, label: str, *, valid: bool):
+        self.label = label
+        self.valid = valid
+        self.opcode = ida_hexrays.m_mov
+        self.ea = 0x401000
+
+    def swap(self, other):
+        self.label, other.label = other.label, self.label
+        self.valid, other.valid = other.valid, self.valid
+
+    def _print(self):
+        return self.label
+
+
+def _mutation_manager(optimizer, stats):
+    manager = InstructionOptimizerManager.__new__(InstructionOptimizerManager)
+    manager.current_maturity = ida_hexrays.MMAT_LOCOPT
+    manager._active_optimizers = [optimizer]
+    manager._last_optimizer_tried = None
+    manager._rewrite_seen = defaultdict(set)
+    manager._scheduled_implementation_names = frozenset()
+    manager._resolve_active_instruction_rule_names = lambda _blk: None
+    manager.analyzer = SimpleNamespace(analyze=lambda _blk, _ins: None)
+    manager.stats = stats
+    manager.generate_z3_code = False
+    return manager
 
 
 def test_maturity_gate_blocks_optimizer_at_wrong_maturity():
@@ -175,6 +234,64 @@ def test_cycle_detection_quarantines_the_producer_before_the_next_callback(
     assert not manager.optimize(blk, ins)
     assert not manager.optimize(blk, ins)
     assert cobra.calls == 2
+
+
+def test_outer_mutation_owner_emits_final_rule_telemetry_only_after_acceptance(
+    monkeypatch,
+):
+    """A replacement is not a rule firing until the swap survives all guards."""
+
+    stats = OptimizationStatistics()
+    optimizer = _ConcreteOptimizer(
+        maturities=[ida_hexrays.MMAT_LOCOPT],
+        stats=stats,
+    )
+    rule = _MutationRule(_SwappableInstruction("replacement", valid=True))
+    optimizer.add_rule(rule)
+    manager = _mutation_manager(optimizer, stats)
+    original = _SwappableInstruction("original", valid=True)
+    blk = SimpleNamespace(
+        mba=SimpleNamespace(maturity=ida_hexrays.MMAT_LOCOPT, entry_ea=0x401000)
+    )
+
+    monkeypatch.setattr(
+        optinsn_adapter, "check_ins_mop_size_are_ok", lambda ins: ins.valid
+    )
+    monkeypatch.setattr(optinsn_adapter, "count_minsn_nodes", lambda _ins: 1)
+    monkeypatch.setattr(optinsn_adapter, "hash_minsn", lambda ins, _ea: hash(ins.label))
+
+    assert manager.optimize(blk, original)
+    execution = stats.get_rule_execution("MutationRule")
+    assert execution is not None
+    assert execution.metadata["mba_provider_outcome"]["status"] == "applied"
+    assert rule.accepted
+
+
+def test_outer_mutation_rejection_emits_no_applied_rule_telemetry(monkeypatch):
+    """An invalid replacement retains its provider outcome but never fires a rule."""
+
+    stats = OptimizationStatistics()
+    optimizer = _ConcreteOptimizer(
+        maturities=[ida_hexrays.MMAT_LOCOPT],
+        stats=stats,
+    )
+    rule = _MutationRule(_SwappableInstruction("invalid", valid=False))
+    optimizer.add_rule(rule)
+    manager = _mutation_manager(optimizer, stats)
+    original = _SwappableInstruction("original", valid=True)
+    blk = SimpleNamespace(
+        mba=SimpleNamespace(maturity=ida_hexrays.MMAT_LOCOPT, entry_ea=0x401000)
+    )
+
+    monkeypatch.setattr(
+        optinsn_adapter, "check_ins_mop_size_are_ok", lambda ins: ins.valid
+    )
+    monkeypatch.setattr(optinsn_adapter, "format_minsn_t", lambda _ins: "unit-ins")
+
+    assert not manager.optimize(blk, original)
+    assert stats.get_rule_execution("MutationRule") is None
+    assert not rule.accepted
+    assert rule.rejected_reason == "invalid_operand_size"
 
 
 def test_instruction_adapter_emits_top_level_preopt_with_live_ports() -> None:

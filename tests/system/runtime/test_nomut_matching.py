@@ -142,6 +142,7 @@ def test_pattern_optimizer_forwards_catalogue_outcome_to_central_statistics():
     class Rule:
         name = "DirectCatalogue"
         maturities = [7]
+        accepted = 0
 
         @staticmethod
         def check_pattern_and_replace(pattern, test_ast):
@@ -153,10 +154,14 @@ def test_pattern_optimizer_forwards_catalogue_outcome_to_central_statistics():
             return {
                 "mba_provider_outcome": {
                     "provider": "catalogue",
-                    "status": "applied",
+                    "status": "applied" if Rule.accepted else "improved",
                     "fingerprint": "native-island",
                 }
             }
+
+        @staticmethod
+        def record_mutation_accepted():
+            Rule.accepted += 1
 
     class Instruction:
         ea = 0
@@ -172,6 +177,7 @@ def test_pattern_optimizer_forwards_catalogue_outcome_to_central_statistics():
     optimizer._use_nomut_matching = False
     optimizer._use_legacy_storage = False
     optimizer._run_later_callback = None
+    optimizer._pending_replacement_rule = None
     optimizer._get_candidates = lambda _ast: [RulePatternInfo(Rule(), object())]
 
     result = optimizer._try_matches(
@@ -184,9 +190,13 @@ def test_pattern_optimizer_forwards_catalogue_outcome_to_central_statistics():
     )
 
     assert result is not None
+    assert stats.get_rule_execution("DirectCatalogue") is None
+
+    optimizer.record_mutation_accepted()
     execution = stats.get_rule_execution("DirectCatalogue")
     assert execution is not None
     assert execution.metadata["mba_provider_outcome"]["provider"] == "catalogue"
+    assert execution.metadata["mba_provider_outcome"]["status"] == "applied"
 
 
 def test_nomut_success_records_the_bound_catalogue_replacement_outcome(monkeypatch):

@@ -12,6 +12,7 @@ from d810.mba.differential_report import (
     compare_provider_outcomes,
     egglog_receipt_to_outcome,
     normalize_outcome_rows,
+    summary_markdown,
 )
 from d810.mba.island_profile import IslandBlocker, MbaIslandClass, MbaIslandProfile
 from d810.mba.provider_outcome import (
@@ -405,6 +406,45 @@ def test_offline_cli_builds_normalized_report_and_requires_explicit_provider_row
             (first_path,),
             expected_providers=(MbaProviderKind.CATALOGUE, MbaProviderKind.EGGLOG),
         )
+
+
+def test_summary_markdown_keeps_budget_and_reconstruction_failures_distinct() -> None:
+    profile = _profile("summary")
+    report = MbaDifferentialReport(
+        schema_version=1,
+        corpus_identity="corpus",
+        toolchain_identity={},
+        cases=(
+            MbaCorpusCaseReport(
+                case_id="budget",
+                profile=profile,
+                outcomes=(
+                    _outcome(
+                        MbaProviderKind.EGGLOG,
+                        ProviderOutcomeStatus.OVER_BUDGET,
+                        profile.fingerprint,
+                    ),
+                ),
+            ),
+            MbaCorpusCaseReport(
+                case_id="rebuild",
+                profile=profile,
+                outcomes=(
+                    _outcome(
+                        MbaProviderKind.EGGLOG,
+                        ProviderOutcomeStatus.RECONSTRUCTION_FAILED,
+                        profile.fingerprint,
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    markdown = summary_markdown(compare_provider_outcomes(report))
+
+    assert "over budget" in markdown
+    assert "reconstruction failures" in markdown
+    assert "| egglog | 2 |" in markdown
 
 
 def _profile_dict(profile: MbaIslandProfile) -> dict[str, object]:

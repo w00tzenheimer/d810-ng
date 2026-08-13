@@ -653,15 +653,16 @@ def summary_markdown(summary: DifferentialSummary) -> str:
     """Return a concise stable Markdown summary suitable for CI artifacts."""
 
     lines = [
-        "| provider | attempts | unique | shared | misses | proof failures | unsafe abstentions | unavailable | node reduction | p50 ms | p95 ms |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| provider | attempts | unique | shared | misses | proof failures | unsafe abstentions | over budget | reconstruction failures | unavailable | node reduction | p50 ms | p95 ms |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for provider, stats in sorted(
         summary.by_provider.items(), key=lambda item: item[0].value
     ):
         lines.append(
             "| {provider} | {attempts} | {unique_wins} | {shared_wins} | {misses} | "
-            "{proof_failures} | {unsafe_abstentions} | {unavailable} | {node_reduction} | "
+            "{proof_failures} | {unsafe_abstentions} | {over_budget} | "
+            "{reconstruction_failures} | {unavailable} | {node_reduction} | "
             "{p50_elapsed_ms:.3f} | {p95_elapsed_ms:.3f} |".format(
                 provider=provider.value, **stats.to_dict()
             )

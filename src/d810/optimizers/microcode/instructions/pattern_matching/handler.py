@@ -735,15 +735,6 @@ class PatternOptimizer(InstructionOptimizer):
                             "  new : %s",
                             format_minsn_t(new_ins),
                         )
-                    if self.stats is not None:
-                        # Use new API with actual rule object
-                        self.stats.record_rule_fired(
-                            rule=rule_pattern_info.rule,
-                            optimizer=self.name,
-                            maturity=self.cur_maturity,
-                            **rule_pattern_info.rule.execution_metadata(),
-                        )
-
                     self._pending_replacement_rule = rule_pattern_info.rule
                     return new_ins
             except RuntimeError as e:
