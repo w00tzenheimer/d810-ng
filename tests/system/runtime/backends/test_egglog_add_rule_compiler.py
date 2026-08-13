@@ -1,0 +1,229 @@
+from __future__ import annotations
+
+import pytest
+
+egglog = pytest.importorskip("egglog")
+ida_hexrays = pytest.importorskip("ida_hexrays")
+
+from d810.backends.mba.egglog_add_rule_compiler import (  # noqa: E402
+    compile_add_rule_catalogue,
+    register_specialization,
+    specialize,
+)
+from d810.hexrays.expr.p_ast import AstConstant, AstLeaf, AstNode  # noqa: E402
+from d810.hexrays.ir.mop_snapshot import MopSnapshot  # noqa: E402
+
+
+def _catalogue_rule(name: str):
+    receipt = compile_add_rule_catalogue().receipt_for(name)
+    assert receipt.compiled_rule is not None
+    return receipt.compiled_rule
+
+
+def _leaf(name: str, register: int, size: int = 4) -> AstLeaf:
+    leaf = AstLeaf(name)
+    leaf.mop = MopSnapshot(t=ida_hexrays.mop_r, size=size, reg=register)
+    leaf.dest_size = size
+    return leaf
+
+
+def _constant(value: int, size: int = 4) -> AstConstant:
+    wrapped = value & ((1 << (size * 8)) - 1)
+    constant = AstConstant(str(value), wrapped, size)
+    constant.mop = MopSnapshot(t=ida_hexrays.mop_n, size=size, value=wrapped)
+    constant.dest_size = size
+    return constant
+
+
+def _node(opcode: int, left, right=None, size: int = 4) -> AstNode:
+    node = AstNode(opcode, left, right)
+    node.dest_size = size
+    return node
+
+
+def _prove(rule_name: str, candidate: AstNode):
+    specialization = specialize(
+        _catalogue_rule(rule_name), candidate, destination_size=4
+    )
+    assert specialization is not None
+    egraph = egglog.EGraph()
+    register_specialization(egraph, specialization)
+    return specialization
+
+
+def test_specializes_direct_add_rule_and_proves_the_egglog_equation():
+    x, y = _leaf("x", 1), _leaf("y", 2)
+    candidate = _node(
+        ida_hexrays.m_add,
+        _node(ida_hexrays.m_xor, x, y),
+        _node(
+            ida_hexrays.m_mul,
+            _constant(2),
+            _node(ida_hexrays.m_and, x.clone(), y.clone()),
+        ),
+    )
+
+    specialization = _prove("Add_HackersDelightRule_2", candidate)
+
+    assert specialization.replacement_ast.opcode == ida_hexrays.m_add
+    assert specialization.source_names == (
+        "Add_HackersDelightRule_2",
+        "Add_OllvmRule_3",
+    )
+
+
+def test_rejects_guarded_rule_when_constant_constraint_is_false():
+    x = _leaf("x", 1)
+    candidate = _node(
+        ida_hexrays.m_add,
+        _node(ida_hexrays.m_xor, x, _constant(5)),
+        _node(
+            ida_hexrays.m_mul,
+            _constant(2),
+            _node(ida_hexrays.m_and, x.clone(), _constant(6)),
+        ),
+    )
+
+    assert (
+        specialize(
+            _catalogue_rule("Add_SpecialConstantRule_1"),
+            candidate,
+            destination_size=4,
+        )
+        is None
+    )
+
+
+def test_specializes_equal_and_masked_constant_guards():
+    x = _leaf("x", 1)
+    equal_candidate = _node(
+        ida_hexrays.m_add,
+        _node(ida_hexrays.m_xor, x, _constant(5)),
+        _node(
+            ida_hexrays.m_mul,
+            _constant(2),
+            _node(ida_hexrays.m_and, x.clone(), _constant(5)),
+        ),
+    )
+    masked_candidate = _node(
+        ida_hexrays.m_add,
+        _node(
+            ida_hexrays.m_xor,
+            _node(ida_hexrays.m_and, x.clone(), _constant(0xFF)),
+            _constant(0x112),
+        ),
+        _node(
+            ida_hexrays.m_mul,
+            _constant(2),
+            _node(ida_hexrays.m_and, x.clone(), _constant(0x12)),
+        ),
+    )
+
+    assert _prove("Add_SpecialConstantRule_1", equal_candidate)
+    assert _prove("Add_SpecialConstantRule_2", masked_candidate)
+
+
+def test_specializes_complement_guard_and_materializes_derived_constant():
+    x = _leaf("x", 1)
+    candidate = _node(
+        ida_hexrays.m_add,
+        _node(ida_hexrays.m_xor, x, _constant(0xFFFFFFFE)),
+        _node(
+            ida_hexrays.m_mul,
+            _constant(2),
+            _node(ida_hexrays.m_or, x.clone(), _constant(1)),
+        ),
+    )
+
+    specialization = _prove("Add_SpecialConstantRule_3", candidate)
+
+    assert specialization.replacement_ast.right.value == 0
+
+
+@pytest.mark.parametrize("rule_name", ["Add_OllvmRule_2", "Add_OllvmRule_4"])
+def test_specializes_wrapped_negative_two_guard(rule_name: str):
+    x, y = _leaf("x", 1), _leaf("y", 2)
+    bitwise = ida_hexrays.m_or if rule_name.endswith("2") else ida_hexrays.m_and
+    candidate = _node(
+        ida_hexrays.m_sub,
+        _node(
+            ida_hexrays.m_bnot if rule_name.endswith("2") else ida_hexrays.m_xor,
+            _node(ida_hexrays.m_xor, x, y) if rule_name.endswith("2") else x,
+            None if rule_name.endswith("2") else y,
+        ),
+        _node(
+            ida_hexrays.m_mul,
+            _constant(-2),
+            _node(bitwise, x.clone(), y.clone()),
+        ),
+    )
+
+    assert _prove(rule_name, candidate)
+
+
+def test_specializes_both_negated_variable_guards():
+    x, y = _leaf("x", 1), _leaf("y", 2)
+    not_y = _node(ida_hexrays.m_bnot, y.clone())
+    rule_1 = _node(
+        ida_hexrays.m_sub,
+        _node(ida_hexrays.m_sub, x, y),
+        _node(
+            ida_hexrays.m_mul,
+            _constant(2),
+            _node(ida_hexrays.m_or, x.clone(), not_y),
+        ),
+    )
+    not_x = _node(ida_hexrays.m_bnot, x.clone())
+    rule_2 = _node(
+        ida_hexrays.m_sub,
+        _node(ida_hexrays.m_sub, x.clone(), y.clone()),
+        _node(
+            ida_hexrays.m_mul,
+            _constant(2),
+            _node(
+                ida_hexrays.m_bnot,
+                _node(ida_hexrays.m_and, not_x, y.clone()),
+            ),
+        ),
+    )
+
+    assert _prove("AddXor_Rule_1", rule_1)
+    assert _prove("AddXor_Rule_2", rule_2)
+
+
+@pytest.mark.parametrize("destination_size", [0, 3, 16])
+def test_rejects_invalid_destination_sizes(destination_size: int):
+    candidate = _node(ida_hexrays.m_add, _leaf("x", 1), _leaf("y", 2))
+    assert (
+        specialize(
+            _catalogue_rule("Add_HackersDelightRule_3"),
+            candidate,
+            destination_size=destination_size,
+        )
+        is None
+    )
+
+
+def test_rejects_casts_mixed_widths_and_unsupported_nodes():
+    rule = _catalogue_rule("Add_HackersDelightRule_3")
+    x, y = _leaf("x", 1), _leaf("y", 2)
+    cast = _node(ida_hexrays.m_xdu, x)
+    cast_candidate = _node(
+        ida_hexrays.m_add,
+        _node(ida_hexrays.m_or, cast, y),
+        _node(ida_hexrays.m_and, cast.clone(), y.clone()),
+    )
+    mixed_candidate = _node(
+        ida_hexrays.m_add,
+        _node(ida_hexrays.m_or, x, _leaf("wide", 3, size=8)),
+        _node(ida_hexrays.m_and, x.clone(), _leaf("wide", 3, size=8)),
+    )
+    unsupported = _node(
+        ida_hexrays.m_add,
+        _node(ida_hexrays.m_udiv, x.clone(), y.clone()),
+        _node(ida_hexrays.m_and, x.clone(), y.clone()),
+    )
+
+    assert specialize(rule, cast_candidate, destination_size=4) is None
+    assert specialize(rule, mixed_candidate, destination_size=4) is None
+    assert specialize(rule, unsupported, destination_size=4) is None
