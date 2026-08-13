@@ -245,7 +245,15 @@ class NativeRelocationEvidence:
 class NativeMetadataActionKind(str, enum.Enum):
     RECREATE_ITEM = "recreate_item"
     UPDATE_XREF = "update_xref"
+    # Resizes the function's *entry* chunk (``set_func_end``).
     SET_FUNCTION_TAIL = "set_function_tail"
+    # Adds/removes discontiguous *tail chunks* (``append_func_tail`` /
+    # ``remove_func_tail``). Deliberately distinct from SET_FUNCTION_TAIL
+    # despite the similar name: they are different IDA operations, and the
+    # writer Task 7 migrates uses this one. Conflating them would silently
+    # turn "attach a label body elsewhere in the image" into "grow the entry
+    # chunk over everything in between".
+    FUNCTION_TAIL_CHUNK = "function_tail_chunk"
     OTHER = "other"
 
 

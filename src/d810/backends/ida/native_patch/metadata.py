@@ -126,6 +126,8 @@ class IdaMetadataActionExecutor:
             return self._read_cref_state(int(ea))
         if kind is NativeMetadataActionKind.SET_FUNCTION_TAIL:
             return self._read_tail_state(int(ea))
+        if kind is NativeMetadataActionKind.FUNCTION_TAIL_CHUNK:
+            return self._read_chunk_state(int(ea))
         raise UnexecutableMetadataAction(getattr(kind, "value", str(kind)))
 
     def _read_item_state(self, ea: int) -> str:
@@ -158,6 +160,27 @@ class IdaMetadataActionExecutor:
             return "none"
         return f"tail:{int(func.start_ea):#x}-{int(func.end_ea):#x}"
 
+    def _read_chunk_state(self, ea: int) -> str:
+        """Every chunk the owning function holds, entry chunk included.
+
+        Enumerating all of them (not just tails) makes the token a complete
+        description of the function's extent, so reversal can both add back a
+        removed chunk and remove an added one from the same value.
+        """
+        import ida_funcs
+
+        func = ida_funcs.get_func(ea)
+        if func is None:
+            return "chunks:"
+        spans: list[tuple[int, int]] = []
+        iterator = ida_funcs.func_tail_iterator_t(func)
+        ok = iterator.main()
+        while ok:
+            chunk = iterator.chunk()
+            spans.append((int(chunk.start_ea), int(chunk.end_ea)))
+            ok = iterator.next()
+        return "chunks:" + ";".join(f"{s:#x}-{e:#x}" for s, e in sorted(spans))
+
     # -- state application ----------------------------------------------
 
     def apply_state(
@@ -170,7 +193,45 @@ class IdaMetadataActionExecutor:
             return self._apply_cref_state(ea, target_state)
         if kind is NativeMetadataActionKind.SET_FUNCTION_TAIL:
             return self._apply_tail_state(ea, target_state)
+        if kind is NativeMetadataActionKind.FUNCTION_TAIL_CHUNK:
+            return self._apply_chunk_state(ea, target_state)
         raise UnexecutableMetadataAction(getattr(kind, "value", str(kind)))
+
+    def _apply_chunk_state(self, ea: int, target_state: str) -> bool:
+        import ida_funcs
+
+        func = ida_funcs.get_func(ea)
+        if func is None:
+            return target_state == "chunks:"
+
+        def _parse(token: str) -> set[tuple[int, int]]:
+            _, _, spans = token.partition(":")
+            out: set[tuple[int, int]] = set()
+            for span in spans.split(";"):
+                if not span.strip():
+                    continue
+                start_text, _, end_text = span.partition("-")
+                out.add((int(start_text, 16), int(end_text, 16)))
+            return out
+
+        wanted = _parse(target_state)
+        current = _parse(self._read_chunk_state(ea))
+        entry_ea = int(func.start_ea)
+
+        # Never add or remove the entry chunk through this action -- that is
+        # SET_FUNCTION_TAIL's job, and removing it would delete the function.
+        for start_ea, end_ea in sorted(current - wanted):
+            if start_ea == entry_ea:
+                continue
+            if not ida_funcs.remove_func_tail(func, start_ea):
+                return False
+        for start_ea, end_ea in sorted(wanted - current):
+            if start_ea == entry_ea:
+                continue
+            if not ida_funcs.append_func_tail(func, start_ea, end_ea):
+                return False
+
+        return self._read_chunk_state(ea) == target_state
 
     def _apply_item_state(self, ea: int, target_state: str) -> bool:
         import ida_bytes

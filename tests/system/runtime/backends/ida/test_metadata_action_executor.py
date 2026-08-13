@@ -158,3 +158,56 @@ class TestIdaMetadataActionExecutor:
             assert executor.read_state(kind, func_ea) == first, (
                 f"{kind.value} state token is not stable across reads"
             )
+
+    def test_tail_chunk_state_reads_the_whole_extent(self, copy_of_idb) -> None:
+        """FUNCTION_TAIL_CHUNK is the action Task 7's writer actually uses.
+
+        ``indirect_jump_labels`` calls ``append_func_tail`` -- a discontiguous
+        chunk elsewhere in the image -- not ``set_func_end``. Conflating the
+        two would turn "attach a label body over there" into "grow the entry
+        chunk over everything in between", so they are separate kinds.
+        """
+        executor = IdaMetadataActionExecutor()
+        kind = NativeMetadataActionKind.FUNCTION_TAIL_CHUNK
+        func_ea = _first_function_with_min_size()
+
+        state = executor.read_state(kind, func_ea)
+
+        assert state.startswith("chunks:")
+        func = ida_funcs.get_func(func_ea)
+        assert f"{int(func.start_ea):#x}-{int(func.end_ea):#x}" in state, (
+            "the entry chunk must appear in the extent token"
+        )
+
+    def test_a_refused_chunk_append_changes_nothing(self, copy_of_idb) -> None:
+        """The property that matters when IDA says no.
+
+        A partial apply that reports failure is exactly what leaves an
+        unreversible database: the journal would hold a before-state for an
+        action that half-happened. Measured on this fixture, IDA refuses to
+        adopt a non-code span (``is_code`` is False at 0x1800011b3), so this
+        drives that refusal deliberately and asserts nothing moved.
+
+        A *successful* append round-trip is deliberately not asserted here:
+        no function in this fixture has more than one chunk, and there is no
+        free code span to adopt, so any positive case would have to fabricate
+        a scenario IDA does not actually present. That gap is real and is
+        recorded rather than papered over with a synthetic fixture.
+        """
+        executor = IdaMetadataActionExecutor()
+        kind = NativeMetadataActionKind.FUNCTION_TAIL_CHUNK
+        func_ea = _first_function_with_min_size()
+
+        before = executor.read_state(kind, func_ea)
+        non_code_ea = 0x1800011B3
+        assert not ida_bytes.is_code(ida_bytes.get_flags(non_code_ea)), (
+            "fixture changed: this probe needs a non-code span to be refused"
+        )
+        attempted = before + f";{non_code_ea:#x}-{non_code_ea + 8:#x}"
+
+        assert not executor.apply_state(kind, func_ea, attempted), (
+            "adopting a non-code span must be refused, not silently accepted"
+        )
+        assert executor.read_state(kind, func_ea) == before, (
+            "a refused append must leave the function extent untouched"
+        )
