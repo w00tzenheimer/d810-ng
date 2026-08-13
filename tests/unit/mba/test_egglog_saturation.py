@@ -262,20 +262,17 @@ _OPCODE_BY_OPERATION = {
     "xor": 8,
 }
 
-_KNOWN_RUNTIME_PROXY_MODULES = (
-    "d810.hexrays.expr.p_ast",
-    "d810.speedups.expr.c_ast",
-)
 _MISSING_PROXY_TARGET = object()
+
+
+_FakeAstProxy = type("AstProxy", (), {"__module__": __name__})
 
 
 def _runtime_ast_proxy(
     target: object = _MISSING_PROXY_TARGET,
     *,
-    module: str = "d810.hexrays.expr.p_ast",
-    class_name: str = "AstProxy",
+    proxy_type: type = _FakeAstProxy,
 ):
-    proxy_type = type(class_name, (), {"__module__": module})
     proxy = object.__new__(proxy_type)
     if target is not _MISSING_PROXY_TARGET:
         object.__setattr__(proxy, "_target", target)
@@ -294,13 +291,18 @@ def fake_native_runtime(monkeypatch: pytest.MonkeyPatch):
         AstNode=_FakeAstNode,
         AstLeaf=_FakeAstLeaf,
         AstConstant=_FakeAstConstant,
+        AstProxy=_FakeAstProxy,
         operation_by_opcode={
             opcode: operation for operation, opcode in _OPCODE_BY_OPERATION.items()
         },
         opcode_by_operation=_OPCODE_BY_OPERATION,
         get_mop_key=lambda mop: mop.to_cache_key(),
     )
-    monkeypatch.setattr(egglog_saturation, "_load_native_runtime", lambda: runtime)
+    monkeypatch.setattr(
+        egglog_saturation,
+        "_load_native_runtime",
+        lambda *_args: runtime,
+    )
     return runtime
 
 
@@ -340,16 +342,14 @@ def test_native_lowering_preserves_live_leaf_keys_and_masks_constants(
 
 
 @pytest.mark.parametrize("size", (1, 2, 4, 8))
-@pytest.mark.parametrize("proxy_module", _KNOWN_RUNTIME_PROXY_MODULES)
-def test_native_lowering_unwraps_known_runtime_proxy_and_preserves_leaf_key(
+def test_native_lowering_unwraps_active_runtime_proxy_and_preserves_leaf_key(
     fake_native_runtime,
     size: int,
-    proxy_module: str,
 ):
     leaf = _FakeAstLeaf("x", _FakeMop("register", 7, size))
     candidate = _FakeAstNode(_OPCODE_BY_OPERATION["bnot"], leaf)
     candidate.dest_size = size
-    proxy = _runtime_ast_proxy(candidate, module=proxy_module)
+    proxy = _runtime_ast_proxy(candidate)
 
     term = lower_native_ast_to_term(proxy, destination_size=size)
 
@@ -381,9 +381,15 @@ def test_native_lowering_rejects_unknown_missing_and_cyclic_proxies(
     cyclic = _runtime_ast_proxy()
     object.__setattr__(cyclic, "_target", cyclic)
 
+    counterfeit_proxy_type = type(
+        "AstProxy",
+        (),
+        {"__module__": "d810.hexrays.expr.p_ast"},
+    )
+    transparent_wrapper_type = type("TransparentWrapper", (), {})
     rejected = (
-        _runtime_ast_proxy(candidate, module="third_party.ast"),
-        _runtime_ast_proxy(candidate, class_name="TransparentWrapper"),
+        _runtime_ast_proxy(candidate, proxy_type=counterfeit_proxy_type),
+        _runtime_ast_proxy(candidate, proxy_type=transparent_wrapper_type),
         _runtime_ast_proxy(),
         cyclic,
     )

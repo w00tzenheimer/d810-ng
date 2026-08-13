@@ -18,6 +18,7 @@ from d810.backends.mba.egglog_saturation import (  # noqa: E402
     ExtractionSkipReason,
     extract_bounded_candidate,
 )
+from d810.hexrays.expr import ast as ast_dispatcher  # noqa: E402
 from d810.hexrays.expr.p_ast import (  # noqa: E402
     AstConstant,
     AstLeaf,
@@ -47,39 +48,51 @@ def _rule(family: str, source_name: str):
     return matches[0]
 
 
-def _leaf(name: str, register: int, size: int = 4) -> AstLeaf:
-    leaf = AstLeaf(name)
+def _leaf(name: str, register: int, size: int = 4, ast_module=None):
+    leaf_type = AstLeaf if ast_module is None else ast_module.AstLeaf
+    leaf = leaf_type(name)
     leaf.mop = MopSnapshot(t=ida_hexrays.mop_r, size=size, reg=register)
     leaf.dest_size = size
     return leaf
 
 
-def _constant(value: int, size: int = 4) -> AstConstant:
+def _constant(value: int, size: int = 4, ast_module=None):
     wrapped = value & ((1 << (size * 8)) - 1)
-    constant = AstConstant(str(value), wrapped, size)
+    constant_type = AstConstant if ast_module is None else ast_module.AstConstant
+    constant = constant_type(str(value), wrapped, size)
     constant.mop = MopSnapshot(t=ida_hexrays.mop_n, size=size, value=wrapped)
     constant.dest_size = size
     return constant
 
 
-def _node(opcode: int, left, right=None, size: int = 4) -> AstNode:
-    node = AstNode(opcode, left, right)
+def _node(opcode: int, left, right=None, size: int = 4, ast_module=None):
+    node_type = AstNode if ast_module is None else ast_module.AstNode
+    node = node_type(opcode, left, right)
     node.dest_size = size
     return node
 
 
-def _direct_add_candidate(size: int = 4) -> AstNode:
-    x, y = _leaf("x", 1, size), _leaf("y", 2, size)
+def _direct_add_candidate(size: int = 4, ast_module=None):
+    x = _leaf("x", 1, size, ast_module)
+    y = _leaf("y", 2, size, ast_module)
     return _node(
         ida_hexrays.m_add,
-        _node(ida_hexrays.m_xor, x, y, size=size),
+        _node(ida_hexrays.m_xor, x, y, size=size, ast_module=ast_module),
         _node(
             ida_hexrays.m_mul,
-            _constant(2, size),
-            _node(ida_hexrays.m_and, x.clone(), y.clone(), size=size),
+            _constant(2, size, ast_module),
+            _node(
+                ida_hexrays.m_and,
+                x.clone(),
+                y.clone(),
+                size=size,
+                ast_module=ast_module,
+            ),
             size=size,
+            ast_module=ast_module,
         ),
         size=size,
+        ast_module=ast_module,
     )
 
 
@@ -125,7 +138,7 @@ def test_one_catalogue_rewrite_extracts_at_degree_one_and_proves_all_widths(size
 
 
 @pytest.mark.parametrize("size", (1, 2, 4, 8))
-def test_real_runtime_proxy_extracts_and_reconstructs_all_widths(size):
+def test_real_python_runtime_proxy_extracts_and_reconstructs_all_widths(size):
     candidate = _direct_add_candidate(size)
     rule = _rule("add", "Add_HackersDelightRule_2")
 
@@ -144,6 +157,26 @@ def test_real_runtime_proxy_extracts_and_reconstructs_all_widths(size):
         result.replacement_ast,
         width=size * 8,
     )
+
+
+@pytest.mark.parametrize("size", (1, 2, 4, 8))
+def test_active_cython_proxy_uses_real_c_ast_types(size):
+    if not ast_dispatcher._USING_CYTHON:
+        pytest.skip("Cython AST dispatcher is not active")
+    c_ast = pytest.importorskip("d810.speedups.expr.c_ast")
+    assert ast_dispatcher.AstProxy is c_ast.AstProxy
+    assert ast_dispatcher.AstNode is c_ast.AstNode
+
+    candidate = _direct_add_candidate(size, c_ast)
+    result = extract_bounded_candidate(
+        c_ast.AstProxy(candidate),
+        (_rule("add", "Add_HackersDelightRule_2"),),
+        EgglogExtractionBudget(time_budget_ms=1000),
+        size,
+    )
+
+    assert isinstance(result.replacement_ast, c_ast.AstNode)
+    assert result.receipt.skip_reason is None
 
 
 def test_composed_catalogue_rewrite_needs_degree_two():

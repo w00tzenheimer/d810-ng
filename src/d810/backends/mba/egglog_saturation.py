@@ -24,9 +24,6 @@ _BINARY_OPERATIONS = frozenset(
 )
 _SUPPORTED_OPERATIONS = _UNARY_OPERATIONS | _BINARY_OPERATIONS
 _VALID_DESTINATION_SIZES = frozenset({1, 2, 4, 8})
-_RUNTIME_AST_PROXY_MODULES = frozenset(
-    {"d810.hexrays.expr.p_ast", "d810.speedups.expr.c_ast"}
-)
 
 
 try:
@@ -342,6 +339,7 @@ class _NativeAstRuntime:
     AstNode: type[Any]
     AstLeaf: type[Any]
     AstConstant: type[Any]
+    AstProxy: type[Any]
     operation_by_opcode: Mapping[int, str]
     opcode_by_operation: Mapping[str, int]
     get_mop_key: Any
@@ -356,11 +354,8 @@ def _unwrap_runtime_ast_node(
     current = ast
     seen: set[int] = set()
     for _ in range(4):
-        current_type = type(current)
-        if current_type.__name__ != "AstProxy":
+        if not isinstance(current, runtime.AstProxy):
             return current if isinstance(current, runtime.AstNode) else None
-        if current_type.__module__ not in _RUNTIME_AST_PROXY_MODULES:
-            return None
         identity = id(current)
         if identity in seen:
             return None
@@ -376,7 +371,7 @@ def _load_native_runtime() -> _NativeAstRuntime:
     """Resolve IDA-coupled AST types only at the native lowering boundary."""
 
     ida_hexrays = importlib.import_module("ida_hexrays")
-    ast_module = importlib.import_module("d810.hexrays.expr.p_ast")
+    ast_module = importlib.import_module("d810.hexrays.expr.ast")
     opcode_by_operation = {
         "add": ida_hexrays.m_add,
         "and": ida_hexrays.m_and,
@@ -391,6 +386,7 @@ def _load_native_runtime() -> _NativeAstRuntime:
         AstNode=ast_module.AstNode,
         AstLeaf=ast_module.AstLeaf,
         AstConstant=ast_module.AstConstant,
+        AstProxy=ast_module.AstProxy,
         operation_by_opcode={
             opcode: operation for operation, opcode in opcode_by_operation.items()
         },
