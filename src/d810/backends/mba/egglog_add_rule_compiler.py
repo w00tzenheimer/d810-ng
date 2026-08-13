@@ -397,6 +397,8 @@ def _candidate_is_supported(ast: AstBase, destination_size: int) -> bool:
         return ast.right is not None and _candidate_is_supported(
             ast.right, destination_size
         )
+    if isinstance(ast, AstConstant):
+        return type(ast.value) is int and _leaf_size(ast) == destination_size
     if not isinstance(ast, AstLeaf):
         return False
     return _leaf_size(ast) == destination_size

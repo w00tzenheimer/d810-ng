@@ -120,6 +120,31 @@ def test_rejects_concrete_constant_with_missing_literal_payload():
     )
 
 
+@pytest.mark.parametrize("payload", [None, "not-an-integer"])
+def test_rejects_malformed_constant_bound_as_repeated_ordinary_variable(payload):
+    malformed = AstConstant("malformed", expected_value=payload, expected_size=4)
+    malformed.dest_size = 4
+    y = _leaf("y", 2)
+    candidate = _node(
+        ida_hexrays.m_add,
+        _node(ida_hexrays.m_xor, malformed, y),
+        _node(
+            ida_hexrays.m_mul,
+            _constant(2),
+            _node(ida_hexrays.m_and, malformed.clone(), y.clone()),
+        ),
+    )
+
+    assert (
+        specialize(
+            _catalogue_rule("Add_HackersDelightRule_2"),
+            candidate,
+            destination_size=4,
+        )
+        is None
+    )
+
+
 def test_specializes_equal_and_masked_constant_guards():
     x = _leaf("x", 1)
     equal_candidate = _node(
