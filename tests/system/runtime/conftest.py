@@ -13,6 +13,13 @@ import platform
 
 import pytest
 
+# Fixture for tests permitted to WRITE to the database. Registered here so
+# any runtime test can request `copy_of_idb` without importing it, which
+# would shadow the parameter name (F811).
+from tests.system.runtime.support.disposable_idb import (  # noqa: F401,E402
+    copy_of_idb,
+)
+
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     """Mark all tests in this subtree as runtime tests."""
