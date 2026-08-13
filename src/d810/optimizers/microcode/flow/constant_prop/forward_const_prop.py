@@ -121,6 +121,10 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
         ida_hexrays.m_setge,
         ida_hexrays.m_setl,
         ida_hexrays.m_setle,
+        # Conditional jumps read l/r as comparison operands.  Their d operand
+        # is a block target and is deliberately never processed below.
+        ida_hexrays.m_jnz,
+        ida_hexrays.m_jz,
         ida_hexrays.m_call,
     }
 

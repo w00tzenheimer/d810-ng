@@ -482,7 +482,6 @@ class AstNode(AstBase):
     def clone(self):
         # Use __new__ to bypass __init__ for speed
         new_node = self.__class__.__new__(self.__class__)
-        super(AstNode, new_node).__init__()  # Initialize the dict part
 
         # Manually copy attributes and clone children
         new_node.opcode = self.opcode

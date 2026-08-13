@@ -211,19 +211,28 @@ int indirect_call_wrapper_dispatch(int op, int a, int b)
 static uintptr_t vtable_sub_targets[4];
 static volatile int vtable_sub_initialized = 0;
 
+/* Keep the encoded entries writable and volatile.  A const table lets IDA
+ * fold the load before D810 reaches MMAT_CALLS, which erases the fixture. */
+static volatile uintptr_t vtable_sub_targets_encoded[2] = {
+    (uintptr_t)call_target_add + SUB_OFFSET,
+    (uintptr_t)call_target_sub + SUB_OFFSET
+};
+
+/* Keep an executable writer xref to this table.  IDA 9.4 otherwise treats
+ * initialized volatile storage as immutable during microcode generation and
+ * folds the computed callee before MMAT_CALLS. */
+EXPORT __attribute__((noinline))
+void indirect_call_vtable_sub_reseed(void)
+{
+    vtable_sub_targets_encoded[1] = (uintptr_t)call_target_sub + SUB_OFFSET;
+}
+
 EXPORT __attribute__((noinline))
 int indirect_call_vtable_sub(int index, int a, int b)
 {
     /* Keep vtable-style + sub-offset shape with table indexing. We force a
      * deterministic byte offset (8) so resolver can statically compute index=1
      * while preserving an m_ldx table access pattern. */
-    /* Keep the encoded entries writable and volatile.  A const table lets
-     * IDA fold the load before D810 reaches MMAT_CALLS, which erases the
-     * indirect-call fixture rather than exercising the resolver. */
-    static volatile uintptr_t vtable_sub_targets_encoded[2] = {
-        (uintptr_t)call_target_add + SUB_OFFSET,
-        (uintptr_t)call_target_sub + SUB_OFFSET
-    };
     volatile int idx_bytes = 8;
     (void)index;
     uintptr_t encoded = *(const volatile uintptr_t *)((const volatile char *)vtable_sub_targets_encoded + idx_bytes);  /* m_ldx from writable global */
@@ -272,6 +281,19 @@ int indirect_call_register_target(int index, int a, int b)
 static uintptr_t hikari_table[4];
 static volatile int hikari_initialized = 0;
 
+static volatile uintptr_t hikari_table_encoded[2] = {
+    (uintptr_t)call_target_add + HIKARI_OFFSET,
+    (uintptr_t)call_target_sub + HIKARI_OFFSET
+};
+
+/* See indirect_call_vtable_sub_reseed: retain the Hikari table load through
+ * MMAT_CALLS without changing the encoded initial value. */
+EXPORT __attribute__((noinline))
+void indirect_call_hikari_mov_sub_reseed(void)
+{
+    hikari_table_encoded[1] = (uintptr_t)call_target_sub + HIKARI_OFFSET;
+}
+
 static void init_hikari_table(void)
 {
     hikari_table[0] = (uintptr_t)call_target_add + HIKARI_OFFSET;
@@ -284,12 +306,6 @@ static void init_hikari_table(void)
 EXPORT __attribute__((noinline))
 int indirect_call_hikari_mov_sub(int index, int a, int b)
 {
-    /* As above, retain a real writable-table read through MMAT_CALLS instead
-     * of permitting IDA to pre-fold the encoded target into a direct call. */
-    static volatile uintptr_t hikari_table_encoded[2] = {
-        (uintptr_t)call_target_add + HIKARI_OFFSET,
-        (uintptr_t)call_target_sub + HIKARI_OFFSET
-    };
     volatile int idx_bytes = 8;
     (void)index;
     volatile uintptr_t *table_ptr = hikari_table_encoded;  /* m_mov mop_a (address-of global) */

@@ -27,6 +27,27 @@ except ImportError:
 from d810.hexrays.expr import p_ast as python_ast
 
 
+def test_python_ast_node_clone_survives_class_rebinding(monkeypatch):
+    """The fallback clone must not depend on its module's current AstNode."""
+    node = python_ast.AstNode(
+        ida_hexrays.m_add,
+        python_ast.AstLeaf("x_0"),
+        python_ast.AstLeaf("y_0"),
+    )
+    original_class = node.__class__
+
+    # IDAPython reloads can rebind the module global while old pattern objects
+    # remain live.  The previous ``super(AstNode, new_node)`` raised here.
+    monkeypatch.setattr(python_ast, "AstNode", type("ReloadedAstNode", (), {}))
+
+    clone = node.clone()
+
+    assert isinstance(clone, original_class)
+    assert clone is not node
+    assert clone.left is not node.left
+    assert clone.right is not node.right
+
+
 @pytest.mark.skipif(not CYTHON_AVAILABLE, reason="Cython extensions not built")
 class TestCythonBenchmark:
     """Benchmark tests for Cython vs Pure Python performance."""

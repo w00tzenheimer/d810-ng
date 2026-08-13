@@ -25,6 +25,10 @@
 #                           context. Auto-detected from the ADD line.
 #   -c, --context DIR       Use this build context verbatim instead of building
 #                           a minimal one. Warning: the repo root is ~20GB.
+#   -p, --platform PLAT     linux/amd64 | linux/arm64. Auto-detected from the
+#                           installer's ELF header, which is authoritative --
+#                           Hex-Rays ships one binary per arch. Override only
+#                           if you know emulation covers it.
 #       --only WHICH        vanilla | speedups | all   (default: all)
 #       --no-verify         Skip the post-build checks.
 #       --no-cache          Pass --no-cache to docker build.
@@ -47,6 +51,7 @@ VERSION=""
 RESOURCE_DIR=""
 ADD_PATH=""
 CONTEXT=""
+PLATFORM=""
 ONLY="all"
 VERIFY=1
 NO_CACHE=""
@@ -64,6 +69,7 @@ while [ $# -gt 0 ]; do
     -r|--resource-dir) RESOURCE_DIR="${2:?}"; shift 2 ;;
     -a|--add-path)     ADD_PATH="${2:?}"; shift 2 ;;
     -c|--context)      CONTEXT="${2:?}"; shift 2 ;;
+    -p|--platform)     PLATFORM="${2:?}"; shift 2 ;;
     --only)            ONLY="${2:?}"; shift 2 ;;
     --no-verify)       VERIFY=0; shift ;;
     --no-cache)        NO_CACHE="--no-cache"; shift ;;
@@ -101,6 +107,43 @@ INSTALLER="$RESOURCE_DIR/ida${VERSION}.run"
 for f in idakeygen.py idareggen.py entrypoint.sh; do
   [ -f "$RESOURCE_DIR/$f" ] || die "missing required resource: $RESOURCE_DIR/$f"
 done
+
+# ---------------------------------------------------------------------------
+# Platform: dictated by the installer, not a free choice
+# ---------------------------------------------------------------------------
+# ida<x.y>.run is a native ELF, and Hex-Rays ships a separate download per
+# architecture. Building on the wrong base means the installer cannot execute,
+# which surfaces ~10 minutes in as an exec format error. Read the ELF header
+# rather than guessing from the host or from IDA_VERSION: as of 9.4, 9.3 and
+# 9.4 are aarch64 here while 9.1 is x86-64.
+#
+# e_machine lives at byte offset 18 (little-endian): 0x3e = x86-64, 0xb7 = aarch64.
+installer_platform() {
+  local m
+  m="$(od -An -tx1 -j18 -N2 "$1" | tr -d ' \n')"
+  case "$m" in
+    3e00) echo linux/amd64 ;;
+    b700) echo linux/arm64 ;;
+    *)    echo "unknown:$m" ;;
+  esac
+}
+
+DETECTED_PLATFORM="$(installer_platform "$INSTALLER")"
+case "$DETECTED_PLATFORM" in
+  unknown:*) die "cannot read the architecture of $INSTALLER (e_machine=${DETECTED_PLATFORM#unknown:}); pass --platform" ;;
+esac
+
+if [ -z "$PLATFORM" ]; then
+  PLATFORM="$DETECTED_PLATFORM"
+  note "installer is $PLATFORM (from its ELF header)"
+elif [ "$PLATFORM" != "$DETECTED_PLATFORM" ]; then
+  note "WARNING: --platform $PLATFORM does not match the installer ($DETECTED_PLATFORM);"
+  note "         $(basename "$INSTALLER") will not execute unless emulation covers it."
+fi
+
+# Emulated builds are slow enough to be worth calling out before the wait.
+HOST_PLATFORM="linux/arm64"; [ "$(uname -m)" = "x86_64" ] && HOST_PLATFORM="linux/amd64"
+[ "$PLATFORM" = "$HOST_PLATFORM" ] || note "NOTE: $PLATFORM on a $HOST_PLATFORM host builds and runs under emulation (slow)."
 
 # ---------------------------------------------------------------------------
 # Build context
@@ -153,7 +196,11 @@ for row in "${VARIANTS[@]}"; do
 
   args=(build)
   [ -n "$NO_CACHE" ] && args+=("$NO_CACHE")
+  # --platform, not --build-arg TARGETPLATFORM: BuildKit predefines
+  # TARGETPLATFORM from this flag, and re-declaring it to use in FROM trips
+  # its RedundantTargetPlatform lint.
   args+=(-f "$DOCKERFILE"
+         --platform "$PLATFORM"
          --build-arg "IDA_VERSION=${VERSION}"
          --build-arg "MODE=${mode}"
          --build-arg "SPEEDUPS=${speedups}")
@@ -203,7 +250,7 @@ done
 if [ "$VERIFY" -eq 1 ] && [ "${#BUILT[@]}" -gt 0 ]; then
   echo
   note "verifying:"
-  printf '  %-34s %-9s %-8s %-9s %-7s %-5s %s\n' IMAGE SPEEDUPS X11LIBS PYTEST IDALIB GDB GUI
+  printf '  %-34s %-9s %-8s %-9s %-7s %-5s %-7s %s\n' IMAGE SPEEDUPS X11LIBS PYTEST IDALIB GDB SETUPT GUI
   failures=0
   for ref in "${BUILT[@]}"; do
     want_speedups="0"; case "$ref" in *-speedups:*) want_speedups="1" ;; esac
@@ -216,6 +263,9 @@ if [ "$VERIFY" -eq 1 ] && [ "${#BUILT[@]}" -gt 0 ]; then
     if docker run --rm "$ref" -c "import idapro, idaapi; print(idaapi.IDA_SDK_VERSION)" >/dev/null 2>&1; then got_idalib="ok"; else got_idalib="FAIL"; fi
     # gdb rides along with SPEEDUPS=1; the vanilla images stay without it
     if docker run --rm --entrypoint sh "$ref" -c "command -v gdb" >/dev/null 2>&1; then got_gdb="yes"; else got_gdb="no"; fi
+    # Every variant needs setuptools/wheel: the images are offline after build,
+    # so `pip install -e .[dev]` cannot fetch d810's build backend on demand.
+    if docker run --rm "$ref" -c "import wheel; from setuptools import build_meta" >/dev/null 2>&1; then got_setupt="yes"; else got_setupt="NO"; fi
 
     # An x11 image whose apt list is short still builds and still links Qt; the
     # GUI binary only fails at launch, and ldd is the cheap way to see it here
@@ -247,9 +297,10 @@ if [ "$VERIFY" -eq 1 ] && [ "${#BUILT[@]}" -gt 0 ]; then
     [ "$got_pytest" = "$want_pytest" ]     || status="$status pytest(want $want_pytest)"
     [ "$got_idalib" = "ok" ]               || status="$status idalib"
     [ "$got_gdb" = "$want_gdb" ]           || status="$status gdb(want $want_gdb)"
+    [ "$got_setupt" = "yes" ]              || status="$status setuptools"
     case "$got_gui" in MISSING*) status="$status gui-libs" ;; esac
 
-    printf '  %-34s %-9s %-8s %-9s %-7s %-5s %s%s\n' "$ref" "$got_speedups" "$got_x11" "$got_pytest" "$got_idalib" "$got_gdb" "$got_gui" \
+    printf '  %-34s %-9s %-8s %-9s %-7s %-5s %-7s %s%s\n' "$ref" "$got_speedups" "$got_x11" "$got_pytest" "$got_idalib" "$got_gdb" "$got_setupt" "$got_gui" \
       "$( [ -n "$status" ] && echo "   MISMATCH:$status" )"
     [ -n "$status" ] && failures=$((failures + 1))
   done

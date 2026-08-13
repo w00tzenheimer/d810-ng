@@ -508,6 +508,9 @@ def test_default_local_boundary_does_not_claim_parameter_dependency(tmp_path):
 
 
 def test_boundary_input_name_cannot_collide_with_varnode_alloca():
+    opt = find_llvm_opt()
+    if opt is None:
+        pytest.skip("LLVM opt not found; IR verification requires opt")
     flow = _graph(_block(0, (), (_ret(_reg(24)),)))
 
     result = emit_flowgraph_to_llvm(
@@ -524,7 +527,11 @@ def test_boundary_input_name_cannot_collide_with_varnode_alloca():
     assert "%r24_4 = alloca i32" in result.ir_text
     assert "store i32 %arg_r24_4, ptr %r24_4, align 4" in result.ir_text
     assert (
-        verify_llvm_ir(result.ir_text, function_name="collision").status
+        verify_llvm_ir(
+            result.ir_text,
+            function_name="collision",
+            opt_path=opt,
+        ).status
         is LlvmVerificationStatus.PASSED
     )
 

@@ -436,7 +436,7 @@ class TestPassPipelineLogging:
         backend = InMemoryBackend()
         pipeline = FlowGraphTransformPipeline(backend, [ConditionalPass()])
 
-        with caplog.at_level("DEBUG"):
+        with caplog.at_level("DEBUG", logger="d810.passes.pipeline"):
             pipeline.run({}, mutation_gateway=MUTATION_GATEWAY)
 
         assert any("not applicable" in record.message for record in caplog.records)
@@ -446,7 +446,7 @@ class TestPassPipelineLogging:
         backend = InMemoryBackend()
         pipeline = FlowGraphTransformPipeline(backend, [NoOpPass()])
 
-        with caplog.at_level("DEBUG"):
+        with caplog.at_level("DEBUG", logger="d810.passes.pipeline"):
             pipeline.run({}, mutation_gateway=MUTATION_GATEWAY)
 
         assert any(
@@ -458,7 +458,7 @@ class TestPassPipelineLogging:
         backend = FailingVerificationBackend()
         pipeline = FlowGraphTransformPipeline(backend, [SingleModPass()])
 
-        with caplog.at_level("DEBUG"):
+        with caplog.at_level("DEBUG", logger="d810.passes.pipeline"):
             pipeline.run({}, mutation_gateway=MUTATION_GATEWAY)
 
         assert any(
@@ -470,7 +470,7 @@ class TestPassPipelineLogging:
         backend = InMemoryBackend()
         pipeline = FlowGraphTransformPipeline(backend, [SingleModPass()])
 
-        with caplog.at_level("DEBUG"):
+        with caplog.at_level("DEBUG", logger="d810.passes.pipeline"):
             pipeline.run({}, mutation_gateway=MUTATION_GATEWAY)
 
         assert any(

@@ -5,12 +5,48 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import ida_hexrays
+import pytest
 
 from d810.ir.lattice import TOP, Const
 from d810.hexrays.ir.mop_utils import constant_propagation_var_name
 from d810.optimizers.microcode.flow.constant_prop.forward_const_prop import (
     ForwardConstantPropagationRule,
 )
+
+
+class _StackMop:
+    """Small live-API-shaped operand used to exercise FCP's recursive rewrite."""
+
+    def __init__(self, name: str, *, size: int = 4) -> None:
+        self.t = ida_hexrays.mop_S
+        self.name = name
+        self.size = size
+        self.nnn = None
+
+    def make_number(self, value: int, size: int) -> None:
+        self.t = ida_hexrays.mop_n
+        self.size = size
+        self.nnn = SimpleNamespace(value=value)
+
+
+class _SubInsnMop:
+    def __init__(self, instruction, *, size: int = 4) -> None:
+        self.t = ida_hexrays.mop_d
+        self.d = instruction
+        self.size = size
+
+
+class _Insn:
+    def __init__(self, opcode: int, *, left=None, right=None, dest=None) -> None:
+        self.opcode = opcode
+        self.l = left
+        self.r = right
+        self.d = dest
+        self.ea = 0x401000
+        self.optimize_calls = 0
+
+    def optimize_solo(self) -> None:
+        self.optimize_calls += 1
 
 
 def test_mba_function_ea_accepts_valid_entry_ea():
@@ -92,3 +128,32 @@ def test_constprop_does_not_widen_a_known_stack_value(monkeypatch):
         {"%var_2E0": Const(0x89ABCDEF, 4)},
     )
     assert rewritten == []
+
+
+@pytest.mark.parametrize("opcode", (ida_hexrays.m_jnz, ida_hexrays.m_jz))
+def test_constprop_rewrites_nested_conditional_branch_operands(monkeypatch, opcode):
+    """A branch comparison may consume a constant expression, not just a literal."""
+    rule = ForwardConstantPropagationRule()
+    left = _StackMop("left")
+    right = _StackMop("right")
+    difference = _Insn(ida_hexrays.m_sub, left=left, right=right)
+    branch = _Insn(opcode, right=_SubInsnMop(difference))
+
+    monkeypatch.setattr(
+        "d810.optimizers.microcode.flow.constant_prop.forward_const_prop.constant_propagation_var_name",
+        lambda mop: mop.name,
+    )
+
+    changed = rule._slow_rewrite_instruction(
+        None,
+        branch,
+        {"left": Const(0xA0DE427, 4), "right": Const(0xA0DE427, 4)},
+    )
+
+    assert changed == 1
+    assert left.t == ida_hexrays.mop_n
+    assert left.nnn.value == 0xA0DE427
+    assert right.t == ida_hexrays.mop_n
+    assert right.nnn.value == 0xA0DE427
+    assert difference.optimize_calls == 1
+    assert branch.optimize_calls == 1

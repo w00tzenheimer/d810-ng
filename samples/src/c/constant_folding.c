@@ -485,12 +485,12 @@ const unsigned __int64 qword_1802D2C99 = 0xDE03F46FCD0D7CAA;
 const unsigned __int32 dword_1802D2E48 = 0x88A8C6E5;
 const unsigned __int32 dword_1802D2DBC = 0xF4C84FC4;
 
-/* Keep the test2 inputs as dedicated writable initializers. Hex-Rays 9.4 can
- * natively collapse the all-immediate instruction stream emitted for const
- * globals, which erases the before/after oracle. At -O0 these objects remain
- * real global reads; D810's aggressive_no_direct_writes policy must prove and
- * materialize them before the constant subtree can collapse. */
-static unsigned __int64 constant_folding_test2_qword = 0xB76BFFAE3B3B94B8;
+/* Keep one test2 input externally visible and writable.  A file-local mutable
+ * global can still be replaced by its initializer in this fixture's PE build,
+ * erasing the before/after oracle.  This external read forces D810's
+ * aggressive_no_direct_writes policy to prove and materialize it before the
+ * constant subtree can collapse. */
+unsigned __int64 constant_folding_test2_qword = 0xB76BFFAE3B3B94B8;
 static unsigned __int32 constant_folding_test2_dword = 0xF4C84FC4;
 
 void _InterlockedExchangeW(int a1, int a2, int a3, int a4, int a5) { (void)a1; (void)a2; (void)a3; (void)a4; (void)a5; }
