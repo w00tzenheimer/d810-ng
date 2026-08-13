@@ -24,13 +24,21 @@ import enum
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from d810.capabilities.native_patch import (
+    NativeEncodingResult,
+    NativeInstructionHead,
+    NativeInstructionSequenceShape,
+)
+
 __all__ = [
     "AbstentionReason",
     "Condition",
     "EncodeOutcome",
     "EncodedInstruction",
     "EncodedSequence",
+    "MinimalX86BranchEncoder",
     "SequenceOutcome",
+    "decode",
     "encode_jcc",
     "encode_jmp",
     "encode_nop_padding",
@@ -507,3 +515,184 @@ def plan_conditional_region(
         if encoded_any
         else AbstentionReason.UNREPRESENTABLE_BRANCH
     )
+
+
+# ---------------------------------------------------------------------------
+# decode() -- independent decode of exactly what this module can emit.
+#
+# Not a general x86 decoder. Its only job is self-verification of bytes this
+# encoder plausibly produced (NativeEncodingEvidence.independent_decode_hash),
+# so it recognises exactly the jmp/jcc/NOP forms above and raises on anything
+# else -- encountering an unrecognised form here means the caller handed it
+# bytes that did not come from this encoder, which is a hard error, not an
+# abstention.
+# ---------------------------------------------------------------------------
+
+_NOP_FORMS_BY_LENGTH = tuple(sorted(_NOP_FORMS.items(), key=lambda item: -item[0]))
+
+
+def _decode_one(cursor: int, data: bytes, offset: int) -> EncodedInstruction:
+    """Decode exactly one instruction from ``data`` at ``offset``.
+
+    Raises ``ValueError`` when the bytes at ``offset`` are not a form this
+    encoder emits.
+    """
+    remaining = len(data) - offset
+    first = data[offset]
+
+    if first == _JMP_REL8_OPCODE and remaining >= _JMP_REL8_SIZE:
+        disp = int.from_bytes(data[offset + 1 : offset + 2], "little", signed=True)
+        return EncodedInstruction(
+            ea=cursor,
+            data=bytes(data[offset : offset + _JMP_REL8_SIZE]),
+            mnemonic="jmp",
+            target=cursor + _JMP_REL8_SIZE + disp,
+            displacement=disp,
+        )
+    if first == _JMP_REL32_OPCODE and remaining >= _JMP_REL32_SIZE:
+        disp = int.from_bytes(data[offset + 1 : offset + 5], "little", signed=True)
+        return EncodedInstruction(
+            ea=cursor,
+            data=bytes(data[offset : offset + _JMP_REL32_SIZE]),
+            mnemonic="jmp",
+            target=cursor + _JMP_REL32_SIZE + disp,
+            displacement=disp,
+        )
+    if _JCC_REL8_BASE <= first < _JCC_REL8_BASE + 0x10 and remaining >= _JCC_REL8_SIZE:
+        nibble = first - _JCC_REL8_BASE
+        disp = int.from_bytes(data[offset + 1 : offset + 2], "little", signed=True)
+        return EncodedInstruction(
+            ea=cursor,
+            data=bytes(data[offset : offset + _JCC_REL8_SIZE]),
+            mnemonic=_CONDITION_MNEMONICS[nibble],
+            target=cursor + _JCC_REL8_SIZE + disp,
+            displacement=disp,
+        )
+    if (
+        first == 0x0F
+        and remaining >= _JCC_REL32_SIZE
+        and _JCC_REL32_BASE <= data[offset + 1] < _JCC_REL32_BASE + 0x10
+    ):
+        nibble = data[offset + 1] - _JCC_REL32_BASE
+        disp = int.from_bytes(data[offset + 2 : offset + 6], "little", signed=True)
+        return EncodedInstruction(
+            ea=cursor,
+            data=bytes(data[offset : offset + _JCC_REL32_SIZE]),
+            mnemonic=_CONDITION_MNEMONICS[nibble],
+            target=cursor + _JCC_REL32_SIZE + disp,
+            displacement=disp,
+        )
+    for length, form in _NOP_FORMS_BY_LENGTH:
+        if remaining >= length and bytes(data[offset : offset + length]) == form:
+            return EncodedInstruction(
+                ea=cursor, data=bytes(data[offset : offset + length]), mnemonic="nop"
+            )
+
+    raise ValueError(
+        f"cannot decode byte {first:#x} at {cursor:#x}: not a jmp/jcc/nop form "
+        "this encoder emits"
+    )
+
+
+def decode(
+    ea: int, data: bytes, *, bitness: int = 64
+) -> NativeInstructionSequenceShape:
+    """Independently decode ``data`` at ``ea`` into a portable shape.
+
+    Implements ``d810.capabilities.native_patch.EncodingProvider.decode``.
+    ``bitness`` is accepted for Protocol conformance but unused: every form
+    this encoder emits decodes identically regardless of address width.
+    """
+    del bitness
+    heads: list[NativeInstructionHead] = []
+    cursor = ea
+    offset = 0
+    while offset < len(data):
+        instruction = _decode_one(cursor, data, offset)
+        successors = (
+            (instruction.target,)
+            if instruction.target is not None
+            else (cursor + len(instruction.data),)
+        )
+        heads.append(
+            NativeInstructionHead(
+                ea=cursor,
+                length=len(instruction.data),
+                mnemonic=instruction.mnemonic,
+                operand_shapes=("rel",) if instruction.target is not None else (),
+                successors=successors,
+            )
+        )
+        cursor += len(instruction.data)
+        offset += len(instruction.data)
+    return NativeInstructionSequenceShape(heads=tuple(heads))
+
+
+# ---------------------------------------------------------------------------
+# MinimalX86BranchEncoder -- the concrete EncodingProvider this module was
+# always going to need. Declared here rather than moved: the Task 5
+# layer-correction block requires `transforms.native_patch_lowering` to
+# depend on the `EncodingProvider` Protocol in `d810.capabilities.native_patch`
+# instead of importing this module upward; this class is what the composition
+# root injects to satisfy that Protocol at runtime.
+# ---------------------------------------------------------------------------
+
+
+def _sequence_outcome_to_result(
+    outcome: SequenceOutcome, ea: int
+) -> NativeEncodingResult:
+    if not outcome.ok:
+        return NativeEncodingResult(ok=False, reason=outcome.reason.value)
+    return NativeEncodingResult(
+        ok=True,
+        replacement_bytes=outcome.sequence.data,
+        expected_after_shape=decode(ea, outcome.sequence.data),
+    )
+
+
+class MinimalX86BranchEncoder:
+    """``EncodingProvider`` implementation over the module-level planners.
+
+    ``condition`` strings are looked up by :class:`Condition` member/alias
+    name (``"E"``, ``"NE"``, ``"AE"``, ...) -- exactly ``Condition.__members__``
+    -- so any name or documented x86 alias this module already recognises is
+    accepted; anything else abstains with ``UNREPRESENTABLE_BRANCH`` rather
+    than raising, matching this module's fail-closed contract.
+    """
+
+    def encode_direct_jump(
+        self, start_ea: int, end_ea: int, target_ea: int, *, bitness: int
+    ) -> NativeEncodingResult:
+        outcome = plan_direct_jump_region(start_ea, end_ea, target_ea, bitness=bitness)
+        return _sequence_outcome_to_result(outcome, start_ea)
+
+    def encode_conditional(
+        self,
+        start_ea: int,
+        end_ea: int,
+        *,
+        condition: str,
+        true_target_ea: int,
+        false_target_ea: int,
+        bitness: int,
+    ) -> NativeEncodingResult:
+        try:
+            resolved = Condition[condition]
+        except KeyError:
+            return NativeEncodingResult(
+                ok=False, reason=AbstentionReason.UNREPRESENTABLE_BRANCH.value
+            )
+        outcome = plan_conditional_region(
+            start_ea,
+            end_ea,
+            condition=resolved,
+            true_target=true_target_ea,
+            false_target=false_target_ea,
+            bitness=bitness,
+        )
+        return _sequence_outcome_to_result(outcome, start_ea)
+
+    def decode(
+        self, ea: int, data: bytes, *, bitness: int = 64
+    ) -> NativeInstructionSequenceShape:
+        return decode(ea, data, bitness=bitness)

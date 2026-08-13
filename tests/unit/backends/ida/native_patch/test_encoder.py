@@ -15,12 +15,15 @@ import pytest
 from d810.backends.ida.native_patch.encoder import (
     AbstentionReason,
     Condition,
+    MinimalX86BranchEncoder,
+    decode,
     encode_jcc,
     encode_jmp,
     encode_nop_padding,
     plan_conditional_region,
     plan_direct_jump_region,
 )
+from d810.capabilities.native_patch import EncodingProvider
 
 pytestmark = pytest.mark.pure_python
 
@@ -402,3 +405,142 @@ class TestPlanConditionalRegion:
 
         assert not outcome.ok
         assert outcome.reason is AbstentionReason.UNREPRESENTABLE_BRANCH
+
+
+class TestDecode:
+    """Independent decode of exactly the byte forms this encoder emits.
+
+    Not a general x86 decoder -- see the module docstring's "no dependency to
+    pin" rationale. It only has to recognise what ``encode_jmp``/``encode_jcc``/
+    ``encode_nop_padding`` could have produced, because its purpose is
+    self-verification of emitted bytes (``NativeEncodingEvidence.
+    independent_decode_hash``), not general disassembly.
+    """
+
+    def test_decodes_jmp_rel8(self):
+        shape = decode(0x1000, bytes([0xEB, 0x03]))
+        assert len(shape.heads) == 1
+        head = shape.heads[0]
+        assert (head.ea, head.length, head.mnemonic) == (0x1000, 2, "jmp")
+        assert head.successors == (0x1005,)
+
+    def test_decodes_jmp_rel32(self):
+        outcome = encode_jmp(ea=0x1000, target=0x1000 + 0x10000, width=32)
+        shape = decode(0x1000, outcome.instruction.data)
+        assert len(shape.heads) == 1
+        head = shape.heads[0]
+        assert (head.ea, head.length, head.mnemonic) == (0x1000, 5, "jmp")
+        assert head.successors == (0x1000 + 0x10000,)
+
+    def test_decodes_jcc_rel8(self):
+        outcome = encode_jcc(ea=0x2000, target=0x2010, condition=Condition.E)
+        shape = decode(0x2000, outcome.instruction.data)
+        head = shape.heads[0]
+        assert (head.ea, head.length, head.mnemonic) == (0x2000, 2, "je")
+        assert head.successors == (0x2010,)
+
+    def test_decodes_jcc_rel32(self):
+        outcome = encode_jcc(
+            ea=0x2000, target=0x2000 + 0x10000, condition=Condition.NE, width=32
+        )
+        shape = decode(0x2000, outcome.instruction.data)
+        head = shape.heads[0]
+        assert (head.ea, head.length, head.mnemonic) == (0x2000, 6, "jne")
+
+    def test_decodes_nop_padding_of_several_lengths(self):
+        for length in (1, 2, 3, 5, 9, 11, 17):
+            padding = encode_nop_padding(0x3000, length)
+            assert padding.ok
+            shape = decode(0x3000, padding.sequence.data)
+            assert sum(h.length for h in shape.heads) == length
+            assert all(h.mnemonic == "nop" for h in shape.heads)
+
+    def test_decodes_a_conditional_region_stencil(self):
+        outcome = plan_conditional_region(
+            start_ea=0x1000,
+            end_ea=0x100C,
+            condition=Condition.E,
+            true_target=0x1020,
+            false_target=0x1030,
+        )
+        assert outcome.ok
+        shape = decode(0x1000, outcome.sequence.data)
+        mnemonics = [h.mnemonic for h in shape.heads]
+        assert mnemonics[0] == "je"
+        assert mnemonics[1] == "jmp"
+        assert all(m == "nop" for m in mnemonics[2:])
+        assert sum(h.length for h in shape.heads) == 0x0C
+
+    def test_raises_on_bytes_it_did_not_emit(self):
+        with pytest.raises(ValueError):
+            decode(0x1000, bytes([0x90, 0xCC]))  # 0xCC (int3) is not in our vocabulary
+
+
+class TestMinimalX86BranchEncoderSatisfiesEncodingProvider:
+    """The existing encoder module implements ``EncodingProvider`` -- see the
+    Task 5 layer-correction block: ``transforms.native_patch_lowering`` depends
+    on the Protocol declared in ``d810.capabilities.native_patch``, never on
+    this module directly."""
+
+    def test_isinstance_check_passes(self):
+        assert isinstance(MinimalX86BranchEncoder(), EncodingProvider)
+
+    def test_encode_direct_jump_matches_plan_direct_jump_region(self):
+        provider = MinimalX86BranchEncoder()
+        result = provider.encode_direct_jump(0x1000, 0x1002, 0x1010, bitness=64)
+
+        assert result.ok
+        plan = plan_direct_jump_region(0x1000, 0x1002, 0x1010)
+        assert result.replacement_bytes == plan.sequence.data
+        assert len(result.expected_after_shape.heads) >= 1
+        assert result.expected_after_shape.heads[0].mnemonic == "jmp"
+
+    def test_encode_direct_jump_abstains_with_the_provider_reason(self):
+        provider = MinimalX86BranchEncoder()
+        # A single byte cannot fit any representable branch encoding.
+        result = provider.encode_direct_jump(
+            0x1000, 0x1001, 0x1000 + (1 << 40), bitness=64
+        )
+
+        assert not result.ok
+        assert result.reason == AbstentionReason.UNREPRESENTABLE_BRANCH.value
+
+    def test_encode_conditional_matches_plan_conditional_region(self):
+        provider = MinimalX86BranchEncoder()
+        result = provider.encode_conditional(
+            0x1000,
+            0x100C,
+            condition="E",
+            true_target_ea=0x1020,
+            false_target_ea=0x1030,
+            bitness=64,
+        )
+
+        assert result.ok
+        plan = plan_conditional_region(
+            start_ea=0x1000,
+            end_ea=0x100C,
+            condition=Condition.E,
+            true_target=0x1020,
+            false_target=0x1030,
+        )
+        assert result.replacement_bytes == plan.sequence.data
+
+    def test_encode_conditional_rejects_an_unknown_condition_name(self):
+        provider = MinimalX86BranchEncoder()
+        result = provider.encode_conditional(
+            0x1000,
+            0x100C,
+            condition="NOT_A_CONDITION",
+            true_target_ea=0x1020,
+            false_target_ea=0x1030,
+            bitness=64,
+        )
+
+        assert not result.ok
+        assert result.reason == AbstentionReason.UNREPRESENTABLE_BRANCH.value
+
+    def test_decode_method_delegates_to_module_level_decode(self):
+        provider = MinimalX86BranchEncoder()
+        data = bytes([0xEB, 0x03])
+        assert provider.decode(0x1000, data, bitness=64) == decode(0x1000, data)

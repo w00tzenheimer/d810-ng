@@ -1,0 +1,370 @@
+"""Pure conversion from a captured native-origin edge to a lowered Mode-A
+``NativePatchOperation``.
+
+Task 5 ("Read-only capture, lowering, and preflight") of
+``_gitless/profile-guided-native-mutation-implementer-plan.md``. Lowers only
+direct/conditional Mode-A edges (section 10 of
+``_gitless/REVERSIBLE-NATIVE-PATCHES.md``): an owned terminator region is
+replaced in place with one jump, or a ``jcc <true>; jmp <false>`` stencil,
+never with a relocated body instruction (invariant 11).
+
+Layer correction -- this module must not import the encoder
+--------------------------------------------------------------------------
+
+``d810.transforms`` (rank 9) sits *below* ``d810.backends`` (rank 6) in the
+layered-architecture contract, so importing
+``d810.backends.ida.native_patch.encoder`` here would be the exact upward
+import the contract forbids. The inversion (identical to the one already
+applied to the policy gate and the observation handler in Task 4): this
+module depends only on the ``EncodingProvider`` Protocol declared in
+``d810.capabilities.native_patch`` (rank 12, a lower layer than both
+``transforms`` and ``backends``); ``MinimalX86BranchEncoder`` in
+``d810.backends.ida.native_patch.encoder`` implements that Protocol, and the
+composition root injects it. This module never imports ``d810.backends``.
+
+The pure-control-transfer mnemonic check (``_is_pure_control_transfer_mnemonic``)
+is a small, self-contained rule duplicated here rather than imported from the
+encoder for the same reason -- it is a naming convention, not encoder logic,
+and importing the encoder module just to reuse it would reintroduce the
+forbidden edge.
+
+The EdgeStateContract is deliberately NOT designed here
+--------------------------------------------------------------------------
+
+``EdgeStateContract`` does not exist yet -- it is an unresolved P0 design item
+the implementer plan explicitly defers. This module does not invent it.
+Instead, whenever a candidate rewrite would eliminate a register/memory/flag
+definition, lowering abstains with the stable reason
+``EDGE_STATE_CONTRACT_REQUIRED`` rather than silently dropping the
+definition. Mode A only ever replaces a *pure control-transfer* instruction
+(the region's own terminator); a captured origin span whose ``instructions``
+contains anything else -- more than one instruction, or a single instruction
+that is not itself a jmp/jcc -- is exactly a "state-store edge": authorizing
+its removal needs a data-flow authority this codebase does not have yet.
+Abstain-by-default is the correct, honest posture here.
+
+Origin coverage (global constraint)
+--------------------------------------------------------------------------
+
+``PARTIAL``, ``AMBIGUOUS``, and ``SYNTHETIC`` :class:`~d810.ir.native_origin.
+NativeOriginCoverage` are all automatic abstention reasons -- see
+``_origin_state_check``. Only ``COMPLETE`` coverage may ever be lowered.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import hashlib
+from dataclasses import dataclass
+from enum import Enum
+
+from d810.capabilities.native_patch import (
+    EncodingProvider,
+    NativeInstructionHead,
+    NativeInstructionSequenceShape,
+)
+from d810.ir.native_origin import NativeOriginCoverage, NativeOriginSpan
+from d810.ir.semantics import PredicateKind
+from d810.transforms.native_patch_plan import (
+    InheritedPatchRow,
+    NativeAddressRange,
+    NativeEncodingEvidence,
+    NativeFunctionOwnership,
+    NativeIncomingRef,
+    NativeItemShape,
+    NativePatchOperation,
+    NativeRestoreSnapshot,
+)
+
+__all__ = [
+    "NativeEdgeAbstentionReason",
+    "NativeEdgeCaptureEvidence",
+    "NativeEdgeLoweringOutcome",
+    "lower_conditional_edge",
+    "lower_direct_edge",
+]
+
+
+class NativeEdgeAbstentionReason(str, Enum):
+    """Stable reasons this module produces on its own (not forwarded from an
+    ``EncodingProvider`` abstention -- those pass through verbatim as plain
+    strings; see ``lower_direct_edge``/``lower_conditional_edge``).
+
+    ``PARTIAL_NATIVE_ORIGIN``, ``AMBIGUOUS_NATIVE_ORIGIN``, and
+    ``UNREPRESENTABLE_BRANCH`` reuse the stable vocabulary from section 16 of
+    ``_gitless/REVERSIBLE-NATIVE-PATCHES.md``. ``SYNTHETIC_NATIVE_ORIGIN`` and
+    ``EDGE_STATE_CONTRACT_REQUIRED`` are not in that list -- both are
+    deliberate additions documented in the module and report: section 16 only
+    names partial/ambiguous explicitly, and the EdgeStateContract reason is
+    new by design (see the module docstring).
+    """
+
+    PARTIAL_NATIVE_ORIGIN = "PARTIAL_NATIVE_ORIGIN"
+    AMBIGUOUS_NATIVE_ORIGIN = "AMBIGUOUS_NATIVE_ORIGIN"
+    SYNTHETIC_NATIVE_ORIGIN = "SYNTHETIC_NATIVE_ORIGIN"
+    EDGE_STATE_CONTRACT_REQUIRED = "EDGE_STATE_CONTRACT_REQUIRED"
+    INSTRUCTION_SPLIT = "INSTRUCTION_SPLIT"
+    UNREPRESENTABLE_BRANCH = "UNREPRESENTABLE_BRANCH"
+
+
+def _is_pure_control_transfer_mnemonic(mnemonic: str) -> bool:
+    """Whether ``mnemonic`` names a plain jump/conditional-jump instruction.
+
+    Matches ``d810.backends.ida.native_patch.observation._is_conditional_
+    branch``'s own established rule ("starts with 'j', is not 'jmp'") rather
+    than an exact finite set of canonical x86 mnemonics: IDA's decoder does
+    not always print the same short-name spelling this module's authors
+    would guess by hand (confirmed against the live ``fake_jumps.dll``
+    fixture in the Docker system-test suite -- see the Task 5 report). Every
+    x86 jump/conditional-jump mnemonic IDA emits starts with ``"j"``
+    (``je``, ``jz``, ``jnb``, ``jrcxz``, ...) and no non-branch x86 mnemonic
+    does, so this is both safe and robust to spelling variants -- unlike a
+    hand-maintained finite set, which this module's own Docker run proved
+    wrong on the first real fixture.
+    """
+    return mnemonic.startswith("j")
+
+
+# Portable PredicateKind -> Condition member/alias name (see
+# d810.backends.ida.native_patch.encoder.Condition.__members__). TRUTHY (m_jcnd)
+# tests a value rather than a condition-code flag, so it has no single-Jcc
+# hardware form in this minimal model and is deliberately absent -- a lookup
+# miss abstains with UNREPRESENTABLE_BRANCH.
+_PREDICATE_TO_CONDITION_NAME: dict[PredicateKind, str] = {
+    PredicateKind.EQ: "E",
+    PredicateKind.NE: "NE",
+    PredicateKind.UGE: "AE",
+    PredicateKind.UGT: "A",
+    PredicateKind.ULE: "BE",
+    PredicateKind.ULT: "B",
+    PredicateKind.SGE: "GE",
+    PredicateKind.SGT: "G",
+    PredicateKind.SLE: "LE",
+    PredicateKind.SLT: "L",
+}
+
+
+@dataclass(frozen=True, slots=True)
+class NativeEdgeCaptureEvidence:
+    """Plain, already-captured facts a backend caller read from the live
+    database, handed to lowering by value.
+
+    Bundles exactly the ``NativePatchOperation`` fields this pure module
+    cannot derive on its own (it never touches IDA). The backend-layer
+    ``capture`` module builds one of these from live reads; lowering only
+    ever sees this plain, provider-neutral snapshot.
+    """
+
+    expected_current_bytes: bytes
+    expected_original_bytes: bytes
+    expected_patch_rows: tuple[InheritedPatchRow, ...]
+    expected_item_shape: NativeItemShape
+    expected_incoming_refs: tuple[NativeIncomingRef, ...]
+    expected_function_ownership: NativeFunctionOwnership
+    restore_snapshot: NativeRestoreSnapshot
+
+
+@dataclass(frozen=True, slots=True)
+class NativeEdgeLoweringOutcome:
+    """Either a lowered ``NativePatchOperation`` or a stable abstention reason."""
+
+    operation: NativePatchOperation | None = None
+    reason: str | None = None
+
+    def __post_init__(self) -> None:
+        if (self.operation is None) == (self.reason is None):
+            raise ValueError("exactly one of operation/reason must be set")
+
+    @property
+    def ok(self) -> bool:
+        return self.operation is not None
+
+
+def _origin_state_check(origin_span: NativeOriginSpan) -> str | None:
+    """Return an abstention reason, or ``None`` if lowering may proceed.
+
+    Coverage is checked first (global constraint: partial/ambiguous/synthetic
+    are automatic abstentions). Only a ``COMPLETE`` span may reach the
+    state-store check, which requires the span to be exactly one pure
+    control-transfer instruction -- see the module docstring.
+    """
+    if origin_span.coverage is NativeOriginCoverage.PARTIAL:
+        return NativeEdgeAbstentionReason.PARTIAL_NATIVE_ORIGIN.value
+    if origin_span.coverage is NativeOriginCoverage.AMBIGUOUS:
+        return NativeEdgeAbstentionReason.AMBIGUOUS_NATIVE_ORIGIN.value
+    if origin_span.coverage is NativeOriginCoverage.SYNTHETIC:
+        return NativeEdgeAbstentionReason.SYNTHETIC_NATIVE_ORIGIN.value
+
+    # COMPLETE.
+    if len(origin_span.instructions) != 1:
+        return NativeEdgeAbstentionReason.EDGE_STATE_CONTRACT_REQUIRED.value
+    if not _is_pure_control_transfer_mnemonic(origin_span.instructions[0].mnemonic):
+        return NativeEdgeAbstentionReason.EDGE_STATE_CONTRACT_REQUIRED.value
+    return None
+
+
+def _build_operation(
+    *,
+    operation_id: str,
+    origin_span: NativeOriginSpan,
+    successors: tuple[int, ...],
+    replacement_bytes: bytes,
+    expected_after_shape: NativeInstructionSequenceShape,
+    capture: NativeEdgeCaptureEvidence,
+    provider: EncodingProvider,
+    provider_id: str,
+    provider_version: str,
+    bitness: int,
+) -> NativePatchOperation:
+    before_insn = origin_span.instructions[0]
+    expected_before_shape = NativeInstructionSequenceShape(
+        heads=(
+            NativeInstructionHead(
+                ea=before_insn.ea,
+                length=before_insn.length,
+                mnemonic=before_insn.mnemonic,
+                operand_shapes=before_insn.operand_shape,
+                successors=(before_insn.end_ea,),
+            ),
+        )
+    )
+    # Independent re-verification: decode the emitted bytes again rather than
+    # trust expected_after_shape, matching EncodingProvider.decode's contract.
+    independent_decode = provider.decode(
+        origin_span.start_ea, replacement_bytes, bitness=bitness
+    )
+    encoding_evidence = NativeEncodingEvidence(
+        provider_id=provider_id,
+        provider_version=provider_version,
+        final_ea=origin_span.start_ea,
+        opcode_intent="; ".join(h.mnemonic for h in expected_after_shape.heads),
+        emitted_hash=hashlib.sha256(replacement_bytes).hexdigest(),
+        independent_decode_hash=hashlib.sha256(
+            repr(dataclasses.astuple(independent_decode)).encode("utf-8")
+        ).hexdigest(),
+    )
+    return NativePatchOperation(
+        operation_id=operation_id,
+        range=NativeAddressRange(origin_span.start_ea, origin_span.end_ea),
+        expected_current_bytes=capture.expected_current_bytes,
+        expected_original_bytes=capture.expected_original_bytes,
+        expected_patch_rows=capture.expected_patch_rows,
+        expected_before_shape=expected_before_shape,
+        expected_item_shape=capture.expected_item_shape,
+        expected_incoming_refs=capture.expected_incoming_refs,
+        expected_function_ownership=capture.expected_function_ownership,
+        replacement_bytes=replacement_bytes,
+        expected_after_shape=expected_after_shape,
+        expected_after_successors=successors,
+        encoding_evidence=encoding_evidence,
+        # Version 1 relocates no body instruction (invariant 11), and Mode A's
+        # same-size NOP-padded replacement never changes item boundaries
+        # ahead of a live apply -- metadata_actions population (RECREATE_ITEM
+        # planning) is deferred to Task 6's gateway, which owns post-write
+        # item recreation with live data this pure module does not have.
+        relocation_evidence=(),
+        metadata_actions=(),
+        restore_snapshot=capture.restore_snapshot,
+    )
+
+
+def lower_direct_edge(
+    *,
+    operation_id: str,
+    origin_span: NativeOriginSpan,
+    target_ea: int,
+    known_instruction_heads: frozenset[int],
+    capture: NativeEdgeCaptureEvidence,
+    provider: EncodingProvider,
+    provider_id: str,
+    provider_version: str,
+    bitness: int = 64,
+) -> NativeEdgeLoweringOutcome:
+    """Lower an owned terminator region to a single unconditional jump."""
+    reason = _origin_state_check(origin_span)
+    if reason is not None:
+        return NativeEdgeLoweringOutcome(reason=reason)
+    if target_ea not in known_instruction_heads:
+        return NativeEdgeLoweringOutcome(
+            reason=NativeEdgeAbstentionReason.INSTRUCTION_SPLIT.value
+        )
+
+    result = provider.encode_direct_jump(
+        origin_span.start_ea, origin_span.end_ea, target_ea, bitness=bitness
+    )
+    if not result.ok:
+        return NativeEdgeLoweringOutcome(reason=result.reason)
+
+    return NativeEdgeLoweringOutcome(
+        operation=_build_operation(
+            operation_id=operation_id,
+            origin_span=origin_span,
+            successors=(target_ea,),
+            replacement_bytes=result.replacement_bytes,
+            expected_after_shape=result.expected_after_shape,
+            capture=capture,
+            provider=provider,
+            provider_id=provider_id,
+            provider_version=provider_version,
+            bitness=bitness,
+        )
+    )
+
+
+def lower_conditional_edge(
+    *,
+    operation_id: str,
+    origin_span: NativeOriginSpan,
+    condition: PredicateKind,
+    true_target_ea: int,
+    false_target_ea: int,
+    known_instruction_heads: frozenset[int],
+    capture: NativeEdgeCaptureEvidence,
+    provider: EncodingProvider,
+    provider_id: str,
+    provider_version: str,
+    bitness: int = 64,
+) -> NativeEdgeLoweringOutcome:
+    """Lower an owned terminator region to ``jcc <true>; jmp <false>``."""
+    reason = _origin_state_check(origin_span)
+    if reason is not None:
+        return NativeEdgeLoweringOutcome(reason=reason)
+    if (
+        true_target_ea not in known_instruction_heads
+        or false_target_ea not in known_instruction_heads
+    ):
+        return NativeEdgeLoweringOutcome(
+            reason=NativeEdgeAbstentionReason.INSTRUCTION_SPLIT.value
+        )
+
+    condition_name = _PREDICATE_TO_CONDITION_NAME.get(condition)
+    if condition_name is None:
+        return NativeEdgeLoweringOutcome(
+            reason=NativeEdgeAbstentionReason.UNREPRESENTABLE_BRANCH.value
+        )
+
+    result = provider.encode_conditional(
+        origin_span.start_ea,
+        origin_span.end_ea,
+        condition=condition_name,
+        true_target_ea=true_target_ea,
+        false_target_ea=false_target_ea,
+        bitness=bitness,
+    )
+    if not result.ok:
+        return NativeEdgeLoweringOutcome(reason=result.reason)
+
+    return NativeEdgeLoweringOutcome(
+        operation=_build_operation(
+            operation_id=operation_id,
+            origin_span=origin_span,
+            successors=(true_target_ea, false_target_ea),
+            replacement_bytes=result.replacement_bytes,
+            expected_after_shape=result.expected_after_shape,
+            capture=capture,
+            provider=provider,
+            provider_id=provider_id,
+            provider_version=provider_version,
+            bitness=bitness,
+        )
+    )
