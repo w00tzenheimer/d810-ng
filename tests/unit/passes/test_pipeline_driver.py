@@ -6,7 +6,9 @@ detect -> pipeline_for -> validate_capabilities -> pass.run -> (apply on non-emp
 
 from __future__ import annotations
 
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -44,10 +46,16 @@ from d810.passes.scheduler import PassScheduler, RunLater, RunLaterDomain
 from d810.passes.registry import PassRegistry
 from d810.transforms.cfg_transaction import LogicalBlockRef
 from d810.transforms.plan import PatchNopInstructions, PatchPlan
+from d810.core.execution_journal import (
+    DecompilationSessionId,
+    ExecutionAttemptStatus,
+)
+from d810.core.execution_journal_store import ExecutionJournalStore
 from d810.passes.driver import (
     AnalysisContractError,
     BackendRouteError,
     CapabilityError,
+    NOT_SCHEDULED_AT_MATURITY_REASON,
     PassContractDiagnostic,
     PassContractError,
     effective_safety_policy,
@@ -3221,3 +3229,260 @@ def test_select_family_require_no_match_returns_none(monkeypatch):
     monkeypatch.setattr("d810.families.registry.registered_families", lambda: (a,))
     cfg = {"router_resolution": {"require": "tigress"}}
     assert select_family("G", project_config=cfg) is None
+
+
+# ---------------------------------------------------------------------------
+# Task 3: mandatory per-pass execution attempt provenance for config-v2 runs
+# ---------------------------------------------------------------------------
+
+
+def _journal_store() -> ExecutionJournalStore:
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    tmp.close()
+    return ExecutionJournalStore(Path(tmp.name))
+
+
+class _NeverDetect:
+    """A Family double that must never be consulted during config-v2 execution."""
+
+    name = "never_detect"
+
+    def detect(self, graph, capabilities, context=None):
+        raise AssertionError("config-v2 execution should not detect a live family")
+
+    def pipeline_for(self, match, context):
+        raise AssertionError("config-v2 execution should not use live specs")
+
+
+def _run_config_v2(
+    specs: tuple[PassSpec, ...],
+    *,
+    journal: ExecutionJournalStore | None,
+    session_id: DecompilationSessionId | None = None,
+    backend=None,
+    facts=None,
+    maturity=IRMaturity.CANONICAL,
+):
+    return run_pipeline(
+        source=_Src(),
+        family=_NeverDetect(),
+        backend=backend if backend is not None else _Backend(),
+        facts=facts if facts is not None else AnalysisManager(_GRAPH),
+        project_config={"pipeline_v2_mode": "config-v2"},
+        maturity=maturity,
+        pipeline_v2_specs=specs,
+        journal=journal,
+        session_id=session_id,
+    )
+
+
+def test_driver_records_a_completed_attempt_for_a_no_effect_pass() -> None:
+    calls: list[str] = []
+    spec = PassSpec("no_effect", _recording_pass("no_effect", calls), no_caps, default)
+    session = DecompilationSessionId.new()
+    journal = _journal_store()
+
+    try:
+        _run_config_v2((spec,), journal=journal, session_id=session)
+
+        assert calls == ["no_effect"]
+        attempt = journal.only_attempt(session, stage_id="no_effect")
+        assert attempt.status is ExecutionAttemptStatus.COMPLETED
+        assert attempt.effect_refs == ()
+        assert attempt.attempt_id.session == session
+    finally:
+        journal.close()
+
+
+def test_driver_records_a_mutation_effect_ref_when_a_pass_applies_a_plan() -> None:
+    session = DecompilationSessionId.new()
+    journal = _journal_store()
+
+    try:
+        _run_config_v2(
+            (PassSpec("mutating", _MutatingPass, no_caps, default),),
+            journal=journal,
+            session_id=session,
+        )
+
+        attempt = journal.only_attempt(session, stage_id="mutating")
+        assert attempt.status is ExecutionAttemptStatus.COMPLETED
+        assert len(attempt.effect_refs) == 1
+        assert attempt.effect_refs[0].kind == "rewrite_plan"
+    finally:
+        journal.close()
+
+
+def test_driver_records_an_abstained_attempt_when_a_capability_is_missing() -> None:
+    class _NeedsCapability:
+        name = "needs_capability"
+
+        def run(self, ctx) -> PassResult:
+            raise AssertionError("missing capability should stop execution")
+
+    spec = PassSpec(
+        "needs_capability",
+        _NeedsCapability,
+        no_caps,
+        default,
+        contract=PassContract(
+            requires=PassRequires(capabilities=frozenset({"live_mba"}))
+        ),
+    )
+    session = DecompilationSessionId.new()
+    journal = _journal_store()
+
+    try:
+        with pytest.raises(CapabilityError):
+            _run_config_v2(
+                (spec,),
+                journal=journal,
+                session_id=session,
+                backend=_Backend(caps=()),
+            )
+
+        attempt = journal.only_attempt(session, stage_id="needs_capability")
+        assert attempt.status is ExecutionAttemptStatus.ABSTAINED
+        assert attempt.reason_code is not None
+        assert "CapabilityError" in attempt.reason_code
+    finally:
+        journal.close()
+
+
+def test_driver_records_a_failed_attempt_when_a_pass_raises() -> None:
+    class _Boom:
+        name = "boom"
+
+        def run(self, ctx) -> PassResult:
+            raise RuntimeError("unexpected pass failure")
+
+    spec = PassSpec("boom", _Boom, no_caps, default)
+    session = DecompilationSessionId.new()
+    journal = _journal_store()
+
+    try:
+        with pytest.raises(RuntimeError, match="unexpected pass failure"):
+            _run_config_v2((spec,), journal=journal, session_id=session)
+
+        attempt = journal.only_attempt(session, stage_id="boom")
+        assert attempt.status is ExecutionAttemptStatus.FAILED
+        assert attempt.reason_code is not None
+        assert "RuntimeError" in attempt.reason_code
+    finally:
+        journal.close()
+
+
+def test_driver_records_an_abstained_attempt_for_a_pass_not_scheduled_at_maturity() -> (
+    None
+):
+    calls: list[str] = []
+    eligible = PassSpec(
+        "eligible", _recording_pass("eligible", calls), no_caps, default
+    )
+    ineligible = PassSpec(
+        "ineligible",
+        _recording_pass("ineligible", calls),
+        no_caps,
+        default,
+        maturity_gates=frozenset({IRMaturity.GLOBAL_ANALYZED}),
+    )
+    session = DecompilationSessionId.new()
+    journal = _journal_store()
+
+    try:
+        _run_config_v2(
+            (eligible, ineligible),
+            journal=journal,
+            session_id=session,
+            maturity=IRMaturity.CANONICAL,
+        )
+
+        assert calls == ["eligible"]
+        not_scheduled = journal.only_attempt(session, stage_id="ineligible")
+        assert not_scheduled.status is ExecutionAttemptStatus.ABSTAINED
+        assert not_scheduled.reason_code == NOT_SCHEDULED_AT_MATURITY_REASON
+        ran = journal.only_attempt(session, stage_id="eligible")
+        assert ran.status is ExecutionAttemptStatus.COMPLETED
+    finally:
+        journal.close()
+
+
+def test_driver_attempts_for_one_run_share_one_session_and_are_ordered() -> None:
+    calls: list[str] = []
+    specs = (
+        PassSpec("first", _recording_pass("first", calls), no_caps, default),
+        PassSpec("second", _recording_pass("second", calls), no_caps, default),
+    )
+    session = DecompilationSessionId.new()
+    journal = _journal_store()
+
+    try:
+        _run_config_v2(specs, journal=journal, session_id=session)
+
+        attempts = journal.attempts_for_session(session)
+        assert [a.stage_id for a in attempts] == ["first", "second"]
+        assert {a.attempt_id.session for a in attempts} == {session}
+        assert [a.attempt_id.sequence for a in attempts] == sorted(
+            a.attempt_id.sequence for a in attempts
+        )
+    finally:
+        journal.close()
+
+
+def test_driver_without_a_journal_records_nothing_and_behaves_as_before() -> None:
+    calls: list[str] = []
+    spec = PassSpec("no_effect", _recording_pass("no_effect", calls), no_caps, default)
+
+    out = _run_config_v2((spec,), journal=None)
+
+    assert calls == ["no_effect"]
+    assert out is _GRAPH
+
+
+def test_legacy_family_pipeline_never_records_attempts_even_with_a_journal() -> None:
+    """Attempt recording is mandatory for config-v2 only, never the legacy path."""
+    session = DecompilationSessionId.new()
+    journal = _journal_store()
+
+    try:
+        _run_specs(
+            (PassSpec("live", _recording_pass("live", []), no_caps, default),),
+        )
+        # The legacy call path (``_run_specs``) never threads pipeline_v2_specs,
+        # so run_pipeline below is the direct equivalent with a journal attached
+        # to prove the family-detected (non config-v2) path stays silent.
+        run_pipeline(
+            source=_Src(),
+            family=_MatchingHodur(),
+            backend=_Backend(),
+            facts=AnalysisManager(_GRAPH),
+            project_config=None,
+            maturity=IRMaturity.CANONICAL,
+            journal=journal,
+            session_id=session,
+        )
+
+        assert journal.attempts_for_session(session) == ()
+    finally:
+        journal.close()
+
+
+def test_session_id_defaults_when_a_journal_is_given_without_one() -> None:
+    calls: list[str] = []
+    spec = PassSpec("no_effect", _recording_pass("no_effect", calls), no_caps, default)
+    journal = _journal_store()
+
+    try:
+        _run_config_v2((spec,), journal=journal, session_id=None)
+
+        # No session was supplied, but attempt recording still happened --
+        # the driver minted one scoped to this call.
+        sessions_seen = {
+            row["session_id"]
+            for row in journal._conn.execute(
+                "SELECT DISTINCT session_id FROM execution_attempt_identities"
+            ).fetchall()
+        }
+        assert len(sessions_seen) == 1
+    finally:
+        journal.close()

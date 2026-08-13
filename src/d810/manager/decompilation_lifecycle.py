@@ -15,6 +15,7 @@ from d810.core.decompilation_session import (
     DecompilationEvent,
     DecompilationSessionEvent,
 )
+from d810.core.execution_journal import DecompilationSessionId
 from d810.core.logging import getLogger
 from d810.core.input_identity_attestation import (
     InputIdentityResolution,
@@ -86,6 +87,18 @@ class DecompilationSessionContext:
     database_identity: str
     top_level_epoch: int
     native_key: NativePreanalysisKey
+    #: Stable correlation identity for the execution journal (see
+    #: ``d810.core.execution_journal``), minted exactly once per top-level
+    #: session by this factory. ``.event`` below must reuse this same value
+    #: on every access rather than letting ``DecompilationSessionEvent``'s
+    #: own default factory mint a fresh one per call -- otherwise
+    #: SESSION_STARTED, ``preanalysis_runtime.begin_session``,
+    #: ``analysis_runtime.begin_session``, SESSION_FINISHED, and every other
+    #: ``.event`` read for this session would each observe a different,
+    #: uncorrelated session id for what is actually one decompile.
+    session_id: DecompilationSessionId = field(
+        default_factory=DecompilationSessionId.new
+    )
     input_identity_resolution: InputIdentityResolution | None = None
     native_preanalysis: NativePreanalysisSessionState = field(
         default_factory=NativePreanalysisSessionState
@@ -133,6 +146,7 @@ class DecompilationSessionContext:
             function_ea=self.function_ea,
             database_identity=self.database_identity,
             top_level_epoch=self.top_level_epoch,
+            session_id=self.session_id,
         )
 
 

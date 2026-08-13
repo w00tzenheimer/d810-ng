@@ -7,6 +7,23 @@ Schema follows the existing pattern in ``core/persistence.py``:
 - Single primary key ``func_ea`` for hints
 
 No IDA imports - fully unit-testable.
+
+Relationship to the execution journal
+--------------------------------------
+
+``d810.core.execution_journal_store.ExecutionJournalStore`` (a separate
+SQLite database) is the authoritative, append-only record of what D810
+considered, ran, abstained from, or failed, and why -- see
+``profile-guided-execution-journal.md``. The hints and session-summary
+tables here remain a **compatibility projection**: current readers
+(``DecompilationAnalysisRuntime.load_hints`` / ``load_flow_context_summary``
+/ ``apply_to_execution_scope``) keep working unchanged during the journal's
+rollout, but this store's upsert-and-clear-on-new-session rows are not
+execution provenance and must never be read as if they were a durable
+attempt history or mutation authority. A later migration (see the plan's
+Task 8) derives these compatibility views from the journal's completed
+attempts instead of writing them independently; until then this module's
+existing read/write behavior is intentionally left unchanged.
 """
 
 from __future__ import annotations

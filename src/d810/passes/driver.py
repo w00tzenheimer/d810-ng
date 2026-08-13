@@ -16,11 +16,22 @@ from ``backends/hexrays``; everything here remains portable.
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import dataclass, replace
 
 from d810.core.typing import Protocol, runtime_checkable
 from d810.capabilities.pass_contract_evidence import PassContractEvidenceObserver
 from d810.capabilities.resolver import CapabilitySet
+from d810.core.execution_journal import (
+    DecompilationSessionId,
+    ExecutionAttempt,
+    ExecutionAttemptId,
+    ExecutionAttemptStatus,
+    ExecutionDomain,
+    ExecutionEffectRef,
+)
+from d810.core.execution_journal_store import ExecutionJournalStore
+from d810.core.logging import getLogger
 from d810.passes.contract_vocabulary import (
     contract_name_in,
     contract_name_variants,
@@ -43,6 +54,8 @@ from d810.passes.pipeline_shadow import (
 from d810.passes.registry import PassRegistry
 from d810.passes.scheduler import PassScheduler, RunLaterDomain
 from d810.transforms.plan import PatchPlan
+
+logger = getLogger("d810.passes.driver")
 
 
 class CapabilityError(RuntimeError):
@@ -472,6 +485,87 @@ def effective_safety_policy(spec: PassSpec) -> SafetyPolicy:
     )
 
 
+# Exceptions raised by the *declared-prerequisite* validation gates above
+# (backend capability, native-contract capability/analyses/facts/evidence)
+# mean "this pass's own declared preconditions are not satisfiable in this
+# context" -- an expected, designed gate, not a bug in the pass. The generic
+# driver records that outcome as ABSTAINED. Everything else (an unexpected
+# exception raised by ``PipelinePass.run()`` itself, a route contract the
+# pass's own result violated, a backend/facts failure while applying its
+# plan) is recorded as FAILED. Both re-raise the original exception
+# unchanged -- see ``_run_pass_spec``.
+_ABSTAIN_EXCEPTION_TYPES: tuple[type[BaseException], ...] = (
+    CapabilityError,
+    AnalysisContractError,
+    PassContractError,
+)
+
+#: Reason code recorded for a config-v2 pass present in the configured
+#: pipeline but filtered out by ``PassSpec.enabled_at(maturity)`` before it
+#: ever reached ``_run_pass_spec`` -- so it never validated, ran, or failed.
+NOT_SCHEDULED_AT_MATURITY_REASON = "not_scheduled_at_maturity"
+
+
+def _reason_code_for_exception(exc: BaseException) -> str:
+    return f"{type(exc).__name__}: {exc}"
+
+
+def _safe_begin_attempt(
+    journal: ExecutionJournalStore,
+    session_id: DecompilationSessionId,
+    *,
+    parent_attempt_id: ExecutionAttemptId | None,
+    stage_id: str,
+    domain: ExecutionDomain,
+) -> ExecutionAttempt | None:
+    """Record a STARTED attempt; never let a journal failure block a pass.
+
+    Attempt recording is additive provenance, not pass authority: a store
+    failure (disk full, a schema surprise, ...) must never prevent -- or
+    change the outcome of -- the pass execution it is only observing.
+    """
+    try:
+        return journal.begin_attempt(
+            session_id,
+            parent_attempt_id=parent_attempt_id,
+            stage_id=stage_id,
+            domain=domain,
+        )
+    except Exception:
+        logger.debug(
+            "execution journal: failed to begin attempt for stage=%s",
+            stage_id,
+            exc_info=True,
+        )
+        return None
+
+
+def _safe_advance(
+    journal: ExecutionJournalStore,
+    attempt: ExecutionAttempt | None,
+    *,
+    status: ExecutionAttemptStatus,
+    reason_code: str | None = None,
+    effect_refs: tuple[ExecutionEffectRef, ...] | None = None,
+) -> None:
+    """Advance a recorded attempt; never let a journal failure propagate."""
+    if attempt is None:
+        return
+    try:
+        journal.advance(
+            attempt,
+            status=status,
+            reason_code=reason_code,
+            effect_refs=effect_refs,
+        )
+    except Exception:
+        logger.debug(
+            "execution journal: failed to advance attempt stage=%s",
+            attempt.stage_id,
+            exc_info=True,
+        )
+
+
 def _run_pass_spec(
     *,
     spec: PassSpec,
@@ -479,63 +573,106 @@ def _run_pass_spec(
     backend,
     facts,
     scheduler: PassScheduler | None,
+    journal: ExecutionJournalStore | None = None,
+    session_id: DecompilationSessionId | None = None,
+    parent_attempt_id: ExecutionAttemptId | None = None,
 ) -> FunctionPipelineContext:
-    validate_capabilities(backend, spec.requirements)
-    validate_contract_capabilities(spec, backend)
-    validate_required_analyses(spec, ctx)
-    validate_native_contract(spec, ctx)
-    result = spec.pass_factory().run(ctx)
-    validate_analysis_outputs(spec, result)
-    validate_contract_fact_outputs(spec, result)
-    validate_contract_evidence_outputs(spec, result)
-    validate_backend_route(spec, result)
-
-    def publish_result_side_effects() -> None:
-        if scheduler is not None:
-            for request in result.run_later:
-                scheduler.request(
-                    func_ea=ctx.source.func_ea,
-                    pass_id=spec.pass_id,
-                    current_maturity=ctx.maturity,
-                    run_later=request,
-                    domain=RunLaterDomain.PIPELINE_PASS,
-                )
-        publish_analysis_outputs(spec, ctx, result)
-        publish_contract_fact_outputs(spec, ctx, result)
-        publish_contract_evidence_outputs(spec, ctx, result)
-
-    defer_result_side_effects = (
-        spec.backend_route is BackendRoute.FRAGMENT_PUBLICATION
-        and result.fragment_plan is not None
-    )
-    if not defer_result_side_effects:
-        publish_result_side_effects()
-    if _plan_has_work(result.rewrite_plan):
-        new_graph = backend.apply(
-            result.rewrite_plan, ctx.source.live_source, effective_safety_policy(spec)
+    attempt: ExecutionAttempt | None = None
+    if journal is not None and session_id is not None:
+        attempt = _safe_begin_attempt(
+            journal,
+            session_id,
+            parent_attempt_id=parent_attempt_id,
+            stage_id=spec.pass_id,
+            domain=ExecutionDomain.PASS,
         )
-        if _graph_changed(ctx.graph, new_graph):
-            facts.invalidate_to(new_graph, effective_preserved_analyses(spec, result))
-            if hasattr(facts, "invalidate_contract"):
-                facts.invalidate_contract(spec.contract)
-            ctx = replace(ctx, graph=new_graph)
-    fragment_plan = result.fragment_plan
-    if fragment_plan is not None:
-        new_graph = backend.apply(
-            fragment_plan,
-            ctx.source.live_source,
-            effective_safety_policy(spec),
+    effect_refs: tuple[ExecutionEffectRef, ...] = ()
+    try:
+        validate_capabilities(backend, spec.requirements)
+        validate_contract_capabilities(spec, backend)
+        validate_required_analyses(spec, ctx)
+        validate_native_contract(spec, ctx)
+        result = spec.pass_factory().run(ctx)
+        validate_analysis_outputs(spec, result)
+        validate_contract_fact_outputs(spec, result)
+        validate_contract_evidence_outputs(spec, result)
+        validate_backend_route(spec, result)
+
+        def publish_result_side_effects() -> None:
+            if scheduler is not None:
+                for request in result.run_later:
+                    scheduler.request(
+                        func_ea=ctx.source.func_ea,
+                        pass_id=spec.pass_id,
+                        current_maturity=ctx.maturity,
+                        run_later=request,
+                        domain=RunLaterDomain.PIPELINE_PASS,
+                    )
+            publish_analysis_outputs(spec, ctx, result)
+            publish_contract_fact_outputs(spec, ctx, result)
+            publish_contract_evidence_outputs(spec, ctx, result)
+
+        defer_result_side_effects = (
+            spec.backend_route is BackendRoute.FRAGMENT_PUBLICATION
+            and result.fragment_plan is not None
         )
-        if _graph_changed(ctx.graph, new_graph):
-            facts.invalidate_to(
-                new_graph,
-                effective_preserved_analyses(spec, result),
+        if not defer_result_side_effects:
+            publish_result_side_effects()
+        if _plan_has_work(result.rewrite_plan):
+            new_graph = backend.apply(
+                result.rewrite_plan,
+                ctx.source.live_source,
+                effective_safety_policy(spec),
             )
-            if hasattr(facts, "invalidate_contract"):
-                facts.invalidate_contract(spec.contract)
-            ctx = replace(ctx, graph=new_graph)
-    if defer_result_side_effects:
-        publish_result_side_effects()
+            if _graph_changed(ctx.graph, new_graph):
+                facts.invalidate_to(
+                    new_graph, effective_preserved_analyses(spec, result)
+                )
+                if hasattr(facts, "invalidate_contract"):
+                    facts.invalidate_contract(spec.contract)
+                ctx = replace(ctx, graph=new_graph)
+                effect_refs = effect_refs + (
+                    ExecutionEffectRef(kind="rewrite_plan", ref_id=uuid.uuid4().hex),
+                )
+        fragment_plan = result.fragment_plan
+        if fragment_plan is not None:
+            new_graph = backend.apply(
+                fragment_plan,
+                ctx.source.live_source,
+                effective_safety_policy(spec),
+            )
+            if _graph_changed(ctx.graph, new_graph):
+                facts.invalidate_to(
+                    new_graph,
+                    effective_preserved_analyses(spec, result),
+                )
+                if hasattr(facts, "invalidate_contract"):
+                    facts.invalidate_contract(spec.contract)
+                ctx = replace(ctx, graph=new_graph)
+                effect_refs = effect_refs + (
+                    ExecutionEffectRef(kind="fragment_plan", ref_id=uuid.uuid4().hex),
+                )
+        if defer_result_side_effects:
+            publish_result_side_effects()
+    except BaseException as exc:
+        status = (
+            ExecutionAttemptStatus.ABSTAINED
+            if isinstance(exc, _ABSTAIN_EXCEPTION_TYPES)
+            else ExecutionAttemptStatus.FAILED
+        )
+        _safe_advance(
+            journal,
+            attempt,
+            status=status,
+            reason_code=_reason_code_for_exception(exc),
+        )
+        raise
+    _safe_advance(
+        journal,
+        attempt,
+        status=ExecutionAttemptStatus.COMPLETED,
+        effect_refs=effect_refs,
+    )
     return ctx
 
 
@@ -593,6 +730,9 @@ def run_pipeline(
     pipeline_v2_shadow_registry: PassRegistry | None = None,
     require_pipeline_v2_shadow_match: bool = False,
     pipeline_v2_specs: tuple[PassSpec, ...] | None = None,
+    session_id: DecompilationSessionId | None = None,
+    journal: ExecutionJournalStore | None = None,
+    parent_attempt_id: ExecutionAttemptId | None = None,
 ):
     """Run one family's pipeline over one function/maturity. Returns the final graph.
 
@@ -600,7 +740,23 @@ def run_pipeline(
     ``capabilities`` is the backend-provided :class:`CapabilitySet` (typed capability instances)
     threaded into every pass's context; ``None`` -> an empty set (passes that only query
     ``optional`` are unaffected).
+
+    ``journal``/``session_id``/``parent_attempt_id`` are the generic execution-
+    provenance wiring: when ``journal`` is supplied for a **config-v2**
+    execution (``pipeline_v2_specs`` is not ``None``), every pass in the
+    configured pipeline gets a mandatory outer :class:`~d810.core.
+    execution_journal.ExecutionAttempt` record -- one that runs, safely
+    abstains (its own declared prerequisites were not met), fails, or is not
+    scheduled at the current maturity -- with no exception yet raised by
+    ``run_pipeline`` ever recorded, this exists purely to persist provenance
+    around it. Legacy family-detected pipelines (``pipeline_v2_specs`` is
+    ``None``) never record attempts, even if a journal is supplied -- see the
+    plan's Task 3, "mandatory outer execution attempt for config-v2 passes".
+    ``session_id`` defaults to a fresh session scoped to this one call when a
+    ``journal`` is given without one.
     """
+    if journal is not None and session_id is None:
+        session_id = DecompilationSessionId.new()
     graph = source.flow_graph
     ctx = FunctionPipelineContext(
         source=source,
@@ -638,13 +794,53 @@ def run_pipeline(
         ctx=ctx,
     )
 
+    # Attempt recording is mandatory for config-v2 execution only -- a
+    # legacy family-detected pipeline never records attempts, even when a
+    # caller supplies a journal (see the ``run_pipeline`` docstring).
+    record_attempts = pipeline_v2_specs is not None and journal is not None
+    effective_journal = journal if record_attempts else None
+
     for spec in worklist:
         ctx = _run_pass_spec(
-            spec=spec, ctx=ctx, backend=backend, facts=facts, scheduler=scheduler
+            spec=spec,
+            ctx=ctx,
+            backend=backend,
+            facts=facts,
+            scheduler=scheduler,
+            journal=effective_journal,
+            session_id=session_id if record_attempts else None,
+            parent_attempt_id=parent_attempt_id,
         )
 
     for spec in replay_after_pipeline:
         ctx = _run_pass_spec(
-            spec=spec, ctx=ctx, backend=backend, facts=facts, scheduler=scheduler
+            spec=spec,
+            ctx=ctx,
+            backend=backend,
+            facts=facts,
+            scheduler=scheduler,
+            journal=effective_journal,
+            session_id=session_id if record_attempts else None,
+            parent_attempt_id=parent_attempt_id,
         )
+
+    if record_attempts:
+        scheduled_ids = {spec.pass_id for spec in worklist}
+        scheduled_ids.update(spec.pass_id for spec in replay_after_pipeline)
+        for spec in specs:
+            if spec.pass_id in scheduled_ids:
+                continue
+            attempt = _safe_begin_attempt(
+                effective_journal,
+                session_id,
+                parent_attempt_id=parent_attempt_id,
+                stage_id=spec.pass_id,
+                domain=ExecutionDomain.PASS,
+            )
+            _safe_advance(
+                effective_journal,
+                attempt,
+                status=ExecutionAttemptStatus.ABSTAINED,
+                reason_code=NOT_SCHEDULED_AT_MATURITY_REASON,
+            )
     return ctx.graph

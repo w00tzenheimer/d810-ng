@@ -24,6 +24,7 @@ from d810.core.input_identity_attestation import (
     InputIdentityRecoveryStatus,
     InputIdentityResolution,
 )
+from d810.core.execution_journal import DecompilationSessionId
 from d810.core.provider_phase import ProviderPhaseSnapshot
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.manager.decompilation_lifecycle import (
@@ -405,6 +406,52 @@ def test_repeated_ensure_for_same_top_level_decompilation_reuses_epoch() -> None
         ("runtime.reset", (0x401000, False)),
         ("execution-scope.clear", 0x401000),
     ]
+
+
+def test_session_event_reuses_a_stable_session_id_across_the_lifecycle() -> None:
+    """``session.event`` must correlate every call to the same journal session.
+
+    ``DecompilationSessionEvent.session_id`` defaults via a factory purely so
+    ``DecompilationSessionContext.event`` stays source-compatible without
+    passing it explicitly (see ``core/decompilation_session.py``). That
+    default factory must not be allowed to mint a *fresh* session id on
+    every ``.event`` access, or every consumer of that property (SESSION_
+    STARTED vs SESSION_FINISHED, ``preanalysis_runtime.begin_session`` vs
+    ``analysis_runtime.begin_session``, ...) would observe an uncorrelated
+    session identity for what is actually one top-level decompile.
+    """
+    coordinator, _runtime = _coordinator([])
+
+    session, created = coordinator.ensure_hexrays_session(
+        function_ea=0x401000,
+        database_identity="sample.i64",
+    )
+
+    assert created is True
+    assert isinstance(session.session_id, DecompilationSessionId)
+    first_event = session.event
+    second_event = session.event
+    assert first_event.session_id == second_event.session_id == session.session_id
+
+
+def test_new_top_level_session_gets_a_fresh_session_id() -> None:
+    """A new top-level decompile mints a new session -- it must not reuse an old id."""
+    coordinator, _runtime = _coordinator([])
+
+    first, _ = coordinator.ensure_hexrays_session(
+        function_ea=0x401000,
+        database_identity="sample.i64",
+    )
+    first_session_id = first.session_id
+    coordinator.finish_hexrays_session()
+
+    second, created = coordinator.ensure_hexrays_session(
+        function_ea=0x401000,
+        database_identity="sample.i64",
+    )
+
+    assert created is True
+    assert second.session_id != first_session_id
 
 
 def test_new_session_initializes_injected_resolver_attachment_exactly_once() -> None:
