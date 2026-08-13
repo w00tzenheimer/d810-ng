@@ -75,6 +75,34 @@ def test_typed_term_masks_constants_and_rejects_mixed_width_children():
         _node("add", _leaf("wide", width=32), _leaf("narrow", width=16))
 
 
+class _SameReprOpaqueKey:
+    def __init__(self, identity: int):
+        self.identity = identity
+
+    def __hash__(self) -> int:
+        return hash(self.identity)
+
+    def __eq__(self, other: object) -> bool:
+        return (
+            isinstance(other, _SameReprOpaqueKey)
+            and self.identity == other.identity
+        )
+
+    def __repr__(self) -> str:
+        return "opaque-key"
+
+
+def test_leaf_key_rejects_same_repr_opaque_parts_before_ac_sorting():
+    first = _SameReprOpaqueKey(1)
+    second = _SameReprOpaqueKey(2)
+    assert first != second
+    assert repr(first) == repr(second)
+
+    for opaque in (first, second):
+        with pytest.raises(ValueError, match="canonically representable"):
+            TypedBvTerm(operation=None, width=32, leaf_key=(opaque,))
+
+
 def test_budget_and_receipt_are_immutable_and_have_stable_contracts():
     budget = EgglogExtractionBudget()
     receipt = EgglogExtractionReceipt()
@@ -184,6 +212,7 @@ class _FakeAstNode:
         self.left = left
         self.right = right
         self.dest_size = None
+        self.size = 0
 
 
 _OPCODE_BY_OPERATION = {
@@ -263,6 +292,43 @@ def test_native_lowering_rejects_mixed_width_and_unsupported_operations(
     assert lower_native_ast_to_term(unsupported_shift, destination_size=4) is None
 
 
+def test_native_lowering_rejects_conflicting_leaf_width_witnesses(
+    fake_native_runtime,
+):
+    conflicting = _FakeAstLeaf("x", _FakeMop("register", 7, 4))
+    conflicting.dest_size = 2
+    candidate = _FakeAstNode(
+        _OPCODE_BY_OPERATION["bnot"],
+        conflicting,
+    )
+    candidate.dest_size = 4
+
+    assert lower_native_ast_to_term(candidate, destination_size=4) is None
+
+
+@pytest.mark.parametrize("missing_width", [None, 0])
+def test_native_lowering_requires_operator_destination_width_witness(
+    fake_native_runtime,
+    missing_width: int | None,
+):
+    leaf = _FakeAstLeaf("x", _FakeMop("register", 7, 4))
+    candidate = _FakeAstNode(_OPCODE_BY_OPERATION["bnot"], leaf)
+    candidate.dest_size = missing_width
+
+    assert lower_native_ast_to_term(candidate, destination_size=4) is None
+
+
+def test_native_lowering_rejects_conflicting_operator_width_witnesses(
+    fake_native_runtime,
+):
+    leaf = _FakeAstLeaf("x", _FakeMop("register", 7, 4))
+    candidate = _FakeAstNode(_OPCODE_BY_OPERATION["bnot"], leaf)
+    candidate.dest_size = 4
+    candidate.size = 2
+
+    assert lower_native_ast_to_term(candidate, destination_size=4) is None
+
+
 def test_native_reconstruction_rejects_missing_leaf_and_width_mismatch(
     fake_native_runtime,
 ):
@@ -272,4 +338,25 @@ def test_native_reconstruction_rejects_missing_leaf_and_width_mismatch(
     assert lower_term_to_native_ast(term, leafs={}, destination_size=4) is None
     assert (
         lower_term_to_native_ast(term, leafs={}, destination_size=2) is None
+    )
+
+
+def test_native_reconstruction_rejects_leaf_mapping_identity_substitution(
+    fake_native_runtime,
+):
+    expected_key = ("mop", "register", 7, 4)
+    term = _node(
+        "bnot",
+        TypedBvTerm(operation=None, width=32, leaf_key=expected_key),
+        width=32,
+    )
+    substituted = _FakeAstLeaf("other", _FakeMop("register", 8, 4))
+
+    assert (
+        lower_term_to_native_ast(
+            term,
+            leafs={expected_key: substituted},
+            destination_size=4,
+        )
+        is None
     )

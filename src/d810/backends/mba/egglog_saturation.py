@@ -139,6 +139,12 @@ class TypedBvTerm:
                     hash(self.leaf_key)
                 except TypeError as exc:
                     raise ValueError("leaf_key must be hashable") from exc
+                try:
+                    tuple(_leaf_key_part_fingerprint(part) for part in self.leaf_key)
+                except ValueError as exc:
+                    raise ValueError(
+                        "leaf_key parts must be canonically representable"
+                    ) from exc
             return
 
         if self.operation not in _SUPPORTED_OPERATIONS:
@@ -154,7 +160,7 @@ class TypedBvTerm:
             raise ValueError("operator children must have the same width")
 
 
-def _opaque_fingerprint(value: object) -> tuple[object, ...]:
+def _leaf_key_part_fingerprint(value: object) -> tuple[object, ...]:
     """Return a totally ordered representation for stable live-leaf key parts."""
 
     if value is None:
@@ -168,14 +174,11 @@ def _opaque_fingerprint(value: object) -> tuple[object, ...]:
     if type(value) is bytes:
         return ("bytes", value.hex())
     if type(value) is tuple:
-        return ("tuple", tuple(_opaque_fingerprint(item) for item in value))
-    value_type = type(value)
-    return (
-        "opaque",
-        value_type.__module__,
-        value_type.__qualname__,
-        repr(value),
-    )
+        return (
+            "tuple",
+            tuple(_leaf_key_part_fingerprint(item) for item in value),
+        )
+    raise ValueError(f"unsupported leaf-key part type: {type(value).__qualname__}")
 
 
 def _term_fingerprint(term: TypedBvTerm) -> tuple[object, ...]:
@@ -186,7 +189,7 @@ def _term_fingerprint(term: TypedBvTerm) -> tuple[object, ...]:
         return (
             "leaf",
             term.width,
-            tuple(_opaque_fingerprint(part) for part in term.leaf_key),
+            tuple(_leaf_key_part_fingerprint(part) for part in term.leaf_key),
         )
     return (
         "node",
@@ -270,15 +273,36 @@ def _load_native_runtime() -> _NativeAstRuntime:
     )
 
 
-def _leaf_size(leaf: Any) -> int:
+def _native_width_witnesses(ast: Any) -> tuple[int, ...] | None:
+    witnesses: list[int] = []
     for attribute in ("size", "expected_size", "dest_size"):
         try:
-            value = int(getattr(leaf, attribute, 0) or 0)
-        except (TypeError, ValueError):
+            value = getattr(ast, attribute, None)
+        except Exception:
+            return None
+        if value is None:
             continue
-        if value:
-            return value
-    return 0
+        if type(value) is not int or value < 0:
+            return None
+        if value != 0:
+            witnesses.append(value)
+    return tuple(witnesses)
+
+
+def _native_width_matches(
+    ast: Any,
+    destination_size: int,
+    *,
+    require_destination_witness: bool = False,
+) -> bool:
+    witnesses = _native_width_witnesses(ast)
+    if witnesses is None or not witnesses:
+        return False
+    if require_destination_witness:
+        destination_witness = getattr(ast, "dest_size", None)
+        if type(destination_witness) is not int or destination_witness == 0:
+            return False
+    return all(witness == destination_size for witness in witnesses)
 
 
 def _live_leaf_key(leaf: Any, runtime: _NativeAstRuntime) -> tuple[object, ...] | None:
@@ -304,11 +328,11 @@ def _lower_native(
     width = destination_size * 8
     if isinstance(ast, runtime.AstConstant):
         value = getattr(ast, "value", None)
-        if type(value) is not int or _leaf_size(ast) != destination_size:
+        if type(value) is not int or not _native_width_matches(ast, destination_size):
             return None
         return TypedBvTerm(operation=None, width=width, value=value)
     if isinstance(ast, runtime.AstLeaf):
-        if _leaf_size(ast) != destination_size:
+        if not _native_width_matches(ast, destination_size):
             return None
         leaf_key = _live_leaf_key(ast, runtime)
         if leaf_key is None:
@@ -317,8 +341,11 @@ def _lower_native(
     if not isinstance(ast, runtime.AstNode):
         return None
 
-    node_size = int(getattr(ast, "dest_size", 0) or 0)
-    if node_size and node_size != destination_size:
+    if not _native_width_matches(
+        ast,
+        destination_size,
+        require_destination_witness=True,
+    ):
         return None
     operation = runtime.operation_by_opcode.get(getattr(ast, "opcode", None))
     if operation is None or getattr(ast, "left", None) is None:
@@ -389,8 +416,10 @@ def _lower_term(
         if (
             not isinstance(leaf, runtime.AstLeaf)
             or isinstance(leaf, runtime.AstConstant)
-            or _leaf_size(leaf) != destination_size
+            or not _native_width_matches(leaf, destination_size)
         ):
+            return None
+        if _live_leaf_key(leaf, runtime) != term.leaf_key:
             return None
         return leaf.clone()
 
