@@ -71,9 +71,9 @@ class EgglogOptimizer(PeepholeSimplificationRule):
 
     The default rule set is the certified ADD catalogue. Selection remains
     bounded and deterministic: configured families are indexed by root opcode,
-    every specialization owns its fresh proof graph, and the lowest-cost
-    proof-bearing strict reduction wins with catalogue order as the stable
-    tie-breaker.
+    one fresh per-candidate degree-bounded e-graph discovers eligible results,
+    and the lowest-cost native-Z3-proven strict reduction wins with catalogue
+    order as the stable tie-breaker.
     """
 
     DESCRIPTION = "Bounded Egglog MBA extraction (proof-gated)"
@@ -196,9 +196,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         if ast is None or not self._is_candidate(ast, ins):
             return None
 
-        extraction = self._select_extraction(
-            ast, destination_size=int(ins.d.size)
-        )
+        extraction = self._select_extraction(ast, destination_size=int(ins.d.size))
         self._record_extraction_receipt(extraction.receipt)
         replacement = extraction.replacement_ast
         if replacement is None:
@@ -252,9 +250,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         )
         return new_ins
 
-    def _record_extraction_receipt(
-        self, receipt: EgglogExtractionReceipt
-    ) -> None:
+    def _record_extraction_receipt(self, receipt: EgglogExtractionReceipt) -> None:
         self.last_extraction_receipt = receipt
         skip_reason = (
             receipt.skip_reason.value if receipt.skip_reason is not None else None
