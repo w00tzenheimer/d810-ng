@@ -354,7 +354,7 @@ def _unwrap_runtime_ast_node(
     current = ast
     seen: set[int] = set()
     for _ in range(4):
-        if not isinstance(current, runtime.AstProxy):
+        if type(current) is not runtime.AstProxy:
             return current if isinstance(current, runtime.AstNode) else None
         identity = id(current)
         if identity in seen:

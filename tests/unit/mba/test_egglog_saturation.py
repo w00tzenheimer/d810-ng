@@ -386,9 +386,11 @@ def test_native_lowering_rejects_unknown_missing_and_cyclic_proxies(
         (),
         {"__module__": "d810.hexrays.expr.p_ast"},
     )
+    proxy_subclass_type = type("AstProxySubclass", (_FakeAstProxy,), {})
     transparent_wrapper_type = type("TransparentWrapper", (), {})
     rejected = (
         _runtime_ast_proxy(candidate, proxy_type=counterfeit_proxy_type),
+        _runtime_ast_proxy(candidate, proxy_type=proxy_subclass_type),
         _runtime_ast_proxy(candidate, proxy_type=transparent_wrapper_type),
         _runtime_ast_proxy(),
         cyclic,
