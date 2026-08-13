@@ -96,6 +96,22 @@ def _direct_add_candidate(size: int = 4, ast_module=None):
     )
 
 
+def _mixed_width_add_candidate():
+    wide = _leaf("wide", 1, 4)
+    narrow = _leaf("narrow", 2, 2)
+    return _node(
+        ida_hexrays.m_add,
+        _node(ida_hexrays.m_xor, wide, narrow, size=4),
+        _node(
+            ida_hexrays.m_mul,
+            _constant(2, 4),
+            _node(ida_hexrays.m_and, wide.clone(), narrow.clone(), size=4),
+            size=4,
+        ),
+        size=4,
+    )
+
+
 def _degree_two_candidate(size: int = 4) -> AstNode:
     # BnotXor_FactorRule_1 keeps cost equal at degree 1:
     #   (~x) ^ (~y) -> ~((~x) ^ y)
@@ -450,6 +466,46 @@ def _configured_live_handler() -> EgglogOptimizer:
         }
     )
     return handler
+
+
+def test_live_handler_receipts_mixed_width_candidate_without_extraction_or_mutation(
+    monkeypatch,
+):
+    import d810.optimizers.microcode.instructions.egraph.egglog_handler as handler_module
+
+    candidate = _mixed_width_add_candidate()
+    handler = _configured_live_handler()
+    extraction_calls = []
+    proof_calls = []
+    create_mop_calls = []
+
+    monkeypatch.setattr(handler_module, "minsn_to_ast", lambda _ins: candidate)
+    monkeypatch.setattr(
+        handler_module,
+        "extract_bounded_candidate",
+        lambda *args: extraction_calls.append(args),
+    )
+    monkeypatch.setattr(
+        handler,
+        "_prove_ast_equivalence",
+        lambda *args, **kwargs: proof_calls.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        AstNode,
+        "create_mop",
+        lambda self, ea: create_mop_calls.append((self, ea)),
+    )
+
+    assert handler._check_and_replace(_Instruction()) is None
+
+    assert extraction_calls == []
+    assert proof_calls == []
+    assert create_mop_calls == []
+    receipt = handler.last_extraction_receipt
+    assert receipt == EgglogExtractionReceipt(
+        skip_reason=ExtractionSkipReason.UNSUPPORTED_WIDTH_SEMANTICS
+    )
+    assert handler.execution_metadata()["skip_reason"] == "unsupported_width_semantics"
 
 
 def test_live_handler_extracts_once_with_exact_configured_rules_then_proves_before_mop(

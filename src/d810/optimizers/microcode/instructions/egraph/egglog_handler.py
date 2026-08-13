@@ -193,7 +193,14 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         self.last_rule_provenance = None
         self.last_extraction_receipt = None
         ast = minsn_to_ast(ins)
-        if ast is None or not self._is_candidate(ast, ins):
+        if ast is None:
+            return None
+        if not self._is_candidate(ast, ins):
+            self._record_extraction_receipt(
+                EgglogExtractionReceipt(
+                    skip_reason=ExtractionSkipReason.UNSUPPORTED_WIDTH_SEMANTICS
+                )
+            )
             return None
 
         extraction = self._select_extraction(ast, destination_size=int(ins.d.size))
