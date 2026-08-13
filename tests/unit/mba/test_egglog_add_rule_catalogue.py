@@ -53,6 +53,30 @@ def test_add_catalogue_rejects_unknown_comparison_constraint_operation(monkeypat
     assert receipt.canonical_name is None
 
 
+def test_add_catalogue_rejects_logical_constraint_the_verifier_cannot_convert(
+    monkeypatch,
+):
+    x, y = Var("x"), Var("y")
+    malformed_rule = type(
+        "ContradictoryAndRule",
+        (VerifiableRule,),
+        {
+            "PATTERN": x,
+            "REPLACEMENT": x,
+            "CONSTRAINTS": [(x == y) & (x != y)],
+        },
+    )
+    monkeypatch.setattr(
+        egglog_add_rule_compiler, "ADD_RULE_CLASSES", (malformed_rule,)
+    )
+
+    receipt = compile_add_rule_catalogue().receipt_for("ContradictoryAndRule")
+
+    assert receipt.status is RuleCompilationStatus.REJECTED
+    assert receipt.compiled_rule is None
+    assert receipt.canonical_name is None
+
+
 def test_add_catalogue_certifies_all_native_widths_and_preserves_aliases():
     catalogue = compile_add_rule_catalogue()
 

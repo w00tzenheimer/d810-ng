@@ -6,7 +6,7 @@ import enum
 from dataclasses import dataclass, replace
 
 from d810.core.typing import Any
-from d810.backends.mba.z3 import verify_rule
+from d810.backends.mba.z3 import constraint_to_z3, create_z3_variables, verify_rule
 from d810.mba.dsl import SymbolicExpressionProtocol
 from d810.mba.rules._base import VerifiableRule
 from d810.mba.rules.add import ADD_RULE_CLASSES
@@ -156,6 +156,46 @@ def _rule_fingerprint(rule: VerifiableRule) -> tuple[Any, ...]:
     )
 
 
+def _expression_symbolic_names(expression: Any) -> set[str]:
+    _expression_fingerprint(expression)
+    if expression.operation is None:
+        if expression.value is None and expression.name:
+            return {expression.name}
+        return set()
+    names = _expression_symbolic_names(expression.left)
+    if expression.right is not None:
+        names.update(_expression_symbolic_names(expression.right))
+    return names
+
+
+def _constraint_symbolic_names(constraint: Any) -> set[str]:
+    if hasattr(constraint, "op_name"):
+        return _expression_symbolic_names(
+            constraint.left
+        ) | _expression_symbolic_names(constraint.right)
+    if hasattr(constraint, "left") and hasattr(constraint, "right"):
+        if isinstance(constraint.left, SymbolicExpressionProtocol):
+            return _expression_symbolic_names(
+                constraint.left
+            ) | _expression_symbolic_names(constraint.right)
+        return _constraint_symbolic_names(
+            constraint.left
+        ) | _constraint_symbolic_names(constraint.right)
+    if hasattr(constraint, "operand"):
+        return _constraint_symbolic_names(constraint.operand)
+    raise ValueError(f"unsupported constraint type: {type(constraint).__name__}")
+
+
+def _validate_declarative_constraints(rule: VerifiableRule, bit_width: int) -> None:
+    names = _expression_symbolic_names(rule.pattern)
+    names.update(_expression_symbolic_names(rule.replacement))
+    for constraint in rule.CONSTRAINTS:
+        names.update(_constraint_symbolic_names(constraint))
+    z3_vars = create_z3_variables(names, bit_width=bit_width)
+    for constraint in rule.CONSTRAINTS:
+        constraint_to_z3(constraint, z3_vars, bit_width=bit_width)
+
+
 def compile_add_rule_catalogue() -> AddRuleCatalogue:
     canonical_by_fingerprint: dict[tuple[Any, ...], CompiledEgglogAddRule] = {}
     staged_receipts: list[tuple[str, RuleCompilationStatus, str | None, str | None]] = []
@@ -187,6 +227,7 @@ def compile_add_rule_catalogue() -> AddRuleCatalogue:
                 continue
 
             for width in CERTIFICATE_WIDTHS:
+                _validate_declarative_constraints(rule, width)
                 if not verify_rule(rule, bit_width=width):
                     raise ValueError(f"verification returned false at {width} bits")
         except (AssertionError, TypeError, ValueError) as exc:
