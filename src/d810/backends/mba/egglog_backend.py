@@ -1,4 +1,9 @@
-"""E-Graph based pattern matching backend using egglog.
+"""Legacy E-Graph pattern matching backend using egglog.
+
+The bounded per-instruction saturation adapter lives in
+``d810.backends.mba.egglog_saturation``.  It owns the width-aware ``BvExpr``
+path and does not use the untyped ``BitExpr`` or ``MBAEGraph`` rewrite set in
+this module.  The legacy classes remain unchanged for compatibility.
 
 This module provides an alternative pattern matching backend that uses
 equality saturation via e-graphs instead of enumerating all commutative
@@ -67,7 +72,7 @@ def requires_egglog(func: typing.Callable[..., typing.Any]):
 
 
 class BitExpr(egglog.Expr):
-    """Bitwise expression type for MBA patterns.
+    """Legacy untyped bitwise expression for compatibility paths.
 
     Supports all common bitwise and arithmetic operations for
     Mixed Boolean-Arithmetic expression simplification.
@@ -118,7 +123,10 @@ class PatternExpr(egglog.Expr):
 
 
 class MBAEGraph:
-    """E-Graph for Mixed Boolean-Arithmetic expression simplification.
+    """Legacy E-Graph for Mixed Boolean-Arithmetic simplification.
+
+    The bounded extraction adapter does not instantiate this class or register
+    these broad algebraic/AC rewrites.
 
     This class wraps egglog to provide MBA pattern matching using
     equality saturation instead of exhaustive pattern enumeration.
