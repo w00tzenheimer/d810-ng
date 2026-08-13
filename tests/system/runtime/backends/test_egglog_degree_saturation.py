@@ -18,7 +18,12 @@ from d810.backends.mba.egglog_saturation import (  # noqa: E402
     ExtractionSkipReason,
     extract_bounded_candidate,
 )
-from d810.hexrays.expr.p_ast import AstConstant, AstLeaf, AstNode  # noqa: E402
+from d810.hexrays.expr.p_ast import (  # noqa: E402
+    AstConstant,
+    AstLeaf,
+    AstNode,
+    AstProxy,
+)
 from d810.hexrays.ir.mop_snapshot import MopSnapshot  # noqa: E402
 from d810.optimizers.microcode.instructions.egraph.egglog_handler import (  # noqa: E402
     EgglogOptimizer,
@@ -112,6 +117,28 @@ def test_one_catalogue_rewrite_extracts_at_degree_one_and_proves_all_widths(size
         "Add_HackersDelightRule_2",
         ("Add_OllvmRule_3",),
     )
+    assert EgglogOptimizer._prove_ast_equivalence(
+        candidate,
+        result.replacement_ast,
+        width=size * 8,
+    )
+
+
+@pytest.mark.parametrize("size", (1, 2, 4, 8))
+def test_real_runtime_proxy_extracts_and_reconstructs_all_widths(size):
+    candidate = _direct_add_candidate(size)
+    rule = _rule("add", "Add_HackersDelightRule_2")
+
+    result = extract_bounded_candidate(
+        AstProxy(candidate),
+        (rule,),
+        EgglogExtractionBudget(time_budget_ms=1000),
+        size,
+    )
+
+    assert result.replacement_ast is not None
+    assert result.receipt.degree == 1
+    assert result.receipt.skip_reason is None
     assert EgglogOptimizer._prove_ast_equivalence(
         candidate,
         result.replacement_ast,

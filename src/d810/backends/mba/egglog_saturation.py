@@ -24,6 +24,9 @@ _BINARY_OPERATIONS = frozenset(
 )
 _SUPPORTED_OPERATIONS = _UNARY_OPERATIONS | _BINARY_OPERATIONS
 _VALID_DESTINATION_SIZES = frozenset({1, 2, 4, 8})
+_RUNTIME_AST_PROXY_MODULES = frozenset(
+    {"d810.hexrays.expr.p_ast", "d810.speedups.expr.c_ast"}
+)
 
 
 try:
@@ -344,6 +347,31 @@ class _NativeAstRuntime:
     get_mop_key: Any
 
 
+def _unwrap_runtime_ast_node(
+    ast: Any,
+    runtime: _NativeAstRuntime,
+) -> Any | None:
+    """Unwrap only known live AST proxies to a concrete operator root."""
+
+    current = ast
+    seen: set[int] = set()
+    for _ in range(4):
+        current_type = type(current)
+        if current_type.__name__ != "AstProxy":
+            return current if isinstance(current, runtime.AstNode) else None
+        if current_type.__module__ not in _RUNTIME_AST_PROXY_MODULES:
+            return None
+        identity = id(current)
+        if identity in seen:
+            return None
+        seen.add(identity)
+        try:
+            current = object.__getattribute__(current, "_target")
+        except (AttributeError, TypeError):
+            return None
+    return None
+
+
 def _load_native_runtime() -> _NativeAstRuntime:
     """Resolve IDA-coupled AST types only at the native lowering boundary."""
 
@@ -487,6 +515,9 @@ def lower_native_ast_to_term(
         return None
     try:
         runtime = _load_native_runtime()
+        ast = _unwrap_runtime_ast_node(ast, runtime)
+        if ast is None:
+            return None
         term = _lower_native(
             ast,
             destination_size=destination_size,
@@ -806,7 +837,12 @@ def extract_bounded_candidate(
             )
 
         runtime = _load_native_runtime()
-        native_leafs = _collect_native_leafs(candidate_ast, runtime=runtime)
+        concrete_candidate = _unwrap_runtime_ast_node(candidate_ast, runtime)
+        native_leafs = (
+            None
+            if concrete_candidate is None
+            else _collect_native_leafs(concrete_candidate, runtime=runtime)
+        )
         if native_leafs is None:
             return _extraction_result(
                 started=started,

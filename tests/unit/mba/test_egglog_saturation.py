@@ -262,6 +262,31 @@ _OPCODE_BY_OPERATION = {
     "xor": 8,
 }
 
+_KNOWN_RUNTIME_PROXY_MODULES = (
+    "d810.hexrays.expr.p_ast",
+    "d810.speedups.expr.c_ast",
+)
+_MISSING_PROXY_TARGET = object()
+
+
+def _runtime_ast_proxy(
+    target: object = _MISSING_PROXY_TARGET,
+    *,
+    module: str = "d810.hexrays.expr.p_ast",
+    class_name: str = "AstProxy",
+):
+    proxy_type = type(class_name, (), {"__module__": module})
+    proxy = object.__new__(proxy_type)
+    if target is not _MISSING_PROXY_TARGET:
+        object.__setattr__(proxy, "_target", target)
+    return proxy
+
+
+def _nested_runtime_ast_proxy(target: object, depth: int):
+    for _ in range(depth):
+        target = _runtime_ast_proxy(target)
+    return target
+
 
 @pytest.fixture
 def fake_native_runtime(monkeypatch: pytest.MonkeyPatch):
@@ -312,6 +337,99 @@ def test_native_lowering_preserves_live_leaf_keys_and_masks_constants(
     ]
     assert any(type(child) is _FakeAstLeaf and child is not leaf for child in rebuilt_leafs)
     assert any(isinstance(child, _FakeAstConstant) for child in rebuilt_leafs)
+
+
+@pytest.mark.parametrize("size", (1, 2, 4, 8))
+@pytest.mark.parametrize("proxy_module", _KNOWN_RUNTIME_PROXY_MODULES)
+def test_native_lowering_unwraps_known_runtime_proxy_and_preserves_leaf_key(
+    fake_native_runtime,
+    size: int,
+    proxy_module: str,
+):
+    leaf = _FakeAstLeaf("x", _FakeMop("register", 7, size))
+    candidate = _FakeAstNode(_OPCODE_BY_OPERATION["bnot"], leaf)
+    candidate.dest_size = size
+    proxy = _runtime_ast_proxy(candidate, module=proxy_module)
+
+    term = lower_native_ast_to_term(proxy, destination_size=size)
+
+    assert term is not None
+    assert term.width == size * 8
+    assert term.children[0].leaf_key == ("mop", "register", 7, size)
+
+    leaf_key = term.children[0].leaf_key
+    assert leaf_key is not None
+    rebuilt = lower_term_to_native_ast(
+        term,
+        leafs={leaf_key: leaf},
+        destination_size=size,
+    )
+
+    assert isinstance(rebuilt, _FakeAstNode)
+    assert rebuilt.dest_size == size
+    assert isinstance(rebuilt.left, _FakeAstLeaf)
+    assert rebuilt.left is not leaf
+    assert rebuilt.left.mop.to_cache_key() == ("register", 7, size)
+
+
+def test_native_lowering_rejects_unknown_missing_and_cyclic_proxies(
+    fake_native_runtime,
+):
+    leaf = _FakeAstLeaf("x", _FakeMop("register", 7, 4))
+    candidate = _FakeAstNode(_OPCODE_BY_OPERATION["bnot"], leaf)
+    candidate.dest_size = 4
+    cyclic = _runtime_ast_proxy()
+    object.__setattr__(cyclic, "_target", cyclic)
+
+    rejected = (
+        _runtime_ast_proxy(candidate, module="third_party.ast"),
+        _runtime_ast_proxy(candidate, class_name="TransparentWrapper"),
+        _runtime_ast_proxy(),
+        cyclic,
+    )
+
+    assert all(
+        lower_native_ast_to_term(proxy, destination_size=4) is None
+        for proxy in rejected
+    )
+
+
+def test_native_lowering_requires_concrete_operator_root_after_proxy_unwrap(
+    fake_native_runtime,
+):
+    leaf = _FakeAstLeaf("x", _FakeMop("register", 7, 4))
+    constant = _FakeAstConstant("one", 1, 4)
+
+    for root in (leaf, constant):
+        assert lower_native_ast_to_term(root, destination_size=4) is None
+        assert (
+            lower_native_ast_to_term(
+                _runtime_ast_proxy(root),
+                destination_size=4,
+            )
+            is None
+        )
+
+
+def test_native_lowering_bounds_known_runtime_proxy_nesting(fake_native_runtime):
+    leaf = _FakeAstLeaf("x", _FakeMop("register", 7, 4))
+    candidate = _FakeAstNode(_OPCODE_BY_OPERATION["bnot"], leaf)
+    candidate.dest_size = 4
+
+    assert (
+        lower_native_ast_to_term(
+            _nested_runtime_ast_proxy(candidate, 3),
+            destination_size=4,
+        )
+        is not None
+    )
+    assert (
+        lower_native_ast_to_term(
+            _nested_runtime_ast_proxy(candidate, 4),
+            destination_size=4,
+        )
+        is None
+    )
 
 
 def test_native_lowering_rejects_mixed_width_and_unsupported_operations(
