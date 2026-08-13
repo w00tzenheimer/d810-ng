@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import enum
 import importlib
+import json
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 
@@ -22,6 +24,77 @@ _BINARY_OPERATIONS = frozenset(
 )
 _SUPPORTED_OPERATIONS = _UNARY_OPERATIONS | _BINARY_OPERATIONS
 _VALID_DESTINATION_SIZES = frozenset({1, 2, 4, 8})
+
+
+try:
+    _EGGLOG_MODULE = importlib.import_module("egglog")
+except (ImportError, ModuleNotFoundError):
+    _EGGLOG_MODULE = None
+egglog = _EGGLOG_MODULE
+
+
+if _EGGLOG_MODULE is not None:
+
+    class BvExpr(egglog.Expr):
+        """Width-carrying Egglog term for the bounded MBA adapter only."""
+
+        @classmethod
+        def leaf(
+            cls,
+            width: egglog.i64Like,
+            key: egglog.StringLike,
+        ) -> BvExpr: ...
+
+        @classmethod
+        def constant(
+            cls,
+            width: egglog.i64Like,
+            value: egglog.i64Like,
+        ) -> BvExpr: ...
+
+        @classmethod
+        def unary(
+            cls,
+            operation: egglog.StringLike,
+            width: egglog.i64Like,
+            operand: BvExpr,
+        ) -> BvExpr: ...
+
+        @classmethod
+        def binary(
+            cls,
+            operation: egglog.StringLike,
+            width: egglog.i64Like,
+            left: BvExpr,
+            right: BvExpr,
+        ) -> BvExpr: ...
+
+
+    class DegreeExpr(egglog.Expr):
+        """Reachability wrapper whose integer tag is an exact rule degree."""
+
+        @classmethod
+        def at(
+            cls,
+            degree: egglog.i64Like,
+            expression: BvExpr,
+        ) -> DegreeExpr: ...
+
+else:
+
+    class BvExpr:  # pragma: no cover - exercised only without the optional extra.
+        pass
+
+
+    class DegreeExpr:  # pragma: no cover - exercised only without the optional extra.
+        pass
+
+
+def _load_egglog_module() -> Any | None:
+    return _EGGLOG_MODULE
+
+
+_monotonic = time.monotonic
 
 
 class ExtractionSkipReason(enum.StrEnum):
@@ -101,6 +174,25 @@ class EgglogExtractionReceipt:
             object.__setattr__(self, "input_cost", tuple(self.input_cost))
         if self.extracted_cost is not None:
             object.__setattr__(self, "extracted_cost", tuple(self.extracted_cost))
+
+
+@dataclass(frozen=True)
+class EgglogExtractionResult:
+    """One immutable candidate extraction outcome and its selected provenance."""
+
+    replacement_ast: Any | None
+    receipt: EgglogExtractionReceipt
+    selected_provenance: tuple[str, str, tuple[str, ...]] | None = None
+
+    def __post_init__(self) -> None:
+        if self.selected_provenance is None:
+            return
+        family, source_name, aliases = self.selected_provenance
+        object.__setattr__(
+            self,
+            "selected_provenance",
+            (str(family), str(source_name), tuple(aliases)),
+        )
 
 
 @dataclass(frozen=True)
@@ -479,12 +571,422 @@ def lower_term_to_native_ast(
         return None
 
 
+def _term_cost(term: TypedBvTerm) -> tuple[int, int]:
+    if term.operation is None:
+        return (0, 1)
+    child_costs = tuple(_term_cost(child) for child in term.children)
+    return (
+        1 + sum(cost[0] for cost in child_costs),
+        1 + sum(cost[1] for cost in child_costs),
+    )
+
+
+def _term_leafs(term: TypedBvTerm) -> frozenset[tuple[object, ...]]:
+    if term.operation is None:
+        return frozenset() if term.leaf_key is None else frozenset((term.leaf_key,))
+    return frozenset().union(*(_term_leafs(child) for child in term.children))
+
+
+def _collect_native_leafs(
+    ast: Any,
+    *,
+    runtime: _NativeAstRuntime,
+) -> dict[tuple[object, ...], Any] | None:
+    leafs: dict[tuple[object, ...], Any] = {}
+
+    def collect(node: Any) -> bool:
+        if isinstance(node, runtime.AstConstant):
+            return True
+        if isinstance(node, runtime.AstLeaf):
+            key = _live_leaf_key(node, runtime)
+            if key is None:
+                return False
+            leafs.setdefault(key, node)
+            return True
+        if not isinstance(node, runtime.AstNode):
+            return False
+        left = getattr(node, "left", None)
+        right = getattr(node, "right", None)
+        return left is not None and collect(left) and (right is None or collect(right))
+
+    return leafs if collect(ast) else None
+
+
+def _leaf_key_string(leaf_key: tuple[object, ...]) -> str:
+    return json.dumps(
+        _leaf_key_fingerprint(leaf_key),
+        ensure_ascii=True,
+        separators=(",", ":"),
+    )
+
+
+def _egglog_integer(value: int, width: int) -> int:
+    masked = value & ((1 << width) - 1)
+    if masked >= (1 << 63):
+        masked -= 1 << 64
+    return masked
+
+
+def _term_to_egglog(term: TypedBvTerm) -> Any:
+    if term.operation is None and term.value is not None:
+        return BvExpr.constant(term.width, _egglog_integer(term.value, term.width))
+    if term.operation is None:
+        assert term.leaf_key is not None
+        return BvExpr.leaf(term.width, _leaf_key_string(term.leaf_key))
+    children = tuple(_term_to_egglog(child) for child in term.children)
+    if len(children) == 1:
+        return BvExpr.unary(term.operation, term.width, children[0])
+    return BvExpr.binary(
+        term.operation,
+        term.width,
+        children[0],
+        children[1],
+    )
+
+
+def _egraph_statistics(egraph: Any) -> tuple[int, int] | None:
+    """Read exact Egglog 13.x serialized counts through the sole private seam."""
+
+    try:
+        serialized = egraph._serialize()
+        if type(serialized.truncated_functions) is not list:
+            return None
+        if type(serialized.discarded_functions) is not list:
+            return None
+        if serialized.truncated_functions or serialized.discarded_functions:
+            return None
+        payload = json.loads(serialized.to_json())
+    except Exception:
+        return None
+    if type(payload) is not dict:
+        return None
+    nodes = payload.get("nodes")
+    class_data = payload.get("class_data")
+    root_eclasses = payload.get("root_eclasses")
+    if type(nodes) is not dict or type(class_data) is not dict:
+        return None
+    if type(root_eclasses) is not list:
+        return None
+    for node in nodes.values():
+        if type(node) is not dict or type(node.get("eclass")) is not str:
+            return None
+        if node["eclass"] not in class_data:
+            return None
+    if any(type(name) is not str for name in class_data):
+        return None
+    return (len(class_data), len(nodes))
+
+
+def _rule_firing_count(report: Any) -> int | None:
+    matches = getattr(report, "num_matches_per_rule", None)
+    if not isinstance(matches, Mapping):
+        return None
+    values = tuple(matches.values())
+    if any(type(value) is not int or value < 0 for value in values):
+        return None
+    return sum(values)
+
+
+def _elapsed_ms(started: float) -> float:
+    return max(0.0, (_monotonic() - started) * 1000.0)
+
+
+def _extraction_result(
+    *,
+    started: float,
+    input_cost: tuple[int, int] | None,
+    extracted_cost: tuple[int, int] | None = None,
+    degree: int | None = None,
+    eclass_count: int | None = None,
+    enode_count: int | None = None,
+    rule_firings: int = 0,
+    provenance: tuple[str, str, tuple[str, ...]] | None = None,
+    replacement_ast: Any | None = None,
+    skip_reason: ExtractionSkipReason | None = None,
+    elapsed_ms: float | None = None,
+) -> EgglogExtractionResult:
+    elapsed = _elapsed_ms(started) if elapsed_ms is None else elapsed_ms
+    family = provenance[0] if provenance is not None else None
+    source_name = provenance[1] if provenance is not None else None
+    aliases = provenance[2] if provenance is not None else ()
+    return EgglogExtractionResult(
+        replacement_ast=replacement_ast,
+        receipt=EgglogExtractionReceipt(
+            input_cost=input_cost,
+            extracted_cost=extracted_cost,
+            degree=degree,
+            eclass_count=eclass_count,
+            enode_count=enode_count,
+            rule_firings=rule_firings,
+            elapsed_ms=elapsed,
+            selected_family=family,
+            selected_source=source_name,
+            selected_aliases=aliases,
+            skip_reason=skip_reason,
+        ),
+        selected_provenance=provenance,
+    )
+
+
+@dataclass(frozen=True)
+class _ReachableCandidate:
+    degree: int
+    term: TypedBvTerm
+    family: str
+    source_name: str
+    aliases: tuple[str, ...]
+    expression: Any
+    rule_decl: Any
+
+    @property
+    def provenance(self) -> tuple[str, str, tuple[str, ...]]:
+        return (self.family, self.source_name, self.aliases)
+
+
+def extract_bounded_candidate(
+    candidate_ast: Any,
+    rules: Any,
+    budget: EgglogExtractionBudget,
+    destination_size: int,
+) -> EgglogExtractionResult:
+    """Extract one strictly cheaper candidate through exact catalogue layers.
+
+    One fresh e-graph is created for every invocation where Egglog is
+    available.  Host-side grounding evaluates only the already-admitted
+    compiler constraints; the registered executable rules remain exclusively
+    layer-tagged catalogue applications.
+    """
+
+    try:
+        started = _monotonic()
+    except Exception:
+        started = 0.0
+    input_cost: tuple[int, int] | None = None
+    egglog = _load_egglog_module()
+    if egglog is None or _EGGLOG_MODULE is None:
+        return _extraction_result(
+            started=started,
+            input_cost=None,
+            skip_reason=ExtractionSkipReason.EGGLOG_UNAVAILABLE,
+            elapsed_ms=0.0,
+        )
+
+    try:
+        egraph = egglog.EGraph()
+        term = lower_native_ast_to_term(
+            candidate_ast,
+            destination_size=destination_size,
+        )
+        if term is None:
+            return _extraction_result(
+                started=started,
+                input_cost=None,
+                skip_reason=ExtractionSkipReason.UNSUPPORTED_WIDTH_SEMANTICS,
+            )
+        input_cost = _term_cost(term)
+        if input_cost[0] > budget.max_operator_nodes:
+            return _extraction_result(
+                started=started,
+                input_cost=input_cost,
+                skip_reason=ExtractionSkipReason.CANDIDATE_BUDGET,
+            )
+        if len(_term_leafs(term)) > budget.max_leaves:
+            return _extraction_result(
+                started=started,
+                input_cost=input_cost,
+                skip_reason=ExtractionSkipReason.CANDIDATE_BUDGET,
+            )
+        elapsed = _elapsed_ms(started)
+        if elapsed > budget.time_budget_ms:
+            return _extraction_result(
+                started=started,
+                input_cost=input_cost,
+                skip_reason=ExtractionSkipReason.TIME_BUDGET,
+                elapsed_ms=elapsed,
+            )
+
+        runtime = _load_native_runtime()
+        native_leafs = _collect_native_leafs(candidate_ast, runtime=runtime)
+        if native_leafs is None:
+            return _extraction_result(
+                started=started,
+                input_cost=input_cost,
+                skip_reason=ExtractionSkipReason.LOWERING_FAILED,
+            )
+
+        from d810.backends.mba.egglog_add_rule_compiler import (
+            apply_compiled_rule_to_term,
+            executable_rule_order_key,
+        )
+
+        ordered_rules = tuple(sorted(tuple(rules), key=executable_rule_order_key))
+        frontier: dict[int, tuple[TypedBvTerm, ...]] = {0: (term,)}
+        reachable: list[_ReachableCandidate] = []
+        rewrites: list[Any] = []
+        for degree in range(budget.max_degree):
+            next_terms: dict[TypedBvTerm, None] = {}
+            for source_term in frontier.get(degree, ()):
+                source_expression = DegreeExpr.at(
+                    degree,
+                    _term_to_egglog(source_term),
+                )
+                for rule in ordered_rules:
+                    replacement = apply_compiled_rule_to_term(rule, source_term)
+                    if replacement is None:
+                        continue
+                    replacement = canonicalize_ac_term(replacement)
+                    target_expression = DegreeExpr.at(
+                        degree + 1,
+                        _term_to_egglog(replacement),
+                    )
+                    executable_rewrite = egglog.rewrite(source_expression).to(
+                        target_expression
+                    )
+                    rewrites.append(executable_rewrite)
+                    reachable.append(
+                        _ReachableCandidate(
+                            degree=degree + 1,
+                            term=replacement,
+                            family=str(rule.family),
+                            source_name=str(rule.source_name),
+                            aliases=tuple(rule.aliases),
+                            expression=target_expression,
+                            rule_decl=executable_rewrite.decl,
+                        )
+                    )
+                    next_terms[replacement] = None
+            frontier[degree + 1] = tuple(next_terms)
+
+        seed = DegreeExpr.at(0, _term_to_egglog(term))
+        egraph.register(seed, *rewrites)
+        report = egraph.run(budget.saturation_rounds)
+        rule_firings = _rule_firing_count(report)
+        statistics = _egraph_statistics(egraph)
+        elapsed = _elapsed_ms(started)
+        if elapsed > budget.time_budget_ms:
+            return _extraction_result(
+                started=started,
+                input_cost=input_cost,
+                rule_firings=rule_firings or 0,
+                skip_reason=ExtractionSkipReason.TIME_BUDGET,
+                elapsed_ms=elapsed,
+            )
+        if rule_firings is None or statistics is None:
+            return _extraction_result(
+                started=started,
+                input_cost=input_cost,
+                rule_firings=rule_firings or 0,
+                skip_reason=ExtractionSkipReason.UNAVAILABLE_EGRAPH_STATISTICS,
+                elapsed_ms=elapsed,
+            )
+        eclass_count, enode_count = statistics
+        common = {
+            "started": started,
+            "input_cost": input_cost,
+            "eclass_count": eclass_count,
+            "enode_count": enode_count,
+            "rule_firings": rule_firings,
+        }
+        if eclass_count > budget.max_eclasses:
+            return _extraction_result(
+                **common,
+                skip_reason=ExtractionSkipReason.ECLASS_BUDGET,
+            )
+        if enode_count > budget.max_enodes:
+            return _extraction_result(
+                **common,
+                skip_reason=ExtractionSkipReason.ENODE_BUDGET,
+            )
+        if rule_firings > budget.max_rule_firings:
+            return _extraction_result(
+                **common,
+                skip_reason=ExtractionSkipReason.RULE_FIRING_BUDGET,
+            )
+
+        selections: list[
+            tuple[
+                tuple[int, int, int, str, str, tuple[str, ...]],
+                Any,
+                _ReachableCandidate,
+            ]
+        ] = []
+        for candidate in reachable:
+            if report.num_matches_per_rule.get(candidate.rule_decl, 0) <= 0:
+                continue
+            try:
+                egraph.extract(candidate.expression)
+            except egglog.EggSmolError:
+                continue
+            candidate_cost = _term_cost(candidate.term)
+            if candidate_cost >= input_cost:
+                continue
+            rebuilt = lower_term_to_native_ast(
+                candidate.term,
+                leafs=native_leafs,
+                destination_size=destination_size,
+            )
+            if rebuilt is None:
+                continue
+            selections.append(
+                (
+                    (
+                        candidate_cost[0],
+                        candidate_cost[1],
+                        candidate.degree,
+                        candidate.family,
+                        candidate.source_name,
+                        candidate.aliases,
+                    ),
+                    rebuilt,
+                    candidate,
+                )
+            )
+        if not selections:
+            return _extraction_result(
+                **common,
+                skip_reason=ExtractionSkipReason.NO_DEGREE_ELIGIBLE_IMPROVEMENT,
+            )
+        selection_key, replacement_ast, selected = min(
+            selections,
+            key=lambda item: item[0],
+        )
+        elapsed = _elapsed_ms(started)
+        if elapsed > budget.time_budget_ms:
+            return _extraction_result(
+                **common,
+                skip_reason=ExtractionSkipReason.TIME_BUDGET,
+                elapsed_ms=elapsed,
+            )
+        return _extraction_result(
+            **common,
+            extracted_cost=(selection_key[0], selection_key[1]),
+            degree=selected.degree,
+            provenance=selected.provenance,
+            replacement_ast=replacement_ast,
+        )
+    except Exception:
+        try:
+            elapsed = _elapsed_ms(started)
+        except Exception:
+            elapsed = 0.0
+        return _extraction_result(
+            started=started,
+            input_cost=input_cost,
+            skip_reason=ExtractionSkipReason.INTERNAL_ERROR,
+            elapsed_ms=elapsed,
+        )
+
+
 __all__ = [
+    "BvExpr",
+    "DegreeExpr",
     "EgglogExtractionBudget",
     "EgglogExtractionReceipt",
+    "EgglogExtractionResult",
     "ExtractionSkipReason",
     "TypedBvTerm",
     "canonicalize_ac_term",
+    "extract_bounded_candidate",
     "lower_native_ast_to_term",
     "lower_term_to_native_ast",
 ]

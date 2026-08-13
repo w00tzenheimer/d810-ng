@@ -34,6 +34,7 @@ _SUPPORTED_OPERATIONS = frozenset(
     }
 )
 _UNARY_OPERATIONS = frozenset({"bnot", "neg"})
+_AC_OPERATIONS = frozenset({"add", "and", "mul", "or", "xor"})
 _SUPPORTED_COMPARISON_OPERATIONS = frozenset({"ne", "lt", "gt", "le", "ge"})
 
 
@@ -438,6 +439,301 @@ def compiled_rules_for_families(
 def compile_add_rule_catalogue() -> AddRuleCatalogue:
     catalogue = _compile_rule_families({"add": ADD_RULE_CLASSES})
     return AddRuleCatalogue(catalogue.receipts)
+
+
+def executable_rule_order_key(
+    rule: CompiledEgglogRule,
+) -> tuple[str, str, tuple[str, ...]]:
+    """Return the stable executable/provenance order for bounded extraction."""
+
+    return (rule.family, rule.source_name, tuple(rule.aliases))
+
+
+def _flatten_symbolic_ac(expression: Any, operation: str) -> tuple[Any, ...]:
+    if getattr(expression, "operation", None) != operation:
+        return (expression,)
+    flattened: list[Any] = []
+    flattened.extend(_flatten_symbolic_ac(expression.left, operation))
+    flattened.extend(_flatten_symbolic_ac(expression.right, operation))
+    return tuple(flattened)
+
+
+def _flatten_term_ac(term: Any, operation: str) -> tuple[Any, ...]:
+    if term.operation != operation:
+        return (term,)
+    flattened: list[Any] = []
+    for child in term.children:
+        flattened.extend(_flatten_term_ac(child, operation))
+    return tuple(flattened)
+
+
+def _match_symbolic_term(
+    expression: Any,
+    term: Any,
+    bindings: dict[str, Any],
+) -> bool:
+    """Match one admitted symbolic pattern against a canonical typed term."""
+
+    operation = expression.operation
+    if operation is None:
+        name = expression.name
+        if not name:
+            return False
+        if bool(getattr(expression, "is_pattern_constant", False)):
+            if term.operation is not None or term.value is None:
+                return False
+        if expression.value is not None:
+            if term.operation is not None or term.value is None:
+                return False
+            mask = (1 << term.width) - 1
+            if term.value != (int(expression.value) & mask):
+                return False
+        existing = bindings.get(name)
+        if existing is not None:
+            return existing == term
+        bindings[name] = term
+        return True
+
+    if operation != term.operation:
+        return False
+    if operation in _AC_OPERATIONS:
+        pattern_items = _flatten_symbolic_ac(expression, operation)
+        term_items = _flatten_term_ac(term, operation)
+        if len(pattern_items) != len(term_items):
+            return False
+
+        def match_items(
+            index: int,
+            remaining: tuple[Any, ...],
+            current: dict[str, Any],
+        ) -> dict[str, Any] | None:
+            if index == len(pattern_items):
+                return current if not remaining else None
+            pattern_item = pattern_items[index]
+            for candidate_index, candidate_item in enumerate(remaining):
+                attempted = dict(current)
+                if not _match_symbolic_term(
+                    pattern_item,
+                    candidate_item,
+                    attempted,
+                ):
+                    continue
+                matched = match_items(
+                    index + 1,
+                    remaining[:candidate_index] + remaining[candidate_index + 1 :],
+                    attempted,
+                )
+                if matched is not None:
+                    return matched
+            return None
+
+        matched_bindings = match_items(0, term_items, dict(bindings))
+        if matched_bindings is None:
+            return False
+        bindings.clear()
+        bindings.update(matched_bindings)
+        return True
+
+    if expression.left is None or not term.children:
+        return False
+    if not _match_symbolic_term(expression.left, term.children[0], bindings):
+        return False
+    if operation in _UNARY_OPERATIONS:
+        return expression.right is None and len(term.children) == 1
+    return (
+        expression.right is not None
+        and len(term.children) == 2
+        and _match_symbolic_term(expression.right, term.children[1], bindings)
+    )
+
+
+@dataclass(frozen=True)
+class _UnboundSymbolicTerm:
+    name: str
+
+
+def _constant_fold(operation: str, values: tuple[int, ...], width: int) -> int:
+    mask = (1 << width) - 1
+    if operation == "add":
+        result = values[0] + values[1]
+    elif operation == "sub":
+        result = values[0] - values[1]
+    elif operation == "mul":
+        result = values[0] * values[1]
+    elif operation == "and":
+        result = values[0] & values[1]
+    elif operation == "or":
+        result = values[0] | values[1]
+    elif operation == "xor":
+        result = values[0] ^ values[1]
+    elif operation == "neg":
+        result = -values[0]
+    elif operation == "bnot":
+        result = ~values[0]
+    else:
+        raise ValueError(f"unsupported constraint operation: {operation}")
+    return result & mask
+
+
+def _evaluate_constraint_expression(
+    expression: Any,
+    bindings: dict[str, Any],
+    *,
+    width: int,
+) -> Any:
+    from d810.backends.mba.egglog_saturation import (
+        TypedBvTerm,
+        canonicalize_ac_term,
+    )
+
+    if not isinstance(expression, SymbolicExpressionProtocol):
+        if type(expression) is int:
+            return TypedBvTerm(operation=None, width=width, value=expression)
+        raise ValueError("unsupported non-symbolic constraint expression")
+    if expression.operation is None:
+        if expression.name and expression.name in bindings:
+            return bindings[expression.name]
+        if expression.value is not None:
+            return TypedBvTerm(
+                operation=None,
+                width=width,
+                value=int(expression.value),
+            )
+        if expression.name:
+            return _UnboundSymbolicTerm(expression.name)
+        raise ValueError("unnamed constraint expression")
+
+    left = _evaluate_constraint_expression(expression.left, bindings, width=width)
+    right = (
+        _evaluate_constraint_expression(expression.right, bindings, width=width)
+        if expression.right is not None
+        else None
+    )
+    if isinstance(left, _UnboundSymbolicTerm) or isinstance(
+        right, _UnboundSymbolicTerm
+    ):
+        raise ValueError("nested unbound constraint expression")
+    children = (left,) if right is None else (left, right)
+    if all(child.operation is None and child.value is not None for child in children):
+        return TypedBvTerm(
+            operation=None,
+            width=width,
+            value=_constant_fold(
+                expression.operation,
+                tuple(int(child.value) for child in children),
+                width,
+            ),
+        )
+    return canonicalize_ac_term(
+        TypedBvTerm(
+            operation=expression.operation,
+            width=width,
+            children=children,
+        )
+    )
+
+
+def _constraints_match_term(
+    rule: CompiledEgglogRule,
+    bindings: dict[str, Any],
+    *,
+    width: int,
+) -> bool:
+    for constraint in rule.constraints:
+        if not hasattr(constraint, "left") or not hasattr(constraint, "right"):
+            return False
+        try:
+            left = _evaluate_constraint_expression(
+                constraint.left,
+                bindings,
+                width=width,
+            )
+            right = _evaluate_constraint_expression(
+                constraint.right,
+                bindings,
+                width=width,
+            )
+        except (TypeError, ValueError):
+            return False
+        if isinstance(left, _UnboundSymbolicTerm):
+            if isinstance(right, _UnboundSymbolicTerm):
+                return False
+            bindings[left.name] = right
+            continue
+        if isinstance(right, _UnboundSymbolicTerm):
+            bindings[right.name] = left
+            continue
+        if left != right:
+            return False
+    return True
+
+
+def _materialize_symbolic_term(
+    expression: Any,
+    bindings: dict[str, Any],
+    *,
+    width: int,
+) -> Any:
+    from d810.backends.mba.egglog_saturation import (
+        TypedBvTerm,
+        canonicalize_ac_term,
+    )
+
+    if expression.operation is None:
+        if expression.name and expression.name in bindings:
+            return bindings[expression.name]
+        if expression.value is None:
+            raise ValueError(f"unbound symbolic leaf: {expression.name}")
+        return TypedBvTerm(
+            operation=None,
+            width=width,
+            value=int(expression.value),
+        )
+    if expression.left is None:
+        raise ValueError("operator expression has no left child")
+    left = _materialize_symbolic_term(expression.left, bindings, width=width)
+    right = (
+        _materialize_symbolic_term(expression.right, bindings, width=width)
+        if expression.right is not None
+        else None
+    )
+    children = (left,) if right is None else (left, right)
+    return canonicalize_ac_term(
+        TypedBvTerm(
+            operation=expression.operation,
+            width=width,
+            children=children,
+        )
+    )
+
+
+def apply_compiled_rule_to_term(
+    rule: CompiledEgglogRule,
+    term: Any,
+) -> Any | None:
+    """Ground one certified catalogue application without native AST fallback.
+
+    The matcher implements the compiler's existing declarative constant and
+    complement constraints over ``TypedBvTerm``.  It does not admit new rule
+    schemas and never calls the legacy per-rule Egglog specialization path.
+    """
+
+    if term.width not in rule.proof_widths:
+        return None
+    bindings: dict[str, Any] = {}
+    if not _match_symbolic_term(rule.pattern, term, bindings):
+        return None
+    if not _constraints_match_term(rule, bindings, width=term.width):
+        return None
+    try:
+        replacement = _materialize_symbolic_term(
+            rule.replacement,
+            bindings,
+            width=term.width,
+        )
+    except (TypeError, ValueError):
+        return None
+    return replacement if replacement.width == term.width else None
 
 
 _OPCODE_BY_OPERATION: dict[str, int] = {}

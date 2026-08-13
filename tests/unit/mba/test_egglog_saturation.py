@@ -9,9 +9,11 @@ from d810.backends.mba import egglog_saturation
 from d810.backends.mba.egglog_saturation import (
     EgglogExtractionBudget,
     EgglogExtractionReceipt,
+    EgglogExtractionResult,
     ExtractionSkipReason,
     TypedBvTerm,
     canonicalize_ac_term,
+    extract_bounded_candidate,
     lower_native_ast_to_term,
     lower_term_to_native_ast,
 )
@@ -398,4 +400,256 @@ def test_native_reconstruction_compares_typed_live_key_components(
             destination_size=4,
         )
         is None
+    )
+
+
+def test_extraction_result_is_immutable_and_carries_tuple_provenance():
+    receipt = EgglogExtractionReceipt(
+        selected_family="xor",
+        selected_source="CanonicalRule",
+        selected_aliases=("AliasRule",),
+    )
+    result = EgglogExtractionResult(
+        replacement_ast=None,
+        receipt=receipt,
+        selected_provenance=("xor", "CanonicalRule", ("AliasRule",)),
+    )
+
+    assert result.selected_provenance == (
+        "xor",
+        "CanonicalRule",
+        ("AliasRule",),
+    )
+    with pytest.raises(FrozenInstanceError):
+        result.replacement_ast = object()  # type: ignore[misc]
+
+
+def test_egglog_unavailability_returns_exact_noop_receipt(
+    fake_native_runtime,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    candidate = _FakeAstNode(
+        _OPCODE_BY_OPERATION["add"],
+        _FakeAstLeaf("x", _FakeMop("register", 1, 4)),
+        _FakeAstLeaf("y", _FakeMop("register", 2, 4)),
+    )
+    candidate.dest_size = 4
+    monkeypatch.setattr(egglog_saturation, "_load_egglog_module", lambda: None)
+
+    result = extract_bounded_candidate(
+        candidate,
+        (),
+        EgglogExtractionBudget(),
+        4,
+    )
+
+    assert result.replacement_ast is None
+    assert result.receipt.skip_reason is ExtractionSkipReason.EGGLOG_UNAVAILABLE
+    assert result.selected_provenance is None
+
+
+def test_operator_budget_returns_candidate_budget_before_registration(
+    fake_native_runtime,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    candidate = _FakeAstNode(
+        _OPCODE_BY_OPERATION["add"],
+        _FakeAstLeaf("x", _FakeMop("register", 1, 4)),
+        _FakeAstNode(
+            _OPCODE_BY_OPERATION["xor"],
+            _FakeAstLeaf("x", _FakeMop("register", 1, 4)),
+            _FakeAstLeaf("y", _FakeMop("register", 2, 4)),
+        ),
+    )
+    candidate.dest_size = 4
+    candidate.right.dest_size = 4
+
+    class _FreshEGraph:
+        instances = 0
+
+        def __init__(self):
+            type(self).instances += 1
+
+        def register(self, *_commands):
+            raise AssertionError("candidate cap must precede registration")
+
+    monkeypatch.setattr(
+        egglog_saturation,
+        "_load_egglog_module",
+        lambda: SimpleNamespace(EGraph=_FreshEGraph),
+    )
+
+    result = extract_bounded_candidate(
+        candidate,
+        (),
+        EgglogExtractionBudget(max_operator_nodes=1),
+        4,
+    )
+
+    assert _FreshEGraph.instances == 1
+    assert result.receipt.input_cost == (2, 5)
+    assert result.receipt.skip_reason is ExtractionSkipReason.CANDIDATE_BUDGET
+
+
+def test_injected_monotonic_clock_returns_time_budget_noop(
+    fake_native_runtime,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    candidate = _FakeAstNode(
+        _OPCODE_BY_OPERATION["add"],
+        _FakeAstLeaf("x", _FakeMop("register", 1, 4)),
+        _FakeAstLeaf("y", _FakeMop("register", 2, 4)),
+    )
+    candidate.dest_size = 4
+    ticks = iter((10.0, 10.004, 10.004))
+
+    class _FreshEGraph:
+        def register(self, *_commands):
+            raise AssertionError("time cap must precede registration")
+
+    monkeypatch.setattr(
+        egglog_saturation,
+        "_load_egglog_module",
+        lambda: SimpleNamespace(EGraph=_FreshEGraph),
+    )
+    monkeypatch.setattr(egglog_saturation, "_monotonic", lambda: next(ticks))
+
+    result = extract_bounded_candidate(
+        candidate,
+        (),
+        EgglogExtractionBudget(time_budget_ms=3),
+        4,
+    )
+
+    assert result.replacement_ast is None
+    assert result.receipt.elapsed_ms == pytest.approx(4.0)
+    assert result.receipt.skip_reason is ExtractionSkipReason.TIME_BUDGET
+
+
+def test_distinct_live_leaf_cap_returns_candidate_budget(
+    fake_native_runtime,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    candidate = _FakeAstNode(
+        _OPCODE_BY_OPERATION["add"],
+        _FakeAstLeaf("x", _FakeMop("register", 1, 4)),
+        _FakeAstLeaf("y", _FakeMop("register", 2, 4)),
+    )
+    candidate.dest_size = 4
+
+    class _FreshEGraph:
+        def register(self, *_commands):
+            raise AssertionError("leaf cap must precede registration")
+
+    monkeypatch.setattr(
+        egglog_saturation,
+        "_load_egglog_module",
+        lambda: SimpleNamespace(EGraph=_FreshEGraph),
+    )
+
+    result = extract_bounded_candidate(
+        candidate,
+        (),
+        EgglogExtractionBudget(max_leaves=1),
+        4,
+    )
+
+    assert result.receipt.input_cost == (1, 3)
+    assert result.receipt.skip_reason is ExtractionSkipReason.CANDIDATE_BUDGET
+
+
+@pytest.mark.parametrize("malformation", ["missing", "truncated", "unknown"])
+def test_private_egraph_statistics_shape_drift_fails_closed(malformation: str):
+    class _Serialized:
+        truncated_functions = []
+        discarded_functions = []
+
+        def to_json(self):
+            if malformation == "unknown":
+                return '{"nodes": [], "class_data": {}}'
+            return '{"nodes": {}, "class_data": {}, "root_eclasses": []}'
+
+    class _EGraph:
+        if malformation != "missing":
+
+            def _serialize(self):
+                serialized = _Serialized()
+                if malformation == "truncated":
+                    serialized.truncated_functions = ["BvExpr.binary"]
+                return serialized
+
+    assert egglog_saturation._egraph_statistics(_EGraph()) is None
+
+
+def test_run_report_match_counts_are_never_guessed():
+    assert (
+        egglog_saturation._rule_firing_count(
+            SimpleNamespace(num_matches_per_rule={"r0": 2, "r1": 3})
+        )
+        == 5
+    )
+    assert (
+        egglog_saturation._rule_firing_count(
+            SimpleNamespace(num_matches_per_rule={"r0": True})
+        )
+        is None
+    )
+    assert egglog_saturation._rule_firing_count(SimpleNamespace()) is None
+
+
+@pytest.mark.parametrize("malformation", ["run-report", "serialization"])
+def test_unknown_runtime_statistics_return_exact_unavailable_receipt(
+    fake_native_runtime,
+    monkeypatch: pytest.MonkeyPatch,
+    malformation: str,
+):
+    candidate = _FakeAstNode(
+        _OPCODE_BY_OPERATION["add"],
+        _FakeAstLeaf("x", _FakeMop("register", 1, 4)),
+        _FakeAstLeaf("y", _FakeMop("register", 2, 4)),
+    )
+    candidate.dest_size = 4
+
+    class _Serialized:
+        truncated_functions = []
+        discarded_functions = []
+
+        @staticmethod
+        def to_json():
+            if malformation == "serialization":
+                return '{"nodes": [], "class_data": {}}'
+            return '{"nodes": {}, "class_data": {}, "root_eclasses": []}'
+
+    class _FreshEGraph:
+        def register(self, *_commands):
+            return None
+
+        def run(self, _rounds):
+            if malformation == "run-report":
+                return SimpleNamespace()
+            return SimpleNamespace(num_matches_per_rule={"canonical-rule": 2})
+
+        def _serialize(self):
+            return _Serialized()
+
+    monkeypatch.setattr(
+        egglog_saturation,
+        "_load_egglog_module",
+        lambda: SimpleNamespace(EGraph=_FreshEGraph),
+    )
+
+    result = extract_bounded_candidate(
+        candidate,
+        (),
+        EgglogExtractionBudget(time_budget_ms=1000),
+        4,
+    )
+
+    assert result.replacement_ast is None
+    assert (
+        result.receipt.skip_reason
+        is ExtractionSkipReason.UNAVAILABLE_EGRAPH_STATISTICS
+    )
+    assert result.receipt.rule_firings == (
+        0 if malformation == "run-report" else 2
     )
