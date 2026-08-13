@@ -1,5 +1,6 @@
 import pytest
 
+from d810.backends.mba import egglog_add_rule_compiler
 from d810.backends.mba.egglog_add_rule_compiler import (
     RuleCompilationStatus,
     compile_add_rule_catalogue,
@@ -7,6 +8,25 @@ from d810.backends.mba.egglog_add_rule_compiler import (
 from d810.backends.mba.z3 import verify_rule
 from d810.mba.dsl import Const, Var
 from d810.mba.rules._base import VerifiableRule
+
+
+@pytest.mark.parametrize("malformed_attribute", ("PATTERN", "REPLACEMENT"))
+def test_add_catalogue_rejects_non_dsl_pattern_or_replacement(
+    monkeypatch, malformed_attribute
+):
+    attributes = {"PATTERN": Var("x"), "REPLACEMENT": Var("x")}
+    attributes[malformed_attribute] = object()
+    malformed_rule = type("MalformedRule", (VerifiableRule,), attributes)
+    monkeypatch.setattr(
+        egglog_add_rule_compiler, "ADD_RULE_CLASSES", (malformed_rule,)
+    )
+
+    catalogue = compile_add_rule_catalogue()
+
+    receipt = catalogue.receipt_for("MalformedRule")
+    assert receipt.status is RuleCompilationStatus.REJECTED
+    assert receipt.compiled_rule is None
+    assert receipt.canonical_name is None
 
 
 def test_add_catalogue_certifies_all_native_widths_and_preserves_aliases():

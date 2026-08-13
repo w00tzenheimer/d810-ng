@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 
 from d810.core.typing import Any
 from d810.backends.mba.z3 import verify_rule
+from d810.mba.dsl import SymbolicExpressionProtocol
 from d810.mba.rules._base import VerifiableRule
 from d810.mba.rules.add import ADD_RULE_CLASSES
 
@@ -24,6 +25,7 @@ _SUPPORTED_OPERATIONS = frozenset(
         "xor",
     }
 )
+_UNARY_OPERATIONS = frozenset({"bnot", "neg"})
 
 
 class RuleCompilationStatus(enum.StrEnum):
@@ -75,24 +77,42 @@ class AddRuleCatalogue:
 
 
 def _expression_fingerprint(expression: Any) -> tuple[Any, ...]:
-    operation = getattr(expression, "operation", None)
+    if not isinstance(expression, SymbolicExpressionProtocol):
+        raise ValueError(
+            f"expected symbolic expression, got {type(expression).__name__}"
+        )
+
+    operation = expression.operation
     if operation is None:
+        if not expression.is_leaf() or expression.left is not None or expression.right is not None:
+            raise ValueError("malformed symbolic expression leaf")
         return (
             "leaf",
-            getattr(expression, "name", None),
-            getattr(expression, "value", None),
+            expression.name,
+            expression.value,
             bool(getattr(expression, "is_pattern_constant", False)),
         )
     if operation not in _SUPPORTED_OPERATIONS:
         raise ValueError(f"unsupported expression operation: {operation}")
+    if expression.is_leaf() or expression.left is None:
+        raise ValueError(f"malformed {operation} expression")
+    if operation in _UNARY_OPERATIONS:
+        if expression.right is not None:
+            raise ValueError(f"malformed unary {operation} expression")
+    elif expression.right is None:
+        raise ValueError(f"malformed binary {operation} expression")
     return (
         "operation",
         operation,
-        getattr(expression, "name", None),
-        getattr(expression, "value", None),
+        expression.name,
+        expression.value,
         bool(getattr(expression, "is_pattern_constant", False)),
-        _expression_fingerprint(getattr(expression, "left", None)),
-        _expression_fingerprint(getattr(expression, "right", None)),
+        _expression_fingerprint(expression.left),
+        (
+            None
+            if expression.right is None
+            else _expression_fingerprint(expression.right)
+        ),
     )
 
 
