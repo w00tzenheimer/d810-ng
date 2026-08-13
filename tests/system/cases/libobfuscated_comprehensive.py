@@ -785,6 +785,30 @@ OLLVM_CASES = [
 
 DAC_MASM_CASES = [
     DeobfuscationCase(
+        function="sub_7FF85A59E4D0",
+        description=(
+            "Live Eidolon state-machine export with residual effect-free "
+            "state-slot writes. Guards conservative stack dead-store "
+            "elimination after dispatcher recovery."
+        ),
+        project="dead_store_elimination_fixture_config_v2_canary.json",
+        obfuscated_contains=["while ( 1 )"],
+        deobfuscated_contains=["0x80100004"],
+        deobfuscated_not_contains=[
+            "0x1ECAF6DF",
+            "0x53DA3C55",
+            "0x89B05D",
+            "0x460BFBA4",
+            "0x47E69B9E",
+            "0x63596D43",
+            "0x434A850F",
+            "0x3CC3FEA8",
+        ],
+        must_change=True,
+        required_rules=["SimpleFlatteningCleanupUnflattener"],
+        skip_if_function_absent=True,
+    ),
+    DeobfuscationCase(
         function="sub_7FF85A5CB920",
         description=(
             "Hodur-like state-machine fixture exported from a live IDB. "

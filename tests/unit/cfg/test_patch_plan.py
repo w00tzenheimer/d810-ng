@@ -32,6 +32,7 @@ from d810.transforms.graph_modification import (
     RedirectBranch,
     RedirectGoto,
     RemoveEdge,
+    RemoveInstruction,
     RetargetOutputStore,
     ScalarizeLocalAliasAccess,
 )
@@ -65,6 +66,7 @@ from d810.transforms.plan import (
     PatchRelocationMap,
     PatchReorderBlocks,
     PatchRemoveEdge,
+    PatchRemoveInstruction,
     PatchRetargetOutputStore,
     PatchScalarizeLocalAliasAccess,
     compile_patch_plan as _compile_patch_plan,
@@ -445,6 +447,37 @@ def test_compile_patch_plan_converts_existing_block_rewrites():
     assert patch_plan.new_blocks == ()
     assert {serial for _ref, serial in patch_plan.source_coordinates} == set(
         range(1, 7)
+    )
+
+
+def test_compile_patch_plan_lowers_guarded_instruction_removal():
+    modification = RemoveInstruction(
+        block_serial=6,
+        block_start_ea=0x401000,
+        insn_ea=0x401004,
+        ordinal=1,
+        opcode=0x123,
+        destination_kind="stack",
+        destination_id=-0x20,
+        destination_size=8,
+    )
+
+    patch_plan = compile_patch_plan(
+        [modification],
+        block_refs_by_serial={6: _logical(6)},
+    )
+
+    assert patch_plan.steps == (
+        PatchRemoveInstruction(
+            block_serial=_logical(6),
+            block_start_ea=0x401000,
+            insn_ea=0x401004,
+            ordinal=1,
+            opcode=0x123,
+            destination_kind="stack",
+            destination_id=-0x20,
+            destination_size=8,
+        ),
     )
 
 

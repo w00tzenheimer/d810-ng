@@ -45,6 +45,7 @@ from d810.transforms.plan import (
     PatchLowerConditionalStateTransition,
     PatchNormalizeNWayDispatcherExit,
     PatchNopInstructions,
+    PatchRemoveInstruction,
     PatchPhaseCycleLowering,
     PatchZeroStateWrite,
     PatchPromoteOperandToScalar,
@@ -1266,6 +1267,8 @@ class IDAIRTranslator:
                     | PatchCloneConditionalAsGotoFromBranchArm()
                 ):
                     continue
+                case PatchRemoveInstruction():
+                    continue
                 case PatchPromoteOperandToScalar():
                     continue
                 case (
@@ -1352,6 +1355,31 @@ class IDAIRTranslator:
                         ea,
                         description=f"nop {hex(ea)} in block {serial}",
                     )
+
+            case PatchRemoveInstruction(
+                block_serial=serial,
+                block_start_ea=block_start_ea,
+                insn_ea=insn_ea,
+                ordinal=ordinal,
+                opcode=opcode,
+                destination_kind=destination_kind,
+                destination_id=destination_id,
+                destination_size=destination_size,
+            ):
+                modifier.queue_guarded_insn_remove(
+                    serial,
+                    block_start_ea,
+                    insn_ea,
+                    ordinal,
+                    opcode,
+                    destination_kind,
+                    destination_id,
+                    destination_size,
+                    description=(
+                        f"remove guarded instruction {hex(insn_ea)} "
+                        f"ordinal={ordinal} in block {serial}"
+                    ),
+                )
 
             case PatchZeroStateWrite(block_serial=serial, insn_ea=ea):
                 modifier.queue_zero_state_write(

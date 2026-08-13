@@ -83,6 +83,9 @@ from d810.hexrays.mutation.semantic_ownership import (
     find_patch_plan_semantic_ownership_overlap,
     format_patch_plan_semantic_ownership_overlap,
 )
+from d810.hexrays.observability import (
+    mba_to_block_snapshots as _mba_to_block_snapshots,
+)
 from d810.analyses.control_flow.provenance import (
     GateAccounting,
     GateDecision,
@@ -108,14 +111,6 @@ from d810.analyses.control_flow.safeguards import (
 from d810.analyses.control_flow.terminal_return_audit import build_terminal_return_audit
 
 executor_logger = logging.getLogger("d810.unflat.hodur.executor")
-
-# ---------- MBA-to-BlockSnapshot helper (shared, IDA-dependent) ----------
-# Phase 5 of the observability-boundary plan will move the serializer
-# into `d810.hexrays.mba_serializer`. The facade (`mba_to_block_snapshots`
-# from `d810.hexrays.observability`) keeps the call sites stable across
-# that move.
-from d810.hexrays.observability import mba_to_block_snapshots as _mba_to_block_snapshots
-
 
 def _optional_int(value: object) -> int | None:
     try:
@@ -1020,15 +1015,14 @@ class TransactionalExecutor:
         except Exception:
             log_cfg_provenance = None
 
+        source_coordinates = dict(patch_plan.source_coordinates)
         for spec in patch_plan.new_blocks:
             assigned_serial = realized_serials.get(spec.block_id)
             if assigned_serial is None:
                 continue
-            origin_serial = spec.template_block
+            origin_serial = source_coordinates.get(spec.template_block)
             if origin_serial is None and spec.incoming_edge is not None:
-                incoming_source = spec.incoming_edge.source
-                if isinstance(incoming_source, int):
-                    origin_serial = incoming_source
+                origin_serial = source_coordinates.get(spec.incoming_edge.source)
             outgoing_targets = [
                 edge.target
                 for edge in spec.outgoing_edges

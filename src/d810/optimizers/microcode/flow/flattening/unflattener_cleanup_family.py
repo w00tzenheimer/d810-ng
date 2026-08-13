@@ -30,6 +30,7 @@ from d810.optimizers.microcode.flow.flattening.engine.runtime import (
 from d810.optimizers.microcode.flow.flattening.unflattening_rule_lifecycle import (
     ComposedUnflatteningRule,
 )
+from d810.optimizers.microcode.handler import ConfigParam
 
 unflat_logger = getLogger("d810.unflat.cleanup_family.engine")
 
@@ -47,6 +48,14 @@ class SimpleFlatteningCleanupUnflattener(ComposedUnflatteningRule):
     ]
     DEFAULT_MAX_PASSES = 3
     HARD_MAX_PASSES = 10
+    CONFIG_SCHEMA = ComposedUnflatteningRule.CONFIG_SCHEMA + (
+        ConfigParam(
+            "enable_dead_store_elimination",
+            bool,
+            False,
+            "Remove proven-dead direct register and stack writes",
+        ),
+    )
 
     def __init__(self) -> None:
         super().__init__()
@@ -60,6 +69,12 @@ class SimpleFlatteningCleanupUnflattener(ComposedUnflatteningRule):
         self._last_snapshot = None
         self._last_provenance: PipelineProvenance | None = None
         self._last_total_changes = 0
+
+    def configure(self, kwargs) -> None:
+        super().configure(kwargs)
+        self._family.set_dead_store_elimination_enabled(
+            bool(self.config.get("enable_dead_store_elimination", False))
+        )
 
     def check_if_rule_should_be_used(self, blk: ida_hexrays.mblock_t) -> bool:
         if not super().check_if_rule_should_be_used(blk):

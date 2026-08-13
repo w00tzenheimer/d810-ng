@@ -653,6 +653,7 @@ class ModificationType(Enum):
     BLOCK_NWAY_GOTO_TYPE_DOWNGRADE = auto()  # Downgrade NWAY+m_goto+1succ to 1-way
     BLOCK_NOP_INSNS = auto()  # NOP instructions in a block
     INSN_REMOVE = auto()  # Remove a specific instruction
+    INSN_GUARDED_REMOVE = auto()  # Remove a fully fingerprinted instruction
     INSN_NOP = auto()  # NOP a specific instruction
     INSN_CONST_MOV_AND_NOP_PAIR = (
         auto()
@@ -791,6 +792,7 @@ class StagedAtomicClassification(Enum):
 _STAGED_ATOMIC_CLASS_MAP: "dict[ModificationType, StagedAtomicClassification]" = {
     # Instruction-only: never touches block topology.
     ModificationType.INSN_REMOVE: StagedAtomicClassification.INSTRUCTION_ONLY,
+    ModificationType.INSN_GUARDED_REMOVE: StagedAtomicClassification.INSTRUCTION_ONLY,
     ModificationType.INSN_NOP: StagedAtomicClassification.INSTRUCTION_ONLY,
     ModificationType.INSN_CONST_MOV_AND_NOP_PAIR: StagedAtomicClassification.INSTRUCTION_ONLY,
     ModificationType.INSN_ZERO_STATE_WRITE: StagedAtomicClassification.INSTRUCTION_ONLY,
@@ -1063,6 +1065,13 @@ class QueuedModification:
     new_target: int | None = None
     # For instruction-level operations
     insn_ea: int | None = None
+    # For fully fingerprinted instruction removal.
+    block_start_ea: int | None = None
+    expected_ordinal: int | None = None
+    expected_opcode: int | None = None
+    expected_destination_kind: str | None = None
+    expected_destination_id: int | None = None
+    expected_destination_size: int | None = None
     # For instruction-level operations that address payload-body ordinals
     insn_body_index: int | None = None
     secondary_insn_body_index: int | None = None
@@ -1801,6 +1810,55 @@ class DeferredGraphModifier:
             )
         )
         logger.debug("Queued insn remove: block %d, ea=%s", block_serial, hex(insn_ea))
+        if self.event_emitter is not None:
+            self._emit(
+                DeferredEvent.DEFERRED_QUEUE_ADDED,
+                self._mod_payload(self.modifications[-1]),
+            )
+
+    def queue_guarded_insn_remove(
+        self,
+        block_serial: int,
+        block_start_ea: int,
+        insn_ea: int,
+        ordinal: int,
+        opcode: int,
+        destination_kind: str,
+        destination_id: int,
+        destination_size: int,
+        description: str = "",
+    ) -> None:
+        """Queue removal guarded by a full instruction identity fingerprint.
+
+        Unlike queue_insn_remove, this never resolves an instruction by EA
+        alone. It is for semantic cleanup passes whose proof becomes invalid
+        if another rewrite changes the block body before this operation runs.
+        """
+        self.modifications.append(
+            QueuedModification(
+                mod_type=ModificationType.INSN_GUARDED_REMOVE,
+                block_serial=int(block_serial),
+                block_start_ea=int(block_start_ea),
+                insn_ea=int(insn_ea),
+                expected_ordinal=int(ordinal),
+                expected_opcode=int(opcode),
+                expected_destination_kind=str(destination_kind),
+                expected_destination_id=int(destination_id),
+                expected_destination_size=int(destination_size),
+                priority=1000,
+                description=description
+                or (
+                    f"remove guarded insn at {hex(insn_ea)} ordinal={ordinal} "
+                    f"in block {block_serial}"
+                ),
+            )
+        )
+        logger.debug(
+            "Queued guarded insn remove: block %d ea=%s ordinal=%d",
+            block_serial,
+            hex(insn_ea),
+            ordinal,
+        )
         if self.event_emitter is not None:
             self._emit(
                 DeferredEvent.DEFERRED_QUEUE_ADDED,
@@ -10951,6 +11009,18 @@ class DeferredGraphModifier:
         elif mod.mod_type == ModificationType.INSN_REMOVE:
             return self._apply_insn_remove(blk, mod.insn_ea)
 
+        elif mod.mod_type == ModificationType.INSN_GUARDED_REMOVE:
+            return self._apply_guarded_insn_remove(
+                blk,
+                block_start_ea=mod.block_start_ea,
+                insn_ea=mod.insn_ea,
+                ordinal=mod.expected_ordinal,
+                opcode=mod.expected_opcode,
+                destination_kind=mod.expected_destination_kind,
+                destination_id=mod.expected_destination_id,
+                destination_size=mod.expected_destination_size,
+            )
+
         elif mod.mod_type == ModificationType.INSN_NOP:
             return self._apply_insn_nop(blk, mod.insn_ea)
 
@@ -11398,6 +11468,105 @@ class DeferredGraphModifier:
             "Instruction at EA %s not found in block %d", hex(insn_ea), blk.serial
         )
         return False
+
+    def _apply_guarded_insn_remove(
+        self,
+        blk: ida_hexrays.mblock_t,
+        *,
+        block_start_ea: int | None,
+        insn_ea: int | None,
+        ordinal: int | None,
+        opcode: int | None,
+        destination_kind: str | None,
+        destination_id: int | None,
+        destination_size: int | None,
+    ) -> bool:
+        """Remove exactly one direct register or stack write after revalidation."""
+        if any(
+            value is None
+            for value in (
+                block_start_ea,
+                insn_ea,
+                ordinal,
+                opcode,
+                destination_kind,
+                destination_id,
+                destination_size,
+            )
+        ):
+            logger.warning(
+                "guarded instruction removal has incomplete fingerprint for block %d",
+                blk.serial,
+            )
+            return False
+        if int(getattr(blk, "start", -1)) != int(block_start_ea):
+            logger.warning(
+                "guarded instruction removal block-start mismatch: block %d expected=%s got=%s",
+                blk.serial,
+                hex(int(block_start_ea)),
+                hex(int(getattr(blk, "start", -1))),
+            )
+            return False
+
+        current_ordinal = 0
+        insn = blk.head
+        while insn is not None:
+            if current_ordinal == int(ordinal):
+                break
+            current_ordinal += 1
+            insn = insn.next
+
+        if insn is None:
+            logger.warning(
+                "guarded instruction removal ordinal %d not found in block %d",
+                ordinal,
+                blk.serial,
+            )
+            return False
+        if int(getattr(insn, "ea", -1)) != int(insn_ea) or int(
+            getattr(insn, "opcode", -1)
+        ) != int(opcode):
+            logger.warning(
+                "guarded instruction removal instruction mismatch: block=%d ordinal=%d",
+                blk.serial,
+                ordinal,
+            )
+            return False
+
+        destination = getattr(insn, "d", None)
+        if destination_kind == "stack":
+            destination_matches = (
+                destination is not None
+                and int(getattr(destination, "t", -1)) == int(ida_hexrays.mop_S)
+                and int(getattr(getattr(destination, "s", None), "off", -1))
+                == int(destination_id)
+                and int(getattr(destination, "size", -1)) == int(destination_size)
+            )
+        elif destination_kind == "register":
+            destination_matches = (
+                destination is not None
+                and int(getattr(destination, "t", -1)) == int(ida_hexrays.mop_r)
+                and int(getattr(destination, "r", -1)) == int(destination_id)
+                and int(getattr(destination, "size", -1)) == int(destination_size)
+            )
+        else:
+            logger.warning(
+                "guarded instruction removal has unsupported destination kind %r",
+                destination_kind,
+            )
+            return False
+        if not destination_matches:
+            logger.warning(
+                "guarded instruction removal destination mismatch: block=%d ordinal=%d",
+                blk.serial,
+                ordinal,
+            )
+            return False
+
+        blk.remove_from_block(insn)
+        blk.mark_lists_dirty()
+        self.mba.mark_chains_dirty()
+        return True
 
     def _apply_insn_nop(self, blk: ida_hexrays.mblock_t, insn_ea: int) -> bool:
         """NOP an instruction by its EA."""

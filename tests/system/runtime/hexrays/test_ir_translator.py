@@ -55,6 +55,7 @@ from d810.transforms.plan import (
     PatchPlan,
     PatchRedirectBranch,
     PatchRedirectGoto,
+    PatchRemoveInstruction,
     compile_patch_plan,
 )
 from d810.transforms.cfg_transaction import (
@@ -1132,6 +1133,33 @@ class _FakeDeferredGraphModifier:
 
     def queue_insn_nop(self, serial: int, ea: int, description: str = "") -> None:
         self.calls.append(("nop", serial, ea, description))
+
+    def queue_guarded_insn_remove(
+        self,
+        serial: int,
+        block_start_ea: int,
+        insn_ea: int,
+        ordinal: int,
+        opcode: int,
+        destination_kind: str,
+        destination_id: int,
+        destination_size: int,
+        description: str = "",
+    ) -> None:
+        self.calls.append(
+            (
+                "guarded_remove",
+                serial,
+                block_start_ea,
+                insn_ea,
+                ordinal,
+                opcode,
+                destination_kind,
+                destination_id,
+                destination_size,
+                description,
+            )
+        )
 
     def queue_remove_edge(
         self, from_serial: int, to_serial: int, description: str = ""
@@ -2427,6 +2455,48 @@ class TestExecutionPolicyGuard:
             "CFG-edit plan must be rejected when policy is NOP_CLEANUP_RELAXED"
         )
         assert created == [], "Modifier must not be created when guard rejects the plan"
+
+    def test_guarded_instruction_removal_queues_under_strict_policy(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        created: list[_FakeDeferredGraphModifier] = []
+
+        def _factory(mba: object, **_kwargs) -> _FakeDeferredGraphModifier:
+            modifier = _FakeDeferredGraphModifier(mba)
+            created.append(modifier)
+            return modifier
+
+        deferred_modifier = importlib.import_module(
+            "d810.hexrays.mutation.deferred_modifier"
+        )
+        monkeypatch.setattr(deferred_modifier, "DeferredGraphModifier", _factory)
+
+        plan = _manual_plan(
+            PatchRemoveInstruction(
+                block_serial=_manual_ref(7),
+                block_start_ea=0x401000,
+                insn_ea=0x401004,
+                ordinal=1,
+                opcode=0x123,
+                destination_kind="stack",
+                destination_id=-0x20,
+                destination_size=8,
+            )
+        )
+
+        assert _lower(IDAIRTranslator(), plan, object()) == 1
+        assert created[0].calls[0][:9] == (
+            "guarded_remove",
+            7,
+            0x401000,
+            0x401004,
+            1,
+            0x123,
+            "stack",
+            -0x20,
+            8,
+        )
 
     def test_nop_only_plan_passes_guard(
         self,

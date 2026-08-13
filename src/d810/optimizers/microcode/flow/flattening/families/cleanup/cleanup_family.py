@@ -86,6 +86,9 @@ from d810.passes.tail_goto_merge import (
     extract_tail_goto_merge_candidates,
     serialize_tail_goto_merge_candidates,
 )
+from d810.passes.dead_store import (
+    DeadStoreEliminationStrategy,
+)
 from d810.analyses.control_flow.graph_reachability import compute_reachable_blocks
 from d810.analyses.control_flow.guarded_state_machine import (
     GUARDED_STATE_MACHINE_FIXES_METADATA_KEY,
@@ -186,10 +189,12 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
         backend: SimpleFlatteningCleanupBackend | None = None,
         cfg_translator: IDAIRTranslator | None = None,
         logger=None,
+        dead_store_elimination_enabled: bool = False,
     ) -> None:
         self._backend = backend or LiveSimpleFlatteningCleanupBackend()
         self._cfg_translator = cfg_translator or IDAIRTranslator()
         self._logger = logger or family_logger
+        self._dead_store_elimination_enabled = bool(dead_store_elimination_enabled)
         self._strategies = [
             FakeJumpStrategy(),
             SingleIterationStrategy(),
@@ -201,6 +206,22 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
             FixPredecessorBranchArmStrategy(),
             TailGotoMergeStrategy(),
         ]
+        if self._dead_store_elimination_enabled:
+            self._strategies.append(DeadStoreEliminationStrategy())
+
+    def set_dead_store_elimination_enabled(self, enabled: bool) -> None:
+        """Rebuild the opt-in strategy list after project configuration changes."""
+        enabled = bool(enabled)
+        if enabled == self._dead_store_elimination_enabled:
+            return
+        self._dead_store_elimination_enabled = enabled
+        self._strategies = [
+            strategy
+            for strategy in self._strategies
+            if strategy.name != DeadStoreEliminationStrategy.name
+        ]
+        if enabled:
+            self._strategies.append(DeadStoreEliminationStrategy())
 
     @property
     def name(self) -> str:

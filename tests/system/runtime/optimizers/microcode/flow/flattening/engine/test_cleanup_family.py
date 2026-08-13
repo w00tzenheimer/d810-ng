@@ -321,6 +321,24 @@ def test_simple_cleanup_family_registers_cleanup_strategies() -> None:
     ]
 
 
+def test_simple_cleanup_family_adds_dead_store_strategy_only_when_enabled() -> None:
+    empty_graph = FlowGraph(blocks={}, entry_serial=0, func_ea=0)
+    family = SimpleFlatteningCleanupFamily(
+        cfg_translator=_FakeTranslator(empty_graph),
+        dead_store_elimination_enabled=True,
+    )
+
+    assert family.strategies[-1].name == "dead_store_elimination"
+
+
+def test_simple_cleanup_rule_configures_dead_store_elimination_opt_in() -> None:
+    rule = SimpleFlatteningCleanupUnflattener()
+
+    rule.configure({"enable_dead_store_elimination": True})
+
+    assert rule._family.strategies[-1].name == "dead_store_elimination"
+
+
 def test_live_cleanup_backend_wraps_existing_collectors(monkeypatch) -> None:
     fake_jump_fix = FakeJumpPredFix(fake_block=2, pred_block=5, new_target=10)
     single_iteration_fix = SingleIterationPredFix(

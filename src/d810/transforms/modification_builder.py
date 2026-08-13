@@ -30,6 +30,7 @@ from d810.transforms.graph_modification import (
     EdgeRedirectViaPredSplit,
     GraphModification,
     NopInstructions,
+    RemoveInstruction,
     ZeroStateWrite,
     PromoteOperandToScalar,
     PrivateTerminalSuffix,
@@ -225,6 +226,29 @@ class ModificationBuilder:
         self, source_block: int, instruction_ea: int
     ) -> NopInstructions:
         return NopInstructions(block_serial=source_block, insn_eas=(instruction_ea,))
+
+    def remove_instruction(
+        self,
+        source_block: int,
+        block_start_ea: int,
+        instruction_ea: int,
+        ordinal: int,
+        opcode: int,
+        destination_kind: str,
+        destination_id: int,
+        destination_size: int,
+    ) -> RemoveInstruction:
+        """Build a fingerprinted direct register or stack instruction removal."""
+        return RemoveInstruction(
+            block_serial=source_block,
+            block_start_ea=block_start_ea,
+            insn_ea=instruction_ea,
+            ordinal=ordinal,
+            opcode=opcode,
+            destination_kind=destination_kind,
+            destination_id=destination_id,
+            destination_size=destination_size,
+        )
 
     def zero_state_write(
         self, source_block: int, instruction_ea: int

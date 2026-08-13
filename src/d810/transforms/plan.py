@@ -57,6 +57,7 @@ from d810.transforms.graph_modification import (
     LowerConditionalStateTransition,
     NormalizeNWayDispatcherExit,
     NopInstructions,
+    RemoveInstruction,
     ZeroStateWrite,
     PhaseCycleLowering,
     PromoteOperandToScalar,
@@ -516,6 +517,32 @@ class PatchNopInstructions(_PatchRefValidated):
     block_serial: PatchBlockRef
     insn_eas: tuple[int, ...]
     _REF_FIELDS: ClassVar[tuple[str, ...]] = ("block_serial",)
+
+
+@dataclass(frozen=True)
+class PatchRemoveInstruction(_PatchRefValidated):
+    """Remove one uniquely fingerprinted microinstruction from a block."""
+
+    block_serial: PatchBlockRef
+    block_start_ea: int
+    insn_ea: int
+    ordinal: int
+    opcode: int
+    destination_kind: str
+    destination_id: int
+    destination_size: int
+    _REF_FIELDS: ClassVar[tuple[str, ...]] = ("block_serial",)
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if self.block_start_ea < 0 or self.insn_ea < 0:
+            raise ValueError("instruction coordinates must be non-negative")
+        if self.ordinal < 0:
+            raise ValueError("ordinal must be non-negative")
+        if self.destination_kind not in {"register", "stack"}:
+            raise ValueError("destination_kind must be 'register' or 'stack'")
+        if self.destination_size <= 0:
+            raise ValueError("destination_size must be positive")
 
 
 @dataclass(frozen=True)
@@ -1032,6 +1059,7 @@ PatchOperation = Union[
     PatchConvertToGoto,
     PatchRemoveEdge,
     PatchNopInstructions,
+    PatchRemoveInstruction,
     PatchZeroStateWrite,
     PatchPromoteOperandToScalar,
     PatchLowerConditionalStateTransition,
@@ -2276,6 +2304,9 @@ def _finalize_step(
         case PatchNopInstructions():
             return step
 
+        case PatchRemoveInstruction():
+            return step
+
         case PatchZeroStateWrite():
             return step
 
@@ -2754,6 +2785,29 @@ def _compile_patch_plan_impl(
             case NopInstructions(block_serial=serial, insn_eas=eas):
                 raw_steps.append(
                     PatchNopInstructions(block_serial=serial, insn_eas=eas)
+                )
+
+            case RemoveInstruction(
+                block_serial=serial,
+                block_start_ea=block_start_ea,
+                insn_ea=insn_ea,
+                ordinal=ordinal,
+                opcode=opcode,
+                destination_kind=destination_kind,
+                destination_id=destination_id,
+                destination_size=destination_size,
+            ):
+                raw_steps.append(
+                    PatchRemoveInstruction(
+                        block_serial=serial,
+                        block_start_ea=block_start_ea,
+                        insn_ea=insn_ea,
+                        ordinal=ordinal,
+                        opcode=opcode,
+                        destination_kind=destination_kind,
+                        destination_id=destination_id,
+                        destination_size=destination_size,
+                    )
                 )
 
             case ZeroStateWrite(block_serial=serial, insn_ea=ea):
@@ -3409,6 +3463,7 @@ __all__ = [
     "PatchConvertToGoto",
     "PatchRemoveEdge",
     "PatchNopInstructions",
+    "PatchRemoveInstruction",
     "PatchZeroStateWrite",
     "PatchPromoteOperandToScalar",
     "PatchLowerConditionalStateTransition",

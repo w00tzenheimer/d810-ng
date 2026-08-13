@@ -317,6 +317,103 @@ def test_modifier_uses_an_injected_session_mutation_gateway() -> None:
     assert gateway.active is True
 
 
+def test_guarded_instruction_removal_requires_full_fingerprint_and_marks_dirty() -> None:
+    """A guarded remove must never fall back to EA-only matching."""
+
+    class FakeBlock:
+        def __init__(self, instruction: object) -> None:
+            self.serial = 6
+            self.start = 0x401000
+            self.head = instruction
+            self.removed: list[object] = []
+            self.lists_dirty = 0
+
+        def remove_from_block(self, instruction: object) -> None:
+            self.removed.append(instruction)
+
+        def mark_lists_dirty(self) -> None:
+            self.lists_dirty += 1
+
+    instruction = SimpleNamespace(
+        ea=0x401004,
+        opcode=int(ida_hexrays.m_mov),
+        d=SimpleNamespace(
+            t=int(ida_hexrays.mop_S),
+            s=SimpleNamespace(off=-0x20),
+            size=8,
+        ),
+        next=None,
+    )
+    block = FakeBlock(instruction)
+    mba = SimpleNamespace(chains_dirty=0)
+    mba.mark_chains_dirty = lambda: setattr(mba, "chains_dirty", mba.chains_dirty + 1)
+    modifier = SimpleNamespace(mba=mba)
+
+    assert dm.DeferredGraphModifier._apply_guarded_insn_remove(
+        modifier,
+        block,
+        block_start_ea=0x401000,
+        insn_ea=0x401004,
+        ordinal=0,
+        opcode=int(ida_hexrays.m_mov),
+        destination_kind="stack",
+        destination_id=-0x20,
+        destination_size=8,
+    )
+    assert block.removed == [instruction]
+    assert block.lists_dirty == 1
+    assert mba.chains_dirty == 1
+
+
+def test_guarded_instruction_removal_rejects_a_destination_mismatch() -> None:
+    """A stale plan must not remove a same-EA instruction with a new destination."""
+
+    class FakeBlock:
+        serial = 6
+        start = 0x401000
+        lists_dirty = 0
+        removed: list[object] = []
+
+        def __init__(self, instruction: object) -> None:
+            self.head = instruction
+
+        def remove_from_block(self, instruction: object) -> None:
+            self.removed.append(instruction)
+
+        def mark_lists_dirty(self) -> None:
+            self.lists_dirty += 1
+
+    instruction = SimpleNamespace(
+        ea=0x401004,
+        opcode=int(ida_hexrays.m_mov),
+        d=SimpleNamespace(
+            t=int(ida_hexrays.mop_S),
+            s=SimpleNamespace(off=-0x18),
+            size=8,
+        ),
+        next=None,
+    )
+    block = FakeBlock(instruction)
+    mba = SimpleNamespace(chains_dirty=0)
+    mba.mark_chains_dirty = lambda: setattr(mba, "chains_dirty", mba.chains_dirty + 1)
+    modifier = SimpleNamespace(mba=mba)
+
+    assert not dm.DeferredGraphModifier._apply_guarded_insn_remove(
+        modifier,
+        block,
+        block_start_ea=0x401000,
+        insn_ea=0x401004,
+        ordinal=0,
+        opcode=int(ida_hexrays.m_mov),
+        destination_kind="stack",
+        destination_id=-0x20,
+        destination_size=8,
+    )
+    assert block.removed == []
+    assert block.lists_dirty == 0
+    assert mba.chains_dirty == 0
+
+
 def test_exact_constant_replacement_preserves_destination_and_rolls_back(
     monkeypatch,
 ) -> None:

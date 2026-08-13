@@ -26,6 +26,7 @@ from d810.transforms.graph_modification import (
     EdgeRedirectViaPredSplit,
     RedirectBranch,
     RedirectGoto,
+    RemoveInstruction,
 )
 from d810.transforms.modification_builder import ModificationBuilder
 
@@ -178,6 +179,32 @@ class TestGotoRedirectLedger:
         assert _override_records(caplog) == []
         # Ensure nothing was recorded in the ledger for the 2-way source.
         assert 42 not in builder._redirect_ledger
+
+
+def test_remove_instruction_builder_preserves_full_fingerprint() -> None:
+    builder = _make_builder()
+
+    modification = builder.remove_instruction(
+        source_block=6,
+        block_start_ea=0x401000,
+        instruction_ea=0x401004,
+        ordinal=1,
+        opcode=0x55,
+        destination_kind="stack",
+        destination_id=-0x20,
+        destination_size=8,
+    )
+
+    assert modification == RemoveInstruction(
+        block_serial=6,
+        block_start_ea=0x401000,
+        insn_ea=0x401004,
+        ordinal=1,
+        opcode=0x55,
+        destination_kind="stack",
+        destination_id=-0x20,
+        destination_size=8,
+    )
 
 
 class TestEdgeRedirectLedger:

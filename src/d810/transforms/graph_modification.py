@@ -409,6 +409,37 @@ class NopInstructions:
 
 
 @dataclass(frozen=True)
+class RemoveInstruction:
+    """Remove one uniquely fingerprinted microinstruction from a block.
+
+    Unlike NopInstructions, this intent leaves no NOP behind. The complete
+    fingerprint prevents an EA collision from selecting an unrelated
+    microinstruction.
+    """
+
+    block_serial: int
+    block_start_ea: int
+    insn_ea: int
+    ordinal: int
+    opcode: int
+    destination_kind: str
+    destination_id: int
+    destination_size: int
+
+    def __post_init__(self) -> None:
+        if self.block_serial < 0:
+            raise ValueError("block_serial must be non-negative")
+        if self.block_start_ea < 0 or self.insn_ea < 0:
+            raise ValueError("instruction coordinates must be non-negative")
+        if self.ordinal < 0:
+            raise ValueError("ordinal must be non-negative")
+        if self.destination_kind not in {"register", "stack"}:
+            raise ValueError("destination_kind must be 'register' or 'stack'")
+        if self.destination_size <= 0:
+            raise ValueError("destination_size must be positive")
+
+
+@dataclass(frozen=True)
 class ZeroStateWrite:
     """Zero the source operand of a state variable write instruction.
 
@@ -808,6 +839,7 @@ GraphModification = Union[
     InsertBlock,
     RemoveEdge,
     NopInstructions,
+    RemoveInstruction,
     ZeroStateWrite,
     PromoteOperandToScalar,
     PrivateTerminalSuffix,
@@ -893,6 +925,7 @@ __all__ = [
     "InsertBlock",
     "RemoveEdge",
     "NopInstructions",
+    "RemoveInstruction",
     "ZeroStateWrite",
     "PromoteOperandToScalar",
     "PrivateTerminalSuffix",

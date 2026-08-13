@@ -23,6 +23,7 @@ from d810.transforms.graph_modification import (
     GraphModification,
     InsertBlock,
     NopInstructions,
+    RemoveInstruction,
     RedirectBranch,
     RedirectGoto,
     RemoveEdge,
@@ -108,6 +109,20 @@ def test_nop_instructions_empty_eas():
     assert mod.block_serial == 10
     assert len(mod.insn_eas) == 0
     assert mod.insn_eas == ()
+
+
+def test_remove_instruction_rejects_non_scalar_destination() -> None:
+    with pytest.raises(ValueError, match="destination_kind"):
+        RemoveInstruction(
+            block_serial=10,
+            block_start_ea=0x1000,
+            insn_ea=0x1004,
+            ordinal=0,
+            opcode=0x55,
+            destination_kind="global",
+            destination_id=7,
+            destination_size=8,
+        )
 
 
 def test_edge_redirect_via_pred_split_construction():

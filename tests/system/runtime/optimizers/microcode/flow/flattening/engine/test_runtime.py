@@ -20,8 +20,10 @@ from d810.analyses.control_flow.provenance import (
 )
 from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
 from d810.ir.block_identity import StableBlockIdentity
+from d810.ir.flowgraph import BlockKind, BlockSnapshot, FlowGraph, InsnKind
 from d810.ir.maturity import MaturityEnvelope
 from d810.optimizers.microcode.flow.flattening.engine.executor import (
+    TransactionalExecutor,
     _committed_semantic_ownership_gate,
 )
 from d810.optimizers.microcode.flow.flattening.engine.runtime import (
@@ -42,8 +44,8 @@ from d810.optimizers.microcode.flow.flattening.engine.runtime import (
     run_family_pass,
     run_ordered_family_hooks,
 )
-from d810.transforms.cfg_transaction import NativeBlockRef
-from d810.transforms.plan import PatchConvertToGoto, PatchPlan
+from d810.transforms.cfg_transaction import NativeBlockRef, PlanBlockRef
+from d810.transforms.plan import PatchBlockSpec, PatchConvertToGoto, PatchPlan
 from d810.transforms.plan_fragment import (
     BenefitMetrics,
     OwnershipScope,
@@ -120,6 +122,69 @@ def _semantic_ownership_gate_plan(
         source_coordinates=tuple(
             (ref, coordinate) for coordinate, ref in enumerate(refs)
         ),
+    )
+
+
+def _origin_graph() -> FlowGraph:
+    return FlowGraph(
+        blocks={
+            4: BlockSnapshot(
+                serial=4,
+                block_type=2,
+                succs=(),
+                preds=(),
+                flags=0,
+                start_ea=0x401000,
+                insn_snapshots=(),
+                tail_opcode=0,
+                kind=BlockKind.ZERO_WAY,
+                tail_kind=InsnKind.NOP,
+            ),
+            7: BlockSnapshot(
+                serial=7,
+                block_type=2,
+                succs=(),
+                preds=(),
+                flags=0,
+                start_ea=0x402000,
+                insn_snapshots=(),
+                tail_opcode=0,
+                kind=BlockKind.ZERO_WAY,
+                tail_kind=InsnKind.NOP,
+            ),
+        },
+        entry_serial=4,
+        func_ea=0x401000,
+    )
+
+
+def test_new_block_origin_logging_resolves_native_template_reference() -> None:
+    native_key = make_native_key()
+    template_ref = NativeBlockRef(
+        StableBlockIdentity.from_instruction_eas(
+            (0x401000,),
+            native_key=native_key,
+        )
+    )
+    created_ref = PlanBlockRef("origin-log-plan", "created:0")
+    plan = PatchPlan(
+        plan_id="origin-log-plan",
+        new_blocks=(
+            PatchBlockSpec(
+                block_id=created_ref,
+                kind="duplicate_block",
+                template_block=template_ref,
+            ),
+        ),
+        source_coordinates=((template_ref, 4),),
+    )
+
+    executor = object.__new__(TransactionalExecutor)
+    executor._log_new_block_origins(
+        plan,
+        _origin_graph(),
+        _origin_graph(),
+        realized_serials={created_ref: 7},
     )
 
 
