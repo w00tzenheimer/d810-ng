@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import ast
 import importlib
-from pathlib import Path
 
 import pytest
 
+from d810.backends.mba import egglog_add_rule_compiler
 from d810.backends.mba.egglog_add_rule_compiler import (
     CERTIFICATE_WIDTHS,
     RuleCompilationStatus,
@@ -14,10 +13,7 @@ from d810.backends.mba.egglog_add_rule_compiler import (
 )
 from d810.mba.dsl import Var
 from d810.mba.rules._base import VerifiableRule
-from d810.mba.rules.catalogue import (
-    FAMILY_REJECTION_REASONS,
-    MBA_RULE_FAMILIES,
-)
+from d810.mba.rules.catalogue import MBA_RULE_FAMILIES
 
 
 _RULE_MODULE_BY_FAMILY = {
@@ -47,37 +43,38 @@ def mba_catalogue():
     return compile_mba_rule_catalogue()
 
 
-def _declared_rule_names(module_name: str) -> tuple[str, ...]:
+def _module_owned_rule_types(
+    module_name: str,
+) -> tuple[type[VerifiableRule], ...]:
     module = importlib.import_module(f"d810.mba.rules.{module_name}")
-    module_path = Path(module.__file__)
-    tree = ast.parse(module_path.read_text(encoding="utf-8"))
     return tuple(
-        statement.name
-        for statement in tree.body
-        if isinstance(statement, ast.ClassDef)
-        and any(
-            isinstance(base, ast.Name) and base.id == "VerifiableRule"
-            for base in statement.bases
-        )
+        value
+        for value in vars(module).values()
+        if isinstance(value, type)
+        and value is not VerifiableRule
+        and issubclass(value, VerifiableRule)
+        and value.__module__ == module.__name__
     )
 
 
-def test_family_manifest_covers_every_rule_declaration_in_source_order():
+def test_family_manifest_covers_every_module_owned_rule_in_source_order():
     discovered_keys: list[tuple[str, str]] = []
     manifest_keys: list[tuple[str, str]] = []
 
     assert tuple(MBA_RULE_FAMILIES) == tuple(_RULE_MODULE_BY_FAMILY)
     for family, module_name in _RULE_MODULE_BY_FAMILY.items():
-        declared_names = _declared_rule_names(module_name)
-        manifest_names = tuple(
-            rule_type.__name__ for rule_type in MBA_RULE_FAMILIES[family]
+        discovered_rule_types = _module_owned_rule_types(module_name)
+        manifest_rule_types = MBA_RULE_FAMILIES[family]
+        assert manifest_rule_types == discovered_rule_types
+        discovered_keys.extend(
+            (family, rule_type.__name__) for rule_type in discovered_rule_types
         )
-        assert manifest_names == declared_names
-        discovered_keys.extend((family, name) for name in declared_names)
-        manifest_keys.extend((family, name) for name in manifest_names)
+        manifest_keys.extend(
+            (family, rule_type.__name__) for rule_type in manifest_rule_types
+        )
 
     assert manifest_keys == discovered_keys
-    assert len(discovered_keys) == 187
+    assert len(discovered_keys) == 188
     assert (
         sum(
             len(MBA_RULE_FAMILIES[family])
@@ -97,14 +94,14 @@ def test_whole_corpus_has_one_family_qualified_receipt_per_declaration(
         for rule_type in rule_types
     }
 
-    assert len(catalogue.receipts) == 187
+    assert len(catalogue.receipts) == 188
     assert set(catalogue.receipts_by_key) == expected_keys
     assert len(catalogue.receipts_by_key) == len(catalogue.receipts)
     assert sum(
         receipt.family not in _CLOSED_FAMILIES
         and receipt.status is RuleCompilationStatus.REJECTED
         for receipt in catalogue.receipts
-    ) == 69
+    ) == 70
 
 
 def test_unsupported_family_and_custom_guard_reasons_are_stable(mba_catalogue):
@@ -119,9 +116,53 @@ def test_unsupported_family_and_custom_guard_reasons_are_stable(mba_catalogue):
         == "custom get_constraints is not portable"
     )
     assert (
-        FAMILY_REJECTION_REASONS["division"]
+        catalogue.receipt_for("division", "UnsignedMagicModulo3Rule").reason
         == "division and cast semantics are not portable"
     )
+
+
+def test_catalogue_rejects_unclassified_families(monkeypatch):
+    monkeypatch.setattr(
+        egglog_add_rule_compiler,
+        "MBA_RULE_FAMILIES",
+        {"unclassified": ()},
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="unclassified MBA rule families: unclassified",
+    ):
+        compile_mba_rule_catalogue()
+
+
+@pytest.mark.parametrize("exception_type", (AssertionError, TypeError, ValueError))
+def test_catalogue_turns_constructor_failures_into_rejected_receipts(
+    monkeypatch,
+    exception_type,
+):
+    def fail_construction(_self):
+        raise exception_type("constructor failed")
+
+    malformed_rule = type(
+        f"{exception_type.__name__}ConstructorRule",
+        (VerifiableRule,),
+        {
+            "PATTERN": Var("x"),
+            "REPLACEMENT": Var("x"),
+            "__init__": fail_construction,
+        },
+    )
+    monkeypatch.setattr(
+        egglog_add_rule_compiler,
+        "ADD_RULE_CLASSES",
+        (malformed_rule,),
+    )
+
+    receipt = compile_add_rule_catalogue().receipt_for(malformed_rule.__name__)
+
+    assert receipt.status is RuleCompilationStatus.REJECTED
+    assert receipt.reason == "constructor failed"
+    assert receipt.compiled_rule is None
 
 
 def test_compiled_rules_are_family_qualified_and_cross_width_certified(

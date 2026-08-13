@@ -268,6 +268,25 @@ def _validate_declarative_constraints(rule: VerifiableRule, bit_width: int) -> N
 def _compile_rule_families(
     rule_families: Mapping[str, tuple[type[VerifiableRule], ...]],
 ) -> MbaRuleCatalogue:
+    family_names = set(rule_families)
+    rejection_family_names = set(FAMILY_REJECTION_REASONS)
+    conflicting_families = sorted(
+        family_names & EGGLOG_CLOSED_FAMILIES & rejection_family_names
+    )
+    if conflicting_families:
+        raise ValueError(
+            "conflicting MBA rule family policies: "
+            + ", ".join(conflicting_families)
+        )
+    unclassified_families = sorted(
+        family_names - EGGLOG_CLOSED_FAMILIES - rejection_family_names
+    )
+    if unclassified_families:
+        raise ValueError(
+            "unclassified MBA rule families: "
+            + ", ".join(unclassified_families)
+        )
+
     canonical_by_fingerprint: dict[tuple[Any, ...], CompiledEgglogRule] = {}
     staged_receipts: list[
         tuple[str, str, RuleCompilationStatus, str | None, str | None]
@@ -299,17 +318,6 @@ def _compile_rule_families(
                     )
                 )
                 continue
-            if family not in EGGLOG_CLOSED_FAMILIES:
-                staged_receipts.append(
-                    (
-                        family,
-                        source_name,
-                        RuleCompilationStatus.REJECTED,
-                        None,
-                        "family is not eligible for portable compilation",
-                    )
-                )
-                continue
             if getattr(rule_type, "SKIP_VERIFICATION", False):
                 staged_receipts.append(
                     (
@@ -322,8 +330,8 @@ def _compile_rule_families(
                 )
                 continue
 
-            rule = rule_type()
             try:
+                rule = rule_type()
                 fingerprint = (family, _rule_fingerprint(rule))
                 canonical = canonical_by_fingerprint.get(fingerprint)
                 if canonical is not None:

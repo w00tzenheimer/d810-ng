@@ -16,6 +16,7 @@ from d810.mba.rules import (
     and_,
     bnot,
     cst,
+    division,
     hodur,
     misc,
     mov,
@@ -134,9 +135,7 @@ MBA_RULE_FAMILIES: Mapping[str, tuple[type[VerifiableRule], ...]] = (
                 cst.CstSimplificationRule21,
                 cst.CstSimplificationRule22,
             ),
-            # ``division`` currently creates one class dynamically via ``type``;
-            # it has no source ``VerifiableRule`` declaration to receipt.
-            "division": (),
+            "division": (division.UnsignedMagicModulo3Rule,),
             "hodur": (
                 hodur.Xor_Hodur_1,
                 hodur.Bnot_Hodur_1,
