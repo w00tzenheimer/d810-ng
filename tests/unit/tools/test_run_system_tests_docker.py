@@ -106,7 +106,7 @@ def test_baked_runtime_validates_dependencies_in_every_mode(
     assert "import pytest, unicorn, z3" in command
     assert "z3.get_version()" in command
     assert "command -v git" in command
-    assert "[dev,emulation]" in command
+    assert ".[dev,emulation,egraph]" in command
     assert "d810.speedups.install" in command
     assert "baked runtime dependencies detected" in command
     assert "baked runtime is stale" in command
@@ -117,7 +117,7 @@ def test_unlabeled_runtime_keeps_dependency_setup(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     command = _container_run(calls)
-    assert "[dev,emulation]" in command
+    assert ".[dev,emulation,egraph]" in command
     assert "d810.speedups.install" in command
 
 
@@ -133,7 +133,7 @@ def test_baked_runtime_preserves_native_cython_build(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stderr
     command = _container_run(calls)
-    assert "[dev,emulation]" in command
+    assert ".[dev,emulation,egraph]" in command
     assert "command -v git" in command
     assert "D810_BUILD_SPEEDUPS=1" in command
     assert "pip install -e .[speedups]" in command
@@ -152,7 +152,7 @@ def test_baked_runtime_preserves_llvm_provisioning(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     command = _container_run(calls)
     assert "apt-get install -y --no-install-recommends llvm" in command
-    assert "[dev,emulation]" in command
+    assert ".[dev,emulation,egraph]" in command
     assert "command -v git" in command
 
 
