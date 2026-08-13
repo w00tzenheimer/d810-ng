@@ -257,6 +257,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
                 replace(
                     extraction.receipt,
                     skip_reason=ExtractionSkipReason.NATIVE_Z3_FAILED,
+                    derivation_trace=(),
                 )
             )
             return None
@@ -266,6 +267,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
                 replace(
                     extraction.receipt,
                     skip_reason=ExtractionSkipReason.LOWERING_FAILED,
+                    derivation_trace=(),
                 )
             )
             return None

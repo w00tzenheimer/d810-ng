@@ -703,6 +703,9 @@ def test_live_handler_extracts_once_with_exact_configured_rules_then_proves_befo
     receipt = handler.last_extraction_receipt
     assert receipt is not None
     assert receipt.skip_reason is None
+    assert receipt.derivation_trace == (
+        ("add", "Add_HackersDelightRule_2", ("Add_OllvmRule_3",)),
+    )
     metadata = handler.execution_metadata()
     assert metadata["input_cost"] == receipt.input_cost
     assert metadata["extracted_cost"] == receipt.extracted_cost
@@ -752,12 +755,32 @@ def test_live_handler_native_z3_failure_records_skip_without_creating_mop(monkey
     receipt = handler.last_extraction_receipt
     assert receipt is not None
     assert receipt.skip_reason is ExtractionSkipReason.NATIVE_Z3_FAILED
+    assert receipt.derivation_trace == ()
     metadata = handler.execution_metadata()
     assert metadata["selected_family"] == "add"
     assert metadata["selected_source"] == "Add_HackersDelightRule_2"
     assert metadata["selected_aliases"] == ("Add_OllvmRule_3",)
     assert "derivation_trace" not in metadata
     assert metadata["skip_reason"] == "native_z3_failed"
+
+
+def test_live_handler_lowering_failure_clears_uncommitted_derivation_trace(monkeypatch):
+    import d810.optimizers.microcode.instructions.egraph.egglog_handler as handler_module
+
+    candidate = _direct_add_candidate()
+    handler = _configured_live_handler()
+    monkeypatch.setattr(handler_module, "minsn_to_ast", lambda _ins: candidate)
+    monkeypatch.setattr(handler, "_candidate_skip_reason", lambda _ast, _ins: None)
+    monkeypatch.setattr(handler, "_prove_ast_equivalence", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(handler, "_create_instruction", lambda *_args: None)
+
+    assert handler._check_and_replace(_Instruction()) is None
+
+    receipt = handler.last_extraction_receipt
+    assert receipt is not None
+    assert receipt.skip_reason is ExtractionSkipReason.LOWERING_FAILED
+    assert receipt.derivation_trace == ()
+    assert "derivation_trace" not in handler.execution_metadata()
 
 
 def test_live_handler_records_extractor_unavailability_for_supported_candidate(
