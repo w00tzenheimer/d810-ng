@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from d810.backends.mba import egglog_add_rule_compiler, egglog_saturation
+from d810.backends.mba import egglog_statistics
 from d810.backends.mba.egglog_add_rule_compiler import (
     CERTIFICATE_WIDTHS,
     CompiledEgglogRule,
@@ -59,9 +60,7 @@ def _term_from_symbolic(expression, bindings=None, *, width: int = 32):
         if expression.right is not None
         else None
     )
-    return canonicalize_ac_term(
-        _node(expression.operation, left, right, width=width)
-    )
+    return canonicalize_ac_term(_node(expression.operation, left, right, width=width))
 
 
 def test_ac_canonicalization_matches_swapped_operands_without_rewrite_rules():
@@ -96,6 +95,38 @@ def test_non_ac_operations_keep_operand_order():
     )
 
 
+def test_equal_cost_extraction_tie_uses_catalogue_declaration_order_not_name():
+    alphabetically_earlier = egglog_saturation._ReachableCandidate(
+        degree=1,
+        term=_leaf("a"),
+        family="add",
+        source_name="AardvarkRule",
+        aliases=(),
+        expression=object(),
+        rule_decl=object(),
+        catalogue_index=1,
+    )
+    declared_earlier = egglog_saturation._ReachableCandidate(
+        degree=1,
+        term=_leaf("z"),
+        family="xor",
+        source_name="ZuluRule",
+        aliases=(),
+        expression=object(),
+        rule_decl=object(),
+        catalogue_index=0,
+    )
+
+    selected = min(
+        (alphabetically_earlier, declared_earlier),
+        key=lambda candidate: egglog_saturation._extraction_selection_key(
+            candidate, (1, 3)
+        ),
+    )
+
+    assert selected is declared_earlier
+
+
 def test_typed_term_masks_constants_and_rejects_mixed_width_children():
     assert _constant(0x1FF, width=8).value == 0xFF
 
@@ -111,10 +142,7 @@ class _SameReprOpaqueKey:
         return hash(self.identity)
 
     def __eq__(self, other: object) -> bool:
-        return (
-            isinstance(other, _SameReprOpaqueKey)
-            and self.identity == other.identity
-        )
+        return isinstance(other, _SameReprOpaqueKey) and self.identity == other.identity
 
     def __repr__(self) -> str:
         return "opaque-key"
@@ -173,6 +201,7 @@ def test_extraction_skip_reason_wire_values_are_stable():
     assert {reason.name: reason.value for reason in ExtractionSkipReason} == {
         "EGGLOG_UNAVAILABLE": "egglog_unavailable",
         "UNSUPPORTED_WIDTH_SEMANTICS": "unsupported_width_semantics",
+        "NON_MBA_CANDIDATE": "non_mba_candidate",
         "CANDIDATE_BUDGET": "candidate_budget",
         "TIME_BUDGET": "time_budget",
         "ECLASS_BUDGET": "eclass_budget",
@@ -318,9 +347,7 @@ def test_native_lowering_preserves_live_leaf_keys_and_masks_constants(
 
     assert term is not None
     assert term.width == 8
-    assert {child.value for child in term.children if child.value is not None} == {
-        0xFF
-    }
+    assert {child.value for child in term.children if child.value is not None} == {0xFF}
     leaf_terms = [child for child in term.children if child.leaf_key is not None]
     assert len(leaf_terms) == 1
     leaf_key = leaf_terms[0].leaf_key
@@ -335,9 +362,13 @@ def test_native_lowering_preserves_live_leaf_keys_and_masks_constants(
     assert isinstance(rebuilt, _FakeAstNode)
     assert rebuilt.dest_size == 1
     rebuilt_leafs = [
-        child for child in (rebuilt.left, rebuilt.right) if isinstance(child, _FakeAstLeaf)
+        child
+        for child in (rebuilt.left, rebuilt.right)
+        if isinstance(child, _FakeAstLeaf)
     ]
-    assert any(type(child) is _FakeAstLeaf and child is not leaf for child in rebuilt_leafs)
+    assert any(
+        type(child) is _FakeAstLeaf and child is not leaf for child in rebuilt_leafs
+    )
     assert any(isinstance(child, _FakeAstConstant) for child in rebuilt_leafs)
 
 
@@ -498,9 +529,7 @@ def test_native_reconstruction_rejects_missing_leaf_and_width_mismatch(
     term = _node("bnot", leaf, width=32)
 
     assert lower_term_to_native_ast(term, leafs={}, destination_size=4) is None
-    assert (
-        lower_term_to_native_ast(term, leafs={}, destination_size=2) is None
-    )
+    assert lower_term_to_native_ast(term, leafs={}, destination_size=2) is None
 
 
 def test_native_reconstruction_rejects_leaf_mapping_identity_substitution(
@@ -730,23 +759,37 @@ def test_private_egraph_statistics_shape_drift_fails_closed(malformation: str):
                     serialized.truncated_functions = ["BvExpr.binary"]
                 return serialized
 
-    assert egglog_saturation._egraph_statistics(_EGraph()) is None
+    assert (
+        egglog_statistics.read_egraph_statistics(_EGraph(), egglog_version="13.2.0")
+        is None
+    )
+
+
+def test_private_statistics_boundary_rejects_unpinned_egglog_version():
+    class _EGraph:
+        def _serialize(self):
+            raise AssertionError("unsupported versions must fail before serialization")
+
+    assert (
+        egglog_statistics.read_egraph_statistics(_EGraph(), egglog_version="13.2.1")
+        is None
+    )
 
 
 def test_run_report_match_counts_are_never_guessed():
     assert (
-        egglog_saturation._rule_firing_count(
+        egglog_statistics.read_rule_firing_count(
             SimpleNamespace(num_matches_per_rule={"r0": 2, "r1": 3})
         )
         == 5
     )
     assert (
-        egglog_saturation._rule_firing_count(
+        egglog_statistics.read_rule_firing_count(
             SimpleNamespace(num_matches_per_rule={"r0": True})
         )
         is None
     )
-    assert egglog_saturation._rule_firing_count(SimpleNamespace()) is None
+    assert egglog_statistics.read_rule_firing_count(SimpleNamespace()) is None
 
 
 @pytest.fixture(scope="module")
@@ -836,9 +879,7 @@ def test_copied_self_authentication_fields_do_not_admit_fabricated_rule(
         fabricated = replace(
             fabricated,
             _admission_signature=(
-                egglog_add_rule_compiler._compiled_rule_admission_signature(
-                    fabricated
-                )
+                egglog_add_rule_compiler._compiled_rule_admission_signature(fabricated)
             ),
         )
     candidate = _term_from_symbolic(fabricated.pattern)
@@ -915,9 +956,222 @@ def test_unknown_runtime_statistics_return_exact_unavailable_receipt(
 
     assert result.replacement_ast is None
     assert (
-        result.receipt.skip_reason
-        is ExtractionSkipReason.UNAVAILABLE_EGRAPH_STATISTICS
+        result.receipt.skip_reason is ExtractionSkipReason.UNAVAILABLE_EGRAPH_STATISTICS
     )
-    assert result.receipt.rule_firings == (
-        0 if malformation == "run-report" else 2
+    assert result.receipt.rule_firings == (0 if malformation == "run-report" else 2)
+
+
+def test_default_time_budget_exhaustion_stops_frontier_before_run(
+    fake_native_runtime,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    candidate = _FakeAstNode(
+        _OPCODE_BY_OPERATION["add"],
+        _FakeAstLeaf("x", _FakeMop("register", 1, 4)),
+        _FakeAstLeaf("y", _FakeMop("register", 2, 4)),
     )
+    candidate.dest_size = 4
+    ticks = iter((10.0, 10.0, 10.0, 10.004, 10.004))
+    applications: list[object] = []
+
+    class _FreshEGraph:
+        def register(self, *_commands):
+            raise AssertionError("expired frontier must not be registered")
+
+        def run(self, _rounds):
+            raise AssertionError("expired frontier must not run")
+
+    rule = SimpleNamespace(
+        family="xor", source_name="Rule", aliases=(), pattern=object()
+    )
+    monkeypatch.setattr(
+        egglog_saturation,
+        "_load_egglog_module",
+        lambda: SimpleNamespace(EGraph=_FreshEGraph),
+    )
+    monkeypatch.setattr(egglog_saturation, "_monotonic", lambda: next(ticks))
+    monkeypatch.setattr(
+        egglog_add_rule_compiler,
+        "executable_rule_order_key",
+        lambda _rule: (),
+    )
+    monkeypatch.setattr(
+        egglog_add_rule_compiler,
+        "apply_compiled_rule_to_term",
+        lambda _rule, term: applications.append(term) or term,
+    )
+
+    result = extract_bounded_candidate(
+        candidate, (rule, rule), EgglogExtractionBudget(), 4
+    )
+
+    assert len(applications) == 1
+    assert result.receipt.skip_reason is ExtractionSkipReason.TIME_BUDGET
+
+
+def test_pre_run_frontier_firing_cap_avoids_registration_and_execution(
+    fake_native_runtime,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    candidate = _FakeAstNode(
+        _OPCODE_BY_OPERATION["add"],
+        _FakeAstLeaf("x", _FakeMop("register", 1, 4)),
+        _FakeAstLeaf("y", _FakeMop("register", 2, 4)),
+    )
+    candidate.dest_size = 4
+
+    class _FreshEGraph:
+        def register(self, *_commands):
+            raise AssertionError("over-budget frontier must not be registered")
+
+        def run(self, _rounds):
+            raise AssertionError("over-budget frontier must not run")
+
+    rules = tuple(
+        SimpleNamespace(family="xor", source_name=name, aliases=(), pattern=object())
+        for name in ("RuleA", "RuleB")
+    )
+    monkeypatch.setattr(
+        egglog_saturation,
+        "_load_egglog_module",
+        lambda: SimpleNamespace(EGraph=_FreshEGraph),
+    )
+    monkeypatch.setattr(
+        egglog_add_rule_compiler,
+        "executable_rule_order_key",
+        lambda rule: rule.source_name,
+    )
+    monkeypatch.setattr(
+        egglog_add_rule_compiler,
+        "apply_compiled_rule_to_term",
+        lambda _rule, term: term,
+    )
+    monkeypatch.setattr(
+        egglog_saturation,
+        "DegreeExpr",
+        SimpleNamespace(at=lambda degree, expression: (degree, expression)),
+    )
+    monkeypatch.setattr(egglog_saturation, "_term_to_egglog", lambda term: term)
+    monkeypatch.setattr(
+        egglog_saturation,
+        "_load_egglog_module",
+        lambda: SimpleNamespace(
+            EGraph=_FreshEGraph,
+            rewrite=lambda source: SimpleNamespace(
+                to=lambda target: SimpleNamespace(
+                    decl=(source, target),
+                )
+            ),
+        ),
+    )
+
+    result = extract_bounded_candidate(
+        candidate,
+        rules,
+        EgglogExtractionBudget(max_rule_firings=1, time_budget_ms=1000),
+        4,
+    )
+
+    assert result.receipt.skip_reason is ExtractionSkipReason.RULE_FIRING_BUDGET
+
+
+def test_default_three_ms_guard_rejects_estimated_run_before_egglog_execution(
+    fake_native_runtime,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    candidate = _FakeAstNode(
+        _OPCODE_BY_OPERATION["add"],
+        _FakeAstLeaf("x", _FakeMop("register", 1, 4)),
+        _FakeAstLeaf("y", _FakeMop("register", 2, 4)),
+    )
+    candidate.dest_size = 4
+    calls: list[str] = []
+
+    class _FreshEGraph:
+        def register(self, *_commands):
+            calls.append("register")
+
+        def run(self, _rounds):
+            calls.append("run")
+            raise AssertionError("pre-run estimate must reject this workload")
+
+    rule = SimpleNamespace(family="xor", source_name="Rule", aliases=())
+    monkeypatch.setattr(
+        egglog_saturation,
+        "DegreeExpr",
+        SimpleNamespace(at=lambda degree, expression: (degree, expression)),
+    )
+    monkeypatch.setattr(egglog_saturation, "_term_to_egglog", lambda term: term)
+    monkeypatch.setattr(
+        egglog_saturation,
+        "_load_egglog_module",
+        lambda: SimpleNamespace(
+            EGraph=_FreshEGraph,
+            rewrite=lambda source: SimpleNamespace(
+                to=lambda target: SimpleNamespace(decl=(source, target))
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        egglog_add_rule_compiler,
+        "apply_compiled_rule_to_term",
+        lambda _rule, term: term,
+    )
+
+    result = extract_bounded_candidate(candidate, (rule,), EgglogExtractionBudget(), 4)
+
+    assert calls == []
+    assert result.receipt.skip_reason is ExtractionSkipReason.TIME_BUDGET
+
+
+def test_exploration_contract_is_candidate_root_only(
+    fake_native_runtime,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    candidate = _FakeAstNode(
+        _OPCODE_BY_OPERATION["add"],
+        _FakeAstNode(
+            _OPCODE_BY_OPERATION["xor"],
+            _FakeAstLeaf("x", _FakeMop("register", 1, 4)),
+            _FakeAstLeaf("y", _FakeMop("register", 2, 4)),
+        ),
+        _FakeAstLeaf("z", _FakeMop("register", 3, 4)),
+    )
+    candidate.dest_size = 4
+    candidate.left.dest_size = 4
+    visited: list[TypedBvTerm] = []
+
+    class _FreshEGraph:
+        def register(self, *_commands):
+            return None
+
+        def run(self, _rounds):
+            return SimpleNamespace(num_matches_per_rule={})
+
+    rule = SimpleNamespace(family="xor", source_name="Rule", aliases=())
+    monkeypatch.setattr(
+        egglog_saturation,
+        "_load_egglog_module",
+        lambda: SimpleNamespace(EGraph=_FreshEGraph),
+    )
+    monkeypatch.setattr(
+        egglog_add_rule_compiler,
+        "executable_rule_order_key",
+        lambda _rule: (),
+    )
+    monkeypatch.setattr(
+        egglog_add_rule_compiler,
+        "apply_compiled_rule_to_term",
+        lambda _rule, term: visited.append(term) or None,
+    )
+
+    extract_bounded_candidate(
+        candidate,
+        (rule,),
+        EgglogExtractionBudget(max_leaves=3, time_budget_ms=1000),
+        4,
+    )
+
+    assert egglog_saturation.EGGLOG_EXPLORATION_SCOPE == "candidate-root-only"
+    assert len(visited) == 1
+    assert visited[0].operation == "add"

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from dataclasses import FrozenInstanceError
+from types import SimpleNamespace
 
 import pytest
 
@@ -449,10 +451,9 @@ class _Instruction:
     d = _Destination()
 
 
-def _configured_live_handler() -> EgglogOptimizer:
+def _configured_live_handler(**overrides) -> EgglogOptimizer:
     handler = EgglogOptimizer()
-    handler.configure(
-        {
+    config = {
             "max_leaves": 2,
             "max_operator_nodes": 10,
             "max_degree": 1,
@@ -464,8 +465,96 @@ def _configured_live_handler() -> EgglogOptimizer:
             "require_proof": True,
             "families": ["add"],
         }
-    )
+    config.update(overrides)
+    handler.configure(config)
     return handler
+
+
+def test_live_handler_admits_and_extracts_real_degree_two_boolean_candidate(
+):
+    candidate = _degree_two_candidate()
+    handler = _configured_live_handler(
+        max_degree=2,
+        families=["bnot"],
+    )
+    handler._catalogue = SimpleNamespace(
+        compiled_rules=(
+            _rule("bnot", "BnotXor_FactorRule_1"),
+            _rule("bnot", "Bnot_FactorRule_5"),
+        )
+    )
+    assert handler._is_candidate(candidate, _Instruction())
+    extraction = handler._select_extraction(candidate, destination_size=4)
+
+    assert extraction.replacement_ast is not None
+    assert extraction.receipt.degree == 2
+    assert extraction.receipt.skip_reason is None
+    assert handler._prove_ast_equivalence(
+        candidate,
+        extraction.replacement_ast,
+        width=32,
+    )
+
+
+def test_live_handler_receipts_candidate_budget_before_extraction(monkeypatch):
+    import d810.optimizers.microcode.instructions.egraph.egglog_handler as handler_module
+
+    candidate = _direct_add_candidate()
+    handler = _configured_live_handler(max_operator_nodes=1)
+    extraction_calls = []
+    monkeypatch.setattr(handler_module, "minsn_to_ast", lambda _ins: candidate)
+    monkeypatch.setattr(
+        handler_module,
+        "extract_bounded_candidate",
+        lambda *args: extraction_calls.append(args),
+    )
+
+    assert handler._check_and_replace(_Instruction()) is None
+    assert extraction_calls == []
+    assert handler.last_extraction_receipt == EgglogExtractionReceipt(
+        skip_reason=ExtractionSkipReason.CANDIDATE_BUDGET
+    )
+
+
+def test_live_handler_receipts_non_mba_candidate_before_extraction(monkeypatch):
+    import d810.optimizers.microcode.instructions.egraph.egglog_handler as handler_module
+
+    candidate = _node(ida_hexrays.m_mov, _leaf("x", 1))
+    handler = _configured_live_handler()
+    extraction_calls = []
+    monkeypatch.setattr(handler_module, "minsn_to_ast", lambda _ins: candidate)
+    monkeypatch.setattr(
+        handler_module,
+        "extract_bounded_candidate",
+        lambda *args: extraction_calls.append(args),
+    )
+
+    assert handler._check_and_replace(_Instruction()) is None
+    assert extraction_calls == []
+    assert handler.last_extraction_receipt == EgglogExtractionReceipt(
+        skip_reason=ExtractionSkipReason.NON_MBA_CANDIDATE
+    )
+
+
+def test_live_handler_exception_before_first_receipt_records_immutable_internal_error(
+    monkeypatch,
+):
+    import d810.optimizers.microcode.instructions.egraph.egglog_handler as handler_module
+
+    handler = _configured_live_handler()
+    monkeypatch.setattr(
+        handler_module,
+        "minsn_to_ast",
+        lambda _ins: (_ for _ in ()).throw(RuntimeError("conversion failed")),
+    )
+
+    assert handler.check_and_replace(None, _Instruction()) is None
+    receipt = handler.last_extraction_receipt
+    assert receipt == EgglogExtractionReceipt(
+        skip_reason=ExtractionSkipReason.INTERNAL_ERROR
+    )
+    with pytest.raises(FrozenInstanceError):
+        receipt.skip_reason = None
 
 
 def test_live_handler_receipts_mixed_width_candidate_without_extraction_or_mutation(

@@ -9,21 +9,35 @@ from __future__ import annotations
 
 import enum
 import importlib
-import json
 import time
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 
 from d810.core.typing import Any
+from d810.backends.mba.egglog_statistics import (
+    read_egraph_statistics,
+    read_rule_firing_count,
+)
 
 
 _AC_OPERATIONS = frozenset({"add", "and", "mul", "or", "xor"})
 _UNARY_OPERATIONS = frozenset({"bnot", "neg"})
-_BINARY_OPERATIONS = frozenset(
-    {"add", "and", "mul", "or", "sub", "xor"}
-)
+_BINARY_OPERATIONS = frozenset({"add", "and", "mul", "or", "sub", "xor"})
 _SUPPORTED_OPERATIONS = _UNARY_OPERATIONS | _BINARY_OPERATIONS
 _VALID_DESTINATION_SIZES = frozenset({1, 2, 4, 8})
+
+# Public capability contract.  This spike explores rewrites of the candidate
+# root only; it does not recursively close over eligible nested subterms.
+EGGLOG_EXPLORATION_SCOPE = "candidate-root-only"
+
+# Egglog 13.2.0 exposes no interruptible or resource-capped run call. A reviewed
+# single-rewrite run took 46 ms, so the live 3 ms default must never enter the
+# Rust executor. Larger explicitly configured budgets reserve that observed
+# baseline plus one millisecond per deterministic ground-graph work unit. This
+# is deliberately conservative admission control, not a hard wall interrupt.
+_MINIMUM_EGGLOG_RUN_BUDGET_MS = 50
+_RUN_WORK_UNIT_BUDGET_MS = 1
 
 
 try:
@@ -69,7 +83,6 @@ if _EGGLOG_MODULE is not None:
             right: BvExpr,
         ) -> BvExpr: ...
 
-
     class DegreeExpr(egglog.Expr):
         """Reachability wrapper whose integer tag is an exact rule degree."""
 
@@ -84,7 +97,6 @@ else:
 
     class BvExpr:  # pragma: no cover - exercised only without the optional extra.
         pass
-
 
     class DegreeExpr:  # pragma: no cover - exercised only without the optional extra.
         pass
@@ -102,6 +114,7 @@ class ExtractionSkipReason(enum.StrEnum):
 
     EGGLOG_UNAVAILABLE = "egglog_unavailable"
     UNSUPPORTED_WIDTH_SEMANTICS = "unsupported_width_semantics"
+    NON_MBA_CANDIDATE = "non_mba_candidate"
     CANDIDATE_BUDGET = "candidate_budget"
     TIME_BUDGET = "time_budget"
     ECLASS_BUDGET = "eclass_budget"
@@ -121,7 +134,13 @@ def _positive_integer(name: str, value: object) -> None:
 
 @dataclass(frozen=True)
 class EgglogExtractionBudget:
-    """Hard limits for one fresh per-instruction saturation session."""
+    """Admission and acceptance limits for one fresh candidate session.
+
+    ``time_budget_ms`` values below 50, including the live 3 ms default, are a
+    safe telemetry/no-op mode: they prevent Egglog registration and execution.
+    Larger values admit structurally capped work but cannot hard-interrupt an
+    individual Egglog 13.2.0 Rust call.
+    """
 
     max_leaves: int = 2
     max_operator_nodes: int = 10
@@ -507,7 +526,10 @@ def lower_native_ast_to_term(
 ) -> TypedBvTerm | None:
     """Lower a width-preserving native AST, or fail closed with ``None``."""
 
-    if type(destination_size) is not int or destination_size not in _VALID_DESTINATION_SIZES:
+    if (
+        type(destination_size) is not int
+        or destination_size not in _VALID_DESTINATION_SIZES
+    ):
         return None
     try:
         runtime = _load_native_runtime()
@@ -548,8 +570,7 @@ def _lower_term(
             return None
         live_leaf_key = _live_leaf_key(leaf, runtime)
         if live_leaf_key is None or (
-            _leaf_key_fingerprint(live_leaf_key)
-            != _leaf_key_fingerprint(term.leaf_key)
+            _leaf_key_fingerprint(live_leaf_key) != _leaf_key_fingerprint(term.leaf_key)
         ):
             return None
         return leaf.clone()
@@ -583,7 +604,10 @@ def lower_term_to_native_ast(
 ) -> Any | None:
     """Rebuild a native operator tree from preserved leaves and constants."""
 
-    if type(destination_size) is not int or destination_size not in _VALID_DESTINATION_SIZES:
+    if (
+        type(destination_size) is not int
+        or destination_size not in _VALID_DESTINATION_SIZES
+    ):
         return None
     try:
         runtime = _load_native_runtime()
@@ -671,51 +695,34 @@ def _term_to_egglog(term: TypedBvTerm) -> Any:
     )
 
 
-def _egraph_statistics(egraph: Any) -> tuple[int, int] | None:
-    """Read exact Egglog 13.x serialized counts through the sole private seam."""
-
-    try:
-        serialized = egraph._serialize()
-        if type(serialized.truncated_functions) is not list:
-            return None
-        if type(serialized.discarded_functions) is not list:
-            return None
-        if serialized.truncated_functions or serialized.discarded_functions:
-            return None
-        payload = json.loads(serialized.to_json())
-    except Exception:
-        return None
-    if type(payload) is not dict:
-        return None
-    nodes = payload.get("nodes")
-    class_data = payload.get("class_data")
-    root_eclasses = payload.get("root_eclasses")
-    if type(nodes) is not dict or type(class_data) is not dict:
-        return None
-    if type(root_eclasses) is not list:
-        return None
-    for node in nodes.values():
-        if type(node) is not dict or type(node.get("eclass")) is not str:
-            return None
-        if node["eclass"] not in class_data:
-            return None
-    if any(type(name) is not str for name in class_data):
-        return None
-    return (len(class_data), len(nodes))
-
-
-def _rule_firing_count(report: Any) -> int | None:
-    matches = getattr(report, "num_matches_per_rule", None)
-    if not isinstance(matches, Mapping):
-        return None
-    values = tuple(matches.values())
-    if any(type(value) is not int or value < 0 for value in values):
-        return None
-    return sum(values)
-
-
 def _elapsed_ms(started: float) -> float:
     return max(0.0, (_monotonic() - started) * 1000.0)
+
+
+def _egglog_term_work_units(term: TypedBvTerm) -> int:
+    """Conservatively count constructor and literal nodes for one expression."""
+
+    if term.operation is None:
+        return 3
+    return 1 + sum(_egglog_term_work_units(child) for child in term.children)
+
+
+def _degree_expression_work_units(term: TypedBvTerm) -> int:
+    return 2 + _egglog_term_work_units(term)
+
+
+def _pre_run_time_guard(
+    *,
+    started: float,
+    budget: EgglogExtractionBudget,
+    work_units: int,
+) -> tuple[bool, float]:
+    """Admit a bounded run workload only while deterministic headroom remains."""
+
+    elapsed = _elapsed_ms(started)
+    remaining_ms = max(0.0, budget.time_budget_ms - elapsed)
+    required_ms = _MINIMUM_EGGLOG_RUN_BUDGET_MS + work_units * _RUN_WORK_UNIT_BUDGET_MS
+    return (required_ms <= remaining_ms, elapsed)
 
 
 def _extraction_result(
@@ -764,10 +771,20 @@ class _ReachableCandidate:
     aliases: tuple[str, ...]
     expression: Any
     rule_decl: Any
+    catalogue_index: int
 
     @property
     def provenance(self) -> tuple[str, str, tuple[str, ...]]:
         return (self.family, self.source_name, self.aliases)
+
+
+def _extraction_selection_key(
+    candidate: _ReachableCandidate,
+    candidate_cost: tuple[int, int],
+) -> tuple[int, int, int, int]:
+    """Rank equal candidates by their checked-in catalogue declaration order."""
+
+    return (*candidate_cost, candidate.degree, candidate.catalogue_index)
 
 
 def extract_bounded_candidate(
@@ -779,9 +796,15 @@ def extract_bounded_candidate(
     """Extract one strictly cheaper candidate through exact catalogue layers.
 
     One fresh e-graph is created for every invocation where Egglog is
-    available.  Host-side grounding evaluates only the already-admitted
-    compiler constraints; the registered executable rules remain exclusively
-    layer-tagged catalogue applications.
+    available. Exploration is candidate-root-only; eligible nested subterms
+    are not traversed or claimed. Host-side grounding evaluates only the
+    already-admitted compiler constraints.
+
+    Egglog 13.2.0 cannot interrupt an individual Rust run. The time field is
+    therefore an acceptance deadline plus a strict pre-run workload guard, not
+    a hard wall-clock interrupt. Frontier construction is cooperative, all
+    graph/firing caps are enforced before registration, and only one bounded
+    schedule round is submitted at a time.
     """
 
     try:
@@ -848,25 +871,63 @@ def extract_bounded_candidate(
 
         from d810.backends.mba.egglog_add_rule_compiler import (
             apply_compiled_rule_to_term,
-            executable_rule_order_key,
         )
 
-        ordered_rules = tuple(sorted(tuple(rules), key=executable_rule_order_key))
+        ordered_rules = tuple(rules)
         frontier: dict[int, tuple[TypedBvTerm, ...]] = {0: (term,)}
         reachable: list[_ReachableCandidate] = []
         rewrites: list[Any] = []
+        registration_work_units = _degree_expression_work_units(term)
         for degree in range(budget.max_degree):
             next_terms: dict[TypedBvTerm, None] = {}
             for source_term in frontier.get(degree, ()):
-                source_expression = DegreeExpr.at(
-                    degree,
-                    _term_to_egglog(source_term),
-                )
-                for rule in ordered_rules:
+                for catalogue_index, rule in enumerate(ordered_rules):
+                    elapsed = _elapsed_ms(started)
+                    if elapsed > budget.time_budget_ms:
+                        return _extraction_result(
+                            started=started,
+                            input_cost=input_cost,
+                            skip_reason=ExtractionSkipReason.TIME_BUDGET,
+                            elapsed_ms=elapsed,
+                        )
                     replacement = apply_compiled_rule_to_term(rule, source_term)
                     if replacement is None:
                         continue
                     replacement = canonicalize_ac_term(replacement)
+                    elapsed = _elapsed_ms(started)
+                    if elapsed > budget.time_budget_ms:
+                        return _extraction_result(
+                            started=started,
+                            input_cost=input_cost,
+                            skip_reason=ExtractionSkipReason.TIME_BUDGET,
+                            elapsed_ms=elapsed,
+                        )
+                    if len(rewrites) + 1 > budget.max_rule_firings:
+                        return _extraction_result(
+                            started=started,
+                            input_cost=input_cost,
+                            skip_reason=ExtractionSkipReason.RULE_FIRING_BUDGET,
+                        )
+                    projected_work_units = registration_work_units + (
+                        _degree_expression_work_units(source_term)
+                        + _degree_expression_work_units(replacement)
+                    )
+                    if projected_work_units > budget.max_eclasses:
+                        return _extraction_result(
+                            started=started,
+                            input_cost=input_cost,
+                            skip_reason=ExtractionSkipReason.ECLASS_BUDGET,
+                        )
+                    if projected_work_units > budget.max_enodes:
+                        return _extraction_result(
+                            started=started,
+                            input_cost=input_cost,
+                            skip_reason=ExtractionSkipReason.ENODE_BUDGET,
+                        )
+                    source_expression = DegreeExpr.at(
+                        degree,
+                        _term_to_egglog(source_term),
+                    )
                     target_expression = DegreeExpr.at(
                         degree + 1,
                         _term_to_egglog(replacement),
@@ -884,34 +945,108 @@ def extract_bounded_candidate(
                             aliases=tuple(rule.aliases),
                             expression=target_expression,
                             rule_decl=executable_rewrite.decl,
+                            catalogue_index=catalogue_index,
                         )
                     )
                     next_terms[replacement] = None
+                    registration_work_units = projected_work_units
             frontier[degree + 1] = tuple(next_terms)
 
-        seed = DegreeExpr.at(0, _term_to_egglog(term))
-        egraph.register(seed, *rewrites)
-        report = egraph.run(budget.saturation_rounds)
-        rule_firings = _rule_firing_count(report)
-        statistics = _egraph_statistics(egraph)
-        elapsed = _elapsed_ms(started)
-        if elapsed > budget.time_budget_ms:
+        scheduled_work_units = registration_work_units + (
+            len(rewrites) * budget.saturation_rounds
+        )
+        admitted, elapsed = _pre_run_time_guard(
+            started=started,
+            budget=budget,
+            work_units=scheduled_work_units,
+        )
+        if not admitted:
             return _extraction_result(
                 started=started,
                 input_cost=input_cost,
-                rule_firings=rule_firings or 0,
                 skip_reason=ExtractionSkipReason.TIME_BUDGET,
                 elapsed_ms=elapsed,
             )
-        if rule_firings is None or statistics is None:
-            return _extraction_result(
+        seed = DegreeExpr.at(0, _term_to_egglog(term))
+        egraph.register(seed, *rewrites)
+        matches_per_rule: dict[Any, int] = {}
+        eclass_count = 0
+        enode_count = 0
+        for _round in range(budget.saturation_rounds):
+            admitted, elapsed = _pre_run_time_guard(
                 started=started,
-                input_cost=input_cost,
-                rule_firings=rule_firings or 0,
-                skip_reason=ExtractionSkipReason.UNAVAILABLE_EGRAPH_STATISTICS,
-                elapsed_ms=elapsed,
+                budget=budget,
+                work_units=registration_work_units + len(rewrites),
             )
-        eclass_count, enode_count = statistics
+            if not admitted:
+                return _extraction_result(
+                    started=started,
+                    input_cost=input_cost,
+                    rule_firings=sum(matches_per_rule.values()),
+                    skip_reason=ExtractionSkipReason.TIME_BUDGET,
+                    elapsed_ms=elapsed,
+                )
+            round_report = egraph.run(1)
+            round_firings = read_rule_firing_count(round_report)
+            statistics = read_egraph_statistics(egraph)
+            elapsed = _elapsed_ms(started)
+            if elapsed > budget.time_budget_ms:
+                return _extraction_result(
+                    started=started,
+                    input_cost=input_cost,
+                    rule_firings=sum(matches_per_rule.values()) + (round_firings or 0),
+                    skip_reason=ExtractionSkipReason.TIME_BUDGET,
+                    elapsed_ms=elapsed,
+                )
+            if round_firings is None or statistics is None:
+                return _extraction_result(
+                    started=started,
+                    input_cost=input_cost,
+                    rule_firings=sum(matches_per_rule.values()) + (round_firings or 0),
+                    skip_reason=ExtractionSkipReason.UNAVAILABLE_EGRAPH_STATISTICS,
+                    elapsed_ms=elapsed,
+                )
+            for declaration, count in round_report.num_matches_per_rule.items():
+                matches_per_rule[declaration] = (
+                    matches_per_rule.get(declaration, 0) + count
+                )
+            eclass_count, enode_count = statistics
+            current_firings = sum(matches_per_rule.values())
+            if eclass_count > budget.max_eclasses:
+                return _extraction_result(
+                    started=started,
+                    input_cost=input_cost,
+                    eclass_count=eclass_count,
+                    enode_count=enode_count,
+                    rule_firings=current_firings,
+                    skip_reason=ExtractionSkipReason.ECLASS_BUDGET,
+                )
+            if enode_count > budget.max_enodes:
+                return _extraction_result(
+                    started=started,
+                    input_cost=input_cost,
+                    eclass_count=eclass_count,
+                    enode_count=enode_count,
+                    rule_firings=current_firings,
+                    skip_reason=ExtractionSkipReason.ENODE_BUDGET,
+                )
+            if current_firings > budget.max_rule_firings:
+                return _extraction_result(
+                    started=started,
+                    input_cost=input_cost,
+                    eclass_count=eclass_count,
+                    enode_count=enode_count,
+                    rule_firings=current_firings,
+                    skip_reason=ExtractionSkipReason.RULE_FIRING_BUDGET,
+                )
+            if not getattr(round_report, "updated", True):
+                break
+        rule_firings = sum(matches_per_rule.values())
+        report = type(
+            "_AggregateRunReport",
+            (),
+            {"num_matches_per_rule": matches_per_rule},
+        )()
         common = {
             "started": started,
             "input_cost": input_cost,
@@ -937,7 +1072,7 @@ def extract_bounded_candidate(
 
         selections: list[
             tuple[
-                tuple[int, int, int, str, str, tuple[str, ...]],
+                tuple[int, int, int, int],
                 Any,
                 _ReachableCandidate,
             ]
@@ -961,14 +1096,7 @@ def extract_bounded_candidate(
                 continue
             selections.append(
                 (
-                    (
-                        candidate_cost[0],
-                        candidate_cost[1],
-                        candidate.degree,
-                        candidate.family,
-                        candidate.source_name,
-                        candidate.aliases,
-                    ),
+                    _extraction_selection_key(candidate, candidate_cost),
                     rebuilt,
                     candidate,
                 )
@@ -1012,6 +1140,7 @@ def extract_bounded_candidate(
 __all__ = [
     "BvExpr",
     "DegreeExpr",
+    "EGGLOG_EXPLORATION_SCOPE",
     "EgglogExtractionBudget",
     "EgglogExtractionReceipt",
     "EgglogExtractionResult",

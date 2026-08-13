@@ -72,7 +72,11 @@ class EgglogOptimizer(PeepholeSimplificationRule):
     bounded and deterministic: configured families are indexed by root opcode,
     one fresh per-candidate degree-bounded e-graph discovers eligible results,
     and the lowest-cost native-Z3-proven strict reduction wins with catalogue
-    order as the stable tie-breaker.
+    order as the stable tie-breaker. The live ``time_budget_ms=3`` default is a
+    safe telemetry/no-op mode and never invokes Egglog; configure above 50 ms
+    with enough deterministic-work headroom to admit structurally capped Egglog
+    execution. Admitted Rust calls cannot be hard-interrupted, so elapsed time
+    remains acceptance telemetry.
     """
 
     DESCRIPTION = "Bounded Egglog MBA extraction (proof-gated)"
@@ -184,13 +188,15 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         try:
             return self._check_and_replace(ins)
         except Exception:  # Never leak an exception through Hex-Rays' callback.
-            if self.last_extraction_receipt is not None:
-                self._record_extraction_receipt(
-                    replace(
-                        self.last_extraction_receipt,
-                        skip_reason=ExtractionSkipReason.INTERNAL_ERROR,
-                    )
+            receipt = self.last_extraction_receipt
+            self._record_extraction_receipt(
+                EgglogExtractionReceipt(skip_reason=ExtractionSkipReason.INTERNAL_ERROR)
+                if receipt is None
+                else replace(
+                    receipt,
+                    skip_reason=ExtractionSkipReason.INTERNAL_ERROR,
                 )
+            )
             logger.exception(
                 "egglog MBA extraction failed at %#x", getattr(ins, "ea", 0)
             )
@@ -203,11 +209,10 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         ast = minsn_to_ast(ins)
         if ast is None:
             return None
-        if not self._is_candidate(ast, ins):
+        candidate_skip_reason = self._candidate_skip_reason(ast, ins)
+        if candidate_skip_reason is not None:
             self._record_extraction_receipt(
-                EgglogExtractionReceipt(
-                    skip_reason=ExtractionSkipReason.UNSUPPORTED_WIDTH_SEMANTICS
-                )
+                EgglogExtractionReceipt(skip_reason=candidate_skip_reason)
             )
             return None
 
@@ -411,22 +416,43 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         )
 
     def _is_candidate(self, ast, ins) -> bool:
+        return self._candidate_skip_reason(ast, ins) is None
+
+    def _candidate_skip_reason(self, ast, ins) -> ExtractionSkipReason | None:
         if ins.d is None or int(ins.d.size) not in _VALID_SIZES:
-            return False
+            return ExtractionSkipReason.UNSUPPORTED_WIDTH_SEMANTICS
         leaves = ast.get_leaf_list()
         variable_leaves = [leaf for leaf in leaves if not leaf.is_constant()]
         unique_variable_leaves = {
             self._leaf_identity(leaf): leaf for leaf in variable_leaves
         }
-        if not unique_variable_leaves or len(unique_variable_leaves) > self.max_leaves:
-            return False
         if any(
             int(getattr(leaf.mop, "size", 0)) != int(ins.d.size)
             for leaf in unique_variable_leaves.values()
         ):
-            return False
+            return ExtractionSkipReason.UNSUPPORTED_WIDTH_SEMANTICS
+        if not unique_variable_leaves or len(unique_variable_leaves) > self.max_leaves:
+            return ExtractionSkipReason.CANDIDATE_BUDGET
         opcodes = self._opcodes(ast)
-        return bool(opcodes & _BOOL_OPCODES) and bool(opcodes & _ARITH_OPCODES)
+        if not opcodes or not opcodes <= _SUPPORTED_ROOT_OPCODES:
+            return ExtractionSkipReason.NON_MBA_CANDIDATE
+        if len(opcodes) > self.max_operator_nodes:
+            # The exact operator-node count is checked below; this cheap set-size
+            # gate only avoids walking obviously oversized heterogeneous trees.
+            return ExtractionSkipReason.CANDIDATE_BUDGET
+        if self._operator_node_count(ast) > self.max_operator_nodes:
+            return ExtractionSkipReason.CANDIDATE_BUDGET
+        return None
+
+    @staticmethod
+    def _operator_node_count(node) -> int:
+        if node is None or node.is_leaf():
+            return 0
+        return (
+            1
+            + EgglogOptimizer._operator_node_count(node.left)
+            + EgglogOptimizer._operator_node_count(node.right)
+        )
 
     @staticmethod
     def _opcodes(node) -> set[int]:
