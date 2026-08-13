@@ -1,0 +1,78 @@
+import pytest
+
+from d810.backends.mba.egglog_add_rule_compiler import (
+    RuleCompilationStatus,
+    compile_add_rule_catalogue,
+)
+from d810.backends.mba.z3 import verify_rule
+from d810.mba.dsl import Const, Var
+from d810.mba.rules._base import VerifiableRule
+
+
+def test_add_catalogue_certifies_all_native_widths_and_preserves_aliases():
+    catalogue = compile_add_rule_catalogue()
+
+    assert len(catalogue.receipts) == 15
+    assert len(catalogue.compiled_rules) == 13
+    assert catalogue.entries == catalogue.receipts
+    assert catalogue.receipt_for("Add_OllvmRule_3").status is RuleCompilationStatus.DUPLICATE
+    assert (
+        catalogue.receipt_for("Add_OllvmRule_3").canonical_name
+        == "Add_HackersDelightRule_2"
+    )
+    assert (
+        catalogue.receipt_for("Add_OllvmRule_DynamicConst").canonical_name
+        == "Add_OllvmRule_1"
+    )
+    assert all(rule.proof_widths == (8, 16, 32, 64) for rule in catalogue.compiled_rules)
+
+
+@pytest.mark.parametrize("bit_width", (8, 16, 32, 64))
+@pytest.mark.parametrize(
+    "rule_type",
+    (
+        pytest.param(
+            type(
+                "MaskedEqualityRule",
+                (VerifiableRule,),
+                {
+                    "PATTERN": Var("x") + (Var("masked") & Const("mask", 0xFF)),
+                    "REPLACEMENT": Var("x") + Var("constant"),
+                    "CONSTRAINTS": [
+                        (Var("masked") & Const("constraint_mask", 0xFF))
+                        == Var("constant")
+                    ],
+                },
+            ),
+            id="masked-equality",
+        ),
+        pytest.param(
+            type(
+                "ComplementDerivedConstantRule",
+                (VerifiableRule,),
+                {
+                    "PATTERN": Var("x") + Var("complement"),
+                    "REPLACEMENT": Var("x") + ~Var("source"),
+                    "CONSTRAINTS": [Var("complement") == ~Var("source")],
+                },
+            ),
+            id="complement-derived-constant",
+        ),
+        pytest.param(
+            type(
+                "NegativeTwoRule",
+                (VerifiableRule,),
+                {
+                    "PATTERN": Var("x") - Var("c"),
+                    "REPLACEMENT": Var("x") + Const("TWO", 2),
+                    "CONSTRAINTS": [Var("c") == Const("NEGATIVE_TWO", -2)],
+                },
+            ),
+            id="negative-two",
+        ),
+    ),
+)
+def test_verify_rule_honors_constraint_width_and_constraint_only_symbols(
+    bit_width, rule_type
+):
+    assert verify_rule(rule_type(), bit_width=bit_width)

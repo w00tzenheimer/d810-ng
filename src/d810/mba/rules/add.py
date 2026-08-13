@@ -12,7 +12,7 @@ Original rules from rewrite_add.py, now with:
 All rules are mathematically proven correct by Z3 SMT solver.
 """
 
-from d810.mba.dsl import NEGATIVE_ONE, NEGATIVE_TWO, Const, Var
+from d810.mba.dsl import NEGATIVE_TWO, Const, Var
 
 from ._base import VerifiableRule
 
@@ -181,9 +181,6 @@ class Add_OllvmRule_3(VerifiableRule):
 # Constrained Rules (using DSL extensions)
 # ============================================================================
 # The following rules use the extended DSL with constraints and dynamic constants.
-
-
-from d810.mba.dsl import DynamicConst, when
 
 
 class Add_SpecialConstantRule_1(VerifiableRule):
@@ -391,6 +388,25 @@ class AddXor_Rule_2(VerifiableRule):
 
     DESCRIPTION = "Simplify SUB-NOT-AND pattern to XOR"
     REFERENCE = "AddXor pattern 2"
+
+
+ADD_RULE_CLASSES = (
+    Add_HackersDelightRule_1,
+    Add_HackersDelightRule_2,
+    Add_HackersDelightRule_3,
+    Add_HackersDelightRule_4,
+    Add_HackersDelightRule_5,
+    Add_OllvmRule_1,
+    Add_OllvmRule_3,
+    Add_SpecialConstantRule_1,
+    Add_SpecialConstantRule_2,
+    Add_SpecialConstantRule_3,
+    Add_OllvmRule_DynamicConst,
+    Add_OllvmRule_2,
+    Add_OllvmRule_4,
+    AddXor_Rule_1,
+    AddXor_Rule_2,
+)
 
 
 """

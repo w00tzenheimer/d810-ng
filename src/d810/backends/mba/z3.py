@@ -784,12 +784,14 @@ def verify_rule(
     var_names = set()
     _collect_symbolic_names(pattern, var_names)
     _collect_symbolic_names(replacement, var_names)
+    for constraint in getattr(rule, "CONSTRAINTS", ()) or ():
+        _collect_constraint_names(constraint, var_names)
 
     # Create Z3 variables for all symbolic names
     z3_vars = {name: z3.BitVec(name, bit_width) for name in sorted(var_names)}
 
     # Get rule-specific constraints and convert to Z3
-    constraints = _extract_constraints(rule, z3_vars)
+    constraints = _extract_constraints(rule, z3_vars, bit_width=bit_width)
 
     # Create visitor and convert expressions to Z3
     visitor = Z3VerificationVisitor(bit_width=bit_width, var_map=z3_vars)
@@ -874,7 +876,11 @@ def create_z3_variables(
 # =============================================================================
 
 
-def constraint_to_z3(constraint, z3_vars: dict[str, z3.BitVecRef]) -> z3.BoolRef:
+def constraint_to_z3(
+    constraint,
+    z3_vars: dict[str, z3.BitVecRef],
+    bit_width: int = 32,
+) -> z3.BoolRef:
     """Convert a ConstraintExpr to a Z3 boolean expression.
 
     This is the Z3-backend-specific visitor for constraint expressions.
@@ -910,8 +916,8 @@ def constraint_to_z3(constraint, z3_vars: dict[str, z3.BitVecRef]) -> z3.BoolRef
     # typing, ComparisonConstraint matches both protocols since it has
     # left/right attributes.
     if isinstance(constraint, ComparisonConstraintProtocol):
-        left_z3 = _constraint_expr_to_z3(constraint.left, z3_vars)
-        right_z3 = _constraint_expr_to_z3(constraint.right, z3_vars)
+        left_z3 = _constraint_expr_to_z3(constraint.left, z3_vars, bit_width)
+        right_z3 = _constraint_expr_to_z3(constraint.right, z3_vars, bit_width)
 
         match constraint.op_name:
             case "ne":
@@ -928,29 +934,31 @@ def constraint_to_z3(constraint, z3_vars: dict[str, z3.BitVecRef]) -> z3.BoolRef
                 raise ValueError(f"Unknown comparison: {constraint.op_name}")
 
     elif isinstance(constraint, EqualityConstraintProtocol):
-        left_z3 = _constraint_expr_to_z3(constraint.left, z3_vars)
-        right_z3 = _constraint_expr_to_z3(constraint.right, z3_vars)
+        left_z3 = _constraint_expr_to_z3(constraint.left, z3_vars, bit_width)
+        right_z3 = _constraint_expr_to_z3(constraint.right, z3_vars, bit_width)
         return left_z3 == right_z3
 
     elif isinstance(constraint, AndConstraintProtocol):
-        left_z3 = constraint_to_z3(constraint.left, z3_vars)
-        right_z3 = constraint_to_z3(constraint.right, z3_vars)
+        left_z3 = constraint_to_z3(constraint.left, z3_vars, bit_width)
+        right_z3 = constraint_to_z3(constraint.right, z3_vars, bit_width)
         return z3.And(left_z3, right_z3)
 
     elif isinstance(constraint, OrConstraintProtocol):
-        left_z3 = constraint_to_z3(constraint.left, z3_vars)
-        right_z3 = constraint_to_z3(constraint.right, z3_vars)
+        left_z3 = constraint_to_z3(constraint.left, z3_vars, bit_width)
+        right_z3 = constraint_to_z3(constraint.right, z3_vars, bit_width)
         return z3.Or(left_z3, right_z3)
 
     elif isinstance(constraint, NotConstraintProtocol):
-        operand_z3 = constraint_to_z3(constraint.operand, z3_vars)
+        operand_z3 = constraint_to_z3(constraint.operand, z3_vars, bit_width)
         return z3.Not(operand_z3)
 
     else:
         raise TypeError(f"Unknown constraint type: {type(constraint)}")
 
 
-def _constraint_expr_to_z3(expr, z3_vars: dict[str, z3.BitVecRef]) -> z3.BitVecRef:
+def _constraint_expr_to_z3(
+    expr, z3_vars: dict[str, z3.BitVecRef], bit_width: int
+) -> z3.BitVecRef:
     """Convert a SymbolicExpression within a constraint to Z3.
 
     Args:
@@ -966,7 +974,7 @@ def _constraint_expr_to_z3(expr, z3_vars: dict[str, z3.BitVecRef]) -> z3.BitVecR
 
     # Use Protocol for hot-reload safety
     if isinstance(expr, SymbolicExpressionProtocol):
-        visitor = Z3VerificationVisitor(bit_width=32, var_map=z3_vars)
+        visitor = Z3VerificationVisitor(bit_width=bit_width, var_map=z3_vars)
         return visitor.visit(expr)
 
     raise ValueError(
@@ -1035,7 +1043,7 @@ def _collect_symbolic_names(expr, names: set) -> None:
         _collect_constraint_names(expr.constraint, names)
 
 
-def _extract_constraints(rule, z3_vars: dict) -> list:
+def _extract_constraints(rule, z3_vars: dict, bit_width: int = 32) -> list:
     """Extract and convert rule constraints to Z3 expressions.
 
     Args:
@@ -1075,7 +1083,9 @@ def _extract_constraints(rule, z3_vars: dict) -> list:
             from d810.mba.constraints import is_constraint_expr
 
             if is_constraint_expr(constraint):
-                z3_constraint = constraint_to_z3(constraint, z3_vars)
+                z3_constraint = constraint_to_z3(
+                    constraint, z3_vars, bit_width=bit_width
+                )
                 z3_constraints.append(z3_constraint)
                 continue
         except Exception:
