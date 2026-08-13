@@ -261,7 +261,9 @@ def test_rule_firing_cap_returns_receipt_not_exception():
     )
 
     assert result.replacement_ast is None
-    assert result.receipt.rule_firings > 1
+    # The cap rejects the projected rewrite frontier before registration or
+    # execution, so no native rule firing has occurred yet.
+    assert result.receipt.rule_firings == 0
     assert result.receipt.skip_reason is ExtractionSkipReason.RULE_FIRING_BUDGET
 
 
@@ -665,7 +667,7 @@ def test_live_handler_extracts_once_with_exact_configured_rules_then_proves_befo
 
     monkeypatch.setattr(handler_module, "extract_bounded_candidate", observe_extract)
     monkeypatch.setattr(handler_module, "minsn_to_ast", lambda _ins: candidate)
-    monkeypatch.setattr(handler, "_is_candidate", lambda _ast, _ins: True)
+    monkeypatch.setattr(handler, "_candidate_skip_reason", lambda _ast, _ins: None)
     monkeypatch.setattr(
         handler,
         "_prove_ast_equivalence",
@@ -732,7 +734,7 @@ def test_live_handler_native_z3_failure_records_skip_without_creating_mop(monkey
 
     monkeypatch.setattr(handler_module, "extract_bounded_candidate", observe_extract)
     monkeypatch.setattr(handler_module, "minsn_to_ast", lambda _ins: candidate)
-    monkeypatch.setattr(handler, "_is_candidate", lambda _ast, _ins: True)
+    monkeypatch.setattr(handler, "_candidate_skip_reason", lambda _ast, _ins: None)
     monkeypatch.setattr(handler, "_prove_ast_equivalence", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(
         AstNode,
@@ -781,7 +783,7 @@ def test_live_handler_records_extractor_unavailability_for_supported_candidate(
         lambda *args, **kwargs: log_calls.append((args, kwargs)),
     )
     monkeypatch.setattr(handler_module, "minsn_to_ast", lambda _ins: candidate)
-    monkeypatch.setattr(handler, "_is_candidate", lambda _ast, _ins: True)
+    monkeypatch.setattr(handler, "_candidate_skip_reason", lambda _ast, _ins: None)
     monkeypatch.setattr(
         handler_module,
         "extract_bounded_candidate",
@@ -816,7 +818,7 @@ def test_live_handler_default_time_budget_overrun_is_clean_noop(monkeypatch):
 
     monkeypatch.setattr(handler_module, "extract_bounded_candidate", time_budget_result)
     monkeypatch.setattr(handler_module, "minsn_to_ast", lambda _ins: candidate)
-    monkeypatch.setattr(handler, "_is_candidate", lambda _ast, _ins: True)
+    monkeypatch.setattr(handler, "_candidate_skip_reason", lambda _ast, _ins: None)
     monkeypatch.setattr(
         AstNode,
         "create_mop",

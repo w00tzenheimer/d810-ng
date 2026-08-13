@@ -395,7 +395,7 @@ def test_central_statistics_records_selected_family_provenance(monkeypatch):
     # This is a provenance-success test, not the rollout latency-cap test.
     # Keep enough headroom for a cold Docker process; the default 3 ms no-op
     # boundary has dedicated deterministic coverage in the saturation suite.
-    handler.configure({"time_budget_ms": 50})
+    handler.configure({"time_budget_ms": 1000})
     rule = _catalogue_rule("xor", "Xor_HackersDelightRule_5")
     candidate = _candidate_from_pattern(rule.pattern)
 
@@ -420,7 +420,7 @@ def test_central_statistics_records_selected_family_provenance(monkeypatch):
         "d810.optimizers.microcode.instructions.egraph.egglog_handler.minsn_to_ast",
         lambda _ins: candidate,
     )
-    monkeypatch.setattr(handler, "_is_candidate", lambda _ast, _ins: True)
+    monkeypatch.setattr(handler, "_candidate_skip_reason", lambda _ast, _ins: None)
     monkeypatch.setattr(
         handler,
         "_create_instruction",
