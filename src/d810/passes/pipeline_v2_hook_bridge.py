@@ -147,6 +147,7 @@ def _mba_egglog_options(config: PipelineConfig) -> dict[str, object]:
         "max_leaves": adapter.max_leaves,
         "rounds": adapter.rounds,
         "require_proof": adapter.require_proof,
+        "families": list(adapter.families),
         # Keep portable maturity vocabulary across the config-v2 boundary.
         # The live Egglog rule resolves it through d810.hexrays.ir_maturity.
         "maturities": list(adapter.maturities),

@@ -31,7 +31,7 @@ class TestMbaEgglogOptions(unittest.TestCase):
     def test_defaults_are_bounded_and_proof_gated(self):
         self.assertEqual(
             parse_mba_egglog_options(_config()),
-            (2, 3, True, ("GLOBAL_OPTIMIZED",)),
+            (2, 3, True, ("add",), ("GLOBAL_OPTIMIZED",)),
         )
 
     def test_explicit_options_reach_the_pass(self):
@@ -40,14 +40,21 @@ class TestMbaEgglogOptions(unittest.TestCase):
                 {
                     "max_leaves": 4,
                     "rounds": 5,
+                    "families": ["xor", "add"],
                     "maturities": ["GLOBAL_ANALYZED"],
                 }
             )
         )
         self.assertIsInstance(built, MbaEgglogPass)
         self.assertEqual(
-            (built.max_leaves, built.rounds, built.require_proof, built.maturities),
-            (4, 5, True, ("GLOBAL_ANALYZED",)),
+            (
+                built.max_leaves,
+                built.rounds,
+                built.require_proof,
+                built.families,
+                built.maturities,
+            ),
+            (4, 5, True, ("xor", "add"), ("GLOBAL_ANALYZED",)),
         )
 
     def test_rejects_unsafe_or_unknown_options(self):
@@ -57,6 +64,8 @@ class TestMbaEgglogOptions(unittest.TestCase):
             {"rounds": 7},
             {"require_proof": False},
             {"require_proof": "yes"},
+            {"families": []},
+            {"families": ["add", 1]},
             {"maturities": []},
             {"maturities": ["NOT_A_MATURITY"]},
             {"surprise": 1},
@@ -64,6 +73,16 @@ class TestMbaEgglogOptions(unittest.TestCase):
             with self.subTest(options=options):
                 with self.assertRaises(PipelineConfigError):
                     parse_mba_egglog_options(_config(options))
+
+    def test_rejects_duplicate_families(self):
+        with self.assertRaisesRegex(PipelineConfigError, "unique"):
+            parse_mba_egglog_options(_config({"families": ["add", "add"]}))
+
+    def test_rejects_unknown_or_unsupported_families(self):
+        for family in ("predicates", "imaginary"):
+            with self.subTest(family=family):
+                with self.assertRaisesRegex(PipelineConfigError, "supported families"):
+                    parse_mba_egglog_options(_config({"families": [family]}))
 
 
 class TestMbaEgglogRegistration(unittest.TestCase):
@@ -85,11 +104,12 @@ class TestMbaEgglogRegistration(unittest.TestCase):
                         "options": {
                             "max_leaves": 4,
                             "rounds": 5,
+                            "families": ["xor", "add"],
                             "maturities": ["GLOBAL_ANALYZED"],
                         },
                     }
                 ],
-            }
+            },
         )
 
         activation = pipeline_v2_hook_activation(project)
@@ -105,6 +125,7 @@ class TestMbaEgglogRegistration(unittest.TestCase):
                 "max_leaves": 4,
                 "rounds": 5,
                 "require_proof": True,
+                "families": ["xor", "add"],
                 "maturities": ["GLOBAL_ANALYZED"],
             },
         )

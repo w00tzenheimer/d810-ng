@@ -13,6 +13,7 @@ from d810.backends.mba.egglog_add_rule_compiler import (  # noqa: E402
     CERTIFICATE_WIDTHS,
     specialize,
 )
+from d810.core.stats import OptimizationStatistics  # noqa: E402
 from d810.hexrays.expr.p_ast import (  # noqa: E402
     AstBase,
     AstConstant,
@@ -23,6 +24,9 @@ from d810.hexrays.ir.mop_snapshot import MopSnapshot  # noqa: E402
 from d810.mba.dsl import SymbolicExpressionProtocol  # noqa: E402
 from d810.optimizers.microcode.instructions.egraph.egglog_handler import (  # noqa: E402
     EgglogOptimizer,
+)
+from d810.optimizers.microcode.instructions.peephole.handler import (  # noqa: E402
+    PeepholeOptimizer,
 )
 
 
@@ -289,3 +293,96 @@ def test_unsupported_root_refuses_specialization_before_egglog_proof(monkeypatch
 
     assert specialize(rule, unsupported, destination_size=4) is None
     assert proof_attempts == []
+
+
+def test_live_handler_xor_root_never_specializes_unrelated_root_buckets(monkeypatch):
+    rules = _compiled_catalogue()
+    requested_families = []
+
+    def select_rules(families):
+        requested_families.append(tuple(families))
+        return rules
+
+    monkeypatch.setattr(
+        "d810.optimizers.microcode.instructions.egraph.egglog_handler."
+        "compiled_rules_for_families",
+        select_rules,
+    )
+    handler = EgglogOptimizer()
+    handler.configure(
+        {"families": ["add", "and", "bnot", "mul", "neg", "or", "sub", "xor"]}
+    )
+    assert handler.families == (
+        "add",
+        "and",
+        "bnot",
+        "mul",
+        "neg",
+        "or",
+        "sub",
+        "xor",
+    )
+    assert requested_families == [handler.families]
+    xor_root_rule = next(rule for rule in rules if rule.pattern.operation == "xor")
+    candidate = _candidate_from_pattern(xor_root_rule.pattern)
+    assert isinstance(candidate, AstNode)
+    assert candidate.opcode == ida_hexrays.m_xor
+    attempted_roots = []
+    real_specialize = egglog_add_rule_compiler.specialize
+
+    def observe(rule, ast, *, destination_size, rounds):
+        attempted_roots.append(rule.pattern.operation)
+        return real_specialize(
+            rule,
+            ast,
+            destination_size=destination_size,
+            rounds=rounds,
+        )
+
+    monkeypatch.setattr(
+        "d810.optimizers.microcode.instructions.egraph.egglog_handler.specialize",
+        observe,
+    )
+
+    assert handler._select_specialization(candidate, destination_size=4) is not None
+    assert attempted_roots
+    assert set(attempted_roots) == {"xor"}
+
+
+def test_central_statistics_records_selected_family_provenance(monkeypatch):
+    stats = OptimizationStatistics()
+    optimizer = PeepholeOptimizer([ida_hexrays.MMAT_GLBOPT2], stats)
+    handler = EgglogOptimizer()
+    handler.last_rule_family = "xor"
+    handler.last_rule_provenance = ("Xor_HackersDelightRule_5", "Xor_MbaRule_2")
+
+    class _Instruction:
+        opcode = ida_hexrays.m_xor
+        ea = 0x401000
+
+        @staticmethod
+        def _print():
+            return "fake xor instruction"
+
+    monkeypatch.setattr(
+        handler,
+        "check_and_replace",
+        lambda _blk, _ins: _Instruction(),
+    )
+    optimizer.add_rule(handler)
+
+    class _Mba:
+        maturity = ida_hexrays.MMAT_GLBOPT2
+
+    class _Block:
+        mba = _Mba()
+
+    optimizer.get_optimized_instruction(_Block(), _Instruction())
+    execution = stats.get_rule_execution("EgglogOptimizer")
+
+    assert execution is not None
+    assert execution.metadata["family"] == "xor"
+    assert execution.metadata["source_name"] == "Xor_HackersDelightRule_5"
+    assert execution.metadata["aliases"] == ("Xor_MbaRule_2",)
+    serialized = stats.to_dict()["rule_executions"]["egglogoptimizer"]
+    assert serialized["metadata"]["family"] == "xor"
