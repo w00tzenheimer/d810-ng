@@ -61,11 +61,14 @@ Four things that reliably waste time:
   guarded by `pytest.importorskip("capstone")` disappears in CI while still
   passing on a developer host, so do not let one carry a correctness guarantee
   on its own.
-- **Worktrees share the root's git hooks but not its untracked files.** The
-  pre-commit `ida-plugin.json` check shells out to `tools/sync_plugin_version.py`;
-  when that file exists only in the root checkout it aborts by absence and blocks
-  the commit with a misleading "out of sync" message. Confirm the other gates
-  passed before reaching for `--no-verify`.
+- **Worktrees share the root's git hooks but not its untracked files.** If a
+  hook shells out to a script that is untracked and present only in the root
+  checkout, it aborts by absence in every worktree and can report a misleading
+  cause. This bit the pre-commit `ida-plugin.json` check until `f8acf9b15`
+  tracked `tools/sync_plugin_version.py`; the hook works in worktrees now. The
+  general lesson stands: when a hook fails in a worktree, check whether the file
+  it needs is tracked before concluding your change is at fault, and re-check
+  after any rebase rather than carrying the old conclusion forward.
 
 ## Unflattening Safety Lessons
 
