@@ -140,7 +140,7 @@ class TypedBvTerm:
                 except TypeError as exc:
                     raise ValueError("leaf_key must be hashable") from exc
                 try:
-                    tuple(_leaf_key_part_fingerprint(part) for part in self.leaf_key)
+                    _leaf_key_fingerprint(self.leaf_key)
                 except ValueError as exc:
                     raise ValueError(
                         "leaf_key parts must be canonically representable"
@@ -181,6 +181,12 @@ def _leaf_key_part_fingerprint(value: object) -> tuple[object, ...]:
     raise ValueError(f"unsupported leaf-key part type: {type(value).__qualname__}")
 
 
+def _leaf_key_fingerprint(
+    leaf_key: tuple[object, ...],
+) -> tuple[tuple[object, ...], ...]:
+    return tuple(_leaf_key_part_fingerprint(part) for part in leaf_key)
+
+
 def _term_fingerprint(term: TypedBvTerm) -> tuple[object, ...]:
     if term.operation is None and term.value is not None:
         return ("constant", term.width, term.value)
@@ -189,7 +195,7 @@ def _term_fingerprint(term: TypedBvTerm) -> tuple[object, ...]:
         return (
             "leaf",
             term.width,
-            tuple(_leaf_key_part_fingerprint(part) for part in term.leaf_key),
+            _leaf_key_fingerprint(term.leaf_key),
         )
     return (
         "node",
@@ -314,9 +320,11 @@ def _live_leaf_key(leaf: Any, runtime: _NativeAstRuntime) -> tuple[object, ...] 
         raw_key = to_cache_key() if callable(to_cache_key) else runtime.get_mop_key(mop)
         key = tuple(raw_key)
         hash(key)
+        live_key = ("mop", *key)
+        _leaf_key_fingerprint(live_key)
     except Exception:
         return None
-    return ("mop", *key)
+    return live_key
 
 
 def _lower_native(
@@ -419,7 +427,11 @@ def _lower_term(
             or not _native_width_matches(leaf, destination_size)
         ):
             return None
-        if _live_leaf_key(leaf, runtime) != term.leaf_key:
+        live_leaf_key = _live_leaf_key(leaf, runtime)
+        if live_leaf_key is None or (
+            _leaf_key_fingerprint(live_leaf_key)
+            != _leaf_key_fingerprint(term.leaf_key)
+        ):
             return None
         return leaf.clone()
 

@@ -92,6 +92,14 @@ class _SameReprOpaqueKey:
         return "opaque-key"
 
 
+class _EqualToIntOpaqueKey:
+    def __hash__(self) -> int:
+        return hash(1)
+
+    def __eq__(self, other: object) -> bool:
+        return type(other) is int and other == 1
+
+
 def test_leaf_key_rejects_same_repr_opaque_parts_before_ac_sorting():
     first = _SameReprOpaqueKey(1)
     second = _SameReprOpaqueKey(2)
@@ -356,6 +364,37 @@ def test_native_reconstruction_rejects_leaf_mapping_identity_substitution(
         lower_term_to_native_ast(
             term,
             leafs={expected_key: substituted},
+            destination_size=4,
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "aliased_component",
+    [_EqualToIntOpaqueKey(), True],
+    ids=["custom-equal-to-int", "bool-int"],
+)
+def test_native_reconstruction_compares_typed_live_key_components(
+    fake_native_runtime,
+    aliased_component: object,
+):
+    expected_key = ("mop", "register", 1, 4)
+    term = _node(
+        "bnot",
+        TypedBvTerm(operation=None, width=32, leaf_key=expected_key),
+        width=32,
+    )
+    aliased = _FakeAstLeaf(
+        "aliased",
+        _FakeMop("register", aliased_component, 4),  # type: ignore[arg-type]
+    )
+
+    assert ("mop", "register", aliased_component, 4) == expected_key
+    assert (
+        lower_term_to_native_ast(
+            term,
+            leafs={expected_key: aliased},
             destination_size=4,
         )
         is None
