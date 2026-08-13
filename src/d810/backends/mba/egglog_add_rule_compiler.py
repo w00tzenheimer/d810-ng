@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import enum
 import importlib
+import weakref
 from collections.abc import Collection, Iterator
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from types import MappingProxyType
 
 from d810.backends.mba.z3 import constraint_to_z3, create_z3_variables, verify_rule
@@ -36,7 +37,6 @@ _SUPPORTED_OPERATIONS = frozenset(
 _UNARY_OPERATIONS = frozenset({"bnot", "neg"})
 _AC_OPERATIONS = frozenset({"add", "and", "mul", "or", "xor"})
 _SUPPORTED_COMPARISON_OPERATIONS = frozenset({"ne", "lt", "gt", "le", "ge"})
-_ADMITTED_RULE_TOKEN = object()
 
 
 class RuleCompilationStatus(enum.StrEnum):
@@ -53,12 +53,6 @@ class CompiledEgglogAddRule:
     proof_widths: tuple[int, ...]
     guarded: bool
     family: str = "add"
-    _admission_token: object | None = field(default=None, repr=False, compare=False)
-    _admission_signature: tuple[Any, ...] | None = field(
-        default=None,
-        repr=False,
-        compare=False,
-    )
 
     @property
     def pattern(self) -> SymbolicExpressionProtocol:
@@ -74,6 +68,10 @@ class CompiledEgglogAddRule:
 
 
 CompiledEgglogRule = CompiledEgglogAddRule
+_ADMITTED_RULES_BY_ID: dict[
+    int,
+    weakref.ReferenceType[CompiledEgglogAddRule],
+] = {}
 
 
 @dataclass(frozen=True)
@@ -238,39 +236,24 @@ def _rule_fingerprint(rule: VerifiableRule) -> tuple[Any, ...]:
     )
 
 
-def _compiled_rule_admission_signature(
-    rule: CompiledEgglogRule,
-) -> tuple[Any, ...]:
-    return (
-        rule.family,
-        rule.source_name,
-        tuple(rule.aliases),
-        rule.rule_type,
-        tuple(rule.proof_widths),
-        bool(rule.guarded),
-        _rule_fingerprint(rule.rule_type()),
-    )
+def _enroll_admitted_rule(rule: CompiledEgglogRule) -> CompiledEgglogRule:
+    rule_id = id(rule)
 
+    def discard(reference: weakref.ReferenceType[CompiledEgglogAddRule]) -> None:
+        if _ADMITTED_RULES_BY_ID.get(rule_id) is reference:
+            _ADMITTED_RULES_BY_ID.pop(rule_id, None)
 
-def _seal_admitted_rule(rule: CompiledEgglogRule) -> CompiledEgglogRule:
-    return replace(
-        rule,
-        _admission_token=_ADMITTED_RULE_TOKEN,
-        _admission_signature=_compiled_rule_admission_signature(rule),
-    )
+    _ADMITTED_RULES_BY_ID[rule_id] = weakref.ref(rule, discard)
+    return rule
 
 
 def is_admitted_compiled_rule(rule: object) -> bool:
-    """Validate the exact immutable compiler admission seal and rule identity."""
+    """Accept only the exact canonical object enrolled by this module load."""
 
     if type(rule) is not CompiledEgglogAddRule:
         return False
-    if rule._admission_token is not _ADMITTED_RULE_TOKEN:
-        return False
-    try:
-        return rule._admission_signature == _compiled_rule_admission_signature(rule)
-    except (AssertionError, TypeError, ValueError):
-        return False
+    enrolled = _ADMITTED_RULES_BY_ID.get(id(rule))
+    return enrolled is not None and enrolled() is rule
 
 
 def _expression_symbolic_names(expression: Any) -> set[str]:
@@ -434,7 +417,7 @@ def _compile_rule_families(
             )
 
     canonical_by_fingerprint = {
-        fingerprint: _seal_admitted_rule(compiled)
+        fingerprint: _enroll_admitted_rule(compiled)
         for fingerprint, compiled in canonical_by_fingerprint.items()
     }
     compiled_by_name = {

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError, dataclass, replace
+from dataclasses import FrozenInstanceError, dataclass, fields, replace
 from types import SimpleNamespace
 
 import pytest
 
-from d810.backends.mba import egglog_saturation
+from d810.backends.mba import egglog_add_rule_compiler, egglog_saturation
 from d810.backends.mba.egglog_add_rule_compiler import (
     CERTIFICATE_WIDTHS,
     CompiledEgglogRule,
@@ -623,15 +623,42 @@ def test_run_report_match_counts_are_never_guessed():
     assert egglog_saturation._rule_firing_count(SimpleNamespace()) is None
 
 
-def test_actual_xor_nested_stuff_canonical_pattern_backtracks_ac_bindings():
+@pytest.fixture(scope="module")
+def admitted_xor_nested_stuff():
     catalogue = _compile_rule_families({"xor": (Xor_NestedStuff,)})
     assert len(catalogue.compiled_rules) == 1
-    canonical = catalogue.compiled_rules[0]
+    return catalogue.compiled_rules[0]
+
+
+def test_actual_xor_nested_stuff_canonical_pattern_backtracks_ac_bindings(
+    admitted_xor_nested_stuff,
+):
+    canonical = admitted_xor_nested_stuff
     candidate = _term_from_symbolic(canonical.pattern)
 
     replacement = apply_compiled_rule_to_term(canonical, candidate)
 
     assert replacement == _term_from_symbolic(canonical.replacement)
+
+
+def test_real_canonical_compiled_rule_instance_is_admitted(
+    admitted_xor_nested_stuff,
+):
+    canonical = admitted_xor_nested_stuff
+    candidate = _term_from_symbolic(canonical.pattern)
+
+    assert apply_compiled_rule_to_term(canonical, candidate) is not None
+
+
+def test_replaced_canonical_compiled_rule_instance_is_not_admitted(
+    admitted_xor_nested_stuff,
+):
+    canonical = admitted_xor_nested_stuff
+    copied = replace(canonical)
+    candidate = _term_from_symbolic(canonical.pattern)
+
+    assert copied is not canonical
+    assert apply_compiled_rule_to_term(copied, candidate) is None
 
 
 def test_fabricated_skip_verification_compiled_rule_is_not_admitted():
@@ -653,8 +680,50 @@ def test_fabricated_skip_verification_compiled_rule_is_not_admitted():
     assert apply_compiled_rule_to_term(fabricated, candidate) is None
 
 
-def test_admitted_compiled_rule_rejects_tampered_catalogue_metadata():
-    canonical = _compile_rule_families({"xor": (Xor_NestedStuff,)}).compiled_rules[0]
+def test_copied_self_authentication_fields_do_not_admit_fabricated_rule(
+    admitted_xor_nested_stuff,
+):
+    class _FabricatedUnverifiedRule(VerifiableRule):
+        SKIP_VERIFICATION = True
+        PATTERN = Xor_NestedStuff.x9 ^ Xor_NestedStuff.x10
+        REPLACEMENT = Xor_NestedStuff.x9
+
+    canonical = admitted_xor_nested_stuff
+    copied_credentials = {
+        item.name: getattr(canonical, item.name)
+        for item in fields(canonical)
+        if item.name.startswith("_admission_")
+    }
+    fabricated = CompiledEgglogRule(
+        family="xor",
+        source_name="FabricatedUnverifiedRule",
+        aliases=(),
+        rule_type=_FabricatedUnverifiedRule,
+        proof_widths=CERTIFICATE_WIDTHS,
+        guarded=False,
+        **copied_credentials,
+    )
+    if hasattr(
+        egglog_add_rule_compiler,
+        "_compiled_rule_admission_signature",
+    ):
+        fabricated = replace(
+            fabricated,
+            _admission_signature=(
+                egglog_add_rule_compiler._compiled_rule_admission_signature(
+                    fabricated
+                )
+            ),
+        )
+    candidate = _term_from_symbolic(fabricated.pattern)
+
+    assert apply_compiled_rule_to_term(fabricated, candidate) is None
+
+
+def test_admitted_compiled_rule_rejects_tampered_catalogue_metadata(
+    admitted_xor_nested_stuff,
+):
+    canonical = admitted_xor_nested_stuff
     candidate = _term_from_symbolic(canonical.pattern)
     tampered_fields = {
         "family": "add",
