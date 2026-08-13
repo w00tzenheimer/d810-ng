@@ -72,17 +72,17 @@ DEFINE_PAIR(uint64_t, mba_shape_degree2_08, mba_truth_degree2_08, ((a & b) + (a 
 DEFINE_PAIR(uint32_t, mba_shape_degree2_09, mba_truth_degree2_09, ((a + b) - (UINT32_C(2) * (a & b))) ^ ((c + d) - (UINT32_C(2) * (c & d))), (a ^ b) ^ (c ^ d))
 DEFINE_PAIR(uint64_t, mba_shape_degree2_10, mba_truth_degree2_10, ((a ^ b) + (UINT64_C(2) * (a & b))) + ((c & d) + (c | d)), a + b + c + d)
 
-/* Linear coefficient residuals, intentionally beyond direct catalogue scope. */
-DEFINE_PAIR(uint8_t, mba_shape_coefficient_01, mba_truth_coefficient_01, 3*a + 5*b - 2*c, 3*a + 5*b - 2*c)
-DEFINE_PAIR(uint16_t, mba_shape_coefficient_02, mba_truth_coefficient_02, 7*a - 4*b + 9*c - d, 7*a - 4*b + 9*c - d)
-DEFINE_PAIR(uint32_t, mba_shape_coefficient_03, mba_truth_coefficient_03, 2*a + 3*b + 5*c + 7*d, 2*a + 3*b + 5*c + 7*d)
-DEFINE_PAIR(uint64_t, mba_shape_coefficient_04, mba_truth_coefficient_04, 11*a - 6*b + 4*c - 3*d + e, 11*a - 6*b + 4*c - 3*d + e)
-DEFINE_PAIR(uint8_t, mba_shape_coefficient_05, mba_truth_coefficient_05, a + 2*b + 3*c + 4*d + 5*e + 6*f, a + 2*b + 3*c + 4*d + 5*e + 6*f)
-DEFINE_PAIR(uint16_t, mba_shape_coefficient_06, mba_truth_coefficient_06, 13*a + 17*b - 19*c + 23*d - 29*e, 13*a + 17*b - 19*c + 23*d - 29*e)
-DEFINE_PAIR(uint32_t, mba_shape_coefficient_07, mba_truth_coefficient_07, 3*a + 3*b + 3*c + 3*d + 3*e + 3*f + 3*g, 3*(a + b + c + d + e + f + g))
-DEFINE_PAIR(uint64_t, mba_shape_coefficient_08, mba_truth_coefficient_08, 31*a - 7*b + 2*c + 9*d - 5*e + 12*f, 31*a - 7*b + 2*c + 9*d - 5*e + 12*f)
-DEFINE_PAIR(uint8_t, mba_shape_coefficient_09, mba_truth_coefficient_09, a - b + c - d + e - f + g - h, a - b + c - d + e - f + g - h)
-DEFINE_PAIR(uint16_t, mba_shape_coefficient_10, mba_truth_coefficient_10, 8*a + 6*b + 4*c + 2*d + e + 3*f + 5*g + 7*h, 8*a + 6*b + 4*c + 2*d + e + 3*f + 5*g + 7*h)
+/* Linear mixed Boolean-arithmetic coefficient residuals. */
+DEFINE_PAIR(uint32_t, mba_shape_coefficient_01, mba_truth_coefficient_01, 3*(a ^ b) + 6*(a & b), 3*(a + b))
+DEFINE_PAIR(uint64_t, mba_shape_coefficient_02, mba_truth_coefficient_02, 5*(a | b) + 5*(a & b), 5*(a + b))
+DEFINE_PAIR(uint32_t, mba_shape_coefficient_03, mba_truth_coefficient_03, 7*(a + b) - 14*(a & b), 7*(a ^ b))
+DEFINE_PAIR(uint64_t, mba_shape_coefficient_04, mba_truth_coefficient_04, 9*(a | b) - 9*(a & b), 9*(a ^ b))
+DEFINE_PAIR(uint32_t, mba_shape_coefficient_05, mba_truth_coefficient_05, 11*(a ^ b) + 22*(a & b) + c, 11*(a + b) + c)
+DEFINE_PAIR(uint64_t, mba_shape_coefficient_06, mba_truth_coefficient_06, 13*(a | b) + 13*(a & b) - c, 13*(a + b) - c)
+DEFINE_PAIR(uint32_t, mba_shape_coefficient_07, mba_truth_coefficient_07, 15*(a + b) - 30*(a & b) + c, 15*(a ^ b) + c)
+DEFINE_PAIR(uint64_t, mba_shape_coefficient_08, mba_truth_coefficient_08, 17*(a | b) - 17*(a & b) + c, 17*(a ^ b) + c)
+DEFINE_PAIR(uint32_t, mba_shape_coefficient_09, mba_truth_coefficient_09, 19*(a ^ b) + 38*(a & b) - c, 19*(a + b) - c)
+DEFINE_PAIR(uint64_t, mba_shape_coefficient_10, mba_truth_coefficient_10, 21*(a | b) + 21*(a & b) + c, 21*(a + b) + c)
 
 /* Nonlinear shells reserved for future substitution/lifting experiments. */
 DEFINE_PAIR(uint32_t, mba_shape_nonlinear_01, mba_truth_nonlinear_01, (a * b) + (c ^ d), (a * b) + (c ^ d))
@@ -106,12 +106,16 @@ DEFINE_PAIR(uint16_t, mba_shape_unsafe_08, mba_truth_unsafe_08, a ^ ((uint32_t)m
 DEFINE_PAIR(uint32_t, mba_shape_unsafe_09, mba_truth_unsafe_09, a ^ ((a << (b & 7)) ^ (a << (b & 7))), a)
 DEFINE_PAIR(uint64_t, mba_shape_unsafe_10, mba_truth_unsafe_10, a + ((a >> (c & 7)) - (a >> (c & 7))), a)
 
-/* Structural matcher refusals: labels are contracts for Task 7 shadow mode. */
-DEFINE_PAIR(uint8_t, mba_shape_matcher_refusal_01, mba_truth_matcher_refusal_01, (a + b) + (c ^ c), a + b)
-DEFINE_PAIR(uint16_t, mba_shape_matcher_refusal_02, mba_truth_matcher_refusal_02, a + (b ^ b) + (c & ~c), a)
-DEFINE_PAIR(uint32_t, mba_shape_matcher_refusal_03, mba_truth_matcher_refusal_03, (a ^ b) + ((uint64_t)2 * (a & b)), a + b)
-DEFINE_PAIR(uint64_t, mba_shape_matcher_refusal_04, mba_truth_matcher_refusal_04, (a & b) + (a & ~b), a)
-DEFINE_PAIR(uint8_t, mba_shape_matcher_refusal_05, mba_truth_matcher_refusal_05, (a + b) - (b + a), 0)
-DEFINE_PAIR(uint16_t, mba_shape_matcher_refusal_06, mba_truth_matcher_refusal_06, (a ^ b) ^ (c ^ c), a ^ b)
+/*
+ * Pending shadow-matcher evidence. These are structural chains, not existing
+ * MBA simplifications or width blockers. Task7 must execute the labels below
+ * before this stratum can be used as provider-routing evidence.
+ */
+DEFINE_PAIR(uint32_t, mba_shape_matcher_refusal_01, mba_truth_matcher_refusal_01, ((a + b) + c) + d, ((a + b) + c) + d)
+DEFINE_PAIR(uint64_t, mba_shape_matcher_refusal_02, mba_truth_matcher_refusal_02, (a + b) + (c + d), (a + b) + (c + d))
+DEFINE_PAIR(uint32_t, mba_shape_matcher_refusal_03, mba_truth_matcher_refusal_03, a + b + c + d + e + f + g + h, a + b + c + d + e + f + g + h)
+DEFINE_PAIR(uint64_t, mba_shape_matcher_refusal_04, mba_truth_matcher_refusal_04, a + (b ^ (c & d)), a + (b ^ (c & d)))
+DEFINE_PAIR(uint32_t, mba_shape_matcher_refusal_05, mba_truth_matcher_refusal_05, (a ^ b) ^ c, (a ^ b) ^ c)
+DEFINE_PAIR(uint64_t, mba_shape_matcher_refusal_06, mba_truth_matcher_refusal_06, ((a & b) | (c & d)) ^ ((e & f) | (g & h)), ((a & b) | (c & d)) ^ ((e & f) | (g & h)))
 
 #undef DEFINE_PAIR

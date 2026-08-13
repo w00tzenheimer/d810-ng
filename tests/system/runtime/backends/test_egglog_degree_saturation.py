@@ -207,7 +207,8 @@ def test_active_cython_proxy_uses_real_c_ast_types(size):
     assert result.receipt.skip_reason is None
 
 
-def test_composed_catalogue_rewrite_needs_degree_two():
+def test_direct_ast_composed_catalogue_rewrite_needs_degree_two():
+    """Exercise the extractor directly; this is not compiler-corpus evidence."""
     candidate = _degree_two_candidate()
     rules = (
         _rule("bnot", "BnotXor_FactorRule_1"),

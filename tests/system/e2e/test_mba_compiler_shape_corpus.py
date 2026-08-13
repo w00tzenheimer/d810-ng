@@ -275,9 +275,10 @@ class TestCompilerShapeCatalogueNative:
     """Native receipt for the root-shaped, currently routed catalogue cases.
 
     The binary is built from this task's source before the Docker invocation;
-    it is intentionally not checked in.  Composed degree-two roots are covered
-    only by explicit configuration until the root-only Egglog scheduler grows
-    subterm scheduling.
+    it is intentionally not checked in.  This compiler corpus makes no
+    single-root degree-two claim: GCC/Hex-Rays may canonicalize a source form
+    or schedule independent nested roots.  The direct-AST runtime suite owns
+    the degree-two derivation proof.
     """
 
     binary_name = "mba_compiler_shapes.dylib"
@@ -313,33 +314,6 @@ class TestCompilerShapeCatalogueNative:
                 must_change=reaches_provider,
                 required_rules=[rule_name] if reaches_provider else [],
                 forbidden_rules=[] if reaches_provider else [rule_name],
-            ),
-            d810_state=d810_state,
-            pseudocode_to_string=pseudocode_to_string,
-        )
-
-    def test_degree_two_profile_reaches_the_native_provider_but_root_only_abstains(
-        self,
-        ida_database,
-        d810_state,
-        pseudocode_to_string,
-    ) -> None:
-        """Pin the current degree-two live contract without inventing coverage.
-
-        ``mba_shape_degree2_01`` is a homogeneous 32-bit composition of two
-        certified ADD roots.  The configured provider receives it at degree 2,
-        but the present scheduler intentionally explores only the complete
-        root, so it cannot rewrite either nested root.  A successful mutation
-        here would mean that contract changed and this corpus must be upgraded
-        to assert its provenance rather than silently treating it as a route.
-        """
-        run_deobfuscation_test(
-            DeobfuscationCase(
-                function="mba_shape_degree2_01",
-                description="degree-2 profile is live but root-only on a composed root",
-                project="mba_compiler_shape_egglog_degree2.json",
-                must_change=False,
-                forbidden_rules=["EgglogOptimizer"],
             ),
             d810_state=d810_state,
             pseudocode_to_string=pseudocode_to_string,

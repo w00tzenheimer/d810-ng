@@ -77,6 +77,7 @@ def test_manifest_declares_a_pinned_lowering_shape_contract() -> None:
         "catalogue",
         "reassociation",
         "degree2",
+        "coefficient",
     ]
     assert contract["forbidden_ir_instructions"] == ["zext", "sext", "trunc"]
 
@@ -102,21 +103,41 @@ def test_manifest_has_unique_exported_ground_truth_pairs_without_host_paths() ->
 
 def test_cases_declare_routes_degree_and_stable_refusal_semantics() -> None:
     cases = _cases()
+    expected_unsafe_blockers = {
+        "unsafe_01": "cast",
+        "unsafe_02": "cast",
+        "unsafe_03": "cast",
+        "unsafe_04": "cast",
+        "unsafe_05": "load",
+        "unsafe_06": "load",
+        "unsafe_07": "call",
+        "unsafe_08": "call",
+        "unsafe_09": "ambiguous_shift",
+        "unsafe_10": "ambiguous_shift",
+    }
     for case in cases:
-        assert case["expected_route"]
+        assert "refusal" not in case["expected_route"]
         assert isinstance(case["semantic_seed"], int)
         if case["stratum"] == "degree2":
             assert case["expected_minimum_degree"] == 2
             assert "egglog" in case["expected_route"]
+        if case["stratum"] == "coefficient":
+            assert case["expected_route"] == ["coefficient_solver"]
+        if case["stratum"] == "nonlinear":
+            assert case["expected_route"] == []
+            assert case["expected_omission_reason"] == "nonlinear_solver_disabled"
+        if case["stratum"] == "unsafe":
+            assert case["expected_route"] == []
+            assert case["expected_blocker"] == expected_unsafe_blockers[case["case_id"]]
         if case["stratum"] == "matcher_refusal":
-            assert case["expected_stop_reason"] in {
+            assert case["expected_route"] == []
+            assert case["coverage_status"] == "pending_shadow_matcher"
+            assert case["expected_shadow_stop_reason"] in {
                 "cardinality_mismatch",
                 "ambiguous_group_capture",
                 "comparison_budget",
                 "unsupported_heterogeneous_chain",
             }
-            assert "egglog" not in case["expected_route"]
-            assert "catalogue" not in case["expected_route"]
 
 
 def test_every_manifest_pair_is_an_export_in_the_compiler_shape_sample() -> None:
@@ -127,6 +148,44 @@ def test_every_manifest_pair_is_an_export_in_the_compiler_shape_sample() -> None
     for case in _cases():
         assert case["function"] in source
         assert case["ground_truth_function"] in source
+
+
+def test_coefficient_shapes_are_mixed_mba_residuals_with_shorter_truths() -> None:
+    """Coefficient routing must not be benchmarked on ordinary arithmetic."""
+
+    source = _SAMPLE.read_text(encoding="utf-8")
+    for case in (case for case in _cases() if case["stratum"] == "coefficient"):
+        match = re.search(
+            rf"^DEFINE_PAIR\([^\n]*{re.escape(str(case['function']))}[^\n]*\)$",
+            source,
+            flags=re.MULTILINE,
+        )
+        assert match is not None, case["case_id"]
+        line = match.group(0)
+        assert any(operator in line for operator in (" ^ ", " & ", " | ")), line
+        assert any(operator in line for operator in (" + ", " - ", " * ")), line
+        shape_expression, truth_expression = line.rsplit(",", 2)[-2:]
+        assert len(shape_expression) > len(truth_expression.rstrip(")")), line
+
+
+def test_lowering_contract_includes_mixed_coefficient_mba_residuals() -> None:
+    contract = _payload()["lowering_contract"]
+    assert "coefficient" in contract["provider_eligible_strata"]
+
+
+def test_pending_shadow_matcher_shapes_are_not_simplification_proxies() -> None:
+    """Shadow labels describe future matching work, not current rewrites."""
+
+    source = _SAMPLE.read_text(encoding="utf-8")
+    for case in (case for case in _cases() if case["stratum"] == "matcher_refusal"):
+        match = re.search(
+            rf"^DEFINE_PAIR\([^\n]*{re.escape(str(case['function']))}[^\n]*\)$",
+            source,
+            flags=re.MULTILINE,
+        )
+        assert match is not None, case["case_id"]
+        _prefix, shape_expression, truth_expression = match.group(0).rsplit(",", 2)
+        assert shape_expression.strip() == truth_expression.strip()[:-1], case["case_id"]
 
 
 def test_provider_eligible_shapes_have_homogeneous_lowered_llvm_ir(

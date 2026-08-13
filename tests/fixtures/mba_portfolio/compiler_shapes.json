@@ -19,7 +19,8 @@
     "provider_eligible_strata": [
       "catalogue",
       "reassociation",
-      "degree2"
+      "degree2",
+      "coefficient"
     ],
     "forbidden_ir_instructions": [
       "zext",
@@ -520,7 +521,7 @@
       "case_id": "coefficient_01",
       "function": "mba_shape_coefficient_01",
       "ground_truth_function": "mba_truth_coefficient_01",
-      "width": 8,
+      "width": 32,
       "stratum": "coefficient",
       "expected_route": [
         "coefficient_solver"
@@ -533,7 +534,7 @@
       "case_id": "coefficient_02",
       "function": "mba_shape_coefficient_02",
       "ground_truth_function": "mba_truth_coefficient_02",
-      "width": 16,
+      "width": 64,
       "stratum": "coefficient",
       "expected_route": [
         "coefficient_solver"
@@ -572,7 +573,7 @@
       "case_id": "coefficient_05",
       "function": "mba_shape_coefficient_05",
       "ground_truth_function": "mba_truth_coefficient_05",
-      "width": 8,
+      "width": 32,
       "stratum": "coefficient",
       "expected_route": [
         "coefficient_solver"
@@ -585,7 +586,7 @@
       "case_id": "coefficient_06",
       "function": "mba_shape_coefficient_06",
       "ground_truth_function": "mba_truth_coefficient_06",
-      "width": 16,
+      "width": 64,
       "stratum": "coefficient",
       "expected_route": [
         "coefficient_solver"
@@ -624,7 +625,7 @@
       "case_id": "coefficient_09",
       "function": "mba_shape_coefficient_09",
       "ground_truth_function": "mba_truth_coefficient_09",
-      "width": 8,
+      "width": 32,
       "stratum": "coefficient",
       "expected_route": [
         "coefficient_solver"
@@ -637,7 +638,7 @@
       "case_id": "coefficient_10",
       "function": "mba_shape_coefficient_10",
       "ground_truth_function": "mba_truth_coefficient_10",
-      "width": 16,
+      "width": 64,
       "stratum": "coefficient",
       "expected_route": [
         "coefficient_solver"
@@ -652,12 +653,11 @@
       "ground_truth_function": "mba_truth_nonlinear_01",
       "width": 32,
       "stratum": "nonlinear",
-      "expected_route": [
-        "coefficient_solver"
-      ],
+      "expected_route": [],
       "expected_minimum_degree": 0,
       "semantic_seed": 856,
-      "authorship": "independently_authored"
+      "authorship": "independently_authored",
+      "expected_omission_reason": "nonlinear_solver_disabled"
     },
     {
       "case_id": "nonlinear_02",
@@ -665,12 +665,11 @@
       "ground_truth_function": "mba_truth_nonlinear_02",
       "width": 64,
       "stratum": "nonlinear",
-      "expected_route": [
-        "coefficient_solver"
-      ],
+      "expected_route": [],
       "expected_minimum_degree": 0,
       "semantic_seed": 857,
-      "authorship": "independently_authored"
+      "authorship": "independently_authored",
+      "expected_omission_reason": "nonlinear_solver_disabled"
     },
     {
       "case_id": "nonlinear_03",
@@ -678,12 +677,11 @@
       "ground_truth_function": "mba_truth_nonlinear_03",
       "width": 8,
       "stratum": "nonlinear",
-      "expected_route": [
-        "coefficient_solver"
-      ],
+      "expected_route": [],
       "expected_minimum_degree": 0,
       "semantic_seed": 858,
-      "authorship": "independently_authored"
+      "authorship": "independently_authored",
+      "expected_omission_reason": "nonlinear_solver_disabled"
     },
     {
       "case_id": "nonlinear_04",
@@ -691,12 +689,11 @@
       "ground_truth_function": "mba_truth_nonlinear_04",
       "width": 16,
       "stratum": "nonlinear",
-      "expected_route": [
-        "coefficient_solver"
-      ],
+      "expected_route": [],
       "expected_minimum_degree": 0,
       "semantic_seed": 859,
-      "authorship": "independently_authored"
+      "authorship": "independently_authored",
+      "expected_omission_reason": "nonlinear_solver_disabled"
     },
     {
       "case_id": "nonlinear_05",
@@ -704,12 +701,11 @@
       "ground_truth_function": "mba_truth_nonlinear_05",
       "width": 32,
       "stratum": "nonlinear",
-      "expected_route": [
-        "coefficient_solver"
-      ],
+      "expected_route": [],
       "expected_minimum_degree": 0,
       "semantic_seed": 860,
-      "authorship": "independently_authored"
+      "authorship": "independently_authored",
+      "expected_omission_reason": "nonlinear_solver_disabled"
     },
     {
       "case_id": "nonlinear_06",
@@ -717,12 +713,11 @@
       "ground_truth_function": "mba_truth_nonlinear_06",
       "width": 64,
       "stratum": "nonlinear",
-      "expected_route": [
-        "coefficient_solver"
-      ],
+      "expected_route": [],
       "expected_minimum_degree": 0,
       "semantic_seed": 861,
-      "authorship": "independently_authored"
+      "authorship": "independently_authored",
+      "expected_omission_reason": "nonlinear_solver_disabled"
     },
     {
       "case_id": "nonlinear_07",
@@ -730,12 +725,11 @@
       "ground_truth_function": "mba_truth_nonlinear_07",
       "width": 8,
       "stratum": "nonlinear",
-      "expected_route": [
-        "coefficient_solver"
-      ],
+      "expected_route": [],
       "expected_minimum_degree": 0,
       "semantic_seed": 862,
-      "authorship": "independently_authored"
+      "authorship": "independently_authored",
+      "expected_omission_reason": "nonlinear_solver_disabled"
     },
     {
       "case_id": "nonlinear_08",
@@ -743,12 +737,11 @@
       "ground_truth_function": "mba_truth_nonlinear_08",
       "width": 16,
       "stratum": "nonlinear",
-      "expected_route": [
-        "coefficient_solver"
-      ],
+      "expected_route": [],
       "expected_minimum_degree": 0,
       "semantic_seed": 863,
-      "authorship": "independently_authored"
+      "authorship": "independently_authored",
+      "expected_omission_reason": "nonlinear_solver_disabled"
     },
     {
       "case_id": "unsafe_01",
@@ -756,12 +749,11 @@
       "ground_truth_function": "mba_truth_unsafe_01",
       "width": 32,
       "stratum": "unsafe",
-      "expected_route": [
-        "refusal"
-      ],
+      "expected_route": [],
       "expected_minimum_degree": 0,
       "semantic_seed": 864,
-      "authorship": "independently_authored"
+      "authorship": "independently_authored",
+      "expected_blocker": "cast"
     },
     {
       "case_id": "unsafe_02",
@@ -769,12 +761,11 @@
       "ground_truth_function": "mba_truth_unsafe_02",
       "width": 64,
       "stratum": "unsafe",
-      "expected_route": [
-        "refusal"
-      ],
+      "expected_route": [],
       "expected_minimum_degree": 0,
       "semantic_seed": 865,
-      "authorship": "independently_authored"
+      "authorship": "independently_authored",
+      "expected_blocker": "cast"
     },
     {
       "case_id": "unsafe_03",
@@ -782,12 +773,11 @@
       "ground_truth_function": "mba_truth_unsafe_03",
       "width": 8,
       "stratum": "unsafe",
-      "expected_route": [
-        "refusal"
-      ],
+      "expected_route": [],
       "expected_minimum_degree": 0,
       "semantic_seed": 866,
-      "authorship": "independently_authored"
+      "authorship": "independently_authored",
+      "expected_blocker": "cast"
     },
     {
       "case_id": "unsafe_04",
@@ -795,12 +785,11 @@
       "ground_truth_function": "mba_truth_unsafe_04",
       "width": 16,
       "stratum": "unsafe",
-      "expected_route": [
-        "refusal"
-      ],
+      "expected_route": [],
       "expected_minimum_degree": 0,
       "semantic_seed": 867,
-      "authorship": "independently_authored"
+      "authorship": "independently_authored",
+      "expected_blocker": "cast"
     },
     {
       "case_id": "unsafe_05",
@@ -808,12 +797,11 @@
       "ground_truth_function": "mba_truth_unsafe_05",
       "width": 32,
       "stratum": "unsafe",
-      "expected_route": [
-        "refusal"
-      ],
+      "expected_route": [],
       "expected_minimum_degree": 0,
       "semantic_seed": 868,
-      "authorship": "independently_authored"
+      "authorship": "independently_authored",
+      "expected_blocker": "load"
     },
     {
       "case_id": "unsafe_06",
@@ -821,12 +809,11 @@
       "ground_truth_function": "mba_truth_unsafe_06",
       "width": 64,
       "stratum": "unsafe",
-      "expected_route": [
-        "refusal"
-      ],
+      "expected_route": [],
       "expected_minimum_degree": 0,
       "semantic_seed": 869,
-      "authorship": "independently_authored"
+      "authorship": "independently_authored",
+      "expected_blocker": "load"
     },
     {
       "case_id": "unsafe_07",
@@ -834,12 +821,11 @@
       "ground_truth_function": "mba_truth_unsafe_07",
       "width": 8,
       "stratum": "unsafe",
-      "expected_route": [
-        "refusal"
-      ],
+      "expected_route": [],
       "expected_minimum_degree": 0,
       "semantic_seed": 870,
-      "authorship": "independently_authored"
+      "authorship": "independently_authored",
+      "expected_blocker": "call"
     },
     {
       "case_id": "unsafe_08",
@@ -847,12 +833,11 @@
       "ground_truth_function": "mba_truth_unsafe_08",
       "width": 16,
       "stratum": "unsafe",
-      "expected_route": [
-        "refusal"
-      ],
+      "expected_route": [],
       "expected_minimum_degree": 0,
       "semantic_seed": 871,
-      "authorship": "independently_authored"
+      "authorship": "independently_authored",
+      "expected_blocker": "call"
     },
     {
       "case_id": "unsafe_09",
@@ -860,12 +845,11 @@
       "ground_truth_function": "mba_truth_unsafe_09",
       "width": 32,
       "stratum": "unsafe",
-      "expected_route": [
-        "refusal"
-      ],
+      "expected_route": [],
       "expected_minimum_degree": 0,
       "semantic_seed": 872,
-      "authorship": "independently_authored"
+      "authorship": "independently_authored",
+      "expected_blocker": "ambiguous_shift"
     },
     {
       "case_id": "unsafe_10",
@@ -873,40 +857,37 @@
       "ground_truth_function": "mba_truth_unsafe_10",
       "width": 64,
       "stratum": "unsafe",
-      "expected_route": [
-        "refusal"
-      ],
+      "expected_route": [],
       "expected_minimum_degree": 0,
       "semantic_seed": 873,
-      "authorship": "independently_authored"
+      "authorship": "independently_authored",
+      "expected_blocker": "ambiguous_shift"
     },
     {
       "case_id": "matcher_refusal_01",
       "function": "mba_shape_matcher_refusal_01",
       "ground_truth_function": "mba_truth_matcher_refusal_01",
-      "width": 8,
+      "width": 32,
       "stratum": "matcher_refusal",
-      "expected_route": [
-        "refusal"
-      ],
+      "expected_route": [],
       "expected_minimum_degree": 0,
       "semantic_seed": 874,
       "authorship": "independently_authored",
-      "expected_stop_reason": "cardinality_mismatch"
+      "expected_shadow_stop_reason": "cardinality_mismatch",
+      "coverage_status": "pending_shadow_matcher"
     },
     {
       "case_id": "matcher_refusal_02",
       "function": "mba_shape_matcher_refusal_02",
       "ground_truth_function": "mba_truth_matcher_refusal_02",
-      "width": 16,
+      "width": 64,
       "stratum": "matcher_refusal",
-      "expected_route": [
-        "refusal"
-      ],
+      "expected_route": [],
       "expected_minimum_degree": 0,
       "semantic_seed": 875,
       "authorship": "independently_authored",
-      "expected_stop_reason": "ambiguous_group_capture"
+      "expected_shadow_stop_reason": "ambiguous_group_capture",
+      "coverage_status": "pending_shadow_matcher"
     },
     {
       "case_id": "matcher_refusal_03",
@@ -914,13 +895,12 @@
       "ground_truth_function": "mba_truth_matcher_refusal_03",
       "width": 32,
       "stratum": "matcher_refusal",
-      "expected_route": [
-        "refusal"
-      ],
+      "expected_route": [],
       "expected_minimum_degree": 0,
       "semantic_seed": 876,
       "authorship": "independently_authored",
-      "expected_stop_reason": "comparison_budget"
+      "expected_shadow_stop_reason": "comparison_budget",
+      "coverage_status": "pending_shadow_matcher"
     },
     {
       "case_id": "matcher_refusal_04",
@@ -928,41 +908,38 @@
       "ground_truth_function": "mba_truth_matcher_refusal_04",
       "width": 64,
       "stratum": "matcher_refusal",
-      "expected_route": [
-        "refusal"
-      ],
+      "expected_route": [],
       "expected_minimum_degree": 0,
       "semantic_seed": 877,
       "authorship": "independently_authored",
-      "expected_stop_reason": "unsupported_heterogeneous_chain"
+      "expected_shadow_stop_reason": "unsupported_heterogeneous_chain",
+      "coverage_status": "pending_shadow_matcher"
     },
     {
       "case_id": "matcher_refusal_05",
       "function": "mba_shape_matcher_refusal_05",
       "ground_truth_function": "mba_truth_matcher_refusal_05",
-      "width": 8,
+      "width": 32,
       "stratum": "matcher_refusal",
-      "expected_route": [
-        "refusal"
-      ],
+      "expected_route": [],
       "expected_minimum_degree": 0,
       "semantic_seed": 878,
       "authorship": "independently_authored",
-      "expected_stop_reason": "cardinality_mismatch"
+      "expected_shadow_stop_reason": "cardinality_mismatch",
+      "coverage_status": "pending_shadow_matcher"
     },
     {
       "case_id": "matcher_refusal_06",
       "function": "mba_shape_matcher_refusal_06",
       "ground_truth_function": "mba_truth_matcher_refusal_06",
-      "width": 16,
+      "width": 64,
       "stratum": "matcher_refusal",
-      "expected_route": [
-        "refusal"
-      ],
+      "expected_route": [],
       "expected_minimum_degree": 0,
       "semantic_seed": 879,
       "authorship": "independently_authored",
-      "expected_stop_reason": "comparison_budget"
+      "expected_shadow_stop_reason": "comparison_budget",
+      "coverage_status": "pending_shadow_matcher"
     }
   ]
 }
