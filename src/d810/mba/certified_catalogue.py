@@ -8,6 +8,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 from d810.core.typing import Any, TypeAlias
+from d810.mba.typed_term import TypedBvTerm
 
 
 RootShape: TypeAlias = tuple[str | None, int, int]
@@ -28,6 +29,36 @@ class CertifiedCatalogueSnapshot:
         )
 
 
+@dataclass
+class ShadowMatcherParityLedger:
+    """Configuration-scoped evidence for legacy-to-structural parity."""
+
+    observation_count: int = 0
+    legacy_match_count: int = 0
+    legacy_rule_mismatches: int = 0
+    legacy_binding_mismatches: int = 0
+    legacy_binding_unknown: int = 0
+
+    def record(
+        self,
+        *,
+        legacy_match: bool,
+        structural_match: bool,
+        same_rule: bool,
+        same_bindings: bool | None,
+    ) -> None:
+        self.observation_count += 1
+        if not legacy_match:
+            return
+        self.legacy_match_count += 1
+        if not structural_match or not same_rule:
+            self.legacy_rule_mismatches += 1
+        if same_bindings is None:
+            self.legacy_binding_unknown += 1
+        elif not same_bindings:
+            self.legacy_binding_mismatches += 1
+
+
 _SNAPSHOTS: dict[str, CertifiedCatalogueSnapshot] = {}
 
 
@@ -39,13 +70,21 @@ def _rule_pattern(rule: CompiledRule) -> Any:
 def _rule_identity(rule: CompiledRule) -> tuple[object, ...]:
     pattern = _rule_pattern(rule)
     return (
-        str(getattr(rule, "family", "")),
+        _rule_family(rule),
         str(
             getattr(rule, "source_name", getattr(rule, "name", type(rule).__qualname__))
         ),
         repr(pattern),
         tuple(str(item) for item in getattr(rule, "aliases", ())),
     )
+
+
+def _rule_family(rule: CompiledRule) -> str:
+    explicit = getattr(rule, "family", None)
+    if type(explicit) is str and explicit:
+        return explicit
+    module = getattr(type(rule), "__module__", "")
+    return module.rsplit(".", 1)[-1] if type(module) is str else ""
 
 
 def _root_shape(rule: CompiledRule, width: int) -> RootShape:
@@ -56,6 +95,12 @@ def _root_shape(rule: CompiledRule, width: int) -> RootShape:
         for child in (getattr(pattern, "left", None), getattr(pattern, "right", None))
     )
     return (operation, width, arity)
+
+
+def root_shape_for_term(term: TypedBvTerm) -> RootShape:
+    """Return the exact cheap bucket key for one lowered candidate root."""
+
+    return (term.operation, term.width, len(term.children))
 
 
 def build_certified_catalogue_snapshot(
@@ -69,8 +114,12 @@ def build_certified_catalogue_snapshot(
 
     if type(compiler_version) is not str or not compiler_version:
         raise ValueError("compiler_version must be non-empty")
-    frozen_rules = tuple(rules)
+    all_rules = tuple(rules)
     families = None if enabled_families is None else tuple(enabled_families)
+    enabled = None if families is None else frozenset(families)
+    frozen_rules = tuple(
+        rule for rule in all_rules if enabled is None or _rule_family(rule) in enabled
+    )
     payload = {
         "compiler_version": compiler_version,
         "widths": tuple(widths),
@@ -101,5 +150,7 @@ __all__ = [
     "CertifiedCatalogueSnapshot",
     "CompiledRule",
     "RootShape",
+    "ShadowMatcherParityLedger",
     "build_certified_catalogue_snapshot",
+    "root_shape_for_term",
 ]

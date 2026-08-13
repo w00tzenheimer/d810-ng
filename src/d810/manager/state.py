@@ -9,7 +9,11 @@ import pathlib
 
 from d810.backends.hexrays.registration import register_hexrays_backend_providers
 from d810.hexrays.utils.ida_utils import ensure_hexrays_available
-from d810.backends.mba.ida import adapt_rules
+from d810.backends.mba.ida import (
+    IDAPatternAdapter,
+    adapt_rules,
+    attach_selected_certified_catalogue_snapshot,
+)
 from d810.core import typing
 from d810.core.config import (
     D810Configuration,
@@ -341,6 +345,21 @@ class D810State(metaclass=SingletonMeta):
                     rule.set_log_dir(self.log_dir)
                     self.current_ins_rules.append(rule)
         logger.debug("Instruction rules configured")
+        selected_catalogue_adapters = tuple(
+            rule
+            for rule in self.current_ins_rules
+            if isinstance(rule, IDAPatternAdapter)
+        )
+        if selected_catalogue_adapters:
+            (
+                self.current_certified_catalogue_snapshot,
+                self.current_shadow_matcher_parity_ledger,
+            ) = attach_selected_certified_catalogue_snapshot(
+                selected_catalogue_adapters
+            )
+        else:
+            self.current_certified_catalogue_snapshot = None
+            self.current_shadow_matcher_parity_ledger = None
         for blk_rule in self.known_blk_rules:
             for rule_conf in project_blk_rules:
                 if not rule_conf.is_activated:

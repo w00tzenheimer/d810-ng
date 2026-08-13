@@ -54,6 +54,24 @@ def test_same_width_ac_chain_requires_equal_cardinality_and_never_group_binds() 
     assert rejected.bindings is None
 
 
+def test_nested_cardinality_miss_does_not_abort_an_outer_ac_backtrack() -> None:
+    a, b, c, d, e, f, g = (Var(name) for name in "abcdefg")
+    pattern = ((a + b) * c) + (((d + e) + f) * g)
+    valid_product = _node("mul", _node("add", _leaf("a"), _leaf("b")), _leaf("c"))
+    three_operand_product = _node(
+        "mul",
+        _node("add", _node("add", _leaf("a"), _leaf("b")), _leaf("extra")),
+        _leaf("c"),
+    )
+    candidate = _node("add", three_operand_product, valid_product)
+
+    report = match_ac_pattern(pattern, candidate, comparison_budget=128)
+
+    assert report.stop_reason is AcMatchStopReason.MATCHED
+    assert report.bindings is not None
+    assert set(report.bindings.candidate_path_by_name) == set("abcdefg")
+
+
 def test_repeated_variables_and_constants_are_rigid() -> None:
     x = Var("x")
     report = match_ac_pattern(

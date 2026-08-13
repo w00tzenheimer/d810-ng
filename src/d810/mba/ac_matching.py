@@ -55,6 +55,7 @@ class _State:
     commuted_branches: int = 0
     flattened_nodes: int = 0
     stopped: AcMatchStopReason | None = None
+    saw_cardinality_mismatch: bool = False
 
     def compare(self) -> bool:
         if self.comparisons >= self.comparison_budget:
@@ -135,6 +136,26 @@ def _pattern_sort_key(pattern: SymbolicExpressionProtocol) -> tuple[object, ...]
     return (1 if _is_flexible_leaf(pattern) else 0, repr(pattern))
 
 
+def _candidate_matches_rigid_root(
+    pattern: SymbolicExpressionProtocol,
+    candidate: TypedBvTerm,
+) -> bool:
+    """Reject impossible AC pairings before the bounded recursive matcher."""
+
+    operation = pattern.operation
+    if operation is None:
+        if _is_pattern_constant(pattern):
+            value = pattern.value
+            return (
+                candidate.operation is None
+                and candidate.value is not None
+                and value is not None
+                and candidate.value == (value & ((1 << candidate.width) - 1))
+            )
+        return candidate.operation is None
+    return candidate.operation == operation
+
+
 def _match_ac_operands(
     patterns: list[SymbolicExpressionProtocol],
     candidates: list[tuple[TypedBvTerm, tuple[int, ...]]],
@@ -145,7 +166,12 @@ def _match_ac_operands(
         return bindings
     pattern = patterns[0]
     ordered_candidates = sorted(
-        candidates, key=lambda item: (term_fingerprint(item[0]), item[1])
+        (
+            item
+            for item in candidates
+            if _candidate_matches_rigid_root(pattern, item[0])
+        ),
+        key=lambda item: (term_fingerprint(item[0]), item[1]),
     )
     for candidate, path in ordered_candidates:
         matched = _match(pattern, candidate, path, state, bindings)
@@ -193,7 +219,10 @@ def _match(
         pattern_operands = _flatten_pattern(pattern, operation)
         candidate_operands = _flatten_term(candidate, path, operation, state)
         if len(pattern_operands) != len(candidate_operands):
-            state.stopped = AcMatchStopReason.CARDINALITY_MISMATCH
+            # This is a branch-local mismatch.  A sibling candidate can still
+            # satisfy the enclosing AC match, so only remember it for the final
+            # no-match classification; do not stop backtracking.
+            state.saw_cardinality_mismatch = True
             return None
         # Binary matching intentionally follows declared order before one swap.
         if len(pattern_operands) == 2:
@@ -280,7 +309,12 @@ def match_ac_pattern(
         state.comparisons,
         state.commuted_branches,
         state.flattened_nodes,
-        reason or AcMatchStopReason.MISS,
+        reason
+        or (
+            AcMatchStopReason.CARDINALITY_MISMATCH
+            if state.saw_cardinality_mismatch
+            else AcMatchStopReason.MISS
+        ),
     )
 
 

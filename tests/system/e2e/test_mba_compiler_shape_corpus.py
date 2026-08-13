@@ -8,6 +8,7 @@ Egglog, or coefficient routing.
 from __future__ import annotations
 
 import ctypes
+import contextlib
 import json
 import random
 import shutil
@@ -313,6 +314,14 @@ class TestCompilerShapeCatalogueNative:
         pseudocode_to_string,
     ) -> None:
         reaches_provider = _catalogue_reaches_provider(function)
+        ledgers = []
+
+        @contextlib.contextmanager
+        def _recording_d810_state():
+            with d810_state() as state:
+                yield state
+                ledgers.append(state.current_shadow_matcher_parity_ledger)
+
         run_deobfuscation_test(
             DeobfuscationCase(
                 function=function,
@@ -326,6 +335,12 @@ class TestCompilerShapeCatalogueNative:
                 required_rules=[rule_name] if reaches_provider else [],
                 forbidden_rules=[] if reaches_provider else [rule_name],
             ),
-            d810_state=d810_state,
+            d810_state=_recording_d810_state,
             pseudocode_to_string=pseudocode_to_string,
         )
+        assert len(ledgers) == 1
+        ledger = ledgers[0]
+        assert ledger is not None
+        assert ledger.legacy_rule_mismatches == 0
+        assert ledger.legacy_binding_mismatches == 0
+        assert ledger.legacy_binding_unknown == 0

@@ -384,6 +384,14 @@ class IDAPatternAdapter:
         self.provider_outcome_history: list[MbaProviderOutcome] = []
         self._attempt_outcome_index: int | None = None
         self._shadow_match_report = None
+        self._shadow_lowering = None
+        self._legacy_binding_paths: dict[str, tuple[int, ...]] | None = None
+        self._legacy_binding_mops: dict[str, tuple[object, ...]] | None = None
+        self._legacy_match_observed = False
+        self._certified_catalogue_snapshot = None
+        self._certified_catalogue_rule_id: int | None = None
+        self._shadow_parity_ledger = None
+        self._shadow_parity_recorded = False
 
     def _reset_attempt_outcome(self, instruction: Any | None = None) -> None:
         """Discard telemetry from the previous live pattern attempt."""
@@ -402,6 +410,20 @@ class IDAPatternAdapter:
         self._last_provider_outcome = None
         self._attempt_outcome_index = None
         self._shadow_match_report = None
+        self._shadow_lowering = None
+        self._legacy_binding_paths = None
+        self._legacy_binding_mops = None
+        self._legacy_match_observed = False
+        self._shadow_parity_recorded = False
+
+    def attach_certified_catalogue_snapshot(
+        self, snapshot, rule_id: int, ledger
+    ) -> None:
+        """Attach one configuration-time snapshot without changing matching."""
+
+        self._certified_catalogue_snapshot = snapshot
+        self._certified_catalogue_rule_id = rule_id
+        self._shadow_parity_ledger = ledger
 
     def observe_structural_match(self, test_ast: Any, *, comparison_budget: int = 64):
         """Record the bounded portable matcher result without changing selection.
@@ -428,6 +450,16 @@ class IDAPatternAdapter:
             )
             if lowering.term is None or self.rule.pattern is None:
                 return None
+            snapshot = self._certified_catalogue_snapshot
+            if snapshot is not None:
+                from d810.mba.certified_catalogue import root_shape_for_term
+
+                bucket = snapshot.rule_ids_by_root_shape.get(
+                    root_shape_for_term(lowering.term),
+                    (),
+                )
+                if self._certified_catalogue_rule_id not in bucket:
+                    return None
             report = match_ac_pattern(
                 self.rule.pattern,
                 lowering.term,
@@ -444,6 +476,7 @@ class IDAPatternAdapter:
                     flattened_nodes=report.flattened_nodes,
                     stop_reason=AcMatchStopReason.MISS,
                 )
+            self._shadow_lowering = lowering
             self._shadow_match_report = report
             return report
         except Exception:
@@ -461,17 +494,86 @@ class IDAPatternAdapter:
             stop_reason=report.stop_reason.value,
         )
 
+    @staticmethod
+    def _mop_identity_key(mop: object) -> tuple[object, ...] | None:
+        if mop is None:
+            return None
+        try:
+            snapshot = (
+                mop if isinstance(mop, MopSnapshot) else MopSnapshot.from_mop(mop)
+            )
+            return snapshot.to_cache_key()
+        except Exception:
+            return None
+
+    def record_legacy_match_bindings(self, candidate_pattern: Any) -> None:
+        """Capture legacy bindings as unique original-native paths when possible."""
+
+        self._legacy_match_observed = True
+        lowering = self._shadow_lowering
+        leafs_by_name = getattr(candidate_pattern, "leafs_by_name", None)
+        if lowering is None or not isinstance(leafs_by_name, dict):
+            return
+        native_paths_by_mop: dict[tuple[object, ...], list[tuple[int, ...]]] = {}
+        for path, native in lowering.native_nodes_by_path.items():
+            key = self._mop_identity_key(getattr(native, "mop", None))
+            if key is not None:
+                native_paths_by_mop.setdefault(key, []).append(path)
+        resolved: dict[str, tuple[int, ...]] = {}
+        mop_bindings: dict[str, tuple[object, ...]] = {}
+        for name, leaf in leafs_by_name.items():
+            if name == "_candidate":
+                continue
+            if type(name) is not str:
+                return
+            key = self._mop_identity_key(getattr(leaf, "mop", None))
+            paths = () if key is None else native_paths_by_mop.get(key, ())
+            if not paths or key is None:
+                return
+            # A repeated variable can occur at more than one native path.  The
+            # legacy matcher retains one logical mop binding, so retain the
+            # deterministic first occurrence only as its path representative.
+            resolved[name] = min(paths)
+            mop_bindings[name] = key
+        self._legacy_binding_paths = resolved
+        self._legacy_binding_mops = mop_bindings
+
     def _shadow_metadata(self, *, legacy_match: bool) -> dict[str, object]:
         report = getattr(self, "_shadow_match_report", None)
         structural_match = bool(report is not None and report.bindings is not None)
+        same_bindings: bool | None = None
+        if legacy_match and not structural_match:
+            same_bindings = False
+        elif legacy_match and self._legacy_match_observed:
+            if self._legacy_binding_mops is not None and report is not None:
+                if report.bindings is None or self._shadow_lowering is None:
+                    same_bindings = False
+                else:
+                    structural_mops: dict[str, tuple[object, ...]] = {}
+                    for name, path in report.bindings.candidate_path_by_name.items():
+                        native = self._shadow_lowering.native_nodes_by_path.get(path)
+                        key = self._mop_identity_key(getattr(native, "mop", None))
+                        if key is None:
+                            structural_mops = {}
+                            break
+                        structural_mops[name] = key
+                    same_bindings = structural_mops == self._legacy_binding_mops
         return {
             "legacy_match": legacy_match,
             "structural_match": structural_match,
-            # Legacy matching does not expose source paths, so binding parity is
-            # intentionally not claimed until Task 8's switch gate can compare it.
             "same_rule": legacy_match and structural_match,
-            "same_bindings": None,
+            "same_bindings": same_bindings,
         }
+
+    def _record_shadow_parity(self, *, legacy_match: bool) -> None:
+        if self._shadow_parity_recorded:
+            return
+        ledger = self._shadow_parity_ledger
+        if ledger is None:
+            return
+        shadow = self._shadow_metadata(legacy_match=legacy_match)
+        ledger.record(**shadow)
+        self._shadow_parity_recorded = True
 
     def _publish_provider_outcome(self, outcome: MbaProviderOutcome) -> None:
         self._last_provider_outcome = outcome
@@ -564,6 +666,7 @@ class IDAPatternAdapter:
                     matcher=self._matcher_metadata(),
                 )
             )
+            self._record_shadow_parity(legacy_match=True)
             return
         self._publish_provider_outcome(
             MbaProviderOutcome(
@@ -579,6 +682,7 @@ class IDAPatternAdapter:
                 matcher=self._matcher_metadata(),
             )
         )
+        self._record_shadow_parity(legacy_match=True)
 
     def _finalize_candidate_outcome(
         self, *, accepted: bool, reason: str | None = None
@@ -623,7 +727,8 @@ class IDAPatternAdapter:
         canonical_source, aliases = self._catalogue_provenance()
         input_ast = self._attempt_input_ast
         fingerprint = self._profile_fingerprint(input_ast)
-        metadata = {"shadow": self._shadow_metadata(legacy_match=False)}
+        legacy_match = self._legacy_match_observed
+        metadata = {"shadow": self._shadow_metadata(legacy_match=legacy_match)}
         if fingerprint is None:
             self._publish_provider_outcome(
                 MbaProviderOutcome(
@@ -638,6 +743,7 @@ class IDAPatternAdapter:
                     matcher=self._matcher_metadata(),
                 )
             )
+            self._record_shadow_parity(legacy_match=legacy_match)
             return
         self._publish_provider_outcome(
             MbaProviderOutcome(
@@ -652,6 +758,7 @@ class IDAPatternAdapter:
                 matcher=self._matcher_metadata(),
             )
         )
+        self._record_shadow_parity(legacy_match=legacy_match)
 
     def record_attempt_error(self, exc: RuntimeError) -> None:
         """Finalize a caught pattern-engine failure as an explicit error row."""
@@ -671,11 +778,14 @@ class IDAPatternAdapter:
                 metadata={
                     "error_class": type(exc).__name__,
                     "error_message": str(exc),
-                    "shadow": self._shadow_metadata(legacy_match=False),
+                    "shadow": self._shadow_metadata(
+                        legacy_match=self._legacy_match_observed
+                    ),
                 },
                 matcher=self._matcher_metadata(),
             )
         )
+        self._record_shadow_parity(legacy_match=self._legacy_match_observed)
 
     def record_bound_replacement_outcome(self, replacement_ast: Any) -> None:
         """Publish the nomut path's success using its bound native input AST."""
@@ -820,6 +930,7 @@ class IDAPatternAdapter:
             # This ensures constraint checks have access to the matched mops
             if not self._check_candidate(mutable_candidate):
                 continue
+            self.record_legacy_match_bindings(mutable_candidate)
             valid_candidates.append(mutable_candidate)
             if stop_early:
                 return valid_candidates
@@ -1021,6 +1132,7 @@ class IDAPatternAdapter:
         # Then check candidate-level constraints
         if not self._check_candidate(candidate_pattern):
             return None
+        self.record_legacy_match_bindings(candidate_pattern)
 
         # Finally, create the replacement instruction
         new_instruction = self.get_replacement(candidate_pattern)
@@ -1155,8 +1267,41 @@ def adapt_rules(rules: List[VerifiableRule]) -> List[IDAPatternAdapter]:
     return [IDAPatternAdapter(rule) for rule in rules]
 
 
+def attach_selected_certified_catalogue_snapshot(
+    adapters: tuple[IDAPatternAdapter, ...] | List[IDAPatternAdapter],
+):
+    """Freeze the already-selected direct DSL rules outside the optinsn path."""
+
+    from d810.mba.certified_catalogue import (
+        ShadowMatcherParityLedger,
+        build_certified_catalogue_snapshot,
+    )
+
+    selected = tuple(adapters)
+    rules = tuple(adapter.rule for adapter in selected)
+    enabled_families = tuple(
+        dict.fromkeys(type(rule).__module__.rsplit(".", 1)[-1] for rule in rules)
+    )
+    snapshot = build_certified_catalogue_snapshot(
+        rules,
+        compiler_version="verifiable-rule-dsl-v1",
+        enabled_families=enabled_families,
+    )
+    ledger = ShadowMatcherParityLedger()
+    rule_ids = {
+        id(rule): rule_id
+        for rule_id, rule in enumerate(snapshot.rules_in_declaration_order)
+    }
+    for adapter in selected:
+        rule_id = rule_ids.get(id(adapter.rule))
+        if rule_id is not None:
+            adapter.attach_certified_catalogue_snapshot(snapshot, rule_id, ledger)
+    return snapshot, ledger
+
+
 __all__ = [
     "IDANodeVisitor",
     "IDAPatternAdapter",
     "adapt_rules",
+    "attach_selected_certified_catalogue_snapshot",
 ]
