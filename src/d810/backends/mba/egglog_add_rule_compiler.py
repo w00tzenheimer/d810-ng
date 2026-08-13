@@ -425,6 +425,8 @@ def bind_symbolic_pattern(
             if is_pattern_constant:
                 if not isinstance(ast, AstConstant):
                     return False
+                if type(ast.value) is not int:
+                    return False
                 if expression.value is not None:
                     mask = (1 << (destination_size * 8)) - 1
                     if int(ast.value) != (int(expression.value) & mask):
@@ -557,7 +559,8 @@ def specialize(
     )
     if not isinstance(replacement, AstNode):
         return None
-    return EgglogAddSpecialization(rule, candidate_ast, replacement, bindings)
+    specialization = EgglogAddSpecialization(rule, candidate_ast, replacement, bindings)
+    return specialization if _prove_specialization(specialization) else None
 
 
 def _dsl_to_bitexpr(
@@ -654,20 +657,27 @@ def _ast_to_bitexpr(ast: AstBase, leaf_names: dict[tuple[Any, ...], str]):
     return _apply_bitexpr_operation(operation, left, right)
 
 
-def register_specialization(
-    egraph: Any, specialization: EgglogAddSpecialization
-) -> None:
+def _prove_specialization(specialization: EgglogAddSpecialization) -> bool:
     import egglog
 
-    variables: dict[str, Any] = {}
-    pattern = _dsl_to_bitexpr(specialization.rule.pattern, variables, specialization)
-    replacement = _dsl_to_bitexpr(
-        specialization.rule.replacement, variables, specialization
-    )
-    leaf_names: dict[tuple[Any, ...], str] = {}
-    candidate = _ast_to_bitexpr(specialization.candidate_ast, leaf_names)
-    concrete_replacement = _ast_to_bitexpr(specialization.replacement_ast, leaf_names)
-    egraph.register(egglog.rewrite(pattern).to(replacement))
-    egraph.register(candidate)
-    egraph.run(min(max(int(specialization.rounds), 1), 6))
-    egraph.check(egglog.eq(candidate).to(concrete_replacement))
+    try:
+        egraph = egglog.EGraph()
+        variables: dict[str, Any] = {}
+        pattern = _dsl_to_bitexpr(
+            specialization.rule.pattern, variables, specialization
+        )
+        replacement = _dsl_to_bitexpr(
+            specialization.rule.replacement, variables, specialization
+        )
+        leaf_names: dict[tuple[Any, ...], str] = {}
+        candidate = _ast_to_bitexpr(specialization.candidate_ast, leaf_names)
+        concrete_replacement = _ast_to_bitexpr(
+            specialization.replacement_ast, leaf_names
+        )
+        egraph.register(egglog.rewrite(pattern).to(replacement))
+        egraph.register(candidate)
+        egraph.run(min(max(int(specialization.rounds), 1), 6))
+        egraph.check(egglog.eq(candidate).to(concrete_replacement))
+    except Exception:
+        return False
+    return True

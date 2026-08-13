@@ -5,9 +5,9 @@ import pytest
 egglog = pytest.importorskip("egglog")
 ida_hexrays = pytest.importorskip("ida_hexrays")
 
+from d810.backends.mba import egglog_add_rule_compiler  # noqa: E402
 from d810.backends.mba.egglog_add_rule_compiler import (  # noqa: E402
     compile_add_rule_catalogue,
-    register_specialization,
     specialize,
 )
 from d810.hexrays.expr.p_ast import AstConstant, AstLeaf, AstNode  # noqa: E402
@@ -46,9 +46,11 @@ def _prove(rule_name: str, candidate: AstNode):
         _catalogue_rule(rule_name), candidate, destination_size=4
     )
     assert specialization is not None
-    egraph = egglog.EGraph()
-    register_specialization(egraph, specialization)
     return specialization
+
+
+def test_specialization_api_does_not_expose_caller_owned_graph_registration():
+    assert not hasattr(egglog_add_rule_compiler, "register_specialization")
 
 
 def test_specializes_direct_add_rule_and_proves_the_egglog_equation():
@@ -87,6 +89,30 @@ def test_rejects_guarded_rule_when_constant_constraint_is_false():
     assert (
         specialize(
             _catalogue_rule("Add_SpecialConstantRule_1"),
+            candidate,
+            destination_size=4,
+        )
+        is None
+    )
+
+
+def test_rejects_concrete_constant_with_missing_literal_payload():
+    x, y = _leaf("x", 1), _leaf("y", 2)
+    missing = AstConstant("missing", expected_value=None, expected_size=4)
+    missing.dest_size = 4
+    candidate = _node(
+        ida_hexrays.m_add,
+        _node(ida_hexrays.m_xor, x, y),
+        _node(
+            ida_hexrays.m_mul,
+            missing,
+            _node(ida_hexrays.m_and, x.clone(), y.clone()),
+        ),
+    )
+
+    assert (
+        specialize(
+            _catalogue_rule("Add_HackersDelightRule_2"),
             candidate,
             destination_size=4,
         )
