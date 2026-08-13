@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 egglog = pytest.importorskip("egglog")
@@ -106,6 +108,80 @@ def test_live_handler_selects_certified_catalogue_rule_with_alias_provenance():
     assert specialization is not None
     assert specialization.rule.source_name == "Add_HackersDelightRule_2"
     assert specialization.rule.aliases == ("Add_OllvmRule_3",)
+
+
+def test_live_handler_selects_later_certified_specialization_with_lower_cost(
+    monkeypatch,
+):
+    x, y = _leaf("x", 1), _leaf("y", 2)
+    candidate = _node(
+        ida_hexrays.m_add,
+        _node(ida_hexrays.m_xor, x, y),
+        _node(
+            ida_hexrays.m_mul,
+            _constant(2),
+            _node(ida_hexrays.m_and, x.clone(), y.clone()),
+        ),
+    )
+    earlier_rule = SimpleNamespace(proof_widths=(32,), source_name="Earlier")
+    later_rule = SimpleNamespace(proof_widths=(32,), source_name="Later")
+    earlier = SimpleNamespace(
+        rule=earlier_rule,
+        replacement_ast=_node(
+            ida_hexrays.m_add,
+            x.clone(),
+            _node(ida_hexrays.m_and, x.clone(), y.clone()),
+        ),
+    )
+    later = SimpleNamespace(
+        rule=later_rule,
+        replacement_ast=_node(ida_hexrays.m_add, x.clone(), y.clone()),
+    )
+    handler = EgglogOptimizer()
+    handler._catalogue = SimpleNamespace(compiled_rules=(earlier_rule, later_rule))
+    monkeypatch.setattr(
+        "d810.optimizers.microcode.instructions.egraph.egglog_handler.specialize",
+        lambda rule, _ast, **_kwargs: (
+            earlier if rule is earlier_rule else later if rule is later_rule else None
+        ),
+    )
+    monkeypatch.setattr(handler, "_prove_ast_equivalence", lambda *_args, **_kwargs: True)
+
+    assert handler._select_specialization(candidate, destination_size=4) is later
+
+
+def test_live_handler_breaks_equal_cost_selection_ties_by_catalogue_order(monkeypatch):
+    x, y = _leaf("x", 1), _leaf("y", 2)
+    candidate = _node(
+        ida_hexrays.m_add,
+        _node(ida_hexrays.m_xor, x, y),
+        _node(
+            ida_hexrays.m_mul,
+            _constant(2),
+            _node(ida_hexrays.m_and, x.clone(), y.clone()),
+        ),
+    )
+    earlier_rule = SimpleNamespace(proof_widths=(32,), source_name="Earlier")
+    later_rule = SimpleNamespace(proof_widths=(32,), source_name="Later")
+    earlier = SimpleNamespace(
+        rule=earlier_rule,
+        replacement_ast=_node(ida_hexrays.m_add, x.clone(), y.clone()),
+    )
+    later = SimpleNamespace(
+        rule=later_rule,
+        replacement_ast=_node(ida_hexrays.m_add, y.clone(), x.clone()),
+    )
+    handler = EgglogOptimizer()
+    handler._catalogue = SimpleNamespace(compiled_rules=(earlier_rule, later_rule))
+    monkeypatch.setattr(
+        "d810.optimizers.microcode.instructions.egraph.egglog_handler.specialize",
+        lambda rule, _ast, **_kwargs: (
+            earlier if rule is earlier_rule else later if rule is later_rule else None
+        ),
+    )
+    monkeypatch.setattr(handler, "_prove_ast_equivalence", lambda *_args, **_kwargs: True)
+
+    assert handler._select_specialization(candidate, destination_size=4) is earlier
 
 
 def test_specializes_live_astproxy_without_changing_structural_semantics():

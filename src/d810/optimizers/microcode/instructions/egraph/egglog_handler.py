@@ -51,7 +51,8 @@ class EgglogOptimizer(PeepholeSimplificationRule):
 
     The rule set is the certified ADD catalogue.  Selection remains bounded and
     deterministic: every specialization owns its fresh proof graph and the
-    first proof-bearing strict reduction wins.
+    lowest-cost proof-bearing strict reduction wins, with catalogue order as
+    the stable tie-breaker.
     """
 
     DESCRIPTION = "Bounded Egglog MBA extraction (proof-gated)"
@@ -137,8 +138,10 @@ class EgglogOptimizer(PeepholeSimplificationRule):
     def _select_specialization(
         self, ast: AstNode, *, destination_size: int
     ) -> EgglogAddSpecialization | None:
-        """Select the first certified strict reduction in catalogue order."""
+        """Select the lowest-cost certified strict reduction in catalogue order."""
         width = int(destination_size) * 8
+        best: EgglogAddSpecialization | None = None
+        best_cost: int | None = None
         for rule in self._catalogue.compiled_rules:
             specialization = specialize(
                 rule,
@@ -158,8 +161,11 @@ class EgglogOptimizer(PeepholeSimplificationRule):
                 ast, specialization.replacement_ast, width=width
             ):
                 continue
-            return specialization
-        return None
+            cost = self._node_count(specialization.replacement_ast)
+            if best_cost is None or cost < best_cost:
+                best = specialization
+                best_cost = cost
+        return best
 
     def _is_candidate(self, ast, ins) -> bool:
         if ins.d is None or int(ins.d.size) not in _VALID_SIZES:
