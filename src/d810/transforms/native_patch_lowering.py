@@ -108,19 +108,28 @@ class NativeEdgeAbstentionReason(str, Enum):
 
 
 def _is_pure_control_transfer_mnemonic(mnemonic: str) -> bool:
-    """Whether ``mnemonic`` names a plain jump/conditional-jump instruction.
+    """Whether ``mnemonic`` names an instruction that only transfers control.
 
-    Matches ``d810.backends.ida.native_patch.observation._is_conditional_
-    branch``'s own established rule ("starts with 'j', is not 'jmp'") rather
-    than an exact finite set of canonical x86 mnemonics: IDA's decoder does
-    not always print the same short-name spelling this module's authors
-    would guess by hand (confirmed against the live ``fake_jumps.dll``
-    fixture in the Docker system-test suite -- see the Task 5 report). Every
-    x86 jump/conditional-jump mnemonic IDA emits starts with ``"j"``
-    (``je``, ``jz``, ``jnb``, ``jrcxz``, ...) and no non-branch x86 mnemonic
-    does, so this is both safe and robust to spelling variants -- unlike a
-    hand-maintained finite set, which this module's own Docker run proved
-    wrong on the first real fixture.
+    This is the ``EdgeStateContract`` gate: it asks "would overwriting this
+    instruction destroy any register, flag, memory or stack effect?" Every x86
+    jump answers no, so **unconditional ``jmp`` is deliberately included** --
+    replacing a ``jmp`` with another branch eliminates no definition and needs
+    no liveness proof.
+
+    That is why this differs from
+    ``d810.backends.ida.native_patch.observation._is_conditional_branch``,
+    which excludes ``jmp``: that predicate hunts for *conditional* branches as
+    rewrite candidates, a different question. Do not "fix" this by adding an
+    ``!= "jmp"`` clause to match it -- that would make lowering abstain on
+    ``jmp``-terminated regions that are provably safe to rewrite.
+
+    Prefix-matching rather than a finite mnemonic set is deliberate. IDA's
+    decoder does not always print the short-name spelling one would guess by
+    hand; a hand-maintained set was proved wrong against the live
+    ``fake_jumps.dll`` fixture on this module's first Docker run, abstaining on
+    seven genuine single-branch regions. Every x86 jump mnemonic IDA emits
+    starts with ``"j"`` (``je``, ``jz``, ``jnb``, ``jrcxz``, ``jmp``, ...) and
+    no non-branch x86 mnemonic does.
     """
     return mnemonic.startswith("j")
 
