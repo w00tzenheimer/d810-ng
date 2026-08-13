@@ -145,7 +145,13 @@ def _mba_egglog_options(config: PipelineConfig) -> dict[str, object]:
     adapter = build_mba_egglog_pass(config)
     return {
         "max_leaves": adapter.max_leaves,
-        "rounds": adapter.rounds,
+        "max_operator_nodes": adapter.max_operator_nodes,
+        "max_degree": adapter.max_degree,
+        "saturation_rounds": adapter.saturation_rounds,
+        "max_eclasses": adapter.max_eclasses,
+        "max_enodes": adapter.max_enodes,
+        "max_rule_firings": adapter.max_rule_firings,
+        "time_budget_ms": adapter.time_budget_ms,
         "require_proof": adapter.require_proof,
         "families": list(adapter.families),
         # Keep portable maturity vocabulary across the config-v2 boundary.

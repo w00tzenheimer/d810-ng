@@ -13,6 +13,8 @@ from d810.backends.mba.egglog_add_rule_compiler import (  # noqa: E402
 )
 from d810.backends.mba.egglog_saturation import (  # noqa: E402
     EgglogExtractionBudget,
+    EgglogExtractionReceipt,
+    EgglogExtractionResult,
     ExtractionSkipReason,
     extract_bounded_candidate,
 )
@@ -359,3 +361,217 @@ def test_one_schedule_round_cannot_authorize_a_degree_two_chain():
         result.receipt.skip_reason
         is ExtractionSkipReason.NO_DEGREE_ELIGIBLE_IMPROVEMENT
     )
+
+
+class _Destination:
+    size = 4
+
+
+class _Instruction:
+    opcode = ida_hexrays.m_add
+    ea = 0x401000
+    d = _Destination()
+
+
+def _configured_live_handler() -> EgglogOptimizer:
+    handler = EgglogOptimizer()
+    handler.configure(
+        {
+            "max_leaves": 2,
+            "max_operator_nodes": 10,
+            "max_degree": 1,
+            "saturation_rounds": 2,
+            "max_eclasses": 256,
+            "max_enodes": 512,
+            "max_rule_firings": 32,
+            "time_budget_ms": 1000,
+            "require_proof": True,
+            "families": ["add"],
+        }
+    )
+    return handler
+
+
+def test_live_handler_extracts_once_with_exact_configured_rules_then_proves_before_mop(
+    monkeypatch,
+):
+    import d810.optimizers.microcode.instructions.egraph.egglog_handler as handler_module
+
+    candidate = _direct_add_candidate()
+    handler = _configured_live_handler()
+    configured_rules = handler._compiled_rules
+    real_extract = extract_bounded_candidate
+    extraction_calls = []
+    events = []
+
+    def observe_extract(ast, rules, budget, destination_size):
+        extraction_calls.append((ast, rules, budget, destination_size))
+        events.append("extract")
+        return real_extract(ast, rules, budget, destination_size)
+
+    monkeypatch.setattr(handler_module, "extract_bounded_candidate", observe_extract)
+    monkeypatch.setattr(handler_module, "minsn_to_ast", lambda _ins: candidate)
+    monkeypatch.setattr(handler, "_is_candidate", lambda _ast, _ins: True)
+    monkeypatch.setattr(
+        handler,
+        "_prove_ast_equivalence",
+        lambda *_args, **_kwargs: events.append("native_z3") or True,
+    )
+    monkeypatch.setattr(
+        AstNode,
+        "create_mop",
+        lambda _self, _ea: events.append("create_mop") or object(),
+    )
+
+    class _ReplacementInstruction:
+        def __init__(self, ea):
+            self.ea = ea
+
+    monkeypatch.setattr(ida_hexrays, "minsn_t", _ReplacementInstruction)
+
+    replacement = handler._check_and_replace(_Instruction())
+
+    assert len(extraction_calls) == 1
+    assert extraction_calls[0][0] is candidate
+    assert extraction_calls[0][1] is configured_rules
+    assert extraction_calls[0][2] is handler.extraction_budget
+    assert extraction_calls[0][2] == EgglogExtractionBudget(
+        max_eclasses=256,
+        max_enodes=512,
+        time_budget_ms=1000,
+    )
+    assert extraction_calls[0][3] == 4
+    assert events == ["extract", "native_z3", "create_mop"]
+    assert replacement is not None
+    assert replacement.opcode == ida_hexrays.m_mov
+    receipt = handler.last_extraction_receipt
+    assert receipt is not None
+    assert receipt.skip_reason is None
+    metadata = handler.execution_metadata()
+    assert metadata["input_cost"] == receipt.input_cost
+    assert metadata["extracted_cost"] == receipt.extracted_cost
+    assert metadata["degree"] == 1
+    assert metadata["eclass_count"] == receipt.eclass_count
+    assert metadata["enode_count"] == receipt.enode_count
+    assert metadata["rule_firings"] == receipt.rule_firings
+    assert metadata["elapsed_ms"] == receipt.elapsed_ms
+    assert metadata["selected_family"] == "add"
+    assert metadata["selected_source"] == "Add_HackersDelightRule_2"
+    assert metadata["selected_aliases"] == ("Add_OllvmRule_3",)
+    assert metadata["skip_reason"] is None
+
+
+def test_live_handler_native_z3_failure_records_skip_without_creating_mop(monkeypatch):
+    import d810.optimizers.microcode.instructions.egraph.egglog_handler as handler_module
+
+    candidate = _direct_add_candidate()
+    handler = _configured_live_handler()
+    real_extract = extract_bounded_candidate
+    extracted = []
+    create_mop_calls = []
+    minsn_calls = []
+
+    def observe_extract(*args):
+        result = real_extract(*args)
+        extracted.append(result)
+        return result
+
+    monkeypatch.setattr(handler_module, "extract_bounded_candidate", observe_extract)
+    monkeypatch.setattr(handler_module, "minsn_to_ast", lambda _ins: candidate)
+    monkeypatch.setattr(handler, "_is_candidate", lambda _ast, _ins: True)
+    monkeypatch.setattr(handler, "_prove_ast_equivalence", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        AstNode,
+        "create_mop",
+        lambda self, ea: create_mop_calls.append((self, ea)),
+    )
+    monkeypatch.setattr(
+        ida_hexrays,
+        "minsn_t",
+        lambda ea: minsn_calls.append(ea),
+    )
+
+    assert handler._check_and_replace(_Instruction()) is None
+
+    assert len(extracted) == 1
+    assert extracted[0].replacement_ast is not None
+    assert create_mop_calls == []
+    assert minsn_calls == []
+    receipt = handler.last_extraction_receipt
+    assert receipt is not None
+    assert receipt.skip_reason is ExtractionSkipReason.NATIVE_Z3_FAILED
+    metadata = handler.execution_metadata()
+    assert metadata["selected_family"] == "add"
+    assert metadata["selected_source"] == "Add_HackersDelightRule_2"
+    assert metadata["selected_aliases"] == ("Add_OllvmRule_3",)
+    assert metadata["skip_reason"] == "native_z3_failed"
+
+
+def test_live_handler_records_extractor_unavailability_for_supported_candidate(
+    monkeypatch,
+):
+    import d810.optimizers.microcode.instructions.egraph.egglog_handler as handler_module
+
+    candidate = _direct_add_candidate()
+    handler = _configured_live_handler()
+    receipt = EgglogExtractionReceipt(
+        skip_reason=ExtractionSkipReason.EGGLOG_UNAVAILABLE
+    )
+    calls = []
+    log_calls = []
+
+    monkeypatch.setattr(handler_module, "EGGLOG_AVAILABLE", False, raising=False)
+    monkeypatch.setattr(
+        handler_module.logger,
+        "info",
+        lambda *args, **kwargs: log_calls.append((args, kwargs)),
+    )
+    monkeypatch.setattr(handler_module, "minsn_to_ast", lambda _ins: candidate)
+    monkeypatch.setattr(handler, "_is_candidate", lambda _ast, _ins: True)
+    monkeypatch.setattr(
+        handler_module,
+        "extract_bounded_candidate",
+        lambda *args: calls.append(args)
+        or EgglogExtractionResult(replacement_ast=None, receipt=receipt),
+    )
+
+    assert handler.check_and_replace(None, _Instruction()) is None
+    assert len(calls) == 1
+    assert handler.last_extraction_receipt is receipt
+    assert handler.execution_metadata()["skip_reason"] == "egglog_unavailable"
+    assert any("extraction receipt" in args[0] for args, _kwargs in log_calls)
+    assert any("egglog_unavailable" in args for args, _kwargs in log_calls)
+
+
+def test_live_handler_default_time_budget_overrun_is_clean_noop(monkeypatch):
+    import d810.optimizers.microcode.instructions.egraph.egglog_handler as handler_module
+
+    candidate = _direct_add_candidate()
+    handler = EgglogOptimizer()
+    receipt = EgglogExtractionReceipt(
+        input_cost=(4, 9),
+        elapsed_ms=4.25,
+        skip_reason=ExtractionSkipReason.TIME_BUDGET,
+    )
+    observed_budgets = []
+    create_mop_calls = []
+
+    def time_budget_result(_ast, _rules, budget, _destination_size):
+        observed_budgets.append(budget)
+        return EgglogExtractionResult(replacement_ast=None, receipt=receipt)
+
+    monkeypatch.setattr(handler_module, "extract_bounded_candidate", time_budget_result)
+    monkeypatch.setattr(handler_module, "minsn_to_ast", lambda _ins: candidate)
+    monkeypatch.setattr(handler, "_is_candidate", lambda _ast, _ins: True)
+    monkeypatch.setattr(
+        AstNode,
+        "create_mop",
+        lambda self, ea: create_mop_calls.append((self, ea)),
+    )
+
+    assert handler.check_and_replace(None, _Instruction()) is None
+    assert observed_budgets == [EgglogExtractionBudget()]
+    assert observed_budgets[0].time_budget_ms == 3
+    assert create_mop_calls == []
+    assert handler.last_extraction_receipt is receipt
+    assert handler.execution_metadata()["skip_reason"] == "time_budget"

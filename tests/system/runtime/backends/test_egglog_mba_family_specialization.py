@@ -353,6 +353,10 @@ def test_central_statistics_records_selected_family_provenance(monkeypatch):
     stats = OptimizationStatistics()
     optimizer = PeepholeOptimizer([ida_hexrays.MMAT_GLBOPT2], stats)
     handler = EgglogOptimizer()
+    # This is a provenance-success test, not the rollout latency-cap test.
+    # Keep enough headroom for a cold Docker process; the default 3 ms no-op
+    # boundary has dedicated deterministic coverage in the saturation suite.
+    handler.configure({"time_budget_ms": 50})
     rule = _catalogue_rule("xor", "Xor_HackersDelightRule_5")
     candidate = _candidate_from_pattern(rule.pattern)
 

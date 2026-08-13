@@ -11,6 +11,7 @@ from d810.passes.mba_egglog import (
     MBA_EGGLOG_IMPLEMENTATION,
     MBA_EGGLOG_PASS_ID,
     MbaEgglogPass,
+    MbaEgglogOptions,
     build_mba_egglog_pass,
     parse_mba_egglog_options,
     register_mba_egglog_pass,
@@ -28,10 +29,37 @@ def _config(options: dict | None = None) -> PipelineConfig:
 
 
 class TestMbaEgglogOptions(unittest.TestCase):
-    def test_defaults_are_bounded_and_proof_gated(self):
+    def test_defaults_are_degree_one_add_only_and_proof_gated(self):
+        options = parse_mba_egglog_options(_config())
+
+        self.assertIsInstance(options, MbaEgglogOptions)
         self.assertEqual(
-            parse_mba_egglog_options(_config()),
-            (2, 3, True, ("add",), ("GLOBAL_OPTIMIZED",)),
+            (
+                options.max_leaves,
+                options.max_operator_nodes,
+                options.max_degree,
+                options.saturation_rounds,
+                options.max_eclasses,
+                options.max_enodes,
+                options.max_rule_firings,
+                options.time_budget_ms,
+                options.require_proof,
+                options.families,
+                options.maturities,
+            ),
+            (
+                2,
+                10,
+                1,
+                2,
+                64,
+                128,
+                32,
+                3,
+                True,
+                ("add",),
+                ("GLOBAL_OPTIMIZED",),
+            ),
         )
 
     def test_explicit_options_reach_the_pass(self):
@@ -39,7 +67,13 @@ class TestMbaEgglogOptions(unittest.TestCase):
             _config(
                 {
                     "max_leaves": 4,
-                    "rounds": 5,
+                    "max_operator_nodes": 12,
+                    "max_degree": 2,
+                    "saturation_rounds": 5,
+                    "max_eclasses": 96,
+                    "max_enodes": 192,
+                    "max_rule_firings": 48,
+                    "time_budget_ms": 9,
                     "families": ["xor", "add"],
                     "maturities": ["GLOBAL_ANALYZED"],
                 }
@@ -49,19 +83,52 @@ class TestMbaEgglogOptions(unittest.TestCase):
         self.assertEqual(
             (
                 built.max_leaves,
-                built.rounds,
+                built.max_operator_nodes,
+                built.max_degree,
+                built.saturation_rounds,
+                built.max_eclasses,
+                built.max_enodes,
+                built.max_rule_firings,
+                built.time_budget_ms,
                 built.require_proof,
                 built.families,
                 built.maturities,
             ),
-            (4, 5, True, ("xor", "add"), ("GLOBAL_ANALYZED",)),
+            (
+                4,
+                12,
+                2,
+                5,
+                96,
+                192,
+                48,
+                9,
+                True,
+                ("xor", "add"),
+                ("GLOBAL_ANALYZED",),
+            ),
         )
 
-    def test_rejects_unsafe_or_unknown_options(self):
+    def test_rejects_invalid_integer_proof_and_unknown_options(self):
         for options in (
             {"max_leaves": 0},
             {"max_leaves": True},
-            {"rounds": 7},
+            {"max_operator_nodes": 0},
+            {"max_operator_nodes": 1.5},
+            {"max_degree": 0},
+            {"max_degree": 3},
+            {"max_degree": True},
+            {"saturation_rounds": 0},
+            {"saturation_rounds": 7},
+            {"saturation_rounds": "2"},
+            {"max_eclasses": 0},
+            {"max_eclasses": False},
+            {"max_enodes": 0},
+            {"max_enodes": 1.5},
+            {"max_rule_firings": 0},
+            {"max_rule_firings": True},
+            {"time_budget_ms": 0},
+            {"time_budget_ms": "3"},
             {"require_proof": False},
             {"require_proof": "yes"},
             {"families": []},
@@ -73,6 +140,16 @@ class TestMbaEgglogOptions(unittest.TestCase):
             with self.subTest(options=options):
                 with self.assertRaises(PipelineConfigError):
                     parse_mba_egglog_options(_config(options))
+
+    def test_legacy_rounds_alias_is_normalized_and_conflicts_are_rejected(self):
+        with self.assertWarns(DeprecationWarning):
+            options = parse_mba_egglog_options(_config({"rounds": 4}))
+
+        self.assertEqual(options.saturation_rounds, 4)
+        with self.assertRaisesRegex(PipelineConfigError, "cannot both"):
+            parse_mba_egglog_options(
+                _config({"rounds": 4, "saturation_rounds": 4})
+            )
 
     def test_rejects_duplicate_families(self):
         with self.assertRaisesRegex(PipelineConfigError, "unique"):
@@ -103,7 +180,13 @@ class TestMbaEgglogRegistration(unittest.TestCase):
                         "pass_id": PassId.MBA_EGGLOG,
                         "options": {
                             "max_leaves": 4,
-                            "rounds": 5,
+                            "max_operator_nodes": 12,
+                            "max_degree": 2,
+                            "saturation_rounds": 5,
+                            "max_eclasses": 96,
+                            "max_enodes": 192,
+                            "max_rule_firings": 48,
+                            "time_budget_ms": 9,
                             "families": ["xor", "add"],
                             "maturities": ["GLOBAL_ANALYZED"],
                         },
@@ -123,7 +206,13 @@ class TestMbaEgglogRegistration(unittest.TestCase):
             rule.config,
             {
                 "max_leaves": 4,
-                "rounds": 5,
+                "max_operator_nodes": 12,
+                "max_degree": 2,
+                "saturation_rounds": 5,
+                "max_eclasses": 96,
+                "max_enodes": 192,
+                "max_rule_firings": 48,
+                "time_budget_ms": 9,
                 "require_proof": True,
                 "families": ["xor", "add"],
                 "maturities": ["GLOBAL_ANALYZED"],

@@ -8,7 +8,7 @@ or expressions leak between instructions or decompilations.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import MappingProxyType
 
 import ida_hexrays
@@ -20,7 +20,13 @@ from d810.backends.mba.egglog_add_rule_compiler import (
     compiled_rules_for_families,
     specialize,
 )
-from d810.backends.mba.egglog_backend import EGGLOG_AVAILABLE
+from d810.backends.mba.egglog_saturation import (
+    EgglogExtractionBudget,
+    EgglogExtractionReceipt,
+    EgglogExtractionResult,
+    ExtractionSkipReason,
+    extract_bounded_candidate,
+)
 from d810.core import getLogger
 from d810.hexrays.expr.ast import AstNode
 from d810.hexrays.ir_maturity import ir_maturity_to_ida
@@ -76,10 +82,11 @@ class EgglogOptimizer(PeepholeSimplificationRule):
     def __init__(self) -> None:
         super().__init__()
         self.maturities = [ida_hexrays.MMAT_GLBOPT2]
-        self.max_leaves = 2
-        self.rounds = 3
+        self.extraction_budget = EgglogExtractionBudget()
+        self._publish_budget_attributes(self.extraction_budget)
         self.families = _DEFAULT_FAMILIES
         self._catalogue = compile_add_rule_catalogue()
+        self.last_extraction_receipt: EgglogExtractionReceipt | None = None
         self.last_rule_family: str | None = None
         self.last_rule_provenance: tuple[str, ...] | None = None
         self.rule_provenance_history: list[tuple[str, ...]] = []
@@ -87,6 +94,12 @@ class EgglogOptimizer(PeepholeSimplificationRule):
     def configure(self, kwargs) -> None:
         config = dict(kwargs or {})
         maturity_names = config.pop("maturities", None)
+        if "rounds" in config and "saturation_rounds" in config:
+            raise ValueError(
+                "EgglogOptimizer rounds and saturation_rounds cannot both be set"
+            )
+        if "rounds" in config:
+            config["saturation_rounds"] = config.pop("rounds")
         families = self._validate_families(
             config.get("families", list(_DEFAULT_FAMILIES))
         )
@@ -100,22 +113,48 @@ class EgglogOptimizer(PeepholeSimplificationRule):
                 raise ValueError(
                     "EgglogOptimizer maturities must be IRMaturity names"
                 ) from exc
-        self.max_leaves = int(self.config.get("max_leaves", 2))
-        self.rounds = int(self.config.get("rounds", 3))
-        if self.config.get("require_proof", True) is not True:
-            raise ValueError("EgglogOptimizer native proof is mandatory")
-        if self.max_leaves < 1 or self.max_leaves > 8:
+        max_leaves = self.config.get("max_leaves", 2)
+        if type(max_leaves) is not int or not 1 <= max_leaves <= 8:
             raise ValueError("EgglogOptimizer max_leaves must be between 1 and 8")
-        if self.rounds < 1 or self.rounds > 6:
-            raise ValueError("EgglogOptimizer rounds must be between 1 and 6")
-        if families != self.families:
-            selected_rules = (
-                compile_add_rule_catalogue().compiled_rules
-                if families == _DEFAULT_FAMILIES
-                else compiled_rules_for_families(families)
+        try:
+            budget = EgglogExtractionBudget(
+                max_leaves=max_leaves,
+                max_operator_nodes=self.config.get("max_operator_nodes", 10),
+                max_degree=self.config.get("max_degree", 1),
+                saturation_rounds=self.config.get("saturation_rounds", 2),
+                max_eclasses=self.config.get("max_eclasses", 64),
+                max_enodes=self.config.get("max_enodes", 128),
+                max_rule_firings=self.config.get("max_rule_firings", 32),
+                time_budget_ms=self.config.get("time_budget_ms", 3),
+                require_proof=self.config.get("require_proof", True),
             )
-            self.families = families
-            self._catalogue = _SelectedRuleCatalogue(selected_rules)
+        except ValueError as exc:
+            if self.config.get("require_proof", True) is not True:
+                raise ValueError("EgglogOptimizer native proof is mandatory") from exc
+            raise ValueError(f"EgglogOptimizer {exc}") from exc
+
+        selected_catalogue = (
+            compile_add_rule_catalogue()
+            if families == _DEFAULT_FAMILIES
+            else _SelectedRuleCatalogue(compiled_rules_for_families(families))
+        )
+        self.extraction_budget = budget
+        self._publish_budget_attributes(budget)
+        self.families = families
+        self._catalogue = selected_catalogue
+
+    def _publish_budget_attributes(self, budget: EgglogExtractionBudget) -> None:
+        self.max_leaves = budget.max_leaves
+        self.max_operator_nodes = budget.max_operator_nodes
+        self.max_degree = budget.max_degree
+        self.saturation_rounds = budget.saturation_rounds
+        self.max_eclasses = budget.max_eclasses
+        self.max_enodes = budget.max_enodes
+        self.max_rule_firings = budget.max_rule_firings
+        self.time_budget_ms = budget.time_budget_ms
+        self.require_proof = budget.require_proof
+        # Deprecated direct-handler compatibility. Config-v2 emits only the new key.
+        self.rounds = budget.saturation_rounds
 
     @property
     def _catalogue(self):
@@ -124,18 +163,26 @@ class EgglogOptimizer(PeepholeSimplificationRule):
     @_catalogue.setter
     def _catalogue(self, catalogue) -> None:
         self.__catalogue = catalogue
+        self._compiled_rules = catalogue.compiled_rules
         self._rules_by_root_opcode = self._build_root_opcode_buckets(
-            tuple(catalogue.compiled_rules)
+            self._compiled_rules
         )
 
     def check_and_replace(self, blk, ins):
         """Return a replacement only after extraction, shrink, and proof."""
         del blk
-        if not EGGLOG_AVAILABLE or ins.opcode not in _SUPPORTED_ROOT_OPCODES:
+        if ins.opcode not in _SUPPORTED_ROOT_OPCODES:
             return None
         try:
             return self._check_and_replace(ins)
         except Exception:  # Never leak an exception through Hex-Rays' callback.
+            if self.last_extraction_receipt is not None:
+                self._record_extraction_receipt(
+                    replace(
+                        self.last_extraction_receipt,
+                        skip_reason=ExtractionSkipReason.INTERNAL_ERROR,
+                    )
+                )
             logger.exception(
                 "egglog MBA extraction failed at %#x", getattr(ins, "ea", 0)
             )
@@ -144,49 +191,139 @@ class EgglogOptimizer(PeepholeSimplificationRule):
     def _check_and_replace(self, ins):
         self.last_rule_family = None
         self.last_rule_provenance = None
+        self.last_extraction_receipt = None
         ast = minsn_to_ast(ins)
         if ast is None or not self._is_candidate(ast, ins):
             return None
 
-        specialization = self._select_specialization(
+        extraction = self._select_extraction(
             ast, destination_size=int(ins.d.size)
         )
-        if specialization is None:
+        self._record_extraction_receipt(extraction.receipt)
+        replacement = extraction.replacement_ast
+        if replacement is None:
             return None
-        new_ins = self._create_instruction(specialization.replacement_ast, ins)
+        if self._node_count(replacement) >= self._node_count(ast):
+            self._record_extraction_receipt(
+                replace(
+                    extraction.receipt,
+                    skip_reason=ExtractionSkipReason.NO_DEGREE_ELIGIBLE_IMPROVEMENT,
+                )
+            )
+            return None
+        selected = extraction.selected_provenance
+        if selected is None:
+            self._record_extraction_receipt(
+                replace(
+                    extraction.receipt,
+                    skip_reason=ExtractionSkipReason.INTERNAL_ERROR,
+                )
+            )
+            return None
+        width = int(ins.d.size) * 8
+        if not self._prove_ast_equivalence(ast, replacement, width=width):
+            self._record_extraction_receipt(
+                replace(
+                    extraction.receipt,
+                    skip_reason=ExtractionSkipReason.NATIVE_Z3_FAILED,
+                )
+            )
+            return None
+        new_ins = self._create_instruction(replacement, ins)
         if new_ins is None:
+            self._record_extraction_receipt(
+                replace(
+                    extraction.receipt,
+                    skip_reason=ExtractionSkipReason.LOWERING_FAILED,
+                )
+            )
             return None
-        provenance = specialization.source_names
-        self.last_rule_family = specialization.family
+        family, source_name, aliases = selected
+        provenance = (source_name, *aliases)
+        self.last_rule_family = family
         self.last_rule_provenance = provenance
         self.rule_provenance_history.append(provenance)
         logger.info(
             "egglog MBA rewrite at %#x: family=%s source=%s aliases=%s",
             getattr(ins, "ea", 0),
-            specialization.family,
-            specialization.rule.source_name,
-            specialization.rule.aliases,
+            family,
+            source_name,
+            aliases,
         )
         return new_ins
 
+    def _record_extraction_receipt(
+        self, receipt: EgglogExtractionReceipt
+    ) -> None:
+        self.last_extraction_receipt = receipt
+        skip_reason = (
+            receipt.skip_reason.value if receipt.skip_reason is not None else None
+        )
+        logger.info(
+            "egglog MBA extraction receipt: input_cost=%s extracted_cost=%s "
+            "degree=%s eclasses=%s enodes=%s rule_firings=%s elapsed_ms=%s "
+            "family=%s source=%s aliases=%s skip=%s",
+            receipt.input_cost,
+            receipt.extracted_cost,
+            receipt.degree,
+            receipt.eclass_count,
+            receipt.enode_count,
+            receipt.rule_firings,
+            receipt.elapsed_ms,
+            receipt.selected_family,
+            receipt.selected_source,
+            receipt.selected_aliases,
+            skip_reason,
+        )
+
     def execution_metadata(self) -> dict[str, object]:
-        """Expose certified source provenance to central optimizer statistics."""
-        source_names = self.last_rule_provenance
-        if not source_names:
+        """Expose the latest extraction receipt and successful provenance."""
+        receipt = self.last_extraction_receipt
+        if receipt is None:
             return {}
-        metadata = {
-            "source_names": source_names,
-            "source_name": source_names[0],
-            "aliases": source_names[1:],
+        metadata: dict[str, object] = {
+            "input_cost": receipt.input_cost,
+            "extracted_cost": receipt.extracted_cost,
+            "degree": receipt.degree,
+            "eclass_count": receipt.eclass_count,
+            "enode_count": receipt.enode_count,
+            "rule_firings": receipt.rule_firings,
+            "elapsed_ms": receipt.elapsed_ms,
+            "selected_family": receipt.selected_family,
+            "selected_source": receipt.selected_source,
+            "selected_aliases": receipt.selected_aliases,
+            "skip_reason": (
+                receipt.skip_reason.value if receipt.skip_reason is not None else None
+            ),
         }
-        if self.last_rule_family is not None:
-            metadata["family"] = self.last_rule_family
+        if receipt.selected_source is not None:
+            source_names = (receipt.selected_source, *receipt.selected_aliases)
+            metadata.update(
+                {
+                    "source_names": source_names,
+                    "source_name": receipt.selected_source,
+                    "aliases": receipt.selected_aliases,
+                }
+            )
+        if receipt.selected_family is not None:
+            metadata["family"] = receipt.selected_family
         return metadata
+
+    def _select_extraction(
+        self, ast: AstNode, *, destination_size: int
+    ) -> EgglogExtractionResult:
+        """Run one fresh bounded extraction with the configured rule objects."""
+        return extract_bounded_candidate(
+            ast,
+            self._compiled_rules,
+            self.extraction_budget,
+            int(destination_size),
+        )
 
     def _select_specialization(
         self, ast: AstNode, *, destination_size: int
     ) -> EgglogAddSpecialization | None:
-        """Select the lowest-cost certified strict reduction in catalogue order."""
+        """Deprecated compatibility seam; the live handler uses one extraction."""
         width = int(destination_size) * 8
         best: EgglogAddSpecialization | None = None
         best_cost: int | None = None
