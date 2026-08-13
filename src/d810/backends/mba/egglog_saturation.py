@@ -711,6 +711,28 @@ def _degree_expression_work_units(term: TypedBvTerm) -> int:
     return 2 + _egglog_term_work_units(term)
 
 
+def _degree_expression_work_unit_keys(
+    degree: int, term: TypedBvTerm
+) -> frozenset[tuple[object, ...]]:
+    """Identify shared registered structure once, as Egglog's graph does."""
+
+    keys: set[tuple[object, ...]] = {
+        ("degree", degree, "constructor"),
+        ("degree", degree, "literal"),
+    }
+
+    def visit(node: TypedBvTerm) -> None:
+        keys.add(("term", degree, node))
+        if node.operation is None:
+            keys.add(("term-width", degree, node.width))
+            keys.add(("term-literal", degree, node.value, node.leaf_key))
+        for child in node.children:
+            visit(child)
+
+    visit(term)
+    return frozenset(keys)
+
+
 def _pre_run_time_guard(
     *,
     started: float,
@@ -877,7 +899,7 @@ def extract_bounded_candidate(
         frontier: dict[int, tuple[TypedBvTerm, ...]] = {0: (term,)}
         reachable: list[_ReachableCandidate] = []
         rewrites: list[Any] = []
-        registration_work_units = _degree_expression_work_units(term)
+        registration_work_unit_keys = set(_degree_expression_work_unit_keys(0, term))
         for degree in range(budget.max_degree):
             next_terms: dict[TypedBvTerm, None] = {}
             for source_term in frontier.get(degree, ()):
@@ -908,10 +930,12 @@ def extract_bounded_candidate(
                             input_cost=input_cost,
                             skip_reason=ExtractionSkipReason.RULE_FIRING_BUDGET,
                         )
-                    projected_work_units = registration_work_units + (
-                        _degree_expression_work_units(source_term)
-                        + _degree_expression_work_units(replacement)
+                    projected_work_unit_keys = registration_work_unit_keys | set(
+                        _degree_expression_work_unit_keys(degree, source_term)
+                    ) | set(
+                        _degree_expression_work_unit_keys(degree + 1, replacement)
                     )
+                    projected_work_units = len(projected_work_unit_keys)
                     if projected_work_units > budget.max_eclasses:
                         return _extraction_result(
                             started=started,
@@ -949,9 +973,10 @@ def extract_bounded_candidate(
                         )
                     )
                     next_terms[replacement] = None
-                    registration_work_units = projected_work_units
+                    registration_work_unit_keys = projected_work_unit_keys
             frontier[degree + 1] = tuple(next_terms)
 
+        registration_work_units = len(registration_work_unit_keys)
         scheduled_work_units = registration_work_units + (
             len(rewrites) * budget.saturation_rounds
         )

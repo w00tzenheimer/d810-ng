@@ -93,7 +93,7 @@ class TestEgglogAddSpike:
                 optimizer.max_rule_firings,
                 optimizer.time_budget_ms,
                 optimizer.require_proof,
-            ) == (2, 10, 1, 2, 64, 128, 32, 50, True)
+            ) == (2, 10, 1, 2, 64, 128, 32, 1000, True)
 
     @pytest.mark.usefixtures("configure_hexrays", "setup_libobfuscated_funcs")
     def test_extracts_direct_and_guarded_add_rules_with_certified_provenance(

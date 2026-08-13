@@ -13,6 +13,10 @@ from d810.backends.mba.egglog_add_rule_compiler import (  # noqa: E402
     CERTIFICATE_WIDTHS,
     specialize,
 )
+from d810.backends.mba.egglog_saturation import (  # noqa: E402
+    EgglogExtractionBudget,
+    extract_bounded_candidate,
+)
 from d810.core.stats import OptimizationStatistics  # noqa: E402
 from d810.hexrays.expr.p_ast import (  # noqa: E402
     AstBase,
@@ -238,6 +242,28 @@ def test_every_compiled_guard_shape_executes_with_real_bindings(
 
     if source_name == "Add_SpecialConstantRule_3":
         assert specialization.replacement_ast.right.value == 0
+
+
+def test_shared_guarded_add_rewrites_fit_the_64_eclass_admission_cap():
+    rule = _catalogue_rule("add", "Add_SpecialConstantRule_1")
+    candidate = _candidate_from_pattern(
+        rule.pattern,
+        constant_bindings={"c_1": 0x55555555, "c_2": 0x55555555},
+    )
+    assert isinstance(candidate, AstNode)
+
+    result = extract_bounded_candidate(
+        candidate,
+        tuple(r for r in _compiled_catalogue() if r.family == "add"),
+        EgglogExtractionBudget(max_eclasses=64, time_budget_ms=1000),
+        destination_size=4,
+    )
+
+    assert result.replacement_ast is not None
+    assert result.receipt.skip_reason is None
+    assert result.receipt.eclass_count is not None
+    assert result.receipt.eclass_count <= 64
+    assert result.receipt.rule_firings == 2
 
 
 @pytest.mark.parametrize(
