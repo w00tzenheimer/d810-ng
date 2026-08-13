@@ -10,6 +10,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import ida_hexrays
+import pytest
 
 from d810.backends.mba.egglog_saturation import (
     EgglogExtractionReceipt,
@@ -124,3 +125,40 @@ def test_structural_chain_nonmatch_is_an_explicit_provider_row(monkeypatch) -> N
     assert outcome.status is ProviderOutcomeStatus.UNCHANGED
     assert outcome.fingerprint == "chain-island"
     assert outcome.metadata["rules_applied"] == 0
+
+
+def test_structural_chain_runtime_error_retains_exact_profile_and_one_error_row(
+    monkeypatch,
+) -> None:
+    class Rule(ChainSimplificationRule):
+        def check_and_replace(self, blk, ins):
+            del blk, ins
+            return None
+
+    rule = Rule()
+    instruction = SimpleNamespace(d=SimpleNamespace(size=4))
+    profile = SimpleNamespace(
+        fingerprint="chain-exact-island",
+        operator_count=1,
+        total_node_count=3,
+    )
+    monkeypatch.setattr(chain_handler, "minsn_to_ast", lambda _ins: object())
+    monkeypatch.setattr(
+        chain_handler,
+        "lower_hexrays_island",
+        lambda _ast, **_kwargs: SimpleNamespace(term=object(), profile=profile),
+    )
+
+    rule._begin_chain_attempt()
+    with pytest.raises(RuntimeError, match="chain failure"):
+        rule._run_chain_attempt(
+            instruction,
+            opcode=ida_hexrays.m_add,
+            simplify=lambda: (_ for _ in ()).throw(RuntimeError("chain failure")),
+        )
+
+    assert len(rule.provider_outcomes()) == 1
+    outcome = rule.provider_outcomes()[0]
+    assert outcome.status is ProviderOutcomeStatus.ERROR
+    assert outcome.fingerprint == "chain-exact-island"
+    assert outcome.refusal_reason == "RuntimeError"

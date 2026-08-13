@@ -139,6 +139,55 @@ class ChainSimplificationRule(InstructionOptimizationRule):
                 },
             ))
 
+    def _publish_chain_error(self, ins, *, opcode: int, exc: RuntimeError) -> None:
+        """Record a simplifier exception while preserving its existing control flow."""
+
+        elapsed_ms = 0.0
+        if self._attempt_started is not None:
+            elapsed_ms = max(0.0, (time.monotonic() - self._attempt_started) * 1000.0)
+        input_cost = None
+        fingerprint = "profile_unavailable"
+        try:
+            input_ast = minsn_to_ast(ins)
+            lowering = lower_hexrays_island(
+                input_ast,
+                destination_size=int(ins.d.size),
+            )
+            if input_ast is not None and lowering.term is not None:
+                fingerprint = lowering.profile.fingerprint
+                input_cost = (
+                    lowering.profile.operator_count,
+                    lowering.profile.total_node_count,
+                )
+        except Exception:
+            pass
+        self._publish_provider_outcome(MbaProviderOutcome(
+            provider=MbaProviderKind.STRUCTURAL_CHAIN,
+            status=ProviderOutcomeStatus.ERROR,
+            fingerprint=fingerprint,
+            input_cost=input_cost,
+            elapsed_ms=elapsed_ms,
+            refusal_reason=type(exc).__name__,
+            metadata={
+                "chain_opcode": int(opcode),
+                "rules_attempted": 1,
+                "rules_applied": 0,
+                "error_class": type(exc).__name__,
+                "error_message": str(exc),
+            },
+        ))
+
+    def _run_chain_attempt(self, ins, *, opcode: int, simplify):
+        """Observe chain failures but retain the former raised exception behavior."""
+
+        try:
+            new_ins = simplify()
+        except RuntimeError as exc:
+            self._publish_chain_error(ins, opcode=opcode, exc=exc)
+            raise
+        self._publish_chain_result(ins, new_ins, opcode=opcode)
+        return new_ins
+
     def execution_metadata(self) -> dict[str, object]:
         outcome = self._last_provider_outcome
         return {} if outcome is None else {"mba_provider_outcome": outcome.to_dict()}

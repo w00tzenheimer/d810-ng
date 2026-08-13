@@ -518,6 +518,26 @@ class IDAPatternAdapter:
             refusal_reason="no_match",
         ))
 
+    def record_attempt_error(self, exc: RuntimeError) -> None:
+        """Finalize a caught pattern-engine failure as an explicit error row."""
+
+        canonical_source, aliases = self._catalogue_provenance()
+        input_ast = self._attempt_input_ast
+        fingerprint = self._profile_fingerprint(input_ast) or "profile_unavailable"
+        self._publish_provider_outcome(MbaProviderOutcome(
+            provider=MbaProviderKind.CATALOGUE,
+            status=ProviderOutcomeStatus.ERROR,
+            fingerprint=fingerprint,
+            input_cost=self._ast_cost(input_ast),
+            elapsed_ms=self._attempt_elapsed_ms(),
+            source_provenance=(canonical_source, *aliases),
+            refusal_reason=type(exc).__name__,
+            metadata={
+                "error_class": type(exc).__name__,
+                "error_message": str(exc),
+            },
+        ))
+
     def record_bound_replacement_outcome(self, replacement_ast: Any) -> None:
         """Publish the nomut path's success using its bound native input AST."""
 

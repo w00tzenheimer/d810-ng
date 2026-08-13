@@ -745,6 +745,13 @@ class PatternOptimizer(InstructionOptimizer):
 
                     return new_ins
             except RuntimeError as e:
+                record_attempt_error = getattr(
+                    rule_pattern_info.rule,
+                    "record_attempt_error",
+                    None,
+                )
+                if record_attempt_error is not None:
+                    record_attempt_error(e)
                 optimizer_logger.error(
                     "Error during rule %s for instruction %s: %s",
                     rule_pattern_info.rule,

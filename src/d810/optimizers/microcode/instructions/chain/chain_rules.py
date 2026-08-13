@@ -468,9 +468,11 @@ class XorChain(ChainSimplificationRule):
         self._begin_chain_attempt()
         func_ea = getattr(getattr(blk, "mba", None), "entry_ea", 0)
         xor_simplifier = ChainSimplification(ida_hexrays.m_xor, func_entry_ea=func_ea)
-        new_ins = xor_simplifier.simplify(ins)
-        self._publish_chain_result(ins, new_ins, opcode=ida_hexrays.m_xor)
-        return new_ins
+        return self._run_chain_attempt(
+            ins,
+            opcode=ida_hexrays.m_xor,
+            simplify=lambda: xor_simplifier.simplify(ins),
+        )
 
 
 class AndChain(ChainSimplificationRule):
@@ -482,9 +484,11 @@ class AndChain(ChainSimplificationRule):
         self._begin_chain_attempt()
         func_ea = getattr(getattr(blk, "mba", None), "entry_ea", 0)
         and_simplifier = ChainSimplification(ida_hexrays.m_and, func_entry_ea=func_ea)
-        new_ins = and_simplifier.simplify(ins)
-        self._publish_chain_result(ins, new_ins, opcode=ida_hexrays.m_and)
-        return new_ins
+        return self._run_chain_attempt(
+            ins,
+            opcode=ida_hexrays.m_and,
+            simplify=lambda: and_simplifier.simplify(ins),
+        )
 
 
 class OrChain(ChainSimplificationRule):
@@ -496,9 +500,11 @@ class OrChain(ChainSimplificationRule):
         self._begin_chain_attempt()
         func_ea = getattr(getattr(blk, "mba", None), "entry_ea", 0)
         or_simplifier = ChainSimplification(ida_hexrays.m_or, func_entry_ea=func_ea)
-        new_ins = or_simplifier.simplify(ins)
-        self._publish_chain_result(ins, new_ins, opcode=ida_hexrays.m_or)
-        return new_ins
+        return self._run_chain_attempt(
+            ins,
+            opcode=ida_hexrays.m_or,
+            simplify=lambda: or_simplifier.simplify(ins),
+        )
 
 
 class ArithmeticChain(ChainSimplificationRule):
@@ -507,6 +513,8 @@ class ArithmeticChain(ChainSimplificationRule):
     def check_and_replace(self, blk, ins):
         self._begin_chain_attempt()
         arithmetic_simplifier = ArithmeticChainSimplification()
-        new_ins = arithmetic_simplifier.simplify(ins)
-        self._publish_chain_result(ins, new_ins, opcode=ins.opcode)
-        return new_ins
+        return self._run_chain_attempt(
+            ins,
+            opcode=ins.opcode,
+            simplify=lambda: arithmetic_simplifier.simplify(ins),
+        )

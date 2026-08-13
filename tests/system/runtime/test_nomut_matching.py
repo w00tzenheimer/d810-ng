@@ -246,6 +246,61 @@ def test_nomut_success_records_the_bound_catalogue_replacement_outcome(monkeypat
     assert adapter.bound_replacements == ["replacement-pattern"]
 
 
+def test_pattern_runtime_error_notifies_attempt_context_before_clear(monkeypatch):
+    """The existing optimizer catch finalizes an error row, not a no-match."""
+
+    class Instruction:
+        ea = 0
+
+        @staticmethod
+        def _print():
+            return "unit-ins"
+
+    class Adapter:
+        name = "DirectCatalogue"
+        maturities = [7]
+
+        def __init__(self):
+            self.errors: list[RuntimeError] = []
+            self.cleared = 0
+
+        @staticmethod
+        def bind_match_context(_blk, _ins):
+            return None
+
+        @staticmethod
+        def check_pattern_and_replace(_pattern, _candidate):
+            raise RuntimeError("matcher failure")
+
+        def record_attempt_error(self, exc):
+            self.errors.append(exc)
+
+        def clear_match_context(self):
+            self.cleared += 1
+
+    adapter = Adapter()
+    optimizer = object.__new__(PatternOptimizer)
+    optimizer.stats = None
+    optimizer.cur_maturity = 7
+    optimizer._use_nomut_matching = False
+    optimizer._use_legacy_storage = False
+    optimizer._run_later_callback = None
+    optimizer._get_candidates = lambda _ast: [RulePatternInfo(adapter, object())]
+
+    result = optimizer._try_matches(
+        None,
+        Instruction(),
+        object(),
+        allowed_rule_names=None,
+        scheduled_rule_names=None,
+        source_label="unit",
+    )
+
+    assert result is None
+    assert [str(error) for error in adapter.errors] == ["matcher failure"]
+    assert adapter.cleared == 1
+
+
 def test_direct_catalogue_refuses_success_telemetry_without_exact_island_profile():
     """A native adapter never replaces required profile identity with a guess."""
 
@@ -271,6 +326,36 @@ def test_direct_catalogue_refuses_success_telemetry_without_exact_island_profile
     assert outcome is not None
     assert outcome.status is ProviderOutcomeStatus.RECONSTRUCTION_FAILED
     assert outcome.refusal_reason == "profile_unavailable"
+
+
+def test_direct_catalogue_context_error_is_not_downgraded_to_unchanged():
+    class Leaf:
+        def is_node(self) -> bool:
+            return False
+
+    class Rule:
+        name = "direct"
+        CANONICAL_NAME = "direct"
+        ALIASES = ()
+
+    adapter = object.__new__(IDAPatternAdapter)
+    adapter.rule = Rule()
+    adapter._attempt_started = None
+    adapter._attempt_destination_size = 4
+    adapter._attempt_input_ast = Leaf()
+    adapter._last_provider_outcome = None
+    adapter.provider_outcome_history = []
+    adapter._attempt_outcome_index = None
+    adapter._profile_fingerprint = lambda _ast: "exact-native-island"
+
+    adapter.record_attempt_error(RuntimeError("matcher failure"))
+    adapter.clear_match_context()
+
+    assert len(adapter.provider_outcomes()) == 1
+    outcome = adapter.provider_outcomes()[0]
+    assert outcome.status is ProviderOutcomeStatus.ERROR
+    assert outcome.fingerprint == "exact-native-island"
+    assert outcome.refusal_reason == "RuntimeError"
 
 
 def test_direct_catalogue_bound_nomut_success_uses_the_same_profiled_outcome():
