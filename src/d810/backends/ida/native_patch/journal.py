@@ -37,6 +37,7 @@ from d810.capabilities.native_patch import (
     NativeByteRecoveryVerdict,
     NativeJournalState,
     NativeMirrorOutcome,
+    AppliedMetadataAction,
     NativeMirrorReceipt,
     NativeOperationRecoveryReport,
     NativeOperationRecoveryVerdict,
@@ -185,6 +186,23 @@ class SQLiteNativePatchJournal:
                     start_ea INTEGER NOT NULL,
                     end_ea INTEGER NOT NULL,
                     PRIMARY KEY (transaction_id, operation_id)
+                )
+                """
+            )
+            # Metadata actions actually applied, with the state each one
+            # replaced. Written at apply time, not plan time: the plan says
+            # what the before-state is *expected* to be, this records what it
+            # actually was, and reversal replays that recorded value.
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS native_patch_metadata_actions (
+                    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                    transaction_id TEXT NOT NULL,
+                    operation_id TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    ea INTEGER NOT NULL,
+                    recorded_before TEXT NOT NULL,
+                    expected_after TEXT NOT NULL
                 )
                 """
             )
@@ -587,6 +605,64 @@ class SQLiteNativePatchJournal:
                 at_state=NativeJournalState(row["at_state"]),
                 reason=row["reason"],
                 recorded_at=row["recorded_at"],
+            )
+            for row in rows
+        )
+
+    def record_metadata_action(
+        self,
+        transaction_id: NativePatchTransactionId,
+        *,
+        operation_id: str,
+        kind: str,
+        ea: int,
+        recorded_before: str,
+        expected_after: str,
+    ) -> None:
+        """Record one applied metadata action and the state it replaced."""
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO native_patch_metadata_actions
+                    (transaction_id, operation_id, kind, ea,
+                     recorded_before, expected_after)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    transaction_id.value,
+                    operation_id,
+                    kind,
+                    int(ea),
+                    recorded_before,
+                    expected_after,
+                ),
+            )
+
+    def metadata_actions(
+        self, transaction_id: NativePatchTransactionId
+    ) -> tuple[AppliedMetadataAction, ...]:
+        """Applied metadata actions in application order.
+
+        Reversal walks this backwards. Ordering is by insertion, never by
+        address: actions can depend on each other (an item must exist before a
+        cref to it does), and address order would undo them out of sequence.
+        """
+        rows = self._conn.execute(
+            """
+            SELECT operation_id, kind, ea, recorded_before, expected_after
+            FROM native_patch_metadata_actions
+            WHERE transaction_id = ?
+            ORDER BY seq
+            """,
+            (transaction_id.value,),
+        ).fetchall()
+        return tuple(
+            AppliedMetadataAction(
+                operation_id=row["operation_id"],
+                kind=row["kind"],
+                ea=int(row["ea"]),
+                recorded_before=row["recorded_before"],
+                expected_after=row["expected_after"],
             )
             for row in rows
         )

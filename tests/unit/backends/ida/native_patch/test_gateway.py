@@ -241,6 +241,7 @@ def build_gateway(
     callers: frozenset[int] = frozenset(),
     reanalyzer: RecordingReanalyzer | None = None,
     extent_restorer: RecordingExtentRestorer | None = None,
+    metadata_executor=None,
     invalidator: RecordingCacheInvalidator | None = None,
     decode_replacement=_decode_replacement,
     blobs: FakeBlobStore | None = None,
@@ -260,6 +261,7 @@ def build_gateway(
         decode_replacement=decode_replacement,
         reanalyzer=reanalyzer,
         extent_restorer=extent_restorer,
+        metadata_executor=metadata_executor,
         cache_invalidator=invalidator,
         caller_discovery=discovery,
         redo_decompiler=redo,
@@ -764,3 +766,161 @@ class TestRecover:
 
         after = rig.journal.get(receipt.transaction_id)
         assert after.state == before.state
+
+
+class FakeMetadataExecutor:
+    """In-memory metadata state keyed by ``(kind, ea)``.
+
+    Models the one property the real executor must have: ``apply_state`` then
+    ``read_state`` returns what was applied, so reversal to a recorded
+    before-value is observable.
+    """
+
+    def __init__(self, initial: dict | None = None, fail_on_apply: bool = False):
+        self.state: dict = dict(initial or {})
+        self.applied: list[tuple[str, int, str]] = []
+        self._fail_on_apply = fail_on_apply
+
+    def read_state(self, kind, ea):
+        return self.state.get((kind, ea), "unknown")
+
+    def apply_state(self, kind, ea, target_state):
+        self.applied.append((kind.value, ea, target_state))
+        if self._fail_on_apply:
+            return False
+        self.state[(kind, ea)] = target_state
+        return True
+
+
+def _plan_with_metadata_actions():
+    from d810.transforms.native_patch_plan import (
+        NativeMetadataAction,
+        NativeMetadataActionKind,
+    )
+
+    op = fixtures.operation(
+        metadata_actions=(
+            NativeMetadataAction(
+                kind=NativeMetadataActionKind.RECREATE_ITEM,
+                ea=0x1000,
+                expected_before="data:1",
+                expected_after="code:2",
+            ),
+            NativeMetadataAction(
+                kind=NativeMetadataActionKind.UPDATE_XREF,
+                ea=0x1000,
+                expected_before="cref:",
+                expected_after="cref:0x1010",
+            ),
+        )
+    )
+    return fixtures.plan(operations=(op,)), op
+
+
+class TestMetadataActionExecution:
+    """Task 7's unblocking prerequisite: metadata actions execute and reverse.
+
+    They were declared vocabulary and rejected at runtime, which blocked
+    migrating the one writer Task 7 names -- it writes zero bytes and is made
+    entirely of these actions.
+    """
+
+    def _initial_state(self):
+        from d810.transforms.native_patch_plan import NativeMetadataActionKind
+
+        return {
+            (NativeMetadataActionKind.RECREATE_ITEM, 0x1000): "data:1",
+            (NativeMetadataActionKind.UPDATE_XREF, 0x1000): "cref:",
+        }
+
+    def test_apply_executes_every_action(self, tmp_path) -> None:
+        plan, _ = _plan_with_metadata_actions()
+        executor = FakeMetadataExecutor(self._initial_state())
+        rig = build_gateway(tmp_path, plan.operations, metadata_executor=executor)
+
+        receipt = rig.gateway.apply(plan)
+
+        assert receipt.ok, receipt.rejection_reasons
+        assert [a[2] for a in executor.applied] == ["code:2", "cref:0x1010"]
+
+    def test_the_observed_before_state_is_journaled_not_the_expected_one(
+        self, tmp_path
+    ) -> None:
+        """Reversal replays what was actually there, so that is what is stored."""
+        plan, _ = _plan_with_metadata_actions()
+        executor = FakeMetadataExecutor(self._initial_state())
+        rig = build_gateway(tmp_path, plan.operations, metadata_executor=executor)
+
+        receipt = rig.gateway.apply(plan)
+
+        recorded = rig.journal.metadata_actions(receipt.transaction_id)
+        assert [r.recorded_before for r in recorded] == ["data:1", "cref:"]
+
+    def test_a_before_state_mismatch_aborts_rather_than_applying(
+        self, tmp_path
+    ) -> None:
+        plan, _ = _plan_with_metadata_actions()
+        # The database is not what the plan was authorized against.
+        executor = FakeMetadataExecutor({})
+        rig = build_gateway(tmp_path, plan.operations, metadata_executor=executor)
+
+        with pytest.raises(Exception):
+            rig.gateway.apply(plan)
+
+        assert executor.applied == [], "no action may run after a mismatch"
+
+    def test_restore_reverses_actions_in_reverse_application_order(
+        self, tmp_path
+    ) -> None:
+        """Actions can depend on each other, so undoing them forwards would
+        break those dependencies."""
+        plan, _ = _plan_with_metadata_actions()
+        executor = FakeMetadataExecutor(self._initial_state())
+        rig = build_gateway(tmp_path, plan.operations, metadata_executor=executor)
+        receipt = rig.gateway.apply(plan)
+        assert receipt.ok
+        executor.applied.clear()
+
+        rig.gateway.restore(receipt.transaction_id)
+
+        assert [a[2] for a in executor.applied] == ["cref:", "data:1"]
+
+    def test_restore_returns_the_metadata_state_to_its_pre_apply_value(
+        self, tmp_path
+    ) -> None:
+        plan, _ = _plan_with_metadata_actions()
+        initial = self._initial_state()
+        executor = FakeMetadataExecutor(dict(initial))
+        rig = build_gateway(tmp_path, plan.operations, metadata_executor=executor)
+        receipt = rig.gateway.apply(plan)
+        assert receipt.ok
+
+        rig.gateway.restore(receipt.transaction_id)
+
+        assert executor.state == initial
+
+    def test_a_failed_reversal_does_not_report_RESTORED(self, tmp_path) -> None:
+        plan, _ = _plan_with_metadata_actions()
+        executor = FakeMetadataExecutor(self._initial_state())
+        rig = build_gateway(tmp_path, plan.operations, metadata_executor=executor)
+        receipt = rig.gateway.apply(plan)
+        assert receipt.ok
+        executor._fail_on_apply = True
+
+        restored = rig.gateway.restore(receipt.transaction_id)
+
+        assert restored.state is NativeJournalState.RECOVERY_REQUIRED
+
+    def test_without_an_executor_metadata_actions_still_fail_closed(
+        self, tmp_path
+    ) -> None:
+        """The pre-existing guarantee must not regress into a silent skip."""
+        from d810.backends.ida.native_patch.gateway import (
+            NativePatchMetadataActionUnsupported,
+        )
+
+        plan, _ = _plan_with_metadata_actions()
+        rig = build_gateway(tmp_path, plan.operations)
+
+        with pytest.raises(NativePatchMetadataActionUnsupported):
+            rig.gateway.apply(plan)

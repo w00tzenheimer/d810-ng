@@ -559,6 +559,25 @@ class NativeTransactionRecoveryReport:
 
 
 @dataclass(frozen=True, slots=True)
+class AppliedMetadataAction:
+    """One metadata action that was applied, and the state it replaced.
+
+    ``recorded_before`` is what the database *actually* held immediately
+    before the action ran -- not the plan's ``expected_before``, which is an
+    assertion about that state rather than the state itself. Reversal replays
+    this recorded value, because re-deriving a before-state at restore time
+    reads the already-mutated database, which is precisely what is being
+    undone (the lesson the function-extent P0 taught).
+    """
+
+    operation_id: str
+    kind: str
+    ea: int
+    recorded_before: str
+    expected_after: str
+
+
+@dataclass(frozen=True, slots=True)
 class OperationByteRecord:
     """One durably-planned byte, exactly as ``prepare()`` recorded it.
 

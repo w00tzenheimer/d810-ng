@@ -83,6 +83,10 @@ from dataclasses import dataclass
 from uuid import uuid4
 
 from d810.backends.ida.native_patch.capture import LiveDatabaseReader
+from d810.backends.ida.native_patch.metadata import (
+    MetadataActionExecutor,
+    MetadataStateMismatch,
+)
 from d810.backends.ida.native_patch.preflight import (
     DecodeReplacement,
     PlanPreflightResult,
@@ -115,6 +119,7 @@ from d810.core.logging import getLogger
 from d810.core.typing import Protocol, runtime_checkable
 from d810.transforms.native_patch_plan import (
     NativeCertificate,
+    NativeMetadataActionKind,
     NativeCertificateState,
     NativeDatabaseIdentity,
     NativePatchOperation,
@@ -293,6 +298,7 @@ class NativePatchGateway:
         decode_replacement: DecodeReplacement,
         reanalyzer: FunctionReanalyzer,
         extent_restorer: FunctionExtentRestorer,
+        metadata_executor: MetadataActionExecutor | None = None,
         cache_invalidator: CfuncCacheInvalidator,
         caller_discovery: CallerDiscovery,
         redo_decompiler: ControlledRedoDecompiler,
@@ -308,6 +314,10 @@ class NativePatchGateway:
         # skips extent restoration produces a RESTORED receipt for a database
         # that was not restored, which is worse than failing to construct.
         self._extent_restorer = extent_restorer
+        # Optional: a plan with no metadata actions never needs one, and
+        # without it any plan that HAS them still fails closed exactly as
+        # before rather than being silently skipped.
+        self._metadata_executor = metadata_executor
         self._cache_invalidator = cache_invalidator
         self._caller_discovery = caller_discovery
         self._redo_decompiler = redo_decompiler
@@ -339,7 +349,7 @@ class NativePatchGateway:
             )
 
             if record.has_metadata_actions:
-                self._apply_metadata_actions(plan)
+                self._apply_metadata_actions(plan, record.transaction_id)
                 record = self._journal.transition(
                     record.transaction_id, NativeJournalState.METADATA_APPLIED
                 )
@@ -432,13 +442,87 @@ class NativePatchGateway:
         # docstring for why this is measured-necessary, not precautionary.
         self._writer.reset_item_boundaries(op.range.start_ea, op.range.end_ea)
 
-    def _apply_metadata_actions(self, plan: NativePatchPlan) -> None:
+    def _apply_metadata_actions(
+        self, plan: NativePatchPlan, transaction_id: NativePatchTransactionId
+    ) -> None:
+        """Execute every metadata action, journaling what each one replaced.
+
+        Read-verify-apply-verify per action. The *observed* before-state is
+        what gets journaled, never the plan's ``expected_before``: reversal
+        replays the observed value, because re-deriving a before-state at
+        restore time reads the already-mutated database -- the function-extent
+        P0 in exact miniature.
+
+        Any mismatch or failed apply raises, which aborts the transaction with
+        the actions so far already journaled, so recovery can reverse them.
+        """
+        if self._metadata_executor is None:
+            for op in plan.operations:
+                if op.metadata_actions:
+                    raise NativePatchMetadataActionUnsupported(
+                        op.operation_id,
+                        tuple(action.kind.value for action in op.metadata_actions),
+                    )
+            return
+
         for op in plan.operations:
-            if op.metadata_actions:
-                raise NativePatchMetadataActionUnsupported(
-                    op.operation_id,
-                    tuple(action.kind.value for action in op.metadata_actions),
+            for action in op.metadata_actions:
+                observed = self._metadata_executor.read_state(action.kind, action.ea)
+                if observed != action.expected_before:
+                    raise MetadataStateMismatch(
+                        action.kind.value,
+                        action.ea,
+                        action.expected_before,
+                        observed,
+                    )
+                # Journal BEFORE applying. An action that is applied but not
+                # recorded is unreversible; one recorded but not applied is
+                # reversed to the state it already holds, which is a no-op.
+                self._journal.record_metadata_action(
+                    transaction_id,
+                    operation_id=op.operation_id,
+                    kind=action.kind.value,
+                    ea=action.ea,
+                    recorded_before=observed,
+                    expected_after=action.expected_after,
                 )
+                if not self._metadata_executor.apply_state(
+                    action.kind, action.ea, action.expected_after
+                ):
+                    raise MetadataStateMismatch(
+                        action.kind.value,
+                        action.ea,
+                        action.expected_after,
+                        self._metadata_executor.read_state(action.kind, action.ea),
+                    )
+
+    def _reverse_metadata_actions(
+        self, transaction_id: NativePatchTransactionId
+    ) -> tuple[str, ...]:
+        """Undo journaled metadata actions, newest first. Returns failures.
+
+        Reverse application order, not address order: actions can depend on
+        each other (an item must exist before a cref to it does), so undoing
+        them in the order they were made would break those dependencies.
+        """
+        actions = self._journal.metadata_actions(transaction_id)
+        if not actions:
+            return ()
+        if self._metadata_executor is None:
+            return tuple(f"{a.kind}@{a.ea:#x}" for a in actions)
+
+        failed: list[str] = []
+        for action in reversed(actions):
+            try:
+                kind = NativeMetadataActionKind(action.kind)
+                ok = self._metadata_executor.apply_state(
+                    kind, action.ea, action.recorded_before
+                )
+            except Exception:
+                ok = False
+            if not ok:
+                failed.append(f"{action.kind}@{action.ea:#x}")
+        return tuple(failed)
 
     @staticmethod
     def _all_operations_cleanly_applied(
@@ -666,6 +750,7 @@ class NativePatchGateway:
         # The remembered extent has to be asserted first, so the subsequent
         # reanalyze+invalidate runs over the whole restored function rather
         # than the truncated one.
+        unreversed_metadata = self._reverse_metadata_actions(transaction_id)
         unrestored_extents = self._restore_function_extents(transaction_id)
 
         for function_ea in self._function_eas_for_transaction(transaction_id):
@@ -676,7 +761,7 @@ class NativePatchGateway:
                 discovery=self._caller_discovery,
             )
 
-        if unrestored_extents:
+        if unreversed_metadata or unrestored_extents:
             # Bytes are back but the database shape is not. Say so rather than
             # reporting RESTORED: a caller that trusts this receipt would
             # believe a half-restored database is clean.
@@ -684,8 +769,9 @@ class NativePatchGateway:
                 transaction_id,
                 NativeJournalState.RECOVERY_REQUIRED,
                 note=(
-                    "bytes restored but function extent could not be "
-                    f"re-established for {unrestored_extents}"
+                    "bytes restored but database shape was not: "
+                    f"unreversed metadata {unreversed_metadata}, "
+                    f"unrestored extents {unrestored_extents}"
                 ),
             )
             return NativeRestoreReceipt(

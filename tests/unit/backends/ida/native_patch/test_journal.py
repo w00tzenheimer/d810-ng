@@ -478,3 +478,77 @@ class TestPrePatchFunctionOwnershipIsPersisted:
 
     def test_unknown_transaction_has_no_ownership(self, store) -> None:
         assert store.operation_ownership(NativePatchTransactionId.new()) == {}
+
+
+class TestMetadataActionsAreJournaled:
+    """Metadata actions must be reversible from a recorded before-state.
+
+    The extent P0 established the rule: state that is not derived from the
+    bytes is not restored by restoring the bytes. Metadata actions are
+    entirely made of such state, so the *actual* pre-action state has to be
+    written down at apply time -- re-deriving it at restore time reads the
+    already-mutated database, which is exactly what has to be undone.
+    """
+
+    def test_recorded_actions_round_trip(self, store) -> None:
+        record = store.prepare(fixtures.plan())
+        store.record_metadata_action(
+            record.transaction_id,
+            operation_id="op-0",
+            kind="recreate_item",
+            ea=0x1000,
+            recorded_before="data:1",
+            expected_after="code:2",
+        )
+
+        actions = store.metadata_actions(record.transaction_id)
+
+        assert len(actions) == 1
+        assert actions[0].kind == "recreate_item"
+        assert actions[0].ea == 0x1000
+        assert actions[0].recorded_before == "data:1"
+        assert actions[0].expected_after == "code:2"
+
+    def test_actions_are_returned_in_application_order(self, store) -> None:
+        record = store.prepare(fixtures.plan())
+        for ea in (0x1002, 0x1000, 0x1001):
+            store.record_metadata_action(
+                record.transaction_id,
+                operation_id="op-0",
+                kind="update_xref",
+                ea=ea,
+                recorded_before=f"before:{ea:#x}",
+                expected_after=f"after:{ea:#x}",
+            )
+
+        actions = store.metadata_actions(record.transaction_id)
+
+        # Insertion order, not ea order: reversal walks this backwards, and
+        # sorting by address would reverse dependent actions out of sequence.
+        assert [a.ea for a in actions] == [0x1002, 0x1000, 0x1001]
+
+    def test_actions_survive_reopening_the_journal(self, tmp_path) -> None:
+        from d810.backends.ida.native_patch.journal import SQLiteNativePatchJournal
+
+        path = tmp_path / "meta.db"
+        first = SQLiteNativePatchJournal(path)
+        record = first.prepare(fixtures.plan())
+        first.record_metadata_action(
+            record.transaction_id,
+            operation_id="op-0",
+            kind="set_function_tail",
+            ea=0x2000,
+            recorded_before="none",
+            expected_after="tail:0x2000-0x2010",
+        )
+        first.close()
+
+        second = SQLiteNativePatchJournal(path)
+        try:
+            actions = second.metadata_actions(record.transaction_id)
+            assert [a.recorded_before for a in actions] == ["none"]
+        finally:
+            second.close()
+
+    def test_unknown_transaction_has_no_actions(self, store) -> None:
+        assert store.metadata_actions(NativePatchTransactionId.new()) == ()
