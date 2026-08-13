@@ -62,7 +62,6 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         self.maturities = [ida_hexrays.MMAT_GLBOPT2]
         self.max_leaves = 2
         self.rounds = 3
-        self.require_proof = True
         self._catalogue = compile_add_rule_catalogue()
         self.last_rule_provenance: tuple[str, ...] | None = None
         self.rule_provenance_history: list[tuple[str, ...]] = []
@@ -81,7 +80,8 @@ class EgglogOptimizer(PeepholeSimplificationRule):
                 raise ValueError("EgglogOptimizer maturities must be IRMaturity names") from exc
         self.max_leaves = int(self.config.get("max_leaves", 2))
         self.rounds = int(self.config.get("rounds", 3))
-        self.require_proof = bool(self.config.get("require_proof", True))
+        if self.config.get("require_proof", True) is not True:
+            raise ValueError("EgglogOptimizer native proof is mandatory")
         if self.max_leaves < 1 or self.max_leaves > 8:
             raise ValueError("EgglogOptimizer max_leaves must be between 1 and 8")
         if self.rounds < 1 or self.rounds > 6:
@@ -99,6 +99,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             return None
 
     def _check_and_replace(self, ins):
+        self.last_rule_provenance = None
         ast = minsn_to_ast(ins)
         if ast is None or not self._is_candidate(ast, ins):
             return None
@@ -122,6 +123,17 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         )
         return new_ins
 
+    def execution_metadata(self) -> dict[str, object]:
+        """Expose certified source provenance to central optimizer statistics."""
+        source_names = self.last_rule_provenance
+        if not source_names:
+            return {}
+        return {
+            "source_names": source_names,
+            "source_name": source_names[0],
+            "aliases": source_names[1:],
+        }
+
     def _select_specialization(
         self, ast: AstNode, *, destination_size: int
     ) -> EgglogAddSpecialization | None:
@@ -129,7 +141,10 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         width = int(destination_size) * 8
         for rule in self._catalogue.compiled_rules:
             specialization = specialize(
-                rule, ast, destination_size=int(destination_size)
+                rule,
+                ast,
+                destination_size=int(destination_size),
+                rounds=self.rounds,
             )
             if specialization is None:
                 continue

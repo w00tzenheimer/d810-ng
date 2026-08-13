@@ -213,6 +213,24 @@ class TestOptimizationStatistics:
         assert stats.did_rule_fire("TestRule")
         assert stats.get_rule_match_count("TESTRULE") == 1
 
+    def test_rule_execution_metadata_survives_serialization(self):
+        stats = OptimizationStatistics()
+        stats.record_rule_fired(
+            MockRule("EgglogOptimizer"),
+            source_names=("Add_HackersDelightRule_2", "Add_OllvmRule_3"),
+            aliases=("Add_OllvmRule_3",),
+        )
+
+        restored = OptimizationStatistics.from_json(stats.to_json())
+        execution = restored.get_rule_execution("EgglogOptimizer")
+
+        assert execution is not None
+        assert execution.metadata["source_names"] == [
+            "Add_HackersDelightRule_2",
+            "Add_OllvmRule_3",
+        ]
+        assert execution.metadata["aliases"] == ["Add_OllvmRule_3"]
+
 
 class TestOptimizationEvent:
     """Tests for OptimizationEvent enum."""

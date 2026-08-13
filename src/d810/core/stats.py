@@ -463,9 +463,18 @@ class OptimizationStatistics:
                 name: {
                     "rule_name": ex.rule_name,
                     "match_count": ex.match_count,
+                    "metadata": ex.metadata,
                 }
                 for name, ex in self.rule_executions.items()
             },
+            "rule_execution_log": [
+                {
+                    "rule_name": ex.rule_name,
+                    "match_count": ex.match_count,
+                    "metadata": ex.metadata,
+                }
+                for ex in self.rule_execution_log
+            ],
             "cfg_rule_usages": {
                 name: list(patches) for name, patches in self.cfg_rule_usages.items()
             },
@@ -491,7 +500,17 @@ class OptimizationStatistics:
                 rule=None,  # Can't reconstruct rule object from JSON
                 rule_name=ex_data["rule_name"],
                 match_count=ex_data["match_count"],
+                metadata=dict(ex_data.get("metadata", {})),
             )
+        stats.rule_execution_log.extend(
+            RuleExecution(
+                rule=None,
+                rule_name=ex_data["rule_name"],
+                match_count=ex_data.get("match_count", 1),
+                metadata=dict(ex_data.get("metadata", {})),
+            )
+            for ex_data in data.get("rule_execution_log", [])
+        )
         for name, patches in data.get("cfg_rule_usages", {}).items():
             stats.cfg_rule_usages[name] = list(patches)
         stats.cycles_detected.update(data.get("cycles_detected", {}))

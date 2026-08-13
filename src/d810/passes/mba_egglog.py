@@ -68,8 +68,8 @@ def parse_mba_egglog_options(
         raise PipelineConfigError(
             "mba-egglog options.rounds must be an integer from 1 to 6"
         )
-    if not isinstance(require_proof, bool):
-        raise PipelineConfigError("mba-egglog options.require_proof must be a boolean")
+    if require_proof is not True:
+        raise PipelineConfigError("mba-egglog native proof is mandatory")
     if isinstance(maturities, str) or not isinstance(maturities, (list, tuple)):
         raise PipelineConfigError("mba-egglog options.maturities must be a list of names")
     resolved = tuple(str(value) for value in maturities)

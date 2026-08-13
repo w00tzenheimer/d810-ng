@@ -40,7 +40,6 @@ class TestMbaEgglogOptions(unittest.TestCase):
                 {
                     "max_leaves": 4,
                     "rounds": 5,
-                    "require_proof": False,
                     "maturities": ["GLOBAL_ANALYZED"],
                 }
             )
@@ -48,7 +47,7 @@ class TestMbaEgglogOptions(unittest.TestCase):
         self.assertIsInstance(built, MbaEgglogPass)
         self.assertEqual(
             (built.max_leaves, built.rounds, built.require_proof, built.maturities),
-            (4, 5, False, ("GLOBAL_ANALYZED",)),
+            (4, 5, True, ("GLOBAL_ANALYZED",)),
         )
 
     def test_rejects_unsafe_or_unknown_options(self):
@@ -56,6 +55,7 @@ class TestMbaEgglogOptions(unittest.TestCase):
             {"max_leaves": 0},
             {"max_leaves": True},
             {"rounds": 7},
+            {"require_proof": False},
             {"require_proof": "yes"},
             {"maturities": []},
             {"maturities": ["NOT_A_MATURITY"]},
@@ -85,7 +85,6 @@ class TestMbaEgglogRegistration(unittest.TestCase):
                         "options": {
                             "max_leaves": 4,
                             "rounds": 5,
-                            "require_proof": False,
                             "maturities": ["GLOBAL_ANALYZED"],
                         },
                     }
@@ -105,7 +104,7 @@ class TestMbaEgglogRegistration(unittest.TestCase):
             {
                 "max_leaves": 4,
                 "rounds": 5,
-                "require_proof": False,
+                "require_proof": True,
                 "maturities": ["GLOBAL_ANALYZED"],
             },
         )

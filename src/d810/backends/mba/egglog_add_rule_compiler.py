@@ -552,7 +552,10 @@ def specialize(
     candidate_ast: AstNode,
     *,
     destination_size: int,
+    rounds: int = 6,
 ) -> EgglogAddSpecialization | None:
+    if not isinstance(rounds, int) or isinstance(rounds, bool) or not 1 <= rounds <= 6:
+        return None
     bindings = bind_symbolic_pattern(rule.pattern, candidate_ast, destination_size)
     if bindings is None or not constraints_hold(rule, bindings, destination_size):
         return None
@@ -561,7 +564,9 @@ def specialize(
     )
     if not isinstance(replacement, AstNode):
         return None
-    specialization = EgglogAddSpecialization(rule, candidate_ast, replacement, bindings)
+    specialization = EgglogAddSpecialization(
+        rule, candidate_ast, replacement, bindings, rounds=rounds
+    )
     return specialization if _prove_specialization(specialization) else None
 
 

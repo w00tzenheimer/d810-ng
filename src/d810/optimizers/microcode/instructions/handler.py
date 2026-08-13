@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import abc
-from d810.core import typing
 
 import ida_hexrays
 
@@ -46,6 +45,10 @@ class InstructionOptimizationRule(OptimizationRule, Registrant, abc.ABC):
         requests = tuple(self._run_later_requests)
         self._run_later_requests.clear()
         return requests
+
+    def execution_metadata(self) -> dict[str, typing.Any]:
+        """Return metadata for the most recent successful replacement."""
+        return {}
 
     @abc.abstractmethod
     def check_and_replace(self, blk, ins):
@@ -301,6 +304,7 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
                             rule=rule,
                             optimizer=self.name,
                             maturity=self.cur_maturity,
+                            **rule.execution_metadata(),
                         )
                     optimizer_logger.info(
                         "Rule %s matched in maturity %s:",

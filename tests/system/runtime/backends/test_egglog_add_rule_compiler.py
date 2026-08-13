@@ -10,10 +10,14 @@ from d810.backends.mba.egglog_add_rule_compiler import (  # noqa: E402
     compile_add_rule_catalogue,
     specialize,
 )
+from d810.core.stats import OptimizationStatistics  # noqa: E402
 from d810.hexrays.expr.p_ast import AstConstant, AstLeaf, AstNode  # noqa: E402
 from d810.hexrays.ir.mop_snapshot import MopSnapshot  # noqa: E402
 from d810.optimizers.microcode.instructions.egraph.egglog_handler import (  # noqa: E402
     EgglogOptimizer,
+)
+from d810.optimizers.microcode.instructions.peephole.handler import (  # noqa: E402
+    PeepholeOptimizer,
 )
 
 
@@ -97,6 +101,89 @@ def test_live_handler_selects_certified_catalogue_rule_with_alias_provenance():
     assert specialization is not None
     assert specialization.rule.source_name == "Add_HackersDelightRule_2"
     assert specialization.rule.aliases == ("Add_OllvmRule_3",)
+
+
+def test_live_handler_threads_configured_rounds_into_specialization(monkeypatch):
+    x, y = _leaf("x", 1), _leaf("y", 2)
+    candidate_ast = _node(
+        ida_hexrays.m_add,
+        _node(ida_hexrays.m_xor, x, y),
+        _node(
+            ida_hexrays.m_mul,
+            _constant(2),
+            _node(ida_hexrays.m_and, x.clone(), y.clone()),
+        ),
+    )
+    observed_rounds = []
+    real_specialize = egglog_add_rule_compiler.specialize
+
+    def observe(rule, ast, *, destination_size, rounds):
+        observed_rounds.append(rounds)
+        return real_specialize(
+            rule, ast, destination_size=destination_size, rounds=rounds
+        )
+
+    monkeypatch.setattr(
+        "d810.optimizers.microcode.instructions.egraph.egglog_handler.specialize",
+        observe,
+    )
+    handler = EgglogOptimizer()
+    handler.configure({"rounds": 2})
+
+    assert handler._select_specialization(candidate_ast, destination_size=4)
+    assert observed_rounds
+    assert set(observed_rounds) == {2}
+
+
+def test_live_handler_rejects_disabling_mandatory_proof():
+    handler = EgglogOptimizer()
+
+    with pytest.raises(ValueError, match="mandatory"):
+        handler.configure({"require_proof": False})
+
+
+def test_central_statistics_records_and_serializes_egglog_provenance(monkeypatch):
+    stats = OptimizationStatistics()
+    optimizer = PeepholeOptimizer([ida_hexrays.MMAT_GLBOPT2], stats)
+    handler = EgglogOptimizer()
+    handler.last_rule_provenance = (
+        "Add_HackersDelightRule_2",
+        "Add_OllvmRule_3",
+    )
+    class _Instruction:
+        opcode = ida_hexrays.m_add
+        ea = 0x401000
+
+        @staticmethod
+        def _print():
+            return "fake instruction"
+
+    monkeypatch.setattr(
+        handler, "check_and_replace", lambda _blk, _ins: _Instruction()
+    )
+    optimizer.add_rule(handler)
+
+    class _Mba:
+        maturity = ida_hexrays.MMAT_GLBOPT2
+
+    class _Block:
+        mba = _Mba()
+
+    optimizer.get_optimized_instruction(_Block(), _Instruction())
+    execution = stats.get_rule_execution("EgglogOptimizer")
+
+    assert execution is not None
+    assert execution.metadata["source_names"] == (
+        "Add_HackersDelightRule_2",
+        "Add_OllvmRule_3",
+    )
+    assert execution.metadata["source_name"] == "Add_HackersDelightRule_2"
+    assert execution.metadata["aliases"] == ("Add_OllvmRule_3",)
+    serialized = stats.to_dict()["rule_executions"]["egglogoptimizer"]
+    assert serialized["metadata"]["source_names"] == (
+        "Add_HackersDelightRule_2",
+        "Add_OllvmRule_3",
+    )
 
 
 def test_rejects_guarded_rule_when_constant_constraint_is_false():
