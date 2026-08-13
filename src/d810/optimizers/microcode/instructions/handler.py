@@ -50,6 +50,19 @@ class InstructionOptimizationRule(OptimizationRule, Registrant, abc.ABC):
         """Return metadata for the most recent successful replacement."""
         return {}
 
+    def record_mutation_accepted(self) -> None:
+        """Finalize telemetry after the outer optinsn owner accepts a candidate.
+
+        Rule implementations that emit provider outcomes use this hook to
+        upgrade a discovered strict improvement to an applied mutation.  The
+        default is intentionally a no-op for legacy instruction rules.
+        """
+
+    def record_mutation_rejected(self, reason: str) -> None:
+        """Retain a non-applied candidate outcome after an outer safety veto."""
+
+        del reason
+
     @abc.abstractmethod
     def check_and_replace(self, blk, ins):
         """Return a replacement instruction if the rule matches, otherwise None."""
@@ -186,6 +199,7 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
         # instruction after one producer has started churning.
         self._cycle_quarantined_rule_names: frozenset[str] = frozenset()
         self.last_matched_rule_name: str | None = None
+        self._pending_replacement_rule: InstructionOptimizationRule | None = None
 
     def set_run_later_callback(self, callback) -> None:
         self._run_later_callback = callback
@@ -237,6 +251,7 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
         # post_bundle_stabilize and maturity_MMAT_GLBOPT1_post_d810
         # to either (a) IDA's native GLBOPT1 cleanup or (b) d810
         # instruction-level mutations making the chain look dead.
+        self._pending_replacement_rule = None
         try:
             import os
 
@@ -314,6 +329,7 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
                     optimizer_logger.info("  orig: %s", format_minsn_t(ins))
                     optimizer_logger.info("  new : %s", format_minsn_t(new_ins))
 
+                    self._pending_replacement_rule = rule
                     return new_ins
             except RuntimeError as e:
                 optimizer_logger.error(
@@ -332,6 +348,22 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
                     e,
                 )
         return None
+
+    def record_mutation_accepted(self) -> None:
+        """Commit the selected rule's provider outcome after the real swap."""
+
+        rule = self._pending_replacement_rule
+        if rule is not None:
+            rule.record_mutation_accepted()
+        self._pending_replacement_rule = None
+
+    def record_mutation_rejected(self, reason: str) -> None:
+        """Preserve a candidate as non-applied when an outer guard vetoes it."""
+
+        rule = self._pending_replacement_rule
+        if rule is not None:
+            rule.record_mutation_rejected(reason)
+        self._pending_replacement_rule = None
 
     @property
     def name(self):

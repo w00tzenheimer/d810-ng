@@ -23,13 +23,8 @@ from d810.mba.provider_outcome import (
 )
 
 
-_WIN_STATUSES = frozenset({ProviderOutcomeStatus.APPLIED, ProviderOutcomeStatus.IMPROVED})
-_UNSAFE_ABSTENTION_STATUSES = frozenset(
-    {
-        ProviderOutcomeStatus.INELIGIBLE,
-        ProviderOutcomeStatus.OVER_BUDGET,
-        ProviderOutcomeStatus.RECONSTRUCTION_FAILED,
-    }
+_WIN_STATUSES = frozenset(
+    {ProviderOutcomeStatus.APPLIED, ProviderOutcomeStatus.IMPROVED}
 )
 
 
@@ -93,7 +88,9 @@ def egglog_receipt_to_outcome(receipt: object) -> MbaProviderOutcome:
         proof_verdict=(
             False
             if status is ProviderOutcomeStatus.PROOF_FAILED
-            else True if skip_text is None else None
+            else True
+            if skip_text is None
+            else None
         ),
         elapsed_ms=float(getattr(receipt, "elapsed_ms", 0.0)),
         source_provenance=provenance,
@@ -182,7 +179,9 @@ def outcome_from_dict(data: Mapping[str, object]) -> MbaProviderOutcome:
             ),
             proof_verdict=data.get("proof_verdict"),  # type: ignore[arg-type]
             elapsed_ms=float(data.get("elapsed_ms", 0.0)),
-            source_provenance=tuple(str(item) for item in data.get("source_provenance", ())),  # type: ignore[arg-type]
+            source_provenance=tuple(
+                str(item) for item in data.get("source_provenance", ())
+            ),  # type: ignore[arg-type]
             refusal_reason=data.get("refusal_reason"),  # type: ignore[arg-type]
             metadata=data.get("metadata", {}),  # type: ignore[arg-type]
             matcher=matcher,
@@ -212,7 +211,9 @@ class MbaCorpusCaseReport:
         providers = tuple(outcome.provider for outcome in self.outcomes)
         if len(set(providers)) != len(providers):
             raise ValueError(f"{self.case_id}: each provider may have only one outcome")
-        if any(outcome.fingerprint != self.profile.fingerprint for outcome in self.outcomes):
+        if any(
+            outcome.fingerprint != self.profile.fingerprint for outcome in self.outcomes
+        ):
             raise ValueError(f"{self.case_id}: outcome fingerprint must match profile")
 
     def to_dict(self) -> dict[str, object]:
@@ -238,9 +239,16 @@ class MbaDifferentialReport:
             raise ValueError("schema_version must be a positive integer")
         if type(self.corpus_identity) is not str or not self.corpus_identity:
             raise ValueError("corpus_identity must be a non-empty string")
-        if any(type(key) is not str or type(value) is not str for key, value in self.toolchain_identity.items()):
+        if any(
+            type(key) is not str or type(value) is not str
+            for key, value in self.toolchain_identity.items()
+        ):
             raise ValueError("toolchain_identity must map strings to strings")
-        object.__setattr__(self, "toolchain_identity", MappingProxyType(dict(sorted(self.toolchain_identity.items()))))
+        object.__setattr__(
+            self,
+            "toolchain_identity",
+            MappingProxyType(dict(sorted(self.toolchain_identity.items()))),
+        )
         object.__setattr__(self, "cases", tuple(self.cases))
         case_ids = tuple(case.case_id for case in self.cases)
         if len(set(case_ids)) != len(case_ids):
@@ -255,9 +263,16 @@ class MbaDifferentialReport:
         }
 
     def to_json(self) -> str:
-        return json.dumps(
-            self.to_dict(), allow_nan=False, ensure_ascii=True, indent=2, sort_keys=True
-        ) + "\n"
+        return (
+            json.dumps(
+                self.to_dict(),
+                allow_nan=False,
+                ensure_ascii=True,
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n"
+        )
 
 
 @dataclass(frozen=True)
@@ -268,6 +283,8 @@ class ProviderDifferentialStats:
     misses: int = 0
     proof_failures: int = 0
     unsafe_abstentions: int = 0
+    over_budget: int = 0
+    reconstruction_failures: int = 0
     unavailable: int = 0
     errors: int = 0
     node_reduction: int = 0
@@ -282,6 +299,8 @@ class ProviderDifferentialStats:
             "misses": self.misses,
             "proof_failures": self.proof_failures,
             "unsafe_abstentions": self.unsafe_abstentions,
+            "over_budget": self.over_budget,
+            "reconstruction_failures": self.reconstruction_failures,
             "unavailable": self.unavailable,
             "errors": self.errors,
             "node_reduction": self.node_reduction,
@@ -301,7 +320,9 @@ class DifferentialSummary:
         return {
             "by_provider": {
                 provider.value: stats.to_dict()
-                for provider, stats in sorted(self.by_provider.items(), key=lambda item: item[0].value)
+                for provider, stats in sorted(
+                    self.by_provider.items(), key=lambda item: item[0].value
+                )
             },
             "by_stratum": {
                 stratum: stats.to_dict()
@@ -325,19 +346,23 @@ def _percentile(samples: Sequence[float], percent: float) -> float:
 
 
 def _stats_for_outcomes(
-    outcomes: Iterable[tuple[MbaProviderOutcome, bool]],
+    outcomes: Iterable[tuple[MbaProviderOutcome, bool, bool]],
 ) -> ProviderDifferentialStats:
     rows = tuple(outcomes)
-    elapsed = tuple(outcome.elapsed_ms for outcome, _shared in rows)
+    elapsed = tuple(outcome.elapsed_ms for outcome, _shared, _unsafe in rows)
     unique_wins = sum(
-        1 for outcome, shared in rows if outcome.status in _WIN_STATUSES and not shared
+        1
+        for outcome, shared, _unsafe in rows
+        if outcome.status in _WIN_STATUSES and not shared
     )
     shared_wins = sum(
-        1 for outcome, shared in rows if outcome.status in _WIN_STATUSES and shared
+        1
+        for outcome, shared, _unsafe in rows
+        if outcome.status in _WIN_STATUSES and shared
     )
     node_reduction = sum(
         outcome.input_cost[1] - outcome.output_cost[1]
-        for outcome, _shared in rows
+        for outcome, _shared, _unsafe in rows
         if outcome.status in _WIN_STATUSES
         and outcome.input_cost is not None
         and outcome.output_cost is not None
@@ -346,18 +371,150 @@ def _stats_for_outcomes(
         attempts=len(rows),
         unique_wins=unique_wins,
         shared_wins=shared_wins,
-        misses=sum(1 for outcome, _shared in rows if outcome.status is ProviderOutcomeStatus.UNCHANGED),
-        proof_failures=sum(
-            1 for outcome, _shared in rows if outcome.status is ProviderOutcomeStatus.PROOF_FAILED
+        misses=sum(
+            1
+            for outcome, _shared, _unsafe in rows
+            if outcome.status is ProviderOutcomeStatus.UNCHANGED
         ),
-        unsafe_abstentions=sum(
-            1 for outcome, _shared in rows if outcome.status in _UNSAFE_ABSTENTION_STATUSES
+        proof_failures=sum(
+            1
+            for outcome, _shared, _unsafe in rows
+            if outcome.status is ProviderOutcomeStatus.PROOF_FAILED
+        ),
+        unsafe_abstentions=sum(1 for outcome, _shared, unsafe in rows if unsafe),
+        over_budget=sum(
+            1
+            for outcome, _shared, _unsafe in rows
+            if outcome.status is ProviderOutcomeStatus.OVER_BUDGET
+        ),
+        reconstruction_failures=sum(
+            1
+            for outcome, _shared, _unsafe in rows
+            if outcome.status is ProviderOutcomeStatus.RECONSTRUCTION_FAILED
         ),
         unavailable=sum(
-            1 for outcome, _shared in rows if outcome.status is ProviderOutcomeStatus.UNAVAILABLE
+            1
+            for outcome, _shared, _unsafe in rows
+            if outcome.status is ProviderOutcomeStatus.UNAVAILABLE
         ),
-        errors=sum(1 for outcome, _shared in rows if outcome.status is ProviderOutcomeStatus.ERROR),
+        errors=sum(
+            1
+            for outcome, _shared, _unsafe in rows
+            if outcome.status is ProviderOutcomeStatus.ERROR
+        ),
         node_reduction=node_reduction,
+        p50_elapsed_ms=_percentile(elapsed, 0.50),
+        p95_elapsed_ms=_percentile(elapsed, 0.95),
+    )
+
+
+def _is_unsafe_abstention(
+    profile: MbaIslandProfile,
+    outcome: MbaProviderOutcome,
+) -> bool:
+    """Return whether an ineligible outcome is the intended fail-closed result.
+
+    Resource exhaustion and reconstruction defects are operational failures on
+    otherwise safe islands, not evidence that the semantic blocker policy
+    worked.  Only an explicitly blocked/unsupported island that the provider
+    declines is counted as an unsafe abstention.
+    """
+
+    return outcome.status is ProviderOutcomeStatus.INELIGIBLE and (
+        bool(profile.blockers) or profile.island_class is MbaIslandClass.UNSUPPORTED
+    )
+
+
+def _stats_for_cases(cases: Iterable[MbaCorpusCaseReport]) -> ProviderDifferentialStats:
+    """Aggregate stratum yield once per corpus case, never once per provider."""
+
+    grouped_cases = tuple(cases)
+    rows = tuple(
+        (
+            case,
+            tuple(
+                outcome for outcome in case.outcomes if outcome.status in _WIN_STATUSES
+            ),
+        )
+        for case in grouped_cases
+    )
+    all_outcomes = tuple(outcome for case in grouped_cases for outcome in case.outcomes)
+    elapsed = tuple(outcome.elapsed_ms for outcome in all_outcomes)
+    return ProviderDifferentialStats(
+        attempts=len(grouped_cases),
+        unique_wins=sum(1 for _case, winners in rows if len(winners) == 1),
+        shared_wins=sum(1 for _case, winners in rows if len(winners) > 1),
+        misses=sum(
+            1
+            for case, winners in rows
+            if not winners
+            and case.outcomes
+            and all(
+                outcome.status is ProviderOutcomeStatus.UNCHANGED
+                for outcome in case.outcomes
+            )
+        ),
+        proof_failures=sum(
+            1
+            for case in grouped_cases
+            if any(
+                outcome.status is ProviderOutcomeStatus.PROOF_FAILED
+                for outcome in case.outcomes
+            )
+        ),
+        unsafe_abstentions=sum(
+            1
+            for case in grouped_cases
+            if any(
+                _is_unsafe_abstention(case.profile, outcome)
+                for outcome in case.outcomes
+            )
+        ),
+        over_budget=sum(
+            1
+            for case in grouped_cases
+            if any(
+                outcome.status is ProviderOutcomeStatus.OVER_BUDGET
+                for outcome in case.outcomes
+            )
+        ),
+        reconstruction_failures=sum(
+            1
+            for case in grouped_cases
+            if any(
+                outcome.status is ProviderOutcomeStatus.RECONSTRUCTION_FAILED
+                for outcome in case.outcomes
+            )
+        ),
+        unavailable=sum(
+            1
+            for case in grouped_cases
+            if any(
+                outcome.status is ProviderOutcomeStatus.UNAVAILABLE
+                for outcome in case.outcomes
+            )
+        ),
+        errors=sum(
+            1
+            for case in grouped_cases
+            if any(
+                outcome.status is ProviderOutcomeStatus.ERROR
+                for outcome in case.outcomes
+            )
+        ),
+        node_reduction=sum(
+            max(
+                (
+                    outcome.input_cost[1] - outcome.output_cost[1]
+                    for outcome in case.outcomes
+                    if outcome.status in _WIN_STATUSES
+                    and outcome.input_cost is not None
+                    and outcome.output_cost is not None
+                ),
+                default=0,
+            )
+            for case in grouped_cases
+        ),
         p50_elapsed_ms=_percentile(elapsed, 0.50),
         p95_elapsed_ms=_percentile(elapsed, 0.95),
     )
@@ -366,23 +523,37 @@ def _stats_for_outcomes(
 def compare_provider_outcomes(report: MbaDifferentialReport) -> DifferentialSummary:
     """Compare provider yield without conflating unavailable and missed attempts."""
 
-    provider_rows: dict[MbaProviderKind, list[tuple[MbaProviderOutcome, bool]]] = defaultdict(list)
-    stratum_rows: dict[str, list[tuple[MbaProviderOutcome, bool]]] = defaultdict(list)
+    provider_rows: dict[
+        MbaProviderKind, list[tuple[MbaProviderOutcome, bool, bool]]
+    ] = defaultdict(list)
+    stratum_cases: dict[str, list[MbaCorpusCaseReport]] = defaultdict(list)
     for case in report.cases:
         winners = {
-            outcome.provider for outcome in case.outcomes if outcome.status in _WIN_STATUSES
+            outcome.provider
+            for outcome in case.outcomes
+            if outcome.status in _WIN_STATUSES
         }
         shared = len(winners) > 1
+        stratum_cases[case.stratum].append(case)
         for outcome in case.outcomes:
-            row = (outcome, shared and outcome.status in _WIN_STATUSES)
+            row = (
+                outcome,
+                shared and outcome.status in _WIN_STATUSES,
+                _is_unsafe_abstention(case.profile, outcome),
+            )
             provider_rows[outcome.provider].append(row)
-            stratum_rows[case.stratum].append(row)
     return DifferentialSummary(
         by_provider=MappingProxyType(
-            {provider: _stats_for_outcomes(rows) for provider, rows in provider_rows.items()}
+            {
+                provider: _stats_for_outcomes(rows)
+                for provider, rows in provider_rows.items()
+            }
         ),
         by_stratum=MappingProxyType(
-            {stratum: _stats_for_outcomes(rows) for stratum, rows in stratum_rows.items()}
+            {
+                stratum: _stats_for_cases(cases)
+                for stratum, cases in stratum_cases.items()
+            }
         ),
     )
 
@@ -431,14 +602,26 @@ def normalize_outcome_rows(
         stratum, profile, outcomes = grouped[case_id]
         case = MbaCorpusCaseReport(case_id, profile, tuple(outcomes), stratum)
         actual = frozenset(outcome.provider for outcome in case.outcomes)
-        missing = tuple(provider.value for provider in expected if provider not in actual)
-        unexpected = tuple(sorted(provider.value for provider in actual - frozenset(expected))) if expected else ()
+        missing = tuple(
+            provider.value for provider in expected if provider not in actual
+        )
+        unexpected = (
+            tuple(sorted(provider.value for provider in actual - frozenset(expected)))
+            if expected
+            else ()
+        )
         if missing:
-            raise ValueError(f"{case_id}: missing outcome rows for {', '.join(missing)}")
+            raise ValueError(
+                f"{case_id}: missing outcome rows for {', '.join(missing)}"
+            )
         if unexpected:
-            raise ValueError(f"{case_id}: unexpected outcome rows for {', '.join(unexpected)}")
+            raise ValueError(
+                f"{case_id}: unexpected outcome rows for {', '.join(unexpected)}"
+            )
         cases.append(case)
-    return MbaDifferentialReport(schema_version, corpus_identity, toolchain_identity, tuple(cases))
+    return MbaDifferentialReport(
+        schema_version, corpus_identity, toolchain_identity, tuple(cases)
+    )
 
 
 def report_from_dict(data: Mapping[str, object]) -> MbaDifferentialReport:
@@ -473,7 +656,9 @@ def summary_markdown(summary: DifferentialSummary) -> str:
         "| provider | attempts | unique | shared | misses | proof failures | unsafe abstentions | unavailable | node reduction | p50 ms | p95 ms |",
         "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
-    for provider, stats in sorted(summary.by_provider.items(), key=lambda item: item[0].value):
+    for provider, stats in sorted(
+        summary.by_provider.items(), key=lambda item: item[0].value
+    ):
         lines.append(
             "| {provider} | {attempts} | {unique_wins} | {shared_wins} | {misses} | "
             "{proof_failures} | {unsafe_abstentions} | {unavailable} | {node_reduction} | "

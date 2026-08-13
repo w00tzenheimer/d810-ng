@@ -58,7 +58,23 @@ def test_egglog_attempt_matrix_retains_one_final_row_per_skip_or_proof_result() 
     assert handler.provider_outcomes()[-1].status is ProviderOutcomeStatus.PROOF_FAILED
 
 
-def test_direct_catalogue_nonmatch_is_published_without_rule_fired_statistics(monkeypatch) -> None:
+def test_egglog_candidate_is_only_applied_after_outer_mutation_acceptance() -> None:
+    handler = EgglogOptimizer()
+    handler._begin_provider_attempt()
+    handler._record_extraction_receipt(
+        EgglogExtractionReceipt(input_cost=(4, 7), extracted_cost=(2, 3))
+    )
+
+    assert handler.provider_outcomes()[-1].status is ProviderOutcomeStatus.IMPROVED
+
+    handler.record_mutation_accepted()
+
+    assert handler.provider_outcomes()[-1].status is ProviderOutcomeStatus.APPLIED
+
+
+def test_direct_catalogue_nonmatch_is_published_without_rule_fired_statistics(
+    monkeypatch,
+) -> None:
     class Rule:
         name = "direct"
         CANONICAL_NAME = "direct"
@@ -125,6 +141,40 @@ def test_structural_chain_nonmatch_is_an_explicit_provider_row(monkeypatch) -> N
     assert outcome.status is ProviderOutcomeStatus.UNCHANGED
     assert outcome.fingerprint == "chain-island"
     assert outcome.metadata["rules_applied"] == 0
+
+
+def test_structural_chain_candidate_is_only_applied_after_outer_mutation_acceptance(
+    monkeypatch,
+) -> None:
+    class Rule(ChainSimplificationRule):
+        def check_and_replace(self, blk, ins):
+            del blk, ins
+            return None
+
+    rule = Rule()
+    instruction = SimpleNamespace(
+        d=SimpleNamespace(size=4),
+        l=SimpleNamespace(t=-1),
+        r=SimpleNamespace(t=-1),
+    )
+    profile = SimpleNamespace(
+        fingerprint="chain-island",
+        operator_count=2,
+        total_node_count=4,
+    )
+    monkeypatch.setattr(chain_handler, "minsn_to_ast", lambda _ins: object())
+    monkeypatch.setattr(
+        chain_handler,
+        "lower_hexrays_island",
+        lambda _ast, **_kwargs: SimpleNamespace(term=object(), profile=profile),
+    )
+
+    rule._begin_chain_attempt()
+    rule._publish_chain_result(instruction, instruction, opcode=ida_hexrays.m_add)
+    assert rule.provider_outcomes()[-1].status is ProviderOutcomeStatus.IMPROVED
+
+    rule.record_mutation_accepted()
+    assert rule.provider_outcomes()[-1].status is ProviderOutcomeStatus.APPLIED
 
 
 def test_structural_chain_runtime_error_retains_exact_profile_and_one_error_row(

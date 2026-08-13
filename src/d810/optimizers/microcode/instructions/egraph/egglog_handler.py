@@ -34,7 +34,7 @@ from d810.hexrays.ir_maturity import ir_maturity_to_ida
 from d810.hexrays.ir.minsn_utils import minsn_to_ast
 from d810.ir.maturity import IRMaturity
 from d810.mba.differential_report import egglog_receipt_to_outcome
-from d810.mba.provider_outcome import MbaProviderOutcome
+from d810.mba.provider_outcome import MbaProviderOutcome, ProviderOutcomeStatus
 from d810.optimizers.microcode.instructions.peephole.handler import (
     PeepholeSimplificationRule,
 )
@@ -345,6 +345,37 @@ class EgglogOptimizer(PeepholeSimplificationRule):
 
         return tuple(self.provider_outcome_history)
 
+    def _finalize_candidate_outcome(
+        self, *, accepted: bool, reason: str | None = None
+    ) -> None:
+        """Mark only an outer-accepted candidate as an applied mutation."""
+
+        if self._attempt_outcome_index is None:
+            return
+        outcome = self.provider_outcome_history[self._attempt_outcome_index]
+        if outcome.status is not ProviderOutcomeStatus.IMPROVED:
+            return
+        metadata = dict(outcome.metadata or {})
+        metadata["mutation_outcome"] = "accepted" if accepted else "rejected"
+        if reason is not None:
+            metadata["mutation_rejection_reason"] = reason
+        self.provider_outcome_history[self._attempt_outcome_index] = replace(
+            outcome,
+            status=(
+                ProviderOutcomeStatus.APPLIED
+                if accepted
+                else ProviderOutcomeStatus.IMPROVED
+            ),
+            refusal_reason=None if accepted else reason,
+            metadata=metadata,
+        )
+
+    def record_mutation_accepted(self) -> None:
+        self._finalize_candidate_outcome(accepted=True)
+
+    def record_mutation_rejected(self, reason: str) -> None:
+        self._finalize_candidate_outcome(accepted=False, reason=reason)
+
     def execution_metadata(self) -> dict[str, object]:
         """Expose the latest extraction receipt and successful provenance."""
         receipt = self.last_extraction_receipt
@@ -396,6 +427,8 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         observation adapter for the common differential report boundary.
         """
 
+        if self._attempt_outcome_index is not None:
+            return self.provider_outcome_history[self._attempt_outcome_index]
         if self.last_extraction_receipt is None:
             return None
         return egglog_receipt_to_outcome(self.last_extraction_receipt)

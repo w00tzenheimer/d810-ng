@@ -523,6 +523,7 @@ class PatternOptimizer(InstructionOptimizer):
         allowed_rule_names: frozenset[str] | None = None,
         scheduled_rule_names: frozenset[str] | None = None,
     ) -> ida_hexrays.minsn_t | None:
+        self._pending_replacement_rule = None
         if blk is not None:
             self.cur_maturity = blk.mba.maturity
         # Optimizer-level maturity gate removed: per-rule maturities are checked in the loop below
@@ -743,6 +744,7 @@ class PatternOptimizer(InstructionOptimizer):
                             **rule_pattern_info.rule.execution_metadata(),
                         )
 
+                    self._pending_replacement_rule = rule_pattern_info.rule
                     return new_ins
             except RuntimeError as e:
                 record_attempt_error = getattr(

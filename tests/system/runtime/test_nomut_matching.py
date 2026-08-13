@@ -381,8 +381,40 @@ def test_direct_catalogue_bound_nomut_success_uses_the_same_profiled_outcome():
     adapter.record_bound_replacement_outcome(Leaf())
 
     outcome = adapter.provider_outcomes()[0]
-    assert outcome.status is ProviderOutcomeStatus.APPLIED
+    assert outcome.status is ProviderOutcomeStatus.IMPROVED
     assert outcome.fingerprint == "exact-native-island"
+
+    adapter.record_mutation_accepted()
+    assert adapter.provider_outcomes()[0].status is ProviderOutcomeStatus.APPLIED
+
+
+def test_direct_catalogue_outer_rejection_keeps_candidate_non_applied():
+    class Leaf:
+        def is_node(self) -> bool:
+            return False
+
+    class Rule:
+        name = "direct"
+        CANONICAL_NAME = "direct"
+        ALIASES = ()
+
+    adapter = object.__new__(IDAPatternAdapter)
+    adapter.rule = Rule()
+    adapter._attempt_started = None
+    adapter._attempt_destination_size = 4
+    adapter._attempt_input_ast = Leaf()
+    adapter._last_provider_outcome = None
+    adapter.provider_outcome_history = []
+    adapter._attempt_outcome_index = None
+    adapter._profile_fingerprint = lambda _ast: "exact-native-island"
+
+    adapter.record_bound_replacement_outcome(Leaf())
+    adapter.record_mutation_rejected("rewrite_cycle")
+
+    outcome = adapter.provider_outcomes()[0]
+    assert outcome.status is ProviderOutcomeStatus.IMPROVED
+    assert outcome.refusal_reason == "rewrite_cycle"
+    assert outcome.metadata["mutation_outcome"] == "rejected"
 
     def test_feature_flags_are_independent(self, monkeypatch):
         """D810_NOMUT_MATCHING and D810_LEGACY_STORAGE control different aspects.

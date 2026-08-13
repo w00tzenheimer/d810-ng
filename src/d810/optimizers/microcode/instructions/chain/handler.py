@@ -1,5 +1,6 @@
 import abc
 import time
+from dataclasses import replace
 
 import ida_hexrays
 
@@ -48,7 +49,9 @@ class ChainSimplificationRule(InstructionOptimizationRule):
         nested = getattr(mop, "d", None)
         if nested is None or getattr(nested, "opcode", None) != opcode:
             return 1
-        return ChainSimplificationRule._chain_arity(nested.l, opcode) + ChainSimplificationRule._chain_arity(nested.r, opcode)
+        return ChainSimplificationRule._chain_arity(
+            nested.l, opcode
+        ) + ChainSimplificationRule._chain_arity(nested.r, opcode)
 
     @staticmethod
     def _arithmetic_arity(mop) -> int:
@@ -59,10 +62,9 @@ class ChainSimplificationRule(InstructionOptimizationRule):
         nested = getattr(mop, "d", None)
         opcode = getattr(nested, "opcode", None)
         if opcode in (ida_hexrays.m_add, ida_hexrays.m_sub):
-            return (
-                ChainSimplificationRule._arithmetic_arity(nested.l)
-                + ChainSimplificationRule._arithmetic_arity(nested.r)
-            )
+            return ChainSimplificationRule._arithmetic_arity(
+                nested.l
+            ) + ChainSimplificationRule._arithmetic_arity(nested.r)
         if opcode == ida_hexrays.m_neg:
             return ChainSimplificationRule._arithmetic_arity(nested.l)
         return 1
@@ -82,62 +84,75 @@ class ChainSimplificationRule(InstructionOptimizationRule):
         try:
             input_ast = minsn_to_ast(ins)
             destination_size = int(ins.d.size)
-            lowering = lower_hexrays_island(input_ast, destination_size=destination_size)
+            lowering = lower_hexrays_island(
+                input_ast, destination_size=destination_size
+            )
             if input_ast is None or lowering.term is None:
                 raise ValueError("native chain island profile unavailable")
-            input_cost = (lowering.profile.operator_count, lowering.profile.total_node_count)
+            input_cost = (
+                lowering.profile.operator_count,
+                lowering.profile.total_node_count,
+            )
             if new_ins is None:
-                self._publish_provider_outcome(MbaProviderOutcome(
-                    provider=MbaProviderKind.STRUCTURAL_CHAIN,
-                    status=ProviderOutcomeStatus.UNCHANGED,
-                    fingerprint=lowering.profile.fingerprint,
-                    input_cost=input_cost,
-                    elapsed_ms=elapsed_ms,
-                    refusal_reason="no_match",
-                    metadata={
-                        "chain_opcode": int(opcode),
-                        "flattened_arity": self._flattened_arity(ins, opcode),
-                        "rules_attempted": 1,
-                        "rules_applied": 0,
-                    },
-                ))
+                self._publish_provider_outcome(
+                    MbaProviderOutcome(
+                        provider=MbaProviderKind.STRUCTURAL_CHAIN,
+                        status=ProviderOutcomeStatus.UNCHANGED,
+                        fingerprint=lowering.profile.fingerprint,
+                        input_cost=input_cost,
+                        elapsed_ms=elapsed_ms,
+                        refusal_reason="no_match",
+                        metadata={
+                            "chain_opcode": int(opcode),
+                            "flattened_arity": self._flattened_arity(ins, opcode),
+                            "rules_attempted": 1,
+                            "rules_applied": 0,
+                        },
+                    )
+                )
                 return
             output_ast = minsn_to_ast(new_ins)
             if output_ast is None:
                 raise ValueError("native chain output profile unavailable")
-            output_lowering = lower_hexrays_island(output_ast, destination_size=destination_size)
+            output_lowering = lower_hexrays_island(
+                output_ast, destination_size=destination_size
+            )
             if output_lowering.term is None:
                 raise ValueError("native chain output profile unavailable")
-            self._publish_provider_outcome(MbaProviderOutcome(
-                provider=MbaProviderKind.STRUCTURAL_CHAIN,
-                status=ProviderOutcomeStatus.APPLIED,
-                fingerprint=lowering.profile.fingerprint,
-                input_cost=input_cost,
-                output_cost=(
-                    output_lowering.profile.operator_count,
-                    output_lowering.profile.total_node_count,
-                ),
-                elapsed_ms=elapsed_ms,
-                metadata={
-                    "chain_opcode": int(opcode),
-                    "flattened_arity": self._flattened_arity(ins, opcode),
-                    "rules_attempted": 1,
-                    "rules_applied": 1,
-                },
-            ))
+            self._publish_provider_outcome(
+                MbaProviderOutcome(
+                    provider=MbaProviderKind.STRUCTURAL_CHAIN,
+                    status=ProviderOutcomeStatus.IMPROVED,
+                    fingerprint=lowering.profile.fingerprint,
+                    input_cost=input_cost,
+                    output_cost=(
+                        output_lowering.profile.operator_count,
+                        output_lowering.profile.total_node_count,
+                    ),
+                    elapsed_ms=elapsed_ms,
+                    metadata={
+                        "chain_opcode": int(opcode),
+                        "flattened_arity": self._flattened_arity(ins, opcode),
+                        "rules_attempted": 1,
+                        "rules_applied": 1,
+                    },
+                )
+            )
         except Exception:
-            self._publish_provider_outcome(MbaProviderOutcome(
-                provider=MbaProviderKind.STRUCTURAL_CHAIN,
-                status=ProviderOutcomeStatus.RECONSTRUCTION_FAILED,
-                fingerprint="profile_unavailable",
-                elapsed_ms=elapsed_ms,
-                refusal_reason="profile_unavailable",
-                metadata={
-                    "chain_opcode": int(opcode),
-                    "rules_attempted": 1,
-                    "rules_applied": int(new_ins is not None),
-                },
-            ))
+            self._publish_provider_outcome(
+                MbaProviderOutcome(
+                    provider=MbaProviderKind.STRUCTURAL_CHAIN,
+                    status=ProviderOutcomeStatus.RECONSTRUCTION_FAILED,
+                    fingerprint="profile_unavailable",
+                    elapsed_ms=elapsed_ms,
+                    refusal_reason="profile_unavailable",
+                    metadata={
+                        "chain_opcode": int(opcode),
+                        "rules_attempted": 1,
+                        "rules_applied": int(new_ins is not None),
+                    },
+                )
+            )
 
     def _publish_chain_error(self, ins, *, opcode: int, exc: RuntimeError) -> None:
         """Record a simplifier exception while preserving its existing control flow."""
@@ -161,21 +176,54 @@ class ChainSimplificationRule(InstructionOptimizationRule):
                 )
         except Exception:
             pass
-        self._publish_provider_outcome(MbaProviderOutcome(
-            provider=MbaProviderKind.STRUCTURAL_CHAIN,
-            status=ProviderOutcomeStatus.ERROR,
-            fingerprint=fingerprint,
-            input_cost=input_cost,
-            elapsed_ms=elapsed_ms,
-            refusal_reason=type(exc).__name__,
-            metadata={
-                "chain_opcode": int(opcode),
-                "rules_attempted": 1,
-                "rules_applied": 0,
-                "error_class": type(exc).__name__,
-                "error_message": str(exc),
-            },
-        ))
+        self._publish_provider_outcome(
+            MbaProviderOutcome(
+                provider=MbaProviderKind.STRUCTURAL_CHAIN,
+                status=ProviderOutcomeStatus.ERROR,
+                fingerprint=fingerprint,
+                input_cost=input_cost,
+                elapsed_ms=elapsed_ms,
+                refusal_reason=type(exc).__name__,
+                metadata={
+                    "chain_opcode": int(opcode),
+                    "rules_attempted": 1,
+                    "rules_applied": 0,
+                    "error_class": type(exc).__name__,
+                    "error_message": str(exc),
+                },
+            )
+        )
+
+    def _finalize_candidate_outcome(
+        self, *, accepted: bool, reason: str | None = None
+    ) -> None:
+        """Upgrade only the candidate that survived the outer optinsn guards."""
+
+        outcome = self._last_provider_outcome
+        if outcome is None or outcome.status is not ProviderOutcomeStatus.IMPROVED:
+            return
+        metadata = dict(outcome.metadata or {})
+        metadata["mutation_outcome"] = "accepted" if accepted else "rejected"
+        if reason is not None:
+            metadata["mutation_rejection_reason"] = reason
+        self._publish_provider_outcome(
+            replace(
+                outcome,
+                status=(
+                    ProviderOutcomeStatus.APPLIED
+                    if accepted
+                    else ProviderOutcomeStatus.IMPROVED
+                ),
+                refusal_reason=None if accepted else reason,
+                metadata=metadata,
+            )
+        )
+
+    def record_mutation_accepted(self) -> None:
+        self._finalize_candidate_outcome(accepted=True)
+
+    def record_mutation_rejected(self, reason: str) -> None:
+        self._finalize_candidate_outcome(accepted=False, reason=reason)
 
     def _run_chain_attempt(self, ins, *, opcode: int, simplify):
         """Observe chain failures but retain the former raised exception behavior."""

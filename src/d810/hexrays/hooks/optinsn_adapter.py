@@ -1062,6 +1062,11 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
 
             if new_ins is not None:
                 if not check_ins_mop_size_are_ok(new_ins):
+                    record_rejected = getattr(
+                        ins_optimizer, "record_mutation_rejected", None
+                    )
+                    if record_rejected is not None:
+                        record_rejected("invalid_operand_size")
                     if check_ins_mop_size_are_ok(ins):
                         main_logger.error(
                             "Invalid optimized instruction (%s) for maturity %s:\n\toptimized: %s\n\toriginal: %s",
@@ -1090,6 +1095,11 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                     max_allowed_nodes = original_nodes * 2
 
                     if new_nodes > max_allowed_nodes and original_nodes > 0:
+                        record_rejected = getattr(
+                            ins_optimizer, "record_mutation_rejected", None
+                        )
+                        if record_rejected is not None:
+                            record_rejected("expression_bloat")
                         optimizer_logger.warning(
                             "Expression bloat detected at %s by %s: "
                             "%d nodes -> %d nodes (%.2fx, max allowed 2x) -- "
@@ -1145,6 +1155,11 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                             quarantined_by_site[site_key].add(
                                 str(producer_rule_name)
                             )
+                        record_rejected = getattr(
+                            ins_optimizer, "record_mutation_rejected", None
+                        )
+                        if record_rejected is not None:
+                            record_rejected("rewrite_cycle")
                         optimizer_logger.warning(
                             "Cycle detected for instruction at %s by %s%s -- "
                             "quarantining producer for this maturity",
@@ -1165,6 +1180,12 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
 
                     seen.add(post_hash)
                     # --- end cycle detection guard ---
+
+                    record_accepted = getattr(
+                        ins_optimizer, "record_mutation_accepted", None
+                    )
+                    if record_accepted is not None:
+                        record_accepted()
 
                     if self.stats is not None:
                         self.stats.record_optimizer_match(ins_optimizer.name)

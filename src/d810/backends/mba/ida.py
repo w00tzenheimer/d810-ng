@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import itertools
 import time
+from dataclasses import replace
 from d810.core.typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import ida_hexrays
@@ -387,7 +388,9 @@ class IDAPatternAdapter:
 
         self._attempt_started = time.monotonic()
         size = getattr(getattr(instruction, "d", None), "size", None)
-        self._attempt_destination_size = int(size) if type(size) is int and size > 0 else None
+        self._attempt_destination_size = (
+            int(size) if type(size) is int and size > 0 else None
+        )
         try:
             self._attempt_input_ast = (
                 None if instruction is None else minsn_to_ast(instruction)
@@ -431,7 +434,11 @@ class IDAPatternAdapter:
             if not ast.is_node():
                 return (0, 1)
             children = (getattr(ast, "left", None), getattr(ast, "right", None))
-            child_costs = tuple(IDAPatternAdapter._ast_cost(child) for child in children if child is not None)
+            child_costs = tuple(
+                IDAPatternAdapter._ast_cost(child)
+                for child in children
+                if child is not None
+            )
             if any(cost is None for cost in child_costs):
                 return None
             return (
@@ -465,29 +472,71 @@ class IDAPatternAdapter:
         elapsed_ms = self._attempt_elapsed_ms()
         fingerprint = self._profile_fingerprint(input_ast)
         if fingerprint is None:
-            self._publish_provider_outcome(MbaProviderOutcome(
+            self._publish_provider_outcome(
+                MbaProviderOutcome(
+                    provider=MbaProviderKind.CATALOGUE,
+                    status=ProviderOutcomeStatus.RECONSTRUCTION_FAILED,
+                    fingerprint="profile_unavailable",
+                    input_cost=self._ast_cost(input_ast),
+                    output_cost=self._ast_cost(replacement_ast),
+                    elapsed_ms=elapsed_ms,
+                    source_provenance=(canonical_source, *aliases),
+                    refusal_reason="profile_unavailable",
+                    metadata={
+                        "rule_name": self.name,
+                        "canonical_source": canonical_source,
+                    },
+                )
+            )
+            return
+        self._publish_provider_outcome(
+            MbaProviderOutcome(
                 provider=MbaProviderKind.CATALOGUE,
-                status=ProviderOutcomeStatus.RECONSTRUCTION_FAILED,
-                fingerprint="profile_unavailable",
+                status=ProviderOutcomeStatus.IMPROVED,
+                fingerprint=fingerprint,
                 input_cost=self._ast_cost(input_ast),
                 output_cost=self._ast_cost(replacement_ast),
+                proof_verdict=None,
                 elapsed_ms=elapsed_ms,
                 source_provenance=(canonical_source, *aliases),
-                refusal_reason="profile_unavailable",
                 metadata={"rule_name": self.name, "canonical_source": canonical_source},
-            ))
+            )
+        )
+
+    def _finalize_candidate_outcome(
+        self, *, accepted: bool, reason: str | None = None
+    ) -> None:
+        """Let the outer mutation owner decide whether a candidate was applied."""
+
+        outcome = self._last_provider_outcome
+        if outcome is None or outcome.status is not ProviderOutcomeStatus.IMPROVED:
             return
-        self._publish_provider_outcome(MbaProviderOutcome(
-            provider=MbaProviderKind.CATALOGUE,
-            status=ProviderOutcomeStatus.APPLIED,
-            fingerprint=fingerprint,
-            input_cost=self._ast_cost(input_ast),
-            output_cost=self._ast_cost(replacement_ast),
-            proof_verdict=None,
-            elapsed_ms=elapsed_ms,
-            source_provenance=(canonical_source, *aliases),
-            metadata={"rule_name": self.name, "canonical_source": canonical_source},
-        ))
+        metadata = dict(outcome.metadata or {})
+        metadata["mutation_outcome"] = "accepted" if accepted else "rejected"
+        if reason is not None:
+            metadata["mutation_rejection_reason"] = reason
+        self._publish_provider_outcome(
+            replace(
+                outcome,
+                status=(
+                    ProviderOutcomeStatus.APPLIED
+                    if accepted
+                    else ProviderOutcomeStatus.IMPROVED
+                ),
+                refusal_reason=None if accepted else reason,
+                metadata=metadata,
+            )
+        )
+
+    def record_mutation_accepted(self) -> None:
+        """Upgrade a candidate only after the optinsn owner accepts its swap."""
+
+        self._finalize_candidate_outcome(accepted=True)
+
+    def record_mutation_rejected(self, reason: str) -> None:
+        """Keep an outer-vetoed candidate observable but non-applied."""
+
+        self._finalize_candidate_outcome(accepted=False, reason=reason)
 
     def _record_catalogue_nonmatch(self) -> None:
         """Publish a direct-rule miss even though no rule-fired stat exists."""
@@ -498,25 +547,29 @@ class IDAPatternAdapter:
         input_ast = self._attempt_input_ast
         fingerprint = self._profile_fingerprint(input_ast)
         if fingerprint is None:
-            self._publish_provider_outcome(MbaProviderOutcome(
+            self._publish_provider_outcome(
+                MbaProviderOutcome(
+                    provider=MbaProviderKind.CATALOGUE,
+                    status=ProviderOutcomeStatus.RECONSTRUCTION_FAILED,
+                    fingerprint="profile_unavailable",
+                    input_cost=self._ast_cost(input_ast),
+                    elapsed_ms=self._attempt_elapsed_ms(),
+                    source_provenance=(canonical_source, *aliases),
+                    refusal_reason="profile_unavailable",
+                )
+            )
+            return
+        self._publish_provider_outcome(
+            MbaProviderOutcome(
                 provider=MbaProviderKind.CATALOGUE,
-                status=ProviderOutcomeStatus.RECONSTRUCTION_FAILED,
-                fingerprint="profile_unavailable",
+                status=ProviderOutcomeStatus.UNCHANGED,
+                fingerprint=fingerprint,
                 input_cost=self._ast_cost(input_ast),
                 elapsed_ms=self._attempt_elapsed_ms(),
                 source_provenance=(canonical_source, *aliases),
-                refusal_reason="profile_unavailable",
-            ))
-            return
-        self._publish_provider_outcome(MbaProviderOutcome(
-            provider=MbaProviderKind.CATALOGUE,
-            status=ProviderOutcomeStatus.UNCHANGED,
-            fingerprint=fingerprint,
-            input_cost=self._ast_cost(input_ast),
-            elapsed_ms=self._attempt_elapsed_ms(),
-            source_provenance=(canonical_source, *aliases),
-            refusal_reason="no_match",
-        ))
+                refusal_reason="no_match",
+            )
+        )
 
     def record_attempt_error(self, exc: RuntimeError) -> None:
         """Finalize a caught pattern-engine failure as an explicit error row."""
@@ -524,19 +577,21 @@ class IDAPatternAdapter:
         canonical_source, aliases = self._catalogue_provenance()
         input_ast = self._attempt_input_ast
         fingerprint = self._profile_fingerprint(input_ast) or "profile_unavailable"
-        self._publish_provider_outcome(MbaProviderOutcome(
-            provider=MbaProviderKind.CATALOGUE,
-            status=ProviderOutcomeStatus.ERROR,
-            fingerprint=fingerprint,
-            input_cost=self._ast_cost(input_ast),
-            elapsed_ms=self._attempt_elapsed_ms(),
-            source_provenance=(canonical_source, *aliases),
-            refusal_reason=type(exc).__name__,
-            metadata={
-                "error_class": type(exc).__name__,
-                "error_message": str(exc),
-            },
-        ))
+        self._publish_provider_outcome(
+            MbaProviderOutcome(
+                provider=MbaProviderKind.CATALOGUE,
+                status=ProviderOutcomeStatus.ERROR,
+                fingerprint=fingerprint,
+                input_cost=self._ast_cost(input_ast),
+                elapsed_ms=self._attempt_elapsed_ms(),
+                source_provenance=(canonical_source, *aliases),
+                refusal_reason=type(exc).__name__,
+                metadata={
+                    "error_class": type(exc).__name__,
+                    "error_message": str(exc),
+                },
+            )
+        )
 
     def record_bound_replacement_outcome(self, replacement_ast: Any) -> None:
         """Publish the nomut path's success using its bound native input AST."""

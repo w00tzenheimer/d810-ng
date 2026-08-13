@@ -13,7 +13,7 @@ from d810.mba.differential_report import (
     egglog_receipt_to_outcome,
     normalize_outcome_rows,
 )
-from d810.mba.island_profile import MbaIslandClass, MbaIslandProfile
+from d810.mba.island_profile import IslandBlocker, MbaIslandClass, MbaIslandProfile
 from d810.mba.provider_outcome import (
     MbaProviderKind,
     MbaProviderOutcome,
@@ -58,7 +58,9 @@ def _outcome(
     )
 
 
-def test_summary_keeps_unique_shared_miss_proof_abstention_and_unavailable_distinct() -> None:
+def test_summary_keeps_unique_shared_miss_proof_abstention_and_unavailable_distinct() -> (
+    None
+):
     first = _profile("first")
     second = _profile("second")
     third = _profile("third")
@@ -140,17 +142,87 @@ def test_summary_keeps_unique_shared_miss_proof_abstention_and_unavailable_disti
     assert summary.by_provider[MbaProviderKind.EGGLOG].shared_wins == 1
     assert summary.by_provider[MbaProviderKind.CATALOGUE].misses == 1
     assert summary.by_provider[MbaProviderKind.CATALOGUE].proof_failures == 1
-    assert summary.by_provider[MbaProviderKind.EGGLOG].unsafe_abstentions == 1
+    assert summary.by_provider[MbaProviderKind.EGGLOG].unsafe_abstentions == 0
     assert summary.by_provider[MbaProviderKind.COEFFICIENT_SOLVER].unavailable == 1
     assert summary.by_provider[MbaProviderKind.COEFFICIENT_SOLVER].misses == 0
     assert summary.by_provider[MbaProviderKind.STRUCTURAL_CHAIN].node_reduction == 4
     assert summary.by_provider[MbaProviderKind.EGGLOG].p50_elapsed_ms == 5.0
     assert summary.by_provider[MbaProviderKind.EGGLOG].p95_elapsed_ms == 5.9
     assert summary.by_stratum["chain"].unique_wins == 1
-    assert summary.by_stratum["direct"].shared_wins == 2
+    # Stratum yield counts solved corpus cases, not provider rows.  The two
+    # providers both improve the same ``shared`` case.
+    assert summary.by_stratum["direct"].shared_wins == 1
 
 
-def test_normalization_requires_exactly_one_explicit_outcome_for_each_provider_case_pair() -> None:
+def test_summary_only_counts_blocked_cases_as_unsafe_abstentions() -> None:
+    safe = _profile("safe")
+    blocked = MbaIslandProfile(
+        width_bits=32,
+        operator_count=2,
+        total_node_count=3,
+        distinct_leaf_count=1,
+        constant_count=0,
+        operations=(("add", 1), ("xor", 1)),
+        has_boolean=True,
+        has_arithmetic=True,
+        nonlinear_product_count=0,
+        island_class=MbaIslandClass.UNSUPPORTED,
+        blockers=(IslandBlocker.CAST,),
+        fingerprint="blocked",
+    )
+    report = MbaDifferentialReport(
+        schema_version=1,
+        corpus_identity="unit-corpus",
+        toolchain_identity={"compiler": "unit"},
+        cases=(
+            MbaCorpusCaseReport(
+                case_id="safe-timeout",
+                profile=safe,
+                outcomes=(
+                    _outcome(
+                        MbaProviderKind.EGGLOG,
+                        ProviderOutcomeStatus.OVER_BUDGET,
+                        safe.fingerprint,
+                    ),
+                ),
+            ),
+            MbaCorpusCaseReport(
+                case_id="safe-rebuild-failure",
+                profile=safe,
+                outcomes=(
+                    _outcome(
+                        MbaProviderKind.CATALOGUE,
+                        ProviderOutcomeStatus.RECONSTRUCTION_FAILED,
+                        safe.fingerprint,
+                    ),
+                ),
+            ),
+            MbaCorpusCaseReport(
+                case_id="blocked",
+                profile=blocked,
+                outcomes=(
+                    _outcome(
+                        MbaProviderKind.EGGLOG,
+                        ProviderOutcomeStatus.INELIGIBLE,
+                        blocked.fingerprint,
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    summary = compare_provider_outcomes(report)
+
+    egglog = summary.by_provider[MbaProviderKind.EGGLOG]
+    assert egglog.unsafe_abstentions == 1
+    assert egglog.over_budget == 1
+    assert summary.by_provider[MbaProviderKind.CATALOGUE].unsafe_abstentions == 0
+    assert summary.by_provider[MbaProviderKind.CATALOGUE].reconstruction_failures == 1
+
+
+def test_normalization_requires_exactly_one_explicit_outcome_for_each_provider_case_pair() -> (
+    None
+):
     profile = _profile("row")
     first = _outcome(
         MbaProviderKind.CATALOGUE,
@@ -237,7 +309,9 @@ def test_report_json_is_normalized_and_rejects_profile_fingerprint_mismatch() ->
         )
 
 
-def test_egglog_receipt_conversion_preserves_skip_semantics_without_invoking_egglog() -> None:
+def test_egglog_receipt_conversion_preserves_skip_semantics_without_invoking_egglog() -> (
+    None
+):
     class Receipt:
         input_cost = (5, 8)
         extracted_cost = (2, 3)
@@ -266,9 +340,14 @@ def test_egglog_receipt_conversion_preserves_skip_semantics_without_invoking_egg
     unavailable = egglog_receipt_to_outcome(Receipt())
     assert unavailable.status is ProviderOutcomeStatus.UNAVAILABLE
     Receipt.skip_reason = "native_z3_failed"
-    assert egglog_receipt_to_outcome(Receipt()).status is ProviderOutcomeStatus.PROOF_FAILED
+    assert (
+        egglog_receipt_to_outcome(Receipt()).status
+        is ProviderOutcomeStatus.PROOF_FAILED
+    )
     Receipt.skip_reason = "candidate_budget"
-    assert egglog_receipt_to_outcome(Receipt()).status is ProviderOutcomeStatus.INELIGIBLE
+    assert (
+        egglog_receipt_to_outcome(Receipt()).status is ProviderOutcomeStatus.INELIGIBLE
+    )
 
 
 def test_offline_cli_builds_normalized_report_and_requires_explicit_provider_rows(
@@ -291,13 +370,27 @@ def test_offline_cli_builds_normalized_report_and_requires_explicit_provider_row
     second_path = tmp_path / "egglog.json"
     first_path.write_text(
         json.dumps(
-            [{"case_id": "case", "stratum": "direct", "profile": _profile_dict(profile), "outcome": catalogue.to_dict()}]
+            [
+                {
+                    "case_id": "case",
+                    "stratum": "direct",
+                    "profile": _profile_dict(profile),
+                    "outcome": catalogue.to_dict(),
+                }
+            ]
         ),
         encoding="utf-8",
     )
     second_path.write_text(
         json.dumps(
-            [{"case_id": "case", "stratum": "direct", "profile": _profile_dict(profile), "outcome": egglog.to_dict()}]
+            [
+                {
+                    "case_id": "case",
+                    "stratum": "direct",
+                    "profile": _profile_dict(profile),
+                    "outcome": egglog.to_dict(),
+                }
+            ]
         ),
         encoding="utf-8",
     )
