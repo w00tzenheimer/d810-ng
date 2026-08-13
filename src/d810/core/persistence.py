@@ -15,6 +15,30 @@ Architecture:
     - FunctionRecipesV2 table: Scoped public pass recipes
     - FunctionTagsV2 table: Scoped internal function metadata
     - Results table: Optimization results per function
+    - Native-patch blobs: opaque, scope+key addressed JSON payloads
+
+Native-patch blobs and the Task 6 layering trap
+--------------------------------------------------
+``d810/backends/ida/native_patch/gateway.py`` (Task 6 of
+``_gitless/profile-guided-native-mutation-implementer-plan.md``) needs an
+IDB-netnode-mirrored store for two things: the section-14.5 normalization
+certificate, and a "prepared transaction" mirror receipt. Both types
+(``NativeCertificate`` and the transaction record) live in
+``d810.transforms``/``d810.capabilities`` -- layers *above* ``d810.core`` in
+the layered-architecture contract -- so this module can never import either
+type without becoming an upward import (the exact trap the plan's Task 6
+description names explicitly). ``set_native_patch_blob``/
+``get_native_patch_blob``/``clear_native_patch_blob`` resolve it the same way
+``function_recipes_v2`` already does for scoped pass recipes: this module
+only ever sees a plain ``dict`` payload it never type-imports or interprets.
+The caller (``d810.backends.ida.native_patch.gateway``, well above this
+layer) owns serialising a typed record to/from that dict.
+
+``scope`` names the blob's kind (``"certificate"``, ``"transaction_mirror"``);
+``key`` is a caller-chosen opaque string scoped within it (a certificate uses
+a stable per-function locator string; a transaction mirror uses the
+transaction id). This module enforces no structure on either beyond
+non-emptiness -- see :meth:`SQLiteOptimizationStorage.set_native_patch_blob`.
 
 Usage:
     storage = SQLiteOptimizationStorage("analysis.db")
@@ -155,6 +179,13 @@ class SupportsOptimizationStorage(Protocol):
     def invalidate_function(self, function_addr: int) -> None: ...
     def get_statistics(self) -> Dict[str, Any]: ...
     def close(self) -> None: ...
+    def set_native_patch_blob(
+        self, scope: str, key: str, payload: Dict[str, Any]
+    ) -> None: ...
+    def get_native_patch_blob(
+        self, scope: str, key: str
+    ) -> Optional[Dict[str, Any]]: ...
+    def clear_native_patch_blob(self, scope: str, key: str) -> None: ...
 
 
 NETNODE_BLOB_SIZE = 1024
@@ -473,6 +504,7 @@ class NetnodeOptimizationStorage:
             "patches": {},
             "function_tags_v2": {},
             "function_recipes_v2": {},
+            "native_patch_blobs": {},
         }
         self._state = self._load_state()
         logger.info("Netnode optimization storage initialized: %s", self.node_name)
@@ -488,6 +520,7 @@ class NetnodeOptimizationStorage:
         payload.setdefault("patches", {})
         payload.setdefault("function_tags_v2", {})
         payload.setdefault("function_recipes_v2", {})
+        payload.setdefault("native_patch_blobs", {})
         for legacy_key in (
             "function_rules",
             "function_recipes",
@@ -684,6 +717,33 @@ class NetnodeOptimizationStorage:
             ),
             "functions_with_recipes": len(self._state["function_recipes_v2"]),
         }
+
+    @staticmethod
+    def _blob_key(scope: str, key: str) -> str:
+        if not str(scope).strip():
+            raise ValueError("scope must not be blank")
+        if not str(key).strip():
+            raise ValueError("key must not be blank")
+        return f"{scope}:{key}"
+
+    def set_native_patch_blob(
+        self, scope: str, key: str, payload: Dict[str, Any]
+    ) -> None:
+        self._state["native_patch_blobs"][self._blob_key(scope, key)] = {
+            "payload": payload,
+            "updated_at": time.time(),
+        }
+        self._flush_state()
+
+    def get_native_patch_blob(self, scope: str, key: str) -> Optional[Dict[str, Any]]:
+        row = self._state["native_patch_blobs"].get(self._blob_key(scope, key))
+        if not row:
+            return None
+        return dict(row.get("payload", {}))
+
+    def clear_native_patch_blob(self, scope: str, key: str) -> None:
+        self._state["native_patch_blobs"].pop(self._blob_key(scope, key), None)
+        self._flush_state()
 
     def close(self) -> None:
         self._flush_state()
@@ -967,6 +1027,18 @@ class SQLiteOptimizationStorage:
                 timestamp REAL NOT NULL,
                 PRIMARY KEY (function_addr, provider_name, provider_level),
                 FOREIGN KEY (function_addr) REFERENCES functions(address)
+            )
+        """
+        )
+
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS native_patch_blobs (
+                scope TEXT NOT NULL,
+                key TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                updated_at REAL NOT NULL,
+                PRIMARY KEY (scope, key)
             )
         """
         )
@@ -1395,6 +1467,50 @@ class SQLiteOptimizationStorage:
         stats["functions_with_recipes"] = cursor.fetchone()["count"]
 
         return stats
+
+    @staticmethod
+    def _validate_blob_scope_key(scope: str, key: str) -> None:
+        if not str(scope).strip():
+            raise ValueError("scope must not be blank")
+        if not str(key).strip():
+            raise ValueError("key must not be blank")
+
+    def set_native_patch_blob(
+        self, scope: str, key: str, payload: Dict[str, Any]
+    ) -> None:
+        self._validate_blob_scope_key(scope, key)
+        if not self.conn:
+            return
+        self.conn.execute(
+            """
+            INSERT OR REPLACE INTO native_patch_blobs (scope, key, payload_json, updated_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (str(scope), str(key), json.dumps(payload), time.time()),
+        )
+        self.conn.commit()
+
+    def get_native_patch_blob(self, scope: str, key: str) -> Optional[Dict[str, Any]]:
+        self._validate_blob_scope_key(scope, key)
+        if not self.conn:
+            return None
+        row = self.conn.execute(
+            "SELECT payload_json FROM native_patch_blobs WHERE scope = ? AND key = ?",
+            (str(scope), str(key)),
+        ).fetchone()
+        if row is None:
+            return None
+        return json.loads(row["payload_json"])
+
+    def clear_native_patch_blob(self, scope: str, key: str) -> None:
+        self._validate_blob_scope_key(scope, key)
+        if not self.conn:
+            return
+        self.conn.execute(
+            "DELETE FROM native_patch_blobs WHERE scope = ? AND key = ?",
+            (str(scope), str(key)),
+        )
+        self.conn.commit()
 
     def close(self) -> None:
         """Close the database connection."""

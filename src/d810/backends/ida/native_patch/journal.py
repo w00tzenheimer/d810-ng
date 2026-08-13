@@ -44,6 +44,7 @@ from d810.capabilities.native_patch import (
     NativePatchTransactionId,
     NativePatchTransactionRecord,
     NativeTransactionRecoveryReport,
+    OperationByteRecord,
     is_legal_native_journal_transition,
 )
 from d810.core.execution_journal import DecompilationSessionId, ExecutionAttemptId
@@ -550,6 +551,33 @@ class SQLiteNativePatchJournal:
                 at_state=NativeJournalState(row["at_state"]),
                 reason=row["reason"],
                 recorded_at=row["recorded_at"],
+            )
+            for row in rows
+        )
+
+    # -- read back the durably-planned bytes (Task 6 restore; see
+    # OperationByteRecord's docstring for why this -- not the in-memory plan
+    # -- is what the gateway restores from) --------------------------------
+
+    def operation_bytes(
+        self, transaction_id: NativePatchTransactionId
+    ) -> tuple[OperationByteRecord, ...]:
+        rows = self._conn.execute(
+            """
+            SELECT operation_id, ea, expected_current, expected_original, replacement
+            FROM native_patch_operation_bytes
+            WHERE transaction_id = ?
+            ORDER BY operation_id, ea
+            """,
+            (transaction_id.value,),
+        ).fetchall()
+        return tuple(
+            OperationByteRecord(
+                operation_id=row["operation_id"],
+                ea=row["ea"],
+                expected_current=row["expected_current"],
+                expected_original=row["expected_original"],
+                replacement=row["replacement"],
             )
             for row in rows
         )

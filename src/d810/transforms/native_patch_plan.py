@@ -54,6 +54,8 @@ from d810.core.execution_journal import ExecutionAttemptId
 __all__ = [
     "InheritedPatchRow",
     "NativeAddressRange",
+    "NativeCertificate",
+    "NativeCertificateState",
     "NativeDatabaseIdentity",
     "NativeEncodingEvidence",
     "NativeFunctionIdentity",
@@ -69,6 +71,8 @@ __all__ = [
     "NativeRelocationEvidence",
     "NativeRestoreSnapshot",
     "OverlappingNativePatchOperationsError",
+    "certificate_from_payload",
+    "certificate_to_payload",
 ]
 
 
@@ -564,3 +568,139 @@ class NativePatchPlan:
     @property
     def plan_hash(self) -> str:
         return _stable_hash(self._content_for_hash())
+
+
+# ---------------------------------------------------------------------------
+# NativeCertificate -- section 14.5 of REVERSIBLE-NATIVE-PATCHES.md.
+#
+# Layering note (Task 6's "layer trap"): the plan lists
+# `src/d810/core/persistence.py` as a Task 6 file to modify, but a
+# provider-neutral certificate record needs `NativeDatabaseIdentity` /
+# `NativeFunctionIdentity`, both defined in *this* module -- and `core` sits
+# below `transforms` in the layered-architecture contract, so `core` may
+# never import them. Two resolutions were open: (a) define the persisted
+# record in `core`/`ir` and have this module build on it, or (b) keep
+# `persistence.py` storing an opaque serialised payload it never
+# type-imports. This module takes (b): `NativeCertificate` is defined here
+# (reusing the identity types this module already owns, rather than
+# duplicating a primitive-only shadow of them in a lower layer), and
+# `certificate_to_payload`/`certificate_from_payload` below convert it to and
+# from a plain `dict[str, object]`. `d810.core.persistence` only ever sees
+# that plain dict -- see its own module docstring for the storage side of
+# this split.
+# ---------------------------------------------------------------------------
+
+_CERTIFICATE_STATES = frozenset(
+    {"applied", "restored", "interference", "restore_failed"}
+)
+_CERTIFICATE_SCHEMA_VERSION = 1
+
+
+class NativeCertificateState(str, enum.Enum):
+    APPLIED = "applied"
+    RESTORED = "restored"
+    INTERFERENCE = "interference"
+    RESTORE_FAILED = "restore_failed"
+
+
+@dataclass(frozen=True, slots=True)
+class NativeCertificate:
+    """Section 14.5's normalization certificate.
+
+    ``inherited_fingerprint`` is authoritative until certification; from
+    certification onward ``normalized_fingerprint`` is authoritative and the
+    inherited value is retained only as restoration evidence (section
+    15.1.1). ``native_plan_hash`` is ``NativePatchPlan.plan_hash`` --
+    deliberately a *content* hash (see the module docstring above) so a plan
+    re-proposed after a restart can still be recognised as "already applied."
+    """
+
+    certificate_id: str
+    schema_version: int
+    database_identity: NativeDatabaseIdentity
+    function_identity: NativeFunctionIdentity
+    inherited_fingerprint: str
+    normalized_fingerprint: str
+    target_cfg_fingerprint: str
+    native_origin_map_fingerprint: str
+    semantic_plan_hash: str
+    native_plan_hash: str
+    d810_version: str
+    authorization_class: str
+    state: NativeCertificateState
+    certified_at: float
+    execution_safe: bool = False
+
+    def __post_init__(self) -> None:
+        _require_identifier(self.certificate_id, "certificate_id")
+        if not isinstance(self.database_identity, NativeDatabaseIdentity):
+            raise TypeError("database_identity must be a NativeDatabaseIdentity")
+        if not isinstance(self.function_identity, NativeFunctionIdentity):
+            raise TypeError("function_identity must be a NativeFunctionIdentity")
+        if not isinstance(self.state, NativeCertificateState):
+            raise TypeError("state must be a NativeCertificateState")
+        if self.execution_safe is not False:
+            raise ValueError("execution_safe must be False (invariant 23)")
+
+
+def certificate_to_payload(certificate: NativeCertificate) -> dict:
+    """Serialize ``certificate`` to a plain, JSON-safe ``dict``.
+
+    The only representation ``d810.core.persistence``'s opaque blob storage
+    ever sees -- see the layering note above ``NativeCertificate``.
+    """
+    return {
+        "certificate_id": certificate.certificate_id,
+        "schema_version": certificate.schema_version,
+        "database_identity": dataclasses.asdict(certificate.database_identity),
+        "function_identity": {
+            "entry_ea": certificate.function_identity.entry_ea,
+            "chunk_ranges": [
+                [r.start_ea, r.end_ea]
+                for r in certificate.function_identity.chunk_ranges
+            ],
+            "inherited_bytes_hash": certificate.function_identity.inherited_bytes_hash,
+        },
+        "inherited_fingerprint": certificate.inherited_fingerprint,
+        "normalized_fingerprint": certificate.normalized_fingerprint,
+        "target_cfg_fingerprint": certificate.target_cfg_fingerprint,
+        "native_origin_map_fingerprint": certificate.native_origin_map_fingerprint,
+        "semantic_plan_hash": certificate.semantic_plan_hash,
+        "native_plan_hash": certificate.native_plan_hash,
+        "d810_version": certificate.d810_version,
+        "authorization_class": certificate.authorization_class,
+        "state": certificate.state.value,
+        "certified_at": certificate.certified_at,
+        "execution_safe": certificate.execution_safe,
+    }
+
+
+def certificate_from_payload(payload: dict) -> NativeCertificate:
+    """Inverse of :func:`certificate_to_payload`. Raises on a malformed payload
+    rather than silently trusting old/foreign native state."""
+    database_identity = NativeDatabaseIdentity(**payload["database_identity"])
+    function_identity = NativeFunctionIdentity(
+        entry_ea=int(payload["function_identity"]["entry_ea"]),
+        chunk_ranges=tuple(
+            NativeAddressRange(int(a), int(b))
+            for a, b in payload["function_identity"]["chunk_ranges"]
+        ),
+        inherited_bytes_hash=str(payload["function_identity"]["inherited_bytes_hash"]),
+    )
+    return NativeCertificate(
+        certificate_id=str(payload["certificate_id"]),
+        schema_version=int(payload["schema_version"]),
+        database_identity=database_identity,
+        function_identity=function_identity,
+        inherited_fingerprint=str(payload["inherited_fingerprint"]),
+        normalized_fingerprint=str(payload["normalized_fingerprint"]),
+        target_cfg_fingerprint=str(payload["target_cfg_fingerprint"]),
+        native_origin_map_fingerprint=str(payload["native_origin_map_fingerprint"]),
+        semantic_plan_hash=str(payload["semantic_plan_hash"]),
+        native_plan_hash=str(payload["native_plan_hash"]),
+        d810_version=str(payload["d810_version"]),
+        authorization_class=str(payload["authorization_class"]),
+        state=NativeCertificateState(payload["state"]),
+        certified_at=float(payload["certified_at"]),
+        execution_safe=bool(payload["execution_safe"]),
+    )

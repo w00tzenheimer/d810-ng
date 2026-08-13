@@ -111,6 +111,7 @@ __all__ = [
     "NativePatchTransactionId",
     "NativePatchTransactionRecord",
     "NativeTransactionRecoveryReport",
+    "OperationByteRecord",
     "is_legal_native_journal_transition",
     "legal_next_native_journal_states",
 ]
@@ -542,6 +543,33 @@ class NativeTransactionRecoveryReport:
     recommended_state: NativeJournalState
 
 
+@dataclass(frozen=True, slots=True)
+class OperationByteRecord:
+    """One durably-planned byte, exactly as ``prepare()`` recorded it.
+
+    This is the write-ahead log's own record of what a byte's before/original/
+    after values were *planned* to be -- distinct from
+    :class:`NativeByteRecoveryEntry`, which additionally carries the
+    *currently observed* value and a verdict. Task 6's gateway needs the plain
+    planned values (not a verdict) to restore exactly: whether
+    ``expected_current == expected_original`` for a given ``ea`` is exactly
+    the fact that decides ``revert_byte`` (byte was pristine before this
+    transaction) vs. ``patch_byte(ea, expected_current)`` (byte already
+    carried an inherited patch before this transaction, and reverting to IDA's
+    original layer would erase that inherited patch rather than restore it).
+    Reading this back from the durable log -- rather than requiring the
+    gateway to keep the original ``NativePatchPlan`` object alive in memory --
+    is what makes :meth:`NativePatchJournalStore.restore`-style recovery work
+    even across a process restart (section 15.4).
+    """
+
+    operation_id: str
+    ea: int
+    expected_current: int
+    expected_original: int
+    replacement: int
+
+
 # ---------------------------------------------------------------------------
 # Netnode mirror receipt -- a separate receipt lane, never a state authority.
 # ---------------------------------------------------------------------------
@@ -661,3 +689,12 @@ class NativePatchJournalStore(Protocol):
         transaction_id: NativePatchTransactionId,
         read_current_bytes: object,
     ) -> NativeTransactionRecoveryReport: ...
+
+    def operation_bytes(
+        self, transaction_id: NativePatchTransactionId
+    ) -> tuple[OperationByteRecord, ...]:
+        """Every durably-planned byte for ``transaction_id``, in ``(operation_id,
+        ea)`` order. See :class:`OperationByteRecord` for why this -- not the
+        original in-memory ``NativePatchPlan`` -- is what restore reads from.
+        """
+        ...
