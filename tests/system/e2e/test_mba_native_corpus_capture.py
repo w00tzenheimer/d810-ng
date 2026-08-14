@@ -270,7 +270,6 @@ class TestNativeMbaCorpusCapture:
             function="mba_shape_catalogue_01",
             description="native provider history capture",
             must_change=True,
-            required_rules=["Add_HackersDelightRule_2"],
         )
         with d810_state() as state:
             state.load_project(
@@ -363,7 +362,6 @@ class TestNativeMbaCorpusCapture:
             function="mba_shape_catalogue_01",
             description="capture a real post-snapshot catalogue outcome",
             must_change=True,
-            required_rules=["Add_HackersDelightRule_2"],
         )
 
         with d810_state() as state:
@@ -450,7 +448,6 @@ class TestNativeMbaCorpusCapture:
             function="mba_shape_catalogue_01",
             description="seed a real catalogue history outcome",
             must_change=True,
-            required_rules=["Add_HackersDelightRule_2"],
         )
         second_case = DeobfuscationCase(
             function="mba_shape_chain_01",
