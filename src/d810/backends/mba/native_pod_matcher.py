@@ -36,6 +36,7 @@ _KIND_LEAF = 2
 _KIND_OPERATOR = 3
 _MISSING_INDEX = -1
 _AC_OPERATIONS = frozenset({"add", "and", "mul", "or", "xor"})
+_MAX_CYTHON_COMPARISONS = 64
 
 if CythonMode().is_enabled():
     try:
@@ -335,6 +336,8 @@ def _match_cython_catalogue(
     from d810.backends.mba.egglog_add_rule_compiler import _constraints_match_term
     from d810.mba.typed_term import term_fingerprint
 
+    if comparison_budget > _MAX_CYTHON_COMPARISONS:
+        return None
     root = packed.sidecar[packed.root_index]
     assert root is not None
     candidate_rows = packed.numeric_rows()

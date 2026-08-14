@@ -20,6 +20,7 @@ DEF OP_OR = 6
 DEF OP_XOR = 8
 DEF MAX_POD_NODES = 32
 DEF MAX_POD_BINDINGS = 16
+DEF MAX_POD_RESULTS = 64
 
 
 cdef struct MatchCounter:
@@ -35,6 +36,12 @@ cdef struct BindingState:
     int undo_slots[MAX_POD_BINDINGS]
     int undo_values[MAX_POD_BINDINGS]
     int undo_count
+
+
+cdef struct BindingResults:
+    # One fixed result buffer is enough because the comparison cap is 64.
+    int values[MAX_POD_RESULTS][MAX_POD_BINDINGS]
+    int count
 
 
 cdef inline bint _is_ac(int operation) noexcept nogil:
@@ -68,8 +75,9 @@ cdef void _rollback_bindings(BindingState* state, int checkpoint) noexcept:
         state.values[state.undo_slots[undo_index]] = state.undo_values[undo_index]
 
 
-cdef vector[BindingState] _empty_results():
-    cdef vector[BindingState] result
+cdef BindingResults _empty_results() noexcept:
+    cdef BindingResults result
+    result.count = 0
     return result
 
 
@@ -133,16 +141,52 @@ cdef void _sort_candidate_ac_items(
         items[0][previous] = current
 
 
-cdef void _extend(
-    vector[BindingState]* destination,
-    vector[BindingState] source,
+cdef void _append_result(
+    BindingResults* destination,
+    BindingState* bindings,
+    MatchCounter* counter,
 ) noexcept:
-    cdef size_t index
-    for index in range(source.size()):
-        destination[0].push_back(source[index])
+    cdef int slot
+    cdef int result_index = destination.count
+    if result_index >= MAX_POD_RESULTS:
+        counter.exceeded = True
+        return
+    for slot in range(MAX_POD_BINDINGS):
+        destination.values[result_index][slot] = bindings.values[slot]
+    destination.count = result_index + 1
 
 
-cdef vector[BindingState] _match(
+cdef BindingState _binding_from_result(
+    BindingResults* source,
+    int result_index,
+) noexcept:
+    cdef BindingState result
+    cdef int slot
+    for slot in range(MAX_POD_BINDINGS):
+        result.values[slot] = source.values[result_index][slot]
+    result.undo_count = 0
+    return result
+
+
+cdef void _extend(
+    BindingResults* destination,
+    BindingResults* source,
+    MatchCounter* counter,
+) noexcept:
+    cdef int source_index
+    cdef int target_index
+    cdef int slot
+    if destination.count + source.count > MAX_POD_RESULTS:
+        counter.exceeded = True
+        return
+    for source_index in range(source.count):
+        target_index = destination.count + source_index
+        for slot in range(MAX_POD_BINDINGS):
+            destination.values[target_index][slot] = source.values[source_index][slot]
+    destination.count += source.count
+
+
+cdef BindingResults _match(
     tuple pattern_rows,
     tuple candidate_rows,
     int pattern_index,
@@ -160,15 +204,17 @@ cdef vector[BindingState] _match(
     cdef int pattern_right
     cdef int candidate_left
     cdef int candidate_right
-    cdef vector[BindingState] result
-    cdef vector[BindingState] left_results
-    cdef vector[BindingState] right_results
+    cdef BindingResults result
+    cdef BindingResults left_results
+    cdef BindingResults right_results
     cdef vector[int] pattern_items
     cdef vector[int] candidate_items
     cdef size_t index
     cdef size_t next_index
     cdef int checkpoint
+    cdef BindingState next_bindings
 
+    result.count = 0
     counter.comparisons += 1
     if counter.comparisons > counter.limit:
         counter.exceeded = True
@@ -182,24 +228,24 @@ cdef vector[BindingState] _match(
             return _empty_results()
         if <unsigned long long>pattern[3] != <unsigned long long>candidate[5]:
             return _empty_results()
-        result.push_back(bindings)
+        _append_result(&result, &bindings, counter)
         return result
     if pattern_kind == KIND_LEAF:
         slot = <int>pattern[2]
         if <int>pattern[4] and candidate_kind != KIND_CONSTANT:
             return _empty_results()
         if slot < 0:
-            result.push_back(bindings)
+            _append_result(&result, &bindings, counter)
             return result
         bound_index = bindings.values[slot]
         if bound_index >= 0:
             if <int>candidate_rows[bound_index][7] != <int>candidate[7]:
                 return _empty_results()
-            result.push_back(bindings)
+            _append_result(&result, &bindings, counter)
             return result
         checkpoint = _binding_checkpoint(&bindings)
         _bind(&bindings, slot, candidate_index)
-        result.push_back(bindings)
+        _append_result(&result, &bindings, counter)
         _rollback_bindings(&bindings, checkpoint)
         return result
     if pattern_kind != KIND_OPERATOR or candidate_kind != KIND_OPERATOR:
@@ -233,16 +279,17 @@ cdef vector[BindingState] _match(
                 bindings,
                 counter,
             )
-            for index in range(left_results.size()):
+            for index in range(left_results.count):
+                next_bindings = _binding_from_result(&left_results, index)
                 right_results = _match(
                     pattern_rows,
                     candidate_rows,
                     pattern_items[1],
                     candidate_items[1],
-                    left_results[index],
+                    next_bindings,
                     counter,
                 )
-                _extend(&result, right_results)
+                _extend(&result, &right_results, counter)
             if counter.exceeded:
                 return _empty_results()
             if <int>candidate_rows[candidate_items[0]][7] != <int>candidate_rows[
@@ -257,16 +304,17 @@ cdef vector[BindingState] _match(
                     bindings,
                     counter,
                 )
-                for index in range(left_results.size()):
+                for index in range(left_results.count):
+                    next_bindings = _binding_from_result(&left_results, index)
                     right_results = _match(
                         pattern_rows,
                         candidate_rows,
                         pattern_items[1],
                         candidate_items[0],
-                        left_results[index],
+                        next_bindings,
                         counter,
                     )
-                    _extend(&result, right_results)
+                    _extend(&result, &right_results, counter)
             return result
         return _match_ac_items(
             pattern_rows,
@@ -280,23 +328,24 @@ cdef vector[BindingState] _match(
     left_results = _match(
         pattern_rows, candidate_rows, pattern_left, candidate_left, bindings, counter
     )
-    for index in range(left_results.size()):
+    for index in range(left_results.count):
+        next_bindings = _binding_from_result(&left_results, index)
         if pattern_right < 0:
-            result.push_back(left_results[index])
+            _append_result(&result, &next_bindings, counter)
         elif candidate_right >= 0:
             right_results = _match(
                 pattern_rows,
                 candidate_rows,
                 pattern_right,
                 candidate_right,
-                left_results[index],
+                next_bindings,
                 counter,
             )
-            _extend(&result, right_results)
+            _extend(&result, &right_results, counter)
     return result
 
 
-cdef vector[BindingState] _match_ac_items(
+cdef BindingResults _match_ac_items(
     tuple pattern_rows,
     tuple candidate_rows,
     vector[int] pattern_items,
@@ -307,16 +356,18 @@ cdef vector[BindingState] _match_ac_items(
 ):
     """Match one flattened AC item per candidate without group capture."""
 
-    cdef vector[BindingState] result
-    cdef vector[BindingState] partial
-    cdef vector[BindingState] completed
+    cdef BindingResults result
+    cdef BindingResults partial
+    cdef BindingResults completed
     cdef vector[int] remaining
     cdef size_t candidate_position
     cdef size_t index
     cdef size_t result_index
+    cdef BindingState next_bindings
+    result.count = 0
     if pattern_position == pattern_items.size():
         if remaining_candidates.empty():
-            result.push_back(bindings)
+            _append_result(&result, &bindings, counter)
         return result
     for candidate_position in range(remaining_candidates.size()):
         partial = _match(
@@ -329,23 +380,24 @@ cdef vector[BindingState] _match_ac_items(
         )
         if counter.exceeded:
             return _empty_results()
-        for result_index in range(partial.size()):
+        for result_index in range(partial.count):
             remaining.clear()
             for index in range(remaining_candidates.size()):
                 if index != candidate_position:
                     remaining.push_back(remaining_candidates[index])
+            next_bindings = _binding_from_result(&partial, result_index)
             completed = _match_ac_items(
                 pattern_rows,
                 candidate_rows,
                 pattern_items,
                 pattern_position + 1,
                 remaining,
-                partial[result_index],
+                next_bindings,
                 counter,
             )
             if counter.exceeded:
                 return _empty_results()
-            _extend(&result, completed)
+            _extend(&result, &completed, counter)
     return result
 
 
@@ -365,16 +417,17 @@ def match_pod_pattern(
     """
 
     cdef BindingState bindings
-    cdef vector[BindingState] results
-    cdef BindingState result
+    cdef BindingResults results
     cdef MatchCounter counter
     cdef int index
-    cdef size_t result_index
-    cdef size_t binding_index
+    cdef int result_index
+    cdef int binding_index
     cdef list output = []
     cdef object record
     if variable_count < 0 or comparison_budget <= 0:
         raise ValueError("variable_count and comparison_budget must be positive")
+    if comparison_budget > MAX_POD_RESULTS:
+        raise ValueError("POD matcher fixed capacity exceeded")
     if not pattern_rows or candidate_root_index < 0:
         return (), 0, 0, False
     if (
@@ -402,10 +455,12 @@ def match_pod_pattern(
     )
     if counter.exceeded:
         return (), counter.comparisons, counter.lazy_swaps, True
-    for result_index in range(results.size()):
-        result = results[result_index]
+    for result_index in range(results.count):
         output.append(
-            tuple(result.values[binding_index] for binding_index in range(variable_count))
+            tuple(
+                results.values[result_index][binding_index]
+                for binding_index in range(variable_count)
+            )
         )
     return tuple(output), counter.comparisons, counter.lazy_swaps, False
 
@@ -427,18 +482,19 @@ def match_pod_catalogue(
     cdef tuple pattern_rows
     cdef int variable_count
     cdef BindingState bindings
-    cdef vector[BindingState] results
-    cdef BindingState result
+    cdef BindingResults results
     cdef MatchCounter counter
     cdef int index
-    cdef size_t result_index
-    cdef size_t binding_index
+    cdef int result_index
+    cdef int binding_index
     cdef list catalogue_output = []
     cdef list pattern_output
     cdef object candidate_record
 
     if comparison_budget <= 0:
         raise ValueError("comparison_budget must be positive")
+    if comparison_budget > MAX_POD_RESULTS:
+        raise ValueError("POD matcher fixed capacity exceeded")
     if candidate_root_index < 0:
         return (), 0, 0, False
     if len(candidate_rows) > MAX_POD_NODES:
@@ -480,11 +536,10 @@ def match_pod_catalogue(
         if counter.exceeded:
             return (), counter.comparisons, counter.lazy_swaps, True
         pattern_output = []
-        for result_index in range(results.size()):
-            result = results[result_index]
+        for result_index in range(results.count):
             pattern_output.append(
                 tuple(
-                    result.values[binding_index]
+                    results.values[result_index][binding_index]
                     for binding_index in range(variable_count)
                 )
             )

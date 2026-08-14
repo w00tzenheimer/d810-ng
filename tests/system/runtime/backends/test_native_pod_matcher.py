@@ -177,6 +177,21 @@ def test_cython_pod_matcher_rejects_pattern_rows_above_fixed_capacity() -> None:
 @pytest.mark.skipif(
     not CythonMode().is_enabled(), reason="requires the Cython POD matcher"
 )
+def test_cython_pod_matcher_rejects_comparison_budget_above_result_capacity() -> None:
+    """The native result collector is intentionally bounded to production work."""
+
+    from d810.speedups.mba.c_native_pod_matcher import match_pod_pattern
+
+    pattern_rows = ((2, 0, -1, 0, 0, -1, -1),)
+    candidate_rows = ((2, 0, 32, -1, -1, 0, 0, 0, 0),)
+
+    with pytest.raises(ValueError, match="fixed capacity"):
+        match_pod_pattern(pattern_rows, candidate_rows, 0, 0, 65)
+
+
+@pytest.mark.skipif(
+    not CythonMode().is_enabled(), reason="requires the Cython POD matcher"
+)
 def test_public_catalogue_keeps_associative_chain_matching_in_cython(
     monkeypatch,
 ) -> None:
