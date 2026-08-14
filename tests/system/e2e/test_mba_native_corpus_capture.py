@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import json
 import shutil
 import subprocess
 import sys
@@ -144,3 +145,12 @@ class TestNativeMbaCorpusCapture:
         )
         assert completed.returncode == 0, completed.stderr
         assert report_path.exists()
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        assert [case["case_id"] for case in report["cases"]] == ["catalogue_01"]
+        captured_case = report["cases"][0]
+        assert captured_case["profile"]["fingerprint"] == profile.fingerprint
+        assert len(captured_case["outcomes"]) == 1
+        captured_outcome = captured_case["outcomes"][0]
+        assert captured_outcome["provider"] == MbaProviderKind.CATALOGUE.value
+        assert captured_outcome["status"] == ProviderOutcomeStatus.APPLIED.value
+        assert captured_outcome == case.outcomes[0].to_dict()
