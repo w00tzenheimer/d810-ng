@@ -158,6 +158,41 @@ def profiles_from_native_provider_histories(
     return tuple(profiles[fingerprint] for fingerprint in sorted(profiles))
 
 
+def select_native_capture_profile(
+    rules: Iterable[object],
+    *,
+    history_snapshot: NativeProviderHistorySnapshot | None = None,
+    preferred_providers: Sequence[MbaProviderKind] = (),
+) -> MbaIslandProfile:
+    """Select one actual candidate profile or reject ambiguous capture evidence.
+
+    A manifest case may name the provider expected to own its native root.  That
+    narrows selection only among profiles actually emitted by that provider;
+    it never derives a profile from a function, a microinstruction fragment,
+    or source-level expectation.  No preferred provider means exactly one
+    observed profile is required.
+    """
+
+    preferred = frozenset(preferred_providers)
+    profiles: dict[str, MbaIslandProfile] = {}
+    for rule in rules:
+        for outcome in _history_for_provider(rule, history_snapshot):
+            if preferred and outcome.provider not in preferred:
+                continue
+            if outcome.fingerprint == "profile_unavailable":
+                continue
+            profile = native_profile_from_outcome(outcome)
+            previous = profiles.setdefault(profile.fingerprint, profile)
+            if previous != profile:
+                raise ValueError(
+                    "same native profile fingerprint has conflicting serialized profiles"
+                )
+    if len(profiles) != 1:
+        observed = ", ".join(sorted(profiles)) or "none"
+        raise ValueError(f"ambiguous native capture profile: {observed}")
+    return next(iter(profiles.values()))
+
+
 def _final_provider_outcome(
     outcomes: tuple[MbaProviderOutcome, ...],
 ) -> MbaProviderOutcome:
@@ -332,5 +367,6 @@ __all__ = [
     "native_profile_from_outcome",
     "native_profile_metadata",
     "profiles_from_native_provider_histories",
+    "select_native_capture_profile",
     "snapshot_native_provider_histories",
 ]

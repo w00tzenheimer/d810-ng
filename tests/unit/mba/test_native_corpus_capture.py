@@ -13,6 +13,7 @@ from d810.mba.native_corpus_capture import (
     capture_native_provider_case,
     native_profile_metadata,
     profiles_from_native_provider_histories,
+    select_native_capture_profile,
     snapshot_native_provider_histories,
 )
 from d810.mba.provider_outcome import (
@@ -235,3 +236,19 @@ def test_manifest_runner_fails_closed_when_a_case_delta_is_truncated() -> None:
             expected_providers=(MbaProviderKind.CATALOGUE,),
             run_case=lambda _case, _snapshot: _profile(),
         )
+
+
+def test_native_capture_profile_requires_one_actual_candidate_profile() -> None:
+    first = _profile("first")
+    second = _profile("second")
+    provider = _Provider(
+        _outcome(MbaProviderKind.CATALOGUE, ProviderOutcomeStatus.UNCHANGED, first),
+        _outcome(MbaProviderKind.EGGLOG, ProviderOutcomeStatus.UNCHANGED, second),
+    )
+
+    with pytest.raises(ValueError, match="ambiguous native capture profile"):
+        select_native_capture_profile((provider,))
+
+    assert select_native_capture_profile(
+        (provider,), preferred_providers=(MbaProviderKind.CATALOGUE,)
+    ) == first
