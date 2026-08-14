@@ -46,6 +46,9 @@ _PROJECT_CONFIG_KEYS = frozenset(
     {
         "pipeline_v2",
         "pipeline_v2_mode",
+        "profile_guidance_budget_ms",
+        "profile_guidance_enabled",
+        "profile_guidance_exploration_slots",
         "router_resolution",
     }
 )

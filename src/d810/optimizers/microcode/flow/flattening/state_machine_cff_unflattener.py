@@ -2135,7 +2135,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     source=source,
                     family=family,
                     backend=backend,
-                    project_config=rule_config,
+                    project_config=project_config,
                     maturity=current_ir_maturity,
                     capabilities=capabilities,
                     input_facts=fact_view,

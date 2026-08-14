@@ -2755,6 +2755,9 @@ class TestUnflattenBoundedRerunGate:
                 {"pass_id": "lower_state_machine"},
                 {"pass_id": "cleanup_residual_dispatcher"},
             ],
+            "profile_guidance_enabled": True,
+            "profile_guidance_budget_ms": 3.5,
+            "profile_guidance_exploration_slots": 2,
         }
 
         monkeypatch.setattr(
@@ -2860,7 +2863,8 @@ class TestUnflattenBoundedRerunGate:
         assert tuple(spec.pass_id for spec in pipeline_v2_specs) == expected_pass_ids
         if materialized_continuation:
             assert pipeline_v2_specs[-1].backend_route.value == "fragment_publication"
-        assert captured["project_config"] is rule_config
+        assert captured["project_config"] == project_config
+        assert captured["project_config"] != rule_config
         assert captured["journal"] is journal
         assert captured["session_id"] == session_id
         assert captured["parent_attempt_id"] == parent_attempt_id
@@ -2901,11 +2905,17 @@ class TestUnflattenBoundedRerunGate:
         manager.configure(
             pipeline_v2_mode="config-v2",
             pipeline_v2=({"pass_id": "recover_dispatcher"},),
+            profile_guidance_enabled=True,
+            profile_guidance_budget_ms=3.5,
+            profile_guidance_exploration_slots=2,
         )
 
         assert rule.project_configs[-1] == {
             "pipeline_v2_mode": "config-v2",
             "pipeline_v2": ({"pass_id": "recover_dispatcher"},),
+            "profile_guidance_enabled": True,
+            "profile_guidance_budget_ms": 3.5,
+            "profile_guidance_exploration_slots": 2,
         }
         manager.configure(project_name="legacy.json")
         assert rule.project_configs[-1] == {}
