@@ -215,6 +215,16 @@ class MbaCorpusCaseReport:
             outcome.fingerprint != self.profile.fingerprint for outcome in self.outcomes
         ):
             raise ValueError(f"{self.case_id}: outcome fingerprint must match profile")
+        applied_providers = tuple(
+            outcome.provider.value
+            for outcome in self.outcomes
+            if outcome.status is ProviderOutcomeStatus.APPLIED
+        )
+        if len(applied_providers) > 1:
+            raise ValueError(
+                f"{self.case_id}: at most one applied provider is allowed for "
+                f"fingerprint {self.profile.fingerprint}: {', '.join(applied_providers)}"
+            )
 
     def to_dict(self) -> dict[str, object]:
         return {

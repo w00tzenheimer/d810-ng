@@ -125,3 +125,37 @@ def test_differential_report_cli_rejects_omitted_provider_rows(tmp_path: Path) -
 
     assert completed.returncode == 2
     assert "missing outcome rows for egglog" in completed.stderr
+
+
+def test_differential_report_cli_rejects_duplicate_applied_mutations(
+    tmp_path: Path,
+) -> None:
+    catalogue_path = tmp_path / "catalogue.json"
+    egglog_path = tmp_path / "egglog.json"
+    _write_rows(
+        catalogue_path,
+        [
+            {
+                "case_id": "case",
+                "stratum": "direct",
+                "profile": _profile(),
+                "outcome": _outcome("catalogue", "applied"),
+            }
+        ],
+    )
+    _write_rows(
+        egglog_path,
+        [
+            {
+                "case_id": "case",
+                "stratum": "direct",
+                "profile": _profile(),
+                "outcome": _outcome("egglog", "applied"),
+            }
+        ],
+    )
+
+    completed = _run_cli(tmp_path, catalogue_path, egglog_path)
+
+    assert completed.returncode == 2
+    assert "at most one applied provider" in completed.stderr

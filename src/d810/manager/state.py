@@ -332,18 +332,32 @@ class D810State(metaclass=SingletonMeta):
             hook_mode=self.last_pipeline_v2_hook_mode,
         )
 
-        for rule in self.known_ins_rules:
-            for rule_conf in project_ins_rules:
-                if not rule_conf.is_activated:
-                    continue
-                if rule.name == rule_conf.name:
-                    effective_config = resolve_arch_config(rule_conf.config)
-                    effective_config["dump_intermediate_microcode"] = (
-                        self.d810_config.get("dump_intermediate_microcode")
-                    )
-                    rule.configure(effective_config)
-                    rule.set_log_dir(self.log_dir)
-                    self.current_ins_rules.append(rule)
+        # Config-v2's hook activation is an explicit runtime schedule, so it
+        # must retain declared pass/transform order. Legacy projects retain
+        # their registry-order contract.
+        if hook_activation.enabled:
+            rule_pairs = (
+                (rule_conf, rule)
+                for rule_conf in project_ins_rules
+                for rule in self.known_ins_rules
+            )
+        else:
+            rule_pairs = (
+                (rule_conf, rule)
+                for rule in self.known_ins_rules
+                for rule_conf in project_ins_rules
+            )
+        for rule_conf, rule in rule_pairs:
+            if not rule_conf.is_activated:
+                continue
+            if rule.name == rule_conf.name:
+                effective_config = resolve_arch_config(rule_conf.config)
+                effective_config["dump_intermediate_microcode"] = (
+                    self.d810_config.get("dump_intermediate_microcode")
+                )
+                rule.configure(effective_config)
+                rule.set_log_dir(self.log_dir)
+                self.current_ins_rules.append(rule)
         logger.debug("Instruction rules configured")
         selected_catalogue_adapters = tuple(
             rule

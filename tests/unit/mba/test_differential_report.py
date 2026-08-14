@@ -310,6 +310,28 @@ def test_report_json_is_normalized_and_rejects_profile_fingerprint_mismatch() ->
         )
 
 
+def test_case_report_rejects_two_applied_providers_for_one_fingerprint() -> None:
+    profile = _profile("one-mutation")
+
+    with pytest.raises(ValueError, match="at most one applied provider"):
+        MbaCorpusCaseReport(
+            case_id="one-mutation",
+            profile=profile,
+            outcomes=(
+                _outcome(
+                    MbaProviderKind.CATALOGUE,
+                    ProviderOutcomeStatus.APPLIED,
+                    profile.fingerprint,
+                ),
+                _outcome(
+                    MbaProviderKind.EGGLOG,
+                    ProviderOutcomeStatus.APPLIED,
+                    profile.fingerprint,
+                ),
+            ),
+        )
+
+
 def test_egglog_receipt_conversion_preserves_skip_semantics_without_invoking_egglog() -> (
     None
 ):
