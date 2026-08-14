@@ -72,25 +72,28 @@ _STRUCTURAL_DSL_OPERATIONS = frozenset(
 def _supports_structural_dsl_pattern(expr: object) -> bool:
     """Return whether one declared DSL pattern fits the typed structural island."""
 
-    seen: set[int] = set()
+    active_nodes: set[int] = set()
 
     def visit(node: object) -> bool:
         if not isinstance(node, SymbolicExpressionProtocol):
             return False
         identity = id(node)
-        if identity in seen:
+        if identity in active_nodes:
             return False
-        seen.add(identity)
-        operation = getattr(node, "operation", None)
-        if operation is None:
-            return True
-        if operation not in _STRUCTURAL_DSL_OPERATIONS:
-            return False
-        left = getattr(node, "left", None)
-        right = getattr(node, "right", None)
-        if left is None or not visit(left):
-            return False
-        return right is None or visit(right)
+        active_nodes.add(identity)
+        try:
+            operation = getattr(node, "operation", None)
+            if operation is None:
+                return True
+            if operation not in _STRUCTURAL_DSL_OPERATIONS:
+                return False
+            left = getattr(node, "left", None)
+            right = getattr(node, "right", None)
+            if left is None or not visit(left):
+                return False
+            return right is None or visit(right)
+        finally:
+            active_nodes.remove(identity)
 
     return visit(expr)
 
@@ -491,10 +494,13 @@ class IDAPatternAdapter:
         self._certified_catalogue_rule_id = rule_id
         self._shadow_parity_ledger = ledger
         # The snapshot only contains already-admitted VerifiableRule DSL
-        # objects.  Keep the generated-permutation implementation available as
-        # a release-scoped rollback, but never register both forms at once.
+        # objects. Structural selection remains opt-in until native Cython
+        # shadow parity has passed. Keep the generated-permutation path as the
+        # safe default and the release-scoped rollback; never register both
+        # forms at once. The explicit rollback wins if both flags are set.
         self._structural_matching_enabled = (
             _supports_structural_dsl_pattern(getattr(self.rule, "pattern", None))
+            and os.environ.get("D810_STRUCTURAL_DSL_MATCHING", "0") == "1"
             and os.environ.get("D810_LEGACY_DSL_PERMUTATIONS", "0") != "1"
         )
 

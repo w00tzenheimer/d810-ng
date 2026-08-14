@@ -21,6 +21,7 @@ from d810.mba.ac_matching import (  # noqa: E402
 )
 from d810.mba.certified_catalogue import ShadowMatcherParityLedger  # noqa: E402
 from d810.mba.dsl import Const, Var, Zext  # noqa: E402
+from d810.mba.rules.add import Add_HackersDelightRule_2  # noqa: E402
 from d810.optimizers.microcode.instructions.pattern_matching.handler import (  # noqa: E402
     PatternOptimizer,
     RulePatternInfo,
@@ -187,26 +188,39 @@ def test_selected_snapshot_narrows_shadow_observation_without_compilation() -> N
     assert xor_adapter.observe_structural_match(ast) is None
 
 
-def test_certified_registration_uses_one_base_pattern_unless_rollback_is_enabled(
+def test_certified_registration_keeps_legacy_default_and_requires_structural_opt_in(
     monkeypatch,
 ) -> None:
-    """Task 8 replaces generated commutations only for snapshot-selected DSL rules."""
+    """Structural selection is gated until native Cython parity is established."""
 
     x = Var("x")
 
-    class Rule:
+    class DefaultRule:
         name = "CertifiedAdd"
         pattern = x + Const("one", 1)
 
+    monkeypatch.delenv("D810_STRUCTURAL_DSL_MATCHING", raising=False)
     monkeypatch.delenv("D810_LEGACY_DSL_PERMUTATIONS", raising=False)
-    structural = IDAPatternAdapter(Rule())
+    default_legacy = IDAPatternAdapter(DefaultRule())
+    attach_selected_certified_catalogue_snapshot((default_legacy,))
+
+    assert default_legacy.uses_structural_matching is False
+    assert len(default_legacy.pattern_candidates) == 2
+
+    class OptInRule:
+        name = "CertifiedAddOptIn"
+        pattern = x + Const("one", 1)
+
+    monkeypatch.setenv("D810_STRUCTURAL_DSL_MATCHING", "1")
+    structural = IDAPatternAdapter(OptInRule())
     attach_selected_certified_catalogue_snapshot((structural,))
 
     assert structural.uses_structural_matching is True
     assert len(structural.pattern_candidates) == 1
 
+    # The existing release-scoped rollback takes precedence over opt-in.
     monkeypatch.setenv("D810_LEGACY_DSL_PERMUTATIONS", "1")
-    rollback = IDAPatternAdapter(Rule())
+    rollback = IDAPatternAdapter(OptInRule())
     attach_selected_certified_catalogue_snapshot((rollback,))
 
     assert rollback.uses_structural_matching is False
@@ -273,6 +287,29 @@ def test_selected_unsupported_dsl_rules_keep_legacy_dispatch_by_default(
 
     assert outcome is not None
     assert calls == [(registered, candidate)]
+
+
+def test_structural_pattern_capability_accepts_reused_leaves_but_rejects_cycles(
+    monkeypatch,
+) -> None:
+    """The symbolic rule catalogue is a DAG, not necessarily a tree."""
+
+    x = Var("x")
+    assert ida_backend._supports_structural_dsl_pattern(x + x)
+
+    class RepeatedCatalogueRule(Add_HackersDelightRule_2):
+        pass
+
+    monkeypatch.setenv("D810_STRUCTURAL_DSL_MATCHING", "1")
+    repeated_rule = IDAPatternAdapter(RepeatedCatalogueRule())
+    attach_selected_certified_catalogue_snapshot((repeated_rule,))
+    assert repeated_rule.uses_structural_matching is True
+
+    cycle = Var("cycle")
+    cycle.operation = "add"
+    cycle.left = cycle
+    cycle.right = Const("one", 1)
+    assert not ida_backend._supports_structural_dsl_pattern(cycle)
 
 
 def test_structural_dispatch_is_root_bucketed_and_reports_attempt_count(

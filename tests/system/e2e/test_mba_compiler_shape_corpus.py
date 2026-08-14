@@ -318,7 +318,13 @@ class TestCompilerShapeCatalogueNative:
         ida_database,
         d810_state,
         pseudocode_to_string,
+        monkeypatch,
     ) -> None:
+        # Task 7's parity receipt is meaningful only while the legacy matcher
+        # remains authoritative.  Force the release rollback before state
+        # construction; this test is the native shadow gate that selection
+        # must satisfy before Task 8 can become authoritative.
+        monkeypatch.setenv("D810_LEGACY_DSL_PERMUTATIONS", "1")
         reaches_provider = _catalogue_reaches_provider(function)
         ledgers = []
 
@@ -347,6 +353,13 @@ class TestCompilerShapeCatalogueNative:
         assert len(ledgers) == 1
         ledger = ledgers[0]
         assert ledger is not None
+        # This is intentionally non-vacuous for the stable native shadow
+        # witness. A zero-mismatch ledger with no legacy observation says
+        # nothing about the selected config-v2 route. Other corpus roots may
+        # already be canonicalized by GCC before this callback runs.
+        if function == "mba_shape_catalogue_01":
+            assert ledger.observation_count > 0
+            assert ledger.legacy_match_count > 0
         assert ledger.legacy_rule_mismatches == 0
         assert ledger.legacy_binding_mismatches == 0
         assert ledger.legacy_binding_unknown == 0
