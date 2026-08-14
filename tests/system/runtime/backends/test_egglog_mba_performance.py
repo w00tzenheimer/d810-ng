@@ -50,6 +50,20 @@ _PIPELINE_STAGE_ORDER = (
     "native_z3",
     "reconstruction",
 )
+_SYNTHETIC_STAGE_PROFILE_NOTE = (
+    "active AST plus real handler/extraction/native-Z3; "
+    "ast_construction uses an injected active AST and "
+    "reconstruction uses a test materializer"
+)
+
+
+def test_synthetic_stage_profile_note_names_both_mocked_boundaries() -> None:
+    assert "ast_construction" in _SYNTHETIC_STAGE_PROFILE_NOTE
+    assert "injected active AST" in _SYNTHETIC_STAGE_PROFILE_NOTE
+    assert "reconstruction" in _SYNTHETIC_STAGE_PROFILE_NOTE
+    assert "test materializer" in _SYNTHETIC_STAGE_PROFILE_NOTE
+
+
 _CAP_SKIP_REASONS = frozenset(
     {
         ExtractionSkipReason.CANDIDATE_BUDGET.value,
@@ -560,10 +574,7 @@ def test_corpus_receipt_reports_quantiles_and_rejects_100x_regression(
             "stage_attempt_outcomes": _build_stage_attempt_outcome_report(
                 tuple(stage_receipts)
             ),
-            "stage_profile_note": (
-                "active AST plus real handler/extraction/native-Z3; "
-                "reconstruction uses a test materializer"
-            ),
+            "stage_profile_note": _SYNTHETIC_STAGE_PROFILE_NOTE,
             "docker_image": os.environ.get("D810_TEST_RUNTIME_IMAGE", "unknown"),
             "docker_image_id": os.environ.get("D810_TEST_RUNTIME_IMAGE_ID", "unknown"),
             "cython_enabled": bool(ast_dispatcher._USING_CYTHON),

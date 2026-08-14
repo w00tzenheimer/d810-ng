@@ -14,8 +14,12 @@ fi
 RUNNER="$REPO_ROOT/tools/scripts/run_system_tests_docker.sh"
 ARTIFACT_DIR="${D810_EGGLOG_PERF_ARTIFACT_DIR:-$REPO_ROOT/.tmp/egglog-native-performance}"
 IMAGE="${D810_DOCKER_IMAGE:-idapro-9.4-speedups:ci}"
+COMPARISON="$ARTIFACT_DIR/comparison.json"
+COMPARISON_TMP="$ARTIFACT_DIR/.comparison.json.tmp"
 
 mkdir -p "$ARTIFACT_DIR"
+rm -f "$COMPARISON" "$COMPARISON_TMP"
+trap 'rm -f "$COMPARISON_TMP"' EXIT
 
 for MODE in 1 0; do
   if [ "$MODE" = 1 ]; then
@@ -46,6 +50,8 @@ done
 "${PYTHON:-python3}" "$REPO_ROOT/tools/scripts/compare_egglog_native_performance_receipts.py" \
   --python "$ARTIFACT_DIR/python.receipts.jsonl" \
   --cython "$ARTIFACT_DIR/cython.receipts.jsonl" \
-  --output "$ARTIFACT_DIR/comparison.json"
+  --output "$COMPARISON_TMP"
+mv -f "$COMPARISON_TMP" "$COMPARISON"
+trap - EXIT
 
 echo "Wrote Egglog native performance receipts to $ARTIFACT_DIR"
