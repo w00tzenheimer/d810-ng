@@ -56,15 +56,24 @@ def test_packed_view_retains_associative_binary_structure_for_numeric_matching()
     assert len(packed.nodes) == 5
 
 
-def test_packed_view_uses_ac_identity_for_repeated_operand_checks() -> None:
+def test_packed_view_uses_ac_identity_for_repeated_operand_checks(monkeypatch) -> None:
     a, b = _leaf("a"), _leaf("b")
-    packed = PackedNativeMbaTerm.from_view(
-        _node("xor", _node("add", a, b), _node("add", b, a))
-    )
+    shared = _node("add", a, b)
+    packed = PackedNativeMbaTerm.from_view(_node("xor", shared, shared))
     root = packed.nodes[packed.root_index]
+    calls = 0
+    original = NativeMbaTermView.canonical_children
+
+    def observed(view: NativeMbaTermView):
+        nonlocal calls
+        calls += 1
+        return original(view)
+
+    monkeypatch.setattr(NativeMbaTermView, "canonical_children", observed)
     rows = packed.numeric_rows()
 
     assert rows[root.left_index][7] == rows[root.right_index][7]
+    assert calls == 0
 
 
 def test_pod_adapter_matches_portable_catalogue_exactly() -> None:

@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from d810.backends.mba.native_mba_term_view import NativeMbaTermView
 from d810.core.cymode import CythonMode
 from d810.core.typing import Any
+from d810.mba.typed_term import _leaf_key_fingerprint
 
 
 _OPERATION_CODES = {
@@ -32,6 +33,7 @@ _KIND_CONSTANT = 1
 _KIND_LEAF = 2
 _KIND_OPERATOR = 3
 _MISSING_INDEX = -1
+_AC_OPERATIONS = frozenset({"add", "and", "mul", "or", "xor"})
 
 if CythonMode().is_enabled():
     try:
@@ -72,7 +74,7 @@ class PackedNativeMbaTerm:
         """Return POD rows with a structural identity for repeated bindings."""
 
         identity_by_key: dict[tuple[object, ...], int] = {}
-        keys = tuple(_view_match_key(view) for view in self.sidecar)
+        keys = _view_match_keys(self.sidecar)
         match_ids: list[int] = []
         for key in keys:
             match_ids.append(identity_by_key.setdefault(key, len(identity_by_key)))
@@ -188,18 +190,98 @@ def _masked_u64(value: int, width: int) -> int:
 
 
 def _view_match_key(view: NativeMbaTermView | None) -> tuple[object, ...]:
-    if view is None:
-        return ("operator",)
-    if view.operation is None:
-        if view.constant_value is not None:
-            return ("constant", view.width, view.constant_value)
-        return ("leaf", view.width, view.leaf_key)
-    return (
-        "node",
-        view.operation,
-        view.width,
-        tuple(_view_match_key(child) for child in view.canonical_children()),
-    )
+    """Return one canonical key for callers that do not have a packed forest."""
+
+    return _view_match_keys((view,))[0]
+
+
+def _view_match_keys(
+    views: tuple[NativeMbaTermView | None, ...],
+) -> tuple[tuple[object, ...], ...]:
+    """Compute canonical structural keys once per live view identity.
+
+    ``PackedNativeMbaTerm`` may deliberately retain the same immutable view in
+    several sidecar positions.  Matching equality must remain structural, but
+    repeatedly walking the same AC subtree is adapter overhead rather than
+    useful matcher work.  The local memo is callback-scoped and holds no live
+    state after packing returns.
+    """
+
+    memo: dict[int, tuple[object, ...]] = {}
+    sort_memo: dict[int, tuple[object, ...]] = {}
+
+    def ac_children(current: NativeMbaTermView) -> tuple[NativeMbaTermView, ...]:
+        flattened: list[NativeMbaTermView] = []
+
+        def collect(child: NativeMbaTermView) -> None:
+            if child.operation == current.operation and child.width == current.width:
+                for grandchild in child.children:
+                    collect(grandchild)
+            else:
+                flattened.append(child)
+
+        for child in current.children:
+            collect(child)
+        return tuple(flattened)
+
+    def sort_key(current: NativeMbaTermView) -> tuple[object, ...]:
+        identity = id(current)
+        cached = sort_memo.get(identity)
+        if cached is not None:
+            return cached
+        if current.operation is None:
+            if current.constant_value is not None:
+                result = ("constant", current.width, current.constant_value)
+            else:
+                assert current.leaf_key is not None
+                result = (
+                    "leaf",
+                    current.width,
+                    _leaf_key_fingerprint(current.leaf_key),
+                )
+        else:
+            children = (
+                ac_children(current)
+                if current.operation in _AC_OPERATIONS
+                else current.children
+            )
+            result = (
+                "node",
+                current.operation,
+                current.width,
+                tuple(sort_key(child) for child in sorted(children, key=sort_key)),
+            )
+        sort_memo[identity] = result
+        return result
+
+    def key(current: NativeMbaTermView | None) -> tuple[object, ...]:
+        if current is None:
+            return ("operator",)
+        identity = id(current)
+        cached = memo.get(identity)
+        if cached is not None:
+            return cached
+        if current.operation is None:
+            if current.constant_value is not None:
+                result = ("constant", current.width, current.constant_value)
+            else:
+                result = ("leaf", current.width, current.leaf_key)
+        else:
+            children = (
+                ac_children(current)
+                if current.operation in _AC_OPERATIONS
+                else current.children
+            )
+            result = (
+                "node",
+                current.operation,
+                current.width,
+                tuple(key(child) for child in sorted(children, key=sort_key)),
+            )
+        memo[identity] = result
+        return result
+
+    return tuple(key(view) for view in views)
 
 
 def _match_cython_catalogue(
