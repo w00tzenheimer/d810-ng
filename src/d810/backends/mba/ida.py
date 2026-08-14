@@ -512,12 +512,17 @@ class IDAPatternAdapter:
             and runtime_mode is not None
             and parity_certificate.authorizes(snapshot, runtime_mode)
         )
-        self._structural_matching_enabled = (
+        structural_matching_enabled = (
             _supports_structural_dsl_pattern(getattr(self.rule, "pattern", None))
             and os.environ.get("D810_STRUCTURAL_DSL_MATCHING", "0") == "1"
             and os.environ.get("D810_LEGACY_DSL_PERMUTATIONS", "0") != "1"
             and self._structural_parity_authorized
         )
+        if self._structural_matching_enabled != structural_matching_enabled:
+            # A reused adapter survives project reloads. Its generated legacy
+            # variants and its structural base form cannot share one cache.
+            self._pattern_candidates_cache = None
+        self._structural_matching_enabled = structural_matching_enabled
 
     @property
     def uses_structural_matching(self) -> bool:

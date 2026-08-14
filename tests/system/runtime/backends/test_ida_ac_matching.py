@@ -273,6 +273,8 @@ def test_structural_opt_in_requires_matching_persisted_parity_certificate(
         ),
         encoding="utf-8",
     )
+    with pytest.raises(ValueError, match="new_safe_coverage_pending=0"):
+        load_structural_matcher_parity_certificate(certificate_path)
 
     wrong_snapshot = IDAPatternAdapter(CertifiedRule())
     attach_selected_certified_catalogue_snapshot(
@@ -294,6 +296,8 @@ def test_structural_opt_in_requires_matching_persisted_parity_certificate(
                 "legacy_rule_mismatches": 0,
                 "legacy_binding_mismatches": 0,
                 "legacy_binding_unknown": 0,
+                "new_safe_coverage_pending": 0,
+                "new_safe_coverage_proved": 0,
             }
         ),
         encoding="utf-8",
@@ -317,6 +321,8 @@ def test_structural_opt_in_requires_matching_persisted_parity_certificate(
                 "legacy_rule_mismatches": 0,
                 "legacy_binding_mismatches": 0,
                 "legacy_binding_unknown": 0,
+                "new_safe_coverage_pending": 0,
+                "new_safe_coverage_proved": 0,
             }
         ),
         encoding="utf-8",
@@ -332,9 +338,25 @@ def test_structural_opt_in_requires_matching_persisted_parity_certificate(
     )
 
     assert matching_catalogue.fingerprint == snapshot.fingerprint
-    assert warnings == []
+    assert len(warnings) == 1
+    assert "new_safe_coverage_pending=0" in str(warnings[0][-1])
     assert matching_snapshot._structural_parity_authorized is True
     assert matching_snapshot.uses_structural_matching is True
+    assert len(matching_snapshot.pattern_candidates) == 1
+
+    attach_selected_certified_catalogue_snapshot(
+        (matching_snapshot,), runtime_mode=runtime_mode
+    )
+    assert matching_snapshot.uses_structural_matching is False
+    assert len(matching_snapshot.pattern_candidates) == 2
+
+    attach_selected_certified_catalogue_snapshot(
+        (matching_snapshot,),
+        parity_certificate_path=certificate_path,
+        runtime_mode=runtime_mode,
+    )
+    assert matching_snapshot.uses_structural_matching is True
+    assert len(matching_snapshot.pattern_candidates) == 1
 
 
 @pytest.mark.parametrize(

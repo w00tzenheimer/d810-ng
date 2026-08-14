@@ -90,6 +90,15 @@ def load_structural_matcher_parity_certificate(
     ):
         if raw.get(field) != 0:
             raise ValueError(f"structural parity certificate requires {field}=0")
+    if raw.get("new_safe_coverage_pending") != 0:
+        raise ValueError(
+            "structural parity certificate requires new_safe_coverage_pending=0"
+        )
+    proven_coverage = raw.get("new_safe_coverage_proved")
+    if type(proven_coverage) is not int or proven_coverage < 0:
+        raise ValueError(
+            "structural parity certificate has invalid new_safe_coverage_proved"
+        )
     return StructuralMatcherParityCertificate(
         snapshot_fingerprint=fingerprint,
         runtime_mode=runtime_mode,
