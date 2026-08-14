@@ -38,6 +38,16 @@ def test_ci_runner_defaults_to_the_cli_image() -> None:
     assert 'IMAGE="${D810_DOCKER_IMAGE:-idapro-9.4-speedups:cli}"' in source
 
 
+def test_ci_runner_profiles_real_idb_only_when_explicitly_requested() -> None:
+    source = CI_RUNNER.read_text(encoding="utf-8")
+
+    assert 'CPROFILE="${D810_EGGLOG_CPROFILE:-0}"' in source
+    assert 'D810_EGGLOG_CPROFILE_DIR="$CONTAINER_PROFILE_DIR"' in source
+    assert 'D810_CYTHON_PROFILE="$CYTHON_TRACE"' in source
+    assert "for corpus in egglog-add-spike egglog-mba-families-spike" in source
+    assert '"$PROFILE_HOST_DIR/$corpus.prof"' in source
+
+
 def _real_attempts() -> list[dict[str, object]]:
     return [
         {

@@ -137,7 +137,42 @@ def test_baked_runtime_preserves_native_cython_build(tmp_path: Path) -> None:
     assert ".[dev,emulation,egraph]" in command
     assert "command -v git" in command
     assert "D810_BUILD_SPEEDUPS=1" in command
+    assert "DEBUG=1 D810_BUILD_SPEEDUPS=1" not in command
     assert "pip install -e .[speedups]" in command
+
+
+def test_cython_profile_build_enables_cython_tracing_only_for_native_mode(
+    tmp_path: Path,
+) -> None:
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        label=RUNTIME_LABEL,
+        no_cython="0",
+        extra_env={"D810_CYTHON_PROFILE": "1"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    command = _container_run(calls)
+    assert "DEBUG=1 D810_BUILD_SPEEDUPS=1" in command
+    assert "D810_CYTHON_PROFILE=1" in command
+    assert "profile build failed" not in command
+
+
+def test_cython_profile_rejects_pure_python_mode(tmp_path: Path) -> None:
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={"D810_CYTHON_PROFILE": "1"},
+    )
+
+    assert result.returncode != 0
+    assert calls == []
+    assert "D810_CYTHON_PROFILE=1 requires D810_NO_CYTHON=0" in result.stderr
 
 
 def test_baked_runtime_preserves_llvm_provisioning(tmp_path: Path) -> None:

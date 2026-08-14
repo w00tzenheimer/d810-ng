@@ -65,6 +65,7 @@
 #   D810_REPO_ROOT         Repo root (default: git rev-parse --show-toplevel from cwd)
 #   D810_WORKTREE_ROOT     Dir under repo root for worktrees (default: .worktrees)
 #   D810_NO_CYTHON         Passed into container (default: 1)
+#   D810_CYTHON_PROFILE    Test-only Cython trace/profile build (requires D810_NO_CYTHON=0)
 #   D810_TEST_BINARY       Passed into container (default: libobfuscated.dll)
 #   D810_DOCKER_MEMORY      Memory limit for container (default: 4g). OOM-kills if exceeded.
 #
@@ -198,15 +199,25 @@ fi
 _trace_default_override D810_DOCKER_IMAGE idapro-9.4
 _trace_default_override D810_DOCKER_MEMORY 4g
 _trace_default_override D810_NO_CYTHON 1
+_trace_default_override D810_CYTHON_PROFILE 0
 _trace_default_override D810_TEST_BINARY libobfuscated.dll
 _trace_default_override D810_WORKTREE_ROOT .worktrees
 
 DOCKER_IMAGE="${D810_DOCKER_IMAGE-idapro-9.4}"
 DOCKER_MEMORY="${D810_DOCKER_MEMORY-4g}"
 NO_CYTHON="${D810_NO_CYTHON-1}"
+CYTHON_PROFILE="${D810_CYTHON_PROFILE-0}"
 TEST_BINARY="${D810_TEST_BINARY-libobfuscated.dll}"
 [ -n "$DOCKER_IMAGE" ] || { echo "ERROR: D810_DOCKER_IMAGE is set but empty" >&2; exit 1; }
 [ -n "$DOCKER_MEMORY" ] || { echo "ERROR: D810_DOCKER_MEMORY is set but empty" >&2; exit 1; }
+case "$CYTHON_PROFILE" in
+  0|1) ;;
+  *) echo "ERROR: D810_CYTHON_PROFILE must be 0 or 1" >&2; exit 1 ;;
+esac
+if [ "$CYTHON_PROFILE" = "1" ] && [ "$NO_CYTHON" != "0" ]; then
+  echo "ERROR: D810_CYTHON_PROFILE=1 requires D810_NO_CYTHON=0" >&2
+  exit 1
+fi
 RUNTIME_LABEL_KEY="org.d810.test-runtime"
 RUNTIME_LABEL_VALUE="dev-emulation-z3-v1"
 
@@ -465,6 +476,10 @@ IDA_VENV_PYTHON="/app/ida/.venv/bin/python"
 # still runs on the pure-Python fallback — the '|| echo' below keeps exit 0.
 if [ "$NO_CYTHON" = "1" ]; then
   SPEEDUPS_BUILD_CMD="echo '[speedups] native build disabled by D810_NO_CYTHON=1'"
+elif [ "$CYTHON_PROFILE" = "1" ]; then
+  # A profiling artifact is only useful when it actually contains Cython
+  # trace events. Unlike the normal optional speedup build, fail closed here.
+  SPEEDUPS_BUILD_CMD="DEBUG=1 D810_BUILD_SPEEDUPS=1 $IDA_VENV_PIP install -e .[speedups] -q"
 else
   SPEEDUPS_BUILD_CMD="D810_BUILD_SPEEDUPS=1 $IDA_VENV_PIP install -e .[speedups] -q || echo '[speedups] build failed, falling back to pure-Python'"
 fi

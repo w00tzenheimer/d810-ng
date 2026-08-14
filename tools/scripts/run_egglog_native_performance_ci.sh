@@ -14,8 +14,14 @@ fi
 RUNNER="$REPO_ROOT/tools/scripts/run_system_tests_docker.sh"
 ARTIFACT_DIR="${D810_EGGLOG_PERF_ARTIFACT_DIR:-$REPO_ROOT/.tmp/egglog-native-performance}"
 IMAGE="${D810_DOCKER_IMAGE:-idapro-9.4-speedups:cli}"
+CPROFILE="${D810_EGGLOG_CPROFILE:-0}"
 COMPARISON="$ARTIFACT_DIR/comparison.json"
 COMPARISON_TMP="$ARTIFACT_DIR/.comparison.json.tmp"
+
+case "$CPROFILE" in
+  0|1) ;;
+  *) echo "ERROR: D810_EGGLOG_CPROFILE must be 0 or 1" >&2; exit 1 ;;
+esac
 
 mkdir -p "$ARTIFACT_DIR"
 rm -f "$COMPARISON" "$COMPARISON_TMP"
@@ -29,13 +35,45 @@ for MODE in 1 0; do
   fi
   LOG="$ARTIFACT_DIR/$LABEL.log"
   RECEIPTS="$ARTIFACT_DIR/$LABEL.receipts.jsonl"
+  PROFILE_HOST_DIR=""
+  CONTAINER_PROFILE_DIR=""
+  CYTHON_TRACE=0
+
+  if [ "$CPROFILE" = 1 ]; then
+    case "$ARTIFACT_DIR" in
+      "$REPO_ROOT"/*)
+        PROFILE_HOST_DIR="$ARTIFACT_DIR/$LABEL.cprofile"
+        CONTAINER_PROFILE_DIR="/work/${PROFILE_HOST_DIR#"$REPO_ROOT"/}"
+        ;;
+      *)
+        echo "ERROR: D810_EGGLOG_PERF_ARTIFACT_DIR must be inside the mounted repository when D810_EGGLOG_CPROFILE=1" >&2
+        exit 1
+        ;;
+    esac
+    rm -rf "$PROFILE_HOST_DIR"
+    mkdir -p "$PROFILE_HOST_DIR"
+    if [ "$MODE" = 0 ]; then
+      CYTHON_TRACE=1
+    fi
+  fi
 
   : > "$LOG"
-  D810_DOCKER_IMAGE="$IMAGE" D810_NO_CYTHON="$MODE" "$RUNNER" test -- \
+  D810_DOCKER_IMAGE="$IMAGE" D810_NO_CYTHON="$MODE" \
+    D810_EGGLOG_CPROFILE_DIR="$CONTAINER_PROFILE_DIR" \
+    D810_CYTHON_PROFILE="$CYTHON_TRACE" "$RUNNER" test -- \
     tests/system/e2e/test_egglog_add_spike.py \
     tests/system/e2e/test_egglog_mba_families_spike.py \
     -q -s | tee -a "$LOG"
-  D810_DOCKER_IMAGE="$IMAGE" D810_NO_CYTHON="$MODE" "$RUNNER" test -- \
+  if [ "$CPROFILE" = 1 ]; then
+    for corpus in egglog-add-spike egglog-mba-families-spike; do
+      [ -s "$PROFILE_HOST_DIR/$corpus.prof" ] || {
+        echo "ERROR: missing cProfile artifact for $LABEL/$corpus" >&2
+        exit 1
+      }
+    done
+  fi
+  D810_DOCKER_IMAGE="$IMAGE" D810_NO_CYTHON="$MODE" \
+    D810_CYTHON_PROFILE="$CYTHON_TRACE" "$RUNNER" test -- \
     tests/system/runtime/backends/test_egglog_mba_performance.py \
     -q -m profile -s | tee -a "$LOG"
 

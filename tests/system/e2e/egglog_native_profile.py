@@ -3,7 +3,58 @@
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Callable
+import json
+import os
+from pathlib import Path
 from statistics import quantiles
+
+from d810.core.typing import TypeVar
+from d810.manager.profiling import CProfileWrapper
+
+
+T = TypeVar("T")
+
+
+def profile_native_egglog_cprofile(corpus: str, run: Callable[[], T]) -> T:
+    """Run a real-IDB callback under D810's opt-in cProfile hook.
+
+    The artifact directory is deliberately test-only. Without it, this helper
+    returns directly without constructing a profiler or changing execution.
+    ``D810_CYTHON_PROFILE=1`` requests a trace-enabled Cython build from the
+    Docker runner; its debug timings are for attribution, never comparison.
+    """
+
+    artifact_dir = os.environ.get("D810_EGGLOG_CPROFILE_DIR")
+    if not artifact_dir:
+        return run()
+    if Path(corpus).name != corpus:
+        raise ValueError("Egglog cProfile corpus must be a basename")
+
+    destination = Path(artifact_dir)
+    destination.mkdir(parents=True, exist_ok=True)
+    profile_path = destination / f"{corpus}.prof"
+    temporary_path = destination / f".{corpus}.prof.tmp"
+    profiler = CProfileWrapper()
+    profiler.enable()
+    try:
+        return run()
+    finally:
+        profiler.disable()
+        profiler.profiler.dump_stats(str(temporary_path))
+        temporary_path.replace(profile_path)
+        print(
+            "\nEGGLOG_MBA_CPROFILE_ARTIFACT="
+            + json.dumps(
+                {
+                    "corpus": corpus,
+                    "path": profile_path.name,
+                    "cython_trace_requested": os.environ.get("D810_CYTHON_PROFILE")
+                    == "1",
+                },
+                sort_keys=True,
+            )
+        )
 
 
 def _percentile(samples: tuple[float, ...], percentile: int) -> float:
@@ -55,4 +106,4 @@ def build_native_egglog_profile(stats, *, corpus: str) -> dict[str, object]:
     }
 
 
-__all__ = ["build_native_egglog_profile"]
+__all__ = ["build_native_egglog_profile", "profile_native_egglog_cprofile"]

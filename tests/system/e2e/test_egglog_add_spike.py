@@ -15,7 +15,10 @@ from tests.system.e2e.egglog_native_corpus import (
     NativeEgglogCorpusEntry,
     build_native_egglog_attempt_receipt,
 )
-from tests.system.e2e.egglog_native_profile import build_native_egglog_profile
+from tests.system.e2e.egglog_native_profile import (
+    build_native_egglog_profile,
+    profile_native_egglog_cprofile,
+)
 
 
 def _get_default_binary() -> str:
@@ -192,12 +195,15 @@ class TestEgglogAddSpike:
             )
             return captured
 
-        run_deobfuscation_test(
-            case=_ADD_CASE,
-            d810_state=d810_state,
-            pseudocode_to_string=pseudocode_to_string,
-            code_comparator=code_comparator,
-            capture_stats=capture_and_assert_provenance,
-            capture_runtime_state=capture_runtime_state,
-            load_expected_stats=load_expected_stats,
+        profile_native_egglog_cprofile(
+            _ADD_CORPUS_ENTRY.corpus,
+            lambda: run_deobfuscation_test(
+                case=_ADD_CASE,
+                d810_state=d810_state,
+                pseudocode_to_string=pseudocode_to_string,
+                code_comparator=code_comparator,
+                capture_stats=capture_and_assert_provenance,
+                capture_runtime_state=capture_runtime_state,
+                load_expected_stats=load_expected_stats,
+            ),
         )
