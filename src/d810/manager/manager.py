@@ -1946,10 +1946,37 @@ class D810Manager:
             certificate_store=certificate_store,
             d810_version="native-writer-migration",
         )
-        # Crash recovery is a startup responsibility, not an optional API:
-        # enumerate durable interrupted apply-lane records before registering
-        # any writer that could reuse their scopes or certificates.
-        recover_startup(journal=self._native_patch_journal, gateway=gateway)
+        # Crash recovery is a startup responsibility, but the SQLite journal
+        # is global while an IDB is not.  Read the IDB-local attestation and
+        # recover only transactions bearing this exact durable UUID; a missing
+        # or malformed attestation fails closed rather than applying another
+        # database's record to the open IDB.
+        from d810.backends.hexrays.input_identity_attestation import (
+            InputIdentityAttestationMalformed,
+            NetnodeInputIdentityAttestationStore,
+        )
+
+        try:
+            attestation = NetnodeInputIdentityAttestationStore().load()
+        except InputIdentityAttestationMalformed:
+            logger.exception(
+                "native patch startup recovery skipped: malformed IDB identity"
+            )
+        except Exception:
+            logger.exception(
+                "native patch startup recovery skipped: unavailable IDB identity"
+            )
+        else:
+            if attestation is None:
+                logger.warning(
+                    "native patch startup recovery skipped: no durable IDB identity"
+                )
+            else:
+                recover_startup(
+                    journal=self._native_patch_journal,
+                    gateway=gateway,
+                    database_identity=attestation.database_uuid,
+                )
 
         enabled = bool(self.config.get("native_patch_enabled", False))
         if not enabled:

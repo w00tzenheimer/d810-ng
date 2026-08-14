@@ -76,8 +76,8 @@ def _restore_snapshot(start_ea: int, size: int) -> NativeRestoreSnapshot:
         ),
         incoming_refs=(),
         function_ownership=NativeFunctionOwnership(
-            owning_function_entry_ea=start_ea,
-            chunk_ranges=(NativeAddressRange(start_ea, start_ea + size),),
+            owning_function_entry_ea=0x1000,
+            chunk_ranges=(NativeAddressRange(0x1000, 0x3000),),
         ),
         switch_fixup_metadata=(),
     )
@@ -110,8 +110,8 @@ def _operation(
         ),
         expected_incoming_refs=(),
         expected_function_ownership=NativeFunctionOwnership(
-            owning_function_entry_ea=start_ea,
-            chunk_ranges=(NativeAddressRange(start_ea, end_ea),),
+            owning_function_entry_ea=0x1000,
+            chunk_ranges=(NativeAddressRange(0x1000, 0x3000),),
         ),
         replacement_bytes=replacement_bytes,
         expected_after_shape=(

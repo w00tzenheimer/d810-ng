@@ -63,8 +63,8 @@ def restore_snapshot(start_ea: int, size: int) -> NativeRestoreSnapshot:
         ),
         incoming_refs=(),
         function_ownership=NativeFunctionOwnership(
-            owning_function_entry_ea=start_ea,
-            chunk_ranges=(NativeAddressRange(start_ea, start_ea + size),),
+            owning_function_entry_ea=0x1000,
+            chunk_ranges=(NativeAddressRange(0x1000, 0x3000),),
         ),
         switch_fixup_metadata=(),
     )
@@ -101,8 +101,8 @@ def operation(
         ),
         expected_incoming_refs=(),
         expected_function_ownership=NativeFunctionOwnership(
-            owning_function_entry_ea=start_ea,
-            chunk_ranges=(NativeAddressRange(start_ea, end_ea),),
+            owning_function_entry_ea=0x1000,
+            chunk_ranges=(NativeAddressRange(0x1000, 0x3000),),
         ),
         replacement_bytes=replacement_bytes,
         expected_after_shape=shape(start_ea, size, "jmp"),
@@ -126,6 +126,7 @@ def plan(
     operations: tuple[NativePatchOperation, ...] | None = None,
     plan_id: str = "plan-1",
     attempt: ExecutionAttemptId | None = None,
+    function_identity: NativeFunctionIdentity | None = None,
 ) -> NativePatchPlan:
     return NativePatchPlan(
         plan_id=plan_id,
@@ -139,10 +140,14 @@ def plan(
             image_base=0x140000000,
             database_path_hash="pathhash",
         ),
-        function_identity=NativeFunctionIdentity(
-            entry_ea=0x1000,
-            chunk_ranges=(NativeAddressRange(0x1000, 0x2000),),
-            inherited_bytes_hash="funchash",
+        function_identity=(
+            function_identity
+            if function_identity is not None
+            else NativeFunctionIdentity(
+                entry_ea=0x1000,
+                chunk_ranges=(NativeAddressRange(0x1000, 0x3000),),
+                inherited_bytes_hash="funchash",
+            )
         ),
         inherited_function_fingerprint="fp-before",
         target_cfg_fingerprint="cfg-1",

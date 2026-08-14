@@ -570,6 +570,20 @@ class NativePatchPlan:
         for op in self.operations:
             if not isinstance(op, NativePatchOperation):
                 raise TypeError("operations must contain only NativePatchOperation")
+            for label, ownership in (
+                ("expected_function_ownership", op.expected_function_ownership),
+                (
+                    "restore_snapshot.function_ownership",
+                    op.restore_snapshot.function_ownership,
+                ),
+            ):
+                if (
+                    ownership.owning_function_entry_ea
+                    != self.function_identity.entry_ea
+                ):
+                    raise ValueError(
+                        f"{label} must belong to the plan function identity"
+                    )
 
         for i, a in enumerate(self.operations):
             for b in self.operations[i + 1 :]:
@@ -634,8 +648,7 @@ class NativePatchPlan:
             for action in operation.metadata_actions:
                 final_targets[(action.kind.value, action.ea)] = action.expected_after
         targets = tuple(
-            (kind, ea, after)
-            for (kind, ea), after in sorted(final_targets.items())
+            (kind, ea, after) for (kind, ea), after in sorted(final_targets.items())
         )
         return _stable_hash(targets)
 

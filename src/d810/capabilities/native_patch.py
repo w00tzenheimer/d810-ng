@@ -684,6 +684,8 @@ class NativePatchPlanEnvelope(Protocol):
 
     plan_id: str
     plan_hash: str
+    database_identity: object
+    function_identity: object
     authorizing_attempt_id: ExecutionAttemptId
     operations: tuple[object, ...]
 
@@ -717,7 +719,9 @@ class NativePatchJournalStore(Protocol):
         self, transaction_id: NativePatchTransactionId
     ) -> NativePatchTransactionRecord | None: ...
 
-    def recoverable_transaction_ids(self) -> tuple[NativePatchTransactionId, ...]:
+    def recoverable_transaction_ids(
+        self, *, database_identity: str
+    ) -> tuple[NativePatchTransactionId, ...]:
         """Durably enumerate interrupted apply/restore transactions that may
         be reconciled automatically at startup."""
         ...

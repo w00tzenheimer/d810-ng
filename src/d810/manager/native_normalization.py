@@ -184,19 +184,33 @@ def recover_startup(
     *,
     journal: NativePatchJournalStore | None = None,
     gateway: NativePatchGateway,
+    database_identity: str,
 ) -> tuple[NativePatchTransactionId, ...]:
     """Section 15.4: reconcile interrupted transactions on plugin load or IDB
     open. The caller may supply ``transaction_ids``; otherwise this enumerates
     durable apply and restore cut points that the gateway can safely resume.
     ``RECOVERY_REQUIRED`` remains operator-visible and read-only until its
-    explicit acknowledgement. Returns the ids recovery was attempted for --
-    a per-id failure is logged and does not stop the remaining ids from being
-    processed, so one broken transaction cannot block the others.
+    explicit acknowledgement. Both automatic enumeration and any caller-
+    supplied ids are intersected with the current IDB's durable identity;
+    recovery never trusts an arbitrary global-journal transaction id. Returns
+    the ids recovery was attempted for -- a per-id failure is logged and does
+    not stop the remaining ids from being processed, so one broken transaction
+    cannot block the others.
     """
+    if journal is None:
+        raise TypeError("journal is required for identity-scoped recovery")
+    recoverable = journal.recoverable_transaction_ids(
+        database_identity=database_identity
+    )
     if transaction_ids is None:
-        if journal is None:
-            raise TypeError("journal is required when transaction_ids is omitted")
-        transaction_ids = journal.recoverable_transaction_ids()
+        transaction_ids = recoverable
+    else:
+        recoverable_set = frozenset(recoverable)
+        transaction_ids = tuple(
+            transaction_id
+            for transaction_id in transaction_ids
+            if transaction_id in recoverable_set
+        )
     attempted: list[NativePatchTransactionId] = []
     for transaction_id in transaction_ids:
         try:

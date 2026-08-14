@@ -459,7 +459,9 @@ class TestApplySuccess:
         )
         assert rig.db.bytes != before
 
-        recovered = recover_startup(journal=rig.journal, gateway=rig.gateway)
+        recovered = recover_startup(
+            journal=rig.journal, gateway=rig.gateway, database_identity="idb-1"
+        )
 
         assert recovered == (transaction_id,)
         assert rig.journal.get(transaction_id).state is NativeJournalState.RESTORED
@@ -571,24 +573,22 @@ class TestApplyPreflightRejection:
         assert rig.db.bytes[0x1001] == 0x01
 
     def test_non_interference_rejection_is_a_clean_zero_op_abandon(self, rig) -> None:
-        # Function-ownership mismatch is not "external interference" -- it is
-        # a precondition failure with nothing written yet, so this is a clean
-        # abandon (RESTORED, zero-op) rather than RECOVERY_REQUIRED.
-        plan = fixtures.plan(
-            operations=(
-                dataclasses.replace(
-                    fixtures.operation(),
-                    expected_function_ownership=dataclasses.replace(
-                        fixtures.operation().expected_function_ownership,
-                        owning_function_entry_ea=0x2000,
+        # A plan cannot mix one certificate function identity with a
+        # different operation owner. Rejecting the malformed plan before
+        # journal preparation leaves no mutable recovery state behind.
+        with pytest.raises(ValueError, match="function identity"):
+            fixtures.plan(
+                operations=(
+                    dataclasses.replace(
+                        fixtures.operation(),
+                        expected_function_ownership=dataclasses.replace(
+                            fixtures.operation().expected_function_ownership,
+                            owning_function_entry_ea=0x2000,
+                        ),
                     ),
-                ),
+                )
             )
-        )
-        receipt = rig.gateway.apply(plan)
 
-        assert not receipt.ok
-        assert receipt.state is NativeJournalState.RESTORED
         assert rig.db.bytes == {0x1000: 0x75, 0x1001: 0x01}
 
 
@@ -816,7 +816,9 @@ class TestRestore:
         assert rig.db.bytes == before
 
         rig.redo.raise_on_decompile = False
-        recovered = recover_startup(journal=rig.journal, gateway=rig.gateway)
+        recovered = recover_startup(
+            journal=rig.journal, gateway=rig.gateway, database_identity="idb-1"
+        )
 
         assert recovered == (receipt.transaction_id,)
         assert (
@@ -853,7 +855,9 @@ class TestRestore:
         rig.reanalyzer._raise_on = None  # noqa: SLF001 - test injection
         rig.discovery.raise_on_callers = False
         rig.invalidator._raise_on_ea = None  # noqa: SLF001 - test injection
-        recover_startup(journal=rig.journal, gateway=rig.gateway)
+        recover_startup(
+            journal=rig.journal, gateway=rig.gateway, database_identity="idb-1"
+        )
 
         assert (
             rig.journal.get(receipt.transaction_id).state is NativeJournalState.RESTORED

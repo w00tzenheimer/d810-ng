@@ -122,6 +122,16 @@ class NativePatchFunctionScopeConflictError(ValueError):
         )
 
 
+class NativePatchLegacyIdentityError(ValueError):
+    """A legacy active row cannot be attributed to the current IDB safely."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "an active native-patch journal row lacks durable database identity; "
+            "manual recovery is required before preparing another patch"
+        )
+
+
 _POST_BYTES_STATES = frozenset(
     {
         NativeJournalState.BYTES_APPLIED,
@@ -233,8 +243,40 @@ class SQLiteNativePatchJournal:
                     attempt_sequence INTEGER NOT NULL,
                     state TEXT NOT NULL,
                     has_metadata_actions INTEGER NOT NULL,
+                    idb_uuid TEXT,
+                    function_entry_ea INTEGER,
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL
+                )
+                """
+            )
+            columns = {
+                str(row["name"])
+                for row in self._conn.execute(
+                    "PRAGMA table_info(native_patch_transactions)"
+                ).fetchall()
+            }
+            # Existing global journals predate database-scoped rows. Keep the
+            # migration non-destructive, but leave their identity NULL so all
+            # subsequent code fails closed rather than guessing an IDB.
+            if "idb_uuid" not in columns:
+                self._conn.execute(
+                    "ALTER TABLE native_patch_transactions ADD COLUMN idb_uuid TEXT"
+                )
+            if "function_entry_ea" not in columns:
+                self._conn.execute(
+                    "ALTER TABLE native_patch_transactions "
+                    "ADD COLUMN function_entry_ea INTEGER"
+                )
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS native_patch_certificate_slots (
+                    idb_uuid TEXT NOT NULL,
+                    function_entry_ea INTEGER NOT NULL,
+                    transaction_id TEXT NOT NULL UNIQUE,
+                    PRIMARY KEY (idb_uuid, function_entry_ea),
+                    FOREIGN KEY (transaction_id)
+                        REFERENCES native_patch_transactions(transaction_id)
                 )
                 """
             )
@@ -356,53 +398,70 @@ class SQLiteNativePatchJournal:
 
     # -- transaction lifecycle -------------------------------------------------
 
-    def _active_operation_ranges(self) -> list[tuple[int, int]]:
+    def _assert_no_legacy_active_transactions(self) -> None:
+        row = self._conn.execute(
+            """
+            SELECT transaction_id
+            FROM native_patch_transactions
+            WHERE state != ? AND (idb_uuid IS NULL OR TRIM(idb_uuid) = '')
+            LIMIT 1
+            """,
+            (NativeJournalState.RESTORED.value,),
+        ).fetchone()
+        if row is not None:
+            raise NativePatchLegacyIdentityError()
+
+    def _active_operation_ranges(self, database_identity: str) -> list[tuple[int, int]]:
         rows = self._conn.execute(
             """
             SELECT o.start_ea, o.end_ea
             FROM native_patch_operations o
             JOIN native_patch_transactions t ON t.transaction_id = o.transaction_id
-            WHERE t.state != ?
+            WHERE t.state != ? AND t.idb_uuid = ?
             """,
-            (NativeJournalState.RESTORED.value,),
+            (NativeJournalState.RESTORED.value, database_identity),
         ).fetchall()
         return [(row["start_ea"], row["end_ea"]) for row in rows]
 
-    def _active_metadata_scopes(self) -> set[tuple[str, int]]:
+    def _active_metadata_scopes(self, database_identity: str) -> set[tuple[str, int]]:
         rows = self._conn.execute(
             """
             SELECT s.scope_kind, s.scope_ea
             FROM native_patch_metadata_scopes s
             JOIN native_patch_transactions t ON t.transaction_id = s.transaction_id
-            WHERE t.state != ?
+            WHERE t.state != ? AND t.idb_uuid = ?
             """,
-            (NativeJournalState.RESTORED.value,),
+            (NativeJournalState.RESTORED.value, database_identity),
         ).fetchall()
         return {(str(row["scope_kind"]), int(row["scope_ea"])) for row in rows}
 
-    def _active_function_certificate_slots(self) -> set[int]:
+    def _active_function_certificate_slots(self, database_identity: str) -> set[int]:
         rows = self._conn.execute(
             """
-            SELECT DISTINCT o.owning_function_entry_ea
-            FROM native_patch_operation_ownership o
-            JOIN native_patch_transactions t ON t.transaction_id = o.transaction_id
-            WHERE t.state != ?
+            SELECT function_entry_ea
+            FROM native_patch_certificate_slots
+            WHERE idb_uuid = ?
             """,
-            (NativeJournalState.RESTORED.value,),
+            (database_identity,),
         ).fetchall()
-        return {int(row["owning_function_entry_ea"]) for row in rows}
+        return {int(row["function_entry_ea"]) for row in rows}
 
-    def recoverable_transaction_ids(self) -> tuple[NativePatchTransactionId, ...]:
+    def recoverable_transaction_ids(
+        self, *, database_identity: str
+    ) -> tuple[NativePatchTransactionId, ...]:
         """Return startup-reconcilable apply/restore transactions in order."""
+        if not isinstance(database_identity, str) or not database_identity.strip():
+            raise ValueError("database_identity must be a non-empty string")
         placeholders = ", ".join("?" for _ in _STARTUP_RECOVERABLE_STATES)
         rows = self._conn.execute(
             """
             SELECT transaction_id
             FROM native_patch_transactions
-            WHERE state IN ("""
+            WHERE idb_uuid = ? AND state IN ("""
             + placeholders
             + ") ORDER BY created_at, transaction_id",
-            tuple(state.value for state in _STARTUP_RECOVERABLE_STATES),
+            (database_identity,)
+            + tuple(state.value for state in _STARTUP_RECOVERABLE_STATES),
         ).fetchall()
         return tuple(
             NativePatchTransactionId(value=str(row["transaction_id"])) for row in rows
@@ -431,32 +490,19 @@ class SQLiteNativePatchJournal:
         return tuple(scopes)
 
     def prepare(self, plan: NativePatchPlanEnvelope) -> NativePatchTransactionRecord:
-        active_ranges = self._active_operation_ranges()
-        for op in plan.operations:
-            op_start, op_end = op.range.start_ea, op.range.end_ea
-            for active_start, active_end in active_ranges:
-                if op_start < active_end and active_start < op_end:
-                    raise NativePatchTransactionConflictError(
-                        op.operation_id, op_start, op_end
-                    )
-
-        active_metadata_scopes = self._active_metadata_scopes()
+        database_identity = str(plan.database_identity.idb_uuid)
+        function_ea = int(plan.function_identity.entry_ea)
+        if not database_identity.strip():
+            raise ValueError("plan database identity must be non-empty")
         for operation in plan.operations:
-            for scope_kind, scope_ea in self._metadata_scopes_for_operation(operation):
-                if (scope_kind, scope_ea) in active_metadata_scopes:
-                    raise NativePatchMetadataScopeConflictError(
-                        operation.operation_id, scope_kind, scope_ea
+            for ownership in (
+                operation.expected_function_ownership,
+                operation.restore_snapshot.function_ownership,
+            ):
+                if ownership.owning_function_entry_ea != function_ea:
+                    raise ValueError(
+                        "operation ownership must belong to the plan function identity"
                     )
-
-        active_function_slots = self._active_function_certificate_slots()
-        for operation in plan.operations:
-            function_ea = int(
-                operation.restore_snapshot.function_ownership.owning_function_entry_ea
-            )
-            if function_ea in active_function_slots:
-                raise NativePatchFunctionScopeConflictError(
-                    operation.operation_id, function_ea
-                )
 
         transaction_id = NativePatchTransactionId.new()
         now = time.time()
@@ -468,14 +514,47 @@ class SQLiteNativePatchJournal:
         # transaction row, every operation row, and every governed byte's
         # planned before/after image must all land durably together before
         # `prepare()` returns -- design requirement 3.
-        with self._conn:
+        # SQLite's BEGIN IMMEDIATE grants the slot contender an exclusive
+        # writer reservation *before* any active-slot query.  Every prepared
+        # row therefore either owns the canonical certificate slot or was
+        # rejected while that slot was still held; a pre-transaction check
+        # would admit two contenders through a TOCTOU window.
+        self._conn.execute("BEGIN IMMEDIATE")
+        try:
+            self._assert_no_legacy_active_transactions()
+            active_ranges = self._active_operation_ranges(database_identity)
+            for op in plan.operations:
+                op_start, op_end = op.range.start_ea, op.range.end_ea
+                for active_start, active_end in active_ranges:
+                    if op_start < active_end and active_start < op_end:
+                        raise NativePatchTransactionConflictError(
+                            op.operation_id, op_start, op_end
+                        )
+
+            active_metadata_scopes = self._active_metadata_scopes(database_identity)
+            for operation in plan.operations:
+                for scope_kind, scope_ea in self._metadata_scopes_for_operation(
+                    operation
+                ):
+                    if (scope_kind, scope_ea) in active_metadata_scopes:
+                        raise NativePatchMetadataScopeConflictError(
+                            operation.operation_id, scope_kind, scope_ea
+                        )
+
+            if function_ea in self._active_function_certificate_slots(
+                database_identity
+            ):
+                raise NativePatchFunctionScopeConflictError(
+                    plan.operations[0].operation_id, function_ea
+                )
             self._conn.execute(
                 """
                 INSERT INTO native_patch_transactions
                     (transaction_id, plan_id, plan_hash, attempt_session,
-                     attempt_sequence, state, has_metadata_actions,
+                     attempt_sequence, state, has_metadata_actions, idb_uuid,
+                     function_entry_ea,
                      created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     transaction_id.value,
@@ -485,10 +564,25 @@ class SQLiteNativePatchJournal:
                     plan.authorizing_attempt_id.sequence,
                     NativeJournalState.PREPARED.value,
                     int(has_metadata_actions),
+                    database_identity,
+                    function_ea,
                     now,
                     now,
                 ),
             )
+            try:
+                self._conn.execute(
+                    """
+                    INSERT INTO native_patch_certificate_slots
+                        (idb_uuid, function_entry_ea, transaction_id)
+                    VALUES (?, ?, ?)
+                    """,
+                    (database_identity, function_ea, transaction_id.value),
+                )
+            except sqlite3.IntegrityError as error:
+                raise NativePatchFunctionScopeConflictError(
+                    plan.operations[0].operation_id, function_ea
+                ) from error
             for op in plan.operations:
                 self._conn.execute(
                     """
@@ -570,6 +664,11 @@ class SQLiteNativePatchJournal:
                     now,
                 ),
             )
+        except Exception:
+            self._conn.rollback()
+            raise
+        else:
+            self._conn.commit()
 
         record = self.get(transaction_id)
         assert record is not None  # just committed; must be readable
@@ -660,6 +759,11 @@ class SQLiteNativePatchJournal:
                 """,
                 (transaction_id.value, current.value, target_state.value, note, now),
             )
+            if target_state is NativeJournalState.RESTORED:
+                self._conn.execute(
+                    "DELETE FROM native_patch_certificate_slots WHERE transaction_id = ?",
+                    (transaction_id.value,),
+                )
 
         record = self.get(transaction_id)
         assert record is not None

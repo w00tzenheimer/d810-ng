@@ -17,6 +17,8 @@ must not roll back bytes that are still fully present and correct.
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 from d810.backends.ida.native_patch.journal import SQLiteNativePatchJournal
@@ -58,11 +60,70 @@ def test_startup_recovery_enumerates_and_resolves_a_prepared_transaction(
     try:
         record = rig.journal.prepare(plan)
 
-        recovered = recover_startup(journal=rig.journal, gateway=rig.gateway)
+        recovered = recover_startup(
+            transaction_ids=(record.transaction_id,),
+            journal=rig.journal,
+            gateway=rig.gateway,
+            database_identity=plan.database_identity.idb_uuid,
+        )
 
         assert recovered == (record.transaction_id,)
         assert (
             rig.journal.get(record.transaction_id).state is NativeJournalState.RESTORED
+        )
+    finally:
+        rig.journal.close()
+
+
+def test_startup_recovery_never_reconciles_a_foreign_idb_transaction(tmp_path) -> None:
+    """A global journal must not turn a foreign record into writes in this IDB."""
+    from .test_gateway import build_gateway
+
+    current_plan = fixtures.plan()
+    foreign_plan = dataclasses.replace(
+        current_plan,
+        database_identity=dataclasses.replace(
+            current_plan.database_identity, idb_uuid="idb-foreign"
+        ),
+    )
+    rig = build_gateway(tmp_path, current_plan.operations)
+    try:
+        record = rig.journal.prepare(foreign_plan)
+        for ea, before, after in ((0x1000, 0x75, 0xEB), (0x1001, 0x01, 0x01)):
+            rig.journal.record_byte_event(
+                record.transaction_id,
+                "op-1",
+                ea,
+                NativeByteEventPhase.WRITE_STARTED,
+                expected_current=before,
+                expected_original=before,
+                replacement=after,
+            )
+            rig.journal.record_byte_event(
+                record.transaction_id,
+                "op-1",
+                ea,
+                NativeByteEventPhase.WRITE_APPLIED,
+                expected_current=before,
+                expected_original=before,
+                replacement=after,
+            )
+        rig.journal.transition(record.transaction_id, NativeJournalState.BYTES_APPLIED)
+        # This is a different IDB whose matching bytes must not be changed by
+        # another database's recovery entry.
+        rig.db.bytes.update({0x1000: 0xEB, 0x1001: 0x01})
+
+        recovered = recover_startup(
+            journal=rig.journal,
+            gateway=rig.gateway,
+            database_identity=current_plan.database_identity.idb_uuid,
+        )
+
+        assert recovered == ()
+        assert rig.db.bytes == {0x1000: 0xEB, 0x1001: 0x01}
+        assert (
+            rig.journal.get(record.transaction_id).state
+            is NativeJournalState.BYTES_APPLIED
         )
     finally:
         rig.journal.close()

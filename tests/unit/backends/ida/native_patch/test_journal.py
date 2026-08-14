@@ -12,10 +12,13 @@ from __future__ import annotations
 
 import dataclasses
 import sqlite3
+import threading
 
 import pytest
 
 from d810.backends.ida.native_patch.journal import (
+    NativePatchFunctionScopeConflictError,
+    NativePatchLegacyIdentityError,
     NativePatchMetadataScopeConflictError,
     NativePatchTransactionConflictError,
     SQLiteNativePatchJournal,
@@ -28,6 +31,7 @@ from d810.capabilities.native_patch import (
     NativePatchTransactionId,
 )
 from d810.transforms.native_patch_plan import (
+    NativeAddressRange,
     NativeMetadataAction,
     NativeMetadataActionKind,
 )
@@ -120,16 +124,224 @@ class TestPrepare:
                 )
             )
         )
+        second_operation = fixtures.operation(
+            operation_id="b", start_ea=0x1002, end_ea=0x1004
+        )
+        second_ownership = dataclasses.replace(
+            second_operation.expected_function_ownership,
+            owning_function_entry_ea=0x2000,
+            chunk_ranges=(NativeAddressRange(0x1000, 0x3000),),
+        )
+        second_operation = dataclasses.replace(
+            second_operation,
+            expected_function_ownership=second_ownership,
+            restore_snapshot=dataclasses.replace(
+                second_operation.restore_snapshot,
+                function_ownership=second_ownership,
+            ),
+        )
         second = store.prepare(
             fixtures.plan(
-                operations=(
-                    fixtures.operation(
-                        operation_id="b", start_ea=0x1002, end_ea=0x1004
-                    ),
-                )
+                operations=(second_operation,),
+                function_identity=dataclasses.replace(
+                    fixtures.plan().function_identity,
+                    entry_ea=0x2000,
+                    chunk_ranges=(NativeAddressRange(0x1000, 0x3000),),
+                ),
             )
         )
         assert second.state is NativeJournalState.PREPARED
+
+    def test_prepare_scopes_same_byte_ranges_to_their_database_identity(
+        self, store
+    ) -> None:
+        first = fixtures.plan()
+        foreign = dataclasses.replace(
+            first,
+            database_identity=dataclasses.replace(
+                first.database_identity, idb_uuid="idb-foreign"
+            ),
+        )
+
+        store.prepare(first)
+
+        assert store.prepare(foreign).state is NativeJournalState.PREPARED
+
+    @pytest.mark.parametrize("ownership_field", ("expected", "restore"))
+    def test_prepare_rejects_operation_ownership_outside_plan_function(
+        self, store, ownership_field
+    ) -> None:
+        operation = fixtures.operation()
+        foreign_ownership = dataclasses.replace(
+            operation.expected_function_ownership,
+            owning_function_entry_ea=0x2000,
+        )
+        if ownership_field == "expected":
+            operation = dataclasses.replace(
+                operation, expected_function_ownership=foreign_ownership
+            )
+        else:
+            operation = dataclasses.replace(
+                operation,
+                restore_snapshot=dataclasses.replace(
+                    operation.restore_snapshot,
+                    function_ownership=foreign_ownership,
+                ),
+            )
+
+        with pytest.raises(ValueError, match="function identity"):
+            store.prepare(fixtures.plan(operations=(operation,)))
+
+    def test_empty_chunk_ownership_still_acquires_the_function_slot(
+        self, store
+    ) -> None:
+        operation = fixtures.operation()
+        ownership = dataclasses.replace(
+            operation.expected_function_ownership,
+            owning_function_entry_ea=0x1000,
+            chunk_ranges=(),
+        )
+        operation = dataclasses.replace(
+            operation,
+            expected_function_ownership=ownership,
+            restore_snapshot=dataclasses.replace(
+                operation.restore_snapshot,
+                function_ownership=ownership,
+            ),
+        )
+        first = fixtures.plan(operations=(operation,))
+        second_operation = dataclasses.replace(
+            operation,
+            operation_id="op-2",
+            range=dataclasses.replace(operation.range, start_ea=0x2000, end_ea=0x2002),
+            expected_before_shape=fixtures.shape(0x2000, 2, "jcc"),
+            expected_after_shape=fixtures.shape(0x2000, 2, "jmp"),
+            expected_item_shape=dataclasses.replace(
+                operation.expected_item_shape,
+                heads=(
+                    dataclasses.replace(
+                        operation.expected_item_shape.heads[0], ea=0x2000
+                    ),
+                ),
+            ),
+            encoding_evidence=dataclasses.replace(
+                operation.encoding_evidence, final_ea=0x2000
+            ),
+        )
+        second = fixtures.plan(operations=(second_operation,), plan_id="plan-2")
+
+        store.prepare(first)
+
+        with pytest.raises(NativePatchFunctionScopeConflictError):
+            store.prepare(second)
+
+    def test_concurrent_prepares_acquire_one_function_slot(self, tmp_path) -> None:
+        """The lease must be serialized by SQLite, not a pre-transaction read."""
+        barrier = threading.Barrier(2)
+        results: list[object] = []
+        results_lock = threading.Lock()
+
+        operation = fixtures.operation()
+        ownership = dataclasses.replace(
+            operation.expected_function_ownership,
+            owning_function_entry_ea=0x1000,
+        )
+        operation = dataclasses.replace(
+            operation,
+            expected_function_ownership=ownership,
+            restore_snapshot=dataclasses.replace(
+                operation.restore_snapshot,
+                function_ownership=ownership,
+            ),
+        )
+        plan_a = fixtures.plan(operations=(operation,), plan_id="plan-a")
+        operation_b = dataclasses.replace(
+            operation,
+            operation_id="op-2",
+            range=dataclasses.replace(operation.range, start_ea=0x2000, end_ea=0x2002),
+            expected_before_shape=fixtures.shape(0x2000, 2, "jcc"),
+            expected_after_shape=fixtures.shape(0x2000, 2, "jmp"),
+            expected_item_shape=dataclasses.replace(
+                operation.expected_item_shape,
+                heads=(
+                    dataclasses.replace(
+                        operation.expected_item_shape.heads[0], ea=0x2000
+                    ),
+                ),
+            ),
+            encoding_evidence=dataclasses.replace(
+                operation.encoding_evidence, final_ea=0x2000
+            ),
+        )
+        plan_b = fixtures.plan(operations=(operation_b,), plan_id="plan-b")
+        path = tmp_path / "concurrent.db"
+
+        def _prepare(plan) -> None:
+            journal = SQLiteNativePatchJournal(path)
+            try:
+                barrier.wait(timeout=5)
+                result = journal.prepare(plan)
+            except Exception as error:  # expected for exactly one contender
+                result = error
+            finally:
+                journal.close()
+            with results_lock:
+                results.append(result)
+
+        first = threading.Thread(target=_prepare, args=(plan_a,))
+        second = threading.Thread(target=_prepare, args=(plan_b,))
+        first.start()
+        second.start()
+        first.join(timeout=10)
+        second.join(timeout=10)
+
+        assert len(results) == 2
+        assert (
+            sum(
+                isinstance(result, NativePatchFunctionScopeConflictError)
+                for result in results
+            )
+            == 1
+        )
+
+    def test_active_legacy_row_fails_closed_after_schema_migration(
+        self, tmp_path
+    ) -> None:
+        path = tmp_path / "legacy.db"
+        connection = sqlite3.connect(path)
+        try:
+            connection.execute(
+                """
+                CREATE TABLE native_patch_transactions (
+                    transaction_id TEXT PRIMARY KEY,
+                    plan_id TEXT NOT NULL,
+                    plan_hash TEXT NOT NULL,
+                    attempt_session TEXT NOT NULL,
+                    attempt_sequence INTEGER NOT NULL,
+                    state TEXT NOT NULL,
+                    has_metadata_actions INTEGER NOT NULL,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO native_patch_transactions VALUES
+                    ('legacy', 'plan', 'hash', 'session', 1, 'prepared', 0, 0, 0)
+                """
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        journal = SQLiteNativePatchJournal(path)
+        try:
+            assert journal.recoverable_transaction_ids(database_identity="idb-1") == ()
+            with pytest.raises(NativePatchLegacyIdentityError):
+                journal.prepare(fixtures.plan())
+        finally:
+            journal.close()
 
     def test_prepare_rejects_same_xref_source_under_distinct_byte_anchors(
         self, store
