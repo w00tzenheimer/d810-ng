@@ -442,20 +442,23 @@ def test_native_lowering_rejects_unknown_missing_and_cyclic_proxies(
     )
 
 
-def test_native_lowering_requires_concrete_operator_root_after_proxy_unwrap(
+def test_native_lowering_accepts_same_width_terminal_roots_after_proxy_unwrap(
     fake_native_runtime,
 ):
     leaf = _FakeAstLeaf("x", _FakeMop("register", 7, 4))
     constant = _FakeAstConstant("one", 1, 4)
 
     for root in (leaf, constant):
-        assert lower_native_ast_to_term(root, destination_size=4) is None
+        # A valid reduction can be a terminal (for example, ``x + 0 -> x``),
+        # so the typed proof boundary must accept same-width leaves/constants
+        # as roots as well as operator trees.
+        assert lower_native_ast_to_term(root, destination_size=4) is not None
         assert (
             lower_native_ast_to_term(
                 _runtime_ast_proxy(root),
                 destination_size=4,
             )
-            is None
+            is not None
         )
 
 
