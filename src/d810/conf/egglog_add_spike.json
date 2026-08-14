@@ -1,5 +1,5 @@
 {
-  "description": "Bounded Egglog ADD MBA E2E receipt: 1000 ms test-only budget; production default remains 3 ms",
+  "description": "Bounded Egglog ADD MBA E2E shadow-proof receipt: 1000 ms test-only budget; production default remains 3 ms",
   "additional_configuration": {
     "pipeline_v2_mode": "config-v2",
     "pipeline_v2": [
@@ -16,6 +16,7 @@
           "max_rule_firings": 32,
           "time_budget_ms": 1000,
           "collect_stage_timings": true,
+          "native_proof_mode": "shadow",
           "require_proof": true
         }
       }

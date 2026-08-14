@@ -245,6 +245,7 @@ class TestMbaEgglogRegistration(unittest.TestCase):
                 "residual_only": False,
                 "require_proof": True,
                 "collect_stage_timings": True,
+                "native_proof_mode": "legacy",
                 "families": ["xor", "add"],
                 "maturities": ["GLOBAL_ANALYZED"],
             },

@@ -44,6 +44,7 @@ class MbaEgglogOptions:
     residual_only: bool = False
     require_proof: bool = True
     collect_stage_timings: bool = False
+    native_proof_mode: str = "legacy"
     families: tuple[str, ...] = DEFAULT_FAMILIES
     maturities: tuple[str, ...] = DEFAULT_MATURITIES
 
@@ -66,6 +67,7 @@ class MbaEgglogPass(PipelinePass):
     residual_only: bool = False
     require_proof: bool = True
     collect_stage_timings: bool = False
+    native_proof_mode: str = "legacy"
     families: tuple[str, ...] = DEFAULT_FAMILIES
     maturities: tuple[str, ...] = DEFAULT_MATURITIES
     name: str = MBA_EGGLOG_PASS_ID
@@ -98,6 +100,7 @@ def parse_mba_egglog_options(
         "residual_only",
         "require_proof",
         "collect_stage_timings",
+        "native_proof_mode",
         "families",
         "maturities",
     }
@@ -131,6 +134,7 @@ def parse_mba_egglog_options(
     residual_only = options.get("residual_only", False)
     require_proof = options.get("require_proof", True)
     collect_stage_timings = options.get("collect_stage_timings", False)
+    native_proof_mode = options.get("native_proof_mode", "legacy")
     families = options.get("families", list(DEFAULT_FAMILIES))
     maturities = options.get("maturities", DEFAULT_MATURITIES)
     if (
@@ -184,6 +188,10 @@ def parse_mba_egglog_options(
         raise PipelineConfigError(
             "mba-egglog options.collect_stage_timings must be a boolean"
         )
+    if native_proof_mode not in {"legacy", "shadow", "enforced"}:
+        raise PipelineConfigError(
+            "mba-egglog options.native_proof_mode must be legacy, shadow, or enforced"
+        )
     if (
         not isinstance(families, list)
         or not families
@@ -233,6 +241,7 @@ def parse_mba_egglog_options(
         residual_only=residual_only,
         require_proof=require_proof,
         collect_stage_timings=collect_stage_timings,
+        native_proof_mode=native_proof_mode,
         families=resolved_families,
         maturities=resolved,
     )
@@ -255,6 +264,7 @@ def build_mba_egglog_pass(config: PipelineConfig) -> MbaEgglogPass:
         residual_only=options.residual_only,
         require_proof=options.require_proof,
         collect_stage_timings=options.collect_stage_timings,
+        native_proof_mode=options.native_proof_mode,
         families=options.families,
         maturities=options.maturities,
     )
