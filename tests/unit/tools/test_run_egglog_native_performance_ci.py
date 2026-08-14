@@ -387,6 +387,39 @@ def test_comparator_rejects_incomplete_or_mismatched_receipts(
         compare_receipts(python_rows, cython_rows)
 
 
+def test_comparator_publishes_predeclared_paired_proof_contract() -> None:
+    python_rows, cython_rows = _valid_receipts()
+
+    comparison = compare_receipts(python_rows, cython_rows)
+
+    assert comparison["performance_contract"] == {
+        "schema_version": 1,
+        "baseline_kind": "post_redundant_template_rebinding",
+        "minimum_matched_pairs_per_mode": 30,
+        "minimum_p50_preflight_reduction_fraction": 0.2,
+        "minimum_p95_preflight_reduction_fraction": 0.1,
+        "requires_exact_semantic_parity": True,
+    }
+    assert comparison["python"]["real_corpus_proof_timings"] == (
+        (
+            ("fixture", "fixture_function", "fixture_project"),
+            (
+                (
+                    "fixture#1:one",
+                    ("FixtureRule",),
+                    "shadow",
+                    "FixtureRule",
+                    None,
+                    True,
+                    True,
+                    1.0,
+                    1.0,
+                ),
+            ),
+        ),
+    )
+
+
 @pytest.mark.parametrize(
     ("mutate", "message"),
     [

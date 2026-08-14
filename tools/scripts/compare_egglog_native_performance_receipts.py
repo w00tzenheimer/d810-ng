@@ -45,6 +45,17 @@ _SHADOW_FALLBACK_REASONS = frozenset(
         "shadow_divergence",
     }
 )
+_PERFORMANCE_CONTRACT = {
+    "schema_version": 1,
+    "baseline_kind": "post_redundant_template_rebinding",
+    # Five current live proof pairs per spike are enough to expose the shape of
+    # the cost, but not enough to call a noisy timing difference a win. Gate 5
+    # must expand the fixed corpus before asserting this contract.
+    "minimum_matched_pairs_per_mode": 30,
+    "minimum_p50_preflight_reduction_fraction": 0.2,
+    "minimum_p95_preflight_reduction_fraction": 0.1,
+    "requires_exact_semantic_parity": True,
+}
 
 
 def _load_receipts(path: Path) -> tuple[dict[str, Any], ...]:
@@ -542,6 +553,38 @@ def _real_corpus_proof_projection(
     )
 
 
+def _real_corpus_proof_timings(
+    receipts: tuple[dict[str, Any], ...],
+) -> tuple[tuple[tuple[str, str, str], tuple[tuple[object, ...], ...]], ...]:
+    """Publish every actual proof pair; timings are not parity comparisons."""
+
+    fields = (
+        "candidate_identity",
+        "source_names",
+        "proof_mode",
+        "template_source_name",
+        "template_fallback_reason",
+        "template_proof_verdict",
+        "legacy_proof_verdict",
+        "template_proof_elapsed_ms",
+        "legacy_proof_elapsed_ms",
+    )
+    return tuple(
+        (
+            (receipt["corpus"], receipt["function"], receipt["project"]),
+            tuple(
+                tuple(
+                    attempt[field] if field != "source_names" else tuple(attempt[field])
+                    for field in fields
+                )
+                for attempt in receipt["attempts"]
+                if attempt["proof_mode"] is not None
+            ),
+        )
+        for receipt in receipts
+    )
+
+
 def compare_receipts(
     python_rows: tuple[dict[str, Any], ...],
     cython_rows: tuple[dict[str, Any], ...],
@@ -619,6 +662,7 @@ def compare_receipts(
         raise ValueError(f"Egglog performance receipt mismatch: {mismatches}")
     return {
         "comparison": comparisons,
+        "performance_contract": _PERFORMANCE_CONTRACT,
         "python": {
             "candidate_count": python_corpus["candidate_count"],
             "docker_image": python_corpus["docker_image"],
@@ -632,6 +676,7 @@ def compare_receipts(
             "real_corpus_stage_coverage": _real_corpus_projection(
                 python_real, "stage_sample_counts"
             ),
+            "real_corpus_proof_timings": _real_corpus_proof_timings(python_real),
         },
         "cython": {
             "candidate_count": cython_corpus["candidate_count"],
@@ -646,6 +691,7 @@ def compare_receipts(
             "real_corpus_stage_coverage": _real_corpus_projection(
                 cython_real, "stage_sample_counts"
             ),
+            "real_corpus_proof_timings": _real_corpus_proof_timings(cython_real),
         },
     }
 
