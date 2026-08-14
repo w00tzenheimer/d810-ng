@@ -229,8 +229,8 @@ def test_nomut_success_records_the_bound_catalogue_replacement_outcome(monkeypat
         def record_bound_replacement_outcome(self, replacement):
             self.bound_replacements.append(replacement)
 
-        def record_legacy_match_bindings(self, bindings, source_ast):
-            self.legacy_bindings.append((bindings, source_ast))
+        def record_legacy_match_bindings(self, pattern, source_ast):
+            self.legacy_bindings.append((pattern, source_ast))
 
         @staticmethod
         def execution_metadata():
@@ -244,13 +244,15 @@ def test_nomut_success_records_the_bound_catalogue_replacement_outcome(monkeypat
     optimizer._use_legacy_storage = False
     optimizer._match_bindings = pattern_handler.MatchBindings()
     optimizer._run_later_callback = None
-    optimizer._get_candidates = lambda _ast: [RulePatternInfo(adapter, object())]
+    pattern = object()
+    test_ast = object()
+    optimizer._get_candidates = lambda _ast: [RulePatternInfo(adapter, pattern)]
     monkeypatch.setattr(pattern_handler, "_match_nomut", lambda *_args: True)
 
     result = optimizer._try_matches(
         None,
         Instruction(),
-        object(),
+        test_ast,
         allowed_rule_names=None,
         scheduled_rule_names=None,
         source_label="unit",
@@ -258,7 +260,7 @@ def test_nomut_success_records_the_bound_catalogue_replacement_outcome(monkeypat
 
     assert result is not None
     assert adapter.bound_replacements == ["replacement-pattern"]
-    assert len(adapter.legacy_bindings) == 1
+    assert adapter.legacy_bindings == [(pattern, test_ast)]
 
 
 def test_pattern_runtime_error_notifies_attempt_context_before_clear(monkeypatch):

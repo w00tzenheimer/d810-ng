@@ -520,18 +520,6 @@ class IDAPatternAdapter:
             stop_reason=report.stop_reason.value,
         )
 
-    @staticmethod
-    def _mop_identity_key(mop: object) -> tuple[object, ...] | None:
-        if mop is None:
-            return None
-        try:
-            snapshot = (
-                mop if isinstance(mop, MopSnapshot) else MopSnapshot.from_mop(mop)
-            )
-            return snapshot.to_cache_key()
-        except Exception:
-            return None
-
     def record_legacy_match_bindings(
         self, candidate_pattern: Any, source_ast: Any | None = None
     ) -> None:
@@ -543,9 +531,10 @@ class IDAPatternAdapter:
         leafs_by_name = getattr(candidate_pattern, "leafs_by_name", None)
         if lowering is None or not isinstance(leafs_by_name, dict):
             return
-        # The legacy matcher walks its pattern and source in lockstep.  Preserve
-        # that slot evidence whenever the caller still has the source tree;
-        # mop snapshots are only an intentionally conservative fallback.
+        # The legacy matcher walks its pattern and source in lockstep. Preserve
+        # that slot evidence whenever the caller still has the source tree.
+        # Without that evidence, equality of mop keys cannot establish which
+        # live slot was selected, so leave parity unknown rather than guess.
         if source_ast is not None:
             resolved_from_slots: dict[str, set[tuple[int, ...]]] = {}
 
@@ -582,26 +571,7 @@ class IDAPatternAdapter:
                 }
                 return
 
-        native_paths_by_mop: dict[tuple[object, ...], list[tuple[int, ...]]] = {}
-        for path, native in lowering.native_nodes_by_path.items():
-            key = self._mop_identity_key(getattr(native, "mop", None))
-            if key is not None:
-                native_paths_by_mop.setdefault(key, []).append(path)
-        resolved: dict[str, frozenset[tuple[int, ...]]] = {}
-        for name, leaf in leafs_by_name.items():
-            if name == "_candidate":
-                continue
-            if type(name) is not str:
-                return
-            key = self._mop_identity_key(getattr(leaf, "mop", None))
-            paths = () if key is None else native_paths_by_mop.get(key, ())
-            # Mop identity alone cannot identify a live operand: the same mop
-            # can occur in multiple slots.  Exact structural parity is unknown
-            # unless the legacy binding has one unambiguous native path.
-            if key is None or len(paths) != 1:
-                return
-            resolved[name] = frozenset(paths)
-        self._legacy_binding_paths = resolved
+        return
 
     def _shadow_metadata(self, *, legacy_match: bool) -> dict[str, object]:
         report = getattr(self, "_shadow_match_report", None)

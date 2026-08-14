@@ -82,11 +82,13 @@ def test_shadow_matcher_compares_exact_legacy_native_paths_when_available() -> N
     ast.dest_size = 4
 
     assert adapter.observe_structural_match(ast) is not None
-    adapter.record_legacy_match_bindings(
-        type(
-            "LegacyCandidate", (), {"leafs_by_name": {"x": ast.right, "one": ast.left}}
-        )()
+    legacy = ast_dispatcher.AstNode(
+        ida_hexrays.m_add,
+        ast_dispatcher.AstConstant("one", 1, 4),
+        ast_dispatcher.AstLeaf("x"),
     )
+    legacy.leafs_by_name = {"x": legacy.right, "one": legacy.left}
+    adapter.record_legacy_match_bindings(legacy, ast)
 
     assert adapter._shadow_metadata(legacy_match=True)["same_bindings"] is True
 

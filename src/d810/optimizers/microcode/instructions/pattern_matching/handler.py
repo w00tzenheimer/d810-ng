@@ -723,7 +723,10 @@ class PatternOptimizer(InstructionOptimizer):
                         None,
                     )
                     if record_legacy_match_bindings is not None:
-                        record_legacy_match_bindings(proxy, test_ast)
+                        record_legacy_match_bindings(
+                            rule_pattern_info.pattern,
+                            test_ast,
+                        )
                     new_ins = rule_pattern_info.rule.get_replacement(proxy)
                     if new_ins is not None:
                         record_bound_replacement_outcome = getattr(
