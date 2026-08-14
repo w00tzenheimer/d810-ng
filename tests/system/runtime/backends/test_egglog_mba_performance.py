@@ -16,8 +16,9 @@ import pytest
 egglog = pytest.importorskip("egglog")
 ida_hexrays = pytest.importorskip("ida_hexrays")
 
+from d810.backends.mba import egglog_add_rule_compiler as catalogue_compiler  # noqa: E402
 from d810.backends.mba.egglog_add_rule_compiler import (  # noqa: E402
-    compile_mba_rule_catalogue,
+    compiled_rules_for_families,
 )
 from d810.backends.mba.egglog_saturation import (  # noqa: E402
     EgglogExtractionReceipt,
@@ -233,6 +234,18 @@ def _build_stage_attempt_outcome_report(
     )
 
 
+def _measure_catalogue_selection(select, *, clock=time.perf_counter):
+    """Measure the configured immutable selection once cold and once warm."""
+
+    cold_started = clock()
+    selected = select()
+    cold_seconds = clock() - cold_started
+    warm_started = clock()
+    select()
+    warm_seconds = clock() - warm_started
+    return selected, {"cold_seconds": cold_seconds, "warm_seconds": warm_seconds}
+
+
 def _assert_comparable_baseline(
     baseline: dict[str, object], report: dict[str, object]
 ) -> None:
@@ -314,6 +327,20 @@ def test_stage_attempt_outcomes_keep_acceptance_and_refusals_separate() -> None:
         "native_z3_failed": 1,
         "time_budget": 1,
     }
+
+
+def test_catalogue_selection_measurement_separates_cold_and_warm_calls() -> None:
+    ticks = iter((10.0, 12.5, 13.0, 13.25))
+    calls: list[str] = []
+
+    selected, report = _measure_catalogue_selection(
+        lambda: calls.append("select") or ("rule",),
+        clock=lambda: next(ticks),
+    )
+
+    assert selected == ("rule",)
+    assert calls == ["select", "select"]
+    assert report == {"cold_seconds": 2.5, "warm_seconds": 0.25}
 
 
 def test_stage_timing_report_requires_consistent_ordered_stages() -> None:
@@ -421,9 +448,13 @@ def test_corpus_receipt_reports_quantiles_and_rejects_100x_regression(
 ) -> None:
     import d810.optimizers.microcode.instructions.egraph.egglog_handler as handler_module
 
-    cold_started = time.perf_counter()
-    catalogue = compile_mba_rule_catalogue()
-    cold_seconds = time.perf_counter() - cold_started
+    # Start from no immutable certificate cache, then measure exactly the
+    # configured selection that a live handler requests. This deliberately
+    # does not benchmark the unrelated receipt-only rule inventory.
+    catalogue_compiler._compile_selected_rule_catalogue.cache_clear()
+    compiled_rules, catalogue_selection = _measure_catalogue_selection(
+        lambda: compiled_rules_for_families(_CLOSED_FAMILIES)
+    )
     extraction_handler = EgglogOptimizer()
     extraction_handler.configure(
         {
@@ -439,9 +470,7 @@ def test_corpus_receipt_reports_quantiles_and_rejects_100x_regression(
             "require_proof": True,
         }
     )
-    rules_by_key = {
-        (rule.family, rule.source_name): rule for rule in catalogue.compiled_rules
-    }
+    rules_by_key = {(rule.family, rule.source_name): rule for rule in compiled_rules}
     corpus_names: list[str] = []
     receipts: list[EgglogExtractionReceipt] = []
     for repetition in range(_REPETITIONS):
@@ -495,8 +524,8 @@ def test_corpus_receipt_reports_quantiles_and_rejects_100x_regression(
         {
             "baseline_fixture": str(_BASELINE_PATH.relative_to(Path.cwd())),
             "baseline_p95_ms": baseline["baseline_p95_ms"],
-            "cold_catalogue_seconds": cold_seconds,
-            "compiled_rule_count": len(catalogue.compiled_rules),
+            "catalogue_selection_seconds": catalogue_selection,
+            "selected_compiled_rule_count": len(compiled_rules),
             "production_time_budget_ms": extraction_handler.time_budget_ms,
             "stage_profile_time_budget_ms": stage_handler.time_budget_ms,
             "stage_timing_ms": _build_stage_timing_report(tuple(stage_records)),
@@ -525,8 +554,7 @@ def test_corpus_receipt_reports_quantiles_and_rejects_100x_regression(
     assert baseline_stage_profiles["egglog_version"] == report["egglog_version"]
     assert baseline_stage_profile["cython_enabled"] is report["cython_enabled"]
 
-    assert len(catalogue.receipts) == 188
-    assert len(catalogue.compiled_rules) == 108
+    assert len(compiled_rules) == 108
     assert extraction_handler.max_degree == 1
     assert extraction_handler.time_budget_ms == 3
     assert stage_handler.time_budget_ms == 1000

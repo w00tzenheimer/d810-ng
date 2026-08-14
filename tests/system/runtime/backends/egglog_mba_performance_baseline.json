@@ -33,7 +33,9 @@
       "cython_enabled": false,
       "production_receipt_p50_ms": 0.1182914711534977,
       "production_receipt_p95_ms": 0.30469143530353904,
-      "cold_catalogue_seconds": 37.50697951694019,
+      "historical_whole_catalogue_seconds": 37.50697951694019,
+      "catalogue_selection_seconds": {"cold_seconds": 31.437162972986698, "warm_seconds": 0.000024416018277406693},
+      "stage_attempt_outcomes": {"accepted": 5},
       "stage_timing_ms": {
         "root_eligibility": {"p50_ms": 0.002084067091345787, "p95_ms": 0.00378340482711792, "max_ms": 0.00400003045797348},
         "ast_construction": {"p50_ms": 0.0008330680429935455, "p95_ms": 0.0014252495020627975, "max_ms": 0.0015420373529195786},
@@ -47,7 +49,9 @@
       "cython_enabled": true,
       "production_receipt_p50_ms": 0.11149991769343615,
       "production_receipt_p95_ms": 0.43545791413635015,
-      "cold_catalogue_seconds": 32.96563105704263,
+      "historical_whole_catalogue_seconds": 32.96563105704263,
+      "catalogue_selection_seconds": {"cold_seconds": 34.22644318290986, "warm_seconds": 0.000024957815185189247},
+      "stage_attempt_outcomes": {"accepted": 5},
       "stage_timing_ms": {
         "root_eligibility": {"p50_ms": 0.0014998950064182281, "p95_ms": 0.002733105793595314, "max_ms": 0.0029581133276224136},
         "ast_construction": {"p50_ms": 0.0007499475032091141, "p95_ms": 0.0008585397154092789, "max_ms": 0.0008752103894948959},
