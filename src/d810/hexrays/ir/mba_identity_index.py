@@ -20,6 +20,7 @@ from d810.ir.block_identity import (
     MbaBlockHandle,
     NativeEaInterval,
     RebindResult,
+    RebindStatus,
     StableBlockIdentity,
     stable_block_identity_from_snapshot,
 )
@@ -1004,10 +1005,27 @@ class MbaBlockIdentityIndex:
         if handle is None:
             raise ValueError("current serial has no identity binding")
         if handle.stable_identity is not None:
-            return NativeBlockRef(handle.stable_identity)
+            # A NativeBlockRef deliberately identifies native ownership without
+            # a current-MBA coordinate.  It is therefore only valid when that
+            # ownership rebinds to one live block.  Hex-Rays can clone a block
+            # while retaining the same native origins; exporting NativeBlockRef
+            # for both clones collapses two live serials into one typed ref and
+            # makes a PatchPlan's source-coordinate authority ambiguous.
+            #
+            # Each live handle already has a published logical proxy.  Use its
+            # current version for this exceptional, same-generation case so
+            # the backend can bind the exact clone inside its transaction.  A
+            # unique native block retains the stronger cross-snapshot ref.
+            rebound = self.rebind_identity(handle.stable_identity)
+            if (
+                rebound.status is RebindStatus.BOUND
+                and rebound.block is not None
+                and rebound.block.handle.token == handle.token
+            ):
+                return NativeBlockRef(handle.stable_identity)
         proxy = self.logical_proxy_for_handle(handle)
         if proxy is None:
-            raise ValueError("observed block has no published logical proxy")
+            raise ValueError("current block has no published logical proxy")
         version = proxy.resolve()
         if version is None:
             raise ValueError("observed block has no published logical version")

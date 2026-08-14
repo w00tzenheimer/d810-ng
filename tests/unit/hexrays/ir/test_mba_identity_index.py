@@ -19,7 +19,16 @@ from d810.ir.block_identity import (
     StableBlockIdentity,
 )
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnSnapshot
-from d810.transforms.cfg_transaction import PlanBlockRef, TransactionAttemptId
+from d810.ir.maturity import MaturityEnvelope
+from d810.hexrays.mutation.patch_binding import bind_patch_plan
+from d810.transforms.cfg_transaction import (
+    LogicalBlockRef,
+    NativeBlockRef,
+    PlanBlockRef,
+    TransactionAttemptId,
+)
+from d810.transforms.graph_modification import ConvertToGoto
+from d810.transforms.plan import compile_patch_plan
 from tests.native_preanalysis import make_native_key
 
 NATIVE_KEY = make_native_key()
@@ -59,6 +68,53 @@ def test_rebinds_only_unique_current_native_identity() -> None:
         ).status
         is RebindStatus.STALE_GENERATION
     )
+
+
+def test_plan_refs_keep_cloned_native_blocks_as_distinct_logical_versions() -> None:
+    """A plan must not collapse same-origin live clones into one native ref."""
+    cloned = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x40EAA7, 0x40EAA8),), native_key=NATIVE_KEY
+    )
+    unique = StableBlockIdentity.from_intervals(
+        (NativeEaInterval(0x40D348, 0x40D349),), native_key=NATIVE_KEY
+    )
+    index = MbaBlockIdentityIndex.from_bindings(
+        generation=4,
+        maturity=0,
+        bindings=((unique, 16), (cloned, 17), (cloned, 18)),
+        native_key=NATIVE_KEY,
+    )
+
+    refs = index.plan_refs_by_serial()
+    assert isinstance(refs[16], NativeBlockRef)
+    assert isinstance(refs[17], LogicalBlockRef)
+    assert isinstance(refs[18], LogicalBlockRef)
+    assert refs[17] != refs[18]
+    assert index.published_identity_for_logical_ref(refs[17]) == cloned
+    assert index.published_identity_for_logical_ref(refs[18]) == cloned
+
+    plan = compile_patch_plan(
+        [ConvertToGoto(block_serial=17, goto_target=18)],
+        block_refs_by_serial=refs,
+        plan_id="same-origin-live-clones",
+        snapshot_id=index.snapshot_id,
+        source_maturity=MaturityEnvelope(
+            ir=None, provider="hexrays", provider_id=0
+        ),
+        source_generation=index.generation,
+    )
+    assert plan.source_coordinates == ((refs[17], 17), (refs[18], 18))
+
+    attempt = TransactionAttemptId.new(
+        plan.plan_id,
+        index.session_id,
+        index.generation,
+    )
+    index.begin_transaction(attempt, quantity=19)
+    bound = bind_patch_plan(plan, index, attempt)
+    assert dict(bound.bindings)[refs[17]] == 17
+    assert dict(bound.bindings)[refs[18]] == 18
+    index.abort_proxy_transaction(attempt.attempt_id)
 
 
 def test_imported_native_rebind_disambiguates_a_live_translation_clone() -> None:
