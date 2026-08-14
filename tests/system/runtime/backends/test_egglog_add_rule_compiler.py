@@ -12,8 +12,9 @@ from d810.backends.mba.egglog_add_rule_compiler import (  # noqa: E402
     compile_add_rule_catalogue,
     specialize,
 )
+from d810.backends.mba.egglog_saturation import EgglogExtractionReceipt  # noqa: E402
 from d810.core.stats import OptimizationStatistics  # noqa: E402
-from d810.hexrays.expr.p_ast import (  # noqa: E402
+from d810.hexrays.expr.ast import (  # noqa: E402
     AstConstant,
     AstLeaf,
     AstNode,
@@ -255,6 +256,11 @@ def test_central_statistics_records_and_serializes_egglog_provenance(monkeypatch
         "Add_HackersDelightRule_2",
         "Add_OllvmRule_3",
     )
+    handler.last_extraction_receipt = EgglogExtractionReceipt(
+        selected_family="add",
+        selected_source="Add_HackersDelightRule_2",
+        selected_aliases=("Add_OllvmRule_3",),
+    )
     class _Instruction:
         opcode = ida_hexrays.m_add
         ea = 0x401000
@@ -274,7 +280,9 @@ def test_central_statistics_records_and_serializes_egglog_provenance(monkeypatch
     class _Block:
         mba = _Mba()
 
-    optimizer.get_optimized_instruction(_Block(), _Instruction())
+    replacement = optimizer.get_optimized_instruction(_Block(), _Instruction())
+    assert replacement is not None
+    optimizer.record_mutation_accepted()
     execution = stats.get_rule_execution("EgglogOptimizer")
 
     assert execution is not None

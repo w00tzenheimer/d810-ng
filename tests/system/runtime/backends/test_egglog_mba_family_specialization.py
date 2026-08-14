@@ -18,7 +18,7 @@ from d810.backends.mba.egglog_saturation import (  # noqa: E402
     extract_bounded_candidate,
 )
 from d810.core.stats import OptimizationStatistics  # noqa: E402
-from d810.hexrays.expr.p_ast import (  # noqa: E402
+from d810.hexrays.expr.ast import (  # noqa: E402
     AstBase,
     AstConstant,
     AstLeaf,
@@ -434,7 +434,9 @@ def test_central_statistics_records_selected_family_provenance(monkeypatch):
     class _Block:
         mba = _Mba()
 
-    optimizer.get_optimized_instruction(_Block(), _Instruction())
+    replacement = optimizer.get_optimized_instruction(_Block(), _Instruction())
+    assert replacement is not None
+    optimizer.record_mutation_accepted()
     execution = stats.get_rule_execution("EgglogOptimizer")
 
     assert execution is not None
