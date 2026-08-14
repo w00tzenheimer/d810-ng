@@ -10,11 +10,12 @@ constraint or replacement materialization semantics.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import cached_property
 
 from d810.backends.mba.native_mba_term_view import NativeMbaTermView
 from d810.core.cymode import CythonMode
 from d810.core.typing import Any
-from d810.mba.typed_term import _leaf_key_fingerprint
+from d810.mba.typed_term import TypedBvTerm, _leaf_key_fingerprint
 
 
 _OPERATION_CODES = {
@@ -27,6 +28,7 @@ _OPERATION_CODES = {
     "sub": 7,
     "xor": 8,
 }
+_OPERATION_NAMES = {code: name for name, code in _OPERATION_CODES.items()}
 
 OP_ADD = _OPERATION_CODES["add"]
 _KIND_CONSTANT = 1
@@ -69,6 +71,38 @@ class PackedNativeMbaTerm:
     nodes: tuple[PackedPodNode, ...]
     root_index: int
     sidecar: tuple[NativeMbaTermView | None, ...]
+
+    @cached_property
+    def typed_terms(self) -> tuple[TypedBvTerm, ...]:
+        """Materialize each packed node once, only after an admitted match."""
+
+        terms: list[TypedBvTerm] = []
+        for node in self.nodes:
+            if node.kind == _KIND_CONSTANT:
+                terms.append(TypedBvTerm(None, node.width, value=node.literal_u64))
+                continue
+            if node.kind == _KIND_LEAF:
+                sidecar = self.sidecar[node.sidecar_index]
+                if sidecar is None or sidecar.leaf_key is None:
+                    raise ValueError("packed native leaf is missing live identity")
+                terms.append(TypedBvTerm(None, node.width, leaf_key=sidecar.leaf_key))
+                continue
+            operation = _OPERATION_NAMES.get(node.operation)
+            if operation is None or node.left_index < 0:
+                raise ValueError("packed native operation is malformed")
+            children = (terms[node.left_index],)
+            if node.right_index >= 0:
+                children += (terms[node.right_index],)
+            terms.append(TypedBvTerm(operation, node.width, children=children))
+        return tuple(terms)
+
+    def typed_term(self, node_index: int | None = None) -> TypedBvTerm:
+        """Return the cached portable term for one packed node."""
+
+        index = self.root_index if node_index is None else node_index
+        if type(index) is not int or not 0 <= index < len(self.nodes):
+            raise ValueError("packed native term index is out of range")
+        return self.typed_terms[index]
 
     def numeric_rows(self) -> tuple[tuple[int, ...], ...]:
         """Return POD rows with a structural identity for repeated bindings."""
@@ -327,19 +361,25 @@ def _match_cython_catalogue(
         pattern_rows, names = encoded
         seen: set[str] = set()
         for indices in bindings_rows:
-            native = {
-                name: packed.sidecar[index] for name, index in zip(names, indices)
-            }
+            native: dict[str, NativeMbaTermView | None] = {}
+            term_bindings: dict[str, TypedBvTerm] = {}
+            for name, index in zip(names, indices, strict=True):
+                native[name] = packed.sidecar[index]
+                term_bindings[name] = packed.typed_term(index)
             if any(value is None for value in native.values()):
                 return None
-            term_bindings = {
-                name: value.to_typed_term() for name, value in native.items()
+            resolved_native = {
+                name: value for name, value in native.items() if value is not None
             }
             if not _constraints_match_term(
                 compiled.rule, term_bindings, width=root.width
             ):
                 continue
-            fixed = FixedBindings(native=native, terms=term_bindings, width=root.width)
+            fixed = FixedBindings(
+                native=resolved_native,
+                terms=term_bindings,
+                width=root.width,
+            )
             try:
                 fingerprint = term_fingerprint(
                     fixed.materialize_replacement(compiled.rule)
@@ -352,7 +392,12 @@ def _match_cython_catalogue(
             matches.append(
                 NativePatternMatch(compiled.rule, fixed, compiled.catalogue_index)
             )
-    return NativePatternMatchResult(tuple(matches), comparisons, lazy_swaps)
+    return NativePatternMatchResult(
+        tuple(matches),
+        comparisons,
+        lazy_swaps,
+        candidate_term=packed.typed_term() if matches else None,
+    )
 
 
 def encode_symbolic_pattern(

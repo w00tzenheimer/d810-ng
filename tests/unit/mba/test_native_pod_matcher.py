@@ -56,6 +56,18 @@ def test_packed_view_retains_associative_binary_structure_for_numeric_matching()
     assert len(packed.nodes) == 5
 
 
+def test_packed_view_materializes_one_shared_portable_term() -> None:
+    x, y = _leaf("x"), _leaf("y")
+    candidate = _node("add", _node("xor", x, y), _constant(1))
+    packed = PackedNativeMbaTerm.from_view(candidate)
+
+    first = packed.typed_term()
+
+    assert first == candidate.to_typed_term()
+    assert packed.typed_term() is first
+    assert packed.typed_term(packed.root_index) is first
+
+
 def test_packed_view_uses_ac_identity_for_repeated_operand_checks(monkeypatch) -> None:
     a, b = _leaf("a"), _leaf("b")
     shared = _node("add", a, b)

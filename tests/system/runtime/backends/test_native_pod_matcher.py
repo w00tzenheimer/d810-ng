@@ -249,6 +249,50 @@ def test_cython_pod_catalogue_adapter_matches_portable_catalogue() -> None:
 @pytest.mark.skipif(
     not CythonMode().is_enabled(), reason="requires the Cython POD matcher"
 )
+def test_cython_pod_catalogue_reuses_packed_terms_without_view_rematerialization(
+    monkeypatch,
+) -> None:
+    from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
+    from d810.backends.mba.egglog_add_rule_compiler import compile_add_rule_catalogue
+    from d810.backends.mba.native_mba_term_view import NativeMbaTermView
+
+    catalogue = CompiledPatternCatalogue.from_rules(
+        compile_add_rule_catalogue().compiled_rules
+    )
+    x = NativeMbaTermView(None, 32, leaf_key=("mop", "r", "x"))
+    y = NativeMbaTermView(None, 32, leaf_key=("mop", "r", "y"))
+    two = NativeMbaTermView(None, 32, constant_value=2)
+    candidate = NativeMbaTermView(
+        "add",
+        32,
+        children=(
+            NativeMbaTermView("xor", 32, children=(x, y)),
+            NativeMbaTermView(
+                "mul",
+                32,
+                children=(two, NativeMbaTermView("and", 32, children=(x, y))),
+            ),
+        ),
+    )
+
+    def forbidden_rematerialization(_view):
+        raise AssertionError("Cython matcher must reuse the packed typed-term cache")
+
+    monkeypatch.setattr(
+        NativeMbaTermView,
+        "to_typed_term",
+        forbidden_rematerialization,
+    )
+
+    result = catalogue.match_root(candidate, comparison_budget=64)
+
+    assert result.matches
+    assert result.candidate_term is not None
+
+
+@pytest.mark.skipif(
+    not CythonMode().is_enabled(), reason="requires the Cython POD matcher"
+)
 def test_public_catalogue_match_uses_cython_pod_backend(monkeypatch) -> None:
     from d810.backends.mba import native_pod_matcher
     from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue

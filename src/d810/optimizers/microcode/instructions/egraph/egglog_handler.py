@@ -336,7 +336,13 @@ class EgglogOptimizer(PeepholeSimplificationRule):
                 return None
         finally:
             self._finish_stage("native_preflight")
-        candidate_term = canonicalize_ac_term(view.to_typed_term())
+        candidate_term = canonicalize_ac_term(
+            (
+                view.to_typed_term()
+                if match_result.candidate_term is None
+                else match_result.candidate_term
+            )
+        )
         initial_replacements = {
             id(match.rule): match.bindings.materialize_replacement(match.rule)
             for match in matches

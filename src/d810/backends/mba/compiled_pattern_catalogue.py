@@ -77,6 +77,7 @@ class NativePatternMatchResult:
     comparisons: int
     lazy_swaps: int
     comparison_budget_exceeded: bool = False
+    candidate_term: TypedBvTerm | None = None
 
 
 @dataclass(frozen=True)
@@ -211,7 +212,10 @@ class CompiledPatternCatalogue:
                     (), budget.comparisons, budget.lazy_swaps, True
                 )
         return NativePatternMatchResult(
-            tuple(matches), budget.comparisons, budget.lazy_swaps
+            tuple(matches),
+            budget.comparisons,
+            budget.lazy_swaps,
+            candidate_term=candidate.to_typed_term() if matches else None,
         )
 
 
