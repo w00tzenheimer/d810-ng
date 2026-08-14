@@ -7,6 +7,7 @@ import pytest
 
 from d810.mba.certified_catalogue import (
     ShadowMatcherParityLedger,
+    StructuralMatcherParityCertificate,
     StructuralMatcherParityExpectation,
     build_certified_catalogue_snapshot,
     load_structural_matcher_parity_certificate,
@@ -41,6 +42,20 @@ class _SemanticRule(_Rule):
 class _DifferentImplementationRule(_SemanticRule):
     def check_candidate(self, candidate) -> bool:
         return not bool(candidate)
+
+
+_HOOK_GLOBAL_LIMIT = 1
+_UNFINGERPRINTABLE_HOOK_GLOBAL = object()
+
+
+class _GlobalConstraintRule(_SemanticRule):
+    def check_candidate(self, candidate) -> bool:
+        return candidate == _HOOK_GLOBAL_LIMIT
+
+
+class _UnfingerprintableGlobalRule(_SemanticRule):
+    def check_candidate(self, candidate) -> bool:
+        return candidate is _UNFINGERPRINTABLE_HOOK_GLOBAL
 
 
 def _digest(value: str) -> str:
@@ -118,6 +133,47 @@ def test_snapshot_fingerprint_binds_replacement_constraints_and_implementation()
     assert baseline.fingerprint != changed_replacement.fingerprint
     assert baseline.fingerprint != changed_constraints.fingerprint
     assert baseline.fingerprint != changed_implementation.fingerprint
+
+
+def test_snapshot_fingerprint_binds_referenced_hook_global_values(monkeypatch) -> None:
+    x, y = Var("x"), Var("y")
+    baseline = build_certified_catalogue_snapshot(
+        (_GlobalConstraintRule("one", x + y, x ^ y),),
+        compiler_version="global-values-v1",
+    )
+
+    monkeypatch.setattr(
+        "tests.unit.mba.test_certified_catalogue._HOOK_GLOBAL_LIMIT", 2
+    )
+    changed = build_certified_catalogue_snapshot(
+        (_GlobalConstraintRule("one", x + y, x ^ y),),
+        compiler_version="global-values-v1",
+    )
+
+    assert baseline.fingerprint != changed.fingerprint
+
+
+def test_snapshot_with_unfingerprintable_hook_global_cannot_authorize() -> None:
+    x, y = Var("x"), Var("y")
+    snapshot = build_certified_catalogue_snapshot(
+        (_UnfingerprintableGlobalRule("one", x + y, x ^ y),),
+        compiler_version="unfingerprintable-global-v1",
+    )
+    expectation = StructuralMatcherParityExpectation(
+        corpus_digest=_digest("native-corpus"),
+        toolchain_digest=_digest("ida-9.4-cython"),
+        legacy_observation_count=1,
+    )
+    certificate = StructuralMatcherParityCertificate(
+        snapshot_fingerprint=snapshot.fingerprint,
+        runtime_mode="cython",
+        corpus_digest=expectation.corpus_digest,
+        toolchain_digest=expectation.toolchain_digest,
+        legacy_observation_count=expectation.legacy_observation_count,
+    )
+
+    assert snapshot.structural_authorizable is False
+    assert not certificate.authorizes(snapshot, "cython", expectation)
 
 
 def test_parity_certificate_requires_exact_expected_corpus_toolchain_and_coverage(
