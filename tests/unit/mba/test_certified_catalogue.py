@@ -98,11 +98,18 @@ def test_shadow_ledger_counts_only_evidence_backed_legacy_parity_mismatches() ->
     ledger.record(
         legacy_match=True, structural_match=False, same_rule=False, same_bindings=False
     )
+    ledger.record(
+        legacy_match=False,
+        structural_match=True,
+        same_rule=False,
+        same_bindings=None,
+        structural_proven=True,
+    )
 
-    assert ledger.observation_count == 4
+    assert ledger.observation_count == 5
     assert ledger.legacy_match_count == 3
     assert ledger.legacy_rule_mismatches == 1
     assert ledger.legacy_binding_mismatches == 1
     assert ledger.legacy_binding_unknown == 1
     assert ledger.new_safe_coverage_pending == 1
-    assert ledger.new_safe_coverage_proved == 0
+    assert ledger.new_safe_coverage_proved == 1

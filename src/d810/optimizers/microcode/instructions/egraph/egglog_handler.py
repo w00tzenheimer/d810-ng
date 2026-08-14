@@ -28,6 +28,7 @@ from d810.backends.mba.egglog_saturation import (
     extract_bounded_candidate,
 )
 from d810.backends.mba.hexrays_island import lower_hexrays_island
+from d810.backends.mba.native_z3 import prove_native_ast_equivalence
 from d810.core import getLogger
 from d810.hexrays.expr.ast import AstNode
 from d810.hexrays.ir_maturity import ir_maturity_to_ida
@@ -593,50 +594,9 @@ class EgglogOptimizer(PeepholeSimplificationRule):
     def _prove_ast_equivalence(
         original: AstNode, replacement: AstNode, *, width: int
     ) -> bool:
-        """Prove concrete native AST equivalence at the destination width."""
-        try:
-            import z3
+        """Compatibility facade for the shared native Z3 mutation gate."""
 
-            variables = {}
-
-            def visit(node):
-                if node is None:
-                    raise ValueError("missing AST operand")
-                if node.is_leaf():
-                    if node.is_constant():
-                        return z3.BitVecVal(int(node.value), width)
-                    mop = getattr(node, "mop", None)
-                    try:
-                        hash(mop)
-                        key = ("mop", mop)
-                    except TypeError:
-                        key = ("mop", repr(mop))
-                    return variables.setdefault(
-                        key, z3.BitVec(f"egglog_leaf_{len(variables)}", width)
-                    )
-                left = visit(node.left)
-                right = visit(node.right) if node.right is not None else None
-                operations = {
-                    ida_hexrays.m_add: lambda: left + right,
-                    ida_hexrays.m_sub: lambda: left - right,
-                    ida_hexrays.m_mul: lambda: left * right,
-                    ida_hexrays.m_and: lambda: left & right,
-                    ida_hexrays.m_or: lambda: left | right,
-                    ida_hexrays.m_xor: lambda: left ^ right,
-                    ida_hexrays.m_neg: lambda: -left,
-                    ida_hexrays.m_bnot: lambda: ~left,
-                }
-                operation = operations.get(node.opcode)
-                if operation is None:
-                    raise ValueError(f"unsupported AST opcode: {node.opcode}")
-                return operation()
-
-            solver = z3.Solver()
-            solver.set(timeout=50)
-            solver.add(visit(original) != visit(replacement))
-            return solver.check() == z3.unsat
-        except Exception:
-            return False
+        return prove_native_ast_equivalence(original, replacement, width=width)
 
     @staticmethod
     def _create_instruction(replacement: AstNode, original_ins):

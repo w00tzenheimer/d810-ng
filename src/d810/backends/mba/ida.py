@@ -42,6 +42,7 @@ from d810.mba.provider_outcome import (
     ProviderOutcomeStatus,
 )
 from d810.hexrays.ir.number_operand import safe_make_number
+from d810.backends.mba.native_z3 import prove_native_ast_equivalence
 
 logger = getLogger(__name__)
 
@@ -120,6 +121,18 @@ class _LeafWrapper:
             self.dst_mop = leaf.mop.to_mop()  # Reconstruct owned mop_t
         else:
             self.dst_mop = leaf.mop  # Already a mop_t (legacy path)
+
+
+class _ShadowBindingCandidate:
+    """Read-only structural bindings shaped for the existing emitter."""
+
+    __slots__ = ("leafs_by_name", "ea", "dst_mop", "is_candidate_ok")
+
+    def __init__(self, leafs_by_name: dict[str, Any], source: Any) -> None:
+        self.leafs_by_name = leafs_by_name
+        self.ea = getattr(source, "ea", None)
+        self.dst_mop = getattr(source, "dst_mop", None)
+        self.is_candidate_ok = True
 
 
 class IDANodeVisitor:
@@ -385,6 +398,7 @@ class IDAPatternAdapter:
         self._attempt_outcome_index: int | None = None
         self._shadow_match_report = None
         self._shadow_lowering = None
+        self._shadow_source_ast = None
         self._shadow_structural_native_paths: dict[str, tuple[int, ...]] | None = None
         self._legacy_binding_paths: (
             dict[str, frozenset[tuple[int, ...]]] | None
@@ -413,6 +427,7 @@ class IDAPatternAdapter:
         self._attempt_outcome_index = None
         self._shadow_match_report = None
         self._shadow_lowering = None
+        self._shadow_source_ast = None
         self._shadow_structural_native_paths = None
         self._legacy_binding_paths = None
         self._legacy_match_observed = False
@@ -502,6 +517,7 @@ class IDAPatternAdapter:
                 if mapped_paths:
                     structural_native_paths = mapped_paths
             self._shadow_lowering = lowering
+            self._shadow_source_ast = test_ast
             self._shadow_match_report = report
             self._shadow_structural_native_paths = structural_native_paths
             return report
@@ -528,8 +544,23 @@ class IDAPatternAdapter:
         self._legacy_match_observed = True
         self._legacy_binding_paths = None
         lowering = getattr(self, "_shadow_lowering", None)
-        leafs_by_name = getattr(candidate_pattern, "leafs_by_name", None)
-        if lowering is None or not isinstance(leafs_by_name, dict):
+        if lowering is None:
+            return
+        declared_names: set[str] = set()
+
+        def collect_declared_names(pattern: Any) -> None:
+            if bool(getattr(pattern, "is_node", lambda: False)()):
+                for child_name in ("left", "right"):
+                    child = getattr(pattern, child_name, None)
+                    if child is not None:
+                        collect_declared_names(child)
+                return
+            name = getattr(pattern, "name", None)
+            if type(name) is str and name and name != "_candidate":
+                declared_names.add(name)
+
+        collect_declared_names(candidate_pattern)
+        if not declared_names:
             return
         # The legacy matcher walks its pattern and source in lockstep. Preserve
         # that slot evidence whenever the caller still has the source tree.
@@ -555,7 +586,7 @@ class IDAPatternAdapter:
                             return False
                     return True
                 name = getattr(pattern, "name", None)
-                if type(name) is str and name in leafs_by_name:
+                if type(name) is str and name in declared_names:
                     # Repeated pattern variables have several legitimate
                     # source slots.  Keep all of them; the structural matcher
                     # may select any one only after checking their equality.
@@ -564,7 +595,7 @@ class IDAPatternAdapter:
 
             if walk(candidate_pattern, source_ast, ()) and set(
                 resolved_from_slots
-            ) == {name for name in leafs_by_name if name != "_candidate"}:
+            ) == declared_names:
                 self._legacy_binding_paths = {
                     name: frozenset(paths)
                     for name, paths in resolved_from_slots.items()
@@ -601,8 +632,80 @@ class IDAPatternAdapter:
         if ledger is None:
             return
         shadow = self._shadow_metadata(legacy_match=legacy_match)
-        ledger.record(**shadow)
+        structural_proven = (
+            not legacy_match
+            and bool(shadow["structural_match"])
+            and self._prove_structural_only_candidate()
+        )
+        ledger.record(**shadow, structural_proven=structural_proven)
         self._shadow_parity_recorded = True
+
+    @staticmethod
+    def _native_node_at_path(source: Any, path: tuple[int, ...]) -> Any | None:
+        current = source
+        try:
+            for index in path:
+                current = getattr(current, "left" if index == 0 else "right", None)
+                if current is None:
+                    return None
+            return current
+        except Exception:
+            return None
+
+    def _prove_structural_only_candidate(self) -> bool:
+        """Promote a structural-only hit after reconstruction and proof only."""
+
+        source = getattr(self, "_shadow_source_ast", None)
+        paths = getattr(self, "_shadow_structural_native_paths", None)
+        destination_size = getattr(self, "_attempt_destination_size", None)
+        if source is None or not paths or destination_size is None:
+            return False
+        leafs_by_name: dict[str, Any] = {}
+        for name, path in paths.items():
+            native = self._native_node_at_path(source, path)
+            if native is None:
+                return False
+            leafs_by_name[name] = native
+        candidate = _ShadowBindingCandidate(leafs_by_name, source)
+        if not candidate.ea or not self._check_candidate(candidate):
+            return False
+        replacement_ins = self._get_shadow_replacement(candidate)
+        if replacement_ins is None:
+            return False
+        replacement = minsn_to_ast(replacement_ins)
+        input_cost = self._ast_cost(source)
+        output_cost = self._ast_cost(replacement)
+        if (
+            replacement is None
+            or input_cost is None
+            or output_cost is None
+            or output_cost >= input_cost
+        ):
+            return False
+        return prove_native_ast_equivalence(
+            source,
+            replacement,
+            width=int(destination_size) * 8,
+        )
+
+    def _get_shadow_replacement(self, candidate: _ShadowBindingCandidate) -> Any | None:
+        """Use the native emitter without mutating its cached live pattern."""
+
+        repl_pattern = self.REPLACEMENT_PATTERN
+        if repl_pattern is None:
+            return None
+        try:
+            replacement = repl_pattern.clone()
+        except Exception:
+            return None
+        if not replacement.update_leafs_mop(candidate):
+            return None
+        if not self._materialize_replacement_constants(replacement, candidate):
+            return None
+        try:
+            return replacement.create_minsn(candidate.ea, candidate.dst_mop)
+        except AstEvaluationException:
+            return None
 
     def _publish_provider_outcome(self, outcome: MbaProviderOutcome) -> None:
         self._last_provider_outcome = outcome
