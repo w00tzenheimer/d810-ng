@@ -48,6 +48,41 @@ def test_cython_pod_matcher_returns_ac_bindings_and_honors_its_budget() -> None:
     assert match_pod_pattern(pattern_rows, candidate_rows, 2, 2, 1)[3] is True
 
 
+@pytest.mark.skipif(
+    not CythonMode().is_enabled(), reason="requires the Cython POD matcher"
+)
+def test_cython_pod_catalogue_matches_multiple_patterns_in_one_call() -> None:
+    from d810.speedups.mba.c_native_pod_matcher import match_pod_catalogue
+
+    pattern_rows = (
+        (2, 0, 0, 0, 0, -1, -1),
+        (2, 0, 1, 0, 0, -1, -1),
+        (3, 1, -1, 0, 0, 0, 1),
+    )
+    constant_pattern_rows = (
+        (1, 0, -1, 7, 0, -1, -1),
+        (2, 0, 0, 0, 0, -1, -1),
+        (3, 1, -1, 0, 0, 0, 1),
+    )
+    candidate_rows = (
+        (2, 0, 32, -1, -1, 0, 0, 0),
+        (2, 0, 32, -1, -1, 0, 1, 1),
+        (3, 1, 32, 0, 1, 0, -1, 2),
+    )
+
+    matches, comparisons, lazy_swaps, exceeded = match_pod_catalogue(
+        ((pattern_rows, 2), (constant_pattern_rows, 1)),
+        candidate_rows,
+        2,
+        64,
+    )
+
+    assert matches == (((0, 1), (1, 0)), ())
+    assert comparisons >= 4
+    assert lazy_swaps == 2
+    assert exceeded is False
+
+
 def test_cython_pod_catalogue_adapter_matches_portable_catalogue() -> None:
     from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
     from d810.backends.mba.egglog_add_rule_compiler import compile_add_rule_catalogue
@@ -106,19 +141,19 @@ def test_public_catalogue_match_uses_cython_pod_backend(monkeypatch) -> None:
         ),
     )
     calls = 0
-    original = native_pod_matcher._match_pod_pattern
+    original = native_pod_matcher._match_pod_catalogue
 
     def observed(*args):
         nonlocal calls
         calls += 1
         return original(*args)
 
-    monkeypatch.setattr(native_pod_matcher, "_match_pod_pattern", observed)
+    monkeypatch.setattr(native_pod_matcher, "_match_pod_catalogue", observed)
 
     assert catalogue.match_root(candidate, comparison_budget=64) == (
         catalogue._match_root_portable(candidate, comparison_budget=64)
     )
-    assert calls == len(catalogue.root_width_buckets[("add", 32)])
+    assert calls == 1
 
 
 @pytest.mark.skipif(

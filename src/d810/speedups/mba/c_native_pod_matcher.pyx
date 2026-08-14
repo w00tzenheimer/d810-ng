@@ -199,3 +199,65 @@ def match_pod_pattern(
         result = results[result_index]
         output.append(tuple(result[binding_index] for binding_index in range(result.size())))
     return tuple(output), counter.comparisons, counter.lazy_swaps, False
+
+
+def match_pod_catalogue(
+    tuple patterns,
+    tuple candidate_rows,
+    int candidate_root_index,
+    int comparison_budget,
+):
+    """Match a root bucket in one Cython call with one global work cap.
+
+    ``patterns`` is a declaration-ordered tuple of
+    ``(pattern_rows, variable_count)`` records.  The nested result tuple has
+    one binding tuple per pattern, preserving the Python catalogue's order.
+    """
+
+    cdef tuple record
+    cdef tuple pattern_rows
+    cdef int variable_count
+    cdef vector[int] bindings
+    cdef vector[vector[int]] results
+    cdef vector[int] result
+    cdef MatchCounter counter
+    cdef int index
+    cdef size_t result_index
+    cdef size_t binding_index
+    cdef list catalogue_output = []
+    cdef list pattern_output
+
+    if comparison_budget <= 0:
+        raise ValueError("comparison_budget must be positive")
+    if candidate_root_index < 0:
+        return (), 0, 0, False
+    counter.comparisons = 0
+    counter.lazy_swaps = 0
+    counter.limit = comparison_budget
+    counter.exceeded = False
+    for record in patterns:
+        pattern_rows = <tuple>record[0]
+        variable_count = <int>record[1]
+        if variable_count < 0:
+            raise ValueError("variable_count must be non-negative")
+        bindings.clear()
+        for index in range(variable_count):
+            bindings.push_back(-1)
+        results = _match(
+            pattern_rows,
+            candidate_rows,
+            len(pattern_rows) - 1,
+            candidate_root_index,
+            bindings,
+            &counter,
+        )
+        if counter.exceeded:
+            return (), counter.comparisons, counter.lazy_swaps, True
+        pattern_output = []
+        for result_index in range(results.size()):
+            result = results[result_index]
+            pattern_output.append(
+                tuple(result[binding_index] for binding_index in range(result.size()))
+            )
+        catalogue_output.append(tuple(pattern_output))
+    return tuple(catalogue_output), counter.comparisons, counter.lazy_swaps, False

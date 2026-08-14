@@ -36,11 +36,14 @@ _MISSING_INDEX = -1
 if CythonMode().is_enabled():
     try:
         from d810.speedups.mba.c_native_pod_matcher import (  # type: ignore[import-not-found]
+            match_pod_catalogue as _match_pod_catalogue,
             match_pod_pattern as _match_pod_pattern,
         )
     except ImportError:
+        _match_pod_catalogue = None
         _match_pod_pattern = None
 else:
+    _match_pod_catalogue = None
     _match_pod_pattern = None
 
 
@@ -222,25 +225,27 @@ def _match_cython_catalogue(
     root = packed.sidecar[packed.root_index]
     assert root is not None
     candidate_rows = packed.numeric_rows()
+    bucket = catalogue.root_width_buckets.get((root.operation, root.width), ())
+    if any(compiled.pod_pattern is None for compiled in bucket):
+        return None
+    if _match_pod_catalogue is None:
+        return None
+    pattern_records = tuple(
+        (compiled.pod_pattern[0], len(compiled.pod_pattern[1])) for compiled in bucket
+    )
+    results_by_pattern, comparisons, lazy_swaps, exceeded = _match_pod_catalogue(
+        pattern_records,
+        candidate_rows,
+        packed.root_index,
+        comparison_budget,
+    )
+    if exceeded:
+        return NativePatternMatchResult((), comparisons, lazy_swaps, True)
     matches: list[Any] = []
-    comparisons = 0
-    lazy_swaps = 0
-    for compiled in catalogue.root_width_buckets.get((root.operation, root.width), ()):
+    for compiled, bindings_rows in zip(bucket, results_by_pattern, strict=True):
         encoded = compiled.pod_pattern
-        if encoded is None:
-            return None
+        assert encoded is not None
         pattern_rows, names = encoded
-        bindings_rows, used, swaps, exceeded = _match_pod_pattern(
-            pattern_rows,
-            candidate_rows,
-            packed.root_index,
-            len(names),
-            comparison_budget - comparisons,
-        )
-        comparisons += int(used)
-        lazy_swaps += int(swaps)
-        if exceeded:
-            return NativePatternMatchResult((), comparisons, lazy_swaps, True)
         seen: set[str] = set()
         for indices in bindings_rows:
             native = {
