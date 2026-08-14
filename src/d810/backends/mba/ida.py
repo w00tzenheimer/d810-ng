@@ -569,11 +569,27 @@ class IDAPatternAdapter:
         if not candidate.ea or not self._check_candidate(candidate):
             return None
         replacement = self.get_replacement(candidate)
-        if replacement is not None:
-            self._record_catalogue_success(
-                test_ast,
-                self.REPLACEMENT_PATTERN,
-            )
+        if replacement is None:
+            return None
+        destination_size = self._attempt_destination_size
+        if type(destination_size) is not int or destination_size <= 0:
+            destination_size = getattr(test_ast, "dest_size", None)
+        if type(destination_size) is not int or destination_size <= 0:
+            return None
+        try:
+            replacement_ast = minsn_to_ast(replacement)
+        except Exception:
+            return None
+        if replacement_ast is None or not prove_native_ast_equivalence(
+            test_ast,
+            replacement_ast,
+            width=destination_size * 8,
+        ):
+            return None
+        self._record_catalogue_success(
+            test_ast,
+            self.REPLACEMENT_PATTERN,
+        )
         return replacement
 
     def prepare_structural_candidate(
