@@ -44,6 +44,29 @@ def test_packed_view_separates_numeric_nodes_from_live_identity_sidecar() -> Non
     assert packed.sidecar[root.right_index] is y
 
 
+def test_packed_view_retains_associative_binary_structure_for_numeric_matching() -> (
+    None
+):
+    x, y, z = _leaf("x"), _leaf("y"), _leaf("z")
+    packed = PackedNativeMbaTerm.from_view(_node("add", _node("add", x, y), z))
+    root = packed.nodes[packed.root_index]
+
+    assert root.operation == OP_ADD
+    assert packed.nodes[root.left_index].operation == OP_ADD
+    assert len(packed.nodes) == 5
+
+
+def test_packed_view_uses_ac_identity_for_repeated_operand_checks() -> None:
+    a, b = _leaf("a"), _leaf("b")
+    packed = PackedNativeMbaTerm.from_view(
+        _node("xor", _node("add", a, b), _node("add", b, a))
+    )
+    root = packed.nodes[packed.root_index]
+    rows = packed.numeric_rows()
+
+    assert rows[root.left_index][7] == rows[root.right_index][7]
+
+
 def test_pod_adapter_matches_portable_catalogue_exactly() -> None:
     rule = _rule("Add_HackersDelightRule_2")
     assert rule is not None

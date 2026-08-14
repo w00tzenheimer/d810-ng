@@ -72,10 +72,11 @@ class PackedNativeMbaTerm:
         """Return POD rows with a structural identity for repeated bindings."""
 
         identity_by_key: dict[tuple[object, ...], int] = {}
+        keys = tuple(_view_match_key(view) for view in self.sidecar)
         match_ids: list[int] = []
-        for view in self.sidecar:
-            key = _view_match_key(view)
+        for key in keys:
             match_ids.append(identity_by_key.setdefault(key, len(identity_by_key)))
+        rank_by_key = {key: rank for rank, key in enumerate(sorted(set(keys)))}
         return tuple(
             (
                 node.kind,
@@ -86,6 +87,7 @@ class PackedNativeMbaTerm:
                 node.literal_u64,
                 node.sidecar_index,
                 match_ids[index],
+                rank_by_key[keys[index]],
             )
             for index, node in enumerate(self.nodes)
         )
@@ -120,13 +122,10 @@ class PackedNativeMbaTerm:
                 )
                 sidecar.append(current)
                 return index
-            children = (
-                current.canonical_children()
-                if current.operation in {"add", "and", "mul", "or", "xor"}
-                else current.children
-            )
-            if len(children) > 2:
-                raise ValueError("POD packing does not encode associative chains")
+            # Preserve the original binary tree. The numeric matcher owns AC
+            # flattening and rollback so it can retain exact native sidecar
+            # indices without allocating a Python n-ary representation.
+            children = current.children
             left_index = append(children[0])
             right_index = _MISSING_INDEX if len(children) == 1 else append(children[1])
             operation = _OPERATION_CODES.get(current.operation)
@@ -164,8 +163,6 @@ def match_root_pod(
     result type exactly.
     """
 
-    if _has_associative_chain(view):
-        return catalogue._match_root_portable(view, comparison_budget=comparison_budget)
     packed = PackedNativeMbaTerm.from_view(view)
     if _match_pod_pattern is not None:
         accelerated = _match_cython_catalogue(
@@ -201,7 +198,7 @@ def _view_match_key(view: NativeMbaTermView | None) -> tuple[object, ...]:
         "node",
         view.operation,
         view.width,
-        tuple(_view_match_key(child) for child in view.children),
+        tuple(_view_match_key(child) for child in view.canonical_children()),
     )
 
 
@@ -210,8 +207,8 @@ def _match_cython_catalogue(
 ) -> Any | None:
     """Adapt Cython's numeric bindings into the existing immutable result.
 
-    Associative chains retain the portable matcher for now: their canonical
-    n-ary rollback is a distinct parity case, never an approximation.
+    The Cython result carries only numeric indices. Constraint validation and
+    replacement materialization remain in this adapter.
     """
 
     from d810.backends.mba.compiled_pattern_catalogue import (
@@ -329,8 +326,6 @@ def encode_symbolic_pattern(
                 )
             )
             return len(rows) - 1
-        if _has_associative_chain_expression(current):
-            return None
         operation = _OPERATION_CODES.get(current.operation)
         if operation is None or current.left is None:
             return None
@@ -342,42 +337,6 @@ def encode_symbolic_pattern(
         return len(rows) - 1
 
     return None if encode(expression) is None else (tuple(rows), tuple(names))
-
-
-def _has_associative_chain(view: NativeMbaTermView) -> bool:
-    if view.operation is None:
-        return False
-    if view.operation in _OPERATION_CODES and view.operation in {
-        "add",
-        "and",
-        "mul",
-        "or",
-        "xor",
-    }:
-        if any(child.operation == view.operation for child in view.children):
-            return True
-    return any(_has_associative_chain(child) for child in view.children)
-
-
-def _has_associative_chain_expression(expression: Any) -> bool:
-    if expression.operation is None:
-        return False
-    if expression.operation in {"add", "and", "mul", "or", "xor"}:
-        if (
-            expression.left is not None
-            and expression.left.operation == expression.operation
-        ):
-            return True
-        if (
-            expression.right is not None
-            and expression.right.operation == expression.operation
-        ):
-            return True
-    return any(
-        _has_associative_chain_expression(child)
-        for child in (expression.left, expression.right)
-        if child is not None
-    )
 
 
 __all__ = [
