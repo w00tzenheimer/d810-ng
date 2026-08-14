@@ -63,7 +63,8 @@ import json
 import sqlite3
 import threading
 import time
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from d810.core import logging
@@ -76,6 +77,7 @@ from d810.core.execution_journal import (
     ExecutionEffectRef,
     advance_attempt,
 )
+from d810.core.native_preanalysis_key import NativePreanalysisKey
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +101,8 @@ CREATE TABLE IF NOT EXISTS execution_attempt_events (
     status        TEXT    NOT NULL,
     reason_code   TEXT,
     effect_refs_json TEXT NOT NULL,
+    elapsed_ms    REAL,
+    details_json  TEXT    NOT NULL DEFAULT '{}',
     created_at    REAL    NOT NULL
 );
 
@@ -109,6 +113,17 @@ CREATE TABLE IF NOT EXISTS execution_attempt_sequence_counters (
     session_id    TEXT PRIMARY KEY,
     next_sequence INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS execution_session_bindings (
+    binding_id  INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id  TEXT    NOT NULL UNIQUE,
+    function_ea INTEGER NOT NULL,
+    native_key_json TEXT,
+    created_at  REAL    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_execution_session_bindings_function
+    ON execution_session_bindings(function_ea, binding_id);
 """
 
 
@@ -144,13 +159,46 @@ class AmbiguousExecutionAttemptLookupError(ValueError):
     """Raised when a lookup expecting exactly one attempt finds zero or many."""
 
 
+def _json_plain(value: object) -> object:
+    """Turn the core immutable JSON representation back into JSON values."""
+    if isinstance(value, dict):
+        return {str(key): _json_plain(nested) for key, nested in value.items()}
+    if hasattr(value, "items"):
+        return {
+            str(key): _json_plain(nested)
+            for key, nested in value.items()  # type: ignore[union-attr]
+        }
+    if isinstance(value, tuple):
+        return [_json_plain(nested) for nested in value]
+    return value
+
+
+def _details_to_json(details: object) -> str:
+    return json.dumps(_json_plain(details), sort_keys=True, separators=(",", ":"))
+
+
 def _effect_refs_to_json(effect_refs: tuple[ExecutionEffectRef, ...]) -> str:
-    return json.dumps([{"kind": ref.kind, "ref_id": ref.ref_id} for ref in effect_refs])
+    return json.dumps(
+        [
+            {
+                "kind": ref.kind,
+                "ref_id": ref.ref_id,
+                "detail": _json_plain(ref.detail),
+            }
+            for ref in effect_refs
+        ],
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 def _effect_refs_from_json(payload: str) -> tuple[ExecutionEffectRef, ...]:
     return tuple(
-        ExecutionEffectRef(kind=str(row["kind"]), ref_id=str(row["ref_id"]))
+        ExecutionEffectRef(
+            kind=str(row["kind"]),
+            ref_id=str(row["ref_id"]),
+            detail=row.get("detail", {}),
+        )
         for row in json.loads(payload or "[]")
     )
 
@@ -199,7 +247,118 @@ class ExecutionJournalStore:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SCHEMA)
+        self._migrate_event_columns()
+        self._migrate_session_binding_columns()
         self._conn.commit()
+
+    def _migrate_event_columns(self) -> None:
+        """Add additive event fields when opening an older journal database."""
+        columns = {
+            str(row["name"])
+            for row in self._conn.execute(
+                "PRAGMA table_info(execution_attempt_events)"
+            ).fetchall()
+        }
+        if "elapsed_ms" not in columns:
+            self._conn.execute(
+                "ALTER TABLE execution_attempt_events ADD COLUMN elapsed_ms REAL"
+            )
+        if "details_json" not in columns:
+            self._conn.execute(
+                "ALTER TABLE execution_attempt_events "
+                "ADD COLUMN details_json TEXT NOT NULL DEFAULT '{}'"
+            )
+
+    def _migrate_session_binding_columns(self) -> None:
+        """Keep legacy bindings readable but ineligible for profile reuse."""
+        columns = {
+            str(row["name"])
+            for row in self._conn.execute(
+                "PRAGMA table_info(execution_session_bindings)"
+            ).fetchall()
+        }
+        if "native_key_json" not in columns:
+            self._conn.execute(
+                "ALTER TABLE execution_session_bindings ADD COLUMN native_key_json TEXT"
+            )
+
+    def bind_session(
+        self,
+        session_id: DecompilationSessionId,
+        *,
+        function_ea: int,
+        native_key: NativePreanalysisKey | None = None,
+    ) -> None:
+        """Durably bind one session to its function and optional attested key.
+
+        A missing key preserves compatibility with older/manual journal users,
+        but such a row is deliberately invisible to profile-history queries.
+        """
+        if not isinstance(session_id, DecompilationSessionId):
+            raise TypeError("session_id must be a DecompilationSessionId")
+        if isinstance(function_ea, bool) or not isinstance(function_ea, int):
+            raise TypeError("function_ea must be an integer")
+        if function_ea < 0:
+            raise ValueError("function_ea must not be negative")
+        if native_key is not None and not isinstance(native_key, NativePreanalysisKey):
+            raise TypeError("native_key must be a NativePreanalysisKey or None")
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO execution_session_bindings
+                    (session_id, function_ea, native_key_json, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    session_id.value,
+                    function_ea,
+                    None if native_key is None else native_key.to_json(),
+                    time.time(),
+                ),
+            )
+            self._conn.commit()
+
+    def latest_session_for_function(
+        self,
+        function_ea: int,
+    ) -> DecompilationSessionId | None:
+        """Return the most recently bound session for ``function_ea``."""
+        if isinstance(function_ea, bool) or not isinstance(function_ea, int):
+            raise TypeError("function_ea must be an integer")
+        row = self._conn.execute(
+            """
+            SELECT session_id
+            FROM execution_session_bindings
+            WHERE function_ea = ?
+            ORDER BY binding_id DESC
+            LIMIT 1
+            """,
+            (function_ea,),
+        ).fetchone()
+        if row is None:
+            return None
+        return DecompilationSessionId(str(row["session_id"]))
+
+    def latest_native_key_for_function(
+        self,
+        function_ea: int,
+    ) -> NativePreanalysisKey | None:
+        """Return the latest attested key, skipping fail-closed legacy rows."""
+        if isinstance(function_ea, bool) or not isinstance(function_ea, int):
+            raise TypeError("function_ea must be an integer")
+        row = self._conn.execute(
+            """
+            SELECT native_key_json
+            FROM execution_session_bindings
+            WHERE function_ea = ? AND native_key_json IS NOT NULL
+            ORDER BY binding_id DESC
+            LIMIT 1
+            """,
+            (function_ea,),
+        ).fetchone()
+        if row is None:
+            return None
+        return NativePreanalysisKey.from_json(str(row["native_key_json"]))
 
     # ------------------------------------------------------------------
     # Monotonic per-session sequence allocation
@@ -324,10 +483,10 @@ class ExecutionJournalStore:
     def _insert_event_locked(self, attempt: ExecutionAttempt) -> None:
         self._conn.execute(
             """
-            INSERT INTO execution_attempt_events
+                INSERT INTO execution_attempt_events
                 (session_id, sequence, status, reason_code, effect_refs_json,
-                 created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+                 elapsed_ms, details_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 attempt.attempt_id.session.value,
@@ -335,6 +494,8 @@ class ExecutionJournalStore:
                 attempt.status.value,
                 attempt.reason_code,
                 _effect_refs_to_json(attempt.effect_refs),
+                attempt.elapsed_ms,
+                _details_to_json(attempt.details),
                 time.time(),
             ),
         )
@@ -350,6 +511,8 @@ class ExecutionJournalStore:
         status: ExecutionAttemptStatus,
         reason_code: str | None = None,
         effect_refs: tuple[ExecutionEffectRef, ...] | None = None,
+        elapsed_ms: float | None = None,
+        details: Mapping[str, object] | None = None,
     ) -> ExecutionAttempt:
         """Validate and durably append one attempt status transition.
 
@@ -365,6 +528,8 @@ class ExecutionJournalStore:
             status=status,
             reason_code=reason_code,
             effect_refs=effect_refs,
+            elapsed_ms=elapsed_ms,
+            details=details,
         )
         with self._lock:
             row = self._conn.execute(
@@ -376,6 +541,24 @@ class ExecutionJournalStore:
             ).fetchone()
             if row is None:
                 raise UnknownExecutionAttemptError(attempt.attempt_id)
+            if advanced.status.is_terminal and advanced.elapsed_ms is None:
+                started = self._conn.execute(
+                    """
+                    SELECT created_at FROM execution_attempt_events
+                    WHERE session_id = ? AND sequence = ?
+                    ORDER BY event_id ASC
+                    LIMIT 1
+                    """,
+                    (attempt.attempt_id.session.value, attempt.attempt_id.sequence),
+                ).fetchone()
+                if started is None:  # pragma: no cover - identity check above
+                    raise UnknownExecutionAttemptError(attempt.attempt_id)
+                advanced = replace(
+                    advanced,
+                    elapsed_ms=max(
+                        0.0, (time.time() - float(started["created_at"])) * 1000.0
+                    ),
+                )
             self._insert_event_locked(advanced)
             self._conn.commit()
         return advanced
@@ -398,7 +581,7 @@ class ExecutionJournalStore:
             return None
         event_row = self._conn.execute(
             """
-            SELECT status, reason_code, effect_refs_json
+            SELECT status, reason_code, effect_refs_json, elapsed_ms, details_json
             FROM execution_attempt_events
             WHERE session_id = ? AND sequence = ?
             ORDER BY event_id DESC
@@ -420,6 +603,8 @@ class ExecutionJournalStore:
             status=ExecutionAttemptStatus(event_row["status"]),
             reason_code=event_row["reason_code"],
             effect_refs=_effect_refs_from_json(event_row["effect_refs_json"]),
+            elapsed_ms=event_row["elapsed_ms"],
+            details=json.loads(event_row["details_json"] or "{}"),
         )
 
     def history(self, attempt_id: ExecutionAttemptId) -> tuple[ExecutionAttempt, ...]:
@@ -447,7 +632,7 @@ class ExecutionJournalStore:
             )
         rows = self._conn.execute(
             """
-            SELECT status, reason_code, effect_refs_json
+            SELECT status, reason_code, effect_refs_json, elapsed_ms, details_json
             FROM execution_attempt_events
             WHERE session_id = ? AND sequence = ?
             ORDER BY event_id ASC
@@ -463,6 +648,8 @@ class ExecutionJournalStore:
                 status=ExecutionAttemptStatus(row["status"]),
                 reason_code=row["reason_code"],
                 effect_refs=_effect_refs_from_json(row["effect_refs_json"]),
+                elapsed_ms=row["elapsed_ms"],
+                details=json.loads(row["details_json"] or "{}"),
             )
             for row in rows
         )
@@ -482,6 +669,41 @@ class ExecutionJournalStore:
         attempts = (
             self.get_attempt(
                 ExecutionAttemptId(session=session_id, sequence=int(row["sequence"]))
+            )
+            for row in rows
+        )
+        return tuple(attempt for attempt in attempts if attempt is not None)
+
+    def attempts_for_native_key(
+        self,
+        native_key: NativePreanalysisKey,
+    ) -> tuple[ExecutionAttempt, ...]:
+        """Return attempts from sessions with the exact attested native key.
+
+        Legacy bindings lacking a key fail closed and never participate in a
+        profile aggregate. Results are stable by session creation then attempt
+        sequence; profile aggregation may subsequently ignore non-terminal
+        rows without losing their diagnostic visibility elsewhere.
+        """
+        if not isinstance(native_key, NativePreanalysisKey):
+            raise TypeError("native_key must be a NativePreanalysisKey")
+        rows = self._conn.execute(
+            """
+            SELECT b.session_id, i.sequence
+            FROM execution_session_bindings AS b
+            JOIN execution_attempt_identities AS i
+              ON i.session_id = b.session_id
+            WHERE b.native_key_json = ?
+            ORDER BY b.binding_id ASC, i.sequence ASC
+            """,
+            (native_key.to_json(),),
+        ).fetchall()
+        attempts = (
+            self.get_attempt(
+                ExecutionAttemptId(
+                    session=DecompilationSessionId(str(row["session_id"])),
+                    sequence=int(row["sequence"]),
+                )
             )
             for row in rows
         )

@@ -62,7 +62,10 @@ Why validation rejects what it rejects
 from __future__ import annotations
 
 import enum
-from dataclasses import dataclass, replace
+import math
+from collections.abc import Mapping
+from dataclasses import dataclass, field, replace
+from types import MappingProxyType
 from uuid import uuid4
 
 
@@ -72,6 +75,43 @@ def _require_identifier(value: object, label: str) -> None:
         raise TypeError(f"{label} must be a string")
     if not value.strip():
         raise ValueError(f"{label} must not be blank")
+
+
+def _freeze_json_value(value: object, *, label: str) -> object:
+    """Return an immutable, JSON-safe representation of ``value``.
+
+    Attempt/effect metadata is durable provenance, not a bag for live IDA,
+    solver, or graph objects.  Keeping the validation in ``core`` lets every
+    producer fail at the same boundary before a non-replayable object reaches
+    SQLite.
+    """
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError(f"{label} must contain only finite JSON numbers")
+        return value
+    if isinstance(value, Mapping):
+        frozen: dict[str, object] = {}
+        for key, nested in value.items():
+            if not isinstance(key, str):
+                raise TypeError(f"{label} mapping keys must be strings")
+            frozen[key] = _freeze_json_value(nested, label=f"{label}.{key}")
+        return MappingProxyType(frozen)
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_json_value(nested, label=f"{label}[]") for nested in value)
+    raise TypeError(
+        f"{label} must contain only JSON-safe scalar, mapping, or sequence values"
+    )
+
+
+def _freeze_json_object(value: object, *, label: str) -> Mapping[str, object]:
+    if not isinstance(value, Mapping):
+        raise TypeError(f"{label} must be a mapping")
+    frozen = _freeze_json_value(value, label=label)
+    if not isinstance(frozen, Mapping):  # pragma: no cover - defensive invariant
+        raise TypeError(f"{label} must be a mapping")
+    return frozen
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,6 +185,7 @@ class ExecutionDomain(enum.Enum):
     TRANSFORM = "transform"
     MUTATION = "mutation"
     NATIVE_NORMALIZATION = "native_normalization"
+    PROFILE_GUIDANCE = "profile_guidance"
 
 
 class ExecutionAttemptStatus(enum.Enum):
@@ -210,10 +251,19 @@ class ExecutionEffectRef:
 
     kind: str
     ref_id: str
+    #: Immutable JSON-safe detail owned by the effect producer.  This carries
+    #: plan fingerprints, operation counts, and receipt summaries without
+    #: smuggling live backend objects into the generic provenance ledger.
+    detail: Mapping[str, object] = field(default_factory=lambda: MappingProxyType({}))
 
     def __post_init__(self) -> None:
         _require_identifier(self.kind, "kind")
         _require_identifier(self.ref_id, "ref_id")
+        object.__setattr__(
+            self,
+            "detail",
+            _freeze_json_object(self.detail, label="detail"),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -232,6 +282,12 @@ class ExecutionAttempt:
     status: ExecutionAttemptStatus
     reason_code: str | None
     effect_refs: tuple[ExecutionEffectRef, ...]
+    #: Elapsed wall-clock duration for a terminal attempt, assigned by the
+    #: durable store when a caller does not provide an authoritative value.
+    elapsed_ms: float | None = None
+    #: Typed terminal payload for structured abstention, failure, mutation, or
+    #: receipt context.  It is deliberately JSON-safe and immutable.
+    details: Mapping[str, object] = field(default_factory=lambda: MappingProxyType({}))
 
     def __post_init__(self) -> None:
         if not isinstance(self.attempt_id, ExecutionAttemptId):
@@ -259,6 +315,20 @@ class ExecutionAttempt:
                 raise TypeError(
                     "effect_refs must contain only ExecutionEffectRef values"
                 )
+        if self.elapsed_ms is not None:
+            if isinstance(self.elapsed_ms, bool) or not isinstance(
+                self.elapsed_ms, (int, float)
+            ):
+                raise TypeError("elapsed_ms must be a finite number or None")
+            elapsed_ms = float(self.elapsed_ms)
+            if not math.isfinite(elapsed_ms) or elapsed_ms < 0.0:
+                raise ValueError("elapsed_ms must be a finite non-negative number")
+            object.__setattr__(self, "elapsed_ms", elapsed_ms)
+        object.__setattr__(
+            self,
+            "details",
+            _freeze_json_object(self.details, label="details"),
+        )
 
 
 def advance_attempt(
@@ -267,6 +337,8 @@ def advance_attempt(
     status: ExecutionAttemptStatus,
     reason_code: str | None = None,
     effect_refs: tuple[ExecutionEffectRef, ...] | None = None,
+    elapsed_ms: float | None = None,
+    details: Mapping[str, object] | None = None,
 ) -> ExecutionAttempt:
     """Return a new attempt record advanced to ``status``.
 
@@ -283,6 +355,8 @@ def advance_attempt(
         status=status,
         reason_code=reason_code if reason_code is not None else attempt.reason_code,
         effect_refs=effect_refs if effect_refs is not None else attempt.effect_refs,
+        elapsed_ms=elapsed_ms if elapsed_ms is not None else attempt.elapsed_ms,
+        details=details if details is not None else attempt.details,
     )
 
 

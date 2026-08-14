@@ -9,6 +9,7 @@ session's monotonic attempt counter"). No IDA imports; SQLite only.
 
 from __future__ import annotations
 
+import sqlite3
 import tempfile
 import threading
 from pathlib import Path
@@ -30,6 +31,7 @@ from d810.core.execution_journal_store import (
     ExecutionJournalStore,
     UnknownExecutionAttemptError,
 )
+from d810.core.native_preanalysis_key import NativePreanalysisKey
 
 
 def _tmp_db_path() -> Path:
@@ -45,6 +47,71 @@ def store():
         yield journal_store
     finally:
         journal_store.close()
+
+
+def _native_key(*, function_fingerprint: str = "a" * 64) -> NativePreanalysisKey:
+    return NativePreanalysisKey(
+        input_identity="b" * 64,
+        processor="metapc",
+        bitness=64,
+        function_rva=0x1000,
+        function_fingerprint=function_fingerprint,
+        profile_fingerprint="c" * 64,
+        sdk_fingerprint="ida-9.4+d810-test",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Durable function/session binding
+# ---------------------------------------------------------------------------
+
+
+def test_latest_session_for_function_survives_reopen_and_ignores_other_functions(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "execution.sqlite"
+    first = DecompilationSessionId.new()
+    other = DecompilationSessionId.new()
+    latest = DecompilationSessionId.new()
+
+    with ExecutionJournalStore(db_path) as journal:
+        journal.bind_session(first, function_ea=0x401000)
+        journal.bind_session(other, function_ea=0x402000)
+        journal.bind_session(latest, function_ea=0x401000)
+        assert journal.latest_session_for_function(0x401000) == latest
+
+    with ExecutionJournalStore(db_path) as reopened:
+        assert reopened.latest_session_for_function(0x401000) == latest
+        assert reopened.latest_session_for_function(0x402000) == other
+        assert reopened.latest_session_for_function(0x403000) is None
+
+
+def test_profile_attempt_query_requires_an_exact_attested_native_key(store) -> None:
+    exact_session = DecompilationSessionId.new()
+    foreign_session = DecompilationSessionId.new()
+    legacy_session = DecompilationSessionId.new()
+    exact_key = _native_key()
+    foreign_key = _native_key(function_fingerprint="d" * 64)
+    store.bind_session(exact_session, function_ea=0x401000, native_key=exact_key)
+    store.bind_session(foreign_session, function_ea=0x401000, native_key=foreign_key)
+    store.bind_session(legacy_session, function_ea=0x401000)
+    exact = store.begin_attempt(
+        exact_session, stage_id="exact", domain=ExecutionDomain.PASS
+    )
+    store.advance(exact, status=ExecutionAttemptStatus.COMPLETED)
+    foreign = store.begin_attempt(
+        foreign_session, stage_id="foreign", domain=ExecutionDomain.PASS
+    )
+    store.advance(foreign, status=ExecutionAttemptStatus.COMPLETED)
+    legacy = store.begin_attempt(
+        legacy_session, stage_id="legacy", domain=ExecutionDomain.PASS
+    )
+    store.advance(legacy, status=ExecutionAttemptStatus.COMPLETED)
+
+    attempts = store.attempts_for_native_key(exact_key)
+
+    assert [attempt.stage_id for attempt in attempts] == ["exact"]
+    assert store.latest_native_key_for_function(0x401000) == foreign_key
 
 
 # ---------------------------------------------------------------------------
@@ -265,6 +332,33 @@ class TestAdvance:
         assert reloaded.reason_code == "pass_exception:RuntimeError"
         assert reloaded.effect_refs == effect_refs
 
+    def test_advance_persists_elapsed_time_and_structured_terminal_detail(
+        self, store
+    ) -> None:
+        session = DecompilationSessionId.new()
+        attempt = store.begin_attempt(
+            session, stage_id="rewrite-dispatcher", domain=ExecutionDomain.MUTATION
+        )
+
+        advanced = store.advance(
+            attempt,
+            status=ExecutionAttemptStatus.COMPLETED,
+            details={
+                "plan_id": "plan:dispatcher-rewrite",
+                "operation_count": 3,
+                "receipt": {"status": "committed"},
+            },
+        )
+
+        assert advanced.elapsed_ms is not None
+        assert advanced.elapsed_ms >= 0.0
+        assert advanced.details == {
+            "plan_id": "plan:dispatcher-rewrite",
+            "operation_count": 3,
+            "receipt": {"status": "committed"},
+        }
+        assert store.get_attempt(attempt.attempt_id) == advanced
+
     def test_advance_rejects_an_illegal_transition_and_writes_nothing(
         self, store
     ) -> None:
@@ -390,3 +484,57 @@ def test_attempts_survive_a_store_close_and_reopen() -> None:
         assert reopened.next_sequence(session) == 2
     finally:
         reopened.close()
+
+
+def test_opening_a_pre_detail_journal_adds_the_new_event_columns() -> None:
+    db_path = _tmp_db_path()
+    connection = sqlite3.connect(db_path)
+    try:
+        connection.executescript(
+            """
+            CREATE TABLE execution_attempt_identities (
+                session_id TEXT NOT NULL,
+                sequence INTEGER NOT NULL,
+                parent_session_id TEXT,
+                parent_sequence INTEGER,
+                stage_id TEXT NOT NULL,
+                domain TEXT NOT NULL,
+                created_at REAL NOT NULL,
+                PRIMARY KEY (session_id, sequence)
+            );
+            CREATE TABLE execution_attempt_events (
+                event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                sequence INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                reason_code TEXT,
+                effect_refs_json TEXT NOT NULL,
+                created_at REAL NOT NULL
+            );
+            CREATE TABLE execution_attempt_sequence_counters (
+                session_id TEXT PRIMARY KEY,
+                next_sequence INTEGER NOT NULL
+            );
+            """
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    store = ExecutionJournalStore(db_path)
+    try:
+        attempt = store.begin_attempt(
+            DecompilationSessionId.new(),
+            stage_id="migrated",
+            domain=ExecutionDomain.PASS,
+        )
+        completed = store.advance(
+            attempt,
+            status=ExecutionAttemptStatus.COMPLETED,
+            details={"operation_count": 1},
+        )
+
+        assert completed.details == {"operation_count": 1}
+        assert completed.elapsed_ms is not None
+    finally:
+        store.close()

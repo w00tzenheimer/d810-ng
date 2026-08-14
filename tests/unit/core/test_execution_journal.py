@@ -152,6 +152,28 @@ class TestExecutionEffectRef:
         with pytest.raises(ValueError):
             ExecutionEffectRef(kind="fact", ref_id="")
 
+    def test_retains_immutable_json_safe_operation_detail(self) -> None:
+        detail = {
+            "plan_id": "plan:dispatcher-rewrite",
+            "operation_count": 3,
+            "receipt": {"status": "committed"},
+        }
+
+        effect = ExecutionEffectRef(
+            kind="mba_mutation_receipt",
+            ref_id="receipt:42",
+            detail=detail,
+        )
+        detail["operation_count"] = 999
+
+        assert effect.detail == {
+            "plan_id": "plan:dispatcher-rewrite",
+            "operation_count": 3,
+            "receipt": {"status": "committed"},
+        }
+        with pytest.raises(TypeError):
+            effect.detail["plan_id"] = "mutated"  # type: ignore[index]
+
 
 class TestExecutionAttemptStatusTransitions:
     def test_started_can_transition_to_every_terminal_status(self) -> None:

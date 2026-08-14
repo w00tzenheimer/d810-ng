@@ -11,6 +11,7 @@ import pytest
 from d810.backends.hexrays.native_preanalysis_key import (
     build_native_preanalysis_key,
     fingerprint_profile_config,
+    native_toolchain_fingerprint,
 )
 
 
@@ -36,7 +37,9 @@ def _install_fake_ida(monkeypatch: pytest.MonkeyPatch) -> None:
             get_bytes=lambda ea, _size: item_bytes[ea],
         ),
         "ida_idp": SimpleNamespace(get_idp_name=lambda: "PC"),
-        "idaapi": SimpleNamespace(IDA_SDK_VERSION=930, get_idb_ctime=lambda: 1700000000),
+        "idaapi": SimpleNamespace(
+            IDA_SDK_VERSION=930, get_idb_ctime=lambda: 1700000000
+        ),
         "ida_hexrays": SimpleNamespace(get_hexrays_version=lambda: "9.3.0.250604"),
         "ida_segment": SimpleNamespace(
             get_segm_qty=lambda: 1,
@@ -71,7 +74,9 @@ def test_build_key_uses_real_loader_function_profile_and_sdk_inputs(
     assert key.function_rva == 0x1000
     assert key.function_fingerprint == f"sha256:{function_hasher.hexdigest()}"
     assert key.profile_fingerprint == fingerprint_profile_config(profile)
-    assert key.sdk_fingerprint == "ida-sdk:930:hexrays:9.3.0.250604"
+    assert key.sdk_fingerprint == (
+        "ida-sdk:930:hexrays:9.3.0.250604:processor:PC:bitness:64:d810:1.0.0b1"
+    )
 
 
 def test_profile_fingerprint_is_canonical() -> None:
@@ -88,6 +93,19 @@ def test_profile_fingerprint_is_canonical() -> None:
 
     assert fingerprint_profile_config(left) == f"sha256:{expected}"
     assert fingerprint_profile_config(right) == f"sha256:{expected}"
+
+
+def test_toolchain_fingerprint_segregates_d810_versions() -> None:
+    common = {
+        "ida_sdk_version": 940,
+        "hexrays_version": "9.4.0",
+        "processor": "metapc",
+        "bitness": 64,
+    }
+
+    assert native_toolchain_fingerprint(
+        **common, d810_version="1.0.0b1"
+    ) != native_toolchain_fingerprint(**common, d810_version="1.0.0b2")
 
 
 def test_profile_fingerprint_rejects_non_json_values() -> None:

@@ -8,6 +8,7 @@ import hashlib
 import json
 from pathlib import Path
 
+from d810 import __version__ as D810_VERSION
 from d810.backends.hexrays.input_identity_attestation import (
     InputIdentityAttestationMalformed,
     InputIdentityAttestationStore,
@@ -33,6 +34,22 @@ from d810.core.settings import get_settings
 
 
 logger = getLogger("d810.native_preanalysis_key")
+
+
+def native_toolchain_fingerprint(
+    *,
+    ida_sdk_version: int,
+    hexrays_version: str,
+    processor: str,
+    bitness: int,
+    d810_version: str = D810_VERSION,
+) -> str:
+    """Return the exact toolchain boundary for reusable execution history."""
+
+    return (
+        f"ida-sdk:{int(ida_sdk_version)}:hexrays:{hexrays_version}:"
+        f"processor:{processor}:bitness:{int(bitness)}:d810:{d810_version}"
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,11 +162,13 @@ def resolve_native_preanalysis_identity(
         idautils=idautils,
     )
     loader_digest = loader_sha256(ida_nalt)
-    store = attestation_store if attestation_store is not None else _default_attestation_store()
+    store = (
+        attestation_store
+        if attestation_store is not None
+        else _default_attestation_store()
+    )
     resolved_mirror_path = (
-        Path(mirror_path)
-        if mirror_path is not None
-        else default_mirror_path()
+        Path(mirror_path) if mirror_path is not None else default_mirror_path()
     )
     if loader_digest is not None:
         refreshed_attestation = _refresh_attestation(
@@ -192,7 +211,8 @@ def resolve_native_preanalysis_identity(
                 ),
                 attestation=attestation,
                 current=current,
-                input_file_exists=candidate_path is not None and candidate_path.is_file(),
+                input_file_exists=candidate_path is not None
+                and candidate_path.is_file(),
                 input_file_sha256=(
                     None if candidate_hash is None else candidate_hash[0]
                 ),
@@ -211,9 +231,11 @@ def resolve_native_preanalysis_identity(
         function_rva=current.function_rva,
         function_fingerprint=current.function_fingerprint,
         profile_fingerprint=fingerprint_profile_config(profile_config),
-        sdk_fingerprint=(
-            f"ida-sdk:{int(idaapi.IDA_SDK_VERSION)}:"
-            f"hexrays:{ida_hexrays.get_hexrays_version()}"
+        sdk_fingerprint=native_toolchain_fingerprint(
+            ida_sdk_version=int(idaapi.IDA_SDK_VERSION),
+            hexrays_version=str(ida_hexrays.get_hexrays_version()),
+            processor=current.processor,
+            bitness=current.bitness,
         ),
     )
     return NativePreanalysisIdentityResolution(native_key, identity_resolution)
@@ -242,5 +264,6 @@ __all__ = [
     "NativePreanalysisIdentityResolution",
     "build_native_preanalysis_key",
     "fingerprint_profile_config",
+    "native_toolchain_fingerprint",
     "resolve_native_preanalysis_identity",
 ]
