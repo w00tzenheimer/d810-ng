@@ -24,6 +24,11 @@ from d810.backends.mba.egglog_saturation import (  # noqa: E402
     EgglogExtractionReceipt,
     ExtractionSkipReason,
 )
+from d810.backends.mba.hexrays_island import lower_hexrays_island  # noqa: E402
+from d810.backends.mba.native_mba_term_view import (  # noqa: E402
+    NativeMbaTermView,
+    NativeMbaViewResult,
+)
 from d810.hexrays.expr import ast as ast_dispatcher  # noqa: E402
 from d810.hexrays.ir.mop_snapshot import MopSnapshot  # noqa: E402
 from d810.mba.dsl import SymbolicExpressionProtocol  # noqa: E402
@@ -44,21 +49,22 @@ _CANDIDATE_CORPUS = (
 _REPETITIONS = 4
 _PIPELINE_STAGE_ORDER = (
     "root_eligibility",
-    "ast_construction",
     "native_preflight",
     "egglog_extraction",
+    "ast_construction",
     "native_z3",
     "reconstruction",
 )
 _SYNTHETIC_STAGE_PROFILE_NOTE = (
-    "active AST plus real handler/extraction/native-Z3; "
-    "ast_construction uses an injected active AST and "
+    "injected active AST plus real handler/extraction/native-Z3; "
+    "native_preflight and ast_construction use that injected AST and "
     "reconstruction uses a test materializer"
 )
 
 
 def test_synthetic_stage_profile_note_names_both_mocked_boundaries() -> None:
     assert "ast_construction" in _SYNTHETIC_STAGE_PROFILE_NOTE
+    assert "native_preflight" in _SYNTHETIC_STAGE_PROFILE_NOTE
     assert "injected active AST" in _SYNTHETIC_STAGE_PROFILE_NOTE
     assert "reconstruction" in _SYNTHETIC_STAGE_PROFILE_NOTE
     assert "test materializer" in _SYNTHETIC_STAGE_PROFILE_NOTE
@@ -124,6 +130,30 @@ def _candidate_from_pattern(expression: SymbolicExpressionProtocol):
         return node
 
     return materialize(expression)
+
+
+def _native_view_from_typed_term(term):
+    if term.operation is None:
+        if term.value is not None:
+            return NativeMbaTermView(None, term.width, constant_value=term.value)
+        return NativeMbaTermView(None, term.width, leaf_key=term.leaf_key)
+    return NativeMbaTermView(
+        term.operation,
+        term.width,
+        children=tuple(_native_view_from_typed_term(child) for child in term.children),
+    )
+
+
+def _stage_native_view(candidate, destination_size: int) -> NativeMbaViewResult:
+    lowering = lower_hexrays_island(candidate, destination_size=destination_size)
+    return NativeMbaViewResult(
+        view=(
+            None
+            if lowering.term is None
+            else _native_view_from_typed_term(lowering.term)
+        ),
+        profile=lowering.profile,
+    )
 
 
 def _stage_profile_handler() -> EgglogOptimizer:
@@ -534,6 +564,13 @@ def test_corpus_receipt_reports_quantiles_and_rejects_100x_regression(
         handler_module,
         "minsn_to_ast",
         lambda _ins: current_candidate[0],
+    )
+    monkeypatch.setattr(
+        stage_handler,
+        "_read_native_view",
+        lambda _ins, destination_size: _stage_native_view(
+            current_candidate[0], destination_size
+        ),
     )
     # The profile is a real handler/proof path over active AST terms. Without
     # a live microcode block, both minsn_to_ast() and final materialization
