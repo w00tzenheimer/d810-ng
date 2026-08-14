@@ -32,6 +32,12 @@ _STAGES = (
 )
 
 
+def test_ci_runner_defaults_to_the_cli_image() -> None:
+    source = CI_RUNNER.read_text(encoding="utf-8")
+
+    assert 'IMAGE="${D810_DOCKER_IMAGE:-idapro-9.4-speedups:cli}"' in source
+
+
 def _real_attempts() -> list[dict[str, object]]:
     return [
         {

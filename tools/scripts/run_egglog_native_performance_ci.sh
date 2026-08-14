@@ -13,7 +13,7 @@ else
 fi
 RUNNER="$REPO_ROOT/tools/scripts/run_system_tests_docker.sh"
 ARTIFACT_DIR="${D810_EGGLOG_PERF_ARTIFACT_DIR:-$REPO_ROOT/.tmp/egglog-native-performance}"
-IMAGE="${D810_DOCKER_IMAGE:-idapro-9.4-speedups:ci}"
+IMAGE="${D810_DOCKER_IMAGE:-idapro-9.4-speedups:cli}"
 COMPARISON="$ARTIFACT_DIR/comparison.json"
 COMPARISON_TMP="$ARTIFACT_DIR/.comparison.json.tmp"
 
