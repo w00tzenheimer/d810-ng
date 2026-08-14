@@ -164,7 +164,7 @@ class TestNativeMbaCorpusCapture:
             for outcome in captured[0].outcomes
         )
 
-    def test_manifest_wide_native_capture_has_one_explicit_row_per_provider_case(
+    def _capture_manifest_wide_native_provider_matrix(
         self,
         tmp_path: Path,
         ida_database,
@@ -512,3 +512,24 @@ class TestNativeMbaCorpusCapture:
             history_snapshot=history_snapshot,
         )
         assert with_snapshot.outcomes == ()
+
+    def test_manifest_wide_native_capture_has_one_explicit_row_per_provider_case(
+        self,
+        tmp_path: Path,
+        ida_database,
+        d810_state,
+        pseudocode_to_string,
+    ) -> None:
+        """Run the mutating 70-case corpus capture after pristine-state tests.
+
+        The IDA fixture retains decompiler state for this class.  This must run
+        after the single-function history-delta witnesses so their baseline is
+        a pristine native lowering, not a prior portfolio mutation.
+        """
+
+        self._capture_manifest_wide_native_provider_matrix(
+            tmp_path,
+            ida_database,
+            d810_state,
+            pseudocode_to_string,
+        )
