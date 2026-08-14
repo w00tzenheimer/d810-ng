@@ -38,6 +38,7 @@ _BINARY = _ROOT / "samples/bins/mba_compiler_shapes.dylib"
 _CLI = _ROOT / "tools/scripts/mba_differential_report.py"
 _MANIFEST = _ROOT / "tests/fixtures/mba_portfolio/compiler_shapes.json"
 _PORTFOLIO_PROJECT = "mba_portfolio_spike.json"
+_TELEMETRY_PROJECT = "mba_portfolio_telemetry_3ms.json"
 _PROVIDER_MATRIX = tuple(MbaProviderKind)
 
 
@@ -172,6 +173,9 @@ class TestNativeMbaCorpusCapture:
         ida_database,
         d810_state,
         pseudocode_to_string,
+        *,
+        project_name: str = _PORTFOLIO_PROJECT,
+        egglog_mode: str = "interactive",
     ) -> None:
         """Capture every manifest function through the real provider histories."""
 
@@ -181,12 +185,12 @@ class TestNativeMbaCorpusCapture:
             toolchain_identity={
                 "ida_sdk": str(idaapi.IDA_SDK_VERSION),
                 "matcher_backend": str(get_engine_info()["backend"]),
-                "profile": "portfolio-interactive",
+                "profile": f"portfolio-{egglog_mode}",
             },
         )
         with d810_state() as state:
             configured_started = time.monotonic()
-            state.load_project(state.project_manager.index(_PORTFOLIO_PROJECT))
+            state.load_project(state.project_manager.index(project_name))
             configuration_elapsed_ms = (time.monotonic() - configured_started) * 1000.0
             selected_rules = tuple(state.current_ins_rules)
             registration_pattern_count = sum(
@@ -205,7 +209,7 @@ class TestNativeMbaCorpusCapture:
                     DeobfuscationCase(
                         function=_manifest_function(case.case_id),
                         description="manifest native provider capture",
-                        project=_PORTFOLIO_PROJECT,
+                        project=project_name,
                         must_change=False,
                     ),
                     d810_state=selected_state,
@@ -243,7 +247,7 @@ class TestNativeMbaCorpusCapture:
                 "provider_execution_modes": {
                     MbaProviderKind.STRUCTURAL_CHAIN.value: "interactive",
                     MbaProviderKind.CATALOGUE.value: "interactive",
-                    MbaProviderKind.EGGLOG.value: "interactive",
+                    MbaProviderKind.EGGLOG.value: egglog_mode,
                     MbaProviderKind.COEFFICIENT_SOLVER.value: "extension_unavailable",
                 },
                 "whole_function_elapsed_ms_by_case": whole_function_elapsed_ms,
@@ -266,8 +270,8 @@ class TestNativeMbaCorpusCapture:
         artifacts = Path(configured_artifacts) if configured_artifacts else tmp_path
         artifacts.mkdir(parents=True, exist_ok=True)
         runtime_mode = str(get_engine_info()["backend"])
-        capture_path = artifacts / f"mba-native-capture-interactive-{runtime_mode}.json"
-        report_path = artifacts / f"mba-native-report-interactive-{runtime_mode}.json"
+        capture_path = artifacts / f"mba-native-capture-{egglog_mode}-{runtime_mode}.json"
+        report_path = artifacts / f"mba-native-report-{egglog_mode}-{runtime_mode}.json"
         capture.write_json(capture_path)
         completed = subprocess.run(
             [
@@ -293,9 +297,18 @@ class TestNativeMbaCorpusCapture:
         assert all(len(case["outcomes"]) == len(_PROVIDER_MATRIX) for case in report["cases"])
         assert report["capture_metadata"] == capture.report().to_dict()["capture_metadata"]
         evidence = report["summary"]["rollout_evidence"]
-        assert "interactive" in evidence["candidate_latency_by_mode"], evidence
-        assert "interactive" in evidence["whole_function_latency_by_mode"], evidence
+        assert egglog_mode in evidence["whole_function_latency_by_mode"], evidence
         assert evidence["lifecycle_measurements"]["project_configuration_ms"]["count"] == 1
+        if egglog_mode == "interactive":
+            assert "interactive" in evidence["candidate_latency_by_mode"], evidence
+        else:
+            egglog_rows = tuple(
+                outcome
+                for case in report["cases"]
+                for outcome in case["outcomes"]
+                if outcome["provider"] == MbaProviderKind.EGGLOG.value
+            )
+            assert all(row["status"] != ProviderOutcomeStatus.APPLIED.value for row in egglog_rows)
 
     def test_real_provider_histories_produce_cli_input(
         self,
@@ -574,4 +587,22 @@ class TestNativeMbaCorpusCapture:
             ida_database,
             d810_state,
             pseudocode_to_string,
+        )
+
+    def test_manifest_wide_native_capture_records_default_3ms_telemetry_separately(
+        self,
+        tmp_path: Path,
+        ida_database,
+        d810_state,
+        pseudocode_to_string,
+    ) -> None:
+        """The default 3 ms lane reports telemetry and never credits Egglog wins."""
+
+        self._capture_manifest_wide_native_provider_matrix(
+            tmp_path,
+            ida_database,
+            d810_state,
+            pseudocode_to_string,
+            project_name=_TELEMETRY_PROJECT,
+            egglog_mode="telemetry_3ms",
         )

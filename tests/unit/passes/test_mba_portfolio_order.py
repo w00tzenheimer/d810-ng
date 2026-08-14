@@ -11,6 +11,7 @@ from d810.passes.pipeline_v2_hook_bridge import pipeline_v2_hook_activation
 
 _ROOT = Path(__file__).resolve().parents[3]
 _CONFIG = _ROOT / "src/d810/conf/mba_portfolio_spike.json"
+_TELEMETRY_CONFIG = _ROOT / "src/d810/conf/mba_portfolio_telemetry_3ms.json"
 
 _CHAIN_IMPLEMENTATIONS = (
     "XorChain",
@@ -20,10 +21,10 @@ _CHAIN_IMPLEMENTATIONS = (
 )
 
 
-def _project() -> ProjectConfiguration:
+def _project(path: Path = _CONFIG) -> ProjectConfiguration:
     return ProjectConfiguration(
-        path=_CONFIG,
-        **json.loads(_CONFIG.read_text(encoding="utf-8")),
+        path=path,
+        **json.loads(path.read_text(encoding="utf-8")),
     )
 
 
@@ -58,3 +59,16 @@ def test_portfolio_spike_loads_without_a_solver_extension() -> None:
 
     assert activation.enabled is True
     assert all(rule.name != "CobraSolveRule" for rule in activation.instruction_rules)
+
+
+def test_telemetry_profile_keeps_the_same_order_but_never_enables_egglog() -> None:
+    """Three milliseconds is a separate measurement lane, never an optimizer SLA."""
+
+    activation = pipeline_v2_hook_activation(_project(_TELEMETRY_CONFIG))
+
+    assert activation.configured_pass_ids == ("mba-simplify", "mba-egglog")
+    egglog_options = _project(_TELEMETRY_CONFIG).additional_configuration[
+        "pipeline_v2"
+    ][1]["options"]
+    assert egglog_options["time_budget_ms"] == 3
+    assert egglog_options["max_degree"] == 1
