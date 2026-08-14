@@ -73,6 +73,30 @@ def test_shadow_matcher_resolves_only_original_native_binding_paths() -> None:
     assert report.bindings.candidate_path_by_name == {"x": (1,), "one": (0,)}
 
 
+def test_shadow_reconstruction_uses_the_active_ast_binding_context() -> None:
+    """The proof-only emitter must satisfy the active Cython AST signature."""
+
+    x = Var("x")
+
+    class Rule:
+        pattern = x + Const("zero", 0)
+        replacement = x
+
+    adapter = IDAPatternAdapter(Rule())
+    source = ast_dispatcher.AstNode(ida_hexrays.m_add, _leaf("x", 1), _constant(0))
+    source.dest_size = 4
+    source.ea = 0x401000
+    candidate = ida_backend._ShadowBindingCandidate(
+        {"x": source.left, "zero": source.right}, source
+    )
+
+    bindings = adapter._shadow_binding_context(candidate)
+
+    assert isinstance(bindings, ast_dispatcher.AstNode)
+    assert bindings.leafs_by_name == candidate.leafs_by_name
+    assert adapter.REPLACEMENT_PATTERN.clone().update_leafs_mop(bindings)
+
+
 def test_native_shadow_proof_uses_fixed_width_bit_vector_semantics() -> None:
     source = ast_dispatcher.AstNode(ida_hexrays.m_add, _leaf("x", 1), _constant(0))
     source.dest_size = 4

@@ -879,14 +879,37 @@ class IDAPatternAdapter:
             replacement = repl_pattern.clone()
         except Exception:
             return None
-        if not replacement.update_leafs_mop(candidate):
+        try:
+            bindings = self._shadow_binding_context(candidate)
+        except Exception:
             return None
-        if not self._materialize_replacement_constants(replacement, candidate):
+        if not replacement.update_leafs_mop(bindings):
+            return None
+        if not self._materialize_replacement_constants(replacement, bindings):
             return None
         try:
-            return replacement.create_minsn(candidate.ea, candidate.dst_mop)
+            return replacement.create_minsn(bindings.ea, bindings.dst_mop)
         except AstEvaluationException:
             return None
+
+    @staticmethod
+    def _shadow_binding_context(candidate: _ShadowBindingCandidate) -> AstNode:
+        """Materialize structural bindings as the active AST runtime's node type.
+
+        The Cython ``update_leafs_mop`` entry point has an exact ``AstNode``
+        signature, unlike the portable implementation's duck-typed path.  The
+        proof-only shadow candidate must therefore be copied into an otherwise
+        empty active AST node before it crosses that boundary.  The mapped
+        leaves retain their original native identities; only the binding
+        container is new.
+        """
+
+        bindings = AstNode()
+        bindings.leafs_by_name = dict(candidate.leafs_by_name)
+        bindings.ea = candidate.ea
+        bindings.dst_mop = candidate.dst_mop
+        bindings.is_candidate_ok = True
+        return bindings
 
     def _publish_provider_outcome(self, outcome: MbaProviderOutcome) -> None:
         self._last_provider_outcome = outcome
