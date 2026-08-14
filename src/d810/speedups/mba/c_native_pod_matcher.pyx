@@ -18,6 +18,8 @@ DEF OP_AND = 2
 DEF OP_MUL = 4
 DEF OP_OR = 6
 DEF OP_XOR = 8
+DEF MAX_POD_NODES = 32
+DEF MAX_POD_BINDINGS = 16
 
 
 cdef struct MatchCounter:
@@ -339,6 +341,8 @@ def match_pod_pattern(
         raise ValueError("variable_count and comparison_budget must be positive")
     if not pattern_rows or candidate_root_index < 0:
         return (), 0, 0, False
+    if len(candidate_rows) > MAX_POD_NODES or variable_count > MAX_POD_BINDINGS:
+        raise ValueError("POD matcher fixed capacity exceeded")
     if any(type(record) is not tuple or len(record) != 7 for record in pattern_rows):
         raise ValueError("pattern POD rows must contain seven integers")
     if any(type(record) is not tuple or len(record) != 9 for record in candidate_rows):
@@ -396,6 +400,8 @@ def match_pod_catalogue(
         raise ValueError("comparison_budget must be positive")
     if candidate_root_index < 0:
         return (), 0, 0, False
+    if len(candidate_rows) > MAX_POD_NODES:
+        raise ValueError("POD matcher fixed capacity exceeded")
     if any(
         type(candidate_record) is not tuple or len(candidate_record) != 9
         for candidate_record in candidate_rows
@@ -417,6 +423,8 @@ def match_pod_catalogue(
             raise ValueError("pattern POD rows must contain seven integers")
         if variable_count < 0:
             raise ValueError("variable_count must be non-negative")
+        if variable_count > MAX_POD_BINDINGS:
+            raise ValueError("POD matcher fixed capacity exceeded")
         bindings.clear()
         for index in range(variable_count):
             bindings.push_back(-1)

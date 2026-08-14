@@ -144,6 +144,24 @@ def test_cython_pod_matcher_rejects_malformed_candidate_row_schema() -> None:
 @pytest.mark.skipif(
     not CythonMode().is_enabled(), reason="requires the Cython POD matcher"
 )
+def test_cython_pod_matcher_rejects_candidate_rows_above_fixed_capacity() -> None:
+    from d810.speedups.mba.c_native_pod_matcher import match_pod_pattern
+
+    rows = tuple((2, 0, 32, -1, -1, 0, index, index, index) for index in range(33))
+
+    with pytest.raises(ValueError, match="fixed capacity"):
+        match_pod_pattern(
+            ((2, 0, 0, 0, 0, -1, -1),),
+            rows,
+            0,
+            1,
+            64,
+        )
+
+
+@pytest.mark.skipif(
+    not CythonMode().is_enabled(), reason="requires the Cython POD matcher"
+)
 def test_public_catalogue_keeps_associative_chain_matching_in_cython(
     monkeypatch,
 ) -> None:
