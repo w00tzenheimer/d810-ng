@@ -104,3 +104,5 @@ def test_shadow_ledger_counts_only_evidence_backed_legacy_parity_mismatches() ->
     assert ledger.legacy_rule_mismatches == 1
     assert ledger.legacy_binding_mismatches == 1
     assert ledger.legacy_binding_unknown == 1
+    assert ledger.new_safe_coverage_pending == 1
+    assert ledger.new_safe_coverage_proved == 0

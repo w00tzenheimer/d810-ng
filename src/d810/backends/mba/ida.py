@@ -385,8 +385,10 @@ class IDAPatternAdapter:
         self._attempt_outcome_index: int | None = None
         self._shadow_match_report = None
         self._shadow_lowering = None
-        self._legacy_binding_paths: dict[str, tuple[int, ...]] | None = None
-        self._legacy_binding_mops: dict[str, tuple[object, ...]] | None = None
+        self._shadow_structural_native_paths: dict[str, tuple[int, ...]] | None = None
+        self._legacy_binding_paths: (
+            dict[str, frozenset[tuple[int, ...]]] | None
+        ) = None
         self._legacy_match_observed = False
         self._certified_catalogue_snapshot = None
         self._certified_catalogue_rule_id: int | None = None
@@ -411,8 +413,8 @@ class IDAPatternAdapter:
         self._attempt_outcome_index = None
         self._shadow_match_report = None
         self._shadow_lowering = None
+        self._shadow_structural_native_paths = None
         self._legacy_binding_paths = None
-        self._legacy_binding_mops = None
         self._legacy_match_observed = False
         self._shadow_parity_recorded = False
 
@@ -450,7 +452,7 @@ class IDAPatternAdapter:
             )
             if lowering.term is None or self.rule.pattern is None:
                 return None
-            snapshot = self._certified_catalogue_snapshot
+            snapshot = getattr(self, "_certified_catalogue_snapshot", None)
             if snapshot is not None:
                 from d810.mba.certified_catalogue import root_shape_for_term
 
@@ -458,7 +460,7 @@ class IDAPatternAdapter:
                     root_shape_for_term(lowering.term),
                     (),
                 )
-                if self._certified_catalogue_rule_id not in bucket:
+                if getattr(self, "_certified_catalogue_rule_id", None) not in bucket:
                     return None
             report = match_ac_pattern(
                 self.rule.pattern,
@@ -476,8 +478,32 @@ class IDAPatternAdapter:
                     flattened_nodes=report.flattened_nodes,
                     stop_reason=AcMatchStopReason.MISS,
                 )
+            structural_native_paths: dict[str, tuple[int, ...]] | None = None
+            if report.bindings is not None:
+                source_paths_by_object: dict[int, list[tuple[int, ...]]] = {}
+
+                def index_source(node: Any, path: tuple[int, ...]) -> None:
+                    source_paths_by_object.setdefault(id(node), []).append(path)
+                    if bool(getattr(node, "is_node", lambda: False)()):
+                        for index, child_name in enumerate(("left", "right")):
+                            child = getattr(node, child_name, None)
+                            if child is not None:
+                                index_source(child, path + (index,))
+
+                index_source(test_ast, ())
+                mapped_paths: dict[str, tuple[int, ...]] = {}
+                for name, canonical_path in report.bindings.candidate_path_by_name.items():
+                    native = lowering.native_nodes_by_path.get(canonical_path)
+                    source_paths = source_paths_by_object.get(id(native), ())
+                    if len(source_paths) != 1:
+                        mapped_paths = {}
+                        break
+                    mapped_paths[name] = source_paths[0]
+                if mapped_paths:
+                    structural_native_paths = mapped_paths
             self._shadow_lowering = lowering
             self._shadow_match_report = report
+            self._shadow_structural_native_paths = structural_native_paths
             return report
         except Exception:
             # Shadow telemetry must never widen the legacy callback failure set.
@@ -506,21 +532,62 @@ class IDAPatternAdapter:
         except Exception:
             return None
 
-    def record_legacy_match_bindings(self, candidate_pattern: Any) -> None:
+    def record_legacy_match_bindings(
+        self, candidate_pattern: Any, source_ast: Any | None = None
+    ) -> None:
         """Capture legacy bindings as unique original-native paths when possible."""
 
         self._legacy_match_observed = True
-        lowering = self._shadow_lowering
+        self._legacy_binding_paths = None
+        lowering = getattr(self, "_shadow_lowering", None)
         leafs_by_name = getattr(candidate_pattern, "leafs_by_name", None)
         if lowering is None or not isinstance(leafs_by_name, dict):
             return
+        # The legacy matcher walks its pattern and source in lockstep.  Preserve
+        # that slot evidence whenever the caller still has the source tree;
+        # mop snapshots are only an intentionally conservative fallback.
+        if source_ast is not None:
+            resolved_from_slots: dict[str, set[tuple[int, ...]]] = {}
+
+            def walk(pattern: Any, source: Any, path: tuple[int, ...]) -> bool:
+                if bool(getattr(pattern, "is_node", lambda: False)()) != bool(
+                    getattr(source, "is_node", lambda: False)()
+                ):
+                    return False
+                if bool(getattr(pattern, "is_node", lambda: False)()):
+                    for index, child_name in enumerate(("left", "right")):
+                        pattern_child = getattr(pattern, child_name, None)
+                        source_child = getattr(source, child_name, None)
+                        if (pattern_child is None) != (source_child is None):
+                            return False
+                        if pattern_child is not None and not walk(
+                            pattern_child, source_child, path + (index,)
+                        ):
+                            return False
+                    return True
+                name = getattr(pattern, "name", None)
+                if type(name) is str and name in leafs_by_name:
+                    # Repeated pattern variables have several legitimate
+                    # source slots.  Keep all of them; the structural matcher
+                    # may select any one only after checking their equality.
+                    resolved_from_slots.setdefault(name, set()).add(path)
+                return True
+
+            if walk(candidate_pattern, source_ast, ()) and set(
+                resolved_from_slots
+            ) == {name for name in leafs_by_name if name != "_candidate"}:
+                self._legacy_binding_paths = {
+                    name: frozenset(paths)
+                    for name, paths in resolved_from_slots.items()
+                }
+                return
+
         native_paths_by_mop: dict[tuple[object, ...], list[tuple[int, ...]]] = {}
         for path, native in lowering.native_nodes_by_path.items():
             key = self._mop_identity_key(getattr(native, "mop", None))
             if key is not None:
                 native_paths_by_mop.setdefault(key, []).append(path)
-        resolved: dict[str, tuple[int, ...]] = {}
-        mop_bindings: dict[str, tuple[object, ...]] = {}
+        resolved: dict[str, frozenset[tuple[int, ...]]] = {}
         for name, leaf in leafs_by_name.items():
             if name == "_candidate":
                 continue
@@ -528,15 +595,13 @@ class IDAPatternAdapter:
                 return
             key = self._mop_identity_key(getattr(leaf, "mop", None))
             paths = () if key is None else native_paths_by_mop.get(key, ())
-            if not paths or key is None:
+            # Mop identity alone cannot identify a live operand: the same mop
+            # can occur in multiple slots.  Exact structural parity is unknown
+            # unless the legacy binding has one unambiguous native path.
+            if key is None or len(paths) != 1:
                 return
-            # A repeated variable can occur at more than one native path.  The
-            # legacy matcher retains one logical mop binding, so retain the
-            # deterministic first occurrence only as its path representative.
-            resolved[name] = min(paths)
-            mop_bindings[name] = key
+            resolved[name] = frozenset(paths)
         self._legacy_binding_paths = resolved
-        self._legacy_binding_mops = mop_bindings
 
     def _shadow_metadata(self, *, legacy_match: bool) -> dict[str, object]:
         report = getattr(self, "_shadow_match_report", None)
@@ -544,20 +609,14 @@ class IDAPatternAdapter:
         same_bindings: bool | None = None
         if legacy_match and not structural_match:
             same_bindings = False
-        elif legacy_match and self._legacy_match_observed:
-            if self._legacy_binding_mops is not None and report is not None:
-                if report.bindings is None or self._shadow_lowering is None:
-                    same_bindings = False
-                else:
-                    structural_mops: dict[str, tuple[object, ...]] = {}
-                    for name, path in report.bindings.candidate_path_by_name.items():
-                        native = self._shadow_lowering.native_nodes_by_path.get(path)
-                        key = self._mop_identity_key(getattr(native, "mop", None))
-                        if key is None:
-                            structural_mops = {}
-                            break
-                        structural_mops[name] = key
-                    same_bindings = structural_mops == self._legacy_binding_mops
+        elif legacy_match and bool(getattr(self, "_legacy_match_observed", False)):
+            legacy_paths = getattr(self, "_legacy_binding_paths", None)
+            structural_paths = getattr(self, "_shadow_structural_native_paths", None)
+            if legacy_paths is not None and structural_paths is not None:
+                same_bindings = set(legacy_paths) == set(structural_paths) and all(
+                    path in legacy_paths[name]
+                    for name, path in structural_paths.items()
+                )
         return {
             "legacy_match": legacy_match,
             "structural_match": structural_match,
@@ -566,9 +625,9 @@ class IDAPatternAdapter:
         }
 
     def _record_shadow_parity(self, *, legacy_match: bool) -> None:
-        if self._shadow_parity_recorded:
+        if getattr(self, "_shadow_parity_recorded", False):
             return
-        ledger = self._shadow_parity_ledger
+        ledger = getattr(self, "_shadow_parity_ledger", None)
         if ledger is None:
             return
         shadow = self._shadow_metadata(legacy_match=legacy_match)
@@ -727,7 +786,7 @@ class IDAPatternAdapter:
         canonical_source, aliases = self._catalogue_provenance()
         input_ast = self._attempt_input_ast
         fingerprint = self._profile_fingerprint(input_ast)
-        legacy_match = self._legacy_match_observed
+        legacy_match = bool(getattr(self, "_legacy_match_observed", False))
         metadata = {"shadow": self._shadow_metadata(legacy_match=legacy_match)}
         if fingerprint is None:
             self._publish_provider_outcome(
@@ -779,13 +838,15 @@ class IDAPatternAdapter:
                     "error_class": type(exc).__name__,
                     "error_message": str(exc),
                     "shadow": self._shadow_metadata(
-                        legacy_match=self._legacy_match_observed
+                        legacy_match=bool(getattr(self, "_legacy_match_observed", False))
                     ),
                 },
                 matcher=self._matcher_metadata(),
             )
         )
-        self._record_shadow_parity(legacy_match=self._legacy_match_observed)
+        self._record_shadow_parity(
+            legacy_match=bool(getattr(self, "_legacy_match_observed", False))
+        )
 
     def record_bound_replacement_outcome(self, replacement_ast: Any) -> None:
         """Publish the nomut path's success using its bound native input AST."""
@@ -930,7 +991,7 @@ class IDAPatternAdapter:
             # This ensures constraint checks have access to the matched mops
             if not self._check_candidate(mutable_candidate):
                 continue
-            self.record_legacy_match_bindings(mutable_candidate)
+            self.record_legacy_match_bindings(mutable_candidate, tmp)
             valid_candidates.append(mutable_candidate)
             if stop_early:
                 return valid_candidates
@@ -1132,7 +1193,7 @@ class IDAPatternAdapter:
         # Then check candidate-level constraints
         if not self._check_candidate(candidate_pattern):
             return None
-        self.record_legacy_match_bindings(candidate_pattern)
+        self.record_legacy_match_bindings(candidate_pattern, test_ast)
 
         # Finally, create the replacement instruction
         new_instruction = self.get_replacement(candidate_pattern)

@@ -717,6 +717,13 @@ class PatternOptimizer(InstructionOptimizer):
                     proxy = BindingsProxy(self._match_bindings)
                     if not rule_pattern_info.rule.check_candidate(proxy):
                         continue
+                    record_legacy_match_bindings = getattr(
+                        rule_pattern_info.rule,
+                        "record_legacy_match_bindings",
+                        None,
+                    )
+                    if record_legacy_match_bindings is not None:
+                        record_legacy_match_bindings(proxy, test_ast)
                     new_ins = rule_pattern_info.rule.get_replacement(proxy)
                     if new_ins is not None:
                         record_bound_replacement_outcome = getattr(

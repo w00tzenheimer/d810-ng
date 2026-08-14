@@ -91,6 +91,54 @@ def test_shadow_matcher_compares_exact_legacy_native_paths_when_available() -> N
     assert adapter._shadow_metadata(legacy_match=True)["same_bindings"] is True
 
 
+def test_shadow_matcher_rejects_ambiguous_legacy_mop_paths() -> None:
+    """Equal live mops in two slots cannot establish exact binding parity."""
+
+    x, y = Var("x"), Var("y")
+
+    class Rule:
+        pattern = x + y
+
+    adapter = IDAPatternAdapter(Rule())
+    adapter._attempt_destination_size = 4
+    ast = ast_dispatcher.AstNode(ida_hexrays.m_add, _leaf("left", 1), _leaf("right", 1))
+    ast.dest_size = 4
+
+    assert adapter.observe_structural_match(ast) is not None
+    adapter.record_legacy_match_bindings(
+        type(
+            "LegacyCandidate", (), {"leafs_by_name": {"x": ast.left, "y": ast.right}}
+        )()
+    )
+
+    assert adapter._shadow_metadata(legacy_match=True)["same_bindings"] is None
+
+
+def test_shadow_matcher_accepts_a_structural_path_for_repeated_pattern_leaf() -> None:
+    """A repeated declared leaf has several valid source slots, unlike aliases."""
+
+    x = Var("x")
+
+    class Rule:
+        pattern = x + x
+
+    adapter = IDAPatternAdapter(Rule())
+    adapter._attempt_destination_size = 4
+    ast = ast_dispatcher.AstNode(ida_hexrays.m_add, _leaf("left", 1), _leaf("right", 1))
+    ast.dest_size = 4
+    legacy = ast_dispatcher.AstNode(
+        ida_hexrays.m_add,
+        ast_dispatcher.AstLeaf("x"),
+        ast_dispatcher.AstLeaf("x"),
+    )
+    legacy.leafs_by_name = {"x": legacy.right}
+
+    assert adapter.observe_structural_match(ast) is not None
+    adapter.record_legacy_match_bindings(legacy, ast)
+
+    assert adapter._shadow_metadata(legacy_match=True)["same_bindings"] is True
+
+
 def test_selected_snapshot_narrows_shadow_observation_without_compilation() -> None:
     x = Var("x")
 

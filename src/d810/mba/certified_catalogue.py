@@ -38,6 +38,8 @@ class ShadowMatcherParityLedger:
     legacy_rule_mismatches: int = 0
     legacy_binding_mismatches: int = 0
     legacy_binding_unknown: int = 0
+    new_safe_coverage_pending: int = 0
+    new_safe_coverage_proved: int = 0
 
     def record(
         self,
@@ -49,6 +51,12 @@ class ShadowMatcherParityLedger:
     ) -> None:
         self.observation_count += 1
         if not legacy_match:
+            # A structural-only hit is useful coverage evidence, but cannot
+            # become a provider win during the shadow period.  It has neither
+            # passed the native matcher nor reached the existing proof/mutation
+            # gate, so keep it explicitly pending rather than counting it.
+            if structural_match:
+                self.new_safe_coverage_pending += 1
             return
         self.legacy_match_count += 1
         if not structural_match or not same_rule:

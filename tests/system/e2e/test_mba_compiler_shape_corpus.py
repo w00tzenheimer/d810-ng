@@ -344,3 +344,7 @@ class TestCompilerShapeCatalogueNative:
         assert ledger.legacy_rule_mismatches == 0
         assert ledger.legacy_binding_mismatches == 0
         assert ledger.legacy_binding_unknown == 0
+        # Structural-only reassociation coverage is intentionally pending:
+        # shadow mode never promotes it to a native/proof-approved provider win.
+        assert ledger.new_safe_coverage_pending >= 0
+        assert ledger.new_safe_coverage_proved == 0

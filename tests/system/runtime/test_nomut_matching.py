@@ -216,6 +216,7 @@ def test_nomut_success_records_the_bound_catalogue_replacement_outcome(monkeypat
 
         def __init__(self):
             self.bound_replacements: list[object] = []
+            self.legacy_bindings: list[object] = []
 
         @staticmethod
         def check_candidate(_proxy):
@@ -227,6 +228,9 @@ def test_nomut_success_records_the_bound_catalogue_replacement_outcome(monkeypat
 
         def record_bound_replacement_outcome(self, replacement):
             self.bound_replacements.append(replacement)
+
+        def record_legacy_match_bindings(self, bindings, source_ast):
+            self.legacy_bindings.append((bindings, source_ast))
 
         @staticmethod
         def execution_metadata():
@@ -254,6 +258,7 @@ def test_nomut_success_records_the_bound_catalogue_replacement_outcome(monkeypat
 
     assert result is not None
     assert adapter.bound_replacements == ["replacement-pattern"]
+    assert len(adapter.legacy_bindings) == 1
 
 
 def test_pattern_runtime_error_notifies_attempt_context_before_clear(monkeypatch):
