@@ -214,6 +214,11 @@ _image_has_baked_runtime() {
   [ "$(docker image inspect --format "{{ index .Config.Labels \"$RUNTIME_LABEL_KEY\" }}" "$DOCKER_IMAGE" 2>/dev/null || true)" = "$RUNTIME_LABEL_VALUE" ]
 }
 
+# Profile receipts need to identify the actual image that ran them. Keep this
+# test-only metadata separate from the image-selection environment variable,
+# which is deliberately wrapper-only and therefore not forwarded by default.
+DOCKER_IMAGE_ID="$(docker image inspect --format '{{.Id}}' "$DOCKER_IMAGE" 2>/dev/null || echo unknown)"
+
 # Convert memory string (e.g., "20g", "4G", "512m") to bytes for RLIMIT_DATA enforcement.
 # Docker --memory is NOT enforced on macOS Docker Desktop; resource.setrlimit IS enforced
 # inside the container.
@@ -406,7 +411,7 @@ echo ""
 
 ENV_IDA="IDA_PREFIX=/app/ida IDA_INSTALL_DIR=/app/ida D810_LIBCLANG_PATH=/app/ida/libclang.so"
 ENV_PYTHON="PYTHONPATH=${PYWORK}:/app/ida/python:\$PYTHONPATH"
-ENV_TEST="D810_NO_CYTHON=$NO_CYTHON D810_TEST_BINARY=$TEST_BINARY"
+ENV_TEST="D810_NO_CYTHON=$NO_CYTHON D810_TEST_BINARY=$TEST_BINARY D810_TEST_RUNTIME_IMAGE=$DOCKER_IMAGE D810_TEST_RUNTIME_IMAGE_ID=$DOCKER_IMAGE_ID"
 [ -n "${D810_DIAG_SNAPSHOT:-}" ] && ENV_TEST="$ENV_TEST D810_DIAG_SNAPSHOT=$D810_DIAG_SNAPSHOT"
 [ -n "${D810_FACT_LIFECYCLE:-}" ] && ENV_TEST="$ENV_TEST D810_FACT_LIFECYCLE=$D810_FACT_LIFECYCLE"
 [ -n "$ENABLE_DIAG_SNAPSHOT" ] && ENV_TEST="$ENV_TEST D810_DIAG_SNAPSHOT=1"

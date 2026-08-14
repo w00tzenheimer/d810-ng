@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+from importlib.metadata import version
+import os
 import statistics
 import time
 from collections import Counter
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -20,7 +23,7 @@ from d810.backends.mba.egglog_saturation import (  # noqa: E402
     EgglogExtractionReceipt,
     ExtractionSkipReason,
 )
-from d810.hexrays.expr.p_ast import AstBase, AstConstant, AstLeaf, AstNode  # noqa: E402
+from d810.hexrays.expr import ast as ast_dispatcher  # noqa: E402
 from d810.hexrays.ir.mop_snapshot import MopSnapshot  # noqa: E402
 from d810.mba.dsl import SymbolicExpressionProtocol  # noqa: E402
 from d810.optimizers.microcode.instructions.egraph.egglog_handler import (  # noqa: E402
@@ -38,6 +41,14 @@ _CANDIDATE_CORPUS = (
     ("sub", "Sub_HackersDelightRule_2"),
 )
 _REPETITIONS = 4
+_PIPELINE_STAGE_ORDER = (
+    "root_eligibility",
+    "ast_construction",
+    "native_preflight",
+    "egglog_extraction",
+    "native_z3",
+    "reconstruction",
+)
 _CAP_SKIP_REASONS = frozenset(
     {
         ExtractionSkipReason.CANDIDATE_BUDGET.value,
@@ -59,13 +70,15 @@ _OPCODE_BY_OPERATION = {
 }
 
 
-def _candidate_from_pattern(expression: SymbolicExpressionProtocol) -> AstBase:
-    leaves: dict[str, AstLeaf] = {}
+def _candidate_from_pattern(expression: SymbolicExpressionProtocol):
+    """Materialize through the active AST dispatcher in both Cython modes."""
 
-    def materialize(item: SymbolicExpressionProtocol) -> AstBase:
+    leaves: dict[str, object] = {}
+
+    def materialize(item: SymbolicExpressionProtocol):
         if item.operation is None:
             if item.value is not None:
-                constant = AstConstant(str(item.value), item.value, 4)
+                constant = ast_dispatcher.AstConstant(str(item.value), item.value, 4)
                 constant.mop = MopSnapshot(
                     t=ida_hexrays.mop_n,
                     size=4,
@@ -76,7 +89,7 @@ def _candidate_from_pattern(expression: SymbolicExpressionProtocol) -> AstBase:
             assert item.name is not None
             leaf = leaves.get(item.name)
             if leaf is None:
-                leaf = AstLeaf(item.name)
+                leaf = ast_dispatcher.AstLeaf(item.name)
                 leaf.mop = MopSnapshot(
                     t=ida_hexrays.mop_r,
                     size=4,
@@ -87,7 +100,7 @@ def _candidate_from_pattern(expression: SymbolicExpressionProtocol) -> AstBase:
             return leaf.clone()
 
         assert item.left is not None
-        node = AstNode(
+        node = ast_dispatcher.AstNode(
             _OPCODE_BY_OPERATION[item.operation],
             materialize(item.left),
             materialize(item.right) if item.right is not None else None,
@@ -96,6 +109,32 @@ def _candidate_from_pattern(expression: SymbolicExpressionProtocol) -> AstBase:
         return node
 
     return materialize(expression)
+
+
+def _stage_profile_handler() -> EgglogOptimizer:
+    """Build the explicitly non-production handler used by the profile corpus."""
+
+    handler = EgglogOptimizer()
+    handler.configure(
+        {
+            "families": list(_CLOSED_FAMILIES),
+            # Pattern materialization clones repeated Python leaves. The live
+            # micro-AST shares its identity, while this stage-only profile must
+            # permit the conservative synthetic representation.
+            "max_leaves": 8,
+            "max_operator_nodes": 10,
+            "max_degree": 1,
+            "saturation_rounds": 2,
+            "max_eclasses": 64,
+            "max_enodes": 128,
+            "max_rule_firings": 32,
+            # This profile measures an admitted pipeline; production remains 3 ms.
+            "time_budget_ms": 1000,
+            "require_proof": True,
+            "collect_stage_timings": True,
+        }
+    )
+    return handler
 
 
 def _percentile(values: tuple[float, ...], percentile: int) -> float:
@@ -114,9 +153,7 @@ def _build_receipt_report(
         raise ValueError("candidate identity count must equal receipt count")
     elapsed = tuple(receipt.elapsed_ms for receipt in receipts)
     eclasses = [
-        receipt.eclass_count
-        for receipt in receipts
-        if receipt.eclass_count is not None
+        receipt.eclass_count for receipt in receipts if receipt.eclass_count is not None
     ]
     enodes = [
         receipt.enode_count for receipt in receipts if receipt.enode_count is not None
@@ -147,6 +184,36 @@ def _build_receipt_report(
         "cap_skip_distribution": cap_skips,
         "cap_skip_count": sum(cap_skips.values()),
     }
+
+
+def _build_stage_timing_report(
+    timing_records: tuple[dict[str, float], ...],
+) -> dict[str, dict[str, float | int]]:
+    """Summarize one ordered stage-timing record per handler attempt."""
+
+    if not timing_records:
+        raise ValueError("stage timing records must not be empty")
+    if not timing_records[0]:
+        raise ValueError("stage timing records must contain stages")
+    for record in timing_records:
+        names = tuple(record)
+        if names != _PIPELINE_STAGE_ORDER[: len(names)]:
+            raise ValueError("stage timing records must be ordered pipeline prefixes")
+
+    report: dict[str, dict[str, float | int]] = {}
+    for name in _PIPELINE_STAGE_ORDER:
+        samples = tuple(record[name] for record in timing_records if name in record)
+        if not samples:
+            continue
+        if any(type(value) is not float or value < 0.0 for value in samples):
+            raise ValueError("stage timing values must be non-negative floats")
+        report[name] = {
+            "sample_count": len(samples),
+            "p50_ms": _percentile(samples, 50),
+            "p95_ms": _percentile(samples, 95),
+            "max_ms": max(samples),
+        }
+    return report
 
 
 def _assert_comparable_baseline(
@@ -216,6 +283,47 @@ def test_controlled_receipts_report_quantiles_distributions_and_skips() -> None:
     assert report["cap_skip_count"] == 2
 
 
+def test_stage_timing_report_requires_consistent_ordered_stages() -> None:
+    report = _build_stage_timing_report(
+        (
+            {
+                "root_eligibility": 1.0,
+                "ast_construction": 2.0,
+                "native_preflight": 3.0,
+            },
+            {"root_eligibility": 3.0, "ast_construction": 6.0},
+        )
+    )
+
+    assert report == {
+        "root_eligibility": {
+            "sample_count": 2,
+            "p50_ms": 2.0,
+            "p95_ms": pytest.approx(2.9),
+            "max_ms": 3.0,
+        },
+        "ast_construction": {
+            "sample_count": 2,
+            "p50_ms": 4.0,
+            "p95_ms": pytest.approx(5.8),
+            "max_ms": 6.0,
+        },
+        "native_preflight": {
+            "sample_count": 1,
+            "p50_ms": 3.0,
+            "p95_ms": 3.0,
+            "max_ms": 3.0,
+        },
+    }
+    with pytest.raises(ValueError, match="ordered pipeline prefixes"):
+        _build_stage_timing_report(
+            (
+                {"root_eligibility": 1.0, "ast_construction": 2.0},
+                {"root_eligibility": 3.0, "native_preflight": 4.0},
+            )
+        )
+
+
 @pytest.mark.parametrize(
     ("baseline", "report", "reason"),
     [
@@ -275,12 +383,16 @@ def test_comparable_baseline_rejects_only_over_100x() -> None:
 
 
 @pytest.mark.profile
-def test_corpus_receipt_reports_quantiles_and_rejects_100x_regression() -> None:
+def test_corpus_receipt_reports_quantiles_and_rejects_100x_regression(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import d810.optimizers.microcode.instructions.egraph.egglog_handler as handler_module
+
     cold_started = time.perf_counter()
     catalogue = compile_mba_rule_catalogue()
     cold_seconds = time.perf_counter() - cold_started
-    handler = EgglogOptimizer()
-    handler.configure(
+    extraction_handler = EgglogOptimizer()
+    extraction_handler.configure(
         {
             "families": [family for family in _CLOSED_FAMILIES],
             "max_leaves": 2,
@@ -303,37 +415,90 @@ def test_corpus_receipt_reports_quantiles_and_rejects_100x_regression() -> None:
         for family, source_name in _CANDIDATE_CORPUS:
             rule = rules_by_key[(family, source_name)]
             candidate = _candidate_from_pattern(rule.pattern)
-            assert isinstance(candidate, AstNode)
-            result = handler._select_extraction(candidate, destination_size=4)
-            handler._record_extraction_receipt(result.receipt)
-            assert handler.last_extraction_receipt is result.receipt
-            receipts.append(handler.last_extraction_receipt)
+            assert isinstance(candidate, ast_dispatcher.AstNode)
+            result = extraction_handler._select_extraction(
+                candidate, destination_size=4
+            )
+            extraction_handler._record_extraction_receipt(result.receipt)
+            assert extraction_handler.last_extraction_receipt is result.receipt
+            receipts.append(extraction_handler.last_extraction_receipt)
             corpus_names.append(f"{family}:{source_name}#{repetition + 1}")
 
     report = _build_receipt_report(tuple(corpus_names), tuple(receipts))
+    stage_handler = _stage_profile_handler()
+    current_candidate: list[object] = []
+    monkeypatch.setattr(
+        handler_module,
+        "minsn_to_ast",
+        lambda _ins: current_candidate[0],
+    )
+    # The profile is a real handler/proof path over active AST terms. It cannot
+    # construct an IDA minsn without a live microcode block, so only the final
+    # materializer is a test double; its stage remains visible but ungated.
+    monkeypatch.setattr(stage_handler, "_create_instruction", lambda *_args: object())
+    stage_records: list[dict[str, float]] = []
+    for family, source_name in _CANDIDATE_CORPUS:
+        rule = rules_by_key[(family, source_name)]
+        candidate = _candidate_from_pattern(rule.pattern)
+        current_candidate[:] = [candidate]
+        instruction = SimpleNamespace(
+            opcode=int(candidate.opcode),
+            d=SimpleNamespace(size=4),
+            ea=0,
+        )
+        stage_handler.check_and_replace(None, instruction)
+        stage_timings = stage_handler.execution_metadata().get("stage_timings_ms")
+        assert isinstance(stage_timings, dict)
+        stage_records.append(stage_timings)
+
     baseline = json.loads(_BASELINE_PATH.read_text(encoding="utf-8"))
+    baseline_stage_profiles = baseline["phase0_stage_profiles"]
+    mode = "cython" if ast_dispatcher._USING_CYTHON else "python"
+    baseline_stage_profile = baseline_stage_profiles[mode]
     report.update(
         {
             "baseline_fixture": str(_BASELINE_PATH.relative_to(Path.cwd())),
             "baseline_p95_ms": baseline["baseline_p95_ms"],
             "cold_catalogue_seconds": cold_seconds,
             "compiled_rule_count": len(catalogue.compiled_rules),
-            "production_time_budget_ms": handler.time_budget_ms,
+            "production_time_budget_ms": extraction_handler.time_budget_ms,
+            "stage_profile_time_budget_ms": stage_handler.time_budget_ms,
+            "stage_timing_ms": _build_stage_timing_report(tuple(stage_records)),
+            "stage_profile_note": (
+                "active AST plus real handler/extraction/native-Z3; "
+                "reconstruction uses a test materializer"
+            ),
+            "docker_image": os.environ.get("D810_TEST_RUNTIME_IMAGE", "unknown"),
+            "docker_image_id": os.environ.get("D810_TEST_RUNTIME_IMAGE_ID", "unknown"),
+            "cython_enabled": bool(ast_dispatcher._USING_CYTHON),
+            "egglog_version": version("egglog"),
         }
     )
     print(
-        "\nEGGLOG_MBA_CORPUS_PERFORMANCE_RECEIPT="
-        + json.dumps(report, sort_keys=True)
+        "\nEGGLOG_MBA_CORPUS_PERFORMANCE_RECEIPT=" + json.dumps(report, sort_keys=True)
     )
     _assert_comparable_baseline(baseline, report)
 
+    # The Phase 0 snapshot is provenance, not a performance threshold. It
+    # prevents a report from silently mixing the two dispatcher modes/images.
+    assert baseline_stage_profiles["image"] == report["docker_image"]
+    assert baseline_stage_profiles["image_id"] == report["docker_image_id"]
+    assert baseline_stage_profiles["egglog_version"] == report["egglog_version"]
+    assert baseline_stage_profile["cython_enabled"] is report["cython_enabled"]
+
     assert len(catalogue.receipts) == 188
     assert len(catalogue.compiled_rules) == 108
-    assert handler.max_degree == 1
-    assert handler.time_budget_ms == 3
+    assert extraction_handler.max_degree == 1
+    assert extraction_handler.time_budget_ms == 3
+    assert stage_handler.time_budget_ms == 1000
+    assert tuple(report["stage_timing_ms"]) == _PIPELINE_STAGE_ORDER
     assert report["candidate_count"] == len(_CANDIDATE_CORPUS) * _REPETITIONS
     assert report["candidate_names"] == corpus_names
     assert set(report["degree_distribution"]) <= {"1", "none"}
-    assert all(count <= handler.max_eclasses for count in report["eclass_counts"])
-    assert all(count <= handler.max_enodes for count in report["enode_counts"])
+    assert all(
+        count <= extraction_handler.max_eclasses for count in report["eclass_counts"]
+    )
+    assert all(
+        count <= extraction_handler.max_enodes for count in report["enode_counts"]
+    )
     assert report["p95_ms"] <= report["baseline_p95_ms"] * 100

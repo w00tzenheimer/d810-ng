@@ -23,5 +23,39 @@
   ],
   "candidate_count": 20,
   "baseline_p95_ms": 4.014116583857685,
-  "source": "native Egglog handler receipt telemetry; update only from this exact named corpus"
+  "source": "native Egglog handler receipt telemetry; update only from this exact named corpus",
+  "phase0_stage_profiles": {
+    "image": "idapro-9.4-speedups:ci",
+    "image_id": "sha256:a60b5ccbd800319ccbfb959bf88c980f9c32029032263bb38a42cb7af3e7b082",
+    "egglog_version": "13.2.0",
+    "profile_contract": "five active-AST handler/extraction/native-Z3 samples; reconstruction is a test materializer; informational only",
+    "python": {
+      "cython_enabled": false,
+      "production_receipt_p50_ms": 0.1182914711534977,
+      "production_receipt_p95_ms": 0.30469143530353904,
+      "cold_catalogue_seconds": 37.50697951694019,
+      "stage_timing_ms": {
+        "root_eligibility": {"p50_ms": 0.002084067091345787, "p95_ms": 0.00378340482711792, "max_ms": 0.00400003045797348},
+        "ast_construction": {"p50_ms": 0.0008330680429935455, "p95_ms": 0.0014252495020627975, "max_ms": 0.0015420373529195786},
+        "native_preflight": {"p50_ms": 0.21312502212822437, "p95_ms": 0.2899502869695425, "max_ms": 0.29270886443555355},
+        "egglog_extraction": {"p50_ms": 5.002208985388279, "p95_ms": 8.715900126844645, "max_ms": 9.120791917666793},
+        "native_z3": {"p50_ms": 19.834249978885055, "p95_ms": 33.58163312077522, "max_ms": 36.09312488697469},
+        "reconstruction": {"p50_ms": 0.002500135451555252, "p95_ms": 0.0029004178941249847, "max_ms": 0.002959044650197029}
+      }
+    },
+    "cython": {
+      "cython_enabled": true,
+      "production_receipt_p50_ms": 0.11149991769343615,
+      "production_receipt_p95_ms": 0.43545791413635015,
+      "cold_catalogue_seconds": 32.96563105704263,
+      "stage_timing_ms": {
+        "root_eligibility": {"p50_ms": 0.0014998950064182281, "p95_ms": 0.002733105793595314, "max_ms": 0.0029581133276224136},
+        "ast_construction": {"p50_ms": 0.0007499475032091141, "p95_ms": 0.0008585397154092789, "max_ms": 0.0008752103894948959},
+        "native_preflight": {"p50_ms": 0.2115420065820217, "p95_ms": 0.25578346103429794, "max_ms": 0.2578750718384981},
+        "egglog_extraction": {"p50_ms": 5.577833158895373, "p95_ms": 6.8121328484267, "max_ms": 6.9036660715937614},
+        "native_z3": {"p50_ms": 17.681916942819953, "p95_ms": 32.931875716894865, "max_ms": 34.91945913992822},
+        "reconstruction": {"p50_ms": 0.0019168946892023087, "p95_ms": 0.002933759242296219, "max_ms": 0.0030421651899814606}
+      }
+    }
+  }
 }
