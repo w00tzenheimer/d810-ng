@@ -959,8 +959,8 @@ class IDAPatternAdapter:
         except Exception:
             return None
 
-    def _profile_fingerprint(self, ast: Any) -> str | None:
-        """Return an exact native boundary fingerprint, never a guessed fallback."""
+    def _profile_for_ast(self, ast: Any):
+        """Return the exact native profile used to publish provider telemetry."""
 
         destination_size = self._attempt_destination_size
         if destination_size is None:
@@ -972,20 +972,39 @@ class IDAPatternAdapter:
                 ast,
                 destination_size=int(destination_size),
             )
-            return lowering.profile.fingerprint if lowering.term is not None else None
+            return lowering.profile if lowering.term is not None else None
         except Exception:
             return None
+
+    def _profile_fingerprint(self, ast: Any) -> str | None:
+        """Return an exact native boundary fingerprint, never a guessed fallback."""
+
+        profile = self._profile_for_ast(ast)
+        return None if profile is None else profile.fingerprint
+
+    @staticmethod
+    def _native_profile_metadata(profile) -> dict[str, object]:
+        from d810.mba.native_corpus_capture import native_profile_metadata
+
+        return {"native_profile": native_profile_metadata(profile)}
 
     def _record_catalogue_success(self, input_ast: Any, replacement_ast: Any) -> None:
         """Publish a successful direct-rule attempt without adding generic Z3."""
 
         canonical_source, aliases = self._catalogue_provenance()
         elapsed_ms = self._attempt_elapsed_ms()
-        fingerprint = self._profile_fingerprint(input_ast)
+        profile = self._profile_for_ast(input_ast)
+        fingerprint = (
+            profile.fingerprint
+            if profile is not None
+            else self._profile_fingerprint(input_ast)
+        )
         metadata = {
             "rule_name": self.name,
             "canonical_source": canonical_source,
         }
+        if profile is not None:
+            metadata.update(self._native_profile_metadata(profile))
         structural_selection = bool(
             getattr(self, "_structural_selection_active", False)
         )
@@ -1073,12 +1092,19 @@ class IDAPatternAdapter:
             return
         canonical_source, aliases = self._catalogue_provenance()
         input_ast = self._attempt_input_ast
-        fingerprint = self._profile_fingerprint(input_ast)
+        profile = self._profile_for_ast(input_ast)
+        fingerprint = (
+            profile.fingerprint
+            if profile is not None
+            else self._profile_fingerprint(input_ast)
+        )
         legacy_match = bool(getattr(self, "_legacy_match_observed", False))
         structural_selection = bool(
             getattr(self, "_structural_selection_active", False)
         )
         metadata: dict[str, object] = {}
+        if profile is not None:
+            metadata.update(self._native_profile_metadata(profile))
         if structural_selection:
             metadata["structural_dispatch"] = {
                 "bucket_size": self._structural_dispatch_bucket_size,
@@ -1124,7 +1150,12 @@ class IDAPatternAdapter:
 
         canonical_source, aliases = self._catalogue_provenance()
         input_ast = self._attempt_input_ast
-        fingerprint = self._profile_fingerprint(input_ast) or "profile_unavailable"
+        profile = self._profile_for_ast(input_ast)
+        fingerprint = (
+            profile.fingerprint
+            if profile is not None
+            else self._profile_fingerprint(input_ast) or "profile_unavailable"
+        )
         structural_selection = bool(
             getattr(self, "_structural_selection_active", False)
         )
@@ -1132,6 +1163,8 @@ class IDAPatternAdapter:
             "error_class": type(exc).__name__,
             "error_message": str(exc),
         }
+        if profile is not None:
+            metadata.update(self._native_profile_metadata(profile))
         if structural_selection:
             metadata["structural_dispatch"] = {
                 "bucket_size": self._structural_dispatch_bucket_size,

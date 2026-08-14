@@ -11,6 +11,7 @@ from d810.mba.provider_outcome import (
     MbaProviderOutcome,
     ProviderOutcomeStatus,
 )
+from d810.mba.native_corpus_capture import native_profile_metadata
 from d810.optimizers.microcode.instructions.handler import (
     InstructionOptimizationRule,
     InstructionOptimizer,
@@ -41,6 +42,15 @@ class ChainSimplificationRule(InstructionOptimizationRule):
             self._attempt_outcome_index = len(self.provider_outcome_history) - 1
         else:
             self.provider_outcome_history[self._attempt_outcome_index] = outcome
+
+    @staticmethod
+    def _native_profile_metadata(profile) -> dict[str, object]:
+        """Attach capture evidence only for complete native lowering profiles."""
+
+        try:
+            return {"native_profile": native_profile_metadata(profile)}
+        except (AttributeError, TypeError, ValueError):
+            return {}
 
     @staticmethod
     def _chain_arity(mop, opcode: int) -> int:
@@ -93,6 +103,7 @@ class ChainSimplificationRule(InstructionOptimizationRule):
                 lowering.profile.operator_count,
                 lowering.profile.total_node_count,
             )
+            native_metadata = self._native_profile_metadata(lowering.profile)
             if new_ins is None:
                 self._publish_provider_outcome(
                     MbaProviderOutcome(
@@ -103,6 +114,7 @@ class ChainSimplificationRule(InstructionOptimizationRule):
                         elapsed_ms=elapsed_ms,
                         refusal_reason="no_match",
                         metadata={
+                            **native_metadata,
                             "chain_opcode": int(opcode),
                             "flattened_arity": self._flattened_arity(ins, opcode),
                             "rules_attempted": 1,
@@ -131,6 +143,7 @@ class ChainSimplificationRule(InstructionOptimizationRule):
                     ),
                     elapsed_ms=elapsed_ms,
                     metadata={
+                        **native_metadata,
                         "chain_opcode": int(opcode),
                         "flattened_arity": self._flattened_arity(ins, opcode),
                         "rules_attempted": 1,

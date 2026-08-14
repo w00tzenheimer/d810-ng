@@ -79,6 +79,9 @@ def egglog_receipt_to_outcome(receipt: object) -> MbaProviderOutcome:
         "nonlinear_product_count": getattr(receipt, "nonlinear_product_count", None),
         "blockers": tuple(str(item) for item in getattr(receipt, "blockers", ())),
     }
+    native_profile = getattr(receipt, "native_profile", None)
+    if isinstance(native_profile, Mapping):
+        metadata["native_profile"] = dict(native_profile)
     return MbaProviderOutcome(
         provider=MbaProviderKind.EGGLOG,
         status=status,
@@ -99,7 +102,9 @@ def egglog_receipt_to_outcome(receipt: object) -> MbaProviderOutcome:
     )
 
 
-def _profile_to_dict(profile: MbaIslandProfile) -> dict[str, object]:
+def profile_to_dict(profile: MbaIslandProfile) -> dict[str, object]:
+    """Encode one actual native island profile for portable report/capture use."""
+
     return {
         "width_bits": profile.width_bits,
         "operator_count": profile.operator_count,
@@ -230,7 +235,7 @@ class MbaCorpusCaseReport:
         return {
             "case_id": self.case_id,
             "stratum": self.stratum,
-            "profile": _profile_to_dict(self.profile),
+            "profile": profile_to_dict(self.profile),
             "outcomes": [outcome.to_dict() for outcome in self.outcomes],
         }
 
@@ -688,6 +693,7 @@ __all__ = [
     "compare_provider_outcomes",
     "normalize_outcome_rows",
     "outcome_from_dict",
+    "profile_to_dict",
     "profile_from_dict",
     "report_from_dict",
     "summary_markdown",

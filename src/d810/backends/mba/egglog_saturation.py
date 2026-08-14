@@ -26,6 +26,7 @@ from d810.backends.mba.hexrays_island import (
     rebuild_hexrays_island,
 )
 from d810.mba.island_profile import profile_typed_term
+from d810.mba.native_corpus_capture import native_profile_metadata
 from d810.mba import typed_term as _typed_term
 from d810.mba.typed_term import (
     TypedBvTerm,
@@ -207,6 +208,7 @@ class EgglogExtractionReceipt:
     distinct_leaf_count: int | None = None
     nonlinear_product_count: int | None = None
     blockers: tuple[str, ...] = ()
+    native_profile: Mapping[str, object] | None = None
     skip_reason: ExtractionSkipReason | None = None
 
     def __post_init__(self) -> None:
@@ -422,6 +424,9 @@ def _extraction_result(
             blockers=()
             if profile is None
             else tuple(blocker.value for blocker in profile.blockers),
+            native_profile=(
+                None if profile is None else native_profile_metadata(profile)
+            ),
             skip_reason=skip_reason,
         ),
         selected_provenance=provenance,
@@ -446,6 +451,7 @@ def extraction_receipt_for_lowering(
         distinct_leaf_count=profile.distinct_leaf_count,
         nonlinear_product_count=profile.nonlinear_product_count,
         blockers=tuple(blocker.value for blocker in profile.blockers),
+        native_profile=native_profile_metadata(profile),
         skip_reason=skip_reason,
     )
 
