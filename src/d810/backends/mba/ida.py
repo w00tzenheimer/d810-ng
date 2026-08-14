@@ -602,7 +602,11 @@ class IDAPatternAdapter:
             candidate = _ShadowBindingCandidate(leafs_by_name, test_ast)
             if not candidate.ea or not self._check_candidate(candidate):
                 return None
-            replacement = self.get_replacement(candidate)
+            # Structural bindings are a read-only projection of the source AST.
+            # Reuse the clone-based emitter so its active-runtime binding carrier
+            # preserves the original live mops instead of mutating the cached
+            # legacy replacement pattern.
+            replacement = self._get_shadow_replacement(candidate)
         except Exception:
             return None
         if replacement is None:
@@ -848,12 +852,19 @@ class IDAPatternAdapter:
         if ledger is None:
             return
         shadow = self._shadow_metadata(legacy_match=legacy_match)
-        structural_proven = (
-            not legacy_match
-            and bool(shadow["structural_match"])
-            and self._prove_structural_only_candidate()
+        structural_proven = False
+        structural_refused = False
+        if not legacy_match and bool(shadow["structural_match"]):
+            structural_proven = self._prove_structural_only_candidate()
+            structural_refused = bool(
+                not structural_proven
+                and getattr(self, "_shadow_structural_refused", False)
+            )
+        ledger.record(
+            **shadow,
+            structural_proven=structural_proven,
+            structural_refused=structural_refused,
         )
-        ledger.record(**shadow, structural_proven=structural_proven)
         self._shadow_parity_recorded = True
 
     @staticmethod
@@ -871,6 +882,10 @@ class IDAPatternAdapter:
     def _prove_structural_only_candidate(self) -> bool:
         """Promote a structural-only hit after reconstruction and proof only."""
 
+        # A completed native reconstruction/proof that rejects a candidate is
+        # a stable refusal, not "pending safe coverage". Pending means the
+        # proof-only path could not reach a decision at all.
+        self._shadow_structural_refused = False
         source = getattr(self, "_shadow_source_ast", None)
         paths = getattr(self, "_shadow_structural_native_paths", None)
         destination_size = getattr(self, "_attempt_destination_size", None)
@@ -884,9 +899,11 @@ class IDAPatternAdapter:
             leafs_by_name[name] = native
         candidate = _ShadowBindingCandidate(leafs_by_name, source)
         if not candidate.ea or not self._check_candidate(candidate):
+            self._shadow_structural_refused = True
             return False
         replacement_ins = self._get_shadow_replacement(candidate)
         if replacement_ins is None:
+            self._shadow_structural_refused = True
             return False
         replacement = minsn_to_ast(replacement_ins)
         input_cost = self._ast_cost(source)
@@ -897,12 +914,16 @@ class IDAPatternAdapter:
             or output_cost is None
             or output_cost >= input_cost
         ):
+            self._shadow_structural_refused = True
             return False
-        return prove_native_ast_equivalence(
+        proven = prove_native_ast_equivalence(
             source,
             replacement,
             width=int(destination_size) * 8,
         )
+        if not proven:
+            self._shadow_structural_refused = True
+        return proven
 
     def _get_shadow_replacement(self, candidate: _ShadowBindingCandidate) -> Any | None:
         """Use the native emitter without mutating its cached live pattern."""

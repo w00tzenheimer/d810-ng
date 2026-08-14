@@ -141,6 +141,11 @@ class MopSnapshot:
             ida_hexrays.mop_a,  # address operand
             ida_hexrays.mop_c,  # switch cases
             ida_hexrays.mop_p,  # pair
+            # ``mop_r`` is scalar, but rebuilding it through ``make_reg``
+            # drops its microcode valnum. Keep an owned clone so a structural
+            # replacement retains the exact live operand identity required by
+            # the native MBA proof gate.
+            ida_hexrays.mop_r,
             ida_hexrays.mop_S,  # stack var (requires mba_t to synthesize)
             ida_hexrays.mop_l,  # local var (requires mba_t to synthesize)
             ida_hexrays.mop_str,  # string literal

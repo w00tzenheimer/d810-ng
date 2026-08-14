@@ -749,8 +749,8 @@ def test_structural_only_hit_stays_pending_when_native_proof_fails(monkeypatch) 
     assert adapter._shadow_parity_ledger.new_safe_coverage_pending == 1
 
 
-def test_structural_only_hit_stays_pending_for_mixed_width_replacement(monkeypatch) -> None:
-    """Proof-only coverage must not erase native mixed-width semantics."""
+def test_structural_only_hit_is_refused_for_mixed_width_replacement(monkeypatch) -> None:
+    """A completed native width rejection is not unresolved safe coverage."""
 
     x = Var("x")
 
@@ -781,4 +781,5 @@ def test_structural_only_hit_stays_pending_for_mixed_width_replacement(monkeypat
     adapter._record_shadow_parity(legacy_match=False)
 
     assert adapter._shadow_parity_ledger.new_safe_coverage_proved == 0
-    assert adapter._shadow_parity_ledger.new_safe_coverage_pending == 1
+    assert adapter._shadow_parity_ledger.new_safe_coverage_pending == 0
+    assert adapter._shadow_parity_ledger.new_safe_coverage_refused == 1

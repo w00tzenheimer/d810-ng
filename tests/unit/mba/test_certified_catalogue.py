@@ -5,6 +5,7 @@ import json
 
 import pytest
 
+from d810.core.logging import getLogger
 from d810.mba.certified_catalogue import (
     ShadowMatcherParityLedger,
     StructuralMatcherParityCertificate,
@@ -47,6 +48,7 @@ class _DifferentImplementationRule(_SemanticRule):
 
 _HOOK_GLOBAL_LIMIT = 1
 _UNFINGERPRINTABLE_HOOK_GLOBAL = object()
+_SEMANTIC_TEST_LOGGER = getLogger(__name__)
 
 
 class _GlobalConstraintRule(_SemanticRule):
@@ -57,6 +59,14 @@ class _GlobalConstraintRule(_SemanticRule):
 class _UnfingerprintableGlobalRule(_SemanticRule):
     def check_candidate(self, candidate) -> bool:
         return candidate is _UNFINGERPRINTABLE_HOOK_GLOBAL
+
+
+class _RuntimeLoggingRule(_SemanticRule):
+    """Real rule hooks may report refusals without logging state being semantic."""
+
+    def check_candidate(self, candidate) -> bool:
+        _SEMANTIC_TEST_LOGGER.debug("candidate rejected: %r", candidate)
+        return bool(candidate)
 
 
 def _digest(value: str) -> str:
@@ -175,6 +185,17 @@ def test_snapshot_with_unfingerprintable_hook_global_cannot_authorize() -> None:
 
     assert snapshot.structural_authorizable is False
     assert not certificate.authorizes(snapshot, "cython", expectation)
+
+
+def test_snapshot_ignores_the_known_operational_d810_logger() -> None:
+    x, y = Var("x"), Var("y")
+
+    snapshot = build_certified_catalogue_snapshot(
+        (_RuntimeLoggingRule("one", x + y, x ^ y),),
+        compiler_version="operational-logger-v1",
+    )
+
+    assert snapshot.structural_authorizable is True
 
 
 def test_parity_certificate_requires_exact_expected_corpus_toolchain_and_coverage(
@@ -320,11 +341,19 @@ def test_shadow_ledger_counts_only_evidence_backed_legacy_parity_mismatches() ->
         same_bindings=None,
         structural_proven=True,
     )
+    ledger.record(
+        legacy_match=False,
+        structural_match=True,
+        same_rule=False,
+        same_bindings=None,
+        structural_refused=True,
+    )
 
-    assert ledger.observation_count == 5
+    assert ledger.observation_count == 6
     assert ledger.legacy_match_count == 3
     assert ledger.legacy_rule_mismatches == 1
     assert ledger.legacy_binding_mismatches == 1
     assert ledger.legacy_binding_unknown == 1
     assert ledger.new_safe_coverage_pending == 1
     assert ledger.new_safe_coverage_proved == 1
+    assert ledger.new_safe_coverage_refused == 1

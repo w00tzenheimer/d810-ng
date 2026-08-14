@@ -174,6 +174,7 @@ class ShadowMatcherParityLedger:
     legacy_binding_unknown: int = 0
     new_safe_coverage_pending: int = 0
     new_safe_coverage_proved: int = 0
+    new_safe_coverage_refused: int = 0
 
     def record(
         self,
@@ -183,6 +184,7 @@ class ShadowMatcherParityLedger:
         same_rule: bool,
         same_bindings: bool | None,
         structural_proven: bool = False,
+        structural_refused: bool = False,
     ) -> None:
         self.observation_count += 1
         if not legacy_match:
@@ -192,6 +194,8 @@ class ShadowMatcherParityLedger:
             if structural_match:
                 if structural_proven:
                     self.new_safe_coverage_proved += 1
+                elif structural_refused:
+                    self.new_safe_coverage_refused += 1
                 else:
                     self.new_safe_coverage_pending += 1
             return
@@ -337,8 +341,25 @@ def _callable_global_values(
         else:
             bindings.append((name, state.unavailable(function, "missing_global")))
             continue
+        if _is_operational_d810_logger(binding):
+            # Logging configuration carries locks, handlers, and verbosity state.
+            # Rule hooks use the project logger only for diagnostics; treating that
+            # mutable operational state as rewrite semantics would permanently deny
+            # structural authorization to every otherwise-certified runtime rule.
+            bindings.append((name, {"operational_logger": "d810"}))
+            continue
         bindings.append((name, _semantic_value(binding, state)))
     return tuple(bindings)
+
+
+def _is_operational_d810_logger(value: object) -> bool:
+    """Recognize only D810's concrete diagnostic logger as non-semantic state."""
+
+    logger_type = type(value)
+    return (
+        logger_type.__module__ == "d810.core.logging"
+        and logger_type.__qualname__ == "D810Logger"
+    )
 
 
 def _semantic_value(

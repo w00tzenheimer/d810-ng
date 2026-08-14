@@ -9,16 +9,27 @@ from __future__ import annotations
 
 import ctypes
 import contextlib
+import hashlib
 import json
+import os
 import random
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
+import idaapi
 
+from d810.core.config import ProjectConfiguration
+from d810.mba.certified_catalogue import ShadowMatcherParityLedger
+from d810.mba.provider_outcome import MbaProviderKind, ProviderOutcomeStatus
+from d810.mba.native_corpus_capture import capture_native_provider_histories
+from d810.optimizers.microcode.instructions.pattern_matching.engine import (
+    get_engine_info,
+)
 from d810.testing.cases import DeobfuscationCase
-from d810.testing.runner import run_deobfuscation_test
+from d810.testing.runner import get_func_ea, run_deobfuscation_test
 
 
 _ROOT = Path(__file__).resolve().parents[3]
@@ -28,6 +39,7 @@ _CATALOGUE_CONFIG = _ROOT / "src/d810/conf/mba_compiler_shape_catalogue.json"
 _EGGLOG_CONFIG = _ROOT / "src/d810/conf/mba_compiler_shape_egglog.json"
 _EGGLOG_DEGREE2_CONFIG = _ROOT / "src/d810/conf/mba_compiler_shape_egglog_degree2.json"
 _NATIVE_BINARY = _ROOT / "samples/bins/mba_compiler_shapes.dylib"
+_PARITY_CERTIFICATE_TOOL = _ROOT / "tools/scripts/mba_structural_matcher_certificate.py"
 
 _COMMON_COMPILER_SHAPE_BUILD_FLAGS = (
     "-shared",
@@ -145,6 +157,31 @@ def _catalogue_reaches_provider(function: str) -> bool:
         Path(compiler).name.startswith("gcc")
         and function in _GCC_PRE_SIMPLIFIED_CATALOGUE_FUNCTIONS
     )
+
+
+def _sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _canonical_json_digest(value: object) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            value,
+            allow_nan=False,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _parity_artifact_dir(tmp_path: Path) -> Path:
+    """Use an explicit output directory when an operator wants persisted evidence."""
+
+    configured = os.environ.get("MBA_STRUCTURAL_PARITY_ARTIFACT_DIR")
+    destination = tmp_path if not configured else Path(configured)
+    destination.mkdir(parents=True, exist_ok=True)
+    return destination
 
 
 def _build_native_corpus_binary() -> None:
@@ -381,3 +418,222 @@ class TestCompilerShapeCatalogueNative:
         assert (
             ledger.new_safe_coverage_pending + ledger.new_safe_coverage_proved
         ) >= 0
+
+    def test_native_shadow_evidence_generates_and_activates_runtime_bound_certificate(
+        self,
+        tmp_path: Path,
+        ida_database,
+        d810_state,
+        pseudocode_to_string,
+        monkeypatch,
+    ) -> None:
+        """Turn real legacy-authoritative observations into an activation receipt.
+
+        This is intentionally an IDA test rather than a portable certificate
+        fixture.  It proves the evidence producer, certificate renderer, and
+        configuration-time authorization form one chain in each matcher runtime.
+        Set ``MBA_STRUCTURAL_PARITY_ARTIFACT_DIR`` to retain the JSON evidence,
+        toolchain document, and certificate outside pytest's temporary directory.
+        """
+
+        monkeypatch.setenv("D810_LEGACY_DSL_PERMUTATIONS", "1")
+        monkeypatch.setenv("D810_SHADOW_DSL_MATCHING", "1")
+        monkeypatch.delenv("D810_STRUCTURAL_DSL_MATCHING", raising=False)
+        observed_snapshots = []
+        observed_ledgers = []
+
+        @contextlib.contextmanager
+        def recording_state():
+            with d810_state() as state:
+                yield state
+                observed_snapshots.append(state.current_certified_catalogue_snapshot)
+                observed_ledgers.append(state.current_shadow_matcher_parity_ledger)
+
+        for function, rule_name in _CATALOGUE_CASES:
+            reaches_provider = _catalogue_reaches_provider(function)
+            run_deobfuscation_test(
+                DeobfuscationCase(
+                    function=function,
+                    description="native structural parity evidence",
+                    project="mba_compiler_shape_catalogue.json",
+                    must_change=reaches_provider,
+                    required_rules=[rule_name] if reaches_provider else [],
+                    forbidden_rules=[] if reaches_provider else [rule_name],
+                ),
+                d810_state=recording_state,
+                pseudocode_to_string=pseudocode_to_string,
+            )
+
+        snapshots = tuple(snapshot for snapshot in observed_snapshots if snapshot)
+        ledgers = tuple(ledger for ledger in observed_ledgers if ledger)
+        assert len(snapshots) == len(_CATALOGUE_CASES)
+        assert len(ledgers) == len(_CATALOGUE_CASES)
+        snapshot = snapshots[0]
+        assert snapshot.structural_authorizable is True
+        assert all(item.fingerprint == snapshot.fingerprint for item in snapshots)
+        combined = ShadowMatcherParityLedger(
+            **{
+                field: sum(getattr(ledger, field) for ledger in ledgers)
+                for field in (
+                    "observation_count",
+                    "legacy_match_count",
+                    "legacy_rule_mismatches",
+                    "legacy_binding_mismatches",
+                    "legacy_binding_unknown",
+                    "new_safe_coverage_pending",
+                    "new_safe_coverage_proved",
+                )
+            }
+        )
+        assert combined.legacy_match_count > 0
+        assert combined.legacy_rule_mismatches == 0
+        assert combined.legacy_binding_mismatches == 0
+        assert combined.legacy_binding_unknown == 0
+        assert combined.new_safe_coverage_pending == 0
+
+        artifacts = _parity_artifact_dir(tmp_path)
+        runtime_mode = str(get_engine_info()["backend"])
+        compiler = _find_c_compiler()
+        toolchain = {
+            "compiler": compiler,
+            "compiler_version": subprocess.run(
+                [compiler, "--version"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.splitlines()[0],
+            "ida_sdk": str(idaapi.IDA_SDK_VERSION),
+            "matcher_backend": runtime_mode,
+        }
+        evidence_path = artifacts / f"mba-structural-parity-{runtime_mode}.json"
+        toolchain_path = artifacts / f"mba-structural-parity-toolchain-{runtime_mode}.json"
+        certificate_path = artifacts / f"mba-structural-parity-{runtime_mode}.certificate.json"
+        evidence_path.write_text(
+            json.dumps(
+                {
+                    "runtime_mode": runtime_mode,
+                    "snapshot": {
+                        "fingerprint": snapshot.fingerprint,
+                        "structural_authorizable": snapshot.structural_authorizable,
+                    },
+                    "ledger": {
+                        field: getattr(combined, field)
+                        for field in (
+                            "observation_count",
+                            "legacy_match_count",
+                            "legacy_rule_mismatches",
+                            "legacy_binding_mismatches",
+                            "legacy_binding_unknown",
+                            "new_safe_coverage_pending",
+                            "new_safe_coverage_proved",
+                        )
+                    },
+                },
+                allow_nan=False,
+                ensure_ascii=True,
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        toolchain_path.write_text(
+            json.dumps(toolchain, allow_nan=False, ensure_ascii=True, indent=2, sort_keys=True)
+            + "\n",
+            encoding="utf-8",
+        )
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(_PARITY_CERTIFICATE_TOOL),
+                "--evidence",
+                str(evidence_path),
+                "--manifest",
+                str(_MANIFEST),
+                "--toolchain",
+                str(toolchain_path),
+                "--out",
+                str(certificate_path),
+            ],
+            cwd=_ROOT,
+            env=os.environ | {"PYTHONPATH": str(_ROOT / "src")},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert completed.returncode == 0, completed.stderr
+        certificate = json.loads(certificate_path.read_text(encoding="utf-8"))
+        assert certificate["snapshot_fingerprint"] == snapshot.fingerprint
+        assert certificate["runtime_mode"] == runtime_mode
+
+        activation_config = json.loads(_CATALOGUE_CONFIG.read_text(encoding="utf-8"))
+        activation_config["additional_configuration"].update(
+            {
+                "structural_matcher_parity_certificate": certificate_path.name,
+                "structural_matcher_parity_expectation": {
+                    "corpus_digest": _sha256_file(_MANIFEST),
+                    "toolchain_digest": _canonical_json_digest(toolchain),
+                    "legacy_observation_count": combined.legacy_match_count,
+                },
+            }
+        )
+        activation_path = artifacts / f"mba-structural-activation-{runtime_mode}.json"
+        activation_path.write_text(
+            json.dumps(activation_config, ensure_ascii=True, indent=2, sort_keys=True)
+            + "\n",
+            encoding="utf-8",
+        )
+        runtime_project = ProjectConfiguration.from_file(activation_path)
+
+        monkeypatch.delenv("D810_LEGACY_DSL_PERMUTATIONS", raising=False)
+        monkeypatch.delenv("D810_SHADOW_DSL_MATCHING", raising=False)
+        monkeypatch.setenv("D810_STRUCTURAL_DSL_MATCHING", "1")
+        with d810_state() as state:
+            state.add_project(runtime_project)
+            activation_index = state.project_manager.index(activation_path.name)
+            assert state.load_project(activation_index) is not None
+            adapters = tuple(state.current_ins_rules)
+            assert adapters
+            assert all(adapter.uses_structural_matching for adapter in adapters)
+
+            function_ea = get_func_ea("mba_shape_catalogue_01")
+            assert function_ea != idaapi.BADADDR
+            state.stop_d810()
+            before = idaapi.decompile(function_ea, flags=idaapi.DECOMP_NO_CACHE)
+            assert before is not None
+            before_text = pseudocode_to_string(before.get_pseudocode())
+            with capture_native_provider_histories(adapters):
+                state.start_d810()
+                after = idaapi.decompile(function_ea, flags=idaapi.DECOMP_NO_CACHE)
+                state.stop_d810()
+            assert after is not None
+            assert pseudocode_to_string(after.get_pseudocode()) != before_text
+            outcomes = tuple(
+                outcome
+                for adapter in adapters
+                for outcome in adapter.provider_outcomes()
+            )
+            assert any(
+                outcome.provider is MbaProviderKind.CATALOGUE
+                and outcome.status is ProviderOutcomeStatus.APPLIED
+                and "structural_dispatch" in outcome.metadata
+                for outcome in outcomes
+            )
+
+            stale_config = json.loads(activation_path.read_text(encoding="utf-8"))
+            stale_config["additional_configuration"][
+                "structural_matcher_parity_expectation"
+            ]["corpus_digest"] = "0" * 64
+            stale_path = artifacts / f"mba-structural-stale-{runtime_mode}.json"
+            stale_path.write_text(
+                json.dumps(stale_config, ensure_ascii=True, indent=2, sort_keys=True)
+                + "\n",
+                encoding="utf-8",
+            )
+            stale_project = ProjectConfiguration.from_file(stale_path)
+            state.add_project(stale_project)
+            stale_index = state.project_manager.index(stale_path.name)
+            assert state.load_project(stale_index) is not None
+            assert all(
+                not adapter.uses_structural_matching for adapter in state.current_ins_rules
+            )

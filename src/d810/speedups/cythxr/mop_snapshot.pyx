@@ -186,6 +186,7 @@ cdef class MopSnapshot:
             t == MOPT.ADDRESS or       # mop_a
             t == MOPT.CASES or         # mop_c
             t == MOPT.PAIR or          # mop_p
+            t == MOPT.REGISTER or      # mop_r; preserve valnum exactly
             t == MOPT.STACK or         # mop_S
             t == MOPT.LOCAL or         # mop_l
             t == MOPT.STRING           # mop_str
