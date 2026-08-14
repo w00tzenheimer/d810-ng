@@ -363,6 +363,11 @@ class TestCompilerShapeCatalogueNative:
         if function == "mba_shape_catalogue_01":
             assert ledger.observation_count > 0
             assert ledger.legacy_match_count > 0
+        if function == "mba_shape_catalogue_04":
+            # Regression: the legacy generated XOR permutation binds x=b,
+            # y=a only after the outer subtraction rejects x=a, y=b. The
+            # structural shadow must retry that nested lazy swap.
+            assert ledger.legacy_match_count == 1
         assert ledger.legacy_rule_mismatches == 0
         assert ledger.legacy_binding_mismatches == 0
         assert ledger.legacy_binding_unknown == 0

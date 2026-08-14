@@ -39,6 +39,35 @@ def test_nested_failed_swap_restores_bindings_before_second_branch() -> None:
     assert dict(report.bindings.candidate_path_by_name) == {"x": (1, 0), "y": (1, 1)}
 
 
+def test_non_ac_parent_retries_a_nested_lazy_commutation_after_rhs_rejects() -> None:
+    """The Sub_HD2 shape needs the XOR child to roll back to its swap."""
+
+    x, y = Var("x"), Var("y")
+    two = Const("two", 2)
+    pattern = (x ^ y) - two * ((~x) & y)
+    a, b = _leaf("a"), _leaf("b")
+    candidate = _node(
+        "sub",
+        _node("xor", a, b),
+        _node(
+            "mul",
+            TypedBvTerm(None, 32, value=2),
+            _node("and", a, TypedBvTerm("bnot", 32, children=(b,))),
+        ),
+    )
+
+    report = match_ac_pattern(pattern, candidate, comparison_budget=64)
+
+    assert report.stop_reason is AcMatchStopReason.MATCHED
+    assert report.bindings is not None
+    assert dict(report.bindings.candidate_path_by_name) == {
+        "x": (0, 1),
+        "y": (0, 0),
+        "two": (1, 0),
+    }
+    assert report.commuted_branches >= 1
+
+
 def test_same_width_ac_chain_requires_equal_cardinality_and_never_group_binds() -> None:
     a, b, c = Var("a"), Var("b"), Var("c")
     candidate = _node("add", _leaf("c"), _node("add", _leaf("b"), _leaf("a")))

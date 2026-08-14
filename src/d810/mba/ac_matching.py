@@ -7,7 +7,7 @@ one concrete term, and homogeneous AC chains must have the same arity.
 from __future__ import annotations
 
 import enum
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 
@@ -156,14 +156,15 @@ def _candidate_matches_rigid_root(
     return candidate.operation == operation
 
 
-def _match_ac_operands(
+def _iter_ac_operand_matches(
     patterns: list[SymbolicExpressionProtocol],
     candidates: list[tuple[TypedBvTerm, tuple[int, ...]]],
     state: _State,
     bindings: dict[str, tuple[str, tuple[int, ...]]],
-) -> dict[str, tuple[str, tuple[int, ...]]] | None:
+) -> Iterator[dict[str, tuple[str, tuple[int, ...]]]]:
     if not patterns:
-        return bindings
+        yield bindings
+        return
     pattern = patterns[0]
     ordered_candidates = sorted(
         (
@@ -174,48 +175,46 @@ def _match_ac_operands(
         key=lambda item: (term_fingerprint(item[0]), item[1]),
     )
     for candidate, path in ordered_candidates:
-        matched = _match(pattern, candidate, path, state, bindings)
-        if state.stopped is not None:
-            return None
-        if matched is None:
-            continue
-        remaining = list(candidates)
-        remaining.remove((candidate, path))
-        completed = _match_ac_operands(patterns[1:], remaining, state, matched)
-        if completed is not None:
-            return completed
-        if state.stopped is not None:
-            return None
-    return None
+        for matched in _iter_matches(pattern, candidate, path, state, bindings):
+            remaining = list(candidates)
+            remaining.remove((candidate, path))
+            yield from _iter_ac_operand_matches(
+                patterns[1:], remaining, state, matched
+            )
+            if state.stopped is not None:
+                return
 
 
-def _match(
+def _iter_matches(
     pattern: SymbolicExpressionProtocol,
     candidate: TypedBvTerm,
     path: tuple[int, ...],
     state: _State,
     bindings: dict[str, tuple[str, tuple[int, ...]]],
-) -> dict[str, tuple[str, tuple[int, ...]]] | None:
+) -> Iterator[dict[str, tuple[str, tuple[int, ...]]]]:
     if not state.compare():
-        return None
+        return
     operation = pattern.operation
     if operation is None:
         if candidate.operation is not None:
-            return None
+            return
         if _is_pattern_constant(pattern):
             if candidate.value is None:
-                return None
+                return
             value = pattern.value
             if value is not None and candidate.value != (
                 value & ((1 << candidate.width) - 1)
             ):
-                return None
-        return _bind(bindings, _pattern_leaf_name(pattern), candidate, path)
+                return
+        matched = _bind(bindings, _pattern_leaf_name(pattern), candidate, path)
+        if matched is not None:
+            yield matched
+        return
     if candidate.operation != operation or pattern.left is None:
-        return None
+        return
     if operation in AC_OPERATIONS:
         if pattern.right is None or len(candidate.children) != 2:
-            return None
+            return
         pattern_operands = _flatten_pattern(pattern, operation)
         candidate_operands = _flatten_term(candidate, path, operation, state)
         if len(pattern_operands) != len(candidate_operands):
@@ -223,61 +222,63 @@ def _match(
             # satisfy the enclosing AC match, so only remember it for the final
             # no-match classification; do not stop backtracking.
             state.saw_cardinality_mismatch = True
-            return None
+            return
         # Binary matching intentionally follows declared order before one swap.
         if len(pattern_operands) == 2:
-            first = _match(
+            for first in _iter_matches(
                 pattern_operands[0],
                 candidate_operands[0][0],
                 candidate_operands[0][1],
                 state,
                 bindings,
-            )
-            if first is not None:
-                second = _match(
+            ):
+                yield from _iter_matches(
                     pattern_operands[1],
                     candidate_operands[1][0],
                     candidate_operands[1][1],
                     state,
                     first,
                 )
-                if second is not None:
-                    return second
             if state.stopped is not None:
-                return None
+                return
             state.commuted_branches += 1
-            first = _match(
+            for first in _iter_matches(
                 pattern_operands[0],
                 candidate_operands[1][0],
                 candidate_operands[1][1],
                 state,
                 bindings,
-            )
-            if first is None:
-                return None
-            return _match(
-                pattern_operands[1],
-                candidate_operands[0][0],
-                candidate_operands[0][1],
-                state,
-                first,
-            )
-        return _match_ac_operands(
+            ):
+                yield from _iter_matches(
+                    pattern_operands[1],
+                    candidate_operands[0][0],
+                    candidate_operands[0][1],
+                    state,
+                    first,
+                )
+            return
+        yield from _iter_ac_operand_matches(
             sorted(pattern_operands, key=_pattern_sort_key),
             candidate_operands,
             state,
             bindings,
         )
+        return
     if pattern.right is None:
         if len(candidate.children) != 1:
-            return None
-        return _match(pattern.left, candidate.children[0], path + (0,), state, bindings)
+            return
+        yield from _iter_matches(
+            pattern.left, candidate.children[0], path + (0,), state, bindings
+        )
+        return
     if len(candidate.children) != 2:
-        return None
-    left = _match(pattern.left, candidate.children[0], path + (0,), state, bindings)
-    if left is None:
-        return None
-    return _match(pattern.right, candidate.children[1], path + (1,), state, left)
+        return
+    for left in _iter_matches(
+        pattern.left, candidate.children[0], path + (0,), state, bindings
+    ):
+        yield from _iter_matches(
+            pattern.right, candidate.children[1], path + (1,), state, left
+        )
 
 
 def match_ac_pattern(
@@ -293,7 +294,7 @@ def match_ac_pattern(
     state = _State(comparison_budget)
     if not _is_expression(pattern) or candidate.width not in _SUPPORTED_WIDTHS:
         return AcMatchReport(None, 0, 0, 0, AcMatchStopReason.UNSUPPORTED_WIDTH)
-    bindings = _match(pattern, candidate, (), state, {})
+    bindings = next(_iter_matches(pattern, candidate, (), state, {}), None)
     reason = state.stopped
     if reason is None and bindings is not None:
         paths = {name: path for name, (_, path) in bindings.items()}
