@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 ida_hexrays = pytest.importorskip("ida_hexrays")
@@ -18,7 +20,7 @@ from d810.mba.ac_matching import (  # noqa: E402
     AcMatchStopReason,
 )
 from d810.mba.certified_catalogue import ShadowMatcherParityLedger  # noqa: E402
-from d810.mba.dsl import Const, Var  # noqa: E402
+from d810.mba.dsl import Const, Var, Zext  # noqa: E402
 from d810.optimizers.microcode.instructions.pattern_matching.handler import (  # noqa: E402
     PatternOptimizer,
     RulePatternInfo,
@@ -209,6 +211,68 @@ def test_certified_registration_uses_one_base_pattern_unless_rollback_is_enabled
 
     assert rollback.uses_structural_matching is False
     assert len(rollback.pattern_candidates) == 2
+
+
+@pytest.mark.parametrize(
+    ("name", "pattern"),
+    (
+        ("ShiftRule", Var("x") >> Const("shift", 1)),
+        ("CastRule", Zext(Var("x"), 32)),
+        ("PredicateRule", (Var("x") != Const("zero", 0)).to_int()),
+    ),
+)
+def test_selected_unsupported_dsl_rules_keep_legacy_dispatch_by_default(
+    monkeypatch,
+    name: str,
+    pattern,
+) -> None:
+    """Unsupported typed semantics must not be starved by Task 8 selection."""
+
+    monkeypatch.delenv("D810_LEGACY_DSL_PERMUTATIONS", raising=False)
+    adapter = IDAPatternAdapter(SimpleNamespace(name=name, pattern=pattern))
+    attach_selected_certified_catalogue_snapshot((adapter,))
+    optimizer = PatternOptimizer(maturities=[7], stats=None, log_dir=None)
+    assert optimizer._add_rule_internal(adapter)
+    optimizer.cur_maturity = 7
+
+    assert adapter.uses_structural_matching is False
+    assert all(
+        adapter not in rules
+        for rules in optimizer._structural_rules_by_root_opcode.values()
+    )
+    assert optimizer._indexed_storage.total_patterns == len(adapter.pattern_candidates)
+
+    class Instruction:
+        ea = 0
+
+        @staticmethod
+        def _print():
+            return "legacy-unsupported"
+
+    calls: list[object] = []
+    monkeypatch.setattr(
+        adapter,
+        "check_pattern_and_replace",
+        lambda registered, candidate: calls.append((registered, candidate))
+        or Instruction(),
+    )
+    registered = adapter.pattern_candidates[0]
+    optimizer._get_candidates = lambda _candidate: [
+        RulePatternInfo(adapter, registered)
+    ]
+
+    candidate = object()
+    outcome = optimizer._try_matches(
+        None,
+        Instruction(),
+        candidate,
+        allowed_rule_names=None,
+        scheduled_rule_names=None,
+        source_label="legacy-unsupported",
+    )
+
+    assert outcome is not None
+    assert calls == [(registered, candidate)]
 
 
 def test_structural_dispatch_is_root_bucketed_and_reports_attempt_count(

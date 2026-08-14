@@ -60,6 +60,40 @@ if TYPE_CHECKING:
 # Note: DSL uses "and", "or" (not "and_", "or_")
 _COMMUTATIVE_OPS = {"add", "mul", "and", "or", "xor"}
 
+# The portable structural matcher is only sound for the same typed island
+# vocabulary accepted by ``lower_hexrays_island``.  Snapshot membership is not
+# enough: the full direct catalogue also contains shifts, casts, predicates,
+# and division/modulo rules that must retain legacy native matching.
+_STRUCTURAL_DSL_OPERATIONS = frozenset(
+    {"add", "sub", "mul", "and", "or", "xor", "bnot", "neg"}
+)
+
+
+def _supports_structural_dsl_pattern(expr: object) -> bool:
+    """Return whether one declared DSL pattern fits the typed structural island."""
+
+    seen: set[int] = set()
+
+    def visit(node: object) -> bool:
+        if not isinstance(node, SymbolicExpressionProtocol):
+            return False
+        identity = id(node)
+        if identity in seen:
+            return False
+        seen.add(identity)
+        operation = getattr(node, "operation", None)
+        if operation is None:
+            return True
+        if operation not in _STRUCTURAL_DSL_OPERATIONS:
+            return False
+        left = getattr(node, "left", None)
+        right = getattr(node, "right", None)
+        if left is None or not visit(left):
+            return False
+        return right is None or visit(right)
+
+    return visit(expr)
+
 
 def _generate_commutative_permutations(
     expr: SymbolicExpression,
@@ -77,6 +111,13 @@ def _generate_commutative_permutations(
     """
     # Note: is_variable() and is_constant() are methods, not properties
     if expr.is_variable() or expr.is_constant():
+        return [expr]
+
+    # ``bool_to_int`` carries a comparison constraint rather than ordinary
+    # expression children.  It is a legacy-only predicate shape, but must
+    # still register as its declared base pattern after Task 8 filters it out
+    # of structural matching.
+    if expr.operation == "bool_to_int":
         return [expr]
 
     # Unary operations
@@ -453,7 +494,8 @@ class IDAPatternAdapter:
         # objects.  Keep the generated-permutation implementation available as
         # a release-scoped rollback, but never register both forms at once.
         self._structural_matching_enabled = (
-            os.environ.get("D810_LEGACY_DSL_PERMUTATIONS", "0") != "1"
+            _supports_structural_dsl_pattern(getattr(self.rule, "pattern", None))
+            and os.environ.get("D810_LEGACY_DSL_PERMUTATIONS", "0") != "1"
         )
 
     @property
