@@ -6,7 +6,9 @@ import pytest
 
 from d810.mba.island_profile import MbaIslandClass, MbaIslandProfile
 from d810.mba.native_corpus_capture import (
+    ManifestNativeCaptureCase,
     NativeMbaCorpusCapture,
+    capture_manifest_native_cases,
     capture_native_provider_case,
     native_profile_metadata,
     profiles_from_native_provider_histories,
@@ -25,6 +27,14 @@ class _Provider:
 
     def provider_outcomes(self) -> tuple[MbaProviderOutcome, ...]:
         return tuple(self._outcomes)
+
+
+class _TruncatedProvider(_Provider):
+    def provider_outcome_cursor(self) -> int:
+        return 0
+
+    def provider_outcomes_since(self, cursor: int) -> tuple[MbaProviderOutcome, ...]:
+        raise ValueError("provider outcome history was truncated after the capture cursor")
 
 
 def _profile(fingerprint: str = "native-shape") -> MbaIslandProfile:
@@ -178,3 +188,45 @@ def test_capture_emits_declared_unavailable_rows_for_missing_provider_history() 
         (MbaProviderKind.CATALOGUE, ProviderOutcomeStatus.APPLIED),
         (MbaProviderKind.EGGLOG, ProviderOutcomeStatus.UNAVAILABLE),
     ]
+
+
+def test_manifest_runner_snapshots_each_case_and_rejects_evicted_delta() -> None:
+    profile = _profile()
+    provider = _Provider()
+    seen: list[str] = []
+
+    def run_case(case: ManifestNativeCaptureCase) -> MbaIslandProfile:
+        seen.append(case.case_id)
+        provider._outcomes.append(
+            _outcome(MbaProviderKind.CATALOGUE, ProviderOutcomeStatus.APPLIED, profile)
+        )
+        return profile
+
+    capture = NativeMbaCorpusCapture("manifest", {"runtime": "python"})
+    cases = (
+        ManifestNativeCaptureCase("one", "catalogue"),
+        ManifestNativeCaptureCase("two", "catalogue"),
+    )
+    captured = capture_manifest_native_cases(
+        capture=capture,
+        cases=cases,
+        rules=(provider,),
+        expected_providers=(MbaProviderKind.CATALOGUE, MbaProviderKind.EGGLOG),
+        run_case=run_case,
+    )
+
+    assert seen == ["one", "two"]
+    assert [case.case_id for case in captured] == ["one", "two"]
+    assert all(len(case.outcomes) == 2 for case in captured)
+
+
+def test_manifest_runner_fails_closed_when_a_case_delta_is_truncated() -> None:
+    capture = NativeMbaCorpusCapture("manifest", {"runtime": "python"})
+    with pytest.raises(ValueError, match="truncated"):
+        capture_manifest_native_cases(
+            capture=capture,
+            cases=(ManifestNativeCaptureCase("evicted", "catalogue"),),
+            rules=(_TruncatedProvider(),),
+            expected_providers=(MbaProviderKind.CATALOGUE,),
+            run_case=lambda _case: _profile(),
+        )

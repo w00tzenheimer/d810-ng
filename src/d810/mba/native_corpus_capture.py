@@ -8,7 +8,7 @@ for providers that did not run.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -35,6 +35,20 @@ class NativeProviderHistorySnapshot:
     """Per-rule history lengths captured immediately before one decompilation."""
 
     outcome_counts_by_rule_id: Mapping[int, int]
+
+
+@dataclass(frozen=True)
+class ManifestNativeCaptureCase:
+    """One declared native-capture invocation from the corpus manifest."""
+
+    case_id: str
+    stratum: str
+
+    def __post_init__(self) -> None:
+        if type(self.case_id) is not str or not self.case_id:
+            raise ValueError("manifest capture case_id must be a non-empty string")
+        if type(self.stratum) is not str or not self.stratum:
+            raise ValueError("manifest capture stratum must be a non-empty string")
 
 
 def native_profile_metadata(profile: MbaIslandProfile) -> dict[str, object]:
@@ -266,9 +280,51 @@ class NativeMbaCorpusCapture:
         path.write_text(self.report().to_json(), encoding="utf-8")
 
 
+def capture_manifest_native_cases(
+    *,
+    capture: NativeMbaCorpusCapture,
+    cases: Sequence[ManifestNativeCaptureCase],
+    rules: Iterable[object],
+    expected_providers: Sequence[MbaProviderKind],
+    run_case: Callable[[ManifestNativeCaptureCase], MbaIslandProfile],
+) -> tuple[MbaCorpusCaseReport, ...]:
+    """Run and capture every declared case as one exact bounded-history delta.
+
+    ``run_case`` owns native decompilation.  The portable coordinator owns the
+    evidence boundary: it snapshots before each invocation and consumes the
+    resulting delta immediately, so a later case cannot evict or inherit it.
+    """
+
+    selected_rules = tuple(rules)
+    declared_cases = tuple(cases)
+    identifiers = tuple(case.case_id for case in declared_cases)
+    if len(set(identifiers)) != len(identifiers):
+        raise ValueError("manifest capture cases must have unique case_id values")
+    captured: list[MbaCorpusCaseReport] = []
+    with capture_native_provider_histories(selected_rules):
+        for case in declared_cases:
+            snapshot = snapshot_native_provider_histories(selected_rules)
+            profile = run_case(case)
+            if not isinstance(profile, MbaIslandProfile):
+                raise TypeError("manifest native runner must return MbaIslandProfile")
+            captured.append(
+                capture.add_case(
+                    case_id=case.case_id,
+                    stratum=case.stratum,
+                    profile=profile,
+                    rules=selected_rules,
+                    history_snapshot=snapshot,
+                    expected_providers=expected_providers,
+                )
+            )
+    return tuple(captured)
+
+
 __all__ = [
     "NativeMbaCorpusCapture",
     "NativeProviderHistorySnapshot",
+    "ManifestNativeCaptureCase",
+    "capture_manifest_native_cases",
     "capture_native_provider_case",
     "capture_native_provider_histories",
     "native_profile_from_outcome",
