@@ -20,20 +20,20 @@ from d810.backends.mba.egglog_add_rule_compiler import (
     specialize,
 )
 from d810.backends.mba.egglog_saturation import (
-    EgglogFunctionBudget,
     EgglogExtractionBudget,
     EgglogExtractionReceipt,
     EgglogExtractionResult,
     ExtractionSkipReason,
-    extraction_receipt_for_lowering,
+    extraction_receipt_for_profile,
     extract_bounded_candidate,
+    extract_bounded_term,
 )
-from d810.backends.mba.cross_block_preparation import (
-    prepare_ast_with_cross_block_constants,
-    prepare_ast_with_def_use_constants,
+from d810.backends.mba.hexrays_island import (
+    lower_hexrays_island,
+    rebuild_hexrays_island,
 )
-from d810.backends.mba.hexrays_island import lower_hexrays_island
-from d810.backends.mba.native_z3 import prove_native_ast_equivalence
+from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
+from d810.backends.mba.native_mba_term_view import NativeMbaTermView
 from d810.core import getLogger
 from d810.hexrays.expr.ast import AstNode
 from d810.hexrays.ir_maturity import ir_maturity_to_ida
@@ -44,8 +44,8 @@ from d810.mba.performance_timing import (
     EMPTY_MBA_STAGE_TIMINGS,
     MbaStageTimer,
 )
+from d810.mba.typed_term import canonicalize_ac_term
 from d810.mba.provider_outcome import MbaProviderOutcome, ProviderOutcomeStatus
-from d810.mba.provider_history import ProviderOutcomeHistory
 from d810.optimizers.microcode.instructions.peephole.handler import (
     PeepholeSimplificationRule,
 )
@@ -96,7 +96,6 @@ class EgglogOptimizer(PeepholeSimplificationRule):
 
     DESCRIPTION = "Bounded Egglog MBA extraction (proof-gated)"
     CATEGORY = "MBA Solving"
-    PORTFOLIO_TIER = "residual"
 
     def __init__(self) -> None:
         super().__init__()
@@ -107,6 +106,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         self.__catalogue = _SelectedRuleCatalogue(())
         self._compiled_rules: tuple[CompiledEgglogRule, ...] = ()
         self._rules_by_root_opcode = MappingProxyType({})
+        self._native_pattern_catalogue = CompiledPatternCatalogue.from_rules(())
         self._catalogue_configured = False
         self.last_extraction_receipt: EgglogExtractionReceipt | None = None
         self.last_rule_family: str | None = None
@@ -114,18 +114,9 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         self.last_derivation_trace: (
             tuple[tuple[str, str, tuple[str, ...]], ...] | None
         ) = None
-        self.rule_provenance_history = ProviderOutcomeHistory[tuple[str, ...]]()
-        self.provider_outcome_history = ProviderOutcomeHistory[MbaProviderOutcome]()
+        self.rule_provenance_history: list[tuple[str, ...]] = []
+        self.provider_outcome_history: list[MbaProviderOutcome] = []
         self._attempt_outcome_index: int | None = None
-        self._provider_outcome_capture_depth = 0
-        self._last_provider_outcome: MbaProviderOutcome | None = None
-        self.cross_block_constant_preparation = False
-        self.cross_block_def_use_preparation = False
-        self.generic_native_z3_before_certificate = False
-        self.function_time_budget_ms: int | None = None
-        self._function_budget: EgglogFunctionBudget | None = None
-        self.residual_only = False
-        self._residual_admitted = False
         self.collect_stage_timings = False
         self.last_stage_timings = EMPTY_MBA_STAGE_TIMINGS
         self._stage_timer: MbaStageTimer | None = None
@@ -134,20 +125,6 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         """Start one observable attempt, independent of whether it mutates."""
 
         self._attempt_outcome_index = None
-        self._last_provider_outcome = None
-
-    def _provider_outcome_capture_enabled(self) -> bool:
-        return self._provider_outcome_capture_depth > 0
-
-    def begin_provider_outcome_capture(self) -> None:
-        if not self._provider_outcome_capture_enabled():
-            self.provider_outcome_history.clear()
-        self._provider_outcome_capture_depth += 1
-
-    def end_provider_outcome_capture(self) -> None:
-        if self._provider_outcome_capture_depth <= 0:
-            raise RuntimeError("provider outcome capture was not active")
-        self._provider_outcome_capture_depth -= 1
 
     def configure(self, kwargs) -> None:
         config = dict(kwargs or {})
@@ -177,34 +154,6 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         max_leaves = self.config.get("max_leaves", 2)
         if type(max_leaves) is not int or not 1 <= max_leaves <= 8:
             raise ValueError("EgglogOptimizer max_leaves must be between 1 and 8")
-        preparation = self.config.get("cross_block_constant_preparation", False)
-        if type(preparation) is not bool:
-            raise ValueError(
-                "EgglogOptimizer cross_block_constant_preparation must be boolean"
-            )
-        def_use_preparation = self.config.get("cross_block_def_use_preparation", False)
-        if type(def_use_preparation) is not bool:
-            raise ValueError(
-                "EgglogOptimizer cross_block_def_use_preparation must be boolean"
-            )
-        generic_native_z3_before_certificate = self.config.get(
-            "generic_native_z3_before_certificate", False
-        )
-        if type(generic_native_z3_before_certificate) is not bool:
-            raise ValueError(
-                "EgglogOptimizer generic_native_z3_before_certificate must be boolean"
-            )
-        function_time_budget_ms = self.config.get("function_time_budget_ms")
-        if function_time_budget_ms is not None and (
-            type(function_time_budget_ms) is not int
-            or not 1 <= function_time_budget_ms <= 5_000
-        ):
-            raise ValueError(
-                "EgglogOptimizer function_time_budget_ms must be an integer from 1 to 5000"
-            )
-        residual_only = self.config.get("residual_only", False)
-        if type(residual_only) is not bool:
-            raise ValueError("EgglogOptimizer residual_only must be boolean")
         try:
             budget = EgglogExtractionBudget(
                 max_leaves=max_leaves,
@@ -230,17 +179,6 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         self.collect_stage_timings = collect_stage_timings
         self.families = families
         self._catalogue = selected_catalogue
-        self.cross_block_constant_preparation = preparation
-        self.cross_block_def_use_preparation = def_use_preparation
-        self.generic_native_z3_before_certificate = generic_native_z3_before_certificate
-        self.function_time_budget_ms = function_time_budget_ms
-        self._function_budget = (
-            None
-            if function_time_budget_ms is None
-            else EgglogFunctionBudget(function_time_budget_ms)
-        )
-        self.residual_only = residual_only
-        self._residual_admitted = False
 
     def _publish_budget_attributes(self, budget: EgglogExtractionBudget) -> None:
         self.max_leaves = budget.max_leaves
@@ -266,6 +204,9 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         self._rules_by_root_opcode = self._build_root_opcode_buckets(
             self._compiled_rules
         )
+        self._native_pattern_catalogue = CompiledPatternCatalogue.from_rules(
+            self._compiled_rules
+        )
         self._catalogue_configured = True
 
     def _ensure_catalogue_configured(self) -> None:
@@ -277,6 +218,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
 
     def check_and_replace(self, blk, ins):
         """Return a replacement only after extraction, shrink, and proof."""
+        del blk
         self.last_rule_family = None
         self.last_rule_provenance = None
         self.last_derivation_trace = None
@@ -284,8 +226,6 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         self._begin_provider_attempt()
         self._begin_stage_timing()
         try:
-            if self.residual_only and not self._residual_admitted:
-                return None
             self._begin_stage("root_eligibility")
             try:
                 if ins.opcode not in _SUPPORTED_ROOT_OPCODES:
@@ -297,7 +237,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
                     return None
             finally:
                 self._finish_stage("root_eligibility")
-            return self._check_and_replace(ins, blk=blk)
+            return self._check_and_replace(ins)
         except Exception:  # Never leak an exception through Hex-Rays' callback.
             receipt = self.last_extraction_receipt
             self._record_extraction_receipt(
@@ -315,17 +255,81 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         finally:
             self._finish_stage_timing()
 
-    def set_residual_admission(self, admitted: bool) -> None:
-        """Receive the current callback's fast-path outcome from its owner."""
-
-        self._residual_admitted = bool(admitted)
-
-    def _check_and_replace(self, ins, *, blk=None):
+    def _check_and_replace(self, ins):
         self.last_rule_family = None
         self.last_rule_provenance = None
         self.last_derivation_trace = None
         self.last_extraction_receipt = None
         self._begin_provider_attempt()
+        if ins.d is None or type(getattr(ins.d, "size", None)) is not int:
+            self._record_extraction_receipt(
+                EgglogExtractionReceipt(
+                    skip_reason=ExtractionSkipReason.UNSUPPORTED_WIDTH_SEMANTICS
+                )
+            )
+            return None
+        destination_size = int(ins.d.size)
+        self._begin_stage("native_preflight")
+        try:
+            native_result = self._read_native_view(ins, destination_size)
+        finally:
+            self._finish_stage("native_preflight")
+        view = native_result.view
+        if view is None:
+            self._record_extraction_receipt(
+                extraction_receipt_for_profile(
+                    native_result.profile,
+                    ExtractionSkipReason.UNSUPPORTED_WIDTH_SEMANTICS,
+                )
+            )
+            return None
+        # Retain the direct profile if a later preflight guard raises; the
+        # callback converts that failure to internal_error without losing its
+        # useful unsafe-input evidence.
+        self.last_extraction_receipt = extraction_receipt_for_profile(
+            native_result.profile,
+            ExtractionSkipReason.INTERNAL_ERROR,
+        )
+        candidate_skip_reason = self._native_view_skip_reason(native_result.profile)
+        if candidate_skip_reason is not None:
+            self._record_extraction_receipt(
+                extraction_receipt_for_profile(
+                    native_result.profile, candidate_skip_reason
+                )
+            )
+            return None
+        self._ensure_catalogue_configured()
+        matches = self._native_pattern_catalogue.match_root(view)
+        if not matches:
+            self._record_extraction_receipt(
+                extraction_receipt_for_profile(
+                    native_result.profile,
+                    ExtractionSkipReason.NO_DEGREE_ELIGIBLE_IMPROVEMENT,
+                )
+            )
+            return None
+        candidate_term = canonicalize_ac_term(view.to_typed_term())
+        initial_replacements = {
+            id(match.rule): match.bindings.materialize_replacement(match.rule)
+            for match in matches
+        }
+
+        self._begin_stage("egglog_extraction")
+        try:
+            extraction = self._select_native_extraction(
+                candidate_term,
+                destination_size=destination_size,
+                profile=native_result.profile,
+                initial_replacements=initial_replacements,
+            )
+        finally:
+            self._finish_stage("egglog_extraction")
+        self._record_extraction_receipt(extraction.receipt)
+        replacement_term = extraction.replacement_term
+        if replacement_term is None:
+            return None
+        # AST construction is intentionally deferred until the direct native
+        # preflight and Egglog extraction have selected a concrete winner.
         self._begin_stage("ast_construction")
         try:
             ast = minsn_to_ast(ins)
@@ -333,70 +337,36 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             self._finish_stage("ast_construction")
         if ast is None:
             self._record_extraction_receipt(
-                EgglogExtractionReceipt(skip_reason=ExtractionSkipReason.INTERNAL_ERROR)
+                replace(
+                    extraction.receipt,
+                    skip_reason=ExtractionSkipReason.LOWERING_FAILED,
+                    derivation_trace=(),
+                )
             )
             return None
-        self._begin_stage("native_preflight")
-        try:
-            lowering = lower_hexrays_island(ast, destination_size=int(ins.d.size))
-            # Preserve the candidate profile if a later preflight step raises; the
-            # callback guard upgrades only the provider outcome to internal_error.
-            self.last_extraction_receipt = extraction_receipt_for_lowering(
-                lowering,
-                ExtractionSkipReason.INTERNAL_ERROR,
-            )
-            candidate_skip_reason = self._candidate_skip_reason(ast, ins)
-            if candidate_skip_reason is not None:
-                self._record_extraction_receipt(
-                    extraction_receipt_for_lowering(lowering, candidate_skip_reason)
+        lowering = lower_hexrays_island(ast, destination_size=destination_size)
+        if lowering.term is None or lowering.term != candidate_term:
+            self._record_extraction_receipt(
+                replace(
+                    extraction.receipt,
+                    skip_reason=ExtractionSkipReason.LOWERING_FAILED,
+                    derivation_trace=(),
                 )
-                return None
-
-            extraction_ast = ast
-            known_constants = None
-            if (
-                self.cross_block_constant_preparation
-                and blk is not None
-                and getattr(blk, "mba", None) is not None
-            ):
-                prepared = prepare_ast_with_cross_block_constants(blk.mba, blk, ins, ast)
-                if prepared is not None:
-                    extraction_ast = prepared.ast
-                    known_constants = prepared.known_constants
-            if (
-                known_constants is None
-                and self.cross_block_def_use_preparation
-                and blk is not None
-                and getattr(blk, "mba", None) is not None
-            ):
-                prepared = prepare_ast_with_def_use_constants(blk.mba, blk, ins, ast)
-                if prepared is not None:
-                    extraction_ast = prepared.ast
-                    known_constants = prepared.known_constants
-
-            extraction_budget = self._candidate_extraction_budget(blk)
-            if extraction_budget is None:
-                self._record_extraction_receipt(
-                    extraction_receipt_for_lowering(
-                        lowering, ExtractionSkipReason.TIME_BUDGET
-                    )
-                )
-                return None
-        finally:
-            self._finish_stage("native_preflight")
-
-        self._begin_stage("egglog_extraction")
-        try:
-            extraction = self._select_extraction(
-                extraction_ast,
-                destination_size=int(ins.d.size),
-                budget=extraction_budget,
             )
-        finally:
-            self._finish_stage("egglog_extraction")
-        self._record_extraction_receipt(extraction.receipt)
-        replacement = extraction.replacement_ast
+            return None
+        replacement = rebuild_hexrays_island(
+            replacement_term,
+            lowering=lowering,
+            destination_size=destination_size,
+        )
         if replacement is None:
+            self._record_extraction_receipt(
+                replace(
+                    extraction.receipt,
+                    skip_reason=ExtractionSkipReason.LOWERING_FAILED,
+                    derivation_trace=(),
+                )
+            )
             return None
         if self._node_count(replacement) >= self._node_count(ast):
             self._record_extraction_receipt(
@@ -416,18 +386,9 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             )
             return None
         width = int(ins.d.size) * 8
-        proof_kwargs = {"width": width}
-        if known_constants is not None:
-            proof_kwargs["known_constants"] = known_constants
-        certificate = self._native_proof_certificate(selected[1])
-        if certificate is not None:
-            proof_kwargs["certificate"] = certificate
-            proof_kwargs["generic_native_z3_before_certificate"] = (
-                self.generic_native_z3_before_certificate
-            )
         self._begin_stage("native_z3")
         try:
-            proved = self._prove_ast_equivalence(ast, replacement, **proof_kwargs)
+            proved = self._prove_ast_equivalence(ast, replacement, width=width)
         finally:
             self._finish_stage("native_z3")
         if not proved:
@@ -458,8 +419,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         self.last_rule_family = family
         self.last_rule_provenance = provenance
         self.last_derivation_trace = extraction.derivation_trace
-        if self._provider_outcome_capture_enabled():
-            self.rule_provenance_history.append(provenance)
+        self.rule_provenance_history.append(provenance)
         logger.info(
             "egglog MBA rewrite at %#x: family=%s source=%s aliases=%s",
             getattr(ins, "ea", 0),
@@ -503,26 +463,24 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         except Exception:
             self.last_stage_timings = EMPTY_MBA_STAGE_TIMINGS
             return
-        if not self.last_stage_timings.stages or self._last_provider_outcome is None:
+        if not self.last_stage_timings.stages or self._attempt_outcome_index is None:
             return
-        metadata = dict(self._last_provider_outcome.metadata or {})
+        outcome = self.provider_outcome_history[self._attempt_outcome_index]
+        metadata = dict(outcome.metadata or {})
         metadata["stage_timings_ms"] = self.last_stage_timings.as_dict()
-        outcome = replace(self._last_provider_outcome, metadata=metadata)
-        self._last_provider_outcome = outcome
-        if self._attempt_outcome_index is not None:
-            self.provider_outcome_history.replace(self._attempt_outcome_index, outcome)
+        self.provider_outcome_history[self._attempt_outcome_index] = replace(
+            outcome,
+            metadata=metadata,
+        )
 
     def _record_extraction_receipt(self, receipt: EgglogExtractionReceipt) -> None:
         self.last_extraction_receipt = receipt
         outcome = egglog_receipt_to_outcome(receipt)
-        self._last_provider_outcome = outcome
-        if self._provider_outcome_capture_enabled():
-            if self._attempt_outcome_index is None:
-                self._attempt_outcome_index = self.provider_outcome_history.append(
-                    outcome
-                )
-            else:
-                self.provider_outcome_history.replace(self._attempt_outcome_index, outcome)
+        if self._attempt_outcome_index is None:
+            self.provider_outcome_history.append(outcome)
+            self._attempt_outcome_index = len(self.provider_outcome_history) - 1
+        else:
+            self.provider_outcome_history[self._attempt_outcome_index] = outcome
         skip_reason = (
             receipt.skip_reason.value if receipt.skip_reason is not None else None
         )
@@ -549,33 +507,23 @@ class EgglogOptimizer(PeepholeSimplificationRule):
     def provider_outcomes(self) -> tuple[MbaProviderOutcome, ...]:
         """Return one final outcome per attempted Egglog candidate."""
 
-        return self.provider_outcome_history.outcomes()
-
-    def provider_outcome_cursor(self) -> int:
-        """Return a capture cursor for the bounded Egglog history."""
-
-        return self.provider_outcome_history.cursor
-
-    def provider_outcomes_since(self, cursor: int) -> tuple[MbaProviderOutcome, ...]:
-        """Return one exact retained capture delta or fail closed on eviction."""
-
-        return self.provider_outcome_history.since(cursor)
+        return tuple(self.provider_outcome_history)
 
     def _finalize_candidate_outcome(
         self, *, accepted: bool, reason: str | None = None
     ) -> None:
         """Mark only an outer-accepted candidate as an applied mutation."""
 
-        outcome = self._last_provider_outcome
-        if outcome is None:
+        if self._attempt_outcome_index is None:
             return
+        outcome = self.provider_outcome_history[self._attempt_outcome_index]
         if outcome.status is not ProviderOutcomeStatus.IMPROVED:
             return
         metadata = dict(outcome.metadata or {})
         metadata["mutation_outcome"] = "accepted" if accepted else "rejected"
         if reason is not None:
             metadata["mutation_rejection_reason"] = reason
-        finalized = replace(
+        self.provider_outcome_history[self._attempt_outcome_index] = replace(
             outcome,
             status=(
                 ProviderOutcomeStatus.APPLIED
@@ -585,12 +533,6 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             refusal_reason=None if accepted else reason,
             metadata=metadata,
         )
-        self._last_provider_outcome = finalized
-        if self._attempt_outcome_index is not None:
-            self.provider_outcome_history.replace(
-                self._attempt_outcome_index,
-                finalized,
-            )
 
     def record_mutation_accepted(self) -> None:
         self._finalize_candidate_outcome(accepted=True)
@@ -651,62 +593,51 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         observation adapter for the common differential report boundary.
         """
 
-        if self._last_provider_outcome is not None:
-            return self._last_provider_outcome
+        if self._attempt_outcome_index is not None:
+            return self.provider_outcome_history[self._attempt_outcome_index]
         if self.last_extraction_receipt is None:
             return None
         return egglog_receipt_to_outcome(self.last_extraction_receipt)
 
-    def _candidate_extraction_budget(
-        self, blk,
-    ) -> EgglogExtractionBudget | None:
-        """Clamp one candidate's admission budget to its live function window."""
-
-        tracker = self._function_budget
-        if tracker is None or blk is None:
-            return self.extraction_budget
-        mba = getattr(blk, "mba", None)
-        function_ea = int(getattr(mba, "entry_ea", 0) or 0)
-        if mba is None or function_ea <= 0:
-            return self.extraction_budget
-        remaining_ms = tracker.remaining_ms((function_ea, id(mba)))
-        candidate_time_budget_ms = min(
-            self.extraction_budget.time_budget_ms, remaining_ms
-        )
-        # Egglog's admission floor is intentionally part of the engine
-        # contract. Avoid building an invalid zero-ms budget just to learn the
-        # same safe no-op answer.
-        if candidate_time_budget_ms < 50:
-            return None
-        return replace(
-            self.extraction_budget,
-            time_budget_ms=candidate_time_budget_ms,
-        )
-
     def _select_extraction(
-        self,
-        ast: AstNode,
-        *,
-        destination_size: int,
-        budget: EgglogExtractionBudget | None = None,
+        self, ast: AstNode, *, destination_size: int
     ) -> EgglogExtractionResult:
         """Run one fresh bounded extraction with the configured rule objects."""
         self._ensure_catalogue_configured()
         return extract_bounded_candidate(
             ast,
             self._compiled_rules,
-            self.extraction_budget if budget is None else budget,
+            self.extraction_budget,
             int(destination_size),
         )
 
-    def _native_proof_certificate(self, source_name: str) -> str | None:
-        """Return a configured rule's bounded native proof plan, if any."""
+    def _select_native_extraction(
+        self,
+        candidate_term,
+        *,
+        destination_size: int,
+        profile,
+        initial_replacements,
+    ) -> EgglogExtractionResult:
+        """Run bounded extraction after a direct ``minsn_t``/``mop_t`` match."""
 
-        for rule in self._compiled_rules:
-            if rule.source_name == source_name:
-                certificate = getattr(rule.rule_type, "EGGLOG_CERTIFICATE_PROVER", None)
-                return certificate if type(certificate) is str else None
-        return None
+        return extract_bounded_term(
+            candidate_term,
+            self._compiled_rules,
+            self.extraction_budget,
+            destination_size=destination_size,
+            profile=profile,
+            initial_replacements=initial_replacements,
+        )
+
+    @staticmethod
+    def _read_native_view(ins, destination_size: int):
+        """Read a callback-local view without AST or IR construction."""
+
+        return NativeMbaTermView.from_instruction(
+            ins,
+            destination_size=destination_size,
+        )
 
     def _select_specialization(
         self, ast: AstNode, *, destination_size: int
@@ -815,6 +746,22 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             return ExtractionSkipReason.CANDIDATE_BUDGET
         return None
 
+    def _native_view_skip_reason(self, profile) -> ExtractionSkipReason | None:
+        """Apply the live limits to a direct read-only microcode view."""
+
+        if profile.blockers:
+            return ExtractionSkipReason.UNSUPPORTED_WIDTH_SEMANTICS
+        if profile.operator_count > self.max_operator_nodes:
+            return ExtractionSkipReason.CANDIDATE_BUDGET
+        if (
+            not profile.distinct_leaf_count
+            or profile.distinct_leaf_count > self.max_leaves
+        ):
+            return ExtractionSkipReason.CANDIDATE_BUDGET
+        if not profile.operations:
+            return ExtractionSkipReason.NON_MBA_CANDIDATE
+        return None
+
     @staticmethod
     def _operator_node_count(node) -> int:
         if node is None or node.is_leaf():
@@ -854,24 +801,52 @@ class EgglogOptimizer(PeepholeSimplificationRule):
 
     @staticmethod
     def _prove_ast_equivalence(
-        original: AstNode,
-        replacement: AstNode,
-        *,
-        width: int,
-        known_constants: object | None = None,
-        certificate: str | None = None,
-        generic_native_z3_before_certificate: bool = False,
+        original: AstNode, replacement: AstNode, *, width: int
     ) -> bool:
-        """Compatibility facade for the shared native Z3 mutation gate."""
+        """Prove concrete native AST equivalence at the destination width."""
+        try:
+            import z3
 
-        return prove_native_ast_equivalence(
-            original,
-            replacement,
-            width=width,
-            known_constants=known_constants,
-            certificate=certificate,
-            generic_native_z3_before_certificate=generic_native_z3_before_certificate,
-        )
+            variables = {}
+
+            def visit(node):
+                if node is None:
+                    raise ValueError("missing AST operand")
+                if node.is_leaf():
+                    if node.is_constant():
+                        return z3.BitVecVal(int(node.value), width)
+                    mop = getattr(node, "mop", None)
+                    try:
+                        hash(mop)
+                        key = ("mop", mop)
+                    except TypeError:
+                        key = ("mop", repr(mop))
+                    return variables.setdefault(
+                        key, z3.BitVec(f"egglog_leaf_{len(variables)}", width)
+                    )
+                left = visit(node.left)
+                right = visit(node.right) if node.right is not None else None
+                operations = {
+                    ida_hexrays.m_add: lambda: left + right,
+                    ida_hexrays.m_sub: lambda: left - right,
+                    ida_hexrays.m_mul: lambda: left * right,
+                    ida_hexrays.m_and: lambda: left & right,
+                    ida_hexrays.m_or: lambda: left | right,
+                    ida_hexrays.m_xor: lambda: left ^ right,
+                    ida_hexrays.m_neg: lambda: -left,
+                    ida_hexrays.m_bnot: lambda: ~left,
+                }
+                operation = operations.get(node.opcode)
+                if operation is None:
+                    raise ValueError(f"unsupported AST opcode: {node.opcode}")
+                return operation()
+
+            solver = z3.Solver()
+            solver.set(timeout=50)
+            solver.add(visit(original) != visit(replacement))
+            return solver.check() == z3.unsat
+        except Exception:
+            return False
 
     @staticmethod
     def _create_instruction(replacement: AstNode, original_ins):

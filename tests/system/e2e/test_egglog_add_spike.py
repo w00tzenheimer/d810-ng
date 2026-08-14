@@ -73,9 +73,11 @@ def _assert_degree_one_success_receipt(metadata: dict[str, object]) -> None:
     stage_timings = metadata["stage_timings_ms"]
     assert tuple(stage_timings) == (
         "root_eligibility",
-        "ast_construction",
         "native_preflight",
         "egglog_extraction",
+        # Phase 1 reads minsn_t/mop_t first. AST allocation begins only
+        # after bounded extraction selects a concrete strict reduction.
+        "ast_construction",
         "native_z3",
         "reconstruction",
     )

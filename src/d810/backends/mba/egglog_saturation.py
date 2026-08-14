@@ -266,6 +266,7 @@ class EgglogExtractionResult:
 
     replacement_ast: Any | None
     receipt: EgglogExtractionReceipt
+    replacement_term: TypedBvTerm | None = None
     selected_provenance: tuple[str, str, tuple[str, ...]] | None = None
     derivation_trace: tuple[tuple[str, str, tuple[str, ...]], ...] = ()
 
@@ -423,17 +424,24 @@ def _extraction_result(
     provenance: tuple[str, str, tuple[str, ...]] | None = None,
     derivation_trace: tuple[tuple[str, str, tuple[str, ...]], ...] = (),
     replacement_ast: Any | None = None,
+    replacement_term: TypedBvTerm | None = None,
     skip_reason: ExtractionSkipReason | None = None,
     elapsed_ms: float | None = None,
     lowering: HexRaysIslandLowering | None = None,
+    profile: Any | None = None,
 ) -> EgglogExtractionResult:
     elapsed = _elapsed_ms(started) if elapsed_ms is None else elapsed_ms
     family = provenance[0] if provenance is not None else None
     source_name = provenance[1] if provenance is not None else None
     aliases = provenance[2] if provenance is not None else ()
-    profile = None if lowering is None else lowering.profile
+    profile = (
+        profile
+        if profile is not None
+        else (None if lowering is None else lowering.profile)
+    )
     return EgglogExtractionResult(
         replacement_ast=replacement_ast,
+        replacement_term=replacement_term,
         receipt=EgglogExtractionReceipt(
             input_cost=input_cost,
             extracted_cost=extracted_cost,
@@ -490,6 +498,23 @@ def extraction_receipt_for_lowering(
     )
 
 
+def extraction_receipt_for_profile(
+    profile: Any,
+    skip_reason: ExtractionSkipReason,
+) -> EgglogExtractionReceipt:
+    """Return a profile-bearing no-op receipt without requiring a native AST."""
+
+    return EgglogExtractionReceipt(
+        island_class=str(profile.island_class.value),
+        island_fingerprint=str(profile.fingerprint),
+        operator_count=int(profile.operator_count),
+        distinct_leaf_count=int(profile.distinct_leaf_count),
+        nonlinear_product_count=int(profile.nonlinear_product_count),
+        blockers=tuple(blocker.value for blocker in profile.blockers),
+        skip_reason=skip_reason,
+    )
+
+
 @dataclass(frozen=True)
 class _ReachableCandidate:
     degree: int
@@ -516,11 +541,15 @@ def _extraction_selection_key(
     return (*candidate_cost, candidate.degree, candidate.catalogue_index)
 
 
-def extract_bounded_candidate(
-    candidate_ast: Any,
+def _extract_bounded_term(
+    term: TypedBvTerm | None,
     rules: Any,
     budget: EgglogExtractionBudget,
     destination_size: int,
+    *,
+    lowering: HexRaysIslandLowering | None = None,
+    profile: Any | None = None,
+    initial_replacements: Mapping[int, TypedBvTerm] | None = None,
 ) -> EgglogExtractionResult:
     """Extract one strictly cheaper candidate through exact catalogue layers.
 
@@ -541,14 +570,13 @@ def extract_bounded_candidate(
     except Exception:
         started = 0.0
     input_cost: tuple[int, int] | None = None
-    lowering = lower_hexrays_island(
-        candidate_ast,
-        destination_size=destination_size,
+    _extraction_result = partial(
+        _build_extraction_result,
+        lowering=lowering,
+        profile=profile,
     )
-    _extraction_result = partial(_build_extraction_result, lowering=lowering)
 
     try:
-        term = lowering.term
         if term is None:
             return _extraction_result(
                 started=started,
@@ -620,7 +648,11 @@ def extract_bounded_candidate(
                             skip_reason=ExtractionSkipReason.TIME_BUDGET,
                             elapsed_ms=elapsed,
                         )
-                    replacement = apply_compiled_rule_to_term(rule, source_term)
+                    replacement = (
+                        initial_replacements.get(id(rule))
+                        if degree == 0 and initial_replacements is not None
+                        else apply_compiled_rule_to_term(rule, source_term)
+                    )
                     if replacement is None:
                         continue
                     replacement = canonicalize_ac_term(replacement)
@@ -840,10 +872,14 @@ def extract_bounded_candidate(
             candidate_cost = _term_cost(candidate.term)
             if candidate_cost >= input_cost:
                 continue
-            rebuilt = rebuild_hexrays_island(
-                candidate.term,
-                lowering=lowering,
-                destination_size=destination_size,
+            rebuilt = (
+                candidate.term
+                if lowering is None
+                else rebuild_hexrays_island(
+                    candidate.term,
+                    lowering=lowering,
+                    destination_size=destination_size,
+                )
             )
             if rebuilt is None:
                 continue
@@ -859,7 +895,7 @@ def extract_bounded_candidate(
                 **common,
                 skip_reason=ExtractionSkipReason.NO_DEGREE_ELIGIBLE_IMPROVEMENT,
             )
-        selection_key, replacement_ast, selected = min(
+        selection_key, replacement, selected = min(
             selections,
             key=lambda item: item[0],
         )
@@ -876,7 +912,8 @@ def extract_bounded_candidate(
             degree=selected.degree,
             provenance=selected.provenance,
             derivation_trace=selected.derivation_trace,
-            replacement_ast=replacement_ast,
+            replacement_ast=None if lowering is None else replacement,
+            replacement_term=selected.term,
         )
     except Exception:
         try:
@@ -891,6 +928,52 @@ def extract_bounded_candidate(
         )
 
 
+def extract_bounded_term(
+    term: TypedBvTerm,
+    rules: Any,
+    budget: EgglogExtractionBudget,
+    *,
+    destination_size: int,
+    profile: Any | None = None,
+    initial_replacements: Mapping[int, TypedBvTerm] | None = None,
+) -> EgglogExtractionResult:
+    """Discover a bounded replacement for an already matched native term.
+
+    No Hex-Rays AST is constructed here.  Callers must reconstruct and prove a
+    selected ``replacement_term`` through the existing native mutation gate.
+    """
+
+    return _extract_bounded_term(
+        term,
+        rules,
+        budget,
+        destination_size,
+        profile=profile,
+        initial_replacements=initial_replacements,
+    )
+
+
+def extract_bounded_candidate(
+    candidate_ast: Any,
+    rules: Any,
+    budget: EgglogExtractionBudget,
+    destination_size: int,
+) -> EgglogExtractionResult:
+    """Compatibility AST entry point for callers not using native preflight."""
+
+    lowering = lower_hexrays_island(
+        candidate_ast,
+        destination_size=destination_size,
+    )
+    return _extract_bounded_term(
+        lowering.term,
+        rules,
+        budget,
+        destination_size,
+        lowering=lowering,
+    )
+
+
 __all__ = [
     "BvExpr",
     "DegreeExpr",
@@ -903,6 +986,8 @@ __all__ = [
     "TypedBvTerm",
     "canonicalize_ac_term",
     "extract_bounded_candidate",
+    "extract_bounded_term",
+    "extraction_receipt_for_profile",
     "lower_native_ast_to_term",
     "lower_term_to_native_ast",
     "term_cost",

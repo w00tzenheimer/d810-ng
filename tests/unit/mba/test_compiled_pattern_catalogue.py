@@ -88,6 +88,49 @@ def test_compiled_catalogue_preserves_certified_declaration_order() -> None:
     assert tuple(item.rule for item in catalogue.rules) == (second, first)
 
 
+def test_fixed_binding_extraction_does_not_rematch_or_construct_an_ast(
+    monkeypatch,
+) -> None:
+    pytest.importorskip("egglog")
+    from d810.backends.mba.egglog_saturation import (
+        EgglogExtractionBudget,
+        extract_bounded_term,
+    )
+    import d810.backends.mba.egglog_add_rule_compiler as compiler_module
+    from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
+
+    rule = _rule("Add_HackersDelightRule_2")
+    assert rule is not None
+    x, y = _leaf("x"), _leaf("y")
+    candidate = _node(
+        "add",
+        _node("xor", x, y),
+        _node("mul", _constant(2), _node("and", x, y)),
+    )
+    match = CompiledPatternCatalogue.from_rules((rule,)).match_root(candidate)[0]
+    monkeypatch.setattr(
+        compiler_module,
+        "apply_compiled_rule_to_term",
+        lambda *_args: pytest.fail("fixed degree-one binding was rematched"),
+    )
+
+    result = extract_bounded_term(
+        canonicalize_ac_term(candidate.to_typed_term()),
+        (rule,),
+        EgglogExtractionBudget(time_budget_ms=1000),
+        destination_size=4,
+        initial_replacements={
+            id(match.rule): match.bindings.materialize_replacement(match.rule)
+        },
+    )
+
+    assert result.replacement_ast is None
+    assert result.replacement_term == canonicalize_ac_term(
+        _node("add", x, y).to_typed_term()
+    )
+    assert result.receipt.degree == 1
+
+
 def test_compiled_catalogue_rejects_unadmitted_rule_objects() -> None:
     from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
 

@@ -152,7 +152,6 @@ def _load_live_mop_runtime() -> NativeMopRuntime:
     """Resolve only the direct Hex-Rays SDK names used by this backend adapter."""
 
     ida_hexrays = importlib.import_module("ida_hexrays")
-    ast_dispatcher = importlib.import_module("d810.hexrays.expr.ast")
     operations = {
         getattr(ida_hexrays, f"m_{name}"): name
         for name in ("add", "and", "bnot", "mul", "neg", "or", "sub", "xor")
@@ -173,6 +172,30 @@ def _load_live_mop_runtime() -> NativeMopRuntime:
         opcode = getattr(ida_hexrays, name, None)
         if type(opcode) is int:
             blockers[opcode] = blocker
+
+    def direct_leaf_key(mop: Any) -> tuple[object, ...]:
+        """Read the AST cache-key fields directly, without a snapshot adapter."""
+
+        kind = mop.t
+        return (
+            kind,
+            mop.size,
+            getattr(mop, "valnum", 0),
+            None,
+            mop.r if kind == ida_hexrays.mop_r else None,
+            (
+                None
+                if kind != ida_hexrays.mop_S or getattr(mop, "s", None) is None
+                else mop.s.off
+            ),
+            mop.g if kind == ida_hexrays.mop_v else None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+
     return NativeMopRuntime(
         mop_z=ida_hexrays.mop_z,
         mop_n=ida_hexrays.mop_n,
@@ -184,7 +207,7 @@ def _load_live_mop_runtime() -> NativeMopRuntime:
         ),
         operation_by_opcode=MappingProxyType(operations),
         blocker_by_opcode=MappingProxyType(blockers),
-        get_mop_key=ast_dispatcher.get_mop_key,
+        get_mop_key=direct_leaf_key,
     )
 
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from dataclasses import FrozenInstanceError
-from types import MappingProxyType, SimpleNamespace
+from types import SimpleNamespace
 
 import pytest
 
@@ -20,16 +20,60 @@ from d810.backends.mba.egglog_saturation import (  # noqa: E402
     ExtractionSkipReason,
     extract_bounded_candidate,
 )
-from d810.backends.mba.cross_block_preparation import (  # noqa: E402
-    PreparedCrossBlockAst,
+from d810.backends.mba.hexrays_island import lower_hexrays_island  # noqa: E402
+from d810.backends.mba.native_mba_term_view import (  # noqa: E402
+    NativeMbaTermView,
+    NativeMbaViewResult,
 )
 from d810.hexrays.expr import ast as ast_dispatcher  # noqa: E402
 from d810.hexrays.expr import p_ast  # noqa: E402
 from d810.hexrays.ir.mop_snapshot import MopSnapshot  # noqa: E402
-from d810.hexrays.hooks.optinsn_adapter import InstructionOptimizerManager  # noqa: E402
 from d810.optimizers.microcode.instructions.egraph.egglog_handler import (  # noqa: E402
     EgglogOptimizer,
 )
+
+
+def _view_from_typed_term(term):
+    if term.operation is None:
+        if term.value is not None:
+            return NativeMbaTermView(None, term.width, constant_value=term.value)
+        return NativeMbaTermView(None, term.width, leaf_key=term.leaf_key)
+    return NativeMbaTermView(
+        term.operation,
+        term.width,
+        children=tuple(_view_from_typed_term(child) for child in term.children),
+    )
+
+
+def _first_typed_operator_child(term):
+    for child in term.children:
+        if child.operation is not None:
+            return child
+    raise AssertionError("expected an operator child")
+
+
+@pytest.fixture(autouse=True)
+def _legacy_ast_fixture_bridge(monkeypatch):
+    """Keep legacy handler seams focused while native E2E owns live mops."""
+
+    import d810.optimizers.microcode.instructions.egraph.egglog_handler as handler_module
+
+    def from_instruction(ins, *, destination_size, runtime=None):
+        del runtime
+        ast = handler_module.minsn_to_ast(ins)
+        lowering = lower_hexrays_island(ast, destination_size=destination_size)
+        return NativeMbaViewResult(
+            view=None
+            if lowering.term is None
+            else _view_from_typed_term(lowering.term),
+            profile=lowering.profile,
+        )
+
+    monkeypatch.setattr(
+        handler_module.NativeMbaTermView,
+        "from_instruction",
+        from_instruction,
+    )
 
 
 @lru_cache(maxsize=1)
@@ -186,8 +230,7 @@ def test_non_active_python_ast_is_rejected_by_cython_dispatcher():
 
     assert result.replacement_ast is None
     assert (
-        result.receipt.skip_reason
-        is ExtractionSkipReason.UNSUPPORTED_WIDTH_SEMANTICS
+        result.receipt.skip_reason is ExtractionSkipReason.UNSUPPORTED_WIDTH_SEMANTICS
     )
 
 
@@ -411,7 +454,10 @@ def test_grounded_constant_guard_fires_only_when_constraint_holds():
 @pytest.mark.parametrize(
     ("budget", "reason"),
     [
-        (EgglogExtractionBudget(max_operator_nodes=1), ExtractionSkipReason.CANDIDATE_BUDGET),
+        (
+            EgglogExtractionBudget(max_operator_nodes=1),
+            ExtractionSkipReason.CANDIDATE_BUDGET,
+        ),
         (
             EgglogExtractionBudget(max_eclasses=1, time_budget_ms=1000),
             ExtractionSkipReason.ECLASS_BUDGET,
@@ -471,124 +517,23 @@ class _Instruction:
 def _configured_live_handler(**overrides) -> EgglogOptimizer:
     handler = EgglogOptimizer()
     config = {
-            "max_leaves": 2,
-            "max_operator_nodes": 10,
-            "max_degree": 1,
-            "saturation_rounds": 2,
-            "max_eclasses": 256,
-            "max_enodes": 512,
-            "max_rule_firings": 32,
-            "time_budget_ms": 1000,
-            "require_proof": True,
-            "families": ["add"],
-        }
+        "max_leaves": 2,
+        "max_operator_nodes": 10,
+        "max_degree": 1,
+        "saturation_rounds": 2,
+        "max_eclasses": 256,
+        "max_enodes": 512,
+        "max_rule_firings": 32,
+        "time_budget_ms": 1000,
+        "require_proof": True,
+        "families": ["add"],
+    }
     config.update(overrides)
     handler.configure(config)
     return handler
 
 
-def test_live_handler_certificate_proof_skips_generic_native_z3_by_default():
-    default_handler = _configured_live_handler()
-    diagnostic_handler = _configured_live_handler(
-        generic_native_z3_before_certificate=True
-    )
-
-    assert default_handler.generic_native_z3_before_certificate is False
-    assert diagnostic_handler.generic_native_z3_before_certificate is True
-
-
-def test_live_handler_residual_only_requires_fast_path_admission(monkeypatch):
-    handler = _configured_live_handler(residual_only=True)
-    calls = []
-    replacement = object()
-    monkeypatch.setattr(
-        handler,
-        "_check_and_replace",
-        lambda *_args, **_kwargs: calls.append("extract") or replacement,
-    )
-
-    assert handler.check_and_replace(None, _Instruction()) is None
-    assert calls == []
-
-    handler.set_residual_admission(True)
-    assert handler.check_and_replace(None, _Instruction()) is replacement
-    assert calls == ["extract"]
-
-
-def test_live_handler_clamps_each_candidate_to_the_function_budget(monkeypatch):
-    handler = _configured_live_handler(
-        time_budget_ms=250,
-        function_time_budget_ms=1_000,
-    )
-    block = SimpleNamespace(mba=SimpleNamespace(entry_ea=0x401000))
-    calls = []
-
-    class _Budget:
-        def remaining_ms(self, scope_key):
-            calls.append(scope_key)
-            return 125
-
-    handler._function_budget = _Budget()
-    clamped = handler._candidate_extraction_budget(block)
-
-    assert clamped is not None
-    assert clamped.time_budget_ms == 125
-    assert calls == [(0x401000, id(block.mba))]
-
-    monkeypatch.setattr(handler._function_budget, "remaining_ms", lambda _scope: 49)
-    assert handler._candidate_extraction_budget(block) is None
-
-
-def test_portfolio_dispatch_admits_residual_only_after_fast_tier_is_configured(
-    monkeypatch,
-):
-    import d810.hexrays.hooks.optinsn_adapter as adapter_module
-
-    admissions = []
-    call_order = []
-
-    class _FastRule:
-        PORTFOLIO_TIER = "fast"
-        name = "FastCatalogue"
-        maturities = (ida_hexrays.MMAT_GLBOPT2,)
-
-    class _ResidualRule:
-        PORTFOLIO_TIER = "residual"
-        name = "EgglogOptimizer"
-        maturities = (ida_hexrays.MMAT_GLBOPT2,)
-
-        def set_residual_admission(self, admitted):
-            admissions.append(admitted)
-
-    class _Optimizer:
-        def __init__(self, name, rules):
-            self.name = name
-            self.rules = tuple(rules)
-
-        def get_optimized_instruction(self, *_args, **_kwargs):
-            call_order.append(self.name)
-            return None
-
-    manager = object.__new__(InstructionOptimizerManager)
-    manager.current_maturity = ida_hexrays.MMAT_GLBOPT2
-    manager._scheduled_implementation_names = frozenset()
-    manager._active_optimizers = [
-        _Optimizer("PatternOptimizer", (_FastRule(),)),
-        _Optimizer("PeepholeOptimizer", (_ResidualRule(),)),
-    ]
-    manager._resolve_active_instruction_rule_names = lambda _blk: frozenset(
-        {"FastCatalogue", "EgglogOptimizer"}
-    )
-    manager.analyzer = SimpleNamespace(analyze=lambda *_args: None)
-    monkeypatch.setattr(adapter_module, "d810_optimization_is_suppressed", lambda: False)
-
-    assert manager.optimize(SimpleNamespace(), SimpleNamespace()) is False
-    assert call_order == ["PatternOptimizer", "PeepholeOptimizer"]
-    assert admissions == [True]
-
-
-def test_live_handler_admits_and_extracts_real_degree_two_boolean_candidate(
-):
+def test_live_handler_admits_and_extracts_real_degree_two_boolean_candidate():
     candidate = _degree_two_candidate()
     handler = _configured_live_handler(
         max_degree=2,
@@ -652,7 +597,7 @@ def test_live_handler_receipts_non_mba_candidate_before_extraction(monkeypatch):
     assert extraction_calls == []
     receipt = handler.last_extraction_receipt
     assert receipt is not None
-    assert receipt.skip_reason is ExtractionSkipReason.NON_MBA_CANDIDATE
+    assert receipt.skip_reason is ExtractionSkipReason.UNSUPPORTED_WIDTH_SEMANTICS
     assert receipt.island_class == "unsupported"
     assert receipt.blockers == ("unsupported_opcode",)
 
@@ -726,10 +671,12 @@ def test_live_handler_preflight_exception_preserves_lowered_profile(monkeypatch)
     import d810.optimizers.microcode.instructions.egraph.egglog_handler as handler_module
 
     handler = _configured_live_handler()
-    monkeypatch.setattr(handler_module, "minsn_to_ast", lambda _ins: _direct_add_candidate())
+    monkeypatch.setattr(
+        handler_module, "minsn_to_ast", lambda _ins: _direct_add_candidate()
+    )
     monkeypatch.setattr(
         handler,
-        "_candidate_skip_reason",
+        "_native_view_skip_reason",
         lambda *_args: (_ for _ in ()).throw(RuntimeError("preflight failed")),
     )
 
@@ -781,25 +728,26 @@ def test_live_handler_extracts_once_with_exact_configured_rules_then_proves_befo
     monkeypatch,
 ):
     if ast_dispatcher._USING_CYTHON:
-        pytest.skip("Cython AstNode methods cannot be monkeypatched to observe ordering")
+        pytest.skip(
+            "Cython AstNode methods cannot be monkeypatched to observe ordering"
+        )
 
     import d810.optimizers.microcode.instructions.egraph.egglog_handler as handler_module
 
     candidate = _direct_add_candidate()
     handler = _configured_live_handler()
     configured_rules = handler._compiled_rules
-    real_extract = extract_bounded_candidate
+    real_extract = handler._select_native_extraction
     extraction_calls = []
     events = []
 
-    def observe_extract(ast, rules, budget, destination_size):
-        extraction_calls.append((ast, rules, budget, destination_size))
+    def observe_extract(*args, **kwargs):
+        extraction_calls.append((args, kwargs))
         events.append("extract")
-        return real_extract(ast, rules, budget, destination_size)
+        return real_extract(*args, **kwargs)
 
-    monkeypatch.setattr(handler_module, "extract_bounded_candidate", observe_extract)
+    monkeypatch.setattr(handler, "_select_native_extraction", observe_extract)
     monkeypatch.setattr(handler_module, "minsn_to_ast", lambda _ins: candidate)
-    monkeypatch.setattr(handler, "_candidate_skip_reason", lambda _ast, _ins: None)
     monkeypatch.setattr(
         handler,
         "_prove_ast_equivalence",
@@ -820,15 +768,14 @@ def test_live_handler_extracts_once_with_exact_configured_rules_then_proves_befo
     replacement = handler._check_and_replace(_Instruction())
 
     assert len(extraction_calls) == 1
-    assert extraction_calls[0][0] is candidate
-    assert extraction_calls[0][1] is configured_rules
-    assert extraction_calls[0][2] is handler.extraction_budget
-    assert extraction_calls[0][2] == EgglogExtractionBudget(
+    assert extraction_calls[0][0][0].width == 32
+    assert handler._compiled_rules is configured_rules
+    assert handler.extraction_budget == EgglogExtractionBudget(
         max_eclasses=256,
         max_enodes=512,
         time_budget_ms=1000,
     )
-    assert extraction_calls[0][3] == 4
+    assert extraction_calls[0][1]["destination_size"] == 4
     assert events == ["extract", "native_z3", "create_mop"]
     assert replacement is not None
     assert replacement.opcode == ida_hexrays.m_mov
@@ -861,77 +808,26 @@ def test_live_handler_extracts_once_with_exact_configured_rules_then_proves_befo
     assert metadata["skip_reason"] is None
 
 
-def test_live_handler_extracts_prepared_cross_block_clone_and_proves_original(
-    monkeypatch,
-):
-    """Egglog explores only the clone and returns a constrained-proof result."""
-
-    import d810.optimizers.microcode.instructions.egraph.egglog_handler as handler_module
-
-    original = _direct_add_candidate()
-    prepared = original.clone()
-    handler = _configured_live_handler(cross_block_constant_preparation=True)
-    extraction_calls = []
-    proof_calls = []
-
-    monkeypatch.setattr(handler_module, "minsn_to_ast", lambda _ins: original)
-    monkeypatch.setattr(handler, "_candidate_skip_reason", lambda _ast, _ins: None)
-    monkeypatch.setattr(
-        handler_module,
-        "prepare_ast_with_cross_block_constants",
-        lambda *_args: PreparedCrossBlockAst(
-            ast=prepared,
-            substitutions=1,
-            environment=MappingProxyType({}),
-            known_constants=MappingProxyType({("mop", "carrier"): 7}),
-        ),
-    )
-    real_extract = extract_bounded_candidate
-
-    def observe_extract(ast, rules, budget, destination_size):
-        extraction_calls.append(ast)
-        return real_extract(ast, rules, budget, destination_size)
-
-    monkeypatch.setattr(handler_module, "extract_bounded_candidate", observe_extract)
-    monkeypatch.setattr(
-        handler,
-        "_prove_ast_equivalence",
-        lambda source, replacement, **kwargs: proof_calls.append(
-            (source, replacement, kwargs)
-        )
-        or True,
-    )
-    monkeypatch.setattr(handler, "_create_instruction", lambda *_args: object())
-
-    replacement = handler.check_and_replace(
-        SimpleNamespace(mba=object(), serial=0),
-        _Instruction(),
-    )
-
-    assert replacement is not None
-    assert extraction_calls == [prepared]
-    assert proof_calls[0][0] is original
-    assert proof_calls[0][2]["known_constants"] == {("mop", "carrier"): 7}
-
-
 def test_live_handler_native_z3_failure_records_skip_without_creating_mop(monkeypatch):
     import d810.optimizers.microcode.instructions.egraph.egglog_handler as handler_module
 
     candidate = _direct_add_candidate()
     handler = _configured_live_handler()
-    real_extract = extract_bounded_candidate
+    real_extract = handler._select_native_extraction
     extracted = []
     minsn_calls = []
 
-    def observe_extract(*args):
-        result = real_extract(*args)
+    def observe_extract(*args, **kwargs):
+        result = real_extract(*args, **kwargs)
         extracted.append(result)
         return result
 
-    monkeypatch.setattr(handler_module, "extract_bounded_candidate", observe_extract)
+    monkeypatch.setattr(handler, "_select_native_extraction", observe_extract)
     monkeypatch.setattr(handler_module, "minsn_to_ast", lambda _ins: candidate)
     monkeypatch.setattr(handler, "_candidate_skip_reason", lambda _ast, _ins: None)
-    monkeypatch.setattr(handler, "_prove_ast_equivalence", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        handler, "_prove_ast_equivalence", lambda *_args, **_kwargs: False
+    )
     monkeypatch.setattr(
         ida_hexrays,
         "minsn_t",
@@ -941,7 +837,7 @@ def test_live_handler_native_z3_failure_records_skip_without_creating_mop(monkey
     assert handler._check_and_replace(_Instruction()) is None
 
     assert len(extracted) == 1
-    assert extracted[0].replacement_ast is not None
+    assert extracted[0].replacement_term is not None
     assert minsn_calls == []
     receipt = handler.last_extraction_receipt
     assert receipt is not None
@@ -962,7 +858,9 @@ def test_live_handler_lowering_failure_clears_uncommitted_derivation_trace(monke
     handler = _configured_live_handler()
     monkeypatch.setattr(handler_module, "minsn_to_ast", lambda _ins: candidate)
     monkeypatch.setattr(handler, "_candidate_skip_reason", lambda _ast, _ins: None)
-    monkeypatch.setattr(handler, "_prove_ast_equivalence", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        handler, "_prove_ast_equivalence", lambda *_args, **_kwargs: True
+    )
     monkeypatch.setattr(handler, "_create_instruction", lambda *_args: None)
 
     assert handler._check_and_replace(_Instruction()) is None
@@ -996,10 +894,12 @@ def test_live_handler_records_extractor_unavailability_for_supported_candidate(
     monkeypatch.setattr(handler_module, "minsn_to_ast", lambda _ins: candidate)
     monkeypatch.setattr(handler, "_candidate_skip_reason", lambda _ast, _ins: None)
     monkeypatch.setattr(
-        handler_module,
-        "extract_bounded_candidate",
-        lambda *args: calls.append(args)
-        or EgglogExtractionResult(replacement_ast=None, receipt=receipt),
+        handler,
+        "_select_native_extraction",
+        lambda *args, **kwargs: (
+            calls.append((args, kwargs))
+            or EgglogExtractionResult(replacement_ast=None, receipt=receipt)
+        ),
     )
 
     assert handler.check_and_replace(None, _Instruction()) is None
@@ -1022,13 +922,13 @@ def test_live_handler_default_time_budget_overrun_is_clean_noop(monkeypatch):
     )
     observed_budgets = []
 
-    def time_budget_result(_ast, _rules, budget, _destination_size):
-        observed_budgets.append(budget)
+    def time_budget_result(_term, *, destination_size, profile, initial_replacements):
+        del destination_size, profile, initial_replacements
+        observed_budgets.append(handler.extraction_budget)
         return EgglogExtractionResult(replacement_ast=None, receipt=receipt)
 
-    monkeypatch.setattr(handler_module, "extract_bounded_candidate", time_budget_result)
+    monkeypatch.setattr(handler, "_select_native_extraction", time_budget_result)
     monkeypatch.setattr(handler_module, "minsn_to_ast", lambda _ins: candidate)
-    monkeypatch.setattr(handler, "_candidate_skip_reason", lambda _ast, _ins: None)
     assert handler.check_and_replace(None, _Instruction()) is None
     assert observed_budgets == [EgglogExtractionBudget()]
     assert observed_budgets[0].time_budget_ms == 3
@@ -1040,7 +940,9 @@ def test_live_handler_opt_in_stage_timings_publish_after_reconstruction(monkeypa
     import d810.optimizers.microcode.instructions.egraph.egglog_handler as handler_module
 
     candidate = _direct_add_candidate()
-    replacement = _leaf("x", 1)
+    replacement = _first_typed_operator_child(
+        lower_hexrays_island(_direct_add_candidate(), destination_size=4).term
+    )
     handler = _configured_live_handler(collect_stage_timings=True)
     receipt = EgglogExtractionReceipt(
         input_cost=(4, 9),
@@ -1053,12 +955,12 @@ def test_live_handler_opt_in_stage_timings_publish_after_reconstruction(monkeypa
     events = []
 
     monkeypatch.setattr(handler_module, "minsn_to_ast", lambda _ins: candidate)
-    monkeypatch.setattr(handler, "_candidate_skip_reason", lambda _ast, _ins: None)
     monkeypatch.setattr(
         handler,
-        "_select_extraction",
+        "_select_native_extraction",
         lambda *_args, **_kwargs: EgglogExtractionResult(
-            replacement_ast=replacement,
+            replacement_ast=None,
+            replacement_term=replacement,
             receipt=receipt,
             selected_provenance=(
                 "add",
@@ -1083,9 +985,9 @@ def test_live_handler_opt_in_stage_timings_publish_after_reconstruction(monkeypa
     metadata = handler.execution_metadata()
     assert tuple(metadata["stage_timings_ms"]) == (
         "root_eligibility",
-        "ast_construction",
         "native_preflight",
         "egglog_extraction",
+        "ast_construction",
         "native_z3",
         "reconstruction",
     )
