@@ -26,6 +26,7 @@ from d810.mba.typed_term import TypedBvTerm, term_fingerprint
 
 
 _AC_OPERATIONS = frozenset({"add", "and", "mul", "or", "xor"})
+_PodPattern = tuple[tuple[tuple[int, ...], ...], tuple[str, ...]]
 
 
 @dataclass(frozen=True)
@@ -82,6 +83,7 @@ class NativePatternMatchResult:
 class _CompiledPattern:
     rule: CompiledEgglogRule
     catalogue_index: int
+    pod_pattern: _PodPattern | None
 
 
 class _ComparisonBudgetExceeded(RuntimeError):
@@ -115,12 +117,21 @@ class CompiledPatternCatalogue:
     def from_rules(
         cls, rules: tuple[CompiledEgglogRule, ...]
     ) -> CompiledPatternCatalogue:
+        # The POD encoder is intentionally loaded only while building the
+        # immutable certified catalogue. Candidate matching must never walk a
+        # symbolic rule tree again.
+        from d810.backends.mba.native_pod_matcher import encode_symbolic_pattern
+
         compiled: list[_CompiledPattern] = []
         buckets: dict[tuple[str, int], list[_CompiledPattern]] = {}
         for index, rule in enumerate(rules):
             if not is_admitted_compiled_rule(rule):
                 raise ValueError("compiled pattern catalogue requires admitted rules")
-            pattern = _CompiledPattern(rule, index)
+            pattern = _CompiledPattern(
+                rule,
+                index,
+                encode_symbolic_pattern(rule.pattern),
+            )
             compiled.append(pattern)
             operation = rule.pattern.operation
             if operation is None:

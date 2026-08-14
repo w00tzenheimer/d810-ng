@@ -121,6 +121,47 @@ def test_public_catalogue_match_uses_cython_pod_backend(monkeypatch) -> None:
     assert calls == len(catalogue.root_width_buckets[("add", 32)])
 
 
+@pytest.mark.skipif(
+    not CythonMode().is_enabled(), reason="requires the Cython POD matcher"
+)
+def test_public_catalogue_match_reuses_its_numeric_compiled_patterns(
+    monkeypatch,
+) -> None:
+    from d810.backends.mba import native_pod_matcher
+    from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
+    from d810.backends.mba.egglog_add_rule_compiler import compile_add_rule_catalogue
+    from d810.backends.mba.native_mba_term_view import NativeMbaTermView
+
+    catalogue = CompiledPatternCatalogue.from_rules(
+        compile_add_rule_catalogue().compiled_rules
+    )
+    assert all(
+        pattern.pod_pattern is not None
+        for pattern in catalogue.root_width_buckets[("add", 32)]
+    )
+    x = NativeMbaTermView(None, 32, leaf_key=("mop", "r", "x"))
+    y = NativeMbaTermView(None, 32, leaf_key=("mop", "r", "y"))
+    two = NativeMbaTermView(None, 32, constant_value=2)
+    candidate = NativeMbaTermView(
+        "add",
+        32,
+        children=(
+            NativeMbaTermView("xor", 32, children=(x, y)),
+            NativeMbaTermView(
+                "mul",
+                32,
+                children=(two, NativeMbaTermView("and", 32, children=(x, y))),
+            ),
+        ),
+    )
+
+    def forbidden_encode(*_args):
+        raise AssertionError("candidate matching must reuse catalogue POD patterns")
+
+    monkeypatch.setattr(native_pod_matcher, "encode_symbolic_pattern", forbidden_encode)
+    assert catalogue.match_root(candidate, comparison_budget=64).matches
+
+
 def test_public_catalogue_match_falls_back_to_portable_oracle(monkeypatch) -> None:
     from d810.backends.mba import native_pod_matcher
     from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue

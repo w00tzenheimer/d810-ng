@@ -221,17 +221,18 @@ def _match_cython_catalogue(
 
     root = packed.sidecar[packed.root_index]
     assert root is not None
+    candidate_rows = packed.numeric_rows()
     matches: list[Any] = []
     comparisons = 0
     lazy_swaps = 0
     for compiled in catalogue.root_width_buckets.get((root.operation, root.width), ()):
-        encoded = _encode_pattern(compiled.rule.pattern)
+        encoded = compiled.pod_pattern
         if encoded is None:
             return None
         pattern_rows, names = encoded
         bindings_rows, used, swaps, exceeded = _match_pod_pattern(
             pattern_rows,
-            packed.numeric_rows(),
+            candidate_rows,
             packed.root_index,
             len(names),
             comparison_budget - comparisons,
@@ -270,7 +271,7 @@ def _match_cython_catalogue(
     return NativePatternMatchResult(tuple(matches), comparisons, lazy_swaps)
 
 
-def _encode_pattern(
+def encode_symbolic_pattern(
     expression: Any,
 ) -> tuple[tuple[tuple[int, ...], ...], tuple[str, ...]] | None:
     rows: list[tuple[int, ...]] = []
@@ -378,6 +379,7 @@ __all__ = [
     "OP_ADD",
     "PackedNativeMbaTerm",
     "PackedPodNode",
+    "encode_symbolic_pattern",
     "match_root_pod",
     "matcher_backend",
 ]
