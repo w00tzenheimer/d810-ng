@@ -40,7 +40,10 @@ from d810.hexrays.ir_maturity import ir_maturity_to_ida
 from d810.hexrays.ir.minsn_utils import minsn_to_ast
 from d810.ir.maturity import IRMaturity
 from d810.mba.differential_report import egglog_receipt_to_outcome
-from d810.mba.performance_timing import MbaStageTimer, MbaStageTimings
+from d810.mba.performance_timing import (
+    EMPTY_MBA_STAGE_TIMINGS,
+    MbaStageTimer,
+)
 from d810.mba.provider_outcome import MbaProviderOutcome, ProviderOutcomeStatus
 from d810.mba.provider_history import ProviderOutcomeHistory
 from d810.optimizers.microcode.instructions.peephole.handler import (
@@ -124,7 +127,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         self.residual_only = False
         self._residual_admitted = False
         self.collect_stage_timings = False
-        self.last_stage_timings = MbaStageTimings()
+        self.last_stage_timings = EMPTY_MBA_STAGE_TIMINGS
         self._stage_timer: MbaStageTimer | None = None
 
     def _begin_provider_attempt(self) -> None:
@@ -467,7 +470,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         return new_ins
 
     def _begin_stage_timing(self) -> None:
-        self.last_stage_timings = MbaStageTimings()
+        self.last_stage_timings = EMPTY_MBA_STAGE_TIMINGS
         self._stage_timer = (
             MbaStageTimer(enabled=True) if self.collect_stage_timings else None
         )
@@ -498,7 +501,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         try:
             self.last_stage_timings = timer.freeze()
         except Exception:
-            self.last_stage_timings = MbaStageTimings()
+            self.last_stage_timings = EMPTY_MBA_STAGE_TIMINGS
             return
         if not self.last_stage_timings.stages or self._last_provider_outcome is None:
             return

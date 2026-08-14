@@ -34,6 +34,9 @@ class MbaStageTimings:
         return dict(self.stages)
 
 
+EMPTY_MBA_STAGE_TIMINGS = MbaStageTimings()
+
+
 class MbaStageTimer:
     """Collect named serial stages without reading the clock when disabled."""
 
@@ -78,7 +81,7 @@ class MbaStageTimer:
         """Freeze all completed timings; active stages are a caller error."""
 
         if not self._enabled:
-            return MbaStageTimings()
+            return EMPTY_MBA_STAGE_TIMINGS
         if self._started:
             names = ", ".join(sorted(self._started))
             raise ValueError(f"unfinished stages: {names}")
@@ -90,4 +93,4 @@ class MbaStageTimer:
             raise ValueError("stage name must be a non-empty string")
 
 
-__all__ = ["MbaStageTimer", "MbaStageTimings"]
+__all__ = ["EMPTY_MBA_STAGE_TIMINGS", "MbaStageTimer", "MbaStageTimings"]

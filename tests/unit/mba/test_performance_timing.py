@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from d810.mba.performance_timing import MbaStageTimer
+from d810.mba.performance_timing import EMPTY_MBA_STAGE_TIMINGS, MbaStageTimer
 
 
 def test_stage_timer_records_ordered_elapsed_durations() -> None:
@@ -39,7 +39,7 @@ def test_disabled_stage_timer_never_reads_clock() -> None:
     timer.begin("native_preflight")
     timer.finish("native_preflight")
 
-    assert timer.freeze().stages == ()
+    assert timer.freeze() is EMPTY_MBA_STAGE_TIMINGS
 
 
 def test_stage_timer_rejects_invalid_transitions() -> None:

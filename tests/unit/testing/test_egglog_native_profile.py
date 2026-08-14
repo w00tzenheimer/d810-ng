@@ -34,4 +34,8 @@ def test_native_egglog_profile_keeps_outcomes_and_partial_stages_separate():
         "outcomes": {"accepted": 1, "native_z3_failed": 1},
         "source_names": [["Add_HackersDelightRule_2"]],
         "stage_sample_counts": {"ast_construction": 1, "root_eligibility": 2},
+        "stage_timing_ms": {
+            "ast_construction": {"p50_ms": 3.0, "p95_ms": 3.0, "max_ms": 3.0},
+            "root_eligibility": {"p50_ms": 1.5, "p95_ms": 1.95, "max_ms": 2.0},
+        },
     }
