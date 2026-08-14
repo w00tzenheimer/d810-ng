@@ -19,14 +19,10 @@ Two boundaries, both non-negotiable per the plan's global constraints:
   this module (or anywhere upstream of it, per Task 8's not-yet-built
   profile guidance) may set that flag on a caller's behalf from a profile
   signal alone.
-* **A matching certificate short-circuits to an abstention, never a
-  reapply.** :func:`_certificate_matches` requires current identity
-  (``database_identity``, ``function_identity.entry_ea``), the semantic and
-  native plan hashes, and an ``applied`` certificate state to agree exactly.
-  Any mismatch falls through to ordinary live preflight via
-  ``gateway.apply()`` -- it never reuses or silently trusts the old
-  certificate's evidence (section 15.1.1's certification is one-way; only an
-  explicit restore may reopen a certified function for a new normalization).
+* **One applied certificate owns one function.** A matching certificate
+  short-circuits to an abstention; a different or stale applied certificate
+  rejects the request before ``gateway.apply()``. Only explicit restore may
+  reopen that function's certificate slot for another normalization.
 
 Layering: ``d810.manager`` is the top layer, so this module may import
 everything below it, including ``d810.backends.ida.native_patch.gateway``.
@@ -139,22 +135,32 @@ def authorize_and_apply(
     existing = gateway.lookup_certificate(
         plan.function_identity.entry_ea, plan.database_identity
     )
-    if (
-        existing is not None
-        and _certificate_matches(existing, plan)
-        and gateway.certificate_matches_current(plan, existing)
-    ):
-        logger.info(
-            "native normalization: function %#x already certified under "
-            "plan_hash=%s; abstaining",
+    if existing is not None:
+        if _certificate_matches(existing, plan) and gateway.certificate_matches_current(
+            plan, existing
+        ):
+            logger.info(
+                "native normalization: function %#x already certified under "
+                "plan_hash=%s; abstaining",
+                plan.function_identity.entry_ea,
+                plan.plan_hash,
+            )
+            return NativeNormalizationResult(
+                outcome=NativeNormalizationOutcome.ALREADY_NORMALIZED,
+                apply_receipt=None,
+                certificate=existing,
+                reason="native_plan_hash matches an existing applied certificate",
+            )
+        logger.warning(
+            "native normalization: function %#x has an applied certificate "
+            "for a different or stale plan; explicit restore required",
             plan.function_identity.entry_ea,
-            plan.plan_hash,
         )
         return NativeNormalizationResult(
-            outcome=NativeNormalizationOutcome.ALREADY_NORMALIZED,
+            outcome=NativeNormalizationOutcome.REJECTED,
             apply_receipt=None,
             certificate=existing,
-            reason="native_plan_hash matches an existing applied certificate",
+            reason="FUNCTION_ALREADY_CERTIFIED_RESTORE_REQUIRED",
         )
 
     receipt = gateway.apply(plan)

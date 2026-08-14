@@ -53,6 +53,7 @@ from d810.core.execution_journal import DecompilationSessionId, ExecutionAttempt
 __all__ = [
     "NativeCurrentByteReader",
     "NativePatchMetadataScopeConflictError",
+    "NativePatchFunctionScopeConflictError",
     "NativePatchTransactionConflictError",
     "SQLiteNativePatchJournal",
 ]
@@ -100,6 +101,24 @@ class NativePatchMetadataScopeConflictError(ValueError):
         super().__init__(
             f"operation {operation_id!r} metadata scope "
             f"{scope_kind}@{scope_ea:#x} overlaps an active transaction"
+        )
+
+
+class NativePatchFunctionScopeConflictError(ValueError):
+    """An active transaction already owns a function's certificate slot.
+
+    Certificates are keyed by database identity plus function entry, so
+    disjoint byte anchors inside one function still cannot coexist.  Without
+    this journal-level exclusion, a direct gateway caller could replace the
+    first transaction's certificate before it is explicitly restored.
+    """
+
+    def __init__(self, operation_id: str, function_ea: int) -> None:
+        self.operation_id = operation_id
+        self.function_ea = function_ea
+        super().__init__(
+            f"operation {operation_id!r} function certificate slot "
+            f"0x{function_ea:x} is owned by an active transaction"
         )
 
 
@@ -361,6 +380,18 @@ class SQLiteNativePatchJournal:
         ).fetchall()
         return {(str(row["scope_kind"]), int(row["scope_ea"])) for row in rows}
 
+    def _active_function_certificate_slots(self) -> set[int]:
+        rows = self._conn.execute(
+            """
+            SELECT DISTINCT o.owning_function_entry_ea
+            FROM native_patch_operation_ownership o
+            JOIN native_patch_transactions t ON t.transaction_id = o.transaction_id
+            WHERE t.state != ?
+            """,
+            (NativeJournalState.RESTORED.value,),
+        ).fetchall()
+        return {int(row["owning_function_entry_ea"]) for row in rows}
+
     def recoverable_transaction_ids(self) -> tuple[NativePatchTransactionId, ...]:
         """Return startup-reconcilable apply/restore transactions in order."""
         placeholders = ", ".join("?" for _ in _STARTUP_RECOVERABLE_STATES)
@@ -416,6 +447,16 @@ class SQLiteNativePatchJournal:
                     raise NativePatchMetadataScopeConflictError(
                         operation.operation_id, scope_kind, scope_ea
                     )
+
+        active_function_slots = self._active_function_certificate_slots()
+        for operation in plan.operations:
+            function_ea = int(
+                operation.restore_snapshot.function_ownership.owning_function_entry_ea
+            )
+            if function_ea in active_function_slots:
+                raise NativePatchFunctionScopeConflictError(
+                    operation.operation_id, function_ea
+                )
 
         transaction_id = NativePatchTransactionId.new()
         now = time.time()

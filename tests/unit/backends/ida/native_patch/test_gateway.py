@@ -26,10 +26,17 @@ from d810.backends.ida.native_patch.gateway import (
 )
 from d810.backends.ida.native_patch.journal import SQLiteNativePatchJournal
 from d810.capabilities.native_patch import NativeJournalState
-from d810.manager.native_normalization import _certificate_matches, recover_startup
+from d810.manager.native_normalization import (
+    NativeNormalizationOutcome,
+    NativeNormalizationRequest,
+    _certificate_matches,
+    authorize_and_apply,
+    recover_startup,
+)
 from d810.transforms.native_patch_plan import (
     NativeAddressRange,
     NativeCertificateState,
+    NativeFunctionOwnership,
 )
 
 from . import _plan_fixtures as fixtures
@@ -487,6 +494,61 @@ class TestApplySuccess:
             )
             is None
         )
+        rig.journal.close()
+
+    def test_direct_gateway_rejects_a_disjoint_plan_for_a_certified_function(
+        self, tmp_path
+    ) -> None:
+        """Journal ownership is by certificate slot, not only byte overlap."""
+        plan_a = fixtures.plan(
+            operations=(_owned_by_shared_test_function(fixtures.operation()),)
+        )
+        plan_b, operation_b = _disjoint_same_function_plan()
+        rig = build_gateway(tmp_path, plan_a.operations + (operation_b,))
+        receipt_a = rig.gateway.apply(plan_a)
+        assert receipt_a.ok
+        certificate_a = rig.gateway.lookup_certificate(
+            plan_a.function_identity.entry_ea,
+            plan_a.database_identity,
+        )
+        assert certificate_a is not None
+        bytes_before_b = bytes(rig.db.bytes[ea] for ea in range(0x2000, 0x2002))
+
+        with pytest.raises(ValueError, match="function certificate slot"):
+            rig.gateway.apply(plan_b)
+
+        assert bytes(rig.db.bytes[ea] for ea in range(0x2000, 0x2002)) == bytes_before_b
+        still_certified = rig.gateway.lookup_certificate(
+            plan_a.function_identity.entry_ea,
+            plan_a.database_identity,
+        )
+        assert still_certified is not None
+        assert still_certified.certificate_id == certificate_a.certificate_id
+        assert _sole_transaction_id(rig.journal) == receipt_a.transaction_id
+        rig.journal.close()
+
+    def test_manager_abstains_before_preparing_a_different_certified_plan(
+        self, tmp_path
+    ) -> None:
+        plan_a = fixtures.plan(
+            operations=(_owned_by_shared_test_function(fixtures.operation()),)
+        )
+        plan_b, operation_b = _disjoint_same_function_plan()
+        rig = build_gateway(tmp_path, plan_a.operations + (operation_b,))
+        receipt_a = rig.gateway.apply(plan_a)
+        assert receipt_a.ok
+        bytes_before_b = bytes(rig.db.bytes[ea] for ea in range(0x2000, 0x2002))
+
+        result = authorize_and_apply(
+            NativeNormalizationRequest(plan=plan_b, user_enabled=True),
+            gateway=rig.gateway,
+        )
+
+        assert result.outcome is NativeNormalizationOutcome.REJECTED
+        assert result.apply_receipt is None
+        assert result.reason == "FUNCTION_ALREADY_CERTIFIED_RESTORE_REQUIRED"
+        assert bytes(rig.db.bytes[ea] for ea in range(0x2000, 0x2002)) == bytes_before_b
+        assert _sole_transaction_id(rig.journal) == receipt_a.transaction_id
         rig.journal.close()
 
 
@@ -1054,6 +1116,33 @@ def _plan_with_metadata_actions():
         ),
         op,
     )
+
+
+def _disjoint_same_function_plan():
+    """A non-overlapping plan that nevertheless owns function 0x1000."""
+    operation = fixtures.operation(
+        operation_id="op-2",
+        start_ea=0x2000,
+        end_ea=0x2002,
+    )
+    operation = _owned_by_shared_test_function(operation)
+    return fixtures.plan(operations=(operation,), plan_id="plan-2"), operation
+
+
+def _owned_by_shared_test_function(operation):
+    ownership = NativeFunctionOwnership(
+        owning_function_entry_ea=0x1000,
+        chunk_ranges=(NativeAddressRange(0x1000, 0x3000),),
+    )
+    operation = dataclasses.replace(
+        operation,
+        expected_function_ownership=ownership,
+        restore_snapshot=dataclasses.replace(
+            operation.restore_snapshot,
+            function_ownership=ownership,
+        ),
+    )
+    return operation
 
 
 class TestMetadataActionExecution:
