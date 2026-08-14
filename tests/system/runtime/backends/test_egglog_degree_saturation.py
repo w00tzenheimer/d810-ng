@@ -898,6 +898,28 @@ def test_shadow_proof_divergence_is_a_noop_before_reconstruction(monkeypatch):
     assert receipt.template_fallback_reason == "shadow_divergence"
 
 
+def test_shadow_proves_real_native_terms_in_active_ast_runtime():
+    candidate = _direct_add_candidate(ast_module=ast_dispatcher)
+    handler = _configured_live_handler(native_proof_mode="shadow")
+    original = lower_hexrays_island(candidate, destination_size=4)
+    assert original.term is not None
+    x = _leaf("x", 1, ast_module=ast_dispatcher)
+    y = _leaf("y", 2, ast_module=ast_dispatcher)
+    replacement = _node(ida_hexrays.m_add, x, y, ast_module=ast_dispatcher)
+
+    proved, source_name, fallback_reason = handler._prove_selected_replacement(
+        candidate,
+        replacement,
+        original_term=original.term,
+        selected=("add", "Add_HackersDelightRule_2", ("Add_OllvmRule_3",)),
+        width=32,
+    )
+
+    assert proved is True
+    assert source_name == "Add_HackersDelightRule_2"
+    assert fallback_reason is None
+
+
 def test_live_handler_native_z3_failure_records_skip_without_creating_mop(monkeypatch):
     import d810.optimizers.microcode.instructions.egraph.egglog_handler as handler_module
 
