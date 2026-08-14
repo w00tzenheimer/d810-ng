@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import platform
 import time
@@ -11,6 +12,7 @@ import pytest
 
 from d810.testing.cases import DeobfuscationCase
 from d810.testing.runner import run_deobfuscation_test
+from tests.system.e2e.egglog_native_profile import build_native_egglog_profile
 
 
 def _get_default_binary() -> str:
@@ -177,6 +179,15 @@ class TestEgglogMbaFamiliesSpike:
             assert len(executions) == len(provenance)
             for execution in executions:
                 _assert_degree_one_success_receipt(execution.metadata)
+            print(
+                "\nEGGLOG_MBA_NATIVE_RECEIPT="
+                + json.dumps(
+                    build_native_egglog_profile(
+                        stats, corpus="egglog-mba-families-spike"
+                    ),
+                    sort_keys=True,
+                )
+            )
             return captured
 
         fixture_started = time.perf_counter()
