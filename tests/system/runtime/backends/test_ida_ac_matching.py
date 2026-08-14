@@ -402,6 +402,44 @@ def test_structural_selection_fails_closed_when_native_z3_rejects(monkeypatch) -
     )
 
 
+def test_structural_selection_fails_closed_when_emission_raises(monkeypatch) -> None:
+    """A structural emitter failure remains a no-op in the live callback."""
+
+    x = Var("x")
+
+    class Rule:
+        pattern = x + Const("zero", 0)
+
+    adapter = IDAPatternAdapter(Rule())
+    adapter._structural_matching_enabled = True
+    source = ast_dispatcher.AstNode(ida_hexrays.m_add, _leaf("x", 1), _constant(0))
+    source.dest_size = 4
+    source.ea = 0x401000
+    report = AcMatchReport(
+        bindings=AcMatchBindings({"x": (0,), "zero": (1,)}),
+        comparisons=1,
+        commuted_branches=0,
+        flattened_nodes=0,
+        stop_reason=AcMatchStopReason.MATCHED,
+    )
+    monkeypatch.setattr(adapter, "observe_structural_match", lambda *_args, **_kwargs: report)
+    adapter._shadow_structural_native_paths = {"x": (0,), "zero": (1,)}
+
+    def _raising_replacement(_candidate):
+        raise RuntimeError("synthetic emitter failure")
+
+    monkeypatch.setattr(adapter, "get_replacement", _raising_replacement)
+
+    assert (
+        adapter.match_structural_and_replace(
+            source,
+            bucket_size=1,
+            attempted_rule_count=1,
+        )
+        is None
+    )
+
+
 @pytest.mark.parametrize(
     ("name", "pattern"),
     (

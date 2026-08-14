@@ -565,10 +565,13 @@ class IDAPatternAdapter:
             if native is None:
                 return None
             leafs_by_name[name] = native
-        candidate = _ShadowBindingCandidate(leafs_by_name, test_ast)
-        if not candidate.ea or not self._check_candidate(candidate):
+        try:
+            candidate = _ShadowBindingCandidate(leafs_by_name, test_ast)
+            if not candidate.ea or not self._check_candidate(candidate):
+                return None
+            replacement = self.get_replacement(candidate)
+        except Exception:
             return None
-        replacement = self.get_replacement(candidate)
         if replacement is None:
             return None
         destination_size = self._attempt_destination_size
