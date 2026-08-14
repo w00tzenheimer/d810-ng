@@ -135,7 +135,22 @@ class CompiledPatternCatalogue:
     def match_root(
         self, candidate: NativeMbaTermView, *, comparison_budget: int = 64
     ) -> NativePatternMatchResult:
-        """Return bounded deterministic root applications without AST materialization."""
+        """Return bounded deterministic root applications without AST materialization.
+
+        The callback-local POD layer owns numeric matching when the accelerated
+        backend is available.  It falls back to ``_match_root_portable`` for
+        unsupported packed shapes, keeping this implementation as the semantic
+        oracle and avoiding a second rule catalogue.
+        """
+
+        from d810.backends.mba.native_pod_matcher import match_root_pod
+
+        return match_root_pod(self, candidate, comparison_budget=comparison_budget)
+
+    def _match_root_portable(
+        self, candidate: NativeMbaTermView, *, comparison_budget: int = 64
+    ) -> NativePatternMatchResult:
+        """Portable native-view matcher used as the POD parity oracle."""
 
         if type(comparison_budget) is not int or comparison_budget <= 0:
             raise ValueError("comparison_budget must be a positive integer")

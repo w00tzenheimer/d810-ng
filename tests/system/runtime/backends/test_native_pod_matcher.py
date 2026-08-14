@@ -2,15 +2,23 @@
 
 from __future__ import annotations
 
+import pytest
+
 from d810.backends.mba.native_pod_matcher import matcher_backend
 from d810.core.cymode import CythonMode
 
 
+@pytest.mark.skipif(
+    not CythonMode().is_enabled(), reason="requires the Cython POD matcher"
+)
 def test_active_cython_pod_matcher_is_selected_when_cython_is_enabled() -> None:
     assert CythonMode().is_enabled()
     assert matcher_backend() == "cython"
 
 
+@pytest.mark.skipif(
+    not CythonMode().is_enabled(), reason="requires the Cython POD matcher"
+)
 def test_cython_pod_matcher_returns_ac_bindings_and_honors_its_budget() -> None:
     from d810.speedups.mba.c_native_pod_matcher import match_pod_pattern
 
@@ -46,13 +54,9 @@ def test_cython_pod_catalogue_adapter_matches_portable_catalogue() -> None:
     from d810.backends.mba.native_mba_term_view import NativeMbaTermView
     from d810.backends.mba.native_pod_matcher import match_root_pod
 
-    rule = (
-        compile_add_rule_catalogue()
-        .receipt_for("Add_HackersDelightRule_2")
-        .compiled_rule
+    catalogue = CompiledPatternCatalogue.from_rules(
+        compile_add_rule_catalogue().compiled_rules
     )
-    assert rule is not None
-    catalogue = CompiledPatternCatalogue.from_rules((rule,))
     x = NativeMbaTermView(None, 32, leaf_key=("mop", "r", "x"))
     y = NativeMbaTermView(None, 32, leaf_key=("mop", "r", "y"))
     two = NativeMbaTermView(None, 32, constant_value=2)
@@ -70,5 +74,83 @@ def test_cython_pod_catalogue_adapter_matches_portable_catalogue() -> None:
     )
 
     assert match_root_pod(catalogue, candidate, comparison_budget=64) == (
-        catalogue.match_root(candidate, comparison_budget=64)
+        catalogue._match_root_portable(candidate, comparison_budget=64)
+    )
+
+
+@pytest.mark.skipif(
+    not CythonMode().is_enabled(), reason="requires the Cython POD matcher"
+)
+def test_public_catalogue_match_uses_cython_pod_backend(monkeypatch) -> None:
+    from d810.backends.mba import native_pod_matcher
+    from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
+    from d810.backends.mba.egglog_add_rule_compiler import compile_add_rule_catalogue
+    from d810.backends.mba.native_mba_term_view import NativeMbaTermView
+
+    catalogue = CompiledPatternCatalogue.from_rules(
+        compile_add_rule_catalogue().compiled_rules
+    )
+    x = NativeMbaTermView(None, 32, leaf_key=("mop", "r", "x"))
+    y = NativeMbaTermView(None, 32, leaf_key=("mop", "r", "y"))
+    two = NativeMbaTermView(None, 32, constant_value=2)
+    candidate = NativeMbaTermView(
+        "add",
+        32,
+        children=(
+            NativeMbaTermView("xor", 32, children=(x, y)),
+            NativeMbaTermView(
+                "mul",
+                32,
+                children=(two, NativeMbaTermView("and", 32, children=(x, y))),
+            ),
+        ),
+    )
+    calls = 0
+    original = native_pod_matcher._match_pod_pattern
+
+    def observed(*args):
+        nonlocal calls
+        calls += 1
+        return original(*args)
+
+    monkeypatch.setattr(native_pod_matcher, "_match_pod_pattern", observed)
+
+    assert catalogue.match_root(candidate, comparison_budget=64) == (
+        catalogue._match_root_portable(candidate, comparison_budget=64)
+    )
+    assert calls == len(catalogue.root_width_buckets[("add", 32)])
+
+
+def test_public_catalogue_match_falls_back_to_portable_oracle(monkeypatch) -> None:
+    from d810.backends.mba import native_pod_matcher
+    from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
+    from d810.backends.mba.egglog_add_rule_compiler import compile_add_rule_catalogue
+    from d810.backends.mba.native_mba_term_view import NativeMbaTermView
+
+    rule = (
+        compile_add_rule_catalogue()
+        .receipt_for("Add_HackersDelightRule_2")
+        .compiled_rule
+    )
+    assert rule is not None
+    catalogue = CompiledPatternCatalogue.from_rules((rule,))
+    x = NativeMbaTermView(None, 32, leaf_key=("mop", "r", "x"))
+    y = NativeMbaTermView(None, 32, leaf_key=("mop", "r", "y"))
+    two = NativeMbaTermView(None, 32, constant_value=2)
+    candidate = NativeMbaTermView(
+        "add",
+        32,
+        children=(
+            NativeMbaTermView("xor", 32, children=(x, y)),
+            NativeMbaTermView(
+                "mul",
+                32,
+                children=(two, NativeMbaTermView("and", 32, children=(x, y))),
+            ),
+        ),
+    )
+    monkeypatch.setattr(native_pod_matcher, "_match_pod_pattern", None)
+
+    assert catalogue.match_root(candidate, comparison_budget=64) == (
+        catalogue._match_root_portable(candidate, comparison_budget=64)
     )

@@ -162,7 +162,7 @@ def match_root_pod(
     """
 
     if _has_associative_chain(view):
-        return catalogue.match_root(view, comparison_budget=comparison_budget)
+        return catalogue._match_root_portable(view, comparison_budget=comparison_budget)
     packed = PackedNativeMbaTerm.from_view(view)
     if _match_pod_pattern is not None:
         accelerated = _match_cython_catalogue(
@@ -172,7 +172,7 @@ def match_root_pod(
         )
         if accelerated is not None:
             return accelerated
-    return catalogue.match_root(view, comparison_budget=comparison_budget)
+    return catalogue._match_root_portable(view, comparison_budget=comparison_budget)
 
 
 def matcher_backend() -> str:
