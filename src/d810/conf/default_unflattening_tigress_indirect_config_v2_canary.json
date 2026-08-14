@@ -3,6 +3,7 @@
   "ins_rules": [],
   "blk_rules": [],
   "additional_configuration": {
+    "legacy_direct_indirect_materialization": true,
     "pipeline_v2_mode": "config-v2",
     "config_v2_canary": {
       "source_config": "default_unflattening_tigress_indirect.json",

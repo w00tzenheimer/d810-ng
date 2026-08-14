@@ -2038,6 +2038,7 @@ class D810Manager:
         from d810.hexrays.preanalysis.indirect_jump_labels import (
             IndirectLabelMaterializationResult,
             NativePatchPlanRequest,
+            execute_legacy_indirect_materialization,
             set_indirect_materialization_default_executor,
         )
         from d810.hexrays.hooks.optimization_suppression import (
@@ -2060,6 +2061,18 @@ class D810Manager:
         from d810.transforms.native_cfg_normalization import validate_live_native_cfg
 
         self._dead_edge_normalizer = None
+
+        # This profile predates the generic native-patch writer. Its proven
+        # materialization needs IDA's transient flow-analysis hints, which are
+        # intentionally not representable as durable generic metadata actions.
+        # Select it before the generic opt-in gate: this is a separate,
+        # explicitly configured compatibility executor, not an authorization
+        # bypass for generic native patches.
+        if bool(self.config.get("legacy_direct_indirect_materialization", False)):
+            set_indirect_materialization_default_executor(
+                execute_legacy_indirect_materialization
+            )
+            return
 
         if self._native_patch_journal is not None:
             self._native_patch_journal.close()
@@ -2291,9 +2304,7 @@ class D810Manager:
             ManagerOwnedNativePatchRequestExecutor(
                 gateway=gateway,
                 user_enabled=lambda request: native_patch_function_is_authorized(
-                    globally_available=bool(
-                        self.config.get("native_patch_enabled", False)
-                    ),
+                    globally_available=bool(self.config.get("native_patch_enabled", False)),
                     function_tags=self.get_function_tags(
                         request.materialization.function_ea
                     ),

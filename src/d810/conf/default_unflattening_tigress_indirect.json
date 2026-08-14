@@ -1,5 +1,8 @@
 {
     "description": "\u00a71a pipeline: StateMachineCffUnflattener over the Tigress indirect jump-table dispatcher (llr-qb33). The IDA-bound IndirectJumpDispatcherResolver is injected into the shared front-end so \u00a71a recognizes the m_ijmp dispatcher; the indirect profile and table layout are discovered structurally for the current decompiled function (llr-trxj). goto_table_info remains an OPTIONAL per-function override for binaries where structural discovery needs help, but is unused here.",
+    "additional_configuration": {
+        "legacy_direct_indirect_materialization": true
+    },
     "ins_rules": [
         {"name": "TigressIncrementRule", "is_activated": true, "config": {}},
         {"name": "TigressXorViaOrMinusAndRule", "is_activated": true, "config": {}},

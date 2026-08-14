@@ -149,6 +149,10 @@ class TestTigressIndirectSemanticOracle:
                 prior_manager_config = dict(state.manager.config)
                 runtime_config["native_patch_enabled"] = True
                 try:
+                    # ``d810_state`` starts its default project before this
+                    # scoped profile is selected. Recreate the manager so this
+                    # profile's explicit compatibility executor is active.
+                    state.stop_d810()
                     state.manager.configure(
                         **{**prior_manager_config, "native_patch_enabled": True}
                     )
