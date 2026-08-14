@@ -129,7 +129,10 @@ class TestNativeMbaCorpusCapture:
                     DeobfuscationCase(
                         function="mba_shape_chain_01",
                         description="native no-candidate coverage",
-                        project=_PORTFOLIO_PROJECT,
+                        # The selected-state context already owns this exact
+                        # project and its capture-scoped adapters.  Supplying
+                        # project here would rebuild them and orphan the
+                        # history cursor captured above.
                         must_change=False,
                     ),
                     d810_state=selected_state,
@@ -194,7 +197,7 @@ class TestNativeMbaCorpusCapture:
             configuration_elapsed_ms = (time.monotonic() - configured_started) * 1000.0
             selected_rules = tuple(state.current_ins_rules)
             registration_pattern_count = sum(
-                len(getattr(rule, "_pattern_candidates_cache", ()) or ())
+                len(getattr(rule, "pattern_candidates", ()) or ())
                 for rule in selected_rules
             )
             whole_function_elapsed_ms: dict[str, float] = {}
@@ -209,7 +212,8 @@ class TestNativeMbaCorpusCapture:
                     DeobfuscationCase(
                         function=_manifest_function(case.case_id),
                         description="manifest native provider capture",
-                        project=project_name,
+                        # Keep the preloaded project's live provider objects;
+                        # see the stale-adapter contract above.
                         must_change=False,
                     ),
                     d810_state=selected_state,
@@ -324,7 +328,6 @@ class TestNativeMbaCorpusCapture:
         native_case = DeobfuscationCase(
             function="mba_shape_catalogue_01",
             description="native provider history capture",
-            project="mba_compiler_shape_catalogue.json",
             must_change=True,
         )
         with d810_state() as state:
@@ -417,7 +420,6 @@ class TestNativeMbaCorpusCapture:
         native_case = DeobfuscationCase(
             function="mba_shape_catalogue_01",
             description="capture a real post-snapshot catalogue outcome",
-            project="mba_compiler_shape_catalogue.json",
             must_change=True,
         )
 
@@ -504,13 +506,11 @@ class TestNativeMbaCorpusCapture:
         first_case = DeobfuscationCase(
             function="mba_shape_catalogue_01",
             description="seed a real catalogue history outcome",
-            project="mba_compiler_shape_catalogue.json",
             must_change=True,
         )
         second_case = DeobfuscationCase(
             function="mba_shape_chain_01",
             description="produce a distinct real native profile",
-            project="mba_compiler_shape_catalogue.json",
             must_change=False,
         )
 
