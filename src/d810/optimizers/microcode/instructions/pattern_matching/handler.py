@@ -24,7 +24,6 @@ from d810.optimizers.microcode.instructions.pattern_matching.engine import (
     OpcodeIndexedStorage as _IndexedStorage,
     match_pattern_nomut as _match_nomut,
     get_engine_info,
-    _USING_CYTHON as _ENGINE_CYTHON,
 )
 
 optimizer_logger = getLogger("d810.optimizer")
