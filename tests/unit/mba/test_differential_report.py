@@ -12,6 +12,7 @@ from d810.mba.differential_report import (
     compare_provider_outcomes,
     egglog_receipt_to_outcome,
     normalize_outcome_rows,
+    report_from_dict,
     summary_markdown,
 )
 from d810.mba.island_profile import IslandBlocker, MbaIslandClass, MbaIslandProfile
@@ -664,6 +665,98 @@ def test_rollout_evidence_marks_unmeasured_questions_as_unavailable() -> None:
     assert evidence.candidate_latency_by_mode == {}
     assert evidence.whole_function_latency_by_mode == {}
     assert evidence.lifecycle_measurements == {}
+
+
+def test_capture_metadata_supplies_measured_provider_lanes_without_row_duplication() -> None:
+    """A native runner owns whole-function/lifecycle facts once per capture."""
+
+    profile = _profile("captured-run")
+    report = MbaDifferentialReport(
+        schema_version=1,
+        corpus_identity="captured",
+        toolchain_identity={"runtime": "unit"},
+        cases=(
+            MbaCorpusCaseReport(
+                case_id="case",
+                profile=profile,
+                outcomes=(
+                    _outcome(
+                        MbaProviderKind.CATALOGUE,
+                        ProviderOutcomeStatus.APPLIED,
+                        profile.fingerprint,
+                        elapsed_ms=1.5,
+                    ),
+                    _outcome(
+                        MbaProviderKind.EGGLOG,
+                        ProviderOutcomeStatus.OVER_BUDGET,
+                        profile.fingerprint,
+                        elapsed_ms=3.0,
+                    ),
+                ),
+            ),
+        ),
+        capture_metadata={
+            "provider_execution_modes": {
+                "catalogue": "interactive",
+                "egglog": "telemetry_3ms",
+            },
+            "whole_function_elapsed_ms_by_case": {"case": 12.0},
+            "lifecycle_measurements": {
+                "handler_startup_ms": [4.0],
+                "registration_pattern_count": 9,
+            },
+            "matcher_samples": [
+                {
+                    "bucket_size": 3,
+                    "attempted_rule_count": 2,
+                    "comparisons": 4,
+                    "lazy_swaps": 1,
+                    "flattened_arity": 2,
+                    "reassociation_coverage": "proved",
+                }
+            ],
+            "root_only_strict_subisland_misses": 2,
+        },
+    )
+
+    evidence = compare_provider_outcomes(report).rollout_evidence
+
+    assert evidence.candidate_latency_by_mode["interactive"]["catalogue"].p50_ms == 1.5
+    assert evidence.candidate_latency_by_mode["telemetry_3ms"]["egglog"].p50_ms == 3.0
+    assert evidence.whole_function_latency_by_mode["interactive"]["catalogue"].p95_ms == 12.0
+    assert evidence.whole_function_latency_by_mode["telemetry_3ms"]["egglog"].p95_ms == 12.0
+    assert evidence.lifecycle_measurements["handler_startup_ms"].p50_ms == 4.0
+    assert evidence.lifecycle_measurements["registration_pattern_count"].total == 9
+    assert evidence.matcher_bucket_size_p50 == 3.0
+    assert evidence.reassociation_proved == 1
+    assert evidence.root_only_strict_subisland_misses == 2
+
+
+def test_report_wire_round_trip_preserves_capture_metadata() -> None:
+    profile = _profile("wire-capture")
+    source = MbaDifferentialReport(
+        schema_version=1,
+        corpus_identity="wire",
+        toolchain_identity={"runtime": "unit"},
+        cases=(
+            MbaCorpusCaseReport(
+                case_id="case",
+                profile=profile,
+                outcomes=(
+                    _outcome(
+                        MbaProviderKind.CATALOGUE,
+                        ProviderOutcomeStatus.APPLIED,
+                        profile.fingerprint,
+                    ),
+                ),
+            ),
+        ),
+        capture_metadata={"whole_function_elapsed_ms_by_case": {"case": 7.0}},
+    )
+
+    restored = report_from_dict(source.to_dict())
+
+    assert restored.capture_metadata == source.capture_metadata
 
 
 def _profile_dict(profile: MbaIslandProfile) -> dict[str, object]:

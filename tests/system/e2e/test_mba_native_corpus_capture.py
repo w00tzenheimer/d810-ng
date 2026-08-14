@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -183,14 +185,22 @@ class TestNativeMbaCorpusCapture:
             },
         )
         with d810_state() as state:
+            configured_started = time.monotonic()
             state.load_project(state.project_manager.index(_PORTFOLIO_PROJECT))
+            configuration_elapsed_ms = (time.monotonic() - configured_started) * 1000.0
             selected_rules = tuple(state.current_ins_rules)
+            registration_pattern_count = sum(
+                len(getattr(rule, "_pattern_candidates_cache", ()) or ())
+                for rule in selected_rules
+            )
+            whole_function_elapsed_ms: dict[str, float] = {}
 
             @contextlib.contextmanager
             def selected_state():
                 yield state
 
             def run_case(case, snapshot):
+                started = time.monotonic()
                 run_deobfuscation_test(
                     DeobfuscationCase(
                         function=_manifest_function(case.case_id),
@@ -201,6 +211,9 @@ class TestNativeMbaCorpusCapture:
                     d810_state=selected_state,
                     pseudocode_to_string=pseudocode_to_string,
                 )
+                whole_function_elapsed_ms[case.case_id] = (
+                    time.monotonic() - started
+                ) * 1000.0
                 try:
                     return select_native_capture_profile(
                         selected_rules,
@@ -225,14 +238,36 @@ class TestNativeMbaCorpusCapture:
                 run_case=run_case,
             )
 
+        capture.set_capture_metadata(
+            {
+                "provider_execution_modes": {
+                    MbaProviderKind.STRUCTURAL_CHAIN.value: "interactive",
+                    MbaProviderKind.CATALOGUE.value: "interactive",
+                    MbaProviderKind.EGGLOG.value: "interactive",
+                    MbaProviderKind.COEFFICIENT_SOLVER.value: "extension_unavailable",
+                },
+                "whole_function_elapsed_ms_by_case": whole_function_elapsed_ms,
+                "lifecycle_measurements": {
+                    "project_configuration_ms": [configuration_elapsed_ms],
+                    "registration_pattern_count": registration_pattern_count,
+                },
+            }
+        )
+
         assert len(captured) == 70
         assert {case.case_id for case in captured} == {
             case.case_id for case in manifest_cases
         }
         assert all(len(case.outcomes) == len(_PROVIDER_MATRIX) for case in captured)
 
-        capture_path = tmp_path / "manifest-native-capture.json"
-        report_path = tmp_path / "manifest-native-report.json"
+        configured_artifacts = os.environ.get(
+            "D810_MBA_NATIVE_CAPTURE_ARTIFACT_DIR"
+        ) or os.environ.get("MBA_NATIVE_CAPTURE_ARTIFACT_DIR")
+        artifacts = Path(configured_artifacts) if configured_artifacts else tmp_path
+        artifacts.mkdir(parents=True, exist_ok=True)
+        runtime_mode = str(get_engine_info()["backend"])
+        capture_path = artifacts / f"mba-native-capture-interactive-{runtime_mode}.json"
+        report_path = artifacts / f"mba-native-report-interactive-{runtime_mode}.json"
         capture.write_json(capture_path)
         completed = subprocess.run(
             [
@@ -240,6 +275,8 @@ class TestNativeMbaCorpusCapture:
                 str(_CLI),
                 "--out",
                 str(report_path),
+                "--manifest",
+                str(_MANIFEST),
                 "--providers",
                 ",".join(provider.value for provider in _PROVIDER_MATRIX),
                 str(capture_path),
@@ -254,6 +291,11 @@ class TestNativeMbaCorpusCapture:
         report = json.loads(report_path.read_text(encoding="utf-8"))
         assert len(report["cases"]) == 70
         assert all(len(case["outcomes"]) == len(_PROVIDER_MATRIX) for case in report["cases"])
+        assert report["capture_metadata"] == capture.report().to_dict()["capture_metadata"]
+        evidence = report["summary"]["rollout_evidence"]
+        assert "interactive" in evidence["candidate_latency_by_mode"], evidence
+        assert "interactive" in evidence["whole_function_latency_by_mode"], evidence
+        assert evidence["lifecycle_measurements"]["project_configuration_ms"]["count"] == 1
 
     def test_real_provider_histories_produce_cli_input(
         self,

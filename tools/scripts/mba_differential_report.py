@@ -101,7 +101,8 @@ def build_report(
 ) -> tuple[dict[str, object], str]:
     """Load rows, enforce provider/case completeness, and render both outputs."""
 
-    rows = [row for path in paths for row in _flat_rows(_load_json(path), path)]
+    documents = tuple((path, _load_json(path)) for path in paths)
+    rows = [row for path, raw in documents for row in _flat_rows(raw, path)]
     if not rows:
         raise ValueError("at least one outcome row is required")
     observed_providers = tuple(
@@ -124,11 +125,26 @@ def build_report(
         or _manifest_provider_matrix(manifest)
         or observed_providers
     )
+    capture_metadata_documents = tuple(
+        raw["capture_metadata"]
+        for _path, raw in documents
+        if isinstance(raw, Mapping) and "capture_metadata" in raw
+    )
+    if len(capture_metadata_documents) > 1:
+        first = capture_metadata_documents[0]
+        if any(item != first for item in capture_metadata_documents[1:]):
+            raise ValueError("cannot merge reports with different capture_metadata")
+    capture_metadata = (
+        capture_metadata_documents[0] if capture_metadata_documents else {}
+    )
+    if not isinstance(capture_metadata, Mapping):
+        raise ValueError("capture_metadata must be an object")
     report = normalize_outcome_rows(
         rows,
         corpus_identity=corpus_identity or (manifest.stem if manifest else "ad-hoc"),
         toolchain_identity={"reporter": "mba_differential_report"},
         expected_providers=providers,
+        capture_metadata=capture_metadata,
     )
     manifest_case_ids = _manifest_cases(manifest)
     if manifest_case_ids:

@@ -11,7 +11,7 @@ import json
 import math
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 
 from d810.mba.island_profile import IslandBlocker, MbaIslandClass, MbaIslandProfile
@@ -262,6 +262,10 @@ class MbaDifferentialReport:
     corpus_identity: str
     toolchain_identity: Mapping[str, str]
     cases: tuple[MbaCorpusCaseReport, ...]
+    # Capture-level measurements belong to the one native corpus invocation,
+    # rather than being duplicated into every provider row.  They are emitted
+    # only by a real runner; the portable report never invents a measurement.
+    capture_metadata: Mapping[str, object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if type(self.schema_version) is not int or self.schema_version <= 0:
@@ -279,6 +283,24 @@ class MbaDifferentialReport:
             MappingProxyType(dict(sorted(self.toolchain_identity.items()))),
         )
         object.__setattr__(self, "cases", tuple(self.cases))
+        try:
+            normalized_metadata = json.loads(
+                json.dumps(
+                    self.capture_metadata,
+                    allow_nan=False,
+                    ensure_ascii=True,
+                    sort_keys=True,
+                )
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError("capture_metadata must be finite JSON data") from exc
+        if not isinstance(normalized_metadata, dict):
+            raise ValueError("capture_metadata must be a mapping")
+        object.__setattr__(
+            self,
+            "capture_metadata",
+            MappingProxyType(normalized_metadata),
+        )
         case_ids = tuple(case.case_id for case in self.cases)
         if len(set(case_ids)) != len(case_ids):
             raise ValueError("case IDs must be unique")
@@ -288,6 +310,7 @@ class MbaDifferentialReport:
             "schema_version": self.schema_version,
             "corpus_identity": self.corpus_identity,
             "toolchain_identity": dict(self.toolchain_identity),
+            "capture_metadata": dict(self.capture_metadata),
             "cases": [case.to_dict() for case in self.cases],
         }
 
@@ -688,6 +711,55 @@ def _rollout_evidence(report: MbaDifferentialReport) -> RolloutEvidence:
     )
     root_only_misses = 0
 
+    capture_metadata = report.capture_metadata
+    raw_modes = capture_metadata.get("provider_execution_modes", {})
+    provider_modes = raw_modes if isinstance(raw_modes, Mapping) else {}
+    raw_whole = capture_metadata.get("whole_function_elapsed_ms_by_case", {})
+    whole_by_case = raw_whole if isinstance(raw_whole, Mapping) else {}
+
+    def capture_number(name: str) -> float | None:
+        return _metadata_number(capture_metadata, name)
+
+    raw_lifecycle = capture_metadata.get("lifecycle_measurements", {})
+    if isinstance(raw_lifecycle, Mapping):
+        for name, values in raw_lifecycle.items():
+            if type(name) is not str:
+                continue
+            samples = values if isinstance(values, list) else [values]
+            for value in samples:
+                if type(value) in (int, float) and math.isfinite(float(value)) and value >= 0:
+                    lifecycle_samples[name].append(float(value))
+
+    raw_matcher_samples = capture_metadata.get("matcher_samples", ())
+    if isinstance(raw_matcher_samples, list):
+        for sample in raw_matcher_samples:
+            if not isinstance(sample, Mapping):
+                continue
+            bucket = _metadata_number(sample, "bucket_size")
+            if bucket is not None:
+                bucket_sizes.append(bucket)
+            attempted = _metadata_number(sample, "attempted_rule_count")
+            if attempted is not None:
+                attempted_rules.append(attempted)
+            comparison = _metadata_number(sample, "comparisons")
+            if comparison is not None:
+                comparisons.append(comparison)
+            flattened = _metadata_number(sample, "flattened_arity")
+            if flattened is not None:
+                flattened_arities.append(flattened)
+            swaps = _metadata_int(sample, "lazy_swaps")
+            if swaps is not None:
+                lazy_swaps_total += swaps
+            if sample.get("comparison_cap_refusal") is True:
+                cap_refusals += 1
+            coverage = sample.get("reassociation_coverage")
+            if coverage == "proved":
+                reassociation_proved += 1
+            elif coverage == "pending":
+                reassociation_pending += 1
+
+    root_only_misses += int(capture_number("root_only_strict_subisland_misses") or 0)
+
     for case in report.cases:
         winners = tuple(
             outcome for outcome in case.outcomes if outcome.status in _WIN_STATUSES
@@ -752,13 +824,23 @@ def _rollout_evidence(report: MbaDifferentialReport) -> RolloutEvidence:
 
             mode = metadata.get("egglog_execution_mode")
             if type(mode) is not str or not mode:
+                configured_mode = provider_modes.get(outcome.provider.value)
+                mode = configured_mode if type(configured_mode) is str else None
+            if type(mode) is not str or not mode:
                 continue
             candidate_elapsed = _metadata_number(metadata, "candidate_elapsed_ms")
+            if candidate_elapsed is None and outcome.status is not ProviderOutcomeStatus.UNAVAILABLE:
+                # Provider adapters already measure this attempt.  Capture
+                # metadata controls its execution lane, so this is real
+                # candidate latency rather than a reporter-side estimate.
+                candidate_elapsed = outcome.elapsed_ms
             if candidate_elapsed is not None:
                 candidate_latencies[mode][outcome.provider.value].append(
                     candidate_elapsed
                 )
             whole_elapsed = _metadata_number(metadata, "whole_function_elapsed_ms")
+            if whole_elapsed is None:
+                whole_elapsed = _metadata_number(whole_by_case, case.case_id)
             if whole_elapsed is not None:
                 whole_function_latencies[mode][outcome.provider.value].append(
                     whole_elapsed
@@ -888,6 +970,7 @@ def normalize_outcome_rows(
     toolchain_identity: Mapping[str, str],
     expected_providers: Sequence[MbaProviderKind] = (),
     schema_version: int = 1,
+    capture_metadata: Mapping[str, object] | None = None,
 ) -> MbaDifferentialReport:
     """Group flat portable outcome rows and reject ambiguous or missing coverage."""
 
@@ -949,7 +1032,11 @@ def normalize_outcome_rows(
             )
         cases.append(case)
     return MbaDifferentialReport(
-        schema_version, corpus_identity, toolchain_identity, tuple(cases)
+        schema_version,
+        corpus_identity,
+        toolchain_identity,
+        tuple(cases),
+        {} if capture_metadata is None else capture_metadata,
     )
 
 
@@ -973,6 +1060,7 @@ def report_from_dict(data: Mapping[str, object]) -> MbaDifferentialReport:
             corpus_identity=str(data["corpus_identity"]),
             toolchain_identity=data["toolchain_identity"],  # type: ignore[arg-type]
             schema_version=int(data["schema_version"]),
+            capture_metadata=data.get("capture_metadata", {}),  # type: ignore[arg-type]
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError(f"invalid MBA differential report: {exc}") from exc

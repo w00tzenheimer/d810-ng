@@ -327,6 +327,22 @@ class NativeMbaCorpusCapture:
     corpus_identity: str
     toolchain_identity: Mapping[str, str]
     _cases: list[MbaCorpusCaseReport] = field(default_factory=list)
+    _capture_metadata: dict[str, object] = field(default_factory=dict)
+
+    def set_capture_metadata(self, metadata: Mapping[str, object]) -> None:
+        """Attach measured run-level evidence before the report is rendered.
+
+        This deliberately accepts only one immutable recording for each key.
+        A runner must not average, overwrite, or fabricate a measurement after
+        the fact; repeated evidence is represented as a list in that one value.
+        """
+
+        for key, value in metadata.items():
+            if type(key) is not str or not key:
+                raise ValueError("capture metadata keys must be non-empty strings")
+            if key in self._capture_metadata:
+                raise ValueError(f"capture metadata already records {key}")
+            self._capture_metadata[key] = value
 
     def add_case(
         self,
@@ -357,6 +373,7 @@ class NativeMbaCorpusCapture:
             corpus_identity=self.corpus_identity,
             toolchain_identity=self.toolchain_identity,
             cases=tuple(self._cases),
+            capture_metadata=self._capture_metadata,
         )
 
     def write_json(self, path: Path) -> None:
