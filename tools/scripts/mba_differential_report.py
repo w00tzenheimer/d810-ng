@@ -92,12 +92,54 @@ def _manifest_provider_matrix(path: Path | None) -> tuple[MbaProviderKind, ...]:
     return providers
 
 
+def _merge_capture_metadata(documents: Sequence[object]) -> Mapping[str, object]:
+    """Merge disjoint capture and measurement sidecars without overwriting facts."""
+
+    def merge(left: object, right: object, path: str) -> object:
+        if left == right:
+            return left
+        if path.startswith("capture_metadata.lifecycle_measurements."):
+            values = (
+                *(left if isinstance(left, list) else (left,)),
+                *(right if isinstance(right, list) else (right,)),
+            )
+            if all(type(value) in (int, float) for value in values):
+                return list(values)
+        if isinstance(left, Mapping) and isinstance(right, Mapping):
+            merged = dict(left)
+            for key, value in right.items():
+                if type(key) is not str:
+                    raise ValueError(f"capture_metadata has a non-string key at {path}")
+                merged[key] = (
+                    value
+                    if key not in merged
+                    else merge(merged[key], value, f"{path}.{key}")
+                )
+            return merged
+        if isinstance(left, list) and isinstance(right, list):
+            return [*left, *right]
+        raise ValueError(f"conflicting capture_metadata at {path}")
+
+    merged: object = {}
+    for document in documents:
+        value = (
+            document.get("capture_metadata", {})
+            if isinstance(document, Mapping)
+            else document
+        )
+        if not isinstance(value, Mapping):
+            raise ValueError("capture_metadata must be an object")
+        merged = merge(merged, value, "capture_metadata")
+    return merged  # type: ignore[return-value]
+
+
 def build_report(
     paths: Sequence[Path],
     *,
     manifest: Path | None = None,
     corpus_identity: str | None = None,
     expected_providers: Sequence[MbaProviderKind] = (),
+    rollout_evidence: Sequence[Path] = (),
 ) -> tuple[dict[str, object], str]:
     """Load rows, enforce provider/case completeness, and render both outputs."""
 
@@ -126,19 +168,14 @@ def build_report(
         or observed_providers
     )
     capture_metadata_documents = tuple(
-        raw["capture_metadata"]
+        raw
         for _path, raw in documents
         if isinstance(raw, Mapping) and "capture_metadata" in raw
     )
-    if len(capture_metadata_documents) > 1:
-        first = capture_metadata_documents[0]
-        if any(item != first for item in capture_metadata_documents[1:]):
-            raise ValueError("cannot merge reports with different capture_metadata")
-    capture_metadata = (
-        capture_metadata_documents[0] if capture_metadata_documents else {}
+    evidence_documents = tuple(_load_json(path) for path in rollout_evidence)
+    capture_metadata = _merge_capture_metadata(
+        (*capture_metadata_documents, *evidence_documents)
     )
-    if not isinstance(capture_metadata, Mapping):
-        raise ValueError("capture_metadata must be an object")
     report = normalize_outcome_rows(
         rows,
         corpus_identity=corpus_identity or (manifest.stem if manifest else "ad-hoc"),
@@ -170,6 +207,13 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--markdown", type=Path)
     parser.add_argument("--corpus-identity")
     parser.add_argument(
+        "--rollout-evidence",
+        action="append",
+        type=Path,
+        default=[],
+        help="JSON capture_metadata sidecar from a real native measurement run",
+    )
+    parser.add_argument(
         "--providers",
         help="comma-separated enabled provider names; makes omitted rows an error",
     )
@@ -193,6 +237,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     if value
                 )
             ),
+            rollout_evidence=tuple(args.rollout_evidence),
         )
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(

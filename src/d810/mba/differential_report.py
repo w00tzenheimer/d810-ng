@@ -366,10 +366,10 @@ class LatencyStats:
     """One explicitly measured latency population, never a filled-in zero."""
 
     count: int
-    p50_ms: float
-    p95_ms: float
+    p50_ms: float | None
+    p95_ms: float | None
 
-    def to_dict(self) -> dict[str, int | float]:
+    def to_dict(self) -> dict[str, int | float | None]:
         return {"count": self.count, "p50_ms": self.p50_ms, "p95_ms": self.p95_ms}
 
 
@@ -717,6 +717,15 @@ def _rollout_evidence(report: MbaDifferentialReport) -> RolloutEvidence:
     raw_whole = capture_metadata.get("whole_function_elapsed_ms_by_case", {})
     whole_by_case = raw_whole if isinstance(raw_whole, Mapping) else {}
 
+    # Keep an explicit zero-sample lane for every configured provider.  An
+    # unavailable extension or a telemetry-only Egglog admission must be
+    # visible as "measured, no candidate" rather than disappear from the
+    # portfolio report.
+    for provider, mode in provider_modes.items():
+        if type(provider) is str and type(mode) is str and mode:
+            candidate_latencies[mode][provider]
+            whole_function_latencies[mode][provider]
+
     def capture_number(name: str) -> float | None:
         return _metadata_number(capture_metadata, name)
 
@@ -758,6 +767,53 @@ def _rollout_evidence(report: MbaDifferentialReport) -> RolloutEvidence:
             elif coverage == "pending":
                 reassociation_pending += 1
 
+    raw_latency_lanes = capture_metadata.get("latency_lanes", ())
+    if isinstance(raw_latency_lanes, list):
+        for lane in raw_latency_lanes:
+            if not isinstance(lane, Mapping):
+                continue
+            population = lane.get("population")
+            mode = lane.get("mode")
+            provider = lane.get("provider")
+            if not all(type(value) is str and value for value in (population, mode, provider)):
+                continue
+            target = (
+                candidate_latencies
+                if population == "candidate"
+                else whole_function_latencies
+                if population == "whole_function"
+                else None
+            )
+            if target is not None:
+                target[mode][provider]
+
+    raw_latency_samples = capture_metadata.get("latency_samples", ())
+    if isinstance(raw_latency_samples, list):
+        for sample in raw_latency_samples:
+            if not isinstance(sample, Mapping):
+                continue
+            population = sample.get("population")
+            mode = sample.get("mode")
+            provider = sample.get("provider")
+            elapsed = _metadata_number(sample, "elapsed_ms")
+            if (
+                not all(
+                    type(value) is str and value
+                    for value in (population, mode, provider)
+                )
+                or elapsed is None
+            ):
+                continue
+            target = (
+                candidate_latencies
+                if population == "candidate"
+                else whole_function_latencies
+                if population == "whole_function"
+                else None
+            )
+            if target is not None:
+                target[mode][provider].append(elapsed)
+
     root_only_misses += int(capture_number("root_only_strict_subisland_misses") or 0)
 
     for case in report.cases:
@@ -765,10 +821,12 @@ def _rollout_evidence(report: MbaDifferentialReport) -> RolloutEvidence:
             outcome for outcome in case.outcomes if outcome.status in _WIN_STATUSES
         )
         if (
-            case.profile is not None
-            and case.profile.island_class is MbaIslandClass.NONLINEAR_MBA
-            and not winners
-        ):
+            case.stratum == "nonlinear"
+            or (
+                case.profile is not None
+                and case.profile.island_class is MbaIslandClass.NONLINEAR_MBA
+            )
+        ) and not winners:
             nonlinear_residuals += 1
         if len(winners) == 1:
             winner = winners[0]
@@ -862,8 +920,12 @@ def _rollout_evidence(report: MbaDifferentialReport) -> RolloutEvidence:
                     {
                         provider: LatencyStats(
                             count=len(samples),
-                            p50_ms=_percentile(samples, 0.50),
-                            p95_ms=_percentile(samples, 0.95),
+                            p50_ms=(
+                                _percentile(samples, 0.50) if samples else None
+                            ),
+                            p95_ms=(
+                                _percentile(samples, 0.95) if samples else None
+                            ),
                         )
                         for provider, samples in sorted(by_provider.items())
                     }
@@ -1149,7 +1211,8 @@ def _format_latency_modes(
     return "; ".join(
         f"{mode}: "
         + ", ".join(
-            f"{provider}(n={stats.count},p50={stats.p50_ms:.3f},p95={stats.p95_ms:.3f})"
+            f"{provider}(n={stats.count},p50={_format_measurement(stats.p50_ms)},"
+            f"p95={_format_measurement(stats.p95_ms)})"
             for provider, stats in sorted(by_provider.items())
         )
         for mode, by_provider in sorted(values.items())

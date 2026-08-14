@@ -25,6 +25,9 @@ from d810.mba.native_corpus_capture import (
     snapshot_native_provider_histories,
 )
 from d810.mba.provider_outcome import MbaProviderKind, ProviderOutcomeStatus
+from d810.backends.mba.egglog_add_rule_compiler import (
+    _compile_selected_rule_catalogue,
+)
 from d810.testing.cases import DeobfuscationCase
 from d810.testing.runner import run_deobfuscation_test
 from d810.optimizers.microcode.instructions.pattern_matching.engine import (
@@ -192,9 +195,11 @@ class TestNativeMbaCorpusCapture:
             },
         )
         with d810_state() as state:
+            catalogue_cache_before = _compile_selected_rule_catalogue.cache_info()
             configured_started = time.monotonic()
             state.load_project(state.project_manager.index(project_name))
             configuration_elapsed_ms = (time.monotonic() - configured_started) * 1000.0
+            catalogue_cache_after = _compile_selected_rule_catalogue.cache_info()
             selected_rules = tuple(state.current_ins_rules)
             registration_pattern_count = sum(
                 len(getattr(rule, "pattern_candidates", ()) or ())
@@ -257,7 +262,14 @@ class TestNativeMbaCorpusCapture:
                 "whole_function_elapsed_ms_by_case": whole_function_elapsed_ms,
                 "lifecycle_measurements": {
                     "project_configuration_ms": [configuration_elapsed_ms],
+                    "cold_snapshot_ms": [configuration_elapsed_ms],
                     "registration_pattern_count": registration_pattern_count,
+                    "catalogue_compiler_invocations": [
+                        catalogue_cache_after.misses - catalogue_cache_before.misses
+                    ],
+                    "catalogue_cache_hits": [
+                        catalogue_cache_after.hits - catalogue_cache_before.hits
+                    ],
                 },
             }
         )
@@ -277,6 +289,40 @@ class TestNativeMbaCorpusCapture:
         capture_path = artifacts / f"mba-native-capture-{egglog_mode}-{runtime_mode}.json"
         report_path = artifacts / f"mba-native-report-{egglog_mode}-{runtime_mode}.json"
         capture.write_json(capture_path)
+        telemetry_sidecar_path = (
+            artifacts / f"mba-native-telemetry-sidecar-{egglog_mode}-{runtime_mode}.json"
+        )
+        telemetry_sidecar_path.write_text(
+            json.dumps(
+                {
+                    "capture_metadata": {
+                        "latency_lanes": [
+                            {
+                                "population": "candidate",
+                                "mode": egglog_mode,
+                                "provider": MbaProviderKind.EGGLOG.value,
+                            }
+                        ],
+                        "latency_samples": [
+                            {
+                                "population": "whole_function",
+                                "mode": egglog_mode,
+                                "provider": MbaProviderKind.EGGLOG.value,
+                                "elapsed_ms": elapsed_ms,
+                            }
+                            for elapsed_ms in whole_function_elapsed_ms.values()
+                        ],
+                    }
+                },
+                allow_nan=False,
+                ensure_ascii=True,
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        assert telemetry_sidecar_path.is_file()
         completed = subprocess.run(
             [
                 sys.executable,

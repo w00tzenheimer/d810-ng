@@ -16,6 +16,8 @@ import random
 import shutil
 import subprocess
 import sys
+import time
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -593,10 +595,12 @@ class TestCompilerShapeCatalogueNative:
         monkeypatch.delenv("D810_LEGACY_DSL_PERMUTATIONS", raising=False)
         monkeypatch.delenv("D810_SHADOW_DSL_MATCHING", raising=False)
         monkeypatch.setenv("D810_STRUCTURAL_DSL_MATCHING", "1")
+        activation_configuration_started = time.monotonic()
         with d810_state() as state:
             state.add_project(runtime_project)
             activation_index = state.project_manager.index(activation_path.name)
             assert state.load_project(activation_index) is not None
+            cold_snapshot_ms = (time.monotonic() - activation_configuration_started) * 1000.0
             adapters = tuple(state.current_ins_rules)
             assert adapters
             assert all(adapter.uses_structural_matching for adapter in adapters)
@@ -608,7 +612,9 @@ class TestCompilerShapeCatalogueNative:
             assert before is not None
             before_text = pseudocode_to_string(before.get_pseudocode())
             with capture_native_provider_histories(adapters):
+                handler_started = time.monotonic()
                 state.start_d810()
+                handler_startup_ms = (time.monotonic() - handler_started) * 1000.0
                 after = idaapi.decompile(function_ea, flags=idaapi.DECOMP_NO_CACHE)
                 state.stop_d810()
             assert after is not None
@@ -624,6 +630,63 @@ class TestCompilerShapeCatalogueNative:
                 and "structural_dispatch" in outcome.metadata
                 for outcome in outcomes
             )
+            structural_outcome = next(
+                outcome
+                for outcome in outcomes
+                if outcome.provider is MbaProviderKind.CATALOGUE
+                and outcome.status is ProviderOutcomeStatus.APPLIED
+                and "structural_dispatch" in outcome.metadata
+            )
+            assert structural_outcome.matcher is not None
+            dispatch = structural_outcome.metadata["structural_dispatch"]
+            assert isinstance(dispatch, Mapping)
+            report_evidence_path = artifacts / f"mba-structural-report-evidence-{runtime_mode}.json"
+            report_evidence_path.write_text(
+                json.dumps(
+                    {
+                        "capture_metadata": {
+                            "matcher_samples": [
+                                {
+                                    "bucket_size": dispatch["bucket_size"],
+                                    "attempted_rule_count": dispatch["attempted_rule_count"],
+                                    "comparisons": structural_outcome.matcher.comparisons,
+                                    "lazy_swaps": structural_outcome.matcher.lazy_swaps,
+                                    "flattened_arity": structural_outcome.matcher.flattened_arity,
+                                    "comparison_cap_refusal": (
+                                        structural_outcome.matcher.stop_reason
+                                        == "comparison_budget"
+                                    ),
+                                }
+                            ],
+                            "lifecycle_measurements": {
+                                "cold_snapshot_ms": [cold_snapshot_ms],
+                                "handler_startup_ms": [handler_startup_ms],
+                                "registration_pattern_count": [
+                                    sum(
+                                        len(
+                                            getattr(
+                                                adapter,
+                                                "pattern_candidates",
+                                                (),
+                                            )
+                                            or ()
+                                        )
+                                        for adapter in adapters
+                                    )
+                                ],
+                                "native_proof_invocations": [1],
+                            },
+                        }
+                    },
+                    allow_nan=False,
+                    ensure_ascii=True,
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            assert report_evidence_path.is_file()
 
             stale_config = json.loads(activation_path.read_text(encoding="utf-8"))
             stale_config["additional_configuration"][

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
+from pathlib import Path
 
 import pytest
 
@@ -21,6 +23,18 @@ from d810.mba.provider_outcome import (
     MbaProviderOutcome,
     ProviderOutcomeStatus,
 )
+
+
+_ROOT = Path(__file__).resolve().parents[3]
+_REPORT_CLI = _ROOT / "tools/scripts/mba_differential_report.py"
+
+
+def _report_cli_module():
+    spec = importlib.util.spec_from_file_location("mba_differential_report_cli", _REPORT_CLI)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _profile(fingerprint: str) -> MbaIslandProfile:
@@ -667,6 +681,33 @@ def test_rollout_evidence_marks_unmeasured_questions_as_unavailable() -> None:
     assert evidence.lifecycle_measurements == {}
 
 
+def test_rollout_evidence_counts_declared_nonlinear_residual_without_profile() -> None:
+    """Native lowering may reject a nonlinear source before a profile exists."""
+
+    report = MbaDifferentialReport(
+        schema_version=1,
+        corpus_identity="nonlinear",
+        toolchain_identity={},
+        cases=(
+            MbaCorpusCaseReport(
+                case_id="nonlinear-native-refusal",
+                profile=None,
+                stratum="nonlinear",
+                outcomes=(
+                    MbaProviderOutcome(
+                        MbaProviderKind.EGGLOG,
+                        ProviderOutcomeStatus.UNAVAILABLE,
+                        "nonlinear-native-refusal",
+                        refusal_reason="native_candidate_not_observed",
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    assert compare_provider_outcomes(report).rollout_evidence.nonlinear_residuals == 1
+
+
 def test_capture_metadata_supplies_measured_provider_lanes_without_row_duplication() -> None:
     """A native runner owns whole-function/lifecycle facts once per capture."""
 
@@ -732,6 +773,85 @@ def test_capture_metadata_supplies_measured_provider_lanes_without_row_duplicati
     assert evidence.root_only_strict_subisland_misses == 2
 
 
+def test_rollout_evidence_keeps_zero_sample_telemetry_lane_visible() -> None:
+    """Configured telemetry is evidence even when no candidate reaches Egglog."""
+
+    profile = _profile("telemetry-empty")
+    report = MbaDifferentialReport(
+        schema_version=1,
+        corpus_identity="telemetry",
+        toolchain_identity={},
+        cases=(
+            MbaCorpusCaseReport(
+                case_id="case",
+                profile=profile,
+                outcomes=(
+                    _outcome(
+                        MbaProviderKind.EGGLOG,
+                        ProviderOutcomeStatus.UNAVAILABLE,
+                        profile.fingerprint,
+                    ),
+                ),
+            ),
+        ),
+        capture_metadata={
+            "provider_execution_modes": {"egglog": "telemetry_3ms"},
+        },
+    )
+
+    lane = compare_provider_outcomes(report).rollout_evidence.candidate_latency_by_mode[
+        "telemetry_3ms"
+    ]["egglog"]
+    assert lane.count == 0
+    assert lane.p50_ms is None
+    assert "p50=not measured" in summary_markdown(compare_provider_outcomes(report))
+
+
+def test_rollout_evidence_accepts_sidecar_latency_lanes() -> None:
+    """A second configuration contributes latency without duplicate outcomes."""
+
+    profile = _profile("telemetry-sidecar")
+    report = MbaDifferentialReport(
+        schema_version=1,
+        corpus_identity="telemetry",
+        toolchain_identity={},
+        cases=(
+            MbaCorpusCaseReport(
+                case_id="case",
+                profile=profile,
+                outcomes=(
+                    _outcome(
+                        MbaProviderKind.CATALOGUE,
+                        ProviderOutcomeStatus.APPLIED,
+                        profile.fingerprint,
+                    ),
+                ),
+            ),
+        ),
+        capture_metadata={
+            "latency_lanes": [
+                {
+                    "population": "candidate",
+                    "mode": "telemetry_3ms",
+                    "provider": "egglog",
+                }
+            ],
+            "latency_samples": [
+                {
+                    "population": "whole_function",
+                    "mode": "telemetry_3ms",
+                    "provider": "egglog",
+                    "elapsed_ms": 7.0,
+                }
+            ],
+        },
+    )
+
+    evidence = compare_provider_outcomes(report).rollout_evidence
+    assert evidence.candidate_latency_by_mode["telemetry_3ms"]["egglog"].count == 0
+    assert evidence.whole_function_latency_by_mode["telemetry_3ms"]["egglog"].p95_ms == 7.0
+
+
 def test_report_wire_round_trip_preserves_capture_metadata() -> None:
     profile = _profile("wire-capture")
     source = MbaDifferentialReport(
@@ -757,6 +877,61 @@ def test_report_wire_round_trip_preserves_capture_metadata() -> None:
     restored = report_from_dict(source.to_dict())
 
     assert restored.capture_metadata == source.capture_metadata
+
+
+def test_report_cli_merges_real_measurement_sidecars(tmp_path: Path) -> None:
+    """Sidecars add measurements without replacing captured provider rows."""
+
+    profile = _profile("sidecar")
+    capture = MbaDifferentialReport(
+        schema_version=1,
+        corpus_identity="sidecar",
+        toolchain_identity={"runtime": "unit"},
+        cases=(
+            MbaCorpusCaseReport(
+                case_id="case",
+                profile=profile,
+                outcomes=(
+                    _outcome(
+                        MbaProviderKind.CATALOGUE,
+                        ProviderOutcomeStatus.APPLIED,
+                        profile.fingerprint,
+                    ),
+                ),
+            ),
+        ),
+        capture_metadata={"lifecycle_measurements": {"configuration_ms": [1.0]}},
+    )
+    capture_path = tmp_path / "capture.json"
+    capture_path.write_text(json.dumps(capture.to_dict()), encoding="utf-8")
+    sidecar_path = tmp_path / "sidecar.json"
+    sidecar_path.write_text(
+        json.dumps(
+            {
+                "capture_metadata": {
+                    "matcher_samples": [{"bucket_size": 2, "comparisons": 3}],
+                    "lifecycle_measurements": {
+                        "configuration_ms": [2.0],
+                        "native_proof_invocations": [1],
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    module = _report_cli_module()
+    payload, _markdown = module.build_report(
+        (capture_path,),
+        rollout_evidence=(sidecar_path,),
+    )
+
+    metadata = payload["capture_metadata"]
+    assert metadata["lifecycle_measurements"] == {
+        "configuration_ms": [1.0, 2.0],
+        "native_proof_invocations": [1],
+    }
+    assert metadata["matcher_samples"] == [{"bucket_size": 2, "comparisons": 3}]
 
 
 def _profile_dict(profile: MbaIslandProfile) -> dict[str, object]:
