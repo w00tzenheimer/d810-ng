@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import inspect
 import importlib
+import os
 import pathlib
 
 from d810.backends.hexrays.registration import register_hexrays_backend_providers
@@ -365,7 +366,19 @@ class D810State(metaclass=SingletonMeta):
             for rule in self.current_ins_rules
             if isinstance(rule, IDAPatternAdapter)
         )
-        if selected_catalogue_adapters:
+        # Snapshot construction fingerprints every selected rule and allocates
+        # the parity ledger.  Neither belongs to ordinary legacy execution:
+        # the rollout stays legacy-authoritative unless an operator explicitly
+        # requests shadow observation or certificate-gated structural matching.
+        shadow_observation_requested = (
+            os.environ.get("D810_SHADOW_DSL_MATCHING", "0") == "1"
+        )
+        structural_matching_requested = (
+            os.environ.get("D810_STRUCTURAL_DSL_MATCHING", "0") == "1"
+        )
+        if selected_catalogue_adapters and (
+            shadow_observation_requested or structural_matching_requested
+        ):
             certificate_path = None
             parity_expectation = None
             certificate_setting = runtime_project.additional_configuration.get(

@@ -260,8 +260,10 @@ def test_catalogue_corpus_keeps_legacy_dsl_matching_by_default() -> None:
 
 
 def test_corpus_projects_register_their_one_intended_provider(
-    ida_database, d810_state
+    ida_database, d810_state, monkeypatch
 ) -> None:
+    monkeypatch.delenv("D810_SHADOW_DSL_MATCHING", raising=False)
+    monkeypatch.delenv("D810_STRUCTURAL_DSL_MATCHING", raising=False)
     with d810_state() as state:
         state.load_project(
             state.project_manager.index("mba_compiler_shape_catalogue.json")
@@ -272,6 +274,8 @@ def test_corpus_projects_register_their_one_intended_provider(
         assert all(
             not adapter.uses_structural_matching for adapter in catalogue_adapters
         )
+        assert state.current_certified_catalogue_snapshot is None
+        assert state.current_shadow_matcher_parity_ledger is None
         assert sum(
             len(adapter.pattern_candidates) for adapter in catalogue_adapters
         ) >= len(catalogue_adapters)
@@ -328,6 +332,7 @@ class TestCompilerShapeCatalogueNative:
         # construction; this test is the native shadow gate that selection
         # must satisfy before Task 8 can become authoritative.
         monkeypatch.setenv("D810_LEGACY_DSL_PERMUTATIONS", "1")
+        monkeypatch.setenv("D810_SHADOW_DSL_MATCHING", "1")
         reaches_provider = _catalogue_reaches_provider(function)
         ledgers = []
 

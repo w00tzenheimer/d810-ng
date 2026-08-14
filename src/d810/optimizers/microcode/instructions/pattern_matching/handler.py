@@ -784,7 +784,10 @@ class PatternOptimizer(InstructionOptimizer):
                         "observe_structural_match",
                         None,
                     )
-                    if observe_structural_match is not None:
+                    if (
+                        observe_structural_match is not None
+                        and os.environ.get("D810_SHADOW_DSL_MATCHING", "0") == "1"
+                    ):
                         observe_structural_match(test_ast)
 
                     # PR4: Non-mutating match path (when enabled and using indexed storage)
@@ -877,9 +880,9 @@ def rec_get_all_binary_subtree_representation(elt_list):
     for i in range(1, len(elt_list)):
         left_list = rec_get_all_binary_subtree_representation(elt_list[:i])
         right_list = rec_get_all_binary_subtree_representation(elt_list[i:])
-        for l in left_list:
-            for r in right_list:
-                tmp_res.append([l, r])
+        for left in left_list:
+            for right in right_list:
+                tmp_res.append([left, right])
     return tmp_res
 
 

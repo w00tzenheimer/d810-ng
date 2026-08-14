@@ -29,6 +29,7 @@ from d810.optimizers.microcode.instructions.egraph.egglog_handler import (
 
 def test_egglog_attempt_matrix_retains_one_final_row_per_skip_or_proof_result() -> None:
     handler = EgglogOptimizer()
+    handler.begin_provider_outcome_capture()
     receipts = (
         EgglogExtractionReceipt(skip_reason=ExtractionSkipReason.EGGLOG_UNAVAILABLE),
         EgglogExtractionReceipt(skip_reason=ExtractionSkipReason.TIME_BUDGET),
@@ -60,6 +61,7 @@ def test_egglog_attempt_matrix_retains_one_final_row_per_skip_or_proof_result() 
 
 def test_egglog_candidate_is_only_applied_after_outer_mutation_acceptance() -> None:
     handler = EgglogOptimizer()
+    handler.begin_provider_outcome_capture()
     handler._begin_provider_attempt()
     handler._record_extraction_receipt(
         EgglogExtractionReceipt(input_cost=(4, 7), extracted_cost=(2, 3))
@@ -81,6 +83,7 @@ def test_direct_catalogue_nonmatch_is_published_without_rule_fired_statistics(
         ALIASES = ()
 
     adapter = IDAPatternAdapter(Rule())
+    adapter.begin_provider_outcome_capture()
     input_ast = SimpleNamespace(is_node=lambda: False)
     monkeypatch.setattr(
         "d810.backends.mba.ida.minsn_to_ast", lambda _instruction: input_ast
@@ -117,6 +120,7 @@ def test_structural_chain_nonmatch_is_an_explicit_provider_row(monkeypatch) -> N
             return None
 
     rule = Rule()
+    rule.begin_provider_outcome_capture()
     instruction = SimpleNamespace(
         d=SimpleNamespace(size=4),
         l=SimpleNamespace(t=-1),
@@ -152,6 +156,7 @@ def test_structural_chain_candidate_is_only_applied_after_outer_mutation_accepta
             return None
 
     rule = Rule()
+    rule.begin_provider_outcome_capture()
     instruction = SimpleNamespace(
         d=SimpleNamespace(size=4),
         l=SimpleNamespace(t=-1),
@@ -186,6 +191,7 @@ def test_structural_chain_runtime_error_retains_exact_profile_and_one_error_row(
             return None
 
     rule = Rule()
+    rule.begin_provider_outcome_capture()
     instruction = SimpleNamespace(d=SimpleNamespace(size=4))
     profile = SimpleNamespace(
         fingerprint="chain-exact-island",

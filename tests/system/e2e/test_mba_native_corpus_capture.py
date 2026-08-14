@@ -14,6 +14,7 @@ import idaapi
 
 from d810.mba.native_corpus_capture import (
     NativeMbaCorpusCapture,
+    capture_native_provider_histories,
     native_profile_from_outcome,
     snapshot_native_provider_histories,
 )
@@ -77,33 +78,36 @@ class TestNativeMbaCorpusCapture:
         """Capture an actual accepted catalogue mutation; no synthetic rows."""
 
         monkeypatch.setenv("D810_LEGACY_DSL_PERMUTATIONS", "1")
-        captured_rules: list[object] = []
+        native_case = DeobfuscationCase(
+            function="mba_shape_catalogue_01",
+            description="native provider history capture",
+            must_change=True,
+            required_rules=["Add_HackersDelightRule_2"],
+        )
+        with d810_state() as state:
+            state.load_project(
+                state.project_manager.index("mba_compiler_shape_catalogue.json")
+            )
+            captured_rules = tuple(state.current_ins_rules)
 
-        @contextlib.contextmanager
-        def recording_state():
-            with d810_state() as state:
+            @contextlib.contextmanager
+            def selected_state():
                 yield state
-                captured_rules.extend(state.current_ins_rules)
 
-        run_deobfuscation_test(
-            DeobfuscationCase(
-                function="mba_shape_catalogue_01",
-                description="native provider history capture",
-                project="mba_compiler_shape_catalogue.json",
-                must_change=True,
-                required_rules=["Add_HackersDelightRule_2"],
-            ),
-            d810_state=recording_state,
-            pseudocode_to_string=pseudocode_to_string,
-        )
+            with capture_native_provider_histories(captured_rules):
+                run_deobfuscation_test(
+                    native_case,
+                    d810_state=selected_state,
+                    pseudocode_to_string=pseudocode_to_string,
+                )
 
-        applied = tuple(
-            outcome
-            for rule in captured_rules
-            for outcome in rule.provider_outcomes()
-            if outcome.provider is MbaProviderKind.CATALOGUE
-            and outcome.status is ProviderOutcomeStatus.APPLIED
-        )
+            applied = tuple(
+                outcome
+                for rule in captured_rules
+                for outcome in rule.provider_outcomes()
+                if outcome.provider is MbaProviderKind.CATALOGUE
+                and outcome.status is ProviderOutcomeStatus.APPLIED
+            )
         assert applied, "native corpus did not record an accepted catalogue outcome"
         profile = native_profile_from_outcome(applied[-1])
         capture = NativeMbaCorpusCapture(
@@ -184,21 +188,22 @@ class TestNativeMbaCorpusCapture:
             def selected_state():
                 yield state
 
-            history_snapshot = snapshot_native_provider_histories(selected_rules)
-            run_deobfuscation_test(
-                native_case,
-                d810_state=selected_state,
-                pseudocode_to_string=pseudocode_to_string,
-            )
-            post_snapshot_applied = tuple(
-                outcome
-                for rule in selected_rules
-                for outcome in rule.provider_outcomes()[
-                    history_snapshot.outcome_counts_by_rule_id[id(rule)] :
-                ]
-                if outcome.provider is MbaProviderKind.CATALOGUE
-                and outcome.status is ProviderOutcomeStatus.APPLIED
-            )
+            with capture_native_provider_histories(selected_rules):
+                history_snapshot = snapshot_native_provider_histories(selected_rules)
+                run_deobfuscation_test(
+                    native_case,
+                    d810_state=selected_state,
+                    pseudocode_to_string=pseudocode_to_string,
+                )
+                post_snapshot_applied = tuple(
+                    outcome
+                    for rule in selected_rules
+                    for outcome in rule.provider_outcomes_since(
+                        history_snapshot.outcome_counts_by_rule_id[id(rule)]
+                    )
+                    if outcome.provider is MbaProviderKind.CATALOGUE
+                    and outcome.status is ProviderOutcomeStatus.APPLIED
+                )
             assert post_snapshot_applied, "native snapshot delta has no applied outcome"
             profile = native_profile_from_outcome(post_snapshot_applied[-1])
 
@@ -275,27 +280,28 @@ class TestNativeMbaCorpusCapture:
             def selected_state():
                 yield state
 
-            run_deobfuscation_test(
-                first_case,
-                d810_state=selected_state,
-                pseudocode_to_string=pseudocode_to_string,
-            )
-            prior_applied = tuple(
-                outcome
-                for rule in selected_rules
-                for outcome in rule.provider_outcomes()
-                if outcome.provider is MbaProviderKind.CATALOGUE
-                and outcome.status is ProviderOutcomeStatus.APPLIED
-            )
-            assert prior_applied, "first native run did not retain an applied outcome"
-            first_profile = native_profile_from_outcome(prior_applied[-1])
+            with capture_native_provider_histories(selected_rules):
+                run_deobfuscation_test(
+                    first_case,
+                    d810_state=selected_state,
+                    pseudocode_to_string=pseudocode_to_string,
+                )
+                prior_applied = tuple(
+                    outcome
+                    for rule in selected_rules
+                    for outcome in rule.provider_outcomes()
+                    if outcome.provider is MbaProviderKind.CATALOGUE
+                    and outcome.status is ProviderOutcomeStatus.APPLIED
+                )
+                assert prior_applied, "first native run did not retain an applied outcome"
+                first_profile = native_profile_from_outcome(prior_applied[-1])
 
-            history_snapshot = snapshot_native_provider_histories(selected_rules)
-            run_deobfuscation_test(
-                second_case,
-                d810_state=selected_state,
-                pseudocode_to_string=pseudocode_to_string,
-            )
+                history_snapshot = snapshot_native_provider_histories(selected_rules)
+                run_deobfuscation_test(
+                    second_case,
+                    d810_state=selected_state,
+                    pseudocode_to_string=pseudocode_to_string,
+                )
 
         capture = NativeMbaCorpusCapture(
             corpus_identity="mba-compiler-shapes-native",

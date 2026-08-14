@@ -364,6 +364,7 @@ def test_direct_catalogue_context_error_is_not_downgraded_to_unchanged():
     adapter.provider_outcome_history = []
     adapter._attempt_outcome_index = None
     adapter._profile_fingerprint = lambda _ast: "exact-native-island"
+    adapter.begin_provider_outcome_capture()
 
     adapter.record_attempt_error(RuntimeError("matcher failure"))
     adapter.clear_match_context()
@@ -394,6 +395,7 @@ def test_direct_catalogue_bound_nomut_success_uses_the_same_profiled_outcome():
     adapter.provider_outcome_history = []
     adapter._attempt_outcome_index = None
     adapter._profile_fingerprint = lambda _ast: "exact-native-island"
+    adapter.begin_provider_outcome_capture()
 
     adapter.record_bound_replacement_outcome(Leaf())
 
@@ -424,6 +426,7 @@ def test_direct_catalogue_outer_rejection_keeps_candidate_non_applied():
     adapter.provider_outcome_history = []
     adapter._attempt_outcome_index = None
     adapter._profile_fingerprint = lambda _ast: "exact-native-island"
+    adapter.begin_provider_outcome_capture()
 
     adapter.record_bound_replacement_outcome(Leaf())
     adapter.record_mutation_rejected("rewrite_cycle")

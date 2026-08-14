@@ -36,6 +36,7 @@ from d810.hexrays.ir.minsn_utils import minsn_to_ast
 from d810.ir.maturity import IRMaturity
 from d810.mba.differential_report import egglog_receipt_to_outcome
 from d810.mba.provider_outcome import MbaProviderOutcome, ProviderOutcomeStatus
+from d810.mba.provider_history import ProviderOutcomeHistory
 from d810.optimizers.microcode.instructions.peephole.handler import (
     PeepholeSimplificationRule,
 )
@@ -103,14 +104,28 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         self.last_derivation_trace: (
             tuple[tuple[str, str, tuple[str, ...]], ...] | None
         ) = None
-        self.rule_provenance_history: list[tuple[str, ...]] = []
-        self.provider_outcome_history: list[MbaProviderOutcome] = []
+        self.rule_provenance_history = ProviderOutcomeHistory[tuple[str, ...]]()
+        self.provider_outcome_history = ProviderOutcomeHistory[MbaProviderOutcome]()
         self._attempt_outcome_index: int | None = None
+        self._provider_outcome_capture_depth = 0
+        self._last_provider_outcome: MbaProviderOutcome | None = None
 
     def _begin_provider_attempt(self) -> None:
         """Start one observable attempt, independent of whether it mutates."""
 
         self._attempt_outcome_index = None
+        self._last_provider_outcome = None
+
+    def _provider_outcome_capture_enabled(self) -> bool:
+        return self._provider_outcome_capture_depth > 0
+
+    def begin_provider_outcome_capture(self) -> None:
+        self._provider_outcome_capture_depth += 1
+
+    def end_provider_outcome_capture(self) -> None:
+        if self._provider_outcome_capture_depth <= 0:
+            raise RuntimeError("provider outcome capture was not active")
+        self._provider_outcome_capture_depth -= 1
 
     def configure(self, kwargs) -> None:
         config = dict(kwargs or {})
@@ -300,7 +315,8 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         self.last_rule_family = family
         self.last_rule_provenance = provenance
         self.last_derivation_trace = extraction.derivation_trace
-        self.rule_provenance_history.append(provenance)
+        if self._provider_outcome_capture_enabled():
+            self.rule_provenance_history.append(provenance)
         logger.info(
             "egglog MBA rewrite at %#x: family=%s source=%s aliases=%s",
             getattr(ins, "ea", 0),
@@ -313,11 +329,13 @@ class EgglogOptimizer(PeepholeSimplificationRule):
     def _record_extraction_receipt(self, receipt: EgglogExtractionReceipt) -> None:
         self.last_extraction_receipt = receipt
         outcome = egglog_receipt_to_outcome(receipt)
+        self._last_provider_outcome = outcome
+        if not self._provider_outcome_capture_enabled():
+            return
         if self._attempt_outcome_index is None:
-            self.provider_outcome_history.append(outcome)
-            self._attempt_outcome_index = len(self.provider_outcome_history) - 1
+            self._attempt_outcome_index = self.provider_outcome_history.append(outcome)
         else:
-            self.provider_outcome_history[self._attempt_outcome_index] = outcome
+            self.provider_outcome_history.replace(self._attempt_outcome_index, outcome)
         skip_reason = (
             receipt.skip_reason.value if receipt.skip_reason is not None else None
         )
@@ -344,23 +362,33 @@ class EgglogOptimizer(PeepholeSimplificationRule):
     def provider_outcomes(self) -> tuple[MbaProviderOutcome, ...]:
         """Return one final outcome per attempted Egglog candidate."""
 
-        return tuple(self.provider_outcome_history)
+        return self.provider_outcome_history.outcomes()
+
+    def provider_outcome_cursor(self) -> int:
+        """Return a capture cursor for the bounded Egglog history."""
+
+        return self.provider_outcome_history.cursor
+
+    def provider_outcomes_since(self, cursor: int) -> tuple[MbaProviderOutcome, ...]:
+        """Return one exact retained capture delta or fail closed on eviction."""
+
+        return self.provider_outcome_history.since(cursor)
 
     def _finalize_candidate_outcome(
         self, *, accepted: bool, reason: str | None = None
     ) -> None:
         """Mark only an outer-accepted candidate as an applied mutation."""
 
-        if self._attempt_outcome_index is None:
+        outcome = self._last_provider_outcome
+        if outcome is None:
             return
-        outcome = self.provider_outcome_history[self._attempt_outcome_index]
         if outcome.status is not ProviderOutcomeStatus.IMPROVED:
             return
         metadata = dict(outcome.metadata or {})
         metadata["mutation_outcome"] = "accepted" if accepted else "rejected"
         if reason is not None:
             metadata["mutation_rejection_reason"] = reason
-        self.provider_outcome_history[self._attempt_outcome_index] = replace(
+        finalized = replace(
             outcome,
             status=(
                 ProviderOutcomeStatus.APPLIED
@@ -370,6 +398,12 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             refusal_reason=None if accepted else reason,
             metadata=metadata,
         )
+        self._last_provider_outcome = finalized
+        if self._attempt_outcome_index is not None:
+            self.provider_outcome_history.replace(
+                self._attempt_outcome_index,
+                finalized,
+            )
 
     def record_mutation_accepted(self) -> None:
         self._finalize_candidate_outcome(accepted=True)
@@ -428,8 +462,8 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         observation adapter for the common differential report boundary.
         """
 
-        if self._attempt_outcome_index is not None:
-            return self.provider_outcome_history[self._attempt_outcome_index]
+        if self._last_provider_outcome is not None:
+            return self._last_provider_outcome
         if self.last_extraction_receipt is None:
             return None
         return egglog_receipt_to_outcome(self.last_extraction_receipt)

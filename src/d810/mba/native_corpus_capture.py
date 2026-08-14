@@ -9,6 +9,7 @@ for providers that did not run.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -71,6 +72,9 @@ def _history_for_provider(
         start = snapshot.outcome_counts_by_rule_id[id(rule)]
     except KeyError as exc:
         raise ValueError("provider was not present in the history snapshot") from exc
+    since = getattr(rule, "provider_outcomes_since", None)
+    if callable(since):
+        return tuple(since(start))
     if len(outcomes) < start:
         raise ValueError("provider history was reset after the capture snapshot")
     return outcomes[start:]
@@ -82,11 +86,37 @@ def snapshot_native_provider_histories(
     """Anchor capture to exactly the attempts from one later decompilation."""
 
     selected = tuple(rules)
+    def cursor(rule: object) -> int:
+        method = getattr(rule, "provider_outcome_cursor", None)
+        if callable(method):
+            return int(method())
+        return len(_history_for_provider(rule))
+
     return NativeProviderHistorySnapshot(
         outcome_counts_by_rule_id={
-            id(rule): len(_history_for_provider(rule)) for rule in selected
+            id(rule): cursor(rule) for rule in selected
         }
     )
+
+
+@contextmanager
+def capture_native_provider_histories(rules: Iterable[object]):
+    """Retain bounded provider outcomes only while a caller captures one run."""
+
+    selected = tuple(rules)
+    started: list[object] = []
+    try:
+        for rule in selected:
+            begin = getattr(rule, "begin_provider_outcome_capture", None)
+            if callable(begin):
+                begin()
+                started.append(rule)
+        yield selected
+    finally:
+        for rule in reversed(started):
+            end = getattr(rule, "end_provider_outcome_capture", None)
+            if callable(end):
+                end()
 
 
 def profiles_from_native_provider_histories(
@@ -209,6 +239,7 @@ __all__ = [
     "NativeMbaCorpusCapture",
     "NativeProviderHistorySnapshot",
     "capture_native_provider_case",
+    "capture_native_provider_histories",
     "native_profile_from_outcome",
     "native_profile_metadata",
     "profiles_from_native_provider_histories",

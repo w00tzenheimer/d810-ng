@@ -44,6 +44,7 @@ from d810.mba.provider_outcome import (
     MbaProviderOutcome,
     ProviderOutcomeStatus,
 )
+from d810.mba.provider_history import ProviderOutcomeHistory
 from d810.hexrays.ir.number_operand import safe_make_number
 from d810.backends.mba.native_z3 import prove_native_ast_equivalence
 
@@ -441,8 +442,9 @@ class IDAPatternAdapter:
         self._attempt_destination_size: int | None = None
         self._attempt_input_ast: AstNode | None = None
         self._last_provider_outcome: MbaProviderOutcome | None = None
-        self.provider_outcome_history: list[MbaProviderOutcome] = []
+        self.provider_outcome_history = ProviderOutcomeHistory[MbaProviderOutcome]()
         self._attempt_outcome_index: int | None = None
+        self._provider_outcome_capture_depth = 0
         self._shadow_match_report = None
         self._shadow_lowering = None
         self._shadow_source_ast = None
@@ -487,6 +489,32 @@ class IDAPatternAdapter:
         self._structural_selection_active = False
         self._structural_dispatch_bucket_size = 0
         self._structural_dispatch_attempt_count = 0
+
+    def _provider_outcome_capture_enabled(self) -> bool:
+        """Whether this long-lived adapter is inside an explicit capture scope."""
+
+        return bool(getattr(self, "_provider_outcome_capture_depth", 0))
+
+    @staticmethod
+    def _shadow_observation_enabled() -> bool:
+        """Keep expensive parity collection out of normal legacy execution."""
+
+        return os.environ.get("D810_SHADOW_DSL_MATCHING", "0") == "1"
+
+    def begin_provider_outcome_capture(self) -> None:
+        """Enable bounded history retention for one explicit capture session."""
+
+        self._provider_outcome_capture_depth = (
+            int(getattr(self, "_provider_outcome_capture_depth", 0)) + 1
+        )
+
+    def end_provider_outcome_capture(self) -> None:
+        """Disable bounded history retention after an explicit capture session."""
+
+        depth = int(getattr(self, "_provider_outcome_capture_depth", 0))
+        if depth <= 0:
+            raise RuntimeError("provider outcome capture was not active")
+        self._provider_outcome_capture_depth = depth - 1
 
     def attach_certified_catalogue_snapshot(
         self,
@@ -918,16 +946,17 @@ class IDAPatternAdapter:
 
     def _publish_provider_outcome(self, outcome: MbaProviderOutcome) -> None:
         self._last_provider_outcome = outcome
+        if not self._provider_outcome_capture_enabled():
+            return
         history = getattr(self, "provider_outcome_history", None)
-        if history is None:
-            history = []
+        if not isinstance(history, ProviderOutcomeHistory):
+            history = ProviderOutcomeHistory[MbaProviderOutcome]()
             self.provider_outcome_history = history
         attempt_index = getattr(self, "_attempt_outcome_index", None)
         if attempt_index is None:
-            history.append(outcome)
-            self._attempt_outcome_index = len(self.provider_outcome_history) - 1
+            self._attempt_outcome_index = history.append(outcome)
         else:
-            history[attempt_index] = outcome
+            history.replace(attempt_index, outcome)
 
     def _attempt_elapsed_ms(self) -> float:
         if self._attempt_started is None:
@@ -1052,7 +1081,7 @@ class IDAPatternAdapter:
                 matcher=self._matcher_metadata(),
             )
         )
-        if not structural_selection:
+        if not structural_selection and self._shadow_observation_enabled():
             self._record_shadow_parity(legacy_match=True)
 
     def _finalize_candidate_outcome(
@@ -1095,6 +1124,15 @@ class IDAPatternAdapter:
 
         if self._last_provider_outcome is not None:
             return
+        capture_enabled = self._provider_outcome_capture_enabled()
+        shadow_enabled = self._shadow_observation_enabled()
+        if not capture_enabled and not shadow_enabled:
+            return
+        if not capture_enabled:
+            self._record_shadow_parity(
+                legacy_match=bool(getattr(self, "_legacy_match_observed", False))
+            )
+            return
         canonical_source, aliases = self._catalogue_provenance()
         input_ast = self._attempt_input_ast
         profile = self._profile_for_ast(input_ast)
@@ -1131,7 +1169,7 @@ class IDAPatternAdapter:
                     matcher=self._matcher_metadata(),
                 )
             )
-            if not structural_selection:
+            if not structural_selection and shadow_enabled:
                 self._record_shadow_parity(legacy_match=legacy_match)
             return
         self._publish_provider_outcome(
@@ -1147,11 +1185,14 @@ class IDAPatternAdapter:
                 matcher=self._matcher_metadata(),
             )
         )
-        if not structural_selection:
+        if not structural_selection and shadow_enabled:
             self._record_shadow_parity(legacy_match=legacy_match)
 
     def record_attempt_error(self, exc: RuntimeError) -> None:
         """Finalize a caught pattern-engine failure as an explicit error row."""
+
+        if not self._provider_outcome_capture_enabled():
+            return
 
         canonical_source, aliases = self._catalogue_provenance()
         input_ast = self._attempt_input_ast
@@ -1192,7 +1233,7 @@ class IDAPatternAdapter:
                 matcher=self._matcher_metadata(),
             )
         )
-        if not structural_selection:
+        if not structural_selection and self._shadow_observation_enabled():
             self._record_shadow_parity(
                 legacy_match=bool(getattr(self, "_legacy_match_observed", False))
             )
@@ -1205,7 +1246,17 @@ class IDAPatternAdapter:
     def provider_outcomes(self) -> tuple[MbaProviderOutcome, ...]:
         """Return one final outcome for each direct-catalogue attempt."""
 
-        return tuple(self.provider_outcome_history)
+        return self.provider_outcome_history.outcomes()
+
+    def provider_outcome_cursor(self) -> int:
+        """Return a capture cursor for the bounded direct-catalogue history."""
+
+        return self.provider_outcome_history.cursor
+
+    def provider_outcomes_since(self, cursor: int) -> tuple[MbaProviderOutcome, ...]:
+        """Return one exact retained capture delta or fail closed on eviction."""
+
+        return self.provider_outcome_history.since(cursor)
 
     # ==========================================================================
     # Properties delegated to the underlying rule

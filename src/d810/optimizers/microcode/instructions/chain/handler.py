@@ -11,6 +11,7 @@ from d810.mba.provider_outcome import (
     MbaProviderOutcome,
     ProviderOutcomeStatus,
 )
+from d810.mba.provider_history import ProviderOutcomeHistory
 from d810.mba.native_corpus_capture import native_profile_metadata
 from d810.optimizers.microcode.instructions.handler import (
     InstructionOptimizationRule,
@@ -25,8 +26,9 @@ class ChainSimplificationRule(InstructionOptimizationRule):
         super().__init__()
         self._attempt_started: float | None = None
         self._last_provider_outcome: MbaProviderOutcome | None = None
-        self.provider_outcome_history: list[MbaProviderOutcome] = []
+        self.provider_outcome_history = ProviderOutcomeHistory[MbaProviderOutcome]()
         self._attempt_outcome_index: int | None = None
+        self._provider_outcome_capture_depth = 0
 
     def _begin_chain_attempt(self) -> None:
         """Reset observation state; the existing chain algebra remains untouched."""
@@ -37,11 +39,23 @@ class ChainSimplificationRule(InstructionOptimizationRule):
 
     def _publish_provider_outcome(self, outcome: MbaProviderOutcome) -> None:
         self._last_provider_outcome = outcome
+        if not self._provider_outcome_capture_enabled():
+            return
         if self._attempt_outcome_index is None:
-            self.provider_outcome_history.append(outcome)
-            self._attempt_outcome_index = len(self.provider_outcome_history) - 1
+            self._attempt_outcome_index = self.provider_outcome_history.append(outcome)
         else:
-            self.provider_outcome_history[self._attempt_outcome_index] = outcome
+            self.provider_outcome_history.replace(self._attempt_outcome_index, outcome)
+
+    def _provider_outcome_capture_enabled(self) -> bool:
+        return self._provider_outcome_capture_depth > 0
+
+    def begin_provider_outcome_capture(self) -> None:
+        self._provider_outcome_capture_depth += 1
+
+    def end_provider_outcome_capture(self) -> None:
+        if self._provider_outcome_capture_depth <= 0:
+            raise RuntimeError("provider outcome capture was not active")
+        self._provider_outcome_capture_depth -= 1
 
     @staticmethod
     def _native_profile_metadata(profile) -> dict[str, object]:
@@ -256,7 +270,17 @@ class ChainSimplificationRule(InstructionOptimizationRule):
     def provider_outcomes(self) -> tuple[MbaProviderOutcome, ...]:
         """Return one final outcome for each structural-chain attempt."""
 
-        return tuple(self.provider_outcome_history)
+        return self.provider_outcome_history.outcomes()
+
+    def provider_outcome_cursor(self) -> int:
+        """Return a capture cursor for the bounded structural-chain history."""
+
+        return self.provider_outcome_history.cursor
+
+    def provider_outcomes_since(self, cursor: int) -> tuple[MbaProviderOutcome, ...]:
+        """Return one exact retained capture delta or fail closed on eviction."""
+
+        return self.provider_outcome_history.since(cursor)
 
     @abc.abstractmethod
     def check_and_replace(self, blk, ins):

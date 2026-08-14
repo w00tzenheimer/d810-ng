@@ -545,6 +545,59 @@ def test_selected_unsupported_dsl_rules_keep_legacy_dispatch_by_default(
     assert calls == [(registered, candidate)]
 
 
+def test_legacy_dispatch_does_not_shadow_or_collect_outcomes_by_default(
+    monkeypatch,
+) -> None:
+    """Normal legacy matching must not pay portfolio-observation costs."""
+
+    monkeypatch.delenv("D810_SHADOW_DSL_MATCHING", raising=False)
+
+    class Instruction:
+        ea = 0x401000
+
+        class d:
+            size = 4
+
+        @staticmethod
+        def _print():
+            return "legacy-default"
+
+    class LegacyRule:
+        name = "LegacyRule"
+        maturities = [7]
+        uses_structural_matching = False
+
+        @staticmethod
+        def observe_structural_match(_candidate):
+            pytest.fail("default legacy matching must not invoke shadow observation")
+
+        @staticmethod
+        def check_pattern_and_replace(_pattern, _candidate):
+            return Instruction()
+
+    rule = LegacyRule()
+    optimizer = object.__new__(PatternOptimizer)
+    optimizer.stats = None
+    optimizer.cur_maturity = 7
+    optimizer._use_nomut_matching = False
+    optimizer._use_legacy_storage = False
+    optimizer._run_later_callback = None
+    optimizer._pending_replacement_rule = None
+    optimizer._get_candidates = lambda _candidate: [RulePatternInfo(rule, object())]
+
+    assert (
+        optimizer._try_matches(
+            None,
+            Instruction(),
+            object(),
+            allowed_rule_names=None,
+            scheduled_rule_names=None,
+            source_label="legacy-default",
+        )
+        is not None
+    )
+
+
 def test_structural_pattern_capability_accepts_reused_leaves_but_rejects_cycles() -> None:
     """The symbolic rule catalogue is a DAG, not necessarily a tree."""
 
