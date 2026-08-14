@@ -16,6 +16,7 @@ from d810.mba.native_corpus_capture import (
     select_native_capture_profile,
     snapshot_native_provider_histories,
 )
+from d810.mba.provider_history import ProviderOutcomeHistory
 from d810.mba.provider_outcome import (
     MbaProviderKind,
     MbaProviderOutcome,
@@ -226,6 +227,19 @@ def test_manifest_runner_snapshots_each_case_and_rejects_evicted_delta() -> None
     assert all(len(case.outcomes) == 2 for case in captured)
 
 
+def test_provider_history_can_start_a_fresh_bounded_capture_window() -> None:
+    """A new decompilation does not inherit entries from an earlier capture."""
+
+    history = ProviderOutcomeHistory[str](capacity=2)
+    history.append("old-one")
+    history.append("old-two")
+    history.clear()
+    cursor = history.cursor
+    history.append("current")
+
+    assert history.since(cursor) == ("current",)
+
+
 def test_manifest_runner_fails_closed_when_a_case_delta_is_truncated() -> None:
     capture = NativeMbaCorpusCapture("manifest", {"runtime": "python"})
     with pytest.raises(ValueError, match="truncated"):
@@ -236,6 +250,30 @@ def test_manifest_runner_fails_closed_when_a_case_delta_is_truncated() -> None:
             expected_providers=(MbaProviderKind.CATALOGUE,),
             run_case=lambda _case, _snapshot: _profile(),
         )
+
+
+def test_manifest_runner_records_no_native_candidate_as_explicit_unavailability() -> None:
+    """A compiler/IDA-elided root is coverage evidence, not a guessed profile."""
+
+    capture = NativeMbaCorpusCapture("manifest", {"runtime": "python"})
+    captured = capture_manifest_native_cases(
+        capture=capture,
+        cases=(ManifestNativeCaptureCase("elided", "chain"),),
+        rules=(_Provider(),),
+        expected_providers=(MbaProviderKind.STRUCTURAL_CHAIN, MbaProviderKind.EGGLOG),
+        run_case=lambda _case, _snapshot: None,
+    )
+
+    assert captured[0].profile is None
+    assert {outcome.provider for outcome in captured[0].outcomes} == {
+        MbaProviderKind.STRUCTURAL_CHAIN,
+        MbaProviderKind.EGGLOG,
+    }
+    assert all(
+        outcome.status is ProviderOutcomeStatus.UNAVAILABLE
+        and outcome.refusal_reason == "native_candidate_not_observed"
+        for outcome in captured[0].outcomes
+    )
 
 
 def test_native_capture_profile_requires_one_actual_candidate_profile() -> None:
@@ -252,3 +290,18 @@ def test_native_capture_profile_requires_one_actual_candidate_profile() -> None:
     assert select_native_capture_profile(
         (provider,), preferred_providers=(MbaProviderKind.CATALOGUE,)
     ) == first
+
+
+def test_profile_selection_ignores_non_candidate_receipts_without_native_profile() -> None:
+    profile = _profile()
+    provider = _Provider(
+        MbaProviderOutcome(
+            provider=MbaProviderKind.EGGLOG,
+            status=ProviderOutcomeStatus.INELIGIBLE,
+            fingerprint="unprofiled",
+            refusal_reason="non_mba_candidate",
+        ),
+        _outcome(MbaProviderKind.EGGLOG, ProviderOutcomeStatus.UNCHANGED, profile),
+    )
+
+    assert select_native_capture_profile((provider,)) == profile

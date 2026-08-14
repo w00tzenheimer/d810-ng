@@ -120,6 +120,8 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         return self._provider_outcome_capture_depth > 0
 
     def begin_provider_outcome_capture(self) -> None:
+        if not self._provider_outcome_capture_enabled():
+            self.provider_outcome_history.clear()
         self._provider_outcome_capture_depth += 1
 
     def end_provider_outcome_capture(self) -> None:

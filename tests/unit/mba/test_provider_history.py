@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from d810.mba.provider_history import (
+    DEFAULT_PROVIDER_OUTCOME_HISTORY_CAPACITY,
     ProviderOutcomeHistory,
     ProviderOutcomeHistoryTruncated,
 )
@@ -33,3 +34,9 @@ def test_history_replaces_the_current_attempt_without_consuming_capacity() -> No
     history.replace(sequence, "applied")
 
     assert history.outcomes() == ("applied",)
+
+
+def test_default_capture_window_holds_one_dense_native_function() -> None:
+    """Capture storage stays bounded but exceeds the observed 64 callbacks."""
+
+    assert DEFAULT_PROVIDER_OUTCOME_HISTORY_CAPACITY >= 128

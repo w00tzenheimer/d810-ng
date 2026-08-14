@@ -271,6 +271,45 @@ def test_normalization_requires_exactly_one_explicit_outcome_for_each_provider_c
         )
 
 
+def test_report_round_trips_explicit_native_candidate_unavailability() -> None:
+    """A native compiler-elided root has coverage rows but no invented profile."""
+
+    rows = (
+        {
+            "case_id": "elided",
+            "stratum": "chain",
+            "profile": None,
+            "outcome": MbaProviderOutcome(
+                provider=MbaProviderKind.STRUCTURAL_CHAIN,
+                status=ProviderOutcomeStatus.UNAVAILABLE,
+                fingerprint="native_candidate_not_observed:elided",
+                refusal_reason="native_candidate_not_observed",
+            ),
+        },
+        {
+            "case_id": "elided",
+            "stratum": "chain",
+            "profile": None,
+            "outcome": MbaProviderOutcome(
+                provider=MbaProviderKind.EGGLOG,
+                status=ProviderOutcomeStatus.UNAVAILABLE,
+                fingerprint="native_candidate_not_observed:elided",
+                refusal_reason="native_candidate_not_observed",
+            ),
+        },
+    )
+    report = normalize_outcome_rows(
+        rows,
+        corpus_identity="unit",
+        toolchain_identity={"compiler": "unit"},
+        expected_providers=(MbaProviderKind.STRUCTURAL_CHAIN, MbaProviderKind.EGGLOG),
+    )
+
+    assert report.cases[0].profile is None
+    assert json.loads(report.to_json())["cases"][0]["profile"] is None
+    assert compare_provider_outcomes(report).by_stratum["chain"].unavailable == 1
+
+
 def test_report_json_is_normalized_and_rejects_profile_fingerprint_mismatch() -> None:
     profile = _profile("fingerprint")
     report = MbaDifferentialReport(

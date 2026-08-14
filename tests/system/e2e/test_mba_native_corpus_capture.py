@@ -13,9 +13,13 @@ import pytest
 import idaapi
 
 from d810.mba.native_corpus_capture import (
+    ManifestNativeCaptureCase,
+    NativeCaptureSelection,
     NativeMbaCorpusCapture,
+    capture_manifest_native_cases,
     capture_native_provider_histories,
     native_profile_from_outcome,
+    select_native_capture_profile,
     snapshot_native_provider_histories,
 )
 from d810.mba.provider_outcome import MbaProviderKind, ProviderOutcomeStatus
@@ -30,6 +34,35 @@ _ROOT = Path(__file__).resolve().parents[3]
 _SOURCE = _ROOT / "samples/src/c/mba_compiler_shapes.c"
 _BINARY = _ROOT / "samples/bins/mba_compiler_shapes.dylib"
 _CLI = _ROOT / "tools/scripts/mba_differential_report.py"
+_MANIFEST = _ROOT / "tests/fixtures/mba_portfolio/compiler_shapes.json"
+_PORTFOLIO_PROJECT = "mba_portfolio_spike.json"
+_PROVIDER_MATRIX = tuple(MbaProviderKind)
+
+
+def _manifest_capture_case(case_id: str) -> ManifestNativeCaptureCase:
+    data = json.loads(_MANIFEST.read_text(encoding="utf-8"))
+    raw_case = next(item for item in data["cases"] if item["case_id"] == case_id)
+    return ManifestNativeCaptureCase(raw_case["case_id"], raw_case["stratum"])
+
+
+def _manifest_capture_cases() -> tuple[ManifestNativeCaptureCase, ...]:
+    data = json.loads(_MANIFEST.read_text(encoding="utf-8"))
+    return tuple(
+        ManifestNativeCaptureCase(raw_case["case_id"], raw_case["stratum"])
+        for raw_case in data["cases"]
+    )
+
+
+def _manifest_function(case_id: str) -> str:
+    data = json.loads(_MANIFEST.read_text(encoding="utf-8"))
+    raw_case = next(item for item in data["cases"] if item["case_id"] == case_id)
+    return str(raw_case["function"])
+
+
+def _preferred_manifest_providers(case_id: str) -> tuple[MbaProviderKind, ...]:
+    data = json.loads(_MANIFEST.read_text(encoding="utf-8"))
+    raw_case = next(item for item in data["cases"] if item["case_id"] == case_id)
+    return tuple(MbaProviderKind(provider) for provider in raw_case["expected_route"])
 
 
 def _build_native_corpus_binary() -> None:
@@ -66,6 +99,161 @@ class TestNativeMbaCorpusCapture:
     @classmethod
     def setup_class(cls) -> None:
         _build_native_corpus_binary()
+
+    def test_elided_native_root_emits_complete_unavailable_provider_matrix(
+        self,
+        ida_database,
+        d810_state,
+        pseudocode_to_string,
+    ) -> None:
+        """No native candidate is explicit coverage, never a guessed island."""
+
+        manifest_case = _manifest_capture_case("chain_01")
+        capture = NativeMbaCorpusCapture(
+            corpus_identity="mba-compiler-shapes-native",
+            toolchain_identity={"provider": "portfolio"},
+        )
+        with d810_state() as state:
+            state.load_project(state.project_manager.index(_PORTFOLIO_PROJECT))
+            selected_rules = tuple(state.current_ins_rules)
+
+            @contextlib.contextmanager
+            def selected_state():
+                yield state
+
+            def run_case(case, snapshot):
+                run_deobfuscation_test(
+                    DeobfuscationCase(
+                        function="mba_shape_chain_01",
+                        description="native no-candidate coverage",
+                        project=_PORTFOLIO_PROJECT,
+                        must_change=False,
+                    ),
+                    d810_state=selected_state,
+                    pseudocode_to_string=pseudocode_to_string,
+                )
+                try:
+                    return select_native_capture_profile(
+                        selected_rules,
+                        history_snapshot=snapshot,
+                        preferred_providers=_preferred_manifest_providers(case.case_id),
+                    )
+                except ValueError as exc:
+                    if str(exc) == "ambiguous native capture profile: none":
+                        return None
+                    if str(exc).startswith("ambiguous native capture profile:"):
+                        return NativeCaptureSelection(
+                            profile=None,
+                            unavailable_reason="native_candidate_ambiguous",
+                        )
+                    raise
+
+            captured = capture_manifest_native_cases(
+                capture=capture,
+                cases=(manifest_case,),
+                rules=selected_rules,
+                expected_providers=_PROVIDER_MATRIX,
+                run_case=run_case,
+            )
+
+        assert captured[0].profile is None
+        assert len(captured[0].outcomes) == len(_PROVIDER_MATRIX)
+        assert all(
+            outcome.status is ProviderOutcomeStatus.UNAVAILABLE
+            and outcome.refusal_reason == "native_candidate_not_observed"
+            for outcome in captured[0].outcomes
+        )
+
+    def test_manifest_wide_native_capture_has_one_explicit_row_per_provider_case(
+        self,
+        tmp_path: Path,
+        ida_database,
+        d810_state,
+        pseudocode_to_string,
+    ) -> None:
+        """Capture every manifest function through the real provider histories."""
+
+        manifest_cases = _manifest_capture_cases()
+        capture = NativeMbaCorpusCapture(
+            corpus_identity="mba-compiler-shapes-native",
+            toolchain_identity={
+                "ida_sdk": str(idaapi.IDA_SDK_VERSION),
+                "matcher_backend": str(get_engine_info()["backend"]),
+                "profile": "portfolio-interactive",
+            },
+        )
+        with d810_state() as state:
+            state.load_project(state.project_manager.index(_PORTFOLIO_PROJECT))
+            selected_rules = tuple(state.current_ins_rules)
+
+            @contextlib.contextmanager
+            def selected_state():
+                yield state
+
+            def run_case(case, snapshot):
+                run_deobfuscation_test(
+                    DeobfuscationCase(
+                        function=_manifest_function(case.case_id),
+                        description="manifest native provider capture",
+                        project=_PORTFOLIO_PROJECT,
+                        must_change=False,
+                    ),
+                    d810_state=selected_state,
+                    pseudocode_to_string=pseudocode_to_string,
+                )
+                try:
+                    return select_native_capture_profile(
+                        selected_rules,
+                        history_snapshot=snapshot,
+                        preferred_providers=_preferred_manifest_providers(case.case_id),
+                    )
+                except ValueError as exc:
+                    if str(exc) == "ambiguous native capture profile: none":
+                        return None
+                    if str(exc).startswith("ambiguous native capture profile:"):
+                        return NativeCaptureSelection(
+                            profile=None,
+                            unavailable_reason="native_candidate_ambiguous",
+                        )
+                    raise
+
+            captured = capture_manifest_native_cases(
+                capture=capture,
+                cases=manifest_cases,
+                rules=selected_rules,
+                expected_providers=_PROVIDER_MATRIX,
+                run_case=run_case,
+            )
+
+        assert len(captured) == 70
+        assert {case.case_id for case in captured} == {
+            case.case_id for case in manifest_cases
+        }
+        assert all(len(case.outcomes) == len(_PROVIDER_MATRIX) for case in captured)
+
+        capture_path = tmp_path / "manifest-native-capture.json"
+        report_path = tmp_path / "manifest-native-report.json"
+        capture.write_json(capture_path)
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(_CLI),
+                "--out",
+                str(report_path),
+                "--providers",
+                ",".join(provider.value for provider in _PROVIDER_MATRIX),
+                str(capture_path),
+            ],
+            cwd=_ROOT,
+            env={"PYTHONPATH": str(_ROOT / "src")},
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert completed.returncode == 0, completed.stderr
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        assert len(report["cases"]) == 70
+        assert all(len(case["outcomes"]) == len(_PROVIDER_MATRIX) for case in report["cases"])
 
     def test_real_provider_histories_produce_cli_input(
         self,

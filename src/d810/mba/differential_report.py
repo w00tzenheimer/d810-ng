@@ -200,7 +200,7 @@ class MbaCorpusCaseReport:
     """All provider attempts for one fixed-width semantic corpus case."""
 
     case_id: str
-    profile: MbaIslandProfile
+    profile: MbaIslandProfile | None
     outcomes: tuple[MbaProviderOutcome, ...]
     stratum: str = "unclassified"
 
@@ -216,7 +216,18 @@ class MbaCorpusCaseReport:
         providers = tuple(outcome.provider for outcome in self.outcomes)
         if len(set(providers)) != len(providers):
             raise ValueError(f"{self.case_id}: each provider may have only one outcome")
-        if any(
+        if self.profile is None:
+            if any(
+                outcome.status is not ProviderOutcomeStatus.UNAVAILABLE
+                or outcome.refusal_reason
+                not in {"native_candidate_not_observed", "native_candidate_ambiguous"}
+                for outcome in self.outcomes
+            ):
+                raise ValueError(
+                    f"{self.case_id}: a missing native candidate may only emit "
+                    "explicit unavailable rows"
+                )
+        elif any(
             outcome.fingerprint != self.profile.fingerprint for outcome in self.outcomes
         ):
             raise ValueError(f"{self.case_id}: outcome fingerprint must match profile")
@@ -228,14 +239,17 @@ class MbaCorpusCaseReport:
         if len(applied_providers) > 1:
             raise ValueError(
                 f"{self.case_id}: at most one applied provider is allowed for "
-                f"fingerprint {self.profile.fingerprint}: {', '.join(applied_providers)}"
+                f"fingerprint {self.profile.fingerprint if self.profile else '<none>'}: "
+                f"{', '.join(applied_providers)}"
             )
 
     def to_dict(self) -> dict[str, object]:
         return {
             "case_id": self.case_id,
             "stratum": self.stratum,
-            "profile": profile_to_dict(self.profile),
+            "profile": (
+                None if self.profile is None else profile_to_dict(self.profile)
+            ),
             "outcomes": [outcome.to_dict() for outcome in self.outcomes],
         }
 
@@ -526,7 +540,7 @@ def _stats_for_outcomes(
 
 
 def _is_unsafe_abstention(
-    profile: MbaIslandProfile,
+    profile: MbaIslandProfile | None,
     outcome: MbaProviderOutcome,
 ) -> bool:
     """Return whether an ineligible outcome is the intended fail-closed result.
@@ -537,7 +551,7 @@ def _is_unsafe_abstention(
     declines is counted as an unsafe abstention.
     """
 
-    return outcome.status is ProviderOutcomeStatus.INELIGIBLE and (
+    return profile is not None and outcome.status is ProviderOutcomeStatus.INELIGIBLE and (
         bool(profile.blockers) or profile.island_class is MbaIslandClass.UNSUPPORTED
     )
 
@@ -678,7 +692,11 @@ def _rollout_evidence(report: MbaDifferentialReport) -> RolloutEvidence:
         winners = tuple(
             outcome for outcome in case.outcomes if outcome.status in _WIN_STATUSES
         )
-        if case.profile.island_class is MbaIslandClass.NONLINEAR_MBA and not winners:
+        if (
+            case.profile is not None
+            and case.profile.island_class is MbaIslandClass.NONLINEAR_MBA
+            and not winners
+        ):
             nonlinear_residuals += 1
         if len(winners) == 1:
             winner = winners[0]
@@ -873,7 +891,9 @@ def normalize_outcome_rows(
 ) -> MbaDifferentialReport:
     """Group flat portable outcome rows and reject ambiguous or missing coverage."""
 
-    grouped: dict[str, tuple[str, MbaIslandProfile, list[MbaProviderOutcome]]] = {}
+    grouped: dict[
+        str, tuple[str, MbaIslandProfile | None, list[MbaProviderOutcome]]
+    ] = {}
     for row in rows:
         try:
             case_id = str(row["case_id"])
@@ -883,9 +903,13 @@ def normalize_outcome_rows(
         except KeyError as exc:
             raise ValueError(f"outcome row missing {exc.args[0]}") from exc
         profile = (
-            profile_value
-            if isinstance(profile_value, MbaIslandProfile)
-            else profile_from_dict(profile_value)  # type: ignore[arg-type]
+            None
+            if profile_value is None
+            else (
+                profile_value
+                if isinstance(profile_value, MbaIslandProfile)
+                else profile_from_dict(profile_value)  # type: ignore[arg-type]
+            )
         )
         outcome = (
             outcome_value

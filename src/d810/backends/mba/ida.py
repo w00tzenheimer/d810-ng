@@ -504,6 +504,8 @@ class IDAPatternAdapter:
     def begin_provider_outcome_capture(self) -> None:
         """Enable bounded history retention for one explicit capture session."""
 
+        if not self._provider_outcome_capture_enabled():
+            self.provider_outcome_history.clear()
         self._provider_outcome_capture_depth = (
             int(getattr(self, "_provider_outcome_capture_depth", 0)) + 1
         )

@@ -17,9 +17,10 @@ T = TypeVar("T")
 
 
 # A single native decompilation can revisit one rule across several maturity
-# passes.  Keep enough evidence for that one capture window while preserving a
-# hard, small bound for long-lived adapter objects.
-DEFAULT_PROVIDER_OUTCOME_HISTORY_CAPACITY = 64
+# passes and the manifest corpus has observed more than 64 callbacks for one
+# selected rule.  256 is still a hard per-provider bound; capture windows are
+# cleared before each decompilation so it is never session-growing state.
+DEFAULT_PROVIDER_OUTCOME_HISTORY_CAPACITY = 256
 
 
 class ProviderOutcomeHistoryTruncated(ValueError):
@@ -43,6 +44,11 @@ class ProviderOutcomeHistory(Generic[T]):
         """Return the cursor immediately after the newest recorded outcome."""
 
         return self._next_cursor
+
+    def clear(self) -> None:
+        """Discard one completed capture window without reusing cursors."""
+
+        self._entries.clear()
 
     def append(self, outcome: T) -> int:
         """Record one outcome and return its stable cursor."""

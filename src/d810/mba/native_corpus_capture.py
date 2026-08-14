@@ -28,6 +28,7 @@ from d810.mba.provider_outcome import (
 
 
 _NATIVE_PROFILE_METADATA_KEY = "native_profile"
+_NATIVE_CANDIDATE_NOT_OBSERVED = "native_candidate_not_observed"
 
 
 @dataclass(frozen=True)
@@ -51,6 +52,26 @@ class ManifestNativeCaptureCase:
             raise ValueError("manifest capture stratum must be a non-empty string")
 
 
+@dataclass(frozen=True)
+class NativeCaptureSelection:
+    """One exact native candidate selection or an explicit no-profile reason."""
+
+    profile: MbaIslandProfile | None
+    unavailable_reason: str = _NATIVE_CANDIDATE_NOT_OBSERVED
+
+    def __post_init__(self) -> None:
+        if self.profile is not None:
+            if not isinstance(self.profile, MbaIslandProfile):
+                raise ValueError("native capture profile must be MbaIslandProfile or None")
+            if self.unavailable_reason != _NATIVE_CANDIDATE_NOT_OBSERVED:
+                raise ValueError("a selected profile cannot have an unavailable reason")
+        elif self.unavailable_reason not in {
+            _NATIVE_CANDIDATE_NOT_OBSERVED,
+            "native_candidate_ambiguous",
+        }:
+            raise ValueError("unknown native capture unavailable reason")
+
+
 def native_profile_metadata(profile: MbaIslandProfile) -> dict[str, object]:
     """Return the JSON-safe profile snapshot bound to a provider outcome."""
 
@@ -72,6 +93,10 @@ def native_profile_from_outcome(outcome: MbaProviderOutcome) -> MbaIslandProfile
             "native provider outcome profile fingerprint does not match outcome"
         )
     return profile
+
+
+def _has_native_profile(outcome: MbaProviderOutcome) -> bool:
+    return isinstance((outcome.metadata or {}).get(_NATIVE_PROFILE_METADATA_KEY), Mapping)
 
 
 def _history_for_provider(
@@ -179,7 +204,9 @@ def select_native_capture_profile(
         for outcome in _history_for_provider(rule, history_snapshot):
             if preferred and outcome.provider not in preferred:
                 continue
-            if outcome.fingerprint == "profile_unavailable":
+            if outcome.fingerprint == "profile_unavailable" or not _has_native_profile(
+                outcome
+            ):
                 continue
             profile = native_profile_from_outcome(outcome)
             previous = profiles.setdefault(profile.fingerprint, profile)
@@ -212,10 +239,11 @@ def capture_native_provider_case(
     *,
     case_id: str,
     stratum: str,
-    profile: MbaIslandProfile,
+    profile: MbaIslandProfile | None,
     rules: Iterable[object],
     history_snapshot: NativeProviderHistorySnapshot | None = None,
     expected_providers: Sequence[MbaProviderKind] = (),
+    unavailable_reason: str = _NATIVE_CANDIDATE_NOT_OBSERVED,
 ) -> MbaCorpusCaseReport:
     """Produce exactly one final row per actually observed provider.
 
@@ -224,6 +252,30 @@ def capture_native_provider_case(
     the capture records ``UNAVAILABLE`` with a stable refusal reason. This is
     explicit coverage evidence, not an invented provider attempt.
     """
+
+    expected = tuple(expected_providers)
+    if expected and len(set(expected)) != len(expected):
+        raise ValueError("expected_providers must not contain duplicates")
+    if profile is None:
+        if not expected:
+            raise ValueError(
+                "missing native candidate evidence requires declared provider coverage"
+            )
+        return MbaCorpusCaseReport(
+            case_id=case_id,
+            stratum=stratum,
+            profile=None,
+            outcomes=tuple(
+                MbaProviderOutcome(
+                    provider=provider,
+                    status=ProviderOutcomeStatus.UNAVAILABLE,
+                    fingerprint=f"{unavailable_reason}:{case_id}",
+                    refusal_reason=unavailable_reason,
+                    metadata={"native_capture": unavailable_reason},
+                )
+                for provider in expected
+            ),
+        )
 
     grouped: dict[object, list[MbaProviderOutcome]] = {}
     for rule in rules:
@@ -240,9 +292,6 @@ def capture_native_provider_case(
         provider: _final_provider_outcome(tuple(outcomes))
         for provider, outcomes in grouped.items()
     }
-    expected = tuple(expected_providers)
-    if expected and len(set(expected)) != len(expected):
-        raise ValueError("expected_providers must not contain duplicates")
     if expected:
         unexpected = frozenset(final_by_provider) - frozenset(expected)
         if unexpected:
@@ -284,10 +333,11 @@ class NativeMbaCorpusCapture:
         *,
         case_id: str,
         stratum: str,
-        profile: MbaIslandProfile,
+        profile: MbaIslandProfile | None,
         rules: Iterable[object],
         history_snapshot: NativeProviderHistorySnapshot | None = None,
         expected_providers: Sequence[MbaProviderKind] = (),
+        unavailable_reason: str = _NATIVE_CANDIDATE_NOT_OBSERVED,
     ) -> MbaCorpusCaseReport:
         case = capture_native_provider_case(
             case_id=case_id,
@@ -296,6 +346,7 @@ class NativeMbaCorpusCapture:
             rules=rules,
             history_snapshot=history_snapshot,
             expected_providers=expected_providers,
+            unavailable_reason=unavailable_reason,
         )
         self._cases.append(case)
         return case
@@ -322,7 +373,8 @@ def capture_manifest_native_cases(
     rules: Iterable[object],
     expected_providers: Sequence[MbaProviderKind],
     run_case: Callable[
-        [ManifestNativeCaptureCase, NativeProviderHistorySnapshot], MbaIslandProfile
+        [ManifestNativeCaptureCase, NativeProviderHistorySnapshot],
+        MbaIslandProfile | NativeCaptureSelection | None,
     ],
 ) -> tuple[MbaCorpusCaseReport, ...]:
     """Run and capture every declared case as one exact bounded-history delta.
@@ -338,12 +390,23 @@ def capture_manifest_native_cases(
     if len(set(identifiers)) != len(identifiers):
         raise ValueError("manifest capture cases must have unique case_id values")
     captured: list[MbaCorpusCaseReport] = []
-    with capture_native_provider_histories(selected_rules):
-        for case in declared_cases:
+    for case in declared_cases:
+        # Provider adapters are session-long objects.  Each function gets its
+        # own bounded retention window so a prior case cannot consume the
+        # current case's fixed-capacity evidence budget.
+        with capture_native_provider_histories(selected_rules):
             snapshot = snapshot_native_provider_histories(selected_rules)
-            profile = run_case(case, snapshot)
-            if not isinstance(profile, MbaIslandProfile):
-                raise TypeError("manifest native runner must return MbaIslandProfile")
+            selected = run_case(case, snapshot)
+            selection = (
+                selected
+                if isinstance(selected, NativeCaptureSelection)
+                else NativeCaptureSelection(selected)
+            )
+            profile = selection.profile
+            if profile is not None and not isinstance(profile, MbaIslandProfile):
+                raise TypeError(
+                    "manifest native runner must return MbaIslandProfile or None"
+                )
             captured.append(
                 capture.add_case(
                     case_id=case.case_id,
@@ -352,6 +415,7 @@ def capture_manifest_native_cases(
                     rules=selected_rules,
                     history_snapshot=snapshot,
                     expected_providers=expected_providers,
+                    unavailable_reason=selection.unavailable_reason,
                 )
             )
     return tuple(captured)
@@ -359,6 +423,7 @@ def capture_manifest_native_cases(
 
 __all__ = [
     "NativeMbaCorpusCapture",
+    "NativeCaptureSelection",
     "NativeProviderHistorySnapshot",
     "ManifestNativeCaptureCase",
     "capture_manifest_native_cases",
