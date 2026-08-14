@@ -248,3 +248,38 @@ def test_structural_only_hit_stays_pending_when_native_proof_fails(monkeypatch) 
 
     assert adapter._shadow_parity_ledger.new_safe_coverage_proved == 0
     assert adapter._shadow_parity_ledger.new_safe_coverage_pending == 1
+
+
+def test_structural_only_hit_stays_pending_for_mixed_width_replacement(monkeypatch) -> None:
+    """Proof-only coverage must not erase native mixed-width semantics."""
+
+    x = Var("x")
+
+    class Rule:
+        pattern = x + Const("zero", 0)
+
+    adapter = IDAPatternAdapter(Rule())
+    source = ast_dispatcher.AstNode(ida_hexrays.m_add, _leaf("x", 1), _constant(0))
+    source.dest_size = 4
+    source.ea = 0x401000
+    replacement = source.left.clone()
+    replacement.dest_size = 2
+    adapter._attempt_destination_size = 4
+    adapter._shadow_source_ast = source
+    adapter._shadow_structural_native_paths = {"x": (0,), "zero": (1,)}
+    adapter._shadow_match_report = AcMatchReport(
+        bindings=AcMatchBindings({"x": (0,), "zero": (1,)}),
+        comparisons=1,
+        commuted_branches=0,
+        flattened_nodes=0,
+        stop_reason=AcMatchStopReason.MATCHED,
+    )
+    adapter._shadow_parity_ledger = ShadowMatcherParityLedger()
+
+    monkeypatch.setattr(adapter, "_get_shadow_replacement", lambda _candidate: object())
+    monkeypatch.setattr(ida_backend, "minsn_to_ast", lambda _ins: replacement)
+
+    adapter._record_shadow_parity(legacy_match=False)
+
+    assert adapter._shadow_parity_ledger.new_safe_coverage_proved == 0
+    assert adapter._shadow_parity_ledger.new_safe_coverage_pending == 1
