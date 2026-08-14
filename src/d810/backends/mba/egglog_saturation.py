@@ -241,10 +241,15 @@ class EgglogExtractionReceipt:
     nonlinear_product_count: int | None = None
     blockers: tuple[str, ...] = ()
     native_profile: Mapping[str, object] | None = None
+    proof_mode: str = "legacy"
+    template_source_name: str | None = None
+    template_fallback_reason: str | None = None
     skip_reason: ExtractionSkipReason | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "selected_aliases", tuple(self.selected_aliases))
+        if self.proof_mode not in {"legacy", "shadow", "enforced"}:
+            raise ValueError("unknown native proof mode")
         object.__setattr__(self, "blockers", tuple(sorted(map(str, self.blockers))))
         object.__setattr__(
             self,

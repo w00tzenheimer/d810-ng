@@ -34,6 +34,10 @@ from d810.backends.mba.hexrays_island import (
 )
 from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
 from d810.backends.mba.native_mba_term_view import NativeMbaTermView
+from d810.backends.mba.native_z3_proof_template import (
+    NativeZ3ProofTemplate,
+    native_z3_proof_templates_for_rules,
+)
 from d810.core import getLogger
 from d810.hexrays.expr.ast import AstNode
 from d810.hexrays.ir_maturity import ir_maturity_to_ida
@@ -107,6 +111,8 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         self._compiled_rules: tuple[CompiledEgglogRule, ...] = ()
         self._rules_by_root_opcode = MappingProxyType({})
         self._native_pattern_catalogue = CompiledPatternCatalogue.from_rules(())
+        self._proof_templates = MappingProxyType({})
+        self.native_proof_mode = "legacy"
         self._catalogue_configured = False
         self.last_extraction_receipt: EgglogExtractionReceipt | None = None
         self.last_rule_family: str | None = None
@@ -141,6 +147,9 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         collect_stage_timings = config.get("collect_stage_timings", False)
         if type(collect_stage_timings) is not bool:
             raise ValueError("EgglogOptimizer collect_stage_timings must be a boolean")
+        native_proof_mode = config.get("native_proof_mode", "legacy")
+        if native_proof_mode not in {"legacy", "shadow", "enforced"}:
+            raise ValueError("EgglogOptimizer native_proof_mode is invalid")
         super().configure(config)
         if maturity_names is not None:
             try:
@@ -177,6 +186,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         self.extraction_budget = budget
         self._publish_budget_attributes(budget)
         self.collect_stage_timings = collect_stage_timings
+        self.native_proof_mode = native_proof_mode
         self.families = families
         self._catalogue = selected_catalogue
 
@@ -205,6 +215,9 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             self._compiled_rules
         )
         self._native_pattern_catalogue = CompiledPatternCatalogue.from_rules(
+            self._compiled_rules
+        )
+        self._proof_templates = native_z3_proof_templates_for_rules(
             self._compiled_rules
         )
         self._catalogue_configured = True
@@ -388,7 +401,13 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         width = int(ins.d.size) * 8
         self._begin_stage("native_z3")
         try:
-            proved = self._prove_ast_equivalence(ast, replacement, width=width)
+            proved, template_source, fallback_reason = self._prove_selected_replacement(
+                ast,
+                replacement,
+                original_term=lowering.term,
+                selected=selected,
+                width=width,
+            )
         finally:
             self._finish_stage("native_z3")
         if not proved:
@@ -397,9 +416,22 @@ class EgglogOptimizer(PeepholeSimplificationRule):
                     extraction.receipt,
                     skip_reason=ExtractionSkipReason.NATIVE_Z3_FAILED,
                     derivation_trace=(),
+                    proof_mode=self.native_proof_mode,
+                    template_source_name=template_source,
+                    template_fallback_reason=fallback_reason,
                 )
             )
             return None
+        extraction = replace(
+            extraction,
+            receipt=replace(
+                extraction.receipt,
+                proof_mode=self.native_proof_mode,
+                template_source_name=template_source,
+                template_fallback_reason=fallback_reason,
+            ),
+        )
+        self._record_extraction_receipt(extraction.receipt)
         self._begin_stage("reconstruction")
         try:
             new_ins = self._create_instruction(replacement, ins)
@@ -565,6 +597,9 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             "distinct_leaf_count": receipt.distinct_leaf_count,
             "nonlinear_product_count": receipt.nonlinear_product_count,
             "blockers": receipt.blockers,
+            "proof_mode": receipt.proof_mode,
+            "template_source_name": receipt.template_source_name,
+            "template_fallback_reason": receipt.template_fallback_reason,
         }
         if receipt.selected_source is not None:
             source_names = (receipt.selected_source, *receipt.selected_aliases)
@@ -797,6 +832,77 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             1
             + EgglogOptimizer._node_count(node.left)
             + EgglogOptimizer._node_count(node.right)
+        )
+
+    def _prove_selected_replacement(
+        self,
+        original: AstNode,
+        replacement: AstNode,
+        *,
+        original_term,
+        selected: tuple[str, str, tuple[str, ...]],
+        width: int,
+    ) -> tuple[bool, str | None, str | None]:
+        """Run the configured template mode without weakening native proof."""
+
+        if self.native_proof_mode == "legacy":
+            return (
+                self._prove_ast_equivalence(original, replacement, width=width),
+                None,
+                None,
+            )
+        family, source_name, _aliases = selected
+        rule = next(
+            (
+                candidate
+                for candidate in self._compiled_rules
+                if candidate.family == family and candidate.source_name == source_name
+            ),
+            None,
+        )
+        template: NativeZ3ProofTemplate | None = (
+            None if rule is None else self._proof_templates.get((id(rule), width))
+        )
+        template_proved = False
+        fallback_reason: str | None = None
+        if template is None:
+            fallback_reason = "template_unavailable"
+        else:
+            replacement_lowering = lower_hexrays_island(
+                replacement, destination_size=width // 8
+            )
+            if replacement_lowering.term is None:
+                fallback_reason = "shape_mismatch"
+            elif (
+                template.validate_terms(original_term, replacement_lowering.term)
+                is None
+            ):
+                fallback_reason = "shape_mismatch"
+            else:
+                template_proved = self._prove_ast_equivalence(
+                    original, replacement, width=width
+                )
+                if not template_proved:
+                    fallback_reason = "template_proof_failed"
+        legacy_proved = self._prove_ast_equivalence(original, replacement, width=width)
+        if self.native_proof_mode == "shadow":
+            if template_proved != legacy_proved:
+                return (
+                    False,
+                    template.source_name if template else None,
+                    "shadow_divergence",
+                )
+            return (
+                legacy_proved,
+                template.source_name if template else None,
+                fallback_reason,
+            )
+        if template_proved:
+            return True, template.source_name if template else None, None
+        return (
+            legacy_proved,
+            template.source_name if template else None,
+            fallback_reason,
         )
 
     @staticmethod

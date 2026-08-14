@@ -808,6 +808,96 @@ def test_live_handler_extracts_once_with_exact_configured_rules_then_proves_befo
     assert metadata["skip_reason"] is None
 
 
+def test_shadow_template_and_legacy_proofs_agree_before_mop(monkeypatch):
+    if ast_dispatcher._USING_CYTHON:
+        pytest.skip("Cython AstNode methods cannot be monkeypatched for ordering")
+    import d810.optimizers.microcode.instructions.egraph.egglog_handler as handler_module
+
+    candidate = _direct_add_candidate()
+    handler = _configured_live_handler(native_proof_mode="shadow")
+    events = []
+    monkeypatch.setattr(handler_module, "minsn_to_ast", lambda _ins: candidate)
+    monkeypatch.setattr(
+        handler,
+        "_prove_ast_equivalence",
+        lambda *_args, **_kwargs: events.append("native_z3") or True,
+    )
+    monkeypatch.setattr(
+        ast_dispatcher.AstNode,
+        "create_mop",
+        lambda _self, _ea: events.append("create_mop") or object(),
+    )
+    monkeypatch.setattr(ida_hexrays, "minsn_t", lambda _ea: SimpleNamespace())
+
+    assert handler._check_and_replace(_Instruction()) is not None
+    assert events == ["native_z3", "native_z3", "create_mop"]
+    receipt = handler.last_extraction_receipt
+    assert receipt is not None
+    assert receipt.proof_mode == "shadow"
+    assert receipt.template_source_name == "Add_HackersDelightRule_2"
+    assert receipt.template_fallback_reason is None
+
+
+def test_enforced_template_shape_mismatch_falls_back_to_legacy(monkeypatch):
+    import d810.optimizers.microcode.instructions.egraph.egglog_handler as handler_module
+
+    candidate = _direct_add_candidate()
+    handler = _configured_live_handler(native_proof_mode="enforced")
+    rule = next(
+        rule
+        for rule in handler._compiled_rules
+        if rule.source_name == "Add_HackersDelightRule_2"
+    )
+    handler._proof_templates = {
+        (id(rule), 32): SimpleNamespace(
+            source_name=rule.source_name,
+            validate_terms=lambda *_args: None,
+        )
+    }
+    calls = []
+    monkeypatch.setattr(handler_module, "minsn_to_ast", lambda _ins: candidate)
+    monkeypatch.setattr(
+        handler,
+        "_prove_ast_equivalence",
+        lambda *_args, **_kwargs: calls.append("legacy_native_z3") or True,
+    )
+    monkeypatch.setattr(handler, "_create_instruction", lambda *_args: object())
+
+    assert handler._check_and_replace(_Instruction()) is not None
+    assert calls == ["legacy_native_z3"]
+    receipt = handler.last_extraction_receipt
+    assert receipt is not None
+    assert receipt.proof_mode == "enforced"
+    assert receipt.template_fallback_reason == "shape_mismatch"
+
+
+def test_shadow_proof_divergence_is_a_noop_before_reconstruction(monkeypatch):
+    import d810.optimizers.microcode.instructions.egraph.egglog_handler as handler_module
+
+    candidate = _direct_add_candidate()
+    handler = _configured_live_handler(native_proof_mode="shadow")
+    verdicts = iter((True, False))
+    mop_calls = []
+    monkeypatch.setattr(handler_module, "minsn_to_ast", lambda _ins: candidate)
+    monkeypatch.setattr(
+        handler,
+        "_prove_ast_equivalence",
+        lambda *_args, **_kwargs: next(verdicts),
+    )
+    monkeypatch.setattr(
+        handler,
+        "_create_instruction",
+        lambda *_args: mop_calls.append("create_mop"),
+    )
+
+    assert handler._check_and_replace(_Instruction()) is None
+    assert mop_calls == []
+    receipt = handler.last_extraction_receipt
+    assert receipt is not None
+    assert receipt.skip_reason is ExtractionSkipReason.NATIVE_Z3_FAILED
+    assert receipt.template_fallback_reason == "shadow_divergence"
+
+
 def test_live_handler_native_z3_failure_records_skip_without_creating_mop(monkeypatch):
     import d810.optimizers.microcode.instructions.egraph.egglog_handler as handler_module
 
