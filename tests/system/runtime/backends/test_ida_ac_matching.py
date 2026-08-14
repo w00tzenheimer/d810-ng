@@ -19,6 +19,10 @@ from d810.mba.ac_matching import (  # noqa: E402
 )
 from d810.mba.certified_catalogue import ShadowMatcherParityLedger  # noqa: E402
 from d810.mba.dsl import Const, Var  # noqa: E402
+from d810.optimizers.microcode.instructions.pattern_matching.handler import (  # noqa: E402
+    PatternOptimizer,
+    RulePatternInfo,
+)
 
 
 def _leaf(name: str, register: int):
@@ -179,6 +183,101 @@ def test_selected_snapshot_narrows_shadow_observation_without_compilation() -> N
     ast.dest_size = 4
 
     assert xor_adapter.observe_structural_match(ast) is None
+
+
+def test_certified_registration_uses_one_base_pattern_unless_rollback_is_enabled(
+    monkeypatch,
+) -> None:
+    """Task 8 replaces generated commutations only for snapshot-selected DSL rules."""
+
+    x = Var("x")
+
+    class Rule:
+        name = "CertifiedAdd"
+        pattern = x + Const("one", 1)
+
+    monkeypatch.delenv("D810_LEGACY_DSL_PERMUTATIONS", raising=False)
+    structural = IDAPatternAdapter(Rule())
+    attach_selected_certified_catalogue_snapshot((structural,))
+
+    assert structural.uses_structural_matching is True
+    assert len(structural.pattern_candidates) == 1
+
+    monkeypatch.setenv("D810_LEGACY_DSL_PERMUTATIONS", "1")
+    rollback = IDAPatternAdapter(Rule())
+    attach_selected_certified_catalogue_snapshot((rollback,))
+
+    assert rollback.uses_structural_matching is False
+    assert len(rollback.pattern_candidates) == 2
+
+
+def test_structural_dispatch_is_root_bucketed_and_reports_attempt_count(
+    monkeypatch,
+) -> None:
+    """The hot path invokes only the root bucket and publishes its measured size."""
+
+    class Instruction:
+        ea = 0x401000
+
+        class d:
+            size = 4
+
+        @staticmethod
+        def _print():
+            return "unit-ins"
+
+    class StructuralRule:
+        name = "CertifiedDsl"
+        maturities = [7]
+        uses_structural_matching = True
+
+        def __init__(self) -> None:
+            self.calls: list[tuple[object, int, int]] = []
+            self.prepared: list[tuple[object, int]] = []
+
+        def prepare_structural_candidate(self, candidate, *, destination_size: int):
+            self.prepared.append((candidate, destination_size))
+            return "lowered-once"
+
+        def match_structural_and_replace(
+            self,
+            candidate,
+            *,
+            bucket_size: int,
+            attempted_rule_count: int,
+            lowering,
+            lowering_provided: bool,
+        ):
+            self.calls.append((candidate, bucket_size, attempted_rule_count))
+            assert lowering == "lowered-once"
+            assert lowering_provided is True
+            return Instruction()
+
+    rule = StructuralRule()
+    optimizer = object.__new__(PatternOptimizer)
+    optimizer.stats = None
+    optimizer.cur_maturity = 7
+    optimizer._use_nomut_matching = False
+    optimizer._use_legacy_storage = False
+    optimizer._run_later_callback = None
+    optimizer._pending_replacement_rule = None
+    optimizer._get_candidates = lambda _ast: [
+        RulePatternInfo(rule, object()),
+        RulePatternInfo(object(), object()),
+    ]
+
+    result = optimizer._try_matches(
+        None,
+        Instruction(),
+        "candidate-ast",
+        allowed_rule_names=None,
+        scheduled_rule_names=None,
+        source_label="unit",
+    )
+
+    assert result is not None
+    assert rule.prepared == [("candidate-ast", 4)]
+    assert rule.calls == [("candidate-ast", 1, 1)]
 
 
 def test_structural_only_hit_is_proven_without_becoming_a_live_rewrite(monkeypatch) -> None:

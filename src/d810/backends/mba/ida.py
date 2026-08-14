@@ -12,6 +12,7 @@ the rule definitions in d810.mba.rules pure and backend-agnostic.
 from __future__ import annotations
 
 import itertools
+import os
 import time
 from dataclasses import replace
 from d810.core.typing import TYPE_CHECKING, Any, Dict, List, Optional
@@ -408,6 +409,10 @@ class IDAPatternAdapter:
         self._certified_catalogue_rule_id: int | None = None
         self._shadow_parity_ledger = None
         self._shadow_parity_recorded = False
+        self._structural_matching_enabled = False
+        self._structural_selection_active = False
+        self._structural_dispatch_bucket_size = 0
+        self._structural_dispatch_attempt_count = 0
 
     def _reset_attempt_outcome(self, instruction: Any | None = None) -> None:
         """Discard telemetry from the previous live pattern attempt."""
@@ -432,17 +437,107 @@ class IDAPatternAdapter:
         self._legacy_binding_paths = None
         self._legacy_match_observed = False
         self._shadow_parity_recorded = False
+        self._structural_selection_active = False
+        self._structural_dispatch_bucket_size = 0
+        self._structural_dispatch_attempt_count = 0
 
     def attach_certified_catalogue_snapshot(
         self, snapshot, rule_id: int, ledger
     ) -> None:
-        """Attach one configuration-time snapshot without changing matching."""
+        """Attach one configuration-time snapshot and select its matcher mode."""
 
         self._certified_catalogue_snapshot = snapshot
         self._certified_catalogue_rule_id = rule_id
         self._shadow_parity_ledger = ledger
+        # The snapshot only contains already-admitted VerifiableRule DSL
+        # objects.  Keep the generated-permutation implementation available as
+        # a release-scoped rollback, but never register both forms at once.
+        self._structural_matching_enabled = (
+            os.environ.get("D810_LEGACY_DSL_PERMUTATIONS", "0") != "1"
+        )
 
-    def observe_structural_match(self, test_ast: Any, *, comparison_budget: int = 64):
+    @property
+    def uses_structural_matching(self) -> bool:
+        """Whether this snapshot-selected DSL rule uses the portable matcher."""
+
+        return bool(getattr(self, "_structural_matching_enabled", False))
+
+    def match_structural_and_replace(
+        self,
+        test_ast: Any,
+        *,
+        bucket_size: int,
+        attempted_rule_count: int,
+        lowering: Any | None = None,
+        lowering_provided: bool = False,
+    ) -> Any | None:
+        """Select through the bounded portable matcher for one certified rule.
+
+        This is deliberately an adapter method: lowerer identity, constraint
+        materialization, and native replacement construction remain on the IDA
+        boundary.  A lowerer miss or any unusable binding remains a no-op.
+        """
+
+        if not self.uses_structural_matching:
+            return None
+        self._structural_selection_active = True
+        self._structural_dispatch_bucket_size = max(0, int(bucket_size))
+        self._structural_dispatch_attempt_count = max(0, int(attempted_rule_count))
+        report = self.observe_structural_match(
+            test_ast,
+            lowering=lowering,
+            lowering_provided=lowering_provided,
+        )
+        paths = getattr(self, "_shadow_structural_native_paths", None)
+        if report is None or report.bindings is None or not paths:
+            return None
+        leafs_by_name: dict[str, Any] = {}
+        for name, path in paths.items():
+            native = self._native_node_at_path(test_ast, path)
+            if native is None:
+                return None
+            leafs_by_name[name] = native
+        candidate = _ShadowBindingCandidate(leafs_by_name, test_ast)
+        if not candidate.ea or not self._check_candidate(candidate):
+            return None
+        replacement = self.get_replacement(candidate)
+        if replacement is not None:
+            self._record_catalogue_success(
+                test_ast,
+                self.REPLACEMENT_PATTERN,
+            )
+        return replacement
+
+    def prepare_structural_candidate(
+        self,
+        test_ast: Any,
+        *,
+        destination_size: int | None = None,
+    ) -> Any | None:
+        """Lower one root bucket once, before its rule-specific comparisons."""
+
+        try:
+            from d810.backends.mba.hexrays_island import lower_hexrays_island
+
+            size = (
+                destination_size
+                if destination_size is not None
+                else self._attempt_destination_size
+            )
+            if type(size) is not int:
+                return None
+            return lower_hexrays_island(test_ast, destination_size=size)
+        except Exception:
+            return None
+
+    def observe_structural_match(
+        self,
+        test_ast: Any,
+        *,
+        comparison_budget: int = 64,
+        lowering: Any | None = None,
+        lowering_provided: bool = False,
+    ):
         """Record the bounded portable matcher result without changing selection.
 
         The legacy AstNode matcher stays authoritative during the Task 7 shadow
@@ -451,20 +546,16 @@ class IDAPatternAdapter:
         """
 
         try:
-            from d810.backends.mba.hexrays_island import lower_hexrays_island
             from d810.mba.ac_matching import (
                 AcMatchReport,
                 AcMatchStopReason,
                 match_ac_pattern,
             )
 
-            destination_size = self._attempt_destination_size
-            if destination_size is None:
+            if not lowering_provided:
+                lowering = self.prepare_structural_candidate(test_ast)
+            if lowering is None:
                 return None
-            lowering = lower_hexrays_island(
-                test_ast,
-                destination_size=int(destination_size),
-            )
             if lowering.term is None or self.rule.pattern is None:
                 return None
             snapshot = getattr(self, "_certified_catalogue_snapshot", None)
@@ -781,8 +872,17 @@ class IDAPatternAdapter:
         metadata = {
             "rule_name": self.name,
             "canonical_source": canonical_source,
-            "shadow": self._shadow_metadata(legacy_match=True),
         }
+        structural_selection = bool(
+            getattr(self, "_structural_selection_active", False)
+        )
+        if structural_selection:
+            metadata["structural_dispatch"] = {
+                "bucket_size": self._structural_dispatch_bucket_size,
+                "attempted_rule_count": self._structural_dispatch_attempt_count,
+            }
+        else:
+            metadata["shadow"] = self._shadow_metadata(legacy_match=True)
         if fingerprint is None:
             self._publish_provider_outcome(
                 MbaProviderOutcome(
@@ -798,7 +898,8 @@ class IDAPatternAdapter:
                     matcher=self._matcher_metadata(),
                 )
             )
-            self._record_shadow_parity(legacy_match=True)
+            if not structural_selection:
+                self._record_shadow_parity(legacy_match=True)
             return
         self._publish_provider_outcome(
             MbaProviderOutcome(
@@ -814,7 +915,8 @@ class IDAPatternAdapter:
                 matcher=self._matcher_metadata(),
             )
         )
-        self._record_shadow_parity(legacy_match=True)
+        if not structural_selection:
+            self._record_shadow_parity(legacy_match=True)
 
     def _finalize_candidate_outcome(
         self, *, accepted: bool, reason: str | None = None
@@ -860,7 +962,17 @@ class IDAPatternAdapter:
         input_ast = self._attempt_input_ast
         fingerprint = self._profile_fingerprint(input_ast)
         legacy_match = bool(getattr(self, "_legacy_match_observed", False))
-        metadata = {"shadow": self._shadow_metadata(legacy_match=legacy_match)}
+        structural_selection = bool(
+            getattr(self, "_structural_selection_active", False)
+        )
+        metadata: dict[str, object] = {}
+        if structural_selection:
+            metadata["structural_dispatch"] = {
+                "bucket_size": self._structural_dispatch_bucket_size,
+                "attempted_rule_count": self._structural_dispatch_attempt_count,
+            }
+        else:
+            metadata["shadow"] = self._shadow_metadata(legacy_match=legacy_match)
         if fingerprint is None:
             self._publish_provider_outcome(
                 MbaProviderOutcome(
@@ -875,7 +987,8 @@ class IDAPatternAdapter:
                     matcher=self._matcher_metadata(),
                 )
             )
-            self._record_shadow_parity(legacy_match=legacy_match)
+            if not structural_selection:
+                self._record_shadow_parity(legacy_match=legacy_match)
             return
         self._publish_provider_outcome(
             MbaProviderOutcome(
@@ -890,7 +1003,8 @@ class IDAPatternAdapter:
                 matcher=self._matcher_metadata(),
             )
         )
-        self._record_shadow_parity(legacy_match=legacy_match)
+        if not structural_selection:
+            self._record_shadow_parity(legacy_match=legacy_match)
 
     def record_attempt_error(self, exc: RuntimeError) -> None:
         """Finalize a caught pattern-engine failure as an explicit error row."""
@@ -898,6 +1012,22 @@ class IDAPatternAdapter:
         canonical_source, aliases = self._catalogue_provenance()
         input_ast = self._attempt_input_ast
         fingerprint = self._profile_fingerprint(input_ast) or "profile_unavailable"
+        structural_selection = bool(
+            getattr(self, "_structural_selection_active", False)
+        )
+        metadata: dict[str, object] = {
+            "error_class": type(exc).__name__,
+            "error_message": str(exc),
+        }
+        if structural_selection:
+            metadata["structural_dispatch"] = {
+                "bucket_size": self._structural_dispatch_bucket_size,
+                "attempted_rule_count": self._structural_dispatch_attempt_count,
+            }
+        else:
+            metadata["shadow"] = self._shadow_metadata(
+                legacy_match=bool(getattr(self, "_legacy_match_observed", False))
+            )
         self._publish_provider_outcome(
             MbaProviderOutcome(
                 provider=MbaProviderKind.CATALOGUE,
@@ -907,19 +1037,14 @@ class IDAPatternAdapter:
                 elapsed_ms=self._attempt_elapsed_ms(),
                 source_provenance=(canonical_source, *aliases),
                 refusal_reason=type(exc).__name__,
-                metadata={
-                    "error_class": type(exc).__name__,
-                    "error_message": str(exc),
-                    "shadow": self._shadow_metadata(
-                        legacy_match=bool(getattr(self, "_legacy_match_observed", False))
-                    ),
-                },
+                metadata=metadata,
                 matcher=self._matcher_metadata(),
             )
         )
-        self._record_shadow_parity(
-            legacy_match=bool(getattr(self, "_legacy_match_observed", False))
-        )
+        if not structural_selection:
+            self._record_shadow_parity(
+                legacy_match=bool(getattr(self, "_legacy_match_observed", False))
+            )
 
     def record_bound_replacement_outcome(self, replacement_ast: Any) -> None:
         """Publish the nomut path's success using its bound native input AST."""
@@ -971,14 +1096,11 @@ class IDAPatternAdapter:
         This property lazily converts the DSL SymbolicExpression to AstNode
         only when accessed in IDA context.
 
-        Pattern Generation Strategy:
-        1. Generate all commutative permutations of the base pattern
-        2. Convert them to AstNode format
-        3. Return them all as candidates for pattern matching
-
-        This eliminates the need for manually defined *_Commuted rule variants.
-        Permutations are correct by construction -- they come from each
-        operation's commutativity -- so no equivalence check is needed.
+        Snapshot-selected certified DSL rules register exactly their declared
+        base pattern and match commutation structurally.  The temporary
+        D810_LEGACY_DSL_PERMUTATIONS=1 rollback preserves the old generated
+        variants for one release.  Non-snapshot adapters retain the legacy
+        generator unchanged.
         """
         if self._pattern_candidates_cache is None:
             pattern = self.rule.pattern
@@ -986,12 +1108,15 @@ class IDAPatternAdapter:
                 self._pattern_candidates_cache = []
                 return self._pattern_candidates_cache
 
-            # Generate all commutative permutations unless the rule is
-            # width-sensitive and explicitly requests its canonical shape.
-            if getattr(self.rule, "GENERATE_COMMUTATIVE_PERMUTATIONS", True):
-                permutations = _generate_commutative_permutations(pattern)
-            else:
+            # Structural selection removes generated commutations only for
+            # the configuration-selected certified DSL catalogue.  All other
+            # adapters keep the historical path.
+            if self.uses_structural_matching or not getattr(
+                self.rule, "GENERATE_COMMUTATIVE_PERMUTATIONS", True
+            ):
                 permutations = [pattern]
+            else:
+                permutations = _generate_commutative_permutations(pattern)
             logger.debug(
                 "Rule %s: Generated %d commutative permutations",
                 self.name,

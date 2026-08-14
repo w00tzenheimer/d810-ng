@@ -245,14 +245,14 @@ def test_corpus_configs_are_provider_isolated_and_egglog_is_explicitly_interacti
     assert "root-only" in degree2["description"]
 
 
-def test_catalogue_corpus_keeps_structural_matching_in_shadow_mode() -> None:
-    """Task 7 observes structural matches but does not select through them."""
+def test_catalogue_corpus_selects_structural_dsl_matching_by_default() -> None:
+    """Task 8 keeps the portfolio pass while replacing only its DSL matcher."""
 
     catalogue = json.loads(_CATALOGUE_CONFIG.read_text(encoding="utf-8"))
     description = catalogue["description"].lower()
     assert "catalogue" in description
-    # The project remains the legacy `mba-simplify` pass until Task 8's parity
-    # gate replaces generated commutations with the structural matcher.
+    # The portfolio scheduling pass does not change; selection within its
+    # snapshot-selected certified DSL rules is structural by default.
     assert [
         item["pass_id"] for item in catalogue["additional_configuration"]["pipeline_v2"]
     ] == ["mba-simplify"]
@@ -266,6 +266,12 @@ def test_corpus_projects_register_their_one_intended_provider(
             state.project_manager.index("mba_compiler_shape_catalogue.json")
         )
         assert state.last_pipeline_v2_hook_pass_ids == ("mba-simplify",)
+        catalogue_adapters = tuple(state.current_ins_rules)
+        assert catalogue_adapters
+        assert all(adapter.uses_structural_matching for adapter in catalogue_adapters)
+        assert sum(
+            len(adapter.pattern_candidates) for adapter in catalogue_adapters
+        ) == len(catalogue_adapters)
 
         state.load_project(
             state.project_manager.index("mba_compiler_shape_egglog.json")
