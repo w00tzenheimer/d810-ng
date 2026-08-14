@@ -286,7 +286,9 @@ def capture_manifest_native_cases(
     cases: Sequence[ManifestNativeCaptureCase],
     rules: Iterable[object],
     expected_providers: Sequence[MbaProviderKind],
-    run_case: Callable[[ManifestNativeCaptureCase], MbaIslandProfile],
+    run_case: Callable[
+        [ManifestNativeCaptureCase, NativeProviderHistorySnapshot], MbaIslandProfile
+    ],
 ) -> tuple[MbaCorpusCaseReport, ...]:
     """Run and capture every declared case as one exact bounded-history delta.
 
@@ -304,7 +306,7 @@ def capture_manifest_native_cases(
     with capture_native_provider_histories(selected_rules):
         for case in declared_cases:
             snapshot = snapshot_native_provider_histories(selected_rules)
-            profile = run_case(case)
+            profile = run_case(case, snapshot)
             if not isinstance(profile, MbaIslandProfile):
                 raise TypeError("manifest native runner must return MbaIslandProfile")
             captured.append(

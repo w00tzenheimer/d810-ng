@@ -8,6 +8,7 @@ from d810.mba.island_profile import MbaIslandClass, MbaIslandProfile
 from d810.mba.native_corpus_capture import (
     ManifestNativeCaptureCase,
     NativeMbaCorpusCapture,
+    NativeProviderHistorySnapshot,
     capture_manifest_native_cases,
     capture_native_provider_case,
     native_profile_metadata,
@@ -195,8 +196,12 @@ def test_manifest_runner_snapshots_each_case_and_rejects_evicted_delta() -> None
     provider = _Provider()
     seen: list[str] = []
 
-    def run_case(case: ManifestNativeCaptureCase) -> MbaIslandProfile:
+    def run_case(
+        case: ManifestNativeCaptureCase,
+        snapshot: NativeProviderHistorySnapshot,
+    ) -> MbaIslandProfile:
         seen.append(case.case_id)
+        assert snapshot.outcome_counts_by_rule_id[id(provider)] == len(provider._outcomes)
         provider._outcomes.append(
             _outcome(MbaProviderKind.CATALOGUE, ProviderOutcomeStatus.APPLIED, profile)
         )
@@ -228,5 +233,5 @@ def test_manifest_runner_fails_closed_when_a_case_delta_is_truncated() -> None:
             cases=(ManifestNativeCaptureCase("evicted", "catalogue"),),
             rules=(_TruncatedProvider(),),
             expected_providers=(MbaProviderKind.CATALOGUE,),
-            run_case=lambda _case: _profile(),
+            run_case=lambda _case, _snapshot: _profile(),
         )
