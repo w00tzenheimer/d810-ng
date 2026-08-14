@@ -330,12 +330,13 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         self.last_extraction_receipt = receipt
         outcome = egglog_receipt_to_outcome(receipt)
         self._last_provider_outcome = outcome
-        if not self._provider_outcome_capture_enabled():
-            return
-        if self._attempt_outcome_index is None:
-            self._attempt_outcome_index = self.provider_outcome_history.append(outcome)
-        else:
-            self.provider_outcome_history.replace(self._attempt_outcome_index, outcome)
+        if self._provider_outcome_capture_enabled():
+            if self._attempt_outcome_index is None:
+                self._attempt_outcome_index = self.provider_outcome_history.append(
+                    outcome
+                )
+            else:
+                self.provider_outcome_history.replace(self._attempt_outcome_index, outcome)
         skip_reason = (
             receipt.skip_reason.value if receipt.skip_reason is not None else None
         )
