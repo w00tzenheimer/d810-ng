@@ -138,6 +138,21 @@ def _cref_state(rows: set[tuple[int, int, bool]]) -> str:
     )
 
 
+def _missing_cref_targets(token: str, targets: set[int]) -> tuple[int, ...]:
+    """Return targets not already delivered by any code-xref representation.
+
+    IDA permits a source-target relation to be represented as an automatic
+    flow edge, a jump edge, or a user-owned edge.  Adding a user jump edge over
+    an existing automatic flow edge is not stable: reanalysis canonicalizes it
+    back to the flow edge.  The planner therefore treats any existing edge to
+    the target as already materialized and emits no redundant write.
+    """
+    existing_targets = {
+        target for target, _xref_type, _user in _parse_cref_state(token)
+    }
+    return tuple(sorted(set(int(target) for target in targets) - existing_targets))
+
+
 def _with_user_cref(
     executor: IdaMetadataActionExecutor,
     *,
@@ -320,14 +335,36 @@ def build_indirect_label_metadata_plan(
         targets_by_source.setdefault(source_ea, set()).add(int(target_ea))
     import idc
 
+    # A table label physically adjacent to a no-fallthrough jump needs an
+    # explicit flow boundary for Hex-Rays to retain the separate handler body.
+    # IDA removes every synthetic representation we measured during required
+    # reanalysis, so the gateway cannot create or certify one. Accept an
+    # already-normalized boundary, otherwise abstain before journal prepare.
     for target_ea in request.target_eas:
         previous_ea = int(ida_bytes.prev_head(int(target_ea), int(request.function_ea)))
         if previous_ea == badaddr or previous_ea >= int(target_ea):
             continue
         if int(ida_bytes.next_head(previous_ea, int(target_ea) + 16)) != int(target_ea):
             continue
-        if str(idc.print_insn_mnem(previous_ea) or "").lower() == "jmp":
-            targets_by_source.setdefault(previous_ea, set()).add(int(target_ea))
+        if str(idc.print_insn_mnem(previous_ea) or "").lower() != "jmp":
+            continue
+        boundary_state = executor.read_state(
+            NativeMetadataActionKind.UPDATE_XREF,
+            previous_ea,
+        )
+        if int(target_ea) in _missing_cref_targets(boundary_state, {int(target_ea)}):
+            raise IndirectLabelPlanBuildError(
+                "missing label-boundary flow xref has no stable reversible "
+                f"representation at {previous_ea:#x}->{int(target_ea):#x}"
+            )
+        actions.append(
+            NativeMetadataAction(
+                kind=NativeMetadataActionKind.UPDATE_XREF,
+                ea=previous_ea,
+                expected_before=boundary_state,
+                expected_after=boundary_state,
+            )
+        )
     if request.state_var_stkoff is not None:
         target_by_state = {
             int(request.state_base) + index: int(target_ea)
@@ -350,7 +387,17 @@ def build_indirect_label_metadata_plan(
         # fan-out into a delete/add batch: a mid-batch failure would leave no
         # failure-atomic transition to journal or reverse.
         cursor = before
-        for target_ea in sorted(targets):
+        missing_targets = _missing_cref_targets(before, targets)
+        if not missing_targets:
+            actions.append(
+                NativeMetadataAction(
+                    kind=NativeMetadataActionKind.UPDATE_XREF,
+                    ea=source_ea,
+                    expected_before=before,
+                    expected_after=before,
+                )
+            )
+        for target_ea in missing_targets:
             wanted = _parse_cref_state(cursor)
             wanted.add((target_ea, int(ida_xref.fl_JN), True))
             after = _cref_state(wanted)

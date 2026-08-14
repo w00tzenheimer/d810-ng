@@ -48,6 +48,164 @@ class TestZ3MopProverAPI:
         prover = Z3MopProver()
         assert callable(getattr(prover, "are_unequal", None))
 
+    def test_prover_has_prove_comparison(self):
+        from d810.backends.ast.z3 import Z3MopProver
+
+        prover = Z3MopProver()
+        assert callable(getattr(prover, "prove_comparison", None))
+
+    @pytest.mark.parametrize(
+        ("comparison", "left", "right", "expected"),
+        (
+            ("eq", 7, 7, True),
+            ("ne", 7, 7, False),
+            ("ult", 0xFFFFFFFF, 0, False),
+            ("ule", 0, 0, True),
+            ("ugt", 0xFFFFFFFF, 0, True),
+            ("uge", 0, 0, True),
+            ("slt", 0xFFFFFFFF, 0, True),
+            ("sle", 0, 0, True),
+            ("sgt", 0xFFFFFFFF, 0, False),
+            ("sge", 0, 0, True),
+        ),
+    )
+    def test_prove_comparison_discharge_covers_signed_and_unsigned_relations(
+        self,
+        monkeypatch,
+        comparison,
+        left,
+        right,
+        expected,
+    ):
+        import d810.backends.ast.z3 as z3mod
+        from d810.backends.ast.z3 import Z3MopProver
+
+        class _StubMop:
+            t = ida_hexrays.mop_n
+            size = 4
+
+            def __init__(self, value):
+                self.value = value
+
+            def dstr(self):
+                return hex(self.value)
+
+        monkeypatch.setattr(
+            z3mod,
+            "mop_list_to_z3_expression_list",
+            lambda mops: [z3.BitVecVal(mop.value, 32) for mop in mops],
+        )
+
+        result = Z3MopProver().prove_comparison(
+            _StubMop(left),
+            _StubMop(right),
+            comparison,
+        )
+
+        assert result is expected
+
+    def test_prove_comparison_returns_none_when_relation_is_not_constant(
+        self, monkeypatch
+    ):
+        import d810.backends.ast.z3 as z3mod
+        from d810.backends.ast.z3 import Z3MopProver
+
+        class _StubMop:
+            t = ida_hexrays.mop_r
+            size = 4
+
+            def __init__(self, name):
+                self.name = name
+
+            def dstr(self):
+                return self.name
+
+        monkeypatch.setattr(
+            z3mod,
+            "mop_list_to_z3_expression_list",
+            lambda mops: [z3.BitVec(mop.name, 32) for mop in mops],
+        )
+
+        assert (
+            Z3MopProver().prove_comparison(_StubMop("x"), _StubMop("y"), "ult") is None
+        )
+
+    def test_prove_comparison_abstains_when_64_bit_operands_were_truncated(
+        self, monkeypatch
+    ):
+        """A low-32-bit model must not authorize a 64-bit native predicate."""
+        import d810.backends.ast.z3 as z3mod
+        from d810.backends.ast.z3 import Z3MopProver
+
+        class _StubMop:
+            t = ida_hexrays.mop_r
+            size = 8
+
+            def __init__(self, name):
+                self.name = name
+
+            def dstr(self):
+                return self.name
+
+        # This is the unsound model the production translator currently builds
+        # for both ``x`` and ``x & 0xffffffff`` when their real mop size is 8.
+        truncated_x = z3.BitVec("x_low32", 32)
+        monkeypatch.setattr(
+            z3mod,
+            "mop_list_to_z3_expression_list",
+            lambda _mops: [truncated_x, truncated_x & 0xFFFFFFFF],
+        )
+
+        assert (
+            Z3MopProver().prove_comparison(
+                _StubMop("x"),
+                _StubMop("x & 0xffffffff"),
+                "eq",
+            )
+            is None
+        )
+
+    @pytest.mark.parametrize(
+        ("left_size", "right_size"),
+        ((1, 1), (2, 2), (8, 8), (4, 8), (8, 4)),
+    )
+    def test_prove_comparison_never_translates_unmodeled_operand_widths(
+        self, monkeypatch, left_size, right_size
+    ):
+        import d810.backends.ast.z3 as z3mod
+        from d810.backends.ast.z3 import Z3MopProver
+
+        monkeypatch.setattr(
+            z3mod,
+            "mop_list_to_z3_expression_list",
+            lambda _mops: pytest.fail("unmodeled widths reached the translator"),
+        )
+        left = SimpleNamespace(t=ida_hexrays.mop_r, size=left_size)
+        right = SimpleNamespace(t=ida_hexrays.mop_r, size=right_size)
+
+        assert Z3MopProver().prove_comparison(left, right, "eq") is None
+
+    @pytest.mark.parametrize("comparison", ["unsupported", ""])
+    def test_prove_comparison_fails_closed_for_unknown_relation(self, comparison):
+        from d810.backends.ast.z3 import Z3MopProver
+
+        assert Z3MopProver().prove_comparison(object(), object(), comparison) is None
+
+    def test_prove_comparison_fails_closed_when_operand_conversion_is_incomplete(
+        self, monkeypatch
+    ):
+        import d810.backends.ast.z3 as z3mod
+        from d810.backends.ast.z3 import Z3MopProver
+
+        mop = SimpleNamespace(t=ida_hexrays.mop_r, size=4)
+        monkeypatch.setattr(
+            z3mod,
+            "mop_list_to_z3_expression_list",
+            lambda _mops: [z3.BitVec("only_one", 32)],
+        )
+
+        assert Z3MopProver().prove_comparison(mop, mop, "eq") is None
+
     def test_prover_has_is_always_zero(self):
         from d810.backends.ast.z3 import Z3MopProver
 

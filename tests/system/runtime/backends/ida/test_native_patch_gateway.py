@@ -29,6 +29,8 @@ ida_funcs = pytest.importorskip("ida_funcs")
 ida_gdl = pytest.importorskip("ida_gdl")
 ida_hexrays = pytest.importorskip("ida_hexrays")
 ida_ida = pytest.importorskip("ida_ida")
+ida_nalt = pytest.importorskip("ida_nalt")
+ida_typeinf = pytest.importorskip("ida_typeinf")
 idaapi = pytest.importorskip("idaapi")
 idautils = pytest.importorskip("idautils")
 
@@ -46,6 +48,10 @@ from d810.backends.ida.native_patch.gateway import (  # noqa: E402
     IdaNativeByteWriter,
     NativePatchGateway,
 )
+from d810.backends.ida.native_patch.issuer import (  # noqa: E402
+    NativePatchIssuerContract,
+    NativePatchIssuerRegistry,
+)
 from d810.backends.ida.native_patch.observation import observe_function  # noqa: E402
 from d810.backends.ida.native_patch.origin_mapper import (  # noqa: E402
     correlate_native_span,
@@ -54,6 +60,7 @@ from d810.backends.ida.native_patch.origin_mapper import (  # noqa: E402
 from d810.backends.ida.native_patch.journal import SQLiteNativePatchJournal  # noqa: E402
 from d810.backends.ida.native_patch.reanalysis import (  # noqa: E402
     IdaFunctionExtentRestorer,
+    IdaFunctionFlowRestorer,
     IdaFunctionReanalyzer,
 )
 from d810.capabilities.native_patch import NativeJournalState  # noqa: E402
@@ -95,6 +102,19 @@ def fresh_journal(tmp_path):
 
 def _bitness() -> int:
     return 64 if ida_ida.inf_is_64bit() else 32
+
+
+def _issuer_registry() -> NativePatchIssuerRegistry:
+    return NativePatchIssuerRegistry(
+        (
+            NativePatchIssuerContract(
+                issuer_id="gateway-system-test-issuer",
+                patch_class="lifting_normalization",
+                proof_ids=frozenset({"gateway-system-test-proof"}),
+                provenance=("gateway-system-test",),
+            ),
+        )
+    )
 
 
 def _encodable_candidates():
@@ -166,7 +186,8 @@ def _build_operation(function_ea: int, branch):
 
 
 def _build_plan(function_ea: int, operation) -> NativePatchPlan:
-    func = ida_funcs.get_func(function_ea)
+    ownership = IdaLiveDatabaseReader().read_function_ownership(function_ea)
+    assert ownership is not None
     return NativePatchPlan(
         plan_id="gateway-system-test-plan",
         schema_version=1,
@@ -181,7 +202,7 @@ def _build_plan(function_ea: int, operation) -> NativePatchPlan:
         ),
         function_identity=NativeFunctionIdentity(
             entry_ea=function_ea,
-            chunk_ranges=(NativeAddressRange(int(func.start_ea), int(func.end_ea)),),
+            chunk_ranges=ownership.chunk_ranges,
             inherited_bytes_hash="gateway-system-test",
         ),
         inherited_function_fingerprint="gateway-system-test-fp",
@@ -213,6 +234,16 @@ def _flowchart_signature(function_ea: int) -> tuple:
     return tuple(sorted(edges))
 
 
+def _function_metadata_signature(function_ea: int) -> tuple[int, tuple | None]:
+    tif = ida_typeinf.tinfo_t()
+    serialized = None
+    if ida_nalt.get_tinfo(tif, function_ea):
+        serialized = tuple(
+            bytes(part) if part is not None else None for part in tif.serialize()
+        )
+    return int(ida_funcs.get_func_flags(function_ea)), serialized
+
+
 def _capture_complete_native_state(function_ea: int, address_range: NativeAddressRange):
     reader = IdaLiveDatabaseReader()
     return {
@@ -232,6 +263,7 @@ def _capture_complete_native_state(function_ea: int, address_range: NativeAddres
             address_range.start_ea, address_range.end_ea
         ),
         "function_ownership": reader.read_function_ownership(function_ea),
+        "function_metadata": _function_metadata_signature(function_ea),
         "flowchart": _flowchart_signature(function_ea),
     }
 
@@ -251,10 +283,13 @@ def _build_gateway(
         decode_replacement=MinimalX86BranchEncoder().decode,
         reanalyzer=reanalyzer or IdaFunctionReanalyzer(),
         extent_restorer=extent_restorer or IdaFunctionExtentRestorer(),
+        flow_restorer=IdaFunctionFlowRestorer(),
         cache_invalidator=cache_invalidator or IdaCfuncCacheInvalidator(),
         caller_discovery=IdaCallerDiscovery(),
         redo_decompiler=redo or IdaControlledRedoDecompiler(),
         certificate_store=SQLiteOptimizationStorage(":memory:"),
+        issuer_registry=_issuer_registry(),
+        current_database_identity="gateway-system-test",
         d810_version="system-test",
     )
 
@@ -273,13 +308,85 @@ def _decompile_text(ea: int) -> str:
 
 
 class TestGatewayApplyRestore:
+    def test_restore_preserves_inherited_function_flags_and_type(
+        self, copy_of_idb, tmp_path
+    ) -> None:
+        function_ea, branch = _first_encodable_candidate()
+        assert ida_funcs.set_func_flags(
+            function_ea,
+            int(ida_funcs.get_func_flags(function_ea)) | ida_funcs.FUNC_NORET,
+        )
+        tif = ida_typeinf.tinfo_t()
+        assert ida_typeinf.parse_decl(
+            tif,
+            None,
+            "long long __fastcall native_patch_metadata_probe(long long value);",
+            ida_typeinf.PT_SIL,
+        )
+        assert ida_typeinf.apply_tinfo(
+            function_ea,
+            tif,
+            ida_typeinf.TINFO_DEFINITE,
+        )
+        before = _function_metadata_signature(function_ea)
+
+        operation = _build_operation(function_ea, branch)
+        plan = _build_plan(function_ea, operation)
+        with fresh_journal(tmp_path) as journal:
+            gateway = _build_gateway(journal)
+            receipt = gateway.apply(plan)
+            assert receipt.ok, receipt.rejection_reasons
+            restored = gateway.restore(receipt.transaction_id)
+            assert restored.ok, restored.failure_reason
+
+        assert _function_metadata_signature(function_ea) == before
+
+    def test_restore_reattaches_an_inherited_detached_tail(
+        self, copy_of_idb, tmp_path
+    ) -> None:
+        selected = None
+        for function_ea, branch in _encodable_candidates():
+            func = ida_funcs.get_func(function_ea)
+            heads = tuple(
+                int(ea)
+                for ea in idautils.Heads(branch.site_ea + branch.size, int(func.end_ea))
+            )
+            if len(heads) >= 3:
+                selected = function_ea, branch, heads[-2], heads[-1], int(func.end_ea)
+                break
+        if selected is None:
+            pytest.skip("no encodable branch leaves room to construct a tail")
+
+        function_ea, branch, entry_end_ea, tail_start_ea, tail_end_ea = selected
+        assert ida_funcs.set_func_end(function_ea, entry_end_ea)
+        func = ida_funcs.get_func(function_ea)
+        assert func is not None
+        assert ida_funcs.append_func_tail(func, tail_start_ea, tail_end_ea)
+
+        operation = _build_operation(function_ea, branch)
+        plan = _build_plan(function_ea, operation)
+        before = IdaLiveDatabaseReader().read_function_ownership(function_ea)
+        assert before is not None
+        assert len(before.chunk_ranges) == 2
+
+        with fresh_journal(tmp_path) as journal:
+            gateway = _build_gateway(journal)
+            receipt = gateway.apply(plan)
+            assert receipt.ok, receipt.rejection_reasons
+
+            func = ida_funcs.get_func(function_ea)
+            assert func is not None
+            assert ida_funcs.remove_func_tail(func, tail_start_ea)
+
+            restored = gateway.restore(receipt.transaction_id)
+            assert restored.ok, restored.failure_reason
+
+        assert IdaLiveDatabaseReader().read_function_ownership(function_ea) == before
+
     def test_gateway_restores_exact_owned_patch_on_disposable_idb(
         self, copy_of_idb, tmp_path
     ) -> None:
         function_ea, branch = _first_encodable_candidate()
-        operation = _build_operation(function_ea, branch)
-        plan = _build_plan(function_ea, operation)
-        target_range = operation.range
 
         # A sentinel "user" patch elsewhere in the image -- proves the
         # gateway disturbs nothing outside its own authorized range, not
@@ -299,8 +406,17 @@ class TestGatewayApplyRestore:
         # measured reason a bare reanalyze_function() call is insufficient.
         IdaFunctionReanalyzer().reanalyze_function(function_ea)
 
-        before = _capture_complete_native_state(function_ea, target_range)
         before_text = _decompile_text(function_ea)
+
+        # Capture the authorizing plan only after the complete baseline
+        # analysis/decompilation regime is established. Function-internal flow
+        # refs are now part of exact ownership, so a plan captured before
+        # either operation would correctly fail current-state preflight.
+        operation = _build_operation(function_ea, branch)
+        plan = _build_plan(function_ea, operation)
+        target_range = operation.range
+
+        before = _capture_complete_native_state(function_ea, target_range)
 
         with fresh_journal(tmp_path) as journal:
             gateway = _build_gateway(journal)
@@ -331,37 +447,22 @@ class TestGatewayApplyRestore:
             "item_shape",
             "incoming_refs",
             "function_ownership",
+            "function_metadata",
         )
         for field in core_fields:
             assert after_restore[field] == before[field], (
                 f"restore must reproduce {field!r} byte-for-byte; it did not"
             )
 
-        # 'flowchart' is captured and compared, but recorded rather than
-        # hard-asserted: measured on IDA 9.4 (Docker system-test run, Task
-        # 6), one block's successor set can remain permanently altered by
-        # having briefly held Mode A's intermediate patched bytes, on a
-        # block *unrelated* to (and not adjacent to) the governed range --
-        # every attempted remedy (reanalyze_function, plan_and_wait,
-        # del_items+create_insn, revert_ida_decisions scoped to the governed
-        # range) left this identical discrepancy unchanged, while every
-        # other captured field above restores exactly. This reads as an IDA
-        # flowchart-cache non-idempotency for an unrelated block, not a
-        # gateway defect -- but it is reported here rather than silently
-        # dropped.
-        flowchart_matches = after_restore["flowchart"] == before["flowchart"]
-        print(f"[task6.gateway] flowchart identical after restore: {flowchart_matches}")
-        if not flowchart_matches:
-            before_edges = set(before["flowchart"])
-            after_edges = set(after_restore["flowchart"])
-            print(
-                "[task6.gateway] flowchart edges only in before: "
-                f"{before_edges - after_edges}"
-            )
-            print(
-                "[task6.gateway] flowchart edges only in after-restore: "
-                f"{after_edges - before_edges}"
-            )
+        # Flowchart equality is a safety property, not a diagnostic. The
+        # gateway now resets affected item boundaries before whole-function
+        # reanalysis; retain this exact oracle so a stale successor regression
+        # cannot be reported as a successful restore.
+        assert after_restore["flowchart"] == before["flowchart"], (
+            "restore changed IDA flowchart edges: "
+            f"only_before={set(before['flowchart']) - set(after_restore['flowchart'])} "
+            f"only_after={set(after_restore['flowchart']) - set(before['flowchart'])}"
+        )
 
         after_restore_text = _decompile_text(function_ea)
 
@@ -391,8 +492,6 @@ class TestGatewayApplyRestore:
         step does not repeat that gap."""
         function_ea, branch, callers = _first_encodable_candidate_with_caller()
         caller_ea = sorted(callers)[0]
-        operation = _build_operation(function_ea, branch)
-        plan = _build_plan(function_ea, operation)
 
         if not idaapi.init_hexrays_plugin():
             pytest.skip("Hex-Rays decompiler plugin not available")
@@ -402,6 +501,12 @@ class TestGatewayApplyRestore:
         before_caller_text = _decompile_text(caller_ea)
         assert ida_hexrays.has_cached_cfunc(function_ea)
         assert ida_hexrays.has_cached_cfunc(caller_ea)
+
+        # Decompilation may persist a guessed function type. Capture the plan
+        # only after warming caches so exact function metadata remains an
+        # authorization witness rather than a deliberately stale snapshot.
+        operation = _build_operation(function_ea, branch)
+        plan = _build_plan(function_ea, operation)
 
         with fresh_journal(tmp_path) as journal:
             gateway = _build_gateway(journal)
@@ -516,10 +621,13 @@ class TestGatewayFailureInjection:
                 decode_replacement=_FaultyDecodeReplacement(),
                 reanalyzer=IdaFunctionReanalyzer(),
                 extent_restorer=IdaFunctionExtentRestorer(),
+                flow_restorer=IdaFunctionFlowRestorer(),
                 cache_invalidator=IdaCfuncCacheInvalidator(),
                 caller_discovery=IdaCallerDiscovery(),
                 redo_decompiler=IdaControlledRedoDecompiler(),
                 certificate_store=SQLiteOptimizationStorage(":memory:"),
+                issuer_registry=_issuer_registry(),
+                current_database_identity="gateway-system-test",
             )
             with pytest.raises(RuntimeError, match="injected"):
                 gateway.apply(plan)
@@ -554,7 +662,7 @@ class TestGatewayFailureInjection:
             from d810.capabilities.native_patch import NativePatchTransactionId
 
             record = journal.get(NativePatchTransactionId(value=transaction_id))
-            assert record.state is NativeJournalState.RESTORED
+            assert record.state is NativeJournalState.RECOVERY_REQUIRED
 
         after = ida_bytes.get_bytes(operation.range.start_ea, operation.range.size)
         assert after == before, (
@@ -585,7 +693,7 @@ class TestGatewayFailureInjection:
             from d810.capabilities.native_patch import NativePatchTransactionId
 
             record = journal.get(NativePatchTransactionId(value=transaction_id))
-            assert record.state is NativeJournalState.RESTORED
+            assert record.state is NativeJournalState.RECOVERY_REQUIRED
 
         after = ida_bytes.get_bytes(operation.range.start_ea, operation.range.size)
         assert after == before
@@ -607,10 +715,13 @@ class TestGatewayFailureInjection:
                 decode_replacement=MinimalX86BranchEncoder().decode,
                 reanalyzer=IdaFunctionReanalyzer(),
                 extent_restorer=IdaFunctionExtentRestorer(),
+                flow_restorer=IdaFunctionFlowRestorer(),
                 cache_invalidator=IdaCfuncCacheInvalidator(),
                 caller_discovery=IdaCallerDiscovery(),
                 redo_decompiler=IdaControlledRedoDecompiler(),
                 certificate_store=SQLiteOptimizationStorage(":memory:"),
+                issuer_registry=_issuer_registry(),
+                current_database_identity="gateway-system-test",
             )
             with pytest.raises(RuntimeError, match="injected: mid-write fault"):
                 gateway.apply(plan)
@@ -649,10 +760,13 @@ class TestGatewayFailureInjection:
                 decode_replacement=MinimalX86BranchEncoder().decode,
                 reanalyzer=IdaFunctionReanalyzer(),
                 extent_restorer=IdaFunctionExtentRestorer(),
+                flow_restorer=IdaFunctionFlowRestorer(),
                 cache_invalidator=IdaCfuncCacheInvalidator(),
                 caller_discovery=IdaCallerDiscovery(),
                 redo_decompiler=IdaControlledRedoDecompiler(),
                 certificate_store=SQLiteOptimizationStorage(":memory:"),
+                issuer_registry=_issuer_registry(),
+                current_database_identity="gateway-system-test",
             )
             with pytest.raises(RuntimeError, match="injected: mid-write fault"):
                 gateway.apply(plan)

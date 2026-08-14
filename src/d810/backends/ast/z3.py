@@ -423,6 +423,14 @@ class Z3MopProver:
             ],
             bool,
         ] = {}
+        self._comparison_cache: Dict[
+            typing.Tuple[
+                str,
+                typing.Tuple[int, int, int | str],
+                typing.Tuple[int, int, int | str],
+            ],
+            bool | None,
+        ] = {}
         self._always_zero_cache: Dict[typing.Tuple[int, int, int | str], bool] = {}
         self._always_nonzero_cache: Dict[typing.Tuple[int, int, int | str], bool] = {}
 
@@ -590,6 +598,118 @@ class Z3MopProver:
         _solver.pop()
         self._neq_cache[cache_key] = is_unequal
         return is_unequal
+
+    @requires_z3_installed
+    def prove_comparison(
+        self,
+        mop1: ida_hexrays.mop_t | None,
+        mop2: ida_hexrays.mop_t | None,
+        comparison: str,
+        *,
+        blk: ida_hexrays.mblock_t | None = None,
+        ins: ida_hexrays.minsn_t | None = None,
+        solver: z3.Solver | None = None,
+    ) -> bool | None:
+        """Prove an exact two-operand comparison, or abstain.
+
+        Returns ``True`` when the predicate is valid for every model,
+        ``False`` when its negation is valid for every model, and ``None``
+        when either direction is satisfiable or cannot be discharged.  The
+        supported vocabulary is deliberately closed: ``eq``, ``ne``, the
+        unsigned ``ult``/``ule``/``ugt``/``uge`` relations, and the signed
+        ``slt``/``sle``/``sgt``/``sge`` relations.
+
+        Both the predicate and its negation are checked.  This detects an
+        inconsistent caller-supplied solver instead of certifying both sides
+        from an already-unsatisfiable base context.
+        """
+        comparison_builders = {
+            "eq": lambda left, right: left == right,
+            "ne": lambda left, right: left != right,
+            "ult": z3.ULT,
+            "ule": z3.ULE,
+            "ugt": z3.UGT,
+            "uge": z3.UGE,
+            "slt": lambda left, right: left < right,
+            "sle": lambda left, right: left <= right,
+            "sgt": lambda left, right: left > right,
+            "sge": lambda left, right: left >= right,
+        }
+        build_predicate = comparison_builders.get(comparison)
+        if build_predicate is None or mop1 is None or mop2 is None:
+            return None
+
+        blk, ins = self._resolve_context(blk, ins)
+        destination_mba = getattr(blk, "mba", None)
+        if isinstance(mop1, MopSnapshot):
+            mop1 = mop1.to_mop(destination_mba)
+        if isinstance(mop2, MopSnapshot):
+            mop2 = mop2.to_mop(destination_mba)
+        if not hasattr(mop1, "t") or not hasattr(mop1, "size"):
+            logger.warning("prove_comparison: mop1 is invalid or freed SWIG object")
+            return None
+        if not hasattr(mop2, "t") or not hasattr(mop2, "size"):
+            logger.warning("prove_comparison: mop2 is invalid or freed SWIG object")
+            return None
+
+        # ``AstNodeZ3Visitor`` currently represents every leaf and concrete
+        # constant as a 32-bit bit-vector.  That model is exact only when both
+        # native operands are themselves 32 bits: widening smaller operands
+        # changes their wrap semantics, while truncating larger operands can
+        # turn a false 64-bit predicate into a proof over its low half.  Native
+        # edge authorization must therefore abstain until the translator is
+        # width-faithful for any other shape.
+        if (int(mop1.size), int(mop2.size)) != (4, 4):
+            return None
+
+        def _operand_key(mop):
+            try:
+                identity = structural_mop_hash(mop, 0)
+            except Exception:
+                identity = mop.dstr() if hasattr(mop, "dstr") else repr(mop)
+            return (int(mop.t), int(mop.size), identity)
+
+        cache_key = (comparison, _operand_key(mop1), _operand_key(mop2))
+        if cache_key in self._comparison_cache:
+            return self._comparison_cache[cache_key]
+
+        exprs = mop_list_to_z3_expression_list([mop1, mop2])
+        if len(exprs) != 2:
+            self._comparison_cache[cache_key] = None
+            return None
+        left, right = exprs
+        _solver = solver if solver is not None else get_solver()
+        try:
+            predicate = build_predicate(left, right)
+
+            _solver.push()
+            try:
+                _solver.add(z3.Not(predicate))
+                negated_result = _solver.check()
+            finally:
+                _solver.pop()
+
+            _solver.push()
+            try:
+                _solver.add(predicate)
+                predicate_result = _solver.check()
+            finally:
+                _solver.pop()
+        except Exception as exc:
+            logger.debug(
+                "prove_comparison: failed to discharge %s: %s", comparison, exc
+            )
+            result = None
+        else:
+            predicate_valid = negated_result == z3.unsat
+            predicate_impossible = predicate_result == z3.unsat
+            if predicate_valid == predicate_impossible:
+                result = None
+            else:
+                result = predicate_valid
+
+        self._comparison_cache[cache_key] = result
+        return result
 
     @requires_z3_installed
     def is_always_zero(
@@ -882,6 +1002,7 @@ class Z3MopProver:
         """Clear all memoization caches. Call on decompilation start."""
         self._eq_cache.clear()
         self._neq_cache.clear()
+        self._comparison_cache.clear()
         self._always_zero_cache.clear()
         self._always_nonzero_cache.clear()
 
@@ -893,4 +1014,8 @@ def d810_backend_probe() -> str | None:
     sets Z3_INSTALLED -- so import success is not evidence the backend works.
     Z3_INSTALLED stays authoritative; this just exposes it uniformly.
     """
-    return None if Z3_INSTALLED else ("z3 not installed or failed to import (pip install z3-solver)")
+    return (
+        None
+        if Z3_INSTALLED
+        else ("z3 not installed or failed to import (pip install z3-solver)")
+    )

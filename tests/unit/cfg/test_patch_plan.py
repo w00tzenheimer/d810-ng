@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import ast
-import inspect
-import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -73,7 +71,6 @@ from d810.transforms.plan import (
     ensure_patch_plan,
 )
 from d810.transforms.cfg_transaction import (
-    NativeBlockRef,
     LogicalBlockRef,
     PlanBlockRef,
 )
@@ -470,7 +467,7 @@ def test_compile_patch_plan_lowers_guarded_instruction_removal():
     assert patch_plan.steps == (
         PatchRemoveInstruction(
             block_serial=_logical(6),
-            block_start_ea=0x401000,
+            expected_owner_ea=0x401000,
             insn_ea=0x401004,
             ordinal=1,
             opcode=0x123,

@@ -22,6 +22,7 @@ from d810.core.execution_journal import (
     ExecutionEffectRef,
 )
 from d810.core.execution_journal_store import ExecutionJournalStore
+from d810.core.typing import Any
 from d810.hexrays.preanalysis.indirect_jump_labels import (
     IndirectLabelMaterializationResult,
     NativePatchPlanRequest,
@@ -29,6 +30,7 @@ from d810.hexrays.preanalysis.indirect_jump_labels import (
 from d810.manager.native_normalization import (
     NativeNormalizationOutcome,
     NativeNormalizationRequest,
+    NativeNormalizationResult,
     authorize_and_apply,
 )
 from d810.manager.native_patch_policy import (
@@ -38,11 +40,15 @@ from d810.manager.native_patch_policy import (
 from d810.transforms.native_patch_plan import NativePatchPlan
 
 __all__ = [
+    "ManagerOwnedDeadEdgeNormalizer",
     "ManagerOwnedNativePatchRequestExecutor",
     "NATIVE_PATCH_FUNCTION_OPT_IN_TAG",
     "PreparedNativePatchRequest",
     "native_patch_function_is_authorized",
 ]
+
+
+DEAD_EDGE_NATIVE_PASS_ID = "native_dead_edge_normalizer"
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +57,134 @@ class PreparedNativePatchRequest:
 
     plan: NativePatchPlan
     observe_result: Callable[[], IndirectLabelMaterializationResult]
+
+
+class ManagerOwnedDeadEdgeNormalizer:
+    """Run the named semantic dead-edge pass through manager-owned authority.
+
+    Discovery is deliberately injected so this orchestration stays testable
+    without IDA.  The manager supplies the production oracle and builder, and
+    the resulting plan still has to pass issuer validation and gateway
+    preflight before any journal preparation or IDB write.
+    """
+
+    def __init__(
+        self,
+        *,
+        gateway: NativePatchGateway,
+        user_enabled: Callable[[int], bool],
+        execution_journal: ExecutionJournalStore,
+        parent_attempt_for_function: Callable[[int], ExecutionAttemptId],
+        discover_candidates: Callable[[int], tuple[tuple[Any, ...], tuple[Any, ...]]],
+        build_plan: Callable[[int, tuple[Any, ...], ExecutionAttemptId], NativePatchPlan],
+        apply_plan: Callable[[NativePatchPlan], NativeNormalizationResult],
+    ) -> None:
+        self._gateway = gateway
+        self._user_enabled = user_enabled
+        self._execution_journal = execution_journal
+        self._parent_attempt_for_function = parent_attempt_for_function
+        self._discover_candidates = discover_candidates
+        self._build_plan = build_plan
+        self._apply_plan = apply_plan
+
+    def __call__(self, function_ea: int) -> NativeNormalizationResult:
+        function_ea = int(function_ea)
+        if not self._user_enabled(function_ea):
+            return NativeNormalizationResult(
+                outcome=NativeNormalizationOutcome.NOT_AUTHORIZED,
+                apply_receipt=None,
+                certificate=None,
+                reason="USER_NOT_OPTED_IN",
+            )
+
+        parent_attempt_id = self._parent_attempt_for_function(function_ea)
+        attempt = self._execution_journal.begin_attempt(
+            parent_attempt_id.session,
+            parent_attempt_id=parent_attempt_id,
+            stage_id=DEAD_EDGE_NATIVE_PASS_ID,
+            domain=ExecutionDomain.NATIVE_NORMALIZATION,
+        )
+        try:
+            candidates, abstentions = self._discover_candidates(function_ea)
+            if not candidates:
+                details = {
+                    "function_ea": function_ea,
+                    "candidate_count": 0,
+                    "abstentions": tuple(repr(item) for item in abstentions),
+                }
+                self._execution_journal.advance(
+                    attempt,
+                    status=ExecutionAttemptStatus.ABSTAINED,
+                    reason_code="NO_PROVEN_DEAD_EDGES",
+                    details=details,
+                )
+                return NativeNormalizationResult(
+                    outcome=NativeNormalizationOutcome.REJECTED,
+                    apply_receipt=None,
+                    certificate=None,
+                    reason="NO_PROVEN_DEAD_EDGES",
+                )
+
+            plan = self._build_plan(function_ea, candidates, attempt.attempt_id)
+            diagnostic_snapshot_id = self._gateway.record_diagnostic_snapshot(plan)
+            outcome = self._apply_plan(plan)
+        except Exception as error:
+            self._execution_journal.advance(
+                attempt,
+                status=ExecutionAttemptStatus.FAILED,
+                reason_code=f"{type(error).__name__}: {error}",
+                details={"function_ea": function_ea},
+            )
+            raise
+
+        receipt = outcome.apply_receipt
+        effects = [
+            ExecutionEffectRef(kind="native_patch_proposal", ref_id=plan.plan_id),
+            ExecutionEffectRef(
+                kind="native_patch_preflight",
+                ref_id=(
+                    receipt.preflight_receipt_id
+                    if receipt is not None
+                    and receipt.preflight_receipt_id is not None
+                    else self._gateway.record_certificate_validation_receipt(
+                        plan, outcome.certificate
+                    )
+                ),
+            ),
+            ExecutionEffectRef(
+                kind="native_patch_diagnostic_snapshot",
+                ref_id=diagnostic_snapshot_id,
+            ),
+        ]
+        if receipt is not None:
+            effects.append(
+                ExecutionEffectRef(
+                    kind="native_patch_transaction",
+                    ref_id=receipt.transaction_id.value,
+                )
+            )
+        if outcome.certificate is not None:
+            effects.append(
+                ExecutionEffectRef(
+                    kind="native_patch_certificate",
+                    ref_id=outcome.certificate.certificate_id,
+                )
+            )
+        status = {
+            NativeNormalizationOutcome.APPLIED: ExecutionAttemptStatus.COMPLETED,
+            NativeNormalizationOutcome.REJECTED: ExecutionAttemptStatus.REJECTED,
+        }.get(outcome.outcome, ExecutionAttemptStatus.ABSTAINED)
+        self._execution_journal.advance(
+            attempt,
+            status=status,
+            reason_code=outcome.reason,
+            effect_refs=tuple(effects),
+            details={
+                "function_ea": function_ea,
+                "candidate_count": len(candidates),
+            },
+        )
+        return outcome
 
 
 class ManagerOwnedNativePatchRequestExecutor:
@@ -107,6 +241,11 @@ class ManagerOwnedNativePatchRequestExecutor:
                 attempt,
                 status=ExecutionAttemptStatus.ABSTAINED,
                 reason_code=f"NATIVE_PLAN_UNAVAILABLE:{error}",
+                details={
+                    "kind": "native_plan_unavailable",
+                    "error_type": type(error).__name__,
+                    "message": str(error),
+                },
             )
             return _compatibility_result(request, f"native_plan_unavailable:{error}")
         except Exception:

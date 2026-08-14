@@ -8,6 +8,11 @@ Wraps existing IDA infrastructure:
 
 from __future__ import annotations
 
+import os
+
+import ida_hexrays
+import idaapi
+
 from d810.core.logging import getLogger
 from d810.core.typing import TYPE_CHECKING, Callable
 
@@ -74,23 +79,16 @@ from d810.hexrays.mutation.mba_mutation_events import StructuralMutationKind
 from d810.hexrays.mutation.patch_binding import (
     BoundModifier,
 )
+from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 from d810.transforms.cfg_transaction import CfgGenerationPoisoned
 
 if TYPE_CHECKING:
-    import ida_hexrays
     from d810.hexrays.mutation.deferred_modifier import (
         DeferredGraphModifier as DeferredGraphModifierType,
     )
     from d810.hexrays.mutation.patch_transaction import BoundPatchCfgTransaction
 
 logger = getLogger(__name__)
-
-import os
-
-import ida_hexrays
-import idaapi
-
-from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 
 
 def _block_kind_from_hexrays(block_type: int) -> BlockKind:
@@ -1358,7 +1356,7 @@ class IDAIRTranslator:
 
             case PatchRemoveInstruction(
                 block_serial=serial,
-                block_start_ea=block_start_ea,
+                expected_owner_ea=expected_owner_ea,
                 insn_ea=insn_ea,
                 ordinal=ordinal,
                 opcode=opcode,
@@ -1368,7 +1366,7 @@ class IDAIRTranslator:
             ):
                 modifier.queue_guarded_insn_remove(
                     serial,
-                    block_start_ea,
+                    expected_owner_ea,
                     insn_ea,
                     ordinal,
                     opcode,

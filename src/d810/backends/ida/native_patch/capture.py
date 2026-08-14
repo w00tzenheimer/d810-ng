@@ -62,7 +62,9 @@ from d810.transforms.native_patch_lowering import NativeEdgeCaptureEvidence
 from d810.transforms.native_patch_plan import (
     InheritedPatchRow,
     NativeAddressRange,
+    NativeFunctionFlowRef,
     NativeFunctionOwnership,
+    NativeFunctionTypeInfo,
     NativeIncomingRef,
     NativeItemHead,
     NativeItemKind,
@@ -305,6 +307,9 @@ class IdaLiveDatabaseReader:
 
     def read_function_ownership(self, ea: int) -> NativeFunctionOwnership | None:
         import ida_funcs
+        import ida_nalt
+        import ida_typeinf
+        import ida_xref
 
         func = ida_funcs.get_func(ea)
         if func is None:
@@ -322,7 +327,52 @@ class IdaLiveDatabaseReader:
         if not chunk_ranges:
             chunk_ranges = [NativeAddressRange(int(func.start_ea), int(func.end_ea))]
 
+        def _inside_function(candidate_ea: int) -> bool:
+            return any(
+                chunk.start_ea <= candidate_ea < chunk.end_ea for chunk in chunk_ranges
+            )
+
+        flow_refs: set[NativeFunctionFlowRef] = set()
+        for chunk in chunk_ranges:
+            for source_ea in range(chunk.start_ea, chunk.end_ea):
+                xref = ida_xref.xrefblk_t()
+                ok = xref.first_from(source_ea, ida_xref.XREF_ALL)
+                while ok:
+                    target_ea = int(xref.to)
+                    if xref.iscode and _inside_function(target_ea):
+                        flow_refs.add(
+                            NativeFunctionFlowRef(
+                                source_ea=int(source_ea),
+                                target_ea=target_ea,
+                                xref_type=int(xref.type),
+                                user=bool(xref.user),
+                            )
+                        )
+                    ok = xref.next_from()
+
+        type_info = None
+        tif = ida_typeinf.tinfo_t()
+        if ida_nalt.get_tinfo(tif, int(func.start_ea)):
+            serialized = tif.serialize()
+            if not isinstance(serialized, tuple) or len(serialized) != 3:
+                return None
+            type_bytes, field_bytes, field_comment_bytes = serialized
+            if not isinstance(type_bytes, bytes) or not type_bytes:
+                return None
+            type_info = NativeFunctionTypeInfo(
+                type_bytes=type_bytes,
+                field_bytes=(bytes(field_bytes) if field_bytes is not None else None),
+                field_comment_bytes=(
+                    bytes(field_comment_bytes)
+                    if field_comment_bytes is not None
+                    else None
+                ),
+            )
+
         return NativeFunctionOwnership(
             owning_function_entry_ea=int(func.start_ea),
             chunk_ranges=tuple(chunk_ranges),
+            flow_refs=tuple(sorted(flow_refs)),
+            function_flags=int(ida_funcs.get_func_flags(int(func.start_ea))),
+            type_info=type_info,
         )

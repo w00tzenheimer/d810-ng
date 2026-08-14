@@ -920,6 +920,18 @@ class D810Manager:
                 "native preanalysis generated-restart budget exhausted with "
                 f"a restart still pending for 0x{function_ea:X}"
             )
+        dead_edge_normalizer = getattr(self, "_dead_edge_normalizer", None)
+        if callable(dead_edge_normalizer):
+            from d810.manager.native_normalization import NativeNormalizationOutcome
+
+            native_outcome = dead_edge_normalizer(function_ea)
+            if native_outcome.outcome is NativeNormalizationOutcome.APPLIED:
+                # The gateway has completed its mandatory controlled redo, but
+                # the object returned by the original top-level decompile was
+                # captured before the certified byte overlay. Return a fresh
+                # caller-owned result rather than an invalidated cfunc.
+                invalidate_cached_cfunc()
+                result = decompile()
         return result
 
     @property
@@ -1894,14 +1906,25 @@ class D810Manager:
             IdaNativeByteWriter,
             NativePatchGateway,
         )
+        from d810.backends.ida.native_patch.encoder import MinimalX86BranchEncoder
+        from d810.backends.ida.native_patch.dead_edge_oracle import (
+            build_dead_edge_semantic_plan,
+            find_dead_edges_for_function,
+        )
         from d810.backends.ida.native_patch.indirect_label_plan import (
             IndirectLabelPlanRequest,
             build_indirect_label_metadata_plan,
+        )
+        from d810.backends.ida.native_patch.issuer import (
+            NativePatchIssuerRegistry,
+            dead_edge_semantic_issuers,
+            indirect_label_materializer_issuer,
         )
         from d810.backends.ida.native_patch.journal import SQLiteNativePatchJournal
         from d810.backends.ida.native_patch.metadata import IdaMetadataActionExecutor
         from d810.backends.ida.native_patch.reanalysis import (
             IdaFunctionExtentRestorer,
+            IdaFunctionFlowRestorer,
             IdaFunctionReanalyzer,
         )
         from d810.core.persistence import NetnodeOptimizationStorage
@@ -1911,11 +1934,18 @@ class D810Manager:
             set_indirect_materialization_default_executor,
         )
         from d810.manager.native_writer_migration import (
+            ManagerOwnedDeadEdgeNormalizer,
             ManagerOwnedNativePatchRequestExecutor,
             PreparedNativePatchRequest,
             native_patch_function_is_authorized,
         )
-        from d810.manager.native_normalization import recover_startup
+        from d810.manager.native_normalization import (
+            NativeNormalizationRequest,
+            authorize_and_apply,
+            recover_startup,
+        )
+
+        self._dead_edge_normalizer = None
 
         if self._native_patch_journal is not None:
             self._native_patch_journal.close()
@@ -1927,30 +1957,11 @@ class D810Manager:
             certificate_store, "set_native_patch_blob"
         ):
             certificate_store = NetnodeOptimizationStorage()
-        gateway = NativePatchGateway(
-            journal=self._native_patch_journal,
-            reader=IdaLiveDatabaseReader(),
-            writer=IdaNativeByteWriter(),
-            # Metadata-only plans never ask the byte encoder to decode their
-            # immutable anchor.  Raise loudly if a future refactor violates
-            # that operation contract instead of accepting a fake decoder.
-            decode_replacement=lambda _ea, _data: (_ for _ in ()).throw(
-                RuntimeError("metadata-only plan attempted byte decoding")
-            ),
-            reanalyzer=IdaFunctionReanalyzer(),
-            extent_restorer=IdaFunctionExtentRestorer(),
-            metadata_executor=IdaMetadataActionExecutor(),
-            cache_invalidator=IdaCfuncCacheInvalidator(),
-            caller_discovery=IdaCallerDiscovery(),
-            redo_decompiler=IdaControlledRedoDecompiler(),
-            certificate_store=certificate_store,
-            d810_version="native-writer-migration",
-        )
-        # Crash recovery is a startup responsibility, but the SQLite journal
-        # is global while an IDB is not.  Read the IDB-local attestation and
-        # recover only transactions bearing this exact durable UUID; a missing
-        # or malformed attestation fails closed rather than applying another
-        # database's record to the open IDB.
+
+        # A destructive gateway cannot exist without the durable IDB identity
+        # it must enforce on direct restore/recover calls. Load that identity
+        # before construction; startup with no valid attestation leaves the
+        # native writer unregistered rather than installing an unscoped API.
         from d810.backends.hexrays.input_identity_attestation import (
             InputIdentityAttestationMalformed,
             NetnodeInputIdentityAttestationStore,
@@ -1959,24 +1970,50 @@ class D810Manager:
         try:
             attestation = NetnodeInputIdentityAttestationStore().load()
         except InputIdentityAttestationMalformed:
-            logger.exception(
-                "native patch startup recovery skipped: malformed IDB identity"
-            )
+            logger.exception("native patch gateway skipped: malformed IDB identity")
+            set_indirect_materialization_default_executor(None)
+            return
         except Exception:
-            logger.exception(
-                "native patch startup recovery skipped: unavailable IDB identity"
-            )
-        else:
-            if attestation is None:
-                logger.warning(
-                    "native patch startup recovery skipped: no durable IDB identity"
+            logger.exception("native patch gateway skipped: unavailable IDB identity")
+            set_indirect_materialization_default_executor(None)
+            return
+        if attestation is None:
+            logger.warning("native patch gateway skipped: no durable IDB identity")
+            set_indirect_materialization_default_executor(None)
+            return
+
+        gateway = NativePatchGateway(
+            journal=self._native_patch_journal,
+            reader=IdaLiveDatabaseReader(),
+            writer=IdaNativeByteWriter(),
+            decode_replacement=MinimalX86BranchEncoder().decode,
+            reanalyzer=IdaFunctionReanalyzer(),
+            extent_restorer=IdaFunctionExtentRestorer(),
+            flow_restorer=IdaFunctionFlowRestorer(),
+            metadata_executor=IdaMetadataActionExecutor(),
+            cache_invalidator=IdaCfuncCacheInvalidator(),
+            caller_discovery=IdaCallerDiscovery(),
+            redo_decompiler=IdaControlledRedoDecompiler(),
+            certificate_store=certificate_store,
+            issuer_registry=NativePatchIssuerRegistry(
+                (
+                    indirect_label_materializer_issuer(),
+                    *dead_edge_semantic_issuers(),
                 )
-            else:
-                recover_startup(
-                    journal=self._native_patch_journal,
-                    gateway=gateway,
-                    database_identity=attestation.database_uuid,
-                )
+            ),
+            current_database_identity=attestation.database_uuid,
+            d810_version="native-writer-migration",
+        )
+        # Crash recovery is a startup responsibility, but the SQLite journal
+        # is global while an IDB is not.  Read the IDB-local attestation and
+        # recover only transactions bearing this exact durable UUID; a missing
+        # or malformed attestation fails closed rather than applying another
+        # database's record to the open IDB.
+        recover_startup(
+            journal=self._native_patch_journal,
+            gateway=gateway,
+            database_identity=attestation.database_uuid,
+        )
 
         enabled = bool(self.config.get("native_patch_enabled", False))
         if not enabled:
@@ -2079,6 +2116,52 @@ class D810Manager:
                 parent_attempt_for_request=_parent_attempt,
                 build_plan=_build,
             )
+        )
+
+        def _dead_edge_parent(function_ea: int):
+            session = self.decompilation_lifecycle.current_session(function_ea)
+            if session is None or session.preanalysis_attempt_id is None:
+                session, _created = self.decompilation_lifecycle.ensure_hexrays_session(
+                    function_ea=int(function_ea),
+                    database_identity=self._database_identity,
+                )
+            if session.preanalysis_attempt_id is None:
+                raise RuntimeError("native semantic pass has no preanalysis parent")
+            return session.preanalysis_attempt_id
+
+        def _discover_dead_edges(function_ea: int):
+            session = self.decompilation_lifecycle.current_session(function_ea)
+            if session is None:
+                session, _created = self.decompilation_lifecycle.ensure_hexrays_session(
+                    function_ea=int(function_ea),
+                    database_identity=self._database_identity,
+                )
+            self.decompilation_lifecycle.begin_native_preanalysis(session)
+            try:
+                return find_dead_edges_for_function(int(function_ea))
+            finally:
+                self.decompilation_lifecycle.finish_native_preanalysis(session)
+
+        self._dead_edge_normalizer = ManagerOwnedDeadEdgeNormalizer(
+            gateway=gateway,
+            user_enabled=lambda function_ea: native_patch_function_is_authorized(
+                globally_available=bool(self.config.get("native_patch_enabled", False)),
+                function_tags=self.get_function_tags(function_ea),
+            ),
+            execution_journal=self._native_patch_execution_journal,
+            parent_attempt_for_function=_dead_edge_parent,
+            discover_candidates=_discover_dead_edges,
+            build_plan=lambda function_ea, candidates, attempt_id: (
+                build_dead_edge_semantic_plan(
+                    function_ea,
+                    candidates,
+                    authorizing_attempt_id=attempt_id,
+                )
+            ),
+            apply_plan=lambda plan: authorize_and_apply(
+                NativeNormalizationRequest(plan=plan, user_enabled=True),
+                gateway=gateway,
+            ),
         )
 
     def _get_execution_metadata(

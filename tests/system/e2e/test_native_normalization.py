@@ -49,6 +49,10 @@ from d810.backends.ida.native_patch.gateway import (  # noqa: E402
     IdaNativeByteWriter,
     NativePatchGateway,
 )
+from d810.backends.ida.native_patch.issuer import (  # noqa: E402
+    NativePatchIssuerContract,
+    NativePatchIssuerRegistry,
+)
 from d810.backends.ida.native_patch.journal import SQLiteNativePatchJournal  # noqa: E402
 from d810.backends.ida.native_patch.observation import observe_function  # noqa: E402
 from d810.backends.ida.native_patch.origin_mapper import (  # noqa: E402
@@ -57,6 +61,7 @@ from d810.backends.ida.native_patch.origin_mapper import (  # noqa: E402
 )
 from d810.backends.ida.native_patch.reanalysis import (  # noqa: E402
     IdaFunctionExtentRestorer,
+    IdaFunctionFlowRestorer,
     IdaFunctionReanalyzer,
 )
 from d810.core.execution_journal import (  # noqa: E402
@@ -191,10 +196,22 @@ def _build_gateway(journal) -> NativePatchGateway:
         decode_replacement=MinimalX86BranchEncoder().decode,
         reanalyzer=IdaFunctionReanalyzer(),
         extent_restorer=IdaFunctionExtentRestorer(),
+        flow_restorer=IdaFunctionFlowRestorer(),
         cache_invalidator=IdaCfuncCacheInvalidator(),
         caller_discovery=IdaCallerDiscovery(),
         redo_decompiler=IdaControlledRedoDecompiler(),
         certificate_store=SQLiteOptimizationStorage(":memory:"),
+        issuer_registry=NativePatchIssuerRegistry(
+            (
+                NativePatchIssuerContract(
+                    issuer_id="e2e-native-normalization-issuer",
+                    patch_class="lifting_normalization",
+                    proof_ids=frozenset({"e2e-native-normalization-proof"}),
+                    provenance=("e2e-native-normalization",),
+                ),
+            )
+        ),
+        current_database_identity="e2e-native-normalization",
         d810_version="e2e-test",
     )
 

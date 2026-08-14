@@ -343,6 +343,35 @@ class SQLiteNativePatchJournal:
             )
             self._conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS native_patch_operation_flow_refs (
+                    transaction_id TEXT NOT NULL,
+                    operation_id TEXT NOT NULL,
+                    ref_index INTEGER NOT NULL,
+                    source_ea INTEGER NOT NULL,
+                    target_ea INTEGER NOT NULL,
+                    xref_type INTEGER NOT NULL,
+                    is_user INTEGER NOT NULL,
+                    PRIMARY KEY (transaction_id, operation_id, ref_index)
+                )
+                """
+            )
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS native_patch_operation_function_metadata (
+                    transaction_id TEXT NOT NULL,
+                    operation_id TEXT NOT NULL,
+                    owning_function_entry_ea INTEGER NOT NULL,
+                    function_flags INTEGER NOT NULL,
+                    has_type_info INTEGER NOT NULL,
+                    type_bytes BLOB,
+                    field_bytes BLOB,
+                    field_comment_bytes BLOB,
+                    PRIMARY KEY (transaction_id, operation_id)
+                )
+                """
+            )
+            self._conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS native_patch_operation_bytes (
                     seq INTEGER PRIMARY KEY AUTOINCREMENT,
                     transaction_id TEXT NOT NULL,
@@ -634,6 +663,49 @@ class SQLiteNativePatchJournal:
                             chunk.end_ea,
                         ),
                     )
+                for ref_index, ref in enumerate(ownership.flow_refs):
+                    self._conn.execute(
+                        """
+                        INSERT INTO native_patch_operation_flow_refs
+                            (transaction_id, operation_id, ref_index,
+                             source_ea, target_ea, xref_type, is_user)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            transaction_id.value,
+                            op.operation_id,
+                            ref_index,
+                            ref.source_ea,
+                            ref.target_ea,
+                            ref.xref_type,
+                            int(ref.user),
+                        ),
+                    )
+                type_info = ownership.type_info
+                self._conn.execute(
+                    """
+                    INSERT INTO native_patch_operation_function_metadata
+                        (transaction_id, operation_id,
+                         owning_function_entry_ea, function_flags,
+                         has_type_info, type_bytes, field_bytes,
+                         field_comment_bytes)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        transaction_id.value,
+                        op.operation_id,
+                        ownership.owning_function_entry_ea,
+                        ownership.function_flags,
+                        int(type_info is not None),
+                        type_info.type_bytes if type_info is not None else None,
+                        type_info.field_bytes if type_info is not None else None,
+                        (
+                            type_info.field_comment_bytes
+                            if type_info is not None
+                            else None
+                        ),
+                    ),
+                )
                 for offset, ea in enumerate(range(op.range.start_ea, op.range.end_ea)):
                     self._conn.execute(
                         """
@@ -685,6 +757,11 @@ class SQLiteNativePatchJournal:
             ),
             state=NativeJournalState(row["state"]),
             has_metadata_actions=bool(row["has_metadata_actions"]),
+            database_identity=(
+                str(row["idb_uuid"])
+                if row["idb_uuid"] is not None and str(row["idb_uuid"]).strip()
+                else None
+            ),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
@@ -975,6 +1052,70 @@ class SQLiteNativePatchJournal:
             result[operation_id] = (
                 entry_ea,
                 chunks + ((int(row["chunk_start_ea"]), int(row["chunk_end_ea"])),),
+            )
+        return result
+
+    def operation_flow_refs(
+        self, transaction_id: NativePatchTransactionId
+    ) -> dict[str, tuple[tuple[int, int, int, bool], ...]]:
+        """Exact pre-patch internal code refs per operation."""
+        rows = self._conn.execute(
+            """
+            SELECT operation_id, source_ea, target_ea, xref_type, is_user
+            FROM native_patch_operation_flow_refs
+            WHERE transaction_id = ?
+            ORDER BY operation_id, ref_index
+            """,
+            (transaction_id.value,),
+        ).fetchall()
+        result: dict[str, tuple[tuple[int, int, int, bool], ...]] = {}
+        for row in rows:
+            operation_id = str(row["operation_id"])
+            result[operation_id] = result.get(operation_id, ()) + (
+                (
+                    int(row["source_ea"]),
+                    int(row["target_ea"]),
+                    int(row["xref_type"]),
+                    bool(row["is_user"]),
+                ),
+            )
+        return result
+
+    def operation_function_metadata(
+        self, transaction_id: NativePatchTransactionId
+    ) -> dict[str, tuple[int, tuple[bytes, bytes | None, bytes | None] | None]]:
+        """Exact inherited flags and SDK-serialized tinfo per operation."""
+        rows = self._conn.execute(
+            """
+            SELECT operation_id, function_flags, has_type_info, type_bytes,
+                   field_bytes, field_comment_bytes
+            FROM native_patch_operation_function_metadata
+            WHERE transaction_id = ?
+            ORDER BY operation_id
+            """,
+            (transaction_id.value,),
+        ).fetchall()
+        result: dict[
+            str, tuple[int, tuple[bytes, bytes | None, bytes | None] | None]
+        ] = {}
+        for row in rows:
+            serialized = None
+            if bool(row["has_type_info"]):
+                type_bytes = row["type_bytes"]
+                if type_bytes is None:
+                    continue
+                serialized = (
+                    bytes(type_bytes),
+                    bytes(row["field_bytes"])
+                    if row["field_bytes"] is not None
+                    else None,
+                    bytes(row["field_comment_bytes"])
+                    if row["field_comment_bytes"] is not None
+                    else None,
+                )
+            result[str(row["operation_id"])] = (
+                int(row["function_flags"]),
+                serialized,
             )
         return result
 

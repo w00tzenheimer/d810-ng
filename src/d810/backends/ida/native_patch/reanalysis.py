@@ -28,11 +28,14 @@ import time
 from dataclasses import dataclass
 
 from d810.core.typing import Protocol, runtime_checkable
+from d810.transforms.native_patch_plan import NativeFunctionOwnership
 
 __all__ = [
     "FunctionExtentRestorer",
+    "FunctionFlowRestorer",
     "FunctionReanalyzer",
     "IdaFunctionExtentRestorer",
+    "IdaFunctionFlowRestorer",
     "IdaFunctionReanalyzer",
     "ReanalysisReceipt",
     "reanalyze_and_wait",
@@ -134,12 +137,67 @@ class FunctionExtentRestorer(Protocol):
     opinion, using ownership captured before the patch.
     """
 
-    def restore_function_extent(self, entry_ea: int, end_ea: int) -> bool:
-        """Force the function at ``entry_ea`` to end at ``end_ea``.
-
-        Returns whether the extent afterwards matches what was asked for.
-        """
+    def restore_function_ownership(self, ownership: NativeFunctionOwnership) -> bool:
+        """Restore exact chunks, flags, and type metadata from ``ownership``."""
         ...
+
+
+@runtime_checkable
+class FunctionFlowRestorer(Protocol):
+    """Reconcile function-internal code refs captured before a patch."""
+
+    def restore_function_flow_refs(self, ownership: NativeFunctionOwnership) -> bool:
+        """Return whether live internal refs exactly match ``ownership``."""
+        ...
+
+
+class IdaFunctionFlowRestorer:
+    """Restore exact internal IDA code refs after byte/extent reanalysis."""
+
+    @staticmethod
+    def _live_refs(ownership: NativeFunctionOwnership):
+        import ida_xref
+
+        def _inside(candidate_ea: int) -> bool:
+            return any(
+                chunk.start_ea <= candidate_ea < chunk.end_ea
+                for chunk in ownership.chunk_ranges
+            )
+
+        refs: set[tuple[int, int, int, bool]] = set()
+        for chunk in ownership.chunk_ranges:
+            for source_ea in range(chunk.start_ea, chunk.end_ea):
+                xref = ida_xref.xrefblk_t()
+                ok = xref.first_from(source_ea, ida_xref.XREF_ALL)
+                while ok:
+                    target_ea = int(xref.to)
+                    if xref.iscode and _inside(target_ea):
+                        refs.add(
+                            (
+                                int(source_ea),
+                                target_ea,
+                                int(xref.type),
+                                bool(xref.user),
+                            )
+                        )
+                    ok = xref.next_from()
+        return refs
+
+    def restore_function_flow_refs(self, ownership: NativeFunctionOwnership) -> bool:
+        import ida_xref
+
+        expected = {
+            (ref.source_ea, ref.target_ea, ref.xref_type, ref.user)
+            for ref in ownership.flow_refs
+        }
+        live = self._live_refs(ownership)
+        for source_ea, target_ea, _xref_type, _user in sorted(live - expected):
+            ida_xref.del_cref(source_ea, target_ea, 0)
+        for source_ea, target_ea, xref_type, user in sorted(expected - live):
+            flags = int(xref_type) | (ida_xref.XREF_USER if user else 0)
+            if not ida_xref.add_cref(source_ea, target_ea, flags):
+                return False
+        return self._live_refs(ownership) == expected
 
 
 class IdaFunctionExtentRestorer:
@@ -149,11 +207,46 @@ class IdaFunctionExtentRestorer:
     constructs this class (per this repository's no-IDA-mocking rule).
     """
 
-    def restore_function_extent(self, entry_ea: int, end_ea: int) -> bool:
-        import ida_auto
+    @staticmethod
+    def _live_chunk_ranges(func) -> tuple[tuple[int, int], ...]:
         import ida_funcs
 
-        entry_ea, end_ea = int(entry_ea), int(end_ea)
+        ranges: list[tuple[int, int]] = []
+        iterator = ida_funcs.func_tail_iterator_t(func)
+        ok = iterator.main()
+        while ok:
+            chunk = iterator.chunk()
+            ranges.append((int(chunk.start_ea), int(chunk.end_ea)))
+            ok = iterator.next()
+        return tuple(ranges)
+
+    @staticmethod
+    def _serialized_type(entry_ea: int):
+        import ida_nalt
+        import ida_typeinf
+
+        tif = ida_typeinf.tinfo_t()
+        if not ida_nalt.get_tinfo(tif, entry_ea):
+            return None
+        return tuple(
+            bytes(part) if part is not None else None for part in tif.serialize()
+        )
+
+    def restore_function_ownership(self, ownership: NativeFunctionOwnership) -> bool:
+        import ida_auto
+        import ida_funcs
+        import ida_nalt
+        import ida_typeinf
+
+        entry_ea = int(ownership.owning_function_entry_ea)
+        expected_chunks = tuple(
+            (int(chunk.start_ea), int(chunk.end_ea)) for chunk in ownership.chunk_ranges
+        )
+        entry_chunks = tuple(chunk for chunk in expected_chunks if chunk[0] == entry_ea)
+        if len(entry_chunks) != 1:
+            return False
+        entry_end_ea = entry_chunks[0][1]
+        expected_tails = set(expected_chunks) - {entry_chunks[0]}
 
         # Deliberately does NOT del_items + create_insn across the extent.
         # That was tried and measured worse on ``fake_jump_opaque_predicate``:
@@ -163,30 +256,64 @@ class IdaFunctionExtentRestorer:
         # record apart faster than re-decoding puts it back.
         func = ida_funcs.get_func(entry_ea)
         if func is None:
-            if not ida_funcs.add_func(entry_ea, end_ea):
+            if not ida_funcs.add_func(entry_ea, entry_end_ea):
                 return False
-        elif int(func.end_ea) != end_ea:
-            if not ida_funcs.set_func_end(entry_ea, end_ea):
+        elif int(func.end_ea) != entry_end_ea:
+            if not ida_funcs.set_func_end(entry_ea, entry_end_ea):
                 return False
 
-        # Clear the truncation's side effects on the function record itself.
-        #
-        # Measured on ``fake_jump_opaque_predicate``: with bytes, boundaries
-        # and items all restored exactly, the function still decompiled to
-        # ``void f(int, int) { ; }``. While it was truncated mid-body it ended
-        # without a ``ret``, so IDA marked it FUNC_NORET and stored a guessed
-        # ``void`` prototype. Neither is derived from the bytes, so neither is
-        # undone by putting the bytes back -- they have to be cleared, and
-        # then the type re-guessed from the restored extent.
+        func = ida_funcs.get_func(entry_ea)
+        if func is None:
+            return False
+        live_chunks = set(self._live_chunk_ranges(func))
+        for start_ea, _end_ea in sorted(live_chunks - set(expected_chunks)):
+            if start_ea == entry_ea:
+                continue
+            if not ida_funcs.remove_func_tail(func, start_ea):
+                return False
+        func = ida_funcs.get_func(entry_ea)
+        if func is None:
+            return False
+        live_chunks = set(self._live_chunk_ranges(func))
+        for start_ea, end_ea in sorted(expected_tails - live_chunks):
+            if not ida_funcs.append_func_tail(func, start_ea, end_ea):
+                return False
+
+        for start_ea, end_ea in expected_chunks:
+            ida_auto.plan_and_wait(start_ea, end_ea)
+
+        if not ida_funcs.set_func_flags(entry_ea, ownership.function_flags):
+            return False
+        if ownership.type_info is None:
+            ida_nalt.del_tinfo(entry_ea)
+        else:
+            tif = ida_typeinf.tinfo_t()
+            if not tif.deserialize(
+                None,
+                ownership.type_info.type_bytes,
+                ownership.type_info.field_bytes,
+                ownership.type_info.field_comment_bytes,
+            ):
+                return False
+            if not ida_typeinf.apply_tinfo(
+                entry_ea,
+                tif,
+                ida_typeinf.TINFO_DEFINITE,
+            ):
+                return False
+
         restored = ida_funcs.get_func(entry_ea)
-        if restored is not None and restored.flags & ida_funcs.FUNC_NORET:
-            restored.flags &= ~ida_funcs.FUNC_NORET
-            ida_funcs.update_func(restored)
-
-        import ida_nalt
-
-        ida_nalt.del_tinfo(entry_ea)
-
-        ida_auto.plan_and_wait(entry_ea, end_ea)
-        restored = ida_funcs.get_func(entry_ea)
-        return restored is not None and int(restored.end_ea) == end_ea
+        if restored is None:
+            return False
+        expected_type = None
+        if ownership.type_info is not None:
+            expected_type = (
+                ownership.type_info.type_bytes,
+                ownership.type_info.field_bytes,
+                ownership.type_info.field_comment_bytes,
+            )
+        return (
+            self._live_chunk_ranges(restored) == expected_chunks
+            and int(ida_funcs.get_func_flags(entry_ea)) == ownership.function_flags
+            and self._serialized_type(entry_ea) == expected_type
+        )

@@ -63,6 +63,7 @@ from d810.capabilities.frontend_normalization import (
     FrontendNormalizationPreparedBodyCapability,
 )
 from d810.manager.decompilation_lifecycle import DecompilationSessionContext
+from d810.manager.native_normalization import NativeNormalizationOutcome
 from d810.optimizers.microcode.flow.jumps import computed_goto_resolver
 from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
     resolver_session_state,
@@ -1137,6 +1138,54 @@ def test_decompile_controller_runs_one_followup_for_pending_generated_restart(
         ("invalidate", 0x401000),
         ("decompile", 0x401000),
         ("pending", 0x401000),
+    ]
+
+
+def test_decompile_controller_runs_stage_b_after_decompile_and_refreshes_applied_output(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, int]] = []
+
+    class _Lifecycle:
+        @staticmethod
+        def current_session(_function_ea: int):
+            return None
+
+        @staticmethod
+        def has_exhausted_poison_restart(_function_ea: int) -> bool:
+            return False
+
+        @staticmethod
+        def has_pending_generated_restart(_function_ea: int) -> bool:
+            return False
+
+    manager = D810Manager.__new__(D810Manager)
+    manager.decompilation_lifecycle = _Lifecycle()
+    manager._dead_edge_normalizer = lambda function_ea: (
+        calls.append(("stage_b", function_ea))
+        or SimpleNamespace(outcome=NativeNormalizationOutcome.APPLIED)
+    )
+    monkeypatch.setattr(
+        manager,
+        "prepare_native_preanalysis",
+        lambda function_ea: calls.append(("prepare", function_ea)) or 0,
+    )
+    outputs = iter(("before-native", "after-native"))
+
+    result = manager.decompile_with_native_preanalysis(
+        0x401000,
+        lambda: calls.append(("decompile", 0x401000)) or next(outputs),
+        lambda: calls.append(("invalidate", 0x401000)),
+    )
+
+    assert result == "after-native"
+    assert calls == [
+        ("prepare", 0x401000),
+        ("invalidate", 0x401000),
+        ("decompile", 0x401000),
+        ("stage_b", 0x401000),
+        ("invalidate", 0x401000),
+        ("decompile", 0x401000),
     ]
 
 

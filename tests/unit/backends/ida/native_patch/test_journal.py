@@ -32,6 +32,7 @@ from d810.capabilities.native_patch import (
 )
 from d810.transforms.native_patch_plan import (
     NativeAddressRange,
+    NativeFunctionTypeInfo,
     NativeMetadataAction,
     NativeMetadataActionKind,
 )
@@ -73,6 +74,7 @@ class TestPrepare:
         record = store.prepare(p)
         assert record.plan_hash == p.plan_hash
         assert record.authorizing_attempt_id == p.authorizing_attempt_id
+        assert record.database_identity == p.database_identity.idb_uuid
 
     def test_prepare_without_metadata_actions(self, store) -> None:
         record = store.prepare(fixtures.plan())
@@ -739,6 +741,58 @@ class TestPrePatchFunctionOwnershipIsPersisted:
             assert chunks == tuple(
                 (r.start_ea, r.end_ea) for r in expected.chunk_ranges
             )
+
+    def test_prepare_persists_exact_internal_flow_refs(self, store) -> None:
+        plan = fixtures.plan()
+        record = store.prepare(plan)
+
+        refs = store.operation_flow_refs(record.transaction_id)
+
+        for op in plan.operations:
+            assert refs[op.operation_id] == tuple(
+                (ref.source_ea, ref.target_ea, ref.xref_type, ref.user)
+                for ref in op.restore_snapshot.function_ownership.flow_refs
+            )
+
+    def test_prepare_persists_exact_function_flags_type_and_tail_chunks(
+        self, store
+    ) -> None:
+        op = fixtures.operation()
+        ownership = dataclasses.replace(
+            op.restore_snapshot.function_ownership,
+            chunk_ranges=(
+                NativeAddressRange(0x1000, 0x1800),
+                NativeAddressRange(0x2000, 0x2010),
+            ),
+            function_flags=0x4,
+            type_info=NativeFunctionTypeInfo(
+                type_bytes=b"\x0cp\x07\x02\x05",
+                field_bytes=b"\x06value",
+                field_comment_bytes=None,
+            ),
+        )
+        op = dataclasses.replace(
+            op,
+            expected_function_ownership=ownership,
+            restore_snapshot=dataclasses.replace(
+                op.restore_snapshot,
+                function_ownership=ownership,
+            ),
+        )
+        record = store.prepare(fixtures.plan(operations=(op,)))
+
+        read_metadata = getattr(store, "operation_function_metadata", None)
+        assert callable(read_metadata), "journal does not expose function metadata"
+        assert read_metadata(record.transaction_id) == {
+            op.operation_id: (
+                0x4,
+                (b"\x0cp\x07\x02\x05", b"\x06value", None),
+            )
+        }
+        assert store.operation_ownership(record.transaction_id)[op.operation_id][1] == (
+            (0x1000, 0x1800),
+            (0x2000, 0x2010),
+        )
 
     def test_ownership_survives_reopening_the_journal(self, tmp_path) -> None:
         """Durability, not just in-memory bookkeeping -- a crash between apply

@@ -72,16 +72,17 @@ Any check failing aborts that candidate (fail closed) rather than emitting an
 unproven patch -- the exact posture the P0 counterexample says the pipeline
 was missing.
 
-This is Stage A only
+Named semantic issuance
 --------------------------------------------------------------------------
 
 The proof this module derives is labelled by ``proof_kind``/``proof_reason``
-as coming from d810's live analysis; it is not issued by a named,
-registered D810 pass carrying a plan hash (report section 6.2). Routing
-through a named pass issuer is Stage B and is explicitly not built here --
-this module's output (:class:`DeadEdgeCandidate`) is shaped so a Stage B
-issuer can wrap it (``proof_kind``/``proof_reason``/the constant facts are
-already present) without this module changing.
+and :func:`build_dead_edge_semantic_plan` is the production-owned Stage B
+issuer.  It recaptures each native range, independently correlates its origin,
+lowers only the action the proof authorized, binds the proof digest to the
+target-CFG fingerprint, and emits a plan for one of the exact contracts in
+``d810.backends.ida.native_patch.issuer``.  Missing live identity, mixed proof
+kinds, incomplete origin coverage, or failed lowering is an abstention before
+the journal or IDB is touched.
 
 Read-only
 --------------------------------------------------------------------------
@@ -97,15 +98,18 @@ live native decode. Turning a candidate into bytes remains
 from __future__ import annotations
 
 import enum
+import hashlib
 from dataclasses import dataclass
 
 import ida_bytes
 import ida_hexrays
+import ida_ida
 import ida_ua
 import idaapi
 
 from d810.backends.ast.z3 import Z3MopProver
 from d810.core.logging import getLogger
+from d810.core.execution_journal import ExecutionAttemptId
 from d810.evaluator.hexrays_microcode.single_trip_loop_extract import (
     PeelCandidate,
     find_single_trip_peels,
@@ -116,15 +120,29 @@ logger = getLogger("d810.backends.ida.native_patch.dead_edge_oracle")
 _SINGLE_TRIP_PROOF_KIND = "single_trip_loop_peel"
 _OPAQUE_PROOF_KIND = "z3_opaque_predicate"
 
-# Equality-shaped conditional jumps. ``are_equal``/``are_unequal`` decide these
-# exactly; relational jumps would need a general predicate discharge the prover
-# does not expose, so they are out of scope rather than approximated.
-_EQUALITY_JUMP_OPCODES = frozenset({ida_hexrays.m_jz, ida_hexrays.m_jnz})
+# Every two-operand Hex-Rays conditional relation, mapped to the closed
+# vocabulary discharged by ``Z3MopProver.prove_comparison``.  The signed and
+# unsigned spellings are intentionally distinct; collapsing them would be an
+# unsound native-branch authorization boundary.
+_JUMP_COMPARISONS = {
+    ida_hexrays.m_jz: "eq",
+    ida_hexrays.m_jnz: "ne",
+    ida_hexrays.m_jb: "ult",
+    ida_hexrays.m_jbe: "ule",
+    ida_hexrays.m_ja: "ugt",
+    ida_hexrays.m_jae: "uge",
+    ida_hexrays.m_jl: "slt",
+    ida_hexrays.m_jle: "sle",
+    ida_hexrays.m_jg: "sgt",
+    ida_hexrays.m_jge: "sge",
+}
 
 __all__ = [
     "DeadEdgeAction",
     "DeadEdgeCandidate",
     "DeadEdgeAbstention",
+    "DeadEdgePlanBuildError",
+    "build_dead_edge_semantic_plan",
     "find_dead_edges",
     "find_dead_edges_for_function",
     "generate_pre_lvars_microcode",
@@ -216,6 +234,216 @@ class DeadEdgeAbstention:
     related_block_serial: int | None
     proof_kind: str
     reason: str
+
+
+class DeadEdgePlanBuildError(ValueError):
+    """Live evidence cannot honestly issue a semantic dead-edge plan."""
+
+
+def _dead_edge_database_identity(function_ea: int):
+    import ida_nalt
+
+    from d810.backends.hexrays.native_preanalysis_key import (
+        resolve_native_preanalysis_identity,
+    )
+    from d810.transforms.native_patch_plan import NativeDatabaseIdentity
+
+    resolution = resolve_native_preanalysis_identity(
+        int(function_ea), profile_config={}
+    )
+    native_key = resolution.native_key
+    database_uuid = resolution.identity_resolution.database_uuid
+    if native_key is None or database_uuid is None:
+        raise DeadEdgePlanBuildError(
+            "missing attested loader identity or durable database UUID: "
+            + resolution.identity_resolution.reason
+        )
+    path = str(ida_nalt.get_input_file_path() or "<unnamed-idb>")
+    return NativeDatabaseIdentity(
+        idb_uuid=database_uuid,
+        input_file_hash=native_key.input_identity.removeprefix("sha256:"),
+        processor=native_key.processor,
+        bitness=native_key.bitness,
+        image_base=int(idaapi.get_imagebase()),
+        database_path_hash=hashlib.sha256(path.encode("utf-8")).hexdigest(),
+    )
+
+
+def _dead_edge_function_identity(reader, ownership):
+    from d810.transforms.native_patch_plan import NativeFunctionIdentity
+
+    chunks: list[bytes] = []
+    for chunk in ownership.chunk_ranges:
+        image = reader.read_current_bytes(chunk.start_ea, chunk.end_ea)
+        if image is None:
+            raise DeadEdgePlanBuildError(
+                f"cannot capture owning function chunk at {chunk.start_ea:#x}"
+            )
+        chunks.append(image)
+    if not chunks:
+        raise DeadEdgePlanBuildError("owning function has no captured chunks")
+    return NativeFunctionIdentity(
+        entry_ea=ownership.owning_function_entry_ea,
+        chunk_ranges=ownership.chunk_ranges,
+        inherited_bytes_hash=hashlib.sha256(b"".join(chunks)).hexdigest(),
+    )
+
+
+def build_dead_edge_semantic_plan(
+    function_ea: int,
+    candidates: tuple[DeadEdgeCandidate, ...],
+    *,
+    authorizing_attempt_id: ExecutionAttemptId,
+):
+    """Issue one fully captured semantic plan from production oracle proofs.
+
+    A plan deliberately contains one proof kind.  Mixed recognizers have
+    distinct issuer contracts and must be submitted as distinct plans rather
+    than laundering several proof authorities through the first candidate.
+    """
+
+    from d810.backends.ida.native_patch.capture import (
+        IdaLiveDatabaseReader,
+        capture_range_evidence,
+    )
+    from d810.backends.ida.native_patch.encoder import MinimalX86BranchEncoder
+    from d810.backends.ida.native_patch.origin_mapper import (
+        correlate_native_span,
+        ida_decoded_range_reader,
+    )
+    from d810.ir.native_origin import NativeOriginCoverage
+    from d810.transforms.native_patch_lowering import (
+        lower_direct_edge,
+        lower_removed_edge,
+    )
+    from d810.transforms.native_patch_plan import NativeAddressRange, NativePatchPlan
+
+    if not isinstance(authorizing_attempt_id, ExecutionAttemptId):
+        raise TypeError("authorizing_attempt_id must be an ExecutionAttemptId")
+    if not candidates:
+        raise DeadEdgePlanBuildError("at least one dead-edge candidate is required")
+    ordered = tuple(sorted(candidates, key=lambda candidate: candidate.site_ea))
+    proof_kinds = {candidate.proof_kind for candidate in ordered}
+    if len(proof_kinds) != 1:
+        raise DeadEdgePlanBuildError("one plan cannot mix dead-edge proof kinds")
+    proof_kind = ordered[0].proof_kind
+    if proof_kind not in {_SINGLE_TRIP_PROOF_KIND, _OPAQUE_PROOF_KIND}:
+        raise DeadEdgePlanBuildError(f"unsupported dead-edge proof kind {proof_kind!r}")
+    if any(candidate.function_ea != int(function_ea) for candidate in ordered):
+        raise DeadEdgePlanBuildError("candidate belongs to a different function")
+    if len({candidate.site_ea for candidate in ordered}) != len(ordered):
+        raise DeadEdgePlanBuildError("duplicate native site in dead-edge plan")
+
+    reader = IdaLiveDatabaseReader()
+    decoder = ida_decoded_range_reader()
+    encoder = MinimalX86BranchEncoder()
+    operations = []
+    origin_witnesses = []
+    ownership = None
+    for index, candidate in enumerate(ordered):
+        address_range = NativeAddressRange(
+            candidate.site_ea, candidate.site_ea + candidate.site_size
+        )
+        current_bytes = reader.read_current_bytes(
+            address_range.start_ea, address_range.end_ea
+        )
+        if current_bytes is None:
+            raise DeadEdgePlanBuildError(
+                f"cannot read candidate bytes at {candidate.site_ea:#x}"
+            )
+        origin_span = correlate_native_span(
+            address_range.start_ea,
+            address_range.end_ea,
+            decoder,
+            expected_bytes_hash=hashlib.sha256(current_bytes).hexdigest(),
+        )
+        if origin_span.coverage is not NativeOriginCoverage.COMPLETE:
+            raise DeadEdgePlanBuildError(
+                f"{origin_span.coverage.value} native origin at {candidate.site_ea:#x}"
+            )
+        captured = capture_range_evidence(
+            reader, address_range, function_ea=int(function_ea)
+        )
+        if not captured.ok or captured.evidence is None:
+            raise DeadEdgePlanBuildError(str(captured.reason))
+        candidate_ownership = captured.evidence.expected_function_ownership
+        if ownership is None:
+            ownership = candidate_ownership
+        elif candidate_ownership != ownership:
+            raise DeadEdgePlanBuildError(
+                "candidate captures disagree on exact function ownership"
+            )
+
+        operation_id = f"dead-edge-{proof_kind}-{index}"
+        if candidate.action is DeadEdgeAction.FORCE_FALLTHROUGH:
+            lowering = lower_removed_edge(
+                operation_id=operation_id,
+                origin_span=origin_span,
+                capture=captured.evidence,
+                provider=encoder,
+                provider_id="minimal-x86",
+                provider_version="1",
+                bitness=64 if ida_ida.inf_is_64bit() else 32,
+            )
+        else:
+            lowering = lower_direct_edge(
+                operation_id=operation_id,
+                origin_span=origin_span,
+                target_ea=candidate.proposed_target_ea,
+                known_instruction_heads=frozenset({candidate.proposed_target_ea}),
+                capture=captured.evidence,
+                provider=encoder,
+                provider_id="minimal-x86",
+                provider_version="1",
+                bitness=64 if ida_ida.inf_is_64bit() else 32,
+            )
+        if not lowering.ok or lowering.operation is None:
+            raise DeadEdgePlanBuildError(
+                f"cannot lower candidate at {candidate.site_ea:#x}: {lowering.reason}"
+            )
+        operations.append(lowering.operation)
+        origin_witnesses.append(repr(origin_span))
+
+    assert ownership is not None
+    function_identity = _dead_edge_function_identity(reader, ownership)
+    database_identity = _dead_edge_database_identity(int(function_ea))
+    proof_material = tuple(
+        (
+            candidate.describe(),
+            candidate.proof_facts,
+        )
+        for candidate in ordered
+    )
+    proof_digest = hashlib.sha256(repr(proof_material).encode("utf-8")).hexdigest()
+    origin_digest = hashlib.sha256(
+        repr(tuple(origin_witnesses)).encode("utf-8")
+    ).hexdigest()
+    sites = ",".join(f"{candidate.site_ea:#x}" for candidate in ordered)
+    return NativePatchPlan(
+        plan_id=f"dead-edge:{proof_digest[:16]}",
+        schema_version=1,
+        patch_class="semantic_deobfuscation",
+        database_identity=database_identity,
+        function_identity=function_identity,
+        inherited_function_fingerprint=function_identity.inherited_bytes_hash,
+        target_cfg_fingerprint=proof_digest,
+        native_origin_map_fingerprint=origin_digest,
+        architecture="x86",
+        bitness=database_identity.bitness,
+        endianness="little",
+        processor=database_identity.processor,
+        issuer_id=f"dead-edge-normalizer:{proof_kind}",
+        proof_id=f"{proof_kind}:function={int(function_ea):#x}:sites={sites}",
+        proof_hash=proof_digest,
+        provenance=(
+            proof_kind,
+            "dead_edge_oracle",
+            *(candidate.proof_reason for candidate in ordered),
+        ),
+        operations=tuple(operations),
+        fallback_policy="no_patch",
+        authorizing_attempt_id=authorizing_attempt_id,
+    )
 
 
 def _loop_nodes(mba, latch: int, header: int) -> set[int]:
@@ -410,12 +638,12 @@ def _find_opaque_edges(
     """Recognizer 2: a conditional branch whose direction Z3 proves constant.
 
     Queries d810's own :class:`~d810.backends.ast.z3.Z3MopProver` -- the same
-    prover the live opaque-predicate rules use -- on the two operands of an
-    equality-shaped microcode jump. ``are_equal``/``are_unequal`` each return
-    ``solver.check() == unsat`` on the *negation* of the claim, so a True is a
-    discharged proof over all values of the free operands, not a sampled
-    observation. Proving over all values is strictly stronger than proving
-    over reachable values, so the quantification errs safe.
+    prover the live opaque-predicate rules use -- on the two operands of a
+    microcode jump. ``prove_comparison`` checks both the exact signed/unsigned
+    predicate and its negation. A boolean verdict is therefore a discharged
+    proof over all values of the free operands, not a sampled observation;
+    ``None`` is an abstention. Proving over all values is strictly stronger
+    than proving over reachable values, so the quantification errs safe.
 
     Deliberately **not** ported from
     ``d810.optimizers.microcode.flow.jumps.opaque``. Those ``JnzRule*``
@@ -427,10 +655,9 @@ def _find_opaque_edges(
     any opaque predicate Z3 can discharge is covered, not just the fifteen
     shapes someone wrote a rule for.
 
-    Relational jumps (``m_jae``, ``m_jl``, ...) are out of scope here: the
-    prover exposes equality and always-zero queries, not a general predicate
-    discharge, so those branches are skipped rather than guessed at. Measured
-    on ``libobfuscated.dll``: 251 relational vs 735 equality-shaped.
+    All two-operand equality, signed-relational, and unsigned-relational jump
+    opcodes are covered. Other conditional shapes remain out of scope and are
+    skipped rather than approximated.
     """
     candidates: list[DeadEdgeCandidate] = []
     abstentions: list[DeadEdgeAbstention] = []
@@ -441,7 +668,8 @@ def _find_opaque_edges(
         if blk is None or blk.tail is None:
             continue
         tail = blk.tail
-        if tail.opcode not in _EQUALITY_JUMP_OPCODES:
+        comparison = _JUMP_COMPARISONS.get(tail.opcode)
+        if comparison is None:
             continue
 
         def _abstain(reason: str, *, _s: int = serial) -> None:
@@ -455,26 +683,26 @@ def _find_opaque_edges(
             )
 
         try:
-            equal = bool(prover.are_equal(tail.l, tail.r, blk=blk, ins=tail))
-            unequal = bool(prover.are_unequal(tail.l, tail.r, blk=blk, ins=tail))
+            # Native authorization must use the width-safe tri-state API for
+            # every predicate, including equality.  The legacy boolean helpers
+            # model all leaves as 32-bit values and cannot distinguish an
+            # unsupported width from a valid negative proof.
+            verdict = prover.prove_comparison(
+                tail.l,
+                tail.r,
+                comparison,
+                blk=blk,
+                ins=tail,
+            )
+            if verdict is None:
+                continue
+            always_taken = verdict
+            proof_reason = f"z3_proved_{comparison}_{str(verdict).lower()}"
         except Exception:
             # A prover failure is not evidence of anything. Skip silently:
             # this is indistinguishable from "undecided", not a proven
             # candidate that failed to map.
             continue
-
-        if equal and unequal:
-            # Both discharged means the solver contradicted itself, or the two
-            # operands were converted inconsistently. Either way the proof is
-            # worthless. Fail closed and say so -- this must never fire, and a
-            # silent skip would hide it if it ever did.
-            _abstain("CONTRADICTORY_PROOF")
-            continue
-        if not equal and not unequal:
-            continue  # undecided: not this pattern
-
-        # m_jz takes the branch when equal; m_jnz when unequal.
-        always_taken = equal if tail.opcode == ida_hexrays.m_jz else unequal
 
         site_ea = int(tail.ea)
         decoded = _decode_native(site_ea)
@@ -535,11 +763,7 @@ def _find_opaque_edges(
                 action=action,
                 block_serial=int(serial),
                 proof_kind=_OPAQUE_PROOF_KIND,
-                proof_reason=(
-                    "z3_proved_operands_always_equal"
-                    if equal
-                    else "z3_proved_operands_always_unequal"
-                ),
+                proof_reason=proof_reason,
                 proof_facts=(("microcode_opcode", int(tail.opcode)),),
             )
         )

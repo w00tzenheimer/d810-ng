@@ -1,0 +1,18 @@
+from d810.backends.ida.native_patch.indirect_label_plan import _missing_cref_targets
+
+
+def test_existing_automatic_flow_edge_satisfies_target_materialization() -> None:
+    assert (
+        _missing_cref_targets(
+            "cref3:0x2000@0x13@a",
+            {0x2000},
+        )
+        == ()
+    )
+
+
+def test_only_genuinely_missing_targets_require_user_edges() -> None:
+    assert _missing_cref_targets(
+        "cref3:0x2000@0x13@a,0x3000@0x11@u",
+        {0x2000, 0x3000, 0x4000, 0x5000},
+    ) == (0x4000, 0x5000)

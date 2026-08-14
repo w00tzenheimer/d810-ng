@@ -14,6 +14,7 @@ from __future__ import annotations
 import dataclasses
 
 import pytest
+import d810.transforms.native_patch_plan as native_patch_plan_model
 
 from d810.capabilities.native_patch import (
     EncodingProvider,
@@ -26,6 +27,7 @@ from d810.transforms.native_patch_plan import (
     NativeDatabaseIdentity,
     NativeEncodingEvidence,
     NativeFunctionIdentity,
+    NativeFunctionFlowRef,
     NativeFunctionOwnership,
     NativeItemHead,
     NativeItemKind,
@@ -37,6 +39,43 @@ from d810.transforms.native_patch_plan import (
     NativeRestoreSnapshot,
     OverlappingNativePatchOperationsError,
 )
+
+
+def test_function_ownership_requires_sorted_unique_exact_flow_refs() -> None:
+    ref = NativeFunctionFlowRef(0x1000, 0x1004, 21, False)
+    ownership = NativeFunctionOwnership(
+        owning_function_entry_ea=0x1000,
+        chunk_ranges=(NativeAddressRange(0x1000, 0x1010),),
+        flow_refs=(ref,),
+    )
+
+    assert ownership.flow_refs == (ref,)
+    with pytest.raises(ValueError, match="sorted and unique"):
+        dataclasses.replace(ownership, flow_refs=(ref, ref))
+
+
+def test_function_ownership_carries_exact_flags_and_serialized_type() -> None:
+    type_info_cls = getattr(native_patch_plan_model, "NativeFunctionTypeInfo", None)
+    assert type_info_cls is not None, "lossless function type vocabulary is missing"
+
+    type_info = type_info_cls(
+        type_bytes=b"\x0cp\x07\x02\x05",
+        field_bytes=b"\x06value",
+        field_comment_bytes=None,
+    )
+    ownership = NativeFunctionOwnership(
+        owning_function_entry_ea=0x1000,
+        chunk_ranges=(
+            NativeAddressRange(0x1000, 0x1010),
+            NativeAddressRange(0x2000, 0x2008),
+        ),
+        function_flags=0x4,
+        type_info=type_info,
+    )
+
+    assert ownership.function_flags == 0x4
+    assert ownership.type_info == type_info
+
 
 pytestmark = pytest.mark.pure_python
 

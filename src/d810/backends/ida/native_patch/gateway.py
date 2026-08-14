@@ -94,9 +94,11 @@ from d810.backends.ida.native_patch.preflight import (
 )
 from d810.backends.ida.native_patch.reanalysis import (
     FunctionExtentRestorer,
+    FunctionFlowRestorer,
     FunctionReanalyzer,
     reanalyze_and_wait,
 )
+from d810.backends.ida.native_patch.issuer import NativePatchIssuerRegistry
 from d810.backends.hexrays.native_patch_lifecycle import (
     CallerDiscovery,
     CfuncCacheInvalidator,
@@ -118,10 +120,14 @@ from d810.capabilities.native_patch import (
 from d810.core.logging import getLogger
 from d810.core.typing import Protocol, runtime_checkable
 from d810.transforms.native_patch_plan import (
+    NativeAddressRange,
     NativeCertificate,
     NativeMetadataActionKind,
     NativeCertificateState,
     NativeDatabaseIdentity,
+    NativeFunctionFlowRef,
+    NativeFunctionOwnership,
+    NativeFunctionTypeInfo,
     NativePatchOperation,
     NativePatchPlan,
     certificate_from_payload,
@@ -137,7 +143,9 @@ __all__ = [
     "NativePatchCertificationFailed",
     "NativePatchGateway",
     "NativePatchGatewayError",
+    "NativePatchDatabaseIdentityMismatch",
     "NativePatchMetadataActionUnsupported",
+    "NativePatchIssuerRejected",
     "NativePatchRestoreNotCertified",
     "NativePatchWriteVerificationFailed",
     "NativeByteWriter",
@@ -147,6 +155,14 @@ __all__ = [
 
 class NativePatchGatewayError(RuntimeError):
     """Base class for every gateway-raised error."""
+
+
+class NativePatchDatabaseIdentityMismatch(NativePatchGatewayError, ValueError):
+    """A destructive gateway call targeted another IDB's journal row."""
+
+
+class NativePatchIssuerRejected(NativePatchGatewayError):
+    """The plan did not match any exact named issuer contract."""
 
 
 class NativePatchWriteVerificationFailed(NativePatchGatewayError):
@@ -301,11 +317,14 @@ class NativePatchGateway:
         decode_replacement: DecodeReplacement,
         reanalyzer: FunctionReanalyzer,
         extent_restorer: FunctionExtentRestorer,
+        flow_restorer: FunctionFlowRestorer,
         metadata_executor: MetadataActionExecutor | None = None,
         cache_invalidator: CfuncCacheInvalidator,
         caller_discovery: CallerDiscovery,
         redo_decompiler: ControlledRedoDecompiler,
         certificate_store: NativePatchBlobStore,
+        issuer_registry: NativePatchIssuerRegistry,
+        current_database_identity: str,
         d810_version: str = "unknown",
     ) -> None:
         self._journal = journal
@@ -317,6 +336,7 @@ class NativePatchGateway:
         # skips extent restoration produces a RESTORED receipt for a database
         # that was not restored, which is worse than failing to construct.
         self._extent_restorer = extent_restorer
+        self._flow_restorer = flow_restorer
         # Optional: a plan with no metadata actions never needs one, and
         # without it any plan that HAS them still fails closed exactly as
         # before rather than being silently skipped.
@@ -325,6 +345,15 @@ class NativePatchGateway:
         self._caller_discovery = caller_discovery
         self._redo_decompiler = redo_decompiler
         self._certificate_store = certificate_store
+        if (
+            not isinstance(current_database_identity, str)
+            or not current_database_identity.strip()
+        ):
+            raise ValueError("current database identity must be a non-empty string")
+        self._current_database_identity = current_database_identity
+        if not isinstance(issuer_registry, NativePatchIssuerRegistry):
+            raise TypeError("issuer_registry must be a NativePatchIssuerRegistry")
+        self._issuer_registry = issuer_registry
         self._d810_version = d810_version
 
     # ------------------------------------------------------------------
@@ -334,6 +363,14 @@ class NativePatchGateway:
     def apply(self, plan: NativePatchPlan) -> NativeApplyReceipt:
         if not isinstance(plan, NativePatchPlan):
             raise TypeError("plan must be a NativePatchPlan")
+        if plan.database_identity.idb_uuid != self._current_database_identity:
+            raise NativePatchDatabaseIdentityMismatch(
+                "plan database identity does not match the current database identity"
+            )
+
+        issuer_validation = self._issuer_registry.validate(plan)
+        if not issuer_validation.authorized:
+            raise NativePatchIssuerRejected(issuer_validation.reason)
 
         record = self._journal.prepare(plan)
         self._mirror_transaction(record)
@@ -367,8 +404,10 @@ class NativePatchGateway:
                 record.transaction_id, NativeJournalState.ANALYSIS_PENDING
             )
             function_eas = self._owning_function_eas(plan)
-            for function_ea in function_eas:
-                reanalyze_and_wait(function_ea, reanalyzer=self._reanalyzer)
+            requires_mutation_cleanup = self._plan_requires_mutation(plan)
+            if requires_mutation_cleanup:
+                for function_ea in function_eas:
+                    reanalyze_and_wait(function_ea, reanalyzer=self._reanalyzer)
 
             recovery = self._journal.classify_recovery(
                 record.transaction_id, self._read_current_byte
@@ -383,13 +422,14 @@ class NativePatchGateway:
                 record.transaction_id, NativeJournalState.ANALYSIS_VALIDATED
             )
 
-            for function_ea in function_eas:
-                invalidate_target_and_callers(
-                    function_ea,
-                    invalidator=self._cache_invalidator,
-                    discovery=self._caller_discovery,
-                )
-                controlled_redo(function_ea, decompiler=self._redo_decompiler)
+            if requires_mutation_cleanup:
+                for function_ea in function_eas:
+                    invalidate_target_and_callers(
+                        function_ea,
+                        invalidator=self._cache_invalidator,
+                        discovery=self._caller_discovery,
+                    )
+                    controlled_redo(function_ea, decompiler=self._redo_decompiler)
             record = self._journal.transition(
                 record.transaction_id, NativeJournalState.CACHE_INVALIDATED
             )
@@ -455,6 +495,24 @@ class NativePatchGateway:
         # before reanalysis runs. See NativeByteWriter.reset_item_boundaries's
         # docstring for why this is measured-necessary, not precautionary.
         self._writer.reset_item_boundaries(op.range.start_ea, op.range.end_ea)
+
+    @staticmethod
+    def _plan_requires_mutation(plan: NativePatchPlan) -> bool:
+        """Whether apply changes bytes or any exact metadata state.
+
+        A fully normalized metadata plan is a read-only certification request.
+        Running reanalysis, invalidation, or redo for it would create side
+        effects despite every action being a no-op, and can destroy metadata
+        the certificate is trying to attest.
+        """
+        return any(
+            operation.writes_bytes
+            or any(
+                action.expected_before != action.expected_after
+                for action in operation.metadata_actions
+            )
+            for operation in plan.operations
+        )
 
     def _apply_metadata_actions(
         self, plan: NativePatchPlan, transaction_id: NativePatchTransactionId
@@ -962,6 +1020,7 @@ class NativePatchGateway:
         record = self._journal.get(transaction_id)
         if record is None:
             raise ValueError(f"unknown transaction {transaction_id.value}")
+        self._require_current_database(record)
         if record.state is NativeJournalState.RECOVERY_REQUIRED:
             if not acknowledge_recovery_required:
                 return NativeRestoreReceipt(
@@ -1046,12 +1105,43 @@ class NativePatchGateway:
             reanalyzed_function_eas = self._function_eas_for_transaction(transaction_id)
             for function_ea in reanalyzed_function_eas:
                 reanalyze_and_wait(function_ea, reanalyzer=self._reanalyzer)
+
+            unrestored_extents = tuple(
+                dict.fromkeys(
+                    unrestored_extents + self._restore_function_extents(transaction_id)
+                )
+            )
+
+            unrestored_flow_refs = self._restore_function_flow_refs(transaction_id)
+            for function_ea in reanalyzed_function_eas:
                 invalidate_target_and_callers(
                     function_ea,
                     invalidator=self._cache_invalidator,
                     discovery=self._caller_discovery,
                 )
                 controlled_redo(function_ea, decompiler=self._redo_decompiler)
+
+            # Decompilation itself may persist a guessed prototype after the
+            # pre-redo snapshot was restored. Reconcile the authoritative
+            # journal snapshot once more at the true end of the lifecycle,
+            # then invalidate any cfunc built against the transient metadata.
+            unrestored_extents = tuple(
+                dict.fromkeys(
+                    unrestored_extents + self._restore_function_extents(transaction_id)
+                )
+            )
+            unrestored_flow_refs = tuple(
+                dict.fromkeys(
+                    unrestored_flow_refs
+                    + self._restore_function_flow_refs(transaction_id)
+                )
+            )
+            for function_ea in reanalyzed_function_eas:
+                invalidate_target_and_callers(
+                    function_ea,
+                    invalidator=self._cache_invalidator,
+                    discovery=self._caller_discovery,
+                )
         except Exception as error:
             return self._restore_failed(
                 transaction_id,
@@ -1059,7 +1149,7 @@ class NativePatchGateway:
                 reason=f"restore lifecycle reconciliation raised: {error}",
             )
 
-        if unreversed_metadata or unrestored_extents:
+        if unreversed_metadata or unrestored_extents or unrestored_flow_refs:
             # Bytes are back but the database shape is not. Say so rather than
             # reporting RESTORED: a caller that trusts this receipt would
             # believe a half-restored database is clean.
@@ -1069,7 +1159,8 @@ class NativePatchGateway:
                 note=(
                     "bytes restored but database shape was not: "
                     f"unreversed metadata {unreversed_metadata}, "
-                    f"unrestored extents {unrestored_extents}"
+                    f"unrestored extents {unrestored_extents}, "
+                    f"unrestored flow refs {unrestored_flow_refs}"
                 ),
             )
             return NativeRestoreReceipt(
@@ -1133,34 +1224,83 @@ class NativePatchGateway:
     def _restore_function_extents(
         self, transaction_id: NativePatchTransactionId
     ) -> tuple[str, ...]:
-        """Reassert every remembered function extent. Returns the entries that
-        could not be re-established, as ``"0x...:0x..."`` strings.
+        """Reassert every remembered function ownership snapshot.
 
         Ownership comes from the journal, never from a live read: by this
         point the database reflects the *patched* shape, which is exactly what
         is being undone. One function can own several operations; each
         distinct (entry, end) is asserted once.
         """
-        wanted: dict[int, int] = {}
-        for entry_ea, chunks in self._journal.operation_ownership(
+        expected_by_function, failed = self._journaled_function_ownership(
             transaction_id
-        ).values():
-            for start_ea, end_ea in chunks:
-                if start_ea != entry_ea:
-                    # A tail chunk, not the entry chunk. set_func_end governs
-                    # the entry chunk only; tail chunks are a separate
-                    # append_func_tail concern this does not attempt.
-                    continue
-                wanted[entry_ea] = max(wanted.get(entry_ea, 0), end_ea)
-
-        failed: list[str] = []
-        for entry_ea, end_ea in sorted(wanted.items()):
+        )
+        for entry_ea, ownership in sorted(expected_by_function.items()):
             try:
-                ok = self._extent_restorer.restore_function_extent(entry_ea, end_ea)
+                ok = self._extent_restorer.restore_function_ownership(ownership)
             except Exception:
                 ok = False
             if not ok:
-                failed.append(f"{entry_ea:#x}:{end_ea:#x}")
+                failed.append(f"{entry_ea:#x}")
+        return tuple(failed)
+
+    def _journaled_function_ownership(
+        self, transaction_id: NativePatchTransactionId
+    ) -> tuple[dict[int, NativeFunctionOwnership], list[str]]:
+        ownership_rows = self._journal.operation_ownership(transaction_id)
+        flow_rows = self._journal.operation_flow_refs(transaction_id)
+        metadata_rows = self._journal.operation_function_metadata(transaction_id)
+        expected_by_function: dict[int, NativeFunctionOwnership] = {}
+        inconsistent: list[str] = []
+        for operation_id, (entry_ea, chunks) in ownership_rows.items():
+            metadata = metadata_rows.get(operation_id)
+            if metadata is None:
+                inconsistent.append(f"{entry_ea:#x}:missing_function_metadata")
+                continue
+            function_flags, serialized_type = metadata
+            type_info = None
+            if serialized_type is not None:
+                type_info = NativeFunctionTypeInfo(
+                    type_bytes=serialized_type[0],
+                    field_bytes=serialized_type[1],
+                    field_comment_bytes=serialized_type[2],
+                )
+            ownership = NativeFunctionOwnership(
+                owning_function_entry_ea=entry_ea,
+                chunk_ranges=tuple(
+                    NativeAddressRange(start_ea, end_ea) for start_ea, end_ea in chunks
+                ),
+                flow_refs=tuple(
+                    NativeFunctionFlowRef(source, target, xref_type, user)
+                    for source, target, xref_type, user in flow_rows.get(
+                        operation_id, ()
+                    )
+                ),
+                function_flags=function_flags,
+                type_info=type_info,
+            )
+            previous = expected_by_function.get(entry_ea)
+            if previous is not None and previous != ownership:
+                inconsistent.append(f"{entry_ea:#x}:inconsistent_snapshot")
+                continue
+            expected_by_function[entry_ea] = ownership
+        return expected_by_function, inconsistent
+
+    def _restore_function_flow_refs(
+        self, transaction_id: NativePatchTransactionId
+    ) -> tuple[str, ...]:
+        """Reconcile exact pre-patch internal code refs from the journal."""
+        expected_by_function, inconsistent = self._journaled_function_ownership(
+            transaction_id
+        )
+
+        failed = list(inconsistent)
+        for entry_ea, ownership in sorted(expected_by_function.items()):
+            try:
+                ok = self._flow_restorer.restore_function_flow_refs(ownership)
+            except Exception:
+                ok = False
+            if not ok:
+                failed.append(f"{entry_ea:#x}")
         return tuple(failed)
 
     def _restore_bytes(
@@ -1248,7 +1388,10 @@ class NativePatchGateway:
         :meth:`_emergency_recover`.
         """
         record = self._journal.get(transaction_id)
-        if record is None or record.state is NativeJournalState.RESTORED:
+        if record is None:
+            return
+        self._require_current_database(record)
+        if record.state is NativeJournalState.RESTORED:
             return
         if record.state in {
             NativeJournalState.RESTORING,
@@ -1266,7 +1409,10 @@ class NativePatchGateway:
 
     def _emergency_recover(self, transaction_id: NativePatchTransactionId) -> None:
         record = self._journal.get(transaction_id)
-        if record is None or record.state in _TERMINAL_STATES:
+        if record is None:
+            return
+        self._require_current_database(record)
+        if record.state in _TERMINAL_STATES:
             return
 
         if record.state is NativeJournalState.CERTIFICATE_PENDING:
@@ -1343,28 +1489,99 @@ class NativePatchGateway:
             )
             return
 
-        for function_ea in self._function_eas_for_transaction(transaction_id):
+        unrestored_extents = self._restore_function_extents(transaction_id)
+        if unrestored_extents:
+            self._journal.transition(
+                transaction_id,
+                NativeJournalState.RECOVERY_REQUIRED,
+                note=f"post-rollback extent restore failed: {unrestored_extents}",
+            )
+            return
+
+        function_eas = self._function_eas_for_transaction(transaction_id)
+        lifecycle_failed = False
+        for function_ea in function_eas:
             try:
                 reanalyze_and_wait(function_ea, reanalyzer=self._reanalyzer)
+            except Exception:
+                lifecycle_failed = True
+                logger.warning(
+                    "post-rollback reanalysis failed for %#x",
+                    function_ea,
+                    exc_info=True,
+                )
+        post_reanalysis_extents = self._restore_function_extents(transaction_id)
+        if post_reanalysis_extents:
+            unrestored_extents = tuple(
+                dict.fromkeys(unrestored_extents + post_reanalysis_extents)
+            )
+        unrestored_flow_refs = self._restore_function_flow_refs(transaction_id)
+        for function_ea in function_eas:
+            try:
+                invalidate_target_and_callers(
+                    function_ea,
+                    invalidator=self._cache_invalidator,
+                    discovery=self._caller_discovery,
+                )
+                controlled_redo(function_ea, decompiler=self._redo_decompiler)
+            except Exception:
+                lifecycle_failed = True
+                logger.warning(
+                    "post-rollback invalidation/redo failed for %#x",
+                    function_ea,
+                    exc_info=True,
+                )
+        final_unrestored_extents = self._restore_function_extents(transaction_id)
+        if final_unrestored_extents:
+            unrestored_extents = tuple(
+                dict.fromkeys(unrestored_extents + final_unrestored_extents)
+            )
+        final_unrestored_flow_refs = self._restore_function_flow_refs(transaction_id)
+        if final_unrestored_flow_refs:
+            unrestored_flow_refs = tuple(
+                dict.fromkeys(unrestored_flow_refs + final_unrestored_flow_refs)
+            )
+        for function_ea in function_eas:
+            try:
                 invalidate_target_and_callers(
                     function_ea,
                     invalidator=self._cache_invalidator,
                     discovery=self._caller_discovery,
                 )
             except Exception:
-                # Bytes are already correct -- the safety-critical part is
-                # done. A failure here is logged, not escalated, so a stale
-                # decompiler cache does not mask a successful byte rollback.
+                lifecycle_failed = True
                 logger.warning(
-                    "post-rollback reanalysis/invalidation failed for %#x",
+                    "post-rollback final invalidation failed for %#x",
                     function_ea,
                     exc_info=True,
                 )
+        if lifecycle_failed or unrestored_extents or unrestored_flow_refs:
+            self._journal.transition(
+                transaction_id,
+                NativeJournalState.RECOVERY_REQUIRED,
+                note=(
+                    "post-rollback lifecycle reconciliation failed: "
+                    f"extents={unrestored_extents}, "
+                    f"flow_refs={unrestored_flow_refs}"
+                ),
+            )
+            return
         self._journal.transition(
             transaction_id,
             NativeJournalState.RESTORED,
             note="rolled back after apply failure",
         )
+
+    def _require_current_database(self, record: NativePatchTransactionRecord) -> None:
+        journaled_identity = record.database_identity
+        if (
+            journaled_identity is None
+            or journaled_identity != self._current_database_identity
+        ):
+            raise NativePatchDatabaseIdentityMismatch(
+                "journaled transaction database identity does not match the "
+                "current database identity"
+            )
 
     def _rollback_bytes(
         self,

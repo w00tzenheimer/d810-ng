@@ -59,7 +59,9 @@ __all__ = [
     "NativeDatabaseIdentity",
     "NativeEncodingEvidence",
     "NativeFunctionIdentity",
+    "NativeFunctionFlowRef",
     "NativeFunctionOwnership",
+    "NativeFunctionTypeInfo",
     "NativeIncomingRef",
     "NativeItemHead",
     "NativeItemKind",
@@ -210,16 +212,70 @@ class NativeIncomingRef:
             raise ValueError("ownership must be 'user' or 'auto'")
 
 
+@dataclass(frozen=True, slots=True, order=True)
+class NativeFunctionFlowRef:
+    """Exact internal code reference needed to reproduce an IDA flowchart."""
+
+    source_ea: int
+    target_ea: int
+    xref_type: int
+    user: bool
+
+    def __post_init__(self) -> None:
+        for label in ("source_ea", "target_ea", "xref_type"):
+            value = getattr(self, label)
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise TypeError(f"{label} must be an int")
+        if not isinstance(self.user, bool):
+            raise TypeError("user must be a bool")
+
+
+@dataclass(frozen=True, slots=True)
+class NativeFunctionTypeInfo:
+    """Lossless SDK serialization of a function's inherited ``tinfo_t``."""
+
+    type_bytes: bytes
+    field_bytes: bytes | None
+    field_comment_bytes: bytes | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.type_bytes, bytes) or not self.type_bytes:
+            raise TypeError("type_bytes must be non-empty bytes")
+        for label in ("field_bytes", "field_comment_bytes"):
+            value = getattr(self, label)
+            if value is not None and not isinstance(value, bytes):
+                raise TypeError(f"{label} must be bytes or None")
+
+
 @dataclass(frozen=True, slots=True)
 class NativeFunctionOwnership:
     owning_function_entry_ea: int
     chunk_ranges: tuple[NativeAddressRange, ...]
+    flow_refs: tuple[NativeFunctionFlowRef, ...] = ()
+    function_flags: int = 0
+    type_info: NativeFunctionTypeInfo | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.chunk_ranges, tuple) or not all(
             isinstance(r, NativeAddressRange) for r in self.chunk_ranges
         ):
             raise TypeError("chunk_ranges must be a tuple of NativeAddressRange")
+        if not isinstance(self.flow_refs, tuple) or not all(
+            isinstance(ref, NativeFunctionFlowRef) for ref in self.flow_refs
+        ):
+            raise TypeError("flow_refs must be a tuple of NativeFunctionFlowRef")
+        if tuple(sorted(set(self.flow_refs))) != self.flow_refs:
+            raise ValueError("flow_refs must be sorted and unique")
+        if isinstance(self.function_flags, bool) or not isinstance(
+            self.function_flags, int
+        ):
+            raise TypeError("function_flags must be an int")
+        if self.function_flags < 0:
+            raise ValueError("function_flags must be non-negative")
+        if self.type_info is not None and not isinstance(
+            self.type_info, NativeFunctionTypeInfo
+        ):
+            raise TypeError("type_info must be NativeFunctionTypeInfo or None")
 
 
 @dataclass(frozen=True, slots=True)

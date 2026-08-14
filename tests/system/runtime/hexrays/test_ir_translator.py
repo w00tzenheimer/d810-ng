@@ -6,6 +6,9 @@ final-boundary lowering adapter behind the public PatchPlan runtime port.
 Runs in IDA environment (system/runtime); skips gracefully without IDA.
 """
 
+# Imports below the live-SDK availability probe are intentional.
+# ruff: noqa: E402
+
 from __future__ import annotations
 
 import importlib
@@ -2475,7 +2478,7 @@ class TestExecutionPolicyGuard:
         plan = _manual_plan(
             PatchRemoveInstruction(
                 block_serial=_manual_ref(7),
-                block_start_ea=0x401000,
+                expected_owner_ea=0x401000,
                 insn_ea=0x401004,
                 ordinal=1,
                 opcode=0x123,

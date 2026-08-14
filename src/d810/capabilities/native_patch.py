@@ -667,6 +667,7 @@ class NativePatchTransactionRecord:
     authorizing_attempt_id: ExecutionAttemptId
     state: NativeJournalState
     has_metadata_actions: bool
+    database_identity: str | None
     created_at: float
     updated_at: float
 
@@ -777,4 +778,16 @@ class NativePatchJournalStore(Protocol):
         from the live database reads the already-shrunken extent -- so the
         function never comes back.
         """
+        ...
+
+    def operation_flow_refs(
+        self, transaction_id: NativePatchTransactionId
+    ) -> dict[str, tuple[tuple[int, int, int, bool], ...]]:
+        """Exact pre-patch internal code refs per operation."""
+        ...
+
+    def operation_function_metadata(
+        self, transaction_id: NativePatchTransactionId
+    ) -> dict[str, tuple[int, tuple[bytes, bytes | None, bytes | None] | None]]:
+        """Exact inherited flags and SDK-serialized function type per operation."""
         ...

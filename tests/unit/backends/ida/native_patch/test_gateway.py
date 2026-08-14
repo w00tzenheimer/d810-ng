@@ -22,7 +22,12 @@ import pytest
 
 from d810.backends.ida.native_patch.gateway import (
     NativePatchGateway,
+    NativePatchIssuerRejected,
     NativePatchRestoreNotCertified,
+)
+from d810.backends.ida.native_patch.issuer import (
+    NativePatchIssuerContract,
+    NativePatchIssuerRegistry,
 )
 from d810.backends.ida.native_patch.journal import SQLiteNativePatchJournal
 from d810.capabilities.native_patch import NativeJournalState
@@ -167,13 +172,29 @@ class RecordingExtentRestorer:
 
     def __init__(self, succeeds: bool = True, raise_always: bool = False):
         self.calls: list[tuple[int, int]] = []
+        self.ownership_calls: list[NativeFunctionOwnership] = []
         self._succeeds = succeeds
         self._raise_always = raise_always
 
-    def restore_function_extent(self, entry_ea: int, end_ea: int) -> bool:
-        self.calls.append((entry_ea, end_ea))
+    def restore_function_ownership(self, ownership: NativeFunctionOwnership) -> bool:
+        self.ownership_calls.append(ownership)
+        entry_ea = ownership.owning_function_entry_ea
+        entry_chunk = next(
+            chunk for chunk in ownership.chunk_ranges if chunk.start_ea == entry_ea
+        )
+        self.calls.append((entry_ea, entry_chunk.end_ea))
         if self._raise_always:
-            raise RuntimeError("injected: restore_function_extent")
+            raise RuntimeError("injected: restore_function_ownership")
+        return self._succeeds
+
+
+class RecordingFlowRestorer:
+    def __init__(self, succeeds: bool = True):
+        self.calls: list[object] = []
+        self._succeeds = succeeds
+
+    def restore_function_flow_refs(self, ownership) -> bool:
+        self.calls.append(ownership)
         return self._succeeds
 
 
@@ -271,10 +292,24 @@ class Gateway:
     db: FakeNativeDatabase
     reanalyzer: RecordingReanalyzer
     extent_restorer: RecordingExtentRestorer
+    flow_restorer: RecordingFlowRestorer
     invalidator: RecordingCacheInvalidator
     discovery: FakeCallerDiscovery
     redo: RecordingRedoDecompiler
     blobs: FakeBlobStore
+
+
+def _issuer_registry() -> NativePatchIssuerRegistry:
+    return NativePatchIssuerRegistry(
+        (
+            NativePatchIssuerContract(
+                issuer_id="issuer-1",
+                patch_class="lifting_normalization",
+                proof_ids=frozenset({"proof-1"}),
+                provenance=("test",),
+            ),
+        )
+    )
 
 
 def build_gateway(
@@ -284,6 +319,7 @@ def build_gateway(
     callers: frozenset[int] = frozenset(),
     reanalyzer: RecordingReanalyzer | None = None,
     extent_restorer: RecordingExtentRestorer | None = None,
+    flow_restorer: RecordingFlowRestorer | None = None,
     metadata_executor=None,
     invalidator: RecordingCacheInvalidator | None = None,
     decode_replacement=_decode_replacement,
@@ -293,6 +329,7 @@ def build_gateway(
     db = FakeNativeDatabase(operations)
     reanalyzer = reanalyzer or RecordingReanalyzer()
     extent_restorer = extent_restorer or RecordingExtentRestorer()
+    flow_restorer = flow_restorer or RecordingFlowRestorer()
     invalidator = invalidator or RecordingCacheInvalidator()
     discovery = FakeCallerDiscovery(callers)
     redo = RecordingRedoDecompiler()
@@ -304,11 +341,14 @@ def build_gateway(
         decode_replacement=decode_replacement,
         reanalyzer=reanalyzer,
         extent_restorer=extent_restorer,
+        flow_restorer=flow_restorer,
         metadata_executor=metadata_executor,
         cache_invalidator=invalidator,
         caller_discovery=discovery,
         redo_decompiler=redo,
         certificate_store=blobs,
+        issuer_registry=_issuer_registry(),
+        current_database_identity="idb-1",
         d810_version="test",
     )
     return Gateway(
@@ -317,10 +357,30 @@ def build_gateway(
         db=db,
         reanalyzer=reanalyzer,
         extent_restorer=extent_restorer,
+        flow_restorer=flow_restorer,
         invalidator=invalidator,
         discovery=discovery,
         redo=redo,
         blobs=blobs,
+    )
+
+
+def _foreign_database_gateway(rig: Gateway) -> NativePatchGateway:
+    return NativePatchGateway(
+        journal=rig.journal,
+        reader=rig.db,
+        writer=rig.db,
+        decode_replacement=_decode_replacement,
+        reanalyzer=rig.reanalyzer,
+        extent_restorer=rig.extent_restorer,
+        flow_restorer=rig.flow_restorer,
+        cache_invalidator=rig.invalidator,
+        caller_discovery=rig.discovery,
+        redo_decompiler=rig.redo,
+        certificate_store=rig.blobs,
+        issuer_registry=_issuer_registry(),
+        current_database_identity="idb-foreign",
+        d810_version="test",
     )
 
 
@@ -329,6 +389,20 @@ def rig(tmp_path):
     bundle = build_gateway(tmp_path, (fixtures.operation(),))
     yield bundle
     bundle.journal.close()
+
+
+def test_unregistered_issuer_is_rejected_before_the_journal_or_idb_is_written(
+    rig,
+) -> None:
+    plan = dataclasses.replace(fixtures.plan(), issuer_id="unregistered")
+
+    with pytest.raises(
+        NativePatchIssuerRejected, match="unregistered native patch issuer"
+    ):
+        rig.gateway.apply(plan)
+
+    assert rig.db.patch_byte_calls == []
+    assert rig.journal.recoverable_transaction_ids(database_identity="idb-1") == ()
 
 
 # ---------------------------------------------------------------------------
@@ -633,7 +707,7 @@ class TestApplyFailureInjection:
         # Bytes were written (BYTES_APPLIED durably reached) then rolled back.
         assert rig.db.bytes == {0x1000: 0x75, 0x1001: 0x01}
         record = rig.journal.get(_sole_transaction_id(rig.journal))
-        assert record.state is NativeJournalState.RESTORED
+        assert record.state is NativeJournalState.RECOVERY_REQUIRED
         rig.journal.close()
 
     def test_failure_after_reanalysis_request_rolls_back(self, tmp_path) -> None:
@@ -694,10 +768,13 @@ class TestApplyFailureInjection:
             decode_replacement=_decode_replacement,
             reanalyzer=RecordingReanalyzer(),
             extent_restorer=RecordingExtentRestorer(),
+            flow_restorer=RecordingFlowRestorer(),
             cache_invalidator=RecordingCacheInvalidator(),
             caller_discovery=FakeCallerDiscovery(),
             redo_decompiler=RecordingRedoDecompiler(),
             certificate_store=FakeBlobStore(),
+            issuer_registry=_issuer_registry(),
+            current_database_identity="idb-1",
         )
 
         plan = fixtures.plan(operations=(op,))
@@ -749,10 +826,13 @@ class TestApplyFailureInjection:
             decode_replacement=_decode_replacement,
             reanalyzer=RecordingReanalyzer(),
             extent_restorer=RecordingExtentRestorer(),
+            flow_restorer=RecordingFlowRestorer(),
             cache_invalidator=RecordingCacheInvalidator(),
             caller_discovery=FakeCallerDiscovery(),
             redo_decompiler=RecordingRedoDecompiler(),
             certificate_store=FakeBlobStore(),
+            issuer_registry=_issuer_registry(),
+            current_database_identity="idb-1",
         )
 
         plan = fixtures.plan(operations=(op,))
@@ -772,6 +852,56 @@ class TestApplyFailureInjection:
 
 
 class TestRestore:
+    def test_direct_restore_rejects_foreign_database_before_any_write(
+        self, rig
+    ) -> None:
+        receipt = rig.gateway.apply(fixtures.plan())
+        assert receipt.ok
+        before_state = rig.journal.get(receipt.transaction_id).state
+        before_patch_calls = tuple(rig.db.patch_byte_calls)
+        before_ownership_calls = tuple(rig.extent_restorer.ownership_calls)
+        foreign = _foreign_database_gateway(rig)
+
+        with pytest.raises(ValueError, match="database identity"):
+            foreign.restore(receipt.transaction_id)
+
+        assert rig.journal.get(receipt.transaction_id).state is before_state
+        assert tuple(rig.db.patch_byte_calls) == before_patch_calls
+        assert tuple(rig.extent_restorer.ownership_calls) == before_ownership_calls
+
+    def test_direct_recover_rejects_foreign_database_before_any_write(
+        self, rig
+    ) -> None:
+        receipt = rig.gateway.apply(fixtures.plan())
+        assert receipt.ok
+        before_state = rig.journal.get(receipt.transaction_id).state
+        before_patch_calls = tuple(rig.db.patch_byte_calls)
+        before_ownership_calls = tuple(rig.extent_restorer.ownership_calls)
+        foreign = _foreign_database_gateway(rig)
+
+        with pytest.raises(ValueError, match="database identity"):
+            foreign.recover(receipt.transaction_id)
+
+        assert rig.journal.get(receipt.transaction_id).state is before_state
+        assert tuple(rig.db.patch_byte_calls) == before_patch_calls
+        assert tuple(rig.extent_restorer.ownership_calls) == before_ownership_calls
+
+    def test_direct_restore_fails_closed_for_legacy_identityless_row(self, rig) -> None:
+        receipt = rig.gateway.apply(fixtures.plan())
+        assert receipt.ok
+        with rig.journal._conn:  # noqa: SLF001 - legacy-schema regression
+            rig.journal._conn.execute(  # noqa: SLF001
+                "UPDATE native_patch_transactions SET idb_uuid = NULL "
+                "WHERE transaction_id = ?",
+                (receipt.transaction_id.value,),
+            )
+        before_patch_calls = tuple(rig.db.patch_byte_calls)
+
+        with pytest.raises(ValueError, match="database identity"):
+            rig.gateway.restore(receipt.transaction_id)
+
+        assert tuple(rig.db.patch_byte_calls) == before_patch_calls
+
     def test_restore_requires_a_certified_transaction(self, rig) -> None:
         record = rig.journal.prepare(fixtures.plan())
         with pytest.raises(NativePatchRestoreNotCertified):
@@ -922,6 +1052,35 @@ class TestRestore:
         }
         assert set(rig.extent_restorer.calls) == expected
 
+    def test_restore_reconciles_exact_entry_tail_flags_and_type_snapshot(
+        self, rig
+    ) -> None:
+        op = fixtures.operation()
+        ownership = dataclasses.replace(
+            op.restore_snapshot.function_ownership,
+            chunk_ranges=(
+                NativeAddressRange(0x1000, 0x1800),
+                NativeAddressRange(0x2000, 0x2010),
+            ),
+            function_flags=0x4,
+        )
+        op = dataclasses.replace(
+            op,
+            expected_function_ownership=ownership,
+            restore_snapshot=dataclasses.replace(
+                op.restore_snapshot,
+                function_ownership=ownership,
+            ),
+        )
+        rig.db._ownership[0x1000] = ownership  # noqa: SLF001 - live-state fixture
+        receipt = rig.gateway.apply(fixtures.plan(operations=(op,)))
+        assert receipt.ok
+
+        restored = rig.gateway.restore(receipt.transaction_id)
+
+        assert restored.ok
+        assert rig.extent_restorer.ownership_calls == [ownership] * 3
+
     def test_extent_is_reasserted_before_reanalysis(self, rig) -> None:
         """Order matters: reanalysis must run over the restored function, not
         the truncated one."""
@@ -934,6 +1093,33 @@ class TestRestore:
 
         assert rig.extent_restorer.calls, "extent was never reasserted"
         assert rig.reanalyzer.calls, "reanalysis never ran"
+
+    def test_restore_reconciles_the_journaled_function_flow_refs(self, rig) -> None:
+        plan = fixtures.plan()
+        receipt = rig.gateway.apply(plan)
+        assert receipt.ok
+
+        restored = rig.gateway.restore(receipt.transaction_id)
+
+        assert restored.ok
+        assert (
+            rig.flow_restorer.calls
+            == [plan.operations[0].restore_snapshot.function_ownership] * 2
+        )
+
+    def test_failed_flow_ref_restore_does_not_report_restored(self, tmp_path) -> None:
+        rig = build_gateway(
+            tmp_path,
+            fixtures.plan().operations,
+            flow_restorer=RecordingFlowRestorer(succeeds=False),
+        )
+        receipt = rig.gateway.apply(fixtures.plan())
+        assert receipt.ok
+
+        restored = rig.gateway.restore(receipt.transaction_id)
+
+        assert restored.state is NativeJournalState.RECOVERY_REQUIRED
+        assert not restored.ok
 
     def test_a_failed_extent_restore_does_not_report_RESTORED(self, tmp_path) -> None:
         """Bytes back but shape not back is a half-restored database. Reporting
@@ -1196,6 +1382,34 @@ class TestMetadataActionExecution:
         assert rig.db.patch_byte_calls == []
         assert rig.db.reset_item_boundary_calls == []
         assert [a[2] for a in executor.applied] == ["code:2", "cref:0x1010"]
+
+    def test_already_normalized_metadata_certifies_without_cleanup(
+        self, tmp_path
+    ) -> None:
+        """A no-op certificate request must stay read-only end to end."""
+        plan, operation = _plan_with_metadata_actions()
+        actions = tuple(
+            dataclasses.replace(action, expected_after=action.expected_before)
+            for action in operation.metadata_actions
+        )
+        operation = dataclasses.replace(
+            operation,
+            replacement_bytes=operation.expected_current_bytes,
+            expected_before_shape=operation.expected_after_shape,
+            writes_bytes=False,
+            metadata_actions=actions,
+        )
+        plan = dataclasses.replace(plan, operations=(operation,))
+        executor = FakeMetadataExecutor(self._initial_state())
+        rig = build_gateway(tmp_path, plan.operations, metadata_executor=executor)
+
+        receipt = rig.gateway.apply(plan)
+
+        assert receipt.ok
+        assert executor.applied == []
+        assert rig.reanalyzer.calls == []
+        assert rig.invalidator.calls == []
+        assert rig.redo.calls == []
 
     def test_the_observed_before_state_is_journaled_not_the_expected_one(
         self, tmp_path

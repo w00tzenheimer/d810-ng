@@ -18,6 +18,9 @@ from d810.backends.hexrays.native_patch_lifecycle import (  # noqa: E402
     IdaCfuncCacheInvalidator,
     IdaControlledRedoDecompiler,
 )
+from d810.backends.hexrays.native_preanalysis_key import (  # noqa: E402
+    resolve_native_preanalysis_identity,
+)
 from d810.backends.ida.native_patch.capture import (  # noqa: E402
     IdaLiveDatabaseReader,
     capture_range_evidence,
@@ -35,6 +38,7 @@ from d810.backends.ida.native_patch.journal import SQLiteNativePatchJournal  # n
 from d810.backends.ida.native_patch.metadata import IdaMetadataActionExecutor  # noqa: E402
 from d810.backends.ida.native_patch.reanalysis import (  # noqa: E402
     IdaFunctionExtentRestorer,
+    IdaFunctionFlowRestorer,
     IdaFunctionReanalyzer,
 )
 from d810.core.execution_journal import (  # noqa: E402
@@ -46,6 +50,10 @@ from d810.core.execution_journal import (  # noqa: E402
 from d810.core.execution_journal_store import ExecutionJournalStore  # noqa: E402
 from d810.capabilities.native_patch import NativePatchTransactionId  # noqa: E402
 from d810.core.persistence import SQLiteOptimizationStorage  # noqa: E402
+from d810.backends.ida.native_patch.issuer import (  # noqa: E402
+    NativePatchIssuerRegistry,
+    indirect_label_materializer_issuer,
+)
 from d810.transforms.native_patch_plan import (  # noqa: E402
     NativeAddressRange,
     NativeMetadataActionKind,
@@ -91,6 +99,52 @@ def test_disabled_native_writer_request_does_not_lower_or_apply() -> None:
     assert calls == []
     assert not result.success
     assert result.reason == "native_patch_policy_disabled"
+
+
+def test_plan_build_abstention_records_a_typed_diagnostic(tmp_path) -> None:
+    journal = ExecutionJournalStore(tmp_path / "execution.sqlite")
+    session = DecompilationSessionId.new()
+    parent = journal.begin_attempt(
+        session,
+        stage_id="hexrays_preanalysis",
+        domain=ExecutionDomain.HOOK,
+    )
+    request = NativePatchPlanRequest(
+        materialization=IndirectLabelMaterializationPlan(
+            function_ea=0x1000,
+            label_start=0x1010,
+            label_end=0x1020,
+            table_address=0x2000,
+            table_count=1,
+            target_eas=(0x1010,),
+        ),
+        dispatch_jump_ea=0x1008,
+        switch_start_ea=None,
+        install_switch_info=False,
+        state_base=1,
+        state_var_stkoff=None,
+    )
+    executor = ManagerOwnedNativePatchRequestExecutor(
+        gateway=object(),
+        user_enabled=lambda _request: True,
+        execution_journal=journal,
+        parent_attempt_for_request=lambda _request: parent.attempt_id,
+        build_plan=lambda _request, _attempt: (_ for _ in ()).throw(
+            IndirectLabelPlanBuildError("typed data cannot round trip")
+        ),
+    )
+
+    result = executor(request)
+    child = journal.attempts_for_session(session)[-1]
+
+    assert not result.success
+    assert child.status is ExecutionAttemptStatus.ABSTAINED
+    assert dict(child.details) == {
+        "kind": "native_plan_unavailable",
+        "error_type": "IndirectLabelPlanBuildError",
+        "message": "typed data cannot round trip",
+    }
+    journal.close()
 
 
 def _first_non_successor_target(function_ea: int) -> tuple[int, int]:
@@ -203,6 +257,14 @@ def test_enabled_request_applies_real_metadata_plan_and_records_child_effects(
     execution_journal = ExecutionJournalStore(tmp_path / "execution.sqlite")
     certificate_store = SQLiteOptimizationStorage(":memory:")
     try:
+        identity_resolution = resolve_native_preanalysis_identity(
+            function_ea,
+            profile_config={},
+        )
+        current_database_identity = (
+            identity_resolution.identity_resolution.database_uuid
+        )
+        assert current_database_identity is not None
         gateway = NativePatchGateway(
             journal=native_journal,
             reader=IdaLiveDatabaseReader(),
@@ -212,11 +274,16 @@ def test_enabled_request_applies_real_metadata_plan_and_records_child_effects(
             ),
             reanalyzer=IdaFunctionReanalyzer(),
             extent_restorer=IdaFunctionExtentRestorer(),
+            flow_restorer=IdaFunctionFlowRestorer(),
             metadata_executor=IdaMetadataActionExecutor(),
             cache_invalidator=IdaCfuncCacheInvalidator(),
             caller_discovery=IdaCallerDiscovery(),
             redo_decompiler=IdaControlledRedoDecompiler(),
             certificate_store=certificate_store,
+            issuer_registry=NativePatchIssuerRegistry(
+                (indirect_label_materializer_issuer(),)
+            ),
+            current_database_identity=current_database_identity,
             d810_version="native-writer-migration-system-test",
         )
         session = DecompilationSessionId.new()

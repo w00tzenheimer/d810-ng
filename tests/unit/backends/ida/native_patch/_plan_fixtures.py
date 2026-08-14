@@ -19,6 +19,7 @@ from d810.transforms.native_patch_plan import (
     NativeDatabaseIdentity,
     NativeEncodingEvidence,
     NativeFunctionIdentity,
+    NativeFunctionFlowRef,
     NativeFunctionOwnership,
     NativeItemHead,
     NativeItemKind,
@@ -65,6 +66,7 @@ def restore_snapshot(start_ea: int, size: int) -> NativeRestoreSnapshot:
         function_ownership=NativeFunctionOwnership(
             owning_function_entry_ea=0x1000,
             chunk_ranges=(NativeAddressRange(0x1000, 0x3000),),
+            flow_refs=(NativeFunctionFlowRef(0x1000, 0x1002, 21, False),),
         ),
         switch_fixup_metadata=(),
     )
@@ -103,6 +105,7 @@ def operation(
         expected_function_ownership=NativeFunctionOwnership(
             owning_function_entry_ea=0x1000,
             chunk_ranges=(NativeAddressRange(0x1000, 0x3000),),
+            flow_refs=(NativeFunctionFlowRef(0x1000, 0x1002, 21, False),),
         ),
         replacement_bytes=replacement_bytes,
         expected_after_shape=shape(start_ea, size, "jmp"),

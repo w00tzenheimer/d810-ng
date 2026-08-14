@@ -19,25 +19,6 @@ from uuid import uuid4
 
 from d810.core.algorithm_metadata import algorithm_metadata
 from d810.core.typing import ClassVar, Mapping, Protocol, TypeAlias, Union
-
-
-class ExecutionPolicy(str, Enum):
-    """Controls verification behaviour during plan lowering.
-
-    STRICT: Default. Full verification, rollback on failure.
-    NOP_CLEANUP_RELAXED: Only NOP-kind steps allowed. Tolerates transient
-        verify failure (INTERR 50846) without rollback. Used exclusively by
-        StateConstantReturnFixupStrategy for stale feeder cleanup.
-    NOP_MERGE_BLOCKS_RELAXED: Only NOP-kind steps allowed. Runs the backend
-        merge-block cleanup before native verify so tail-goto NOP cleanup can
-        let Hex-Rays coalesce linear blocks.
-    """
-
-    STRICT = "strict"
-    NOP_CLEANUP_RELAXED = "nop_cleanup_relaxed"
-    NOP_MERGE_BLOCKS_RELAXED = "nop_merge_blocks_relaxed"
-
-
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.ir.maturity import MaturityEnvelope
@@ -50,7 +31,6 @@ from d810.transforms.graph_modification import (
     CreateConditionalRedirect,
     DuplicateBlock,
     DuplicateReplayAndRedirect,
-    DuplicateReplayEntry,
     EdgeRedirectViaPredSplit,
     GraphModification,
     InsertBlock,
@@ -65,7 +45,6 @@ from d810.transforms.graph_modification import (
     PrivateTerminalSuffixGroup,
     ExitPathLoweringKind,
     ExitPathLoweringGroup,
-    ExitPathLoweringSite,
     ReorderBlocks,
     RedirectBranch,
     RedirectGoto,
@@ -96,6 +75,23 @@ from d810.transforms.cfg_transaction import (
     NativeBlockRef,
     PlanBlockRef,
 )
+
+
+class ExecutionPolicy(str, Enum):
+    """Controls verification behaviour during plan lowering.
+
+    STRICT: Default. Full verification, rollback on failure.
+    NOP_CLEANUP_RELAXED: Only NOP-kind steps allowed. Tolerates transient
+        verify failure (INTERR 50846) without rollback. Used exclusively by
+        StateConstantReturnFixupStrategy for stale feeder cleanup.
+    NOP_MERGE_BLOCKS_RELAXED: Only NOP-kind steps allowed. Runs the backend
+        merge-block cleanup before native verify so tail-goto NOP cleanup can
+        let Hex-Rays coalesce linear blocks.
+    """
+
+    STRICT = "strict"
+    NOP_CLEANUP_RELAXED = "nop_cleanup_relaxed"
+    NOP_MERGE_BLOCKS_RELAXED = "nop_merge_blocks_relaxed"
 
 
 PatchBlockRef: TypeAlias = CfgBlockRef
@@ -524,7 +520,9 @@ class PatchRemoveInstruction(_PatchRefValidated):
     """Remove one uniquely fingerprinted microinstruction from a block."""
 
     block_serial: PatchBlockRef
-    block_start_ea: int
+    # This is a scalar revalidation witness, not a second block reference.
+    # ``block_serial`` is the only executable block authority in the plan.
+    expected_owner_ea: int
     insn_ea: int
     ordinal: int
     opcode: int
@@ -535,7 +533,7 @@ class PatchRemoveInstruction(_PatchRefValidated):
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        if self.block_start_ea < 0 or self.insn_ea < 0:
+        if self.expected_owner_ea < 0 or self.insn_ea < 0:
             raise ValueError("instruction coordinates must be non-negative")
         if self.ordinal < 0:
             raise ValueError("ordinal must be non-negative")
@@ -1124,15 +1122,13 @@ def _validate_fragment_contract_steps(
     )
     expected_constant_count = int(bool(fragment.constant_materializations))
     if len(constant_steps) != expected_constant_count:
-        raise ValueError("fragment constant materialization PatchStep inventory differs")
+        raise ValueError(
+            "fragment constant materialization PatchStep inventory differs"
+        )
     if constant_steps and (
         constant_steps[0].materializations != fragment.constant_materializations
-        or tuple(
-            ref.local_block_id for ref in constant_steps[0].source_refs
-        )
-        != tuple(
-            item.source_block_id for item in fragment.constant_materializations
-        )
+        or tuple(ref.local_block_id for ref in constant_steps[0].source_refs)
+        != tuple(item.source_block_id for item in fragment.constant_materializations)
     ):
         raise ValueError("fragment constant materialization PatchStep payload differs")
 
@@ -2800,7 +2796,7 @@ def _compile_patch_plan_impl(
                 raw_steps.append(
                     PatchRemoveInstruction(
                         block_serial=serial,
-                        block_start_ea=block_start_ea,
+                        expected_owner_ea=block_start_ea,
                         insn_ea=insn_ea,
                         ordinal=ordinal,
                         opcode=opcode,
@@ -3166,7 +3162,7 @@ def _compile_patch_plan_impl(
             case PrivateTerminalSuffix(
                 anchor_serial=anchor,
                 shared_entry_serial=shared_entry,
-                return_block_serial=return_block,
+                return_block_serial=_,
                 suffix_serials=suffix,
             ):
                 if not suffix:
@@ -3209,7 +3205,7 @@ def _compile_patch_plan_impl(
             case PrivateTerminalSuffixGroup(
                 anchors=anchors,
                 shared_entry_serial=shared_entry,
-                return_block_serial=return_block,
+                return_block_serial=_,
                 suffix_serials=suffix,
             ):
                 if not suffix:

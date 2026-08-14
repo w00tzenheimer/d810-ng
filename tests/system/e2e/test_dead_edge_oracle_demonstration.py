@@ -51,7 +51,6 @@ from __future__ import annotations
 
 import contextlib
 import difflib
-import hashlib
 import re
 
 import pytest
@@ -65,7 +64,6 @@ pytestmark = [
 
 ida_bytes = pytest.importorskip("ida_bytes")
 ida_funcs = pytest.importorskip("ida_funcs")
-ida_ida = pytest.importorskip("ida_ida")
 idaapi = pytest.importorskip("idaapi")
 idc = pytest.importorskip("idc")
 
@@ -76,10 +74,10 @@ from d810.backends.hexrays.native_patch_lifecycle import (  # noqa: E402
 )
 from d810.backends.ida.native_patch.capture import (  # noqa: E402
     IdaLiveDatabaseReader,
-    capture_range_evidence,
 )
 from d810.backends.ida.native_patch.dead_edge_oracle import (  # noqa: E402
     DeadEdgeAction,
+    build_dead_edge_semantic_plan,
     find_dead_edges,
     generate_pre_lvars_microcode,
 )
@@ -88,13 +86,14 @@ from d810.backends.ida.native_patch.gateway import (  # noqa: E402
     IdaNativeByteWriter,
     NativePatchGateway,
 )
-from d810.backends.ida.native_patch.journal import SQLiteNativePatchJournal  # noqa: E402
-from d810.backends.ida.native_patch.origin_mapper import (  # noqa: E402
-    correlate_native_span,
-    ida_decoded_range_reader,
+from d810.backends.ida.native_patch.issuer import (  # noqa: E402
+    NativePatchIssuerRegistry,
+    dead_edge_semantic_issuers,
 )
+from d810.backends.ida.native_patch.journal import SQLiteNativePatchJournal  # noqa: E402
 from d810.backends.ida.native_patch.reanalysis import (  # noqa: E402
     IdaFunctionExtentRestorer,
+    IdaFunctionFlowRestorer,
     IdaFunctionReanalyzer,
 )
 from d810.core.execution_journal import (  # noqa: E402
@@ -102,18 +101,7 @@ from d810.core.execution_journal import (  # noqa: E402
     ExecutionAttemptId,
 )
 from d810.core.persistence import SQLiteOptimizationStorage  # noqa: E402
-from d810.ir.native_origin import NativeOriginCoverage  # noqa: E402
 from d810.testing.runner import _resolve_test_project_index  # noqa: E402
-from d810.transforms.native_patch_lowering import (  # noqa: E402
-    lower_direct_edge,
-    lower_removed_edge,
-)
-from d810.transforms.native_patch_plan import (  # noqa: E402
-    NativeAddressRange,
-    NativeDatabaseIdentity,
-    NativeFunctionIdentity,
-    NativePatchPlan,
-)
 
 FUNCTION_NAME = "single_iteration_simple"
 PROJECT_NAME = "bogus_loops.json"
@@ -148,10 +136,6 @@ def _get_func_ea(name: str) -> int:
     return ea
 
 
-def _bitness() -> int:
-    return 64 if ida_ida.inf_is_64bit() else 32
-
-
 def _decompile_text(pseudocode_to_string, func_ea: int) -> str:
     cfunc = idaapi.decompile(func_ea, flags=idaapi.DECOMP_NO_CACHE)
     assert cfunc is not None, f"failed to decompile {func_ea:#x}"
@@ -172,7 +156,7 @@ def _fresh_journal(tmp_path):
         journal.close()
 
 
-def _build_gateway(journal) -> NativePatchGateway:
+def _build_gateway(journal, *, database_identity: str) -> NativePatchGateway:
     return NativePatchGateway(
         journal=journal,
         reader=IdaLiveDatabaseReader(),
@@ -180,128 +164,26 @@ def _build_gateway(journal) -> NativePatchGateway:
         decode_replacement=MinimalX86BranchEncoder().decode,
         reanalyzer=IdaFunctionReanalyzer(),
         extent_restorer=IdaFunctionExtentRestorer(),
+        flow_restorer=IdaFunctionFlowRestorer(),
         cache_invalidator=IdaCfuncCacheInvalidator(),
         caller_discovery=IdaCallerDiscovery(),
         redo_decompiler=IdaControlledRedoDecompiler(),
         certificate_store=SQLiteOptimizationStorage(":memory:"),
-        d810_version="stage-a-dead-edge-oracle-demo",
+        issuer_registry=NativePatchIssuerRegistry(dead_edge_semantic_issuers()),
+        current_database_identity=database_identity,
+        d810_version="dead-edge-semantic-oracle-demo",
     )
-
-
-def _lower_candidate(candidate, *, function_ea: int, operation_id: str):
-    """Lower one oracle candidate through capture + lowering, never by hand."""
-    start_ea, end_ea = candidate.site_ea, candidate.site_ea + candidate.site_size
-
-    current_bytes = ida_bytes.get_bytes(start_ea, end_ea - start_ea) or b""
-    origin_span = correlate_native_span(
-        start_ea,
-        end_ea,
-        ida_decoded_range_reader(),
-        expected_bytes_hash=hashlib.sha256(current_bytes).hexdigest(),
-    )
-    assert origin_span.coverage is NativeOriginCoverage.COMPLETE, origin_span.coverage
-
-    capture_outcome = capture_range_evidence(
-        IdaLiveDatabaseReader(),
-        NativeAddressRange(start_ea, end_ea),
-        function_ea=function_ea,
-    )
-    assert capture_outcome.ok, capture_outcome.reason
-
-    # Dispatch on the action the proof authorized. A FORCE_FALLTHROUGH edge
-    # must be *erased*, not retargeted: emitting a jump to the next
-    # instruction would also be correct but is not what was proven, and the
-    # point of the action field is that a consumer never has to guess.
-    if candidate.action is DeadEdgeAction.FORCE_FALLTHROUGH:
-        lowering = lower_removed_edge(
-            operation_id=operation_id,
-            origin_span=origin_span,
-            capture=capture_outcome.evidence,
-            provider=MinimalX86BranchEncoder(),
-            provider_id="minimal-x86",
-            provider_version="1",
-            bitness=_bitness(),
-        )
-    else:
-        lowering = lower_direct_edge(
-            operation_id=operation_id,
-            origin_span=origin_span,
-            target_ea=candidate.proposed_target_ea,
-            known_instruction_heads=frozenset({candidate.proposed_target_ea}),
-            capture=capture_outcome.evidence,
-            provider=MinimalX86BranchEncoder(),
-            provider_id="minimal-x86",
-            provider_version="1",
-            bitness=_bitness(),
-        )
-    assert lowering.ok, lowering.reason
-    return lowering.operation
 
 
 def _build_plan_from_candidates(function_ea: int, candidates):
-    """Turn oracle-derived candidates into one ``NativePatchPlan``, through the
-    existing lowering + capture machinery -- never a hand-written byte write.
-    """
-    operations = tuple(
-        _lower_candidate(
-            candidate,
-            function_ea=function_ea,
-            operation_id=f"stage-a-dead-edge-oracle-op-{index}",
-        )
-        for index, candidate in enumerate(candidates)
-    )
-    candidate = candidates[0]
-
-    func = ida_funcs.get_func(function_ea)
-    proof_hash = hashlib.sha256(
-        "\n".join(c.describe() for c in candidates).encode("utf-8")
-    ).hexdigest()
-
-    plan = NativePatchPlan(
-        plan_id="stage-a-dead-edge-oracle-plan",
-        schema_version=1,
-        # Section 6.2: persisting a semantic simplification already decided
-        # by a named D810 pass's live analysis (SingleTripLoopPeel's own
-        # recognizer/prover), not merely exposing already-proven native
-        # evidence pre-lift. Stage B (routing through a registered pass
-        # issuer carrying a plan hash) is a follow-on; this plan is built
-        # directly from the oracle's output, labelled as such via issuer_id.
-        patch_class="semantic_deobfuscation",
-        database_identity=NativeDatabaseIdentity(
-            idb_uuid="stage-a-dead-edge-oracle",
-            input_file_hash="stage-a-dead-edge-oracle",
-            processor="metapc",
-            bitness=_bitness(),
-            image_base=idaapi.get_imagebase(),
-            database_path_hash="stage-a-dead-edge-oracle",
-        ),
-        function_identity=NativeFunctionIdentity(
-            entry_ea=function_ea,
-            chunk_ranges=(NativeAddressRange(int(func.start_ea), int(func.end_ea)),),
-            inherited_bytes_hash="stage-a-dead-edge-oracle",
-        ),
-        inherited_function_fingerprint="stage-a-dead-edge-oracle-fp",
-        target_cfg_fingerprint="stage-a-dead-edge-oracle-cfg",
-        native_origin_map_fingerprint="stage-a-dead-edge-oracle-origin",
-        architecture="x86",
-        bitness=_bitness(),
-        endianness="little",
-        processor="metapc",
-        issuer_id=f"stage_a.dead_edge_oracle:{candidate.proof_kind}",
-        proof_id=(
-            f"{candidate.proof_kind}:block={candidate.block_serial}:"
-            f"action={candidate.action.value}:"
-            + ":".join(f"{k}={v}" for k, v in candidate.proof_facts)
-        ),
-        proof_hash=proof_hash,
-        provenance=(candidate.proof_kind, candidate.proof_reason),
-        operations=operations,
-        fallback_policy="no_patch",
+    """Exercise the production Stage B issuer, not a test-owned contract."""
+    return build_dead_edge_semantic_plan(
+        function_ea,
+        tuple(candidates),
         authorizing_attempt_id=ExecutionAttemptId.new(
             session=DecompilationSessionId.new(), sequence=1
         ),
     )
-    return plan
 
 
 def _emulate_patched_function(func_ea: int, func_end_ea: int, a1: int) -> int:
@@ -436,7 +318,9 @@ class TestDeadEdgeOracleDemonstration:
 
             # --- Step 4b: apply through the existing gateway ---------------
             with _fresh_journal(tmp_path) as journal:
-                gateway = _build_gateway(journal)
+                gateway = _build_gateway(
+                    journal, database_identity=plan.database_identity.idb_uuid
+                )
                 apply_receipt = gateway.apply(plan)
                 assert apply_receipt.ok, apply_receipt.rejection_reasons
 
@@ -578,7 +462,9 @@ class TestDeadEdgeOracleDemonstration:
                 plan = _build_plan_from_candidates(func_ea, opaque)
 
                 with _fresh_journal(tmp_path / function_name) as journal:
-                    gateway = _build_gateway(journal)
+                    gateway = _build_gateway(
+                        journal, database_identity=plan.database_identity.idb_uuid
+                    )
                     apply_receipt = gateway.apply(plan)
                     assert apply_receipt.ok, apply_receipt.rejection_reasons
 
@@ -697,7 +583,9 @@ class TestDeadEdgeOracleDemonstration:
 
             plan = _build_plan_from_candidates(func_ea, opaque)
             with _fresh_journal(tmp_path / "xfail") as journal:
-                gateway = _build_gateway(journal)
+                gateway = _build_gateway(
+                    journal, database_identity=plan.database_identity.idb_uuid
+                )
                 apply_receipt = gateway.apply(plan)
                 assert apply_receipt.ok, apply_receipt.rejection_reasons
                 restore_receipt = gateway.restore(apply_receipt.transaction_id)
