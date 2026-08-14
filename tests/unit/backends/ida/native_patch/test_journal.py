@@ -206,8 +206,10 @@ class TestPrepare:
             NativeJournalState.ANALYSIS_PENDING,
             NativeJournalState.ANALYSIS_VALIDATED,
             NativeJournalState.CACHE_INVALIDATED,
+            NativeJournalState.CERTIFICATE_PENDING,
             NativeJournalState.CERTIFIED,
             NativeJournalState.RESTORING,
+            NativeJournalState.RESTORE_BYTES_RESTORED,
             NativeJournalState.RESTORED,
         ):
             store.transition(tx, target)
@@ -232,6 +234,7 @@ class TestLegalTransitions:
             NativeJournalState.ANALYSIS_PENDING,
             NativeJournalState.ANALYSIS_VALIDATED,
             NativeJournalState.CACHE_INVALIDATED,
+            NativeJournalState.CERTIFICATE_PENDING,
             NativeJournalState.CERTIFIED,
         ):
             record = store.transition(tx, target)
@@ -266,6 +269,7 @@ class TestLegalTransitions:
             NativeJournalState.ANALYSIS_PENDING,
             NativeJournalState.ANALYSIS_VALIDATED,
             NativeJournalState.CACHE_INVALIDATED,
+            NativeJournalState.CERTIFICATE_PENDING,
             NativeJournalState.CERTIFIED,
         ):
             store.transition(tx, target)

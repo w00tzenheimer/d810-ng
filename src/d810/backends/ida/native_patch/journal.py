@@ -110,16 +110,16 @@ _POST_BYTES_STATES = frozenset(
         NativeJournalState.ANALYSIS_PENDING,
         NativeJournalState.ANALYSIS_VALIDATED,
         NativeJournalState.CACHE_INVALIDATED,
+        NativeJournalState.CERTIFICATE_PENDING,
         NativeJournalState.CERTIFIED,
     }
 )
 
 # These are the states where an interrupted apply has a reversible, durable
 # before-image and the gateway's emergency lane can still transition to its
-# rollback/recovery outcome.  CERTIFIED and restore-lane states are excluded:
-# a certificate is complete, while an interrupted explicit restore must remain
-# visible for operator resolution rather than being mistaken for an apply
-# failure at the next startup.
+# rollback/recovery outcome. ``CERTIFICATE_PENDING`` is deliberately included:
+# a certificate is not complete until its external blob/link writes finish.
+# Restore-lane states have their own resumable reconciliation path.
 _STARTUP_RECOVERABLE_STATES = frozenset(
     {
         NativeJournalState.PREPARED,
@@ -128,6 +128,10 @@ _STARTUP_RECOVERABLE_STATES = frozenset(
         NativeJournalState.ANALYSIS_PENDING,
         NativeJournalState.ANALYSIS_VALIDATED,
         NativeJournalState.CACHE_INVALIDATED,
+        NativeJournalState.CERTIFICATE_PENDING,
+        NativeJournalState.RESTORING,
+        NativeJournalState.RESTORE_BYTES_RESTORED,
+        NativeJournalState.RESTORE_FAILED,
     }
 )
 
@@ -358,7 +362,7 @@ class SQLiteNativePatchJournal:
         return {(str(row["scope_kind"]), int(row["scope_ea"])) for row in rows}
 
     def recoverable_transaction_ids(self) -> tuple[NativePatchTransactionId, ...]:
-        """Return interrupted apply-lane transactions in creation order."""
+        """Return startup-reconcilable apply/restore transactions in order."""
         placeholders = ", ".join("?" for _ in _STARTUP_RECOVERABLE_STATES)
         rows = self._conn.execute(
             """

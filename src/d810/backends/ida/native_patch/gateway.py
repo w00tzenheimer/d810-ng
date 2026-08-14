@@ -272,6 +272,7 @@ class NativeRestoreReceipt:
     restored_eas: tuple[int, ...]
     interference_eas: tuple[int, ...]
     controlled_redo_function_eas: tuple[int, ...] = ()
+    failure_reason: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -395,9 +396,12 @@ class NativePatchGateway:
 
             certificate = self._certify(plan, record)
             record = self._journal.transition(
-                record.transaction_id, NativeJournalState.CERTIFIED
+                record.transaction_id, NativeJournalState.CERTIFICATE_PENDING
             )
             self._store_certificate(plan, certificate, record.transaction_id)
+            record = self._journal.transition(
+                record.transaction_id, NativeJournalState.CERTIFIED
+            )
 
             return NativeApplyReceipt(
                 transaction_id=record.transaction_id,
@@ -865,13 +869,17 @@ class NativePatchGateway:
         key = self._certificate_key(
             plan.function_identity.entry_ea, plan.database_identity
         )
-        self._certificate_store.set_native_patch_blob(
-            "certificate", key, certificate_to_payload(certificate)
-        )
+        # Write the transaction link first.  If the second write or the
+        # following CERTIFIED transition is interrupted, startup recovery can
+        # find and revoke any partial certificate instead of leaving an
+        # orphaned applied certificate after rolling back the overlay.
         self._certificate_store.set_native_patch_blob(
             "certificate_transaction",
             transaction_id.value,
             {"certificate_key": key, "certificate_id": certificate.certificate_id},
+        )
+        self._certificate_store.set_native_patch_blob(
+            "certificate", key, certificate_to_payload(certificate)
         )
 
     def _revoke_certificate(self, transaction_id: NativePatchTransactionId) -> bool:
@@ -937,49 +945,91 @@ class NativePatchGateway:
     # Explicit restore (section 15.3)
     # ------------------------------------------------------------------
 
-    def restore(self, transaction_id: NativePatchTransactionId) -> NativeRestoreReceipt:
+    def restore(
+        self,
+        transaction_id: NativePatchTransactionId,
+        *,
+        acknowledge_recovery_required: bool = False,
+    ) -> NativeRestoreReceipt:
+        """Restore or resume one transaction's durable restore lane.
+
+        A restore is idempotent at the byte and metadata primitives.  The
+        journal nevertheless records the byte-restored cut point so a restart
+        knows whether it is resuming the reversal or its post-restore
+        analysis/redo reconciliation. ``RECOVERY_REQUIRED`` remains read-only
+        until an operator explicitly acknowledges a retry.
+        """
         record = self._journal.get(transaction_id)
         if record is None:
             raise ValueError(f"unknown transaction {transaction_id.value}")
-        if record.state is not NativeJournalState.CERTIFIED:
-            raise NativePatchRestoreNotCertified(record.state)
-
-        recovery = self._journal.classify_recovery(
-            transaction_id, self._read_current_byte
-        )
-        interference_eas = tuple(
-            sorted(
-                entry.ea
-                for op in recovery.operation_reports
-                for entry in op.byte_entries
-                if entry.verdict is NativeByteRecoveryVerdict.NEITHER
-            )
-        )
-
-        record = self._journal.transition(transaction_id, NativeJournalState.RESTORING)
-
-        if interference_eas:
+        if record.state is NativeJournalState.RECOVERY_REQUIRED:
+            if not acknowledge_recovery_required:
+                return NativeRestoreReceipt(
+                    transaction_id=transaction_id,
+                    state=record.state,
+                    restored_eas=(),
+                    interference_eas=(),
+                    failure_reason="explicit acknowledgement required before retry",
+                )
             record = self._journal.transition(
                 transaction_id,
-                NativeJournalState.RECOVERY_REQUIRED,
-                note="current state diverges from the certified after-image",
+                NativeJournalState.RESTORING,
+                note="operator acknowledged restore reconciliation retry",
             )
-            return NativeRestoreReceipt(
-                transaction_id=transaction_id,
-                state=record.state,
-                restored_eas=(),
-                interference_eas=interference_eas,
-            )
-
-        try:
-            restored_eas = self._restore_bytes(transaction_id, recovery)
-        except Exception:
-            self._journal.transition(
+        elif record.state is NativeJournalState.RESTORE_FAILED:
+            record = self._journal.transition(
                 transaction_id,
-                NativeJournalState.RESTORE_FAILED,
-                note="a byte write during restore raised",
+                NativeJournalState.RESTORING,
+                note="retrying a failed restore",
             )
-            raise
+        elif record.state is NativeJournalState.CERTIFIED:
+            record = self._journal.transition(
+                transaction_id, NativeJournalState.RESTORING
+            )
+        elif record.state not in {
+            NativeJournalState.RESTORING,
+            NativeJournalState.RESTORE_BYTES_RESTORED,
+        }:
+            raise NativePatchRestoreNotCertified(record.state)
+
+        restored_eas: tuple[int, ...] = ()
+        if record.state is NativeJournalState.RESTORING:
+            recovery = self._journal.classify_recovery(
+                transaction_id, self._read_current_byte
+            )
+            interference_eas = tuple(
+                sorted(
+                    entry.ea
+                    for op in recovery.operation_reports
+                    for entry in op.byte_entries
+                    if entry.verdict is NativeByteRecoveryVerdict.NEITHER
+                )
+            )
+            if interference_eas:
+                record = self._journal.transition(
+                    transaction_id,
+                    NativeJournalState.RECOVERY_REQUIRED,
+                    note="current state diverges from the certified after-image",
+                )
+                return NativeRestoreReceipt(
+                    transaction_id=transaction_id,
+                    state=record.state,
+                    restored_eas=(),
+                    interference_eas=interference_eas,
+                )
+            try:
+                restored_eas = self._restore_bytes(transaction_id, recovery)
+            except Exception as error:
+                return self._restore_failed(
+                    transaction_id,
+                    restored_eas=(),
+                    reason=f"a byte write during restore raised: {error}",
+                )
+            record = self._journal.transition(
+                transaction_id,
+                NativeJournalState.RESTORE_BYTES_RESTORED,
+                note="restore byte image reconciled",
+            )
 
         # Re-establish the pre-patch function extent BEFORE reanalysis.
         #
@@ -989,18 +1039,25 @@ class NativePatchGateway:
         # The remembered extent has to be asserted first, so the subsequent
         # reanalyze+invalidate runs over the whole restored function rather
         # than the truncated one.
-        unreversed_metadata = self._reverse_metadata_actions(transaction_id)
-        unrestored_extents = self._restore_function_extents(transaction_id)
+        try:
+            unreversed_metadata = self._reverse_metadata_actions(transaction_id)
+            unrestored_extents = self._restore_function_extents(transaction_id)
 
-        reanalyzed_function_eas = self._function_eas_for_transaction(transaction_id)
-        for function_ea in reanalyzed_function_eas:
-            reanalyze_and_wait(function_ea, reanalyzer=self._reanalyzer)
-            invalidate_target_and_callers(
-                function_ea,
-                invalidator=self._cache_invalidator,
-                discovery=self._caller_discovery,
+            reanalyzed_function_eas = self._function_eas_for_transaction(transaction_id)
+            for function_ea in reanalyzed_function_eas:
+                reanalyze_and_wait(function_ea, reanalyzer=self._reanalyzer)
+                invalidate_target_and_callers(
+                    function_ea,
+                    invalidator=self._cache_invalidator,
+                    discovery=self._caller_discovery,
+                )
+                controlled_redo(function_ea, decompiler=self._redo_decompiler)
+        except Exception as error:
+            return self._restore_failed(
+                transaction_id,
+                restored_eas=restored_eas,
+                reason=f"restore lifecycle reconciliation raised: {error}",
             )
-            controlled_redo(function_ea, decompiler=self._redo_decompiler)
 
         if unreversed_metadata or unrestored_extents:
             # Bytes are back but the database shape is not. Say so rather than
@@ -1050,6 +1107,27 @@ class NativePatchGateway:
             restored_eas=restored_eas,
             interference_eas=(),
             controlled_redo_function_eas=reanalyzed_function_eas,
+        )
+
+    def _restore_failed(
+        self,
+        transaction_id: NativePatchTransactionId,
+        *,
+        restored_eas: tuple[int, ...],
+        reason: str,
+    ) -> NativeRestoreReceipt:
+        """Durably expose a restore cut-point failure for startup retry."""
+        record = self._journal.transition(
+            transaction_id,
+            NativeJournalState.RESTORE_FAILED,
+            note=reason,
+        )
+        return NativeRestoreReceipt(
+            transaction_id=transaction_id,
+            state=record.state,
+            restored_eas=restored_eas,
+            interference_eas=(),
+            failure_reason=reason,
         )
 
     def _restore_function_extents(
@@ -1159,7 +1237,7 @@ class NativePatchGateway:
     # ------------------------------------------------------------------
 
     def recover(self, transaction_id: NativePatchTransactionId) -> None:
-        """Classify and resolve one non-terminal transaction.
+        """Classify and reconcile one interrupted transaction.
 
         Public entry point for startup recovery
         (``d810.manager.native_normalization``'s job is to enumerate which
@@ -1169,12 +1247,40 @@ class NativePatchGateway:
         the exception path inside :meth:`apply` -- see
         :meth:`_emergency_recover`.
         """
+        record = self._journal.get(transaction_id)
+        if record is None or record.state is NativeJournalState.RESTORED:
+            return
+        if record.state in {
+            NativeJournalState.RESTORING,
+            NativeJournalState.RESTORE_BYTES_RESTORED,
+            NativeJournalState.RESTORE_FAILED,
+        }:
+            self.restore(transaction_id)
+            return
+        # RECOVERY_REQUIRED is deliberately not auto-written: its explicit
+        # acknowledgement is the caller's authority to retry a restore after
+        # an interference or certificate-revocation failure.
+        if record.state is NativeJournalState.RECOVERY_REQUIRED:
+            return
         self._emergency_recover(transaction_id)
 
     def _emergency_recover(self, transaction_id: NativePatchTransactionId) -> None:
         record = self._journal.get(transaction_id)
         if record is None or record.state in _TERMINAL_STATES:
             return
+
+        if record.state is NativeJournalState.CERTIFICATE_PENDING:
+            try:
+                certificate_revoked = self._revoke_certificate(transaction_id)
+            except Exception:
+                certificate_revoked = False
+            if not certificate_revoked:
+                self._journal.transition(
+                    transaction_id,
+                    NativeJournalState.RECOVERY_REQUIRED,
+                    note="certificate persistence interrupted; certificate cleanup failed",
+                )
+                return
 
         unreversed_metadata = self._reverse_metadata_actions(transaction_id)
         if unreversed_metadata:

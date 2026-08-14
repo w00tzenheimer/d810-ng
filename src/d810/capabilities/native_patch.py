@@ -327,9 +327,11 @@ class NativeJournalState(str, enum.Enum):
     ANALYSIS_PENDING = "ANALYSIS_PENDING"
     ANALYSIS_VALIDATED = "ANALYSIS_VALIDATED"
     CACHE_INVALIDATED = "CACHE_INVALIDATED"
+    CERTIFICATE_PENDING = "CERTIFICATE_PENDING"
     CERTIFIED = "CERTIFIED"
     ROLLING_BACK = "ROLLING_BACK"
     RESTORING = "RESTORING"
+    RESTORE_BYTES_RESTORED = "RESTORE_BYTES_RESTORED"
     RESTORED = "RESTORED"
     RESTORE_FAILED = "RESTORE_FAILED"
     RECOVERY_REQUIRED = "RECOVERY_REQUIRED"
@@ -392,6 +394,17 @@ _LEGAL_NATIVE_JOURNAL_TRANSITIONS: dict[
     ),
     NativeJournalState.CACHE_INVALIDATED: frozenset(
         {
+            NativeJournalState.CERTIFICATE_PENDING,
+            NativeJournalState.ROLLING_BACK,
+            NativeJournalState.RECOVERY_REQUIRED,
+        }
+    ),
+    # Both external certificate-store writes happen while this state is
+    # durable.  A crash or a store failure can therefore still take the
+    # ordinary apply rollback lane; CERTIFIED means both the overlay and its
+    # certificate/link witnesses are complete.
+    NativeJournalState.CERTIFICATE_PENDING: frozenset(
+        {
             NativeJournalState.CERTIFIED,
             NativeJournalState.ROLLING_BACK,
             NativeJournalState.RECOVERY_REQUIRED,
@@ -414,10 +427,20 @@ _LEGAL_NATIVE_JOURNAL_TRANSITIONS: dict[
     ),
     NativeJournalState.RESTORING: frozenset(
         {
+            NativeJournalState.RESTORE_BYTES_RESTORED,
             NativeJournalState.RESTORED,
             NativeJournalState.RESTORE_FAILED,
             # 15.3 step 2: "If the current state differs, record interference
             # and require user resolution."
+            NativeJournalState.RECOVERY_REQUIRED,
+        }
+    ),
+    # This durable receipt means a restart need not infer whether the
+    # byte-reversal loop completed before it resumes metadata/analysis work.
+    NativeJournalState.RESTORE_BYTES_RESTORED: frozenset(
+        {
+            NativeJournalState.RESTORED,
+            NativeJournalState.RESTORE_FAILED,
             NativeJournalState.RECOVERY_REQUIRED,
         }
     ),
@@ -695,8 +718,8 @@ class NativePatchJournalStore(Protocol):
     ) -> NativePatchTransactionRecord | None: ...
 
     def recoverable_transaction_ids(self) -> tuple[NativePatchTransactionId, ...]:
-        """Durably enumerate apply-lane transactions interrupted before
-        certification or an explicit recovery outcome."""
+        """Durably enumerate interrupted apply/restore transactions that may
+        be reconciled automatically at startup."""
         ...
 
     def record_byte_event(

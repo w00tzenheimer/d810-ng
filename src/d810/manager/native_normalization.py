@@ -179,14 +179,13 @@ def recover_startup(
     journal: NativePatchJournalStore | None = None,
     gateway: NativePatchGateway,
 ) -> tuple[NativePatchTransactionId, ...]:
-    """Section 15.4: resolve interrupted apply-lane transactions on plugin
-    load or IDB open. The caller may supply ``transaction_ids``; otherwise
-    this enumerates the durable apply-lane records that the gateway can safely
-    recover. Explicit-restore failures remain durable operator-visible states
-    rather than being misclassified as abandoned applies. Returns the ids
-    recovery was attempted for -- a per-id failure is logged and does not
-    stop the remaining ids from being processed, so one broken transaction
-    cannot block the others.
+    """Section 15.4: reconcile interrupted transactions on plugin load or IDB
+    open. The caller may supply ``transaction_ids``; otherwise this enumerates
+    durable apply and restore cut points that the gateway can safely resume.
+    ``RECOVERY_REQUIRED`` remains operator-visible and read-only until its
+    explicit acknowledgement. Returns the ids recovery was attempted for --
+    a per-id failure is logged and does not stop the remaining ids from being
+    processed, so one broken transaction cannot block the others.
     """
     if transaction_ids is None:
         if journal is None:

@@ -26,7 +26,7 @@ from d810.backends.ida.native_patch.gateway import (
 )
 from d810.backends.ida.native_patch.journal import SQLiteNativePatchJournal
 from d810.capabilities.native_patch import NativeJournalState
-from d810.manager.native_normalization import _certificate_matches
+from d810.manager.native_normalization import _certificate_matches, recover_startup
 from d810.transforms.native_patch_plan import (
     NativeAddressRange,
     NativeCertificateState,
@@ -186,24 +186,31 @@ class FakeCallerDiscovery:
     def __init__(self, callers: frozenset[int] = frozenset()):
         self.callers = callers
         self.queried: list[int] = []
+        self.raise_on_callers = False
 
     def callers_of(self, function_ea):
         self.queried.append(function_ea)
+        if self.raise_on_callers:
+            raise RuntimeError("injected: caller discovery")
         return self.callers
 
 
 class RecordingRedoDecompiler:
     def __init__(self):
         self.calls: list[int] = []
+        self.raise_on_decompile = False
 
     def decompile(self, function_ea):
         self.calls.append(function_ea)
+        if self.raise_on_decompile:
+            raise RuntimeError("injected: controlled redo")
         return object()
 
 
 class FakeBlobStore:
     def __init__(self):
         self._data: dict[tuple[str, str], dict] = {}
+        self.raise_on_clear = False
 
     def get_native_patch_blob(self, scope, key):
         row = self._data.get((scope, key))
@@ -213,6 +220,8 @@ class FakeBlobStore:
         self._data[(scope, key)] = dict(payload)
 
     def clear_native_patch_blob(self, scope, key):
+        if self.raise_on_clear:
+            raise RuntimeError("injected: certificate revocation")
         self._data.pop((scope, key), None)
 
 
@@ -220,6 +229,27 @@ class RaisingBlobStore(FakeBlobStore):
     def set_native_patch_blob(self, scope, key, payload):
         if scope == "transaction_mirror":
             raise RuntimeError("injected: netnode mirror write failed")
+        super().set_native_patch_blob(scope, key, payload)
+
+
+class CrashingCertificateBlobStore(FakeBlobStore):
+    """Models process death at the certificate-store cut point.
+
+    ``KeyboardInterrupt`` intentionally bypasses ``apply()``'s ordinary
+    exception handler, leaving only the durable journal state for startup to
+    reconcile.
+    """
+
+    def set_native_patch_blob(self, scope, key, payload):
+        if scope == "certificate_transaction":
+            raise KeyboardInterrupt("injected: certificate-store crash")
+        super().set_native_patch_blob(scope, key, payload)
+
+
+class FailingCertificateBlobStore(FakeBlobStore):
+    def set_native_patch_blob(self, scope, key, payload):
+        if scope == "certificate":
+            raise RuntimeError("injected: certificate write failed")
         super().set_native_patch_blob(scope, key, payload)
 
 
@@ -399,6 +429,64 @@ class TestApplySuccess:
         mirror_receipts = rig.journal.mirror_receipts(receipt.transaction_id)
         assert len(mirror_receipts) == 1
         assert mirror_receipts[0].outcome.value == "mirror_failed"
+        rig.journal.close()
+
+    def test_certificate_store_crash_remains_startup_recoverable(
+        self, tmp_path
+    ) -> None:
+        """CERTIFIED must not be durable before both certificate writes are."""
+        rig = build_gateway(
+            tmp_path,
+            (fixtures.operation(),),
+            blobs=CrashingCertificateBlobStore(),
+        )
+        before = dict(rig.db.bytes)
+
+        with pytest.raises(KeyboardInterrupt, match="certificate-store crash"):
+            rig.gateway.apply(fixtures.plan())
+
+        transaction_id = _sole_transaction_id(rig.journal)
+        assert (
+            rig.journal.get(transaction_id).state
+            is NativeJournalState.CERTIFICATE_PENDING
+        )
+        assert rig.db.bytes != before
+
+        recovered = recover_startup(journal=rig.journal, gateway=rig.gateway)
+
+        assert recovered == (transaction_id,)
+        assert rig.journal.get(transaction_id).state is NativeJournalState.RESTORED
+        assert rig.db.bytes == before
+        assert (
+            rig.blobs.get_native_patch_blob(
+                "certificate_transaction", transaction_id.value
+            )
+            is None
+        )
+        rig.journal.close()
+
+    def test_certificate_write_failure_revokes_the_prior_transaction_link(
+        self, tmp_path
+    ) -> None:
+        rig = build_gateway(
+            tmp_path,
+            (fixtures.operation(),),
+            blobs=FailingCertificateBlobStore(),
+        )
+        before = dict(rig.db.bytes)
+
+        with pytest.raises(RuntimeError, match="certificate write failed"):
+            rig.gateway.apply(fixtures.plan())
+
+        transaction_id = _sole_transaction_id(rig.journal)
+        assert rig.journal.get(transaction_id).state is NativeJournalState.RESTORED
+        assert rig.db.bytes == before
+        assert (
+            rig.blobs.get_native_patch_blob(
+                "certificate_transaction", transaction_id.value
+            )
+            is None
+        )
         rig.journal.close()
 
 
@@ -648,6 +736,87 @@ class TestRestore:
         assert restored.ok
         assert rig.redo.calls == [0x1000]
         assert restored.controlled_redo_function_eas == (0x1000,)
+
+    def test_restore_redo_failure_is_startup_retryable(self, rig) -> None:
+        """A restore-lane exception must leave a durable resumable state."""
+        before = dict(rig.db.bytes)
+        receipt = rig.gateway.apply(fixtures.plan())
+        assert receipt.ok
+        rig.redo.raise_on_decompile = True
+
+        failed = rig.gateway.restore(receipt.transaction_id)
+
+        assert failed.state is NativeJournalState.RESTORE_FAILED
+        assert not failed.ok
+        assert rig.journal.get(receipt.transaction_id).state is (
+            NativeJournalState.RESTORE_FAILED
+        )
+        assert rig.db.bytes == before
+
+        rig.redo.raise_on_decompile = False
+        recovered = recover_startup(journal=rig.journal, gateway=rig.gateway)
+
+        assert recovered == (receipt.transaction_id,)
+        assert (
+            rig.journal.get(receipt.transaction_id).state is NativeJournalState.RESTORED
+        )
+
+    @pytest.mark.parametrize(
+        "stage",
+        (
+            "reanalyze_function",
+            "auto_wait",
+            "caller_discovery",
+            "cache_invalidation",
+        ),
+    )
+    def test_restore_lifecycle_failure_is_durable_and_startup_retryable(
+        self, rig, stage
+    ) -> None:
+        """Every required restore lifecycle primitive has one failure boundary."""
+        receipt = rig.gateway.apply(fixtures.plan())
+        assert receipt.ok
+        if stage in {"reanalyze_function", "auto_wait"}:
+            rig.reanalyzer._raise_on = stage  # noqa: SLF001 - test injection
+        elif stage == "caller_discovery":
+            rig.discovery.raise_on_callers = True
+        else:
+            rig.invalidator._raise_on_ea = 0x1000  # noqa: SLF001 - test injection
+
+        failed = rig.gateway.restore(receipt.transaction_id)
+
+        assert failed.state is NativeJournalState.RESTORE_FAILED
+        assert failed.failure_reason is not None
+
+        rig.reanalyzer._raise_on = None  # noqa: SLF001 - test injection
+        rig.discovery.raise_on_callers = False
+        rig.invalidator._raise_on_ea = None  # noqa: SLF001 - test injection
+        recover_startup(journal=rig.journal, gateway=rig.gateway)
+
+        assert (
+            rig.journal.get(receipt.transaction_id).state is NativeJournalState.RESTORED
+        )
+
+    def test_certificate_revocation_failure_requires_acknowledged_retry(
+        self, rig
+    ) -> None:
+        receipt = rig.gateway.apply(fixtures.plan())
+        assert receipt.ok
+        rig.blobs.raise_on_clear = True
+
+        failed = rig.gateway.restore(receipt.transaction_id)
+
+        assert failed.state is NativeJournalState.RECOVERY_REQUIRED
+        assert not failed.ok
+
+        rig.blobs.raise_on_clear = False
+        resumed = rig.gateway.restore(
+            receipt.transaction_id,
+            acknowledge_recovery_required=True,
+        )
+
+        assert resumed.ok
+        assert resumed.state is NativeJournalState.RESTORED
 
     def test_restore_revokes_the_applied_certificate(self, rig) -> None:
         """A restored function must never continue to short-circuit a plan."""
