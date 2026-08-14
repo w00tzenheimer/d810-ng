@@ -216,6 +216,23 @@ def _build_stage_timing_report(
     return report
 
 
+def _build_stage_attempt_outcome_report(
+    receipts: tuple[EgglogExtractionReceipt, ...],
+) -> dict[str, int]:
+    """Count accepted and refused timed attempts without conflating them."""
+
+    if not receipts:
+        raise ValueError("stage attempt receipts must not be empty")
+    return dict(
+        sorted(
+            Counter(
+                "accepted" if receipt.skip_reason is None else receipt.skip_reason.value
+                for receipt in receipts
+            ).items()
+        )
+    )
+
+
 def _assert_comparable_baseline(
     baseline: dict[str, object], report: dict[str, object]
 ) -> None:
@@ -281,6 +298,22 @@ def test_controlled_receipts_report_quantiles_distributions_and_skips() -> None:
         "time_budget": 1,
     }
     assert report["cap_skip_count"] == 2
+
+
+def test_stage_attempt_outcomes_keep_acceptance_and_refusals_separate() -> None:
+    report = _build_stage_attempt_outcome_report(
+        (
+            EgglogExtractionReceipt(),
+            EgglogExtractionReceipt(skip_reason=ExtractionSkipReason.NATIVE_Z3_FAILED),
+            EgglogExtractionReceipt(skip_reason=ExtractionSkipReason.TIME_BUDGET),
+        )
+    )
+
+    assert report == {
+        "accepted": 1,
+        "native_z3_failed": 1,
+        "time_budget": 1,
+    }
 
 
 def test_stage_timing_report_requires_consistent_ordered_stages() -> None:
@@ -437,6 +470,7 @@ def test_corpus_receipt_reports_quantiles_and_rejects_100x_regression(
     # materializer is a test double; its stage remains visible but ungated.
     monkeypatch.setattr(stage_handler, "_create_instruction", lambda *_args: object())
     stage_records: list[dict[str, float]] = []
+    stage_receipts: list[EgglogExtractionReceipt] = []
     for family, source_name in _CANDIDATE_CORPUS:
         rule = rules_by_key[(family, source_name)]
         candidate = _candidate_from_pattern(rule.pattern)
@@ -450,6 +484,8 @@ def test_corpus_receipt_reports_quantiles_and_rejects_100x_regression(
         stage_timings = stage_handler.execution_metadata().get("stage_timings_ms")
         assert isinstance(stage_timings, dict)
         stage_records.append(stage_timings)
+        assert stage_handler.last_extraction_receipt is not None
+        stage_receipts.append(stage_handler.last_extraction_receipt)
 
     baseline = json.loads(_BASELINE_PATH.read_text(encoding="utf-8"))
     baseline_stage_profiles = baseline["phase0_stage_profiles"]
@@ -464,6 +500,9 @@ def test_corpus_receipt_reports_quantiles_and_rejects_100x_regression(
             "production_time_budget_ms": extraction_handler.time_budget_ms,
             "stage_profile_time_budget_ms": stage_handler.time_budget_ms,
             "stage_timing_ms": _build_stage_timing_report(tuple(stage_records)),
+            "stage_attempt_outcomes": _build_stage_attempt_outcome_report(
+                tuple(stage_receipts)
+            ),
             "stage_profile_note": (
                 "active AST plus real handler/extraction/native-Z3; "
                 "reconstruction uses a test materializer"
