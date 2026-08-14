@@ -16,6 +16,8 @@ from d810.manager.workbench_models import (
     D810OutputRef,
     DeobfuscationWorkbenchSnapshot,
     EffectiveStageDecisionSummary,
+    ExecutionAttemptSummary,
+    ExecutionLedgerSummary,
     FunctionRef,
     OutcomeStatus,
     PipelineStageSnapshot,
@@ -158,6 +160,61 @@ def test_rows_preserve_pipeline_order_and_keep_consumers_supporting() -> None:
         next(row for row in supporting if row.key == "consumer:execution_scope").status
         is OutcomeStatus.ABSTAINED
     )
+
+
+def test_supporting_rows_lead_with_session_execution_ledger_and_demote_counters() -> (
+    None
+):
+    snapshot = _snapshot()
+    snapshot = dataclasses.replace(
+        snapshot,
+        execution_ledger=ExecutionLedgerSummary(
+            session_id="session-1",
+            function_ea=0x401000,
+            attempts=(
+                ExecutionAttemptSummary(
+                    sequence=1,
+                    parent_sequence=None,
+                    stage_id="hexrays_preanalysis",
+                    domain="hook",
+                    status="completed",
+                    reason_code=None,
+                    elapsed_ms=1.25,
+                    effect_refs_json="[]",
+                    details_json="{}",
+                ),
+                ExecutionAttemptSummary(
+                    sequence=2,
+                    parent_sequence=1,
+                    stage_id="ctree_rule:noop",
+                    domain="hook",
+                    status="abstained",
+                    reason_code="no_modifications",
+                    elapsed_ms=0.5,
+                    effect_refs_json="[]",
+                    details_json='{"patch_count":0}',
+                ),
+            ),
+            terminal_attempts=2,
+            in_progress_attempts=0,
+        ),
+    )
+
+    supporting = tuple(
+        row
+        for row in logic.project_workbench_rows(snapshot)
+        if row.section is logic.WorkbenchSection.SUPPORTING
+    )
+    ledger = next(row for row in supporting if row.key == "supporting:execution-ledger")
+    legacy = next(row for row in supporting if row.key == "supporting:statistics")
+
+    assert ledger.label == "Execution ledger"
+    assert ledger.summary == "2 terminal, 0 in progress"
+    assert "2 <- 1 hook ctree_rule:noop: abstained" in ledger.detail
+    assert "reason=no_modifications" in ledger.detail
+    assert ledger.status is OutcomeStatus.READY
+    assert legacy.label == "Legacy counters"
+    assert supporting.index(ledger) < supporting.index(legacy)
 
 
 def test_context_rows_keep_source_and_runtime_truth_distinct() -> None:
@@ -456,6 +513,20 @@ def test_evidence_export_is_canonical_deterministic_json() -> None:
             }
         ],
         "engine_started": True,
+        "execution_ledger": {
+            "attempts": [],
+            "function_ea": 0,
+            "in_progress_attempts": 0,
+            "session_id": None,
+            "terminal_attempts": 0,
+        },
+        "execution_profile": {
+            "candidates": [],
+            "identity_json": None,
+            "ignored_identity_mismatch_count": 0,
+            "ignored_in_progress_count": 0,
+            "is_read_only": True,
+        },
         "freshness": "current",
         "function": {
             "ea": 0x401000,

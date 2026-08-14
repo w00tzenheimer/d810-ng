@@ -183,6 +183,71 @@ def _statistics_detail(snapshot: DeobfuscationWorkbenchSnapshot) -> str:
     return "\n".join(lines)
 
 
+def _execution_ledger_detail(snapshot: DeobfuscationWorkbenchSnapshot) -> str:
+    ledger = snapshot.execution_ledger
+    if ledger.session_id is None:
+        return "No recorded decompilation session for this function."
+    lines = [f"session: {ledger.session_id}"]
+    for attempt in ledger.attempts:
+        parent = (
+            "root" if attempt.parent_sequence is None else str(attempt.parent_sequence)
+        )
+        elapsed = (
+            "elapsed=unavailable"
+            if attempt.elapsed_ms is None
+            else f"elapsed={attempt.elapsed_ms:.3f}ms"
+        )
+        reason = "" if attempt.reason_code is None else f" reason={attempt.reason_code}"
+        lines.append(
+            f"{attempt.sequence} <- {parent} {attempt.domain} {attempt.stage_id}: "
+            f"{attempt.status} {elapsed}{reason}"
+        )
+        if attempt.effect_refs_json != "[]":
+            lines.append(f"  effects={attempt.effect_refs_json}")
+        if attempt.details_json != "{}":
+            lines.append(f"  details={attempt.details_json}")
+    return "\n".join(lines)
+
+
+def _execution_ledger_status(
+    snapshot: DeobfuscationWorkbenchSnapshot,
+) -> OutcomeStatus:
+    ledger = snapshot.execution_ledger
+    if not ledger.attempts:
+        return OutcomeStatus.NOT_RUN
+    if any(
+        attempt.status in {"failed", "poisoned_restart_required"}
+        for attempt in ledger.attempts
+    ):
+        return OutcomeStatus.FAILED
+    return OutcomeStatus.READY
+
+
+def _execution_profile_detail(snapshot: DeobfuscationWorkbenchSnapshot) -> str:
+    profile = snapshot.execution_profile
+    if profile.identity_json is None:
+        return "No attested execution profile is available for this function."
+    lines = [f"identity={profile.identity_json}", "authority=read-only preview"]
+    for candidate in profile.candidates:
+        p95 = (
+            "unavailable"
+            if candidate.p95_elapsed_ms is None
+            else f"{candidate.p95_elapsed_ms:.3f}ms"
+        )
+        reduction = (
+            "unavailable"
+            if candidate.mean_reduction is None
+            else f"{candidate.mean_reduction:.3f}"
+        )
+        lines.append(
+            f"{candidate.domain} {candidate.stage_id}: score={candidate.priority_score:.3f} "
+            f"effect_rate={candidate.attempt_to_effect_rate:.3f} p95={p95} "
+            f"proof_failures={candidate.proof_failure_count} reduction={reduction} "
+            f"reasons={candidate.reason_counts_json}"
+        )
+    return "\n".join(lines)
+
+
 def project_workbench_rows(
     snapshot: DeobfuscationWorkbenchSnapshot,
 ) -> tuple[WorkbenchRow, ...]:
@@ -317,15 +382,42 @@ def project_workbench_rows(
                 status=OutcomeStatus.READY,
             ),
             _row(
-                key="supporting:statistics",
+                key="supporting:execution-ledger",
                 section=WorkbenchSection.SUPPORTING,
                 ordinal=len(snapshot.consumers) + 1,
-                label="Supporting statistics",
+                label="Execution ledger",
+                summary=(
+                    f"{snapshot.execution_ledger.terminal_attempts} terminal, "
+                    f"{snapshot.execution_ledger.in_progress_attempts} in progress"
+                ),
+                detail=_execution_ledger_detail(snapshot),
+                status=_execution_ledger_status(snapshot),
+            ),
+            _row(
+                key="supporting:statistics",
+                section=WorkbenchSection.SUPPORTING,
+                ordinal=len(snapshot.consumers) + 3,
+                label="Legacy counters",
                 summary=f"{snapshot.statistics.total_stage_firings} stage firings",
                 detail=_statistics_detail(snapshot),
                 status=(
                     OutcomeStatus.READY
                     if snapshot.statistics.total_stage_firings
+                    else OutcomeStatus.NOT_RUN
+                ),
+            ),
+            _row(
+                key="supporting:execution-profile",
+                section=WorkbenchSection.SUPPORTING,
+                ordinal=len(snapshot.consumers) + 2,
+                label="Execution profile preview",
+                summary=(
+                    f"{len(snapshot.execution_profile.candidates)} ranked candidates"
+                ),
+                detail=_execution_profile_detail(snapshot),
+                status=(
+                    OutcomeStatus.READY
+                    if snapshot.execution_profile.identity_json is not None
                     else OutcomeStatus.NOT_RUN
                 ),
             ),

@@ -18,6 +18,10 @@ from d810.manager.workbench_models import (
     D810OutputRef,
     DeobfuscationWorkbenchSnapshot,
     EffectiveStageDecisionSummary,
+    ExecutionAttemptSummary,
+    ExecutionLedgerSummary,
+    ExecutionProfileCandidateSummary,
+    ExecutionProfileSummary,
     FunctionRef,
     OutcomeStatus,
     PatchCountEntry,
@@ -29,6 +33,10 @@ from d810.manager.workbench_models import (
     WorkbenchCommandRequest,
     WorkbenchCommandResult,
     WorkbenchDiagnostic,
+)
+from d810.core.execution_profile import (
+    ExecutionProfileKey,
+    build_execution_profile_preview,
 )
 from d810.manager.workbench_recipe_models import (
     FunctionPipelineOverride,
@@ -50,6 +58,14 @@ def _canonical_json(value: object) -> str:
         separators=(",", ":"),
         ensure_ascii=False,
     )
+
+
+def _plain_json(value: object) -> object:
+    if isinstance(value, Mapping):
+        return {str(key): _plain_json(nested) for key, nested in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_plain_json(nested) for nested in value]
+    return value
 
 
 def _path_ref(*, kind: str, label: str, value: object) -> ArtifactRef:
@@ -239,6 +255,18 @@ class WorkbenchService:
             errors.append(f"execution-scope: {exc}")
 
         try:
+            execution_ledger = self._execution_ledger(function_ea)
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            execution_ledger = ExecutionLedgerSummary(None, int(function_ea), (), 0, 0)
+            errors.append(f"execution-ledger: {exc}")
+
+        try:
+            execution_profile = self._execution_profile(function_ea, attack)
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            execution_profile = ExecutionProfileSummary(None, (), 0)
+            errors.append(f"execution-profile: {exc}")
+
+        try:
             statistics = self._statistics()
         except (RuntimeError, TypeError, ValueError) as exc:
             statistics = StatisticsSummary((), 0, ())
@@ -275,6 +303,8 @@ class WorkbenchService:
             freshness=SnapshotFreshness.CURRENT,
             engine_started=bool(getattr(self._manager, "started", False)),
             collection_errors=tuple(errors),
+            execution_ledger=execution_ledger,
+            execution_profile=execution_profile,
             case=case,
         )
 
@@ -676,6 +706,109 @@ class WorkbenchService:
                 )
                 for name, values in sorted(stage_patches.items())
             ),
+        )
+
+    def _execution_ledger(self, function_ea: int) -> ExecutionLedgerSummary:
+        lifecycle = getattr(self._manager, "decompilation_lifecycle", None)
+        journal = getattr(lifecycle, "execution_journal", None)
+        latest_session = getattr(journal, "latest_session_for_function", None)
+        attempts_for_session = getattr(journal, "attempts_for_session", None)
+        if not callable(latest_session) or not callable(attempts_for_session):
+            return ExecutionLedgerSummary(None, int(function_ea), (), 0, 0)
+        session_id = latest_session(int(function_ea))
+        if session_id is None:
+            return ExecutionLedgerSummary(None, int(function_ea), (), 0, 0)
+        attempts = attempts_for_session(session_id)
+        summaries = tuple(
+            ExecutionAttemptSummary(
+                sequence=int(attempt.attempt_id.sequence),
+                parent_sequence=(
+                    None
+                    if attempt.parent_attempt_id is None
+                    else int(attempt.parent_attempt_id.sequence)
+                ),
+                stage_id=str(attempt.stage_id),
+                domain=str(attempt.domain.value),
+                status=str(attempt.status.value),
+                reason_code=attempt.reason_code,
+                elapsed_ms=attempt.elapsed_ms,
+                effect_refs_json=_canonical_json(
+                    [
+                        {
+                            "kind": ref.kind,
+                            "ref_id": ref.ref_id,
+                            "detail": _plain_json(ref.detail),
+                        }
+                        for ref in attempt.effect_refs
+                    ]
+                ),
+                details_json=_canonical_json(_plain_json(attempt.details)),
+            )
+            for attempt in attempts
+        )
+        terminal = sum(item.status != "started" for item in summaries)
+        return ExecutionLedgerSummary(
+            session_id=str(session_id.value),
+            function_ea=int(function_ea),
+            attempts=summaries,
+            terminal_attempts=terminal,
+            in_progress_attempts=len(summaries) - terminal,
+        )
+
+    def _execution_profile(
+        self,
+        function_ea: int,
+        attack: AttackSummary,
+    ) -> ExecutionProfileSummary:
+        """Project exact-key history for display; never return a scheduler port."""
+        lifecycle = getattr(self._manager, "decompilation_lifecycle", None)
+        journal = getattr(lifecycle, "execution_journal", None)
+        latest_key = getattr(journal, "latest_native_key_for_function", None)
+        attempts_for_key = getattr(journal, "attempts_for_native_key", None)
+        if not callable(latest_key) or not callable(attempts_for_key):
+            return ExecutionProfileSummary(None, (), 0)
+        native_key = latest_key(int(function_ea))
+        if native_key is None:
+            return ExecutionProfileSummary(None, (), 0)
+        attempts = attempts_for_key(native_key)
+        dimensioned = tuple(
+            attempt
+            for attempt in attempts
+            if isinstance(attempt.details.get("maturity"), str)
+            and bool(attempt.details.get("maturity"))
+            and isinstance(attempt.details.get("structural_shape"), str)
+            and bool(attempt.details.get("structural_shape"))
+        )
+        if not dimensioned:
+            return ExecutionProfileSummary(None, (), 0)
+        latest_dimension = dimensioned[-1]
+        key = ExecutionProfileKey(
+            database_identity=native_key.input_identity,
+            function_fingerprint=native_key.function_fingerprint,
+            config_fingerprint=native_key.profile_fingerprint,
+            toolchain_fingerprint=native_key.sdk_fingerprint,
+            maturity=str(latest_dimension.details["maturity"]),
+            structural_shape=str(latest_dimension.details["structural_shape"]),
+        )
+        preview = build_execution_profile_preview(key, attempts)
+        return ExecutionProfileSummary(
+            identity_json=_canonical_json(key.to_dict()),
+            candidates=tuple(
+                ExecutionProfileCandidateSummary(
+                    stage_id=candidate.stage_id,
+                    domain=candidate.domain.value,
+                    attempt_count=candidate.attempt_count,
+                    attempt_to_effect_rate=candidate.attempt_to_effect_rate,
+                    p95_elapsed_ms=candidate.p95_elapsed_ms,
+                    priority_score=candidate.priority_score,
+                    proof_failure_count=candidate.proof_failure_count,
+                    mean_reduction=candidate.mean_reduction,
+                    reason_counts_json=_canonical_json(dict(candidate.reason_counts)),
+                )
+                for candidate in preview.candidates
+            ),
+            ignored_in_progress_count=preview.ignored_in_progress_count,
+            ignored_identity_mismatch_count=(preview.ignored_identity_mismatch_count),
         )
 
     def _artifacts(

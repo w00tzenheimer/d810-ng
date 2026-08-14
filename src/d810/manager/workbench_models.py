@@ -143,6 +143,50 @@ class StatisticsSummary:
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
+class ExecutionAttemptSummary:
+    sequence: int
+    parent_sequence: int | None
+    stage_id: str
+    domain: str
+    status: str
+    reason_code: str | None
+    elapsed_ms: float | None
+    effect_refs_json: str
+    details_json: str
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class ExecutionLedgerSummary:
+    session_id: str | None
+    function_ea: int
+    attempts: tuple[ExecutionAttemptSummary, ...]
+    terminal_attempts: int
+    in_progress_attempts: int
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class ExecutionProfileCandidateSummary:
+    stage_id: str
+    domain: str
+    attempt_count: int
+    attempt_to_effect_rate: float
+    p95_elapsed_ms: float | None
+    priority_score: float
+    proof_failure_count: int
+    mean_reduction: float | None
+    reason_counts_json: str
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class ExecutionProfileSummary:
+    identity_json: str | None
+    candidates: tuple[ExecutionProfileCandidateSummary, ...]
+    ignored_in_progress_count: int
+    ignored_identity_mismatch_count: int = 0
+    is_read_only: bool = True
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
 class ArtifactRef:
     kind: str
     label: str
@@ -224,6 +268,12 @@ class DeobfuscationWorkbenchSnapshot:
     freshness: SnapshotFreshness
     engine_started: bool
     collection_errors: tuple[str, ...]
+    execution_ledger: ExecutionLedgerSummary = dataclasses.field(
+        default_factory=lambda: ExecutionLedgerSummary(None, 0, (), 0, 0)
+    )
+    execution_profile: ExecutionProfileSummary = dataclasses.field(
+        default_factory=lambda: ExecutionProfileSummary(None, (), 0)
+    )
     case: DeobfuscationCaseSnapshot | None = None
 
 
@@ -259,6 +309,10 @@ __all__ = [
     "D810OutputRef",
     "DeobfuscationWorkbenchSnapshot",
     "EffectiveStageDecisionSummary",
+    "ExecutionAttemptSummary",
+    "ExecutionLedgerSummary",
+    "ExecutionProfileCandidateSummary",
+    "ExecutionProfileSummary",
     "FunctionRef",
     "OutcomeStatus",
     "PatchCountEntry",

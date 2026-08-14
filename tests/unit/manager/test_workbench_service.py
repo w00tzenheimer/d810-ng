@@ -13,6 +13,14 @@ from d810.core.execution_scope import (
     EffectiveExecutionDecision,
     EffectiveExecutionReport,
 )
+from d810.core.execution_journal import (
+    DecompilationSessionId,
+    ExecutionAttemptStatus,
+    ExecutionDomain,
+    ExecutionEffectRef,
+)
+from d810.core.execution_journal_store import ExecutionJournalStore
+from d810.core.native_preanalysis_key import NativePreanalysisKey
 from d810.manager.project_runtime import (
     ProjectConfigMode,
     ProjectIdentitySnapshot,
@@ -448,6 +456,106 @@ def test_attack_consumers_execution_scope_statistics_and_artifacts_are_truthful(
     assert artifacts["function-recipe-storage"].available is False
     assert snapshot.baseline.available is False
     assert snapshot.latest_output.available is False
+
+
+def test_collect_uses_latest_function_session_as_primary_execution_ledger(
+    tmp_path: Path,
+) -> None:
+    project_snapshot, runtime_project = _project_context(tmp_path)
+    manager = _manager(tmp_path)
+    journal = ExecutionJournalStore(tmp_path / "execution.sqlite")
+    session_id = DecompilationSessionId.new()
+    native_key = NativePreanalysisKey(
+        input_identity="a" * 64,
+        processor="metapc",
+        bitness=64,
+        function_rva=0x1000,
+        function_fingerprint="b" * 64,
+        profile_fingerprint="c" * 64,
+        sdk_fingerprint="ida-9.4+d810-test",
+    )
+    journal.bind_session(session_id, function_ea=0x401000, native_key=native_key)
+    root = journal.begin_attempt(
+        session_id,
+        stage_id="hexrays_preanalysis",
+        domain=ExecutionDomain.HOOK,
+    )
+    completed = journal.begin_attempt(
+        session_id,
+        parent_attempt_id=root.attempt_id,
+        stage_id="mba-simplify",
+        domain=ExecutionDomain.PASS,
+    )
+    journal.advance(
+        completed,
+        status=ExecutionAttemptStatus.COMPLETED,
+        effect_refs=(
+            ExecutionEffectRef(
+                kind="rewrite_plan",
+                ref_id="plan-1",
+                detail={"operation_count": 2},
+            ),
+        ),
+        details={
+            "candidate_count": 3,
+            "maturity": "ir.canonical",
+            "structural_shape": "flowgraph-v1:shape-a",
+        },
+    )
+    abstained = journal.begin_attempt(
+        session_id,
+        parent_attempt_id=root.attempt_id,
+        stage_id="ctree_rule:noop",
+        domain=ExecutionDomain.HOOK,
+    )
+    journal.advance(
+        abstained,
+        status=ExecutionAttemptStatus.ABSTAINED,
+        reason_code="no_modifications",
+    )
+    journal.advance(root, status=ExecutionAttemptStatus.COMPLETED)
+    manager.decompilation_lifecycle = SimpleNamespace(execution_journal=journal)
+
+    try:
+        snapshot = _service(manager).collect(
+            function_ea=0x401000,
+            function_name="target",
+            function_fingerprint=None,
+            project_snapshot=project_snapshot,
+            runtime_project=runtime_project,
+        )
+
+        assert snapshot.execution_ledger.session_id == session_id.value
+        assert snapshot.execution_ledger.function_ea == 0x401000
+        assert tuple(item.stage_id for item in snapshot.execution_ledger.attempts) == (
+            "hexrays_preanalysis",
+            "mba-simplify",
+            "ctree_rule:noop",
+        )
+        assert tuple(item.status for item in snapshot.execution_ledger.attempts) == (
+            "completed",
+            "completed",
+            "abstained",
+        )
+        assert snapshot.execution_ledger.attempts[1].effect_refs_json == (
+            '[{"detail":{"operation_count":2},"kind":"rewrite_plan","ref_id":"plan-1"}]'
+        )
+        assert snapshot.execution_ledger.attempts[1].details_json == (
+            '{"candidate_count":3,"maturity":"ir.canonical",'
+            '"structural_shape":"flowgraph-v1:shape-a"}'
+        )
+        assert snapshot.execution_profile.identity_json is not None
+        assert tuple(
+            candidate.stage_id for candidate in snapshot.execution_profile.candidates
+        ) == ("mba-simplify",)
+        assert snapshot.execution_profile.candidates[0].attempt_to_effect_rate == 1.0
+        assert snapshot.execution_profile.ignored_identity_mismatch_count == 2
+        assert snapshot.execution_profile.is_read_only is True
+        assert snapshot.execution_ledger.terminal_attempts == 3
+        assert snapshot.execution_ledger.in_progress_attempts == 0
+        assert snapshot.statistics.total_stage_firings == 3
+    finally:
+        journal.close()
 
 
 def test_collection_failure_is_reported_without_hiding_other_sections(
