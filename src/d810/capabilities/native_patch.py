@@ -694,6 +694,11 @@ class NativePatchJournalStore(Protocol):
         self, transaction_id: NativePatchTransactionId
     ) -> NativePatchTransactionRecord | None: ...
 
+    def recoverable_transaction_ids(self) -> tuple[NativePatchTransactionId, ...]:
+        """Durably enumerate apply-lane transactions interrupted before
+        certification or an explicit recovery outcome."""
+        ...
+
     def record_byte_event(
         self,
         transaction_id: NativePatchTransactionId,

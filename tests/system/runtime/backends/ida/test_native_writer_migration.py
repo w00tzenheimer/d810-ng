@@ -18,12 +18,16 @@ from d810.backends.hexrays.native_patch_lifecycle import (  # noqa: E402
     IdaCfuncCacheInvalidator,
     IdaControlledRedoDecompiler,
 )
-from d810.backends.ida.native_patch.capture import IdaLiveDatabaseReader  # noqa: E402
+from d810.backends.ida.native_patch.capture import (  # noqa: E402
+    IdaLiveDatabaseReader,
+    capture_range_evidence,
+)
 from d810.backends.ida.native_patch.gateway import (  # noqa: E402
     IdaNativeByteWriter,
     NativePatchGateway,
 )
 from d810.backends.ida.native_patch.indirect_label_plan import (  # noqa: E402
+    IndirectLabelPlanBuildError,
     IndirectLabelPlanRequest,
     build_indirect_label_metadata_plan,
 )
@@ -35,13 +39,17 @@ from d810.backends.ida.native_patch.reanalysis import (  # noqa: E402
 )
 from d810.core.execution_journal import (  # noqa: E402
     DecompilationSessionId,
+    ExecutionAttemptId,
     ExecutionAttemptStatus,
     ExecutionDomain,
 )
 from d810.core.execution_journal_store import ExecutionJournalStore  # noqa: E402
 from d810.capabilities.native_patch import NativePatchTransactionId  # noqa: E402
 from d810.core.persistence import SQLiteOptimizationStorage  # noqa: E402
-from d810.transforms.native_patch_plan import NativeMetadataActionKind  # noqa: E402
+from d810.transforms.native_patch_plan import (  # noqa: E402
+    NativeAddressRange,
+    NativeMetadataActionKind,
+)
 from d810.hexrays.preanalysis.indirect_jump_labels import (  # noqa: E402
     IndirectLabelMaterializationPlan,
     IndirectLabelMaterializationResult,
@@ -106,6 +114,66 @@ def _first_non_successor_target(function_ea: int) -> tuple[int, int]:
             break
         candidate = next_candidate
     pytest.skip("no in-function target without an existing source xref")
+
+
+def test_unknown_item_target_fails_closed_without_metadata_drift(copy_of_idb) -> None:
+    """The explicit UNKNOWN head witness is not enough to authorize a write.
+
+    A disposable-IDB apply/restore experiment showed required reanalysis
+    recreates the item as code after its inverse. Until that lifecycle has a
+    lossless proof, the planner must preserve the complete captured target
+    evidence and abstain before the gateway starts a transaction.
+    """
+    function_ea = next(int(ea) for ea in idautils.Functions())
+    source_ea, target_ea = _first_non_successor_target(function_ea)
+    function = ida_funcs.get_func(function_ea)
+    assert function is not None
+    size = int(ida_bytes.get_item_size(target_ea))
+    assert size > 0
+    assert ida_bytes.del_items(target_ea, ida_bytes.DELIT_SIMPLE, size)
+
+    metadata = IdaMetadataActionExecutor()
+    flags = ida_bytes.get_flags(target_ea)
+    assert ida_bytes.is_unknown(flags)
+    assert ida_bytes.get_item_head(target_ea) == target_ea
+    assert metadata.read_state(NativeMetadataActionKind.RECREATE_ITEM, target_ea) == (
+        "unknown"
+    )
+    before = capture_range_evidence(
+        IdaLiveDatabaseReader(),
+        NativeAddressRange(target_ea, target_ea + size),
+        function_ea=function_ea,
+    )
+    assert before.ok
+
+    with pytest.raises(
+        IndirectLabelPlanBuildError,
+        match="unknown-item recreation is not yet proven reversible",
+    ):
+        build_indirect_label_metadata_plan(
+            IndirectLabelPlanRequest(
+                function_ea=function_ea,
+                label_start=target_ea,
+                label_end=int(function.end_ea),
+                table_address=0,
+                table_count=1,
+                target_eas=(target_ea,),
+                dispatch_jump_ea=source_ea,
+                switch_start_ea=None,
+                install_switch_info=False,
+                state_base=0,
+                state_var_stkoff=None,
+            ),
+            authorizing_attempt_id=ExecutionAttemptId(DecompilationSessionId.new(), 1),
+        )
+
+    after = capture_range_evidence(
+        IdaLiveDatabaseReader(),
+        NativeAddressRange(target_ea, target_ea + size),
+        function_ea=function_ea,
+    )
+    assert after.ok
+    assert after.evidence == before.evidence
 
 
 def test_enabled_request_applies_real_metadata_plan_and_records_child_effects(
@@ -282,6 +350,7 @@ def test_enabled_request_applies_real_metadata_plan_and_records_child_effects(
         applied_actions = native_journal.metadata_actions(transaction_id)
         restored = gateway.restore(transaction_id)
         assert restored.ok
+        assert restored.controlled_redo_function_eas == (function_ea,)
         metadata = IdaMetadataActionExecutor()
         for action in applied_actions:
             assert metadata.read_state(

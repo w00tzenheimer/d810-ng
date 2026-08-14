@@ -114,6 +114,23 @@ _POST_BYTES_STATES = frozenset(
     }
 )
 
+# These are the states where an interrupted apply has a reversible, durable
+# before-image and the gateway's emergency lane can still transition to its
+# rollback/recovery outcome.  CERTIFIED and restore-lane states are excluded:
+# a certificate is complete, while an interrupted explicit restore must remain
+# visible for operator resolution rather than being mistaken for an apply
+# failure at the next startup.
+_STARTUP_RECOVERABLE_STATES = frozenset(
+    {
+        NativeJournalState.PREPARED,
+        NativeJournalState.BYTES_APPLIED,
+        NativeJournalState.METADATA_APPLIED,
+        NativeJournalState.ANALYSIS_PENDING,
+        NativeJournalState.ANALYSIS_VALIDATED,
+        NativeJournalState.CACHE_INVALIDATED,
+    }
+)
+
 
 def _recommend_state(
     recorded_state: NativeJournalState,
@@ -339,6 +356,22 @@ class SQLiteNativePatchJournal:
             (NativeJournalState.RESTORED.value,),
         ).fetchall()
         return {(str(row["scope_kind"]), int(row["scope_ea"])) for row in rows}
+
+    def recoverable_transaction_ids(self) -> tuple[NativePatchTransactionId, ...]:
+        """Return interrupted apply-lane transactions in creation order."""
+        placeholders = ", ".join("?" for _ in _STARTUP_RECOVERABLE_STATES)
+        rows = self._conn.execute(
+            """
+            SELECT transaction_id
+            FROM native_patch_transactions
+            WHERE state IN ("""
+            + placeholders
+            + ") ORDER BY created_at, transaction_id",
+            tuple(state.value for state in _STARTUP_RECOVERABLE_STATES),
+        ).fetchall()
+        return tuple(
+            NativePatchTransactionId(value=str(row["transaction_id"])) for row in rows
+        )
 
     @staticmethod
     def _metadata_scopes_for_operation(operation) -> tuple[tuple[str, int], ...]:

@@ -60,6 +60,24 @@ def _first_function_without_switch_info() -> int:
     pytest.fail("no function without existing switch metadata in the fixture")
 
 
+def _first_instruction_tail() -> int:
+    """Find a real non-head byte inside a multi-byte instruction."""
+    for function_ea in idautils.Functions():
+        function = ida_funcs.get_func(function_ea)
+        if function is None:
+            continue
+        ea = int(function.start_ea)
+        while ea < int(function.end_ea):
+            size = int(ida_bytes.get_item_size(ea))
+            if size > 1:
+                return ea + 1
+            next_ea = int(ida_bytes.next_head(ea, int(function.end_ea)))
+            if next_ea <= ea:
+                break
+            ea = next_ea
+    pytest.fail("no multi-byte instruction tail in the fixture")
+
+
 class TestIdaMetadataActionExecutor:
     binary_name = "libobfuscated.dll"
 
@@ -98,6 +116,18 @@ class TestIdaMetadataActionExecutor:
             "restoring the recorded before-state must succeed"
         )
         assert executor.read_state(kind, func_ea) == before
+
+    def test_item_tail_is_not_authorized_as_unknown(self, copy_of_idb) -> None:
+        """Only an explicit unknown item head may become a code item."""
+        executor = IdaMetadataActionExecutor()
+        tail_ea = _first_instruction_tail()
+        flags = ida_bytes.get_flags(tail_ea)
+
+        assert ida_bytes.is_tail(flags)
+        assert (
+            executor.read_state(NativeMetadataActionKind.RECREATE_ITEM, tail_ea)
+            != "unknown"
+        )
 
     def test_cref_state_round_trips(self, copy_of_idb) -> None:
         executor = IdaMetadataActionExecutor()

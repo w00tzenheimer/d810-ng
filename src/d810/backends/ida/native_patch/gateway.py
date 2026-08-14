@@ -271,6 +271,7 @@ class NativeRestoreReceipt:
     state: NativeJournalState
     restored_eas: tuple[int, ...]
     interference_eas: tuple[int, ...]
+    controlled_redo_function_eas: tuple[int, ...] = ()
 
     @property
     def ok(self) -> bool:
@@ -803,17 +804,27 @@ class NativePatchGateway:
         Certificate reuse invokes this same read-only capture.  A certificate
         is therefore invalidated by a byte divergence even when its original
         byte anchor was intentionally unchanged by a metadata-only operation.
+        Metadata plans never write function bytes, so their certificate can
+        and must attest the complete owning-function byte image instead of
+        only the operation's immutable anchor.
         """
+        if any(operation.metadata_actions for operation in plan.operations):
+            ranges = plan.function_identity.chunk_ranges
+        else:
+            ranges = tuple(operation.range for operation in plan.operations)
+
         pieces: list[tuple[int, int, bytes]] = []
-        for op in plan.operations:
+        for address_range in ranges:
             current = self._reader.read_current_bytes(
-                op.range.start_ea, op.range.end_ea
+                address_range.start_ea, address_range.end_ea
             )
             if current is None:
                 raise ValueError(
-                    f"operation {op.operation_id!r}: range became unloaded"
+                    "certificate range "
+                    f"{address_range.start_ea:#x}-{address_range.end_ea:#x} "
+                    "became unloaded"
                 )
-            pieces.append((op.range.start_ea, op.range.end_ea, current))
+            pieces.append((address_range.start_ea, address_range.end_ea, current))
         return hashlib.sha256(repr(tuple(pieces)).encode("utf-8")).hexdigest()
 
     def certificate_matches_current(
@@ -981,13 +992,15 @@ class NativePatchGateway:
         unreversed_metadata = self._reverse_metadata_actions(transaction_id)
         unrestored_extents = self._restore_function_extents(transaction_id)
 
-        for function_ea in self._function_eas_for_transaction(transaction_id):
+        reanalyzed_function_eas = self._function_eas_for_transaction(transaction_id)
+        for function_ea in reanalyzed_function_eas:
             reanalyze_and_wait(function_ea, reanalyzer=self._reanalyzer)
             invalidate_target_and_callers(
                 function_ea,
                 invalidator=self._cache_invalidator,
                 discovery=self._caller_discovery,
             )
+            controlled_redo(function_ea, decompiler=self._redo_decompiler)
 
         if unreversed_metadata or unrestored_extents:
             # Bytes are back but the database shape is not. Say so rather than
@@ -1007,6 +1020,7 @@ class NativePatchGateway:
                 state=record.state,
                 restored_eas=restored_eas,
                 interference_eas=(),
+                controlled_redo_function_eas=reanalyzed_function_eas,
             )
 
         try:
@@ -1024,6 +1038,7 @@ class NativePatchGateway:
                 state=record.state,
                 restored_eas=restored_eas,
                 interference_eas=(),
+                controlled_redo_function_eas=reanalyzed_function_eas,
             )
 
         record = self._journal.transition(
@@ -1034,6 +1049,7 @@ class NativePatchGateway:
             state=record.state,
             restored_eas=restored_eas,
             interference_eas=(),
+            controlled_redo_function_eas=reanalyzed_function_eas,
         )
 
     def _restore_function_extents(

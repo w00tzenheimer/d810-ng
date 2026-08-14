@@ -171,7 +171,16 @@ class IdaMetadataActionExecutor:
             return f"{_ITEM_CODE}:{ida_bytes.get_item_size(ea)}"
         if ida_bytes.is_data(flags):
             return f"{_ITEM_DATA}:{ida_bytes.get_item_size(ea)}"
-        return _ITEM_UNKNOWN
+        # ``is_head(flags)`` is deliberately false for IDA's FF_UNK bytes;
+        # ``get_item_head(ea) == ea`` is the matching head witness for an
+        # undefined item. A tail byte resolves to its enclosing item head.
+        if ida_bytes.is_unknown(flags) and int(ida_bytes.get_item_head(ea)) == ea:
+            return _ITEM_UNKNOWN
+        # A tail byte, an unexplored non-head byte, or any other flag state is
+        # not an item that this executor can recreate losslessly.  Preserve a
+        # stable diagnostic token so the planner fails closed rather than
+        # treating it as an undefined item head.
+        return f"unsupported-item-flags:{int(flags):#x}"
 
     def _read_cref_state(self, ea: int) -> str:
         import ida_xref

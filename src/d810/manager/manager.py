@@ -1915,23 +1915,7 @@ class D810Manager:
             PreparedNativePatchRequest,
             native_patch_function_is_authorized,
         )
-
-        enabled = bool(self.config.get("native_patch_enabled", False))
-        if not enabled:
-            set_indirect_materialization_default_executor(
-                ManagerOwnedNativePatchRequestExecutor(
-                    gateway=object(),
-                    user_enabled=lambda _request: False,
-                    execution_journal=self._native_patch_execution_journal,
-                    parent_attempt_for_request=lambda _request: (_ for _ in ()).throw(
-                        RuntimeError("disabled native patch executor has no parent")
-                    ),
-                    build_plan=lambda _request, _attempt: (_ for _ in ()).throw(
-                        RuntimeError("disabled native patch executor cannot lower")
-                    ),
-                )
-            )
-            return
+        from d810.manager.native_normalization import recover_startup
 
         if self._native_patch_journal is not None:
             self._native_patch_journal.close()
@@ -1962,6 +1946,27 @@ class D810Manager:
             certificate_store=certificate_store,
             d810_version="native-writer-migration",
         )
+        # Crash recovery is a startup responsibility, not an optional API:
+        # enumerate durable interrupted apply-lane records before registering
+        # any writer that could reuse their scopes or certificates.
+        recover_startup(journal=self._native_patch_journal, gateway=gateway)
+
+        enabled = bool(self.config.get("native_patch_enabled", False))
+        if not enabled:
+            set_indirect_materialization_default_executor(
+                ManagerOwnedNativePatchRequestExecutor(
+                    gateway=gateway,
+                    user_enabled=lambda _request: False,
+                    execution_journal=self._native_patch_execution_journal,
+                    parent_attempt_for_request=lambda _request: (_ for _ in ()).throw(
+                        RuntimeError("disabled native patch executor has no parent")
+                    ),
+                    build_plan=lambda _request, _attempt: (_ for _ in ()).throw(
+                        RuntimeError("disabled native patch executor cannot lower")
+                    ),
+                )
+            )
+            return
 
         def _parent_attempt(request: NativePatchPlanRequest):
             session = self.decompilation_lifecycle.current_session(

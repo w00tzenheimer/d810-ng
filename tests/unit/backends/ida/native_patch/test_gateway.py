@@ -26,7 +26,11 @@ from d810.backends.ida.native_patch.gateway import (
 )
 from d810.backends.ida.native_patch.journal import SQLiteNativePatchJournal
 from d810.capabilities.native_patch import NativeJournalState
-from d810.transforms.native_patch_plan import NativeCertificateState
+from d810.manager.native_normalization import _certificate_matches
+from d810.transforms.native_patch_plan import (
+    NativeAddressRange,
+    NativeCertificateState,
+)
 
 from . import _plan_fixtures as fixtures
 
@@ -634,6 +638,17 @@ class TestRestore:
         assert restored.state is NativeJournalState.RESTORED
         assert rig.db.bytes == before
 
+    def test_restore_performs_controlled_redo_after_reanalysis(self, rig) -> None:
+        receipt = rig.gateway.apply(fixtures.plan())
+        assert receipt.ok
+        rig.redo.calls.clear()
+
+        restored = rig.gateway.restore(receipt.transaction_id)
+
+        assert restored.ok
+        assert rig.redo.calls == [0x1000]
+        assert restored.controlled_redo_function_eas == (0x1000,)
+
     def test_restore_revokes_the_applied_certificate(self, rig) -> None:
         """A restored function must never continue to short-circuit a plan."""
         plan = fixtures.plan()
@@ -859,7 +874,17 @@ def _plan_with_metadata_actions():
             ),
         )
     )
-    return fixtures.plan(operations=(op,)), op
+    plan = fixtures.plan(operations=(op,))
+    return (
+        dataclasses.replace(
+            plan,
+            function_identity=dataclasses.replace(
+                plan.function_identity,
+                chunk_ranges=(NativeAddressRange(0x1000, 0x1002),),
+            ),
+        ),
+        op,
+    )
 
 
 class TestMetadataActionExecution:
@@ -936,6 +961,53 @@ class TestMetadataActionExecution:
         assert rig.gateway.certificate_matches_current(plan, receipt.certificate)
 
         executor.state[(NativeMetadataActionKind.UPDATE_XREF, 0x1000)] = "cref:"
+
+        assert not rig.gateway.certificate_matches_current(plan, receipt.certificate)
+
+    def test_metadata_certificate_rejects_function_wide_byte_divergence(
+        self, tmp_path
+    ) -> None:
+        """A metadata anchor cannot certify unrelated bytes in its function."""
+        plan, _ = _plan_with_metadata_actions()
+        executor = FakeMetadataExecutor(self._initial_state())
+        rig = build_gateway(tmp_path, plan.operations, metadata_executor=executor)
+        receipt = rig.gateway.apply(plan)
+        assert receipt.certificate is not None
+
+        divergent_plan = dataclasses.replace(
+            plan,
+            function_identity=dataclasses.replace(
+                plan.function_identity,
+                inherited_bytes_hash="changed-function-byte-fingerprint",
+            ),
+            inherited_function_fingerprint="changed-function-byte-fingerprint",
+        )
+
+        assert not _certificate_matches(receipt.certificate, divergent_plan)
+
+    def test_live_metadata_certificate_rejects_byte_divergence_outside_anchor(
+        self, tmp_path
+    ) -> None:
+        """Live validation covers the owning function, not just its anchor."""
+        plan, _ = _plan_with_metadata_actions()
+        plan = dataclasses.replace(
+            plan,
+            function_identity=dataclasses.replace(
+                plan.function_identity,
+                chunk_ranges=(NativeAddressRange(0x1000, 0x1004),),
+            ),
+        )
+        executor = FakeMetadataExecutor(self._initial_state())
+        rig = build_gateway(tmp_path, plan.operations, metadata_executor=executor)
+        rig.db.bytes.update({0x1002: 0x90, 0x1003: 0x90})
+        rig.db.original.update({0x1002: 0x90, 0x1003: 0x90})
+
+        receipt = rig.gateway.apply(plan)
+
+        assert receipt.certificate is not None
+        assert rig.gateway.certificate_matches_current(plan, receipt.certificate)
+
+        rig.db.bytes[0x1003] = 0xCC
 
         assert not rig.gateway.certificate_matches_current(plan, receipt.certificate)
 

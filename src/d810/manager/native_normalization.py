@@ -42,7 +42,10 @@ from d810.backends.ida.native_patch.gateway import (
     NativeApplyReceipt,
     NativePatchGateway,
 )
-from d810.capabilities.native_patch import NativePatchTransactionId
+from d810.capabilities.native_patch import (
+    NativePatchJournalStore,
+    NativePatchTransactionId,
+)
 from d810.core.logging import getLogger
 from d810.transforms.native_patch_plan import (
     NativeCertificate,
@@ -100,7 +103,12 @@ def _certificate_matches(certificate: NativeCertificate, plan: NativePatchPlan) 
         certificate.state is NativeCertificateState.APPLIED
         and certificate.semantic_plan_hash == plan.proof_hash
         and certificate.database_identity == plan.database_identity
-        and certificate.function_identity.entry_ea == plan.function_identity.entry_ea
+        and (
+            certificate.function_identity == plan.function_identity
+            if any(operation.metadata_actions for operation in plan.operations)
+            else certificate.function_identity.entry_ea
+            == plan.function_identity.entry_ea
+        )
         and certificate.metadata_target_fingerprint == plan.metadata_target_fingerprint
         and (
             any(operation.metadata_actions for operation in plan.operations)
@@ -166,18 +174,24 @@ def authorize_and_apply(
 
 
 def recover_startup(
-    transaction_ids: Iterable[NativePatchTransactionId],
+    transaction_ids: Iterable[NativePatchTransactionId] | None = None,
     *,
+    journal: NativePatchJournalStore | None = None,
     gateway: NativePatchGateway,
 ) -> tuple[NativePatchTransactionId, ...]:
-    """Section 15.4: resolve every non-terminal transaction on plugin load or
-    IDB open. The caller supplies ``transaction_ids`` (typically every
-    transaction id the process's journal instance knows about); this
-    function does not enumerate the journal itself. Returns the ids recovery
-    was attempted for -- a per-id failure is logged and does not stop the
-    remaining ids from being processed, so one broken transaction cannot
-    block recovery of the others.
+    """Section 15.4: resolve interrupted apply-lane transactions on plugin
+    load or IDB open. The caller may supply ``transaction_ids``; otherwise
+    this enumerates the durable apply-lane records that the gateway can safely
+    recover. Explicit-restore failures remain durable operator-visible states
+    rather than being misclassified as abandoned applies. Returns the ids
+    recovery was attempted for -- a per-id failure is logged and does not
+    stop the remaining ids from being processed, so one broken transaction
+    cannot block the others.
     """
+    if transaction_ids is None:
+        if journal is None:
+            raise TypeError("journal is required when transaction_ids is omitted")
+        transaction_ids = journal.recoverable_transaction_ids()
     attempted: list[NativePatchTransactionId] = []
     for transaction_id in transaction_ids:
         try:

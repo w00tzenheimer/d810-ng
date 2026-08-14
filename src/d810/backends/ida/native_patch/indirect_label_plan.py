@@ -249,6 +249,7 @@ def build_indirect_label_metadata_plan(
     evidence = captured.evidence
 
     actions: list[NativeMetadataAction] = []
+    import ida_bytes
     import ida_funcs
 
     requires_tail = any(
@@ -269,6 +270,26 @@ def build_indirect_label_metadata_plan(
         before = executor.read_state(NativeMetadataActionKind.RECREATE_ITEM, target_ea)
         after = f"code:{_instruction_size(target_ea)}"
         if before == "unknown":
+            flags = ida_bytes.get_flags(int(target_ea))
+            if not (
+                ida_bytes.is_unknown(flags)
+                and int(ida_bytes.get_item_head(int(target_ea))) == int(target_ea)
+            ):
+                raise IndirectLabelPlanBuildError(
+                    f"target is not an explicit unknown item head at {target_ea:#x}"
+                )
+            # Required function reanalysis/redo reclaims such an item as code
+            # during restore, so UNKNOWN -> CODE has no lossless inverse yet.
+            # Its head witness is intentionally checked above to make the
+            # refusal diagnostic precise rather than conflating it with tails.
+            raise IndirectLabelPlanBuildError(
+                "unknown-item recreation is not yet proven reversible after "
+                f"required reanalysis at {target_ea:#x}"
+            )
+        elif before == after:
+            # Keep the target's final item witness stable across a rerun.  The
+            # gateway recognizes this as a no-op and never calls IDA's item
+            # writer, but the certificate still proves the same target set.
             actions.append(
                 NativeMetadataAction(
                     kind=NativeMetadataActionKind.RECREATE_ITEM,
@@ -282,7 +303,6 @@ def build_indirect_label_metadata_plan(
                 f"cannot losslessly recreate {before!r} as {after!r} at {target_ea:#x}"
             )
 
-    import ida_bytes
     import idaapi
 
     badaddr = int(getattr(idaapi, "BADADDR", -1))

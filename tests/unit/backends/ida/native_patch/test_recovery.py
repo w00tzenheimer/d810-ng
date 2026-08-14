@@ -20,6 +20,7 @@ from __future__ import annotations
 import pytest
 
 from d810.backends.ida.native_patch.journal import SQLiteNativePatchJournal
+from d810.manager.native_normalization import recover_startup
 from d810.capabilities.native_patch import (
     NativeByteEventPhase,
     NativeJournalState,
@@ -44,6 +45,27 @@ def _reader(mapping: dict[int, int | None]):
         return mapping.get(ea)
 
     return _read
+
+
+def test_startup_recovery_enumerates_and_resolves_a_prepared_transaction(
+    tmp_path,
+) -> None:
+    """A restart must not depend on an external transaction-id inventory."""
+    from .test_gateway import build_gateway
+
+    plan = fixtures.plan()
+    rig = build_gateway(tmp_path, plan.operations)
+    try:
+        record = rig.journal.prepare(plan)
+
+        recovered = recover_startup(journal=rig.journal, gateway=rig.gateway)
+
+        assert recovered == (record.transaction_id,)
+        assert (
+            rig.journal.get(record.transaction_id).state is NativeJournalState.RESTORED
+        )
+    finally:
+        rig.journal.close()
 
 
 class TestByteGranularClassification:
