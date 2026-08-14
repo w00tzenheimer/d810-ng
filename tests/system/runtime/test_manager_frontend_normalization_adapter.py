@@ -16,6 +16,8 @@ from d810.core.observability_events import (
     LifecycleEventObserved,
 )
 from d810.core.fragment_authority import NormalizationWorkItemAuthority
+from d810.core.execution_journal import ExecutionAttemptStatus, ExecutionDomain
+from d810.core.execution_journal_store import ExecutionJournalStore
 from d810.ir.block_identity import (
     CurrentMbaBlockIdentityBinding,
     CurrentMbaIdentityBindingSnapshot,
@@ -290,6 +292,71 @@ def test_live_adapter_abstains_without_lifecycle_owned_materializer(
     }
 
 
+def test_live_adapter_threads_its_lifecycle_attempt_into_portable_pipeline(
+    monkeypatch, tmp_path
+) -> None:
+    session = _session()
+    journal = ExecutionJournalStore(tmp_path / "execution.sqlite")
+    parent = journal.begin_attempt(
+        session.session_id,
+        stage_id="hexrays_preanalysis",
+        domain=ExecutionDomain.HOOK,
+    )
+    session.execution_journal = journal
+    session.preanalysis_attempt_id = parent.attempt_id
+    mba = SimpleNamespace(this=0x5678)
+    captured: dict[str, object] = {}
+    try:
+        monkeypatch.setattr(
+            live_normalization,
+            "_lift_live_function",
+            lambda live_mba: SimpleNamespace(
+                flow_graph=GRAPH,
+                func_ea=0x1000,
+                live_source=live_mba,
+            ),
+        )
+        monkeypatch.setattr(
+            live_normalization,
+            "_new_live_backend",
+            lambda **_kwargs: object(),
+        )
+
+        def run_pipeline(**kwargs):
+            captured.update(kwargs)
+            return FrontendNormalizationRunResult(
+                graph=GRAPH,
+                microcode_modified=False,
+                published_generation=None,
+            )
+
+        monkeypatch.setattr(
+            live_normalization,
+            "run_frontend_normalization_pipeline",
+            run_pipeline,
+        )
+
+        live_normalization.run_live_frontend_normalization(
+            function_ea=0x1000,
+            mba=mba,
+            decision={
+                "session": session,
+                "mutation_gateway": object(),
+                "semantic_native_body_materializer": object(),
+            },
+        )
+
+        assert captured["journal"] is journal
+        assert captured["session_id"] == session.session_id
+        assert captured["parent_attempt_id"] == parent.attempt_id
+        assert (
+            journal.get_attempt(parent.attempt_id).status
+            is ExecutionAttemptStatus.STARTED
+        )
+    finally:
+        journal.close()
+
+
 def test_live_adapter_rejects_modified_result_without_complete_plan_intent(
     monkeypatch,
 ) -> None:
@@ -424,9 +491,7 @@ def test_live_adapter_receipts_identity_without_rebinding_producer_callback(
     assert len(observed_intents) == 1
     intent_event = observed_intents[0]
     identity_event = observed[0]
-    assert intent_event.work_item_id == (
-        "frontend-normalization:0x1000:g3:root@0x1000"
-    )
+    assert intent_event.work_item_id == ("frontend-normalization:0x1000:g3:root@0x1000")
     assert intent_event.plan_id == complete_plan.plan_id
     assert intent_event.atomic_group_id == complete_plan.atomic_group_id
     assert intent_event.publication_revision == 1

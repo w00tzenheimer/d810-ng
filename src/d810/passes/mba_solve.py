@@ -21,6 +21,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from d810.core import getLogger
+from d810.core.execution_journal import (
+    ExecutionAttempt,
+    ExecutionAttemptStatus,
+    ExecutionDomain,
+    ExecutionEffectRef,
+)
+from d810.capabilities.resolver import CapabilityNotProvided
 from d810.core.deobfuscation_case import StrategyWorkflowStage
 from d810.core.pass_ids import PassId
 from d810.core.pass_editor_spec import (
@@ -65,6 +72,7 @@ def mba_solve_implementation() -> str | None:
     from d810.backends import registry
 
     return registry().implementation_for(MBA_SOLVE_PASS_ID)
+
 
 #: Signature cost is 2**n evaluations for n leaves, so this is the real
 #: throttle: 256 evaluations at 8 versus 65,536 at 16.
@@ -132,16 +140,118 @@ class MbaSolvePass(PipelinePass):
             raise ValueError("max_leaves above 16 is not supported")
 
     def run(self, context: FunctionPipelineContext) -> PassResult:
-        capability = context.capabilities.require(MbaSolveCapability)
-        return capability.run_mba_solve(
-            MbaSolveRequest(
-                live_source=context.source.live_source,
-                func_ea=int(context.source.func_ea),
-                maturity=context.maturity,
-                max_leaves=self.max_leaves,
-                require_proof=self.require_proof,
-            )
+        journal = context.execution_journal
+        parent_attempt_id = context.execution_parent_attempt_id
+        maturity_value = getattr(context.maturity, "value", "unknown")
+        maturity_detail = {"maturity": str(maturity_value)}
+        attempt: ExecutionAttempt | None = None
+        if journal is not None and parent_attempt_id is not None:
+            try:
+                attempt = journal.begin_attempt(
+                    parent_attempt_id.session,
+                    parent_attempt_id=parent_attempt_id,
+                    stage_id="mba_solver:solve",
+                    domain=ExecutionDomain.SOLVER,
+                )
+            except Exception:
+                logger.debug("mba-solve journal begin failed", exc_info=True)
+        request = MbaSolveRequest(
+            live_source=context.source.live_source,
+            func_ea=int(context.source.func_ea),
+            maturity=context.maturity,
+            max_leaves=self.max_leaves,
+            require_proof=self.require_proof,
         )
+        try:
+            capability = context.capabilities.require(MbaSolveCapability)
+            result = capability.run_mba_solve(request)
+        except CapabilityNotProvided as exc:
+            _advance_solver_attempt(
+                journal,
+                attempt,
+                status=ExecutionAttemptStatus.ABSTAINED,
+                reason_code=f"{type(exc).__name__}: {exc}",
+                details=maturity_detail,
+            )
+            raise
+        except Exception as exc:
+            _advance_solver_attempt(
+                journal,
+                attempt,
+                status=ExecutionAttemptStatus.FAILED,
+                reason_code=f"{type(exc).__name__}: {exc}",
+                details=maturity_detail,
+            )
+            raise
+
+        effects = _solver_effects(result)
+        if effects:
+            _advance_solver_attempt(
+                journal,
+                attempt,
+                status=ExecutionAttemptStatus.COMPLETED,
+                effect_refs=effects,
+                details={
+                    **maturity_detail,
+                    "rewrite_count": len(result.rewrite_plan.steps),
+                },
+            )
+        else:
+            _advance_solver_attempt(
+                journal,
+                attempt,
+                status=ExecutionAttemptStatus.ABSTAINED,
+                reason_code="no_rewrite",
+                details={**maturity_detail, "rewrite_count": 0},
+            )
+        return result
+
+
+def _advance_solver_attempt(
+    journal,
+    attempt: ExecutionAttempt | None,
+    *,
+    status: ExecutionAttemptStatus,
+    reason_code: str | None = None,
+    effect_refs: tuple[ExecutionEffectRef, ...] = (),
+    details: dict[str, object] | None = None,
+) -> None:
+    """Persist solver provenance without making telemetry execution authority."""
+    if journal is None or attempt is None:
+        return
+    try:
+        journal.advance(
+            attempt,
+            status=status,
+            reason_code=reason_code,
+            effect_refs=effect_refs,
+            details=details,
+        )
+    except Exception:
+        logger.debug("mba-solve journal advance failed", exc_info=True)
+
+
+def _solver_effects(result: PassResult) -> tuple[ExecutionEffectRef, ...]:
+    """Reference immutable solver output plans without retaining solver objects."""
+    rewrite_plan = result.rewrite_plan
+    if rewrite_plan.steps or rewrite_plan.new_blocks:
+        return (
+            ExecutionEffectRef(
+                kind="solver_rewrite_plan",
+                ref_id=rewrite_plan.plan_id,
+                detail={"step_count": len(rewrite_plan.steps)},
+            ),
+        )
+    fragment_plan = result.fragment_plan
+    if fragment_plan is not None:
+        return (
+            ExecutionEffectRef(
+                kind="solver_fragment_plan",
+                ref_id=fragment_plan.plan_id,
+                detail={"operation_count": len(fragment_plan.operations)},
+            ),
+        )
+    return ()
 
 
 def parse_mba_solve_options(

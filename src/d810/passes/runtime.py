@@ -56,14 +56,15 @@ class AnalysisOutcome:
         hints: Resolved hints, or ``None`` if unavailable.
         apply_result: Result from ``ExecutionScopeService.apply_hints()``, or
             ``None`` if hints were unavailable.
-        source: How the hints were obtained: ``"cached"``, ``"analyzed"``,
-            or ``"unavailable"``.
+        source: How the hints were obtained: ``"analyzed"`` or
+            ``"unavailable"``. Older stored outcome rows may still contain
+            the legacy ``"cached"`` label, but live execution never emits it.
     """
 
     func_ea: int
     hints: DeobfuscationHints | None
     apply_result: ApplyExecutionHintsResult | None
-    source: str  # "cached" | "analyzed" | "unavailable"
+    source: str  # "analyzed" | "unavailable"
 
 
 class DecompilationAnalysisRuntime:
@@ -355,7 +356,8 @@ class DecompilationAnalysisRuntime:
             )
         )
         logger.info(
-            "analyze: persisted hints for func=0x%x (type=%s, confidence=%.2f)",
+            "analyze: derived fresh hints and stored session summary for "
+            "func=0x%x (type=%s, confidence=%.2f)",
             func_ea,
             hints.obfuscation_type,
             hints.confidence,
@@ -363,14 +365,14 @@ class DecompilationAnalysisRuntime:
         return hints
 
     def load_hints(self, func_ea: int) -> DeobfuscationHints | None:
-        """Load previously persisted hints from the store.
+        """Load the latest compatibility/UI session-summary projection.
 
         Args:
             func_ea: Function effective address.
 
         Returns:
-            Stored hints, or ``None`` if no hints have been persisted for this
-            function.
+            Projected hints, or ``None`` if no session summary has been
+            persisted for this function. This method is not an execution seam.
         """
         return self._store.load_hints(func_ea=func_ea)
 
@@ -390,20 +392,14 @@ class DecompilationAnalysisRuntime:
         func_ea: int,
         execution_scope: ExecutionScopeService,
     ) -> AnalysisOutcome:
-        """Analyze persisted evidence and apply available hints."""
-        hints = self.load_hints(func_ea)
-        if hints is not None:
-            source = "cached"
-            logger.info(
-                "apply_to_execution_scope: func=0x%x using cached hints "
-                "(type=%s confidence=%.2f)",
-                func_ea,
-                hints.obfuscation_type,
-                hints.confidence,
-            )
-        else:
-            hints = self.analyze(func_ea)
-            source = "analyzed" if hints is not None else "unavailable"
+        """Analyze current-session evidence and apply only the fresh result.
+
+        Persisted hint rows are UI/session-summary projections. They are never
+        loaded here, so this compatibility helper cannot turn them into a
+        cross-decompilation pass cache, profile authority, or mutation seam.
+        """
+        hints = self.analyze(func_ea)
+        source = "analyzed" if hints is not None else "unavailable"
 
         apply_result = None
         if hints is not None:

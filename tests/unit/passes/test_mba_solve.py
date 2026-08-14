@@ -3,17 +3,34 @@
 from __future__ import annotations
 
 import unittest
+from dataclasses import dataclass
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
+from d810.capabilities.resolver import CapabilitySet
 from d810.core.deobfuscation_case import StrategyWorkflowStage
+from d810.core.execution_journal import (
+    DecompilationSessionId,
+    ExecutionAttemptStatus,
+    ExecutionDomain,
+)
+from d810.core.execution_journal_store import ExecutionJournalStore
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph
+from d810.ir.maturity import IRMaturity
 from d810.passes.mba_solve import (
     DEFAULT_MAX_LEAVES,
     MBA_SOLVE_PASS_ID,
+    MbaSolveCapability,
     MbaSolvePass,
     build_mba_solve_pass,
     mba_solve_pass_registry,
     parse_mba_solve_options,
 )
-from d810.passes.pass_pipeline import PipelineConfig
+from d810.passes.pass_pipeline import (
+    FunctionPipelineContext,
+    PassResult,
+    PipelineConfig,
+)
 
 
 def _config(options: dict | None = None) -> PipelineConfig:
@@ -22,6 +39,112 @@ def _config(options: dict | None = None) -> PipelineConfig:
         workflow_stage=StrategyWorkflowStage.FRONTEND_NORMALIZATION,
         options=options if options is not None else {},
     )
+
+
+@dataclass
+class _Source:
+    func_ea: int = 0x401000
+    live_source: object = "LIVE"
+
+    @property
+    def flow_graph(self) -> FlowGraph:
+        return FlowGraph(
+            blocks={
+                0: BlockSnapshot(
+                    serial=0,
+                    block_type=1,
+                    succs=(),
+                    preds=(),
+                    flags=0,
+                    start_ea=self.func_ea,
+                    insn_snapshots=(),
+                )
+            },
+            entry_serial=0,
+            func_ea=self.func_ea,
+        )
+
+
+class _SolverCapability:
+    def __init__(self, *, failure: Exception | None = None) -> None:
+        self.failure = failure
+
+    def run_mba_solve(self, _request) -> PassResult:
+        if self.failure is not None:
+            raise self.failure
+        return PassResult()
+
+
+def _context_with_execution_journal(
+    journal: ExecutionJournalStore,
+    parent_attempt_id,
+    capability: _SolverCapability,
+) -> FunctionPipelineContext:
+    source = _Source()
+    return FunctionPipelineContext(
+        source=source,
+        graph=source.flow_graph,
+        maturity=IRMaturity.GLOBAL_OPTIMIZED,
+        project_config=None,
+        facts=object(),
+        capabilities=CapabilitySet().with_capability(MbaSolveCapability, capability),
+        execution_journal=journal,
+        execution_parent_attempt_id=parent_attempt_id,
+    )
+
+
+class TestSolverExecutionJournal(unittest.TestCase):
+    def test_no_rewrite_and_failure_are_durable_child_solver_outcomes(self):
+        with TemporaryDirectory() as temp_dir:
+            journal = ExecutionJournalStore(Path(temp_dir) / "execution.sqlite")
+            session_id = DecompilationSessionId.new()
+            parent = journal.begin_attempt(
+                session_id,
+                stage_id="mba-solve",
+                domain=ExecutionDomain.PASS,
+            )
+            try:
+                result = MbaSolvePass().run(
+                    _context_with_execution_journal(
+                        journal,
+                        parent.attempt_id,
+                        _SolverCapability(),
+                    )
+                )
+                self.assertIsInstance(result, PassResult)
+                abstained = journal.only_attempt(
+                    session_id, stage_id="mba_solver:solve"
+                )
+                self.assertIs(abstained.status, ExecutionAttemptStatus.ABSTAINED)
+                self.assertEqual(abstained.reason_code, "no_rewrite")
+                self.assertEqual(abstained.parent_attempt_id, parent.attempt_id)
+                self.assertEqual(
+                    abstained.details,
+                    {"maturity": IRMaturity.GLOBAL_OPTIMIZED.value, "rewrite_count": 0},
+                )
+
+                with self.assertRaisesRegex(RuntimeError, "solver outage"):
+                    MbaSolvePass().run(
+                        _context_with_execution_journal(
+                            journal,
+                            parent.attempt_id,
+                            _SolverCapability(failure=RuntimeError("solver outage")),
+                        )
+                    )
+                attempts = journal.attempts_for_stage(
+                    session_id, stage_id="mba_solver:solve"
+                )
+                self.assertEqual(len(attempts), 2)
+                self.assertIs(attempts[-1].status, ExecutionAttemptStatus.FAILED)
+                self.assertEqual(
+                    attempts[-1].reason_code, "RuntimeError: solver outage"
+                )
+                self.assertEqual(
+                    attempts[-1].details,
+                    {"maturity": IRMaturity.GLOBAL_OPTIMIZED.value},
+                )
+            finally:
+                journal.close()
 
 
 class TestAutoInstallSolver(unittest.TestCase):
@@ -103,11 +226,13 @@ class TestOptions(unittest.TestCase):
 
     def test_explicit_values(self):
         max_leaves, require_proof, maturities, _ = parse_mba_solve_options(
-            _config({
-                "max_leaves": 4,
-                "require_proof": False,
-                "maturities": ["GLOBAL_ANALYZED"],
-            })
+            _config(
+                {
+                    "max_leaves": 4,
+                    "require_proof": False,
+                    "maturities": ["GLOBAL_ANALYZED"],
+                }
+            )
         )
         self.assertEqual(max_leaves, 4)
         self.assertFalse(require_proof)

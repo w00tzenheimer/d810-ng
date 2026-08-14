@@ -7,6 +7,12 @@ import ida_hexrays
 import pytest
 
 from d810.core.stats import OptimizationStatistics
+from d810.core.execution_journal import (
+    DecompilationSessionId,
+    ExecutionAttemptStatus,
+    ExecutionDomain,
+)
+from d810.core.execution_journal_store import ExecutionJournalStore
 from d810.hexrays.hooks import optblock_adapter
 from d810.hexrays.hooks.callback_mutation_diagnostics import (
     build_callback_nop_delta_records,
@@ -336,7 +342,9 @@ def test_optblock_callback_exception_logs_typed_context_before_rethrow(
     monkeypatch.setattr(
         optblock_adapter,
         "optimizer_logger",
-        SimpleNamespace(exception=lambda *args, **kwargs: logged.append((args, kwargs))),
+        SimpleNamespace(
+            exception=lambda *args, **kwargs: logged.append((args, kwargs))
+        ),
     )
     monkeypatch.setattr(
         optblock_adapter,
@@ -362,14 +370,17 @@ def test_optblock_callback_exception_logs_typed_context_before_rethrow(
     assert "blk45@0x7ff859c07656" in rendered
     assert "TypeError: deliberate callback failure" in rendered
     assert len(observed) == 1
-    assert observed[0].items() >= {
-        "func_ea": 0x7FF859C06F60,
-        "maturity": "MMAT_GLBOPT1",
-        "block_serial": 45,
-        "block_ea": 0x7FF859C07656,
-        "error_type": "TypeError",
-        "error_message": "deliberate callback failure",
-    }.items()
+    assert (
+        observed[0].items()
+        >= {
+            "func_ea": 0x7FF859C06F60,
+            "maturity": "MMAT_GLBOPT1",
+            "block_serial": 45,
+            "block_ea": 0x7FF859C07656,
+            "error_type": "TypeError",
+            "error_message": "deliberate callback failure",
+        }.items()
+    )
     assert "TypeError: deliberate callback failure" in observed[0]["traceback_text"]
 
 
@@ -628,6 +639,264 @@ def test_instruction_optimizer_reports_a_nop_write_that_returns_false() -> None:
     assert len(persisted) == 1
     assert persisted[0].decision == "mutation_unreported"
     assert persisted[0].payload["callback_kind"] == "optinsn_callback"
+
+
+def test_instruction_optimizer_records_a_completed_mba_mutation_child(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    instruction = _Instruction(ida_hexrays.m_mov, 0x401010)
+    instruction.optimize_solo = lambda: None
+    block = _Block(
+        serial=9,
+        start=0x401000,
+        end=0x401020,
+        head=instruction,
+    )
+    block.mark_lists_dirty = lambda: None
+    _Mba((block,))
+    monkeypatch.setattr(
+        "d810.hexrays.hooks.optinsn_adapter.safe_verify",
+        lambda *_args, **_kwargs: None,
+    )
+
+    with ExecutionJournalStore(tmp_path / "execution.sqlite") as journal:
+        session_id = DecompilationSessionId.new()
+        parent = journal.begin_attempt(
+            session_id,
+            stage_id="hexrays_preanalysis",
+            domain=ExecutionDomain.HOOK,
+        )
+        session = SimpleNamespace(
+            session_id=session_id,
+            preanalysis_attempt_id=parent.attempt_id,
+            execution_journal=journal,
+        )
+        lifecycle = SimpleNamespace(current_session=lambda _func_ea: session)
+        manager = SimpleNamespace(
+            _fact_consumer_callback=None,
+            current_maturity=ida_hexrays.MMAT_GLBOPT2,
+            instruction_visitor=SimpleNamespace(blk=None),
+            _last_optimizer_tried="synthetic_writer",
+            _decompilation_lifecycle=lifecycle,
+        )
+        manager._capture_callback_nop_sites = MethodType(
+            InstructionOptimizerManager._capture_callback_nop_sites,
+            manager,
+        )
+        manager._report_callback_nop_delta = MethodType(
+            InstructionOptimizerManager._report_callback_nop_delta,
+            manager,
+        )
+        manager.log_info_on_input = lambda _blk, _ins: False
+        manager.optimize = lambda _blk, _ins: True
+
+        assert InstructionOptimizerManager.func(manager, block, instruction) is True
+
+        hook = journal.only_attempt(
+            session_id,
+            stage_id=(
+                f"optinsn_callback:maturity={ida_hexrays.MMAT_GLBOPT2}:insn=0x401010"
+            ),
+        )
+        mutation = journal.only_attempt(
+            session_id,
+            stage_id=(
+                "mba_mutation:optinsn:"
+                f"maturity={ida_hexrays.MMAT_GLBOPT2}:insn=0x401010"
+            ),
+        )
+        assert hook.status is ExecutionAttemptStatus.COMPLETED
+        assert mutation.status is ExecutionAttemptStatus.COMPLETED
+        assert mutation.domain is ExecutionDomain.MUTATION
+        assert mutation.parent_attempt_id == hook.attempt_id
+        assert mutation.effect_refs[0].kind == "mba_instruction_edit"
+
+
+@pytest.mark.parametrize(
+    "route_name",
+    (
+        "impossible_return_artifact_edges",
+        "terminal_zero_guard_literal_return_edges",
+        "terminal_tail_cascade_egress",
+    ),
+)
+def test_late_mba_mutation_routes_record_completed_attempts(
+    tmp_path, route_name
+) -> None:
+    with ExecutionJournalStore(tmp_path / "execution.sqlite") as journal:
+        session_id = DecompilationSessionId.new()
+        parent = journal.begin_attempt(
+            session_id,
+            stage_id="hexrays_preanalysis",
+            domain=ExecutionDomain.HOOK,
+        )
+        flow_context = SimpleNamespace(
+            execution_attempt_context=lambda: (
+                journal,
+                session_id,
+                parent.attempt_id,
+            )
+        )
+        manager = object.__new__(BlockOptimizerManager)
+
+        result = manager._run_recorded_mba_mutation_attempt(
+            flow_context=flow_context,
+            route_name=route_name,
+            maturity_name="MMAT_GLBOPT2",
+            function_ea=0x401000,
+            mutation=lambda: 2,
+        )
+
+        assert result == 2
+        attempt = journal.only_attempt(
+            session_id,
+            stage_id=(
+                f"mba_late_mutation:{route_name}:"
+                "maturity=MMAT_GLBOPT2:function=0x401000"
+            ),
+        )
+        assert attempt.status is ExecutionAttemptStatus.COMPLETED
+        assert attempt.domain is ExecutionDomain.MUTATION
+        assert attempt.parent_attempt_id == parent.attempt_id
+        assert attempt.effect_refs[0].kind == "mba_rule_edit"
+        assert attempt.effect_refs[0].detail["patch_count"] == 2
+
+
+def test_late_mba_mutation_failure_is_recorded_before_propagation(tmp_path) -> None:
+    with ExecutionJournalStore(tmp_path / "execution.sqlite") as journal:
+        session_id = DecompilationSessionId.new()
+        parent = journal.begin_attempt(
+            session_id,
+            stage_id="hexrays_preanalysis",
+            domain=ExecutionDomain.HOOK,
+        )
+        flow_context = SimpleNamespace(
+            execution_attempt_context=lambda: (
+                journal,
+                session_id,
+                parent.attempt_id,
+            )
+        )
+        manager = object.__new__(BlockOptimizerManager)
+
+        def fail():
+            raise RuntimeError("injected late mutation failure")
+
+        with pytest.raises(RuntimeError, match="injected late mutation failure"):
+            manager._run_recorded_mba_mutation_attempt(
+                flow_context=flow_context,
+                route_name="terminal_tail_cascade_egress",
+                maturity_name="MMAT_GLBOPT1",
+                function_ea=0x401000,
+                mutation=fail,
+            )
+
+        attempt = journal.only_attempt(
+            session_id,
+            stage_id=(
+                "mba_late_mutation:terminal_tail_cascade_egress:"
+                "maturity=MMAT_GLBOPT1:function=0x401000"
+            ),
+        )
+        assert attempt.status is ExecutionAttemptStatus.FAILED
+        assert attempt.reason_code == "RuntimeError: injected late mutation failure"
+
+
+@pytest.mark.parametrize(
+    ("route_name", "maturity"),
+    (
+        ("impossible_return_artifact_edges", ida_hexrays.MMAT_GLBOPT2),
+        ("terminal_zero_guard_literal_return_edges", ida_hexrays.MMAT_GLBOPT2),
+        ("terminal_tail_cascade_egress", ida_hexrays.MMAT_GLBOPT1),
+    ),
+)
+def test_each_late_route_records_its_swallowed_failure(
+    tmp_path, monkeypatch, route_name, maturity
+) -> None:
+    from d810.analyses.control_flow import runtime_evidence
+    from d810.hexrays.mutation import byte_emit_tail_isolation_runtime
+
+    with ExecutionJournalStore(tmp_path / "execution.sqlite") as journal:
+        session_id = DecompilationSessionId.new()
+        parent = journal.begin_attempt(
+            session_id,
+            stage_id="hexrays_preanalysis",
+            domain=ExecutionDomain.HOOK,
+        )
+        flow_context = SimpleNamespace(
+            execution_attempt_context=lambda: (
+                journal,
+                session_id,
+                parent.attempt_id,
+            ),
+            new_mba_mutation_gateway=lambda: object(),
+        )
+        manager = object.__new__(BlockOptimizerManager)
+        manager.current_maturity = maturity
+        manager._flow_context = flow_context
+        manager._impossible_return_artifact_rewrite_applied = set()
+        manager._terminal_zero_literal_rewrite_applied = set()
+        manager._terminal_tail_cascade_egress_applied = set()
+        manager._function_priors_provider = None
+        manager._validated_fact_view_provider = None
+        manager._dispatcher_artifact_planner = None
+        manager._new_coordinator_mutation_gateway = lambda _mba: object()
+        manager.stats = None
+        mba = SimpleNamespace(entry_ea=0x401000, maturity=maturity)
+        block = SimpleNamespace(mba=mba)
+
+        def fail(*_args, **_kwargs):
+            raise RuntimeError(f"injected {route_name} failure")
+
+        if route_name == "impossible_return_artifact_edges":
+            monkeypatch.setattr(
+                byte_emit_tail_isolation_runtime,
+                "impossible_return_artifact_rewrite_enabled",
+                lambda: True,
+            )
+            monkeypatch.setattr(
+                byte_emit_tail_isolation_runtime,
+                "maybe_rewrite_impossible_return_artifact_edges",
+                fail,
+            )
+            result = manager._maybe_rewrite_impossible_return_artifact_edges(block)
+        elif route_name == "terminal_zero_guard_literal_return_edges":
+            monkeypatch.setattr(
+                byte_emit_tail_isolation_runtime,
+                "terminal_zero_guard_literal_return_rewrite_enabled",
+                lambda: True,
+            )
+            monkeypatch.setattr(
+                byte_emit_tail_isolation_runtime,
+                "terminal_zero_guard_literal_return_values",
+                lambda _mba: (0,),
+            )
+            monkeypatch.setattr(
+                byte_emit_tail_isolation_runtime,
+                "maybe_rewrite_terminal_zero_guard_literal_return_edges",
+                fail,
+            )
+            result = manager._maybe_rewrite_terminal_zero_guard_literal_edges(block)
+        else:
+            monkeypatch.setattr(
+                runtime_evidence,
+                "ensure_terminal_byte_fact_view",
+                fail,
+            )
+            result = manager._maybe_run_terminal_tail_cascade_egress_lowering(mba)
+
+        assert result == 0
+        attempt = journal.only_attempt(
+            session_id,
+            stage_id=(
+                f"mba_late_mutation:{route_name}:"
+                f"maturity={optblock_adapter.maturity_to_string(maturity)}:"
+                "function=0x401000"
+            ),
+        )
+        assert attempt.status is ExecutionAttemptStatus.FAILED
+        assert attempt.reason_code == f"RuntimeError: injected {route_name} failure"
 
 
 def test_instruction_optimizer_nop_diagnostics_are_callback_block_local() -> None:

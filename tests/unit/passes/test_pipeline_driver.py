@@ -49,6 +49,7 @@ from d810.transforms.plan import PatchNopInstructions, PatchPlan
 from d810.core.execution_journal import (
     DecompilationSessionId,
     ExecutionAttemptStatus,
+    ExecutionDomain,
 )
 from d810.core.execution_journal_store import ExecutionJournalStore
 from d810.passes.driver import (
@@ -3309,6 +3310,51 @@ def test_driver_records_a_mutation_effect_ref_when_a_pass_applies_a_plan() -> No
         assert attempt.status is ExecutionAttemptStatus.COMPLETED
         assert len(attempt.effect_refs) == 1
         assert attempt.effect_refs[0].kind == "rewrite_plan"
+        mutation = journal.only_attempt(session, stage_id="mutation:mutating:rewrite")
+        assert mutation.domain is ExecutionDomain.MUTATION
+        assert mutation.parent_attempt_id == attempt.attempt_id
+        assert mutation.status is ExecutionAttemptStatus.COMPLETED
+        assert mutation.effect_refs == attempt.effect_refs
+        assert mutation.details == {
+            "graph_changed": True,
+            "maturity": IRMaturity.CANONICAL.value,
+            "structural_shape": "unclassified",
+        }
+    finally:
+        journal.close()
+
+
+def test_driver_records_the_backend_mutation_receipt() -> None:
+    class _ReceiptBackend(_Backend):
+        last_mutation_receipt = SimpleNamespace(
+            mutation_batch_id="batch-17",
+            operation_count=1,
+            pre_generation=3,
+            post_generation=4,
+        )
+
+    session = DecompilationSessionId.new()
+    journal = _journal_store()
+
+    try:
+        _run_config_v2(
+            (PassSpec("mutating", _MutatingPass, no_caps, default),),
+            journal=journal,
+            session_id=session,
+            backend=_ReceiptBackend(),
+        )
+
+        mutation = journal.only_attempt(session, stage_id="mutation:mutating:rewrite")
+        assert [effect.kind for effect in mutation.effect_refs] == [
+            "rewrite_plan",
+            "mutation_receipt",
+        ]
+        assert mutation.effect_refs[1].ref_id == "batch-17"
+        assert mutation.effect_refs[1].detail == {
+            "operation_count": 1,
+            "pre_generation": 3,
+            "post_generation": 4,
+        }
     finally:
         journal.close()
 
@@ -3401,8 +3447,16 @@ def test_driver_records_an_abstained_attempt_for_a_pass_not_scheduled_at_maturit
         not_scheduled = journal.only_attempt(session, stage_id="ineligible")
         assert not_scheduled.status is ExecutionAttemptStatus.ABSTAINED
         assert not_scheduled.reason_code == NOT_SCHEDULED_AT_MATURITY_REASON
+        assert not_scheduled.details == {
+            "maturity": IRMaturity.CANONICAL.value,
+            "structural_shape": "unclassified",
+        }
         ran = journal.only_attempt(session, stage_id="eligible")
         assert ran.status is ExecutionAttemptStatus.COMPLETED
+        assert ran.details == {
+            "maturity": IRMaturity.CANONICAL.value,
+            "structural_shape": "unclassified",
+        }
     finally:
         journal.close()
 

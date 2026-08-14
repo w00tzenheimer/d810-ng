@@ -16,12 +16,11 @@ from ``backends/hexrays``; everything here remains portable.
 
 from __future__ import annotations
 
-import uuid
 from dataclasses import dataclass, replace
 
 from d810.core.typing import Protocol, runtime_checkable
 from d810.capabilities.pass_contract_evidence import PassContractEvidenceObserver
-from d810.capabilities.resolver import CapabilitySet
+from d810.capabilities.resolver import CapabilityNotProvided, CapabilitySet
 from d810.core.execution_journal import (
     DecompilationSessionId,
     ExecutionAttempt,
@@ -53,6 +52,7 @@ from d810.passes.pipeline_shadow import (
 )
 from d810.passes.registry import PassRegistry
 from d810.passes.scheduler import PassScheduler, RunLaterDomain
+from d810.transforms.cfg_transaction import CfgGenerationPoisoned
 from d810.transforms.plan import PatchPlan
 
 logger = getLogger("d810.passes.driver")
@@ -496,6 +496,7 @@ def effective_safety_policy(spec: PassSpec) -> SafetyPolicy:
 # unchanged -- see ``_run_pass_spec``.
 _ABSTAIN_EXCEPTION_TYPES: tuple[type[BaseException], ...] = (
     CapabilityError,
+    CapabilityNotProvided,
     AnalysisContractError,
     PassContractError,
 )
@@ -508,6 +509,12 @@ NOT_SCHEDULED_AT_MATURITY_REASON = "not_scheduled_at_maturity"
 
 def _reason_code_for_exception(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}"
+
+
+def _maturity_detail(phase_token: object) -> str:
+    """Return a portable maturity label without constraining legacy callers."""
+    value = getattr(phase_token, "value", None)
+    return str(value) if isinstance(value, str) and value else "unknown"
 
 
 def _safe_begin_attempt(
@@ -547,6 +554,7 @@ def _safe_advance(
     status: ExecutionAttemptStatus,
     reason_code: str | None = None,
     effect_refs: tuple[ExecutionEffectRef, ...] | None = None,
+    details: dict[str, object] | None = None,
 ) -> None:
     """Advance a recorded attempt; never let a journal failure propagate."""
     if attempt is None:
@@ -557,6 +565,7 @@ def _safe_advance(
             status=status,
             reason_code=reason_code,
             effect_refs=effect_refs,
+            details=details,
         )
     except Exception:
         logger.debug(
@@ -564,6 +573,144 @@ def _safe_advance(
             attempt.stage_id,
             exc_info=True,
         )
+
+
+def _mutation_status_for_error(exc: BaseException) -> ExecutionAttemptStatus:
+    if isinstance(exc, CfgGenerationPoisoned):
+        return ExecutionAttemptStatus.POISONED_RESTART_REQUIRED
+    if type(exc).__name__ == "PatchTransactionPreflightRejected":
+        return ExecutionAttemptStatus.REJECTED
+    return ExecutionAttemptStatus.FAILED
+
+
+def _plan_effect_ref(plan: PatchPlan | object, *, kind: str) -> ExecutionEffectRef:
+    plan_id = str(getattr(plan, "plan_id", "") or "")
+    if not plan_id:
+        raise TypeError("mutation plan must expose a non-empty plan_id")
+    steps = getattr(plan, "steps", ())
+    operations = getattr(plan, "operations", ())
+    detail: dict[str, object] = {"step_count": len(steps)}
+    if operations:
+        detail["operation_count"] = len(operations)
+    return ExecutionEffectRef(
+        kind=kind,
+        ref_id=plan_id,
+        detail=detail,
+    )
+
+
+def _backend_receipt_effect(backend: object) -> ExecutionEffectRef | None:
+    """Extract a stable receipt summary without retaining a live backend object."""
+    receipt = getattr(backend, "last_mutation_receipt", None)
+    if receipt is None:
+        execution = getattr(backend, "last_patch_execution", None)
+        receipt = getattr(execution, "receipt", None)
+    if receipt is None:
+        return None
+    receipt_id = str(
+        getattr(receipt, "mutation_batch_id", "")
+        or getattr(getattr(receipt, "transaction_id", None), "value", "")
+        or ""
+    )
+    if not receipt_id:
+        return None
+    detail: dict[str, object] = {}
+    for field in (
+        "operation_count",
+        "planned_operation_count",
+        "pre_generation",
+        "post_generation",
+        "evidence_generation",
+    ):
+        value = getattr(receipt, field, None)
+        if isinstance(value, int) and not isinstance(value, bool):
+            detail[field] = value
+    return ExecutionEffectRef(
+        kind="mutation_receipt",
+        ref_id=receipt_id,
+        detail=detail,
+    )
+
+
+def _apply_with_journal(
+    *,
+    backend,
+    plan: PatchPlan | object,
+    live_source: object,
+    safety_policy: SafetyPolicy,
+    journal: ExecutionJournalStore | None,
+    session_id: DecompilationSessionId | None,
+    parent_attempt_id: ExecutionAttemptId | None,
+    stage_id: str,
+    plan_effect_kind: str,
+    pre_graph: object,
+    profile_details: dict[str, object],
+) -> tuple[object, tuple[ExecutionEffectRef, ...], ExecutionAttemptStatus, str | None]:
+    """Apply one config-v2 mutation plan with a child receipt attempt.
+
+    The backend remains the only mutation authority.  This wrapper observes
+    its plan, terminal failure, and receipt without changing its return or
+    exception contract.
+    """
+    plan_effect = _plan_effect_ref(plan, kind=plan_effect_kind)
+    mutation_attempt = None
+    if journal is not None and session_id is not None:
+        mutation_attempt = _safe_begin_attempt(
+            journal,
+            session_id,
+            parent_attempt_id=parent_attempt_id,
+            stage_id=stage_id,
+            domain=ExecutionDomain.MUTATION,
+        )
+    try:
+        new_graph = backend.apply(plan, live_source, safety_policy)
+    except BaseException as exc:
+        status = _mutation_status_for_error(exc)
+        reason_code = _reason_code_for_exception(exc)
+        _safe_advance(
+            journal,
+            mutation_attempt,
+            status=status,
+            reason_code=reason_code,
+            effect_refs=(plan_effect,),
+            details=profile_details,
+        )
+        raise
+
+    backend_failure = getattr(backend, "last_patch_failure", None)
+    if isinstance(backend_failure, BaseException):
+        status = _mutation_status_for_error(backend_failure)
+        reason_code = _reason_code_for_exception(backend_failure)
+        _safe_advance(
+            journal,
+            mutation_attempt,
+            status=status,
+            reason_code=reason_code,
+            effect_refs=(plan_effect,),
+            details=profile_details,
+        )
+        return new_graph, (plan_effect,), status, reason_code
+
+    receipt_effect = _backend_receipt_effect(backend)
+    effects = (
+        (plan_effect,) if receipt_effect is None else (plan_effect, receipt_effect)
+    )
+    changed = _graph_changed(pre_graph, new_graph)
+    status = (
+        ExecutionAttemptStatus.COMPLETED
+        if changed
+        else ExecutionAttemptStatus.ABSTAINED
+    )
+    reason_code = None if changed else "no_graph_change"
+    _safe_advance(
+        journal,
+        mutation_attempt,
+        status=status,
+        reason_code=reason_code,
+        effect_refs=effects,
+        details={**profile_details, "graph_changed": changed},
+    )
+    return new_graph, effects, status, reason_code
 
 
 def _run_pass_spec(
@@ -576,7 +723,12 @@ def _run_pass_spec(
     journal: ExecutionJournalStore | None = None,
     session_id: DecompilationSessionId | None = None,
     parent_attempt_id: ExecutionAttemptId | None = None,
+    structural_shape: str = "unclassified",
 ) -> FunctionPipelineContext:
+    profile_details = {
+        "maturity": _maturity_detail(ctx.maturity),
+        "structural_shape": str(structural_shape),
+    }
     attempt: ExecutionAttempt | None = None
     if journal is not None and session_id is not None:
         attempt = _safe_begin_attempt(
@@ -592,7 +744,17 @@ def _run_pass_spec(
         validate_contract_capabilities(spec, backend)
         validate_required_analyses(spec, ctx)
         validate_native_contract(spec, ctx)
-        result = spec.pass_factory().run(ctx)
+        # A nested solver or backend adapter inherits the exact attempt that
+        # invoked this pass.  It may record child provenance but cannot create
+        # a session or turn a journal record into mutation authority.
+        pass_context = replace(
+            ctx,
+            execution_journal=journal,
+            execution_parent_attempt_id=(
+                None if attempt is None else attempt.attempt_id
+            ),
+        )
+        result = spec.pass_factory().run(pass_context)
         validate_analysis_outputs(spec, result)
         validate_contract_fact_outputs(spec, result)
         validate_contract_evidence_outputs(spec, result)
@@ -618,12 +780,28 @@ def _run_pass_spec(
         )
         if not defer_result_side_effects:
             publish_result_side_effects()
+        terminal_status = ExecutionAttemptStatus.COMPLETED
+        terminal_reason: str | None = None
         if _plan_has_work(result.rewrite_plan):
-            new_graph = backend.apply(
-                result.rewrite_plan,
-                ctx.source.live_source,
-                effective_safety_policy(spec),
+            new_graph, mutation_effects, mutation_status, mutation_reason = (
+                _apply_with_journal(
+                    backend=backend,
+                    plan=result.rewrite_plan,
+                    live_source=ctx.source.live_source,
+                    safety_policy=effective_safety_policy(spec),
+                    journal=journal,
+                    session_id=session_id,
+                    parent_attempt_id=(None if attempt is None else attempt.attempt_id),
+                    stage_id=f"mutation:{spec.pass_id}:rewrite",
+                    plan_effect_kind="rewrite_plan",
+                    pre_graph=ctx.graph,
+                    profile_details=profile_details,
+                )
             )
+            effect_refs = effect_refs + mutation_effects
+            if mutation_status is not ExecutionAttemptStatus.COMPLETED:
+                terminal_status = mutation_status
+                terminal_reason = mutation_reason
             if _graph_changed(ctx.graph, new_graph):
                 facts.invalidate_to(
                     new_graph, effective_preserved_analyses(spec, result)
@@ -631,16 +809,27 @@ def _run_pass_spec(
                 if hasattr(facts, "invalidate_contract"):
                     facts.invalidate_contract(spec.contract)
                 ctx = replace(ctx, graph=new_graph)
-                effect_refs = effect_refs + (
-                    ExecutionEffectRef(kind="rewrite_plan", ref_id=uuid.uuid4().hex),
-                )
         fragment_plan = result.fragment_plan
         if fragment_plan is not None:
-            new_graph = backend.apply(
-                fragment_plan,
-                ctx.source.live_source,
-                effective_safety_policy(spec),
+            new_graph, mutation_effects, mutation_status, mutation_reason = (
+                _apply_with_journal(
+                    backend=backend,
+                    plan=fragment_plan,
+                    live_source=ctx.source.live_source,
+                    safety_policy=effective_safety_policy(spec),
+                    journal=journal,
+                    session_id=session_id,
+                    parent_attempt_id=(None if attempt is None else attempt.attempt_id),
+                    stage_id=f"mutation:{spec.pass_id}:fragment",
+                    plan_effect_kind="fragment_plan",
+                    pre_graph=ctx.graph,
+                    profile_details=profile_details,
+                )
             )
+            effect_refs = effect_refs + mutation_effects
+            if mutation_status is not ExecutionAttemptStatus.COMPLETED:
+                terminal_status = mutation_status
+                terminal_reason = mutation_reason
             if _graph_changed(ctx.graph, new_graph):
                 facts.invalidate_to(
                     new_graph,
@@ -649,29 +838,31 @@ def _run_pass_spec(
                 if hasattr(facts, "invalidate_contract"):
                     facts.invalidate_contract(spec.contract)
                 ctx = replace(ctx, graph=new_graph)
-                effect_refs = effect_refs + (
-                    ExecutionEffectRef(kind="fragment_plan", ref_id=uuid.uuid4().hex),
-                )
         if defer_result_side_effects:
             publish_result_side_effects()
     except BaseException as exc:
-        status = (
-            ExecutionAttemptStatus.ABSTAINED
-            if isinstance(exc, _ABSTAIN_EXCEPTION_TYPES)
-            else ExecutionAttemptStatus.FAILED
-        )
+        status = _mutation_status_for_error(exc)
+        if status is ExecutionAttemptStatus.FAILED:
+            status = (
+                ExecutionAttemptStatus.ABSTAINED
+                if isinstance(exc, _ABSTAIN_EXCEPTION_TYPES)
+                else ExecutionAttemptStatus.FAILED
+            )
         _safe_advance(
             journal,
             attempt,
             status=status,
             reason_code=_reason_code_for_exception(exc),
+            details=profile_details,
         )
         raise
     _safe_advance(
         journal,
         attempt,
-        status=ExecutionAttemptStatus.COMPLETED,
+        status=terminal_status,
+        reason_code=terminal_reason,
         effect_refs=effect_refs,
+        details=profile_details,
     )
     return ctx
 
@@ -733,6 +924,7 @@ def run_pipeline(
     session_id: DecompilationSessionId | None = None,
     journal: ExecutionJournalStore | None = None,
     parent_attempt_id: ExecutionAttemptId | None = None,
+    structural_shape: str = "unclassified",
 ):
     """Run one family's pipeline over one function/maturity. Returns the final graph.
 
@@ -810,6 +1002,7 @@ def run_pipeline(
             journal=effective_journal,
             session_id=session_id if record_attempts else None,
             parent_attempt_id=parent_attempt_id,
+            structural_shape=structural_shape,
         )
 
     for spec in replay_after_pipeline:
@@ -822,6 +1015,7 @@ def run_pipeline(
             journal=effective_journal,
             session_id=session_id if record_attempts else None,
             parent_attempt_id=parent_attempt_id,
+            structural_shape=structural_shape,
         )
 
     if record_attempts:
@@ -842,5 +1036,9 @@ def run_pipeline(
                 attempt,
                 status=ExecutionAttemptStatus.ABSTAINED,
                 reason_code=NOT_SCHEDULED_AT_MATURITY_REASON,
+                details={
+                    "maturity": _maturity_detail(ctx.maturity),
+                    "structural_shape": str(structural_shape),
+                },
             )
     return ctx.graph

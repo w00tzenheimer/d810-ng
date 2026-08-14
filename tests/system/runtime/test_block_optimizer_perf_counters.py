@@ -10,6 +10,12 @@ import pytest
 
 from d810.core.stats import OptimizationStatistics
 from d810.core.execution_scope import ExecutionStageIdentity
+from d810.core.execution_journal import (
+    DecompilationSessionId,
+    ExecutionAttemptStatus,
+    ExecutionDomain,
+)
+from d810.core.execution_journal_store import ExecutionJournalStore
 from d810.hexrays.hooks.optblock_adapter import BlockOptimizerManager
 from d810.ir.maturity import IRMaturity
 from d810.optimizers.microcode.flow.context import FlowMaturityContext
@@ -71,6 +77,13 @@ class _CrossPassRunLaterRule(_DummyRule):
                 target_id=self.target_rule_name,
             )
         return self.patches
+
+
+class _FailingRule(_DummyRule):
+    def optimize(self, blk) -> int:
+        del blk
+        self.calls += 1
+        raise RuntimeError("flow rule failure")
 
 
 class _GatewayRule(FlowOptimizationRule):
@@ -157,6 +170,17 @@ class _MutationGatewayLifecycle:
         return self.materializer
 
 
+class _RecordingPassPipeline:
+    passes: tuple[object, ...] = ()
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[object, dict[str, object]]] = []
+
+    def run(self, backend_state: object, **kwargs: object) -> int:
+        self.calls.append((backend_state, kwargs))
+        return 0
+
+
 def _make_block(func_ea: int = 0x401000, maturity=None):
     mba = SimpleNamespace(entry_ea=func_ea, qty=1)
     if maturity is not None:
@@ -223,6 +247,190 @@ def test_block_optimizer_refreshes_live_identity_before_each_gateway() -> None:
     ]
     assert rule.flow_context.semantic_native_body_materializer() is materializer
     assert lifecycle.materializer_calls == [(0x401000, block.mba)]
+
+
+def test_block_optimizer_binds_the_lifecycle_execution_attempt_context(
+    tmp_path,
+) -> None:
+    journal = ExecutionJournalStore(tmp_path / "execution.sqlite")
+    session_id = DecompilationSessionId.new()
+    parent = journal.begin_attempt(
+        session_id,
+        stage_id="hexrays_preanalysis",
+        domain=ExecutionDomain.HOOK,
+    )
+    manager = BlockOptimizerManager(
+        OptimizationStatistics(), Path("."), ctx_cls=FlowMaturityContext
+    )
+    manager.current_maturity = ida_hexrays.MMAT_GLBOPT1
+    rule = _DummyRule("execution_context")
+    lifecycle = _MutationGatewayLifecycle(object(), object())
+    lifecycle.execution_journal = journal
+    lifecycle.current_session = lambda _function_ea: SimpleNamespace(
+        session_id=session_id,
+        preanalysis_attempt_id=parent.attempt_id,
+    )
+    manager.configure(
+        execution_scope_service=_FakeExecutionScopeService((rule,)),
+        execution_scope_project_name="proj",
+        execution_scope_idb_key="idb",
+        decompilation_lifecycle=lifecycle,
+    )
+
+    try:
+        assert manager.optimize(_make_block(maturity=ida_hexrays.MMAT_GLBOPT1)) == 0
+        assert rule.flow_context.execution_attempt_context() == (
+            journal,
+            session_id,
+            parent.attempt_id,
+        )
+    finally:
+        journal.close()
+
+
+def test_block_optimizer_threads_its_lifecycle_attempt_into_pass_pipeline(
+    tmp_path,
+) -> None:
+    journal = ExecutionJournalStore(tmp_path / "execution.sqlite")
+    session_id = DecompilationSessionId.new()
+    parent = journal.begin_attempt(
+        session_id,
+        stage_id="hexrays_preanalysis",
+        domain=ExecutionDomain.HOOK,
+    )
+    manager = BlockOptimizerManager(
+        OptimizationStatistics(), Path("."), ctx_cls=FlowMaturityContext
+    )
+    manager.current_maturity = ida_hexrays.MMAT_GLBOPT1
+    rule = _DummyRule("pipeline_context")
+    lifecycle = _MutationGatewayLifecycle(object(), object())
+    lifecycle.execution_journal = journal
+    lifecycle.current_session = lambda _function_ea: SimpleNamespace(
+        session_id=session_id,
+        preanalysis_attempt_id=parent.attempt_id,
+    )
+    pipeline = _RecordingPassPipeline()
+    manager.configure(
+        execution_scope_service=_FakeExecutionScopeService((rule,)),
+        execution_scope_project_name="proj",
+        execution_scope_idb_key="idb",
+        decompilation_lifecycle=lifecycle,
+        pass_pipeline=pipeline,
+    )
+    block = _make_block(maturity=ida_hexrays.MMAT_GLBOPT1)
+
+    try:
+        assert manager.optimize(block) == 0
+        manager._run_pass_pipeline_once(block.mba, phase_label="test")
+        assert len(pipeline.calls) == 1
+        _, captured = pipeline.calls[0]
+        assert captured["journal"] is journal
+        assert captured["session_id"] == session_id
+        assert captured["parent_attempt_id"] == parent.attempt_id
+        assert captured["maturity"] == "MMAT_GLBOPT1"
+    finally:
+        journal.close()
+
+
+def test_block_optimizer_records_rule_and_mba_mutation_attempts(tmp_path) -> None:
+    journal = ExecutionJournalStore(tmp_path / "execution.sqlite")
+    session_id = DecompilationSessionId.new()
+    parent = journal.begin_attempt(
+        session_id,
+        stage_id="hexrays_preanalysis",
+        domain=ExecutionDomain.HOOK,
+    )
+    manager = BlockOptimizerManager(
+        OptimizationStatistics(), Path("."), ctx_cls=FlowMaturityContext
+    )
+    manager.current_maturity = ida_hexrays.MMAT_GLBOPT1
+    rule = _DummyRule("solver_backed_rule", patches=2)
+    lifecycle = _MutationGatewayLifecycle(object(), object())
+    lifecycle.execution_journal = journal
+    lifecycle.current_session = lambda _function_ea: SimpleNamespace(
+        session_id=session_id,
+        preanalysis_attempt_id=parent.attempt_id,
+    )
+    manager.configure(
+        execution_scope_service=_FakeExecutionScopeService((rule,)),
+        execution_scope_project_name="proj",
+        execution_scope_idb_key="idb",
+        decompilation_lifecycle=lifecycle,
+    )
+
+    try:
+        assert manager.optimize(_make_block(maturity=ida_hexrays.MMAT_GLBOPT1)) == 2
+        rule_attempt = journal.only_attempt(
+            session_id,
+            stage_id="flow_rule:solver_backed_rule:maturity=MMAT_GLBOPT1:unknown",
+        )
+        mutation_attempt = journal.only_attempt(
+            session_id,
+            stage_id=(
+                "mba_rule_mutation:solver_backed_rule:maturity=MMAT_GLBOPT1:unknown"
+            ),
+        )
+        assert rule_attempt.status is ExecutionAttemptStatus.COMPLETED
+        assert rule_attempt.parent_attempt_id == parent.attempt_id
+        assert rule_attempt.details == {"patch_count": 2, "maturity": "MMAT_GLBOPT1"}
+        assert mutation_attempt.status is ExecutionAttemptStatus.COMPLETED
+        assert mutation_attempt.parent_attempt_id == rule_attempt.attempt_id
+        assert mutation_attempt.effect_refs[0].kind == "mba_rule_edit"
+    finally:
+        journal.close()
+
+
+def test_block_optimizer_records_noop_and_failure_attempts(tmp_path) -> None:
+    journal = ExecutionJournalStore(tmp_path / "execution.sqlite")
+    session_id = DecompilationSessionId.new()
+    parent = journal.begin_attempt(
+        session_id,
+        stage_id="hexrays_preanalysis",
+        domain=ExecutionDomain.HOOK,
+    )
+    manager = BlockOptimizerManager(
+        OptimizationStatistics(), Path("."), ctx_cls=FlowMaturityContext
+    )
+    manager.current_maturity = ida_hexrays.MMAT_GLBOPT1
+    noop = _DummyRule("solver_backed_noop")
+    failing = _FailingRule("solver_backed_failure")
+    lifecycle = _MutationGatewayLifecycle(object(), object())
+    lifecycle.execution_journal = journal
+    lifecycle.current_session = lambda _function_ea: SimpleNamespace(
+        session_id=session_id,
+        preanalysis_attempt_id=parent.attempt_id,
+    )
+    manager.configure(
+        execution_scope_service=_FakeExecutionScopeService((noop, failing)),
+        execution_scope_project_name="proj",
+        execution_scope_idb_key="idb",
+        decompilation_lifecycle=lifecycle,
+    )
+
+    try:
+        with pytest.raises(RuntimeError, match="flow rule failure"):
+            manager.optimize(_make_block(maturity=ida_hexrays.MMAT_GLBOPT1))
+        noop_attempt = journal.only_attempt(
+            session_id,
+            stage_id="flow_rule:solver_backed_noop:maturity=MMAT_GLBOPT1:unknown",
+        )
+        assert noop_attempt.status is ExecutionAttemptStatus.ABSTAINED
+        assert noop_attempt.reason_code == "no_modifications"
+        failed_attempt = journal.only_attempt(
+            session_id,
+            stage_id="flow_rule:solver_backed_failure:maturity=MMAT_GLBOPT1:unknown",
+        )
+        failed_mutation = journal.only_attempt(
+            session_id,
+            stage_id=(
+                "mba_rule_mutation:solver_backed_failure:maturity=MMAT_GLBOPT1:unknown"
+            ),
+        )
+        assert failed_attempt.status is ExecutionAttemptStatus.FAILED
+        assert failed_mutation.status is ExecutionAttemptStatus.FAILED
+        assert failed_attempt.reason_code == "RuntimeError: flow rule failure"
+    finally:
+        journal.close()
 
 
 def test_disabled_impossible_return_cleanup_does_not_build_gateway(

@@ -24,7 +24,12 @@ from d810.core.input_identity_attestation import (
     InputIdentityRecoveryStatus,
     InputIdentityResolution,
 )
-from d810.core.execution_journal import DecompilationSessionId
+from d810.core.execution_journal import (
+    DecompilationSessionId,
+    ExecutionAttemptStatus,
+    ExecutionDomain,
+)
+from d810.core.execution_journal_store import ExecutionJournalStore
 from d810.core.provider_phase import ProviderPhaseSnapshot
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.manager.decompilation_lifecycle import (
@@ -452,6 +457,87 @@ def test_new_top_level_session_gets_a_fresh_session_id() -> None:
 
     assert created is True
     assert second.session_id != first_session_id
+
+
+def test_new_top_level_session_is_durably_bound_to_its_function(tmp_path) -> None:
+    coordinator, _runtime = _coordinator([])
+    with ExecutionJournalStore(tmp_path / "execution.sqlite") as journal:
+        coordinator.execution_journal = journal
+
+        session, created = coordinator.ensure_hexrays_session(
+            function_ea=0x401000,
+            database_identity="sample.i64",
+        )
+
+        assert created is True
+        assert journal.latest_session_for_function(0x401000) == session.session_id
+
+
+@pytest.mark.parametrize("operation", ("bind_session", "begin_attempt"))
+def test_journal_setup_failure_does_not_block_a_live_decompilation(
+    tmp_path,
+    monkeypatch,
+    operation: str,
+) -> None:
+    """Provenance storage is best-effort and never a session authority."""
+    coordinator, _runtime = _coordinator([])
+    with ExecutionJournalStore(tmp_path / "execution.sqlite") as journal:
+        coordinator.execution_journal = journal
+
+        def fail(*_args, **_kwargs):
+            raise OSError("journal unavailable")
+
+        monkeypatch.setattr(journal, operation, fail)
+        session, created = coordinator.ensure_hexrays_session(
+            function_ea=0x401000,
+            database_identity="sample.i64",
+        )
+
+    assert created is True
+    assert session.preanalysis_attempt_id is None
+    assert session.execution_journal is None
+
+
+def test_fresh_hint_application_is_a_child_journal_record_not_a_cache_read(
+    tmp_path,
+) -> None:
+    calls: list[tuple[str, object]] = []
+    coordinator, runtime = _coordinator(calls)
+    runtime.hints = SimpleNamespace(
+        func_ea=0x401000,
+        obfuscation_type="state_machine",
+        confidence=0.75,
+        recommended_inferences=("unflattening",),
+        suppress_stages=("legacy-stage",),
+    )
+
+    with ExecutionJournalStore(tmp_path / "execution.sqlite") as journal:
+        coordinator.execution_journal = journal
+        session, _created = coordinator.ensure_hexrays_session(
+            function_ea=0x401000,
+            database_identity="sample.i64",
+        )
+
+        coordinator.analyze_current_function(
+            function_ea=0x401000,
+            source="instruction",
+        )
+
+        attempt = journal.only_attempt(
+            session.session_id,
+            stage_id="execution_hints:fresh_analysis",
+        )
+        assert attempt.domain is ExecutionDomain.HOOK
+        assert attempt.parent_attempt_id == session.preanalysis_attempt_id
+        assert attempt.status is ExecutionAttemptStatus.COMPLETED
+        assert attempt.details["hint_source"] == "fresh_analysis"
+        assert attempt.details["trigger_source"] == "instruction"
+        assert len(attempt.effect_refs) == 1
+        assert attempt.effect_refs[0].kind == "fresh_execution_hints"
+        assert attempt.effect_refs[0].detail["recommended_inferences"] == (
+            "unflattening",
+        )
+        assert "cached" not in str(attempt.details)
 
 
 def test_new_session_initializes_injected_resolver_attachment_exactly_once() -> None:
@@ -1021,7 +1107,9 @@ def test_pending_generated_restart_retains_owner_until_flowchart_consumes_it() -
     assert coordinator.current_session(0x401000) is None
 
 
-def test_analysis_without_hints_does_not_apply_or_record_execution_scope_outcome() -> None:
+def test_analysis_without_hints_does_not_apply_or_record_execution_scope_outcome() -> (
+    None
+):
     calls: list[tuple[str, object]] = []
     coordinator, _runtime = _coordinator(calls)
 
@@ -1087,8 +1175,7 @@ def test_file_verified_identity_delegates_external_oracle_calls() -> None:
 
     assert gate.reference_oracle_scope_for(0x401000, NATIVE_KEY) == "scope-result"
     assert (
-        gate.reference_oracle_for(0x401000, NATIVE_KEY, (0x401020,))
-        == "anchor-result"
+        gate.reference_oracle_for(0x401000, NATIVE_KEY, (0x401020,)) == "anchor-result"
     )
     assert calls == ["scope", "anchors"]
 

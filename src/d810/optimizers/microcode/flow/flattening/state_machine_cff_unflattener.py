@@ -275,8 +275,7 @@ def _request_materialized_recovery_generated_restart(
         ),
     ):
         raise RuntimeError(
-            "portable dispatcher recovery evidence did not acquire a "
-            "generated restart"
+            "portable dispatcher recovery evidence did not acquire a generated restart"
         )
     return True
 
@@ -2113,6 +2112,24 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     "require_pipeline_v2_shadow_match": True,
                 }
 
+            execution_attempt_context = getattr(
+                self.flow_context,
+                "execution_attempt_context",
+                None,
+            )
+            if callable(execution_attempt_context):
+                journal, session_id, parent_attempt_id = execution_attempt_context()
+                if (
+                    journal is not None
+                    and session_id is not None
+                    and parent_attempt_id is not None
+                ):
+                    shadow_gate_kwargs.update(
+                        journal=journal,
+                        session_id=session_id,
+                        parent_attempt_id=parent_attempt_id,
+                    )
+
             def run_pipeline() -> None:
                 self._pass_manager.run(
                     source=source,
@@ -2453,14 +2470,13 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                         mba,
                         int(prelim.dispatcher_block_serial),
                     )
-                    if (
-                        getattr(stack_probe, "state_var_stkoff", None) is not None
-                        and bool(
-                            getattr(
-                                getattr(stack_probe, "decision_dag", None),
-                                "nodes",
-                                None,
-                            )
+                    if getattr(
+                        stack_probe, "state_var_stkoff", None
+                    ) is not None and bool(
+                        getattr(
+                            getattr(stack_probe, "decision_dag", None),
+                            "nodes",
+                            None,
                         )
                     ):
                         range_evidence = stack_probe
@@ -2853,16 +2869,13 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             )
             imported_handler_serials: set[int] = set()
             for state_constant, target_ea in equality_target_eas.items():
-                target_block = (
-                    _rebind_current_native_ea(
-                        current_identity_index,
-                        int(target_ea),
-                    )
-                    or find_materialized_handler_block_by_native_ea(
-                        mba,
-                        int(target_ea),
-                        required_native_eas=atomic_predicate_eas,
-                    )
+                target_block = _rebind_current_native_ea(
+                    current_identity_index,
+                    int(target_ea),
+                ) or find_materialized_handler_block_by_native_ea(
+                    mba,
+                    int(target_ea),
+                    required_native_eas=atomic_predicate_eas,
                 )
                 if target_block is None:
                     continue
@@ -3167,16 +3180,13 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 )
 
             def resolve_live_target_serial(target_ea: int) -> int | None:
-                target_block = (
-                    _rebind_current_native_ea(
-                        current_identity_index,
-                        int(target_ea),
-                    )
-                    or find_materialized_handler_block_by_native_ea(
-                        mba,
-                        int(target_ea),
-                        required_native_eas=atomic_predicate_eas,
-                    )
+                target_block = _rebind_current_native_ea(
+                    current_identity_index,
+                    int(target_ea),
+                ) or find_materialized_handler_block_by_native_ea(
+                    mba,
+                    int(target_ea),
+                    required_native_eas=atomic_predicate_eas,
                 )
                 target_serial = (
                     int(target_block.serial) if target_block is not None else None
@@ -3776,8 +3786,9 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         canonical_composition_ready: bool = False,
     ):
         """Poll the family registry (reduced-product bypass on opt-in). Returns family|None."""
-        if materialized_evidence_ready and not self._uses_tigress_indirect_materialization(
-            rule_config
+        if (
+            materialized_evidence_ready
+            and not self._uses_tigress_indirect_materialization(rule_config)
         ):
             logger.info(
                 "unflat: complete materialized identity resumes canonical fragment composition "
@@ -3786,8 +3797,9 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 maturity_to_string(int(mba.maturity)),
             )
             return _MaterializedComputedGotoContinuationFamily()
-        if canonical_composition_ready and not self._uses_tigress_indirect_materialization(
-            rule_config
+        if (
+            canonical_composition_ready
+            and not self._uses_tigress_indirect_materialization(rule_config)
         ):
             logger.info(
                 "unflat: partial canonical evidence resumes fragment composition "
@@ -3879,8 +3891,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                                 "family_name": family_name,
                                 "indirect_bypass": bool(is_indirect),
                                 "target_maturities": sorted(
-                                    int(maturity)
-                                    for maturity in _target_maturities
+                                    int(maturity) for maturity in _target_maturities
                                 ),
                             },
                         ),

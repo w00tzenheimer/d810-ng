@@ -13,6 +13,11 @@ from d810.core import getLogger, typing
 from d810.core.cymode import CythonMode
 from d810.core.decompilation_session import DecompilationEvent
 from d810.core.execution_scope import ExecutionPipeline, ExecutionStageIdentity
+from d810.core.execution_journal import (
+    ExecutionAttemptStatus,
+    ExecutionDomain,
+    ExecutionEffectRef,
+)
 from d810.errors import D810Exception
 from d810.hexrays.hooks.callback_mutation_diagnostics import (
     LiveNopSite,
@@ -164,7 +169,9 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         self._execution_scope_func_ea = -1
         self._active_instruction_rule_names_by_maturity: dict[int, frozenset[str]] = {}
         self._run_later_scheduler = None
-        self._scheduled_stage_identities: frozenset[ExecutionStageIdentity] = frozenset()
+        self._scheduled_stage_identities: frozenset[ExecutionStageIdentity] = (
+            frozenset()
+        )
         self._scheduled_implementation_names: frozenset[str] = frozenset()
 
         # Cycle detection: maps instruction EA -> set of post-rewrite hashes.
@@ -499,6 +506,42 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             )
 
     def func(self, blk: ida_hexrays.mblock_t, ins: ida_hexrays.minsn_t) -> bool:
+        # ``optinsn_t`` is a direct MBA mutation seam.  Record its observable
+        # callback outcome under the manager-owned session, but never let a
+        # journal failure alter the Hex-Rays callback contract.
+        journal = None
+        journal_attempt = None
+        journal_session = None
+        journal_maturity = int(getattr(getattr(blk, "mba", None), "maturity", -1))
+        journal_instruction_ea = int(getattr(ins, "ea", 0) or 0)
+        try:
+            lifecycle = getattr(self, "_decompilation_lifecycle", None)
+            mba = getattr(blk, "mba", None)
+            function_ea = int(getattr(mba, "entry_ea", 0) or 0)
+            session = (
+                None if lifecycle is None else lifecycle.current_session(function_ea)
+            )
+            journal = None if session is None else session.execution_journal
+            if journal is not None:
+                journal_session = session
+                journal_attempt = journal.begin_attempt(
+                    session.session_id,
+                    parent_attempt_id=session.preanalysis_attempt_id,
+                    stage_id=(
+                        "optinsn_callback:"
+                        f"maturity={journal_maturity}:"
+                        f"insn=0x{journal_instruction_ea:X}"
+                    ),
+                    domain=ExecutionDomain.HOOK,
+                )
+        except Exception:
+            optimizer_logger.debug(
+                "execution journal: failed to begin optinsn callback attempt",
+                exc_info=True,
+            )
+            journal = None
+            journal_attempt = None
+            journal_session = None
         callback_nop_sites = self._capture_callback_nop_sites(blk)
         callback_result: bool | None = None
         callback_exception_name: str | None = None
@@ -559,6 +602,62 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                 callback_result=callback_result,
                 exception_name=callback_exception_name,
             )
+            if journal is not None and journal_attempt is not None:
+                try:
+                    detail = {
+                        "maturity": journal_maturity,
+                        "instruction_ea": journal_instruction_ea,
+                    }
+                    if callback_exception_name is not None:
+                        journal.advance(
+                            journal_attempt,
+                            status=ExecutionAttemptStatus.FAILED,
+                            reason_code=callback_exception_name,
+                            details=detail,
+                        )
+                    elif callback_result:
+                        effect = ExecutionEffectRef(
+                            kind="mba_instruction_edit",
+                            ref_id=(
+                                f"maturity={journal_maturity}:"
+                                f"insn=0x{journal_instruction_ea:X}"
+                            ),
+                            detail=detail,
+                        )
+                        journal.advance(
+                            journal_attempt,
+                            status=ExecutionAttemptStatus.COMPLETED,
+                            effect_refs=(effect,),
+                            details=detail,
+                        )
+                        mutation_attempt = journal.begin_attempt(
+                            journal_session.session_id,
+                            parent_attempt_id=journal_attempt.attempt_id,
+                            stage_id=(
+                                "mba_mutation:optinsn:"
+                                f"maturity={journal_maturity}:"
+                                f"insn=0x{journal_instruction_ea:X}"
+                            ),
+                            domain=ExecutionDomain.MUTATION,
+                        )
+                        journal.advance(
+                            mutation_attempt,
+                            status=ExecutionAttemptStatus.COMPLETED,
+                            effect_refs=(effect,),
+                            details=detail,
+                        )
+                    else:
+                        journal.advance(
+                            journal_attempt,
+                            status=ExecutionAttemptStatus.ABSTAINED,
+                            reason_code="no_instruction_change",
+                            details=detail,
+                        )
+                except Exception:
+                    optimizer_logger.debug(
+                        "execution journal: failed to record optinsn callback outcome",
+                        exc_info=True,
+                    )
 
     # statistics are managed centrally via the stats object
 

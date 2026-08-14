@@ -13,6 +13,12 @@ from __future__ import annotations
 
 import pytest
 
+from d810.core.execution_journal import (
+    DecompilationSessionId,
+    ExecutionAttemptStatus,
+    ExecutionDomain,
+)
+from d810.core.execution_journal_store import ExecutionJournalStore
 from d810.transforms._base import FlowGraphTransform
 from d810.transforms.graph_modification import (
     ConvertToGoto,
@@ -96,6 +102,21 @@ class MutatingBackend(InMemoryBackend):
             )
             self.blocks[new_serial] = new_block
         return count
+
+
+class ExplodingExecutionBackend(InMemoryBackend):
+    """Runtime that fails after a transform has produced a PatchPlan."""
+
+    def execute_patch_plan(
+        self,
+        plan,
+        state=None,
+        *,
+        mutation_gateway: object,
+        pre_cfg: FlowGraph,
+    ):
+        del plan, state, mutation_gateway, pre_cfg
+        raise RuntimeError("live mutation backend rejected the plan")
 
 
 # ============================================================================
@@ -319,7 +340,7 @@ class TestPassPipeline:
         # Use CountingPass which returns mods based on block count
         pipeline = FlowGraphTransformPipeline(backend, [CountingPass(), CountingPass()])
 
-        total = pipeline.run({}, mutation_gateway=MUTATION_GATEWAY)
+        pipeline.run({}, mutation_gateway=MUTATION_GATEWAY)
 
         # First pass: 0 blocks -> 0 mods
         # Second pass: should see mutated state from first pass if re-lift happened
@@ -426,6 +447,93 @@ class TestPassPipeline:
         # Only SingleModPass should contribute
         assert total == 1
         assert len(backend.applied_steps) == 1
+
+    def test_journal_records_transform_abstentions_and_mutation_receipt(self, tmp_path):
+        """Every transform attempt gets a durable terminal record and receipt child."""
+        journal = ExecutionJournalStore(tmp_path / "execution.sqlite")
+        session_id = DecompilationSessionId.new()
+        parent = journal.begin_attempt(
+            session_id,
+            stage_id="hexrays_preanalysis",
+            domain=ExecutionDomain.HOOK,
+        )
+        pipeline = FlowGraphTransformPipeline(
+            InMemoryBackend(),
+            [ConditionalPass(), NoOpPass(), SingleModPass()],
+        )
+
+        assert (
+            pipeline.run(
+                {},
+                mutation_gateway=MUTATION_GATEWAY,
+                journal=journal,
+                session_id=session_id,
+                parent_attempt_id=parent.attempt_id,
+                maturity="MMAT_GLBOPT2",
+            )
+            == 1
+        )
+
+        conditional = journal.only_attempt(
+            session_id, stage_id="flow_transform:conditional"
+        )
+        assert conditional.status is ExecutionAttemptStatus.ABSTAINED
+        assert conditional.reason_code == "not_applicable"
+        assert conditional.parent_attempt_id == parent.attempt_id
+        assert conditional.details == {"maturity": "MMAT_GLBOPT2"}
+
+        noop = journal.only_attempt(session_id, stage_id="flow_transform:noop")
+        assert noop.status is ExecutionAttemptStatus.ABSTAINED
+        assert noop.reason_code == "no_modifications"
+        assert noop.details == {"maturity": "MMAT_GLBOPT2"}
+
+        transform = journal.only_attempt(
+            session_id, stage_id="flow_transform:single_mod"
+        )
+        assert transform.status is ExecutionAttemptStatus.COMPLETED
+        assert transform.details == {
+            "maturity": "MMAT_GLBOPT2",
+            "operation_count": 1,
+        }
+        assert transform.effect_refs[0].kind == "patch_plan"
+        assert transform.effect_refs[0].detail == {"step_count": 1}
+
+        mutation = journal.only_attempt(session_id, stage_id="mba_mutation:single_mod")
+        assert mutation.status is ExecutionAttemptStatus.COMPLETED
+        assert mutation.parent_attempt_id == transform.attempt_id
+        assert mutation.details == {
+            "applied_count": 1,
+            "maturity": "MMAT_GLBOPT2",
+            "plan_step_count": 1,
+        }
+        assert mutation.effect_refs[0].kind == "patch_plan"
+
+    def test_journal_records_backend_failure_without_masking_it(self, tmp_path):
+        """A backend exception is preserved while both nested attempts terminate."""
+        journal = ExecutionJournalStore(tmp_path / "execution.sqlite")
+        session_id = DecompilationSessionId.new()
+        pipeline = FlowGraphTransformPipeline(
+            ExplodingExecutionBackend(), [SingleModPass()]
+        )
+
+        with pytest.raises(
+            RuntimeError, match="live mutation backend rejected the plan"
+        ):
+            pipeline.run(
+                {},
+                mutation_gateway=MUTATION_GATEWAY,
+                journal=journal,
+                session_id=session_id,
+            )
+
+        transform = journal.only_attempt(
+            session_id, stage_id="flow_transform:single_mod"
+        )
+        mutation = journal.only_attempt(session_id, stage_id="mba_mutation:single_mod")
+        assert transform.status is ExecutionAttemptStatus.FAILED
+        assert mutation.status is ExecutionAttemptStatus.FAILED
+        assert transform.reason_code == mutation.reason_code
+        assert "RuntimeError" in transform.reason_code
 
 
 class TestPassPipelineLogging:

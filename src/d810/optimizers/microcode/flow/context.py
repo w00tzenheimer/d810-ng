@@ -23,6 +23,11 @@ from d810.passes.function_priors import FunctionAnalysisPriors
 from d810.passes.scheduler import RunLater
 
 if TYPE_CHECKING:
+    from d810.core.execution_journal import (
+        DecompilationSessionId,
+        ExecutionAttemptId,
+    )
+    from d810.core.execution_journal_store import ExecutionJournalStore
     from d810.analyses.value_flow.model import FactConsumerRecord, ValidatedFactView
     from d810.analyses.control_flow.dispatcher_analysis import DispatcherAnalysis
     from d810.analyses.control_flow.dispatcher_facts import BlockAnalysis
@@ -159,6 +164,17 @@ class FlowMaturityContext:
         self._semantic_native_body_materializer_factory: (
             Callable[[], object | None] | None
         ) = None
+        # The lifecycle owns this immutable correlation tuple.  Flow rules may
+        # pass it to portable execution, but must not mint sessions or parent
+        # attempts of their own.
+        self._execution_attempt_context: (
+            tuple[
+                "ExecutionJournalStore",
+                "DecompilationSessionId",
+                "ExecutionAttemptId",
+            ]
+            | None
+        ) = None
 
     @property
     def hint_summary(self) -> FlowContextHintSummary | None:
@@ -168,6 +184,30 @@ class FlowMaturityContext:
     def set_hint_summary(self, summary: FlowContextHintSummary) -> None:
         "Attach an analyzed hint summary from the preanalysis lifecycle.\n\n        The summary is used as an *additional* signal in gate evaluation\n        methods. It does not replace existing dispatcher-analysis logic.\n\n        In the live path, ``BlockOptimizerManager._attach_hint_summary``\n        calls this automatically when a new ``FlowMaturityContext`` is\n        created (including after invalidation). The summary is derived\n        from persisted ``DeobfuscationHints`` via\n        :func:`derive_flow_context_summary`.\n"
         self._hint_summary = summary
+
+    def set_execution_attempt_context(
+        self,
+        journal: "ExecutionJournalStore | None",
+        session_id: "DecompilationSessionId | None",
+        parent_attempt_id: "ExecutionAttemptId | None",
+    ) -> None:
+        """Attach the manager-owned execution correlation for this callback."""
+        if journal is None or session_id is None or parent_attempt_id is None:
+            self._execution_attempt_context = None
+            return
+        self._execution_attempt_context = (journal, session_id, parent_attempt_id)
+
+    def execution_attempt_context(
+        self,
+    ) -> tuple[
+        "ExecutionJournalStore | None",
+        "DecompilationSessionId | None",
+        "ExecutionAttemptId | None",
+    ]:
+        """Return the active lifecycle correlation, or an explicit empty tuple."""
+        if self._execution_attempt_context is None:
+            return (None, None, None)
+        return self._execution_attempt_context
 
     def set_outcome_callback(
         self,

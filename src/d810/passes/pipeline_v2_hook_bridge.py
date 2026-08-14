@@ -90,9 +90,7 @@ def _state_machine_rule_config(
         raise PipelineConfigError(
             "state-machine native spine entries disagree on typed options"
         )
-    hook_options: dict[str, object] = {
-        "min_state_constant": first.min_state_constant
-    }
+    hook_options: dict[str, object] = {"min_state_constant": first.min_state_constant}
     if first.family is StateMachineCffFamily.TIGRESS_INDIRECT:
         hook_options["profile"] = "tigress_indirect"
     if first.recovery_strategy is StateMachineRecoveryStrategy.REDUCED_PRODUCT:

@@ -8,10 +8,21 @@ from types import SimpleNamespace
 
 import pytest
 
+from d810.core.execution_journal import (
+    DecompilationSessionId,
+    ExecutionAttemptStatus,
+    ExecutionDomain,
+    ExecutionEffectRef,
+)
+from d810.core.execution_journal_store import ExecutionJournalStore
+from d810.core.native_preanalysis_key import NativePreanalysisKey
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph
 from d810.ir.maturity import IRMaturity
 from d810.passes.driver import AnalysisContractError
-from d810.passes.function_pass_manager import FunctionPassManager
+from d810.passes.function_pass_manager import (
+    FunctionPassManager,
+    flowgraph_structural_shape,
+)
 from d810.passes.pass_pipeline import (
     AnalysisContract,
     PipelineConfigError,
@@ -134,6 +145,155 @@ def test_manager_threads_scheduler_across_maturity_runs():
         IRMaturity.GLOBAL_ANALYZED,
         IRMaturity.GLOBAL_ANALYZED,
     ]
+
+
+def test_manager_threads_config_v2_attempts_into_the_active_session(tmp_path):
+    class _NoOp:
+        name = "no_op"
+
+        def run(self, ctx) -> PassResult:
+            return PassResult()
+
+    journal = ExecutionJournalStore(tmp_path / "execution.sqlite")
+    session_id = DecompilationSessionId.new()
+    parent = journal.begin_attempt(
+        session_id,
+        stage_id="hexrays_preanalysis",
+        domain=ExecutionDomain.HOOK,
+    )
+    spec = PassSpec("no_op", _NoOp, no_caps, default)
+
+    try:
+        FunctionPassManager().run(
+            source=_Src(),
+            family=_MatchingFamily((spec,)),
+            backend=_Backend(),
+            project_config={"pipeline_v2_mode": "config-v2"},
+            maturity=IRMaturity.CANONICAL,
+            pipeline_v2_specs=(spec,),
+            journal=journal,
+            session_id=session_id,
+            parent_attempt_id=parent.attempt_id,
+        )
+
+        attempts = journal.attempts_for_session(session_id)
+        assert [
+            (attempt.stage_id, attempt.parent_attempt_id) for attempt in attempts
+        ] == [
+            ("hexrays_preanalysis", None),
+            ("no_op", parent.attempt_id),
+        ]
+        assert attempts[-1].status is ExecutionAttemptStatus.COMPLETED
+    finally:
+        journal.close()
+
+
+def test_profile_guidance_selects_only_currently_eligible_optional_specs(
+    tmp_path,
+):
+    calls: list[str] = []
+    unknown = PassSpec(
+        "unknown",
+        _recording_pass("unknown", calls),
+        no_caps,
+        default,
+        options={
+            "profile_guided_optional": True,
+            "profile_estimated_cost_ms": 1.0,
+        },
+    )
+    proven = PassSpec(
+        "proven",
+        _recording_pass("proven", calls),
+        no_caps,
+        default,
+        options={
+            "profile_guided_optional": True,
+            "profile_estimated_cost_ms": 1.0,
+        },
+    )
+    mandatory = PassSpec(
+        "mandatory", _recording_pass("mandatory", calls), no_caps, default
+    )
+    future = PassSpec(
+        "future",
+        _recording_pass("future", calls),
+        no_caps,
+        default,
+        maturity_gates=frozenset({IRMaturity.GLOBAL_ANALYZED}),
+        options={
+            "profile_guided_optional": True,
+            "profile_estimated_cost_ms": 1.0,
+        },
+    )
+    specs = (unknown, proven, mandatory, future)
+    native_key = NativePreanalysisKey(
+        input_identity="sha256:input",
+        processor="metapc",
+        bitness=64,
+        function_rva=0x1000,
+        function_fingerprint="sha256:function",
+        profile_fingerprint="sha256:config",
+        sdk_fingerprint="ida-sdk:940:hexrays:9.4:d810:1.0.0b1",
+    )
+    journal = ExecutionJournalStore(tmp_path / "profile-selection.sqlite")
+    historical_session = DecompilationSessionId.new()
+    live_session = DecompilationSessionId.new()
+    journal.bind_session(historical_session, function_ea=0x1000, native_key=native_key)
+    journal.bind_session(live_session, function_ea=0x1000, native_key=native_key)
+    historical = journal.begin_attempt(
+        historical_session,
+        stage_id="proven",
+        domain=ExecutionDomain.PASS,
+    )
+    journal.advance(
+        historical,
+        status=ExecutionAttemptStatus.COMPLETED,
+        effect_refs=(ExecutionEffectRef("rewrite_plan", "historical-plan"),),
+        elapsed_ms=1.0,
+        details={
+            "maturity": IRMaturity.CANONICAL.value,
+            "structural_shape": flowgraph_structural_shape(_GRAPH),
+        },
+    )
+
+    FunctionPassManager().run(
+        source=_Src(),
+        family=_MatchingFamily(specs),
+        backend=_Backend(),
+        project_config={
+            "profile_guidance_enabled": True,
+            "profile_guidance_budget_ms": 1.0,
+            "profile_guidance_exploration_slots": 0,
+        },
+        maturity=IRMaturity.CANONICAL,
+        pipeline_v2_specs=specs,
+        journal=journal,
+        session_id=live_session,
+    )
+
+    assert calls == ["proven", "mandatory"]
+    guidance = tuple(
+        attempt
+        for attempt in journal.attempts_for_session(live_session)
+        if attempt.domain is ExecutionDomain.PROFILE_GUIDANCE
+    )
+    assert [attempt.reason_code for attempt in guidance] == [
+        "profile_selected",
+        "profile_deprioritized",
+    ]
+
+    calls.clear()
+    FunctionPassManager().run(
+        source=_Src(),
+        family=_MatchingFamily(specs),
+        backend=_Backend(),
+        project_config={"profile_guidance_enabled": False},
+        maturity=IRMaturity.CANONICAL,
+        pipeline_v2_specs=specs,
+    )
+    assert calls == ["unknown", "proven", "mandatory"]
+    journal.close()
 
 
 def test_manager_bubbles_analysis_contract_failure_with_pass_id():

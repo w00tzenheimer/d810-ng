@@ -20,6 +20,7 @@ from d810.core.execution_journal import (
     ExecutionAttemptId,
     ExecutionAttemptStatus,
     ExecutionDomain,
+    ExecutionEffectRef,
 )
 from d810.core.execution_journal_store import ExecutionJournalStore
 from d810.core.logging import getLogger
@@ -108,6 +109,14 @@ class DecompilationSessionContext:
     #: Durable parent for native proposal/preflight/transaction child attempts.
     #: It is created only when the manager supplied an execution journal.
     preanalysis_attempt_id: ExecutionAttemptId | None = None
+    #: Manager-owned durable provenance store for every child stage in this
+    #: decompilation.  It is deliberately a session capability, not a live
+    #: Hex-Rays object, so adapters can preserve the established parent attempt
+    #: without minting another session or inventing a global store.
+    execution_journal: ExecutionJournalStore | None = field(
+        default=None,
+        repr=False,
+    )
     input_identity_resolution: InputIdentityResolution | None = None
     native_preanalysis: NativePreanalysisSessionState = field(
         default_factory=NativePreanalysisSessionState
@@ -137,6 +146,12 @@ class DecompilationSessionContext:
         ):
             raise ValueError(
                 "session native key disagrees with input identity resolution"
+            )
+        if self.execution_journal is not None and not isinstance(
+            self.execution_journal, ExecutionJournalStore
+        ):
+            raise TypeError(
+                "session execution_journal must be an ExecutionJournalStore"
             )
         self.frontend_normalization_plan_authority = (
             SessionFrontendNormalizationPlanAuthority(
@@ -481,14 +496,33 @@ class DecompilationLifecycleCoordinator:
             top_level_epoch=epoch,
             native_key=native_key,
             input_identity_resolution=identity_resolution,
+            execution_journal=self.execution_journal,
         )
         if self.execution_journal is not None:
-            parent_attempt = self.execution_journal.begin_attempt(
-                session.session_id,
-                stage_id="hexrays_preanalysis",
-                domain=ExecutionDomain.HOOK,
-            )
-            session.preanalysis_attempt_id = parent_attempt.attempt_id
+            try:
+                self.execution_journal.bind_session(
+                    session.session_id,
+                    function_ea=function_ea,
+                    native_key=session.native_key,
+                )
+                parent_attempt = self.execution_journal.begin_attempt(
+                    session.session_id,
+                    stage_id="hexrays_preanalysis",
+                    domain=ExecutionDomain.HOOK,
+                )
+                session.preanalysis_attempt_id = parent_attempt.attempt_id
+            except Exception:
+                # Execution provenance must never become decompilation or
+                # mutation authority.  Disable it for this session after a
+                # setup failure; a later session may retry the manager-owned
+                # journal normally.
+                session.execution_journal = None
+                logger.warning(
+                    "execution journal unavailable; continuing without provenance "
+                    "for func=0x%x",
+                    function_ea,
+                    exc_info=True,
+                )
         session.native_preanalysis.event_observer = (
             lambda transition, owned_session=session: self._observe_evidence_transition(
                 owned_session,
@@ -1055,16 +1089,82 @@ class DecompilationLifecycleCoordinator:
             )
 
     def analyze_current_function(self, *, function_ea: int, source: str) -> None:
-        """Derive hints and apply them through the manager-owned rule scope."""
+        """Derive fresh hints and apply them through the manager-owned scope.
+
+        The preanalysis SQLite hint rows are a compatibility/UI projection, not
+        a cross-decompilation execution cache.  This live path always invokes
+        ``analyze`` against evidence collected in the *current* session and
+        records the resulting scope decision as a journal child when one is
+        active.  The journal record is descriptive only: a storage failure
+        cannot change analysis or rule activation behavior.
+        """
         if self.analysis_runtime is None:
             return
         function_ea = int(function_ea)
+        session = self.current_session(function_ea)
+        journal = None if session is None else session.execution_journal
+        journal_attempt = None
+        if journal is not None:
+            try:
+                journal_attempt = journal.begin_attempt(
+                    session.session_id,
+                    parent_attempt_id=session.preanalysis_attempt_id,
+                    stage_id="execution_hints:fresh_analysis",
+                    domain=ExecutionDomain.HOOK,
+                )
+            except Exception:
+                logger.debug(
+                    "execution journal: failed to begin fresh-hint attempt "
+                    "for func=0x%x",
+                    function_ea,
+                    exc_info=True,
+                )
         try:
             hints = self.analysis_runtime.analyze(function_ea)
-        except Exception:
+        except Exception as exc:
             logger.exception("analysis failed for func=0x%x", function_ea)
+            if journal_attempt is not None:
+                try:
+                    journal.advance(
+                        journal_attempt,
+                        status=ExecutionAttemptStatus.FAILED,
+                        reason_code=f"{type(exc).__name__}: {exc}",
+                        details={
+                            "hint_source": "fresh_analysis",
+                            "trigger_source": str(source),
+                        },
+                    )
+                except Exception:
+                    logger.debug(
+                        "execution journal: failed to record hint-analysis failure "
+                        "for func=0x%x",
+                        function_ea,
+                        exc_info=True,
+                    )
             return
         if hints is None or self.execution_scope_service is None:
+            if journal_attempt is not None:
+                try:
+                    journal.advance(
+                        journal_attempt,
+                        status=ExecutionAttemptStatus.ABSTAINED,
+                        reason_code=(
+                            "no_fresh_hints"
+                            if hints is None
+                            else "execution_scope_unavailable"
+                        ),
+                        details={
+                            "hint_source": "fresh_analysis",
+                            "trigger_source": str(source),
+                        },
+                    )
+                except Exception:
+                    logger.debug(
+                        "execution journal: failed to record hint abstention "
+                        "for func=0x%x",
+                        function_ea,
+                        exc_info=True,
+                    )
             return
         try:
             apply_result = self.execution_scope_service.apply_hints(hints)
@@ -1074,10 +1174,72 @@ class DecompilationLifecycleCoordinator:
                 apply_result=apply_result,
                 source=source,
             )
-        except Exception:
+        except Exception as exc:
             logger.exception(
                 "rule-scope hint application failed for func=0x%x", function_ea
             )
+            if journal_attempt is not None:
+                try:
+                    journal.advance(
+                        journal_attempt,
+                        status=ExecutionAttemptStatus.FAILED,
+                        reason_code=f"{type(exc).__name__}: {exc}",
+                        details={
+                            "hint_source": "fresh_analysis",
+                            "trigger_source": str(source),
+                        },
+                    )
+                except Exception:
+                    logger.debug(
+                        "execution journal: failed to record hint-application "
+                        "failure for func=0x%x",
+                        function_ea,
+                        exc_info=True,
+                    )
+            return
+        if journal_attempt is not None:
+            payload = {
+                "func_ea": function_ea,
+                "obfuscation_type": getattr(hints, "obfuscation_type", None),
+                "confidence": getattr(hints, "confidence", None),
+                "recommended_inferences": tuple(
+                    str(value) for value in getattr(hints, "recommended_inferences", ())
+                ),
+                "suppressed_stages": tuple(
+                    str(value) for value in getattr(hints, "suppress_stages", ())
+                ),
+            }
+            try:
+                canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+                effect = ExecutionEffectRef(
+                    kind="fresh_execution_hints",
+                    ref_id=hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+                    detail=payload,
+                )
+                journal.advance(
+                    journal_attempt,
+                    status=ExecutionAttemptStatus.COMPLETED,
+                    effect_refs=(effect,),
+                    details={
+                        "hint_source": "fresh_analysis",
+                        "trigger_source": str(source),
+                        "inferences_applied": tuple(
+                            str(value)
+                            for value in getattr(apply_result, "inferences_applied", ())
+                        ),
+                        "stages_suppressed": tuple(
+                            str(value)
+                            for value in getattr(apply_result, "stages_suppressed", ())
+                        ),
+                    },
+                )
+            except Exception:
+                logger.debug(
+                    "execution journal: failed to record fresh-hint application "
+                    "for func=0x%x",
+                    function_ea,
+                    exc_info=True,
+                )
 
     def finish_hexrays_session(self) -> None:
         """Finish the innermost session and publish its typed observer event."""

@@ -6,8 +6,14 @@ in tests/unit by the import-linter contract.  They live here in tests/system.
 
 from __future__ import annotations
 
-import pytest
+import ida_hexrays
 
+from d810.core.execution_journal import (
+    DecompilationSessionId,
+    ExecutionAttemptStatus,
+    ExecutionDomain,
+)
+from d810.core.execution_journal_store import ExecutionJournalStore
 from d810.core.stats import OptimizationStatistics
 from d810.hexrays.hooks.ctree_hooks import (
     CtreeOptimizerManager,
@@ -98,6 +104,104 @@ class TestCtreeOptimizerManagerRuleExecution:
         # Should not raise
         total = mgr.on_maturity(None, 8)
         assert total == 0
+
+    def test_rules_record_terminal_attempts_in_the_active_session(self, tmp_path):
+        class AppliedRule(CtreeOptimizationRule):
+            NAME = "ctree_applied"
+
+            def optimize_ctree(self, cfunc):
+                del cfunc
+                return 2
+
+        class NoOpRule(CtreeOptimizationRule):
+            NAME = "ctree_noop"
+
+            def optimize_ctree(self, cfunc):
+                del cfunc
+                return 0
+
+        class FailingRule(CtreeOptimizationRule):
+            NAME = "ctree_failing"
+
+            def optimize_ctree(self, cfunc):
+                del cfunc
+                raise RuntimeError("ctree failure")
+
+        journal = ExecutionJournalStore(tmp_path / "execution.sqlite")
+        session_id = DecompilationSessionId.new()
+        parent = journal.begin_attempt(
+            session_id,
+            stage_id="hexrays_preanalysis",
+            domain=ExecutionDomain.HOOK,
+        )
+        lifecycle = type(
+            "Lifecycle",
+            (),
+            {
+                "execution_journal": journal,
+                "current_session": lambda self, _function_ea: type(
+                    "Session",
+                    (),
+                    {
+                        "session_id": session_id,
+                        "preanalysis_attempt_id": parent.attempt_id,
+                    },
+                )(),
+                "capture_ctree": lambda self, *args, **kwargs: None,
+                "analyze_current_function": lambda self, **kwargs: None,
+            },
+        )()
+        manager = CtreeOptimizerManager(
+            OptimizationStatistics(),
+            decompilation_lifecycle=lifecycle,
+        )
+        manager.add_rule(AppliedRule())
+        manager.add_rule(NoOpRule())
+        manager.add_rule(FailingRule())
+        cfunc = type("Cfunc", (), {"entry_ea": 0x401000})()
+
+        try:
+            assert manager.on_maturity(cfunc, ida_hexrays.CMAT_FINAL) == 2
+            applied = journal.only_attempt(
+                session_id, stage_id="ctree_rule:ctree_applied"
+            )
+            assert applied.status is ExecutionAttemptStatus.COMPLETED
+            assert applied.parent_attempt_id == parent.attempt_id
+            assert applied.details == {
+                "maturity": "CMAT_FINAL",
+                "patch_count": 2,
+            }
+            mutation = journal.only_attempt(
+                session_id, stage_id="ctree_mutation:ctree_applied"
+            )
+            assert mutation.status is ExecutionAttemptStatus.COMPLETED
+            assert mutation.parent_attempt_id == applied.attempt_id
+            assert mutation.details == {
+                "maturity": "CMAT_FINAL",
+                "patch_count": 2,
+            }
+            assert mutation.effect_refs[0].kind == "ctree_edit"
+
+            noop = journal.only_attempt(session_id, stage_id="ctree_rule:ctree_noop")
+            assert noop.status is ExecutionAttemptStatus.ABSTAINED
+            assert noop.reason_code == "no_modifications"
+            noop_mutation = journal.only_attempt(
+                session_id, stage_id="ctree_mutation:ctree_noop"
+            )
+            assert noop_mutation.status is ExecutionAttemptStatus.ABSTAINED
+            assert noop_mutation.reason_code == "no_modifications"
+
+            failed = journal.only_attempt(
+                session_id, stage_id="ctree_rule:ctree_failing"
+            )
+            assert failed.status is ExecutionAttemptStatus.FAILED
+            assert "RuntimeError: ctree failure" == failed.reason_code
+            failed_mutation = journal.only_attempt(
+                session_id, stage_id="ctree_mutation:ctree_failing"
+            )
+            assert failed_mutation.status is ExecutionAttemptStatus.FAILED
+        finally:
+            journal.close()
 
     def test_multiple_rules_accumulate(self):
         """Multiple rules should accumulate their patch counts."""

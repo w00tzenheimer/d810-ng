@@ -15,6 +15,12 @@ from d810.hexrays.hooks.optimization_suppression import (
 
 from d810.core import getLogger, typing
 from d810.core.decompilation_session import DecompilationEvent
+from d810.core.execution_journal import (
+    ExecutionAttempt,
+    ExecutionAttemptStatus,
+    ExecutionDomain,
+    ExecutionEffectRef,
+)
 from d810.core.execution_scope import ExecutionPipeline, ExecutionStageIdentity
 from d810.errors import D810Exception
 from d810.hexrays.hooks.callback_mutation_diagnostics import (
@@ -66,6 +72,83 @@ def _safe_callback_attr(value: object, name: str) -> object | None:
         return getattr(value, name, None)
     except Exception:
         return None
+
+
+def _safe_begin_execution_attempt(
+    journal: object | None,
+    session_id: object | None,
+    *,
+    parent_attempt_id: object | None,
+    stage_id: str,
+    domain: ExecutionDomain,
+) -> ExecutionAttempt | None:
+    """Record an optimizer callback attempt without changing callback semantics."""
+    if journal is None or session_id is None:
+        return None
+    begin_attempt = getattr(journal, "begin_attempt", None)
+    if not callable(begin_attempt):
+        return None
+    try:
+        attempt = begin_attempt(
+            session_id,
+            parent_attempt_id=parent_attempt_id,
+            stage_id=stage_id,
+            domain=domain,
+        )
+    except Exception:
+        optimizer_logger.debug(
+            "execution journal begin failed for stage=%s", stage_id, exc_info=True
+        )
+        return None
+    return attempt if isinstance(attempt, ExecutionAttempt) else None
+
+
+def _safe_advance_execution_attempt(
+    journal: object | None,
+    attempt: ExecutionAttempt | None,
+    *,
+    status: ExecutionAttemptStatus,
+    reason_code: str | None = None,
+    effect_refs: tuple[ExecutionEffectRef, ...] = (),
+    details: dict[str, object] | None = None,
+) -> None:
+    """Terminally record callback provenance without masking its real result."""
+    if journal is None or attempt is None:
+        return
+    advance = getattr(journal, "advance", None)
+    if not callable(advance):
+        return
+    try:
+        advance(
+            attempt,
+            status=status,
+            reason_code=reason_code,
+            effect_refs=effect_refs,
+            details=details,
+        )
+    except Exception:
+        optimizer_logger.debug(
+            "execution journal advance failed for stage=%s",
+            attempt.stage_id,
+            exc_info=True,
+        )
+
+
+def _flow_rule_execution_context(
+    flow_context: object | None,
+) -> tuple[object | None, object | None, object | None]:
+    """Borrow the immutable lifecycle correlation attached to this callback."""
+    get_context = getattr(flow_context, "execution_attempt_context", None)
+    if not callable(get_context):
+        return None, None, None
+    try:
+        context = get_context()
+    except Exception:
+        optimizer_logger.debug("execution journal context read failed", exc_info=True)
+        return None, None, None
+    if not isinstance(context, tuple) or len(context) != 3:
+        return None, None, None
+    return context
 
 
 def _optblock_callback_exception_context(
@@ -213,7 +296,9 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         # Accessing stale mop_t pointers after pipeline mutations causes segfaults.
         self._pipeline_just_fired: bool = False
         self._run_later_scheduler = None
-        self._scheduled_stage_identities: frozenset[ExecutionStageIdentity] = frozenset()
+        self._scheduled_stage_identities: frozenset[ExecutionStageIdentity] = (
+            frozenset()
+        )
         self._scheduled_flow_implementations: tuple[FlowOptimizationRule, ...] = ()
         # usage tracking moved to centralized statistics object
         # Optional event emitter - set by D810Manager after construction.
@@ -369,9 +454,30 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                     phase_label,
                 )
                 return
+            execution_attempt_context = getattr(
+                self._flow_context,
+                "execution_attempt_context",
+                None,
+            )
+            pipeline_kwargs: dict[str, object] = {
+                "mutation_gateway": mutation_gateway,
+                "maturity": maturity_to_string(int(self.current_maturity)),
+            }
+            if callable(execution_attempt_context):
+                journal, session_id, parent_attempt_id = execution_attempt_context()
+                if (
+                    journal is not None
+                    and session_id is not None
+                    and parent_attempt_id is not None
+                ):
+                    pipeline_kwargs.update(
+                        journal=journal,
+                        session_id=session_id,
+                        parent_attempt_id=parent_attempt_id,
+                    )
             total = self._pass_pipeline.run(
                 mba,
-                mutation_gateway=mutation_gateway,
+                **pipeline_kwargs,
             )
             if total > 0:
                 optimizer_logger.info(
@@ -867,6 +973,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             )
         else:
             self._flow_context.refresh_mba(mba)
+        self._bind_execution_attempt_context(self._flow_context, mba)
         self._flow_context.set_function_priors_provider(self._function_priors_provider)
         self._flow_context.set_phase(
             priority=phase_priority,
@@ -984,6 +1091,44 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                 function_ea=function_ea,
                 mba=flow_context.mba,
             )
+        )
+
+    def _bind_execution_attempt_context(
+        self,
+        flow_context: FlowMaturityContext,
+        mba: ida_hexrays.mbl_array_t,
+    ) -> None:
+        """Bind the active lifecycle attempt without introducing an EA registry."""
+        set_context = getattr(flow_context, "set_execution_attempt_context", None)
+        if not callable(set_context):
+            return
+        lifecycle = self._decompilation_lifecycle
+        if lifecycle is None:
+            set_context(None, None, None)
+            return
+        journal = getattr(lifecycle, "execution_journal", None)
+        current_session = getattr(lifecycle, "current_session", None)
+        if journal is None or not callable(current_session):
+            set_context(None, None, None)
+            return
+        function_ea = int(getattr(mba, "entry_ea", 0) or 0)
+        try:
+            session = current_session(function_ea)
+        except Exception:
+            optimizer_logger.debug(
+                "execution attempt context unavailable for func=0x%x",
+                function_ea,
+                exc_info=True,
+            )
+            set_context(None, None, None)
+            return
+        if session is None:
+            set_context(None, None, None)
+            return
+        set_context(
+            journal,
+            getattr(session, "session_id", None),
+            getattr(session, "preanalysis_attempt_id", None),
         )
 
     def _bind_resolver_session_state(
@@ -1369,6 +1514,69 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                     except Exception:
                         pass
                     rule_name = str(cfg_rule.name)
+                    journal, session_id, parent_attempt_id = (
+                        _flow_rule_execution_context(flow_context)
+                    )
+                    (
+                        _callback_func_ea,
+                        maturity_name,
+                        block_serial,
+                        block_ea,
+                        block_anchor,
+                    ) = _optblock_callback_exception_context(blk)
+                    rule_attempt = _safe_begin_execution_attempt(
+                        journal,
+                        session_id,
+                        parent_attempt_id=parent_attempt_id,
+                        stage_id=(
+                            f"flow_rule:{rule_name}:maturity={maturity_name}:"
+                            f"{block_anchor}"
+                        ),
+                        domain=ExecutionDomain.HOOK,
+                    )
+                    mutation_attempt = _safe_begin_execution_attempt(
+                        journal,
+                        session_id,
+                        parent_attempt_id=(
+                            rule_attempt.attempt_id
+                            if rule_attempt is not None
+                            else parent_attempt_id
+                        ),
+                        stage_id=(
+                            f"mba_rule_mutation:{rule_name}:maturity={maturity_name}:"
+                            f"{block_anchor}"
+                        ),
+                        domain=ExecutionDomain.MUTATION,
+                    )
+                    restore_attempt_context = None
+                    set_attempt_context = getattr(
+                        flow_context,
+                        "set_execution_attempt_context",
+                        None,
+                    )
+                    if callable(set_attempt_context) and rule_attempt is not None:
+                        restore_attempt_context = (
+                            journal,
+                            session_id,
+                            parent_attempt_id,
+                        )
+                        try:
+                            # Nested config-v2 pass/solver attempts are
+                            # children of this live callback, not unrelated
+                            # siblings under the session root.
+                            set_attempt_context(
+                                journal,
+                                session_id,
+                                rule_attempt.attempt_id,
+                            )
+                        except Exception:
+                            restore_attempt_context = None
+                            optimizer_logger.debug(
+                                "execution journal child context bind failed "
+                                "for rule=%s",
+                                rule_name,
+                                exc_info=True,
+                            )
                     if flow_context is not None:
                         set_current_rule_name = getattr(
                             flow_context,
@@ -1385,6 +1593,19 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                         nb_patch = callback_result
                     except Exception as error:
                         callback_exception_name = type(error).__name__
+                        reason_code = f"{type(error).__name__}: {error}"
+                        _safe_advance_execution_attempt(
+                            journal,
+                            mutation_attempt,
+                            status=ExecutionAttemptStatus.FAILED,
+                            reason_code=reason_code,
+                        )
+                        _safe_advance_execution_attempt(
+                            journal,
+                            rule_attempt,
+                            status=ExecutionAttemptStatus.FAILED,
+                            reason_code=reason_code,
+                        )
                         raise
                     finally:
                         self._report_callback_block_nop_delta(
@@ -1408,7 +1629,54 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                             )
                             if callable(set_current_rule_name):
                                 set_current_rule_name(None)
+                        if (
+                            callable(set_attempt_context)
+                            and restore_attempt_context is not None
+                        ):
+                            try:
+                                set_attempt_context(*restore_attempt_context)
+                            except Exception:
+                                optimizer_logger.debug(
+                                    "execution journal parent context restore failed "
+                                    "for rule=%s",
+                                    rule_name,
+                                    exc_info=True,
+                                )
                     if nb_patch > 0:
+                        patch_count = int(nb_patch)
+                        details: dict[str, object] = {
+                            "patch_count": patch_count,
+                            "maturity": maturity_name,
+                        }
+                        if block_serial is not None and block_ea is not None:
+                            details["block_serial"] = block_serial
+                            details["block_ea"] = block_ea
+                        effects = ()
+                        if mutation_attempt is not None:
+                            effects = (
+                                ExecutionEffectRef(
+                                    kind="mba_rule_edit",
+                                    ref_id=(
+                                        f"{mutation_attempt.attempt_id.session.value}:"
+                                        f"{mutation_attempt.attempt_id.sequence}"
+                                    ),
+                                    detail=details,
+                                ),
+                            )
+                        _safe_advance_execution_attempt(
+                            journal,
+                            mutation_attempt,
+                            status=ExecutionAttemptStatus.COMPLETED,
+                            effect_refs=effects,
+                            details=details,
+                        )
+                        _safe_advance_execution_attempt(
+                            journal,
+                            rule_attempt,
+                            status=ExecutionAttemptStatus.COMPLETED,
+                            effect_refs=effects,
+                            details=details,
+                        )
                         optimizer_logger.info(
                             "Rule {0} matched: {1} patches".format(
                                 cfg_rule.name, nb_patch
@@ -1427,6 +1695,20 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                             f"{cfg_rule.name} applied {nb_patch} patch(es)"
                         )
                         return nb_patch
+                    _safe_advance_execution_attempt(
+                        journal,
+                        mutation_attempt,
+                        status=ExecutionAttemptStatus.ABSTAINED,
+                        reason_code="no_modifications",
+                        details={"patch_count": 0, "maturity": maturity_name},
+                    )
+                    _safe_advance_execution_attempt(
+                        journal,
+                        rule_attempt,
+                        status=ExecutionAttemptStatus.ABSTAINED,
+                        reason_code="no_modifications",
+                        details={"patch_count": 0, "maturity": maturity_name},
+                    )
 
         impossible_artifact_patch_count = (
             self._maybe_rewrite_impossible_return_artifact_edges(blk)
@@ -1443,6 +1725,80 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             return late_patch_count
         return 0
 
+    def _run_recorded_mba_mutation_attempt(
+        self,
+        *,
+        flow_context: object | None,
+        route_name: str,
+        maturity_name: str,
+        function_ea: int,
+        mutation: typing.Callable[[], int],
+    ) -> int:
+        """Run one late MBA writer under the normal mutation-attempt ledger."""
+        journal, session_id, parent_attempt_id = _flow_rule_execution_context(
+            flow_context
+        )
+        stage_id = (
+            f"mba_late_mutation:{route_name}:maturity={maturity_name}:"
+            f"function=0x{int(function_ea):x}"
+        )
+        attempt = _safe_begin_execution_attempt(
+            journal,
+            session_id,
+            parent_attempt_id=parent_attempt_id,
+            stage_id=stage_id,
+            domain=ExecutionDomain.MUTATION,
+        )
+        try:
+            patch_count = int(mutation())
+        except Exception as error:
+            _safe_advance_execution_attempt(
+                journal,
+                attempt,
+                status=ExecutionAttemptStatus.FAILED,
+                reason_code=f"{type(error).__name__}: {error}",
+                details={
+                    "maturity": maturity_name,
+                    "function_ea": int(function_ea),
+                },
+            )
+            raise
+
+        details: dict[str, object] = {
+            "patch_count": patch_count,
+            "maturity": maturity_name,
+            "function_ea": int(function_ea),
+        }
+        if patch_count > 0:
+            effects = ()
+            if attempt is not None:
+                effects = (
+                    ExecutionEffectRef(
+                        kind="mba_rule_edit",
+                        ref_id=(
+                            f"{attempt.attempt_id.session.value}:"
+                            f"{attempt.attempt_id.sequence}"
+                        ),
+                        detail=details,
+                    ),
+                )
+            _safe_advance_execution_attempt(
+                journal,
+                attempt,
+                status=ExecutionAttemptStatus.COMPLETED,
+                effect_refs=effects,
+                details=details,
+            )
+        else:
+            _safe_advance_execution_attempt(
+                journal,
+                attempt,
+                status=ExecutionAttemptStatus.ABSTAINED,
+                reason_code="no_modifications",
+                details=details,
+            )
+        return patch_count
+
     def _maybe_rewrite_impossible_return_artifact_edges(
         self,
         blk: ida_hexrays.mblock_t,
@@ -1456,7 +1812,8 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         key = (func_ea, int(self.current_maturity))
         if key in self._impossible_return_artifact_rewrite_applied:
             return 0
-        try:
+
+        def _mutate() -> int:
             from d810.hexrays.mutation.byte_emit_tail_isolation_runtime import (
                 impossible_return_artifact_rewrite_enabled,
                 maybe_rewrite_impossible_return_artifact_edges,
@@ -1468,21 +1825,30 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                 mba,
                 mutation_gateway=self._flow_context.new_mba_mutation_gateway(),
             )
+            if not applied:
+                return 0
+            self._impossible_return_artifact_rewrite_applied.add(key)
+            if self.stats is not None:
+                self.stats.record_cfg_rule_patches(
+                    "impossible_return_artifact_edges",
+                    len(applied),
+                    maturity=self.current_maturity,
+                )
+            return len(applied)
+
+        try:
+            return self._run_recorded_mba_mutation_attempt(
+                flow_context=self._flow_context,
+                route_name="impossible_return_artifact_edges",
+                maturity_name=maturity_to_string(self.current_maturity),
+                function_ea=func_ea,
+                mutation=_mutate,
+            )
         except Exception:
             optimizer_logger.exception(
                 "impossible return artifact return-edge cleanup failed"
             )
             return 0
-        if not applied:
-            return 0
-        self._impossible_return_artifact_rewrite_applied.add(key)
-        if self.stats is not None:
-            self.stats.record_cfg_rule_patches(
-                "impossible_return_artifact_edges",
-                len(applied),
-                maturity=self.current_maturity,
-            )
-        return len(applied)
 
     def _run_glbopt1_preanalysis_backed_extensions(
         self,
@@ -1563,7 +1929,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                 )
                 fact_view = None
 
-        try:
+        def _mutate() -> int:
             from d810.analyses.control_flow.runtime_evidence import (
                 ensure_terminal_byte_fact_view,
                 get_latest_reconstruction_dag,
@@ -1575,7 +1941,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                 maybe_run_terminal_tail_cascade_egress_lowering,
             )
 
-            fact_view = ensure_terminal_byte_fact_view(
+            resolved_fact_view = ensure_terminal_byte_fact_view(
                 mba,
                 func_ea=func_ea,
                 maturity=int(self.current_maturity),
@@ -1596,10 +1962,29 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             applied = maybe_run_terminal_tail_cascade_egress_lowering(
                 mba,
                 mutation_gateway=mutation_gateway,
-                fact_view=fact_view,
+                fact_view=resolved_fact_view,
                 dag=dag,
                 cascade_priors=cascade_priors,
                 dispatcher_artifact_planner=self._dispatcher_artifact_planner,
+            )
+            self._terminal_tail_cascade_egress_applied.add(key)
+            if not applied:
+                return 0
+            if self.stats is not None:
+                self.stats.record_cfg_rule_patches(
+                    "terminal_tail_cascade_egress",
+                    1,
+                    maturity=self.current_maturity,
+                )
+            return 1
+
+        try:
+            return self._run_recorded_mba_mutation_attempt(
+                flow_context=self._flow_context,
+                route_name="terminal_tail_cascade_egress",
+                maturity_name=current_maturity_name,
+                function_ea=func_ea,
+                mutation=_mutate,
             )
         except Exception:
             optimizer_logger.exception(
@@ -1607,17 +1992,6 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                 func_ea,
             )
             return 0
-
-        self._terminal_tail_cascade_egress_applied.add(key)
-        if not applied:
-            return 0
-        if self.stats is not None:
-            self.stats.record_cfg_rule_patches(
-                "terminal_tail_cascade_egress",
-                1,
-                maturity=self.current_maturity,
-            )
-        return 1
 
     def _maybe_rewrite_terminal_zero_guard_literal_edges(
         self,
@@ -1632,7 +2006,8 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         key = (func_ea, int(self.current_maturity))
         if key in self._terminal_zero_literal_rewrite_applied:
             return 0
-        try:
+
+        def _mutate() -> int:
             from d810.hexrays.mutation.byte_emit_tail_isolation_runtime import (
                 maybe_rewrite_terminal_zero_guard_literal_return_edges,
                 terminal_zero_guard_literal_return_rewrite_enabled,
@@ -1647,21 +2022,30 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                 mba,
                 mutation_gateway=self._flow_context.new_mba_mutation_gateway(),
             )
+            if not applied:
+                return 0
+            self._terminal_zero_literal_rewrite_applied.add(key)
+            if self.stats is not None:
+                self.stats.record_cfg_rule_patches(
+                    "terminal_zero_guard_literal_return_edges",
+                    len(applied),
+                    maturity=self.current_maturity,
+                )
+            return len(applied)
+
+        try:
+            return self._run_recorded_mba_mutation_attempt(
+                flow_context=self._flow_context,
+                route_name="terminal_zero_guard_literal_return_edges",
+                maturity_name=maturity_to_string(self.current_maturity),
+                function_ea=func_ea,
+                mutation=_mutate,
+            )
         except Exception:
             optimizer_logger.exception(
                 "terminal zero-guard literal return cleanup failed"
             )
             return 0
-        if not applied:
-            return 0
-        self._terminal_zero_literal_rewrite_applied.add(key)
-        if self.stats is not None:
-            self.stats.record_cfg_rule_patches(
-                "terminal_zero_guard_literal_return_edges",
-                len(applied),
-                maturity=self.current_maturity,
-            )
-        return len(applied)
 
     def add_rule(self, cfg_rule: FlowOptimizationRule):
         optimizer_logger.info("Adding cfg rule {0}".format(cfg_rule))

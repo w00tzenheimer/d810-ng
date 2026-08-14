@@ -16,9 +16,10 @@ SQLite database) is the authoritative, append-only record of what D810
 considered, ran, abstained from, or failed, and why -- see
 ``profile-guided-execution-journal.md``. The hints and session-summary
 tables here remain a **compatibility projection**: current readers
-(``DecompilationAnalysisRuntime.load_hints`` / ``load_flow_context_summary``
-/ ``apply_to_execution_scope``) keep working unchanged during the journal's
-rollout, but this store's upsert-and-clear-on-new-session rows are not
+(``DecompilationAnalysisRuntime.load_hints`` / ``load_flow_context_summary``)
+remain UI/session-summary readers during the journal's rollout. Live
+``apply_to_execution_scope`` deliberately recomputes from current-session
+evidence and never reads these rows. This store's upsert-and-clear-on-new-session rows are not
 execution provenance and must never be read as if they were a durable
 attempt history or mutation authority. A later migration (see the plan's
 Task 8) derives these compatibility views from the journal's completed

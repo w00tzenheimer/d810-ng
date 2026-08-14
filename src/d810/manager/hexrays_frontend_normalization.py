@@ -191,6 +191,9 @@ def run_live_frontend_normalization(
                 function_ea=int(function_ea),
                 evidence_generation=int(session.native_preanalysis.evidence_generation),
             ),
+            journal=session.execution_journal,
+            session_id=session.session_id,
+            parent_attempt_id=session.preanalysis_attempt_id,
         )
     except CfgGenerationPoisoned as exc:
         emit_diagnostic(

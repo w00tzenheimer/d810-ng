@@ -19,6 +19,8 @@ from d810.capabilities.semantic_routes import (
     SemanticRouteReferenceOracleCapability,
 )
 from d810.core.fragment_authority import NormalizationWorkItemAuthority
+from d810.core.execution_journal import DecompilationSessionId, ExecutionAttemptId
+from d810.core.execution_journal_store import ExecutionJournalStore
 from d810.core.native_preanalysis_key import NativePreanalysisKey
 from d810.ir.flowgraph import FlowGraph
 from d810.ir.maturity import IRMaturity
@@ -377,9 +379,8 @@ class SessionFrontendNormalizationPlanAuthority:
             work_item_plan_id,
             _publication_revision,
         ), snapshot in self._receipted_prepared_work_items.items():
-            if (
-                generation != int(evidence_generation)
-                or retained_source_plan_id != str(source_plan_id)
+            if generation != int(evidence_generation) or retained_source_plan_id != str(
+                source_plan_id
             ):
                 continue
             previous = latest_by_work_item_plan_id.get(work_item_plan_id)
@@ -551,6 +552,9 @@ def run_frontend_normalization_pipeline(
     project_config: object | None = None,
     pass_manager: FunctionPassManager | None = None,
     pass_contract_evidence_observer: PassContractEvidenceObserver | None = None,
+    journal: ExecutionJournalStore | None = None,
+    session_id: DecompilationSessionId | None = None,
+    parent_attempt_id: ExecutionAttemptId | None = None,
 ) -> FrontendNormalizationRunResult:
     """Run the generic PREOPT tier and accept only receipt-backed publication."""
     if not isinstance(lifecycle_state, NativePreanalysisSessionState):
@@ -620,6 +624,9 @@ def run_frontend_normalization_pipeline(
         maturity=IRMaturity.CANONICAL,
         capabilities=capabilities,
         pipeline_v2_specs=standard_frontend_normalization_passes(),
+        journal=journal,
+        session_id=session_id,
+        parent_attempt_id=parent_attempt_id,
     )
     if not isinstance(final_graph, FlowGraph):
         raise TypeError("frontend normalization backend returned a non-portable graph")

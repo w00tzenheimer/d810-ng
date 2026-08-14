@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from types import MappingProxyType
 
+from d810.core.execution_journal import ExecutionAttemptId
+from d810.core.execution_journal_store import ExecutionJournalStore
 from d810.core.typing import Callable, Mapping, Protocol, TypeVar, runtime_checkable
 from d810.core.config import ProjectConfiguration
 from d810.core.deobfuscation_case import StrategyWorkflowStage
@@ -169,6 +171,20 @@ class FunctionPipelineContext:
     # ``capabilities`` object). Empty by default — passes query via ``optional`` so a
     # run with no capabilities is a no-op for them.
     capabilities: CapabilitySet = field(default_factory=CapabilitySet)
+    # The driver attaches this only while invoking one pass.  It is an
+    # observability correlation port, never a cache or source of execution
+    # authority: passes may record nested solver/transform work but may not
+    # mint a session or reuse it across a fresh decompilation.
+    execution_journal: ExecutionJournalStore | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+    execution_parent_attempt_id: ExecutionAttemptId | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
 
 @dataclass(frozen=True)
@@ -191,7 +207,9 @@ class ContractEvidencePublication:
         if not anchors:
             raise ValueError("contract evidence publication requires native anchors")
         if any(anchor < 0 for anchor in anchors):
-            raise ValueError("contract evidence publication anchors must be non-negative")
+            raise ValueError(
+                "contract evidence publication anchors must be non-negative"
+            )
         if anchors != tuple(sorted(set(anchors))):
             raise ValueError(
                 "contract evidence publication anchors must be ordered and unique"
@@ -868,7 +886,9 @@ class PassResult:
                 {} if evidence_outputs is None else dict(evidence_outputs)
             ),
         )
-        publications = {} if evidence_publications is None else dict(evidence_publications)
+        publications = (
+            {} if evidence_publications is None else dict(evidence_publications)
+        )
         if any(
             not isinstance(token, str)
             or not token.strip()

@@ -2660,8 +2660,14 @@ class TestUnflattenBoundedRerunGate:
         self,
         monkeypatch,
         materialized_continuation,
+        tmp_path,
     ) -> None:
         """Config-v2 preserves canonical fragment publication when selected."""
+        from d810.core.execution_journal import (
+            DecompilationSessionId,
+            ExecutionAttemptId,
+        )
+        from d810.core.execution_journal_store import ExecutionJournalStore
         from d810.hexrays.preanalysis import indirect_jump_labels
         from d810.optimizers.microcode.flow.flattening import (
             state_machine_cff_unflattener as unflat_mod,
@@ -2723,6 +2729,9 @@ class TestUnflattenBoundedRerunGate:
 
         captured: dict[str, object] = {}
         materializer = object()
+        journal = ExecutionJournalStore(tmp_path / "execution.sqlite")
+        session_id = DecompilationSessionId.new()
+        parent_attempt_id = ExecutionAttemptId.new(session=session_id, sequence=1)
         family = (
             unflat_mod._MaterializedComputedGotoContinuationFamily()
             if materialized_continuation
@@ -2816,6 +2825,11 @@ class TestUnflattenBoundedRerunGate:
             ),
             new_mba_mutation_gateway=lambda: object(),
             semantic_native_body_materializer=lambda: materializer,
+            execution_attempt_context=lambda: (
+                journal,
+                session_id,
+                parent_attempt_id,
+            ),
         )
         rule._union_maturities_cache = frozenset({test_maturity})
 
@@ -2847,6 +2861,9 @@ class TestUnflattenBoundedRerunGate:
         if materialized_continuation:
             assert pipeline_v2_specs[-1].backend_route.value == "fragment_publication"
         assert captured["project_config"] is rule_config
+        assert captured["journal"] is journal
+        assert captured["session_id"] == session_id
+        assert captured["parent_attempt_id"] == parent_attempt_id
         assert "pipeline_v2_shadow_registry" not in captured
         assert captured["reset_func"] == _EA
         assert rule._last_pipeline_v2_mode == "config-v2"
@@ -2857,6 +2874,7 @@ class TestUnflattenBoundedRerunGate:
             "lower_state_machine",
             "cleanup_residual_dispatcher",
         )
+        journal.close()
 
     def test_block_optimizer_manager_forwards_project_config_to_rules(self, tmp_path):
         """Project additional config reaches private implementations."""

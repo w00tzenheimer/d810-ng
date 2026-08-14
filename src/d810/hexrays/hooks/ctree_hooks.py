@@ -8,6 +8,13 @@ from __future__ import annotations
 
 import abc
 
+from d810.core.execution_journal import (
+    ExecutionAttempt,
+    ExecutionAttemptStatus,
+    ExecutionDomain,
+    ExecutionEffectRef,
+)
+from d810.core.execution_journal_store import ExecutionJournalStore
 from d810.core import getLogger, typing
 from d810.core.provider_phase import ProviderPhaseSnapshot
 from d810.core.registry import Registrant
@@ -19,7 +26,7 @@ HEXRAYS_CTREE_PROVIDER = "hexrays_ctree"
 # ---------------------------------------------------------------------------
 # IDA imports are optional for testing.
 # ---------------------------------------------------------------------------
-import ida_hexrays
+import ida_hexrays  # noqa: E402
 
 _CTREE_MATURITY_NAMES = (
     "CMAT_ZERO",
@@ -135,6 +142,66 @@ class CtreeOptimizerManager:
         logger.info("Adding ctree rule %s", rule.name)
         self.ctree_rules.append(rule)
 
+    def _execution_attempt_context(
+        self,
+        *,
+        function_ea: int,
+    ) -> tuple[ExecutionJournalStore | None, object | None, object | None]:
+        """Return the active manager-owned journal/session/parent correlation."""
+        lifecycle = self._decompilation_lifecycle
+        if lifecycle is None:
+            return None, None, None
+        journal = getattr(lifecycle, "execution_journal", None)
+        current_session = getattr(lifecycle, "current_session", None)
+        if not isinstance(journal, ExecutionJournalStore) or not callable(
+            current_session
+        ):
+            return None, None, None
+        try:
+            session = current_session(function_ea)
+        except Exception:
+            logger.debug(
+                "ctree execution context unavailable for func=0x%x",
+                function_ea,
+                exc_info=True,
+            )
+            return None, None, None
+        if session is None:
+            return None, None, None
+        session_id = getattr(session, "session_id", None)
+        parent_attempt_id = getattr(session, "preanalysis_attempt_id", None)
+        if session_id is None or parent_attempt_id is None:
+            return None, None, None
+        return journal, session_id, parent_attempt_id
+
+    @staticmethod
+    def _advance_rule_attempt(
+        journal: ExecutionJournalStore | None,
+        attempt: ExecutionAttempt | None,
+        *,
+        status: ExecutionAttemptStatus,
+        reason_code: str | None = None,
+        effect_refs: tuple[ExecutionEffectRef, ...] = (),
+        details: dict[str, object] | None = None,
+    ) -> None:
+        """Record one terminal ctree outcome without masking the callback."""
+        if journal is None or attempt is None:
+            return
+        try:
+            journal.advance(
+                attempt,
+                status=status,
+                reason_code=reason_code,
+                effect_refs=effect_refs,
+                details=details,
+            )
+        except Exception:
+            logger.debug(
+                "ctree execution journal advance failed for stage=%s",
+                attempt.stage_id,
+                exc_info=True,
+            )
+
     def on_maturity(self, cfunc: typing.Any, new_maturity: int) -> int:
         """Called when ctree maturity changes.
 
@@ -166,7 +233,44 @@ class CtreeOptimizerManager:
             return 0
 
         total: int = 0
+        maturity_detail = {"maturity": _ctree_maturity_to_string(new_maturity)}
+        journal, session_id, parent_attempt_id = self._execution_attempt_context(
+            function_ea=func_ea if lifecycle is not None else 0,
+        )
         for rule in self.ctree_rules:
+            attempt = None
+            mutation_attempt = None
+            if journal is not None and session_id is not None:
+                try:
+                    attempt = journal.begin_attempt(
+                        session_id,
+                        parent_attempt_id=parent_attempt_id,
+                        stage_id=f"ctree_rule:{rule.name}",
+                        domain=ExecutionDomain.HOOK,
+                    )
+                except Exception:
+                    logger.debug(
+                        "ctree execution journal begin failed for rule=%s",
+                        rule.name,
+                        exc_info=True,
+                    )
+                try:
+                    mutation_attempt = journal.begin_attempt(
+                        session_id,
+                        parent_attempt_id=(
+                            attempt.attempt_id
+                            if attempt is not None
+                            else parent_attempt_id
+                        ),
+                        stage_id=f"ctree_mutation:{rule.name}",
+                        domain=ExecutionDomain.MUTATION,
+                    )
+                except Exception:
+                    logger.debug(
+                        "ctree mutation journal begin failed for rule=%s",
+                        rule.name,
+                        exc_info=True,
+                    )
             try:
                 n = rule.optimize_ctree(cfunc)
                 if n > 0:
@@ -174,6 +278,62 @@ class CtreeOptimizerManager:
                     if self.stats is not None:
                         self.stats.record_cfg_rule_patches(rule.name, n)
                     total += n
-            except Exception:
+                    details = {**maturity_detail, "patch_count": int(n)}
+                    effects = ()
+                    if mutation_attempt is not None:
+                        effects = (
+                            ExecutionEffectRef(
+                                kind="ctree_edit",
+                                ref_id=(
+                                    f"{mutation_attempt.attempt_id.session.value}:"
+                                    f"{mutation_attempt.attempt_id.sequence}"
+                                ),
+                                detail=details,
+                            ),
+                        )
+                    self._advance_rule_attempt(
+                        journal,
+                        mutation_attempt,
+                        status=ExecutionAttemptStatus.COMPLETED,
+                        effect_refs=effects,
+                        details=details,
+                    )
+                    self._advance_rule_attempt(
+                        journal,
+                        attempt,
+                        status=ExecutionAttemptStatus.COMPLETED,
+                        effect_refs=effects,
+                        details=details,
+                    )
+                else:
+                    self._advance_rule_attempt(
+                        journal,
+                        mutation_attempt,
+                        status=ExecutionAttemptStatus.ABSTAINED,
+                        reason_code="no_modifications",
+                        details={**maturity_detail, "patch_count": 0},
+                    )
+                    self._advance_rule_attempt(
+                        journal,
+                        attempt,
+                        status=ExecutionAttemptStatus.ABSTAINED,
+                        reason_code="no_modifications",
+                        details={**maturity_detail, "patch_count": 0},
+                    )
+            except Exception as exc:
+                self._advance_rule_attempt(
+                    journal,
+                    mutation_attempt,
+                    status=ExecutionAttemptStatus.FAILED,
+                    reason_code=f"{type(exc).__name__}: {exc}",
+                    details=maturity_detail,
+                )
+                self._advance_rule_attempt(
+                    journal,
+                    attempt,
+                    status=ExecutionAttemptStatus.FAILED,
+                    reason_code=f"{type(exc).__name__}: {exc}",
+                    details=maturity_detail,
+                )
                 logger.exception("Ctree rule %s failed", rule.name)
         return total

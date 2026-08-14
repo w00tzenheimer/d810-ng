@@ -65,6 +65,10 @@ class HexRaysMutationBackend:
         self._committed_fragment_operation_count = 0
         self._last_patch_execution: object | None = None
         self._last_patch_failure: Exception | None = None
+        # One immutable-ish receipt reference for the *most recent* backend
+        # call.  Portable provenance observers may summarize it, but never use
+        # it as permission to replay or authorize a later mutation.
+        self._last_mutation_receipt: object | None = None
         self._fragment_backend_factory = (
             fragment_backend_factory
             if fragment_backend_factory is not None
@@ -92,6 +96,11 @@ class HexRaysMutationBackend:
     @property
     def last_patch_failure(self) -> Exception | None:
         return self._last_patch_failure
+
+    @property
+    def last_mutation_receipt(self) -> object | None:
+        """Return the receipt from the current apply call, if it committed."""
+        return self._last_mutation_receipt
 
     @property
     def committed_fragment_operation_count(self) -> int:
@@ -132,6 +141,7 @@ class HexRaysMutationBackend:
         ),
     ) -> FlowGraph | object:
         """The sole live transaction entry point for PatchPlan and FragmentPlan."""
+        self._last_mutation_receipt = None
         if isinstance(rewrite_plan, FragmentPlan):
             if not isinstance(
                 publication_profile,
@@ -220,9 +230,7 @@ class HexRaysMutationBackend:
                 application_status="rejected_preflight",
                 outcome_reason=str(error),
                 attempt_id=attempt_authority.attempt_id,
-                projected_validation=(
-                    error.projected_dispatcher_removal_validation
-                ),
+                projected_validation=(error.projected_dispatcher_removal_validation),
                 projected_coverage_validation=(
                     error.projected_dispatcher_coverage_validation
                 ),
@@ -307,6 +315,11 @@ class HexRaysMutationBackend:
                 None,
             ),
         )
+        self._last_mutation_receipt = getattr(
+            self._last_patch_execution,
+            "receipt",
+            None,
+        )
         return self._last_patch_execution.graph
 
     @staticmethod
@@ -334,18 +347,20 @@ class HexRaysMutationBackend:
             envelope = rewrite_plan.source_maturity
             ir = None if envelope is None else getattr(envelope, "ir", None)
             maturity = str(getattr(ir, "value", None) or ir or "unknown")
-            observations = collect_unflatten_dispatcher_outcome_observations_from_metadata(
-                rewrite_plan.metadata_dict(),
-                maturity=maturity,
-                phase="patch_transaction",
-                application_status=application_status,
-                outcome_reason=outcome_reason,
-                observed_validation=observed_validation,
-                observed_coverage_validation=observed_coverage_validation,
-                projected_validation=projected_validation,
-                projected_coverage_validation=projected_coverage_validation,
-                plan_id=rewrite_plan.plan_id,
-                attempt_id=attempt_id,
+            observations = (
+                collect_unflatten_dispatcher_outcome_observations_from_metadata(
+                    rewrite_plan.metadata_dict(),
+                    maturity=maturity,
+                    phase="patch_transaction",
+                    application_status=application_status,
+                    outcome_reason=outcome_reason,
+                    observed_validation=observed_validation,
+                    observed_coverage_validation=observed_coverage_validation,
+                    projected_validation=projected_validation,
+                    projected_coverage_validation=projected_coverage_validation,
+                    plan_id=rewrite_plan.plan_id,
+                    attempt_id=attempt_id,
+                )
             )
             if observations:
                 observe_unflatten_dispatcher_corridor_coverage(
@@ -386,6 +401,7 @@ class HexRaysMutationBackend:
         if operation_count <= 0:
             raise ValueError("committed fragment receipt requires applied operations")
         self._committed_fragment_receipt = receipt
+        self._last_mutation_receipt = receipt
         self._committed_fragment_operation_count += operation_count
         if publication_profile.graph_free:
             return live_source
