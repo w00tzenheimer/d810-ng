@@ -1048,6 +1048,7 @@ def test_live_handler_default_time_budget_overrun_is_clean_noop(monkeypatch):
 
 def test_live_handler_opt_in_stage_timings_publish_after_reconstruction(monkeypatch):
     import d810.optimizers.microcode.instructions.egraph.egglog_handler as handler_module
+    from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
 
     candidate = _direct_add_candidate()
     replacement = _first_typed_operator_child(
@@ -1063,8 +1064,21 @@ def test_live_handler_opt_in_stage_timings_publish_after_reconstruction(monkeypa
         selected_aliases=("Add_OllvmRule_3",),
     )
     events = []
+    original_match_root = CompiledPatternCatalogue.match_root
+    original_finish_stage = handler._finish_stage
+
+    def observed_match_root(*args, **kwargs):
+        events.append("native_match")
+        return original_match_root(*args, **kwargs)
+
+    def observed_finish_stage(name):
+        if name == "native_preflight":
+            events.append("native_preflight_finished")
+        return original_finish_stage(name)
 
     monkeypatch.setattr(handler_module, "minsn_to_ast", lambda _ins: candidate)
+    monkeypatch.setattr(CompiledPatternCatalogue, "match_root", observed_match_root)
+    monkeypatch.setattr(handler, "_finish_stage", observed_finish_stage)
     monkeypatch.setattr(
         handler,
         "_select_native_extraction",
@@ -1091,7 +1105,12 @@ def test_live_handler_opt_in_stage_timings_publish_after_reconstruction(monkeypa
     )
 
     assert handler.check_and_replace(None, _Instruction()) is not None
-    assert events == ["native_z3", "reconstruction"]
+    assert events == [
+        "native_match",
+        "native_preflight_finished",
+        "native_z3",
+        "reconstruction",
+    ]
     metadata = handler.execution_metadata()
     assert tuple(metadata["stage_timings_ms"]) == (
         "root_eligibility",

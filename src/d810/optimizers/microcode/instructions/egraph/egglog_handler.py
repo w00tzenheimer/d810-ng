@@ -290,52 +290,52 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         self._begin_stage("native_preflight")
         try:
             native_result = self._read_native_view(ins, destination_size)
+            view = native_result.view
+            if view is None:
+                self._record_extraction_receipt(
+                    extraction_receipt_for_profile(
+                        native_result.profile,
+                        ExtractionSkipReason.UNSUPPORTED_WIDTH_SEMANTICS,
+                    )
+                )
+                return None
+            # Retain the direct profile if a later preflight guard raises; the
+            # callback converts that failure to internal_error without losing its
+            # useful unsafe-input evidence.
+            self.last_extraction_receipt = extraction_receipt_for_profile(
+                native_result.profile,
+                ExtractionSkipReason.INTERNAL_ERROR,
+            )
+            candidate_skip_reason = self._native_view_skip_reason(native_result.profile)
+            if candidate_skip_reason is not None:
+                self._record_extraction_receipt(
+                    extraction_receipt_for_profile(
+                        native_result.profile, candidate_skip_reason
+                    )
+                )
+                return None
+            self._ensure_catalogue_configured()
+            match_result = self._native_pattern_catalogue.match_root(
+                view, comparison_budget=_MAX_PATTERN_COMPARISONS
+            )
+            if match_result.comparison_budget_exceeded:
+                self._record_extraction_receipt(
+                    extraction_receipt_for_profile(
+                        native_result.profile, ExtractionSkipReason.CANDIDATE_BUDGET
+                    )
+                )
+                return None
+            matches = match_result.matches
+            if not matches:
+                self._record_extraction_receipt(
+                    extraction_receipt_for_profile(
+                        native_result.profile,
+                        ExtractionSkipReason.NO_DEGREE_ELIGIBLE_IMPROVEMENT,
+                    )
+                )
+                return None
         finally:
             self._finish_stage("native_preflight")
-        view = native_result.view
-        if view is None:
-            self._record_extraction_receipt(
-                extraction_receipt_for_profile(
-                    native_result.profile,
-                    ExtractionSkipReason.UNSUPPORTED_WIDTH_SEMANTICS,
-                )
-            )
-            return None
-        # Retain the direct profile if a later preflight guard raises; the
-        # callback converts that failure to internal_error without losing its
-        # useful unsafe-input evidence.
-        self.last_extraction_receipt = extraction_receipt_for_profile(
-            native_result.profile,
-            ExtractionSkipReason.INTERNAL_ERROR,
-        )
-        candidate_skip_reason = self._native_view_skip_reason(native_result.profile)
-        if candidate_skip_reason is not None:
-            self._record_extraction_receipt(
-                extraction_receipt_for_profile(
-                    native_result.profile, candidate_skip_reason
-                )
-            )
-            return None
-        self._ensure_catalogue_configured()
-        match_result = self._native_pattern_catalogue.match_root(
-            view, comparison_budget=_MAX_PATTERN_COMPARISONS
-        )
-        if match_result.comparison_budget_exceeded:
-            self._record_extraction_receipt(
-                extraction_receipt_for_profile(
-                    native_result.profile, ExtractionSkipReason.CANDIDATE_BUDGET
-                )
-            )
-            return None
-        matches = match_result.matches
-        if not matches:
-            self._record_extraction_receipt(
-                extraction_receipt_for_profile(
-                    native_result.profile,
-                    ExtractionSkipReason.NO_DEGREE_ELIGIBLE_IMPROVEMENT,
-                )
-            )
-            return None
         candidate_term = canonicalize_ac_term(view.to_typed_term())
         initial_replacements = {
             id(match.rule): match.bindings.materialize_replacement(match.rule)
