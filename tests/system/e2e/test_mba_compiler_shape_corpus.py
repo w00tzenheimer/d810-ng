@@ -178,7 +178,9 @@ def _canonical_json_digest(value: object) -> str:
 def _parity_artifact_dir(tmp_path: Path) -> Path:
     """Use an explicit output directory when an operator wants persisted evidence."""
 
-    configured = os.environ.get("MBA_STRUCTURAL_PARITY_ARTIFACT_DIR")
+    configured = os.environ.get(
+        "D810_MBA_STRUCTURAL_PARITY_ARTIFACT_DIR"
+    ) or os.environ.get("MBA_STRUCTURAL_PARITY_ARTIFACT_DIR")
     destination = tmp_path if not configured else Path(configured)
     destination.mkdir(parents=True, exist_ok=True)
     return destination
@@ -432,8 +434,11 @@ class TestCompilerShapeCatalogueNative:
         This is intentionally an IDA test rather than a portable certificate
         fixture.  It proves the evidence producer, certificate renderer, and
         configuration-time authorization form one chain in each matcher runtime.
-        Set ``MBA_STRUCTURAL_PARITY_ARTIFACT_DIR`` to retain the JSON evidence,
-        toolchain document, and certificate outside pytest's temporary directory.
+        Set ``D810_MBA_STRUCTURAL_PARITY_ARTIFACT_DIR`` (the Docker-forwarded
+        spelling) to retain the JSON evidence, toolchain document, and
+        certificate outside pytest's temporary directory.  The historical
+        ``MBA_STRUCTURAL_PARITY_ARTIFACT_DIR`` spelling remains compatible for
+        direct local pytest invocations.
         """
 
         monkeypatch.setenv("D810_LEGACY_DSL_PERMUTATIONS", "1")
