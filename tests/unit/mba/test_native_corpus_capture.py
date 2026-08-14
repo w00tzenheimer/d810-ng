@@ -156,3 +156,25 @@ def test_capture_snapshot_excludes_prior_decompilation_history() -> None:
     )
 
     assert case.outcomes[0].status is ProviderOutcomeStatus.UNCHANGED
+
+
+def test_capture_emits_declared_unavailable_rows_for_missing_provider_history() -> None:
+    """The manifest provider matrix is complete even when a provider did not run."""
+
+    profile = _profile()
+    case = capture_native_provider_case(
+        case_id="complete-matrix",
+        stratum="catalogue",
+        profile=profile,
+        rules=(
+            _Provider(
+                _outcome(MbaProviderKind.CATALOGUE, ProviderOutcomeStatus.APPLIED, profile)
+            ),
+        ),
+        expected_providers=(MbaProviderKind.CATALOGUE, MbaProviderKind.EGGLOG),
+    )
+
+    assert [(outcome.provider, outcome.status) for outcome in case.outcomes] == [
+        (MbaProviderKind.CATALOGUE, ProviderOutcomeStatus.APPLIED),
+        (MbaProviderKind.EGGLOG, ProviderOutcomeStatus.UNAVAILABLE),
+    ]

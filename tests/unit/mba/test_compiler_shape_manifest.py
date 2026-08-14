@@ -59,6 +59,15 @@ def test_manifest_has_the_planned_independently_authored_strata() -> None:
     assert all(case["authorship"] == "independently_authored" for case in cases)
 
 
+def test_manifest_declares_the_complete_native_provider_matrix() -> None:
+    assert _payload()["provider_matrix"] == [
+        "structural_chain",
+        "catalogue",
+        "egglog",
+        "coefficient_solver",
+    ]
+
+
 def test_manifest_declares_a_pinned_lowering_shape_contract() -> None:
     contract = _payload()["lowering_contract"]
     assert contract["compiler"] == "clang"

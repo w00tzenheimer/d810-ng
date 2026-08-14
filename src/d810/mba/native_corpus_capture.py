@@ -8,7 +8,7 @@ for providers that did not run.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,7 +20,11 @@ from d810.mba.differential_report import (
     profile_to_dict,
 )
 from d810.mba.island_profile import MbaIslandProfile
-from d810.mba.provider_outcome import MbaProviderOutcome, ProviderOutcomeStatus
+from d810.mba.provider_outcome import (
+    MbaProviderKind,
+    MbaProviderOutcome,
+    ProviderOutcomeStatus,
+)
 
 
 _NATIVE_PROFILE_METADATA_KEY = "native_profile"
@@ -162,12 +166,14 @@ def capture_native_provider_case(
     profile: MbaIslandProfile,
     rules: Iterable[object],
     history_snapshot: NativeProviderHistorySnapshot | None = None,
+    expected_providers: Sequence[MbaProviderKind] = (),
 ) -> MbaCorpusCaseReport:
     """Produce exactly one final row per actually observed provider.
 
     Only outcomes for the declared, actual profile fingerprint participate.
-    Providers without a matching history are absent; callers must not convert
-    absence into ``UNAVAILABLE`` because that would be invented telemetry.
+    A declared provider matrix is the one exception to absent-history rows:
+    the capture records ``UNAVAILABLE`` with a stable refusal reason. This is
+    explicit coverage evidence, not an invented provider attempt.
     """
 
     grouped: dict[object, list[MbaProviderOutcome]] = {}
@@ -181,9 +187,32 @@ def capture_native_provider_case(
                     "native provider outcome profile does not match requested case"
                 )
             grouped.setdefault(outcome.provider, []).append(outcome)
+    final_by_provider = {
+        provider: _final_provider_outcome(tuple(outcomes))
+        for provider, outcomes in grouped.items()
+    }
+    expected = tuple(expected_providers)
+    if expected and len(set(expected)) != len(expected):
+        raise ValueError("expected_providers must not contain duplicates")
+    if expected:
+        unexpected = frozenset(final_by_provider) - frozenset(expected)
+        if unexpected:
+            names = ", ".join(sorted(provider.value for provider in unexpected))
+            raise ValueError(f"native capture observed undeclared providers: {names}")
+        for provider in expected:
+            final_by_provider.setdefault(
+                provider,
+                MbaProviderOutcome(
+                    provider=provider,
+                    status=ProviderOutcomeStatus.UNAVAILABLE,
+                    fingerprint=profile.fingerprint,
+                    refusal_reason="provider_not_observed",
+                    metadata={_NATIVE_PROFILE_METADATA_KEY: native_profile_metadata(profile)},
+                ),
+            )
     final_outcomes = tuple(
-        _final_provider_outcome(tuple(outcomes))
-        for _provider, outcomes in sorted(grouped.items(), key=lambda item: str(item[0]))
+        final_by_provider[provider]
+        for provider in (expected or tuple(sorted(final_by_provider, key=str)))
     )
     return MbaCorpusCaseReport(
         case_id=case_id,
@@ -209,6 +238,7 @@ class NativeMbaCorpusCapture:
         profile: MbaIslandProfile,
         rules: Iterable[object],
         history_snapshot: NativeProviderHistorySnapshot | None = None,
+        expected_providers: Sequence[MbaProviderKind] = (),
     ) -> MbaCorpusCaseReport:
         case = capture_native_provider_case(
             case_id=case_id,
@@ -216,6 +246,7 @@ class NativeMbaCorpusCapture:
             profile=profile,
             rules=rules,
             history_snapshot=history_snapshot,
+            expected_providers=expected_providers,
         )
         self._cases.append(case)
         return case

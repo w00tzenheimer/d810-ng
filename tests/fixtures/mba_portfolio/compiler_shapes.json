@@ -3,6 +3,12 @@
   "fixture_kind": "post_lowering_semantic_shapes",
   "authorship": "independently_authored",
   "source_policy": "Each expression was authored from D810-certified bit-vector identities or a local algebraic proof; no external corpus expression or test was copied.",
+  "provider_matrix": [
+    "structural_chain",
+    "catalogue",
+    "egglog",
+    "coefficient_solver"
+  ],
   "lowering_contract": {
     "compiler": "clang",
     "flags": [
