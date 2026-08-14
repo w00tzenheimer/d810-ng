@@ -246,6 +246,14 @@ def _measure_catalogue_selection(select, *, clock=time.perf_counter):
     return selected, {"cold_seconds": cold_seconds, "warm_seconds": warm_seconds}
 
 
+def _measure_handler_configuration(handler, config, *, clock=time.perf_counter):
+    """Measure configuration after the selected immutable catalogue is warm."""
+
+    started = clock()
+    handler.configure(config)
+    return handler, clock() - started
+
+
 def _assert_comparable_baseline(
     baseline: dict[str, object], report: dict[str, object]
 ) -> None:
@@ -341,6 +349,25 @@ def test_catalogue_selection_measurement_separates_cold_and_warm_calls() -> None
     assert selected == ("rule",)
     assert calls == ["select", "select"]
     assert report == {"cold_seconds": 2.5, "warm_seconds": 0.25}
+
+
+def test_handler_configuration_measurement_is_separate_from_selection() -> None:
+    ticks = iter((10.0, 10.125))
+    configured: list[dict[str, object]] = []
+
+    class Handler:
+        def configure(self, config: dict[str, object]) -> None:
+            configured.append(config)
+
+    handler, elapsed_seconds = _measure_handler_configuration(
+        Handler(),
+        {"families": ["add"]},
+        clock=lambda: next(ticks),
+    )
+
+    assert isinstance(handler, Handler)
+    assert configured == [{"families": ["add"]}]
+    assert elapsed_seconds == 0.125
 
 
 def test_stage_timing_report_requires_consistent_ordered_stages() -> None:
@@ -455,8 +482,8 @@ def test_corpus_receipt_reports_quantiles_and_rejects_100x_regression(
     compiled_rules, catalogue_selection = _measure_catalogue_selection(
         lambda: compiled_rules_for_families(_CLOSED_FAMILIES)
     )
-    extraction_handler = EgglogOptimizer()
-    extraction_handler.configure(
+    extraction_handler, handler_configuration_seconds = _measure_handler_configuration(
+        EgglogOptimizer(),
         {
             "families": [family for family in _CLOSED_FAMILIES],
             "max_leaves": 2,
@@ -468,7 +495,7 @@ def test_corpus_receipt_reports_quantiles_and_rejects_100x_regression(
             "max_rule_firings": 32,
             "time_budget_ms": 3,
             "require_proof": True,
-        }
+        },
     )
     rules_by_key = {(rule.family, rule.source_name): rule for rule in compiled_rules}
     corpus_names: list[str] = []
@@ -525,6 +552,7 @@ def test_corpus_receipt_reports_quantiles_and_rejects_100x_regression(
             "baseline_fixture": str(_BASELINE_PATH.relative_to(Path.cwd())),
             "baseline_p95_ms": baseline["baseline_p95_ms"],
             "catalogue_selection_seconds": catalogue_selection,
+            "handler_configuration_seconds": handler_configuration_seconds,
             "selected_compiled_rule_count": len(compiled_rules),
             "production_time_budget_ms": extraction_handler.time_budget_ms,
             "stage_profile_time_budget_ms": stage_handler.time_budget_ms,
