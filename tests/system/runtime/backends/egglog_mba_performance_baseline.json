@@ -25,7 +25,7 @@
   "baseline_p95_ms": 4.014116583857685,
   "source": "native Egglog handler receipt telemetry; update only from this exact named corpus",
   "phase0_stage_profiles": {
-    "image": "idapro-9.4-speedups:ci",
+    "image": "idapro-9.4-speedups:cli",
     "image_id": "sha256:a60b5ccbd800319ccbfb959bf88c980f9c32029032263bb38a42cb7af3e7b082",
     "egglog_version": "13.2.0",
     "profile_contract": "five active-AST handler/extraction/native-Z3 samples; reconstruction is a test materializer; informational only",
