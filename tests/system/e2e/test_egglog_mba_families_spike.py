@@ -12,6 +12,10 @@ import pytest
 
 from d810.testing.cases import DeobfuscationCase
 from d810.testing.runner import run_deobfuscation_test
+from tests.system.e2e.egglog_native_corpus import (
+    NativeEgglogCorpusEntry,
+    build_native_egglog_attempt_receipt,
+)
 from tests.system.e2e.egglog_native_profile import build_native_egglog_profile
 
 
@@ -90,6 +94,18 @@ _MBA_FAMILIES_CASE = DeobfuscationCase(
     forbidden_rules=_LEGACY_MBA_RULES,
 )
 
+_MBA_FAMILIES_CORPUS_ENTRY = NativeEgglogCorpusEntry(
+    corpus="egglog-mba-families-spike",
+    function="test_egglog_mba_families",
+    project="egglog_mba_families_spike.json",
+    expected_sources=(
+        ("Add_HackersDelightRule_2", "Add_OllvmRule_3"),
+        ("Xor_HackersDelightRule_3",),
+        ("Sub_HackersDelightRule_2",),
+    ),
+    expected_outcomes=("applied",) * 3,
+)
+
 
 def _assert_degree_one_success_receipt(metadata: dict[str, object]) -> None:
     assert metadata["degree"] == 1
@@ -155,6 +171,17 @@ class TestEgglogMbaFamiliesSpike:
         capture_stats,
         load_expected_stats,
     ) -> None:
+        captured_attempts = ()
+
+        def capture_runtime_state(state) -> None:
+            nonlocal captured_attempts
+            optimizer = next(
+                rule
+                for rule in state.current_ins_rules
+                if rule.name == "EgglogOptimizer"
+            )
+            captured_attempts = optimizer.provider_outcomes()
+
         def capture_and_assert_provenance(stats):
             captured = capture_stats(stats)
             provenance = tuple(
@@ -188,6 +215,17 @@ class TestEgglogMbaFamiliesSpike:
                     sort_keys=True,
                 )
             )
+            print(
+                "\nEGGLOG_MBA_REAL_CORPUS_RECEIPT="
+                + json.dumps(
+                    build_native_egglog_attempt_receipt(
+                        captured_attempts,
+                        entry=_MBA_FAMILIES_CORPUS_ENTRY,
+                        proof_mode="legacy_native_ast",
+                    ),
+                    sort_keys=True,
+                )
+            )
             return captured
 
         fixture_started = time.perf_counter()
@@ -197,6 +235,7 @@ class TestEgglogMbaFamiliesSpike:
             pseudocode_to_string=pseudocode_to_string,
             code_comparator=code_comparator,
             capture_stats=capture_and_assert_provenance,
+            capture_runtime_state=capture_runtime_state,
             load_expected_stats=load_expected_stats,
         )
         fixture_seconds = time.perf_counter() - fixture_started

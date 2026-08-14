@@ -11,6 +11,10 @@ import pytest
 
 from d810.testing.cases import DeobfuscationCase
 from d810.testing.runner import run_deobfuscation_test
+from tests.system.e2e.egglog_native_corpus import (
+    NativeEgglogCorpusEntry,
+    build_native_egglog_attempt_receipt,
+)
 from tests.system.e2e.egglog_native_profile import build_native_egglog_profile
 
 
@@ -58,6 +62,20 @@ _ADD_CASE = DeobfuscationCase(
     operator_complexity_ops=["+", "-", "*", "&", "|", "^"],
     required_rules=["EgglogOptimizer"],
     forbidden_rules=_LEGACY_ADD_RULES,
+)
+
+_ADD_CORPUS_ENTRY = NativeEgglogCorpusEntry(
+    corpus="egglog-add-spike",
+    function="test_egglog_add_rules",
+    project="egglog_add_spike.json",
+    expected_sources=(
+        ("Add_HackersDelightRule_2", "Add_OllvmRule_3"),
+        ("Add_HackersDelightRule_3",),
+        ("Add_OllvmRule_1", "Add_OllvmRule_DynamicConst"),
+        ("Add_HackersDelightRule_2", "Add_OllvmRule_3"),
+        ("Add_SpecialConstantRule_3",),
+    ),
+    expected_outcomes=("applied",) * 5,
 )
 
 
@@ -122,6 +140,17 @@ class TestEgglogAddSpike:
         capture_stats,
         load_expected_stats,
     ) -> None:
+        captured_attempts = ()
+
+        def capture_runtime_state(state) -> None:
+            nonlocal captured_attempts
+            optimizer = next(
+                rule
+                for rule in state.current_ins_rules
+                if rule.name == "EgglogOptimizer"
+            )
+            captured_attempts = optimizer.provider_outcomes()
+
         def capture_and_assert_provenance(stats):
             captured = capture_stats(stats)
             provenance = tuple(
@@ -151,6 +180,17 @@ class TestEgglogAddSpike:
                     sort_keys=True,
                 )
             )
+            print(
+                "\nEGGLOG_MBA_REAL_CORPUS_RECEIPT="
+                + json.dumps(
+                    build_native_egglog_attempt_receipt(
+                        captured_attempts,
+                        entry=_ADD_CORPUS_ENTRY,
+                        proof_mode="legacy_native_ast",
+                    ),
+                    sort_keys=True,
+                )
+            )
             return captured
 
         run_deobfuscation_test(
@@ -159,5 +199,6 @@ class TestEgglogAddSpike:
             pseudocode_to_string=pseudocode_to_string,
             code_comparator=code_comparator,
             capture_stats=capture_and_assert_provenance,
+            capture_runtime_state=capture_runtime_state,
             load_expected_stats=load_expected_stats,
         )

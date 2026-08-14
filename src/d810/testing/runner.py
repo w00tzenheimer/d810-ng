@@ -117,6 +117,7 @@ def run_deobfuscation_test(
     pseudocode_to_string: Callable,
     code_comparator: Optional[Any] = None,
     capture_stats: Optional[Callable] = None,
+    capture_runtime_state: Optional[Callable] = None,
     load_expected_stats: Optional[Callable] = None,
     db_capture: Optional[Any] = None,
 ) -> None:
@@ -135,6 +136,8 @@ def run_deobfuscation_test(
         pseudocode_to_string: Function to convert pseudocode to string.
         code_comparator: Optional CodeComparator for AST comparison.
         capture_stats: Optional function to capture statistics.
+        capture_runtime_state: Optional function called with the live D810 state
+            after decompilation and before the state context closes.
         load_expected_stats: Optional function to load expected stats.
         db_capture: Optional database capture fixture.
 
@@ -256,10 +259,7 @@ def run_deobfuscation_test(
             elif not effective_case.allow_unchanged_pseudocode_if_rules_fired:
                 assert_code_changed(code_before, code_after)
             else:
-                if (
-                    not effective_case.check_stats
-                    or not effective_case.required_rules
-                ):
+                if not effective_case.check_stats or not effective_case.required_rules:
                     raise AssertionError(
                         "allow_unchanged_pseudocode_if_rules_fired requires "
                         "check_stats=True and at least one required rule"
@@ -370,6 +370,8 @@ def run_deobfuscation_test(
         # ==========================================
         # STATS: Verify rule firing
         # ==========================================
+        if capture_runtime_state is not None:
+            capture_runtime_state(state)
         if effective_case.check_stats:
             # Check required/expected/forbidden rules
             if (
