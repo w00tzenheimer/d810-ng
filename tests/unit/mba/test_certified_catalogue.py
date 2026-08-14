@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+import hashlib
+import json
+
+import pytest
+
 from d810.mba.certified_catalogue import (
     ShadowMatcherParityLedger,
+    StructuralMatcherParityExpectation,
     build_certified_catalogue_snapshot,
+    load_structural_matcher_parity_certificate,
 )
 from d810.mba.dsl import Var
 
@@ -12,6 +19,32 @@ class _Rule:
         self.source_name = name
         self.pattern = pattern
         self.family = family
+
+
+class _SemanticRule(_Rule):
+    def __init__(
+        self,
+        name: str,
+        pattern,
+        replacement,
+        *,
+        constraints: tuple[str, ...] = (),
+    ) -> None:
+        super().__init__(name, pattern)
+        self.replacement = replacement
+        self.CONSTRAINTS = constraints
+
+    def check_candidate(self, candidate) -> bool:
+        return bool(candidate)
+
+
+class _DifferentImplementationRule(_SemanticRule):
+    def check_candidate(self, candidate) -> bool:
+        return not bool(candidate)
+
+
+def _digest(value: str) -> str:
+    return hashlib.sha256(value.encode("ascii")).hexdigest()
 
 
 def test_snapshot_is_memoized_immutable_and_preserves_declaration_order() -> None:
@@ -61,6 +94,99 @@ def test_snapshot_fingerprint_changes_with_content_version_or_enabled_families()
     assert first.fingerprint != changed_version.fingerprint
     assert first.fingerprint != changed_widths.fingerprint
     assert first.fingerprint != changed_families.fingerprint
+
+
+def test_snapshot_fingerprint_binds_replacement_constraints_and_implementation() -> None:
+    x, y = Var("x"), Var("y")
+    baseline = build_certified_catalogue_snapshot(
+        (_SemanticRule("one", x + y, x ^ y, constraints=("same",)),),
+        compiler_version="v1",
+    )
+    changed_replacement = build_certified_catalogue_snapshot(
+        (_SemanticRule("one", x + y, x | y, constraints=("same",)),),
+        compiler_version="v1",
+    )
+    changed_constraints = build_certified_catalogue_snapshot(
+        (_SemanticRule("one", x + y, x ^ y, constraints=("different",)),),
+        compiler_version="v1",
+    )
+    changed_implementation = build_certified_catalogue_snapshot(
+        (_DifferentImplementationRule("one", x + y, x ^ y, constraints=("same",)),),
+        compiler_version="v1",
+    )
+
+    assert baseline.fingerprint != changed_replacement.fingerprint
+    assert baseline.fingerprint != changed_constraints.fingerprint
+    assert baseline.fingerprint != changed_implementation.fingerprint
+
+
+def test_parity_certificate_requires_exact_expected_corpus_toolchain_and_coverage(
+    tmp_path,
+) -> None:
+    x, y = Var("x"), Var("y")
+    snapshot = build_certified_catalogue_snapshot(
+        (_SemanticRule("one", x + y, x ^ y),), compiler_version="v1"
+    )
+    expectation = StructuralMatcherParityExpectation(
+        corpus_digest=_digest("native-corpus"),
+        toolchain_digest=_digest("ida-9.4-cython"),
+        legacy_observation_count=17,
+    )
+    certificate_path = tmp_path / "parity.json"
+    certificate_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "snapshot_fingerprint": snapshot.fingerprint,
+                "runtime_mode": "cython",
+                "corpus_digest": expectation.corpus_digest,
+                "toolchain_digest": expectation.toolchain_digest,
+                "legacy_observation_count": expectation.legacy_observation_count,
+                "legacy_rule_mismatches": 0,
+                "legacy_binding_mismatches": 0,
+                "legacy_binding_unknown": 0,
+                "new_safe_coverage_pending": 0,
+                "new_safe_coverage_proved": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    certificate = load_structural_matcher_parity_certificate(certificate_path)
+    assert certificate.authorizes(snapshot, "cython", expectation)
+    assert not certificate.authorizes(
+        snapshot,
+        "cython",
+        StructuralMatcherParityExpectation(
+            corpus_digest=_digest("other-corpus"),
+            toolchain_digest=expectation.toolchain_digest,
+            legacy_observation_count=17,
+        ),
+    )
+    assert not certificate.authorizes(
+        snapshot,
+        "cython",
+        StructuralMatcherParityExpectation(
+            corpus_digest=expectation.corpus_digest,
+            toolchain_digest=_digest("other-toolchain"),
+            legacy_observation_count=17,
+        ),
+    )
+    assert not certificate.authorizes(
+        snapshot,
+        "cython",
+        StructuralMatcherParityExpectation(
+            corpus_digest=expectation.corpus_digest,
+            toolchain_digest=expectation.toolchain_digest,
+            legacy_observation_count=18,
+        ),
+    )
+
+    certificate_path.write_text(
+        json.dumps({"schema_version": 1}), encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="schema_version must be 2"):
+        load_structural_matcher_parity_certificate(certificate_path)
 
 
 def test_enabled_families_filter_rules_before_root_bucket_indexing() -> None:

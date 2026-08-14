@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from types import SimpleNamespace
 
@@ -22,6 +23,7 @@ from d810.mba.ac_matching import (  # noqa: E402
 )
 from d810.mba.certified_catalogue import (  # noqa: E402
     ShadowMatcherParityLedger,
+    StructuralMatcherParityExpectation,
     load_structural_matcher_parity_certificate,
 )
 from d810.mba.dsl import Const, Var, Zext  # noqa: E402
@@ -32,6 +34,10 @@ from d810.optimizers.microcode.instructions.pattern_matching.handler import (  #
 from d810.optimizers.microcode.instructions.pattern_matching.engine import (  # noqa: E402
     get_engine_info,
 )
+
+
+def _parity_digest(value: str) -> str:
+    return hashlib.sha256(value.encode("ascii")).hexdigest()
 
 
 def _leaf(name: str, register: int):
@@ -248,6 +254,11 @@ def test_structural_opt_in_requires_matching_persisted_parity_certificate(
     monkeypatch.setenv("D810_STRUCTURAL_DSL_MATCHING", "1")
     monkeypatch.delenv("D810_LEGACY_DSL_PERMUTATIONS", raising=False)
     runtime_mode = get_engine_info()["backend"]
+    expectation = StructuralMatcherParityExpectation(
+        corpus_digest=_parity_digest("controlled-native-corpus"),
+        toolchain_digest=_parity_digest(f"ida-9.4-{runtime_mode}"),
+        legacy_observation_count=1,
+    )
     warnings: list[tuple[object, ...]] = []
     monkeypatch.setattr(
         ida_backend.logger,
@@ -261,10 +272,11 @@ def test_structural_opt_in_requires_matching_persisted_parity_certificate(
     certificate_path.write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "snapshot_fingerprint": "0" * 64,
                 "runtime_mode": runtime_mode,
-                "corpus_identity": "controlled-native-corpus",
+                "corpus_digest": expectation.corpus_digest,
+                "toolchain_digest": expectation.toolchain_digest,
                 "legacy_observation_count": 1,
                 "legacy_rule_mismatches": 0,
                 "legacy_binding_mismatches": 0,
@@ -280,6 +292,7 @@ def test_structural_opt_in_requires_matching_persisted_parity_certificate(
     attach_selected_certified_catalogue_snapshot(
         (wrong_snapshot,),
         parity_certificate_path=certificate_path,
+        parity_expectation=expectation,
         runtime_mode=runtime_mode,
     )
     assert wrong_snapshot.uses_structural_matching is False
@@ -288,10 +301,11 @@ def test_structural_opt_in_requires_matching_persisted_parity_certificate(
     certificate_path.write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "snapshot_fingerprint": snapshot.fingerprint,
                 "runtime_mode": other_runtime_mode,
-                "corpus_identity": "controlled-native-corpus",
+                "corpus_digest": expectation.corpus_digest,
+                "toolchain_digest": expectation.toolchain_digest,
                 "legacy_observation_count": 1,
                 "legacy_rule_mismatches": 0,
                 "legacy_binding_mismatches": 0,
@@ -306,6 +320,7 @@ def test_structural_opt_in_requires_matching_persisted_parity_certificate(
     attach_selected_certified_catalogue_snapshot(
         (wrong_runtime,),
         parity_certificate_path=certificate_path,
+        parity_expectation=expectation,
         runtime_mode=runtime_mode,
     )
     assert wrong_runtime.uses_structural_matching is False
@@ -313,10 +328,11 @@ def test_structural_opt_in_requires_matching_persisted_parity_certificate(
     certificate_path.write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "snapshot_fingerprint": snapshot.fingerprint,
                 "runtime_mode": runtime_mode,
-                "corpus_identity": "controlled-native-corpus",
+                "corpus_digest": expectation.corpus_digest,
+                "toolchain_digest": expectation.toolchain_digest,
                 "legacy_observation_count": 1,
                 "legacy_rule_mismatches": 0,
                 "legacy_binding_mismatches": 0,
@@ -329,11 +345,12 @@ def test_structural_opt_in_requires_matching_persisted_parity_certificate(
     )
 
     certificate = load_structural_matcher_parity_certificate(certificate_path)
-    assert certificate.authorizes(snapshot, runtime_mode)
+    assert certificate.authorizes(snapshot, runtime_mode, expectation)
     matching_snapshot = IDAPatternAdapter(CertifiedRule())
     matching_catalogue, _ = attach_selected_certified_catalogue_snapshot(
         (matching_snapshot,),
         parity_certificate_path=certificate_path,
+        parity_expectation=expectation,
         runtime_mode=runtime_mode,
     )
 
@@ -353,6 +370,7 @@ def test_structural_opt_in_requires_matching_persisted_parity_certificate(
     attach_selected_certified_catalogue_snapshot(
         (matching_snapshot,),
         parity_certificate_path=certificate_path,
+        parity_expectation=expectation,
         runtime_mode=runtime_mode,
     )
     assert matching_snapshot.uses_structural_matching is True

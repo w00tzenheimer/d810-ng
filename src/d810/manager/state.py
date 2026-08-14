@@ -50,6 +50,7 @@ from d810.diagnostics.workbench_models import (
     DiagnosticViewKind,
 )
 from d810.mba.rules import VerifiableRule
+from d810.mba.certified_catalogue import StructuralMatcherParityExpectation
 from d810.manager.project_runtime import (
     ProjectRuntimeSnapshot,
     build_project_runtime_snapshot,
@@ -366,6 +367,7 @@ class D810State(metaclass=SingletonMeta):
         )
         if selected_catalogue_adapters:
             certificate_path = None
+            parity_expectation = None
             certificate_setting = runtime_project.additional_configuration.get(
                 "structural_matcher_parity_certificate"
             )
@@ -379,6 +381,27 @@ class D810State(metaclass=SingletonMeta):
             elif certificate_setting is not None:
                 logger.warning(
                     "Ignoring non-string structural matcher parity certificate setting"
+                )
+            expectation_setting = runtime_project.additional_configuration.get(
+                "structural_matcher_parity_expectation"
+            )
+            if isinstance(expectation_setting, dict):
+                try:
+                    parity_expectation = StructuralMatcherParityExpectation(
+                        corpus_digest=expectation_setting["corpus_digest"],
+                        toolchain_digest=expectation_setting["toolchain_digest"],
+                        legacy_observation_count=expectation_setting[
+                            "legacy_observation_count"
+                        ],
+                    )
+                except (KeyError, TypeError, ValueError) as exc:
+                    logger.warning(
+                        "Ignoring invalid structural matcher parity expectation: %s",
+                        exc,
+                    )
+            elif expectation_setting is not None:
+                logger.warning(
+                    "Ignoring non-object structural matcher parity expectation setting"
                 )
             runtime_mode = None
             try:
@@ -399,6 +422,7 @@ class D810State(metaclass=SingletonMeta):
             ) = attach_selected_certified_catalogue_snapshot(
                 selected_catalogue_adapters,
                 parity_certificate_path=certificate_path,
+                parity_expectation=parity_expectation,
                 runtime_mode=runtime_mode,
             )
         else:

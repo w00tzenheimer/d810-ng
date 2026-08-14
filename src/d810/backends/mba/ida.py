@@ -494,6 +494,7 @@ class IDAPatternAdapter:
         rule_id: int,
         ledger,
         parity_certificate,
+        parity_expectation,
         runtime_mode: str | None,
     ) -> None:
         """Attach one configuration-time snapshot and select its matcher mode."""
@@ -510,7 +511,9 @@ class IDAPatternAdapter:
         self._structural_parity_authorized = bool(
             parity_certificate is not None
             and runtime_mode is not None
-            and parity_certificate.authorizes(snapshot, runtime_mode)
+            and parity_certificate.authorizes(
+                snapshot, runtime_mode, parity_expectation
+            )
         )
         structural_matching_enabled = (
             _supports_structural_dsl_pattern(getattr(self.rule, "pattern", None))
@@ -1617,6 +1620,7 @@ def attach_selected_certified_catalogue_snapshot(
     adapters: tuple[IDAPatternAdapter, ...] | List[IDAPatternAdapter],
     *,
     parity_certificate_path: Path | None = None,
+    parity_expectation=None,
     runtime_mode: str | None = None,
 ):
     """Freeze the already-selected direct DSL rules outside the optinsn path."""
@@ -1662,6 +1666,7 @@ def attach_selected_certified_catalogue_snapshot(
             rule_id,
             ledger,
             parity_certificate,
+            parity_expectation,
             runtime_mode,
         )
     return snapshot, ledger
