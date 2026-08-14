@@ -68,6 +68,18 @@ def _assert_degree_one_success_receipt(metadata: dict[str, object]) -> None:
     assert 0 < metadata["enode_count"] <= 128
     assert 0 < metadata["rule_firings"] <= 32
     assert metadata["elapsed_ms"] >= 0.0
+    stage_timings = metadata["stage_timings_ms"]
+    assert tuple(stage_timings) == (
+        "root_eligibility",
+        "ast_construction",
+        "native_preflight",
+        "egglog_extraction",
+        "native_z3",
+        "reconstruction",
+    )
+    assert all(
+        type(value) is float and value >= 0.0 for value in stage_timings.values()
+    )
 
 
 class TestEgglogAddSpike:
@@ -83,6 +95,7 @@ class TestEgglogAddSpike:
             assert state.last_pipeline_v2_hook_pass_ids == ("mba-egglog",)
             optimizer = state.current_ins_rules[0]
             assert optimizer.maturities == [ida_hexrays.MMAT_GLBOPT1]
+            assert optimizer.collect_stage_timings is True
             assert (
                 optimizer.max_leaves,
                 optimizer.max_operator_nodes,

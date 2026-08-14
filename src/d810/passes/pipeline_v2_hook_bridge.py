@@ -166,6 +166,7 @@ def _mba_egglog_options(config: PipelineConfig) -> dict[str, object]:
         "function_time_budget_ms": adapter.function_time_budget_ms,
         "residual_only": adapter.residual_only,
         "require_proof": adapter.require_proof,
+        "collect_stage_timings": adapter.collect_stage_timings,
         "families": list(adapter.families),
         # Keep portable maturity vocabulary across the config-v2 boundary.
         # The live Egglog rule resolves it through d810.hexrays.ir_maturity.

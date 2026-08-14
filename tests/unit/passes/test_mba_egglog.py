@@ -47,6 +47,7 @@ class TestMbaEgglogOptions(unittest.TestCase):
                 options.function_time_budget_ms,
                 options.residual_only,
                 options.require_proof,
+                options.collect_stage_timings,
                 options.families,
                 options.maturities,
             ),
@@ -63,6 +64,7 @@ class TestMbaEgglogOptions(unittest.TestCase):
                 None,
                 False,
                 True,
+                False,
                 ("add",),
                 ("GLOBAL_OPTIMIZED",),
             ),
@@ -83,6 +85,7 @@ class TestMbaEgglogOptions(unittest.TestCase):
                     "time_budget_ms": 9,
                     "function_time_budget_ms": 1000,
                     "residual_only": True,
+                    "collect_stage_timings": True,
                     "families": ["xor", "add"],
                     "maturities": ["GLOBAL_ANALYZED"],
                 }
@@ -103,6 +106,7 @@ class TestMbaEgglogOptions(unittest.TestCase):
                 built.function_time_budget_ms,
                 built.residual_only,
                 built.require_proof,
+                built.collect_stage_timings,
                 built.families,
                 built.maturities,
             ),
@@ -117,6 +121,7 @@ class TestMbaEgglogOptions(unittest.TestCase):
                 True,
                 9,
                 1000,
+                True,
                 True,
                 True,
                 ("xor", "add"),
@@ -151,6 +156,7 @@ class TestMbaEgglogOptions(unittest.TestCase):
             {"residual_only": 1},
             {"require_proof": False},
             {"require_proof": "yes"},
+            {"collect_stage_timings": "yes"},
             {"families": []},
             {"families": ["add", 1]},
             {"maturities": []},
@@ -167,9 +173,7 @@ class TestMbaEgglogOptions(unittest.TestCase):
 
         self.assertEqual(options.saturation_rounds, 4)
         with self.assertRaisesRegex(PipelineConfigError, "cannot both"):
-            parse_mba_egglog_options(
-                _config({"rounds": 4, "saturation_rounds": 4})
-            )
+            parse_mba_egglog_options(_config({"rounds": 4, "saturation_rounds": 4}))
 
     def test_rejects_duplicate_families(self):
         with self.assertRaisesRegex(PipelineConfigError, "unique"):
@@ -208,6 +212,7 @@ class TestMbaEgglogRegistration(unittest.TestCase):
                             "max_rule_firings": 48,
                             "cross_block_constant_preparation": True,
                             "time_budget_ms": 9,
+                            "collect_stage_timings": True,
                             "families": ["xor", "add"],
                             "maturities": ["GLOBAL_ANALYZED"],
                         },
@@ -239,6 +244,7 @@ class TestMbaEgglogRegistration(unittest.TestCase):
                 "function_time_budget_ms": None,
                 "residual_only": False,
                 "require_proof": True,
+                "collect_stage_timings": True,
                 "families": ["xor", "add"],
                 "maturities": ["GLOBAL_ANALYZED"],
             },
