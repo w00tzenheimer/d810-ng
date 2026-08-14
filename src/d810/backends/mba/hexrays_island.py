@@ -30,9 +30,11 @@ class HexRaysIslandLowering:
     """Portable island facts paired with the original native identity objects."""
 
     term: TypedBvTerm | None
+    raw_term: TypedBvTerm | None
     profile: MbaIslandProfile
     leafs: Mapping[tuple[object, ...], Any]
     native_nodes_by_path: Mapping[tuple[int, ...], Any]
+    raw_native_nodes_by_path: Mapping[tuple[int, ...], Any]
 
 
 @dataclass(frozen=True)
@@ -247,9 +249,11 @@ def lower_hexrays_island(
     if type(destination_size) is not int or destination_size not in _VALID_DESTINATION_SIZES:
         return HexRaysIslandLowering(
             term=None,
+            raw_term=None,
             profile=_unsupported_profile(1, {IslandBlocker.MIXED_WIDTH}),
             leafs=MappingProxyType({}),
             native_nodes_by_path=MappingProxyType({}),
+            raw_native_nodes_by_path=MappingProxyType({}),
         )
     try:
         runtime = _load_native_runtime()
@@ -257,9 +261,11 @@ def lower_hexrays_island(
         if root is None:
             return HexRaysIslandLowering(
                 term=None,
+                raw_term=None,
                 profile=_unsupported_profile(destination_size, {IslandBlocker.UNSUPPORTED_OPCODE}),
                 leafs=MappingProxyType({}),
                 native_nodes_by_path=MappingProxyType({}),
+                raw_native_nodes_by_path=MappingProxyType({}),
             )
         blockers: set[IslandBlocker] = set()
         leafs: dict[tuple[object, ...], Any] = {}
@@ -329,13 +335,16 @@ def lower_hexrays_island(
         if term is None or blockers:
             return HexRaysIslandLowering(
                 term=None,
+                raw_term=None,
                 profile=_unsupported_profile(destination_size, blockers or {IslandBlocker.UNSUPPORTED_OPCODE}),
                 leafs=MappingProxyType(dict(leafs)),
                 native_nodes_by_path=MappingProxyType(dict(nodes)),
+                raw_native_nodes_by_path=MappingProxyType(dict(nodes)),
             )
         normalized = canonicalize_ac_term(term)
         return HexRaysIslandLowering(
             term=normalized,
+            raw_term=term,
             profile=profile_typed_term(normalized),
             leafs=MappingProxyType(dict(leafs)),
             native_nodes_by_path=_canonical_native_nodes_by_path(
@@ -343,13 +352,16 @@ def lower_hexrays_island(
                 normalized,
                 nodes,
             ),
+            raw_native_nodes_by_path=MappingProxyType(dict(nodes)),
         )
     except Exception:
         return HexRaysIslandLowering(
             term=None,
+            raw_term=None,
             profile=_unsupported_profile(destination_size, {IslandBlocker.UNSUPPORTED_OPCODE}),
             leafs=MappingProxyType({}),
             native_nodes_by_path=MappingProxyType({}),
+            raw_native_nodes_by_path=MappingProxyType({}),
         )
 
 

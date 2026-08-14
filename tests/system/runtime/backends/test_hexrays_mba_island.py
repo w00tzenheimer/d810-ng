@@ -83,6 +83,22 @@ def test_lowering_preserves_live_leafs_paths_and_rebuilds_supported_island():
     assert all(leaf.mop == x.mop for leaf in rebuilt_live_leafs)
 
 
+def test_lowering_retains_raw_source_order_term_and_paths_alongside_canonical_term():
+    """Structural matching needs declared source order, not AC sort order."""
+
+    b = _leaf("b", 2)
+    a = _leaf("a", 1)
+    expression = _node(ida_hexrays.m_xor, b, a)
+
+    lowering = lower_hexrays_island(expression, destination_size=4)
+
+    assert lowering.term is not None
+    assert lowering.raw_term is not None
+    assert lowering.raw_term.children[0].leaf_key != lowering.term.children[0].leaf_key
+    assert lowering.raw_native_nodes_by_path[(0,)] is b
+    assert lowering.raw_native_nodes_by_path[(1,)] is a
+
+
 @pytest.mark.parametrize(
     ("opcode_name", "has_right"),
     (

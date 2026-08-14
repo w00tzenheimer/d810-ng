@@ -276,9 +276,11 @@ def lower_term_to_native_ast(
 
     lowering = HexRaysIslandLowering(
         term=term,
+        raw_term=term,
         profile=profile_typed_term(term),
         leafs=leafs,
         native_nodes_by_path={},
+        raw_native_nodes_by_path={},
     )
     return rebuild_hexrays_island(
         term,

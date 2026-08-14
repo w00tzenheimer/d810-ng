@@ -631,8 +631,9 @@ class IDAPatternAdapter:
         """Record the bounded portable matcher result without changing selection.
 
         The legacy AstNode matcher stays authoritative during the Task 7 shadow
-        period.  Binding paths must resolve to the lowerer's original native
-        objects; synthetic canonical paths are deliberately reported as a miss.
+        period. Matching and binding recovery use the raw source-order term;
+        profiling and certified bucketing retain the canonical term. Binding
+        paths must resolve to the lowerer's original native objects.
         """
 
         try:
@@ -646,7 +647,11 @@ class IDAPatternAdapter:
                 lowering = self.prepare_structural_candidate(test_ast)
             if lowering is None:
                 return None
-            if lowering.term is None or self.rule.pattern is None:
+            if (
+                lowering.term is None
+                or lowering.raw_term is None
+                or self.rule.pattern is None
+            ):
                 return None
             snapshot = getattr(self, "_certified_catalogue_snapshot", None)
             if snapshot is not None:
@@ -660,11 +665,11 @@ class IDAPatternAdapter:
                     return None
             report = match_ac_pattern(
                 self.rule.pattern,
-                lowering.term,
+                lowering.raw_term,
                 comparison_budget=comparison_budget,
             )
             if report.bindings is not None and not all(
-                path in lowering.native_nodes_by_path
+                path in lowering.raw_native_nodes_by_path
                 for path in report.bindings.candidate_path_by_name.values()
             ):
                 report = AcMatchReport(
@@ -688,8 +693,8 @@ class IDAPatternAdapter:
 
                 index_source(test_ast, ())
                 mapped_paths: dict[str, tuple[int, ...]] = {}
-                for name, canonical_path in report.bindings.candidate_path_by_name.items():
-                    native = lowering.native_nodes_by_path.get(canonical_path)
+                for name, raw_path in report.bindings.candidate_path_by_name.items():
+                    native = lowering.raw_native_nodes_by_path.get(raw_path)
                     source_paths = source_paths_by_object.get(id(native), ())
                     if len(source_paths) != 1:
                         mapped_paths = {}
