@@ -49,6 +49,7 @@ class FakeNativeDatabase:
     def __init__(self, operations):
         self.bytes: dict[int, int] = {}
         self.original: dict[int, int] = {}
+        self.patch_byte_calls: list[tuple[int, int]] = []
         self.reset_item_boundary_calls: list[tuple[int, int]] = []
         self._patch_rows: dict[tuple[int, int], tuple] = {}
         self._item_shape: dict[tuple[int, int], object] = {}
@@ -98,6 +99,7 @@ class FakeNativeDatabase:
         return self.bytes.get(ea)
 
     def patch_byte(self, ea, value):
+        self.patch_byte_calls.append((ea, value))
         self.bytes[ea] = value
 
     def revert_byte(self, ea):
@@ -365,6 +367,24 @@ class TestApplySuccess:
         assert looked_up.certificate_id == receipt.certificate.certificate_id
         assert looked_up.native_plan_hash == plan.plan_hash
 
+    def test_obsolete_certificate_payload_fails_closed_as_a_cache_miss(
+        self, rig
+    ) -> None:
+        plan = fixtures.plan()
+        key = rig.gateway._certificate_key(  # noqa: SLF001 - storage fixture
+            plan.function_identity.entry_ea, plan.database_identity
+        )
+        rig.blobs.set_native_patch_blob(
+            "certificate", key, {"schema_version": 1, "certificate_id": "old"}
+        )
+
+        assert (
+            rig.gateway.lookup_certificate(
+                plan.function_identity.entry_ea, plan.database_identity
+            )
+            is None
+        )
+
     def test_mirror_write_failure_is_a_separate_receipt_and_does_not_abort(
         self, tmp_path
     ) -> None:
@@ -614,6 +634,22 @@ class TestRestore:
         assert restored.state is NativeJournalState.RESTORED
         assert rig.db.bytes == before
 
+    def test_restore_revokes_the_applied_certificate(self, rig) -> None:
+        """A restored function must never continue to short-circuit a plan."""
+        plan = fixtures.plan()
+        receipt = rig.gateway.apply(plan)
+        assert receipt.ok
+
+        restored = rig.gateway.restore(receipt.transaction_id)
+
+        assert restored.ok
+        assert (
+            rig.gateway.lookup_certificate(
+                plan.function_identity.entry_ea, plan.database_identity
+            )
+            is None
+        )
+
     def test_restore_reasserts_the_remembered_function_extent(self, rig) -> None:
         """Restoring bytes is not restoring state.
 
@@ -776,10 +812,16 @@ class FakeMetadataExecutor:
     before-value is observable.
     """
 
-    def __init__(self, initial: dict | None = None, fail_on_apply: bool = False):
+    def __init__(
+        self,
+        initial: dict | None = None,
+        fail_on_apply: bool = False,
+        mutate_then_fail: bool = False,
+    ):
         self.state: dict = dict(initial or {})
         self.applied: list[tuple[str, int, str]] = []
         self._fail_on_apply = fail_on_apply
+        self._mutate_then_fail = mutate_then_fail
 
     def read_state(self, kind, ea):
         return self.state.get((kind, ea), "unknown")
@@ -789,6 +831,9 @@ class FakeMetadataExecutor:
         if self._fail_on_apply:
             return False
         self.state[(kind, ea)] = target_state
+        if self._mutate_then_fail:
+            self._mutate_then_fail = False
+            return False
         return True
 
 
@@ -843,6 +888,28 @@ class TestMetadataActionExecution:
         assert receipt.ok, receipt.rejection_reasons
         assert [a[2] for a in executor.applied] == ["code:2", "cref:0x1010"]
 
+    def test_metadata_only_operation_never_calls_the_byte_writer(
+        self, tmp_path
+    ) -> None:
+        """A metadata-only request has an identity anchor, not a dummy patch."""
+        plan, operation = _plan_with_metadata_actions()
+        operation = dataclasses.replace(
+            operation,
+            replacement_bytes=operation.expected_current_bytes,
+            expected_before_shape=operation.expected_after_shape,
+            writes_bytes=False,
+        )
+        plan = dataclasses.replace(plan, operations=(operation,))
+        executor = FakeMetadataExecutor(self._initial_state())
+        rig = build_gateway(tmp_path, plan.operations, metadata_executor=executor)
+
+        receipt = rig.gateway.apply(plan)
+
+        assert receipt.ok, receipt.rejection_reasons
+        assert rig.db.patch_byte_calls == []
+        assert rig.db.reset_item_boundary_calls == []
+        assert [a[2] for a in executor.applied] == ["code:2", "cref:0x1010"]
+
     def test_the_observed_before_state_is_journaled_not_the_expected_one(
         self, tmp_path
     ) -> None:
@@ -856,6 +923,22 @@ class TestMetadataActionExecution:
         recorded = rig.journal.metadata_actions(receipt.transaction_id)
         assert [r.recorded_before for r in recorded] == ["data:1", "cref:"]
 
+    def test_certificate_rejects_metadata_divergence_after_apply(
+        self, tmp_path
+    ) -> None:
+        from d810.transforms.native_patch_plan import NativeMetadataActionKind
+
+        plan, _ = _plan_with_metadata_actions()
+        executor = FakeMetadataExecutor(self._initial_state())
+        rig = build_gateway(tmp_path, plan.operations, metadata_executor=executor)
+        receipt = rig.gateway.apply(plan)
+        assert receipt.certificate is not None
+        assert rig.gateway.certificate_matches_current(plan, receipt.certificate)
+
+        executor.state[(NativeMetadataActionKind.UPDATE_XREF, 0x1000)] = "cref:"
+
+        assert not rig.gateway.certificate_matches_current(plan, receipt.certificate)
+
     def test_a_before_state_mismatch_aborts_rather_than_applying(
         self, tmp_path
     ) -> None:
@@ -868,6 +951,30 @@ class TestMetadataActionExecution:
             rig.gateway.apply(plan)
 
         assert executor.applied == [], "no action may run after a mismatch"
+
+    def test_primitive_that_mutates_then_reports_failure_is_compensated(
+        self, tmp_path
+    ) -> None:
+        """The before image is durable before the primitive can mutate.
+
+        Supported live actions are deliberately single IDA primitives.  This
+        seam proves the remaining possible failure shape: a primitive has
+        reached its exact after-state but reports failure.  Emergency
+        recovery must reverse it from the pre-recorded state, not leave an
+        aggregate action half-applied.
+        """
+        plan, _ = _plan_with_metadata_actions()
+        initial = self._initial_state()
+        executor = FakeMetadataExecutor(dict(initial), mutate_then_fail=True)
+        rig = build_gateway(tmp_path, plan.operations, metadata_executor=executor)
+
+        with pytest.raises(Exception):
+            rig.gateway.apply(plan)
+
+        assert executor.state == initial
+        record = rig.journal.get(_sole_transaction_id(rig.journal))
+        assert record is not None
+        assert record.state is NativeJournalState.RESTORED
 
     def test_restore_reverses_actions_in_reverse_application_order(
         self, tmp_path

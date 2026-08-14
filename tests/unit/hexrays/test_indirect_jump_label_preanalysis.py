@@ -1,4 +1,5 @@
-import sys
+import ast
+import inspect
 from types import SimpleNamespace
 
 from d810.hexrays.preanalysis import flowchart_preanalysis
@@ -7,8 +8,6 @@ from d810.hexrays.preanalysis.indirect_jump_discovery import (
     DiscoveredIndirectJumpTable,
 )
 from d810.hexrays.preanalysis.indirect_jump_labels import (
-    _add_user_cref_with_fallback,
-    _add_resolved_state_write_crefs,
     materialized_indirect_transfers,
     merge_materialized_indirect_transfers,
     merge_terminal_return_carrier_requests,
@@ -81,6 +80,35 @@ def test_indirect_label_materialization_plan_rejects_unbounded_range() -> None:
             discovered_function_end=0x180017610,
         )
         is None
+    )
+
+
+def test_direct_writer_is_reduced_to_a_native_patch_plan_request() -> None:
+    """The preanalysis writer may discover, but it may not mutate IDA.
+
+    This is intentionally scoped to the known migration target.  The Task 4
+    inventory still owns classification of other IDA maintenance helpers.
+    """
+    source = inspect.getsource(labels.materialize_indirect_label_targets)
+    tree = ast.parse(source)
+    calls = {
+        node.func.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+
+    assert "NativePatchPlanRequest" in source
+    assert not calls.intersection(
+        {
+            "del_items",
+            "create_insn",
+            "reanalyze_function",
+            "auto_wait",
+            "mark_cfunc_dirty",
+            "add_cref",
+            "append_func_tail",
+            "set_switch_info",
+        }
     )
 
 
@@ -211,72 +239,6 @@ def test_releasing_live_bindings_does_not_create_an_address_keyed_clear_path() -
     assert terminal_return_carrier_requests(state) == (request,)
 
 
-def test_indirect_label_cref_uses_fallback_kind(monkeypatch) -> None:
-    calls: list[int] = []
-
-    def add_cref(_source: int, _target: int, flags: int) -> bool:
-        calls.append(flags)
-        return flags == (0x20 | 0x8000)
-
-    fake_ida_xref = SimpleNamespace(
-        fl_JN=0x10,
-        fl_CF=0x20,
-        fl_F=0x40,
-        XREF_USER=0x8000,
-        add_cref=add_cref,
-    )
-    monkeypatch.setitem(sys.modules, "ida_xref", fake_ida_xref)
-
-    assert _add_user_cref_with_fallback(0x18001776D, 0x18001761A)
-    assert calls == [0x10 | 0x8000, 0x20 | 0x8000]
-
-
-def test_resolved_state_write_crefs_scan_raw_label_range(monkeypatch) -> None:
-    data: dict[int, int] = {}
-    for ea, state_value in ((0x100, 2), (0x120, 3)):
-        encoded = (0xC7, 0x44, 0x24, 0x30) + tuple(
-            (state_value >> shift) & 0xFF for shift in (0, 8, 16, 24)
-        )
-        for offset, byte in enumerate(encoded):
-            data[ea + offset] = byte
-    calls: list[tuple[int, int]] = []
-
-    fake_idaapi = SimpleNamespace(BADADDR=-1)
-    fake_idc = SimpleNamespace(print_insn_mnem=lambda _ea: "")
-    fake_ida_bytes = SimpleNamespace(
-        get_byte=lambda ea: data.get(ea, 0x90),
-        get_dword=lambda ea: sum(data.get(ea + i, 0) << (i * 8) for i in range(4)),
-        next_head=lambda _ea, _stop: -1,
-    )
-
-    def add_cref(source: int, target: int, _flags: int) -> bool:
-        calls.append((source, target))
-        return True
-
-    fake_ida_xref = SimpleNamespace(
-        fl_JN=0x10,
-        fl_CF=0x20,
-        fl_F=0x40,
-        XREF_USER=0x8000,
-        add_cref=add_cref,
-    )
-    monkeypatch.setitem(sys.modules, "idaapi", fake_idaapi)
-    monkeypatch.setitem(sys.modules, "idc", fake_idc)
-    monkeypatch.setitem(sys.modules, "ida_bytes", fake_ida_bytes)
-    monkeypatch.setitem(sys.modules, "ida_xref", fake_ida_xref)
-
-    count = _add_resolved_state_write_crefs(
-        function_ea=0x80,
-        label_end=0x140,
-        targets=(0xAAA0, 0xBBB0, 0xCCC0),
-        state_base=1,
-        state_var_stkoff=0x30,
-    )
-
-    assert count == 2
-    assert calls == [(0x100, 0xBBB0), (0x120, 0xCCC0)]
-
-
 def test_current_function_materialization_uses_discovered_state_slot(
     monkeypatch,
 ) -> None:
@@ -363,7 +325,7 @@ def test_indirect_materialization_subscribes_to_flowchart_event(
         native_preanalysis=NativePreanalysisSessionState(),
         resolver_attachment=None,
     )
-    state = resolver_session_state(session)
+    resolver_session_state(session)
 
     def materialize(function_ea: int, *, state: object):
         calls.append(function_ea)

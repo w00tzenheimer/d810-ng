@@ -3,8 +3,9 @@
 Tigress indirect flattening copies a native label table to the stack and then
 dispatches with ``ijmp`` through that stack slot.  IDA may keep the native label
 bodies outside the function graph used by Hex-Rays, so the resulting MBA only
-contains the table-copy stub and final indirect jump.  This module performs the
-IDA-specific preanalysis needed to make those labels visible to Hex-Rays.
+contains the table-copy stub and final indirect jump.  This module discovers
+that shape and emits a read-only native-patch request; a manager-owned gateway
+is the only component permitted to materialize labels in the IDB.
 
 Indirect-dispatcher materialization family
 ------------------------------------------
@@ -14,8 +15,8 @@ seam and routed for CFF recovery. A dispatcher "shape" is a member of the family
 if it implements discovery + delivery and then uses these three shared
 primitives:
 
-* :func:`create_dispatcher_target_instructions` -- turn discovered handler EAs
-  into real code/flowchart heads (undefining stale data heads first).
+* :class:`NativePatchPlanRequest` -- describe the discovered handler/table
+  facts for manager-owned native materialization.
 * :func:`mark_indirect_dispatcher` -- record that a function was materialized as
   a register-indirect dispatcher.
 * :func:`is_materialized_indirect_dispatcher` -- the address-agnostic signal the
@@ -42,7 +43,7 @@ discovery + delivery because both differ fundamentally:
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
 from d810.analyses.control_flow.materialized_indirect_transfer import (
@@ -53,12 +54,11 @@ from d810.analyses.control_flow.native_preanalysis_session import (
     ResolverEvidenceAttachment,
 )
 from d810.core.logging import getLogger
-
-logger = getLogger("d810.hexrays.preanalysis.indirect_jump_labels")
-
 from d810.hexrays.preanalysis.indirect_jump_discovery import (
     discover_indirect_jump_table,
 )
+
+logger = getLogger("d810.hexrays.preanalysis.indirect_jump_labels")
 
 
 @dataclass(frozen=True)
@@ -92,6 +92,29 @@ class IndirectLabelMaterializationResult:
     reason: str
     boundary_flow_xref_count: int = 0
     resolved_state_xref_count: int = 0
+
+
+@dataclass(frozen=True)
+class NativePatchPlanRequest:
+    """Read-only proposal for manager-owned native materialization.
+
+    This is deliberately not an executable IDA action.  The preanalysis layer
+    only discovers the dispatcher and emits the request; a manager-owned
+    adapter captures live metadata, builds the concrete ``NativePatchPlan``,
+    applies policy, and is the sole path to ``NativePatchGateway``.
+    """
+
+    materialization: IndirectLabelMaterializationPlan
+    dispatch_jump_ea: int | None
+    switch_start_ea: int | None
+    install_switch_info: bool
+    state_base: int
+    state_var_stkoff: int | None
+
+
+NativePatchPlanRequestExecutor = Callable[
+    [NativePatchPlanRequest], IndirectLabelMaterializationResult
+]
 
 
 def _parse_int(value: object, *, default: int | None = None) -> int | None:
@@ -184,43 +207,6 @@ def _discover_next_function_start(function_ea: int) -> int | None:
         return None
 
 
-def create_dispatcher_target_instructions(targets: Sequence[int]) -> None:
-    """Disassemble each computed-goto label target into an instruction head.
-
-    Shared primitive of the indirect-dispatcher materialization family (see the
-    module docstring): both the pointer-table and comparison-tree shapes call it
-    to promote discovered handler EAs to real code/flowchart heads.
-
-    A Tigress label body that immediately abuts the dispatch ``jmp reg`` (the
-    ``jmp`` has no fall-through, so the byte after it is only reachable through
-    the indirect table) is frequently left as an *undefined data* head by IDA's
-    autoanalysis: the only reference to it is the data qword in the jump table.
-    ``create_insn`` is a no-op on a byte that is already a defined data item, so
-    such a label would never become a code head -- and Hex-Rays would then never
-    give it its own MBA block (the handler ``target_block`` resolves to ``-1``).
-
-    Undefining the data item first lets ``create_insn`` decode the real handler
-    instruction, so the label becomes an instruction/flowchart head that the
-    indirect engine can resolve to a concrete block.  Targets that are already
-    code heads are left untouched.
-    """
-    import ida_bytes  # type: ignore[import-untyped]
-    import idaapi  # type: ignore[import-untyped]
-
-    for target in sorted({int(target) for target in targets}):
-        try:
-            flags = ida_bytes.get_full_flags(int(target))
-            already_code = bool(ida_bytes.is_code(flags))
-            if not already_code:
-                # Undefine a stale data head so the byte can be re-decoded as the
-                # handler's first instruction; address-agnostic (driven by the
-                # discovered table targets, not any hard-coded label EA).
-                ida_bytes.del_items(int(target), ida_bytes.DELIT_SIMPLE, 1)
-            idaapi.create_insn(int(target))
-        except Exception:
-            logger.debug("failed creating instruction at 0x%X", target, exc_info=True)
-
-
 def _find_indirect_jump_ea(start: int, end: int) -> int | None:
     import ida_bytes  # type: ignore[import-untyped]
     import idaapi  # type: ignore[import-untyped]
@@ -246,332 +232,6 @@ def _find_indirect_jump_ea(start: int, end: int) -> int | None:
     return None
 
 
-def _add_jump_target_crefs(dispatch_jump_ea: int | None, targets: Sequence[int]) -> int:
-    """Add surviving code crefs from the dispatch jump to each handler label.
-
-    The dispatch ``jmp reg`` has no fall-through, so a computed-goto label that
-    sits *immediately after* it (``target == dispatch_jump_ea + insn_len``) is
-    the jump's fall-through address.  IDA's autoanalysis treats a near-jump cref
-    to an instruction's own fall-through as a degenerate "jump to next" edge and
-    *deletes it after reanalysis*, even with ``XREF_USER`` -- so the abutting
-    handler would never gain an incoming code reference and Hex-Rays would drop
-    it from the MBA flowgraph (its ``target_block`` resolves to ``-1``).
-
-    For that one fall-through-adjacent target the cref is instead anchored from
-    the instruction *before* the dispatch jump (the table-load), a non-adjacent
-    source whose ``fl_JN`` cref survives reanalysis and makes the handler a real
-    flowchart/MBA block.  All addresses are derived from the discovered dispatch
-    jump and table targets, so this stays fully address-agnostic.
-    """
-    if dispatch_jump_ea is None:
-        return 0
-    try:
-        import ida_bytes  # type: ignore[import-untyped]
-        import idaapi  # type: ignore[import-untyped]
-        import ida_xref  # type: ignore[import-untyped]
-
-        dispatch_jump_ea = int(dispatch_jump_ea)
-        badaddr = int(getattr(idaapi, "BADADDR", -1))
-        # Fall-through address of the dispatch jump: the byte immediately after
-        # it.  A handler at exactly this EA needs a non-adjacent cref anchor.
-        fallthrough_ea = int(ida_bytes.next_head(dispatch_jump_ea, badaddr))
-        anchor_ea = int(ida_bytes.prev_head(dispatch_jump_ea, 0))
-        count = 0
-        for target in sorted({int(target) for target in targets}):
-            source_ea = dispatch_jump_ea
-            if (
-                target == fallthrough_ea
-                and anchor_ea != badaddr
-                and anchor_ea < dispatch_jump_ea
-            ):
-                source_ea = anchor_ea
-                logger.debug(
-                    "indirect handler 0x%X abuts dispatch jump 0x%X; anchoring "
-                    "code cref from preceding instruction 0x%X so it survives "
-                    "reanalysis",
-                    target,
-                    dispatch_jump_ea,
-                    anchor_ea,
-                )
-            if ida_xref.add_cref(
-                source_ea,
-                target,
-                ida_xref.fl_JN | ida_xref.XREF_USER,
-            ):
-                count += 1
-        return count
-    except Exception:
-        logger.debug(
-            "failed adding indirect jump target code references from 0x%X",
-            int(dispatch_jump_ea),
-            exc_info=True,
-        )
-        return 0
-
-
-def _add_user_cref_with_fallback(source_ea: int, target_ea: int) -> bool:
-    """Add an analysis-only code reference using the narrowest accepted kind."""
-    import ida_xref  # type: ignore[import-untyped]
-
-    flags = (
-        ida_xref.fl_JN,
-        ida_xref.fl_CF,
-        ida_xref.fl_F,
-    )
-    for flag in flags:
-        try:
-            if ida_xref.add_cref(
-                int(source_ea),
-                int(target_ea),
-                int(flag) | ida_xref.XREF_USER,
-            ):
-                return True
-        except Exception:
-            logger.debug(
-                "failed adding indirect-label cref 0x%X -> 0x%X flags=0x%X",
-                int(source_ea),
-                int(target_ea),
-                int(flag),
-                exc_info=True,
-            )
-    return False
-
-
-def _flowchart_block_starts(func: object) -> frozenset[int]:
-    try:
-        import ida_gdl  # type: ignore[import-untyped]
-
-        return frozenset(int(block.start_ea) for block in ida_gdl.FlowChart(func))
-    except Exception:
-        logger.debug("failed reading function flowchart", exc_info=True)
-        return frozenset()
-
-
-def _add_missing_label_boundary_flow_crefs(
-    func: object,
-    targets: Sequence[int],
-) -> int:
-    """Force block boundaries for table labels hidden after no-fallthrough jumps."""
-    try:
-        import ida_bytes  # type: ignore[import-untyped]
-        import idaapi  # type: ignore[import-untyped]
-        import idc  # type: ignore[import-untyped]
-
-        func_start = int(getattr(func, "start_ea", 0) or 0)
-        badaddr = int(getattr(idaapi, "BADADDR", -1))
-        count = 0
-        for target in sorted({int(target) for target in targets}):
-            prev_ea = int(ida_bytes.prev_head(target, func_start))
-            if prev_ea == badaddr or prev_ea >= target:
-                continue
-            next_ea = int(ida_bytes.next_head(prev_ea, target + 16))
-            if next_ea != target:
-                continue
-            mnemonic = str(idc.print_insn_mnem(prev_ea) or "").lower()
-            if mnemonic != "jmp":
-                continue
-            if _add_user_cref_with_fallback(prev_ea, target):
-                count += 1
-        return count
-    except Exception:
-        logger.debug("failed adding boundary flow xrefs", exc_info=True)
-        return 0
-
-
-def _matches_rsp_state_write(ea: int, state_var_stkoff: int) -> int | None:
-    try:
-        import ida_bytes  # type: ignore[import-untyped]
-
-        if int(ida_bytes.get_byte(ea)) != 0xC7:
-            return None
-        if int(ida_bytes.get_byte(ea + 1)) != 0x44:
-            return None
-        if int(ida_bytes.get_byte(ea + 2)) != 0x24:
-            return None
-        if int(ida_bytes.get_byte(ea + 3)) != (int(state_var_stkoff) & 0xFF):
-            return None
-        return int(ida_bytes.get_dword(ea + 4)) & 0xFFFFFFFF
-    except Exception:
-        return None
-
-
-def _find_following_jump_ea(start_ea: int, stop_ea: int) -> int | None:
-    try:
-        import ida_bytes  # type: ignore[import-untyped]
-        import idaapi  # type: ignore[import-untyped]
-        import idc  # type: ignore[import-untyped]
-
-        badaddr = int(getattr(idaapi, "BADADDR", -1))
-        ea = int(ida_bytes.next_head(int(start_ea), int(stop_ea)))
-        local_stop = min(int(stop_ea), int(start_ea) + 0x80)
-        while ea != badaddr and ea < local_stop:
-            mnemonic = str(idc.print_insn_mnem(ea) or "").lower()
-            if mnemonic == "jmp":
-                return int(ea)
-            next_ea = int(ida_bytes.next_head(ea, int(stop_ea)))
-            if next_ea == badaddr or next_ea <= ea:
-                break
-            ea = next_ea
-    except Exception:
-        logger.debug(
-            "failed finding following jump after 0x%X",
-            int(start_ea),
-            exc_info=True,
-        )
-    return None
-
-
-def _add_resolved_state_write_crefs(
-    *,
-    function_ea: int,
-    label_end: int,
-    targets: Sequence[int],
-    state_base: int,
-    state_var_stkoff: int | None,
-) -> int:
-    if state_var_stkoff is None:
-        return 0
-    try:
-        import idaapi  # type: ignore[import-untyped]
-
-        target_by_state = {
-            int(state_base) + index: int(target)
-            for index, target in enumerate(tuple(targets))
-        }
-        badaddr = int(getattr(idaapi, "BADADDR", -1))
-        added_edges: set[tuple[int, int]] = set()
-        ea = int(function_ea)
-        stop = int(label_end)
-        while ea != badaddr and ea + 8 <= stop:
-            state_value = _matches_rsp_state_write(ea, int(state_var_stkoff))
-            if state_value is not None:
-                target = target_by_state.get(int(state_value))
-                if target is None:
-                    logger.debug(
-                        "Tigress indirect state write has no table target: "
-                        "state=0x%X write=0x%X",
-                        int(state_value) & 0xFFFFFFFF,
-                        int(ea),
-                    )
-                    ea += 1
-                    continue
-                jump_ea = _find_following_jump_ea(ea, stop)
-                added = False
-                if jump_ea is not None:
-                    added = _add_user_cref_with_fallback(jump_ea, int(target))
-                if not added:
-                    added = _add_user_cref_with_fallback(ea, int(target))
-                logger.debug(
-                    "Tigress indirect resolved state edge state=0x%X "
-                    "write=0x%X jump=%s target=0x%X added=%s",
-                    int(state_value) & 0xFFFFFFFF,
-                    int(ea),
-                    "<none>" if jump_ea is None else f"0x{int(jump_ea):X}",
-                    int(target) if target is not None else -1,
-                    added,
-                )
-                if added:
-                    added_edges.add((int(ea), int(target)))
-                ea += 8
-                continue
-            ea += 1
-        return len(added_edges)
-    except Exception:
-        logger.debug("failed adding resolved state-write xrefs", exc_info=True)
-        return 0
-
-
-def _install_switch_info(
-    *,
-    dispatch_jump_ea: int | None,
-    function_ea: int,
-    switch_start_ea: int | None,
-    table_address: int,
-    table_count: int,
-    state_base: int,
-) -> bool:
-    if dispatch_jump_ea is None:
-        return False
-    try:
-        import ida_nalt  # type: ignore[import-untyped]
-        import idaapi  # type: ignore[import-untyped]
-
-        si = ida_nalt.switch_info_t()
-        si.clear()
-        si.flags = ida_nalt.SWI_USER | ida_nalt.SWI_ELBASE
-        si.jumps = int(table_address)
-        si.ncases = int(table_count)
-        si.defjump = int(getattr(idaapi, "BADADDR", -1))
-        si.startea = int(switch_start_ea or dispatch_jump_ea or function_ea)
-        si.expr_ea = int(dispatch_jump_ea)
-        si.lowcase = int(state_base)
-        si.set_elbase(0)
-        si.set_jtable_element_size(8)
-        si.set_jtable_size(int(table_count))
-        ida_nalt.set_switch_info(int(dispatch_jump_ea), si)
-        check = ida_nalt.switch_info_t()
-        return bool(ida_nalt.get_switch_info(check, int(dispatch_jump_ea)))
-    except Exception:
-        logger.debug(
-            "failed installing switch_info_t for indirect jump at 0x%X",
-            int(dispatch_jump_ea),
-            exc_info=True,
-        )
-        return False
-
-
-def _append_tail(func: object, start: int, end: int) -> bool:
-    try:
-        import ida_funcs  # type: ignore[import-untyped]
-
-        append = getattr(ida_funcs, "append_func_tail", None)
-        if append is not None:
-            return bool(append(func, int(start), int(end)))
-    except Exception:
-        logger.debug("ida_funcs.append_func_tail failed", exc_info=True)
-    try:
-        import idaapi  # type: ignore[import-untyped]
-
-        append = getattr(idaapi, "append_func_tail", None)
-        if append is not None:
-            return bool(append(func, int(start), int(end)))
-    except Exception:
-        logger.debug("idaapi.append_func_tail failed", exc_info=True)
-    return False
-
-
-def _reanalyze_range(function_ea: int, start: int, end: int) -> None:
-    import idaapi  # type: ignore[import-untyped]
-
-    try:
-        if hasattr(idaapi, "plan_and_wait"):
-            idaapi.plan_and_wait(int(start), int(end))
-    except Exception:
-        logger.debug("plan_and_wait failed for 0x%X..0x%X", start, end, exc_info=True)
-    try:
-        import ida_funcs  # type: ignore[import-untyped]
-
-        func = ida_funcs.get_func(int(function_ea))
-        if func is not None:
-            try:
-                ida_funcs.reanalyze_function(func, int(start), int(end), True)
-            except TypeError:
-                ida_funcs.reanalyze_function(func)
-    except Exception:
-        logger.debug("reanalyze_function failed for 0x%X", function_ea, exc_info=True)
-    try:
-        idaapi.auto_wait()
-    except Exception:
-        logger.debug(
-            "auto_wait failed after indirect-label materialization", exc_info=True
-        )
-    try:
-        if hasattr(idaapi, "mark_cfunc_dirty"):
-            idaapi.mark_cfunc_dirty(int(function_ea), False)
-    except Exception:
-        logger.debug("mark_cfunc_dirty failed for 0x%X", function_ea, exc_info=True)
-
-
 def materialize_indirect_label_targets(
     *,
     function_ea: int,
@@ -585,9 +245,14 @@ def materialize_indirect_label_targets(
     state_base: int = 1,
     state_var_stkoff: int | None = None,
 ) -> IndirectLabelMaterializationResult:
-    """Attach configured computed-goto label bodies to their owning function."""
+    """Emit one manager-owned ``NativePatchPlan`` request.
+
+    This function used to be the direct writer.  It is now intentionally
+    read-only: it discovers the exact same label/table facts, packages them
+    into a proposal, and returns a compatibility abstention until a manager
+    registers an explicit-policy executor.
+    """
     import ida_funcs  # type: ignore[import-untyped]
-    import idaapi  # type: ignore[import-untyped]
 
     function_ea = int(function_ea)
     table_address = int(table_address)
@@ -609,13 +274,7 @@ def materialize_indirect_label_targets(
             reason="empty_table",
         )
 
-    func = ida_funcs.get_func(function_ea) or idaapi.get_func(function_ea)
-    if func is None:
-        try:
-            idaapi.add_func(function_ea)
-        except Exception:
-            logger.debug("add_func failed for 0x%X", function_ea, exc_info=True)
-        func = ida_funcs.get_func(function_ea) or idaapi.get_func(function_ea)
+    func = ida_funcs.get_func(function_ea)
     if func is None:
         return IndirectLabelMaterializationResult(
             function_ea=function_ea,
@@ -661,82 +320,25 @@ def materialize_indirect_label_targets(
             reason="unbounded_label_range",
         )
 
-    create_dispatcher_target_instructions(plan.target_eas)
     indirect_jump_ea = (
         int(dispatch_jump_ea)
         if dispatch_jump_ea is not None
         else _find_indirect_jump_ea(function_ea, plan.label_end)
     )
-    jump_xref_count = _add_jump_target_crefs(indirect_jump_ea, plan.target_eas)
-    resolved_state_xref_count = _add_resolved_state_write_crefs(
-        function_ea=function_ea,
-        label_end=plan.label_end,
-        targets=targets,
+    request = NativePatchPlanRequest(
+        materialization=plan,
+        dispatch_jump_ea=indirect_jump_ea,
+        switch_start_ea=switch_start_ea,
+        install_switch_info=bool(install_switch_info),
         state_base=int(state_base),
         state_var_stkoff=state_var_stkoff,
     )
-    switch_info_installed = False
-    if install_switch_info:
-        switch_info_installed = _install_switch_info(
-            dispatch_jump_ea=indirect_jump_ea,
-            function_ea=function_ea,
-            switch_start_ea=switch_start_ea,
-            table_address=table_address,
-            table_count=table_count,
-            state_base=int(state_base),
-        )
-    before = _count_materialized_targets(func, plan.target_eas)
-    appended_tail = False
-    if before < len(plan.target_eas):
-        appended_tail = _append_tail(func, plan.label_start, plan.label_end)
-    _reanalyze_range(function_ea, plan.label_start, plan.label_end)
+    executor = _INDIRECT_MATERIALIZATION_EXECUTOR
+    if executor is not None:
+        return executor(request)
 
-    func = ida_funcs.get_func(function_ea) or idaapi.get_func(function_ea)
-    boundary_flow_xref_count = 0
-    if func is not None:
-        boundary_flow_xref_count = _add_missing_label_boundary_flow_crefs(
-            func,
-            plan.target_eas,
-        )
-        if boundary_flow_xref_count:
-            _reanalyze_range(function_ea, plan.label_start, plan.label_end)
-            refreshed_state_xref_count = _add_resolved_state_write_crefs(
-                function_ea=function_ea,
-                label_end=plan.label_end,
-                targets=targets,
-                state_base=int(state_base),
-                state_var_stkoff=state_var_stkoff,
-            )
-            if refreshed_state_xref_count:
-                resolved_state_xref_count = max(
-                    resolved_state_xref_count,
-                    refreshed_state_xref_count,
-                )
-                _reanalyze_range(function_ea, plan.label_start, plan.label_end)
-            func = ida_funcs.get_func(function_ea) or idaapi.get_func(function_ea)
-    after = (
-        _count_materialized_targets(func, plan.target_eas) if func is not None else 0
-    )
-    success = after == len(plan.target_eas)
-    reason = "materialized" if success else "targets_still_missing"
-    logger.info(
-        "Tigress indirect label materialization 0x%X: targets=%d materialized=%d "
-        "range=0x%X..0x%X dispatch_jump=%s jump_xrefs=%d "
-        "resolved_state_xrefs=%d appended_tail=%s boundary_flow_xrefs=%d "
-        "switch_info=%s reason=%s",
-        function_ea,
-        len(plan.target_eas),
-        after,
-        plan.label_start,
-        plan.label_end,
-        "<none>" if indirect_jump_ea is None else f"0x{indirect_jump_ea:X}",
-        jump_xref_count,
-        resolved_state_xref_count,
-        appended_tail,
-        boundary_flow_xref_count,
-        switch_info_installed,
-        reason,
-    )
+    # Policy is deliberately opt-in.  Preserve the old discovery evidence in
+    # the result while making it unambiguous that no database change occurred.
     return IndirectLabelMaterializationResult(
         function_ea=function_ea,
         table_address=table_address,
@@ -744,15 +346,13 @@ def materialize_indirect_label_targets(
         label_start=plan.label_start,
         label_end=plan.label_end,
         target_count=len(plan.target_eas),
-        materialized_target_count=after,
+        materialized_target_count=_count_materialized_targets(func, plan.target_eas),
         dispatch_jump_ea=indirect_jump_ea,
-        jump_xref_count=jump_xref_count,
-        switch_info_installed=switch_info_installed,
-        appended_tail=appended_tail,
-        success=success,
-        reason=reason,
-        boundary_flow_xref_count=boundary_flow_xref_count,
-        resolved_state_xref_count=resolved_state_xref_count,
+        jump_xref_count=0,
+        switch_info_installed=False,
+        appended_tail=False,
+        success=False,
+        reason="native_patch_policy_disabled",
     )
 
 
@@ -946,6 +546,8 @@ def materialize_indirect_label_targets_from_config(
 
 _INDIRECT_MATERIALIZATION_REGISTERED = False
 _INDIRECT_MATERIALIZATION_GOTO_TABLE: dict = {}
+_INDIRECT_MATERIALIZATION_EXECUTOR: NativePatchPlanRequestExecutor | None = None
+_INDIRECT_MATERIALIZATION_DEFAULT_EXECUTOR: NativePatchPlanRequestExecutor | None = None
 _INDIRECT_MATERIALIZATION_HANDLER = "hexrays.indirect_jump_label_materialization"
 
 
@@ -1026,15 +628,30 @@ def _on_flowchart_preanalysis(*, function_ea: int, mba: object, decision: dict) 
     )
 
 
-def register_indirect_materialization(goto_table_info: Mapping[str, object]) -> None:
-    """Register table info for flowchart-stage current-function materialization."""
-    global _INDIRECT_MATERIALIZATION_REGISTERED, _INDIRECT_MATERIALIZATION_GOTO_TABLE
+def register_indirect_materialization(
+    goto_table_info: Mapping[str, object],
+    *,
+    native_patch_executor: NativePatchPlanRequestExecutor | None = None,
+) -> None:
+    """Register discovery plus an optional manager-owned request executor.
+
+    A missing executor is the deliberate read-only compatibility mode: the
+    flowchart hook still detects the dispatcher but cannot mutate the IDB.
+    """
+    global _INDIRECT_MATERIALIZATION_REGISTERED
+    global _INDIRECT_MATERIALIZATION_GOTO_TABLE
+    global _INDIRECT_MATERIALIZATION_EXECUTOR
     from d810.hexrays.preanalysis.flowchart_preanalysis import (
         register_flowchart_preanalysis_handler,
     )
 
     _INDIRECT_MATERIALIZATION_REGISTERED = True
     _INDIRECT_MATERIALIZATION_GOTO_TABLE = dict(goto_table_info or {})
+    _INDIRECT_MATERIALIZATION_EXECUTOR = (
+        native_patch_executor
+        if native_patch_executor is not None
+        else _INDIRECT_MATERIALIZATION_DEFAULT_EXECUTOR
+    )
     register_flowchart_preanalysis_handler(
         _INDIRECT_MATERIALIZATION_HANDLER,
         _on_flowchart_preanalysis,
@@ -1043,14 +660,33 @@ def register_indirect_materialization(goto_table_info: Mapping[str, object]) -> 
 
 def reset_indirect_materialization() -> None:
     """Clear the flowchart-stage materialization registration."""
-    global _INDIRECT_MATERIALIZATION_REGISTERED, _INDIRECT_MATERIALIZATION_GOTO_TABLE
+    global _INDIRECT_MATERIALIZATION_REGISTERED
+    global _INDIRECT_MATERIALIZATION_GOTO_TABLE
+    global _INDIRECT_MATERIALIZATION_EXECUTOR
     from d810.hexrays.preanalysis.flowchart_preanalysis import (
         unregister_flowchart_preanalysis_handler,
     )
 
     _INDIRECT_MATERIALIZATION_REGISTERED = False
     _INDIRECT_MATERIALIZATION_GOTO_TABLE = {}
+    _INDIRECT_MATERIALIZATION_EXECUTOR = None
     unregister_flowchart_preanalysis_handler(_INDIRECT_MATERIALIZATION_HANDLER)
+
+
+def set_indirect_materialization_default_executor(
+    executor: NativePatchPlanRequestExecutor | None,
+) -> None:
+    """Inject/remove the manager-owned executor for future registrations.
+
+    Project reload clears the active request executor but intentionally keeps
+    this manager-owned default: the manager survives that reload and remains
+    responsible for explicit native-patch policy.
+    """
+    global _INDIRECT_MATERIALIZATION_DEFAULT_EXECUTOR
+    global _INDIRECT_MATERIALIZATION_EXECUTOR
+    _INDIRECT_MATERIALIZATION_DEFAULT_EXECUTOR = executor
+    if _INDIRECT_MATERIALIZATION_REGISTERED:
+        _INDIRECT_MATERIALIZATION_EXECUTOR = executor
 
 
 def run_indirect_materialization_for_function(
@@ -1120,14 +756,16 @@ __all__ = [
     "materialized_indirect_transfers",
     "merge_terminal_return_carrier_requests",
     "terminal_return_carrier_requests",
-    "create_dispatcher_target_instructions",
     "IndirectLabelMaterializationPlan",
+    "NativePatchPlanRequest",
+    "NativePatchPlanRequestExecutor",
     "is_materialized_indirect_dispatcher",
     "IndirectLabelMaterializationResult",
     "materialize_indirect_label_targets",
     "materialize_discovered_indirect_label_targets",
     "materialize_indirect_label_targets_for_function",
     "register_indirect_materialization",
+    "set_indirect_materialization_default_executor",
     "reset_indirect_materialization",
     "run_indirect_materialization_for_function",
     "materialize_indirect_label_targets_from_config",

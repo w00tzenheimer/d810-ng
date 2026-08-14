@@ -245,6 +245,10 @@ class NativeRelocationEvidence:
 class NativeMetadataActionKind(str, enum.Enum):
     RECREATE_ITEM = "recreate_item"
     UPDATE_XREF = "update_xref"
+    # Installs/removes the complete ``switch_info_t`` record at an indirect
+    # jump.  This is distinct from xrefs: the record drives IDA/Hex-Rays'
+    # switch recognition and is not derivable from either bytes or edges.
+    SET_SWITCH_INFO = "set_switch_info"
     # Resizes the function's *entry* chunk (``set_func_end``).
     SET_FUNCTION_TAIL = "set_function_tail"
     # Adds/removes discontiguous *tail chunks* (``append_func_tail`` /
@@ -307,11 +311,13 @@ _FALLBACK_POLICIES = frozenset({"mba", "preopt", "no_patch"})
 
 @dataclass(frozen=True, slots=True)
 class NativePatchOperation:
-    """One byte-range rewrite plus its full authorization/restore evidence.
+    """One native operation plus its full authorization/restore evidence.
 
     See design requirement 6: expected current/original bytes, inherited
     patch rows, before/after decoded shapes, owned metadata actions, and a
-    restore snapshot are all mandatory, non-optional fields.
+    restore snapshot are all mandatory, non-optional fields.  A
+    metadata-only operation retains a byte range as a read-only identity
+    anchor but sets ``writes_bytes=False`` and may never patch it.
     """
 
     operation_id: str
@@ -330,6 +336,7 @@ class NativePatchOperation:
     relocation_evidence: tuple[NativeRelocationEvidence, ...]
     metadata_actions: tuple[NativeMetadataAction, ...]
     restore_snapshot: NativeRestoreSnapshot
+    writes_bytes: bool = True
 
     def __post_init__(self) -> None:
         _require_identifier(self.operation_id, "operation_id")
@@ -389,6 +396,21 @@ class NativePatchOperation:
             raise TypeError("metadata_actions must be a tuple")
         if not isinstance(self.expected_after_successors, tuple):
             raise TypeError("expected_after_successors must be a tuple")
+        if not isinstance(self.writes_bytes, bool):
+            raise TypeError("writes_bytes must be a bool")
+        if not self.writes_bytes:
+            if not self.metadata_actions:
+                raise ValueError(
+                    "a metadata-only operation must own at least one metadata action"
+                )
+            if self.replacement_bytes != self.expected_current_bytes:
+                raise ValueError(
+                    "a metadata-only operation must preserve its byte anchor"
+                )
+            if self.expected_after_shape != self.expected_before_shape:
+                raise ValueError(
+                    "a metadata-only operation must preserve its decoded anchor shape"
+                )
 
         # Missing/degenerate restore state (design requirement 6 + Task 2
         # Step 1 negative "missing restore state"): the snapshot must be
@@ -420,7 +442,20 @@ class NativePatchOperation:
             tuple(dataclasses.astuple(r) for r in self.relocation_evidence),
             tuple(dataclasses.astuple(m) for m in self.metadata_actions),
             dataclasses.astuple(self.restore_snapshot),
+            self.writes_bytes,
         )
+
+    @property
+    def is_metadata_only(self) -> bool:
+        """True when this operation changes owned metadata but never bytes.
+
+        The non-empty range remains an immutable, live-read anchor for
+        ownership/preflight/certification.  It is intentionally not a dummy
+        byte patch: ``writes_bytes=False`` requires the replacement image to
+        equal the captured current image and the gateway must not call its
+        byte writer for this operation.
+        """
+        return not self.writes_bytes
 
 
 class OverlappingNativePatchOperationsError(ValueError):
@@ -577,6 +612,33 @@ class NativePatchPlan:
     def plan_hash(self) -> str:
         return _stable_hash(self._content_for_hash())
 
+    @property
+    def metadata_target_fingerprint(self) -> str:
+        """Content hash of the metadata state this plan asks IDA to reach.
+
+        The byte-inclusive ``plan_hash`` remains the authorization identity:
+        it must change when a live expected-before witness changes.  A
+        certificate for a metadata-only normalization also needs an identity
+        that survives a second observation of the already-normalized state,
+        so this fingerprint binds only action kind, target EA, and requested
+        after-state.  It is never a substitute for rereading those states
+        before accepting a certificate.
+        """
+        # Several failure-atomic primitives may serially reach one surface
+        # (for example several user xrefs from one source).  Only the final
+        # state per owned surface is the normalized target; intermediate
+        # states are authorization witnesses and necessarily differ on a
+        # no-rerun reread.
+        final_targets: dict[tuple[str, int], str] = {}
+        for operation in self.operations:
+            for action in operation.metadata_actions:
+                final_targets[(action.kind.value, action.ea)] = action.expected_after
+        targets = tuple(
+            (kind, ea, after)
+            for (kind, ea), after in sorted(final_targets.items())
+        )
+        return _stable_hash(targets)
+
 
 # ---------------------------------------------------------------------------
 # NativeCertificate -- section 14.5 of REVERSIBLE-NATIVE-PATCHES.md.
@@ -633,6 +695,7 @@ class NativeCertificate:
     native_origin_map_fingerprint: str
     semantic_plan_hash: str
     native_plan_hash: str
+    metadata_target_fingerprint: str
     d810_version: str
     authorization_class: str
     state: NativeCertificateState
@@ -641,6 +704,9 @@ class NativeCertificate:
 
     def __post_init__(self) -> None:
         _require_identifier(self.certificate_id, "certificate_id")
+        _require_identifier(
+            self.metadata_target_fingerprint, "metadata_target_fingerprint"
+        )
         if not isinstance(self.database_identity, NativeDatabaseIdentity):
             raise TypeError("database_identity must be a NativeDatabaseIdentity")
         if not isinstance(self.function_identity, NativeFunctionIdentity):
@@ -675,6 +741,7 @@ def certificate_to_payload(certificate: NativeCertificate) -> dict:
         "native_origin_map_fingerprint": certificate.native_origin_map_fingerprint,
         "semantic_plan_hash": certificate.semantic_plan_hash,
         "native_plan_hash": certificate.native_plan_hash,
+        "metadata_target_fingerprint": certificate.metadata_target_fingerprint,
         "d810_version": certificate.d810_version,
         "authorization_class": certificate.authorization_class,
         "state": certificate.state.value,
@@ -706,6 +773,7 @@ def certificate_from_payload(payload: dict) -> NativeCertificate:
         native_origin_map_fingerprint=str(payload["native_origin_map_fingerprint"]),
         semantic_plan_hash=str(payload["semantic_plan_hash"]),
         native_plan_hash=str(payload["native_plan_hash"]),
+        metadata_target_fingerprint=str(payload["metadata_target_fingerprint"]),
         d810_version=str(payload["d810_version"]),
         authorization_class=str(payload["authorization_class"]),
         state=NativeCertificateState(payload["state"]),

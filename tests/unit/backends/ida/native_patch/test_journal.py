@@ -10,11 +10,13 @@ retroactively change SQLite transaction state).
 
 from __future__ import annotations
 
+import dataclasses
 import sqlite3
 
 import pytest
 
 from d810.backends.ida.native_patch.journal import (
+    NativePatchMetadataScopeConflictError,
     NativePatchTransactionConflictError,
     SQLiteNativePatchJournal,
 )
@@ -127,6 +129,69 @@ class TestPrepare:
                 )
             )
         )
+        assert second.state is NativeJournalState.PREPARED
+
+    def test_prepare_rejects_same_xref_source_under_distinct_byte_anchors(
+        self, store
+    ) -> None:
+        """Byte-range ownership cannot serialize an xref source mutation."""
+        first = fixtures.operation(
+            operation_id="first",
+            start_ea=0x1000,
+            end_ea=0x1002,
+            metadata_actions=(
+                NativeMetadataAction(
+                    kind=NativeMetadataActionKind.UPDATE_XREF,
+                    ea=0x5000,
+                    expected_before="cref3:",
+                    expected_after="cref3:0x6000@0x11@u",
+                ),
+            ),
+        )
+        second = fixtures.operation(
+            operation_id="second",
+            start_ea=0x2000,
+            end_ea=0x2002,
+            metadata_actions=(
+                NativeMetadataAction(
+                    kind=NativeMetadataActionKind.UPDATE_XREF,
+                    ea=0x5000,
+                    expected_before="cref3:0x6000@0x11@u",
+                    expected_after="cref3:0x6000@0x11@u,0x7000@0x11@u",
+                ),
+            ),
+        )
+        store.prepare(fixtures.plan(operations=(first,)))
+
+        with pytest.raises(NativePatchMetadataScopeConflictError):
+            store.prepare(fixtures.plan(operations=(second,)))
+
+    def test_metadata_scope_is_released_only_after_verified_restore(
+        self, store
+    ) -> None:
+        operation = fixtures.operation(
+            operation_id="xref-owner",
+            metadata_actions=(
+                NativeMetadataAction(
+                    kind=NativeMetadataActionKind.UPDATE_XREF,
+                    ea=0x5000,
+                    expected_before="cref3:",
+                    expected_after="cref3:0x6000@0x11@u",
+                ),
+            ),
+        )
+        first = store.prepare(fixtures.plan(operations=(operation,)))
+        store.transition(first.transaction_id, NativeJournalState.ROLLING_BACK)
+        store.transition(first.transaction_id, NativeJournalState.RESTORED)
+
+        second = store.prepare(
+            fixtures.plan(
+                operations=(
+                    dataclasses.replace(operation, operation_id="xref-new-owner"),
+                )
+            )
+        )
+
         assert second.state is NativeJournalState.PREPARED
 
     def test_prepare_allows_overlap_after_the_prior_transaction_is_restored(

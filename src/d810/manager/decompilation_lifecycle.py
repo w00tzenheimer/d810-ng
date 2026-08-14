@@ -16,6 +16,12 @@ from d810.core.decompilation_session import (
     DecompilationSessionEvent,
 )
 from d810.core.execution_journal import DecompilationSessionId
+from d810.core.execution_journal import (
+    ExecutionAttemptId,
+    ExecutionAttemptStatus,
+    ExecutionDomain,
+)
+from d810.core.execution_journal_store import ExecutionJournalStore
 from d810.core.logging import getLogger
 from d810.core.input_identity_attestation import (
     InputIdentityResolution,
@@ -99,6 +105,9 @@ class DecompilationSessionContext:
     session_id: DecompilationSessionId = field(
         default_factory=DecompilationSessionId.new
     )
+    #: Durable parent for native proposal/preflight/transaction child attempts.
+    #: It is created only when the manager supplied an execution journal.
+    preanalysis_attempt_id: ExecutionAttemptId | None = None
     input_identity_resolution: InputIdentityResolution | None = None
     native_preanalysis: NativePreanalysisSessionState = field(
         default_factory=NativePreanalysisSessionState
@@ -118,13 +127,17 @@ class DecompilationSessionContext:
 
     def __post_init__(self) -> None:
         resolution = self.input_identity_resolution
-        if resolution is not None and not isinstance(resolution, InputIdentityResolution):
+        if resolution is not None and not isinstance(
+            resolution, InputIdentityResolution
+        ):
             raise TypeError("session input identity resolution is invalid")
         if (
             resolution is not None
             and resolution.input_identity != self.native_key.input_identity
         ):
-            raise ValueError("session native key disagrees with input identity resolution")
+            raise ValueError(
+                "session native key disagrees with input identity resolution"
+            )
         self.frontend_normalization_plan_authority = (
             SessionFrontendNormalizationPlanAuthority(
                 function_ea=int(self.function_ea),
@@ -198,6 +211,7 @@ class DecompilationLifecycleCoordinator:
         typing.Callable[[DecompilationSessionContext], ResolverEvidenceAttachment]
         | None
     ) = None
+    execution_journal: ExecutionJournalStore | None = None
     _active_sessions: list[_SessionActivation] = field(
         default_factory=list,
         init=False,
@@ -248,7 +262,9 @@ class DecompilationLifecycleCoordinator:
         native_key = getattr(supplied, "native_key", None)
         resolution = getattr(supplied, "identity_resolution", None)
         if not isinstance(resolution, InputIdentityResolution):
-            raise TypeError("native preanalysis identity provider returned no resolution")
+            raise TypeError(
+                "native preanalysis identity provider returned no resolution"
+            )
         if native_key is None:
             logger.warning(
                 "D810 native mutation abstained for func=0x%x: input identity %s",
@@ -257,7 +273,9 @@ class DecompilationLifecycleCoordinator:
             )
             raise ValueError("input identity unavailable: " + resolution.reason)
         if not isinstance(native_key, NativePreanalysisKey):
-            raise TypeError("native preanalysis identity provider returned an invalid key")
+            raise TypeError(
+                "native preanalysis identity provider returned an invalid key"
+            )
         if resolution.input_identity != native_key.input_identity:
             raise ValueError("native key disagrees with input identity resolution")
         return native_key, resolution
@@ -464,6 +482,13 @@ class DecompilationLifecycleCoordinator:
             native_key=native_key,
             input_identity_resolution=identity_resolution,
         )
+        if self.execution_journal is not None:
+            parent_attempt = self.execution_journal.begin_attempt(
+                session.session_id,
+                stage_id="hexrays_preanalysis",
+                domain=ExecutionDomain.HOOK,
+            )
+            session.preanalysis_attempt_id = parent_attempt.attempt_id
         session.native_preanalysis.event_observer = (
             lambda transition, owned_session=session: self._observe_evidence_transition(
                 owned_session,
@@ -1108,6 +1133,16 @@ class DecompilationLifecycleCoordinator:
                 logger.exception(
                     "analysis runtime session finish failed for func=0x%x",
                     session.function_ea,
+                )
+        if (
+            self.execution_journal is not None
+            and session.preanalysis_attempt_id is not None
+        ):
+            attempt = self.execution_journal.get_attempt(session.preanalysis_attempt_id)
+            if attempt is not None and attempt.status is ExecutionAttemptStatus.STARTED:
+                self.execution_journal.advance(
+                    attempt,
+                    status=ExecutionAttemptStatus.COMPLETED,
                 )
         self._observe_session(session, "finished")
         self._emit_session_event(DecompilationEvent.SESSION_FINISHED, session.event)

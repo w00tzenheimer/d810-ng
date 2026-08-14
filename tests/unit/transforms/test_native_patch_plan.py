@@ -30,6 +30,8 @@ from d810.transforms.native_patch_plan import (
     NativeItemHead,
     NativeItemKind,
     NativeItemShape,
+    NativeMetadataAction,
+    NativeMetadataActionKind,
     NativePatchOperation,
     NativePatchPlan,
     NativeRestoreSnapshot,
@@ -189,6 +191,35 @@ def test_plan_hash_changes_when_expected_before_bytes_change() -> None:
     first = plan_with_before(b"\x75\x01")
     second = plan_with_before(b"\x75\x02")
     assert first.plan_hash != second.plan_hash
+
+
+def test_metadata_target_fingerprint_binds_after_state_not_before_state() -> None:
+    action = NativeMetadataAction(
+        kind=NativeMetadataActionKind.UPDATE_XREF,
+        ea=0x1000,
+        expected_before="cref3:",
+        expected_after="cref3:0x2000@0x11@u",
+    )
+    reread_action = dataclasses.replace(action, expected_before="cref3:0x2000@0x11@u")
+    changed_target = dataclasses.replace(action, expected_after="cref3:0x3000@0x11@u")
+
+    first = _plan(
+        operations=(dataclasses.replace(_operation(), metadata_actions=(action,)),)
+    )
+    reread = _plan(
+        operations=(
+            dataclasses.replace(_operation(), metadata_actions=(reread_action,)),
+        )
+    )
+    changed = _plan(
+        operations=(
+            dataclasses.replace(_operation(), metadata_actions=(changed_target,)),
+        )
+    )
+
+    assert first.plan_hash != reread.plan_hash
+    assert first.metadata_target_fingerprint == reread.metadata_target_fingerprint
+    assert first.metadata_target_fingerprint != changed.metadata_target_fingerprint
 
 
 # ---------------------------------------------------------------------------

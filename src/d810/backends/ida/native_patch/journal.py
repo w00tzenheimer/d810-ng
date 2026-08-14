@@ -52,6 +52,7 @@ from d810.core.execution_journal import DecompilationSessionId, ExecutionAttempt
 
 __all__ = [
     "NativeCurrentByteReader",
+    "NativePatchMetadataScopeConflictError",
     "NativePatchTransactionConflictError",
     "SQLiteNativePatchJournal",
 ]
@@ -80,6 +81,25 @@ class NativePatchTransactionConflictError(ValueError):
         super().__init__(
             f"operation {operation_id!r} range "
             f"[0x{start_ea:x}, 0x{end_ea:x}) overlaps an active transaction"
+        )
+
+
+class NativePatchMetadataScopeConflictError(ValueError):
+    """A metadata surface is owned by an active transaction.
+
+    Byte-anchor ranges identify the evidence used to authorize an operation,
+    not every mutable IDB surface it owns.  In particular, two disjoint
+    anchors can both target one xref source or switch record.  Those plans
+    must serialize just as overlapping byte writes do.
+    """
+
+    def __init__(self, operation_id: str, scope_kind: str, scope_ea: int) -> None:
+        self.operation_id = operation_id
+        self.scope_kind = scope_kind
+        self.scope_ea = scope_ea
+        super().__init__(
+            f"operation {operation_id!r} metadata scope "
+            f"{scope_kind}@{scope_ea:#x} overlaps an active transaction"
         )
 
 
@@ -206,6 +226,22 @@ class SQLiteNativePatchJournal:
                 )
                 """
             )
+            # Scoped metadata ownership is recorded at PREPARED time, before
+            # an IDA mutation can begin.  It prevents distinct byte anchors
+            # from concurrently modifying one item head, xref source, switch
+            # record, or function extent.
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS native_patch_metadata_scopes (
+                    transaction_id TEXT NOT NULL,
+                    operation_id TEXT NOT NULL,
+                    action_index INTEGER NOT NULL,
+                    scope_kind TEXT NOT NULL,
+                    scope_ea INTEGER NOT NULL,
+                    PRIMARY KEY (transaction_id, operation_id, action_index)
+                )
+                """
+            )
             # Pre-patch function extent, captured while the database still
             # holds the truth. A separate table rather than columns on
             # native_patch_operations so an existing journal file picks it up
@@ -292,6 +328,40 @@ class SQLiteNativePatchJournal:
         ).fetchall()
         return [(row["start_ea"], row["end_ea"]) for row in rows]
 
+    def _active_metadata_scopes(self) -> set[tuple[str, int]]:
+        rows = self._conn.execute(
+            """
+            SELECT s.scope_kind, s.scope_ea
+            FROM native_patch_metadata_scopes s
+            JOIN native_patch_transactions t ON t.transaction_id = s.transaction_id
+            WHERE t.state != ?
+            """,
+            (NativeJournalState.RESTORED.value,),
+        ).fetchall()
+        return {(str(row["scope_kind"]), int(row["scope_ea"])) for row in rows}
+
+    @staticmethod
+    def _metadata_scopes_for_operation(operation) -> tuple[tuple[str, int], ...]:
+        scopes: list[tuple[str, int]] = []
+        function_ea = (
+            operation.restore_snapshot.function_ownership.owning_function_entry_ea
+        )
+        for action in operation.metadata_actions:
+            if action.kind.value == "recreate_item":
+                scopes.append(("item", int(action.ea)))
+            elif action.kind.value == "update_xref":
+                scopes.append(("xref_source", int(action.ea)))
+            elif action.kind.value == "set_switch_info":
+                scopes.append(("switch", int(action.ea)))
+            elif action.kind.value in {"set_function_tail", "function_tail_chunk"}:
+                scopes.append(("function_chunks", int(function_ea)))
+            else:
+                # Unsupported metadata actions must never become silently
+                # shareable.  Their own executor rejects them, and this
+                # durable scope also serializes any future implementation.
+                scopes.append((f"metadata:{action.kind.value}", int(action.ea)))
+        return tuple(scopes)
+
     def prepare(self, plan: NativePatchPlanEnvelope) -> NativePatchTransactionRecord:
         active_ranges = self._active_operation_ranges()
         for op in plan.operations:
@@ -300,6 +370,14 @@ class SQLiteNativePatchJournal:
                 if op_start < active_end and active_start < op_end:
                     raise NativePatchTransactionConflictError(
                         op.operation_id, op_start, op_end
+                    )
+
+        active_metadata_scopes = self._active_metadata_scopes()
+        for operation in plan.operations:
+            for scope_kind, scope_ea in self._metadata_scopes_for_operation(operation):
+                if (scope_kind, scope_ea) in active_metadata_scopes:
+                    raise NativePatchMetadataScopeConflictError(
+                        operation.operation_id, scope_kind, scope_ea
                     )
 
         transaction_id = NativePatchTransactionId.new()
@@ -348,6 +426,24 @@ class SQLiteNativePatchJournal:
                     ),
                 )
                 ownership = op.restore_snapshot.function_ownership
+                for action_index, (scope_kind, scope_ea) in enumerate(
+                    self._metadata_scopes_for_operation(op)
+                ):
+                    self._conn.execute(
+                        """
+                        INSERT INTO native_patch_metadata_scopes
+                            (transaction_id, operation_id, action_index,
+                             scope_kind, scope_ea)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (
+                            transaction_id.value,
+                            op.operation_id,
+                            action_index,
+                            scope_kind,
+                            scope_ea,
+                        ),
+                    )
                 for chunk_index, chunk in enumerate(ownership.chunk_ranges):
                     self._conn.execute(
                         """

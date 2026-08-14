@@ -258,6 +258,7 @@ class NativeApplyReceipt:
     state: NativeJournalState
     certificate: NativeCertificate | None
     rejection_reasons: tuple[str, ...] = ()
+    preflight_receipt_id: str | None = None
 
     @property
     def ok(self) -> bool:
@@ -339,11 +340,17 @@ class NativePatchGateway:
             preflight = preflight_plan_live(
                 self._reader, plan, self._decode_replacement
             )
+            preflight_receipt_id = self._record_preflight_receipt(
+                plan, record.transaction_id, preflight
+            )
             if not preflight.authorized:
-                return self._abandon(record.transaction_id, preflight)
+                return self._abandon(
+                    record.transaction_id, preflight, preflight_receipt_id
+                )
 
             for op in plan.operations:
-                self._apply_operation_bytes(record.transaction_id, op)
+                if op.writes_bytes:
+                    self._apply_operation_bytes(record.transaction_id, op)
             record = self._journal.transition(
                 record.transaction_id, NativeJournalState.BYTES_APPLIED
             )
@@ -364,11 +371,12 @@ class NativePatchGateway:
             recovery = self._journal.classify_recovery(
                 record.transaction_id, self._read_current_byte
             )
-            if not self._all_operations_cleanly_applied(recovery):
+            if not self._all_operations_cleanly_applied(plan, recovery):
                 raise NativePatchCertificationFailed(
                     record.transaction_id,
                     "post-reanalysis byte recheck did not confirm a clean apply",
                 )
+            self._verify_metadata_actions(plan)
             record = self._journal.transition(
                 record.transaction_id, NativeJournalState.ANALYSIS_VALIDATED
             )
@@ -388,12 +396,13 @@ class NativePatchGateway:
             record = self._journal.transition(
                 record.transaction_id, NativeJournalState.CERTIFIED
             )
-            self._store_certificate(plan, certificate)
+            self._store_certificate(plan, certificate, record.transaction_id)
 
             return NativeApplyReceipt(
                 transaction_id=record.transaction_id,
                 state=record.state,
                 certificate=certificate,
+                preflight_receipt_id=preflight_receipt_id,
             )
         except Exception as exc:
             try:
@@ -475,6 +484,12 @@ class NativePatchGateway:
                         action.expected_before,
                         observed,
                     )
+                # A repeat observation of an already-normalized request
+                # intentionally carries an after==before witness so its
+                # metadata target can be certified.  Never send that through
+                # an IDA mutator: the gateway must prove reuse read-only.
+                if observed == action.expected_after:
+                    continue
                 # Journal BEFORE applying. An action that is applied but not
                 # recorded is unreversible; one recorded but not applied is
                 # reversed to the state it already holds, which is a no-op.
@@ -515,6 +530,12 @@ class NativePatchGateway:
         for action in reversed(actions):
             try:
                 kind = NativeMetadataActionKind(action.kind)
+                current = self._metadata_executor.read_state(kind, action.ea)
+                if current == action.recorded_before:
+                    continue
+                if current != action.expected_after:
+                    failed.append(f"{action.kind}@{action.ea:#x}")
+                    continue
                 ok = self._metadata_executor.apply_state(
                     kind, action.ea, action.recorded_before
                 )
@@ -526,13 +547,55 @@ class NativePatchGateway:
 
     @staticmethod
     def _all_operations_cleanly_applied(
+        plan: NativePatchPlan,
         recovery: NativeTransactionRecoveryReport,
     ) -> bool:
-        return all(
-            op.verdict is NativeOperationRecoveryVerdict.APPLIED
-            and op.corroborated_by_write_applied_receipt
-            for op in recovery.operation_reports
-        )
+        reports = {report.operation_id: report for report in recovery.operation_reports}
+        for operation in plan.operations:
+            report = reports.get(operation.operation_id)
+            if report is None:
+                return False
+            if operation.writes_bytes:
+                if not (
+                    report.verdict is NativeOperationRecoveryVerdict.APPLIED
+                    and report.corroborated_by_write_applied_receipt
+                ):
+                    return False
+                continue
+            # Metadata-only operations retain a byte anchor solely as a live
+            # identity/preflight witness.  It must remain at the before/after
+            # identical image and there must be no byte-write receipt.
+            if report.verdict is not NativeOperationRecoveryVerdict.NOT_APPLIED:
+                return False
+            if report.corroborated_by_write_applied_receipt:
+                return False
+        return True
+
+    def _verify_metadata_actions(self, plan: NativePatchPlan) -> None:
+        """Re-read every owned metadata action after reanalysis.
+
+        Reanalysis is allowed to rebuild derived state, but it must not erase
+        a user-owned tail/xref/switch/item action that the transaction claims
+        to have applied.  This second check keeps certification honest for a
+        metadata-only operation whose byte anchor is intentionally unchanged.
+        """
+        if not any(op.metadata_actions for op in plan.operations):
+            return
+        if self._metadata_executor is None:
+            raise NativePatchMetadataActionUnsupported("metadata", ())
+        final_actions = {}
+        for operation in plan.operations:
+            for action in operation.metadata_actions:
+                final_actions[(action.kind, action.ea)] = action
+        for action in final_actions.values():
+            observed = self._metadata_executor.read_state(action.kind, action.ea)
+            if observed != action.expected_after:
+                raise MetadataStateMismatch(
+                    action.kind.value,
+                    action.ea,
+                    action.expected_after,
+                    observed,
+                )
 
     @staticmethod
     def _owning_function_eas(plan: NativePatchPlan) -> tuple[int, ...]:
@@ -548,6 +611,7 @@ class NativePatchGateway:
         self,
         transaction_id: NativePatchTransactionId,
         preflight: PlanPreflightResult,
+        preflight_receipt_id: str,
     ) -> NativeApplyReceipt:
         """A re-preflight failure right after ``PREPARED``: zero bytes have
         been written. See the module docstring's apply-ordering note."""
@@ -586,7 +650,80 @@ class NativePatchGateway:
             state=record.state,
             certificate=None,
             rejection_reasons=reasons,
+            preflight_receipt_id=preflight_receipt_id,
         )
+
+    def record_diagnostic_snapshot(self, plan: NativePatchPlan) -> str:
+        """Persist a read-only lowering snapshot and return its own receipt id."""
+        snapshot_id = uuid4().hex
+        payload = {
+            "plan_id": plan.plan_id,
+            "plan_hash": plan.plan_hash,
+            "database_identity": plan.database_identity.idb_uuid,
+            "function_ea": plan.function_identity.entry_ea,
+            "metadata_actions": [
+                {
+                    "kind": action.kind.value,
+                    "ea": action.ea,
+                    "expected_before": action.expected_before,
+                    "expected_after": action.expected_after,
+                }
+                for operation in plan.operations
+                for action in operation.metadata_actions
+            ],
+        }
+        self._certificate_store.set_native_patch_blob(
+            "native_patch_diagnostic_snapshot", snapshot_id, payload
+        )
+        return snapshot_id
+
+    def record_certificate_validation_receipt(
+        self, plan: NativePatchPlan, certificate: NativeCertificate | None
+    ) -> str:
+        """Persist the no-rerun validation verdict as its own evidence item."""
+        receipt_id = uuid4().hex
+        self._certificate_store.set_native_patch_blob(
+            "native_patch_preflight_receipt",
+            receipt_id,
+            {
+                "kind": "certificate_validation",
+                "plan_id": plan.plan_id,
+                "plan_hash": plan.plan_hash,
+                "certificate_id": (
+                    None if certificate is None else certificate.certificate_id
+                ),
+            },
+        )
+        return receipt_id
+
+    def _record_preflight_receipt(
+        self,
+        plan: NativePatchPlan,
+        transaction_id: NativePatchTransactionId,
+        preflight: PlanPreflightResult,
+    ) -> str:
+        """Persist the actual live preflight verdict separately from the plan."""
+        receipt_id = uuid4().hex
+        self._certificate_store.set_native_patch_blob(
+            "native_patch_preflight_receipt",
+            receipt_id,
+            {
+                "kind": "live_preflight",
+                "transaction_id": transaction_id.value,
+                "plan_id": plan.plan_id,
+                "plan_hash": plan.plan_hash,
+                "authorized": preflight.authorized,
+                "operation_results": [
+                    {
+                        "operation_id": result.operation_id,
+                        "authorized": result.ok,
+                        "rejection_reasons": list(result.rejection_reasons),
+                    }
+                    for result in preflight.operation_results
+                ],
+            },
+        )
+        return receipt_id
 
     # ------------------------------------------------------------------
     # Netnode mirror (separate receipt; never a second commit)
@@ -631,7 +768,7 @@ class NativePatchGateway:
         )
         return NativeCertificate(
             certificate_id=uuid4().hex,
-            schema_version=1,
+            schema_version=2,
             database_identity=plan.database_identity,
             function_identity=plan.function_identity,
             inherited_fingerprint=plan.inherited_function_fingerprint,
@@ -640,6 +777,7 @@ class NativePatchGateway:
             native_origin_map_fingerprint=plan.native_origin_map_fingerprint,
             semantic_plan_hash=plan.proof_hash,
             native_plan_hash=plan.plan_hash,
+            metadata_target_fingerprint=plan.metadata_target_fingerprint,
             d810_version=self._d810_version,
             authorization_class=plan.patch_class,
             state=NativeCertificateState.APPLIED,
@@ -654,21 +792,64 @@ class NativePatchGateway:
         a journaled operation for every changed byte (reusing the existing
         ``classify_recovery`` corroboration check rather than re-deriving
         it)."""
+        try:
+            return self._current_normalized_fingerprint(plan)
+        except ValueError as error:
+            raise NativePatchCertificationFailed(transaction_id, str(error)) from error
+
+    def _current_normalized_fingerprint(self, plan: NativePatchPlan) -> str:
+        """Fingerprint the live normalized byte image without trusting a plan.
+
+        Certificate reuse invokes this same read-only capture.  A certificate
+        is therefore invalidated by a byte divergence even when its original
+        byte anchor was intentionally unchanged by a metadata-only operation.
+        """
         pieces: list[tuple[int, int, bytes]] = []
         for op in plan.operations:
             current = self._reader.read_current_bytes(
                 op.range.start_ea, op.range.end_ea
             )
             if current is None:
-                raise NativePatchCertificationFailed(
-                    transaction_id,
-                    f"operation {op.operation_id!r}: range became unloaded before certification",
+                raise ValueError(
+                    f"operation {op.operation_id!r}: range became unloaded"
                 )
             pieces.append((op.range.start_ea, op.range.end_ea, current))
         return hashlib.sha256(repr(tuple(pieces)).encode("utf-8")).hexdigest()
 
-    def _store_certificate(
+    def certificate_matches_current(
         self, plan: NativePatchPlan, certificate: NativeCertificate
+    ) -> bool:
+        """Verify the certificate's live byte and owned-metadata witnesses."""
+        if certificate.normalized_fingerprint != self._current_normalized_fingerprint(
+            plan
+        ):
+            return False
+        if certificate.metadata_target_fingerprint != plan.metadata_target_fingerprint:
+            return False
+        if not any(op.metadata_actions for op in plan.operations):
+            return True
+        if self._metadata_executor is None:
+            return False
+        try:
+            final_actions = {}
+            for operation in plan.operations:
+                for action in operation.metadata_actions:
+                    final_actions[(action.kind, action.ea)] = action
+            for action in final_actions.values():
+                if (
+                    self._metadata_executor.read_state(action.kind, action.ea)
+                    != action.expected_after
+                ):
+                    return False
+        except Exception:
+            return False
+        return True
+
+    def _store_certificate(
+        self,
+        plan: NativePatchPlan,
+        certificate: NativeCertificate,
+        transaction_id: NativePatchTransactionId,
     ) -> None:
         key = self._certificate_key(
             plan.function_identity.entry_ea, plan.database_identity
@@ -676,6 +857,38 @@ class NativePatchGateway:
         self._certificate_store.set_native_patch_blob(
             "certificate", key, certificate_to_payload(certificate)
         )
+        self._certificate_store.set_native_patch_blob(
+            "certificate_transaction",
+            transaction_id.value,
+            {"certificate_key": key, "certificate_id": certificate.certificate_id},
+        )
+
+    def _revoke_certificate(self, transaction_id: NativePatchTransactionId) -> bool:
+        """Remove only the certificate produced by this restored transaction."""
+        link = self._certificate_store.get_native_patch_blob(
+            "certificate_transaction", transaction_id.value
+        )
+        if link is None:
+            return True
+        key = link.get("certificate_key")
+        certificate_id = link.get("certificate_id")
+        if not isinstance(key, str) or not isinstance(certificate_id, str):
+            return False
+        current = self._certificate_store.get_native_patch_blob("certificate", key)
+        if current is not None:
+            try:
+                current_certificate = certificate_from_payload(current)
+            except Exception:
+                return False
+            # A newer normalization at the same function replaced this
+            # transaction's certificate; restoring the older transaction may
+            # not revoke that newer independent certification.
+            if current_certificate.certificate_id == certificate_id:
+                self._certificate_store.clear_native_patch_blob("certificate", key)
+        self._certificate_store.clear_native_patch_blob(
+            "certificate_transaction", transaction_id.value
+        )
+        return True
 
     @staticmethod
     def _certificate_key(
@@ -692,7 +905,22 @@ class NativePatchGateway:
         )
         if payload is None:
             return None
-        return certificate_from_payload(payload)
+        try:
+            certificate = certificate_from_payload(payload)
+        except Exception:
+            # A certificate written by an older schema cannot authorize a
+            # metadata mutation.  Treat it as absent so the request goes
+            # through fresh preflight rather than crashing or trusting a
+            # payload without the current-state witness.
+            logger.warning("ignoring malformed or obsolete native certificate")
+            return None
+        if certificate.schema_version != 2:
+            logger.warning(
+                "ignoring obsolete native certificate schema %s",
+                certificate.schema_version,
+            )
+            return None
+        return certificate
 
     # ------------------------------------------------------------------
     # Explicit restore (section 15.3)
@@ -773,6 +1001,23 @@ class NativePatchGateway:
                     f"unreversed metadata {unreversed_metadata}, "
                     f"unrestored extents {unrestored_extents}"
                 ),
+            )
+            return NativeRestoreReceipt(
+                transaction_id=transaction_id,
+                state=record.state,
+                restored_eas=restored_eas,
+                interference_eas=(),
+            )
+
+        try:
+            certificate_revoked = self._revoke_certificate(transaction_id)
+        except Exception:
+            certificate_revoked = False
+        if not certificate_revoked:
+            record = self._journal.transition(
+                transaction_id,
+                NativeJournalState.RECOVERY_REQUIRED,
+                note="database restored but applied certificate could not be revoked",
             )
             return NativeRestoreReceipt(
                 transaction_id=transaction_id,
@@ -913,6 +1158,15 @@ class NativePatchGateway:
     def _emergency_recover(self, transaction_id: NativePatchTransactionId) -> None:
         record = self._journal.get(transaction_id)
         if record is None or record.state in _TERMINAL_STATES:
+            return
+
+        unreversed_metadata = self._reverse_metadata_actions(transaction_id)
+        if unreversed_metadata:
+            self._journal.transition(
+                transaction_id,
+                NativeJournalState.RECOVERY_REQUIRED,
+                note=f"apply failed; metadata reversal incomplete: {unreversed_metadata}",
+            )
             return
 
         recovery = self._journal.classify_recovery(

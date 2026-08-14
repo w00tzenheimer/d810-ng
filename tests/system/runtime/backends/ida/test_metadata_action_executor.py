@@ -21,6 +21,8 @@ worthless no matter how correct the gateway's bookkeeping is.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 pytestmark = [
@@ -30,6 +32,8 @@ pytestmark = [
 
 ida_bytes = pytest.importorskip("ida_bytes")
 ida_funcs = pytest.importorskip("ida_funcs")
+ida_xref = pytest.importorskip("ida_xref")
+ida_nalt = pytest.importorskip("ida_nalt")
 idaapi = pytest.importorskip("idaapi")
 idautils = pytest.importorskip("idautils")
 
@@ -46,6 +50,14 @@ def _first_function_with_min_size(min_size: int = 0x20) -> int:
         if func is not None and (func.end_ea - func.start_ea) >= min_size:
             return int(ea)
     pytest.fail("no function large enough in the fixture")
+
+
+def _first_function_without_switch_info() -> int:
+    for ea in idautils.Functions():
+        switch = ida_nalt.switch_info_t()
+        if not ida_nalt.get_switch_info(switch, ea):
+            return int(ea)
+    pytest.fail("no function without existing switch metadata in the fixture")
 
 
 class TestIdaMetadataActionExecutor:
@@ -93,20 +105,36 @@ class TestIdaMetadataActionExecutor:
         kind = NativeMetadataActionKind.UPDATE_XREF
 
         before = executor.read_state(kind, func_ea)
+        assert before.startswith("cref3:")
         target = int(ida_funcs.get_func(func_ea).end_ea) - 1
-        added = f"{before},{target:#x}" if before != "cref:" else f"cref:{target:#x}"
-        # Token order is sorted; rebuild it the way read_state would.
-        wanted = {int(t, 16) for t in added.partition(":")[2].split(",") if t.strip()}
-        added = "cref:" + ",".join(f"{t:#x}" for t in sorted(wanted))
+        # Preserve the whole xref type word: in particular, the user-owned
+        # bit must survive the gateway's eventual restore.
+        rows = {
+            tuple(item.split("@", 2))
+            for item in before.removeprefix("cref3:").split(",")
+            if item
+        }
+        rows.add((f"{target:#x}", f"{ida_xref.fl_JN:#x}", "u"))
+        added = "cref3:" + ",".join(
+            f"{target_text}@{xref_type}@{owner}"
+            for target_text, xref_type, owner in sorted(
+                rows,
+                key=lambda row: (int(row[0], 16), int(row[1], 16), row[2]),
+            )
+        )
 
-        assert executor.apply_state(kind, func_ea, added)
+        assert executor.apply_state(kind, func_ea, added), executor.read_state(
+            kind, func_ea
+        )
         assert executor.read_state(kind, func_ea) == added
 
         assert executor.apply_state(kind, func_ea, before)
         assert executor.read_state(kind, func_ea) == before
 
-    def test_function_tail_state_round_trips(self, copy_of_idb) -> None:
-        """SET_FUNCTION_TAIL is the action the extent P0 was made of."""
+    def test_function_tail_is_refused_without_a_lossless_snapshot(
+        self, copy_of_idb
+    ) -> None:
+        """Changing the entry extent has attributes this action cannot restore."""
         executor = IdaMetadataActionExecutor()
         func_ea = _first_function_with_min_size(0x30)
         kind = NativeMetadataActionKind.SET_FUNCTION_TAIL
@@ -118,21 +146,108 @@ class TestIdaMetadataActionExecutor:
         end_ea = int(ida_funcs.get_func(func_ea).end_ea)
         shrunk = f"tail:{start_ea:#x}-{end_ea - 0x10:#x}"
 
-        # Asserted, not tolerated. An earlier draft accepted "IDA refused the
-        # shrink" as a passing outcome, which made both branches green and the
-        # test worthless -- the same silent-skip failure mode that hid a
-        # capstone oracle from CI earlier in this work. Measured on this
-        # fixture: the shrink applies (0x1800010cb -> 0x1800010bb) and the
-        # restore is exact, so anything less is a real regression.
-        assert executor.apply_state(kind, func_ea, shrunk), (
-            "IDA refused a function shrink this fixture is known to accept"
-        )
-        assert executor.read_state(kind, func_ea) == shrunk
-
-        assert executor.apply_state(kind, func_ea, before), (
-            "a shrunken function must be restorable to its recorded extent"
-        )
+        with pytest.raises(UnexecutableMetadataAction):
+            executor.apply_state(kind, func_ea, shrunk)
         assert executor.read_state(kind, func_ea) == before
+
+    def test_typed_data_recreation_is_refused_without_flattening_it(
+        self, copy_of_idb
+    ) -> None:
+        """``data:<size>`` is not a lossless representation of IDA data."""
+        executor = IdaMetadataActionExecutor()
+        func_ea = _first_function_with_min_size()
+
+        before = executor.read_state(NativeMetadataActionKind.RECREATE_ITEM, func_ea)
+        assert before.startswith("code:")
+        with pytest.raises(UnexecutableMetadataAction):
+            executor.apply_state(
+                NativeMetadataActionKind.RECREATE_ITEM, func_ea, "data:1"
+            )
+        assert (
+            executor.read_state(NativeMetadataActionKind.RECREATE_ITEM, func_ea)
+            == before
+        )
+
+    def test_switch_info_state_round_trips_through_absence_and_back(
+        self, copy_of_idb
+    ) -> None:
+        """SET_SWITCH_INFO must restore the complete persisted record.
+
+        The Task 7 writer optionally installs a ``switch_info_t``. Unlike a
+        byte patch, deleting that metadata cannot be reversed from bytes, so
+        the executor must preserve every persisted field and the no-info
+        state, not just the handful of fields the writer happens to set.
+        """
+        executor = IdaMetadataActionExecutor()
+        kind = NativeMetadataActionKind.SET_SWITCH_INFO
+        func_ea = _first_function_without_switch_info()
+
+        assert executor.read_state(kind, func_ea) == "switch:none"
+
+        configured = ida_nalt.switch_info_t()
+        configured.clear()
+        configured.flags = ida_nalt.SWI_USER | ida_nalt.SWI_ELBASE
+        configured.jumps = func_ea + 0x10
+        configured.ncases = 3
+        configured.defjump = idaapi.BADADDR
+        configured.startea = func_ea
+        configured.expr_ea = func_ea
+        configured.lowcase = 7
+        configured.set_elbase(0)
+        configured.set_jtable_element_size(8)
+        configured.set_jtable_size(3)
+        ida_nalt.set_switch_info(func_ea, configured)
+
+        recorded = executor.read_state(kind, func_ea)
+        assert recorded.startswith("switch:")
+        state = json.loads(recorded.removeprefix("switch:"))
+        assert state["jumps"] == func_ea + 0x10
+        assert state["ncases"] == 3
+        assert state["defjump"] == idaapi.BADADDR
+        assert state["startea"] == func_ea
+        # IDA canonicalizes this record's expression location to BADADDR on
+        # storage.  Reversal must preserve the persisted state, not the
+        # transient value we gave ``switch_info_t`` before installation.
+        assert state["expr_ea"] == idaapi.BADADDR
+        assert state["lowcase"] == 7
+        assert state["elbase"] == 0
+
+        assert executor.apply_state(kind, func_ea, "switch:none")
+        assert executor.read_state(kind, func_ea) == "switch:none"
+
+        assert executor.apply_state(kind, func_ea, recorded)
+        assert executor.read_state(kind, func_ea) == recorded
+
+    def test_sparse_switch_info_state_restores_values(self, copy_of_idb) -> None:
+        """The sparse union is part of the persisted record too.
+
+        Omitting it would make an initially valid switch look restored while
+        changing its case lookup.
+        """
+        executor = IdaMetadataActionExecutor()
+        kind = NativeMetadataActionKind.SET_SWITCH_INFO
+        func_ea = _first_function_without_switch_info()
+
+        configured = ida_nalt.switch_info_t()
+        configured.clear()
+        configured.flags = ida_nalt.SWI_USER | ida_nalt.SWI_ELBASE | ida_nalt.SWI_SPARSE
+        configured.jumps = func_ea + 0x10
+        configured.values = func_ea + 0x20
+        configured.ncases = 3
+        configured.defjump = idaapi.BADADDR
+        configured.startea = func_ea
+        configured.set_elbase(0)
+        configured.set_jtable_element_size(8)
+        configured.set_jtable_size(3)
+        ida_nalt.set_switch_info(func_ea, configured)
+
+        recorded = executor.read_state(kind, func_ea)
+        state = json.loads(recorded.removeprefix("switch:"))
+        assert state["values"] == func_ea + 0x20
+        assert "lowcase" not in state
+        assert executor.apply_state(kind, func_ea, "switch:none")
+        assert executor.apply_state(kind, func_ea, recorded)
+        assert executor.read_state(kind, func_ea) == recorded
 
     def test_other_kind_is_rejected_rather_than_guessed_at(self, copy_of_idb) -> None:
         executor = IdaMetadataActionExecutor()
@@ -205,9 +320,8 @@ class TestIdaMetadataActionExecutor:
         )
         attempted = before + f";{non_code_ea:#x}-{non_code_ea + 8:#x}"
 
-        assert not executor.apply_state(kind, func_ea, attempted), (
-            "adopting a non-code span must be refused, not silently accepted"
-        )
+        with pytest.raises(UnexecutableMetadataAction):
+            executor.apply_state(kind, func_ea, attempted)
         assert executor.read_state(kind, func_ea) == before, (
             "a refused append must leave the function extent untouched"
         )

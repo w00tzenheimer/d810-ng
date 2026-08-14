@@ -217,8 +217,12 @@ def preflight_operation(
         _receipt(
             OperationInvariant.DECODED_REPLACEMENT,
             ea,
-            decode_replacement(ea, operation.replacement_bytes)
-            == operation.expected_after_shape,
+            (
+                operation.expected_after_shape == operation.expected_before_shape
+                if operation.is_metadata_only
+                else decode_replacement(ea, operation.replacement_bytes)
+                == operation.expected_after_shape
+            ),
         ),
     )
     return OperationPreflightResult(

@@ -98,10 +98,14 @@ def _certificate_matches(certificate: NativeCertificate, plan: NativePatchPlan) 
     partial/fuzzy match. See the module docstring."""
     return (
         certificate.state is NativeCertificateState.APPLIED
-        and certificate.native_plan_hash == plan.plan_hash
         and certificate.semantic_plan_hash == plan.proof_hash
         and certificate.database_identity == plan.database_identity
         and certificate.function_identity.entry_ea == plan.function_identity.entry_ea
+        and certificate.metadata_target_fingerprint == plan.metadata_target_fingerprint
+        and (
+            any(operation.metadata_actions for operation in plan.operations)
+            or certificate.native_plan_hash == plan.plan_hash
+        )
     )
 
 
@@ -127,7 +131,11 @@ def authorize_and_apply(
     existing = gateway.lookup_certificate(
         plan.function_identity.entry_ea, plan.database_identity
     )
-    if existing is not None and _certificate_matches(existing, plan):
+    if (
+        existing is not None
+        and _certificate_matches(existing, plan)
+        and gateway.certificate_matches_current(plan, existing)
+    ):
         logger.info(
             "native normalization: function %#x already certified under "
             "plan_hash=%s; abstaining",

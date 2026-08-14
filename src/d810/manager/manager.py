@@ -639,6 +639,16 @@ class D810Manager:
         init=False,
         repr=False,
     )
+    _native_patch_execution_journal: typing.Any = dataclasses.field(
+        default=None,
+        init=False,
+        repr=False,
+    )
+    _native_patch_journal: typing.Any = dataclasses.field(
+        default=None,
+        init=False,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         self.profiling = ProfilingController(self.log_dir)
@@ -1740,6 +1750,9 @@ class D810Manager:
                 self._preanalysis_runtime = self._analysis_bundle.preanalysis_runtime
                 self._analysis_runtime = self._analysis_bundle.analysis_runtime
 
+        self._native_patch_execution_journal = (
+            self._new_native_patch_execution_journal()
+        )
         self.decompilation_lifecycle = DecompilationLifecycleCoordinator(
             preanalysis_runtime=self._preanalysis_runtime,
             analysis_runtime=self._analysis_runtime,
@@ -1764,7 +1777,9 @@ class D810Manager:
                     ),
                 )
             ),
+            execution_journal=self._native_patch_execution_journal,
         )
+        self._install_native_writer_migration()
 
         # The lifecycle coordinator owns top-level reset, capture, analysis,
         # and rule-scope delivery.  Adapters retain only the narrow fact-view
@@ -1850,6 +1865,190 @@ class D810Manager:
                 self._function_storage_config
             )
 
+    def _new_native_patch_execution_journal(self):
+        """Open the manager-owned provenance store before any native request.
+
+        Unlike the IDB mirror, this SQLite journal is the durable authority for
+        parent/child attempt ordering.  It intentionally lives beside the
+        manager's other diagnostic artifacts, never in a temporary directory.
+        """
+        from d810.core.execution_journal_store import ExecutionJournalStore
+
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        return ExecutionJournalStore(self.log_dir / "native_patch_execution.sqlite")
+
+    def _install_native_writer_migration(self) -> None:
+        """Inject the one manager-authorized indirect-label executor.
+
+        The lower Hex-Rays module retains no manager import.  Its registration
+        resolves this default only after the manager has created the durable
+        execution journal and the lifecycle session parent attempt.
+        """
+        from d810.backends.hexrays.native_patch_lifecycle import (
+            IdaCallerDiscovery,
+            IdaCfuncCacheInvalidator,
+            IdaControlledRedoDecompiler,
+        )
+        from d810.backends.ida.native_patch.capture import IdaLiveDatabaseReader
+        from d810.backends.ida.native_patch.gateway import (
+            IdaNativeByteWriter,
+            NativePatchGateway,
+        )
+        from d810.backends.ida.native_patch.indirect_label_plan import (
+            IndirectLabelPlanRequest,
+            build_indirect_label_metadata_plan,
+        )
+        from d810.backends.ida.native_patch.journal import SQLiteNativePatchJournal
+        from d810.backends.ida.native_patch.metadata import IdaMetadataActionExecutor
+        from d810.backends.ida.native_patch.reanalysis import (
+            IdaFunctionExtentRestorer,
+            IdaFunctionReanalyzer,
+        )
+        from d810.core.persistence import NetnodeOptimizationStorage
+        from d810.hexrays.preanalysis.indirect_jump_labels import (
+            IndirectLabelMaterializationResult,
+            NativePatchPlanRequest,
+            set_indirect_materialization_default_executor,
+        )
+        from d810.manager.native_writer_migration import (
+            ManagerOwnedNativePatchRequestExecutor,
+            PreparedNativePatchRequest,
+            native_patch_function_is_authorized,
+        )
+
+        enabled = bool(self.config.get("native_patch_enabled", False))
+        if not enabled:
+            set_indirect_materialization_default_executor(
+                ManagerOwnedNativePatchRequestExecutor(
+                    gateway=object(),
+                    user_enabled=lambda _request: False,
+                    execution_journal=self._native_patch_execution_journal,
+                    parent_attempt_for_request=lambda _request: (_ for _ in ()).throw(
+                        RuntimeError("disabled native patch executor has no parent")
+                    ),
+                    build_plan=lambda _request, _attempt: (_ for _ in ()).throw(
+                        RuntimeError("disabled native patch executor cannot lower")
+                    ),
+                )
+            )
+            return
+
+        if self._native_patch_journal is not None:
+            self._native_patch_journal.close()
+        self._native_patch_journal = SQLiteNativePatchJournal(
+            self.log_dir / "native_patch_journal.sqlite"
+        )
+        certificate_store = self.storage
+        if certificate_store is None or not hasattr(
+            certificate_store, "set_native_patch_blob"
+        ):
+            certificate_store = NetnodeOptimizationStorage()
+        gateway = NativePatchGateway(
+            journal=self._native_patch_journal,
+            reader=IdaLiveDatabaseReader(),
+            writer=IdaNativeByteWriter(),
+            # Metadata-only plans never ask the byte encoder to decode their
+            # immutable anchor.  Raise loudly if a future refactor violates
+            # that operation contract instead of accepting a fake decoder.
+            decode_replacement=lambda _ea, _data: (_ for _ in ()).throw(
+                RuntimeError("metadata-only plan attempted byte decoding")
+            ),
+            reanalyzer=IdaFunctionReanalyzer(),
+            extent_restorer=IdaFunctionExtentRestorer(),
+            metadata_executor=IdaMetadataActionExecutor(),
+            cache_invalidator=IdaCfuncCacheInvalidator(),
+            caller_discovery=IdaCallerDiscovery(),
+            redo_decompiler=IdaControlledRedoDecompiler(),
+            certificate_store=certificate_store,
+            d810_version="native-writer-migration",
+        )
+
+        def _parent_attempt(request: NativePatchPlanRequest):
+            session = self.decompilation_lifecycle.current_session(
+                request.materialization.function_ea
+            )
+            if session is None or session.preanalysis_attempt_id is None:
+                raise RuntimeError("native request has no active preanalysis attempt")
+            return session.preanalysis_attempt_id
+
+        def _build(
+            request: NativePatchPlanRequest,
+            authorizing_attempt_id,
+        ) -> PreparedNativePatchRequest:
+            plan_request = IndirectLabelPlanRequest(
+                function_ea=request.materialization.function_ea,
+                label_start=request.materialization.label_start,
+                label_end=request.materialization.label_end,
+                table_address=request.materialization.table_address,
+                table_count=request.materialization.table_count,
+                target_eas=request.materialization.target_eas,
+                dispatch_jump_ea=request.dispatch_jump_ea,
+                switch_start_ea=request.switch_start_ea,
+                install_switch_info=request.install_switch_info,
+                state_base=request.state_base,
+                state_var_stkoff=request.state_var_stkoff,
+            )
+            plan = build_indirect_label_metadata_plan(
+                plan_request,
+                authorizing_attempt_id=authorizing_attempt_id,
+            )
+
+            def _observe() -> IndirectLabelMaterializationResult:
+                import ida_funcs
+
+                func = ida_funcs.get_func(request.materialization.function_ea)
+                count = sum(
+                    1
+                    for target_ea in request.materialization.target_eas
+                    if func is not None
+                    and (owner := ida_funcs.get_func(target_ea)) is not None
+                    and int(owner.start_ea) == int(func.start_ea)
+                )
+                return IndirectLabelMaterializationResult(
+                    function_ea=request.materialization.function_ea,
+                    table_address=request.materialization.table_address,
+                    table_count=request.materialization.table_count,
+                    label_start=request.materialization.label_start,
+                    label_end=request.materialization.label_end,
+                    target_count=len(request.materialization.target_eas),
+                    materialized_target_count=count,
+                    dispatch_jump_ea=request.dispatch_jump_ea,
+                    jump_xref_count=sum(
+                        action.kind.value == "update_xref"
+                        for action in plan.operations[0].metadata_actions
+                    ),
+                    switch_info_installed=request.install_switch_info,
+                    appended_tail=any(
+                        action.kind.value == "function_tail_chunk"
+                        for action in plan.operations[0].metadata_actions
+                    ),
+                    success=count == len(request.materialization.target_eas),
+                    reason=(
+                        "materialized"
+                        if count == len(request.materialization.target_eas)
+                        else "targets_still_missing"
+                    ),
+                )
+
+            return PreparedNativePatchRequest(plan=plan, observe_result=_observe)
+
+        set_indirect_materialization_default_executor(
+            ManagerOwnedNativePatchRequestExecutor(
+                gateway=gateway,
+                user_enabled=lambda request: native_patch_function_is_authorized(
+                    globally_available=bool(
+                        self.config.get("native_patch_enabled", False)
+                    ),
+                    function_tags=self.get_function_tags(
+                        request.materialization.function_ea
+                    ),
+                ),
+                execution_journal=self._native_patch_execution_journal,
+                parent_attempt_for_request=_parent_attempt,
+                build_plan=_build,
+            )
+        )
+
     def _get_execution_metadata(
         self, function_ea: int
     ) -> FunctionExecutionMetadata | None:
@@ -1868,6 +2067,27 @@ class D810Manager:
             function_addr=function_addr,
             tags=tags,
         )
+
+    def is_native_patch_opted_in(self, function_addr: int) -> bool:
+        """Read the persisted explicit consent for one native mutation target."""
+        from d810.manager.native_writer_migration import (
+            NATIVE_PATCH_FUNCTION_OPT_IN_TAG,
+        )
+
+        return NATIVE_PATCH_FUNCTION_OPT_IN_TAG in self.get_function_tags(function_addr)
+
+    def set_native_patch_opted_in(self, *, function_addr: int, enabled: bool) -> None:
+        """Persist explicit native-mutation consent for exactly one function."""
+        from d810.manager.native_writer_migration import (
+            NATIVE_PATCH_FUNCTION_OPT_IN_TAG,
+        )
+
+        tags = self.get_function_tags(function_addr)
+        if enabled:
+            tags.add(NATIVE_PATCH_FUNCTION_OPT_IN_TAG)
+        else:
+            tags.discard(NATIVE_PATCH_FUNCTION_OPT_IN_TAG)
+        self.set_function_tags(function_addr=function_addr, tags=tags)
 
     def get_effective_execution_report(self, function_addr: int):
         """Return the same pass/stage decisions used by optimizer execution."""
@@ -2655,6 +2875,17 @@ class D810Manager:
         shutdown_all_writers()
         self.event_emitter.clear()
         self.stop_profiling()
+        from d810.hexrays.preanalysis.indirect_jump_labels import (
+            set_indirect_materialization_default_executor,
+        )
+
+        set_indirect_materialization_default_executor(None)
+        if self._native_patch_journal is not None:
+            self._native_patch_journal.close()
+            self._native_patch_journal = None
+        if self._native_patch_execution_journal is not None:
+            self._native_patch_execution_journal.close()
+            self._native_patch_execution_journal = None
         self.function_storage_runtime.close()
         if self._analysis_bundle is not None:
             self._analysis_bundle.close()
