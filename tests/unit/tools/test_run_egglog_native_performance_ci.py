@@ -121,7 +121,7 @@ def _valid_receipts() -> tuple[
     corpus = {
         "candidate_count": 1,
         "candidate_names": ["add:fixture#1"],
-        "docker_image": "idapro-9.4-speedups:ci",
+        "docker_image": "idapro-9.4-speedups:cli",
         "docker_image_id": "sha256:fixture",
         "egglog_version": "13.2.0",
         "cython_enabled": False,
@@ -162,7 +162,7 @@ set -eu
 printf '%s|%s\\n' "$D810_NO_CYTHON" "$*" >> "$D810_FAKE_RUNNER_LOG"
 if [[ "$*" == *"test_egglog_mba_performance.py"* ]]; then
   if [[ "$D810_NO_CYTHON" == 0 ]]; then cython=true; else cython=false; fi
-  echo 'EGGLOG_MBA_CORPUS_PERFORMANCE_RECEIPT={"candidate_count":1,"candidate_names":["add:fixture#1"],"docker_image":"idapro-9.4-speedups:ci","docker_image_id":"sha256:fixture","egglog_version":"13.2.0","cython_enabled":'$cython',"stage_attempt_outcomes":{"accepted":1},"stage_timing_ms":{"root_eligibility":{"sample_count":1},"ast_construction":{"sample_count":1},"native_preflight":{"sample_count":1},"egglog_extraction":{"sample_count":1},"native_z3":{"sample_count":1},"reconstruction":{"sample_count":1}},"kind":"corpus"}'
+  echo 'EGGLOG_MBA_CORPUS_PERFORMANCE_RECEIPT={"candidate_count":1,"candidate_names":["add:fixture#1"],"docker_image":"idapro-9.4-speedups:cli","docker_image_id":"sha256:fixture","egglog_version":"13.2.0","cython_enabled":'$cython',"stage_attempt_outcomes":{"accepted":1},"stage_timing_ms":{"root_eligibility":{"sample_count":1},"ast_construction":{"sample_count":1},"native_preflight":{"sample_count":1},"egglog_extraction":{"sample_count":1},"native_z3":{"sample_count":1},"reconstruction":{"sample_count":1}},"kind":"corpus"}'
 else
   echo 'EGGLOG_MBA_NATIVE_RECEIPT={"corpus":"fixture","execution_count":1,"outcomes":{"accepted":1},"source_names":[["FixtureRule"]],"stage_sample_counts":{"root_eligibility":1,"ast_construction":1,"native_preflight":1,"egglog_extraction":1,"native_z3":1,"reconstruction":1},"kind":"native"}'
   echo 'EGGLOG_MBA_REAL_CORPUS_RECEIPT={"schema_version":3,"corpus":"fixture","function":"fixture_function","project":"fixture_project","execution_count":2,"candidate_identities":["fixture#1:one","fixture#2:two"],"outcomes":{"applied":1,"ineligible":1},"source_names":[["FixtureRule"],[]],"proof_attempt_count":1,"proof_mode_counts":{"shadow":1},"stage_sample_counts":{"root_eligibility":2,"native_preflight":1,"egglog_extraction":1,"ast_construction":1,"native_z3":1,"reconstruction":1},"attempts":[{"candidate_identity":"fixture#1:one","status":"applied","refusal_reason":null,"source_names":["FixtureRule"],"degree":1,"input_cost":[2,3],"output_cost":[1,2],"stage_timings_ms":{"root_eligibility":1.0,"native_preflight":1.0,"egglog_extraction":1.0,"ast_construction":1.0,"native_z3":1.0,"reconstruction":1.0},"proof_mode":"shadow","template_source_name":"FixtureRule","template_fallback_reason":null,"template_proof_verdict":true,"legacy_proof_verdict":true,"template_proof_elapsed_ms":1.0,"legacy_proof_elapsed_ms":1.0},{"candidate_identity":"fixture#2:two","status":"ineligible","refusal_reason":"candidate_budget","source_names":[],"degree":null,"input_cost":null,"output_cost":null,"stage_timings_ms":{"root_eligibility":1.0},"proof_mode":null,"template_source_name":null,"template_fallback_reason":null,"template_proof_verdict":null,"legacy_proof_verdict":null,"template_proof_elapsed_ms":null,"legacy_proof_elapsed_ms":null}],"kind":"real_native"}'
@@ -176,7 +176,7 @@ fi
     env = os.environ | {
         "D810_EGGLOG_PERF_ARTIFACT_DIR": str(artifact_dir),
         "D810_FAKE_RUNNER_LOG": str(runner_log),
-        "D810_DOCKER_IMAGE": "idapro-9.4-speedups:ci",
+        "D810_DOCKER_IMAGE": "idapro-9.4-speedups:cli",
         "D810_REPO_ROOT": str(tmp_path),
     }
 
@@ -235,7 +235,7 @@ fi
 def test_comparator_rejects_missing_identity_metadata(tmp_path: Path) -> None:
     receipt = {
         "candidate_count": 1,
-        "docker_image": "idapro-9.4-speedups:ci",
+        "docker_image": "idapro-9.4-speedups:cli",
         "docker_image_id": "sha256:fixture",
         "egglog_version": "13.2.0",
     }
