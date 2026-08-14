@@ -242,6 +242,7 @@ def test_selected_unsupported_dsl_rules_keep_legacy_dispatch_by_default(
 ) -> None:
     """Unsupported typed semantics must not be starved by Task 8 selection."""
 
+    monkeypatch.setenv("D810_STRUCTURAL_DSL_MATCHING", "1")
     monkeypatch.delenv("D810_LEGACY_DSL_PERMUTATIONS", raising=False)
     adapter = IDAPatternAdapter(SimpleNamespace(name=name, pattern=pattern))
     attach_selected_certified_catalogue_snapshot((adapter,))
