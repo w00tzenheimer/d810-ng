@@ -16,6 +16,7 @@ from types import MappingProxyType
 
 from d810.backends.mba.egglog_add_rule_compiler import (
     CompiledEgglogRule,
+    _constraints_match_term,
     apply_compiled_rule_to_term,
     is_admitted_compiled_rule,
 )
@@ -24,6 +25,7 @@ from d810.mba.typed_term import SUPPORTED_OPERATIONS, TypedBvTerm
 
 
 _TEMPLATE_WIDTHS = frozenset({8, 16, 32, 64})
+_AC_OPERATIONS = frozenset({"add", "and", "mul", "or", "xor"})
 _TEMPLATE_RULES: dict[int, weakref.ReferenceType[CompiledEgglogRule]] = {}
 
 
@@ -93,21 +95,37 @@ class NativeZ3ProofTemplate:
     ) -> TemplateValidation | None:
         """Require the concrete terms to be this rule's exact materialization.
 
-        ``apply_compiled_rule_to_term`` is the same declarative matcher used by
-        bounded extraction.  It enforces constants, repeated bindings, AC
-        structure, and rule constraints before we compare its materialized
-        result with the rebuilt concrete replacement.
+        The immutable template shapes enforce exact operation/arity/width,
+        masked constants, and repeated bindings directly.  We then apply the
+        admitted rule's declarative constraints to those fixed bindings.  This
+        deliberately avoids re-entering the generic symbolic matcher after
+        native selection has already fixed the candidate.
         """
 
         if original.width != self.width or replacement.width != self.width:
             return None
-        try:
-            expected = apply_compiled_rule_to_term_by_identity(
-                self.declaration_identity, original
-            )
-        except (TypeError, ValueError):
+        bindings: dict[str, TypedBvTerm] = {}
+        if not _match_template_shape(
+            self.original_shape,
+            original,
+            bindings,
+            allow_new_bindings=True,
+        ):
             return None
-        if expected is None or expected != replacement:
+        if not _match_template_shape(
+            self.replacement_shape,
+            replacement,
+            bindings,
+            allow_new_bindings=False,
+        ):
+            return None
+        rule = _template_rule_by_identity(self.declaration_identity)
+        if rule is None:
+            return None
+        try:
+            if not _constraints_match_term(rule, bindings, width=self.width):
+                return None
+        except (TypeError, ValueError):
             return None
         return TemplateValidation(
             width=self.width,
@@ -213,6 +231,67 @@ def _shape_from_expression(expression: object) -> NativeProofShape:
     return NativeProofShape(operation=operation, children=tuple(children))
 
 
+def _match_template_shape(
+    shape: NativeProofShape,
+    term: TypedBvTerm,
+    bindings: dict[str, TypedBvTerm],
+    *,
+    allow_new_bindings: bool,
+) -> bool:
+    """Validate one concrete fixed-width term against an immutable shape."""
+
+    if term.width <= 0:
+        return False
+    if shape.operation is None:
+        if term.operation is not None:
+            return False
+        if shape.constant is not None:
+            if term.value is None:
+                return False
+            mask = (1 << term.width) - 1
+            if term.value != (shape.constant & mask):
+                return False
+        if shape.requires_constant and term.value is None:
+            return False
+        if shape.name is None:
+            return shape.constant is not None or shape.requires_constant
+        bound = bindings.get(shape.name)
+        if bound is None:
+            if not allow_new_bindings:
+                return False
+            bindings[shape.name] = term
+            return True
+        return bound == term
+    if term.operation != shape.operation or len(term.children) != len(shape.children):
+        return False
+
+    def match_children(
+        children: tuple[TypedBvTerm, ...],
+    ) -> bool:
+        return all(
+            _match_template_shape(
+                child_shape,
+                child_term,
+                bindings,
+                allow_new_bindings=allow_new_bindings,
+            )
+            for child_shape, child_term in zip(shape.children, children, strict=True)
+        )
+
+    checkpoint = dict(bindings)
+    if match_children(term.children):
+        return True
+    bindings.clear()
+    bindings.update(checkpoint)
+    if shape.operation not in _AC_OPERATIONS or len(term.children) != 2:
+        return False
+    if match_children((term.children[1], term.children[0])):
+        return True
+    bindings.clear()
+    bindings.update(checkpoint)
+    return False
+
+
 def _ordered_leaf_keys(*terms: TypedBvTerm) -> tuple[tuple[object, ...], ...]:
     ordered: dict[tuple[object, ...], None] = {}
 
@@ -268,8 +347,17 @@ def apply_compiled_rule_to_term_by_identity(
 ) -> TypedBvTerm | None:
     """Resolve one still-live enrolled declaration without caching runtime state."""
 
+    rule = _template_rule_by_identity(declaration_identity)
+    return None if rule is None else apply_compiled_rule_to_term(rule, original)
+
+
+def _template_rule_by_identity(
+    declaration_identity: int,
+) -> CompiledEgglogRule | None:
+    """Return one live admitted template declaration by exact identity."""
+
     reference = _TEMPLATE_RULES.get(declaration_identity)
     rule = None if reference is None else reference()
     if rule is None or id(rule) != declaration_identity:
         return None
-    return apply_compiled_rule_to_term(rule, original)
+    return rule

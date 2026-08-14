@@ -47,12 +47,25 @@ def test_template_accepts_only_enrolled_width_preserving_rule_shapes() -> None:
     )
 
 
-def test_template_validates_exact_constants_and_repeated_live_leaf_identity() -> None:
+def test_template_validates_exact_constants_and_repeated_live_leaf_identity(
+    monkeypatch,
+) -> None:
+    import d810.backends.mba.native_z3_proof_template as template_module
+
     template = NativeZ3ProofTemplate.from_compiled_rule(
         _rule("Add_HackersDelightRule_2"), width=32
     )
     assert template is not None
     original, replacement = _valid_terms()
+
+    def forbidden_generic_rematch(*_args, **_kwargs):
+        raise AssertionError("template validation must use its compiled shapes")
+
+    monkeypatch.setattr(
+        template_module,
+        "apply_compiled_rule_to_term_by_identity",
+        forbidden_generic_rematch,
+    )
 
     validation = template.validate_terms(original, replacement)
     assert validation is not None
