@@ -48,12 +48,22 @@ def _valid_receipts() -> tuple[
         "docker_image": "idapro-9.4-speedups:ci",
         "docker_image_id": "sha256:fixture",
         "egglog_version": "13.2.0",
+        "cython_enabled": False,
+        "stage_attempt_outcomes": {"accepted": 1},
         "stage_timing_ms": {
             stage: {"sample_count": 1, "p50_ms": 1.0, "p95_ms": 1.0, "max_ms": 1.0}
             for stage in _STAGES
         },
     }
-    return ((native, corpus), (native.copy(), corpus.copy()))
+    cython_corpus = copy.deepcopy(corpus)
+    cython_corpus["cython_enabled"] = True
+    return ((native, corpus), (copy.deepcopy(native), cython_corpus))
+
+
+def _set_synthetic_attempt_count(corpus: dict[str, object], count: int) -> None:
+    corpus["stage_attempt_outcomes"] = {"accepted": count}
+    for timing in corpus["stage_timing_ms"].values():
+        timing["sample_count"] = count
 
 
 def test_ci_runner_archives_two_mode_json_receipts(tmp_path: Path) -> None:
@@ -72,7 +82,8 @@ def test_ci_runner_archives_two_mode_json_receipts(tmp_path: Path) -> None:
 set -eu
 printf '%s|%s\\n' "$D810_NO_CYTHON" "$*" >> "$D810_FAKE_RUNNER_LOG"
 if [[ "$*" == *"test_egglog_mba_performance.py"* ]]; then
-  echo 'EGGLOG_MBA_CORPUS_PERFORMANCE_RECEIPT={"candidate_count":1,"candidate_names":["add:fixture#1"],"docker_image":"idapro-9.4-speedups:ci","docker_image_id":"sha256:fixture","egglog_version":"13.2.0","stage_timing_ms":{"root_eligibility":{"sample_count":1},"ast_construction":{"sample_count":1},"native_preflight":{"sample_count":1},"egglog_extraction":{"sample_count":1},"native_z3":{"sample_count":1},"reconstruction":{"sample_count":1}},"kind":"corpus"}'
+  if [[ "$D810_NO_CYTHON" == 0 ]]; then cython=true; else cython=false; fi
+  echo 'EGGLOG_MBA_CORPUS_PERFORMANCE_RECEIPT={"candidate_count":1,"candidate_names":["add:fixture#1"],"docker_image":"idapro-9.4-speedups:ci","docker_image_id":"sha256:fixture","egglog_version":"13.2.0","cython_enabled":'$cython',"stage_attempt_outcomes":{"accepted":1},"stage_timing_ms":{"root_eligibility":{"sample_count":1},"ast_construction":{"sample_count":1},"native_preflight":{"sample_count":1},"egglog_extraction":{"sample_count":1},"native_z3":{"sample_count":1},"reconstruction":{"sample_count":1}},"kind":"corpus"}'
 else
   echo 'EGGLOG_MBA_NATIVE_RECEIPT={"corpus":"fixture","execution_count":1,"outcomes":{"accepted":1},"source_names":[["FixtureRule"]],"stage_sample_counts":{"root_eligibility":1,"ast_construction":1,"native_preflight":1,"egglog_extraction":1,"native_z3":1,"reconstruction":1},"kind":"native"}'
 fi
@@ -120,12 +131,14 @@ fi
     assert comparison["comparison"] == {
         "candidate_count_match": True,
         "candidate_identities_match": True,
+        "cython_mode_match": True,
         "egglog_version_match": True,
         "image_digest_match": True,
         "image_match": True,
         "native_outcomes_match": True,
         "native_source_identities_match": True,
         "native_stage_coverage_match": True,
+        "synthetic_stage_sample_counts_match": True,
     }
 
 
@@ -179,6 +192,10 @@ def test_comparator_rejects_missing_identity_metadata(tmp_path: Path) -> None:
             "egglog_version_match",
         ),
         (
+            lambda _python, cython: cython[1].update(cython_enabled=False),
+            "cython_enabled must be True",
+        ),
+        (
             lambda _python, cython: cython[1].update(
                 candidate_count=2,
                 candidate_names=["add:fixture#1", "add:fixture#2"],
@@ -219,14 +236,28 @@ def test_comparator_rejects_missing_identity_metadata(tmp_path: Path) -> None:
             lambda _python, cython: cython[0].update(corpus="other-fixture"),
             "native_stage_coverage_match",
         ),
+        (
+            lambda _python, cython: cython[1]["stage_timing_ms"][
+                "root_eligibility"
+            ].update(sample_count=2),
+            "synthetic stage sample counts must equal stage_attempt_outcomes",
+        ),
+        (
+            lambda _python, cython: _set_synthetic_attempt_count(cython[1], 2),
+            "synthetic_stage_sample_counts_match",
+        ),
+        (
+            lambda python, _cython: python.append({"unexpected": "receipt"}),
+            "unrecognized receipt row",
+        ),
     ],
 )
 def test_comparator_rejects_incomplete_or_mismatched_receipts(
     mutate, message: str
 ) -> None:
     python_rows, cython_rows = _valid_receipts()
-    python_rows = copy.deepcopy(python_rows)
-    cython_rows = copy.deepcopy(cython_rows)
+    python_rows = list(copy.deepcopy(python_rows))
+    cython_rows = list(copy.deepcopy(cython_rows))
     mutate(python_rows, cython_rows)
 
     with pytest.raises(ValueError, match=message):

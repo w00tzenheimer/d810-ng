@@ -535,9 +535,9 @@ def test_corpus_receipt_reports_quantiles_and_rejects_100x_regression(
         "minsn_to_ast",
         lambda _ins: current_candidate[0],
     )
-    # The profile is a real handler/proof path over active AST terms. It cannot
-    # construct an IDA minsn without a live microcode block, so only the final
-    # materializer is a test double; its stage remains visible but ungated.
+    # The profile is a real handler/proof path over active AST terms. Without
+    # a live microcode block, both minsn_to_ast() and final materialization
+    # are synthetic boundaries; their stages remain visible but ungated.
     monkeypatch.setattr(stage_handler, "_create_instruction", lambda *_args: object())
     stage_records: list[dict[str, float]] = []
     stage_receipts: list[EgglogExtractionReceipt] = []

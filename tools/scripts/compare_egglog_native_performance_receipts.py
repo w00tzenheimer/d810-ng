@@ -41,7 +41,40 @@ def _corpus_receipt(rows: tuple[dict[str, Any], ...]) -> dict[str, Any]:
     return matches[0]
 
 
-def _validate_corpus_metadata(receipt: dict[str, Any]) -> None:
+def _synthetic_stage_sample_counts(receipt: dict[str, Any]) -> dict[str, int]:
+    """Validate and return the comparable synthetic stage sample-count profile."""
+
+    attempts = receipt.get("stage_attempt_outcomes")
+    if not isinstance(attempts, dict) or not attempts:
+        raise ValueError("corpus receipt must provide stage_attempt_outcomes")
+    if not all(
+        type(outcome) is str and outcome and _positive_int(count)
+        for outcome, count in attempts.items()
+    ):
+        raise ValueError("stage_attempt_outcomes must contain positive outcome counts")
+    attempt_count = sum(attempts.values())
+
+    timings = receipt.get("stage_timing_ms")
+    if not isinstance(timings, dict) or set(timings) != _EXPECTED_STAGES:
+        raise ValueError("corpus receipt must provide the expected stage set")
+    counts: dict[str, int] = {}
+    for stage, timing in timings.items():
+        if not isinstance(timing, dict) or not _positive_int(
+            timing.get("sample_count")
+        ):
+            raise ValueError(f"{stage} must provide a positive stage sample count")
+        sample_count = timing["sample_count"]
+        if sample_count != attempt_count:
+            raise ValueError(
+                "synthetic stage sample counts must equal stage_attempt_outcomes"
+            )
+        counts[stage] = sample_count
+    return counts
+
+
+def _validate_corpus_metadata(
+    receipt: dict[str, Any], *, expected_cython_enabled: bool
+) -> dict[str, int]:
     required_strings = ("docker_image", "docker_image_id", "egglog_version")
     for field in required_strings:
         if type(receipt.get(field)) is not str or not receipt[field]:
@@ -54,25 +87,35 @@ def _validate_corpus_metadata(receipt: dict[str, Any]) -> None:
     candidate_count = receipt.get("candidate_count")
     if not _positive_int(candidate_count) or candidate_count != len(candidate_names):
         raise ValueError("candidate_count must equal len(candidate_names)")
-    timings = receipt.get("stage_timing_ms")
-    if not isinstance(timings, dict) or set(timings) != _EXPECTED_STAGES:
-        raise ValueError("corpus receipt must provide the expected stage set")
-    for stage, timing in timings.items():
-        if not isinstance(timing, dict) or not _positive_int(
-            timing.get("sample_count")
+    if receipt.get("cython_enabled") is not expected_cython_enabled:
+        raise ValueError(
+            f"corpus receipt cython_enabled must be {expected_cython_enabled}"
+        )
+    return _synthetic_stage_sample_counts(receipt)
+
+
+def _split_receipt_stream(
+    rows: tuple[dict[str, Any], ...],
+) -> tuple[dict[str, Any], tuple[dict[str, Any], ...]]:
+    """Classify every row so malformed or unrelated receipts cannot be ignored."""
+
+    corpus = _corpus_receipt(rows)
+    native: list[dict[str, Any]] = []
+    for row in rows:
+        if row is corpus:
+            continue
+        if type(row.get("corpus")) is str and isinstance(
+            row.get("stage_sample_counts"), dict
         ):
-            raise ValueError(f"{stage} must provide a positive stage sample count")
+            native.append(row)
+            continue
+        raise ValueError("unrecognized receipt row")
+    return corpus, tuple(native)
 
 
 def _native_receipts(
-    rows: tuple[dict[str, Any], ...],
+    receipts: tuple[dict[str, Any], ...],
 ) -> tuple[dict[str, Any], ...]:
-    receipts = tuple(
-        row
-        for row in rows
-        if type(row.get("corpus")) is str
-        and isinstance(row.get("stage_sample_counts"), dict)
-    )
     if not receipts:
         raise ValueError("receipt streams must provide native stage coverage")
     if len({receipt["corpus"] for receipt in receipts}) != len(receipts):
@@ -124,12 +167,16 @@ def compare_receipts(
 ) -> dict[str, object]:
     """Return an auditable comparison and fail closed on incomplete evidence."""
 
-    python_corpus = _corpus_receipt(python_rows)
-    cython_corpus = _corpus_receipt(cython_rows)
-    _validate_corpus_metadata(python_corpus)
-    _validate_corpus_metadata(cython_corpus)
-    python_native = _native_receipts(python_rows)
-    cython_native = _native_receipts(cython_rows)
+    python_corpus, python_native_rows = _split_receipt_stream(python_rows)
+    cython_corpus, cython_native_rows = _split_receipt_stream(cython_rows)
+    python_synthetic_counts = _validate_corpus_metadata(
+        python_corpus, expected_cython_enabled=False
+    )
+    cython_synthetic_counts = _validate_corpus_metadata(
+        cython_corpus, expected_cython_enabled=True
+    )
+    python_native = _native_receipts(python_native_rows)
+    cython_native = _native_receipts(cython_native_rows)
     comparisons = {
         "image_match": python_corpus["docker_image"] == cython_corpus["docker_image"],
         "image_digest_match": python_corpus["docker_image_id"]
@@ -140,6 +187,10 @@ def compare_receipts(
         == cython_corpus["candidate_count"],
         "candidate_identities_match": python_corpus["candidate_names"]
         == cython_corpus["candidate_names"],
+        "cython_mode_match": (
+            python_corpus["cython_enabled"] is False
+            and cython_corpus["cython_enabled"] is True
+        ),
         "native_stage_coverage_match": _native_projection(
             python_native, "stage_sample_counts"
         )
@@ -150,6 +201,9 @@ def compare_receipts(
             python_native, "source_names"
         )
         == _native_projection(cython_native, "source_names"),
+        "synthetic_stage_sample_counts_match": (
+            python_synthetic_counts == cython_synthetic_counts
+        ),
     }
     if not all(comparisons.values()):
         mismatches = ", ".join(
@@ -163,6 +217,8 @@ def compare_receipts(
             "docker_image": python_corpus["docker_image"],
             "docker_image_id": python_corpus["docker_image_id"],
             "egglog_version": python_corpus["egglog_version"],
+            "cython_enabled": python_corpus["cython_enabled"],
+            "synthetic_stage_sample_counts": python_synthetic_counts,
             "native_stage_coverage": _native_projection(
                 python_native, "stage_sample_counts"
             ),
@@ -172,6 +228,8 @@ def compare_receipts(
             "docker_image": cython_corpus["docker_image"],
             "docker_image_id": cython_corpus["docker_image_id"],
             "egglog_version": cython_corpus["egglog_version"],
+            "cython_enabled": cython_corpus["cython_enabled"],
+            "synthetic_stage_sample_counts": cython_synthetic_counts,
             "native_stage_coverage": _native_projection(
                 cython_native, "stage_sample_counts"
             ),
