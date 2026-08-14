@@ -79,6 +79,39 @@ def test_resolve_mop_to_ast_materializes_snapshot_before_tracker(monkeypatch):
     assert RecordingTracker.seen_mop.size == 4
 
 
+def test_resolve_mop_to_ast_forwards_explicit_cross_block_tracker_budget(monkeypatch):
+    class RecordingTracker:
+        received_budget = None
+
+        @staticmethod
+        def reset():
+            return None
+
+        def __init__(self, _searched_mop_list, *, max_nb_block, max_path):
+            self.__class__.received_budget = (max_nb_block, max_path)
+
+        def search_backward(self, _blk, _ins):
+            return []
+
+    monkeypatch.setitem(
+        def_search.sys.modules,
+        "d810.evaluator.hexrays_microcode.tracker",
+        SimpleNamespace(MopTracker=RecordingTracker),
+    )
+    monkeypatch.setattr(def_search, "_USE_NATIVE_DEF_SEARCH", False)
+
+    result = def_search.resolve_mop_to_ast(
+        SimpleNamespace(t=ida_hexrays.mop_r, size=4, r=0),
+        blk=object(),
+        ins=SimpleNamespace(ea=0x1000),
+        max_predecessor_blocks=2,
+        max_paths=3,
+    )
+
+    assert result is None
+    assert RecordingTracker.received_budget == (2, 3)
+
+
 def test_resolve_mop_to_ast_fails_closed_for_unowned_stack_snapshot(monkeypatch):
     class ExplodingTracker:
         @staticmethod

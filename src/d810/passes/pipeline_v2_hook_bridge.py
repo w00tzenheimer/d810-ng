@@ -151,6 +151,9 @@ def _mba_egglog_options(config: PipelineConfig) -> dict[str, object]:
         "max_eclasses": adapter.max_eclasses,
         "max_enodes": adapter.max_enodes,
         "max_rule_firings": adapter.max_rule_firings,
+        "cross_block_constant_preparation": (
+            adapter.cross_block_constant_preparation
+        ),
         "time_budget_ms": adapter.time_budget_ms,
         "require_proof": adapter.require_proof,
         "families": list(adapter.families),

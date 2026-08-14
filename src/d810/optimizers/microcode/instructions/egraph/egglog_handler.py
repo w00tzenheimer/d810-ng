@@ -27,6 +27,9 @@ from d810.backends.mba.egglog_saturation import (
     extraction_receipt_for_lowering,
     extract_bounded_candidate,
 )
+from d810.backends.mba.cross_block_preparation import (
+    prepare_ast_with_cross_block_constants,
+)
 from d810.backends.mba.hexrays_island import lower_hexrays_island
 from d810.backends.mba.native_z3 import prove_native_ast_equivalence
 from d810.core import getLogger
@@ -109,6 +112,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         self._attempt_outcome_index: int | None = None
         self._provider_outcome_capture_depth = 0
         self._last_provider_outcome: MbaProviderOutcome | None = None
+        self.cross_block_constant_preparation = False
 
     def _begin_provider_attempt(self) -> None:
         """Start one observable attempt, independent of whether it mutates."""
@@ -154,6 +158,11 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         max_leaves = self.config.get("max_leaves", 2)
         if type(max_leaves) is not int or not 1 <= max_leaves <= 8:
             raise ValueError("EgglogOptimizer max_leaves must be between 1 and 8")
+        preparation = self.config.get("cross_block_constant_preparation", False)
+        if type(preparation) is not bool:
+            raise ValueError(
+                "EgglogOptimizer cross_block_constant_preparation must be boolean"
+            )
         try:
             budget = EgglogExtractionBudget(
                 max_leaves=max_leaves,
@@ -178,6 +187,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         self._publish_budget_attributes(budget)
         self.families = families
         self._catalogue = selected_catalogue
+        self.cross_block_constant_preparation = preparation
 
     def _publish_budget_attributes(self, budget: EgglogExtractionBudget) -> None:
         self.max_leaves = budget.max_leaves
@@ -214,7 +224,6 @@ class EgglogOptimizer(PeepholeSimplificationRule):
 
     def check_and_replace(self, blk, ins):
         """Return a replacement only after extraction, shrink, and proof."""
-        del blk
         self.last_rule_family = None
         self.last_rule_provenance = None
         self.last_derivation_trace = None
@@ -228,7 +237,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             )
             return None
         try:
-            return self._check_and_replace(ins)
+            return self._check_and_replace(ins, blk=blk)
         except Exception:  # Never leak an exception through Hex-Rays' callback.
             receipt = self.last_extraction_receipt
             self._record_extraction_receipt(
@@ -244,7 +253,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             )
             return None
 
-    def _check_and_replace(self, ins):
+    def _check_and_replace(self, ins, *, blk=None):
         self.last_rule_family = None
         self.last_rule_provenance = None
         self.last_derivation_trace = None
@@ -270,7 +279,22 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             )
             return None
 
-        extraction = self._select_extraction(ast, destination_size=int(ins.d.size))
+        extraction_ast = ast
+        known_constants = None
+        if (
+            self.cross_block_constant_preparation
+            and blk is not None
+            and getattr(blk, "mba", None) is not None
+        ):
+            prepared = prepare_ast_with_cross_block_constants(blk.mba, blk, ins, ast)
+            if prepared is not None:
+                extraction_ast = prepared.ast
+                known_constants = prepared.known_constants
+
+        extraction = self._select_extraction(
+            extraction_ast,
+            destination_size=int(ins.d.size),
+        )
         self._record_extraction_receipt(extraction.receipt)
         replacement = extraction.replacement_ast
         if replacement is None:
@@ -293,7 +317,10 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             )
             return None
         width = int(ins.d.size) * 8
-        if not self._prove_ast_equivalence(ast, replacement, width=width):
+        proof_kwargs = {"width": width}
+        if known_constants is not None:
+            proof_kwargs["known_constants"] = known_constants
+        if not self._prove_ast_equivalence(ast, replacement, **proof_kwargs):
             self._record_extraction_receipt(
                 replace(
                     extraction.receipt,
@@ -629,11 +656,20 @@ class EgglogOptimizer(PeepholeSimplificationRule):
 
     @staticmethod
     def _prove_ast_equivalence(
-        original: AstNode, replacement: AstNode, *, width: int
+        original: AstNode,
+        replacement: AstNode,
+        *,
+        width: int,
+        known_constants: object | None = None,
     ) -> bool:
         """Compatibility facade for the shared native Z3 mutation gate."""
 
-        return prove_native_ast_equivalence(original, replacement, width=width)
+        return prove_native_ast_equivalence(
+            original,
+            replacement,
+            width=width,
+            known_constants=known_constants,
+        )
 
     @staticmethod
     def _create_instruction(replacement: AstNode, original_ins):

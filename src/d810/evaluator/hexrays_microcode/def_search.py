@@ -18,11 +18,8 @@ import os
 import sys
 
 import ida_hexrays
-import idaapi
 
 from d810.core import typing
-from d810.core.typing import TYPE_CHECKING
-
 from d810.core import getLogger
 from d810.hexrays.expr.ast import AstLeaf, AstNode, get_mop_key
 from d810.hexrays.ir.mop_snapshot import MopSnapshot
@@ -403,6 +400,9 @@ def resolve_mop_to_ast(
     mop: ida_hexrays.mop_t | MopSnapshot,
     blk: ida_hexrays.mblock_t,
     ins: ida_hexrays.minsn_t,
+    *,
+    max_predecessor_blocks: int = 1,
+    max_paths: int = 1,
 ) -> AstNode | AstLeaf | None:
     """Use MopTracker to find the instruction that defines mop, return its AST.
 
@@ -425,10 +425,23 @@ def resolve_mop_to_ast(
              or mop_d with m_ldx for memory loads)
         blk: The block containing the instruction
         ins: The instruction where mop is used
+        max_predecessor_blocks: MopTracker fallback block traversal budget.
+            Defaults to one, preserving the existing local/cross-edge scope.
+        max_paths: MopTracker fallback path budget. Defaults to one, so a
+            caller never receives a definition from an ambiguous path unless
+            it explicitly opts into broader exploration.
 
     Returns:
         The AST of the defining instruction's RHS, or None if not found
     """
+    if (
+        type(max_predecessor_blocks) is not int
+        or not 1 <= max_predecessor_blocks <= _MAX_PRED_DEPTH
+        or type(max_paths) is not int
+        or not 1 <= max_paths <= 32
+    ):
+        return None
+
     mop = _materialize_mop_for_tracking(
         mop,
         "resolve_mop_to_ast",
@@ -449,7 +462,13 @@ def resolve_mop_to_ast(
                 # If the destination is a register or stack var, track it
                 if dest_mop.t in (ida_hexrays.mop_r, ida_hexrays.mop_S):
                     # Recursively resolve using the destination
-                    return resolve_mop_to_ast(dest_mop, blk, ins)
+                    return resolve_mop_to_ast(
+                        dest_mop,
+                        blk,
+                        ins,
+                        max_predecessor_blocks=max_predecessor_blocks,
+                        max_paths=max_paths,
+                    )
             # If we can't resolve via destination, try the address operand
             # to find a matching store (m_stx) instruction
             return resolve_memory_load_via_store(nested, blk, ins)
@@ -479,13 +498,16 @@ def resolve_mop_to_ast(
         logger.debug("resolve_mop_to_ast: MopTracker class not available")
         return None
 
-    # Create tracker with limited block depth. IDA decomposes compound MBA
-    # expressions into separate instructions with temporary registers;
-    # max_nb_block=1 restricts to single-block lookups to avoid incorrect
-    # cross-block definitions. max_path=1 limits to single path.
+    # Create tracker with an explicit caller-owned exploration budget. The
+    # defaults retain the previous one-block/one-path behavior; wider traversal
+    # remains an opt-in research tool rather than a global matcher policy.
     try:
         MopTracker.reset()  # Reset global path counter
-        tracker = MopTracker([mop], max_nb_block=1, max_path=1)
+        tracker = MopTracker(
+            [mop],
+            max_nb_block=max_predecessor_blocks,
+            max_path=max_paths,
+        )
         histories = tracker.search_backward(blk, ins)
     except Exception as e:
         logger.debug("resolve_mop_to_ast: Tracker failed: %s", e)

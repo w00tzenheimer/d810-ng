@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from d810.backends.mba.hexrays_island import lower_hexrays_island
 from d810.core.typing import Any
 
@@ -11,12 +13,18 @@ def prove_native_ast_equivalence(
     replacement: Any,
     *,
     width: int,
+    known_constants: Mapping[tuple[object, ...], int] | None = None,
 ) -> bool:
     """Prove two same-width supported native ASTs equal with bit-vector Z3.
 
     Both trees first pass through the native island lowerer at exactly this
     destination width. Casts, truncations, shifts, unsupported opcodes, and
     mixed-width trees therefore fail closed before Z3 sees a term.
+
+    ``known_constants`` is an optional set of exact live leaf identities from
+    a converged cross-block constant environment. Every supplied key must
+    occur in the original/replacement proof and is constrained to its value;
+    an unknown key, invalid width, or malformed value rejects the proof.
     """
 
     if type(width) is not int or width not in {8, 16, 32, 64}:
@@ -76,6 +84,13 @@ def prove_native_ast_equivalence(
         solver.add(
             visit(original_lowering.term) != visit(replacement_lowering.term)
         )
+        if known_constants:
+            for key, value in known_constants.items():
+                if type(value) is not int or key not in variables:
+                    return False
+                solver.add(
+                    variables[key] == z3.BitVecVal(value & ((1 << width) - 1), width)
+                )
         return solver.check() == z3.unsat
     except Exception:
         return False

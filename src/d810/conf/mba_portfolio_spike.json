@@ -39,6 +39,7 @@
           "max_eclasses": 64,
           "max_enodes": 128,
           "max_rule_firings": 32,
+          "cross_block_constant_preparation": true,
           "time_budget_ms": 1000,
           "require_proof": true
         }

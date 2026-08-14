@@ -36,6 +36,8 @@ def test_portfolio_spike_declares_fast_path_then_opt_in_egglog() -> None:
         for entry in project.additional_configuration["pipeline_v2"]
     ] == ["mba-simplify", "mba-egglog"]
     assert "mba-solve" not in project.additional_configuration["pipeline_v2"]
+    egglog_options = project.additional_configuration["pipeline_v2"][1]["options"]
+    assert egglog_options["cross_block_constant_preparation"] is True
 
 
 def test_hook_activation_keeps_chain_before_catalogue_before_egglog() -> None:
@@ -72,3 +74,4 @@ def test_telemetry_profile_keeps_the_same_order_but_never_enables_egglog() -> No
     ][1]["options"]
     assert egglog_options["time_budget_ms"] == 3
     assert egglog_options["max_degree"] == 1
+    assert "cross_block_constant_preparation" not in egglog_options

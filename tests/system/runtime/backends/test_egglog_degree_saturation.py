@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from dataclasses import FrozenInstanceError
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 
 import pytest
 
@@ -19,6 +19,9 @@ from d810.backends.mba.egglog_saturation import (  # noqa: E402
     EgglogExtractionResult,
     ExtractionSkipReason,
     extract_bounded_candidate,
+)
+from d810.backends.mba.cross_block_preparation import (  # noqa: E402
+    PreparedCrossBlockAst,
 )
 from d810.hexrays.expr import ast as ast_dispatcher  # noqa: E402
 from d810.hexrays.expr import p_ast  # noqa: E402
@@ -755,6 +758,59 @@ def test_live_handler_extracts_once_with_exact_configured_rules_then_proves_befo
         ("add", "Add_HackersDelightRule_2", ("Add_OllvmRule_3",)),
     )
     assert metadata["skip_reason"] is None
+
+
+def test_live_handler_extracts_prepared_cross_block_clone_and_proves_original(
+    monkeypatch,
+):
+    """Egglog explores only the clone and returns a constrained-proof result."""
+
+    import d810.optimizers.microcode.instructions.egraph.egglog_handler as handler_module
+
+    original = _direct_add_candidate()
+    prepared = original.clone()
+    handler = _configured_live_handler(cross_block_constant_preparation=True)
+    extraction_calls = []
+    proof_calls = []
+
+    monkeypatch.setattr(handler_module, "minsn_to_ast", lambda _ins: original)
+    monkeypatch.setattr(handler, "_candidate_skip_reason", lambda _ast, _ins: None)
+    monkeypatch.setattr(
+        handler_module,
+        "prepare_ast_with_cross_block_constants",
+        lambda *_args: PreparedCrossBlockAst(
+            ast=prepared,
+            substitutions=1,
+            environment=MappingProxyType({}),
+            known_constants=MappingProxyType({("mop", "carrier"): 7}),
+        ),
+    )
+    real_extract = extract_bounded_candidate
+
+    def observe_extract(ast, rules, budget, destination_size):
+        extraction_calls.append(ast)
+        return real_extract(ast, rules, budget, destination_size)
+
+    monkeypatch.setattr(handler_module, "extract_bounded_candidate", observe_extract)
+    monkeypatch.setattr(
+        handler,
+        "_prove_ast_equivalence",
+        lambda source, replacement, **kwargs: proof_calls.append(
+            (source, replacement, kwargs)
+        )
+        or True,
+    )
+    monkeypatch.setattr(handler, "_create_instruction", lambda *_args: object())
+
+    replacement = handler.check_and_replace(
+        SimpleNamespace(mba=object(), serial=0),
+        _Instruction(),
+    )
+
+    assert replacement is not None
+    assert extraction_calls == [prepared]
+    assert proof_calls[0][0] is original
+    assert proof_calls[0][2]["known_constants"] == {("mop", "carrier"): 7}
 
 
 def test_live_handler_native_z3_failure_records_skip_without_creating_mop(monkeypatch):

@@ -37,6 +37,7 @@ class MbaEgglogOptions:
     max_eclasses: int = 64
     max_enodes: int = 128
     max_rule_firings: int = 32
+    cross_block_constant_preparation: bool = False
     time_budget_ms: int = 3
     require_proof: bool = True
     families: tuple[str, ...] = DEFAULT_FAMILIES
@@ -54,6 +55,7 @@ class MbaEgglogPass(PipelinePass):
     max_eclasses: int = 64
     max_enodes: int = 128
     max_rule_firings: int = 32
+    cross_block_constant_preparation: bool = False
     time_budget_ms: int = 3
     require_proof: bool = True
     families: tuple[str, ...] = DEFAULT_FAMILIES
@@ -81,6 +83,7 @@ def parse_mba_egglog_options(
         "max_eclasses",
         "max_enodes",
         "max_rule_firings",
+        "cross_block_constant_preparation",
         "time_budget_ms",
         "require_proof",
         "families",
@@ -107,6 +110,9 @@ def parse_mba_egglog_options(
     max_eclasses = options.get("max_eclasses", 64)
     max_enodes = options.get("max_enodes", 128)
     max_rule_firings = options.get("max_rule_firings", 32)
+    cross_block_constant_preparation = options.get(
+        "cross_block_constant_preparation", False
+    )
     time_budget_ms = options.get("time_budget_ms", 3)
     require_proof = options.get("require_proof", True)
     families = options.get("families", list(DEFAULT_FAMILIES))
@@ -134,6 +140,10 @@ def parse_mba_egglog_options(
     if type(max_degree) is not int or max_degree not in (1, 2):
         raise PipelineConfigError(
             "mba-egglog options.max_degree must be exactly 1 or 2"
+        )
+    if type(cross_block_constant_preparation) is not bool:
+        raise PipelineConfigError(
+            "mba-egglog options.cross_block_constant_preparation must be boolean"
         )
     if type(saturation_rounds) is not int or not 1 <= saturation_rounds <= 6:
         raise PipelineConfigError(
@@ -183,6 +193,7 @@ def parse_mba_egglog_options(
         max_eclasses=max_eclasses,
         max_enodes=max_enodes,
         max_rule_firings=max_rule_firings,
+        cross_block_constant_preparation=cross_block_constant_preparation,
         time_budget_ms=time_budget_ms,
         require_proof=require_proof,
         families=resolved_families,
@@ -200,6 +211,7 @@ def build_mba_egglog_pass(config: PipelineConfig) -> MbaEgglogPass:
         max_eclasses=options.max_eclasses,
         max_enodes=options.max_enodes,
         max_rule_firings=options.max_rule_firings,
+        cross_block_constant_preparation=options.cross_block_constant_preparation,
         time_budget_ms=options.time_budget_ms,
         require_proof=options.require_proof,
         families=options.families,
@@ -221,6 +233,7 @@ def register_mba_egglog_pass(registry: PassRegistry) -> PassRegistry:
                 "max_eclasses": 64,
                 "max_enodes": 128,
                 "max_rule_firings": 32,
+                "cross_block_constant_preparation": False,
                 "time_budget_ms": 3,
                 "require_proof": True,
                 "families": list(DEFAULT_FAMILIES),
