@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import pytest
 
 from d810.capabilities.resolver import CapabilityNotProvided, CapabilitySet
+from d810.core.pass_editor_spec import FieldControlKind, PassEditorKind
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph
 from d810.ir.maturity import IRMaturity
 from d810.passes.cleanup_family_adapter import (
@@ -144,6 +145,20 @@ def test_cleanup_family_adapter_registry_builds_cleanup_entry():
     assert isinstance(adapter, CleanupFamilyAdapterPass)
     assert adapter.implementation_name == SIMPLE_FLATTENING_CLEANUP_RULE
     assert adapter.transform_options == {}
+
+
+def test_cleanup_family_adapter_registry_exposes_dead_store_checkbox():
+    """Keep the opt-in dead-store cleanup reachable from the typed editor."""
+    editor = cleanup_family_adapter_pass_registry().editor_spec_for(
+        SIMPLE_FLATTENING_CLEANUP_PASS_ID
+    )
+
+    assert editor.kind is PassEditorKind.FIELDS
+    assert editor.default_options() == {"enable_dead_store_elimination": False}
+    assert len(editor.fields) == 1
+    field = editor.fields[0]
+    assert field.field_id == "enable_dead_store_elimination"
+    assert field.control is FieldControlKind.BOOLEAN
 
 
 def test_cleanup_family_adapter_registry_rejects_former_legacy_rule_option():

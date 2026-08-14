@@ -5,7 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from d810.core.deobfuscation_case import StrategyWorkflowStage
-from d810.core.pass_editor_spec import PassEditorSpec
+from d810.core.pass_editor_spec import (
+    FieldControlKind,
+    FieldEditorSpec,
+    PassEditorSpec,
+)
 from d810.core.pass_ids import PassId
 from d810.core.typing import Mapping, Protocol
 from d810.ir.maturity import IRMaturity
@@ -96,7 +100,7 @@ def register_cleanup_family_adapter_passes(registry: PassRegistry) -> PassRegist
         config_template=PipelineConfig(
             pass_id=SIMPLE_FLATTENING_CLEANUP_PASS_ID,
             workflow_stage=StrategyWorkflowStage.CANONICAL_TRANSFORM,
-            options={},
+            options={"enable_dead_store_elimination": False},
         ),
         stages=(
             ExecutionStageDescriptor(
@@ -106,7 +110,18 @@ def register_cleanup_family_adapter_passes(registry: PassRegistry) -> PassRegist
                 SIMPLE_FLATTENING_CLEANUP_RULE,
             ),
         ),
-        editor_spec=PassEditorSpec.summary(),
+        editor_spec=PassEditorSpec.fields_editor(
+            (
+                FieldEditorSpec(
+                    field_id="enable_dead_store_elimination",
+                    label="Enable dead-store elimination",
+                    path=("enable_dead_store_elimination",),
+                    control=FieldControlKind.BOOLEAN,
+                    description="Remove proven-dead direct register and stack writes.",
+                    default=False,
+                ),
+            )
+        ),
     )
     return registry
 
