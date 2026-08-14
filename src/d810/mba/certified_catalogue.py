@@ -6,6 +6,7 @@ import hashlib
 import json
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from types import MappingProxyType
 from d810.core.typing import Any, TypeAlias
 from d810.mba.typed_term import TypedBvTerm
@@ -27,6 +28,74 @@ class CertifiedCatalogueSnapshot:
             "rule_ids_by_root_shape",
             MappingProxyType(dict(self.rule_ids_by_root_shape)),
         )
+
+
+@dataclass(frozen=True)
+class StructuralMatcherParityCertificate:
+    """Persisted native parity evidence for one matcher runtime and snapshot."""
+
+    snapshot_fingerprint: str
+    runtime_mode: str
+    corpus_identity: str
+    legacy_observation_count: int
+
+    def authorizes(
+        self, snapshot: CertifiedCatalogueSnapshot, runtime_mode: str
+    ) -> bool:
+        return (
+            self.snapshot_fingerprint == snapshot.fingerprint
+            and self.runtime_mode == runtime_mode
+        )
+
+
+def load_structural_matcher_parity_certificate(
+    path: Path,
+) -> StructuralMatcherParityCertificate:
+    """Load fail-closed structural-matcher parity evidence from JSON.
+
+    The certificate is deliberately separate from an experimental environment
+    flag: the flag requests selection while this artifact binds that request to
+    one certified catalogue snapshot and one active matcher runtime.
+    """
+
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError("structural parity certificate must be an object")
+    if raw.get("schema_version") != 1:
+        raise ValueError("structural parity certificate schema_version must be 1")
+    fingerprint = raw.get("snapshot_fingerprint")
+    if (
+        not isinstance(fingerprint, str)
+        or len(fingerprint) != 64
+        or any(character not in "0123456789abcdef" for character in fingerprint)
+    ):
+        raise ValueError(
+            "structural parity certificate has invalid snapshot_fingerprint"
+        )
+    runtime_mode = raw.get("runtime_mode")
+    if runtime_mode not in {"python", "cython"}:
+        raise ValueError("structural parity certificate has invalid runtime_mode")
+    corpus_identity = raw.get("corpus_identity")
+    if not isinstance(corpus_identity, str) or not corpus_identity:
+        raise ValueError("structural parity certificate has invalid corpus_identity")
+    observation_count = raw.get("legacy_observation_count")
+    if type(observation_count) is not int or observation_count <= 0:
+        raise ValueError(
+            "structural parity certificate needs positive legacy_observation_count"
+        )
+    for field in (
+        "legacy_rule_mismatches",
+        "legacy_binding_mismatches",
+        "legacy_binding_unknown",
+    ):
+        if raw.get(field) != 0:
+            raise ValueError(f"structural parity certificate requires {field}=0")
+    return StructuralMatcherParityCertificate(
+        snapshot_fingerprint=fingerprint,
+        runtime_mode=runtime_mode,
+        corpus_identity=corpus_identity,
+        legacy_observation_count=observation_count,
+    )
 
 
 @dataclass
@@ -162,6 +231,8 @@ __all__ = [
     "CompiledRule",
     "RootShape",
     "ShadowMatcherParityLedger",
+    "StructuralMatcherParityCertificate",
     "build_certified_catalogue_snapshot",
+    "load_structural_matcher_parity_certificate",
     "root_shape_for_term",
 ]

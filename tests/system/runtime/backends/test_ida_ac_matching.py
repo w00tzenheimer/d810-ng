@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -19,12 +20,17 @@ from d810.mba.ac_matching import (  # noqa: E402
     AcMatchReport,
     AcMatchStopReason,
 )
-from d810.mba.certified_catalogue import ShadowMatcherParityLedger  # noqa: E402
+from d810.mba.certified_catalogue import (  # noqa: E402
+    ShadowMatcherParityLedger,
+    load_structural_matcher_parity_certificate,
+)
 from d810.mba.dsl import Const, Var, Zext  # noqa: E402
-from d810.mba.rules.add import Add_HackersDelightRule_2  # noqa: E402
 from d810.optimizers.microcode.instructions.pattern_matching.handler import (  # noqa: E402
     PatternOptimizer,
     RulePatternInfo,
+)
+from d810.optimizers.microcode.instructions.pattern_matching.engine import (  # noqa: E402
+    get_engine_info,
 )
 
 
@@ -188,10 +194,10 @@ def test_selected_snapshot_narrows_shadow_observation_without_compilation() -> N
     assert xor_adapter.observe_structural_match(ast) is None
 
 
-def test_certified_registration_keeps_legacy_default_and_requires_structural_opt_in(
+def test_certified_registration_rejects_bare_structural_opt_in(
     monkeypatch,
 ) -> None:
-    """Structural selection is gated until native Cython parity is established."""
+    """The experimental flag cannot bypass persisted parity evidence."""
 
     x = Var("x")
 
@@ -215,8 +221,8 @@ def test_certified_registration_keeps_legacy_default_and_requires_structural_opt
     structural = IDAPatternAdapter(OptInRule())
     attach_selected_certified_catalogue_snapshot((structural,))
 
-    assert structural.uses_structural_matching is True
-    assert len(structural.pattern_candidates) == 1
+    assert structural.uses_structural_matching is False
+    assert len(structural.pattern_candidates) == 2
 
     # The existing release-scoped rollback takes precedence over opt-in.
     monkeypatch.setenv("D810_LEGACY_DSL_PERMUTATIONS", "1")
@@ -225,6 +231,110 @@ def test_certified_registration_keeps_legacy_default_and_requires_structural_opt
 
     assert rollback.uses_structural_matching is False
     assert len(rollback.pattern_candidates) == 2
+
+
+def test_structural_opt_in_requires_matching_persisted_parity_certificate(
+    monkeypatch, tmp_path
+) -> None:
+    """A certificate authorizes exactly its snapshot and active matcher mode."""
+
+    x = Var("x")
+
+    class CertifiedRule:
+        name = "CertifiedAdd"
+        pattern = x + Const("one", 1)
+
+    assert ida_backend._supports_structural_dsl_pattern(CertifiedRule.pattern)
+    monkeypatch.setenv("D810_STRUCTURAL_DSL_MATCHING", "1")
+    monkeypatch.delenv("D810_LEGACY_DSL_PERMUTATIONS", raising=False)
+    runtime_mode = get_engine_info()["backend"]
+    warnings: list[tuple[object, ...]] = []
+    monkeypatch.setattr(
+        ida_backend.logger,
+        "warning",
+        lambda *args: warnings.append(args),
+    )
+
+    probe = IDAPatternAdapter(CertifiedRule())
+    snapshot, _ = attach_selected_certified_catalogue_snapshot((probe,))
+    certificate_path = tmp_path / "structural-parity.json"
+    certificate_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "snapshot_fingerprint": "0" * 64,
+                "runtime_mode": runtime_mode,
+                "corpus_identity": "controlled-native-corpus",
+                "legacy_observation_count": 1,
+                "legacy_rule_mismatches": 0,
+                "legacy_binding_mismatches": 0,
+                "legacy_binding_unknown": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    wrong_snapshot = IDAPatternAdapter(CertifiedRule())
+    attach_selected_certified_catalogue_snapshot(
+        (wrong_snapshot,),
+        parity_certificate_path=certificate_path,
+        runtime_mode=runtime_mode,
+    )
+    assert wrong_snapshot.uses_structural_matching is False
+
+    other_runtime_mode = "cython" if runtime_mode == "python" else "python"
+    certificate_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "snapshot_fingerprint": snapshot.fingerprint,
+                "runtime_mode": other_runtime_mode,
+                "corpus_identity": "controlled-native-corpus",
+                "legacy_observation_count": 1,
+                "legacy_rule_mismatches": 0,
+                "legacy_binding_mismatches": 0,
+                "legacy_binding_unknown": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    wrong_runtime = IDAPatternAdapter(CertifiedRule())
+    attach_selected_certified_catalogue_snapshot(
+        (wrong_runtime,),
+        parity_certificate_path=certificate_path,
+        runtime_mode=runtime_mode,
+    )
+    assert wrong_runtime.uses_structural_matching is False
+
+    certificate_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "snapshot_fingerprint": snapshot.fingerprint,
+                "runtime_mode": runtime_mode,
+                "corpus_identity": "controlled-native-corpus",
+                "legacy_observation_count": 1,
+                "legacy_rule_mismatches": 0,
+                "legacy_binding_mismatches": 0,
+                "legacy_binding_unknown": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    certificate = load_structural_matcher_parity_certificate(certificate_path)
+    assert certificate.authorizes(snapshot, runtime_mode)
+    matching_snapshot = IDAPatternAdapter(CertifiedRule())
+    matching_catalogue, _ = attach_selected_certified_catalogue_snapshot(
+        (matching_snapshot,),
+        parity_certificate_path=certificate_path,
+        runtime_mode=runtime_mode,
+    )
+
+    assert matching_catalogue.fingerprint == snapshot.fingerprint
+    assert warnings == []
+    assert matching_snapshot._structural_parity_authorized is True
+    assert matching_snapshot.uses_structural_matching is True
 
 
 @pytest.mark.parametrize(
@@ -290,21 +400,11 @@ def test_selected_unsupported_dsl_rules_keep_legacy_dispatch_by_default(
     assert calls == [(registered, candidate)]
 
 
-def test_structural_pattern_capability_accepts_reused_leaves_but_rejects_cycles(
-    monkeypatch,
-) -> None:
+def test_structural_pattern_capability_accepts_reused_leaves_but_rejects_cycles() -> None:
     """The symbolic rule catalogue is a DAG, not necessarily a tree."""
 
     x = Var("x")
     assert ida_backend._supports_structural_dsl_pattern(x + x)
-
-    class RepeatedCatalogueRule(Add_HackersDelightRule_2):
-        pass
-
-    monkeypatch.setenv("D810_STRUCTURAL_DSL_MATCHING", "1")
-    repeated_rule = IDAPatternAdapter(RepeatedCatalogueRule())
-    attach_selected_certified_catalogue_snapshot((repeated_rule,))
-    assert repeated_rule.uses_structural_matching is True
 
     cycle = Var("cycle")
     cycle.operation = "add"

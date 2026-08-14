@@ -365,11 +365,41 @@ class D810State(metaclass=SingletonMeta):
             if isinstance(rule, IDAPatternAdapter)
         )
         if selected_catalogue_adapters:
+            certificate_path = None
+            certificate_setting = runtime_project.additional_configuration.get(
+                "structural_matcher_parity_certificate"
+            )
+            if type(certificate_setting) is str and certificate_setting:
+                configured_path = pathlib.Path(certificate_setting)
+                certificate_path = (
+                    configured_path
+                    if configured_path.is_absolute()
+                    else runtime_project.path.parent / configured_path
+                )
+            elif certificate_setting is not None:
+                logger.warning(
+                    "Ignoring non-string structural matcher parity certificate setting"
+                )
+            runtime_mode = None
+            try:
+                from d810.optimizers.microcode.instructions.pattern_matching import (
+                    engine as pattern_matching_engine,
+                )
+
+                candidate_mode = pattern_matching_engine.get_engine_info().get(
+                    "backend"
+                )
+                if candidate_mode in {"python", "cython"}:
+                    runtime_mode = candidate_mode
+            except Exception:  # noqa: BLE001 - experimental selection fails closed
+                runtime_mode = None
             (
                 self.current_certified_catalogue_snapshot,
                 self.current_shadow_matcher_parity_ledger,
             ) = attach_selected_certified_catalogue_snapshot(
-                selected_catalogue_adapters
+                selected_catalogue_adapters,
+                parity_certificate_path=certificate_path,
+                runtime_mode=runtime_mode,
             )
         else:
             self.current_certified_catalogue_snapshot = None

@@ -12,9 +12,11 @@ the rule definitions in d810.mba.rules pure and backend-agnostic.
 from __future__ import annotations
 
 import itertools
+import json
 import os
 import time
 from dataclasses import replace
+from pathlib import Path
 from d810.core.typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import ida_hexrays
@@ -454,6 +456,7 @@ class IDAPatternAdapter:
         self._shadow_parity_ledger = None
         self._shadow_parity_recorded = False
         self._structural_matching_enabled = False
+        self._structural_parity_authorized = False
         self._structural_selection_active = False
         self._structural_dispatch_bucket_size = 0
         self._structural_dispatch_attempt_count = 0
@@ -486,7 +489,12 @@ class IDAPatternAdapter:
         self._structural_dispatch_attempt_count = 0
 
     def attach_certified_catalogue_snapshot(
-        self, snapshot, rule_id: int, ledger
+        self,
+        snapshot,
+        rule_id: int,
+        ledger,
+        parity_certificate,
+        runtime_mode: str | None,
     ) -> None:
         """Attach one configuration-time snapshot and select its matcher mode."""
 
@@ -494,14 +502,21 @@ class IDAPatternAdapter:
         self._certified_catalogue_rule_id = rule_id
         self._shadow_parity_ledger = ledger
         # The snapshot only contains already-admitted VerifiableRule DSL
-        # objects. Structural selection remains opt-in until native Cython
-        # shadow parity has passed. Keep the generated-permutation path as the
-        # safe default and the release-scoped rollback; never register both
-        # forms at once. The explicit rollback wins if both flags are set.
+        # objects. The environment flag requests the experimental path, but a
+        # persisted zero-mismatch certificate must also bind this exact
+        # snapshot to the active matcher runtime. Keep generated permutations
+        # as the safe default and the release-scoped rollback; never register
+        # both forms at once. The explicit rollback wins if both flags are set.
+        self._structural_parity_authorized = bool(
+            parity_certificate is not None
+            and runtime_mode is not None
+            and parity_certificate.authorizes(snapshot, runtime_mode)
+        )
         self._structural_matching_enabled = (
             _supports_structural_dsl_pattern(getattr(self.rule, "pattern", None))
             and os.environ.get("D810_STRUCTURAL_DSL_MATCHING", "0") == "1"
             and os.environ.get("D810_LEGACY_DSL_PERMUTATIONS", "0") != "1"
+            and self._structural_parity_authorized
         )
 
     @property
@@ -1576,12 +1591,16 @@ def adapt_rules(rules: List[VerifiableRule]) -> List[IDAPatternAdapter]:
 
 def attach_selected_certified_catalogue_snapshot(
     adapters: tuple[IDAPatternAdapter, ...] | List[IDAPatternAdapter],
+    *,
+    parity_certificate_path: Path | None = None,
+    runtime_mode: str | None = None,
 ):
     """Freeze the already-selected direct DSL rules outside the optinsn path."""
 
     from d810.mba.certified_catalogue import (
         ShadowMatcherParityLedger,
         build_certified_catalogue_snapshot,
+        load_structural_matcher_parity_certificate,
     )
 
     selected = tuple(adapters)
@@ -1594,15 +1613,33 @@ def attach_selected_certified_catalogue_snapshot(
         compiler_version="verifiable-rule-dsl-v1",
         enabled_families=enabled_families,
     )
+    parity_certificate = None
+    if parity_certificate_path is not None:
+        try:
+            parity_certificate = load_structural_matcher_parity_certificate(
+                parity_certificate_path
+            )
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            logger.warning(
+                "Structural matcher parity certificate unavailable (%s): %s",
+                parity_certificate_path,
+                exc,
+            )
+    if runtime_mode not in {"python", "cython"}:
+        runtime_mode = None
     ledger = ShadowMatcherParityLedger()
-    rule_ids = {
-        id(rule): rule_id
-        for rule_id, rule in enumerate(snapshot.rules_in_declaration_order)
-    }
-    for adapter in selected:
-        rule_id = rule_ids.get(id(adapter.rule))
-        if rule_id is not None:
-            adapter.attach_certified_catalogue_snapshot(snapshot, rule_id, ledger)
+    # ``build_certified_catalogue_snapshot`` can return a cached immutable
+    # view containing earlier rule instances. The selected input order is the
+    # certified declaration order used for that fingerprint, so attach by
+    # position rather than transient Python object identity.
+    for rule_id, adapter in enumerate(selected):
+        adapter.attach_certified_catalogue_snapshot(
+            snapshot,
+            rule_id,
+            ledger,
+            parity_certificate,
+            runtime_mode,
+        )
     return snapshot, ledger
 
 
