@@ -42,6 +42,25 @@ def _valid_receipts() -> tuple[
         "source_names": [["FixtureRule"]],
         "stage_sample_counts": {stage: 1 for stage in _STAGES},
     }
+    real_native = {
+        "schema_version": 2,
+        "corpus": "fixture",
+        "function": "fixture_function",
+        "project": "fixture_project",
+        "execution_count": 2,
+        "candidate_identities": ["fixture#1:one", "fixture#2:two"],
+        "outcomes": {"applied": 1, "ineligible": 1},
+        "source_names": [["FixtureRule"], []],
+        "proof_mode_counts": {"legacy_native_ast": 2},
+        "stage_sample_counts": {
+            "root_eligibility": 2,
+            "native_preflight": 1,
+            "egglog_extraction": 1,
+            "ast_construction": 1,
+            "native_z3": 1,
+            "reconstruction": 1,
+        },
+    }
     corpus = {
         "candidate_count": 1,
         "candidate_names": ["add:fixture#1"],
@@ -57,7 +76,10 @@ def _valid_receipts() -> tuple[
     }
     cython_corpus = copy.deepcopy(corpus)
     cython_corpus["cython_enabled"] = True
-    return ((native, corpus), (copy.deepcopy(native), cython_corpus))
+    return (
+        (native, real_native, corpus),
+        (copy.deepcopy(native), copy.deepcopy(real_native), cython_corpus),
+    )
 
 
 def _set_synthetic_attempt_count(corpus: dict[str, object], count: int) -> None:
@@ -86,6 +108,7 @@ if [[ "$*" == *"test_egglog_mba_performance.py"* ]]; then
   echo 'EGGLOG_MBA_CORPUS_PERFORMANCE_RECEIPT={"candidate_count":1,"candidate_names":["add:fixture#1"],"docker_image":"idapro-9.4-speedups:ci","docker_image_id":"sha256:fixture","egglog_version":"13.2.0","cython_enabled":'$cython',"stage_attempt_outcomes":{"accepted":1},"stage_timing_ms":{"root_eligibility":{"sample_count":1},"ast_construction":{"sample_count":1},"native_preflight":{"sample_count":1},"egglog_extraction":{"sample_count":1},"native_z3":{"sample_count":1},"reconstruction":{"sample_count":1}},"kind":"corpus"}'
 else
   echo 'EGGLOG_MBA_NATIVE_RECEIPT={"corpus":"fixture","execution_count":1,"outcomes":{"accepted":1},"source_names":[["FixtureRule"]],"stage_sample_counts":{"root_eligibility":1,"ast_construction":1,"native_preflight":1,"egglog_extraction":1,"native_z3":1,"reconstruction":1},"kind":"native"}'
+  echo 'EGGLOG_MBA_REAL_CORPUS_RECEIPT={"schema_version":2,"corpus":"fixture","function":"fixture_function","project":"fixture_project","execution_count":2,"candidate_identities":["fixture#1:one","fixture#2:two"],"outcomes":{"applied":1,"ineligible":1},"source_names":[["FixtureRule"],[]],"proof_mode_counts":{"legacy_native_ast":2},"stage_sample_counts":{"root_eligibility":2,"native_preflight":1,"egglog_extraction":1,"ast_construction":1,"native_z3":1,"reconstruction":1},"kind":"real_native"}'
 fi
 """,
         encoding="utf-8",
@@ -124,7 +147,11 @@ fi
             .read_text(encoding="utf-8")
             .splitlines()
         ]
-        assert [receipt["kind"] for receipt in receipts] == ["native", "corpus"]
+        assert [receipt["kind"] for receipt in receipts] == [
+            "native",
+            "real_native",
+            "corpus",
+        ]
     comparison = json.loads(
         (artifact_dir / "comparison.json").read_text(encoding="utf-8")
     )
@@ -138,6 +165,11 @@ fi
         "native_outcomes_match": True,
         "native_source_identities_match": True,
         "native_stage_coverage_match": True,
+        "real_corpus_attempts_match": True,
+        "real_corpus_outcomes_match": True,
+        "real_corpus_proof_modes_match": True,
+        "real_corpus_source_identities_match": True,
+        "real_corpus_stage_coverage_match": True,
         "synthetic_stage_sample_counts_match": True,
     }
 
@@ -178,32 +210,65 @@ def test_comparator_rejects_missing_identity_metadata(tmp_path: Path) -> None:
     ("mutate", "message"),
     [
         (
-            lambda _python, cython: cython[1].update(docker_image="different-image"),
+            lambda real: real.update(candidate_identities=["fixture#1:one"]),
+            "candidate_identities must match execution_count",
+        ),
+        (
+            lambda real: real["stage_sample_counts"].update(root_eligibility=1),
+            "root eligibility count must equal execution_count",
+        ),
+        (
+            lambda real: real.update(source_names=[["FixtureRule"], ["OtherRule"]]),
+            "applied sources must match outcomes",
+        ),
+        (
+            lambda real: real.update(proof_mode_counts={"unknown": 2}),
+            "proof modes must match execution_count",
+        ),
+    ],
+)
+def test_comparator_rejects_incomplete_real_corpus_receipts(
+    mutate, message: str
+) -> None:
+    python_rows, cython_rows = _valid_receipts()
+    python_rows = list(copy.deepcopy(python_rows))
+    cython_rows = list(copy.deepcopy(cython_rows))
+    mutate(cython_rows[1])
+
+    with pytest.raises(ValueError, match=message):
+        compare_receipts(python_rows, cython_rows)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (
+            lambda _python, cython: cython[2].update(docker_image="different-image"),
             "image_match",
         ),
         (
-            lambda _python, cython: cython[1].update(
+            lambda _python, cython: cython[2].update(
                 docker_image_id="sha256:different"
             ),
             "image_digest_match",
         ),
         (
-            lambda _python, cython: cython[1].update(egglog_version="13.3.0"),
+            lambda _python, cython: cython[2].update(egglog_version="13.3.0"),
             "egglog_version_match",
         ),
         (
-            lambda _python, cython: cython[1].update(cython_enabled=False),
+            lambda _python, cython: cython[2].update(cython_enabled=False),
             "cython_enabled must be True",
         ),
         (
-            lambda _python, cython: cython[1].update(
+            lambda _python, cython: cython[2].update(
                 candidate_count=2,
                 candidate_names=["add:fixture#1", "add:fixture#2"],
             ),
             "candidate_count_match",
         ),
         (
-            lambda _python, cython: cython[1].update(candidate_names=["add:other#1"]),
+            lambda _python, cython: cython[2].update(candidate_names=["add:other#1"]),
             "candidate_identities_match",
         ),
         (
@@ -237,13 +302,29 @@ def test_comparator_rejects_missing_identity_metadata(tmp_path: Path) -> None:
             "native_stage_coverage_match",
         ),
         (
-            lambda _python, cython: cython[1]["stage_timing_ms"][
+            lambda _python, cython: cython[1].update(
+                candidate_identities=["fixture#1:one", "fixture#2:other"]
+            ),
+            "real_corpus_attempts_match",
+        ),
+        (
+            lambda _python, cython: cython[1]["stage_sample_counts"].update(
+                native_z3=2
+            ),
+            "real_corpus_stage_coverage_match",
+        ),
+        (
+            lambda _python, cython: cython[1].update(proof_mode_counts={"shadow": 2}),
+            "real_corpus_proof_modes_match",
+        ),
+        (
+            lambda _python, cython: cython[2]["stage_timing_ms"][
                 "root_eligibility"
             ].update(sample_count=2),
             "synthetic stage sample counts must equal stage_attempt_outcomes",
         ),
         (
-            lambda _python, cython: _set_synthetic_attempt_count(cython[1], 2),
+            lambda _python, cython: _set_synthetic_attempt_count(cython[2], 2),
             "synthetic_stage_sample_counts_match",
         ),
         (

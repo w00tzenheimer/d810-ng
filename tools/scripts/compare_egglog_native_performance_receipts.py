@@ -19,6 +19,7 @@ _EXPECTED_STAGES = frozenset(
         "reconstruction",
     }
 )
+_EXPECTED_PROOF_MODES = frozenset({"legacy_native_ast", "shadow", "native_template"})
 
 
 def _load_receipts(path: Path) -> tuple[dict[str, Any], ...]:
@@ -96,13 +97,17 @@ def _validate_corpus_metadata(
 
 def _split_receipt_stream(
     rows: tuple[dict[str, Any], ...],
-) -> tuple[dict[str, Any], tuple[dict[str, Any], ...]]:
+) -> tuple[dict[str, Any], tuple[dict[str, Any], ...], tuple[dict[str, Any], ...]]:
     """Classify every row so malformed or unrelated receipts cannot be ignored."""
 
     corpus = _corpus_receipt(rows)
     native: list[dict[str, Any]] = []
+    real_corpus: list[dict[str, Any]] = []
     for row in rows:
         if row is corpus:
+            continue
+        if row.get("schema_version") == 2:
+            real_corpus.append(row)
             continue
         if type(row.get("corpus")) is str and isinstance(
             row.get("stage_sample_counts"), dict
@@ -110,7 +115,7 @@ def _split_receipt_stream(
             native.append(row)
             continue
         raise ValueError("unrecognized receipt row")
-    return corpus, tuple(native)
+    return corpus, tuple(native), tuple(real_corpus)
 
 
 def _native_receipts(
@@ -161,14 +166,125 @@ def _native_projection(
     return tuple((receipt["corpus"], receipt[key]) for receipt in receipts)
 
 
+def _real_corpus_receipts(
+    receipts: tuple[dict[str, Any], ...],
+) -> tuple[dict[str, Any], ...]:
+    """Validate full live-attempt receipts without pretending every attempt ran.
+
+    A refusal can stop at root eligibility, so only that stage must cover every
+    candidate.  Later stages are intentionally sparse and describe the actual
+    partial pipeline, not a synthetic all-success path.
+    """
+
+    if not receipts:
+        raise ValueError("receipt streams must provide real corpus attempts")
+    identity_fields = ("corpus", "function", "project")
+    identities: set[tuple[str, str, str]] = set()
+    for receipt in receipts:
+        if receipt.get("schema_version") != 2:
+            raise ValueError("real corpus receipt must use schema_version 2")
+        identity = tuple(receipt.get(field) for field in identity_fields)
+        if not all(type(value) is str and value for value in identity):
+            raise ValueError("real corpus receipt must provide stable identity")
+        if identity in identities:
+            raise ValueError("real corpus identities must be unique")
+        identities.add(identity)
+
+        execution_count = receipt.get("execution_count")
+        if not _positive_int(execution_count):
+            raise ValueError("real corpus receipt must provide execution_count")
+        candidates = receipt.get("candidate_identities")
+        if (
+            not isinstance(candidates, list)
+            or len(candidates) != execution_count
+            or any(
+                type(candidate) is not str or not candidate for candidate in candidates
+            )
+        ):
+            raise ValueError(
+                "real corpus candidate_identities must match execution_count"
+            )
+        if len(set(candidates)) != len(candidates):
+            raise ValueError("real corpus candidate_identities must be unique")
+
+        stage_counts = receipt.get("stage_sample_counts")
+        if (
+            not isinstance(stage_counts, dict)
+            or not stage_counts
+            or not set(stage_counts).issubset(_EXPECTED_STAGES)
+            or "root_eligibility" not in stage_counts
+            or any(not _positive_int(count) for count in stage_counts.values())
+        ):
+            raise ValueError("real corpus receipt must provide valid stage coverage")
+        if stage_counts["root_eligibility"] != execution_count:
+            raise ValueError("real root eligibility count must equal execution_count")
+        if any(count > execution_count for count in stage_counts.values()):
+            raise ValueError("real stage counts cannot exceed execution_count")
+
+        outcomes = receipt.get("outcomes")
+        if (
+            not isinstance(outcomes, dict)
+            or not outcomes
+            or not all(
+                type(name) is str and name and _positive_int(count)
+                for name, count in outcomes.items()
+            )
+            or sum(outcomes.values()) != execution_count
+        ):
+            raise ValueError("real corpus outcomes must sum to execution_count")
+        source_names = receipt.get("source_names")
+        if not isinstance(source_names, list) or len(source_names) != execution_count:
+            raise ValueError("real corpus source_names must match execution_count")
+        if any(
+            not isinstance(names, list)
+            or any(type(name) is not str or not name for name in names)
+            for names in source_names
+        ):
+            raise ValueError("real corpus source_names must be string lists")
+        if sum(bool(names) for names in source_names) != outcomes.get("applied", 0):
+            raise ValueError("real corpus applied sources must match outcomes")
+
+        proof_modes = receipt.get("proof_mode_counts")
+        if (
+            not isinstance(proof_modes, dict)
+            or not proof_modes
+            or not set(proof_modes).issubset(_EXPECTED_PROOF_MODES)
+            or not all(_positive_int(count) for count in proof_modes.values())
+            or sum(proof_modes.values()) != execution_count
+        ):
+            raise ValueError("real corpus proof modes must match execution_count")
+    return tuple(
+        sorted(
+            receipts,
+            key=lambda receipt: tuple(receipt[field] for field in identity_fields),
+        )
+    )
+
+
+def _real_corpus_projection(
+    receipts: tuple[dict[str, Any], ...], key: str
+) -> tuple[tuple[tuple[str, str, str], object], ...]:
+    return tuple(
+        (
+            (receipt["corpus"], receipt["function"], receipt["project"]),
+            receipt[key],
+        )
+        for receipt in receipts
+    )
+
+
 def compare_receipts(
     python_rows: tuple[dict[str, Any], ...],
     cython_rows: tuple[dict[str, Any], ...],
 ) -> dict[str, object]:
     """Return an auditable comparison and fail closed on incomplete evidence."""
 
-    python_corpus, python_native_rows = _split_receipt_stream(python_rows)
-    cython_corpus, cython_native_rows = _split_receipt_stream(cython_rows)
+    python_corpus, python_native_rows, python_real_rows = _split_receipt_stream(
+        python_rows
+    )
+    cython_corpus, cython_native_rows, cython_real_rows = _split_receipt_stream(
+        cython_rows
+    )
     python_synthetic_counts = _validate_corpus_metadata(
         python_corpus, expected_cython_enabled=False
     )
@@ -177,6 +293,8 @@ def compare_receipts(
     )
     python_native = _native_receipts(python_native_rows)
     cython_native = _native_receipts(cython_native_rows)
+    python_real = _real_corpus_receipts(python_real_rows)
+    cython_real = _real_corpus_receipts(cython_real_rows)
     comparisons = {
         "image_match": python_corpus["docker_image"] == cython_corpus["docker_image"],
         "image_digest_match": python_corpus["docker_image_id"]
@@ -201,6 +319,24 @@ def compare_receipts(
             python_native, "source_names"
         )
         == _native_projection(cython_native, "source_names"),
+        "real_corpus_attempts_match": _real_corpus_projection(
+            python_real, "candidate_identities"
+        )
+        == _real_corpus_projection(cython_real, "candidate_identities"),
+        "real_corpus_outcomes_match": _real_corpus_projection(python_real, "outcomes")
+        == _real_corpus_projection(cython_real, "outcomes"),
+        "real_corpus_source_identities_match": _real_corpus_projection(
+            python_real, "source_names"
+        )
+        == _real_corpus_projection(cython_real, "source_names"),
+        "real_corpus_stage_coverage_match": _real_corpus_projection(
+            python_real, "stage_sample_counts"
+        )
+        == _real_corpus_projection(cython_real, "stage_sample_counts"),
+        "real_corpus_proof_modes_match": _real_corpus_projection(
+            python_real, "proof_mode_counts"
+        )
+        == _real_corpus_projection(cython_real, "proof_mode_counts"),
         "synthetic_stage_sample_counts_match": (
             python_synthetic_counts == cython_synthetic_counts
         ),
@@ -222,6 +358,9 @@ def compare_receipts(
             "native_stage_coverage": _native_projection(
                 python_native, "stage_sample_counts"
             ),
+            "real_corpus_stage_coverage": _real_corpus_projection(
+                python_real, "stage_sample_counts"
+            ),
         },
         "cython": {
             "candidate_count": cython_corpus["candidate_count"],
@@ -232,6 +371,9 @@ def compare_receipts(
             "synthetic_stage_sample_counts": cython_synthetic_counts,
             "native_stage_coverage": _native_projection(
                 cython_native, "stage_sample_counts"
+            ),
+            "real_corpus_stage_coverage": _real_corpus_projection(
+                cython_real, "stage_sample_counts"
             ),
         },
     }
