@@ -387,6 +387,96 @@ def test_comparator_rejects_incomplete_or_mismatched_receipts(
         compare_receipts(python_rows, cython_rows)
 
 
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (
+            lambda attempt: attempt.update(
+                template_proof_verdict=False,
+                legacy_proof_verdict=True,
+                template_fallback_reason=None,
+            ),
+            "shadow verdict disagreement requires shadow_divergence",
+        ),
+        (
+            lambda attempt: attempt.update(template_proof_elapsed_ms=None),
+            "template proof verdict requires a template timing",
+        ),
+        (
+            lambda attempt: attempt.update(template_source_name=42),
+            "template source must be a non-empty string or null",
+        ),
+        (
+            lambda attempt: attempt.update(degree="one"),
+            "degree must be an integer in the supported range or null",
+        ),
+        (
+            lambda attempt: attempt.update(input_cost=[2]),
+            "input_cost must contain two non-negative integers or null",
+        ),
+    ],
+)
+def test_comparator_rejects_identically_malformed_shadow_attempts(
+    mutate, message: str
+) -> None:
+    python_rows, cython_rows = _valid_receipts()
+    python_rows = list(copy.deepcopy(python_rows))
+    cython_rows = list(copy.deepcopy(cython_rows))
+    mutate(python_rows[1]["attempts"][0])
+    mutate(cython_rows[1]["attempts"][0])
+
+    with pytest.raises(ValueError, match=message):
+        compare_receipts(python_rows, cython_rows)
+
+
+def test_comparator_accepts_provenance_bearing_shadow_divergence() -> None:
+    python_rows, cython_rows = _valid_receipts()
+    python_rows = list(copy.deepcopy(python_rows))
+    cython_rows = list(copy.deepcopy(cython_rows))
+    for rows in (python_rows, cython_rows):
+        real = rows[1]
+        attempt = real["attempts"][0]
+        attempt.update(
+            status="proof_failed",
+            refusal_reason="native_z3_failed",
+            template_proof_verdict=False,
+            legacy_proof_verdict=True,
+            template_fallback_reason="shadow_divergence",
+        )
+        real["outcomes"] = {"ineligible": 1, "proof_failed": 1}
+
+    assert all(compare_receipts(python_rows, cython_rows)["comparison"].values())
+
+
+def test_comparator_rejects_provenance_free_proof_failure_and_unreached_proof() -> None:
+    python_rows, cython_rows = _valid_receipts()
+    python_rows = list(copy.deepcopy(python_rows))
+    cython_rows = list(copy.deepcopy(cython_rows))
+    attempt = cython_rows[1]["attempts"][0]
+    attempt.update(
+        status="proof_failed",
+        refusal_reason="native_z3_failed",
+        source_names=[],
+        template_proof_verdict=False,
+        legacy_proof_verdict=True,
+        template_fallback_reason="shadow_divergence",
+    )
+    cython_rows[1]["outcomes"] = {"ineligible": 1, "proof_failed": 1}
+
+    with pytest.raises(ValueError, match="proof failure must retain source provenance"):
+        compare_receipts(python_rows, cython_rows)
+
+    python_rows, cython_rows = _valid_receipts()
+    python_rows = list(copy.deepcopy(python_rows))
+    cython_rows = list(copy.deepcopy(cython_rows))
+    cython_rows[1]["attempts"][1]["template_source_name"] = "leaked"
+
+    with pytest.raises(
+        ValueError, match="unreached proof must leave proof fields null"
+    ):
+        compare_receipts(python_rows, cython_rows)
+
+
 def test_ci_runner_removes_stale_comparison_before_a_failed_run(tmp_path: Path) -> None:
     tools_dir = tmp_path / "tools" / "scripts"
     tools_dir.mkdir(parents=True)

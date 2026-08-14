@@ -20,6 +20,31 @@ _EXPECTED_STAGES = frozenset(
     }
 )
 _EXPECTED_PROOF_MODES = frozenset({"legacy", "shadow"})
+_EXPECTED_OUTCOMES = frozenset(
+    {
+        "applied",
+        "improved",
+        "unchanged",
+        "ineligible",
+        "unavailable",
+        "over_budget",
+        "proof_failed",
+        "reconstruction_failed",
+        "error",
+    }
+)
+_SUCCESS_OUTCOMES = frozenset({"applied", "improved"})
+_PROVENANCE_REQUIRED_OUTCOMES = frozenset(
+    {"applied", "improved", "proof_failed", "reconstruction_failed"}
+)
+_SHADOW_FALLBACK_REASONS = frozenset(
+    {
+        "template_unavailable",
+        "shape_mismatch",
+        "template_proof_failed",
+        "shadow_divergence",
+    }
+)
 
 
 def _load_receipts(path: Path) -> tuple[dict[str, Any], ...]:
@@ -33,6 +58,18 @@ def _load_receipts(path: Path) -> tuple[dict[str, Any], ...]:
 
 def _positive_int(value: object) -> bool:
     return type(value) is int and value > 0
+
+
+def _valid_cost(value: object) -> bool:
+    return (
+        isinstance(value, list)
+        and len(value) == 2
+        and all(type(item) is int and item >= 0 for item in value)
+    )
+
+
+def _valid_optional_elapsed(value: object) -> bool:
+    return value is None or (type(value) is float and value >= 0)
 
 
 def _corpus_receipt(rows: tuple[dict[str, Any], ...]) -> dict[str, Any]:
@@ -166,6 +203,152 @@ def _native_projection(
     return tuple((receipt["corpus"], receipt[key]) for receipt in receipts)
 
 
+def _validate_real_attempt(attempt: dict[str, Any]) -> None:
+    """Reject impossible handler proof states before comparing two streams."""
+
+    status = attempt["status"]
+    refusal_reason = attempt["refusal_reason"]
+    sources = attempt["source_names"]
+    degree = attempt["degree"]
+    input_cost = attempt["input_cost"]
+    output_cost = attempt["output_cost"]
+    mode = attempt["proof_mode"]
+    template_source = attempt["template_source_name"]
+    fallback_reason = attempt["template_fallback_reason"]
+    template_verdict = attempt["template_proof_verdict"]
+    legacy_verdict = attempt["legacy_proof_verdict"]
+    template_elapsed_ms = attempt["template_proof_elapsed_ms"]
+    legacy_elapsed_ms = attempt["legacy_proof_elapsed_ms"]
+
+    if type(status) is not str or status not in _EXPECTED_OUTCOMES:
+        raise ValueError("real corpus attempt has an unknown status")
+    if status in _SUCCESS_OUTCOMES:
+        if refusal_reason is not None:
+            raise ValueError("successful real corpus attempt must not have a refusal")
+    elif type(refusal_reason) is not str or not refusal_reason:
+        raise ValueError("refused real corpus attempt requires a refusal reason")
+    if not isinstance(sources, list) or any(
+        type(name) is not str or not name for name in sources
+    ):
+        raise ValueError("real corpus attempt source_names must be string lists")
+    if status in _PROVENANCE_REQUIRED_OUTCOMES and not sources:
+        if status == "proof_failed":
+            raise ValueError("real corpus proof failure must retain source provenance")
+        raise ValueError("real corpus selected outcome must retain source provenance")
+
+    if degree is None:
+        if input_cost is not None or output_cost is not None:
+            raise ValueError("null degree requires null costs")
+    else:
+        if type(degree) is not int or degree not in {1, 2}:
+            raise ValueError("degree must be an integer in the supported range or null")
+        if not _valid_cost(input_cost):
+            raise ValueError(
+                "input_cost must contain two non-negative integers or null"
+            )
+        if not _valid_cost(output_cost):
+            raise ValueError(
+                "output_cost must contain two non-negative integers or null"
+            )
+        if status in _SUCCESS_OUTCOMES and tuple(output_cost) >= tuple(input_cost):
+            raise ValueError("applied real corpus attempt must strictly reduce cost")
+
+    if template_source is not None and (
+        type(template_source) is not str or not template_source
+    ):
+        raise ValueError("template source must be a non-empty string or null")
+    if fallback_reason is not None and fallback_reason not in _SHADOW_FALLBACK_REASONS:
+        raise ValueError("real corpus attempt has an unknown template fallback")
+    if template_verdict is not None and type(template_verdict) is not bool:
+        raise ValueError("real corpus template verdict must be boolean or null")
+    if legacy_verdict is not None and type(legacy_verdict) is not bool:
+        raise ValueError("real corpus legacy verdict must be boolean or null")
+    if not _valid_optional_elapsed(template_elapsed_ms) or not _valid_optional_elapsed(
+        legacy_elapsed_ms
+    ):
+        raise ValueError("real corpus proof timings must be non-negative floats")
+
+    proof_fields = (
+        template_source,
+        fallback_reason,
+        template_verdict,
+        legacy_verdict,
+        template_elapsed_ms,
+        legacy_elapsed_ms,
+    )
+    if mode is None:
+        if any(value is not None for value in proof_fields):
+            raise ValueError("unreached proof must leave proof fields null")
+        return
+    if mode not in _EXPECTED_PROOF_MODES:
+        raise ValueError("real corpus attempt has an unknown proof mode")
+    if status not in _SUCCESS_OUTCOMES | {
+        "proof_failed",
+        "reconstruction_failed",
+    }:
+        raise ValueError("reached proof requires a proof-stage outcome")
+    if degree is None or not sources:
+        raise ValueError("reached proof requires a selected, costed rewrite")
+    if legacy_verdict is None or legacy_elapsed_ms is None:
+        raise ValueError("reached proof requires a legacy verdict and timing")
+
+    if mode == "legacy":
+        if any(
+            value is not None
+            for value in (
+                template_source,
+                fallback_reason,
+                template_verdict,
+                template_elapsed_ms,
+            )
+        ):
+            raise ValueError("legacy proof must leave template fields null")
+        if (
+            status in _SUCCESS_OUTCOMES | {"reconstruction_failed"}
+            and not legacy_verdict
+        ):
+            raise ValueError("successful legacy proof outcome requires a true verdict")
+        if status == "proof_failed" and legacy_verdict:
+            raise ValueError("legacy proof failure requires a false verdict")
+        return
+
+    if template_verdict is None:
+        if template_elapsed_ms is not None:
+            raise ValueError("unreached template proof must leave its timing null")
+        if fallback_reason not in {"template_unavailable", "shape_mismatch"}:
+            raise ValueError("unreached template proof requires an explained fallback")
+    else:
+        if template_source is None:
+            raise ValueError("template proof verdict requires a template source")
+        if template_elapsed_ms is None:
+            raise ValueError("template proof verdict requires a template timing")
+        if template_verdict != legacy_verdict:
+            if fallback_reason != "shadow_divergence":
+                raise ValueError(
+                    "shadow verdict disagreement requires shadow_divergence"
+                )
+            if status != "proof_failed":
+                raise ValueError("shadow divergence must be reported as proof_failed")
+        elif fallback_reason == "shadow_divergence":
+            raise ValueError("shadow_divergence requires disagreeing proof verdicts")
+        elif fallback_reason == "template_proof_failed":
+            if template_verdict or legacy_verdict:
+                raise ValueError("template_proof_failed requires two false verdicts")
+        elif fallback_reason is not None:
+            raise ValueError("completed template proof has an inconsistent fallback")
+
+    if status in _SUCCESS_OUTCOMES | {"reconstruction_failed"}:
+        if not legacy_verdict or template_verdict is False:
+            raise ValueError(
+                "successful shadow proof outcome requires agreeing true verdicts"
+            )
+    if status == "proof_failed":
+        if template_verdict == legacy_verdict is True:
+            raise ValueError("proof_failed cannot retain two true shadow verdicts")
+        if template_verdict is None and legacy_verdict:
+            raise ValueError("proof_failed requires a false verdict or divergence")
+
+
 def _real_corpus_receipts(
     receipts: tuple[dict[str, Any], ...],
 ) -> tuple[dict[str, Any], ...]:
@@ -238,22 +421,11 @@ def _real_corpus_receipts(
         derived_sources: list[list[str]] = []
         derived_proof_modes: dict[str, int] = {}
         for attempt in attempt_rows:
+            _validate_real_attempt(attempt)
             status = attempt["status"]
             sources = attempt["source_names"]
             timings = attempt["stage_timings_ms"]
             mode = attempt["proof_mode"]
-            template_verdict = attempt["template_proof_verdict"]
-            legacy_verdict = attempt["legacy_proof_verdict"]
-            template_elapsed_ms = attempt["template_proof_elapsed_ms"]
-            legacy_elapsed_ms = attempt["legacy_proof_elapsed_ms"]
-            if type(status) is not str or not status:
-                raise ValueError("real corpus attempt must provide a status")
-            if not isinstance(sources, list) or any(
-                type(name) is not str or not name for name in sources
-            ):
-                raise ValueError(
-                    "real corpus attempt source_names must be string lists"
-                )
             if (
                 not isinstance(timings, dict)
                 or not timings
@@ -263,27 +435,6 @@ def _real_corpus_receipts(
                 )
             ):
                 raise ValueError("real corpus attempt timings must be known floats")
-            if mode is not None and mode not in _EXPECTED_PROOF_MODES:
-                raise ValueError("real corpus attempt has an unknown proof mode")
-            if template_verdict is not None and type(template_verdict) is not bool:
-                raise ValueError("real corpus template verdict must be boolean or null")
-            if legacy_verdict is not None and type(legacy_verdict) is not bool:
-                raise ValueError("real corpus legacy verdict must be boolean or null")
-            if mode is None and (
-                template_verdict is not None or legacy_verdict is not None
-            ):
-                raise ValueError("real corpus proof verdict requires a proof mode")
-            if any(
-                value is not None and (type(value) is not float or value < 0)
-                for value in (template_elapsed_ms, legacy_elapsed_ms)
-            ):
-                raise ValueError(
-                    "real corpus proof timings must be non-negative floats"
-                )
-            if mode is None and (
-                template_elapsed_ms is not None or legacy_elapsed_ms is not None
-            ):
-                raise ValueError("real corpus proof timing requires a proof mode")
             derived_outcomes[status] = derived_outcomes.get(status, 0) + 1
             derived_sources.append(sources)
             for stage in timings:
@@ -327,8 +478,6 @@ def _real_corpus_receipts(
             raise ValueError("real corpus source_names must be string lists")
         if source_names != derived_sources:
             raise ValueError("real corpus sources must equal per-attempt sources")
-        if sum(bool(names) for names in source_names) != outcomes.get("applied", 0):
-            raise ValueError("real corpus applied sources must match outcomes")
 
         proof_modes = receipt.get("proof_mode_counts")
         if (
