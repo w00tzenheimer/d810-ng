@@ -815,7 +815,7 @@ def _ensure_runtime() -> None:
         return
     global AstBase, AstConstant, AstLeaf, AstNode, ida_hexrays
     ida_hexrays = importlib.import_module("ida_hexrays")
-    ast_module = importlib.import_module("d810.hexrays.expr.p_ast")
+    ast_module = importlib.import_module("d810.hexrays.expr.ast")
     AstBase = ast_module.AstBase
     AstConstant = ast_module.AstConstant
     AstLeaf = ast_module.AstLeaf

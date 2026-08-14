@@ -10,6 +10,7 @@ from d810.mba.native_corpus_capture import (
     capture_native_provider_case,
     native_profile_metadata,
     profiles_from_native_provider_histories,
+    snapshot_native_provider_histories,
 )
 from d810.mba.provider_outcome import (
     MbaProviderKind,
@@ -20,10 +21,10 @@ from d810.mba.provider_outcome import (
 
 class _Provider:
     def __init__(self, *outcomes: MbaProviderOutcome) -> None:
-        self._outcomes = outcomes
+        self._outcomes = list(outcomes)
 
     def provider_outcomes(self) -> tuple[MbaProviderOutcome, ...]:
-        return self._outcomes
+        return tuple(self._outcomes)
 
 
 def _profile(fingerprint: str = "native-shape") -> MbaIslandProfile:
@@ -112,7 +113,6 @@ def test_capture_rejects_missing_or_conflicting_actual_profile_evidence() -> Non
             profile=profile,
             rules=(_Provider(missing),),
         )
-
     with pytest.raises(ValueError, match="at most one applied"):
         capture_native_provider_case(
             case_id="duplicate-applied",
@@ -135,3 +135,24 @@ def test_capture_rejects_missing_or_conflicting_actual_profile_evidence() -> Non
                 ),
             ),
         )
+
+
+def test_capture_snapshot_excludes_prior_decompilation_history() -> None:
+    profile = _profile()
+    provider = _Provider(
+        _outcome(MbaProviderKind.CATALOGUE, ProviderOutcomeStatus.APPLIED, profile)
+    )
+    snapshot = snapshot_native_provider_histories((provider,))
+    provider._outcomes.append(
+        _outcome(MbaProviderKind.CATALOGUE, ProviderOutcomeStatus.UNCHANGED, profile)
+    )
+
+    case = capture_native_provider_case(
+        case_id="new-decompilation-only",
+        stratum="catalogue",
+        profile=profile,
+        rules=(provider,),
+        history_snapshot=snapshot,
+    )
+
+    assert case.outcomes[0].status is ProviderOutcomeStatus.UNCHANGED

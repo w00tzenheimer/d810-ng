@@ -25,6 +25,13 @@ from d810.mba.provider_outcome import MbaProviderOutcome, ProviderOutcomeStatus
 _NATIVE_PROFILE_METADATA_KEY = "native_profile"
 
 
+@dataclass(frozen=True)
+class NativeProviderHistorySnapshot:
+    """Per-rule history lengths captured immediately before one decompilation."""
+
+    outcome_counts_by_rule_id: Mapping[int, int]
+
+
 def native_profile_metadata(profile: MbaIslandProfile) -> dict[str, object]:
     """Return the JSON-safe profile snapshot bound to a provider outcome."""
 
@@ -48,24 +55,50 @@ def native_profile_from_outcome(outcome: MbaProviderOutcome) -> MbaIslandProfile
     return profile
 
 
-def _history_for_provider(rule: object) -> tuple[MbaProviderOutcome, ...]:
+def _history_for_provider(
+    rule: object,
+    snapshot: NativeProviderHistorySnapshot | None = None,
+) -> tuple[MbaProviderOutcome, ...]:
     method = getattr(rule, "provider_outcomes", None)
     if not callable(method):
         return ()
     outcomes = tuple(method())
     if any(not isinstance(outcome, MbaProviderOutcome) for outcome in outcomes):
         raise ValueError("provider_outcomes must return MbaProviderOutcome objects")
-    return outcomes
+    if snapshot is None:
+        return outcomes
+    try:
+        start = snapshot.outcome_counts_by_rule_id[id(rule)]
+    except KeyError as exc:
+        raise ValueError("provider was not present in the history snapshot") from exc
+    if len(outcomes) < start:
+        raise ValueError("provider history was reset after the capture snapshot")
+    return outcomes[start:]
+
+
+def snapshot_native_provider_histories(
+    rules: Iterable[object],
+) -> NativeProviderHistorySnapshot:
+    """Anchor capture to exactly the attempts from one later decompilation."""
+
+    selected = tuple(rules)
+    return NativeProviderHistorySnapshot(
+        outcome_counts_by_rule_id={
+            id(rule): len(_history_for_provider(rule)) for rule in selected
+        }
+    )
 
 
 def profiles_from_native_provider_histories(
     rules: Iterable[object],
+    *,
+    history_snapshot: NativeProviderHistorySnapshot | None = None,
 ) -> tuple[MbaIslandProfile, ...]:
     """Return the distinct actual profiles observed during one decompilation."""
 
     profiles: dict[str, MbaIslandProfile] = {}
     for rule in rules:
-        for outcome in _history_for_provider(rule):
+        for outcome in _history_for_provider(rule, history_snapshot):
             if outcome.fingerprint == "profile_unavailable":
                 continue
             profile = native_profile_from_outcome(outcome)
@@ -98,6 +131,7 @@ def capture_native_provider_case(
     stratum: str,
     profile: MbaIslandProfile,
     rules: Iterable[object],
+    history_snapshot: NativeProviderHistorySnapshot | None = None,
 ) -> MbaCorpusCaseReport:
     """Produce exactly one final row per actually observed provider.
 
@@ -108,7 +142,7 @@ def capture_native_provider_case(
 
     grouped: dict[object, list[MbaProviderOutcome]] = {}
     for rule in rules:
-        for outcome in _history_for_provider(rule):
+        for outcome in _history_for_provider(rule, history_snapshot):
             if outcome.fingerprint != profile.fingerprint:
                 continue
             recorded_profile = native_profile_from_outcome(outcome)
@@ -144,12 +178,14 @@ class NativeMbaCorpusCapture:
         stratum: str,
         profile: MbaIslandProfile,
         rules: Iterable[object],
+        history_snapshot: NativeProviderHistorySnapshot | None = None,
     ) -> MbaCorpusCaseReport:
         case = capture_native_provider_case(
             case_id=case_id,
             stratum=stratum,
             profile=profile,
             rules=rules,
+            history_snapshot=history_snapshot,
         )
         self._cases.append(case)
         return case
@@ -171,8 +207,10 @@ class NativeMbaCorpusCapture:
 
 __all__ = [
     "NativeMbaCorpusCapture",
+    "NativeProviderHistorySnapshot",
     "capture_native_provider_case",
     "native_profile_from_outcome",
     "native_profile_metadata",
     "profiles_from_native_provider_histories",
+    "snapshot_native_provider_histories",
 ]
