@@ -269,6 +269,7 @@ class TestNativeMbaCorpusCapture:
         native_case = DeobfuscationCase(
             function="mba_shape_catalogue_01",
             description="native provider history capture",
+            project="mba_compiler_shape_catalogue.json",
             must_change=True,
         )
         with d810_state() as state:
@@ -361,6 +362,7 @@ class TestNativeMbaCorpusCapture:
         native_case = DeobfuscationCase(
             function="mba_shape_catalogue_01",
             description="capture a real post-snapshot catalogue outcome",
+            project="mba_compiler_shape_catalogue.json",
             must_change=True,
         )
 
@@ -447,11 +449,13 @@ class TestNativeMbaCorpusCapture:
         first_case = DeobfuscationCase(
             function="mba_shape_catalogue_01",
             description="seed a real catalogue history outcome",
+            project="mba_compiler_shape_catalogue.json",
             must_change=True,
         )
         second_case = DeobfuscationCase(
             function="mba_shape_chain_01",
             description="produce a distinct real native profile",
+            project="mba_compiler_shape_catalogue.json",
             must_change=False,
         )
 
