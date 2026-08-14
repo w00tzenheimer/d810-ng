@@ -204,6 +204,57 @@ class ShadowMatcherParityLedger:
             self.legacy_binding_mismatches += 1
 
 
+def make_structural_matcher_parity_certificate(
+    *,
+    snapshot: CertifiedCatalogueSnapshot,
+    ledger: ShadowMatcherParityLedger,
+    runtime_mode: str,
+    corpus_digest: str,
+    toolchain_digest: str,
+) -> dict[str, object]:
+    """Render one reproducible certificate from completed parity evidence.
+
+    This function deliberately refuses partial evidence.  The output is still
+    data, not authorization: configuration must independently supply matching
+    corpus/toolchain expectations before structural selection can activate.
+    """
+
+    if not snapshot.structural_authorizable:
+        raise ValueError("structural parity certificate needs an authorizable snapshot")
+    if runtime_mode not in {"python", "cython"}:
+        raise ValueError("structural parity certificate has invalid runtime_mode")
+    if not _is_sha256_digest(corpus_digest):
+        raise ValueError("structural parity certificate has invalid corpus_digest")
+    if not _is_sha256_digest(toolchain_digest):
+        raise ValueError("structural parity certificate has invalid toolchain_digest")
+    if ledger.legacy_match_count <= 0:
+        raise ValueError(
+            "structural parity certificate needs positive legacy_match_count"
+        )
+    for field in (
+        "legacy_rule_mismatches",
+        "legacy_binding_mismatches",
+        "legacy_binding_unknown",
+        "new_safe_coverage_pending",
+    ):
+        if getattr(ledger, field) != 0:
+            raise ValueError(f"structural parity certificate requires {field}=0")
+    return {
+        "schema_version": _PARITY_CERTIFICATE_SCHEMA_VERSION,
+        "snapshot_fingerprint": snapshot.fingerprint,
+        "runtime_mode": runtime_mode,
+        "corpus_digest": corpus_digest,
+        "toolchain_digest": toolchain_digest,
+        "legacy_observation_count": ledger.legacy_match_count,
+        "observation_count": ledger.observation_count,
+        "legacy_rule_mismatches": ledger.legacy_rule_mismatches,
+        "legacy_binding_mismatches": ledger.legacy_binding_mismatches,
+        "legacy_binding_unknown": ledger.legacy_binding_unknown,
+        "new_safe_coverage_pending": ledger.new_safe_coverage_pending,
+        "new_safe_coverage_proved": ledger.new_safe_coverage_proved,
+    }
+
+
 _SNAPSHOTS: dict[str, CertifiedCatalogueSnapshot] = {}
 
 
@@ -514,5 +565,6 @@ __all__ = [
     "StructuralMatcherParityExpectation",
     "build_certified_catalogue_snapshot",
     "load_structural_matcher_parity_certificate",
+    "make_structural_matcher_parity_certificate",
     "root_shape_for_term",
 ]

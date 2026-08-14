@@ -11,6 +11,7 @@ from d810.mba.certified_catalogue import (
     StructuralMatcherParityExpectation,
     build_certified_catalogue_snapshot,
     load_structural_matcher_parity_certificate,
+    make_structural_matcher_parity_certificate,
 )
 from d810.mba.dsl import Var
 
@@ -243,6 +244,38 @@ def test_parity_certificate_requires_exact_expected_corpus_toolchain_and_coverag
     )
     with pytest.raises(ValueError, match="schema_version must be 2"):
         load_structural_matcher_parity_certificate(certificate_path)
+
+
+def test_parity_certificate_generator_refuses_nonzero_or_incomplete_ledger() -> None:
+    x, y = Var("x"), Var("y")
+    snapshot = build_certified_catalogue_snapshot(
+        (_SemanticRule("one", x + y, x ^ y),), compiler_version="v1"
+    )
+    ledger = ShadowMatcherParityLedger(observation_count=7, legacy_match_count=7)
+
+    certificate = make_structural_matcher_parity_certificate(
+        snapshot=snapshot,
+        ledger=ledger,
+        runtime_mode="python",
+        corpus_digest=_digest("manifest"),
+        toolchain_digest=_digest("ida-python"),
+    )
+
+    assert certificate["schema_version"] == 2
+    assert certificate["snapshot_fingerprint"] == snapshot.fingerprint
+    assert certificate["legacy_observation_count"] == 7
+    with pytest.raises(ValueError, match="legacy_rule_mismatches=0"):
+        make_structural_matcher_parity_certificate(
+                snapshot=snapshot,
+                ledger=ShadowMatcherParityLedger(
+                    observation_count=1,
+                    legacy_match_count=1,
+                    legacy_rule_mismatches=1,
+                ),
+            runtime_mode="python",
+            corpus_digest=_digest("manifest"),
+            toolchain_digest=_digest("ida-python"),
+        )
 
 
 def test_enabled_families_filter_rules_before_root_bucket_indexing() -> None:
