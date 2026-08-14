@@ -69,9 +69,35 @@ class NativePatternMatch:
 
 
 @dataclass(frozen=True)
+class NativePatternMatchResult:
+    """Bounded root-match result, including the actual comparison count."""
+
+    matches: tuple[NativePatternMatch, ...]
+    comparisons: int
+    lazy_swaps: int
+    comparison_budget_exceeded: bool = False
+
+
+@dataclass(frozen=True)
 class _CompiledPattern:
     rule: CompiledEgglogRule
     catalogue_index: int
+
+
+class _ComparisonBudgetExceeded(RuntimeError):
+    pass
+
+
+@dataclass
+class _MatchBudget:
+    limit: int
+    comparisons: int = 0
+    lazy_swaps: int = 0
+
+    def compare(self) -> None:
+        self.comparisons += 1
+        if self.comparisons > self.limit:
+            raise _ComparisonBudgetExceeded
 
 
 @dataclass(frozen=True)
@@ -83,67 +109,93 @@ class CompiledPatternCatalogue:
     """
 
     rules: tuple[_CompiledPattern, ...]
+    root_width_buckets: Mapping[tuple[str, int], tuple[_CompiledPattern, ...]]
 
     @classmethod
     def from_rules(
         cls, rules: tuple[CompiledEgglogRule, ...]
     ) -> CompiledPatternCatalogue:
         compiled: list[_CompiledPattern] = []
+        buckets: dict[tuple[str, int], list[_CompiledPattern]] = {}
         for index, rule in enumerate(rules):
             if not is_admitted_compiled_rule(rule):
                 raise ValueError("compiled pattern catalogue requires admitted rules")
-            compiled.append(_CompiledPattern(rule, index))
-        return cls(tuple(compiled))
+            pattern = _CompiledPattern(rule, index)
+            compiled.append(pattern)
+            operation = rule.pattern.operation
+            if operation is None:
+                continue
+            for width in rule.proof_widths:
+                buckets.setdefault((operation, width), []).append(pattern)
+        return cls(
+            tuple(compiled),
+            MappingProxyType({key: tuple(value) for key, value in buckets.items()}),
+        )
 
     def match_root(
-        self, candidate: NativeMbaTermView
-    ) -> tuple[NativePatternMatch, ...]:
-        """Return deterministic root applications without AST materialization."""
+        self, candidate: NativeMbaTermView, *, comparison_budget: int = 64
+    ) -> NativePatternMatchResult:
+        """Return bounded deterministic root applications without AST materialization."""
+
+        if type(comparison_budget) is not int or comparison_budget <= 0:
+            raise ValueError("comparison_budget must be a positive integer")
+        if candidate.operation is None:
+            return NativePatternMatchResult((), 0, 0)
 
         matches: list[NativePatternMatch] = []
-        for compiled in self.rules:
-            if candidate.width not in compiled.rule.proof_widths:
-                continue
+        budget = _MatchBudget(comparison_budget)
+        for compiled in self.root_width_buckets.get(
+            (candidate.operation, candidate.width), ()
+        ):
             seen_replacements: set[str] = set()
-            for native_bindings in _iter_native_matches(
-                compiled.rule.pattern, candidate, {}
-            ):
-                term_bindings = {
-                    name: value.to_typed_term()
-                    for name, value in native_bindings.items()
-                }
-                if not _constraints_match_term(
-                    compiled.rule, term_bindings, width=candidate.width
+            try:
+                for native_bindings in _iter_native_matches(
+                    compiled.rule.pattern, candidate, {}, budget
                 ):
-                    continue
-                fixed = FixedBindings(
-                    native=native_bindings,
-                    terms=term_bindings,
-                    width=candidate.width,
-                )
-                try:
-                    replacement = fixed.materialize_replacement(compiled.rule)
-                except (TypeError, ValueError):
-                    continue
-                replacement_fingerprint = term_fingerprint(replacement)
-                if replacement_fingerprint in seen_replacements:
-                    continue
-                seen_replacements.add(replacement_fingerprint)
-                matches.append(
-                    NativePatternMatch(
-                        rule=compiled.rule,
-                        bindings=fixed,
-                        catalogue_index=compiled.catalogue_index,
+                    term_bindings = {
+                        name: value.to_typed_term()
+                        for name, value in native_bindings.items()
+                    }
+                    if not _constraints_match_term(
+                        compiled.rule, term_bindings, width=candidate.width
+                    ):
+                        continue
+                    fixed = FixedBindings(
+                        native=native_bindings,
+                        terms=term_bindings,
+                        width=candidate.width,
                     )
+                    try:
+                        replacement = fixed.materialize_replacement(compiled.rule)
+                    except (TypeError, ValueError):
+                        continue
+                    replacement_fingerprint = term_fingerprint(replacement)
+                    if replacement_fingerprint in seen_replacements:
+                        continue
+                    seen_replacements.add(replacement_fingerprint)
+                    matches.append(
+                        NativePatternMatch(
+                            rule=compiled.rule,
+                            bindings=fixed,
+                            catalogue_index=compiled.catalogue_index,
+                        )
+                    )
+            except _ComparisonBudgetExceeded:
+                return NativePatternMatchResult(
+                    (), budget.comparisons, budget.lazy_swaps, True
                 )
-        return tuple(matches)
+        return NativePatternMatchResult(
+            tuple(matches), budget.comparisons, budget.lazy_swaps
+        )
 
 
 def _iter_native_matches(
     expression: SymbolicExpressionProtocol,
     candidate: NativeMbaTermView,
     bindings: Mapping[str, NativeMbaTermView],
+    budget: _MatchBudget,
 ) -> Iterator[dict[str, NativeMbaTermView]]:
+    budget.compare()
     operation = expression.operation
     if operation is None:
         name = expression.name
@@ -188,7 +240,7 @@ def _iter_native_matches(
             pattern_item = pattern_items[index]
             for candidate_index, candidate_item in enumerate(remaining):
                 for updated in _iter_native_matches(
-                    pattern_item, candidate_item, current
+                    pattern_item, candidate_item, current, budget
                 ):
                     yield from match_items(
                         index + 1,
@@ -196,13 +248,31 @@ def _iter_native_matches(
                         updated,
                     )
 
+        if len(pattern_items) == 2:
+            candidate_orders = ((0, 1), (1, 0))
+            for order_index, order in enumerate(candidate_orders):
+                if order_index and _view_key(candidate_items[0]) == _view_key(
+                    candidate_items[1]
+                ):
+                    continue
+                if order_index:
+                    budget.lazy_swaps += 1
+                first = candidate_items[order[0]]
+                second = candidate_items[order[1]]
+                for first_bindings in _iter_native_matches(
+                    pattern_items[0], first, bindings, budget
+                ):
+                    yield from _iter_native_matches(
+                        pattern_items[1], second, first_bindings, budget
+                    )
+            return
         yield from match_items(0, candidate_items, dict(bindings))
         return
 
     if expression.left is None or not candidate.children:
         return
     for left_bindings in _iter_native_matches(
-        expression.left, candidate.children[0], bindings
+        expression.left, candidate.children[0], bindings, budget
     ):
         if operation in {"bnot", "neg"}:
             if expression.right is None and len(candidate.children) == 1:
@@ -211,7 +281,7 @@ def _iter_native_matches(
         if expression.right is None or len(candidate.children) != 2:
             continue
         yield from _iter_native_matches(
-            expression.right, candidate.children[1], left_bindings
+            expression.right, candidate.children[1], left_bindings, budget
         )
 
 
@@ -250,4 +320,9 @@ def _view_key(candidate: NativeMbaTermView) -> tuple[Any, ...]:
     )
 
 
-__all__ = ["CompiledPatternCatalogue", "FixedBindings", "NativePatternMatch"]
+__all__ = [
+    "CompiledPatternCatalogue",
+    "FixedBindings",
+    "NativePatternMatch",
+    "NativePatternMatchResult",
+]

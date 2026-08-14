@@ -830,7 +830,9 @@ def test_shadow_template_and_legacy_proofs_agree_before_mop(monkeypatch):
     monkeypatch.setattr(ida_hexrays, "minsn_t", lambda _ea: SimpleNamespace())
 
     assert handler._check_and_replace(_Instruction()) is not None
-    assert events == ["native_z3", "native_z3", "create_mop"]
+    # The template proof is a separate typed-term solver; this patched legacy
+    # AST proof therefore records exactly one invocation before reconstruction.
+    assert events == ["native_z3", "create_mop"]
     receipt = handler.last_extraction_receipt
     assert receipt is not None
     assert receipt.proof_mode == "shadow"
@@ -838,11 +840,24 @@ def test_shadow_template_and_legacy_proofs_agree_before_mop(monkeypatch):
     assert receipt.template_fallback_reason is None
 
 
-def test_enforced_template_shape_mismatch_falls_back_to_legacy(monkeypatch):
+def test_enforced_mode_is_rejected_until_shadow_corpus_parity_is_authorized():
+    with pytest.raises(ValueError, match="not rollout-authorized"):
+        _configured_live_handler(native_proof_mode="enforced")
+
+
+def test_shadow_proof_divergence_is_a_noop_before_reconstruction(monkeypatch):
     import d810.optimizers.microcode.instructions.egraph.egglog_handler as handler_module
 
     candidate = _direct_add_candidate()
-    handler = _configured_live_handler(native_proof_mode="enforced")
+    handler = _configured_live_handler(native_proof_mode="shadow")
+    verdicts = iter((False,))
+    mop_calls = []
+    monkeypatch.setattr(handler_module, "minsn_to_ast", lambda _ins: candidate)
+    monkeypatch.setattr(
+        handler,
+        "_prove_ast_equivalence",
+        lambda *_args, **_kwargs: next(verdicts),
+    )
     rule = next(
         rule
         for rule in handler._compiled_rules
@@ -851,39 +866,10 @@ def test_enforced_template_shape_mismatch_falls_back_to_legacy(monkeypatch):
     handler._proof_templates = {
         (id(rule), 32): SimpleNamespace(
             source_name=rule.source_name,
-            validate_terms=lambda *_args: None,
+            validate_terms=lambda *_args: object(),
+            prove_validation=lambda _validation: True,
         )
     }
-    calls = []
-    monkeypatch.setattr(handler_module, "minsn_to_ast", lambda _ins: candidate)
-    monkeypatch.setattr(
-        handler,
-        "_prove_ast_equivalence",
-        lambda *_args, **_kwargs: calls.append("legacy_native_z3") or True,
-    )
-    monkeypatch.setattr(handler, "_create_instruction", lambda *_args: object())
-
-    assert handler._check_and_replace(_Instruction()) is not None
-    assert calls == ["legacy_native_z3"]
-    receipt = handler.last_extraction_receipt
-    assert receipt is not None
-    assert receipt.proof_mode == "enforced"
-    assert receipt.template_fallback_reason == "shape_mismatch"
-
-
-def test_shadow_proof_divergence_is_a_noop_before_reconstruction(monkeypatch):
-    import d810.optimizers.microcode.instructions.egraph.egglog_handler as handler_module
-
-    candidate = _direct_add_candidate()
-    handler = _configured_live_handler(native_proof_mode="shadow")
-    verdicts = iter((True, False))
-    mop_calls = []
-    monkeypatch.setattr(handler_module, "minsn_to_ast", lambda _ins: candidate)
-    monkeypatch.setattr(
-        handler,
-        "_prove_ast_equivalence",
-        lambda *_args, **_kwargs: next(verdicts),
-    )
     monkeypatch.setattr(
         handler,
         "_create_instruction",
@@ -907,7 +893,15 @@ def test_shadow_proves_real_native_terms_in_active_ast_runtime():
     y = _leaf("y", 2, ast_module=ast_dispatcher)
     replacement = _node(ida_hexrays.m_add, x, y, ast_module=ast_dispatcher)
 
-    proved, source_name, fallback_reason = handler._prove_selected_replacement(
+    (
+        proved,
+        source_name,
+        fallback_reason,
+        template_verdict,
+        legacy_verdict,
+        template_elapsed_ms,
+        legacy_elapsed_ms,
+    ) = handler._prove_selected_replacement(
         candidate,
         replacement,
         original_term=original.term,
@@ -918,6 +912,10 @@ def test_shadow_proves_real_native_terms_in_active_ast_runtime():
     assert proved is True
     assert source_name == "Add_HackersDelightRule_2"
     assert fallback_reason is None
+    assert template_verdict is True
+    assert legacy_verdict is True
+    assert template_elapsed_ms is not None
+    assert legacy_elapsed_ms is not None
 
 
 def test_live_handler_native_z3_failure_records_skip_without_creating_mop(monkeypatch):

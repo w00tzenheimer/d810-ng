@@ -32,6 +32,45 @@ _STAGES = (
 )
 
 
+def _real_attempts() -> list[dict[str, object]]:
+    return [
+        {
+            "candidate_identity": "fixture#1:one",
+            "status": "applied",
+            "refusal_reason": None,
+            "source_names": ["FixtureRule"],
+            "degree": 1,
+            "input_cost": [2, 3],
+            "output_cost": [1, 2],
+            "stage_timings_ms": {stage: 1.0 for stage in _STAGES},
+            "proof_mode": "shadow",
+            "template_source_name": "FixtureRule",
+            "template_fallback_reason": None,
+            "template_proof_verdict": True,
+            "legacy_proof_verdict": True,
+            "template_proof_elapsed_ms": 1.0,
+            "legacy_proof_elapsed_ms": 1.0,
+        },
+        {
+            "candidate_identity": "fixture#2:two",
+            "status": "ineligible",
+            "refusal_reason": "candidate_budget",
+            "source_names": [],
+            "degree": None,
+            "input_cost": None,
+            "output_cost": None,
+            "stage_timings_ms": {"root_eligibility": 1.0},
+            "proof_mode": None,
+            "template_source_name": None,
+            "template_fallback_reason": None,
+            "template_proof_verdict": None,
+            "legacy_proof_verdict": None,
+            "template_proof_elapsed_ms": None,
+            "legacy_proof_elapsed_ms": None,
+        },
+    ]
+
+
 def _valid_receipts() -> tuple[
     tuple[dict[str, object], ...], tuple[dict[str, object], ...]
 ]:
@@ -43,7 +82,7 @@ def _valid_receipts() -> tuple[
         "stage_sample_counts": {stage: 1 for stage in _STAGES},
     }
     real_native = {
-        "schema_version": 2,
+        "schema_version": 3,
         "corpus": "fixture",
         "function": "fixture_function",
         "project": "fixture_project",
@@ -51,7 +90,8 @@ def _valid_receipts() -> tuple[
         "candidate_identities": ["fixture#1:one", "fixture#2:two"],
         "outcomes": {"applied": 1, "ineligible": 1},
         "source_names": [["FixtureRule"], []],
-        "proof_mode_counts": {"legacy_native_ast": 2},
+        "proof_attempt_count": 1,
+        "proof_mode_counts": {"shadow": 1},
         "stage_sample_counts": {
             "root_eligibility": 2,
             "native_preflight": 1,
@@ -60,6 +100,7 @@ def _valid_receipts() -> tuple[
             "native_z3": 1,
             "reconstruction": 1,
         },
+        "attempts": _real_attempts(),
     }
     corpus = {
         "candidate_count": 1,
@@ -108,7 +149,7 @@ if [[ "$*" == *"test_egglog_mba_performance.py"* ]]; then
   echo 'EGGLOG_MBA_CORPUS_PERFORMANCE_RECEIPT={"candidate_count":1,"candidate_names":["add:fixture#1"],"docker_image":"idapro-9.4-speedups:ci","docker_image_id":"sha256:fixture","egglog_version":"13.2.0","cython_enabled":'$cython',"stage_attempt_outcomes":{"accepted":1},"stage_timing_ms":{"root_eligibility":{"sample_count":1},"ast_construction":{"sample_count":1},"native_preflight":{"sample_count":1},"egglog_extraction":{"sample_count":1},"native_z3":{"sample_count":1},"reconstruction":{"sample_count":1}},"kind":"corpus"}'
 else
   echo 'EGGLOG_MBA_NATIVE_RECEIPT={"corpus":"fixture","execution_count":1,"outcomes":{"accepted":1},"source_names":[["FixtureRule"]],"stage_sample_counts":{"root_eligibility":1,"ast_construction":1,"native_preflight":1,"egglog_extraction":1,"native_z3":1,"reconstruction":1},"kind":"native"}'
-  echo 'EGGLOG_MBA_REAL_CORPUS_RECEIPT={"schema_version":2,"corpus":"fixture","function":"fixture_function","project":"fixture_project","execution_count":2,"candidate_identities":["fixture#1:one","fixture#2:two"],"outcomes":{"applied":1,"ineligible":1},"source_names":[["FixtureRule"],[]],"proof_mode_counts":{"legacy_native_ast":2},"stage_sample_counts":{"root_eligibility":2,"native_preflight":1,"egglog_extraction":1,"ast_construction":1,"native_z3":1,"reconstruction":1},"kind":"real_native"}'
+  echo 'EGGLOG_MBA_REAL_CORPUS_RECEIPT={"schema_version":3,"corpus":"fixture","function":"fixture_function","project":"fixture_project","execution_count":2,"candidate_identities":["fixture#1:one","fixture#2:two"],"outcomes":{"applied":1,"ineligible":1},"source_names":[["FixtureRule"],[]],"proof_attempt_count":1,"proof_mode_counts":{"shadow":1},"stage_sample_counts":{"root_eligibility":2,"native_preflight":1,"egglog_extraction":1,"ast_construction":1,"native_z3":1,"reconstruction":1},"attempts":[{"candidate_identity":"fixture#1:one","status":"applied","refusal_reason":null,"source_names":["FixtureRule"],"degree":1,"input_cost":[2,3],"output_cost":[1,2],"stage_timings_ms":{"root_eligibility":1.0,"native_preflight":1.0,"egglog_extraction":1.0,"ast_construction":1.0,"native_z3":1.0,"reconstruction":1.0},"proof_mode":"shadow","template_source_name":"FixtureRule","template_fallback_reason":null,"template_proof_verdict":true,"legacy_proof_verdict":true,"template_proof_elapsed_ms":1.0,"legacy_proof_elapsed_ms":1.0},{"candidate_identity":"fixture#2:two","status":"ineligible","refusal_reason":"candidate_budget","source_names":[],"degree":null,"input_cost":null,"output_cost":null,"stage_timings_ms":{"root_eligibility":1.0},"proof_mode":null,"template_source_name":null,"template_fallback_reason":null,"template_proof_verdict":null,"legacy_proof_verdict":null,"template_proof_elapsed_ms":null,"legacy_proof_elapsed_ms":null}],"kind":"real_native"}'
 fi
 """,
         encoding="utf-8",
@@ -167,6 +208,7 @@ fi
         "native_stage_coverage_match": True,
         "real_corpus_attempts_match": True,
         "real_corpus_outcomes_match": True,
+        "real_corpus_proof_paths_match": True,
         "real_corpus_proof_modes_match": True,
         "real_corpus_source_identities_match": True,
         "real_corpus_stage_coverage_match": True,
@@ -219,11 +261,11 @@ def test_comparator_rejects_missing_identity_metadata(tmp_path: Path) -> None:
         ),
         (
             lambda real: real.update(source_names=[["FixtureRule"], ["OtherRule"]]),
-            "applied sources must match outcomes",
+            "sources must equal per-attempt sources",
         ),
         (
             lambda real: real.update(proof_mode_counts={"unknown": 2}),
-            "proof modes must match execution_count",
+            "proof modes must equal actual proof attempts",
         ),
     ],
 )
@@ -305,17 +347,17 @@ def test_comparator_rejects_incomplete_real_corpus_receipts(
             lambda _python, cython: cython[1].update(
                 candidate_identities=["fixture#1:one", "fixture#2:other"]
             ),
-            "real_corpus_attempts_match",
+            "attempts must preserve candidate identities",
         ),
         (
             lambda _python, cython: cython[1]["stage_sample_counts"].update(
                 native_z3=2
             ),
-            "real_corpus_stage_coverage_match",
+            "stage counts must equal per-attempt coverage",
         ),
         (
             lambda _python, cython: cython[1].update(proof_mode_counts={"shadow": 2}),
-            "real_corpus_proof_modes_match",
+            "proof modes must equal actual proof attempts",
         ),
         (
             lambda _python, cython: cython[2]["stage_timing_ms"][

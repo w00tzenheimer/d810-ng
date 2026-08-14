@@ -19,7 +19,7 @@ _EXPECTED_STAGES = frozenset(
         "reconstruction",
     }
 )
-_EXPECTED_PROOF_MODES = frozenset({"legacy_native_ast", "shadow", "native_template"})
+_EXPECTED_PROOF_MODES = frozenset({"legacy", "shadow"})
 
 
 def _load_receipts(path: Path) -> tuple[dict[str, Any], ...]:
@@ -106,7 +106,7 @@ def _split_receipt_stream(
     for row in rows:
         if row is corpus:
             continue
-        if row.get("schema_version") == 2:
+        if row.get("schema_version") == 3:
             real_corpus.append(row)
             continue
         if type(row.get("corpus")) is str and isinstance(
@@ -181,8 +181,8 @@ def _real_corpus_receipts(
     identity_fields = ("corpus", "function", "project")
     identities: set[tuple[str, str, str]] = set()
     for receipt in receipts:
-        if receipt.get("schema_version") != 2:
-            raise ValueError("real corpus receipt must use schema_version 2")
+        if receipt.get("schema_version") != 3:
+            raise ValueError("real corpus receipt must use schema_version 3")
         identity = tuple(receipt.get(field) for field in identity_fields)
         if not all(type(value) is str and value for value in identity):
             raise ValueError("real corpus receipt must provide stable identity")
@@ -207,6 +207,90 @@ def _real_corpus_receipts(
         if len(set(candidates)) != len(candidates):
             raise ValueError("real corpus candidate_identities must be unique")
 
+        attempt_rows = receipt.get("attempts")
+        if not isinstance(attempt_rows, list) or len(attempt_rows) != execution_count:
+            raise ValueError("real corpus attempts must match execution_count")
+        if any(not isinstance(attempt, dict) for attempt in attempt_rows):
+            raise ValueError("real corpus attempts must be objects")
+        expected_attempt_keys = {
+            "candidate_identity",
+            "status",
+            "refusal_reason",
+            "source_names",
+            "degree",
+            "input_cost",
+            "output_cost",
+            "stage_timings_ms",
+            "proof_mode",
+            "template_source_name",
+            "template_fallback_reason",
+            "template_proof_verdict",
+            "legacy_proof_verdict",
+            "template_proof_elapsed_ms",
+            "legacy_proof_elapsed_ms",
+        }
+        if any(set(attempt) != expected_attempt_keys for attempt in attempt_rows):
+            raise ValueError("real corpus attempts have an invalid schema")
+        if [attempt["candidate_identity"] for attempt in attempt_rows] != candidates:
+            raise ValueError("real corpus attempts must preserve candidate identities")
+        derived_stage_counts: dict[str, int] = {}
+        derived_outcomes: dict[str, int] = {}
+        derived_sources: list[list[str]] = []
+        derived_proof_modes: dict[str, int] = {}
+        for attempt in attempt_rows:
+            status = attempt["status"]
+            sources = attempt["source_names"]
+            timings = attempt["stage_timings_ms"]
+            mode = attempt["proof_mode"]
+            template_verdict = attempt["template_proof_verdict"]
+            legacy_verdict = attempt["legacy_proof_verdict"]
+            template_elapsed_ms = attempt["template_proof_elapsed_ms"]
+            legacy_elapsed_ms = attempt["legacy_proof_elapsed_ms"]
+            if type(status) is not str or not status:
+                raise ValueError("real corpus attempt must provide a status")
+            if not isinstance(sources, list) or any(
+                type(name) is not str or not name for name in sources
+            ):
+                raise ValueError(
+                    "real corpus attempt source_names must be string lists"
+                )
+            if (
+                not isinstance(timings, dict)
+                or not timings
+                or not set(timings).issubset(_EXPECTED_STAGES)
+                or any(
+                    type(value) is not float or value < 0 for value in timings.values()
+                )
+            ):
+                raise ValueError("real corpus attempt timings must be known floats")
+            if mode is not None and mode not in _EXPECTED_PROOF_MODES:
+                raise ValueError("real corpus attempt has an unknown proof mode")
+            if template_verdict is not None and type(template_verdict) is not bool:
+                raise ValueError("real corpus template verdict must be boolean or null")
+            if legacy_verdict is not None and type(legacy_verdict) is not bool:
+                raise ValueError("real corpus legacy verdict must be boolean or null")
+            if mode is None and (
+                template_verdict is not None or legacy_verdict is not None
+            ):
+                raise ValueError("real corpus proof verdict requires a proof mode")
+            if any(
+                value is not None and (type(value) is not float or value < 0)
+                for value in (template_elapsed_ms, legacy_elapsed_ms)
+            ):
+                raise ValueError(
+                    "real corpus proof timings must be non-negative floats"
+                )
+            if mode is None and (
+                template_elapsed_ms is not None or legacy_elapsed_ms is not None
+            ):
+                raise ValueError("real corpus proof timing requires a proof mode")
+            derived_outcomes[status] = derived_outcomes.get(status, 0) + 1
+            derived_sources.append(sources)
+            for stage in timings:
+                derived_stage_counts[stage] = derived_stage_counts.get(stage, 0) + 1
+            if mode is not None:
+                derived_proof_modes[mode] = derived_proof_modes.get(mode, 0) + 1
+
         stage_counts = receipt.get("stage_sample_counts")
         if (
             not isinstance(stage_counts, dict)
@@ -218,8 +302,8 @@ def _real_corpus_receipts(
             raise ValueError("real corpus receipt must provide valid stage coverage")
         if stage_counts["root_eligibility"] != execution_count:
             raise ValueError("real root eligibility count must equal execution_count")
-        if any(count > execution_count for count in stage_counts.values()):
-            raise ValueError("real stage counts cannot exceed execution_count")
+        if stage_counts != derived_stage_counts:
+            raise ValueError("real stage counts must equal per-attempt coverage")
 
         outcomes = receipt.get("outcomes")
         if (
@@ -229,7 +313,7 @@ def _real_corpus_receipts(
                 type(name) is str and name and _positive_int(count)
                 for name, count in outcomes.items()
             )
-            or sum(outcomes.values()) != execution_count
+            or outcomes != derived_outcomes
         ):
             raise ValueError("real corpus outcomes must sum to execution_count")
         source_names = receipt.get("source_names")
@@ -241,18 +325,20 @@ def _real_corpus_receipts(
             for names in source_names
         ):
             raise ValueError("real corpus source_names must be string lists")
+        if source_names != derived_sources:
+            raise ValueError("real corpus sources must equal per-attempt sources")
         if sum(bool(names) for names in source_names) != outcomes.get("applied", 0):
             raise ValueError("real corpus applied sources must match outcomes")
 
         proof_modes = receipt.get("proof_mode_counts")
         if (
             not isinstance(proof_modes, dict)
-            or not proof_modes
             or not set(proof_modes).issubset(_EXPECTED_PROOF_MODES)
             or not all(_positive_int(count) for count in proof_modes.values())
-            or sum(proof_modes.values()) != execution_count
+            or proof_modes != derived_proof_modes
+            or receipt.get("proof_attempt_count") != sum(derived_proof_modes.values())
         ):
-            raise ValueError("real corpus proof modes must match execution_count")
+            raise ValueError("real corpus proof modes must equal actual proof attempts")
     return tuple(
         sorted(
             receipts,
@@ -268,6 +354,40 @@ def _real_corpus_projection(
         (
             (receipt["corpus"], receipt["function"], receipt["project"]),
             receipt[key],
+        )
+        for receipt in receipts
+    )
+
+
+def _real_corpus_proof_projection(
+    receipts: tuple[dict[str, Any], ...],
+) -> tuple[tuple[tuple[str, str, str], tuple[tuple[object, ...], ...]], ...]:
+    """Compare proof facts, not inherently variable per-stage timings."""
+
+    fields = (
+        "candidate_identity",
+        "status",
+        "refusal_reason",
+        "source_names",
+        "degree",
+        "input_cost",
+        "output_cost",
+        "proof_mode",
+        "template_source_name",
+        "template_fallback_reason",
+        "template_proof_verdict",
+        "legacy_proof_verdict",
+    )
+    return tuple(
+        (
+            (receipt["corpus"], receipt["function"], receipt["project"]),
+            tuple(
+                tuple(
+                    attempt[field] if field != "source_names" else tuple(attempt[field])
+                    for field in fields
+                )
+                for attempt in receipt["attempts"]
+            ),
         )
         for receipt in receipts
     )
@@ -337,6 +457,8 @@ def compare_receipts(
             python_real, "proof_mode_counts"
         )
         == _real_corpus_projection(cython_real, "proof_mode_counts"),
+        "real_corpus_proof_paths_match": _real_corpus_proof_projection(python_real)
+        == _real_corpus_proof_projection(cython_real),
         "synthetic_stage_sample_counts_match": (
             python_synthetic_counts == cython_synthetic_counts
         ),

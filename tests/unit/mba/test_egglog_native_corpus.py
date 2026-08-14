@@ -35,7 +35,12 @@ def _outcome(
         fingerprint=fingerprint,
         source_provenance=sources,
         refusal_reason=refusal_reason,
-        metadata={"stage_timings_ms": _STAGES},
+        metadata={
+            "stage_timings_ms": _STAGES,
+            "proof_mode": "shadow",
+            "template_proof_verdict": True,
+            "legacy_proof_verdict": True,
+        },
     )
 
 
@@ -53,16 +58,18 @@ def test_real_corpus_receipt_keeps_every_attempt_and_exact_stage_schema() -> Non
     receipt = build_native_egglog_attempt_receipt(
         (_outcome(),),
         entry=_entry(),
-        proof_mode="legacy_native_ast",
     )
 
-    assert receipt["schema_version"] == 2
+    assert receipt["schema_version"] == 3
     assert receipt["execution_count"] == 1
     assert receipt["candidate_identities"] == ["egglog-add-spike#1:candidate-a"]
     assert receipt["outcomes"] == {"applied": 1}
     assert receipt["source_names"] == [["Add_HackersDelightRule_2", "Add_OllvmRule_3"]]
-    assert receipt["proof_mode_counts"] == {"legacy_native_ast": 1}
+    assert receipt["proof_attempt_count"] == 1
+    assert receipt["proof_mode_counts"] == {"shadow": 1}
     assert receipt["stage_sample_counts"] == {name: 1 for name in _STAGES}
+    assert receipt["attempts"][0]["template_proof_verdict"] is True
+    assert receipt["attempts"][0]["legacy_proof_verdict"] is True
 
 
 @pytest.mark.parametrize(
@@ -100,7 +107,6 @@ def test_real_corpus_receipt_rejects_incomplete_evidence(
         build_native_egglog_attempt_receipt(
             outcomes,
             entry=_entry(),
-            proof_mode="legacy_native_ast",
         )
 
 

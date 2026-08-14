@@ -116,6 +116,74 @@ class NativeZ3ProofTemplate:
             leaf_keys=_ordered_leaf_keys(original, replacement),
         )
 
+    def prove_validation(self, validation: TemplateValidation) -> bool:
+        """Instantiate this exact template into a fresh fixed-width Z3 proof.
+
+        This deliberately does *not* lower a Hex-Rays AST.  ``validate_terms``
+        has already established that the candidate is this admitted rule with
+        these exact fixed bindings.  We lower that template-validated
+        materialization into a new bit-vector solver.  The handler retains its
+        native-AST proof as the independent mutation gate.
+        """
+
+        if validation.width != self.width:
+            return False
+        try:
+            import z3
+
+            variables: dict[tuple[object, ...], object] = {}
+            # ``validate_terms`` has already matched these exact concrete
+            # bindings against both immutable shapes.  Rebinding the shapes
+            # here adds a second Python AC walk and was slower than the legacy
+            # AST path.  Lower the validated fixed-width terms directly into
+            # this fresh solver instead.
+            original = _lower_validated_term(
+                validation.original, variables=variables, z3=z3
+            )
+            replacement = _lower_validated_term(
+                validation.replacement, variables=variables, z3=z3
+            )
+            solver = z3.Solver()
+            solver.set(timeout=50)
+            solver.add(original != replacement)
+            return solver.check() == z3.unsat
+        except (TypeError, ValueError, ImportError):
+            return False
+
+
+def _lower_validated_term(
+    term: TypedBvTerm, *, variables: dict[tuple[object, ...], object], z3
+):
+    """Lower one already template-validated fixed-width term to Z3."""
+
+    if term.operation is None:
+        if term.value is not None:
+            return z3.BitVecVal(term.value, term.width)
+        if term.leaf_key is None:
+            raise ValueError("missing validated leaf key")
+        return variables.setdefault(
+            term.leaf_key,
+            z3.BitVec(f"egglog_template_leaf_{len(variables)}", term.width),
+        )
+    children = tuple(
+        _lower_validated_term(child, variables=variables, z3=z3)
+        for child in term.children
+    )
+    operations = {
+        "add": lambda: children[0] + children[1],
+        "sub": lambda: children[0] - children[1],
+        "mul": lambda: children[0] * children[1],
+        "and": lambda: children[0] & children[1],
+        "or": lambda: children[0] | children[1],
+        "xor": lambda: children[0] ^ children[1],
+        "neg": lambda: -children[0],
+        "bnot": lambda: ~children[0],
+    }
+    operation = operations.get(term.operation)
+    if operation is None:
+        raise ValueError("unsupported validated operation")
+    return operation()
+
 
 def _shape_from_expression(expression: object) -> NativeProofShape:
     if not isinstance(expression, SymbolicExpressionProtocol):

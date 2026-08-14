@@ -172,17 +172,15 @@ class TestEgglogMbaFamiliesSpike:
         load_expected_stats,
     ) -> None:
         captured_attempts = ()
-        captured_proof_mode = "legacy_native_ast"
 
         def capture_runtime_state(state) -> None:
-            nonlocal captured_attempts, captured_proof_mode
+            nonlocal captured_attempts
             optimizer = next(
                 rule
                 for rule in state.current_ins_rules
                 if rule.name == "EgglogOptimizer"
             )
             captured_attempts = optimizer.provider_outcomes()
-            captured_proof_mode = optimizer.native_proof_mode
 
         def capture_and_assert_provenance(stats):
             captured = capture_stats(stats)
@@ -223,7 +221,6 @@ class TestEgglogMbaFamiliesSpike:
                     build_native_egglog_attempt_receipt(
                         captured_attempts,
                         entry=_MBA_FAMILIES_CORPUS_ENTRY,
-                        proof_mode=captured_proof_mode,
                     ),
                     sort_keys=True,
                 )

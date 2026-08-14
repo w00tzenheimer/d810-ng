@@ -70,6 +70,18 @@ def test_template_validates_exact_constants_and_repeated_live_leaf_identity() ->
     assert template.validate_terms(original, _term("add", x, z)) is None
 
 
+def test_template_proves_validated_terms_with_its_own_fresh_solver() -> None:
+    template = NativeZ3ProofTemplate.from_compiled_rule(
+        _rule("Add_HackersDelightRule_2"), width=32
+    )
+    assert template is not None
+    original, replacement = _valid_terms()
+    validation = template.validate_terms(original, replacement)
+
+    assert validation is not None
+    assert template.prove_validation(validation) is True
+
+
 def test_templates_are_immutable_and_keyed_by_exact_admitted_rule_identity() -> None:
     rule = _rule("Add_HackersDelightRule_2")
     templates = native_z3_proof_templates_for_rules((rule,))

@@ -244,11 +244,15 @@ class EgglogExtractionReceipt:
     proof_mode: str = "legacy"
     template_source_name: str | None = None
     template_fallback_reason: str | None = None
+    template_proof_verdict: bool | None = None
+    legacy_proof_verdict: bool | None = None
+    template_proof_elapsed_ms: float | None = None
+    legacy_proof_elapsed_ms: float | None = None
     skip_reason: ExtractionSkipReason | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "selected_aliases", tuple(self.selected_aliases))
-        if self.proof_mode not in {"legacy", "shadow", "enforced"}:
+        if self.proof_mode not in {"legacy", "shadow"}:
             raise ValueError("unknown native proof mode")
         object.__setattr__(self, "blockers", tuple(sorted(map(str, self.blockers))))
         object.__setattr__(

@@ -78,6 +78,15 @@ def egglog_receipt_to_outcome(receipt: object) -> MbaProviderOutcome:
         "distinct_leaf_count": getattr(receipt, "distinct_leaf_count", None),
         "nonlinear_product_count": getattr(receipt, "nonlinear_product_count", None),
         "blockers": tuple(str(item) for item in getattr(receipt, "blockers", ())),
+        "proof_mode": getattr(receipt, "proof_mode", None),
+        "template_source_name": getattr(receipt, "template_source_name", None),
+        "template_fallback_reason": getattr(receipt, "template_fallback_reason", None),
+        "template_proof_verdict": getattr(receipt, "template_proof_verdict", None),
+        "legacy_proof_verdict": getattr(receipt, "legacy_proof_verdict", None),
+        "template_proof_elapsed_ms": getattr(
+            receipt, "template_proof_elapsed_ms", None
+        ),
+        "legacy_proof_elapsed_ms": getattr(receipt, "legacy_proof_elapsed_ms", None),
     }
     native_profile = getattr(receipt, "native_profile", None)
     if isinstance(native_profile, Mapping):

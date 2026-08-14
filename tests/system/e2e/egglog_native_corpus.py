@@ -17,7 +17,7 @@ _STAGE_ORDER = (
     "native_z3",
     "reconstruction",
 )
-_PROOF_MODES = frozenset({"legacy_native_ast", "shadow", "native_template"})
+_PROOF_MODES = frozenset({"legacy", "shadow"})
 
 
 @dataclass(frozen=True)
@@ -68,12 +68,9 @@ def build_native_egglog_attempt_receipt(
     attempts: Iterable[MbaProviderOutcome],
     *,
     entry: NativeEgglogCorpusEntry,
-    proof_mode: str,
 ) -> dict[str, object]:
     """Serialize every live provider attempt for a fixed real-IDB entry."""
 
-    if proof_mode not in _PROOF_MODES:
-        raise ValueError("unknown native proof mode")
     outcomes = tuple(attempts)
     if not outcomes:
         raise ValueError("corpus must contain at least one live attempt")
@@ -81,8 +78,10 @@ def build_native_egglog_attempt_receipt(
         raise ValueError("corpus must contain only Egglog provider attempts")
 
     stage_counts = Counter()
+    serialized_attempts: list[dict[str, object]] = []
+    proof_mode_counts = Counter()
     for outcome in outcomes:
-        _stage_timings(outcome)
+        timings = _stage_timings(outcome)
         if (
             outcome.status
             not in {ProviderOutcomeStatus.APPLIED, ProviderOutcomeStatus.IMPROVED}
@@ -91,7 +90,44 @@ def build_native_egglog_attempt_receipt(
             raise ValueError(
                 "refused live attempt requires a structured refusal reason"
             )
-        stage_counts.update(_stage_timings(outcome).keys())
+        stage_counts.update(timings.keys())
+        metadata = outcome.metadata or {}
+        template_verdict = metadata.get("template_proof_verdict")
+        legacy_verdict = metadata.get("legacy_proof_verdict")
+        if template_verdict is not None and type(template_verdict) is not bool:
+            raise ValueError("template proof verdict must be boolean or null")
+        if legacy_verdict is not None and type(legacy_verdict) is not bool:
+            raise ValueError("legacy proof verdict must be boolean or null")
+        proof_attempted = template_verdict is not None or legacy_verdict is not None
+        proof_mode = metadata.get("proof_mode") if proof_attempted else None
+        if proof_mode not in _PROOF_MODES and proof_mode is not None:
+            raise ValueError("live proof attempt has an unknown mode")
+        if proof_mode is not None:
+            proof_mode_counts[proof_mode] += 1
+        source = tuple(outcome.source_provenance)
+        serialized_attempts.append(
+            {
+                "candidate_identity": f"{entry.corpus}#{len(serialized_attempts) + 1}:{outcome.fingerprint}",
+                "status": outcome.status.value,
+                "refusal_reason": outcome.refusal_reason,
+                "source_names": list(source),
+                "degree": metadata.get("degree"),
+                "input_cost": (
+                    None if outcome.input_cost is None else list(outcome.input_cost)
+                ),
+                "output_cost": (
+                    None if outcome.output_cost is None else list(outcome.output_cost)
+                ),
+                "stage_timings_ms": dict(timings),
+                "proof_mode": proof_mode,
+                "template_source_name": metadata.get("template_source_name"),
+                "template_fallback_reason": metadata.get("template_fallback_reason"),
+                "template_proof_verdict": template_verdict,
+                "legacy_proof_verdict": legacy_verdict,
+                "template_proof_elapsed_ms": metadata.get("template_proof_elapsed_ms"),
+                "legacy_proof_elapsed_ms": metadata.get("legacy_proof_elapsed_ms"),
+            }
+        )
 
     statuses = tuple(outcome.status.value for outcome in outcomes)
     sources = tuple(tuple(outcome.source_provenance) for outcome in outcomes)
@@ -109,19 +145,20 @@ def build_native_egglog_attempt_receipt(
         raise ValueError("live applied source provenance differs from corpus manifest")
 
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "corpus": entry.corpus,
         "function": entry.function,
         "project": entry.project,
         "execution_count": len(outcomes),
         "candidate_identities": [
-            f"{entry.corpus}#{index}:{outcome.fingerprint}"
-            for index, outcome in enumerate(outcomes, start=1)
+            attempt["candidate_identity"] for attempt in serialized_attempts
         ],
         "outcomes": dict(sorted(Counter(statuses).items())),
         "source_names": [list(source) for source in sources],
-        "proof_mode_counts": {proof_mode: len(outcomes)},
+        "proof_attempt_count": sum(proof_mode_counts.values()),
+        "proof_mode_counts": dict(sorted(proof_mode_counts.items())),
         "stage_sample_counts": dict(sorted(stage_counts.items())),
+        "attempts": serialized_attempts,
     }
 
 

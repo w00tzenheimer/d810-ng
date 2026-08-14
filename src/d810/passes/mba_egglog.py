@@ -188,9 +188,10 @@ def parse_mba_egglog_options(
         raise PipelineConfigError(
             "mba-egglog options.collect_stage_timings must be a boolean"
         )
-    if native_proof_mode not in {"legacy", "shadow", "enforced"}:
+    if native_proof_mode not in {"legacy", "shadow"}:
         raise PipelineConfigError(
-            "mba-egglog options.native_proof_mode must be legacy, shadow, or enforced"
+            "mba-egglog options.native_proof_mode must be legacy or shadow; "
+            "enforced is not rollout-authorized"
         )
     if (
         not isinstance(families, list)

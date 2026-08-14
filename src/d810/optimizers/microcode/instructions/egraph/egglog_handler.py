@@ -8,6 +8,7 @@ or expressions leak between instructions or decompilations.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, replace
 from types import MappingProxyType
 
@@ -77,6 +78,7 @@ _ARITH_OPCODES = frozenset(
 )
 _VALID_SIZES = frozenset({1, 2, 4, 8})
 _DEFAULT_FAMILIES = ("add",)
+_MAX_PATTERN_COMPARISONS = 256
 
 
 @dataclass(frozen=True)
@@ -148,8 +150,11 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         if type(collect_stage_timings) is not bool:
             raise ValueError("EgglogOptimizer collect_stage_timings must be a boolean")
         native_proof_mode = config.get("native_proof_mode", "legacy")
-        if native_proof_mode not in {"legacy", "shadow", "enforced"}:
-            raise ValueError("EgglogOptimizer native_proof_mode is invalid")
+        if native_proof_mode not in {"legacy", "shadow"}:
+            raise ValueError(
+                "EgglogOptimizer native_proof_mode must be legacy or shadow; "
+                "enforced is not rollout-authorized"
+            )
         super().configure(config)
         if maturity_names is not None:
             try:
@@ -312,7 +317,17 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             )
             return None
         self._ensure_catalogue_configured()
-        matches = self._native_pattern_catalogue.match_root(view)
+        match_result = self._native_pattern_catalogue.match_root(
+            view, comparison_budget=_MAX_PATTERN_COMPARISONS
+        )
+        if match_result.comparison_budget_exceeded:
+            self._record_extraction_receipt(
+                extraction_receipt_for_profile(
+                    native_result.profile, ExtractionSkipReason.CANDIDATE_BUDGET
+                )
+            )
+            return None
+        matches = match_result.matches
         if not matches:
             self._record_extraction_receipt(
                 extraction_receipt_for_profile(
@@ -401,7 +416,15 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         width = int(ins.d.size) * 8
         self._begin_stage("native_z3")
         try:
-            proved, template_source, fallback_reason = self._prove_selected_replacement(
+            (
+                proved,
+                template_source,
+                fallback_reason,
+                template_verdict,
+                legacy_verdict,
+                template_elapsed_ms,
+                legacy_elapsed_ms,
+            ) = self._prove_selected_replacement(
                 ast,
                 replacement,
                 original_term=lowering.term,
@@ -419,6 +442,10 @@ class EgglogOptimizer(PeepholeSimplificationRule):
                     proof_mode=self.native_proof_mode,
                     template_source_name=template_source,
                     template_fallback_reason=fallback_reason,
+                    template_proof_verdict=template_verdict,
+                    legacy_proof_verdict=legacy_verdict,
+                    template_proof_elapsed_ms=template_elapsed_ms,
+                    legacy_proof_elapsed_ms=legacy_elapsed_ms,
                 )
             )
             return None
@@ -429,6 +456,10 @@ class EgglogOptimizer(PeepholeSimplificationRule):
                 proof_mode=self.native_proof_mode,
                 template_source_name=template_source,
                 template_fallback_reason=fallback_reason,
+                template_proof_verdict=template_verdict,
+                legacy_proof_verdict=legacy_verdict,
+                template_proof_elapsed_ms=template_elapsed_ms,
+                legacy_proof_elapsed_ms=legacy_elapsed_ms,
             ),
         )
         self._record_extraction_receipt(extraction.receipt)
@@ -600,6 +631,10 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             "proof_mode": receipt.proof_mode,
             "template_source_name": receipt.template_source_name,
             "template_fallback_reason": receipt.template_fallback_reason,
+            "template_proof_verdict": receipt.template_proof_verdict,
+            "legacy_proof_verdict": receipt.legacy_proof_verdict,
+            "template_proof_elapsed_ms": receipt.template_proof_elapsed_ms,
+            "legacy_proof_elapsed_ms": receipt.legacy_proof_elapsed_ms,
         }
         if receipt.selected_source is not None:
             source_names = (receipt.selected_source, *receipt.selected_aliases)
@@ -842,14 +877,30 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         original_term,
         selected: tuple[str, str, tuple[str, ...]],
         width: int,
-    ) -> tuple[bool, str | None, str | None]:
+    ) -> tuple[
+        bool,
+        str | None,
+        str | None,
+        bool | None,
+        bool | None,
+        float | None,
+        float | None,
+    ]:
         """Run the configured template mode without weakening native proof."""
 
         if self.native_proof_mode == "legacy":
+            legacy_started = time.perf_counter()
+            legacy_proved = self._prove_ast_equivalence(
+                original, replacement, width=width
+            )
             return (
-                self._prove_ast_equivalence(original, replacement, width=width),
+                legacy_proved,
                 None,
                 None,
+                None,
+                legacy_proved,
+                None,
+                (time.perf_counter() - legacy_started) * 1000.0,
             )
         family, source_name, _aliases = selected
         rule = next(
@@ -863,7 +914,8 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         template: NativeZ3ProofTemplate | None = (
             None if rule is None else self._proof_templates.get((id(rule), width))
         )
-        template_proved = False
+        template_proved: bool | None = None
+        template_elapsed_ms: float | None = None
         fallback_reason: str | None = None
         if template is None:
             fallback_reason = "template_unavailable"
@@ -873,36 +925,61 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             )
             if replacement_lowering.term is None:
                 fallback_reason = "shape_mismatch"
-            elif (
-                template.validate_terms(original_term, replacement_lowering.term)
-                is None
-            ):
-                fallback_reason = "shape_mismatch"
             else:
-                template_proved = self._prove_ast_equivalence(
-                    original, replacement, width=width
+                validation = template.validate_terms(
+                    original_term, replacement_lowering.term
                 )
-                if not template_proved:
-                    fallback_reason = "template_proof_failed"
+                if validation is None:
+                    fallback_reason = "shape_mismatch"
+                else:
+                    template_started = time.perf_counter()
+                    template_proved = template.prove_validation(validation)
+                    template_elapsed_ms = (
+                        time.perf_counter() - template_started
+                    ) * 1000.0
+                    if not template_proved:
+                        fallback_reason = "template_proof_failed"
+        legacy_started = time.perf_counter()
         legacy_proved = self._prove_ast_equivalence(original, replacement, width=width)
+        legacy_elapsed_ms = (time.perf_counter() - legacy_started) * 1000.0
         if self.native_proof_mode == "shadow":
-            if template_proved != legacy_proved:
+            if template_proved is not None and template_proved != legacy_proved:
                 return (
                     False,
                     template.source_name if template else None,
                     "shadow_divergence",
+                    template_proved,
+                    legacy_proved,
+                    template_elapsed_ms,
+                    legacy_elapsed_ms,
                 )
             return (
                 legacy_proved,
                 template.source_name if template else None,
                 fallback_reason,
+                template_proved,
+                legacy_proved,
+                template_elapsed_ms,
+                legacy_elapsed_ms,
             )
-        if template_proved:
-            return True, template.source_name if template else None, None
+        if template_proved is True:
+            return (
+                True,
+                template.source_name if template else None,
+                None,
+                True,
+                legacy_proved,
+                template_elapsed_ms,
+                legacy_elapsed_ms,
+            )
         return (
             legacy_proved,
             template.source_name if template else None,
             fallback_reason,
+            template_proved,
+            legacy_proved,
+            template_elapsed_ms,
+            legacy_elapsed_ms,
         )
 
     @staticmethod
