@@ -70,6 +70,28 @@ def _manifest_cases(path: Path | None) -> tuple[str, ...]:
     return tuple(case_ids)
 
 
+def _manifest_provider_matrix(path: Path | None) -> tuple[MbaProviderKind, ...]:
+    """Return the manifest's declared coverage matrix, if it has one."""
+
+    if path is None:
+        return ()
+    raw = _load_json(path)
+    if not isinstance(raw, Mapping):
+        return ()
+    values = raw.get("provider_matrix")
+    if values is None:
+        return ()
+    if not isinstance(values, list) or not all(type(value) is str for value in values):
+        raise ValueError(f"{path}: provider_matrix must be an array of provider names")
+    try:
+        providers = tuple(MbaProviderKind(value) for value in values)
+    except ValueError as exc:
+        raise ValueError(f"{path}: invalid provider_matrix value: {exc}") from exc
+    if len(set(providers)) != len(providers):
+        raise ValueError(f"{path}: duplicate provider_matrix entry")
+    return providers
+
+
 def build_report(
     paths: Sequence[Path],
     *,
@@ -97,7 +119,11 @@ def build_report(
             key=lambda provider: provider.value,
         )
     )
-    providers = tuple(expected_providers) or observed_providers
+    providers = (
+        tuple(expected_providers)
+        or _manifest_provider_matrix(manifest)
+        or observed_providers
+    )
     report = normalize_outcome_rows(
         rows,
         corpus_identity=corpus_identity or (manifest.stem if manifest else "ad-hoc"),

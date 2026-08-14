@@ -430,6 +430,51 @@ def test_offline_cli_builds_normalized_report_and_requires_explicit_provider_row
         )
 
 
+def test_offline_cli_uses_manifest_provider_matrix_when_no_override_is_given(
+    tmp_path,
+) -> None:
+    from tools.scripts.mba_differential_report import build_report
+
+    profile = _profile("manifest-matrix")
+    outcomes_path = tmp_path / "outcomes.json"
+    manifest_path = tmp_path / "manifest.json"
+    outcomes_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "corpus_identity": "unit",
+                "toolchain_identity": {},
+                "cases": [
+                    MbaCorpusCaseReport(
+                        case_id="case",
+                        profile=profile,
+                        outcomes=(
+                            _outcome(
+                                MbaProviderKind.CATALOGUE,
+                                ProviderOutcomeStatus.UNAVAILABLE,
+                                profile.fingerprint,
+                            ),
+                        ),
+                    ).to_dict()
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "provider_matrix": ["catalogue", "egglog"],
+                "cases": [{"case_id": "case"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="missing outcome rows for egglog"):
+        build_report((outcomes_path,), manifest=manifest_path)
+
+
 def test_summary_markdown_keeps_budget_and_reconstruction_failures_distinct() -> None:
     profile = _profile("summary")
     report = MbaDifferentialReport(
@@ -467,6 +512,119 @@ def test_summary_markdown_keeps_budget_and_reconstruction_failures_distinct() ->
     assert "over budget" in markdown
     assert "reconstruction failures" in markdown
     assert "| egglog | 2 |" in markdown
+
+
+def test_rollout_evidence_keeps_runtime_modes_refusals_and_root_only_misses_distinct() -> None:
+    """The rollout report must answer measurement questions without zero-filling gaps."""
+
+    profile = _profile("rollout-evidence")
+    report = MbaDifferentialReport(
+        schema_version=1,
+        corpus_identity="corpus",
+        toolchain_identity={"compiler": "unit"},
+        cases=(
+            MbaCorpusCaseReport(
+                case_id="degree-one",
+                profile=profile,
+                stratum="degree2",
+                outcomes=(
+                    MbaProviderOutcome(
+                        provider=MbaProviderKind.EGGLOG,
+                        status=ProviderOutcomeStatus.APPLIED,
+                        fingerprint=profile.fingerprint,
+                        input_cost=(4, 7),
+                        output_cost=(2, 3),
+                        elapsed_ms=2.0,
+                        metadata={
+                            "degree": 1,
+                            "egglog_execution_mode": "interactive",
+                            "candidate_elapsed_ms": 2.0,
+                            "whole_function_elapsed_ms": 9.0,
+                            "root_only_strict_subisland_miss": False,
+                        },
+                    ),
+                ),
+            ),
+            MbaCorpusCaseReport(
+                case_id="degree-two-timeout",
+                profile=profile,
+                stratum="degree2",
+                outcomes=(
+                    MbaProviderOutcome(
+                        provider=MbaProviderKind.EGGLOG,
+                        status=ProviderOutcomeStatus.OVER_BUDGET,
+                        fingerprint=profile.fingerprint,
+                        elapsed_ms=3.0,
+                        refusal_reason="time_budget",
+                        metadata={
+                            "degree": 2,
+                            "egglog_execution_mode": "telemetry_3ms",
+                            "candidate_elapsed_ms": 3.0,
+                            "whole_function_elapsed_ms": 11.0,
+                            "root_only_strict_subisland_miss": True,
+                            "root_bucket_size": 4,
+                            "attempted_rule_count": 3,
+                            "comparison_cap_refusal": True,
+                            "reassociation_coverage": "proved",
+                            "cold_snapshot_ms": 12.0,
+                            "catalogue_cache_hit": True,
+                            "native_proof_invocations": 1,
+                            "catalogue_compiler_invocations": 0,
+                        },
+                        matcher=None,
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    evidence = compare_provider_outcomes(report).rollout_evidence
+
+    assert evidence.egglog_unique_wins_by_degree == {1: 1, 2: 0}
+    assert evidence.refusals_by_reason == {"time_budget": 1}
+    assert evidence.matcher_bucket_size_p50 == 4.0
+    assert evidence.matcher_attempted_rules_p95 == 3.0
+    assert evidence.matcher_cap_refusals == 1
+    assert evidence.reassociation_proved == 1
+    assert evidence.lifecycle_measurements["cold_snapshot_ms"].p50_ms == 12.0
+    assert evidence.lifecycle_measurements["catalogue_cache_hits"].count == 1
+    assert evidence.lifecycle_measurements["native_proof_invocations"].total == 1
+    assert evidence.candidate_latency_by_mode["interactive"]["egglog"].p50_ms == 2.0
+    assert evidence.whole_function_latency_by_mode["telemetry_3ms"]["egglog"].p95_ms == 11.0
+    assert evidence.root_only_strict_subisland_misses == 1
+    markdown = summary_markdown(compare_provider_outcomes(report))
+    assert "## Rollout evidence" in markdown
+    assert "Egglog unique wins by degree" in markdown
+    assert "telemetry_3ms" in markdown
+    assert "Root-only strict-sub-island misses: 1" in markdown
+
+
+def test_rollout_evidence_marks_unmeasured_questions_as_unavailable() -> None:
+    profile = _profile("no-rollout-evidence")
+    report = MbaDifferentialReport(
+        schema_version=1,
+        corpus_identity="corpus",
+        toolchain_identity={},
+        cases=(
+            MbaCorpusCaseReport(
+                case_id="case",
+                profile=profile,
+                outcomes=(
+                    _outcome(
+                        MbaProviderKind.CATALOGUE,
+                        ProviderOutcomeStatus.UNAVAILABLE,
+                        profile.fingerprint,
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    evidence = compare_provider_outcomes(report).rollout_evidence
+
+    assert evidence.candidate_latency_by_mode == {}
+    assert evidence.whole_function_latency_by_mode == {}
+    assert evidence.lifecycle_measurements == {}
 
 
 def _profile_dict(profile: MbaIslandProfile) -> dict[str, object]:

@@ -325,11 +325,112 @@ class ProviderDifferentialStats:
 
 
 @dataclass(frozen=True)
+class LatencyStats:
+    """One explicitly measured latency population, never a filled-in zero."""
+
+    count: int
+    p50_ms: float
+    p95_ms: float
+
+    def to_dict(self) -> dict[str, int | float]:
+        return {"count": self.count, "p50_ms": self.p50_ms, "p95_ms": self.p95_ms}
+
+
+@dataclass(frozen=True)
+class LifecycleMeasurement:
+    """A measured lifecycle counter or duration from actual capture metadata."""
+
+    count: int
+    total: int | float
+    p50_ms: float | None = None
+    p95_ms: float | None = None
+
+    def to_dict(self) -> dict[str, int | float | None]:
+        return {
+            "count": self.count,
+            "total": self.total,
+            "p50_ms": self.p50_ms,
+            "p95_ms": self.p95_ms,
+        }
+
+
+@dataclass(frozen=True)
+class RolloutEvidence:
+    """Measurements required to decide a portfolio rollout from captured rows.
+
+    Missing instrumentation remains absent from its mapping.  This prevents an
+    incomplete run from being rendered as a measured zero.
+    """
+
+    egglog_unique_wins_by_degree: Mapping[int, int]
+    external_reference_unique_wins: int
+    nonlinear_residuals: int
+    refusals_by_reason: Mapping[str, int]
+    matcher_bucket_size_p50: float | None
+    matcher_attempted_rules_p95: float | None
+    matcher_comparisons_p95: float | None
+    matcher_lazy_swaps_total: int
+    matcher_flattened_arity_p95: float | None
+    matcher_cap_refusals: int
+    reassociation_proved: int
+    reassociation_pending: int
+    lifecycle_measurements: Mapping[str, LifecycleMeasurement]
+    candidate_latency_by_mode: Mapping[str, Mapping[str, LatencyStats]]
+    whole_function_latency_by_mode: Mapping[str, Mapping[str, LatencyStats]]
+    root_only_strict_subisland_misses: int
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "egglog_unique_wins_by_degree": {
+                str(degree): count
+                for degree, count in sorted(self.egglog_unique_wins_by_degree.items())
+            },
+            "external_reference_unique_wins": self.external_reference_unique_wins,
+            "nonlinear_residuals": self.nonlinear_residuals,
+            "refusals_by_reason": dict(sorted(self.refusals_by_reason.items())),
+            "matcher": {
+                "bucket_size_p50": self.matcher_bucket_size_p50,
+                "attempted_rules_p95": self.matcher_attempted_rules_p95,
+                "comparisons_p95": self.matcher_comparisons_p95,
+                "lazy_swaps_total": self.matcher_lazy_swaps_total,
+                "flattened_arity_p95": self.matcher_flattened_arity_p95,
+                "cap_refusals": self.matcher_cap_refusals,
+                "reassociation_proved": self.reassociation_proved,
+                "reassociation_pending": self.reassociation_pending,
+            },
+            "lifecycle_measurements": {
+                name: measurement.to_dict()
+                for name, measurement in sorted(self.lifecycle_measurements.items())
+            },
+            "candidate_latency_by_mode": _latency_by_mode_to_dict(
+                self.candidate_latency_by_mode
+            ),
+            "whole_function_latency_by_mode": _latency_by_mode_to_dict(
+                self.whole_function_latency_by_mode
+            ),
+            "root_only_strict_subisland_misses": self.root_only_strict_subisland_misses,
+        }
+
+
+def _latency_by_mode_to_dict(
+    values: Mapping[str, Mapping[str, LatencyStats]],
+) -> dict[str, object]:
+    return {
+        mode: {
+            provider: stats.to_dict()
+            for provider, stats in sorted(by_provider.items())
+        }
+        for mode, by_provider in sorted(values.items())
+    }
+
+
+@dataclass(frozen=True)
 class DifferentialSummary:
     """Aggregate outcomes by provider and corpus stratum."""
 
     by_provider: Mapping[MbaProviderKind, ProviderDifferentialStats]
     by_stratum: Mapping[str, ProviderDifferentialStats]
+    rollout_evidence: RolloutEvidence
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -343,6 +444,7 @@ class DifferentialSummary:
                 stratum: stats.to_dict()
                 for stratum, stats in sorted(self.by_stratum.items())
             },
+            "rollout_evidence": self.rollout_evidence.to_dict(),
         }
 
 
@@ -535,6 +637,193 @@ def _stats_for_cases(cases: Iterable[MbaCorpusCaseReport]) -> ProviderDifferenti
     )
 
 
+def _metadata_number(metadata: Mapping[str, object], name: str) -> float | None:
+    value = metadata.get(name)
+    if type(value) not in (int, float):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) and number >= 0 else None
+
+
+def _metadata_int(metadata: Mapping[str, object], name: str) -> int | None:
+    value = metadata.get(name)
+    return value if type(value) is int and value >= 0 else None
+
+
+def _rollout_evidence(report: MbaDifferentialReport) -> RolloutEvidence:
+    """Aggregate explicit rollout instrumentation from captured provider rows."""
+
+    refusals: dict[str, int] = defaultdict(int)
+    egglog_unique_by_degree: dict[int, int] = defaultdict(int)
+    external_unique = 0
+    nonlinear_residuals = 0
+    bucket_sizes: list[float] = []
+    attempted_rules: list[float] = []
+    comparisons: list[float] = []
+    flattened_arities: list[float] = []
+    lazy_swaps_total = 0
+    cap_refusals = 0
+    reassociation_proved = 0
+    reassociation_pending = 0
+    lifecycle_samples: dict[str, list[float]] = defaultdict(list)
+    candidate_latencies: dict[str, dict[str, list[float]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
+    whole_function_latencies: dict[str, dict[str, list[float]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
+    root_only_misses = 0
+
+    for case in report.cases:
+        winners = tuple(
+            outcome for outcome in case.outcomes if outcome.status in _WIN_STATUSES
+        )
+        if case.profile.island_class is MbaIslandClass.NONLINEAR_MBA and not winners:
+            nonlinear_residuals += 1
+        if len(winners) == 1:
+            winner = winners[0]
+            if winner.provider is MbaProviderKind.EGGLOG:
+                degree = _metadata_int(winner.metadata, "degree")
+                if degree is not None:
+                    egglog_unique_by_degree[degree] += 1
+            if winner.provider is MbaProviderKind.EXTERNAL_REFERENCE:
+                external_unique += 1
+
+        for outcome in case.outcomes:
+            metadata = outcome.metadata
+            if outcome.refusal_reason is not None:
+                refusals[outcome.refusal_reason] += 1
+
+            dispatch = metadata.get("structural_dispatch")
+            dispatch_metadata = dispatch if isinstance(dispatch, Mapping) else metadata
+            bucket_size = _metadata_number(dispatch_metadata, "bucket_size")
+            if bucket_size is None:
+                bucket_size = _metadata_number(metadata, "root_bucket_size")
+            if bucket_size is not None:
+                bucket_sizes.append(bucket_size)
+            attempted = _metadata_number(dispatch_metadata, "attempted_rule_count")
+            if attempted is not None:
+                attempted_rules.append(attempted)
+            if outcome.matcher is not None:
+                comparisons.append(float(outcome.matcher.comparisons))
+                flattened_arities.append(float(outcome.matcher.flattened_arity))
+                lazy_swaps_total += outcome.matcher.lazy_swaps
+                if outcome.matcher.stop_reason == "comparison_budget":
+                    cap_refusals += 1
+            if metadata.get("comparison_cap_refusal") is True:
+                cap_refusals += 1
+            reassociation = metadata.get("reassociation_coverage")
+            if reassociation == "proved":
+                reassociation_proved += 1
+            elif reassociation == "pending":
+                reassociation_pending += 1
+
+            for name, source in (
+                ("cold_snapshot_ms", "cold_snapshot_ms"),
+                ("handler_startup_ms", "handler_startup_ms"),
+                ("plugin_startup_ms", "plugin_startup_ms"),
+                ("registration_pattern_count", "registration_pattern_count"),
+                ("native_proof_invocations", "native_proof_invocations"),
+                ("catalogue_compiler_invocations", "catalogue_compiler_invocations"),
+            ):
+                value = _metadata_number(metadata, source)
+                if value is not None:
+                    lifecycle_samples[name].append(value)
+            if metadata.get("catalogue_cache_hit") is True:
+                lifecycle_samples["catalogue_cache_hits"].append(1.0)
+
+            mode = metadata.get("egglog_execution_mode")
+            if type(mode) is not str or not mode:
+                continue
+            candidate_elapsed = _metadata_number(metadata, "candidate_elapsed_ms")
+            if candidate_elapsed is not None:
+                candidate_latencies[mode][outcome.provider.value].append(
+                    candidate_elapsed
+                )
+            whole_elapsed = _metadata_number(metadata, "whole_function_elapsed_ms")
+            if whole_elapsed is not None:
+                whole_function_latencies[mode][outcome.provider.value].append(
+                    whole_elapsed
+                )
+            if metadata.get("root_only_strict_subisland_miss") is True:
+                root_only_misses += 1
+
+    # A degree with captured observations but no unique win must be visible as
+    # a real measured zero.  Degree-one/two are the rollout comparison lanes.
+    for degree in (1, 2):
+        egglog_unique_by_degree.setdefault(degree, 0)
+
+    def latency_stats(
+        values: Mapping[str, Mapping[str, list[float]]],
+    ) -> Mapping[str, Mapping[str, LatencyStats]]:
+        return MappingProxyType(
+            {
+                mode: MappingProxyType(
+                    {
+                        provider: LatencyStats(
+                            count=len(samples),
+                            p50_ms=_percentile(samples, 0.50),
+                            p95_ms=_percentile(samples, 0.95),
+                        )
+                        for provider, samples in sorted(by_provider.items())
+                    }
+                )
+                for mode, by_provider in sorted(values.items())
+            }
+        )
+
+    duration_measurements = {
+        "cold_snapshot_ms",
+        "handler_startup_ms",
+        "plugin_startup_ms",
+    }
+    lifecycle = MappingProxyType(
+        {
+            name: LifecycleMeasurement(
+                count=len(samples),
+                total=sum(samples),
+                p50_ms=(
+                    _percentile(samples, 0.50)
+                    if name in duration_measurements
+                    else None
+                ),
+                p95_ms=(
+                    _percentile(samples, 0.95)
+                    if name in duration_measurements
+                    else None
+                ),
+            )
+            for name, samples in sorted(lifecycle_samples.items())
+        }
+    )
+    return RolloutEvidence(
+        egglog_unique_wins_by_degree=MappingProxyType(dict(egglog_unique_by_degree)),
+        external_reference_unique_wins=external_unique,
+        nonlinear_residuals=nonlinear_residuals,
+        refusals_by_reason=MappingProxyType(dict(sorted(refusals.items()))),
+        matcher_bucket_size_p50=(
+            _percentile(bucket_sizes, 0.50) if bucket_sizes else None
+        ),
+        matcher_attempted_rules_p95=(
+            _percentile(attempted_rules, 0.95) if attempted_rules else None
+        ),
+        matcher_comparisons_p95=(
+            _percentile(comparisons, 0.95) if comparisons else None
+        ),
+        matcher_lazy_swaps_total=lazy_swaps_total,
+        matcher_flattened_arity_p95=(
+            _percentile(flattened_arities, 0.95) if flattened_arities else None
+        ),
+        matcher_cap_refusals=cap_refusals,
+        reassociation_proved=reassociation_proved,
+        reassociation_pending=reassociation_pending,
+        lifecycle_measurements=lifecycle,
+        candidate_latency_by_mode=latency_stats(candidate_latencies),
+        whole_function_latency_by_mode=latency_stats(whole_function_latencies),
+        root_only_strict_subisland_misses=root_only_misses,
+    )
+
+
 def compare_provider_outcomes(report: MbaDifferentialReport) -> DifferentialSummary:
     """Compare provider yield without conflating unavailable and missed attempts."""
 
@@ -570,6 +859,7 @@ def compare_provider_outcomes(report: MbaDifferentialReport) -> DifferentialSumm
                 for stratum, cases in stratum_cases.items()
             }
         ),
+        rollout_evidence=_rollout_evidence(report),
     )
 
 
@@ -682,14 +972,86 @@ def summary_markdown(summary: DifferentialSummary) -> str:
                 provider=provider.value, **stats.to_dict()
             )
         )
+    evidence = summary.rollout_evidence
+    lines.extend(
+        (
+            "",
+            "## Rollout evidence",
+            "",
+            "Egglog unique wins by degree: "
+            + ", ".join(
+                f"degree {degree}={count}"
+                for degree, count in sorted(
+                    evidence.egglog_unique_wins_by_degree.items()
+                )
+            ),
+            f"External-reference unique wins: {evidence.external_reference_unique_wins}",
+            f"Nonlinear residuals: {evidence.nonlinear_residuals}",
+            "Refusals by stable reason: "
+            + (
+                ", ".join(
+                    f"{reason}={count}"
+                    for reason, count in sorted(evidence.refusals_by_reason.items())
+                )
+                or "not measured"
+            ),
+            "Matcher: "
+            f"bucket p50={_format_measurement(evidence.matcher_bucket_size_p50)}, "
+            f"attempted-rule p95={_format_measurement(evidence.matcher_attempted_rules_p95)}, "
+            f"comparison p95={_format_measurement(evidence.matcher_comparisons_p95)}, "
+            f"lazy swaps={evidence.matcher_lazy_swaps_total}, "
+            f"flattened-arity p95={_format_measurement(evidence.matcher_flattened_arity_p95)}, "
+            f"cap refusals={evidence.matcher_cap_refusals}, "
+            f"reassociation proved={evidence.reassociation_proved}, "
+            f"pending={evidence.reassociation_pending}",
+            "Lifecycle measurements: "
+            + (
+                ", ".join(
+                    f"{name}=count:{measurement.count},total:{measurement.total}"
+                    for name, measurement in sorted(
+                        evidence.lifecycle_measurements.items()
+                    )
+                )
+                or "not measured"
+            ),
+            "Candidate latency by mode: "
+            + _format_latency_modes(evidence.candidate_latency_by_mode),
+            "Whole-function latency by mode: "
+            + _format_latency_modes(evidence.whole_function_latency_by_mode),
+            "Root-only strict-sub-island misses: "
+            f"{evidence.root_only_strict_subisland_misses}",
+        )
+    )
     return "\n".join(lines) + "\n"
+
+
+def _format_measurement(value: float | None) -> str:
+    return "not measured" if value is None else f"{value:.3f}"
+
+
+def _format_latency_modes(
+    values: Mapping[str, Mapping[str, LatencyStats]],
+) -> str:
+    if not values:
+        return "not measured"
+    return "; ".join(
+        f"{mode}: "
+        + ", ".join(
+            f"{provider}(n={stats.count},p50={stats.p50_ms:.3f},p95={stats.p95_ms:.3f})"
+            for provider, stats in sorted(by_provider.items())
+        )
+        for mode, by_provider in sorted(values.items())
+    )
 
 
 __all__ = [
     "DifferentialSummary",
+    "LatencyStats",
+    "LifecycleMeasurement",
     "MbaCorpusCaseReport",
     "MbaDifferentialReport",
     "ProviderDifferentialStats",
+    "RolloutEvidence",
     "compare_provider_outcomes",
     "normalize_outcome_rows",
     "outcome_from_dict",
