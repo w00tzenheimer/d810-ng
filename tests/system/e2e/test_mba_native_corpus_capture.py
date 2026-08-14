@@ -156,6 +156,93 @@ class TestNativeMbaCorpusCapture:
         assert captured_outcome["status"] == ProviderOutcomeStatus.APPLIED.value
         assert captured_outcome == case.outcomes[0].to_dict()
 
+    def test_history_snapshot_retains_real_post_snapshot_outcome(
+        self,
+        tmp_path: Path,
+        ida_database,
+        d810_state,
+        pseudocode_to_string,
+        monkeypatch,
+    ) -> None:
+        """A snapshot-backed capture keeps the actual later applied outcome."""
+
+        monkeypatch.setenv("D810_LEGACY_DSL_PERMUTATIONS", "1")
+        native_case = DeobfuscationCase(
+            function="mba_shape_catalogue_01",
+            description="capture a real post-snapshot catalogue outcome",
+            must_change=True,
+            required_rules=["Add_HackersDelightRule_2"],
+        )
+
+        with d810_state() as state:
+            state.load_project(
+                state.project_manager.index("mba_compiler_shape_catalogue.json")
+            )
+            selected_rules = tuple(state.current_ins_rules)
+
+            @contextlib.contextmanager
+            def selected_state():
+                yield state
+
+            history_snapshot = snapshot_native_provider_histories(selected_rules)
+            run_deobfuscation_test(
+                native_case,
+                d810_state=selected_state,
+                pseudocode_to_string=pseudocode_to_string,
+            )
+            post_snapshot_applied = tuple(
+                outcome
+                for rule in selected_rules
+                for outcome in rule.provider_outcomes()[
+                    history_snapshot.outcome_counts_by_rule_id[id(rule)] :
+                ]
+                if outcome.provider is MbaProviderKind.CATALOGUE
+                and outcome.status is ProviderOutcomeStatus.APPLIED
+            )
+            assert post_snapshot_applied, "native snapshot delta has no applied outcome"
+            profile = native_profile_from_outcome(post_snapshot_applied[-1])
+
+        capture = NativeMbaCorpusCapture(
+            corpus_identity="mba-compiler-shapes-native",
+            toolchain_identity={"provider": "catalogue"},
+        )
+        case = capture.add_case(
+            case_id="catalogue-post-snapshot",
+            stratum="catalogue",
+            profile=profile,
+            rules=selected_rules,
+            history_snapshot=history_snapshot,
+        )
+        assert case.outcomes == (post_snapshot_applied[-1],)
+
+        capture_path = tmp_path / "snapshot-capture.json"
+        report_path = tmp_path / "snapshot-report.json"
+        capture.write_json(capture_path)
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(_CLI),
+                "--out",
+                str(report_path),
+                "--providers",
+                "catalogue",
+                str(capture_path),
+            ],
+            cwd=_ROOT,
+            env={"PYTHONPATH": str(_ROOT / "src")},
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert completed.returncode == 0, completed.stderr
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        assert [item["case_id"] for item in report["cases"]] == [
+            "catalogue-post-snapshot"
+        ]
+        report_case = report["cases"][0]
+        assert report_case["profile"]["fingerprint"] == profile.fingerprint
+        assert report_case["outcomes"] == [post_snapshot_applied[-1].to_dict()]
+
     def test_history_snapshot_excludes_prior_real_profile(
         self,
         ida_database,
