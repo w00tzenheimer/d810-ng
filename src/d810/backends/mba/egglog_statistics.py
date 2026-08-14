@@ -76,8 +76,42 @@ def read_rule_firing_count(report: Any) -> int | None:
     return sum(values)
 
 
+def release_egraph_on_owner_thread(
+    egraph: Any,
+    *,
+    egglog_version: str | None = None,
+) -> bool:
+    """Detach Egglog's thread-affine native graph before callback return.
+
+    Egglog 13.2.0 has no public close API, yet its native ``EGraph`` binding is
+    intentionally unsendable.  A Hex-Rays callback must therefore release the
+    private state on its creating thread rather than leave Python finalization
+    to an arbitrary teardown thread.  Any shape or version drift fails closed.
+    """
+
+    version = _installed_egglog_version() if egglog_version is None else egglog_version
+    if version != SUPPORTED_EGGLOG_VERSION:
+        return False
+    try:
+        state = egraph._state
+        state_stack = egraph._state_stack
+        token_stack = egraph._token_stack
+        if state is None or not hasattr(state, "egraph"):
+            return False
+        if type(state_stack) is not list or type(token_stack) is not list:
+            return False
+        state_stack.clear()
+        token_stack.clear()
+        egraph._state = None
+        del state
+    except Exception:
+        return False
+    return True
+
+
 __all__ = [
     "SUPPORTED_EGGLOG_VERSION",
+    "release_egraph_on_owner_thread",
     "read_egraph_statistics",
     "read_rule_firing_count",
 ]

@@ -19,6 +19,7 @@ from d810.core.typing import Any
 from d810.backends.mba.egglog_statistics import (
     read_egraph_statistics,
     read_rule_firing_count,
+    release_egraph_on_owner_thread,
 )
 from d810.backends.mba.hexrays_island import (
     HexRaysIslandLowering,
@@ -584,6 +585,7 @@ def _extract_bounded_term(
         lowering=lowering,
         profile=profile,
     )
+    egraph: Any | None = None
 
     try:
         if term is None:
@@ -935,6 +937,9 @@ def _extract_bounded_term(
             skip_reason=ExtractionSkipReason.INTERNAL_ERROR,
             elapsed_ms=elapsed,
         )
+    finally:
+        if egraph is not None:
+            release_egraph_on_owner_thread(egraph)
 
 
 def extract_bounded_term(

@@ -841,6 +841,92 @@ def test_private_statistics_boundary_rejects_unpinned_egglog_version():
     )
 
 
+def test_private_egraph_owner_thread_release_detaches_native_state():
+    native_state = object()
+
+    class _State:
+        egraph = native_state
+
+    class _EGraph:
+        _state = _State()
+        _state_stack = [_State()]
+        _token_stack = [object()]
+
+    egraph = _EGraph()
+
+    assert egglog_statistics.release_egraph_on_owner_thread(
+        egraph,
+        egglog_version="13.2.0",
+    )
+    assert egraph._state is None
+    assert egraph._state_stack == []
+    assert egraph._token_stack == []
+
+
+def test_private_egraph_owner_thread_release_rejects_unpinned_runtime():
+    class _EGraph:
+        _state = object()
+        _state_stack = []
+        _token_stack = []
+
+    egraph = _EGraph()
+
+    assert not egglog_statistics.release_egraph_on_owner_thread(
+        egraph,
+        egglog_version="13.2.1",
+    )
+    assert egraph._state is not None
+
+
+def test_bounded_extraction_releases_egraph_on_its_owner_thread(monkeypatch):
+    released = []
+
+    class _EGraph:
+        def register(self, *_commands):
+            return None
+
+        def run(self, _rounds):
+            return SimpleNamespace(num_matches_per_rule={}, updated=False)
+
+    egraph = _EGraph()
+    monkeypatch.setattr(
+        egglog_saturation,
+        "release_egraph_on_owner_thread",
+        lambda value: released.append(value) or True,
+    )
+    monkeypatch.setattr(
+        egglog_saturation,
+        "_load_egglog_module",
+        lambda: SimpleNamespace(EGraph=lambda: egraph),
+    )
+    monkeypatch.setattr(
+        egglog_saturation,
+        "read_egraph_statistics",
+        lambda _egraph: (1, 1),
+    )
+
+    result = egglog_saturation.extract_bounded_term(
+        _leaf("x"),
+        (),
+        EgglogExtractionBudget(time_budget_ms=1000),
+        destination_size=4,
+    )
+
+    assert (
+        result.receipt.skip_reason
+        is ExtractionSkipReason.NO_DEGREE_ELIGIBLE_IMPROVEMENT
+    )
+    assert released == [egraph]
+
+
+def test_pinned_egglog_binding_can_be_released_on_owner_thread():
+    egglog = pytest.importorskip("egglog")
+    egraph = egglog.EGraph()
+
+    assert egglog_statistics.release_egraph_on_owner_thread(egraph)
+    assert egraph._state is None
+
+
 def test_run_report_match_counts_are_never_guessed():
     assert (
         egglog_statistics.read_rule_firing_count(
