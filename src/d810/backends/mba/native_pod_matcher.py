@@ -359,7 +359,9 @@ def _match_cython_catalogue(
         comparison_budget,
     )
     if exceeded:
-        return NativePatternMatchResult((), comparisons, lazy_swaps, True)
+        return NativePatternMatchResult(
+            (), comparisons, lazy_swaps, True, matcher_backend="cython"
+        )
     matches: list[Any] = []
     for compiled, bindings_rows in zip(bucket, results_by_pattern, strict=True):
         encoded = compiled.pod_pattern
@@ -403,6 +405,7 @@ def _match_cython_catalogue(
         comparisons,
         lazy_swaps,
         candidate_term=packed.typed_term() if matches else None,
+        matcher_backend="cython",
     )
 
 

@@ -10,7 +10,7 @@ the replacement from those bindings and never re-runs pattern matching.
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 
 from d810.backends.mba.egglog_add_rule_compiler import (
@@ -78,6 +78,9 @@ class NativePatternMatchResult:
     lazy_swaps: int
     comparison_budget_exceeded: bool = False
     candidate_term: TypedBvTerm | None = None
+    # Diagnostic-only: semantic parity compares matches and resource facts,
+    # while the performance receipt must retain the actual matching path.
+    matcher_backend: str = field(default="python", compare=False)
 
 
 @dataclass(frozen=True)

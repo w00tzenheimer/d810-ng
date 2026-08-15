@@ -403,7 +403,10 @@ def test_public_catalogue_uses_cython_at_the_handler_comparison_budget(
         CompiledPatternCatalogue, "_match_root_portable", forbidden_portable
     )
 
-    assert catalogue.match_root(candidate, comparison_budget=256).matches
+    result = catalogue.match_root(candidate, comparison_budget=256)
+
+    assert result.matches
+    assert result.matcher_backend == "cython"
 
 
 @pytest.mark.skipif(
@@ -477,6 +480,7 @@ def test_public_catalogue_match_falls_back_to_portable_oracle(monkeypatch) -> No
     )
     monkeypatch.setattr(native_pod_matcher, "_match_pod_pattern", None)
 
-    assert catalogue.match_root(candidate, comparison_budget=64) == (
-        catalogue._match_root_portable(candidate, comparison_budget=64)
-    )
+    result = catalogue.match_root(candidate, comparison_budget=64)
+
+    assert result == catalogue._match_root_portable(candidate, comparison_budget=64)
+    assert result.matcher_backend == "python"
