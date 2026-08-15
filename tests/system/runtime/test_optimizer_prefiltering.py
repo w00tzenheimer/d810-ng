@@ -34,6 +34,12 @@ class _StubRule:
         self.calls += 1
         return None
 
+    def record_mutation_accepted(self):
+        pass
+
+    def record_mutation_rejected(self, _reason: str):
+        pass
+
 
 class _ConcreteOptimizer(InstructionOptimizer):
     """Concrete subclass for testing (InstructionOptimizer is generic)."""
@@ -179,10 +185,10 @@ def test_optimizer_quarantines_only_the_rule_that_closed_a_rewrite_cycle():
     assert independent.calls == 1
 
 
-def test_cycle_detection_quarantines_the_producer_before_the_next_callback(
+def test_cycle_detection_allows_represented_pre_state_but_quarantines_a_revisit(
     monkeypatch,
 ):
-    """A repeated post-rewrite form may not re-enter its producing rule."""
+    """Only a return to X after X -> Y is a rewrite cycle at one site."""
     from d810.hexrays.hooks import optinsn_adapter
     from d810.optimizers.microcode.instructions import handler as handler_module
 
@@ -194,10 +200,10 @@ def test_cycle_detection_quarantines_the_producer_before_the_next_callback(
         def swap(self, other):
             self.form, other.form = other.form, self.form
 
-    class _RepeatedCobraRule(_StubRule):
-        def check_and_replace(self, _blk, _ins):
+    class _TransitionRule(_StubRule):
+        def check_and_replace(self, _blk, ins):
             self.calls += 1
-            return _SwappableInstruction("cobra-rewrite")
+            return _SwappableInstruction({"X": "Y", "Y": "X"}[ins.form])
 
     monkeypatch.setattr(optinsn_adapter, "check_ins_mop_size_are_ok", lambda _ins: True)
     monkeypatch.setattr(optinsn_adapter, "count_minsn_nodes", lambda _ins: 1)
@@ -208,9 +214,9 @@ def test_cycle_detection_quarantines_the_producer_before_the_next_callback(
     )
     monkeypatch.setattr(handler_module, "format_minsn_t", lambda ins: ins.form)
 
-    cobra = _RepeatedCobraRule("CobraSolveRule", [ida_hexrays.MMAT_LOCOPT])
+    rule = _TransitionRule("CobraSolveRule", [ida_hexrays.MMAT_LOCOPT])
     optimizer = _ConcreteOptimizer([ida_hexrays.MMAT_LOCOPT], stats=None)
-    optimizer.add_rule(cobra)
+    optimizer.add_rule(rule)
     manager = InstructionOptimizerManager.__new__(InstructionOptimizerManager)
     manager._active_optimizers = [optimizer]
     manager._rewrite_seen = defaultdict(set)
@@ -221,19 +227,81 @@ def test_cycle_detection_quarantines_the_producer_before_the_next_callback(
     manager.analyzer = SimpleNamespace(analyze=lambda _blk, _ins: None)
     manager._resolve_active_instruction_rule_names = lambda _blk: None
     manager._scheduled_implementation_names = frozenset()
-
     blk = SimpleNamespace(
         mba=SimpleNamespace(
             entry_ea=0x7FF856F83C70,
             maturity=ida_hexrays.MMAT_LOCOPT,
         )
     )
-    ins = _SwappableInstruction("original")
 
-    assert manager.optimize(blk, ins)
+    first_x = _SwappableInstruction("X")
+    assert manager.optimize(blk, first_x)
+    assert first_x.form == "Y"
+
+    represented_x = _SwappableInstruction("X")
+    assert manager.optimize(blk, represented_x)
+    assert represented_x.form == "Y"
+
+    assert manager.optimize(blk, first_x)
+    assert first_x.form == "X"
+    assert not manager.optimize(blk, first_x)
+    assert manager._cycle_quarantined_rule_names[
+        (0x7FF856F83C70, ida_hexrays.MMAT_LOCOPT, 0x7FF856F84A8E)
+    ] == {"CobraSolveRule"}
+
+
+def test_cycle_detection_rejects_a_noop_without_quarantining_its_producer(
+    monkeypatch,
+):
+    """A rule returning the current form cannot keep the callback alive."""
+    from d810.hexrays.hooks import optinsn_adapter
+    from d810.optimizers.microcode.instructions import handler as handler_module
+
+    class _SwappableInstruction:
+        def __init__(self, form: str):
+            self.form = form
+            self.ea = 0x7FF856F84A8E
+
+        def swap(self, other):
+            self.form, other.form = other.form, self.form
+
+    class _IdempotentRule(_StubRule):
+        def check_and_replace(self, _blk, ins):
+            self.calls += 1
+            return _SwappableInstruction(ins.form)
+
+    monkeypatch.setattr(optinsn_adapter, "check_ins_mop_size_are_ok", lambda _ins: True)
+    monkeypatch.setattr(optinsn_adapter, "count_minsn_nodes", lambda _ins: 1)
+    monkeypatch.setattr(
+        optinsn_adapter,
+        "hash_minsn",
+        lambda ins, _func_ea=0: hash(ins.form),
+    )
+    monkeypatch.setattr(handler_module, "format_minsn_t", lambda ins: ins.form)
+
+    rule = _IdempotentRule("CobraSolveRule", [ida_hexrays.MMAT_LOCOPT])
+    optimizer = _ConcreteOptimizer([ida_hexrays.MMAT_LOCOPT], stats=None)
+    optimizer.add_rule(rule)
+    manager = InstructionOptimizerManager.__new__(InstructionOptimizerManager)
+    manager._active_optimizers = [optimizer]
+    manager._rewrite_seen = defaultdict(set)
+    manager._cycle_quarantined_rule_names = defaultdict(set)
+    manager.current_maturity = ida_hexrays.MMAT_LOCOPT
+    manager.stats = None
+    manager.generate_z3_code = False
+    manager.analyzer = SimpleNamespace(analyze=lambda _blk, _ins: None)
+    manager._resolve_active_instruction_rule_names = lambda _blk: None
+    manager._scheduled_implementation_names = frozenset()
+    blk = SimpleNamespace(
+        mba=SimpleNamespace(
+            entry_ea=0x7FF856F83C70,
+            maturity=ida_hexrays.MMAT_LOCOPT,
+        )
+    )
+    ins = _SwappableInstruction("already-folded")
+
     assert not manager.optimize(blk, ins)
-    assert not manager.optimize(blk, ins)
-    assert cobra.calls == 2
+    assert not manager._cycle_quarantined_rule_names
 
 
 def test_outer_mutation_owner_emits_final_rule_telemetry_only_after_acceptance(

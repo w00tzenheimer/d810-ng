@@ -39,6 +39,11 @@ class _NodeLike:
         return self._leaves
 
 
+class _EmptyCandidate:
+    def __init__(self):
+        self.leafs_by_name = {}
+
+
 def test_update_leafs_mop_delegates_to_leaf_specific_update():
     ok_leaf = _Leaf("x_0", should_succeed=True)
     failing_leaf = _Leaf("c_1", should_succeed=False)
@@ -52,3 +57,17 @@ def test_update_leafs_mop_delegates_to_leaf_specific_update():
     assert failing_leaf.calls == 1
     assert ok_leaf.mop == "mop_x"
     assert failing_leaf.mop == "mop_c"
+
+
+def test_literal_constant_without_a_pattern_binding_is_admitted():
+    """Replacement literals reach materialization even when unbound by PATTERN."""
+    literal = p_ast.AstConstant("NEG_TWO", expected_value=-2)
+
+    assert literal.update_leafs_mop(_EmptyCandidate()) is True
+
+
+def test_unbound_pattern_constant_is_still_rejected():
+    """A placeholder requires a candidate binding; only known literals bypass it."""
+    placeholder = p_ast.AstConstant("c_1")
+
+    assert placeholder.update_leafs_mop(_EmptyCandidate()) is False

@@ -907,6 +907,11 @@ class AstConstant(AstLeaf):
             source_leaf = other2.leafs_by_name[self.name]
 
         if source_leaf is None:
+            # Replacement-side literals already carry their value. They do
+            # not need a PATTERN binding: downstream materialization creates
+            # the constant mop from expected_value.
+            if self.expected_value is not None:
+                return True
             return False
 
         # Copy mop if available

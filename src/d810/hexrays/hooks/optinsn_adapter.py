@@ -166,17 +166,17 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         )
         self._scheduled_implementation_names: frozenset[str] = frozenset()
 
-        # Cycle detection: maps instruction EA -> set of post-rewrite hashes.
-        # If a rewrite produces an instruction whose hash was already seen for
-        # that EA, we have a cycle (Rule A: X->Y, Rule B: Y->X) and break it.
-        self._rewrite_seen: dict[int, set[int]] = defaultdict(set)
-        # A repeated post-rewrite form identifies the rule which produced it.
-        # Quarantine that producer for this function/maturity/instruction site;
-        # merely refusing one duplicate replacement leaves Hex-Rays free to
-        # invoke the same expensive rule again on the next callback.
-        self._cycle_quarantined_rule_names: dict[
-            tuple[int, int, int], set[str]
-        ] = defaultdict(set)
+        # Cycle detection records pre-rewrite states per function/maturity
+        # instruction site. A state is a cycle only when it reappears after
+        # another distinct state (X -> Y -> X). Hex-Rays may legitimately
+        # re-present the same pre-state across callbacks, so that is allowed.
+        self._rewrite_seen: dict[tuple[int, int, int], set[int]] = defaultdict(set)
+        # A real state revisit identifies the producer that closed the cycle.
+        # Quarantine it at this function/maturity/instruction site; merely
+        # refusing one rewrite leaves Hex-Rays free to invoke it again.
+        self._cycle_quarantined_rule_names: dict[tuple[int, int, int], set[str]] = (
+            defaultdict(set)
+        )
 
         # Optional event emitter - set by D810Manager after construction to
         # allow emitting DecompilationEvent.MATURITY_CHANGED events.
@@ -1165,23 +1165,32 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                     # --- end expression size guard ---
 
                     # --- cycle detection guard ---
-                    # Compute structural hash of the NEW instruction
-                    # (after swap, `ins` holds the new content).
-                    ins.swap(new_ins)
+                    # Record pre-rewrite states, rather than replacement
+                    # states. Re-presenting the same pre-state is a normal
+                    # Hex-Rays callback pattern; only returning to a state
+                    # after another state has intervened is a real cycle.
+                    pre_hash = hash_minsn(ins, func_ea)
+                    post_hash = hash_minsn(new_ins, func_ea)
+                    ins_key = int(getattr(ins, "ea", 0) or 0)
 
-                    try:
-                        func_ea = blk.mba.entry_ea if blk and blk.mba else 0
-                    except Exception:
-                        func_ea = 0
-                    post_hash = hash_minsn(ins, func_ea)
-                    ins_key = ins.ea
+                    if post_hash == pre_hash:
+                        record_rejected = getattr(
+                            ins_optimizer, "record_mutation_rejected", None
+                        )
+                        if record_rejected is not None:
+                            record_rejected("rewrite_noop")
+                        optimizer_logger.debug(
+                            "Rejecting no-op rewrite for instruction at %s by %s",
+                            hex(ins_key),
+                            ins_optimizer.name,
+                        )
+                        return False
 
-                    seen = self._rewrite_seen[ins_key]
-                    if post_hash in seen:
-                        # Cycle detected: this instruction was already
-                        # rewritten to this exact form.  Undo the swap and
-                        # refuse the rewrite to break the cycle.
-                        ins.swap(new_ins)  # undo
+                    seen_states = self._rewrite_seen[site_key]
+                    if pre_hash in seen_states and len(seen_states) > 1:
+                        # We have reached a previously observed state after
+                        # traversing at least one different state: X -> Y -> X.
+                        # Refuse the rewrite and quarantine only its producer.
                         producer_rule_name = getattr(
                             ins_optimizer,
                             "last_matched_rule_name",
@@ -1195,12 +1204,8 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                             )
                             if quarantined_by_site is None:
                                 quarantined_by_site = defaultdict(set)
-                                self._cycle_quarantined_rule_names = (
-                                    quarantined_by_site
-                                )
-                            quarantined_by_site[site_key].add(
-                                str(producer_rule_name)
-                            )
+                                self._cycle_quarantined_rule_names = quarantined_by_site
+                            quarantined_by_site[site_key].add(str(producer_rule_name))
                         record_rejected = getattr(
                             ins_optimizer, "record_mutation_rejected", None
                         )
@@ -1211,11 +1216,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                             "quarantining producer for this maturity",
                             hex(ins_key),
                             ins_optimizer.name,
-                            (
-                                f"/{producer_rule_name}"
-                                if producer_rule_name
-                                else ""
-                            ),
+                            (f"/{producer_rule_name}" if producer_rule_name else ""),
                         )
                         if self.stats is not None:
                             self.stats.record_cycle_detected(
@@ -1224,7 +1225,8 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                             )
                         return False
 
-                    seen.add(post_hash)
+                    seen_states.add(pre_hash)
+                    ins.swap(new_ins)
                     # --- end cycle detection guard ---
 
                     record_accepted = getattr(
