@@ -26,6 +26,11 @@ from .locations import (
     StackSlot,
     StorageLocation,
 )
+from .native_range_projection import (
+    CtreeNativeRangeProjection,
+    CtreeStatementNativeRanges,
+    NativeRange,
+)
 from .redirect import RedirectBranchIntent, RedirectGotoIntent, RedirectIntent
 from .results import ConstantFixpointResult
 from .semantics import (
@@ -60,6 +65,8 @@ __all__ = [
     "Const",
     "ConstantFixpointResult",
     "ControlTransferKind",
+    "CtreeNativeRangeProjection",
+    "CtreeStatementNativeRanges",
     "DefinitionRef",
     "EdgeStateContract",
     "ExprRef",
@@ -80,6 +87,7 @@ __all__ = [
     "MachineStateLocation",
     "MachineStateLocationKind",
     "Move",
+    "NativeRange",
     "OperandHandle",
     "OperationKind",
     "PredicateKind",
