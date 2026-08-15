@@ -19,6 +19,7 @@ def prove_native_ast_equivalence(
     width: int,
     known_constants: Mapping[tuple[object, ...], int] | None = None,
     certificate: str | None = None,
+    generic_native_z3_before_certificate: bool = False,
 ) -> bool:
     """Prove two same-width supported native ASTs equal with bit-vector Z3.
 
@@ -30,16 +31,23 @@ def prove_native_ast_equivalence(
     a converged cross-block constant environment. Every supplied key must
     occur in the original/replacement proof and is constrained to its value;
     an unknown key, invalid width, or malformed value rejects the proof.
+
+    A recognized ``certificate`` still validates both lowered native terms.
+    It skips the generic bit-vector query by default because the certificate
+    is the narrower, independently checked proof plan. Set
+    ``generic_native_z3_before_certificate`` to retain the legacy generic-first
+    ordering for diagnosis or comparison.
     """
 
     if type(width) is not int or width not in {8, 16, 32, 64}:
         return False
     try:
-        import z3
-
         destination_size = width // 8
         assumptions = dict(known_constants or {})
-        if any(type(value) is not int for value in assumptions.values()):
+        if (
+            any(type(value) is not int for value in assumptions.values())
+            or type(generic_native_z3_before_certificate) is not bool
+        ):
             return False
         original_lowering = lower_hexrays_island(
             original,
@@ -51,57 +59,21 @@ def prove_native_ast_equivalence(
         )
         if original_lowering.term is None or replacement_lowering.term is None:
             return False
-
-        variables: dict[object, Any] = {}
-        observed_leaf_keys: set[object] = set()
-
-        def visit(node: Any) -> Any:
-            if node.width != width:
-                raise ValueError("mixed-width typed term")
-            if node.operation is None:
-                if node.value is not None:
-                    return z3.BitVecVal(int(node.value), width)
-                if node.leaf_key is None:
-                    raise ValueError("missing typed leaf identity")
-                key = node.leaf_key
-                observed_leaf_keys.add(key)
-                if key in assumptions:
-                    return z3.BitVecVal(
-                        assumptions[key] & ((1 << width) - 1),
-                        width,
-                    )
-                return variables.setdefault(
-                    key,
-                    z3.BitVec(f"native_mba_leaf_{len(variables)}", width),
-                )
-            children = tuple(visit(child) for child in node.children)
-            if len(children) not in {1, 2}:
-                raise ValueError("invalid typed operator arity")
-            left = children[0]
-            right = children[1] if len(children) == 2 else None
-            operations = {
-                "add": lambda: left + right,
-                "sub": lambda: left - right,
-                "mul": lambda: left * right,
-                "and": lambda: left & right,
-                "or": lambda: left | right,
-                "xor": lambda: left ^ right,
-                "neg": lambda: -left,
-                "bnot": lambda: ~left,
-            }
-            operation = operations.get(node.operation)
-            if operation is None:
-                raise ValueError("unsupported typed operation")
-            return operation()
-
-        original_term = visit(original_lowering.term)
-        replacement_term = visit(replacement_lowering.term)
-        if not set(assumptions).issubset(observed_leaf_keys):
-            return False
-        solver = z3.Solver()
-        solver.set(timeout=50)
-        solver.add(original_term != replacement_term)
-        if solver.check() == z3.unsat:
+        if (
+            certificate == _COMPLEMENT_MASK_HODUR_CERTIFICATE
+            and not generic_native_z3_before_certificate
+        ):
+            return _prove_complement_mask_hodur_native_certificate(
+                original_lowering.term,
+                replacement_lowering.term,
+                width=width,
+            )
+        if _prove_generic_native_terms(
+            original_lowering.term,
+            replacement_lowering.term,
+            width=width,
+            assumptions=assumptions,
+        ):
             return True
         if certificate == _COMPLEMENT_MASK_HODUR_CERTIFICATE:
             return _prove_complement_mask_hodur_native_certificate(
@@ -112,6 +84,69 @@ def prove_native_ast_equivalence(
         return False
     except Exception:
         return False
+
+
+def _prove_generic_native_terms(
+    original: TypedBvTerm,
+    replacement: TypedBvTerm,
+    *,
+    width: int,
+    assumptions: Mapping[tuple[object, ...], int],
+) -> bool:
+    """Run the legacy bounded bit-vector proof over already-lowered terms."""
+
+    import z3
+
+    variables: dict[object, Any] = {}
+    observed_leaf_keys: set[object] = set()
+
+    def visit(node: TypedBvTerm) -> Any:
+        if node.width != width:
+            raise ValueError("mixed-width typed term")
+        if node.operation is None:
+            if node.value is not None:
+                return z3.BitVecVal(int(node.value), width)
+            if node.leaf_key is None:
+                raise ValueError("missing typed leaf identity")
+            key = node.leaf_key
+            observed_leaf_keys.add(key)
+            if key in assumptions:
+                return z3.BitVecVal(
+                    assumptions[key] & ((1 << width) - 1),
+                    width,
+                )
+            return variables.setdefault(
+                key,
+                z3.BitVec(f"native_mba_leaf_{len(variables)}", width),
+            )
+        children = tuple(visit(child) for child in node.children)
+        if len(children) not in {1, 2}:
+            raise ValueError("invalid typed operator arity")
+        left = children[0]
+        right = children[1] if len(children) == 2 else None
+        operations = {
+            "add": lambda: left + right,
+            "sub": lambda: left - right,
+            "mul": lambda: left * right,
+            "and": lambda: left & right,
+            "or": lambda: left | right,
+            "xor": lambda: left ^ right,
+            "neg": lambda: -left,
+            "bnot": lambda: ~left,
+        }
+        operation = operations.get(node.operation)
+        if operation is None:
+            raise ValueError("unsupported typed operation")
+        return operation()
+
+    original_term = visit(original)
+    replacement_term = visit(replacement)
+    if not set(assumptions).issubset(observed_leaf_keys):
+        return False
+    solver = z3.Solver()
+    solver.set(timeout=50)
+    solver.add(original_term != replacement_term)
+    return solver.check() == z3.unsat
 
 
 def _constant(value: int, width: int) -> TypedBvTerm:

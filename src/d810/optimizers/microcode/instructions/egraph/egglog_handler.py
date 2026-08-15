@@ -115,6 +115,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         self._last_provider_outcome: MbaProviderOutcome | None = None
         self.cross_block_constant_preparation = False
         self.cross_block_def_use_preparation = False
+        self.generic_native_z3_before_certificate = False
 
     def _begin_provider_attempt(self) -> None:
         """Start one observable attempt, independent of whether it mutates."""
@@ -170,6 +171,13 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             raise ValueError(
                 "EgglogOptimizer cross_block_def_use_preparation must be boolean"
             )
+        generic_native_z3_before_certificate = self.config.get(
+            "generic_native_z3_before_certificate", False
+        )
+        if type(generic_native_z3_before_certificate) is not bool:
+            raise ValueError(
+                "EgglogOptimizer generic_native_z3_before_certificate must be boolean"
+            )
         try:
             budget = EgglogExtractionBudget(
                 max_leaves=max_leaves,
@@ -196,6 +204,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         self._catalogue = selected_catalogue
         self.cross_block_constant_preparation = preparation
         self.cross_block_def_use_preparation = def_use_preparation
+        self.generic_native_z3_before_certificate = generic_native_z3_before_certificate
 
     def _publish_budget_attributes(self, budget: EgglogExtractionBudget) -> None:
         self.max_leaves = budget.max_leaves
@@ -341,6 +350,9 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         certificate = self._native_proof_certificate(selected[1])
         if certificate is not None:
             proof_kwargs["certificate"] = certificate
+            proof_kwargs["generic_native_z3_before_certificate"] = (
+                self.generic_native_z3_before_certificate
+            )
         if not self._prove_ast_equivalence(ast, replacement, **proof_kwargs):
             self._record_extraction_receipt(
                 replace(
@@ -692,6 +704,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         width: int,
         known_constants: object | None = None,
         certificate: str | None = None,
+        generic_native_z3_before_certificate: bool = False,
     ) -> bool:
         """Compatibility facade for the shared native Z3 mutation gate."""
 
@@ -701,6 +714,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             width=width,
             known_constants=known_constants,
             certificate=certificate,
+            generic_native_z3_before_certificate=generic_native_z3_before_certificate,
         )
 
     @staticmethod

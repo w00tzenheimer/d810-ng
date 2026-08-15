@@ -929,6 +929,56 @@ def test_complement_mask_hodur_native_certificate_proves_only_the_exact_residual
     )
 
 
+def test_complement_mask_hodur_native_certificate_skips_generic_z3_by_default(
+    monkeypatch,
+):
+    """The certified native proof plan must avoid the redundant bit-blast."""
+
+    catalogue = _compile_rule_families({"sub": (Sub_ComplementMaskHodurRule_1,)})
+    rule = catalogue.compiled_rules[0]
+    mask = 0x60657A1106CA3013
+    original_term = _term_from_symbolic(
+        rule.pattern,
+        {
+            "x_0": _constant(mask, width=64),
+            "bnot_x_0": _constant(~mask, width=64),
+            "x_1": _leaf("value", width=64),
+        },
+        width=64,
+    )
+    replacement_term = _node(
+        "sub",
+        _leaf("value", width=64),
+        _constant(mask, width=64),
+        width=64,
+    )
+    original_ast, replacement_ast = object(), object()
+
+    def lower(ast, *, destination_size):
+        assert destination_size == 8
+        return SimpleNamespace(
+            term=original_term if ast is original_ast else replacement_term
+        )
+
+    generic_calls: list[tuple[TypedBvTerm, TypedBvTerm]] = []
+
+    def reject_generic(original, replacement, **_kwargs):
+        generic_calls.append((original, replacement))
+        raise AssertionError("certificate path must not invoke generic native Z3")
+
+    assert hasattr(native_z3, "_prove_generic_native_terms")
+    monkeypatch.setattr(native_z3, "lower_hexrays_island", lower)
+    monkeypatch.setattr(native_z3, "_prove_generic_native_terms", reject_generic)
+
+    assert native_z3.prove_native_ast_equivalence(
+        original_ast,
+        replacement_ast,
+        width=64,
+        certificate="complement-mask-hodur-v1",
+    )
+    assert generic_calls == []
+
+
 def test_replaced_canonical_compiled_rule_instance_is_not_admitted(
     admitted_xor_nested_stuff,
 ):

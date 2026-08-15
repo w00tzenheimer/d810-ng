@@ -486,6 +486,16 @@ def _configured_live_handler(**overrides) -> EgglogOptimizer:
     return handler
 
 
+def test_live_handler_certificate_proof_skips_generic_native_z3_by_default():
+    default_handler = _configured_live_handler()
+    diagnostic_handler = _configured_live_handler(
+        generic_native_z3_before_certificate=True
+    )
+
+    assert default_handler.generic_native_z3_before_certificate is False
+    assert diagnostic_handler.generic_native_z3_before_certificate is True
+
+
 def test_live_handler_admits_and_extracts_real_degree_two_boolean_candidate(
 ):
     candidate = _degree_two_candidate()
