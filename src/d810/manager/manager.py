@@ -3037,7 +3037,12 @@ class D810Manager:
             run_flowchart_preanalysis_handlers,
         )
 
-        self._install_native_preanalysis_handlers()
+        # Computed-goto materialization is a profile-specific compatibility
+        # path.  Installing it for every project steals ordinary ``m_ijmp``
+        # candidates from the selected IndirectBranchResolver before that
+        # rule reaches LOCOPT.
+        if bool(self.config.get("legacy_direct_indirect_materialization", False)):
+            self._install_native_preanalysis_handlers()
         self.event_emitter.on(
             DecompilationEvent.HEXRAYS_FLOWCHART_READY,
             run_flowchart_preanalysis_handlers,
