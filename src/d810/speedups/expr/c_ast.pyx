@@ -386,10 +386,13 @@ cdef class AstNode(AstBase):
 
         new_ins.d = ida_hexrays.mop_t()
 
-        if self.left is not None:
-            new_ins.d.size = new_ins.l.size
         if dest is not None:
             new_ins.d = dest
+        elif self.dest_size is not None:
+            # Keep conversion result widths: xdu.8(reg.1) is not xdu.1.
+            new_ins.d.size = self.dest_size
+        elif self.left is not None:
+            new_ins.d.size = new_ins.l.size
         return new_ins
 
     def get_pattern(self) -> str:

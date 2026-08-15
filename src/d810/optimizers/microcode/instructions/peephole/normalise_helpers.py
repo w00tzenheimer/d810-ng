@@ -451,6 +451,25 @@ def _get_mask(bits):
     return AND_TABLE[byte_size]
 
 
+def _ast_result_bits(ast: AstBase, fallback_bits: int) -> int:
+    """Use a subtree's recorded native result width when it is available."""
+
+    size = getattr(ast, "dest_size", None)
+    if isinstance(size, int) and size in AND_TABLE:
+        return size * 8
+    return fallback_bits
+
+
+def _folded_constant_leaf(value: int, bits: int) -> AstLeaf:
+    """Create a folded leaf with the exact width of the folded subtree."""
+
+    leaf = AstLeaf(value)
+    leaf.mop = ida_hexrays.mop_t()
+    safe_make_number(leaf.mop, value, bits // 8)
+    leaf.dest_size = bits // 8
+    return leaf
+
+
 def _fold_bottom_up(
     ast: AstBase,
     bits,
@@ -464,6 +483,7 @@ def _fold_bottom_up(
     When *blk* and *ins* are provided, non-constant leaf operands (mop_S,
     mop_r, mop_l) are resolved via def-search before attempting folding.
     """
+    bits = _ast_result_bits(ast, bits)
     changed = False
 
     # leaves
@@ -483,10 +503,7 @@ def _fold_bottom_up(
         if func_name and bits > 0:
             val = _eval_subtree(ast, bits, blk=blk, ins=ins)
             if val is not None:
-                leaf = AstLeaf(val)
-                leaf.mop = ida_hexrays.mop_t()
-                safe_make_number(leaf.mop, val, bits // 8)
-                return leaf, True
+                return _folded_constant_leaf(val, bits), True
         return ast, False
 
     # recurse first
@@ -505,20 +522,14 @@ def _fold_bottom_up(
     if ast.right is None:
         val = _eval_subtree(ast, bits, blk=blk, ins=ins)
         if val is not None:
-            leaf = AstLeaf(val)  # tiny helper; see below
-            leaf.mop = ida_hexrays.mop_t()
-            safe_make_number(leaf.mop, val, bits // 8)
-            return leaf, True
+            return _folded_constant_leaf(val, bits), True
     elif ast.left is not None and ast.right is not None:
         lval = _eval_subtree(ast.left, bits, blk=blk, ins=ins)
         rval = _eval_subtree(ast.right, bits, blk=blk, ins=ins)
         if lval is not None and rval is not None:
             val = _fold(ast.opcode, lval, rval, bits)
             if val is not None:
-                leaf = AstLeaf(val)
-                leaf.mop = ida_hexrays.mop_t()
-                safe_make_number(leaf.mop, val, bits // 8)
-                return leaf, True
+                return _folded_constant_leaf(val, bits), True
 
     return ast, changed
 

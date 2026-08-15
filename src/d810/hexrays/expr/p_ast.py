@@ -391,10 +391,16 @@ class AstNode(AstBase):
 
         new_ins.d = ida_hexrays.mop_t()
 
-        if self.left is not None:
-            new_ins.d.size = new_ins.l.size
         if dest is not None:
             new_ins.d = dest
+        elif self.dest_size is not None:
+            # Nested conversion nodes are the counterexample to deriving the
+            # result width from ``l``: ``xdu.8(reg.1)`` has a one-byte source
+            # but an eight-byte result.  The AST keeps the native result size
+            # precisely so partial rebuilds do not turn it into ``xdu.1``.
+            new_ins.d.size = self.dest_size
+        elif self.left is not None:
+            new_ins.d.size = new_ins.l.size
         return new_ins
 
     def get_pattern(self) -> str:
