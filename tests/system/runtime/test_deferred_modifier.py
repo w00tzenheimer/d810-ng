@@ -4242,6 +4242,50 @@ class TestStagedAtomicClassification:
         assert actual == expected
 
 
+def test_convert_to_goto_routes_nway_jtbl_through_specialized_converter(
+    monkeypatch,
+) -> None:
+    """All conversion paths preserve m_jtbl-specific CFG bookkeeping.
+
+    A generic two-way rewrite only removes two outgoing edges.  A table jump
+    carries one successor per case, so deferred execution, staged-atomic
+    preflight, and immediate execution must all select the dedicated converter.
+    """
+
+    mba = _FakeMBA()
+    block = SimpleNamespace(
+        serial=7,
+        mba=mba,
+        tail=SimpleNamespace(opcode=int(ida_hexrays.m_jtbl)),
+        nsucc=lambda: 3,
+    )
+    calls: list[tuple[object, int, object]] = []
+
+    def _convert(blk, target, owner_mba):
+        calls.append((blk, int(target), owner_mba))
+        return True
+
+    monkeypatch.setattr(dm, "convert_jtbl_to_goto", _convert, raising=False)
+    monkeypatch.setattr(
+        dm,
+        "make_2way_block_goto",
+        lambda *_args, **_kwargs: pytest.fail("m_jtbl must not use 2-way lowering"),
+    )
+
+    deferred = dm.DeferredGraphModifier(mba)
+    assert deferred._apply_convert_to_goto(block, 13)
+    assert dm.ImmediateGraphModifier(mba)._apply_convert_to_goto(block, 13)
+    assert deferred._apply_destructive_on_copy(
+        block,
+        dm.QueuedModification(
+            mod_type=dm.ModificationType.BLOCK_CONVERT_TO_GOTO,
+            block_serial=7,
+            new_target=13,
+        ),
+    )
+    assert calls == [(block, 13, mba), (block, 13, mba), (block, 13, mba)]
+
+
 class TestStagedAtomicPendingRewire:
     """Data contract for the _StagedPendingRewire record."""
 

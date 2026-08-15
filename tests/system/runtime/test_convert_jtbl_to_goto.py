@@ -32,6 +32,7 @@ import ida_hexrays
 import idaapi
 import idc
 from d810.hexrays.mutation.cfg_mutations import convert_jtbl_to_goto
+from d810.hexrays.mutation.deferred_modifier import DeferredGraphModifier
 from d810.hexrays.ir.cfg_queries import _serial_in_predset
 
 if TYPE_CHECKING:
@@ -517,8 +518,8 @@ class TestConvertJtblToGotoEdgeCases:
                 if blk is None:
                     continue
                 try:
-                    # For non-jtbl blocks this returns False immediately.
-                    # For jtbl blocks, target 0 is a valid block serial.
+                    # Non-jtbl blocks return False immediately. A table block
+                    # also returns False when target 0 is not one of its cases.
                     convert_jtbl_to_goto(blk, 0, mba)
                 except Exception as e:
                     pytest.fail(
@@ -528,6 +529,74 @@ class TestConvertJtblToGotoEdgeCases:
 
             print(f"\n  {func_name}: all {mba.qty} blocks processed without crash")
 
+
+class TestNwayJtblFixture:
+    """Exercise the N-way lowering against a dedicated, tracked C fixture."""
+
+    binary_name = _get_default_binary()
+
+    def _find_fixture_jtbl(self):
+        func_ea = get_func_ea("nway_jtbl_fixture")
+        if func_ea == idaapi.BADADDR:
+            pytest.skip("nway_jtbl_fixture is absent; rebuild libobfuscated.dll")
+
+        for maturity in (
+            ida_hexrays.MMAT_PREOPTIMIZED,
+            ida_hexrays.MMAT_LOCOPT,
+            ida_hexrays.MMAT_CALLS,
+        ):
+            mba = gen_microcode_at_maturity(func_ea, maturity)
+            if mba is None:
+                continue
+            for _serial, block in find_jtbl_blocks(mba):
+                if len(collect_jtbl_case_targets(block)) >= 3:
+                    return mba, block
+        pytest.fail("nway_jtbl_fixture did not produce a dense m_jtbl block")
+
+    @pytest.mark.ida_required
+    def test_converts_only_a_proven_existing_case_target(self, libobfuscated_setup):
+        mba, block = self._find_fixture_jtbl()
+        old_targets = collect_jtbl_case_targets(block)
+        chosen_target = next(iter(old_targets))
+
+        assert convert_jtbl_to_goto(block, chosen_target, mba)
+        assert block.tail.opcode == ida_hexrays.m_goto
+        assert list(block.succset) == [chosen_target]
+        assert block.type == ida_hexrays.BLT_1WAY
+        for removed_target in old_targets - {chosen_target}:
+            removed_block = mba.get_mblock(removed_target)
+            assert removed_block is not None
+            assert not _serial_in_predset(removed_block, block.serial)
+        mba.verify(True)
+
+    @pytest.mark.ida_required
+    def test_rejects_an_invented_target_without_mutating_the_table(
+        self, libobfuscated_setup
+    ):
+        mba, block = self._find_fixture_jtbl()
+        old_targets = collect_jtbl_case_targets(block)
+        invented_target = next(
+            serial for serial in range(mba.qty) if serial not in old_targets
+        )
+        old_successors = list(block.succset)
+
+        assert not convert_jtbl_to_goto(block, invented_target, mba)
+        assert block.tail.opcode == ida_hexrays.m_jtbl
+        assert list(block.succset) == old_successors
+
+    @pytest.mark.ida_required
+    def test_deferred_modifier_uses_the_table_aware_conversion(
+        self, libobfuscated_setup
+    ):
+        mba, block = self._find_fixture_jtbl()
+        chosen_target = next(iter(collect_jtbl_case_targets(block)))
+
+        assert DeferredGraphModifier(mba)._apply_convert_to_goto(
+            block, chosen_target
+        )
+        assert block.tail.opcode == ida_hexrays.m_goto
+        assert list(block.succset) == [chosen_target]
+        mba.verify(True)
 
 # ---------------------------------------------------------------------------
 # Test class: _serial_in_predset helper

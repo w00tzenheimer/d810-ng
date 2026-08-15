@@ -1018,7 +1018,10 @@ def convert_jtbl_to_goto(
     if tail is None or tail.opcode != ida_hexrays.m_jtbl:
         return False
 
-    # 1. Collect old case targets from mcases_t for predset cleanup
+    # 1. Collect old case targets from mcases_t for predset cleanup.
+    # A conversion may only retain a target that is already a table case: this
+    # helper removes every other successor, so inventing a fresh destination
+    # would manufacture a control-flow edge rather than simplify one.
     old_targets = set()
     if tail.r is not None and tail.r.t == ida_hexrays.mop_c:
         cases = tail.r.c
@@ -1027,6 +1030,14 @@ def convert_jtbl_to_goto(
             n = targets.size()
             for j in range(n):
                 old_targets.add(targets[j])
+
+    # ``gen_microcode`` may expose a valid ``mcases_t`` before Hex-Rays has
+    # materialized the block's succset.  The table is therefore the authority
+    # for target validity; use the union below only for conservative predset
+    # cleanup when either representation is populated.
+    old_succ_serials = {int(successor) for successor in blk.succset}
+    if int(new_target_serial) not in old_targets:
+        return False
 
     # 2. Change opcode
     tail.opcode = ida_hexrays.m_goto
@@ -1041,13 +1052,12 @@ def convert_jtbl_to_goto(
 
     # 5. Update succset: remove all old successors, add new target
     blk_serial = blk.serial
-    old_succ_serials = [x for x in blk.succset]
     for old_serial in old_succ_serials:
         blk.succset._del(old_serial)
     blk.succset.push_back(new_target_serial)
 
     # 6. Remove blk from old targets' predsets
-    for old_tgt in old_targets:
+    for old_tgt in old_succ_serials | old_targets:
         if old_tgt == new_target_serial:
             continue  # Will be handled in step 7
         if 0 <= old_tgt < mba.qty:

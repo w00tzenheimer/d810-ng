@@ -20,6 +20,7 @@
  */
 
 #include "ida_types.h"
+#include "platform.h"
 
 /* ============================================================================
  * Pattern 1: High Fan-In Dispatcher
@@ -388,6 +389,40 @@ int predecessor_uniformity_pattern(int input)
     }
 
     return result;
+}
+
+/* ============================================================================
+ * Pattern 7: Dense N-way jump-table mutation fixture
+ *
+ * ``volatile`` keeps the selector live through code generation, while the
+ * dense, distinct cases force a real switch/jump-table in the PE fixture.
+ * The converter itself deliberately does not prove a case live; callers must
+ * supply that proof, and may retain only one of these existing case targets.
+ * ============================================================================ */
+EXPORT D810_NOINLINE int nway_jtbl_fixture(volatile uint32_t *selector)
+{
+    uint32_t state = *selector & 0xFu;
+
+    switch (state)
+    {
+    case 0:  return 0x13;
+    case 1:  return 0xA7;
+    case 2:  return 0x2D;
+    case 3:  return 0xE1;
+    case 4:  return 0x56;
+    case 5:  return 0xC4;
+    case 6:  return 0x79;
+    case 7:  return 0x1B;
+    case 8:  return 0xF2;
+    case 9:  return 0x68;
+    case 10: return 0x35;
+    case 11: return 0xBD;
+    case 12: return 0x4A;
+    case 13: return 0x96;
+    case 14: return 0x0F;
+    case 15: return 0xD8;
+    default: return -1;
+    }
 }
 
 /* ============================================================================
