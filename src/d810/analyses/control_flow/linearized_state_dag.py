@@ -4921,7 +4921,7 @@ def _discover_supplemental_states(
                         kind = ExitStateKind.STABLE_HANDOFF
                 logger.info(
                     "supplemental classification: state 0x%X from handler blk[%d] "
-                    "exit_block=%d succ=%s → %s",
+                    "exit_block=%d succ=%s -> %s",
                     state_value,
                     handler_serial,
                     path.exit_block,
