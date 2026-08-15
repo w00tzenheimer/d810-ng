@@ -265,6 +265,7 @@ from d810.hexrays.mutation.cfg_mutations import insert_goto_instruction
 from d810.hexrays.mutation.cfg_mutations import retarget_jtbl_block_cases
 from d810.hexrays.mutation.cfg_verify import log_block_info
 from d810.hexrays.mutation.cfg_mutations import make_2way_block_goto
+from d810.hexrays.mutation.cfg_mutations import make_nway_block_goto
 from d810.hexrays.mutation.cfg_mutations import mba_deep_cleaning
 from d810.hexrays.mutation.cfg_verify import safe_verify
 from d810.hexrays.mutation.cfg_verify import snapshot_block_for_capture
@@ -10035,6 +10036,12 @@ class DeferredGraphModifier:
             tail = copy_blk.tail
             if tail is not None and tail.opcode == ida_hexrays.m_jtbl:
                 return convert_jtbl_to_goto(copy_blk, mod.new_target, self.mba)
+            if copy_blk.nsucc() > 2:
+                return make_nway_block_goto(
+                    copy_blk,
+                    mod.new_target,
+                    verify=False,
+                )
             if copy_blk.nsucc() != 2:
                 return False
             return make_2way_block_goto(
@@ -11427,6 +11434,8 @@ class DeferredGraphModifier:
             return convert_jtbl_to_goto(blk, goto_target, self.mba)
         if blk.nsucc() == 0:
             return change_0way_block_successor(blk, goto_target, verify=False)
+        if blk.nsucc() > 2:
+            return make_nway_block_goto(blk, goto_target, verify=False)
         if blk.nsucc() != 2:
             return False
         return make_2way_block_goto(blk, goto_target, verify=False)
@@ -17923,6 +17932,8 @@ class ImmediateGraphModifier:
             return convert_jtbl_to_goto(blk, goto_target, self.mba)
         if blk.nsucc() == 0:
             return change_0way_block_successor(blk, goto_target, verify=False)
+        if blk.nsucc() > 2:
+            return make_nway_block_goto(blk, goto_target, verify=False)
         if blk.nsucc() != 2:
             return False
         return make_2way_block_goto(blk, goto_target, verify=False)

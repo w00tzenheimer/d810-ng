@@ -4286,6 +4286,137 @@ def test_convert_to_goto_routes_nway_jtbl_through_specialized_converter(
     assert calls == [(block, 13, mba), (block, 13, mba), (block, 13, mba)]
 
 
+def test_convert_to_goto_collapses_generic_nway_cfg_and_cleans_all_old_edges(
+    monkeypatch,
+) -> None:
+    """A proven target can collapse a non-table N-way CFG source.
+
+    This is intentionally a synthetic microcode fixture.  Native ``switch``
+    constructs decode as ``m_jtbl`` and already exercise the specialized
+    converter above.  The generic helper must also correctly lower an N-way
+    topology whose terminal is not a jump table, including reverse-edge
+    cleanup for *every* discarded successor.
+    """
+
+    mba = _FakeMBA()
+    source = _FakeBlock(7, start=0x401700)
+    source.mba = mba
+    source.type = ida_hexrays.BLT_NWAY
+    source.tail = SimpleNamespace(opcode=ida_hexrays.m_ijmp, ea=0x4017AA)
+    source.succset = _FakeEdgeSet([10, 11, 12])
+    source.nsucc = source.succset.size  # type: ignore[assignment]
+    targets = [_FakeBlock(serial, start=0x402000 + serial) for serial in (10, 11, 12)]
+    for target in targets:
+        target.mba = mba
+        target.predset = _FakeEdgeSet([source.serial])
+    mba.blocks = {source.serial: source, **{target.serial: target for target in targets}}
+    mba.qty = 13
+    inserted: list[tuple[int, int, bool]] = []
+
+    def _insert_goto(block, target_serial, *, nop_previous_instruction, **_kwargs):
+        inserted.append((int(block.serial), int(target_serial), bool(nop_previous_instruction)))
+        block.tail = SimpleNamespace(
+            opcode=ida_hexrays.m_goto,
+            ea=0x4017AA,
+            l=SimpleNamespace(t=ida_hexrays.mop_b, b=int(target_serial)),
+            d=None,
+            r=None,
+        )
+
+    monkeypatch.setattr(cfg_mutations, "insert_goto_instruction", _insert_goto)
+
+    assert dm.DeferredGraphModifier(mba)._apply_convert_to_goto(source, 11)
+    assert inserted == [(7, 11, True)]
+    assert source.tail.opcode == ida_hexrays.m_goto
+    assert source.type == ida_hexrays.BLT_1WAY
+    assert source.flags & ida_hexrays.MBL_GOTO
+    assert tuple(source.succset) == (11,)
+    assert tuple(targets[0].predset) == ()
+    assert tuple(targets[1].predset) == (7,)
+    assert tuple(targets[2].predset) == ()
+    assert mba.marked_dirty == 1
+
+
+@pytest.mark.parametrize(
+    ("successors", "target_serial", "should_lower"),
+    [([10], 10, False), ([10, 11], 11, True)],
+)
+def test_make_nway_block_goto_requires_multiple_successors_and_supports_two(
+    monkeypatch,
+    successors: list[int],
+    target_serial: int,
+    should_lower: bool,
+) -> None:
+    """The generic lowerer has the same >=2-successor contract as upstream."""
+
+    mba = _FakeMBA()
+    source = _FakeBlock(7)
+    source.mba = mba
+    source.succset = _FakeEdgeSet(successors)
+    source.nsucc = source.succset.size  # type: ignore[assignment]
+    targets = [_FakeBlock(serial) for serial in successors]
+    for target in targets:
+        target.mba = mba
+        target.predset = _FakeEdgeSet([source.serial])
+    mba.blocks = {source.serial: source, **{target.serial: target for target in targets}}
+    mba.qty = 13
+    inserted: list[int] = []
+
+    def _insert_goto(_block, target, **_kwargs):
+        inserted.append(int(target))
+
+    monkeypatch.setattr(cfg_mutations, "insert_goto_instruction", _insert_goto)
+
+    assert (
+        cfg_mutations.make_nway_block_goto(source, target_serial, verify=False)
+        is should_lower
+    )
+    assert inserted == ([target_serial] if should_lower else [])
+    if should_lower:
+        assert tuple(source.succset) == (target_serial,)
+        assert tuple(targets[0].predset) == ()
+        assert tuple(targets[1].predset) == (source.serial,)
+
+
+def test_convert_to_goto_routes_generic_nway_through_multiway_converter(
+    monkeypatch,
+) -> None:
+    """All execution modes select the generic converter for non-table N-way CFG."""
+
+    mba = _FakeMBA()
+    block = SimpleNamespace(
+        serial=7,
+        mba=mba,
+        tail=SimpleNamespace(opcode=int(ida_hexrays.m_ijmp)),
+        nsucc=lambda: 3,
+    )
+    calls: list[tuple[object, int, bool]] = []
+
+    def _convert(blk, target, *, verify):
+        calls.append((blk, int(target), bool(verify)))
+        return True
+
+    monkeypatch.setattr(dm, "make_nway_block_goto", _convert)
+    monkeypatch.setattr(
+        dm,
+        "make_2way_block_goto",
+        lambda *_args, **_kwargs: pytest.fail("N-way CFG must not use 2-way lowering"),
+    )
+
+    deferred = dm.DeferredGraphModifier(mba)
+    assert deferred._apply_convert_to_goto(block, 13)
+    assert dm.ImmediateGraphModifier(mba)._apply_convert_to_goto(block, 13)
+    assert deferred._apply_destructive_on_copy(
+        block,
+        dm.QueuedModification(
+            mod_type=dm.ModificationType.BLOCK_CONVERT_TO_GOTO,
+            block_serial=7,
+            new_target=13,
+        ),
+    )
+    assert calls == [(block, 13, False), (block, 13, False), (block, 13, False)]
+
+
 class TestStagedAtomicPendingRewire:
     """Data contract for the _StagedPendingRewire record."""
 
