@@ -99,19 +99,20 @@ def state_machine_cff_options_from_config(
 ) -> StateMachineCffOptions:
     """Read strict public state-machine options from config-v2."""
     if config.pass_id not in STATE_MACHINE_NATIVE_PASS_IDS:
-        raise PipelineConfigError(
-            f"{config.pass_id!r} is not a state-machine CFF pass"
-        )
+        raise PipelineConfigError(f"{config.pass_id!r} is not a state-machine CFF pass")
     unknown = tuple(
         sorted(
             set(config.options)
-            - {"min_state_constant", "family", "recovery_strategy"}
+            - {
+                "min_state_constant",
+                "family",
+                "recovery_strategy",
+                "native_cfg_persistence",
+            }
         )
     )
     if unknown:
-        raise PipelineConfigError(
-            f"state-CFF has unknown options: {list(unknown)}"
-        )
+        raise PipelineConfigError(f"state-CFF has unknown options: {list(unknown)}")
     value = config.options.get("min_state_constant", MIN_STATE_CONSTANT)
     return StateMachineCffOptions(
         min_state_constant=_validated_min_state_constant(value),
@@ -137,9 +138,7 @@ def replace_state_machine_cff_options(
 ) -> PipelineConfig:
     """Replace public state-machine options using the strict typed shape."""
     if config.pass_id not in STATE_MACHINE_NATIVE_PASS_IDS:
-        raise PipelineConfigError(
-            f"{config.pass_id!r} is not a state-machine CFF pass"
-        )
+        raise PipelineConfigError(f"{config.pass_id!r} is not a state-machine CFF pass")
     normalized = StateMachineCffOptions(
         min_state_constant=options.min_state_constant,
         family=options.family,

@@ -121,12 +121,14 @@ from d810.backends.hexrays.evidence.machine_engines_capability import (
 from d810.capabilities.machine_engines import MachineRecoveryEnginesCapability
 from d810.backends.hexrays.lifter import lift_function
 from d810.backends.hexrays.mutation.backend import HexRaysMutationBackend
+from d810.backends.hexrays.native_cfg_state import HexRaysNativeEdgeStateProof
 from d810.capabilities.frontend_normalization import (
     FrontendNormalizationEvidenceCapability,
     FrontendNormalizationPlanCapability,
     FrontendNormalizationPreparedBodyCapability,
 )
 from d810.capabilities.resolver import CapabilitySet
+from d810.capabilities.native_cfg_normalization import NativeEdgeStateProofCapability
 from d810.capabilities.semantic_routes import (
     CanonicalSemanticCandidateEvidenceCapability,
     CanonicalSemanticEvidenceCapability,
@@ -3683,6 +3685,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         cap_instances = {
             ValRangeCapability: HexRaysValRangeCapability(mba),
             UseDefSafetyCapability: HexRaysUseDefSafetyBackend(),
+            NativeEdgeStateProofCapability: HexRaysNativeEdgeStateProof(mba),
         }
         # Concolic precision oracle (M3 slice 1, llr-11du): the prove-exact-or-abstain
         # block emulator switch/indirect next-state folds consume. ADDITIVE — no standard

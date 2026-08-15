@@ -252,6 +252,16 @@ _STATE_MACHINE_EDITOR_SPEC = PassEditorSpec.fields_editor(
             choices=("family", "reduced-product"),
             default=StateMachineCffOptions().recovery_strategy.value,
         ),
+        FieldEditorSpec(
+            field_id="native_cfg_persistence",
+            label="Persist native CFG",
+            path=("native_cfg_persistence",),
+            control=FieldControlKind.BOOLEAN,
+            description=(
+                "Request fail-closed Stage C persistence for pass-owned CFG edges."
+            ),
+            default=False,
+        ),
     )
 )
 
@@ -282,10 +292,17 @@ def state_machine_pass_spec(
 def register_state_machine_passes(registry: PassRegistry) -> PassRegistry:
     """Register the canonical state-machine CFF pass factories."""
     for spec in standard_state_machine_passes():
+
         def build(config, *, factory=spec.pass_factory):
             options = state_machine_cff_options_from_config(config)
             if factory is RecoverDispatcher:
                 return factory(options=options)
+            if factory is LowerStateMachine:
+                return factory(
+                    native_cfg_persistence=(
+                        config.options.get("native_cfg_persistence") is True
+                    )
+                )
             return factory()
 
         registry.register_configured(

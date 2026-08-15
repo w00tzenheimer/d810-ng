@@ -1,0 +1,168 @@
+"""Fail-closed machine-state proofs for native CFG edge relinking."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import pytest
+
+from d810.backends.hexrays.native_cfg_state import HexRaysNativeEdgeStateProof
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot
+
+pytestmark = pytest.mark.pure_python
+
+
+class _List:
+    def __init__(self, *tokens: str) -> None:
+        self.tokens = frozenset(tokens)
+
+    def has_common(self, other: "_List") -> bool:
+        return bool(self.tokens & other.tokens)
+
+    def empty(self) -> bool:
+        return not self.tokens
+
+    def dstr(self) -> str:
+        return ",".join(sorted(self.tokens))
+
+
+@dataclass
+class _LiveBlock:
+    maybuse: _List
+    maybdef: _List
+
+    def make_lists_ready(self) -> None:
+        return None
+
+
+class _Mba:
+    entry_ea = 0x1000
+
+    def __init__(self, blocks: dict[int, _LiveBlock]) -> None:
+        self.blocks = blocks
+
+    def get_mblock(self, serial: int):
+        return self.blocks.get(serial)
+
+
+def _block(
+    serial: int,
+    successors: tuple[int, ...],
+    ea: int,
+    *,
+    kind: InsnKind,
+) -> BlockSnapshot:
+    return BlockSnapshot(
+        serial=serial,
+        block_type=1,
+        succs=successors,
+        preds=(),
+        flags=0,
+        start_ea=ea,
+        native_start_ea=ea,
+        insn_snapshots=(
+            InsnSnapshot(
+                opcode=1,
+                ea=ea,
+                native_ea=ea,
+                operands=(),
+                kind=kind,
+            ),
+        ),
+    )
+
+
+def _graph(corridor_kind: InsnKind = InsnKind.MOV) -> FlowGraph:
+    return FlowGraph(
+        blocks={
+            0: _block(0, (1,), 0x1000, kind=InsnKind.GOTO),
+            1: _block(1, (2,), 0x1010, kind=corridor_kind),
+            2: _block(2, (), 0x1020, kind=InsnKind.RET),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+
+
+def _provider(
+    *,
+    corridor_defs: tuple[str, ...] = ("dispatcher-state",),
+    target_uses: tuple[str, ...] = ("r0",),
+    source_spd: int = 0,
+    target_spd: int = 0,
+    target_reads_flags: bool = False,
+) -> HexRaysNativeEdgeStateProof:
+    mba = _Mba(
+        {
+            0: _LiveBlock(_List(), _List()),
+            1: _LiveBlock(_List(), _List(*corridor_defs)),
+            2: _LiveBlock(_List(*target_uses), _List()),
+        }
+    )
+    spd_by_ea = {0x1000: source_spd, 0x1020: target_spd}
+    return HexRaysNativeEdgeStateProof(
+        mba,
+        stack_delta_for_ea=lambda ea: spd_by_ea.get(ea),
+        target_reads_flags=lambda ea: target_reads_flags,
+    )
+
+
+def _prove(provider, graph=None):
+    return provider.prove_edge_transition(
+        graph=_graph() if graph is None else graph,
+        source_block=0,
+        inherited_successors=(1,),
+        final_successors=(2,),
+        semantic_proof_ids=("semantic-route-7",),
+    )
+
+
+def test_dead_dispatcher_state_definition_receives_positive_contract() -> None:
+    contract = _prove(_provider())
+
+    assert contract is not None
+    assert contract.permits_control_only_relink is True
+    assert "semantic-route-7" in contract.proof_ids
+    assert contract.unpersisted_body_effects == contract.proven_dead_body_effects
+    assert contract.required_target_inputs == contract.proven_equivalent_inputs
+
+
+@pytest.mark.parametrize(
+    "provider",
+    (
+        _provider(corridor_defs=("r0",)),
+        _provider(source_spd=0, target_spd=8),
+        _provider(target_reads_flags=True),
+    ),
+)
+def test_live_definition_stack_or_flags_abstain(provider) -> None:
+    assert _prove(provider) is None
+
+
+@pytest.mark.parametrize("kind", (InsnKind.CALL, InsnKind.STORE, InsnKind.UNKNOWN))
+def test_observable_or_unresolved_corridor_effect_abstains(kind: InsnKind) -> None:
+    assert _prove(_provider(), _graph(kind)) is None
+
+
+def test_existing_selected_edge_needs_no_bypassed_corridor() -> None:
+    original = _graph()
+    graph = FlowGraph(
+        blocks={
+            **original.blocks,
+            0: _block(0, (1, 2), 0x1000, kind=InsnKind.COND_JUMP),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    provider = _provider(corridor_defs=("r0",))
+
+    contract = provider.prove_edge_transition(
+        graph=graph,
+        source_block=0,
+        inherited_successors=(1, 2),
+        final_successors=(2,),
+        semantic_proof_ids=("opaque-predicate",),
+    )
+
+    assert contract is not None
+    assert contract.permits_control_only_relink is True

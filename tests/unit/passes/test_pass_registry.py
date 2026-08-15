@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 from d810.core.deobfuscation_case import StrategyWorkflowStage
@@ -104,6 +106,18 @@ def test_state_machine_registry_builds_typed_threshold_into_recovery_pass():
 
     recovery_pass = spec.pass_factory()
     assert recovery_pass.options == StateMachineCffOptions(min_state_constant=0x8000)
+
+
+def test_lower_state_machine_exact_opt_in_reaches_pass_and_spec() -> None:
+    registry = state_machine_pass_registry()
+    template = registry.config_template_for("lower_state_machine")
+
+    spec = registry.build_spec(
+        dataclasses.replace(template, options={"native_cfg_persistence": True})
+    )
+
+    assert spec.options["native_cfg_persistence"] is True
+    assert spec.pass_factory().native_cfg_persistence is True
 
 
 def test_registry_build_spec_preserves_native_pass_contract():

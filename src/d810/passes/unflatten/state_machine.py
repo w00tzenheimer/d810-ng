@@ -114,6 +114,7 @@ from d810.ir.maturity import MaturityEnvelope
 from d810.capabilities.branch_witness import BranchWitnessCapability
 from d810.capabilities.value_range import ValRangeCapability
 from d810.capabilities.use_def_safety import UseDefSafetyCapability
+from d810.capabilities.native_cfg_normalization import NativeEdgeStateProofCapability
 from d810.capabilities.machine_engines import MachineRecoveryEnginesCapability
 from d810.capabilities.semantic_routes import (
     CanonicalSemanticCandidateEvidenceCapability,
@@ -131,12 +132,95 @@ from d810.core.observability_preanalysis import (
     observe_state_dispatcher_rows,
     observe_unflatten_dispatcher_corridor_coverage,
 )
+from d810.transforms.native_cfg_normalization import ObservedEdgeStateContract
+from d810.transforms.plan import (
+    PatchConvertToGoto,
+    PatchPlan,
+    PatchRedirectBranch,
+    PatchRedirectGoto,
+)
 
 logger = logging.getLogger("d810.passes.unflatten.state_machine")
 
 LOWER_STATE_MACHINE_PLAN_METADATA = "lower_state_machine_plan_metadata"
 CANONICAL_SEMANTIC_EVIDENCE = "canonical_semantic_evidence"
 BOUND_CANONICAL_SEMANTIC_EVIDENCE = "bound_canonical_semantic_evidence"
+
+
+def native_cfg_edge_contracts_for_plan(
+    context: FunctionPipelineContext,
+    plan: PatchPlan,
+) -> tuple[ObservedEdgeStateContract, ...]:
+    """Publish all-or-nothing native state proofs for an edge-only plan."""
+    proof_capability = context.capabilities.optional(NativeEdgeStateProofCapability)
+    if proof_capability is None or plan.new_blocks or not plan.steps:
+        return ()
+    coordinates = dict(plan.source_coordinates)
+    edge_shapes: list[tuple[int, tuple[int, ...], tuple[int, ...], str]] = []
+    seen_sources: set[int] = set()
+    for ordinal, step in enumerate(plan.steps):
+        source_ref = None
+        if isinstance(step, PatchConvertToGoto):
+            source_ref = step.block_serial
+            target_ref = step.goto_target
+            old_target_ref = None
+        elif isinstance(step, (PatchRedirectBranch, PatchRedirectGoto)):
+            source_ref = step.from_serial
+            target_ref = step.new_target
+            old_target_ref = step.old_target
+        else:
+            return ()
+        source = coordinates.get(source_ref)
+        target = coordinates.get(target_ref)
+        old_target = None if old_target_ref is None else coordinates.get(old_target_ref)
+        if source is None or target is None:
+            return ()
+        block = context.graph.get_block(source)
+        if block is None or source in seen_sources:
+            return ()
+        inherited = tuple(block.succs)
+        if isinstance(step, PatchConvertToGoto):
+            final = (target,)
+        else:
+            if old_target is None or inherited.count(old_target) != 1:
+                return ()
+            final_values = list(inherited)
+            final_values[final_values.index(old_target)] = target
+            final = tuple(final_values)
+        if inherited == final or target not in context.graph.blocks:
+            return ()
+        seen_sources.add(source)
+        semantic_proof_id = (
+            f"lower_state_machine:{plan.plan_id}:edge:{ordinal}:"
+            f"{source}:{','.join(map(str, inherited))}:"
+            f"{','.join(map(str, final))}"
+        )
+        edge_shapes.append((source, inherited, final, semantic_proof_id))
+
+    contracts: list[ObservedEdgeStateContract] = []
+    for source, inherited, final, semantic_proof_id in edge_shapes:
+        contract = proof_capability.prove_edge_transition(
+            graph=context.graph,
+            source_block=source,
+            inherited_successors=inherited,
+            final_successors=final,
+            semantic_proof_ids=(semantic_proof_id,),
+        )
+        if (
+            contract is None
+            or not contract.permits_control_only_relink
+            or semantic_proof_id not in contract.proof_ids
+        ):
+            return ()
+        contracts.append(
+            ObservedEdgeStateContract(
+                source_block=source,
+                inherited_successors=inherited,
+                final_successors=final,
+                contract=contract,
+            )
+        )
+    return tuple(contracts)
 
 
 def _current_graph_identity_authority(
@@ -1416,9 +1500,7 @@ def _compose_configured_reference_scope_plan(
                 rejection = CanonicalSemanticFragmentRejected(
                     "detached canonical route lacks receipt-backed prepared topology",
                     reason_code="prepared_normalization_topology_missing",
-                    anchor_ea=int(
-                        detached_direct_plan.source_block.semantic_anchor_ea
-                    ),
+                    anchor_ea=int(detached_direct_plan.source_block.semantic_anchor_ea),
                     payload={
                         "source_block_id": detached_direct_plan.source_block.block_id,
                         "source_plan_id": normalization_plan.plan_id,
@@ -1550,18 +1632,14 @@ def _compose_configured_reference_scope_plan(
                 for prepared_work_item in prepared_work_items:
                     for prepared_body in prepared_work_item.prepared_bodies.bodies:
                         for prepared_block in prepared_body.blocks:
-                            previous = prepared_block_facts.get(
-                                prepared_block.block_id
-                            )
+                            previous = prepared_block_facts.get(prepared_block.block_id)
                             if previous is not None and previous != prepared_block:
                                 raise CanonicalSemanticFragmentRejected(
                                     "prepared topology block fact differs across receipts",
                                     reason_code=(
                                         "prepared_topology_block_fact_receipt_drift"
                                     ),
-                                    anchor_ea=int(
-                                        prepared_block.semantic_anchor_ea
-                                    ),
+                                    anchor_ea=int(prepared_block.semantic_anchor_ea),
                                     payload={
                                         "block_id": prepared_block.block_id,
                                     },
@@ -2178,6 +2256,7 @@ class LowerStateMachine(PipelinePass):
     resolvers: tuple = field(default_factory=default_resolvers)
     configured_kind: RouterKind | None = None
     configured_table_provenance: TableProvenance | None = None
+    native_cfg_persistence: bool = False
 
     def _resolve_router(self, recovery, range_evidence, dispatcher_entry: int | None):
         """Adapt the recovered evidence into a router via the injectable chain.
@@ -2611,6 +2690,11 @@ class LowerStateMachine(PipelinePass):
             return PassResult(
                 facts=(PassFact("recovered_cfg_edge", plan_metadata),),
                 rewrite_plan=plan,
+                native_cfg_edge_contracts=(
+                    native_cfg_edge_contracts_for_plan(context, plan)
+                    if self.native_cfg_persistence
+                    else ()
+                ),
                 preserved=PreservedAnalyses.none(),
                 analysis_outputs={LOWER_STATE_MACHINE_PLAN_METADATA: plan_metadata},
             )
@@ -2634,6 +2718,11 @@ class LowerStateMachine(PipelinePass):
         return PassResult(
             facts=(PassFact("recovered_cfg_edge", {}),),
             rewrite_plan=plan,
+            native_cfg_edge_contracts=(
+                native_cfg_edge_contracts_for_plan(context, plan)
+                if self.native_cfg_persistence
+                else ()
+            ),
             preserved=PreservedAnalyses.none(),
             analysis_outputs={LOWER_STATE_MACHINE_PLAN_METADATA: {}},
         )
