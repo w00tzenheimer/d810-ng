@@ -1030,6 +1030,46 @@ def test_unresolved_conditional_lowering_is_rejected_before_mutation() -> None:
     assert "conditional state lowering" in str(backend.last_patch_failure)
 
 
+def test_preflight_rejects_redirect_that_strands_reachable_call_block() -> None:
+    """A cleanup redirect may not discard an executable call block."""
+    base_cfg = _make_cfg([(0, 1), (1, 2)])
+    call_block = replace(
+        base_cfg.blocks[1],
+        insn_snapshots=(
+            InsnSnapshot(
+                opcode=0,
+                ea=0x1001,
+                operands=(),
+                kind=InsnKind.CALL,
+            ),
+        ),
+    )
+    cfg = FlowGraph(
+        blocks={**base_cfg.blocks, 1: call_block},
+        entry_serial=base_cfg.entry_serial,
+        func_ea=base_cfg.func_ea,
+    )
+    plan = _ordinary_plan(
+        PatchRedirectGoto,
+        serials=(0, 1),
+        from_serial=0,
+        old_target=1,
+        new_target=0,
+    )
+    translator = _FakeTranslator(cfg)
+    backend = HexRaysMutationBackend(
+        mutation_gateway=_ordinary_gateway(cfg, plan),
+        translator=translator,
+    )
+
+    result = backend.apply(plan, live_source=SimpleNamespace(qty=cfg.num_blocks))
+
+    assert result is cfg
+    assert translator.lower_calls == []
+    assert isinstance(backend.last_patch_failure, PatchTransactionPreflightRejected)
+    assert "effectful" in str(backend.last_patch_failure)
+
+
 def test_conditional_lowering_coordinate_outside_snapshot_is_rejected_cleanly() -> None:
     """A present but unresolvable coordinate cannot leak a raw projection error."""
     cfg = _make_cfg(
@@ -2027,6 +2067,53 @@ def test_backend_poisons_when_observed_graph_collapses_entry_reachability() -> N
         == "runtime:post_observation_contract"
     )
     assert lifecycle_state.has_pending_generated_restart
+    assert backend.last_patch_execution is None
+
+
+def test_backend_poisons_when_observed_graph_strands_reachable_call() -> None:
+    """Post-apply observation independently preserves executable call blocks."""
+    pre_cfg = _make_cfg([(0, 1), (1, 2)])
+    pre_cfg = replace(
+        pre_cfg,
+        blocks={
+            **pre_cfg.blocks,
+            1: replace(
+                pre_cfg.blocks[1],
+                insn_snapshots=(
+                    InsnSnapshot(
+                        opcode=0,
+                        ea=0x1001,
+                        operands=(),
+                        kind=InsnKind.CALL,
+                        is_call=True,
+                    ),
+                ),
+            ),
+        },
+    )
+    observed_cfg = _make_cfg([(0, 0), (1, 2)])
+    plan = _ordinary_plan(
+        PatchConvertToGoto,
+        serials=(0, 1),
+        block_serial=0,
+        goto_target=1,
+    )
+
+    class _StrandingTranslator(_FakeTranslator):
+        def lift(self, _live_source: object) -> FlowGraph:
+            self.lift_count += 1
+            return observed_cfg if self.lower_calls else pre_cfg
+
+    gateway = _ordinary_gateway(pre_cfg, plan)
+    backend = HexRaysMutationBackend(
+        mutation_gateway=gateway,
+        translator=_StrandingTranslator(pre_cfg),
+    )
+
+    with pytest.raises(CfgGenerationPoisoned):
+        backend.apply(plan, live_source=SimpleNamespace(qty=pre_cfg.num_blocks))
+
+    assert gateway.generation_poisoned
     assert backend.last_patch_execution is None
 
 

@@ -10,6 +10,7 @@ from d810.analyses.control_flow.graph_checks import (
     TerminalSinkResult,
     check_entry_reachability_counts_not_collapsed,
     check_entry_reachability_not_collapsed,
+    check_effectful_reachability_preserved,
     check_terminal_reachability_preserved,
     detect_terminal_cycles,
     prove_terminal_sink,
@@ -18,7 +19,7 @@ from d810.analyses.control_flow.graph_checks import (
     SemanticGate,
     check_edge_split_structural_legality,
 )
-from d810.ir.flowgraph import BlockKind, BlockSnapshot, FlowGraph
+from d810.ir.flowgraph import BlockKind, BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot
 
 
 def _make_adj(edges: list[tuple[int, int]]) -> dict[int, list[int]]:
@@ -37,6 +38,7 @@ def _make_block(
     *,
     kind: BlockKind | None = None,
     start_ea: int | None = None,
+    insns: tuple[InsnSnapshot, ...] = (),
 ) -> BlockSnapshot:
     return BlockSnapshot(
         serial=serial,
@@ -45,7 +47,7 @@ def _make_block(
         preds=preds,
         flags=0,
         start_ea=0x1000 + serial if start_ea is None else start_ea,
-        insn_snapshots=(),
+        insn_snapshots=insns,
         kind=kind
         or (
             BlockKind.TWO_WAY
@@ -381,6 +383,82 @@ class TestEntryReachabilityPreservation:
         assert result.passed
         assert result.pre_reachable_count == 26
         assert result.post_reachable_count == 14
+
+
+class TestEffectfulReachabilityPreservation:
+    def test_rejects_redirect_that_strands_reachable_call_block(self):
+        call = InsnSnapshot(
+            opcode=0,
+            ea=0x1001,
+            operands=(),
+            kind=InsnKind.CALL,
+        )
+        cfg = FlowGraph(
+            blocks={
+                0: _make_block(0, (1,), (), start_ea=0x1000),
+                1: _make_block(1, (2,), (0,), start_ea=0x1001, insns=(call,)),
+                2: _make_block(2, (), (1,), start_ea=0x1002),
+            },
+            entry_serial=0,
+            func_ea=0x1000,
+        )
+        post_adj = {0: [0], 1: [2], 2: []}
+
+        result = check_effectful_reachability_preserved(cfg, post_adj=post_adj)
+
+        assert not result.passed
+        assert result.lost_block_serials == frozenset({1})
+        assert result.reason == "reachable effectful blocks became unreachable"
+
+    def test_allows_redirect_that_strands_effect_free_register_write(self):
+        move = InsnSnapshot(
+            opcode=0,
+            ea=0x1001,
+            operands=(),
+            kind=InsnKind.MOV,
+        )
+        cfg = FlowGraph(
+            blocks={
+                0: _make_block(0, (1,), (), start_ea=0x1000),
+                1: _make_block(1, (2,), (0,), start_ea=0x1001, insns=(move,)),
+                2: _make_block(2, (), (1,), start_ea=0x1002),
+            },
+            entry_serial=0,
+            func_ea=0x1000,
+        )
+
+        result = check_effectful_reachability_preserved(
+            cfg,
+            post_adj={0: [0], 1: [2], 2: []},
+        )
+
+        assert result.passed
+        assert result.pre_effectful_block_serials == frozenset()
+
+    def test_rejects_redirect_that_strands_reachable_store_block(self):
+        store = InsnSnapshot(
+            opcode=0,
+            ea=0x1001,
+            operands=(),
+            kind=InsnKind.STORE,
+        )
+        cfg = FlowGraph(
+            blocks={
+                0: _make_block(0, (1,), (), start_ea=0x1000),
+                1: _make_block(1, (2,), (0,), start_ea=0x1001, insns=(store,)),
+                2: _make_block(2, (), (1,), start_ea=0x1002),
+            },
+            entry_serial=0,
+            func_ea=0x1000,
+        )
+
+        result = check_effectful_reachability_preserved(
+            cfg,
+            post_adj={0: [0], 1: [2], 2: []},
+        )
+
+        assert not result.passed
+        assert result.lost_block_serials == frozenset({1})
 
 
 class TestPreflightCycleRejection:

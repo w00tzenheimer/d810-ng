@@ -178,6 +178,13 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         # If a rewrite produces an instruction whose hash was already seen for
         # that EA, we have a cycle (Rule A: X->Y, Rule B: Y->X) and break it.
         self._rewrite_seen: dict[int, set[int]] = defaultdict(set)
+        # A repeated post-rewrite form identifies the rule which produced it.
+        # Quarantine that producer for this function/maturity/instruction site;
+        # merely refusing one duplicate replacement leaves Hex-Rays free to
+        # invoke the same expensive rule again on the next callback.
+        self._cycle_quarantined_rule_names: dict[
+            tuple[int, int, int], set[str]
+        ] = defaultdict(set)
 
         # Optional event emitter - set by D810Manager after construction to
         # allow emitting DecompilationEvent.MATURITY_CHANGED events.
@@ -310,6 +317,9 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         manager) and on maturity change (in log_info_on_input).
         """
         self._rewrite_seen.clear()
+        quarantined_by_site = getattr(self, "_cycle_quarantined_rule_names", None)
+        if quarantined_by_site is not None:
+            quarantined_by_site.clear()
 
     def reset_run_later_state(self) -> None:
         self._scheduled_stage_identities = frozenset()
@@ -1062,8 +1072,29 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         # optimizer_log.info("Trying to optimize {0}".format(format_minsn_t(ins)))
         allowed_rule_names = self._resolve_active_instruction_rule_names(blk)
         scheduled_rule_names = self._scheduled_implementation_names
+        try:
+            func_ea = int(getattr(getattr(blk, "mba", None), "entry_ea", 0) or 0)
+        except Exception:
+            func_ea = 0
+        try:
+            maturity = int(
+                getattr(getattr(blk, "mba", None), "maturity", self.current_maturity)
+            )
+        except (TypeError, ValueError):
+            maturity = int(self.current_maturity or -1)
+        site_key = (func_ea, maturity, int(getattr(ins, "ea", 0) or 0))
+        quarantined_rule_names = frozenset(
+            getattr(self, "_cycle_quarantined_rule_names", {}).get(site_key, ())
+        )
         for ins_optimizer in self._active_optimizers:
             self._last_optimizer_tried = ins_optimizer
+            set_quarantine = getattr(
+                ins_optimizer,
+                "set_cycle_quarantined_rule_names",
+                None,
+            )
+            if callable(set_quarantine):
+                set_quarantine(quarantined_rule_names)
             new_ins = ins_optimizer.get_optimized_instruction(
                 blk,
                 ins,
@@ -1137,11 +1168,35 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                         # rewritten to this exact form.  Undo the swap and
                         # refuse the rewrite to break the cycle.
                         ins.swap(new_ins)  # undo
+                        producer_rule_name = getattr(
+                            ins_optimizer,
+                            "last_matched_rule_name",
+                            None,
+                        )
+                        if producer_rule_name:
+                            quarantined_by_site = getattr(
+                                self,
+                                "_cycle_quarantined_rule_names",
+                                None,
+                            )
+                            if quarantined_by_site is None:
+                                quarantined_by_site = defaultdict(set)
+                                self._cycle_quarantined_rule_names = (
+                                    quarantined_by_site
+                                )
+                            quarantined_by_site[site_key].add(
+                                str(producer_rule_name)
+                            )
                         optimizer_logger.warning(
-                            "Cycle detected for instruction at %s by %s -- "
-                            "breaking rewrite loop",
+                            "Cycle detected for instruction at %s by %s%s -- "
+                            "quarantining producer for this maturity",
                             hex(ins_key),
                             ins_optimizer.name,
+                            (
+                                f"/{producer_rule_name}"
+                                if producer_rule_name
+                                else ""
+                            ),
                         )
                         if self.stats is not None:
                             self.stats.record_cycle_detected(

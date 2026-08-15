@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 
 from d810.analyses.control_flow.graph_checks import (
     check_entry_reachability_not_collapsed,
+    check_effectful_reachability_preserved,
     check_terminal_reachability_preserved,
 )
 from d810.ir.flowgraph import FlowGraph
@@ -346,6 +347,10 @@ class HexRaysPatchTransactionParticipant:
             snapshot,
             post_adj=projection.graph.as_adjacency_dict(),
         )
+        effectful_reachability = check_effectful_reachability_preserved(
+            snapshot,
+            post_adj=projection.graph.as_adjacency_dict(),
+        )
         entry_reachability = check_entry_reachability_not_collapsed(
             snapshot,
             post_adj=projection.graph.as_adjacency_dict(),
@@ -426,9 +431,20 @@ class HexRaysPatchTransactionParticipant:
             projected_coverage_validation is not None
             and not projected_coverage_validation.passed
         )
-        if not terminal_reachability.passed or (
+        if not terminal_reachability.passed or not effectful_reachability.passed or (
             not entry_reachability.passed and not entry_allowance_passed
         ) or dispatcher_removal_rejected or projected_coverage_rejected:
+            effectful_detail = ""
+            if not effectful_reachability.passed:
+                effectful_lost = ", ".join(
+                    f"blk{serial}@0x{int(snapshot.blocks[serial].start_ea):x}"
+                    for serial in sorted(effectful_reachability.lost_block_serials)
+                    if serial in snapshot.blocks
+                )
+                effectful_detail = (
+                    f"effectful={effectful_reachability.reason}"
+                    f"; lost={effectful_lost}; "
+                )
             dispatcher_removal_detail = (
                 ""
                 if entry_allowance_reason is None
@@ -445,6 +461,7 @@ class HexRaysPatchTransactionParticipant:
             raise PatchTransactionPreflightRejected(
                 "projected reachability rejected: "
                 f"terminal={terminal_reachability.reason}; "
+                f"{effectful_detail}"
                 f"entry={entry_reachability.reason}"
                 f"{dispatcher_removal_detail}",
                 projected_dispatcher_removal_validation=entry_allowance,
@@ -637,6 +654,10 @@ class _PatchTransactionLifecycle:
             source,
             post_cfg=observed_validation_graph,
         )
+        effectful_reachability = check_effectful_reachability_preserved(
+            source,
+            post_cfg=observed_validation_graph,
+        )
         entry_reachability = check_entry_reachability_not_collapsed(
             source,
             post_cfg=observed_validation_graph,
@@ -722,9 +743,20 @@ class _PatchTransactionLifecycle:
             observed_coverage_validation is not None
             and not observed_coverage_validation.passed
         )
-        if not terminal_reachability.passed or (
+        if not terminal_reachability.passed or not effectful_reachability.passed or (
             not entry_reachability.passed and not entry_allowance_passed
         ) or observed_removal_rejected or observed_coverage_rejected:
+            effectful_detail = ""
+            if not effectful_reachability.passed:
+                effectful_lost = ", ".join(
+                    f"blk{serial}@0x{int(source.blocks[serial].start_ea):x}"
+                    for serial in sorted(effectful_reachability.lost_block_serials)
+                    if serial in source.blocks
+                )
+                effectful_detail = (
+                    f"effectful={effectful_reachability.reason}"
+                    f"; lost={effectful_lost}; "
+                )
             detail = (
                 ""
                 if observed_validation is None
@@ -741,6 +773,7 @@ class _PatchTransactionLifecycle:
             raise PatchTransactionPostObservationRejected(
                 "observed reachability rejected: "
                 f"terminal={terminal_reachability.reason}; "
+                f"{effectful_detail}"
                 f"entry={entry_reachability.reason}{detail}",
                 observed_dispatcher_removal_validation=observed_validation,
                 observed_dispatcher_coverage_validation=(

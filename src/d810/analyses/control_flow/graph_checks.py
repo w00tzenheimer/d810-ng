@@ -61,6 +61,17 @@ class EntryReachabilityResult:
     reason: str = ""
 
 
+@dataclass(frozen=True)
+class EffectfulReachabilityResult:
+    """Result of preserving reachable CALL/STORE-bearing blocks."""
+
+    passed: bool
+    pre_effectful_block_serials: frozenset[int]
+    post_reachable_effectful_block_serials: frozenset[int]
+    lost_block_serials: frozenset[int]
+    reason: str = ""
+
+
 def reachable_from_adjacency(
     adj: dict[int, list[int]] | dict[int, tuple[int, ...]],
     entry_serial: int,
@@ -229,6 +240,67 @@ def check_entry_reachability_counts_not_collapsed(
         retained_ratio=retained_ratio,
         min_pre_reachable=min_pre_reachable,
         min_retained_ratio=min_retained_ratio,
+    )
+
+
+def _block_has_effectful_instruction(block: object) -> bool:
+    """Whether a portable block contains an observable write or call."""
+    return any(
+        getattr(insn, "is_call", False)
+        or getattr(insn, "kind", None) in {InsnKind.CALL, InsnKind.STORE}
+        for insn in (getattr(block, "insn_snapshots", ()) or ())
+    )
+
+
+def check_effectful_reachability_preserved(
+    pre_cfg: FlowGraph,
+    *,
+    post_cfg: FlowGraph | None = None,
+    post_adj: dict[int, list[int]] | dict[int, tuple[int, ...]] | None = None,
+) -> EffectfulReachabilityResult:
+    """Reject a rewrite that strands a formerly reachable CALL/STORE block.
+
+    Dispatcher retirement may remove only control-only plumbing.  Current
+    portable proof does not model replacement execution for side effects, so a
+    CALL or STORE block is never an eligible retired block here.  This is
+    deliberately narrower than generic reachability preservation: effect-free
+    register and stack-state writes remain available for cleanup.
+    """
+    if (post_cfg is None) == (post_adj is None):
+        raise ValueError("provide exactly one of post_cfg or post_adj")
+
+    pre_reachable = reachable_from_adjacency(
+        pre_cfg.as_adjacency_dict(),
+        pre_cfg.entry_serial,
+    )
+    pre_effectful = frozenset(
+        int(serial)
+        for serial in pre_reachable
+        if _block_has_effectful_instruction(pre_cfg.get_block(int(serial)))
+    )
+    post_reachable = (
+        reachable_from_adjacency(
+            post_cfg.as_adjacency_dict(),
+            post_cfg.entry_serial,
+        )
+        if post_cfg is not None
+        else reachable_from_adjacency(post_adj or {}, pre_cfg.entry_serial)
+    )
+    retained = frozenset(pre_effectful & post_reachable)
+    lost = frozenset(pre_effectful - post_reachable)
+    if lost:
+        return EffectfulReachabilityResult(
+            passed=False,
+            pre_effectful_block_serials=pre_effectful,
+            post_reachable_effectful_block_serials=retained,
+            lost_block_serials=lost,
+            reason="reachable effectful blocks became unreachable",
+        )
+    return EffectfulReachabilityResult(
+        passed=True,
+        pre_effectful_block_serials=pre_effectful,
+        post_reachable_effectful_block_serials=retained,
+        lost_block_serials=frozenset(),
     )
 
 

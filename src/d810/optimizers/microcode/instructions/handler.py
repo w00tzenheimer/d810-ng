@@ -177,9 +177,22 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
         # Centralized statistics collector injected by the manager
         self.stats = stats
         self._run_later_callback = None
+        # The adapter populates this with the rules that closed a rewrite
+        # cycle at the current instruction site.  It is deliberately a
+        # rule-level quarantine: other rules can still simplify the same
+        # instruction after one producer has started churning.
+        self._cycle_quarantined_rule_names: frozenset[str] = frozenset()
+        self.last_matched_rule_name: str | None = None
 
     def set_run_later_callback(self, callback) -> None:
         self._run_later_callback = callback
+
+    def set_cycle_quarantined_rule_names(
+        self,
+        rule_names: frozenset[str],
+    ) -> None:
+        """Set the per-callback rule quarantine supplied by the adapter."""
+        self._cycle_quarantined_rule_names = frozenset(rule_names)
 
     def add_rule(self, rule: T_Rule) -> bool:
         """Add a rule to this optimizer if it matches RULE_CLASSES.
@@ -212,6 +225,7 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
         allowed_rule_names: frozenset[str] | None = None,
         scheduled_rule_names: frozenset[str] | None = None,
     ) -> ida_hexrays.minsn_t | None:
+        self.last_matched_rule_name = None
         # uee-b7ze causality test: when ``D810_FENCE_INSN_OPT_AT_GLBOPT1``
         # is set, suppress every instruction-level optimizer (Z3 const
         # opt, PatternOptimizer, egraph rules, etc.) at MMAT_GLBOPT1
@@ -264,6 +278,8 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
             return None
         for rule in self.rules:
             rule_name = str(rule.name)
+            if rule_name in self._cycle_quarantined_rule_names:
+                continue
             if allowed_rule_names is not None and rule_name not in allowed_rule_names:
                 continue
             if (
@@ -278,6 +294,7 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
                     if self._run_later_callback is not None:
                         self._run_later_callback(rule, self.cur_maturity)
                 if new_ins is not None:
+                    self.last_matched_rule_name = rule_name
                     if self.stats is not None:
                         # Use new API with actual rule object
                         self.stats.record_rule_fired(

@@ -785,6 +785,27 @@ OLLVM_CASES = [
 
 DAC_MASM_CASES = [
     DeobfuscationCase(
+        function="Eidolon_RunFiberWorker13",
+        description=(
+            "Live Eidolon worker-loop export. Guards the transaction preflight "
+            "against stranding the direct task, one-shot timer, or current-fiber "
+            "queue calls while dispatcher cleanup rewrites the CFG."
+        ),
+        project="eidolon_v3_const_solve.json",
+        obfuscated_contains=[
+            "0x47C3C789",
+            "Eidolon_TestAndUpdateSharedState13",
+        ],
+        deobfuscated_contains=[
+            "Eidolon_TestAndUpdateSharedState13",
+            "Eidolon_CreateOneShotWaitableTimerMilliseconds",
+            "Eidolon_QueueHandleForCurrentFiber",
+        ],
+        must_change=True,
+        required_rules=["SimpleFlatteningCleanupUnflattener"],
+        skip_if_function_absent=True,
+    ),
+    DeobfuscationCase(
         function="sub_7FF85A59E4D0",
         description=(
             "Live Eidolon state-machine export with residual effect-free "
