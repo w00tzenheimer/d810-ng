@@ -149,6 +149,7 @@ def test_structural_chain_observation_reads_the_shared_native_view(monkeypatch) 
             return None
 
     rule = Rule()
+    rule.begin_provider_outcome_capture()
     instruction = SimpleNamespace(
         d=SimpleNamespace(size=4),
         l=SimpleNamespace(t=-1),

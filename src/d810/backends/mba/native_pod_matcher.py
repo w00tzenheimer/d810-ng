@@ -45,10 +45,14 @@ if CythonMode().is_enabled():
     try:
         from d810.speedups.mba.c_native_pod_matcher import (  # type: ignore[import-not-found]
             match_pod_catalogue_trusted as _match_pod_catalogue,
-            match_pod_pattern as _match_pod_pattern,
         )
     except ImportError:
         _match_pod_catalogue = None
+    try:
+        from d810.speedups.mba.c_native_pod_matcher import (  # type: ignore[import-not-found]
+            match_pod_pattern as _match_pod_pattern,
+        )
+    except ImportError:
         _match_pod_pattern = None
 else:
     _match_pod_catalogue = None
@@ -204,7 +208,7 @@ def match_root_pod(
     """
 
     packed = PackedNativeMbaTerm.from_view(view)
-    if _match_pod_pattern is not None:
+    if _match_pod_catalogue is not None:
         accelerated = _match_cython_catalogue(
             catalogue,
             packed,
@@ -218,7 +222,7 @@ def match_root_pod(
 def matcher_backend() -> str:
     """Name the available numeric matcher backend."""
 
-    return "cython" if _match_pod_pattern is not None else "python"
+    return "cython" if _match_pod_catalogue is not None else "python"
 
 
 def _masked_u64(value: int, width: int) -> int:

@@ -115,7 +115,7 @@ class ChainSimplificationRule(InstructionOptimizationRule):
                 input_profile.operator_count,
                 input_profile.total_node_count,
             )
-            native_metadata = self._native_profile_metadata(lowering.profile)
+            native_metadata = self._native_profile_metadata(input_profile)
             if new_ins is None:
                 self._publish_provider_outcome(
                     MbaProviderOutcome(
