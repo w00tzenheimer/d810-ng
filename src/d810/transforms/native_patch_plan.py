@@ -770,6 +770,11 @@ class NativeCertificate:
     state: NativeCertificateState
     certified_at: float
     execution_safe: bool = False
+    # Stage C fills this only after a forced, optimizer-suppressed, no-cache
+    # decompile and a live whole-function flowchart recapture.  It is the
+    # observed EA-anchor quotient; ``target_cfg_fingerprint`` remains the
+    # independently frozen expected value.
+    observed_native_cfg_fingerprint: str | None = None
 
     def __post_init__(self) -> None:
         _require_identifier(self.certificate_id, "certificate_id")
@@ -816,6 +821,9 @@ def certificate_to_payload(certificate: NativeCertificate) -> dict:
         "state": certificate.state.value,
         "certified_at": certificate.certified_at,
         "execution_safe": certificate.execution_safe,
+        "observed_native_cfg_fingerprint": (
+            certificate.observed_native_cfg_fingerprint
+        ),
     }
 
 
@@ -848,4 +856,9 @@ def certificate_from_payload(payload: dict) -> NativeCertificate:
         state=NativeCertificateState(payload["state"]),
         certified_at=float(payload["certified_at"]),
         execution_safe=bool(payload["execution_safe"]),
+        observed_native_cfg_fingerprint=(
+            None
+            if payload.get("observed_native_cfg_fingerprint") is None
+            else str(payload["observed_native_cfg_fingerprint"])
+        ),
     )

@@ -119,15 +119,15 @@ def _case(kind: NativeCfgEdgeKind):
     elif kind is NativeCfgEdgeKind.FORCE_TAKEN:
         source = _insn(0x1000, 6, "jne")
         inherited_serials = (1, 2)
-        inherited_eas = (0x1020, 0x1006)
-        final_serials = (1,)
+        inherited_eas = (0x1006, 0x1020)
+        final_serials = (2,)
         final_eas = (0x1020,)
         predicate = PredicateKind.NE
     else:
         source = _insn(0x1000, 2, "jne")
         inherited_serials = (1, 2)
-        inherited_eas = (0x1020, 0x1002)
-        final_serials = (2,)
+        inherited_eas = (0x1002, 0x1020)
+        final_serials = (1,)
         final_eas = (0x1002,)
         predicate = PredicateKind.NE
     image[: source.length] = b"\x75\x00" + b"\x90" * (source.length - 2)
@@ -153,7 +153,17 @@ def _case(kind: NativeCfgEdgeKind):
     rows = {
         ((0x1000, source.end_ea),): NativeOriginDecode(
             (source,),
-            (NativeDecodedControlTransfer(source, inherited_eas, predicate),),
+            (
+                NativeDecodedControlTransfer(
+                    source,
+                    (
+                        tuple(reversed(inherited_eas))
+                        if len(inherited_eas) == 2
+                        else inherited_eas
+                    ),
+                    predicate,
+                ),
+            ),
         ),
         **{
             ((ea, ea + 1),): decode
@@ -324,8 +334,8 @@ def test_builds_two_way_retarget_with_native_fallthrough() -> None:
     intent, reader, mapper, attestation = _case(NativeCfgEdgeKind.FORCE_TAKEN)
     edge = dataclasses.replace(
         intent.edge_intents[0],
-        final_successors=(3, 2),
-        target_native_eas=(0x1030, 0x1006),
+        final_successors=(2, 3),
+        target_native_eas=(0x1006, 0x1030),
         kind=NativeCfgEdgeKind.REDIRECT,
     )
     intent = dataclasses.replace(

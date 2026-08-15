@@ -24,13 +24,18 @@ __all__ = [
     "NativeCfgEdgeKind",
     "NativeCfgFreezeOutcome",
     "NativeCfgFreezeReason",
+    "NativeCfgPostcondition",
+    "NativeCfgProjection",
     "NativeCfgNormalizationIntent",
     "NativeCfgPassMutationObservation",
     "NativeCfgTopologyFreezeOutcome",
+    "NativeFlowchartBlock",
     "ObservedEdgeStateContract",
     "bind_ctree_native_ranges",
     "cfg_fingerprint",
     "freeze_native_cfg_topology",
+    "project_target_native_cfg",
+    "validate_live_native_cfg",
 ]
 
 
@@ -179,6 +184,47 @@ class NativeCfgFreezeOutcome:
             raise ValueError("outcome must contain exactly one of intent or reason")
 
 
+@dataclass(frozen=True, slots=True)
+class NativeFlowchartBlock:
+    """One live IDA basic block, expressed without backend-owned objects."""
+
+    start_ea: int
+    end_ea: int
+    successor_eas: tuple[int, ...]
+
+    def __post_init__(self) -> None:
+        if int(self.end_ea) <= int(self.start_ea):
+            raise ValueError("native flowchart block range must be non-empty")
+        object.__setattr__(self, "start_ea", int(self.start_ea))
+        object.__setattr__(self, "end_ea", int(self.end_ea))
+        object.__setattr__(
+            self,
+            "successor_eas",
+            tuple(dict.fromkeys(int(ea) for ea in self.successor_eas)),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class NativeCfgProjection:
+    """CFG quotient keyed by stable native anchors instead of block serials."""
+
+    entry_ea: int
+    successor_eas_by_anchor: tuple[tuple[int, tuple[int, ...]], ...]
+
+    @property
+    def fingerprint(self) -> str:
+        return _hash((self.entry_ea, self.successor_eas_by_anchor))
+
+
+@dataclass(frozen=True, slots=True)
+class NativeCfgPostcondition:
+    expected: NativeCfgProjection
+    observed: NativeCfgProjection
+    live_flowchart_fingerprint: str
+    matches: bool
+    reason: str | None = None
+
+
 def _hash(value: object) -> str:
     encoded = json.dumps(value, separators=(",", ":"), ensure_ascii=True).encode()
     return hashlib.sha256(encoded).hexdigest()
@@ -208,6 +254,190 @@ def cfg_fingerprint(graph: FlowGraph) -> str:
     )
 
 
+def _reachable_serials(graph: FlowGraph) -> tuple[int, ...]:
+    pending = [int(graph.entry_serial)]
+    visited: set[int] = set()
+    while pending:
+        serial = pending.pop()
+        if serial in visited:
+            continue
+        block = graph.blocks.get(serial)
+        if block is None:
+            raise ValueError(f"missing reachable microcode block {serial}")
+        visited.add(serial)
+        pending.extend(int(target) for target in block.succs)
+    return tuple(sorted(visited))
+
+
+def project_target_native_cfg(graph: FlowGraph) -> NativeCfgProjection:
+    """Project the target microcode graph onto its stable native-EA anchors."""
+
+    reachable = _reachable_serials(graph)
+    anchors: dict[int, int] = {}
+    for serial in reachable:
+        block = graph.blocks[serial]
+        if _is_addressless_stop_sentinel(block):
+            continue
+        anchor = _block_native_anchor(block)
+        if anchor is None:
+            raise ValueError(f"reachable block {serial} has no native anchor")
+        anchors[serial] = anchor
+    if graph.entry_serial not in anchors:
+        raise ValueError("target microcode entry has no native anchor")
+    successors_by_anchor: dict[int, set[int]] = {
+        anchor: set() for anchor in anchors.values()
+    }
+    for serial, source_anchor in anchors.items():
+        for target_serial in graph.blocks[serial].succs:
+            target = graph.blocks[int(target_serial)]
+            if _is_addressless_stop_sentinel(target):
+                continue
+            target_anchor = anchors.get(int(target_serial))
+            if target_anchor is None:
+                raise ValueError(
+                    f"reachable target block {target_serial} has no native anchor"
+                )
+            # Hex-Rays may split several microblocks at the same native EA.
+            # They are one native anchor, so their internal edge collapses.
+            if target_anchor != source_anchor:
+                successors_by_anchor[source_anchor].add(target_anchor)
+    rows = tuple(
+        (anchor, tuple(sorted(targets)))
+        for anchor, targets in sorted(successors_by_anchor.items())
+    )
+    return NativeCfgProjection(
+        entry_ea=anchors[int(graph.entry_serial)],
+        successor_eas_by_anchor=rows,
+    )
+
+
+def _live_flowchart_fingerprint(blocks: tuple[NativeFlowchartBlock, ...]) -> str:
+    return _hash(
+        tuple(
+            (
+                block.start_ea,
+                block.end_ea,
+                tuple(sorted(block.successor_eas)),
+            )
+            for block in sorted(blocks, key=lambda item: item.start_ea)
+        )
+    )
+
+
+def _observe_anchor_quotient(
+    expected: NativeCfgProjection,
+    blocks: tuple[NativeFlowchartBlock, ...],
+) -> NativeCfgProjection:
+    blocks_by_start = {block.start_ea: block for block in blocks}
+    if len(blocks_by_start) != len(blocks):
+        raise ValueError("live flowchart contains duplicate block starts")
+    for block in blocks:
+        missing = set(block.successor_eas).difference(blocks_by_start)
+        if missing:
+            formatted = ",".join(f"0x{ea:X}" for ea in sorted(missing))
+            raise ValueError(f"live flowchart has foreign successors: {formatted}")
+
+    expected_anchors = tuple(
+        anchor for anchor, _targets in expected.successor_eas_by_anchor
+    )
+    block_start_by_anchor: dict[int, int] = {}
+    anchors_by_block_start: dict[int, list[int]] = {
+        block.start_ea: [] for block in blocks
+    }
+    for anchor in expected_anchors:
+        containing = [
+            block for block in blocks if block.start_ea <= anchor < block.end_ea
+        ]
+        if len(containing) != 1:
+            raise ValueError(
+                f"native anchor 0x{anchor:X} belongs to {len(containing)} live blocks"
+            )
+        owner = containing[0]
+        block_start_by_anchor[anchor] = owner.start_ea
+        anchors_by_block_start[owner.start_ea].append(anchor)
+    for anchors in anchors_by_block_start.values():
+        anchors.sort()
+
+    def first_downstream_anchors(start_ea: int) -> tuple[set[int], bool]:
+        def walk(current: int, path: frozenset[int]) -> tuple[set[int], bool]:
+            if current in path:
+                return set(), True
+            block_anchors = anchors_by_block_start[current]
+            if block_anchors:
+                return {block_anchors[0]}, False
+            successors = blocks_by_start[current].successor_eas
+            if not successors:
+                return set(), True
+            found: set[int] = set()
+            unresolved_path = False
+            next_path = path | {current}
+            for successor in successors:
+                downstream, unresolved = walk(successor, next_path)
+                found.update(downstream)
+                unresolved_path = unresolved_path or unresolved
+            return found, unresolved_path
+
+        return walk(int(start_ea), frozenset())
+
+    rows = []
+    expected_targets_by_anchor = dict(expected.successor_eas_by_anchor)
+    for anchor in expected_anchors:
+        block_start = block_start_by_anchor[anchor]
+        block_anchors = anchors_by_block_start[block_start]
+        position = block_anchors.index(anchor)
+        if position + 1 < len(block_anchors):
+            targets = {block_anchors[position + 1]}
+        else:
+            targets: set[int] = set()
+            for successor in blocks_by_start[block_start].successor_eas:
+                downstream, unresolved = first_downstream_anchors(successor)
+                if unresolved and expected_targets_by_anchor[anchor]:
+                    raise ValueError(
+                        f"live path from anchor 0x{anchor:X} reaches no target anchor"
+                    )
+                targets.update(downstream)
+        rows.append((anchor, tuple(sorted(targets))))
+    return NativeCfgProjection(
+        entry_ea=expected.entry_ea,
+        successor_eas_by_anchor=tuple(sorted(rows)),
+    )
+
+
+def validate_live_native_cfg(
+    target_graph: FlowGraph,
+    live_blocks: tuple[NativeFlowchartBlock, ...],
+) -> NativeCfgPostcondition:
+    """Compare the complete live flowchart with the target anchor quotient.
+
+    Multiple target microblocks may be represented by one linearized native
+    block after a conditional terminator becomes NOPs.  Anchors inside that
+    block are therefore linked in address order before physical block edges
+    are followed.  This mirrors Hex-Rays' EA synchronization without assuming
+    that its snapshot-local block serials survive native reanalysis.
+    """
+
+    expected = project_target_native_cfg(target_graph)
+    physical_fingerprint = _live_flowchart_fingerprint(live_blocks)
+    try:
+        observed = _observe_anchor_quotient(expected, live_blocks)
+    except ValueError as error:
+        observed = NativeCfgProjection(expected.entry_ea, ())
+        return NativeCfgPostcondition(
+            expected=expected,
+            observed=observed,
+            live_flowchart_fingerprint=physical_fingerprint,
+            matches=False,
+            reason=str(error),
+        )
+    return NativeCfgPostcondition(
+        expected=expected,
+        observed=observed,
+        live_flowchart_fingerprint=physical_fingerprint,
+        matches=observed == expected,
+        reason=None if observed == expected else "native anchor CFG mismatch",
+    )
+
+
 def _edge_kind(
     inherited: tuple[int, ...],
     final: tuple[int, ...],
@@ -216,9 +446,9 @@ def _edge_kind(
         return NativeCfgEdgeKind.REDIRECT
     if len(inherited) == 2 and len(final) == 1:
         if final[0] == inherited[0]:
-            return NativeCfgEdgeKind.FORCE_TAKEN
-        if final[0] == inherited[1]:
             return NativeCfgEdgeKind.FORCE_FALLTHROUGH
+        if final[0] == inherited[1]:
+            return NativeCfgEdgeKind.FORCE_TAKEN
     if len(inherited) == 2 and len(final) == 2 and inherited != final:
         return NativeCfgEdgeKind.REDIRECT
     return None
@@ -567,7 +797,13 @@ def bind_ctree_native_ranges(
             function_ea=frozen.function_ea,
             maturity=frozen.maturity,
             baseline_cfg_fingerprint=frozen.baseline_cfg_fingerprint,
-            target_cfg_fingerprint=frozen.target_cfg_fingerprint,
+            # The native plan and certificate use the stable EA-anchor
+            # quotient, not Hex-Rays block serials.  The latter are meaningful
+            # only inside this one microcode snapshot and cannot be recaptured
+            # from IDA's post-reanalysis flowchart.
+            target_cfg_fingerprint=project_target_native_cfg(
+                frozen.final_graph
+            ).fingerprint,
             target_ctree_range_fingerprint=target_projection.fingerprint,
             block_range_bindings=tuple(bindings),
             edge_intents=frozen.edge_intents,

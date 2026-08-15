@@ -201,9 +201,16 @@ class _Journal:
 
 
 class _Gateway:
-    def __init__(self, *, restore_ok: bool = True):
+    def __init__(
+        self,
+        *,
+        restore_ok: bool = True,
+        native_cfg_persist_error: Exception | None = None,
+    ):
         self.restored = []
         self.restore_ok = restore_ok
+        self.native_cfg_persist_error = native_cfg_persist_error
+        self.native_cfg_receipts = []
 
     def record_diagnostic_snapshot(self, plan):
         return "diagnostic-1"
@@ -217,6 +224,14 @@ class _Gateway:
                 value="restored" if self.restore_ok else "restore_failed"
             ),
             failure_reason=None if self.restore_ok else "injected restore failure",
+        )
+
+    def record_native_cfg_postcondition_receipt(self, **kwargs):
+        if self.native_cfg_persist_error is not None:
+            raise self.native_cfg_persist_error
+        self.native_cfg_receipts.append(kwargs)
+        return "native-cfg-receipt-1", SimpleNamespace(
+            observed_native_cfg_fingerprint=(kwargs["observed_native_cfg_fingerprint"])
         )
 
 
@@ -240,12 +255,16 @@ def _normalizer(
     post_structure="structure",
     post_error: Exception | None = None,
     restore_ok: bool = True,
+    native_cfg_persist_error: Exception | None = None,
 ):
     session = DecompilationSessionId("session")
     parent = ExecutionAttemptId(session, 1)
     child = ExecutionAttemptId(session, 2)
     journal = _Journal(child)
-    gateway = _Gateway(restore_ok=restore_ok)
+    gateway = _Gateway(
+        restore_ok=restore_ok,
+        native_cfg_persist_error=native_cfg_persist_error,
+    )
     function_identity = NativeFunctionIdentity(
         entry_ea=0x1000,
         chunk_ranges=(NativeAddressRange(0x1000, 0x1100),),
@@ -254,6 +273,7 @@ def _normalizer(
     plan = SimpleNamespace(
         plan_id="stage-c-plan",
         operations=(),
+        target_cfg_fingerprint="target-native-cfg",
     )
     transaction_id = SimpleNamespace(value="transaction-1")
     normalization = NativeNormalizationResult(
@@ -266,10 +286,16 @@ def _normalizer(
     def _post_apply_observer(**kwargs):
         if post_error is not None:
             raise post_error
+        validated_cfunc = object()
         return (
             SimpleNamespace(fingerprint=post_projection),
             post_structure,
-            True,
+            SimpleNamespace(
+                matches=True,
+                observed=SimpleNamespace(fingerprint="target-native-cfg"),
+                live_flowchart_fingerprint="live-flowchart",
+            ),
+            validated_cfunc,
         )
 
     normalizer = ManagerOwnedNativeCfgNormalizer(
@@ -306,6 +332,11 @@ def test_stage_c_success_is_terminal_and_blocks_stage_b() -> None:
 
     assert result.normalization.outcome is NativeNormalizationOutcome.APPLIED
     assert result.allow_stage_b is False
+    assert result.validated_cfunc is not None
+    assert result.normalization.certificate.observed_native_cfg_fingerprint == (
+        "target-native-cfg"
+    )
+    assert len(gateway.native_cfg_receipts) == 1
     assert gateway.restored == []
     assert journal.advances[-1]["status"] is ExecutionAttemptStatus.COMPLETED
 
@@ -379,6 +410,24 @@ def test_stage_c_postcondition_capture_exception_restores_and_stays_terminal() -
     )
 
     assert result.reason.startswith("CTREE_POSTCONDITION_CAPTURE_FAILED")
+    assert result.allow_stage_b is False
+    assert len(gateway.restored) == 1
+    assert journal.advances[-1]["status"] is ExecutionAttemptStatus.FAILED
+
+
+def test_stage_c_postcondition_persistence_failure_restores() -> None:
+    normalizer, parent, journal, gateway = _normalizer(
+        native_cfg_persist_error=RuntimeError("injected receipt failure")
+    )
+
+    result = normalizer.normalize(
+        function_ea=0x1000,
+        topology_outcome=_topology_outcome(),
+        decompilation_result=object(),
+        parent_attempt_id=parent,
+    )
+
+    assert result.reason.startswith("NATIVE_CFG_POSTCONDITION_PERSIST_FAILED")
     assert result.allow_stage_b is False
     assert len(gateway.restored) == 1
     assert journal.advances[-1]["status"] is ExecutionAttemptStatus.FAILED

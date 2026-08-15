@@ -79,7 +79,7 @@ from __future__ import annotations
 
 import hashlib
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from uuid import uuid4
 
 from d810.backends.ida.native_patch.capture import LiveDatabaseReader
@@ -759,6 +759,67 @@ class NativePatchGateway:
         )
         return receipt_id
 
+    def record_native_cfg_postcondition_receipt(
+        self,
+        *,
+        plan: NativePatchPlan,
+        certificate: NativeCertificate,
+        transaction_id: NativePatchTransactionId,
+        observed_native_cfg_fingerprint: str,
+        live_flowchart_fingerprint: str,
+    ) -> tuple[str, NativeCertificate]:
+        """Persist Stage C's recaptured whole-function native CFG witness.
+
+        The expected fingerprint was frozen from the target microcode graph;
+        the observed fingerprint comes from the live IDA flowchart's anchor
+        quotient.  Keeping both prevents an intended target hash from being
+        mistaken for evidence that the resulting native graph was observed.
+        """
+        if certificate.target_cfg_fingerprint != plan.target_cfg_fingerprint:
+            raise ValueError("certificate target CFG does not match the Stage C plan")
+        if observed_native_cfg_fingerprint != plan.target_cfg_fingerprint:
+            raise ValueError("observed native CFG does not match the frozen target")
+        link = self._certificate_store.get_native_patch_blob(
+            "certificate_transaction", transaction_id.value
+        )
+        if link is None or link.get("certificate_id") != certificate.certificate_id:
+            raise ValueError("Stage C transaction certificate link is missing")
+        key = link.get("certificate_key")
+        if not isinstance(key, str):
+            raise ValueError("Stage C transaction certificate key is malformed")
+        current_payload = self._certificate_store.get_native_patch_blob(
+            "certificate", key
+        )
+        if current_payload is None:
+            raise ValueError("Stage C certificate is missing")
+        current = certificate_from_payload(current_payload)
+        if current.certificate_id != certificate.certificate_id:
+            raise ValueError("Stage C certificate slot changed during validation")
+
+        receipt_id = uuid4().hex
+        self._certificate_store.set_native_patch_blob(
+            "native_cfg_postcondition_receipt",
+            receipt_id,
+            {
+                "kind": "whole_function_native_cfg_postcondition",
+                "transaction_id": transaction_id.value,
+                "certificate_id": certificate.certificate_id,
+                "plan_id": plan.plan_id,
+                "expected_native_cfg_fingerprint": plan.target_cfg_fingerprint,
+                "observed_native_cfg_fingerprint": observed_native_cfg_fingerprint,
+                "live_flowchart_fingerprint": live_flowchart_fingerprint,
+            },
+        )
+        updated = replace(
+            current,
+            schema_version=max(3, current.schema_version),
+            observed_native_cfg_fingerprint=observed_native_cfg_fingerprint,
+        )
+        self._certificate_store.set_native_patch_blob(
+            "certificate", key, certificate_to_payload(updated)
+        )
+        return receipt_id, updated
+
     def _record_preflight_receipt(
         self,
         plan: NativePatchPlan,
@@ -899,6 +960,12 @@ class NativePatchGateway:
             return False
         if certificate.metadata_target_fingerprint != plan.metadata_target_fingerprint:
             return False
+        if (
+            plan.issuer_id == "stage-c-native-cfg-normalizer"
+            and certificate.observed_native_cfg_fingerprint
+            != plan.target_cfg_fingerprint
+        ):
+            return False
         if not any(op.metadata_actions for op in plan.operations):
             return True
         if self._metadata_executor is None:
@@ -991,7 +1058,7 @@ class NativePatchGateway:
             # payload without the current-state witness.
             logger.warning("ignoring malformed or obsolete native certificate")
             return None
-        if certificate.schema_version != 2:
+        if certificate.schema_version not in {2, 3}:
             logger.warning(
                 "ignoring obsolete native certificate schema %s",
                 certificate.schema_version,

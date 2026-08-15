@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from d810.backends.ida.native_patch.native_cfg_plan import (
     build_native_cfg_plan,
@@ -157,6 +157,7 @@ class StageCNormalizationResult:
     normalization: NativeNormalizationResult | None
     allow_stage_b: bool
     reason: str
+    validated_cfunc: object | None = None
 
 
 class ManagerOwnedNativeCfgNormalizer:
@@ -217,6 +218,7 @@ class ManagerOwnedNativeCfgNormalizer:
                 reason = f"{reason}: {topology_outcome.detail}"
             return self._abstain(attempt, reason)
         transaction_started = False
+        validated_cfunc = None
         try:
             attestation = self._capture_attestation(
                 function_ea=int(function_ea),
@@ -279,12 +281,16 @@ class ManagerOwnedNativeCfgNormalizer:
                 )
             if outcome.outcome is NativeNormalizationOutcome.APPLIED:
                 try:
-                    post_projection, post_structure, native_cfg_matches = (
-                        self._post_apply_observer(
-                            function_ea=int(function_ea),
-                            function_ranges=function_ranges,
-                            plan=plan,
-                        )
+                    (
+                        post_projection,
+                        post_structure,
+                        native_cfg_postcondition,
+                        validated_cfunc,
+                    ) = self._post_apply_observer(
+                        function_ea=int(function_ea),
+                        function_ranges=function_ranges,
+                        plan=plan,
+                        target_graph=topology_outcome.topology.final_graph,
                     )
                 except Exception as error:
                     mismatch = (
@@ -317,12 +323,43 @@ class ManagerOwnedNativeCfgNormalizer:
                     )
                     return StageCNormalizationResult(rejected, False, mismatch)
                 mismatch = None
-                if not native_cfg_matches:
-                    mismatch = "NATIVE_CFG_POSTCONDITION_MISMATCH"
+                if not native_cfg_postcondition.matches:
+                    mismatch = (
+                        "NATIVE_CFG_POSTCONDITION_MISMATCH: "
+                        f"{native_cfg_postcondition.reason or 'fingerprint mismatch'}; "
+                        "expected="
+                        f"{native_cfg_postcondition.expected.fingerprint}; "
+                        "observed="
+                        f"{native_cfg_postcondition.observed.fingerprint}"
+                    )
                 elif post_projection.fingerprint != target_projection.fingerprint:
                     mismatch = "CTREE_RANGE_POSTCONDITION_MISMATCH"
                 elif post_structure != target_structure:
                     mismatch = "CTREE_STRUCTURE_POSTCONDITION_MISMATCH"
+                if mismatch is None:
+                    try:
+                        receipt_id, updated_certificate = (
+                            self._gateway.record_native_cfg_postcondition_receipt(
+                                plan=plan,
+                                certificate=outcome.certificate,
+                                transaction_id=outcome.apply_receipt.transaction_id,
+                                observed_native_cfg_fingerprint=(
+                                    native_cfg_postcondition.observed.fingerprint
+                                ),
+                                live_flowchart_fingerprint=(
+                                    native_cfg_postcondition.live_flowchart_fingerprint
+                                ),
+                            )
+                        )
+                        effects.append(
+                            ExecutionEffectRef("native_cfg_postcondition", receipt_id)
+                        )
+                        outcome = replace(outcome, certificate=updated_certificate)
+                    except Exception as error:
+                        mismatch = (
+                            "NATIVE_CFG_POSTCONDITION_PERSIST_FAILED: "
+                            f"{type(error).__name__}: {error}"
+                        )
                 if mismatch is not None:
                     restore = self._gateway.restore(
                         outcome.apply_receipt.transaction_id
@@ -370,6 +407,11 @@ class ManagerOwnedNativeCfgNormalizer:
                 outcome,
                 allow_stage_b,
                 outcome.reason or outcome.outcome.value,
+                validated_cfunc=(
+                    validated_cfunc
+                    if outcome.outcome is NativeNormalizationOutcome.APPLIED
+                    else None
+                ),
             )
         except Exception as error:
             self._execution_journal.advance(

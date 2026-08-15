@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from d810.ir.edge_state_contract import (
     EdgeStateContract,
@@ -12,7 +13,11 @@ from d810.ir.edge_state_contract import (
 )
 from d810.ir.flowgraph import FlowGraph, InsnKind, ValueOpKind
 
-__all__ = ["HexRaysNativeEdgeStateProof"]
+__all__ = [
+    "HexRaysNativeEdgeStateProof",
+    "NativeFlagAccessStep",
+    "prove_target_flag_independence",
+]
 
 
 def _default_stack_delta(mba: object, ea: int) -> int | None:
@@ -28,21 +33,120 @@ def _default_stack_delta(mba: object, ea: int) -> int | None:
         return None
 
 
-def _default_target_reads_flags(ea: int) -> bool:
-    """Conservatively reject native targets beginning with a flag consumer."""
-    try:
-        import ida_ua
+@dataclass(frozen=True, slots=True)
+class NativeFlagAccessStep:
+    next_ea: int
+    reads_flags: bool
+    writes_flags: bool
+    stops: bool = False
 
+
+def prove_target_flag_independence(
+    target_ea: int,
+    *,
+    inspect: Callable[[int], NativeFlagAccessStep | None],
+    max_instructions: int = 64,
+) -> bool:
+    """Prove inherited flags die before any target-prefix read."""
+    current_ea = int(target_ea)
+    visited: set[int] = set()
+    for _index in range(int(max_instructions)):
+        if current_ea in visited:
+            return False
+        visited.add(current_ea)
+        step = inspect(current_ea)
+        if step is None or step.next_ea == current_ea or step.next_ea < 0:
+            return False
+        if step.reads_flags:
+            return False
+        if step.writes_flags:
+            return True
+        if step.stops:
+            return False
+        current_ea = step.next_ea
+    return False
+
+
+_FLAG_READ_PREFIXES = ("cmov", "set", "loop")
+_FLAG_READ_MNEMONICS = frozenset(
+    {"adc", "sbb", "rcl", "rcr", "lahf", "pushf", "pushfd", "pushfq"}
+)
+_FLAG_KILL_MNEMONICS = frozenset({"add", "sub", "cmp", "test", "and", "or", "xor"})
+_FLAG_PRESERVE_MNEMONICS = frozenset(
+    {"mov", "movzx", "movsx", "movsxd", "lea", "nop", "push", "pop"}
+)
+_FLAG_REGISTER_NAMES = frozenset({"flags", "efl", "eflags", "rflags"})
+
+
+def _inspect_native_flag_access(ea: int) -> NativeFlagAccessStep | None:
+    try:
+        import ida_idp
+        import ida_ua
+        import idaapi
+
+        instruction = ida_ua.insn_t()
+        size = int(ida_ua.decode_insn(instruction, int(ea)))
+        if size <= 0:
+            return None
         mnemonic = str(ida_ua.print_insn_mnem(int(ea)) or "").lower()
     except (AttributeError, RuntimeError, TypeError, ValueError):
-        return True
+        return None
     if not mnemonic:
-        return True
-    return (
+        return None
+
+    reads_flags = (
         (mnemonic.startswith("j") and mnemonic not in {"jmp", "jmpq"})
-        or mnemonic.startswith("loop")
-        or mnemonic in {"adc", "sbb"}
-        or mnemonic.startswith(("cmov", "set"))
+        or mnemonic.startswith(_FLAG_READ_PREFIXES)
+        or mnemonic in _FLAG_READ_MNEMONICS
+    )
+    writes_flags = mnemonic in _FLAG_KILL_MNEMONICS
+    accesses = ida_idp.reg_accesses_t()
+    if ida_idp.ph_get_reg_accesses(accesses, instruction, 0) < 0:
+        return None
+    register_names = ida_idp.ph_get_regnames()
+    for access in accesses:
+        name = str(register_names[int(access.regnum)]).lower()
+        if name not in _FLAG_REGISTER_NAMES:
+            continue
+        access_type = int(access.access_type)
+        reads_flags = reads_flags or bool(access_type & int(ida_idp.READ_ACCESS))
+        writes_flags = writes_flags or bool(access_type & int(ida_idp.WRITE_ACCESS))
+
+    known = (
+        reads_flags
+        or writes_flags
+        or mnemonic in _FLAG_PRESERVE_MNEMONICS
+        or mnemonic in {"jmp", "jmpq", "ret", "retn", "retf"}
+    )
+    if not known:
+        return None
+    is_direct_unconditional_jump = bool(
+        mnemonic in {"jmp", "jmpq"}
+        and int(instruction.ops[0].type) in {int(idaapi.o_near), int(idaapi.o_far)}
+    )
+    next_ea = (
+        int(instruction.ops[0].addr) if is_direct_unconditional_jump else int(ea) + size
+    )
+    stops = bool(
+        ida_idp.is_call_insn(instruction)
+        or ida_idp.is_ret_insn(instruction, 0)
+        or (
+            ida_idp.is_basic_block_end(instruction, False)
+            and not is_direct_unconditional_jump
+        )
+    )
+    return NativeFlagAccessStep(
+        next_ea=next_ea,
+        reads_flags=reads_flags,
+        writes_flags=writes_flags,
+        stops=stops,
+    )
+
+
+def _default_target_flags_are_independent(ea: int) -> bool:
+    return prove_target_flag_independence(
+        int(ea),
+        inspect=_inspect_native_flag_access,
     )
 
 
@@ -144,6 +248,7 @@ class HexRaysNativeEdgeStateProof:
         *,
         stack_delta_for_ea: Callable[[int], int | None] | None = None,
         target_reads_flags: Callable[[int], bool] | None = None,
+        target_flags_are_independent: Callable[[int], bool] | None = None,
     ) -> None:
         self._mba = mba
         self._stack_delta_for_ea = (
@@ -151,10 +256,18 @@ class HexRaysNativeEdgeStateProof:
             if stack_delta_for_ea is not None
             else lambda ea: _default_stack_delta(mba, ea)
         )
-        self._target_reads_flags = (
-            target_reads_flags
-            if target_reads_flags is not None
-            else _default_target_reads_flags
+        if target_reads_flags is not None and target_flags_are_independent is not None:
+            raise ValueError("provide only one target flag proof callback")
+        self._target_flags_are_independent = (
+            target_flags_are_independent
+            if target_flags_are_independent is not None
+            else (
+                lambda ea: (
+                    not target_reads_flags(ea)
+                    if target_reads_flags is not None
+                    else _default_target_flags_are_independent(ea)
+                )
+            )
         )
 
     def prove_edge_transition(
@@ -203,10 +316,15 @@ class HexRaysNativeEdgeStateProof:
                 return None
             try:
                 target_stack_delta = self._stack_delta_for_ea(target_ea)
-                target_uses_flags = self._target_reads_flags(target_ea)
+                target_flags_are_independent = self._target_flags_are_independent(
+                    target_ea
+                )
             except (RuntimeError, TypeError, ValueError):
                 return None
-            if target_stack_delta != source_stack_delta or target_uses_flags:
+            if (
+                target_stack_delta != source_stack_delta
+                or not target_flags_are_independent
+            ):
                 return None
             live_target = self._mba.get_mblock(target)
             if live_target is None:

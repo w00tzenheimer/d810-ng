@@ -1540,6 +1540,48 @@ def test_decompile_controller_scopes_and_closes_stage_c_collector(monkeypatch) -
     )
 
 
+def test_decompile_controller_returns_stage_c_validated_cfunc(monkeypatch) -> None:
+    session = DecompilationSessionContext(
+        function_ea=0x401000,
+        database_identity="stage-c-idb",
+        top_level_epoch=1,
+        native_key=NATIVE_KEY,
+    )
+
+    class _Lifecycle:
+        @staticmethod
+        def current_session(_function_ea: int):
+            return session
+
+        @staticmethod
+        def has_exhausted_poison_restart(_function_ea: int) -> bool:
+            return False
+
+        @staticmethod
+        def has_pending_generated_restart(_function_ea: int) -> bool:
+            return False
+
+    inherited_cfunc = object()
+    validated_cfunc = object()
+    manager = D810Manager.__new__(D810Manager)
+    manager.decompilation_lifecycle = _Lifecycle()
+    monkeypatch.setattr(manager, "prepare_native_preanalysis", lambda _ea: 0)
+    monkeypatch.setattr(manager, "_stage_c_collection_enabled", lambda _ea: True)
+    manager._stage_c_topology_consumer = lambda **_kwargs: SimpleNamespace(
+        allow_stage_b=False,
+        normalization=SimpleNamespace(outcome=NativeNormalizationOutcome.APPLIED),
+        validated_cfunc=validated_cfunc,
+    )
+
+    result = manager.decompile_with_native_preanalysis(
+        0x401000,
+        lambda: inherited_cfunc,
+        lambda: None,
+    )
+
+    assert result is validated_cfunc
+
+
 def test_decompile_controller_closes_stage_c_collector_on_exception(
     monkeypatch,
 ) -> None:

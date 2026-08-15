@@ -94,7 +94,6 @@ class TestStageCNativeCfgNormalization:
             state.load_project(project_index)
             function_ea = _function_ea()
             assert function_ea != int(idaapi.BADADDR)
-
             # A fresh disposable IDB has no durable database UUID until its
             # first manager-owned decompilation session records the input
             # attestation.  Exercise that normal first-session lifecycle, then
@@ -150,13 +149,21 @@ class TestStageCNativeCfgNormalization:
                 )
                 assert len(attempts) == 1
                 attempt = attempts[0]
-                assert attempt.status is ExecutionAttemptStatus.COMPLETED, attempt
+                assert attempt.status is ExecutionAttemptStatus.COMPLETED, (
+                    attempt.reason_code
+                )
                 transaction_effects = tuple(
                     effect
                     for effect in attempt.effect_refs
                     if effect.kind == "native_patch_transaction"
                 )
                 assert len(transaction_effects) == 1
+                cfg_effects = tuple(
+                    effect
+                    for effect in attempt.effect_refs
+                    if effect.kind == "native_cfg_postcondition"
+                )
+                assert len(cfg_effects) == 1
                 transaction_id = NativePatchTransactionId(transaction_effects[0].ref_id)
                 journal = state.manager._native_patch_journal
                 record = journal.get(transaction_id)
@@ -173,6 +180,23 @@ class TestStageCNativeCfgNormalization:
                     "certificate_transaction", transaction_id.value
                 )
                 assert certificate_link is not None
+                certificate_payload = state.manager._native_patch_gateway._certificate_store.get_native_patch_blob(
+                    "certificate", certificate_link["certificate_key"]
+                )
+                assert certificate_payload is not None
+                assert (
+                    certificate_payload["observed_native_cfg_fingerprint"]
+                    == (certificate_payload["target_cfg_fingerprint"])
+                )
+                cfg_receipt = state.manager._native_patch_gateway._certificate_store.get_native_patch_blob(
+                    "native_cfg_postcondition_receipt", cfg_effects[0].ref_id
+                )
+                assert cfg_receipt is not None
+                assert (
+                    cfg_receipt["observed_native_cfg_fingerprint"]
+                    == (cfg_receipt["expected_native_cfg_fingerprint"])
+                )
+                assert cfg_receipt["live_flowchart_fingerprint"]
                 assert not any(
                     item.stage_id == "native_dead_edge_normalizer"
                     and item.attempt_id not in prior_attempt_ids
@@ -180,6 +204,19 @@ class TestStageCNativeCfgNormalization:
                         function_ea
                     )
                 )
+
+                # The certified bytes must independently reproduce the result
+                # under a forced fresh decompile with every D810 optimizer
+                # suppressed. A cached controlled-redo cfunc is not evidence.
+                with d810_hooks_suppressed(state.manager):
+                    independently_validated_cfunc = idaapi.decompile(
+                        function_ea, flags=idaapi.DECOMP_NO_CACHE
+                    )
+                assert independently_validated_cfunc is not None
+                assert fingerprint_ctree(result) == fingerprint_ctree(
+                    independently_validated_cfunc
+                )
+                assert _function_bytes(function_ea) == current_bytes
 
                 restore = state.manager._native_patch_gateway.restore(transaction_id)
                 assert restore.ok, restore

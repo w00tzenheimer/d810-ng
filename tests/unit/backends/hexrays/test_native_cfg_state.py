@@ -6,7 +6,11 @@ from dataclasses import dataclass
 
 import pytest
 
-from d810.backends.hexrays.native_cfg_state import HexRaysNativeEdgeStateProof
+from d810.backends.hexrays.native_cfg_state import (
+    HexRaysNativeEdgeStateProof,
+    NativeFlagAccessStep,
+    prove_target_flag_independence,
+)
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot
 
 pytestmark = pytest.mark.pure_python
@@ -269,3 +273,68 @@ def test_longer_acyclic_route_to_target_forces_abstention() -> None:
     )
 
     assert contract is None
+
+
+def test_target_prefix_rejects_flag_read_after_flag_preserving_instructions() -> None:
+    steps = {
+        0x1000: NativeFlagAccessStep(0x1001, reads_flags=False, writes_flags=False),
+        0x1001: NativeFlagAccessStep(0x1002, reads_flags=False, writes_flags=False),
+        0x1002: NativeFlagAccessStep(0x1003, reads_flags=True, writes_flags=False),
+    }
+
+    assert (
+        prove_target_flag_independence(0x1000, inspect=lambda ea: steps.get(ea))
+        is False
+    )
+
+
+def test_target_prefix_accepts_definite_flag_kill_before_any_read() -> None:
+    steps = {
+        0x1000: NativeFlagAccessStep(0x1001, reads_flags=False, writes_flags=False),
+        0x1001: NativeFlagAccessStep(0x1002, reads_flags=False, writes_flags=True),
+    }
+
+    assert prove_target_flag_independence(0x1000, inspect=lambda ea: steps.get(ea))
+
+
+def test_target_prefix_follows_direct_jump_before_definite_flag_kill() -> None:
+    steps = {
+        0x1000: NativeFlagAccessStep(0x2000, reads_flags=False, writes_flags=False),
+        0x2000: NativeFlagAccessStep(0x2001, reads_flags=False, writes_flags=True),
+    }
+
+    assert prove_target_flag_independence(0x1000, inspect=lambda ea: steps.get(ea))
+
+
+def test_target_prefix_follows_backward_direct_jump_before_flag_kill() -> None:
+    steps = {
+        0x2000: NativeFlagAccessStep(0x1000, reads_flags=False, writes_flags=False),
+        0x1000: NativeFlagAccessStep(0x1001, reads_flags=False, writes_flags=True),
+    }
+
+    assert prove_target_flag_independence(0x2000, inspect=lambda ea: steps.get(ea))
+
+
+def test_target_prefix_abstains_on_control_flow_cycle() -> None:
+    steps = {
+        0x1000: NativeFlagAccessStep(0x2000, reads_flags=False, writes_flags=False),
+        0x2000: NativeFlagAccessStep(0x1000, reads_flags=False, writes_flags=False),
+    }
+
+    assert not prove_target_flag_independence(0x1000, inspect=lambda ea: steps.get(ea))
+
+
+@pytest.mark.parametrize(
+    "step",
+    (
+        NativeFlagAccessStep(0x1001, reads_flags=True, writes_flags=True),
+        NativeFlagAccessStep(
+            0x1001,
+            reads_flags=False,
+            writes_flags=False,
+            stops=True,
+        ),
+    ),
+)
+def test_target_prefix_abstains_on_read_modify_flags_or_control_cut(step) -> None:
+    assert not prove_target_flag_independence(0x1000, inspect=lambda _ea: step)

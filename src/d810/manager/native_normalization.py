@@ -107,6 +107,11 @@ def _certificate_matches(certificate: NativeCertificate, plan: NativePatchPlan) 
         )
         and certificate.metadata_target_fingerprint == plan.metadata_target_fingerprint
         and (
+            plan.issuer_id != "stage-c-native-cfg-normalizer"
+            or certificate.observed_native_cfg_fingerprint
+            == plan.target_cfg_fingerprint
+        )
+        and (
             any(operation.metadata_actions for operation in plan.operations)
             or certificate.native_plan_hash == plan.plan_hash
         )

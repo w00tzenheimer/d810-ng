@@ -18,12 +18,15 @@ from d810.ir.native_range_projection import (
     NativeRange,
 )
 from d810.transforms.native_cfg_normalization import (
+    NativeFlowchartBlock,
     NativeCfgEdgeKind,
     NativeCfgFreezeReason,
     NativeCfgPassMutationObservation,
     ObservedEdgeStateContract,
     bind_ctree_native_ranges,
     freeze_native_cfg_topology,
+    project_target_native_cfg,
+    validate_live_native_cfg,
 )
 
 pytestmark = pytest.mark.pure_python
@@ -176,7 +179,10 @@ def test_freezes_direct_redirect_with_exact_receipt_and_contract() -> None:
 
 @pytest.mark.parametrize(
     ("successor", "kind"),
-    [(1, NativeCfgEdgeKind.FORCE_TAKEN), (2, NativeCfgEdgeKind.FORCE_FALLTHROUGH)],
+    [
+        (1, NativeCfgEdgeKind.FORCE_FALLTHROUGH),
+        (2, NativeCfgEdgeKind.FORCE_TAKEN),
+    ],
 )
 def test_classifies_conditional_edge_selection(
     successor: int,
@@ -189,6 +195,107 @@ def test_classifies_conditional_edge_selection(
 
     assert outcome.topology is not None
     assert outcome.topology.edge_intents[0].kind is kind
+
+
+def test_live_native_cfg_projection_linearizes_anchors_inside_merged_blocks() -> None:
+    target = _graph(
+        {0: (1,), 1: (2, 3), 2: (), 3: ()},
+        native_eas={0: 0x1000, 1: 0x1010, 2: 0x1020, 3: 0x1030},
+    )
+    live_blocks = (
+        NativeFlowchartBlock(0x1000, 0x1018, (0x1020, 0x1030)),
+        NativeFlowchartBlock(0x1020, 0x1028, ()),
+        NativeFlowchartBlock(0x1030, 0x1038, ()),
+    )
+
+    validation = validate_live_native_cfg(target, live_blocks)
+
+    assert validation.matches
+    assert validation.expected == project_target_native_cfg(target)
+    assert validation.observed == validation.expected
+    assert validation.live_flowchart_fingerprint
+
+
+def test_target_native_cfg_projection_collapses_duplicate_microcode_anchors() -> None:
+    target = _graph(
+        {0: (1,), 1: (2,), 2: ()},
+        native_eas={0: 0x1000, 1: 0x1000, 2: 0x1020},
+    )
+
+    projection = project_target_native_cfg(target)
+
+    assert projection.successor_eas_by_anchor == (
+        (0x1000, (0x1020,)),
+        (0x1020, ()),
+    )
+
+
+def test_live_native_cfg_projection_rejects_wrong_whole_function_edge() -> None:
+    target = _graph(
+        {0: (1,), 1: (2, 3), 2: (), 3: ()},
+        native_eas={0: 0x1000, 1: 0x1010, 2: 0x1020, 3: 0x1030},
+    )
+    live_blocks = (
+        NativeFlowchartBlock(0x1000, 0x1018, (0x1020,)),
+        NativeFlowchartBlock(0x1020, 0x1028, ()),
+        NativeFlowchartBlock(0x1030, 0x1038, ()),
+    )
+
+    validation = validate_live_native_cfg(target, live_blocks)
+
+    assert not validation.matches
+    assert validation.expected.fingerprint != validation.observed.fingerprint
+
+
+def test_live_native_cfg_projection_rejects_extra_unanchored_exit() -> None:
+    target = _graph(
+        {0: (1,), 1: ()},
+        native_eas={0: 0x1000, 1: 0x1020},
+    )
+    live_blocks = (
+        NativeFlowchartBlock(0x1000, 0x1008, (0x1010, 0x1020)),
+        NativeFlowchartBlock(0x1010, 0x1018, ()),
+        NativeFlowchartBlock(0x1020, 0x1028, ()),
+    )
+
+    validation = validate_live_native_cfg(target, live_blocks)
+
+    assert not validation.matches
+    assert "reaches no target anchor" in validation.reason
+
+
+def test_live_native_cfg_projection_accepts_unanchored_terminal_epilogue() -> None:
+    target = _graph({0: ()}, native_eas={0: 0x1000})
+    live_blocks = (
+        NativeFlowchartBlock(0x1000, 0x1008, (0x1010,)),
+        NativeFlowchartBlock(0x1010, 0x1018, ()),
+    )
+
+    validation = validate_live_native_cfg(target, live_blocks)
+
+    assert validation.matches
+
+
+def test_bound_plan_uses_native_anchor_topology_fingerprint() -> None:
+    baseline = _graph({0: (1,), 1: (), 2: ()})
+    final = _graph({0: (2,), 1: (), 2: ()})
+    frozen = _freeze(
+        baseline,
+        final,
+        (_observation(baseline, final, source=0),),
+    ).topology
+    assert frozen is not None
+
+    outcome = bind_ctree_native_ranges(
+        frozen=frozen,
+        target_projection=_projection(final),
+    )
+
+    assert outcome.intent is not None
+    assert (
+        outcome.intent.target_cfg_fingerprint
+        == project_target_native_cfg(final).fingerprint
+    )
 
 
 def test_unchanged_graph_reports_no_changed_edges() -> None:

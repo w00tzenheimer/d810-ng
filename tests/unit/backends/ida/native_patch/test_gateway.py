@@ -492,6 +492,39 @@ class TestApplySuccess:
         assert rig.db.bytes == {0x1000: 0xEB, 0x1001: 0x01}
         assert before != rig.db.bytes
 
+    def test_stage_c_postcondition_persists_observed_whole_cfg(self, rig) -> None:
+        plan = fixtures.plan()
+        receipt = rig.gateway.apply(plan)
+        assert receipt.certificate is not None
+
+        receipt_id, certificate = rig.gateway.record_native_cfg_postcondition_receipt(
+            plan=plan,
+            certificate=receipt.certificate,
+            transaction_id=receipt.transaction_id,
+            observed_native_cfg_fingerprint=plan.target_cfg_fingerprint,
+            live_flowchart_fingerprint="live-physical-flowchart",
+        )
+
+        evidence = rig.blobs.get_native_patch_blob(
+            "native_cfg_postcondition_receipt", receipt_id
+        )
+        assert evidence["expected_native_cfg_fingerprint"] == (
+            plan.target_cfg_fingerprint
+        )
+        assert evidence["observed_native_cfg_fingerprint"] == (
+            plan.target_cfg_fingerprint
+        )
+        assert evidence["live_flowchart_fingerprint"] == "live-physical-flowchart"
+        assert certificate.observed_native_cfg_fingerprint == (
+            plan.target_cfg_fingerprint
+        )
+        assert (
+            rig.gateway.lookup_certificate(
+                plan.function_identity.entry_ea, plan.database_identity
+            ).observed_native_cfg_fingerprint
+            == plan.target_cfg_fingerprint
+        )
+
     def test_apply_reanalyzes_the_owning_function_and_waits(self, rig) -> None:
         rig.gateway.apply(fixtures.plan())
         assert ("reanalyze_function", 0x1000) in rig.reanalyzer.calls

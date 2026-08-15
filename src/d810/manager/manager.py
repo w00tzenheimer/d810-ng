@@ -976,6 +976,17 @@ class D810Manager:
                         decompilation_result=stage_c_result,
                         parent_attempt_id=stage_c_collector.parent_attempt_id,
                     )
+                    if (
+                        stage_c_native_result is not None
+                        and stage_c_native_result.normalization is not None
+                        and stage_c_native_result.normalization.outcome.value
+                        == "applied"
+                    ):
+                        if stage_c_native_result.validated_cfunc is None:
+                            raise RuntimeError(
+                                "applied Stage C result lacks its validated cfunc"
+                            )
+                        result = stage_c_native_result.validated_cfunc
             finally:
                 stage_c_collector.close()
 
@@ -1995,6 +2006,9 @@ class D810Manager:
         )
         from d810.backends.ida.native_patch.encoder import MinimalX86BranchEncoder
         from d810.backends.ida.native_patch.origin_mapper import IdaNativeOriginMapper
+        from d810.backends.ida.native_patch.native_cfg_observer import (
+            capture_live_native_flowchart,
+        )
         from d810.backends.hexrays.ctree_fingerprint import fingerprint_ctree
         from d810.backends.hexrays.ctree_native_ranges import (
             capture_ctree_native_ranges,
@@ -2043,6 +2057,7 @@ class D810Manager:
             authorize_and_apply,
             recover_startup,
         )
+        from d810.transforms.native_cfg_normalization import validate_live_native_cfg
 
         self._dead_edge_normalizer = None
 
@@ -2135,11 +2150,15 @@ class D810Manager:
             )
             return
 
-        def _observe_stage_c_postconditions(*, function_ea, function_ranges, plan):
+        def _observe_stage_c_postconditions(
+            *, function_ea, function_ranges, plan, target_graph
+        ):
             import ida_hexrays
 
             with suppress_d810_optimization():
-                cfunc = ida_hexrays.decompile(int(function_ea))
+                cfunc = ida_hexrays.decompile(
+                    int(function_ea), flags=ida_hexrays.DECOMP_NO_CACHE
+                )
             if cfunc is None:
                 raise RuntimeError("Stage C controlled redo produced no C-tree")
             projection = capture_ctree_native_ranges(
@@ -2147,13 +2166,13 @@ class D810Manager:
                 function_ranges=function_ranges,
             )
             structure = fingerprint_ctree(cfunc)
-            native_cfg_matches = True
+            native_operations_match = True
             for operation in plan.operations:
                 current = live_reader.read_current_bytes(
                     operation.range.start_ea, operation.range.end_ea
                 )
                 if current is None:
-                    native_cfg_matches = False
+                    native_operations_match = False
                     break
                 decoded = branch_encoder.decode(
                     operation.range.start_ea,
@@ -2161,9 +2180,19 @@ class D810Manager:
                     bitness=plan.bitness,
                 )
                 if decoded != operation.expected_after_shape:
-                    native_cfg_matches = False
+                    native_operations_match = False
                     break
-            return projection, structure, native_cfg_matches
+            native_cfg_postcondition = validate_live_native_cfg(
+                target_graph,
+                capture_live_native_flowchart(int(function_ea)),
+            )
+            if not native_operations_match and native_cfg_postcondition.matches:
+                native_cfg_postcondition = dataclasses.replace(
+                    native_cfg_postcondition,
+                    matches=False,
+                    reason="patched operation decode mismatch",
+                )
+            return projection, structure, native_cfg_postcondition, cfunc
 
         stage_c_normalizer = ManagerOwnedNativeCfgNormalizer(
             gateway=gateway,

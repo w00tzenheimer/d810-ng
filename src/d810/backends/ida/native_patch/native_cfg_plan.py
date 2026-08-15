@@ -119,6 +119,11 @@ def _owned_by_function(
     )
 
 
+def _native_successor_order(successors: tuple[int, ...]) -> tuple[int, ...]:
+    """Convert Hex-Rays [fallthrough, taken] to native [taken, fallthrough]."""
+    return tuple(reversed(successors)) if len(successors) == 2 else successors
+
+
 def _fresh_function_hash(
     reader: LiveDatabaseReader,
     identity: NativeFunctionIdentity,
@@ -225,6 +230,9 @@ def build_native_cfg_plan(
     for index, edge in enumerate(
         sorted(intent.edge_intents, key=lambda item: item.source_native_ea)
     ):
+        inherited_native_successors = _native_successor_order(
+            edge.inherited_target_native_eas
+        )
         source_binding = bindings.get(edge.source_block)
         if source_binding is None:
             if function_decode is None:
@@ -233,7 +241,7 @@ def build_native_cfg_plan(
                 transfer
                 for transfer in function_decode.control_transfers
                 if transfer.instruction.ea == edge.source_native_ea
-                and transfer.successors == edge.inherited_target_native_eas
+                and transfer.successors == inherited_native_successors
             )
         else:
             if not _contains(source_binding, edge.source_native_ea):
@@ -243,7 +251,7 @@ def build_native_cfg_plan(
                 transfer
                 for transfer in source_decode.control_transfers
                 if transfer.instruction.ea == edge.source_native_ea
-                and transfer.successors == edge.inherited_target_native_eas
+                and transfer.successors == inherited_native_successors
                 and _contains(source_binding, transfer.instruction.ea)
                 and _contains(source_binding, transfer.instruction.end_ea - 1)
             )
@@ -251,7 +259,7 @@ def build_native_cfg_plan(
         successor_matches = tuple(
             item
             for item in diagnostic_decode.control_transfers
-            if item.successors == edge.inherited_target_native_eas
+            if item.successors == inherited_native_successors
             and (
                 source_binding is None
                 or (
@@ -266,7 +274,8 @@ def build_native_cfg_plan(
             return _failure(
                 f"{NativeCfgPlanBuildReason.AMBIGUOUS_NATIVE_TERMINATOR.value}: "
                 f"source=0x{edge.source_native_ea:X} "
-                f"inherited={edge.inherited_target_native_eas} "
+                f"inherited_hexrays={edge.inherited_target_native_eas} "
+                f"inherited_native={inherited_native_successors} "
                 f"candidates={tuple(item.instruction.ea for item in candidates)} "
                 "successor_matches="
                 f"{tuple(item.instruction.ea for item in successor_matches)}"
@@ -354,8 +363,8 @@ def build_native_cfg_plan(
             lowered = lower_conditional_edge(
                 **common,
                 condition=transfer.predicate,
-                true_target_ea=resolved_targets[0],
-                false_target_ea=resolved_targets[1],
+                true_target_ea=resolved_targets[1],
+                false_target_ea=resolved_targets[0],
                 known_instruction_heads=frozenset(known_heads),
             )
         else:
