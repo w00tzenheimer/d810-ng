@@ -29,6 +29,7 @@ from d810.capabilities.resolver import CapabilitySet
 from d810.passes.contract_vocabulary import warn_legacy_contract_names
 from d810.passes.scheduler import RunLater
 from d810.transforms.fragment_plan import FragmentPlan
+from d810.transforms.native_cfg_normalization import ObservedEdgeStateContract
 from d810.transforms.plan import PatchPlan
 
 # Rewrite-plan vocabulary alias (canonical home already exists).
@@ -845,6 +846,7 @@ class PassResult:
     analysis_outputs: Mapping[str, object]
     evidence_outputs: Mapping[str, object]
     evidence_publications: Mapping[str, ContractEvidencePublication]
+    native_cfg_edge_contracts: tuple[ObservedEdgeStateContract, ...]
     _preserved_explicit: bool = field(default=False, repr=False, compare=False)
 
     def __init__(
@@ -858,6 +860,7 @@ class PassResult:
         analysis_outputs: Mapping[str, object] | None = None,
         evidence_outputs: Mapping[str, object] | None = None,
         evidence_publications: Mapping[str, ContractEvidencePublication] | None = None,
+        native_cfg_edge_contracts: tuple[ObservedEdgeStateContract, ...] = (),
     ) -> None:
         preserved_explicit = preserved is not _PRESERVED_UNSET
         preserved_value = preserved if preserved_explicit else PreservedAnalyses.all()
@@ -902,6 +905,19 @@ class PassResult:
             self,
             "evidence_publications",
             MappingProxyType(publications),
+        )
+        if not isinstance(native_cfg_edge_contracts, tuple) or not all(
+            isinstance(item, ObservedEdgeStateContract)
+            for item in native_cfg_edge_contracts
+        ):
+            raise TypeError(
+                "native_cfg_edge_contracts must contain "
+                "ObservedEdgeStateContract values"
+            )
+        object.__setattr__(
+            self,
+            "native_cfg_edge_contracts",
+            native_cfg_edge_contracts,
         )
         object.__setattr__(self, "_preserved_explicit", preserved_explicit)
 

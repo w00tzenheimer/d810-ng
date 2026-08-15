@@ -37,6 +37,7 @@ def test_defaults():
     assert pp.PassResult().run_later == ()
     assert pp.PassResult().analysis_outputs == {}
     assert pp.PassResult().evidence_outputs == {}
+    assert pp.PassResult().native_cfg_edge_contracts == ()
     assert pp.CapabilityPolicy().required == frozenset()
     assert pp.SafetyPolicy().name == "default"
     assert pp.SafetyPolicy().golden_required is False

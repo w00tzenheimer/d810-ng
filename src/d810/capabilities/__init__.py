@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from .branch_witness import BranchWitnessCapability
 from .constant_fixpoint import ConstantFixpointBackend, ConstantFixpointCapability
+from .native_cfg_normalization import NativeCfgFreezeObserver
 from .recurrence import ExternalRecurrenceCapability, RecurrenceAnalysis
 from .source_lifter import (
     LiveLifter,
@@ -38,6 +39,7 @@ __all__ = [
     "ConstantFixpointCapability",
     "ExternalRecurrenceCapability",
     "LiveLifter",
+    "NativeCfgFreezeObserver",
     "RecurrenceAnalysis",
     "SeveranceViolation",
     "SourceLifter",

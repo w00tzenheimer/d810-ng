@@ -19,6 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 
 from d810.core.typing import Protocol, runtime_checkable
+from d810.capabilities.native_cfg_normalization import NativeCfgFreezeObserver
 from d810.capabilities.pass_contract_evidence import PassContractEvidenceObserver
 from d810.capabilities.resolver import CapabilityNotProvided, CapabilitySet
 from d810.core.execution_journal import (
@@ -31,6 +32,8 @@ from d810.core.execution_journal import (
 )
 from d810.core.execution_journal_store import ExecutionJournalStore
 from d810.core.logging import getLogger
+from d810.ir.flowgraph import FlowGraph
+from d810.ir.maturity import IRMaturity
 from d810.passes.contract_vocabulary import (
     contract_name_in,
     contract_name_variants,
@@ -53,6 +56,10 @@ from d810.passes.pipeline_shadow import (
 from d810.passes.registry import PassRegistry
 from d810.passes.scheduler import PassScheduler, RunLaterDomain
 from d810.transforms.cfg_transaction import CfgGenerationPoisoned
+from d810.transforms.native_cfg_normalization import (
+    NativeCfgPassMutationObservation,
+    ObservedEdgeStateContract,
+)
 from d810.transforms.plan import PatchPlan
 
 logger = getLogger("d810.passes.driver")
@@ -76,6 +83,12 @@ class PassContractDiagnostic:
     undeclared: tuple[str, ...] = ()
     available: tuple[str, ...] = ()
     detail: str = ""
+
+
+@dataclass
+class _NativeCfgObserverRunState:
+    observer: NativeCfgFreezeObserver
+    failed: bool = False
 
 
 class PassContractError(RuntimeError):
@@ -632,6 +645,122 @@ def _backend_receipt_effect(backend: object) -> ExecutionEffectRef | None:
     )
 
 
+def _valid_native_cfg_edge_contracts(
+    contracts: tuple[ObservedEdgeStateContract, ...],
+    *,
+    pre_graph: object,
+    post_graph: object,
+) -> bool:
+    """Require exact positive contracts against the observed graph transition."""
+    if (
+        not contracts
+        or not isinstance(pre_graph, FlowGraph)
+        or not isinstance(post_graph, FlowGraph)
+    ):
+        return False
+    source_blocks: set[int] = set()
+    for observed in contracts:
+        if observed.source_block in source_blocks:
+            return False
+        source_blocks.add(observed.source_block)
+        pre_block = pre_graph.blocks.get(observed.source_block)
+        post_block = post_graph.blocks.get(observed.source_block)
+        if (
+            pre_block is None
+            or post_block is None
+            or tuple(pre_block.succs) != observed.inherited_successors
+            or tuple(post_block.succs) != observed.final_successors
+            or observed.inherited_successors == observed.final_successors
+            or not observed.contract.permits_control_only_relink
+        ):
+            return False
+    return True
+
+
+def _observe_native_cfg_mutation(
+    *,
+    state: _NativeCfgObserverRunState | None,
+    spec: PassSpec,
+    maturity: IRMaturity | None,
+    pre_graph: object,
+    post_graph: object,
+    plan: PatchPlan,
+    mutation_status: ExecutionAttemptStatus,
+    mutation_effects: tuple[ExecutionEffectRef, ...],
+    edge_state_contracts: tuple[ObservedEdgeStateContract, ...],
+    journal: ExecutionJournalStore | None,
+    session_id: DecompilationSessionId | None,
+    parent_attempt_id: ExecutionAttemptId | None,
+) -> None:
+    if (
+        state is None
+        or state.failed
+        or spec.options.get("native_cfg_persistence") is not True
+        or mutation_status is not ExecutionAttemptStatus.COMPLETED
+        or not isinstance(maturity, IRMaturity)
+        or not _valid_native_cfg_edge_contracts(
+            edge_state_contracts,
+            pre_graph=pre_graph,
+            post_graph=post_graph,
+        )
+    ):
+        return
+    receipt_ref = next(
+        (
+            effect
+            for effect in reversed(mutation_effects)
+            if effect.kind == "mutation_receipt"
+        ),
+        None,
+    )
+    if receipt_ref is None:
+        return
+    observer_attempt = None
+    if journal is not None and session_id is not None:
+        observer_attempt = _safe_begin_attempt(
+            journal,
+            session_id,
+            parent_attempt_id=parent_attempt_id,
+            stage_id=f"native-cfg-observer:{spec.pass_id}",
+            domain=ExecutionDomain.NATIVE_NORMALIZATION,
+        )
+    try:
+        state.observer.observe_native_cfg_mutation(
+            NativeCfgPassMutationObservation(
+                pass_id=spec.pass_id,
+                maturity=maturity,
+                pre_graph=pre_graph,
+                post_graph=post_graph,
+                plan_fingerprint=plan.plan_id,
+                receipt_ref=receipt_ref,
+                edge_state_contracts=edge_state_contracts,
+            )
+        )
+    except BaseException as exc:
+        state.failed = True
+        _safe_advance(
+            journal,
+            observer_attempt,
+            status=ExecutionAttemptStatus.FAILED,
+            reason_code=_reason_code_for_exception(exc),
+            effect_refs=(receipt_ref,),
+            details={"pass_id": spec.pass_id},
+        )
+        logger.warning(
+            "native CFG observer rejected pass %s; Stage C disabled for this run",
+            spec.pass_id,
+            exc_info=True,
+        )
+        return
+    _safe_advance(
+        journal,
+        observer_attempt,
+        status=ExecutionAttemptStatus.COMPLETED,
+        effect_refs=(receipt_ref,),
+        details={"pass_id": spec.pass_id},
+    )
+
+
 def _apply_with_journal(
     *,
     backend,
@@ -724,6 +853,7 @@ def _run_pass_spec(
     session_id: DecompilationSessionId | None = None,
     parent_attempt_id: ExecutionAttemptId | None = None,
     structural_shape: str = "unclassified",
+    native_cfg_observer_state: _NativeCfgObserverRunState | None = None,
 ) -> FunctionPipelineContext:
     profile_details = {
         "maturity": _maturity_detail(ctx.maturity),
@@ -783,6 +913,7 @@ def _run_pass_spec(
         terminal_status = ExecutionAttemptStatus.COMPLETED
         terminal_reason: str | None = None
         if _plan_has_work(result.rewrite_plan):
+            pre_mutation_graph = ctx.graph
             new_graph, mutation_effects, mutation_status, mutation_reason = (
                 _apply_with_journal(
                     backend=backend,
@@ -799,6 +930,20 @@ def _run_pass_spec(
                 )
             )
             effect_refs = effect_refs + mutation_effects
+            _observe_native_cfg_mutation(
+                state=native_cfg_observer_state,
+                spec=spec,
+                maturity=ctx.maturity,
+                pre_graph=pre_mutation_graph,
+                post_graph=new_graph,
+                plan=result.rewrite_plan,
+                mutation_status=mutation_status,
+                mutation_effects=mutation_effects,
+                edge_state_contracts=result.native_cfg_edge_contracts,
+                journal=journal,
+                session_id=session_id,
+                parent_attempt_id=(None if attempt is None else attempt.attempt_id),
+            )
             if mutation_status is not ExecutionAttemptStatus.COMPLETED:
                 terminal_status = mutation_status
                 terminal_reason = mutation_reason
@@ -908,6 +1053,70 @@ def _build_pass_worklists(
     return tuple(worklist), tuple(replay_after_pipeline)
 
 
+def _freeze_native_cfg_observer(
+    *,
+    state: _NativeCfgObserverRunState | None,
+    function_ea: int,
+    maturity: IRMaturity | None,
+    baseline_graph: object,
+    final_graph: object,
+    scheduled_pass_ids: tuple[str, ...],
+    journal: ExecutionJournalStore | None,
+    session_id: DecompilationSessionId | None,
+    parent_attempt_id: ExecutionAttemptId | None,
+) -> None:
+    if (
+        state is None
+        or state.failed
+        or not isinstance(maturity, IRMaturity)
+        or not isinstance(baseline_graph, FlowGraph)
+        or not isinstance(final_graph, FlowGraph)
+    ):
+        return
+    freeze_attempt = None
+    if journal is not None and session_id is not None:
+        freeze_attempt = _safe_begin_attempt(
+            journal,
+            session_id,
+            parent_attempt_id=parent_attempt_id,
+            stage_id="native-cfg-freeze",
+            domain=ExecutionDomain.NATIVE_NORMALIZATION,
+        )
+    try:
+        topology = state.observer.freeze_native_cfg_topology(
+            function_ea=function_ea,
+            maturity=maturity,
+            baseline_graph=baseline_graph,
+            final_graph=final_graph,
+            scheduled_pass_ids=scheduled_pass_ids,
+        )
+    except BaseException as exc:
+        state.failed = True
+        _safe_advance(
+            journal,
+            freeze_attempt,
+            status=ExecutionAttemptStatus.FAILED,
+            reason_code=_reason_code_for_exception(exc),
+            details={"scheduled_pass_ids": scheduled_pass_ids},
+        )
+        logger.warning(
+            "native CFG topology freeze failed; Stage C disabled for this run",
+            exc_info=True,
+        )
+        return
+    _safe_advance(
+        journal,
+        freeze_attempt,
+        status=(
+            ExecutionAttemptStatus.COMPLETED
+            if topology is not None
+            else ExecutionAttemptStatus.ABSTAINED
+        ),
+        reason_code=None if topology is not None else "no_eligible_cfg_changes",
+        details={"scheduled_pass_ids": scheduled_pass_ids},
+    )
+
+
 def run_pipeline(
     *,
     source,
@@ -950,6 +1159,7 @@ def run_pipeline(
     if journal is not None and session_id is None:
         session_id = DecompilationSessionId.new()
     graph = source.flow_graph
+    baseline_graph = graph
     ctx = FunctionPipelineContext(
         source=source,
         graph=graph,
@@ -991,6 +1201,11 @@ def run_pipeline(
     # caller supplies a journal (see the ``run_pipeline`` docstring).
     record_attempts = pipeline_v2_specs is not None and journal is not None
     effective_journal = journal if record_attempts else None
+    native_cfg_observer_state = None
+    if pipeline_v2_specs is not None:
+        observer = ctx.capabilities.optional(NativeCfgFreezeObserver)
+        if observer is not None:
+            native_cfg_observer_state = _NativeCfgObserverRunState(observer=observer)
 
     for spec in worklist:
         ctx = _run_pass_spec(
@@ -1003,6 +1218,7 @@ def run_pipeline(
             session_id=session_id if record_attempts else None,
             parent_attempt_id=parent_attempt_id,
             structural_shape=structural_shape,
+            native_cfg_observer_state=native_cfg_observer_state,
         )
 
     for spec in replay_after_pipeline:
@@ -1016,7 +1232,22 @@ def run_pipeline(
             session_id=session_id if record_attempts else None,
             parent_attempt_id=parent_attempt_id,
             structural_shape=structural_shape,
+            native_cfg_observer_state=native_cfg_observer_state,
         )
+
+    _freeze_native_cfg_observer(
+        state=native_cfg_observer_state,
+        function_ea=source.func_ea,
+        maturity=ctx.maturity,
+        baseline_graph=baseline_graph,
+        final_graph=ctx.graph,
+        scheduled_pass_ids=tuple(
+            spec.pass_id for spec in (*worklist, *replay_after_pipeline)
+        ),
+        journal=effective_journal,
+        session_id=session_id if record_attempts else None,
+        parent_attempt_id=parent_attempt_id,
+    )
 
     if record_attempts:
         scheduled_ids = {spec.pass_id for spec in worklist}
