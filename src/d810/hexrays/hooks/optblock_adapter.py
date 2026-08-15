@@ -185,7 +185,7 @@ def _optblock_callback_exception_context(
 
 
 def _report_optblock_callback_exception(blk: object, error: Exception) -> None:
-    """Log and publish one callback exception before the SWIG bridge rethrows."""
+    """Best-effort log and publication for one swallowed SWIG callback error."""
     try:
         func_ea, maturity, block_serial, block_ea, block_anchor = (
             _optblock_callback_exception_context(blk)
@@ -543,6 +543,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         )
 
     def func(self, blk: ida_hexrays.mblock_t):
+        """Never propagate a Python exception through Hex-Rays' SWIG bridge."""
         try:
             result = self._func(blk)
             if (
@@ -554,7 +555,17 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             return result
         except Exception as error:
             _report_optblock_callback_exception(blk, error)
-            raise
+            # IDA may keep optimizing after a Python exception crosses this
+            # C++ callback boundary, with an MBA whose transient state is no
+            # longer trustworthy.  This is also the final containment point
+            # for external request watchdogs (for example MCP's profile-based
+            # timeout) that can raise at an arbitrary Python call or return.
+            # Disable the rest of this maturity and ask Hex-Rays for no retry.
+            try:
+                self._pass_count = self._max_passes_current + 1
+            except Exception:
+                pass
+            return 0
 
     def _func(self, blk: ida_hexrays.mblock_t):
         if self.log_info_on_input(blk):
@@ -631,6 +642,14 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         except sqlite3.DatabaseError as e:
             optimizer_logger.warning(
                 "DatabaseError in block optimizer on blk %d: %s", blk.serial, e
+            )
+            self._pass_count = self._max_passes_current + 1
+        except Exception as e:
+            # A rule can be interrupted by an external request watchdog which
+            # is not a D810Exception (e.g. ida_mcp.sync.IDASyncError). Keep it
+            # inside the Python callback and suppress this maturity.
+            optimizer_logger.warning(
+                "Exception in block optimizer on blk %d: %s", blk.serial, e
             )
             self._pass_count = self._max_passes_current + 1
         return 0

@@ -800,6 +800,20 @@ DAC_MASM_CASES = [
         skip_if_function_absent=True,
     ),
     DeobfuscationCase(
+        function="Eidolon_ComputeTwoQwordBufferHash",
+        description=(
+            "MurmurHash3-shaped 64-bit multiply/shift rotate pair. The exact "
+            "semantic lift must render both inner rotates as __ROL8__ helpers."
+        ),
+        project="eidolon_v3_const_solve.json",
+        obfuscated_contains=["0x88A129EA80000000", "0x4E8B26FE00000000"],
+        deobfuscated_contains=["__ROL8__"],
+        deobfuscated_regexes=[r"(?s)__ROL8__.*__ROL8__"],
+        must_change=True,
+        required_rules=["RotateIdiomRecoveryBlockRule"],
+        skip_if_function_absent=True,
+    ),
+    DeobfuscationCase(
         function="Eidolon_RunFiberWorker13",
         description=(
             "Live Eidolon worker-loop export. Guards the transaction preflight "

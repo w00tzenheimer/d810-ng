@@ -923,6 +923,73 @@
           "tags_any": []
         },
         "workflow_stage": "frontend_normalization"
+      },
+      {
+        "analyses": {
+          "provided": [],
+          "required": []
+        },
+        "backend_route": "mutation_backend",
+        "contract": {
+          "invalidates": {
+            "analyses": [],
+            "facts": []
+          },
+          "maturity": {
+            "max": null,
+            "min": null,
+            "preferred": null
+          },
+          "outputs": {
+            "evidence": [],
+            "facts": []
+          },
+          "preserves": {
+            "analyses": [],
+            "facts": []
+          },
+          "requires": {
+            "analyses": [],
+            "capabilities": [],
+            "evidence": [],
+            "facts": {
+              "optional": [],
+              "required": []
+            }
+          },
+          "safety": {
+            "policy": "default",
+            "requires_oracle": false
+          },
+          "scope": "function"
+        },
+        "granularity": "function",
+        "maturity_gates": [],
+        "options": {
+          "maturities": [
+            "GLOBAL_OPTIMIZED"
+          ]
+        },
+        "pass_id": "rotate-idiom-recovery",
+        "preservation": {
+          "all_preserved": true,
+          "kept": []
+        },
+        "requirements": {
+          "required": []
+        },
+        "safety_policy": {
+          "golden_required": false,
+          "name": "default"
+        },
+        "scheduler_policy": "worklist",
+        "target": {
+          "exclude_eas": [],
+          "include_eas": [],
+          "tags_all": [],
+          "tags_any": []
+        },
+        "workflow_stage": "frontend_normalization"
       }
     ],
     "pipeline_v2_mode": "config-v2"

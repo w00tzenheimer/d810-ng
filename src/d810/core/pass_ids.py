@@ -53,6 +53,9 @@ class PassId(enum.StrEnum):
     #: Bounded Egglog extraction with a proof-gated live hook implementation.
     MBA_EGGLOG = "mba-egglog"
 
+    #: Exact 64-bit compiler idiom lifting after bounded MBA simplification.
+    ROTATE_IDIOM_RECOVERY = "rotate-idiom-recovery"
+
     #: Constant folding / expression-level constant simplification.
     CONSTANT_SIMPLIFICATION = "constant-simplification"
 

@@ -33,6 +33,11 @@ from d810.passes.mba_egglog import (
     MBA_EGGLOG_PASS_ID,
     build_mba_egglog_pass,
 )
+from d810.passes.rotate_idiom_recovery import (
+    ROTATE_IDIOM_RECOVERY_IMPLEMENTATION,
+    ROTATE_IDIOM_RECOVERY_PASS_ID,
+    build_rotate_idiom_recovery_pass,
+)
 from d810.passes.pass_pipeline import PipelineConfig, PipelineConfigError
 from d810.passes.pipeline_config_parser import (
     PipelineV2Mode,
@@ -176,6 +181,11 @@ def _mba_egglog_options(config: PipelineConfig) -> dict[str, object]:
     }
 
 
+def _rotate_idiom_recovery_options(config: PipelineConfig) -> dict[str, object]:
+    adapter = build_rotate_idiom_recovery_pass(config)
+    return {"maturities": list(adapter.maturities)}
+
+
 def _flow_rule_from(config: PipelineConfig) -> RuleConfiguration:
     adapter = build_hook_transform_pass(config)
     return _rule_config(adapter.implementation_name, adapter.transform_options)
@@ -301,6 +311,14 @@ def pipeline_v2_hook_activation(project_config) -> PipelineV2HookActivation:
         if pass_id == MBA_EGGLOG_PASS_ID:
             instruction_rules.append(
                 _rule_config(MBA_EGGLOG_IMPLEMENTATION, _mba_egglog_options(config))
+            )
+            continue
+        if pass_id == ROTATE_IDIOM_RECOVERY_PASS_ID:
+            block_rules.append(
+                _rule_config(
+                    ROTATE_IDIOM_RECOVERY_IMPLEMENTATION,
+                    _rotate_idiom_recovery_options(config),
+                )
             )
             continue
         if pass_id in STATE_MACHINE_NATIVE_PASS_IDS:

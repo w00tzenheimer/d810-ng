@@ -1093,6 +1093,9 @@ class D810State(metaclass=SingletonMeta):
     def _build_known_block_rules(self) -> list:
         """Every block rule available to be matched against a config."""
         self._ensure_extension_rules_registered()
+        from d810.optimizers.microcode.instructions.peephole import (  # noqa: F401
+            rotate_idiom_recovery_native,
+        )
         return [
             rule_cls()
             for rule_cls in FlowOptimizationRule.registry.values()

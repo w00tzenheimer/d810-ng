@@ -10,6 +10,7 @@ from d810.passes.hook_transform_passes import register_hook_transform_passes
 from d810.passes.mba_simplify import register_mba_simplify_pass
 from d810.passes.mba_egglog import register_mba_egglog_pass
 from d810.passes.mba_solve import register_mba_solve_pass
+from d810.passes.rotate_idiom_recovery import register_rotate_idiom_recovery_pass
 from d810.passes.registry import PassRegistry
 from d810.passes.state_machine_spine import register_state_machine_passes
 
@@ -21,6 +22,7 @@ def register_operational_config_v2_passes(registry: PassRegistry) -> PassRegistr
     register_mba_simplify_pass(registry)
     register_mba_egglog_pass(registry)
     register_mba_solve_pass(registry)
+    register_rotate_idiom_recovery_pass(registry)
     register_constant_simplification_pass(registry)
     register_state_machine_passes(registry)
     register_hook_transform_passes(registry)

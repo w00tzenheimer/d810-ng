@@ -315,10 +315,10 @@ def test_callback_nop_delta_captures_nested_mop_d_instruction() -> None:
     assert records[0].payload["instruction_ea"] == "0x401014"
 
 
-def test_optblock_callback_exception_logs_typed_context_before_rethrow(
+def test_optblock_callback_exception_logs_typed_context_and_returns_zero(
     monkeypatch,
 ) -> None:
-    """The SWIG boundary must not hide the callback traceback or its anchor."""
+    """The SWIG boundary records arbitrary failures without rethrowing them."""
     block = _Block(
         serial=45,
         start=0x7FF859C07656,
@@ -359,8 +359,7 @@ def test_optblock_callback_exception_logs_typed_context_before_rethrow(
         def _func(_blk):
             raise TypeError("deliberate callback failure")
 
-    with pytest.raises(TypeError, match="deliberate callback failure"):
-        BlockOptimizerManager.func(_FailingManager(), block)
+    assert BlockOptimizerManager.func(_FailingManager(), block) == 0
 
     assert len(logged) == 1
     message, *args = logged[0][0]
@@ -430,21 +429,18 @@ def test_optblock_callback_damaged_start_clears_unpaired_block_serial(
         def _func(_blk):
             raise original
 
-    with pytest.raises(TypeError) as raised:
-        BlockOptimizerManager.func(_FailingManager(), block)
-
-    assert raised.value is original
+    assert BlockOptimizerManager.func(_FailingManager(), block) == 0
     assert len(observed) == 1
     assert observed[0]["block_serial"] is None
     assert observed[0]["block_ea"] is None
 
 
 @pytest.mark.parametrize("failure_site", ("traceback", "logger", "publisher"))
-def test_optblock_callback_diagnostic_failure_never_masks_original_error(
+def test_optblock_callback_diagnostic_failure_still_returns_zero(
     monkeypatch,
     failure_site: str,
 ) -> None:
-    """The SWIG boundary must preserve the original exception object exactly."""
+    """Diagnostics failures must not let the original error escape to SWIG."""
     block = _Block(serial=45, start=0x401000, end=0x401020, head=None)
     _Mba((block,))
     original = TypeError("original optimizer callback failure")
@@ -475,10 +471,7 @@ def test_optblock_callback_diagnostic_failure_never_masks_original_error(
         def _func(_blk):
             raise original
 
-    with pytest.raises(TypeError) as raised:
-        BlockOptimizerManager.func(_FailingManager(), block)
-
-    assert raised.value is original
+    assert BlockOptimizerManager.func(_FailingManager(), block) == 0
 
 
 def test_block_optimizer_reports_a_rule_nop_write_that_returns_zero() -> None:
