@@ -131,12 +131,7 @@ def test_structural_chain_nonmatch_is_an_explicit_provider_row(monkeypatch) -> N
         operator_count=1,
         total_node_count=3,
     )
-    monkeypatch.setattr(chain_handler, "minsn_to_ast", lambda _ins: object())
-    monkeypatch.setattr(
-        chain_handler,
-        "lower_hexrays_island",
-        lambda _ast, **_kwargs: SimpleNamespace(term=object(), profile=profile),
-    )
+    monkeypatch.setattr(rule, "_read_native_chain_profile", lambda _ins: profile)
 
     rule._begin_chain_attempt()
     rule._publish_chain_result(instruction, None, opcode=ida_hexrays.m_add)
@@ -145,6 +140,43 @@ def test_structural_chain_nonmatch_is_an_explicit_provider_row(monkeypatch) -> N
     assert outcome.status is ProviderOutcomeStatus.UNCHANGED
     assert outcome.fingerprint == "chain-island"
     assert outcome.metadata["rules_applied"] == 0
+
+
+def test_structural_chain_observation_reads_the_shared_native_view(monkeypatch) -> None:
+    class Rule(ChainSimplificationRule):
+        def check_and_replace(self, blk, ins):
+            del blk, ins
+            return None
+
+    rule = Rule()
+    instruction = SimpleNamespace(
+        d=SimpleNamespace(size=4),
+        l=SimpleNamespace(t=-1),
+        r=SimpleNamespace(t=-1),
+    )
+    profile = SimpleNamespace(
+        fingerprint="native-chain-island",
+        operator_count=2,
+        total_node_count=5,
+    )
+    direct_reads: list[tuple[object, int]] = []
+
+    class NativeView:
+        @classmethod
+        def from_instruction(cls, ins, *, destination_size):
+            direct_reads.append((ins, destination_size))
+            return SimpleNamespace(view=object(), profile=profile)
+
+    monkeypatch.setattr(chain_handler, "NativeMbaTermView", NativeView)
+    assert not hasattr(chain_handler, "minsn_to_ast")
+
+    rule._begin_chain_attempt()
+    rule._publish_chain_result(instruction, None, opcode=ida_hexrays.m_add)
+
+    outcome = rule.provider_outcomes()[0]
+    assert direct_reads == [(instruction, 4)]
+    assert outcome.fingerprint == "native-chain-island"
+    assert outcome.input_cost == (2, 5)
 
 
 def test_structural_chain_candidate_is_only_applied_after_outer_mutation_acceptance(
@@ -167,12 +199,7 @@ def test_structural_chain_candidate_is_only_applied_after_outer_mutation_accepta
         operator_count=2,
         total_node_count=4,
     )
-    monkeypatch.setattr(chain_handler, "minsn_to_ast", lambda _ins: object())
-    monkeypatch.setattr(
-        chain_handler,
-        "lower_hexrays_island",
-        lambda _ast, **_kwargs: SimpleNamespace(term=object(), profile=profile),
-    )
+    monkeypatch.setattr(rule, "_read_native_chain_profile", lambda _ins: profile)
 
     rule._begin_chain_attempt()
     rule._publish_chain_result(instruction, instruction, opcode=ida_hexrays.m_add)
@@ -198,12 +225,7 @@ def test_structural_chain_runtime_error_retains_exact_profile_and_one_error_row(
         operator_count=1,
         total_node_count=3,
     )
-    monkeypatch.setattr(chain_handler, "minsn_to_ast", lambda _ins: object())
-    monkeypatch.setattr(
-        chain_handler,
-        "lower_hexrays_island",
-        lambda _ast, **_kwargs: SimpleNamespace(term=object(), profile=profile),
-    )
+    monkeypatch.setattr(rule, "_read_native_chain_profile", lambda _ins: profile)
 
     rule._begin_chain_attempt()
     with pytest.raises(RuntimeError, match="chain failure"):

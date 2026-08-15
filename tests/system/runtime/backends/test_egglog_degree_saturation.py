@@ -892,6 +892,8 @@ def test_shadow_proves_real_native_terms_in_active_ast_runtime():
     x = _leaf("x", 1, ast_module=ast_dispatcher)
     y = _leaf("y", 2, ast_module=ast_dispatcher)
     replacement = _node(ida_hexrays.m_add, x, y, ast_module=ast_dispatcher)
+    replacement_lowering = lower_hexrays_island(replacement, destination_size=4)
+    assert replacement_lowering.term is not None
 
     (
         proved,
@@ -905,6 +907,7 @@ def test_shadow_proves_real_native_terms_in_active_ast_runtime():
         candidate,
         replacement,
         original_term=original.term,
+        replacement_term=replacement_lowering.term,
         selected=("add", "Add_HackersDelightRule_2", ("Add_OllvmRule_3",)),
         width=32,
     )
@@ -916,6 +919,40 @@ def test_shadow_proves_real_native_terms_in_active_ast_runtime():
     assert legacy_verdict is True
     assert template_elapsed_ms is not None
     assert legacy_elapsed_ms is not None
+
+
+def test_shadow_template_uses_selected_replacement_term_without_relowering(
+    monkeypatch,
+):
+    import d810.optimizers.microcode.instructions.egraph.egglog_handler as handler_module
+
+    candidate = _direct_add_candidate(ast_module=ast_dispatcher)
+    handler = _configured_live_handler(native_proof_mode="shadow")
+    original = lower_hexrays_island(candidate, destination_size=4)
+    assert original.term is not None
+    x = _leaf("x", 1, ast_module=ast_dispatcher)
+    y = _leaf("y", 2, ast_module=ast_dispatcher)
+    replacement = _node(ida_hexrays.m_add, x, y, ast_module=ast_dispatcher)
+    replacement_lowering = lower_hexrays_island(replacement, destination_size=4)
+    assert replacement_lowering.term is not None
+    monkeypatch.setattr(
+        handler_module,
+        "lower_hexrays_island",
+        lambda *_args, **_kwargs: pytest.fail(
+            "template shadow must consume the selected replacement term"
+        ),
+    )
+
+    proved, *_rest = handler._prove_selected_replacement(
+        candidate,
+        replacement,
+        original_term=original.term,
+        replacement_term=replacement_lowering.term,
+        selected=("add", "Add_HackersDelightRule_2", ("Add_OllvmRule_3",)),
+        width=32,
+    )
+
+    assert proved is True
 
 
 def test_live_handler_native_z3_failure_records_skip_without_creating_mop(monkeypatch):

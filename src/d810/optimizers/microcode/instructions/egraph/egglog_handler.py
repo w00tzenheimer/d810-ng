@@ -459,6 +459,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
                 ast,
                 replacement,
                 original_term=lowering.term,
+                replacement_term=replacement_term,
                 selected=selected,
                 width=width,
             )
@@ -932,6 +933,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         replacement: AstNode,
         *,
         original_term,
+        replacement_term,
         selected: tuple[str, str, tuple[str, ...]],
         width: int,
     ) -> tuple[
@@ -977,25 +979,15 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         if template is None:
             fallback_reason = "template_unavailable"
         else:
-            replacement_lowering = lower_hexrays_island(
-                replacement, destination_size=width // 8
-            )
-            if replacement_lowering.term is None:
+            validation = template.validate_terms(original_term, replacement_term)
+            if validation is None:
                 fallback_reason = "shape_mismatch"
             else:
-                validation = template.validate_terms(
-                    original_term, replacement_lowering.term
-                )
-                if validation is None:
-                    fallback_reason = "shape_mismatch"
-                else:
-                    template_started = time.perf_counter()
-                    template_proved = template.prove_validation(validation)
-                    template_elapsed_ms = (
-                        time.perf_counter() - template_started
-                    ) * 1000.0
-                    if not template_proved:
-                        fallback_reason = "template_proof_failed"
+                template_started = time.perf_counter()
+                template_proved = template.prove_validation(validation)
+                template_elapsed_ms = (time.perf_counter() - template_started) * 1000.0
+                if not template_proved:
+                    fallback_reason = "template_proof_failed"
         legacy_started = time.perf_counter()
         legacy_proved = self._prove_ast_equivalence(original, replacement, width=width)
         legacy_elapsed_ms = (time.perf_counter() - legacy_started) * 1000.0

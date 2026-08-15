@@ -4,8 +4,7 @@ from dataclasses import replace
 
 import ida_hexrays
 
-from d810.backends.mba.hexrays_island import lower_hexrays_island
-from d810.hexrays.ir.minsn_utils import minsn_to_ast
+from d810.backends.mba.native_mba_term_view import NativeMbaTermView
 from d810.mba.provider_outcome import (
     MbaProviderKind,
     MbaProviderOutcome,
@@ -109,16 +108,12 @@ class ChainSimplificationRule(InstructionOptimizationRule):
         if self._attempt_started is not None:
             elapsed_ms = max(0.0, (time.monotonic() - self._attempt_started) * 1000.0)
         try:
-            input_ast = minsn_to_ast(ins)
-            destination_size = int(ins.d.size)
-            lowering = lower_hexrays_island(
-                input_ast, destination_size=destination_size
-            )
-            if input_ast is None or lowering.term is None:
+            input_profile = self._read_native_chain_profile(ins)
+            if input_profile is None:
                 raise ValueError("native chain island profile unavailable")
             input_cost = (
-                lowering.profile.operator_count,
-                lowering.profile.total_node_count,
+                input_profile.operator_count,
+                input_profile.total_node_count,
             )
             native_metadata = self._native_profile_metadata(lowering.profile)
             if new_ins is None:
@@ -126,7 +121,7 @@ class ChainSimplificationRule(InstructionOptimizationRule):
                     MbaProviderOutcome(
                         provider=MbaProviderKind.STRUCTURAL_CHAIN,
                         status=ProviderOutcomeStatus.UNCHANGED,
-                        fingerprint=lowering.profile.fingerprint,
+                        fingerprint=input_profile.fingerprint,
                         input_cost=input_cost,
                         elapsed_ms=elapsed_ms,
                         refusal_reason="no_match",
@@ -140,23 +135,18 @@ class ChainSimplificationRule(InstructionOptimizationRule):
                     )
                 )
                 return
-            output_ast = minsn_to_ast(new_ins)
-            if output_ast is None:
-                raise ValueError("native chain output profile unavailable")
-            output_lowering = lower_hexrays_island(
-                output_ast, destination_size=destination_size
-            )
-            if output_lowering.term is None:
+            output_profile = self._read_native_chain_profile(new_ins)
+            if output_profile is None:
                 raise ValueError("native chain output profile unavailable")
             self._publish_provider_outcome(
                 MbaProviderOutcome(
                     provider=MbaProviderKind.STRUCTURAL_CHAIN,
                     status=ProviderOutcomeStatus.IMPROVED,
-                    fingerprint=lowering.profile.fingerprint,
+                    fingerprint=input_profile.fingerprint,
                     input_cost=input_cost,
                     output_cost=(
-                        output_lowering.profile.operator_count,
-                        output_lowering.profile.total_node_count,
+                        output_profile.operator_count,
+                        output_profile.total_node_count,
                     ),
                     elapsed_ms=elapsed_ms,
                     metadata={
@@ -193,16 +183,12 @@ class ChainSimplificationRule(InstructionOptimizationRule):
         input_cost = None
         fingerprint = "profile_unavailable"
         try:
-            input_ast = minsn_to_ast(ins)
-            lowering = lower_hexrays_island(
-                input_ast,
-                destination_size=int(ins.d.size),
-            )
-            if input_ast is not None and lowering.term is not None:
-                fingerprint = lowering.profile.fingerprint
+            profile = self._read_native_chain_profile(ins)
+            if profile is not None:
+                fingerprint = profile.fingerprint
                 input_cost = (
-                    lowering.profile.operator_count,
-                    lowering.profile.total_node_count,
+                    profile.operator_count,
+                    profile.total_node_count,
                 )
         except Exception:
             pass
@@ -223,6 +209,19 @@ class ChainSimplificationRule(InstructionOptimizationRule):
                 },
             )
         )
+
+    @staticmethod
+    def _read_native_chain_profile(ins):
+        """Return the shared direct native profile without constructing an AST."""
+
+        destination = getattr(ins, "d", None)
+        destination_size = getattr(destination, "size", None)
+        if type(destination_size) is not int:
+            return None
+        result = NativeMbaTermView.from_instruction(
+            ins, destination_size=destination_size
+        )
+        return result.profile if result.view is not None else None
 
     def _finalize_candidate_outcome(
         self, *, accepted: bool, reason: str | None = None
