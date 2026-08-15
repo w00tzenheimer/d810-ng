@@ -28,6 +28,7 @@ from d810.backends.ida.native_patch.gateway import (
 from d810.backends.ida.native_patch.issuer import (
     NativePatchIssuerContract,
     NativePatchIssuerRegistry,
+    stage_c_native_cfg_issuer,
 )
 from d810.backends.ida.native_patch.journal import SQLiteNativePatchJournal
 from d810.capabilities.native_patch import NativeJournalState
@@ -281,6 +282,15 @@ class FailingCertificateBlobStore(FakeBlobStore):
         super().set_native_patch_blob(scope, key, payload)
 
 
+class CrashingStageCCertificateUpdateBlobStore(FakeBlobStore):
+    """Models process death after the Stage C receipt but before cert update."""
+
+    def set_native_patch_blob(self, scope, key, payload):
+        if scope == "certificate" and payload.get("schema_version") == 3:
+            raise KeyboardInterrupt("injected: Stage C certificate update crash")
+        super().set_native_patch_blob(scope, key, payload)
+
+
 @dataclasses.dataclass
 class Gateway:
     """Bundle of a gateway plus the fakes/journal that back it, so tests can
@@ -308,7 +318,20 @@ def _issuer_registry() -> NativePatchIssuerRegistry:
                 proof_ids=frozenset({"proof-1"}),
                 provenance=("test",),
             ),
+            stage_c_native_cfg_issuer(),
         )
+    )
+
+
+def _stage_c_plan():
+    plan = fixtures.plan(plan_id="stage-c-plan")
+    return dataclasses.replace(
+        plan,
+        patch_class="semantic_deobfuscation",
+        issuer_id="stage-c-native-cfg-normalizer",
+        proof_id="native-cfg-intent-v1:test",
+        proof_hash=plan.target_cfg_fingerprint,
+        provenance=("stage-c-native-cfg", "mutation:test"),
     )
 
 
@@ -493,9 +516,12 @@ class TestApplySuccess:
         assert before != rig.db.bytes
 
     def test_stage_c_postcondition_persists_observed_whole_cfg(self, rig) -> None:
-        plan = fixtures.plan()
+        plan = _stage_c_plan()
         receipt = rig.gateway.apply(plan)
         assert receipt.certificate is not None
+        assert not receipt.ok
+        assert receipt.postcondition_pending
+        assert receipt.state is NativeJournalState.POSTCONDITION_PENDING
 
         receipt_id, certificate = rig.gateway.record_native_cfg_postcondition_receipt(
             plan=plan,
@@ -519,10 +545,166 @@ class TestApplySuccess:
             plan.target_cfg_fingerprint
         )
         assert (
+            rig.journal.get(receipt.transaction_id).state
+            is NativeJournalState.CERTIFIED
+        )
+        assert (
             rig.gateway.lookup_certificate(
                 plan.function_identity.entry_ea, plan.database_identity
             ).observed_native_cfg_fingerprint
             == plan.target_cfg_fingerprint
+        )
+
+    def test_stage_c_authorization_reports_applied_while_postcondition_is_pending(
+        self, rig
+    ) -> None:
+        result = authorize_and_apply(
+            NativeNormalizationRequest(plan=_stage_c_plan(), user_enabled=True),
+            gateway=rig.gateway,
+        )
+
+        assert result.outcome is NativeNormalizationOutcome.APPLIED
+        assert result.apply_receipt.postcondition_pending
+        assert not result.apply_receipt.ok
+
+    def test_stage_c_crash_before_observation_is_startup_recoverable(self, rig) -> None:
+        plan = _stage_c_plan()
+        before = dict(rig.db.bytes)
+
+        receipt = rig.gateway.apply(plan)
+
+        assert receipt.state is NativeJournalState.POSTCONDITION_PENDING
+        assert rig.db.bytes != before
+        recovered = recover_startup(
+            journal=rig.journal,
+            gateway=rig.gateway,
+            database_identity="idb-1",
+        )
+        assert recovered == (receipt.transaction_id,)
+        assert (
+            rig.journal.get(receipt.transaction_id).state is NativeJournalState.RESTORED
+        )
+        assert rig.db.bytes == before
+        assert (
+            rig.gateway.lookup_certificate(
+                plan.function_identity.entry_ea, plan.database_identity
+            )
+            is None
+        )
+
+    def test_stage_c_failed_postcondition_can_restore_pending_overlay(
+        self, rig
+    ) -> None:
+        plan = _stage_c_plan()
+        before = dict(rig.db.bytes)
+        receipt = rig.gateway.apply(plan)
+
+        restored = rig.gateway.restore(receipt.transaction_id)
+
+        assert restored.ok
+        assert rig.db.bytes == before
+        assert (
+            rig.gateway.lookup_certificate(
+                plan.function_identity.entry_ea, plan.database_identity
+            )
+            is None
+        )
+
+    def test_stage_c_crash_after_receipt_before_certificate_is_recoverable(
+        self, tmp_path
+    ) -> None:
+        blobs = CrashingStageCCertificateUpdateBlobStore()
+        rig = build_gateway(tmp_path, (fixtures.operation(),), blobs=blobs)
+        plan = _stage_c_plan()
+        before = dict(rig.db.bytes)
+        try:
+            receipt = rig.gateway.apply(plan)
+            with pytest.raises(
+                KeyboardInterrupt, match="Stage C certificate update crash"
+            ):
+                rig.gateway.record_native_cfg_postcondition_receipt(
+                    plan=plan,
+                    certificate=receipt.certificate,
+                    transaction_id=receipt.transaction_id,
+                    observed_native_cfg_fingerprint=plan.target_cfg_fingerprint,
+                    live_flowchart_fingerprint="live-physical-flowchart",
+                )
+
+            evidence_rows = [
+                payload
+                for (scope, _key), payload in blobs._data.items()  # noqa: SLF001
+                if scope == "native_cfg_postcondition_receipt"
+            ]
+            assert len(evidence_rows) == 1
+            assert (
+                rig.journal.get(receipt.transaction_id).state
+                is NativeJournalState.POSTCONDITION_PENDING
+            )
+            assert recover_startup(
+                journal=rig.journal,
+                gateway=rig.gateway,
+                database_identity="idb-1",
+            ) == (receipt.transaction_id,)
+            assert rig.db.bytes == before
+            assert (
+                rig.journal.get(receipt.transaction_id).state
+                is NativeJournalState.RESTORED
+            )
+            assert (
+                rig.gateway.lookup_certificate(
+                    plan.function_identity.entry_ea, plan.database_identity
+                )
+                is None
+            )
+        finally:
+            rig.journal.close()
+
+    def test_stage_c_crash_after_persistence_before_terminal_transition_recovers(
+        self, rig
+    ) -> None:
+        plan = _stage_c_plan()
+        before = dict(rig.db.bytes)
+        receipt = rig.gateway.apply(plan)
+        original_transition = rig.journal.transition
+
+        def _crash_before_certified(transaction_id, new_state, *, note=None):
+            if new_state is NativeJournalState.CERTIFIED:
+                raise KeyboardInterrupt("injected: Stage C terminal transition crash")
+            return original_transition(transaction_id, new_state, note=note)
+
+        rig.journal.transition = _crash_before_certified
+        with pytest.raises(KeyboardInterrupt, match="terminal transition crash"):
+            rig.gateway.record_native_cfg_postcondition_receipt(
+                plan=plan,
+                certificate=receipt.certificate,
+                transaction_id=receipt.transaction_id,
+                observed_native_cfg_fingerprint=plan.target_cfg_fingerprint,
+                live_flowchart_fingerprint="live-physical-flowchart",
+            )
+        rig.journal.transition = original_transition
+
+        stored = rig.gateway.lookup_certificate(
+            plan.function_identity.entry_ea, plan.database_identity
+        )
+        assert stored.observed_native_cfg_fingerprint == plan.target_cfg_fingerprint
+        assert (
+            rig.journal.get(receipt.transaction_id).state
+            is NativeJournalState.POSTCONDITION_PENDING
+        )
+        assert recover_startup(
+            journal=rig.journal,
+            gateway=rig.gateway,
+            database_identity="idb-1",
+        ) == (receipt.transaction_id,)
+        assert rig.db.bytes == before
+        assert (
+            rig.journal.get(receipt.transaction_id).state is NativeJournalState.RESTORED
+        )
+        assert (
+            rig.gateway.lookup_certificate(
+                plan.function_identity.entry_ea, plan.database_identity
+            )
+            is None
         )
 
     def test_apply_reanalyzes_the_owning_function_and_waits(self, rig) -> None:

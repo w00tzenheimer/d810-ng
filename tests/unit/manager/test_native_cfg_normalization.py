@@ -6,6 +6,11 @@ import pytest
 
 from types import SimpleNamespace
 
+from d810.backends.ida.native_patch.gateway import NativeApplyReceipt
+from d810.capabilities.native_patch import (
+    NativeJournalState,
+    NativePatchTransactionId,
+)
 from d810.core.execution_journal import (
     DecompilationSessionId,
     ExecutionAttemptId,
@@ -275,10 +280,14 @@ def _normalizer(
         operations=(),
         target_cfg_fingerprint="target-native-cfg",
     )
-    transaction_id = SimpleNamespace(value="transaction-1")
+    transaction_id = NativePatchTransactionId(value="transaction-1")
     normalization = NativeNormalizationResult(
         outcome=NativeNormalizationOutcome.APPLIED,
-        apply_receipt=SimpleNamespace(transaction_id=transaction_id),
+        apply_receipt=NativeApplyReceipt(
+            transaction_id=transaction_id,
+            state=NativeJournalState.POSTCONDITION_PENDING,
+            certificate=None,
+        ),
         certificate=None,
         reason=None,
     )
@@ -336,6 +345,8 @@ def test_stage_c_success_is_terminal_and_blocks_stage_b() -> None:
     assert result.normalization.certificate.observed_native_cfg_fingerprint == (
         "target-native-cfg"
     )
+    assert result.normalization.apply_receipt.state is NativeJournalState.CERTIFIED
+    assert result.normalization.apply_receipt.ok
     assert len(gateway.native_cfg_receipts) == 1
     assert gateway.restored == []
     assert journal.advances[-1]["status"] is ExecutionAttemptStatus.COMPLETED

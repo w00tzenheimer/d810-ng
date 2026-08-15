@@ -81,6 +81,11 @@ entry point that creates a row, always landing directly on ``PREPARED``. A
 with no row raises :class:`IllegalNativeJournalTransition` with
 ``current=None`` -- see ``test_bytes_applied_requires_a_durable_prepared_record``
 in the implementer plan's Task 2 Step 2.
+
+``CERTIFICATE_PENDING`` and ``POSTCONDITION_PENDING`` are later safety
+refinements of the same principle: external certificate writes and Stage C's
+independent native-CFG observation remain inside an automatic recovery lane
+until their terminal authority is durable.
 """
 
 from __future__ import annotations
@@ -328,6 +333,7 @@ class NativeJournalState(str, enum.Enum):
     ANALYSIS_VALIDATED = "ANALYSIS_VALIDATED"
     CACHE_INVALIDATED = "CACHE_INVALIDATED"
     CERTIFICATE_PENDING = "CERTIFICATE_PENDING"
+    POSTCONDITION_PENDING = "POSTCONDITION_PENDING"
     CERTIFIED = "CERTIFIED"
     ROLLING_BACK = "ROLLING_BACK"
     RESTORING = "RESTORING"
@@ -406,6 +412,19 @@ _LEGAL_NATIVE_JOURNAL_TRANSITIONS: dict[
     NativeJournalState.CERTIFICATE_PENDING: frozenset(
         {
             NativeJournalState.CERTIFIED,
+            NativeJournalState.POSTCONDITION_PENDING,
+            NativeJournalState.ROLLING_BACK,
+            NativeJournalState.RECOVERY_REQUIRED,
+        }
+    ),
+    # Stage C has a second independent authority boundary: patched native
+    # bytes must reproduce the frozen CFG/C-tree while optimizer hooks are
+    # suppressed.  Until that observed receipt and upgraded certificate are
+    # durable, process death must retain an automatic rollback route.
+    NativeJournalState.POSTCONDITION_PENDING: frozenset(
+        {
+            NativeJournalState.CERTIFIED,
+            NativeJournalState.RESTORING,
             NativeJournalState.ROLLING_BACK,
             NativeJournalState.RECOVERY_REQUIRED,
         }

@@ -140,14 +140,18 @@ _POST_BYTES_STATES = frozenset(
         NativeJournalState.ANALYSIS_VALIDATED,
         NativeJournalState.CACHE_INVALIDATED,
         NativeJournalState.CERTIFICATE_PENDING,
+        NativeJournalState.POSTCONDITION_PENDING,
         NativeJournalState.CERTIFIED,
     }
 )
 
 # These are the states where an interrupted apply has a reversible, durable
 # before-image and the gateway's emergency lane can still transition to its
-# rollback/recovery outcome. ``CERTIFICATE_PENDING`` is deliberately included:
-# a certificate is not complete until its external blob/link writes finish.
+# rollback/recovery outcome. ``CERTIFICATE_PENDING`` and
+# ``POSTCONDITION_PENDING`` are deliberately included: a certificate is not
+# complete until its external blob/link writes finish, and a Stage C
+# certificate is not authoritative until its independent live observation is
+# durably linked to the terminal transition.
 # Restore-lane states have their own resumable reconciliation path.
 _STARTUP_RECOVERABLE_STATES = frozenset(
     {
@@ -158,6 +162,7 @@ _STARTUP_RECOVERABLE_STATES = frozenset(
         NativeJournalState.ANALYSIS_VALIDATED,
         NativeJournalState.CACHE_INVALIDATED,
         NativeJournalState.CERTIFICATE_PENDING,
+        NativeJournalState.POSTCONDITION_PENDING,
         NativeJournalState.RESTORING,
         NativeJournalState.RESTORE_BYTES_RESTORED,
         NativeJournalState.RESTORE_FAILED,

@@ -208,7 +208,8 @@ class NativePatchRestoreNotCertified(NativePatchGatewayError):
     def __init__(self, state: NativeJournalState):
         self.state = state
         super().__init__(
-            f"restore requires a CERTIFIED transaction; current state is {state.value}"
+            "restore requires a CERTIFIED transaction or a pending Stage C "
+            f"postcondition; current state is {state.value}"
         )
 
 
@@ -279,6 +280,10 @@ class NativeApplyReceipt:
     @property
     def ok(self) -> bool:
         return self.state is NativeJournalState.CERTIFIED
+
+    @property
+    def postcondition_pending(self) -> bool:
+        return self.state is NativeJournalState.POSTCONDITION_PENDING
 
 
 @dataclass(frozen=True, slots=True)
@@ -440,7 +445,12 @@ class NativePatchGateway:
             )
             self._store_certificate(plan, certificate, record.transaction_id)
             record = self._journal.transition(
-                record.transaction_id, NativeJournalState.CERTIFIED
+                record.transaction_id,
+                (
+                    NativeJournalState.POSTCONDITION_PENDING
+                    if plan.issuer_id == "stage-c-native-cfg-normalizer"
+                    else NativeJournalState.CERTIFIED
+                ),
             )
 
             return NativeApplyReceipt(
@@ -779,6 +789,16 @@ class NativePatchGateway:
             raise ValueError("certificate target CFG does not match the Stage C plan")
         if observed_native_cfg_fingerprint != plan.target_cfg_fingerprint:
             raise ValueError("observed native CFG does not match the frozen target")
+        record = self._journal.get(transaction_id)
+        if record is None:
+            raise ValueError("Stage C transaction is missing")
+        self._require_current_database(record)
+        if record.plan_id != plan.plan_id or record.plan_hash != plan.plan_hash:
+            raise ValueError("Stage C transaction does not own this plan")
+        if record.state is not NativeJournalState.POSTCONDITION_PENDING:
+            raise ValueError(
+                "Stage C postcondition requires a POSTCONDITION_PENDING transaction"
+            )
         link = self._certificate_store.get_native_patch_blob(
             "certificate_transaction", transaction_id.value
         )
@@ -818,6 +838,7 @@ class NativePatchGateway:
         self._certificate_store.set_native_patch_blob(
             "certificate", key, certificate_to_payload(updated)
         )
+        self._journal.transition(transaction_id, NativeJournalState.CERTIFIED)
         return receipt_id, updated
 
     def _record_preflight_receipt(
@@ -1111,6 +1132,12 @@ class NativePatchGateway:
         elif record.state is NativeJournalState.CERTIFIED:
             record = self._journal.transition(
                 transaction_id, NativeJournalState.RESTORING
+            )
+        elif record.state is NativeJournalState.POSTCONDITION_PENDING:
+            record = self._journal.transition(
+                transaction_id,
+                NativeJournalState.RESTORING,
+                note="Stage C postcondition failed; restoring pending overlay",
             )
         elif record.state not in {
             NativeJournalState.RESTORING,
@@ -1482,7 +1509,10 @@ class NativePatchGateway:
         if record.state in _TERMINAL_STATES:
             return
 
-        if record.state is NativeJournalState.CERTIFICATE_PENDING:
+        if record.state in {
+            NativeJournalState.CERTIFICATE_PENDING,
+            NativeJournalState.POSTCONDITION_PENDING,
+        }:
             try:
                 certificate_revoked = self._revoke_certificate(transaction_id)
             except Exception:

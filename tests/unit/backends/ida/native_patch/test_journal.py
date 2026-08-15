@@ -454,6 +454,42 @@ class TestLegalTransitions:
             record = store.transition(tx, target)
             assert record.state is target
 
+    def test_stage_c_postcondition_remains_recoverable_until_certified(
+        self, store
+    ) -> None:
+        record = store.prepare(fixtures.plan())
+        tx = record.transaction_id
+        for target in (
+            NativeJournalState.BYTES_APPLIED,
+            NativeJournalState.ANALYSIS_PENDING,
+            NativeJournalState.ANALYSIS_VALIDATED,
+            NativeJournalState.CACHE_INVALIDATED,
+            NativeJournalState.CERTIFICATE_PENDING,
+            NativeJournalState.POSTCONDITION_PENDING,
+        ):
+            record = store.transition(tx, target)
+            assert record.state is target
+
+        assert store.recoverable_transaction_ids(database_identity="idb-1") == (tx,)
+        record = store.transition(tx, NativeJournalState.CERTIFIED)
+        assert record.state is NativeJournalState.CERTIFIED
+        assert store.recoverable_transaction_ids(database_identity="idb-1") == ()
+
+    def test_stage_c_pending_postcondition_can_enter_restore_lane(self, store) -> None:
+        record = store.prepare(fixtures.plan())
+        tx = record.transaction_id
+        for target in (
+            NativeJournalState.BYTES_APPLIED,
+            NativeJournalState.ANALYSIS_PENDING,
+            NativeJournalState.ANALYSIS_VALIDATED,
+            NativeJournalState.CACHE_INVALIDATED,
+            NativeJournalState.CERTIFICATE_PENDING,
+            NativeJournalState.POSTCONDITION_PENDING,
+            NativeJournalState.RESTORING,
+        ):
+            record = store.transition(tx, target)
+        assert record.state is NativeJournalState.RESTORING
+
     def test_metadata_owning_plan_must_pass_through_metadata_applied(
         self, store
     ) -> None:

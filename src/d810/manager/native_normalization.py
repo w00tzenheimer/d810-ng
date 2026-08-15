@@ -39,6 +39,7 @@ from d810.backends.ida.native_patch.gateway import (
     NativePatchGateway,
 )
 from d810.capabilities.native_patch import (
+    NativeJournalState,
     NativePatchJournalStore,
     NativePatchTransactionId,
 )
@@ -169,7 +170,10 @@ def authorize_and_apply(
         )
 
     receipt = gateway.apply(plan)
-    if receipt.ok:
+    if receipt.ok or (
+        plan.issuer_id == "stage-c-native-cfg-normalizer"
+        and receipt.state is NativeJournalState.POSTCONDITION_PENDING
+    ):
         return NativeNormalizationResult(
             outcome=NativeNormalizationOutcome.APPLIED,
             apply_receipt=receipt,

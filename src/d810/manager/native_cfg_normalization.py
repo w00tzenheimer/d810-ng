@@ -8,6 +8,7 @@ from d810.backends.ida.native_patch.native_cfg_plan import (
     build_native_cfg_plan,
     capture_database_attestation,
 )
+from d810.capabilities.native_patch import NativeJournalState
 from d810.core.execution_journal import (
     DecompilationSessionId,
     ExecutionAttemptId,
@@ -354,7 +355,16 @@ class ManagerOwnedNativeCfgNormalizer:
                         effects.append(
                             ExecutionEffectRef("native_cfg_postcondition", receipt_id)
                         )
-                        outcome = replace(outcome, certificate=updated_certificate)
+                        finalized_receipt = replace(
+                            outcome.apply_receipt,
+                            state=NativeJournalState.CERTIFIED,
+                            certificate=updated_certificate,
+                        )
+                        outcome = replace(
+                            outcome,
+                            apply_receipt=finalized_receipt,
+                            certificate=updated_certificate,
+                        )
                     except Exception as error:
                         mismatch = (
                             "NATIVE_CFG_POSTCONDITION_PERSIST_FAILED: "
