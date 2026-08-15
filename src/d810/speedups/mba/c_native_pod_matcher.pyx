@@ -21,6 +21,7 @@ DEF OP_XOR = 8
 DEF MAX_POD_NODES = 32
 DEF MAX_POD_BINDINGS = 16
 DEF MAX_POD_RESULTS = 64
+DEF MAX_POD_COMPARISONS = 256
 
 
 cdef struct MatchCounter:
@@ -426,7 +427,7 @@ def match_pod_pattern(
     cdef object record
     if variable_count < 0 or comparison_budget <= 0:
         raise ValueError("variable_count and comparison_budget must be positive")
-    if comparison_budget > MAX_POD_RESULTS:
+    if comparison_budget > MAX_POD_COMPARISONS:
         raise ValueError("POD matcher fixed capacity exceeded")
     if not pattern_rows or candidate_root_index < 0:
         return (), 0, 0, False
@@ -493,7 +494,7 @@ def match_pod_catalogue(
 
     if comparison_budget <= 0:
         raise ValueError("comparison_budget must be positive")
-    if comparison_budget > MAX_POD_RESULTS:
+    if comparison_budget > MAX_POD_COMPARISONS:
         raise ValueError("POD matcher fixed capacity exceeded")
     if candidate_root_index < 0:
         return (), 0, 0, False

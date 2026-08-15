@@ -36,7 +36,10 @@ _KIND_LEAF = 2
 _KIND_OPERATOR = 3
 _MISSING_INDEX = -1
 _AC_OPERATIONS = frozenset({"add", "and", "mul", "or", "xor"})
-_MAX_CYTHON_COMPARISONS = 64
+# The handler owns one semantic comparison ceiling.  Result storage is a
+# separate fixed capacity: reaching it returns a bounded no-op rather than
+# lowering the number of comparisons that the live path may explore.
+_MAX_CYTHON_COMPARISONS = 256
 
 if CythonMode().is_enabled():
     try:

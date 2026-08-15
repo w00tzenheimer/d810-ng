@@ -177,16 +177,33 @@ def test_cython_pod_matcher_rejects_pattern_rows_above_fixed_capacity() -> None:
 @pytest.mark.skipif(
     not CythonMode().is_enabled(), reason="requires the Cython POD matcher"
 )
-def test_cython_pod_matcher_rejects_comparison_budget_above_result_capacity() -> None:
-    """The native result collector is intentionally bounded to production work."""
+def test_cython_pod_matcher_accepts_handler_comparison_budget() -> None:
+    """The fixed result buffer must not lower the handler's work budget."""
 
     from d810.speedups.mba.c_native_pod_matcher import match_pod_pattern
 
     pattern_rows = ((2, 0, -1, 0, 0, -1, -1),)
     candidate_rows = ((2, 0, 32, -1, -1, 0, 0, 0, 0),)
 
+    assert match_pod_pattern(pattern_rows, candidate_rows, 0, 0, 256) == (
+        ((),),
+        1,
+        0,
+        False,
+    )
+
+
+@pytest.mark.skipif(
+    not CythonMode().is_enabled(), reason="requires the Cython POD matcher"
+)
+def test_cython_pod_matcher_rejects_comparison_budget_above_fixed_work_limit() -> None:
+    from d810.speedups.mba.c_native_pod_matcher import match_pod_pattern
+
+    pattern_rows = ((2, 0, -1, 0, 0, -1, -1),)
+    candidate_rows = ((2, 0, 32, -1, -1, 0, 0, 0, 0),)
+
     with pytest.raises(ValueError, match="fixed capacity"):
-        match_pod_pattern(pattern_rows, candidate_rows, 0, 0, 65)
+        match_pod_pattern(pattern_rows, candidate_rows, 0, 0, 257)
 
 
 @pytest.mark.skipif(
@@ -346,6 +363,47 @@ def test_public_catalogue_match_uses_cython_pod_backend(monkeypatch) -> None:
         catalogue._match_root_portable(candidate, comparison_budget=64)
     )
     assert calls == 1
+
+
+@pytest.mark.skipif(
+    not CythonMode().is_enabled(), reason="requires the Cython POD matcher"
+)
+def test_public_catalogue_uses_cython_at_the_handler_comparison_budget(
+    monkeypatch,
+) -> None:
+    """The live handler's 256-comparison ceiling must remain accelerated."""
+
+    from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
+    from d810.backends.mba.egglog_add_rule_compiler import compile_add_rule_catalogue
+    from d810.backends.mba.native_mba_term_view import NativeMbaTermView
+
+    catalogue = CompiledPatternCatalogue.from_rules(
+        compile_add_rule_catalogue().compiled_rules
+    )
+    x = NativeMbaTermView(None, 32, leaf_key=("mop", "r", "x"))
+    y = NativeMbaTermView(None, 32, leaf_key=("mop", "r", "y"))
+    two = NativeMbaTermView(None, 32, constant_value=2)
+    candidate = NativeMbaTermView(
+        "add",
+        32,
+        children=(
+            NativeMbaTermView("xor", 32, children=(x, y)),
+            NativeMbaTermView(
+                "mul",
+                32,
+                children=(two, NativeMbaTermView("and", 32, children=(x, y))),
+            ),
+        ),
+    )
+
+    def forbidden_portable(*_args, **_kwargs):
+        raise AssertionError("handler-budget match must not fall back to Python")
+
+    monkeypatch.setattr(
+        CompiledPatternCatalogue, "_match_root_portable", forbidden_portable
+    )
+
+    assert catalogue.match_root(candidate, comparison_budget=256).matches
 
 
 @pytest.mark.skipif(
