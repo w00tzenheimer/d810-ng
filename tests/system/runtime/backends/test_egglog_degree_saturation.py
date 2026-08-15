@@ -544,6 +544,12 @@ def test_native_z3_timeout_requires_explicit_noninteractive_execution_mode():
     assert noninteractive._native_z3_timeout_ms() == 250
 
 
+@pytest.mark.parametrize("execution_mode", ([], {}))
+def test_live_handler_rejects_non_string_execution_mode(execution_mode):
+    with pytest.raises(ValueError, match="execution_mode"):
+        _configured_live_handler(execution_mode=execution_mode)
+
+
 def test_live_handler_admits_and_extracts_real_degree_two_boolean_candidate():
     candidate = _degree_two_candidate()
     handler = _configured_live_handler(

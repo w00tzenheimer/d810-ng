@@ -192,7 +192,10 @@ def parse_mba_egglog_options(
         raise PipelineConfigError(
             "mba-egglog options.collect_stage_timings must be a boolean"
         )
-    if execution_mode not in {"interactive", "noninteractive"}:
+    if type(execution_mode) is not str or execution_mode not in {
+        "interactive",
+        "noninteractive",
+    }:
         raise PipelineConfigError(
             "mba-egglog options.execution_mode must be interactive or noninteractive"
         )

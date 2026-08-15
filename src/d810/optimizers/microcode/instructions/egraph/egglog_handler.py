@@ -159,7 +159,10 @@ class EgglogOptimizer(PeepholeSimplificationRule):
                 "enforced is not rollout-authorized"
             )
         execution_mode = config.get("execution_mode", "interactive")
-        if execution_mode not in {"interactive", "noninteractive"}:
+        if type(execution_mode) is not str or execution_mode not in {
+            "interactive",
+            "noninteractive",
+        }:
             raise ValueError(
                 "EgglogOptimizer execution_mode must be interactive or noninteractive"
             )

@@ -163,6 +163,8 @@ class TestMbaEgglogOptions(unittest.TestCase):
             {"require_proof": "yes"},
             {"collect_stage_timings": "yes"},
             {"execution_mode": "batch"},
+            {"execution_mode": []},
+            {"execution_mode": {}},
             {"families": []},
             {"families": ["add", 1]},
             {"maturities": []},
