@@ -2605,6 +2605,7 @@ class TestUnflattenBoundedRerunGate:
             validated_fact_view=lambda _maturity: fact_view,
             new_mba_mutation_gateway=lambda: object(),
             semantic_native_body_materializer=lambda: materializer,
+            native_cfg_freeze_observer=lambda: None,
         )
         rule.current_resolver_session_state = lambda: ResolverSessionState(
             native_preanalysis=NativePreanalysisSessionState(),
@@ -2828,6 +2829,7 @@ class TestUnflattenBoundedRerunGate:
             ),
             new_mba_mutation_gateway=lambda: object(),
             semantic_native_body_materializer=lambda: materializer,
+            native_cfg_freeze_observer=lambda: None,
             execution_attempt_context=lambda: (
                 journal,
                 session_id,
@@ -2863,8 +2865,11 @@ class TestUnflattenBoundedRerunGate:
         assert tuple(spec.pass_id for spec in pipeline_v2_specs) == expected_pass_ids
         if materialized_continuation:
             assert pipeline_v2_specs[-1].backend_route.value == "fragment_publication"
-        assert captured["project_config"] == project_config
-        assert captured["project_config"] != rule_config
+        # The live optimizer passes the selected rule configuration.  Passing
+        # the project-wide config here re-enabled every configured rule and
+        # was the branch-only full-suite memory regression.
+        assert captured["project_config"] == rule_config
+        assert captured["project_config"] != project_config
         assert captured["journal"] is journal
         assert captured["session_id"] == session_id
         assert captured["parent_attempt_id"] == parent_attempt_id

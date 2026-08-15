@@ -1240,7 +1240,7 @@ def test_decompile_controller_releases_stack_capacity_witness_when_decompile_rai
     monkeypatch,
 ) -> None:
     calls: list[tuple[str, object]] = []
-    session = object()
+    session = SimpleNamespace(native_cfg_collector=None)
 
     class _Lifecycle:
         @staticmethod
@@ -1254,6 +1254,8 @@ def test_decompile_controller_releases_stack_capacity_witness_when_decompile_rai
             calls.append(("release", session))
 
     manager = D810Manager.__new__(D810Manager)
+    manager.config = {}
+    manager.get_function_tags = lambda _function_ea: frozenset()
     manager.decompilation_lifecycle = _Lifecycle()
     monkeypatch.setattr(
         manager,
