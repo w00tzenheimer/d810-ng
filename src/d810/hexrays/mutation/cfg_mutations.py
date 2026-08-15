@@ -549,6 +549,78 @@ def make_2way_block_goto(
         raise e
 
 
+def make_nway_block_goto(
+    blk: ida_hexrays.mblock_t, blk_successor_serial: int, verify: bool = True
+) -> bool:
+    """Collapse a multi-successor block to one direct goto.
+
+    Unlike :func:`make_2way_block_goto`, this removes every former outgoing
+    edge before installing the surviving route.  Callers must already have
+    proven that *blk_successor_serial* is the only semantically live target.
+    ``m_jtbl`` blocks retain their specialized conversion path because table
+    cases can be available before Hex-Rays materializes ``succset``.
+    """
+    if blk.nsucc() < 2:
+        return False
+
+    mba = blk.mba
+    previous_blk_successor_serials = [int(x) for x in blk.succset]
+    previous_blk_successors = [
+        mba.get_mblock(serial) for serial in previous_blk_successor_serials
+    ]
+    new_blk_successor = mba.get_mblock(int(blk_successor_serial))
+    if new_blk_successor is None or any(
+        predecessor is None for predecessor in previous_blk_successors
+    ):
+        return False
+
+    try:
+        from d810.core.observability_cfg import observe_cfg_provenance
+
+        observe_cfg_provenance(
+            pass_name="cfg_mutations",
+            action="REDIRECT_EDGE",
+            block_serial=int(blk.serial),
+            target_serial=int(blk_successor_serial),
+            reason="make_nway_block_goto",
+            extra={"old_succs": previous_blk_successor_serials},
+            mba=mba,
+        )
+    except Exception:
+        pass
+
+    insert_goto_instruction(blk, blk_successor_serial, nop_previous_instruction=True)
+
+    blk.type = ida_hexrays.BLT_1WAY
+    blk.flags |= ida_hexrays.MBL_GOTO
+
+    for previous_serial in previous_blk_successor_serials:
+        blk.succset._del(previous_serial)
+    blk.succset.push_back(blk_successor_serial)
+    blk.mark_lists_dirty()
+
+    for previous_blk in previous_blk_successors:
+        previous_blk.predset._del(blk.serial)
+        if previous_blk.serial != mba.qty - 1:
+            previous_blk.mark_lists_dirty()
+
+    new_blk_successor.predset.push_back(blk.serial)
+    if new_blk_successor.serial != mba.qty - 1:
+        new_blk_successor.mark_lists_dirty()
+
+    mba.mark_chains_dirty()
+    if not verify:
+        return True
+    try:
+        mba.verify(True)
+        return True
+    except RuntimeError as e:
+        helper_logger.error("Error in make_nway_block_goto: {0}".format(e))
+        log_block_info(blk, helper_logger.error)
+        log_block_info(new_blk_successor, helper_logger.error)
+        raise e
+
+
 def create_block(
     blk: ida_hexrays.mblock_t,
     blk_ins: list[ida_hexrays.minsn_t],
@@ -1018,7 +1090,10 @@ def convert_jtbl_to_goto(
     if tail is None or tail.opcode != ida_hexrays.m_jtbl:
         return False
 
-    # 1. Collect old case targets from mcases_t for predset cleanup
+    # 1. Collect old case targets from mcases_t for predset cleanup.
+    # A conversion may only retain a target that is already a table case: this
+    # helper removes every other successor, so inventing a fresh destination
+    # would manufacture a control-flow edge rather than simplify one.
     old_targets = set()
     if tail.r is not None and tail.r.t == ida_hexrays.mop_c:
         cases = tail.r.c
@@ -1027,6 +1102,14 @@ def convert_jtbl_to_goto(
             n = targets.size()
             for j in range(n):
                 old_targets.add(targets[j])
+
+    # ``gen_microcode`` may expose a valid ``mcases_t`` before Hex-Rays has
+    # materialized the block's succset.  The table is therefore the authority
+    # for target validity; use the union below only for conservative predset
+    # cleanup when either representation is populated.
+    old_succ_serials = {int(successor) for successor in blk.succset}
+    if int(new_target_serial) not in old_targets:
+        return False
 
     # 2. Change opcode
     tail.opcode = ida_hexrays.m_goto
@@ -1041,13 +1124,12 @@ def convert_jtbl_to_goto(
 
     # 5. Update succset: remove all old successors, add new target
     blk_serial = blk.serial
-    old_succ_serials = [x for x in blk.succset]
     for old_serial in old_succ_serials:
         blk.succset._del(old_serial)
     blk.succset.push_back(new_target_serial)
 
     # 6. Remove blk from old targets' predsets
-    for old_tgt in old_targets:
+    for old_tgt in old_succ_serials | old_targets:
         if old_tgt == new_target_serial:
             continue  # Will be handled in step 7
         if 0 <= old_tgt < mba.qty:
@@ -1874,6 +1956,7 @@ __all__ = [
     "change_2way_block_conditional_successor",
     "update_blk_successor",
     "make_2way_block_goto",
+    "make_nway_block_goto",
     "create_block",
     "create_standalone_block",
     "update_block_successors",

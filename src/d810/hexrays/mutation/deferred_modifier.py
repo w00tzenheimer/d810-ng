@@ -252,6 +252,7 @@ from d810.hexrays.mutation.cfg_mutations import (
     canonicalize_explicit_return_to_stop_edge as _canonicalize_return_to_stop_edge,
 )
 from d810.hexrays.mutation.cfg_mutations import coalesce_jtbl_cases
+from d810.hexrays.mutation.cfg_mutations import convert_jtbl_to_goto
 from d810.transforms.cfg_transaction import PlanBlockRef, TransactionAttemptId
 from d810.hexrays.mutation.cfg_mutations import create_standalone_block
 from d810.hexrays.mutation.cfg_mutations import downgrade_nway_null_tail_to_1way
@@ -264,6 +265,7 @@ from d810.hexrays.mutation.cfg_mutations import insert_goto_instruction
 from d810.hexrays.mutation.cfg_mutations import retarget_jtbl_block_cases
 from d810.hexrays.mutation.cfg_verify import log_block_info
 from d810.hexrays.mutation.cfg_mutations import make_2way_block_goto
+from d810.hexrays.mutation.cfg_mutations import make_nway_block_goto
 from d810.hexrays.mutation.cfg_mutations import mba_deep_cleaning
 from d810.hexrays.mutation.cfg_verify import safe_verify
 from d810.hexrays.mutation.cfg_verify import snapshot_block_for_capture
@@ -646,7 +648,7 @@ class ModificationType(Enum):
     BLOCK_TARGET_CHANGE = auto()  # Change conditional jump target
     BLOCK_FALLTHROUGH_CHANGE = auto()  # Change fallthrough successor
     BLOCK_TERMINAL_GOTO_CHANGE = auto()  # Convert 0-way block to 1-way goto
-    BLOCK_CONVERT_TO_GOTO = auto()  # Convert 2-way to 1-way block
+    BLOCK_CONVERT_TO_GOTO = auto()  # Convert a proven 2-way or m_jtbl block to goto
     BLOCK_NWAY_NULL_TAIL_DOWNGRADE = (
         auto()
     )  # Downgrade degenerate NWAY null-tail to 1-way
@@ -1680,7 +1682,7 @@ class DeferredGraphModifier:
         description: str = "",
         target_ref_kind: TargetRefKind | None = None,
     ) -> None:
-        """Queue conversion of a 2-way block to a 1-way goto."""
+        """Queue conversion of a proven 2-way or m_jtbl block to a goto."""
         resolved_target_kind = (
             target_ref_kind
             if target_ref_kind is not None
@@ -10031,6 +10033,15 @@ class DeferredGraphModifier:
                 verify=False,
             )
         if mod.mod_type == ModificationType.BLOCK_CONVERT_TO_GOTO:
+            tail = copy_blk.tail
+            if tail is not None and tail.opcode == ida_hexrays.m_jtbl:
+                return convert_jtbl_to_goto(copy_blk, mod.new_target, self.mba)
+            if copy_blk.nsucc() > 2:
+                return make_nway_block_goto(
+                    copy_blk,
+                    mod.new_target,
+                    verify=False,
+                )
             if copy_blk.nsucc() != 2:
                 return False
             return make_2way_block_goto(
@@ -11418,9 +11429,15 @@ class DeferredGraphModifier:
     def _apply_convert_to_goto(
         self, blk: ida_hexrays.mblock_t, goto_target: int
     ) -> bool:
-        """Connect a terminal block or collapse a 2-way block to a goto."""
+        """Connect a terminal block or collapse a proven branch/table to goto."""
+        if blk.tail is not None and blk.tail.opcode == ida_hexrays.m_jtbl:
+            return convert_jtbl_to_goto(blk, goto_target, self.mba)
         if blk.nsucc() == 0:
             return change_0way_block_successor(blk, goto_target, verify=False)
+        if blk.nsucc() > 2:
+            return make_nway_block_goto(blk, goto_target, verify=False)
+        if blk.nsucc() != 2:
+            return False
         return make_2way_block_goto(blk, goto_target, verify=False)
 
     def _apply_nway_null_tail_downgrade(
@@ -17676,7 +17693,7 @@ class ImmediateGraphModifier:
         goto_target: int,
         description: str = "",
     ) -> None:
-        """Convert a 2-way block to a 1-way goto immediately."""
+        """Convert a proven 2-way or m_jtbl block to a goto immediately."""
         blk = self.mba.get_mblock(block_serial)
         if blk is None:
             logger.warning("Block %d not found", block_serial)
@@ -17910,9 +17927,15 @@ class ImmediateGraphModifier:
     def _apply_convert_to_goto(
         self, blk: ida_hexrays.mblock_t, goto_target: int
     ) -> bool:
-        """Connect a terminal block or collapse a 2-way block to a goto."""
+        """Connect a terminal block or collapse a proven branch/table to goto."""
+        if blk.tail is not None and blk.tail.opcode == ida_hexrays.m_jtbl:
+            return convert_jtbl_to_goto(blk, goto_target, self.mba)
         if blk.nsucc() == 0:
             return change_0way_block_successor(blk, goto_target, verify=False)
+        if blk.nsucc() > 2:
+            return make_nway_block_goto(blk, goto_target, verify=False)
+        if blk.nsucc() != 2:
+            return False
         return make_2way_block_goto(blk, goto_target, verify=False)
 
     def _apply_remove_edge(self, blk: ida_hexrays.mblock_t, to_serial: int) -> bool:
