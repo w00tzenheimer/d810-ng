@@ -29,6 +29,7 @@ from d810.backends.mba.egglog_saturation import (
 )
 from d810.backends.mba.cross_block_preparation import (
     prepare_ast_with_cross_block_constants,
+    prepare_ast_with_def_use_constants,
 )
 from d810.backends.mba.hexrays_island import lower_hexrays_island
 from d810.backends.mba.native_z3 import prove_native_ast_equivalence
@@ -113,6 +114,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         self._provider_outcome_capture_depth = 0
         self._last_provider_outcome: MbaProviderOutcome | None = None
         self.cross_block_constant_preparation = False
+        self.cross_block_def_use_preparation = False
 
     def _begin_provider_attempt(self) -> None:
         """Start one observable attempt, independent of whether it mutates."""
@@ -163,6 +165,11 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             raise ValueError(
                 "EgglogOptimizer cross_block_constant_preparation must be boolean"
             )
+        def_use_preparation = self.config.get("cross_block_def_use_preparation", False)
+        if type(def_use_preparation) is not bool:
+            raise ValueError(
+                "EgglogOptimizer cross_block_def_use_preparation must be boolean"
+            )
         try:
             budget = EgglogExtractionBudget(
                 max_leaves=max_leaves,
@@ -188,6 +195,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         self.families = families
         self._catalogue = selected_catalogue
         self.cross_block_constant_preparation = preparation
+        self.cross_block_def_use_preparation = def_use_preparation
 
     def _publish_budget_attributes(self, budget: EgglogExtractionBudget) -> None:
         self.max_leaves = budget.max_leaves
@@ -290,6 +298,16 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             if prepared is not None:
                 extraction_ast = prepared.ast
                 known_constants = prepared.known_constants
+        if (
+            known_constants is None
+            and self.cross_block_def_use_preparation
+            and blk is not None
+            and getattr(blk, "mba", None) is not None
+        ):
+            prepared = prepare_ast_with_def_use_constants(blk.mba, blk, ins, ast)
+            if prepared is not None:
+                extraction_ast = prepared.ast
+                known_constants = prepared.known_constants
 
         extraction = self._select_extraction(
             extraction_ast,
@@ -320,6 +338,9 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         proof_kwargs = {"width": width}
         if known_constants is not None:
             proof_kwargs["known_constants"] = known_constants
+        certificate = self._native_proof_certificate(selected[1])
+        if certificate is not None:
+            proof_kwargs["certificate"] = certificate
         if not self._prove_ast_equivalence(ast, replacement, **proof_kwargs):
             self._record_extraction_receipt(
                 replace(
@@ -510,6 +531,15 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             int(destination_size),
         )
 
+    def _native_proof_certificate(self, source_name: str) -> str | None:
+        """Return a configured rule's bounded native proof plan, if any."""
+
+        for rule in self._compiled_rules:
+            if rule.source_name == source_name:
+                certificate = getattr(rule.rule_type, "EGGLOG_CERTIFICATE_PROVER", None)
+                return certificate if type(certificate) is str else None
+        return None
+
     def _select_specialization(
         self, ast: AstNode, *, destination_size: int
     ) -> EgglogAddSpecialization | None:
@@ -661,6 +691,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         *,
         width: int,
         known_constants: object | None = None,
+        certificate: str | None = None,
     ) -> bool:
         """Compatibility facade for the shared native Z3 mutation gate."""
 
@@ -669,6 +700,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             replacement,
             width=width,
             known_constants=known_constants,
+            certificate=certificate,
         )
 
     @staticmethod

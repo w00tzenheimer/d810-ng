@@ -23,6 +23,8 @@ from d810.evaluator.hexrays_microcode.forward_dataflow import (
     constant_transfer_single,
     run_forward_fixpoint_on_mba,
 )
+from d810.evaluator.hexrays_microcode.def_search import resolve_mop_to_ast
+from d810.backends.mba.hexrays_island import unwrap_hexrays_island_ast
 from d810.hexrays.ir.mop_snapshot import MopSnapshot
 from d810.hexrays.ir.mop_utils import constant_propagation_var_name
 from d810.ir.lattice import Const, LatticeMeet, TOP
@@ -66,9 +68,13 @@ def constant_environment_before_instruction(
     except Exception:
         return None
 
+    target = _resolve_block_instruction(block, instruction)
+    if target is None:
+        return None
+
     current = getattr(block, "head", None)
     while current:
-        if _same_instruction(current, instruction):
+        if current is target:
             return MappingProxyType(environment)
         try:
             constant_transfer_single(mba, current, environment)
@@ -96,6 +102,9 @@ def rewrite_ast_with_constant_resolver(
     except ImportError:
         return ast, 0
 
+    ast = unwrap_hexrays_island_ast(ast)
+    if ast is None:
+        return ast, 0
     substitutions = 0
 
     def rewrite(node: Any) -> Any:
@@ -200,6 +209,115 @@ def prepare_ast_with_cross_block_constants(
     )
 
 
+def prepare_ast_with_def_use_constants(
+    mba: object,
+    block: object,
+    instruction: object,
+    ast: Any,
+    *,
+    max_predecessor_blocks: int = 1,
+    max_paths: int = 1,
+) -> PreparedCrossBlockAst | None:
+    """Specialize a clone from one bounded def-use literal, or abstain.
+
+    Unlike the lattice preparation, this may resolve a register as well as a
+    stack location.  It accepts only a defining AST that is already a literal;
+    arbitrary expressions are never inlined.  The final native-Z3 gate still
+    binds every substituted value to the original live leaf identity.
+    """
+
+    if (
+        type(max_predecessor_blocks) is not int
+        or max_predecessor_blocks < 1
+        or type(max_paths) is not int
+        or max_paths < 1
+    ):
+        return None
+    search_instruction = _resolve_block_instruction(block, instruction)
+    if search_instruction is None:
+        return None
+
+    def resolve_constant(leaf: Any) -> tuple[int, int] | None:
+        try:
+            import ida_hexrays
+        except ImportError:
+            return None
+        mop = getattr(leaf, "mop", None)
+        if (
+            mop is None
+            or mop.t not in {ida_hexrays.mop_r, ida_hexrays.mop_S}
+            or mop.size not in {1, 2, 4, 8}
+        ):
+            return None
+        try:
+            # ``resolve_mop_to_ast`` owns MopSnapshot materialization.  Doing
+            # it here loses the snapshot's native ownership/context before
+            # the bounded def-use resolver can safely inspect it.
+            resolved = resolve_mop_to_ast(
+                mop,
+                block,
+                search_instruction,
+                max_predecessor_blocks=max_predecessor_blocks,
+                max_paths=max_paths,
+            )
+        except Exception:
+            return None
+        if resolved is None or not resolved.is_constant():
+            return None
+        size = getattr(resolved, "dest_size", None)
+        value = getattr(resolved, "value", None)
+        if type(size) is not int or size != mop.size or type(value) is not int:
+            return None
+        return value, size
+
+    prepared_ast, substitutions = rewrite_ast_with_constant_resolver(
+        ast,
+        resolve_constant=resolve_constant,
+    )
+    if substitutions == 0:
+        return None
+    known_constants = _collect_known_constants(ast, resolve_constant)
+    if known_constants is None or not known_constants:
+        return None
+    return PreparedCrossBlockAst(
+        ast=prepared_ast,
+        substitutions=substitutions,
+        environment=MappingProxyType({}),
+        known_constants=MappingProxyType(known_constants),
+    )
+
+
+def _collect_known_constants(
+    ast: Any,
+    resolve_constant: Callable[[Any], tuple[int, int] | None],
+) -> dict[tuple[object, ...], int] | None:
+    """Collect exact original-leaf assumptions for a clone-only preparation."""
+
+    ast = unwrap_hexrays_island_ast(ast)
+    if ast is None:
+        return None
+    known_constants: dict[tuple[object, ...], int] = {}
+
+    def collect(node: Any) -> bool:
+        if getattr(node, "is_leaf", lambda: False)():
+            resolved = resolve_constant(node)
+            if resolved is None:
+                return True
+            value, _size = resolved
+            key = _live_leaf_key(node)
+            if key is None:
+                return False
+            previous = known_constants.setdefault(key, value)
+            return previous == value
+        for child_name in ("left", "right", "dst"):
+            child = getattr(node, child_name, None)
+            if child is not None and not collect(child):
+                return False
+        return True
+
+    return known_constants if collect(ast) else None
+
+
 def _same_instruction(left: object, right: object) -> bool:
     """Use native object identity only; EA equality is intentionally unsafe."""
 
@@ -209,6 +327,47 @@ def _same_instruction(left: object, right: object) -> bool:
         return bool(left == right)
     except Exception:
         return False
+
+
+def _resolve_block_instruction(block: object, instruction: object) -> object | None:
+    """Resolve one callback wrapper to an exact instruction in its block.
+
+    Hex-Rays can pass a fresh Python wrapper for a nested ``minsn_t`` while
+    the linked list on ``block.head`` exposes its enclosing instruction.
+    Identity, equality, opcode, and destination width can therefore all
+    differ.  The callback EA is accepted only as a block-local anchor: it must
+    occur exactly once in the already supplied block.  Ambiguity fails closed;
+    this is never a global EA fallback.
+    """
+
+    current = getattr(block, "head", None)
+    while current:
+        if _same_instruction(current, instruction):
+            return current
+        current = getattr(current, "next", None)
+
+    anchor = _block_instruction_ea(instruction)
+    if anchor is None:
+        return None
+    matches: list[object] = []
+    current = getattr(block, "head", None)
+    while current:
+        if _block_instruction_ea(current) == anchor:
+            matches.append(current)
+        current = getattr(current, "next", None)
+    return matches[0] if len(matches) == 1 else None
+
+
+def _block_instruction_ea(instruction: object) -> int | None:
+    """Return one native EA suitable only for a unique block-local anchor."""
+
+    try:
+        ea = getattr(instruction, "ea")
+    except Exception:
+        return None
+    if type(ea) is not int or ea < 0:
+        return None
+    return ea
 
 
 def _live_leaf_key(leaf: Any) -> tuple[object, ...] | None:
@@ -234,6 +393,7 @@ def _live_leaf_key(leaf: Any) -> tuple[object, ...] | None:
 __all__ = [
     "PreparedCrossBlockAst",
     "constant_environment_before_instruction",
+    "prepare_ast_with_def_use_constants",
     "prepare_ast_with_cross_block_constants",
     "rewrite_ast_with_constant_resolver",
 ]

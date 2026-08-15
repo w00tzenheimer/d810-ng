@@ -8,6 +8,7 @@ import pytest
 from d810.backends.mba import egglog_add_rule_compiler, egglog_saturation
 from d810.backends.mba import hexrays_island
 from d810.backends.mba import egglog_statistics
+from d810.backends.mba import native_z3
 from d810.backends.mba.egglog_add_rule_compiler import (
     CERTIFICATE_WIDTHS,
     CompiledEgglogRule,
@@ -27,6 +28,7 @@ from d810.backends.mba.egglog_saturation import (
 )
 from d810.mba import typed_term
 from d810.mba.rules._base import VerifiableRule
+from d810.mba.rules.sub import Sub_ComplementMaskHodurRule_1
 from d810.mba.rules.xor import Xor_NestedStuff
 
 
@@ -864,6 +866,67 @@ def test_real_canonical_compiled_rule_instance_is_admitted(
     candidate = _term_from_symbolic(canonical.pattern)
 
     assert apply_compiled_rule_to_term(canonical, candidate) is not None
+
+
+def test_complement_mask_hodur_rule_matches_generic_complementary_constants():
+    catalogue = _compile_rule_families(
+        {"sub": (Sub_ComplementMaskHodurRule_1,)}
+    )
+    assert len(catalogue.compiled_rules) == 1
+    rule = catalogue.compiled_rules[0]
+    mask = 0x60657A1106CA3013
+    candidate = _term_from_symbolic(
+        rule.pattern,
+        {
+            "x_0": _constant(mask, width=64),
+            "bnot_x_0": _constant(~mask, width=64),
+            "x_1": _leaf("value", width=64),
+        },
+        width=64,
+    )
+
+    replacement = apply_compiled_rule_to_term(rule, candidate)
+
+    assert replacement == _node(
+        "sub",
+        _leaf("value", width=64),
+        _constant(mask, width=64),
+        width=64,
+    )
+
+
+def test_complement_mask_hodur_native_certificate_proves_only_the_exact_residual():
+    """Keep the fallback proof plan structural and fail-closed."""
+
+    catalogue = _compile_rule_families({"sub": (Sub_ComplementMaskHodurRule_1,)})
+    rule = catalogue.compiled_rules[0]
+    mask = 0x60657A1106CA3013
+    original = _term_from_symbolic(
+        rule.pattern,
+        {
+            "x_0": _constant(mask, width=64),
+            "bnot_x_0": _constant(~mask, width=64),
+            "x_1": _leaf("value", width=64),
+        },
+        width=64,
+    )
+    replacement = _node(
+        "sub",
+        _leaf("value", width=64),
+        _constant(mask, width=64),
+        width=64,
+    )
+
+    assert native_z3._prove_complement_mask_hodur_native_certificate(
+        original,
+        replacement,
+        width=64,
+    )
+    assert not native_z3._prove_complement_mask_hodur_native_certificate(
+        original,
+        _node("add", _leaf("value", width=64), _constant(mask, width=64), width=64),
+        width=64,
+    )
 
 
 def test_replaced_canonical_compiled_rule_instance_is_not_admitted(

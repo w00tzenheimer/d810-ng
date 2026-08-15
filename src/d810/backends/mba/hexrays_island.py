@@ -143,6 +143,19 @@ def _unwrap_runtime_ast_node(ast: Any, runtime: _NativeAstRuntime) -> Any | None
     return None
 
 
+def unwrap_hexrays_island_ast(ast: Any) -> Any | None:
+    """Return one exact active-runtime node/leaf behind bounded proxies.
+
+    Consumers that need to make a disposable native-AST clone use this instead
+    of duplicating proxy traversal or trusting module/name lookalikes.
+    """
+
+    try:
+        return _unwrap_runtime_ast_node(ast, _load_native_runtime())
+    except Exception:
+        return None
+
+
 def _native_width_witnesses(ast: Any) -> tuple[int, ...] | None:
     witnesses: list[int] = []
     for attribute in ("size", "expected_size", "dest_size"):
@@ -423,4 +436,5 @@ __all__ = [
     "HexRaysIslandLowering",
     "lower_hexrays_island",
     "rebuild_hexrays_island",
+    "unwrap_hexrays_island_ast",
 ]

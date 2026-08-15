@@ -22,6 +22,8 @@ bnot_x, bnot_y = Var("bnot_x_0"), Var("bnot_x_1")
 # Common constants
 ONE = Const("1", 1)
 TWO = Const("2", 2)
+THREE = Const("3", 3)
+FOUR = Const("4", 4)
 MINUS_TWO = Const("-2", -2)
 
 
@@ -111,6 +113,47 @@ class Sub_HackersDelightRule_4(VerifiableRule):
 
     DESCRIPTION = "Simplify 2*(x & ~y) - (x ^ y) to x - y"
     REFERENCE = "Hacker's Delight with bnot verification"
+
+
+class Sub_ComplementMaskHodurRule_1:
+    """Collapse Hodur's complementary-mask arithmetic residual to ``x - a``.
+
+    The two masks are required to be exact bitwise complements.  Keeping that
+    relationship as a certified runtime constraint makes the identity generic
+    across 8/16/32/64-bit widths; the rule does not encode the sample's
+    constants or rely on forward constant propagation.
+
+    The expression is deliberately written in its emitted left-associated
+    microcode order.  Egglog can therefore match the real residual directly,
+    then later native-Z3 verifies the rebuilt candidate before mutation.
+    """
+
+    # This is an Egglog-only certificate.  It deliberately does not inherit
+    # ``VerifiableRule``: direct mba-simplify registration would let the legacy
+    # matcher bypass Egglog's bounded extraction/provenance path.
+    EGGLOG_CERTIFICATE_PROVER = "complement-mask-hodur-v1"
+
+    PATTERN = (
+        (FOUR * ~(x & y) + (TWO * (x & y) - THREE * (bnot_x & y)))
+        - TWO * ~(bnot_x & y)
+        - TWO * ~(x | y)
+        - THREE * ~(bnot_x | y)
+    )
+    REPLACEMENT = y - x
+
+    CONSTRAINTS = [bnot_x == ~x]
+
+    DESCRIPTION = "Hodur complementary-mask MBA residual to subtraction"
+    REFERENCE = "D810 MASM Hodur residual, generalized by complement masks"
+    get_constraints = VerifiableRule.get_constraints
+
+    @property
+    def pattern(self):
+        return self.PATTERN
+
+    @property
+    def replacement(self):
+        return self.REPLACEMENT
 
 
 # ============================================================================

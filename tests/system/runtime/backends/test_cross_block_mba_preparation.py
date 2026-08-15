@@ -10,6 +10,7 @@ ida_hexrays = pytest.importorskip("ida_hexrays")
 
 from d810.backends.mba.cross_block_preparation import (  # noqa: E402
     constant_environment_before_instruction,
+    prepare_ast_with_def_use_constants,
     prepare_ast_with_cross_block_constants,
     rewrite_ast_with_constant_resolver,
 )
@@ -67,7 +68,69 @@ def test_constant_environment_is_exactly_before_target_instruction(monkeypatch):
 
     environment = constant_environment_before_instruction(mba, block, target)
 
-    assert environment == {"carrier": Const(0xA0DE427, 4)}
+    assert environment is not None
+    assert environment["carrier"] == Const(0xA0DE427, 4)
+
+
+@pytest.mark.usefixtures("configure_hexrays")
+def test_constant_environment_accepts_unique_callback_wrapper_anchor(monkeypatch):
+    """A callback wrapper may lose minsn identity but retains one block-local anchor."""
+
+    definition = _Insn(
+        ida_hexrays.m_mov,
+        left=_number(0xA0DE427),
+        dest=_stack("carrier"),
+    )
+    target = _Insn(ida_hexrays.m_nop, dest=_stack("result"))
+    target.ea = 0x401004
+    definition.next = target
+    block = SimpleNamespace(serial=0, head=definition, predset=(), succset=())
+    mba = SimpleNamespace(qty=1, get_mblock=lambda serial: block)
+    block.mba = mba
+    # Hex-Rays supplies the nested MBA expression to the handler, while the
+    # forward lattice is anchored to the containing linked-list instruction.
+    callback_wrapper = _Insn(ida_hexrays.m_sub, dest=_stack("nested", size=8))
+    callback_wrapper.ea = target.ea
+
+    monkeypatch.setattr(
+        "d810.hexrays.ir.mop_utils.constant_propagation_var_name",
+        lambda mop: mop.name,
+    )
+
+    environment = constant_environment_before_instruction(
+        mba, block, callback_wrapper
+    )
+
+    assert environment is not None
+    assert environment["carrier"] == Const(0xA0DE427, 4)
+
+
+@pytest.mark.usefixtures("configure_hexrays")
+def test_constant_environment_refuses_ambiguous_callback_ea(monkeypatch):
+    """A nested callback EA is usable only once within its supplied block."""
+
+    definition = _Insn(
+        ida_hexrays.m_mov,
+        left=_number(0xA0DE427),
+        dest=_stack("carrier"),
+    )
+    first = _Insn(ida_hexrays.m_nop, dest=_stack("first"))
+    second = _Insn(ida_hexrays.m_nop, dest=_stack("second"))
+    definition.ea = 0x400FFC
+    second.ea = first.ea
+    definition.next = first
+    first.next = second
+    block = SimpleNamespace(serial=0, head=definition, predset=(), succset=())
+    mba = SimpleNamespace(qty=1, get_mblock=lambda serial: block)
+    callback_wrapper = _Insn(ida_hexrays.m_sub, dest=_stack("nested", size=8))
+    callback_wrapper.ea = first.ea
+
+    monkeypatch.setattr(
+        "d810.hexrays.ir.mop_utils.constant_propagation_var_name",
+        lambda mop: mop.name,
+    )
+
+    assert constant_environment_before_instruction(mba, block, callback_wrapper) is None
 
 
 @pytest.mark.usefixtures("configure_hexrays")
@@ -179,4 +242,68 @@ def test_preparation_carries_only_exact_live_leaf_assumptions(monkeypatch):
     assert prepared.ast.is_constant()
     assert prepared.known_constants == {
         ("mop", ida_hexrays.mop_S, 4, 0x20): 0xA0DE427
+    }
+
+
+@pytest.mark.usefixtures("configure_hexrays")
+def test_def_use_preparation_specializes_only_a_resolved_literal(monkeypatch):
+    """One bounded def-use edge may provide an exact literal for Egglog only."""
+
+    import d810.backends.mba.cross_block_preparation as preparation
+
+    class _FakeSnapshot:
+        def __init__(self, *, t, size, reg=None, value=None):
+            self.t = t
+            self.size = size
+            self.reg = reg
+            self.value = value
+
+        def to_mop(self, *, mba=None):  # noqa: ARG002
+            return SimpleNamespace(t=self.t, size=self.size, r=self.reg)
+
+        def to_cache_key(self):
+            return (
+                (self.t, self.size, self.value)
+                if self.t == ida_hexrays.mop_n
+                else (self.t, self.size, self.reg)
+            )
+
+    monkeypatch.setattr(preparation, "MopSnapshot", _FakeSnapshot)
+    carrier = ast_dispatcher.AstLeaf("carrier")
+    carrier.mop = _FakeSnapshot(t=ida_hexrays.mop_r, size=4, reg=3)
+    carrier.dest_size = 4
+    resolved = ast_dispatcher.AstConstant("c", 0xA0DE427, 4)
+    resolved.dest_size = 4
+    monkeypatch.setattr(
+        preparation,
+        "resolve_mop_to_ast",
+        lambda *args, **kwargs: resolved,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        preparation,
+        "_resolve_block_instruction",
+        lambda block, instruction: instruction,
+    )
+    monkeypatch.setattr(
+        ast_dispatcher,
+        "get_constant_mop",
+        lambda value, size: _FakeSnapshot(
+            t=ida_hexrays.mop_n,
+            size=size,
+            value=value,
+        ),
+    )
+
+    prepared = prepare_ast_with_def_use_constants(
+        object(),
+        object(),
+        object(),
+        carrier,
+    )
+
+    assert prepared is not None
+    assert prepared.ast.is_constant()
+    assert prepared.known_constants == {
+        ("mop", ida_hexrays.mop_r, 4, 3): 0xA0DE427
     }

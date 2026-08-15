@@ -228,6 +228,7 @@ MBA_RULE_FAMILIES: Mapping[str, tuple[type[VerifiableRule], ...]] = (
                 sub.Sub_HackersDelightRule_2,
                 sub.Sub_HackersDelightRule_3,
                 sub.Sub_HackersDelightRule_4,
+                sub.Sub_ComplementMaskHodurRule_1,
                 sub.Sub1_FactorRule_1,
                 sub.Sub1_FactorRule_2,
                 sub.Sub1Add_HackersDelightRule_1,

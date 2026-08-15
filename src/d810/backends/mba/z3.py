@@ -700,6 +700,128 @@ def prove_equivalence(
 # =============================================================================
 
 
+def _symbolic_expression_signature(expression: Any) -> tuple[Any, ...]:
+    """Return the exact pure DSL tree shape used by a certificate prover."""
+
+    operation = getattr(expression, "operation", None)
+    if operation is None:
+        return (
+            "leaf",
+            getattr(expression, "name", None),
+            getattr(expression, "value", None),
+            bool(getattr(expression, "is_pattern_constant", False)),
+        )
+    return (
+        "node",
+        str(operation),
+        _symbolic_expression_signature(getattr(expression, "left", None)),
+        (
+            _symbolic_expression_signature(getattr(expression, "right", None))
+            if getattr(expression, "right", None) is not None
+            else None
+        ),
+    )
+
+
+def _complement_mask_hodur_expected_rule():
+    """Build the one audited complement-mask identity without IDA imports."""
+
+    from d810.mba.dsl import Const, Var
+
+    mask, value, complement_mask = Var("x_0"), Var("x_1"), Var("bnot_x_0")
+    two, three, four = Const("2", 2), Const("3", 3), Const("4", 4)
+    pattern = (
+        (
+            four * ~(mask & value)
+            + (two * (mask & value) - three * (complement_mask & value))
+        )
+        - two * ~(complement_mask & value)
+        - two * ~(mask | value)
+        - three * ~(complement_mask | value)
+    )
+    return pattern, value - mask, complement_mask == ~mask
+
+
+def _is_unsat(formula: Any) -> bool:
+    """Prove one small, independently-checkable bit-vector obligation."""
+
+    solver = z3.Solver()
+    solver.add(formula)
+    return solver.check() == z3.unsat
+
+
+def _verify_complement_mask_hodur_v1(rule: Any, bit_width: int) -> bool:
+    """Certify the complement-mask identity through audited small lemmas.
+
+    A monolithic bit-blast of this wide MBA expression is impractical at 32/64
+    bits.  This certificate first requires the exact declarative tree and
+    complement constraint, then uses Z3 to prove the four Boolean/ring lemmas
+    that reduce it to linear modular arithmetic.  The remaining arithmetic
+    obligation is also discharged by Z3.  Any altered pattern, replacement or
+    constraint therefore fails closed before catalogue admission.
+    """
+
+    if type(bit_width) is not int or bit_width <= 0:
+        return False
+    try:
+        expected_pattern, expected_replacement, expected_constraint = (
+            _complement_mask_hodur_expected_rule()
+        )
+        if _symbolic_expression_signature(rule.pattern) != _symbolic_expression_signature(
+            expected_pattern
+        ):
+            return False
+        if _symbolic_expression_signature(
+            rule.replacement
+        ) != _symbolic_expression_signature(expected_replacement):
+            return False
+        constraints = tuple(getattr(rule, "CONSTRAINTS", ()) or ())
+        if len(constraints) != 1:
+            return False
+        constraint = constraints[0]
+        if (
+            _symbolic_expression_signature(getattr(constraint, "left", None))
+            != _symbolic_expression_signature(getattr(expected_constraint, "left", None))
+            or _symbolic_expression_signature(getattr(constraint, "right", None))
+            != _symbolic_expression_signature(getattr(expected_constraint, "right", None))
+            or getattr(constraint, "op_name", None) != getattr(expected_constraint, "op_name", None)
+        ):
+            return False
+
+        mask = z3.BitVec("certificate_mask", bit_width)
+        value = z3.BitVec("certificate_value", bit_width)
+        complement = ~mask
+        masked = value & mask
+        complement_masked = value & complement
+        all_ones = z3.BitVecVal((1 << bit_width) - 1, bit_width)
+
+        # The Boolean identities that expose the original expression's ring
+        # structure. Each one is discharged separately, rather than trusting a
+        # host-side rewrite.
+        if not _is_unsat(masked + complement_masked != value):
+            return False
+        if not _is_unsat((value | mask) != mask + complement_masked):
+            return False
+        if not _is_unsat((value | complement) != complement + masked):
+            return False
+        if not _is_unsat(mask + complement != all_ones):
+            return False
+
+        # Substitute the four proved identities and ``~t == -t - 1`` into the
+        # declared residual. What remains is linear modular arithmetic.
+        reduced = (
+            2 * masked
+            - 3 * complement_masked
+            + 4 * (-masked - 1)
+            - 2 * (-complement_masked - 1)
+            - 2 * (-(mask + complement_masked) - 1)
+            - 3 * (-(complement + masked) - 1)
+        )
+        return _is_unsat(reduced != value - mask)
+    except Exception:
+        return False
+
+
 def verify_rule(
     rule,
     bit_width: int | None = None,
@@ -759,6 +881,12 @@ def verify_rule(
     # Resolve bit_width: parameter > rule.BIT_WIDTH > default 32
     if bit_width is None:
         bit_width = getattr(rule, "BIT_WIDTH", 32)
+
+    certificate_prover = getattr(rule, "EGGLOG_CERTIFICATE_PROVER", None)
+    if certificate_prover is not None:
+        if certificate_prover != "complement-mask-hodur-v1":
+            return False
+        return _verify_complement_mask_hodur_v1(rule, bit_width)
     logger.debug(
         f"Verifying {getattr(rule, 'name', 'unknown')} with bit_width={bit_width}"
     )
