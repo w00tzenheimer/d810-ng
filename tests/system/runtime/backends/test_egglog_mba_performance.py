@@ -631,7 +631,9 @@ def test_corpus_receipt_reports_quantiles_and_rejects_100x_regression(
     assert baseline_stage_profiles["egglog_version"] == report["egglog_version"]
     assert baseline_stage_profile["cython_enabled"] is report["cython_enabled"]
 
-    assert len(compiled_rules) == 108
+    # cfg-recon-mainline admits the certified Hodur complement-mask rule in
+    # addition to the Phase 3 catalogue baseline.
+    assert len(compiled_rules) == 109
     assert extraction_handler.max_degree == 1
     assert extraction_handler.time_budget_ms == 3
     assert stage_handler.time_budget_ms == 1000
