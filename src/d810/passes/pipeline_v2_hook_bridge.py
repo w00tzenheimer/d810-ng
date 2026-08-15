@@ -111,7 +111,12 @@ def _instruction_rules_from(config: PipelineConfig) -> tuple[RuleConfiguration, 
     return tuple(
         _rule_config(
             implementation_name,
-            adapter.transform_options.get(transform_id, {}),
+            {
+                **adapter.transform_options.get(transform_id, {}),
+                "generate_commutative_permutations": (
+                    adapter.generate_commutative_permutations
+                ),
+            },
         )
         for transform_id, implementation_name in zip(
             adapter.transform_ids,
@@ -154,7 +159,12 @@ def _mba_egglog_options(config: PipelineConfig) -> dict[str, object]:
         "cross_block_constant_preparation": (
             adapter.cross_block_constant_preparation
         ),
+        "cross_block_def_use_preparation": (
+            adapter.cross_block_def_use_preparation
+        ),
         "time_budget_ms": adapter.time_budget_ms,
+        "function_time_budget_ms": adapter.function_time_budget_ms,
+        "residual_only": adapter.residual_only,
         "require_proof": adapter.require_proof,
         "families": list(adapter.families),
         # Keep portable maturity vocabulary across the config-v2 boundary.

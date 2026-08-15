@@ -12,6 +12,7 @@ from d810.passes.pipeline_v2_hook_bridge import pipeline_v2_hook_activation
 _ROOT = Path(__file__).resolve().parents[3]
 _CONFIG = _ROOT / "src/d810/conf/mba_portfolio_spike.json"
 _TELEMETRY_CONFIG = _ROOT / "src/d810/conf/mba_portfolio_telemetry_3ms.json"
+_DEEP_CONFIG = _ROOT / "src/d810/conf/mba_portfolio_deep.json"
 
 _CHAIN_IMPLEMENTATIONS = (
     "XorChain",
@@ -36,8 +37,13 @@ def test_portfolio_spike_declares_fast_path_then_opt_in_egglog() -> None:
         for entry in project.additional_configuration["pipeline_v2"]
     ] == ["mba-simplify", "mba-egglog"]
     assert "mba-solve" not in project.additional_configuration["pipeline_v2"]
+    fast_options = project.additional_configuration["pipeline_v2"][0]["options"]
+    assert fast_options["generate_commutative_permutations"] is False
     egglog_options = project.additional_configuration["pipeline_v2"][1]["options"]
     assert egglog_options["cross_block_constant_preparation"] is True
+    assert egglog_options["time_budget_ms"] == 250
+    assert egglog_options["function_time_budget_ms"] == 1_000
+    assert egglog_options["residual_only"] is True
 
 
 def test_hook_activation_keeps_chain_before_catalogue_before_egglog() -> None:
@@ -75,3 +81,25 @@ def test_telemetry_profile_keeps_the_same_order_but_never_enables_egglog() -> No
     assert egglog_options["time_budget_ms"] == 3
     assert egglog_options["max_degree"] == 1
     assert "cross_block_constant_preparation" not in egglog_options
+
+
+def test_deep_profile_is_explicitly_bounded_and_never_the_default_lane() -> None:
+    project = _project(_DEEP_CONFIG)
+    activation = pipeline_v2_hook_activation(project)
+    egglog_options = project.additional_configuration["pipeline_v2"][1]["options"]
+
+    assert activation.configured_pass_ids == ("mba-simplify", "mba-egglog")
+    assert egglog_options["time_budget_ms"] == 500
+    assert egglog_options["function_time_budget_ms"] == 5_000
+    assert egglog_options["max_degree"] == 2
+    assert egglog_options["residual_only"] is True
+    assert egglog_options["families"] == [
+        "add",
+        "and",
+        "bnot",
+        "mul",
+        "neg",
+        "or",
+        "sub",
+        "xor",
+    ]

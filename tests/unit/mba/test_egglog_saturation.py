@@ -16,6 +16,7 @@ from d810.backends.mba.egglog_add_rule_compiler import (
     apply_compiled_rule_to_term,
 )
 from d810.backends.mba.egglog_saturation import (
+    EgglogFunctionBudget,
     EgglogExtractionBudget,
     EgglogExtractionReceipt,
     EgglogExtractionResult,
@@ -74,6 +75,21 @@ def test_ac_canonicalization_matches_swapped_operands_without_rewrite_rules():
     assert canonicalize_ac_term(_node("add", a, b)) == canonicalize_ac_term(
         _node("add", b, a)
     )
+
+
+def test_function_budget_resets_only_for_a_new_live_mba_scope():
+    budget = EgglogFunctionBudget(1_000)
+
+    assert budget.remaining_ms((0x401000, 101), now=10.0) == 1_000
+    assert budget.remaining_ms((0x401000, 101), now=10.250) == 750
+    assert budget.remaining_ms((0x401000, 202), now=20.0) == 1_000
+
+
+def test_function_budget_exhaustion_never_wraps_negative():
+    budget = EgglogFunctionBudget(100)
+
+    assert budget.remaining_ms((0x401000, 101), now=10.0) == 100
+    assert budget.remaining_ms((0x401000, 101), now=10.101) == 0
 
 
 @pytest.mark.parametrize("operation", ["add", "mul", "and", "or", "xor"])

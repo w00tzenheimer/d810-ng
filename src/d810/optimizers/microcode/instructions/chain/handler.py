@@ -21,6 +21,7 @@ from d810.optimizers.microcode.instructions.handler import (
 
 class ChainSimplificationRule(InstructionOptimizationRule):
     CATEGORY = "Chain Optimization"
+    PORTFOLIO_TIER = "fast"
 
     def __init__(self) -> None:
         super().__init__()

@@ -20,6 +20,7 @@ from d810.backends.mba.egglog_add_rule_compiler import (
     specialize,
 )
 from d810.backends.mba.egglog_saturation import (
+    EgglogFunctionBudget,
     EgglogExtractionBudget,
     EgglogExtractionReceipt,
     EgglogExtractionResult,
@@ -91,6 +92,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
 
     DESCRIPTION = "Bounded Egglog MBA extraction (proof-gated)"
     CATEGORY = "MBA Solving"
+    PORTFOLIO_TIER = "residual"
 
     def __init__(self) -> None:
         super().__init__()
@@ -116,6 +118,10 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         self.cross_block_constant_preparation = False
         self.cross_block_def_use_preparation = False
         self.generic_native_z3_before_certificate = False
+        self.function_time_budget_ms: int | None = None
+        self._function_budget: EgglogFunctionBudget | None = None
+        self.residual_only = False
+        self._residual_admitted = False
 
     def _begin_provider_attempt(self) -> None:
         """Start one observable attempt, independent of whether it mutates."""
@@ -178,6 +184,17 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             raise ValueError(
                 "EgglogOptimizer generic_native_z3_before_certificate must be boolean"
             )
+        function_time_budget_ms = self.config.get("function_time_budget_ms")
+        if function_time_budget_ms is not None and (
+            type(function_time_budget_ms) is not int
+            or not 1 <= function_time_budget_ms <= 5_000
+        ):
+            raise ValueError(
+                "EgglogOptimizer function_time_budget_ms must be an integer from 1 to 5000"
+            )
+        residual_only = self.config.get("residual_only", False)
+        if type(residual_only) is not bool:
+            raise ValueError("EgglogOptimizer residual_only must be boolean")
         try:
             budget = EgglogExtractionBudget(
                 max_leaves=max_leaves,
@@ -205,6 +222,14 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         self.cross_block_constant_preparation = preparation
         self.cross_block_def_use_preparation = def_use_preparation
         self.generic_native_z3_before_certificate = generic_native_z3_before_certificate
+        self.function_time_budget_ms = function_time_budget_ms
+        self._function_budget = (
+            None
+            if function_time_budget_ms is None
+            else EgglogFunctionBudget(function_time_budget_ms)
+        )
+        self.residual_only = residual_only
+        self._residual_admitted = False
 
     def _publish_budget_attributes(self, budget: EgglogExtractionBudget) -> None:
         self.max_leaves = budget.max_leaves
@@ -246,6 +271,8 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         self.last_derivation_trace = None
         self.last_extraction_receipt = None
         self._begin_provider_attempt()
+        if self.residual_only and not self._residual_admitted:
+            return None
         if ins.opcode not in _SUPPORTED_ROOT_OPCODES:
             self._record_extraction_receipt(
                 EgglogExtractionReceipt(
@@ -269,6 +296,11 @@ class EgglogOptimizer(PeepholeSimplificationRule):
                 "egglog MBA extraction failed at %#x", getattr(ins, "ea", 0)
             )
             return None
+
+    def set_residual_admission(self, admitted: bool) -> None:
+        """Receive the current callback's fast-path outcome from its owner."""
+
+        self._residual_admitted = bool(admitted)
 
     def _check_and_replace(self, ins, *, blk=None):
         self.last_rule_family = None
@@ -318,9 +350,18 @@ class EgglogOptimizer(PeepholeSimplificationRule):
                 extraction_ast = prepared.ast
                 known_constants = prepared.known_constants
 
+        extraction_budget = self._candidate_extraction_budget(blk)
+        if extraction_budget is None:
+            self._record_extraction_receipt(
+                extraction_receipt_for_lowering(
+                    lowering, ExtractionSkipReason.TIME_BUDGET
+                )
+            )
+            return None
         extraction = self._select_extraction(
             extraction_ast,
             destination_size=int(ins.d.size),
+            budget=extraction_budget,
         )
         self._record_extraction_receipt(extraction.receipt)
         replacement = extraction.replacement_ast
@@ -531,15 +572,45 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             return None
         return egglog_receipt_to_outcome(self.last_extraction_receipt)
 
+    def _candidate_extraction_budget(
+        self, blk,
+    ) -> EgglogExtractionBudget | None:
+        """Clamp one candidate's admission budget to its live function window."""
+
+        tracker = self._function_budget
+        if tracker is None or blk is None:
+            return self.extraction_budget
+        mba = getattr(blk, "mba", None)
+        function_ea = int(getattr(mba, "entry_ea", 0) or 0)
+        if mba is None or function_ea <= 0:
+            return self.extraction_budget
+        remaining_ms = tracker.remaining_ms((function_ea, id(mba)))
+        candidate_time_budget_ms = min(
+            self.extraction_budget.time_budget_ms, remaining_ms
+        )
+        # Egglog's admission floor is intentionally part of the engine
+        # contract. Avoid building an invalid zero-ms budget just to learn the
+        # same safe no-op answer.
+        if candidate_time_budget_ms < 50:
+            return None
+        return replace(
+            self.extraction_budget,
+            time_budget_ms=candidate_time_budget_ms,
+        )
+
     def _select_extraction(
-        self, ast: AstNode, *, destination_size: int
+        self,
+        ast: AstNode,
+        *,
+        destination_size: int,
+        budget: EgglogExtractionBudget | None = None,
     ) -> EgglogExtractionResult:
         """Run one fresh bounded extraction with the configured rule objects."""
         self._ensure_catalogue_configured()
         return extract_bounded_candidate(
             ast,
             self._compiled_rules,
-            self.extraction_budget,
+            self.extraction_budget if budget is None else budget,
             int(destination_size),
         )
 

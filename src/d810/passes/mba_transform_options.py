@@ -137,6 +137,7 @@ MBA_TRANSFORM_OPTION_FIELDS: Mapping[str, tuple[FieldEditorSpec, ...]] = {
 class MbaSimplifyOptions:
     transform_ids: tuple[str, ...]
     transform_options: Mapping[str, Mapping[str, object]]
+    generate_commutative_permutations: bool = True
 
     def __post_init__(self) -> None:
         copied = {
@@ -188,13 +189,27 @@ def parse_mba_simplify_options(
             f"expected {MBA_SIMPLIFY_PASS_ID!r}, got {config.pass_id!r}"
         )
     unknown_option_names = tuple(
-        sorted(set(config.options) - {"transforms", "transform_options"})
+        sorted(
+            set(config.options)
+            - {
+                "transforms",
+                "transform_options",
+                "generate_commutative_permutations",
+            }
+        )
     )
     if unknown_option_names:
         raise PipelineConfigError(
             f"mba-simplify has unknown options: {list(unknown_option_names)}"
         )
     raw_transform_ids = config.options.get("transforms", [])
+    generate_commutative_permutations = config.options.get(
+        "generate_commutative_permutations", True
+    )
+    if type(generate_commutative_permutations) is not bool:
+        raise PipelineConfigError(
+            "mba-simplify options.generate_commutative_permutations must be boolean"
+        )
     if isinstance(raw_transform_ids, str) or not isinstance(
         raw_transform_ids, (list, tuple)
     ):
@@ -252,7 +267,11 @@ def parse_mba_simplify_options(
                 f"{list(unknown_names)}"
             )
         transform_options[transform_id] = dict(options)
-    return MbaSimplifyOptions(tuple(transform_ids), transform_options)
+    return MbaSimplifyOptions(
+        tuple(transform_ids),
+        transform_options,
+        generate_commutative_permutations=generate_commutative_permutations,
+    )
 
 
 __all__ = [

@@ -428,6 +428,8 @@ class IDAPatternAdapter:
         >>> new_ins = adapter.check_and_replace(blk, instruction)
     """
 
+    PORTFOLIO_TIER = "fast"
+
     def __init__(self, rule: VerifiableRule):
         """Initialize the adapter with a rule.
 
@@ -462,6 +464,7 @@ class IDAPatternAdapter:
         self._structural_selection_active = False
         self._structural_dispatch_bucket_size = 0
         self._structural_dispatch_attempt_count = 0
+        self._generate_commutative_permutations = True
 
     def _reset_attempt_outcome(self, instruction: Any | None = None) -> None:
         """Discard telemetry from the previous live pattern attempt."""
@@ -1336,8 +1339,10 @@ class IDAPatternAdapter:
             # Structural selection removes generated commutations only for
             # the configuration-selected certified DSL catalogue.  All other
             # adapters keep the historical path.
-            if self.uses_structural_matching or not getattr(
-                self.rule, "GENERATE_COMMUTATIVE_PERMUTATIONS", True
+            if (
+                self.uses_structural_matching
+                or not self._generate_commutative_permutations
+                or not getattr(self.rule, "GENERATE_COMMUTATIVE_PERMUTATIONS", True)
             ):
                 permutations = [pattern]
             else:
@@ -1719,6 +1724,14 @@ class IDAPatternAdapter:
         Args:
             kwargs: Configuration dictionary from the JSON project file.
         """
+        generate_permutations = (kwargs or {}).get(
+            "generate_commutative_permutations", True
+        )
+        if type(generate_permutations) is not bool:
+            raise ValueError("generate_commutative_permutations must be boolean")
+        if self._generate_commutative_permutations != generate_permutations:
+            self._pattern_candidates_cache = None
+        self._generate_commutative_permutations = generate_permutations
         if hasattr(self.rule, "configure"):
             self.rule.configure(kwargs)
 

@@ -50,6 +50,7 @@ class MbaSimplifyPass(PipelinePass):
     transform_ids: tuple[str, ...]
     implementation_names: tuple[str, ...]
     transform_options: Mapping[str, Mapping[str, object]]
+    generate_commutative_permutations: bool = True
     name: str = MBA_SIMPLIFY_PASS_ID
 
     def __post_init__(self) -> None:
@@ -101,6 +102,7 @@ def build_mba_simplify_pass(
             for transform_id in options.transform_ids
         ),
         transform_options=options.transform_options,
+        generate_commutative_permutations=options.generate_commutative_permutations,
     )
 
 

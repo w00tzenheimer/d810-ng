@@ -187,6 +187,38 @@ class EgglogExtractionBudget:
             raise ValueError("require_proof must remain true")
 
 
+class EgglogFunctionBudget:
+    """Monotonic aggregate admission budget for one live MBA object.
+
+    The per-candidate extraction budget remains the only limit passed to
+    Egglog.  This small host-side tracker prevents a configured interactive or
+    deep profile from admitting an unbounded number of such candidates while a
+    single function is decompiled.  It deliberately models admission only:
+    Egglog 13.2.0 cannot interrupt an already-admitted Rust ``run(1)`` call.
+    """
+
+    def __init__(self, time_budget_ms: int) -> None:
+        _positive_integer("function_time_budget_ms", time_budget_ms)
+        self._time_budget_ms = time_budget_ms
+        self._scope_key: object | None = None
+        self._started_at: float | None = None
+
+    def remaining_ms(self, scope_key: object, *, now: float | None = None) -> int:
+        """Return remaining whole-function admission time for ``scope_key``.
+
+        A new live MBA object starts a fresh capture; calls for the same object
+        monotonically consume its single aggregate budget.
+        """
+
+        current = _monotonic() if now is None else now
+        if self._scope_key != scope_key or self._started_at is None:
+            self._scope_key = scope_key
+            self._started_at = current
+            return self._time_budget_ms
+        elapsed_ms = (current - self._started_at) * 1_000.0
+        return max(0, int(self._time_budget_ms - elapsed_ms))
+
+
 @dataclass(frozen=True)
 class EgglogExtractionReceipt:
     """Immutable telemetry for either an extraction or a fail-closed skip."""
@@ -863,6 +895,7 @@ __all__ = [
     "BvExpr",
     "DegreeExpr",
     "EGGLOG_EXPLORATION_SCOPE",
+    "EgglogFunctionBudget",
     "EgglogExtractionBudget",
     "EgglogExtractionReceipt",
     "EgglogExtractionResult",

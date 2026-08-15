@@ -62,6 +62,22 @@ def test_typed_mba_options_reject_an_undeclared_transform_option() -> None:
         parse_mba_simplify_options(config, mba_simplify_pass_registry())
 
 
+def test_typed_mba_options_can_disable_legacy_fuzzy_permutations() -> None:
+    config = PipelineConfig(
+        pass_id="mba-simplify",
+        options={
+            "transforms": ["add-xor-1"],
+            "generate_commutative_permutations": False,
+        },
+    )
+
+    parsed = parse_mba_simplify_options(config, mba_simplify_pass_registry())
+    adapter = build_mba_simplify_pass(config, mba_simplify_pass_registry())
+
+    assert parsed.generate_commutative_permutations is False
+    assert adapter.generate_commutative_permutations is False
+
+
 @pytest.mark.parametrize(
     ("config", "message"),
     (

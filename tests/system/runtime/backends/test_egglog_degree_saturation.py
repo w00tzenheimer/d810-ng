@@ -26,6 +26,7 @@ from d810.backends.mba.cross_block_preparation import (  # noqa: E402
 from d810.hexrays.expr import ast as ast_dispatcher  # noqa: E402
 from d810.hexrays.expr import p_ast  # noqa: E402
 from d810.hexrays.ir.mop_snapshot import MopSnapshot  # noqa: E402
+from d810.hexrays.hooks.optinsn_adapter import InstructionOptimizerManager  # noqa: E402
 from d810.optimizers.microcode.instructions.egraph.egglog_handler import (  # noqa: E402
     EgglogOptimizer,
 )
@@ -494,6 +495,96 @@ def test_live_handler_certificate_proof_skips_generic_native_z3_by_default():
 
     assert default_handler.generic_native_z3_before_certificate is False
     assert diagnostic_handler.generic_native_z3_before_certificate is True
+
+
+def test_live_handler_residual_only_requires_fast_path_admission(monkeypatch):
+    handler = _configured_live_handler(residual_only=True)
+    calls = []
+    replacement = object()
+    monkeypatch.setattr(
+        handler,
+        "_check_and_replace",
+        lambda *_args, **_kwargs: calls.append("extract") or replacement,
+    )
+
+    assert handler.check_and_replace(None, _Instruction()) is None
+    assert calls == []
+
+    handler.set_residual_admission(True)
+    assert handler.check_and_replace(None, _Instruction()) is replacement
+    assert calls == ["extract"]
+
+
+def test_live_handler_clamps_each_candidate_to_the_function_budget(monkeypatch):
+    handler = _configured_live_handler(
+        time_budget_ms=250,
+        function_time_budget_ms=1_000,
+    )
+    block = SimpleNamespace(mba=SimpleNamespace(entry_ea=0x401000))
+    calls = []
+
+    class _Budget:
+        def remaining_ms(self, scope_key):
+            calls.append(scope_key)
+            return 125
+
+    handler._function_budget = _Budget()
+    clamped = handler._candidate_extraction_budget(block)
+
+    assert clamped is not None
+    assert clamped.time_budget_ms == 125
+    assert calls == [(0x401000, id(block.mba))]
+
+    monkeypatch.setattr(handler._function_budget, "remaining_ms", lambda _scope: 49)
+    assert handler._candidate_extraction_budget(block) is None
+
+
+def test_portfolio_dispatch_admits_residual_only_after_fast_tier_is_configured(
+    monkeypatch,
+):
+    import d810.hexrays.hooks.optinsn_adapter as adapter_module
+
+    admissions = []
+    call_order = []
+
+    class _FastRule:
+        PORTFOLIO_TIER = "fast"
+        name = "FastCatalogue"
+        maturities = (ida_hexrays.MMAT_GLBOPT2,)
+
+    class _ResidualRule:
+        PORTFOLIO_TIER = "residual"
+        name = "EgglogOptimizer"
+        maturities = (ida_hexrays.MMAT_GLBOPT2,)
+
+        def set_residual_admission(self, admitted):
+            admissions.append(admitted)
+
+    class _Optimizer:
+        def __init__(self, name, rules):
+            self.name = name
+            self.rules = tuple(rules)
+
+        def get_optimized_instruction(self, *_args, **_kwargs):
+            call_order.append(self.name)
+            return None
+
+    manager = object.__new__(InstructionOptimizerManager)
+    manager.current_maturity = ida_hexrays.MMAT_GLBOPT2
+    manager._scheduled_implementation_names = frozenset()
+    manager._active_optimizers = [
+        _Optimizer("PatternOptimizer", (_FastRule(),)),
+        _Optimizer("PeepholeOptimizer", (_ResidualRule(),)),
+    ]
+    manager._resolve_active_instruction_rule_names = lambda _blk: frozenset(
+        {"FastCatalogue", "EgglogOptimizer"}
+    )
+    manager.analyzer = SimpleNamespace(analyze=lambda *_args: None)
+    monkeypatch.setattr(adapter_module, "d810_optimization_is_suppressed", lambda: False)
+
+    assert manager.optimize(SimpleNamespace(), SimpleNamespace()) is False
+    assert call_order == ["PatternOptimizer", "PeepholeOptimizer"]
+    assert admissions == [True]
 
 
 def test_live_handler_admits_and_extracts_real_degree_two_boolean_candidate(

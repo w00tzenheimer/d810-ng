@@ -38,7 +38,10 @@ class MbaEgglogOptions:
     max_enodes: int = 128
     max_rule_firings: int = 32
     cross_block_constant_preparation: bool = False
+    cross_block_def_use_preparation: bool = False
     time_budget_ms: int = 3
+    function_time_budget_ms: int | None = None
+    residual_only: bool = False
     require_proof: bool = True
     families: tuple[str, ...] = DEFAULT_FAMILIES
     maturities: tuple[str, ...] = DEFAULT_MATURITIES
@@ -56,7 +59,10 @@ class MbaEgglogPass(PipelinePass):
     max_enodes: int = 128
     max_rule_firings: int = 32
     cross_block_constant_preparation: bool = False
+    cross_block_def_use_preparation: bool = False
     time_budget_ms: int = 3
+    function_time_budget_ms: int | None = None
+    residual_only: bool = False
     require_proof: bool = True
     families: tuple[str, ...] = DEFAULT_FAMILIES
     maturities: tuple[str, ...] = DEFAULT_MATURITIES
@@ -84,7 +90,10 @@ def parse_mba_egglog_options(
         "max_enodes",
         "max_rule_firings",
         "cross_block_constant_preparation",
+        "cross_block_def_use_preparation",
         "time_budget_ms",
+        "function_time_budget_ms",
+        "residual_only",
         "require_proof",
         "families",
         "maturities",
@@ -113,7 +122,12 @@ def parse_mba_egglog_options(
     cross_block_constant_preparation = options.get(
         "cross_block_constant_preparation", False
     )
+    cross_block_def_use_preparation = options.get(
+        "cross_block_def_use_preparation", False
+    )
     time_budget_ms = options.get("time_budget_ms", 3)
+    function_time_budget_ms = options.get("function_time_budget_ms")
+    residual_only = options.get("residual_only", False)
     require_proof = options.get("require_proof", True)
     families = options.get("families", list(DEFAULT_FAMILIES))
     maturities = options.get("maturities", DEFAULT_MATURITIES)
@@ -137,6 +151,15 @@ def parse_mba_egglog_options(
             raise PipelineConfigError(
                 f"mba-egglog options.{name} must be a positive integer"
             )
+    if function_time_budget_ms is not None and (
+        type(function_time_budget_ms) is not int
+        or not 1 <= function_time_budget_ms <= 5_000
+    ):
+        raise PipelineConfigError(
+            "mba-egglog options.function_time_budget_ms must be an integer from 1 to 5000"
+        )
+    if type(residual_only) is not bool:
+        raise PipelineConfigError("mba-egglog options.residual_only must be boolean")
     if type(max_degree) is not int or max_degree not in (1, 2):
         raise PipelineConfigError(
             "mba-egglog options.max_degree must be exactly 1 or 2"
@@ -144,6 +167,10 @@ def parse_mba_egglog_options(
     if type(cross_block_constant_preparation) is not bool:
         raise PipelineConfigError(
             "mba-egglog options.cross_block_constant_preparation must be boolean"
+        )
+    if type(cross_block_def_use_preparation) is not bool:
+        raise PipelineConfigError(
+            "mba-egglog options.cross_block_def_use_preparation must be boolean"
         )
     if type(saturation_rounds) is not int or not 1 <= saturation_rounds <= 6:
         raise PipelineConfigError(
@@ -194,7 +221,10 @@ def parse_mba_egglog_options(
         max_enodes=max_enodes,
         max_rule_firings=max_rule_firings,
         cross_block_constant_preparation=cross_block_constant_preparation,
+        cross_block_def_use_preparation=cross_block_def_use_preparation,
         time_budget_ms=time_budget_ms,
+        function_time_budget_ms=function_time_budget_ms,
+        residual_only=residual_only,
         require_proof=require_proof,
         families=resolved_families,
         maturities=resolved,
@@ -212,7 +242,10 @@ def build_mba_egglog_pass(config: PipelineConfig) -> MbaEgglogPass:
         max_enodes=options.max_enodes,
         max_rule_firings=options.max_rule_firings,
         cross_block_constant_preparation=options.cross_block_constant_preparation,
+        cross_block_def_use_preparation=options.cross_block_def_use_preparation,
         time_budget_ms=options.time_budget_ms,
+        function_time_budget_ms=options.function_time_budget_ms,
+        residual_only=options.residual_only,
         require_proof=options.require_proof,
         families=options.families,
         maturities=options.maturities,

@@ -1024,6 +1024,47 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         self._active_instruction_rule_names_by_maturity[maturity] = names
         return names
 
+    def _has_active_fast_mba_provider(
+        self,
+        *,
+        allowed_rule_names: frozenset[str] | None,
+        scheduled_rule_names: frozenset[str],
+    ) -> bool:
+        """Whether this callback gave a configured fast MBA tier first refusal.
+
+        Egglog is a residual tier only in profiles that request it.  The actual
+        candidate handoff remains the existing outer loop: any earlier fast
+        candidate returns immediately, so a residual rule is reached only when
+        every eligible fast rule returned ``None``.  This predicate prevents a
+        residual-only Egglog rule from silently becoming a standalone matcher
+        when a profile forgot to configure its fast tier.
+        """
+
+        for optimizer in self._active_optimizers:
+            for rule in getattr(optimizer, "rules", ()) or ():
+                if getattr(rule, "PORTFOLIO_TIER", None) != "fast":
+                    continue
+                name = self._rule_name(rule)
+                if allowed_rule_names is not None and name not in allowed_rule_names:
+                    continue
+                maturities = getattr(rule, "maturities", ())
+                if (
+                    self.current_maturity not in maturities
+                    and name not in scheduled_rule_names
+                ):
+                    continue
+                return True
+        return False
+
+    @staticmethod
+    def _set_residual_admission(optimizer: object, admitted: bool) -> None:
+        """Give residual rules a callback-local fast-tier admission decision."""
+
+        for rule in getattr(optimizer, "rules", ()) or ():
+            setter = getattr(rule, "set_residual_admission", None)
+            if callable(setter):
+                setter(admitted)
+
     def optimize(self, blk: ida_hexrays.mblock_t, ins: ida_hexrays.minsn_t) -> bool:
         if d810_optimization_is_suppressed():
             return False
@@ -1044,6 +1085,10 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         quarantined_rule_names = frozenset(
             getattr(self, "_cycle_quarantined_rule_names", {}).get(site_key, ())
         )
+        residual_admitted = self._has_active_fast_mba_provider(
+            allowed_rule_names=allowed_rule_names,
+            scheduled_rule_names=scheduled_rule_names,
+        )
         for ins_optimizer in self._active_optimizers:
             self._last_optimizer_tried = ins_optimizer
             set_quarantine = getattr(
@@ -1053,6 +1098,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             )
             if callable(set_quarantine):
                 set_quarantine(quarantined_rule_names)
+            self._set_residual_admission(ins_optimizer, residual_admitted)
             new_ins = ins_optimizer.get_optimized_instruction(
                 blk,
                 ins,

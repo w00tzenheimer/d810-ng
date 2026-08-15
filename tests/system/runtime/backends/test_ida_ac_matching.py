@@ -263,6 +263,21 @@ def test_certified_registration_rejects_bare_structural_opt_in(
     assert len(rollback.pattern_candidates) == 2
 
 
+def test_portfolio_can_disable_legacy_fuzzy_permutations_without_structural_opt_in():
+    x = Var("x")
+
+    class Rule:
+        name = "NoFuzzyRule"
+        pattern = x + Const("one", 1)
+
+    adapter = IDAPatternAdapter(Rule())
+    assert len(adapter.pattern_candidates) == 2
+
+    adapter.configure({"generate_commutative_permutations": False})
+    assert adapter.uses_structural_matching is False
+    assert len(adapter.pattern_candidates) == 1
+
+
 def test_structural_opt_in_requires_matching_persisted_parity_certificate(
     monkeypatch, tmp_path
 ) -> None:
