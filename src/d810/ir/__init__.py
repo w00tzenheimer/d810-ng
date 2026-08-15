@@ -3,6 +3,11 @@
 from __future__ import annotations
 
 from .confidence import FactConfidence
+from .edge_state_contract import (
+    EdgeStateContract,
+    MachineStateLocation,
+    MachineStateLocationKind,
+)
 from .expressions import Add, Const, ExprRef, Load, Move, Store, Sub, ValueOpKind
 from .handles import BlockHandle, FlowGraphHandle, InsnHandle, OperandHandle
 from .instructions import (
@@ -56,6 +61,7 @@ __all__ = [
     "ConstantFixpointResult",
     "ControlTransferKind",
     "DefinitionRef",
+    "EdgeStateContract",
     "ExprRef",
     "FactConfidence",
     "FlowGraphHandle",
@@ -71,6 +77,8 @@ __all__ = [
     "LiftedOpcode",
     "Load",
     "MemoryCell",
+    "MachineStateLocation",
+    "MachineStateLocationKind",
     "Move",
     "OperandHandle",
     "OperationKind",
