@@ -785,6 +785,21 @@ OLLVM_CASES = [
 
 DAC_MASM_CASES = [
     DeobfuscationCase(
+        function="affine_opaque_jz_false",
+        description=(
+            "Purpose-built MASM opaque branch: independently computes "
+            "604*x and 604*x-768, whose equality is always false. Guards "
+            "the cheap affine jump fold before the Z3 fallback."
+        ),
+        project="default_unflattening_ollvm.json",
+        obfuscated_contains=["0x25C", "0x300"],
+        deobfuscated_contains=["return 1;"],
+        deobfuscated_not_contains=["0x25C", "0x300"],
+        must_change=True,
+        required_rules=["JumpFixer"],
+        skip_if_function_absent=True,
+    ),
+    DeobfuscationCase(
         function="Eidolon_RunFiberWorker13",
         description=(
             "Live Eidolon worker-loop export. Guards the transaction preflight "

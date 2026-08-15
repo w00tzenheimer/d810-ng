@@ -1,3 +1,5 @@
+import re
+
 import ida_hexrays
 
 from d810.evaluator.evaluators import evaluate_concrete
@@ -717,6 +719,143 @@ class JmpRuleZ3Const(JumpOptimizationRule):
             )
             return True
         return False
+
+
+_AFFINE_RECURSION_LIMIT = 24
+_SSA_TAG_RE = re.compile(r"\{\d+\}")
+
+
+def _serialize_mop_key(mop) -> str:
+    """Return an SSA-insensitive key for a non-affine leaf expression."""
+    try:
+        rendered = mop.dstr()
+    except Exception:
+        rendered = None
+    if rendered:
+        return _SSA_TAG_RE.sub("", rendered)
+    # Without the renderer separate leaves cannot match, which is conservative.
+    return f"@{id(mop):x}"
+
+
+def _affine_extract(
+    mop,
+    size: int,
+    depth: int = 0,
+) -> tuple[dict[str, int], int] | None:
+    """Extract ``mop`` as affine terms plus a constant modulo ``2^(8*size)``."""
+    if mop is None or depth > _AFFINE_RECURSION_LIMIT or size <= 0:
+        return None
+    mask = (1 << (size * 8)) - 1
+    if mop.t == ida_hexrays.mop_n:
+        try:
+            return ({}, int(mop.nnn.value) & mask)
+        except Exception:
+            return None
+    if mop.t != ida_hexrays.mop_d or mop.d is None:
+        return ({_serialize_mop_key(mop): 1}, 0)
+
+    instruction = mop.d
+
+    def combine(
+        left: tuple[dict[str, int], int],
+        right: tuple[dict[str, int], int],
+        sign: int,
+    ) -> tuple[dict[str, int], int]:
+        terms = dict(left[0])
+        for key, value in right[0].items():
+            coefficient = (terms.get(key, 0) + sign * value) & mask
+            if coefficient:
+                terms[key] = coefficient
+            else:
+                terms.pop(key, None)
+        return (terms, (left[1] + sign * right[1]) & mask)
+
+    def scale(
+        affine: tuple[dict[str, int], int], factor: int
+    ) -> tuple[dict[str, int], int]:
+        factor &= mask
+        if factor == 0:
+            return ({}, 0)
+        terms = {
+            key: coefficient
+            for key, value in affine[0].items()
+            if (coefficient := (value * factor) & mask)
+        }
+        return (terms, (affine[1] * factor) & mask)
+
+    if instruction.opcode in (ida_hexrays.m_add, ida_hexrays.m_sub):
+        left = _affine_extract(instruction.l, size, depth + 1)
+        right = _affine_extract(instruction.r, size, depth + 1)
+        if left is None or right is None:
+            return None
+        return combine(
+            left,
+            right,
+            1 if instruction.opcode == ida_hexrays.m_add else -1,
+        )
+    if instruction.opcode == ida_hexrays.m_neg:
+        left = _affine_extract(instruction.l, size, depth + 1)
+        return None if left is None else scale(left, -1)
+    if instruction.opcode == ida_hexrays.m_bnot:
+        left = _affine_extract(instruction.l, size, depth + 1)
+        if left is None:
+            return None
+        terms, constant = scale(left, -1)
+        return (terms, (constant - 1) & mask)
+    if instruction.opcode == ida_hexrays.m_mul:
+        left = _affine_extract(instruction.l, size, depth + 1)
+        right = _affine_extract(instruction.r, size, depth + 1)
+        if left is None or right is None:
+            return None
+        if not left[0]:
+            return scale(right, left[1])
+        if not right[0]:
+            return scale(left, right[1])
+
+    # Non-linear and unsupported operations remain one opaque affine term.
+    return ({_serialize_mop_key(mop): 1}, 0)
+
+
+def _affine_decide_equality(opcode: int, left_mop, right_mop) -> bool | None:
+    """Return whether an affine ``jz``/``jnz`` is taken, else ``None``."""
+    size = max(
+        int(getattr(left_mop, "size", 0) or 0),
+        int(getattr(right_mop, "size", 0) or 0),
+    )
+    if size <= 0:
+        return None
+    left = _affine_extract(left_mop, size)
+    right = _affine_extract(right_mop, size)
+    if left is None or right is None or left[0] != right[0]:
+        return None
+    is_equal = left[1] == right[1]
+    if opcode == ida_hexrays.m_jz:
+        return is_equal
+    if opcode == ida_hexrays.m_jnz:
+        return not is_equal
+    return None
+
+
+class JmpRuleAffineEq(JumpOptimizationRule):
+    """Fold jz/jnz predicates with equal affine term maps without Z3."""
+
+    ORIGINAL_JUMP_OPCODES = [ida_hexrays.m_jz, ida_hexrays.m_jnz]
+    LEFT_PATTERN = AstLeaf("x_0")
+    RIGHT_PATTERN = AstLeaf("x_1")
+    REPLACEMENT_OPCODE = ida_hexrays.m_goto
+
+    def check_candidate(self, opcode, left_candidate, right_candidate):
+        jump_taken = _affine_decide_equality(
+            opcode,
+            left_candidate.mop,
+            right_candidate.mop,
+        )
+        if jump_taken is None:
+            return False
+        self.jump_replacement_block_serial = (
+            self.jump_original_block_serial if jump_taken else self.direct_block_serial
+        )
+        return True
 
 
 # NOT "d810.optimizer": that logger is filtered out of the dump entirely

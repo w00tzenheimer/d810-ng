@@ -120,6 +120,7 @@ def test_rule_group_actions_apply_to_all_registered_descendants() -> None:
         target_id="family:comparison-rewrites",
         selected=False,
     ) == (
+        "JmpRuleAffineEq",
         "JmpRuleFlagsOpaquePredicate",
         "JmpRuleReachingConst",
         "JmpRuleZ3Const",
@@ -145,6 +146,7 @@ def test_rule_group_actions_apply_to_all_registered_descendants() -> None:
     ) == (
         "JaeRule1",
         "JbRule1",
+        "JmpRuleAffineEq",
         "JmpRuleFlagsOpaquePredicate",
         "JmpRuleReachingConst",
         "JmpRuleZ3Const",

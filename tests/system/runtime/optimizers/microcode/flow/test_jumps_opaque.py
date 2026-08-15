@@ -192,6 +192,70 @@ def test_jump_fixer_executes_goto_fold_through_typed_transaction(monkeypatch):
     ]
 
 
+def test_jump_fixer_applies_the_configured_affine_rule_before_z3():
+    """The cheap affine fold must run before the expensive Z3 fallback."""
+    fixer = handler.JumpFixer()
+
+    fixer.configure({"enabled_rules": ["JmpRuleAffineEq", "JmpRuleZ3Const"]})
+
+    assert [rule.name for rule in fixer.rules] == [
+        "JmpRuleAffineEq",
+        "JmpRuleZ3Const",
+    ]
+
+
+def test_jump_fixer_preserves_side_effect_corridor_for_affine_fold(monkeypatch):
+    """The side-effect veto applies to every goto-producing jump rule."""
+    mba = _FakeMba()
+    mba.qty = 12
+    branch = _insn(
+        ida_hexrays.m_jz,
+        left=_reg(20),
+        right=_num(0),
+        dest=_blkref(11),
+    )
+    branch.ea = 0x40C116
+    source = mba.add(
+        _FakeBlock(
+            7,
+            head=branch,
+            succs=(11, 8),
+            next_serial=8,
+        )
+    )
+    source.start = 0x40C116
+    mba.add(_FakeBlock(8, head=_insn(ida_hexrays.m_stx), succs=()))
+    mba.add(_FakeBlock(11, head=_insn(ida_hexrays.m_nop), succs=()))
+
+    folded = _insn(ida_hexrays.m_goto, dest=_blkref(11))
+    fixer = handler.JumpFixer()
+    fixer.configure(
+        {
+            "preserve_z3_discarded_side_effects": True,
+            "preserve_z3_discarded_side_effect_depth": 3,
+        }
+    )
+    fixer.rules = [
+        SimpleNamespace(
+            name="JmpRuleAffineEq",
+            check_pattern_and_replace=lambda *_args: folded,
+        )
+    ]
+
+    monkeypatch.setattr(handler, "is_conditional_jump", lambda _block: True)
+    monkeypatch.setattr(handler, "mop_to_ast", lambda _mop: object())
+    monkeypatch.setattr(handler, "format_minsn_t", lambda _insn: "insn")
+    monkeypatch.setattr(
+        fixer,
+        "execute_graph_modifications",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("effectful discarded corridor must not be folded")
+        ),
+    )
+
+    assert fixer.optimize(source) is False
+
+
 def test_jump_fixer_does_not_claim_rejected_typed_transaction(monkeypatch):
     mba = SimpleNamespace()
     branch = _insn(

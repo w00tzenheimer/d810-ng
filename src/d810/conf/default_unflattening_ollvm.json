@@ -976,6 +976,7 @@
           "JnzRuleUmodAddIdentity",
           "JnzRuleUmodSubIdentity",
           "JmpRuleReachingConst",
+          "JmpRuleAffineEq",
           "JmpRuleZ3Const"
         ]
       }
