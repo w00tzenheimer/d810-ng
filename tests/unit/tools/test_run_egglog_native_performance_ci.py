@@ -257,7 +257,7 @@ fi
         "native_stage_coverage_match": True,
         "real_corpus_attempts_match": True,
         "real_corpus_matcher_backend_match": True,
-        "real_corpus_matcher_semantics_match": True,
+        "real_corpus_matcher_metrics_match": True,
         "real_corpus_matcher_timing_contract_met": True,
         "real_corpus_outcomes_match": True,
         "real_corpus_proof_paths_match": True,
@@ -419,9 +419,9 @@ def test_comparator_rejects_incomplete_real_corpus_receipts(
         ),
         (
             lambda _python, cython: cython[1]["attempts"][0].update(
-                native_matcher_comparisons=257
+                native_matcher_comparisons=5
             ),
-            "native matcher comparisons exceed fixed capacity",
+            "real_corpus_matcher_metrics_match",
         ),
         (
             lambda _python, cython: cython[2]["stage_timing_ms"][
@@ -459,14 +459,37 @@ def test_comparator_publishes_predeclared_paired_proof_contract() -> None:
     assert comparison["performance_contract"] == {
         "schema_version": 1,
         "baseline_kind": "native_pod_matcher",
-        "minimum_matched_pairs_per_mode": 30,
+        "minimum_structural_matcher_pairs_per_mode": 5,
         "minimum_p50_matcher_reduction_fraction": 0.2,
         "minimum_p95_matcher_reduction_fraction": 0.1,
         "requires_exact_semantic_parity": True,
     }
     assert comparison["python"]["real_corpus_matcher_timing"] == {
         "mode": "python",
+        "reached_preflight_count": 30,
         "sample_count": 30,
+        "p50_ms": 1.0,
+        "p95_ms": 1.0,
+        "max_ms": 1.0,
+    }
+
+
+def test_comparator_excludes_shared_feasibility_noops_from_matcher_timing() -> None:
+    """Zero-comparison rows remain paired evidence but are not matcher work."""
+
+    python_rows, cython_rows = _valid_receipts()
+    python_rows = list(copy.deepcopy(python_rows))
+    cython_rows = list(copy.deepcopy(cython_rows))
+    for rows in (python_rows, cython_rows):
+        attempt = rows[1]["attempts"][0]
+        attempt.update(native_matcher_comparisons=0, native_matcher_lazy_swaps=0)
+
+    comparison = compare_receipts(python_rows, cython_rows)
+
+    assert comparison["python"]["real_corpus_matcher_timing"] == {
+        "mode": "python",
+        "reached_preflight_count": 30,
+        "sample_count": 29,
         "p50_ms": 1.0,
         "p95_ms": 1.0,
         "max_ms": 1.0,

@@ -88,6 +88,7 @@ class _CompiledPattern:
     rule: CompiledEgglogRule
     catalogue_index: int
     pod_pattern: _PodPattern | None
+    structural_node_count: int
 
 
 class _ComparisonBudgetExceeded(RuntimeError):
@@ -138,6 +139,7 @@ class CompiledPatternCatalogue:
                 rule,
                 index,
                 encode_symbolic_pattern(rule.pattern),
+                _symbolic_node_count(rule.pattern),
             )
             compiled.append(pattern)
             operation = rule.pattern.operation
@@ -179,6 +181,32 @@ class CompiledPatternCatalogue:
 
         return match_root_pod(self, candidate, comparison_budget=comparison_budget)
 
+    def feasible_root_patterns(
+        self, candidate: NativeMbaTermView
+    ) -> tuple[_CompiledPattern, ...]:
+        """Return the common zero-cost structural feasibility subset.
+
+        Each pattern operator must match an operator in the candidate.  A
+        pattern therefore cannot fit into a candidate with fewer structural
+        nodes.  The filter deliberately lives above both matchers so it never
+        changes the shared comparison-budget semantics between Python and
+        Cython.
+        """
+
+        if candidate.operation is None:
+            return ()
+        bucket = self.root_width_buckets.get((candidate.operation, candidate.width), ())
+        candidate_node_count = candidate.term_cost[1]
+        if all(
+            pattern.structural_node_count <= candidate_node_count for pattern in bucket
+        ):
+            return bucket
+        return tuple(
+            pattern
+            for pattern in bucket
+            if pattern.structural_node_count <= candidate_node_count
+        )
+
     def _match_root_portable(
         self, candidate: NativeMbaTermView, *, comparison_budget: int = 64
     ) -> NativePatternMatchResult:
@@ -191,9 +219,7 @@ class CompiledPatternCatalogue:
 
         matches: list[NativePatternMatch] = []
         budget = _MatchBudget(comparison_budget)
-        for compiled in self.root_width_buckets.get(
-            (candidate.operation, candidate.width), ()
-        ):
+        for compiled in self.feasible_root_patterns(candidate):
             seen_replacements: set[str] = set()
             try:
                 for native_bindings in _iter_native_matches(
@@ -333,6 +359,19 @@ def _iter_native_matches(
         yield from _iter_native_matches(
             expression.right, candidate.children[1], left_bindings, budget
         )
+
+
+def _symbolic_node_count(expression: SymbolicExpressionProtocol) -> int:
+    """Return the immutable structural cardinality of one rule pattern."""
+
+    if expression.operation is None:
+        return 1
+    assert expression.left is not None
+    return (
+        1
+        + _symbolic_node_count(expression.left)
+        + (0 if expression.right is None else _symbolic_node_count(expression.right))
+    )
 
 
 def _flatten_symbolic_ac(

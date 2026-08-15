@@ -3,13 +3,36 @@
 from __future__ import annotations
 
 from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
-from d810.backends.mba.egglog_add_rule_compiler import compile_add_rule_catalogue
+from d810.backends.mba.egglog_add_rule_compiler import (
+    _compile_rule_families,
+    compile_add_rule_catalogue,
+)
 from d810.backends.mba.native_mba_term_view import NativeMbaTermView
 from d810.backends.mba.native_pod_matcher import (
     OP_ADD,
     PackedNativeMbaTerm,
     match_root_pod,
 )
+from d810.mba.dsl import Const, Var
+from d810.mba.rules._base import VerifiableRule
+
+
+_TIGHT_X, _TIGHT_Y, _TIGHT_Z = Var("tight_x"), Var("tight_y"), Var("tight_z")
+_TIGHT_ZERO = Const("tight_zero", 0)
+
+
+class _ImpossibleBeforeValidRule(VerifiableRule):
+    """A valid schema that cannot fit into the three-node test candidate."""
+
+    PATTERN = _TIGHT_X + (_TIGHT_Y & _TIGHT_Z)
+    REPLACEMENT = PATTERN
+
+
+class _ValidAfterImpossibleRule(VerifiableRule):
+    """A later valid zero-addition simplification."""
+
+    PATTERN = _TIGHT_X + _TIGHT_ZERO
+    REPLACEMENT = _TIGHT_X
 
 
 def _leaf(name: str) -> NativeMbaTermView:
@@ -101,4 +124,21 @@ def test_pod_adapter_matches_portable_catalogue_exactly() -> None:
 
     assert match_root_pod(catalogue, candidate, comparison_budget=64) == (
         catalogue.match_root(candidate, comparison_budget=64)
+    )
+
+
+def test_shared_feasibility_filter_preserves_later_match_under_tight_budget() -> None:
+    """Impossible earlier patterns must not consume the shared budget in either mode."""
+
+    rules = _compile_rule_families(
+        {"add": (_ImpossibleBeforeValidRule, _ValidAfterImpossibleRule)}
+    ).compiled_rules
+    catalogue = CompiledPatternCatalogue.from_rules(rules)
+    candidate = _node("add", _leaf("x"), _constant(0))
+
+    result = catalogue._match_root_portable(candidate, comparison_budget=5)
+
+    assert result.comparison_budget_exceeded is False
+    assert tuple(match.rule.source_name for match in result.matches) == (
+        "_ValidAfterImpossibleRule",
     )

@@ -344,14 +344,23 @@ def _match_cython_catalogue(
     root = packed.sidecar[packed.root_index]
     assert root is not None
     candidate_rows = packed.numeric_rows()
-    bucket = catalogue.root_width_buckets.get((root.operation, root.width), ())
+    root_width = (root.operation, root.width)
+    full_bucket = catalogue.root_width_buckets.get(root_width, ())
+    bucket = catalogue.feasible_root_patterns(root)
     if _match_pod_catalogue is None:
         return None
-    pattern_records = catalogue.pod_records_by_root_width.get(
-        (root.operation, root.width)
-    )
-    if pattern_records is None:
+    if any(pattern.pod_pattern is None for pattern in bucket):
         return None
+    pattern_records = (
+        catalogue.pod_records_by_root_width[root_width]
+        if bucket is full_bucket
+        else tuple(
+            (pattern.pod_pattern[0], len(pattern.pod_pattern[1]))
+            for pattern in bucket
+            if pattern.pod_pattern is not None
+        )
+    )
+    assert pattern_records is not None
     results_by_pattern, comparisons, lazy_swaps, exceeded = _match_pod_catalogue(
         pattern_records,
         candidate_rows,

@@ -494,16 +494,6 @@ cdef tuple _match_pod_catalogue_trusted(
     for record in patterns:
         pattern_rows = <tuple>record[0]
         variable_count = <int>record[1]
-        # Every structural operator in the pattern must map to a structural
-        # operator in the candidate.  A pattern with more packed nodes cannot
-        # fit, even when its terminal variables capture complete subtrees.
-        # Reject it before allocating rollback/result state or consuming the
-        # bounded comparison budget.  This is deliberately Cython-local: the
-        # native counter measures actual native structural comparisons, not a
-        # portable-oracle work estimate.
-        if len(pattern_rows) > len(candidate_rows):
-            catalogue_output.append(())
-            continue
         _reset_bindings(&bindings, variable_count)
         results = _match(
             pattern_rows,
