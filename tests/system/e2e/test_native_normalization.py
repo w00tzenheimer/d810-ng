@@ -30,19 +30,19 @@ pytestmark = [
 ]
 
 ida_bytes = pytest.importorskip("ida_bytes")
-ida_funcs = pytest.importorskip("ida_funcs")
 ida_ida = pytest.importorskip("ida_ida")
 idaapi = pytest.importorskip("idaapi")
-idautils = pytest.importorskip("idautils")
+idc = pytest.importorskip("idc")
 
 from d810.backends.hexrays.native_patch_lifecycle import (  # noqa: E402
     IdaCallerDiscovery,
     IdaCfuncCacheInvalidator,
     IdaControlledRedoDecompiler,
 )
-from d810.backends.ida.native_patch.capture import (  # noqa: E402
-    IdaLiveDatabaseReader,
-    capture_range_evidence,
+from d810.backends.ida.native_patch.capture import IdaLiveDatabaseReader  # noqa: E402
+from d810.backends.ida.native_patch.dead_edge_oracle import (  # noqa: E402
+    build_dead_edge_semantic_plan,
+    find_dead_edges_for_function,
 )
 from d810.backends.ida.native_patch.encoder import MinimalX86BranchEncoder  # noqa: E402
 from d810.backends.ida.native_patch.gateway import (  # noqa: E402
@@ -50,15 +50,10 @@ from d810.backends.ida.native_patch.gateway import (  # noqa: E402
     NativePatchGateway,
 )
 from d810.backends.ida.native_patch.issuer import (  # noqa: E402
-    NativePatchIssuerContract,
     NativePatchIssuerRegistry,
+    dead_edge_semantic_issuers,
 )
 from d810.backends.ida.native_patch.journal import SQLiteNativePatchJournal  # noqa: E402
-from d810.backends.ida.native_patch.observation import observe_function  # noqa: E402
-from d810.backends.ida.native_patch.origin_mapper import (  # noqa: E402
-    correlate_native_span,
-    ida_decoded_range_reader,
-)
 from d810.backends.ida.native_patch.reanalysis import (  # noqa: E402
     IdaFunctionExtentRestorer,
     IdaFunctionFlowRestorer,
@@ -75,13 +70,7 @@ from d810.manager.native_normalization import (  # noqa: E402
     NativeNormalizationRequest,
     authorize_and_apply,
 )
-from d810.transforms.native_patch_lowering import lower_direct_edge  # noqa: E402
-from d810.transforms.native_patch_plan import (  # noqa: E402
-    NativeAddressRange,
-    NativeDatabaseIdentity,
-    NativeFunctionIdentity,
-    NativePatchPlan,
-)
+from d810.transforms.native_patch_plan import NativePatchPlan  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -98,85 +87,21 @@ def _bitness() -> int:
     return 64 if ida_ida.inf_is_64bit() else 32
 
 
-def _first_encodable_candidate():
-    for func_ea in idautils.Functions():
-        observation = observe_function(func_ea)
-        if observation is None:
-            continue
-        for branch in observation.branches:
-            if branch.encodable:
-                return func_ea, branch
-    pytest.skip("no Mode-A-encodable branch found anywhere in this binary")
-
-
-def _build_operation(function_ea: int, branch):
-    start_ea, end_ea = branch.site_ea, branch.site_ea + branch.size
-    origin_span = correlate_native_span(
-        start_ea,
-        end_ea,
-        ida_decoded_range_reader(),
-        expected_bytes_hash="e2e-native-normalization",
-    )
-    assert origin_span.coverage is NativeOriginCoverage.COMPLETE
-
-    capture_outcome = capture_range_evidence(
-        IdaLiveDatabaseReader(),
-        NativeAddressRange(start_ea, end_ea),
-        function_ea=function_ea,
-    )
-    assert capture_outcome.ok, capture_outcome.reason
-
-    lowering = lower_direct_edge(
-        operation_id="e2e-native-normalization-op",
-        origin_span=origin_span,
-        target_ea=branch.taken_target,
-        known_instruction_heads=frozenset({branch.taken_target}),
-        capture=capture_outcome.evidence,
-        provider=MinimalX86BranchEncoder(),
-        provider_id="minimal-x86",
-        provider_version="1",
-        bitness=_bitness(),
-    )
-    assert lowering.ok, lowering.reason
-    return lowering.operation
-
-
-def _build_plan(function_ea: int, operation) -> NativePatchPlan:
-    func = ida_funcs.get_func(function_ea)
-    return NativePatchPlan(
-        plan_id="e2e-native-normalization-plan",
-        schema_version=1,
-        patch_class="lifting_normalization",
-        database_identity=NativeDatabaseIdentity(
-            idb_uuid="e2e-native-normalization",
-            input_file_hash="e2e-native-normalization",
-            processor="metapc",
-            bitness=_bitness(),
-            image_base=idaapi.get_imagebase(),
-            database_path_hash="e2e-native-normalization",
-        ),
-        function_identity=NativeFunctionIdentity(
-            entry_ea=function_ea,
-            chunk_ranges=(NativeAddressRange(int(func.start_ea), int(func.end_ea)),),
-            inherited_bytes_hash="e2e-native-normalization",
-        ),
-        inherited_function_fingerprint="e2e-native-normalization-fp",
-        target_cfg_fingerprint="e2e-native-normalization-cfg",
-        native_origin_map_fingerprint="e2e-native-normalization-origin",
-        architecture="x86",
-        bitness=_bitness(),
-        endianness="little",
-        processor="metapc",
-        issuer_id="e2e-native-normalization-issuer",
-        proof_id="e2e-native-normalization-proof",
-        proof_hash="e2e-native-normalization-proof-hash",
-        provenance=("e2e-native-normalization",),
-        operations=(operation,),
-        fallback_policy="no_patch",
+def _build_proven_plan() -> tuple[int, NativePatchPlan]:
+    """Use a production proof, never a test-invented control-flow contract."""
+    function_ea = idc.get_name_ea_simple("single_iteration_simple")
+    assert function_ea != idaapi.BADADDR, "single_iteration_simple not found"
+    candidates, _ = find_dead_edges_for_function(function_ea)
+    assert candidates, "native dead-edge oracle found no proven candidate"
+    plan = build_dead_edge_semantic_plan(
+        function_ea,
+        (candidates[0],),
         authorizing_attempt_id=ExecutionAttemptId.new(
             session=DecompilationSessionId.new(), sequence=1
         ),
     )
+    assert len(plan.operations) == 1
+    return function_ea, plan
 
 
 @contextlib.contextmanager
@@ -188,7 +113,7 @@ def _fresh_journal(tmp_path):
         journal.close()
 
 
-def _build_gateway(journal) -> NativePatchGateway:
+def _build_gateway(journal, *, database_identity: str) -> NativePatchGateway:
     return NativePatchGateway(
         journal=journal,
         reader=IdaLiveDatabaseReader(),
@@ -201,17 +126,8 @@ def _build_gateway(journal) -> NativePatchGateway:
         caller_discovery=IdaCallerDiscovery(),
         redo_decompiler=IdaControlledRedoDecompiler(),
         certificate_store=SQLiteOptimizationStorage(":memory:"),
-        issuer_registry=NativePatchIssuerRegistry(
-            (
-                NativePatchIssuerContract(
-                    issuer_id="e2e-native-normalization-issuer",
-                    patch_class="lifting_normalization",
-                    proof_ids=frozenset({"e2e-native-normalization-proof"}),
-                    provenance=("e2e-native-normalization",),
-                ),
-            )
-        ),
-        current_database_identity="e2e-native-normalization",
+        issuer_registry=NativePatchIssuerRegistry(dead_edge_semantic_issuers()),
+        current_database_identity=database_identity,
         d810_version="e2e-test",
     )
 
@@ -222,13 +138,14 @@ class TestExplicitUserPolicyBoundary:
     def test_disabled_policy_never_writes_a_single_byte(
         self, copy_of_idb, tmp_path
     ) -> None:
-        function_ea, branch = _first_encodable_candidate()
-        operation = _build_operation(function_ea, branch)
-        plan = _build_plan(function_ea, operation)
+        _, plan = _build_proven_plan()
+        operation = plan.operations[0]
         before = ida_bytes.get_bytes(operation.range.start_ea, operation.range.size)
 
         with _fresh_journal(tmp_path) as journal:
-            gateway = _build_gateway(journal)
+            gateway = _build_gateway(
+                journal, database_identity=plan.database_identity.idb_uuid
+            )
             result = authorize_and_apply(
                 NativeNormalizationRequest(plan=plan, user_enabled=False),
                 gateway=gateway,
@@ -243,12 +160,13 @@ class TestExplicitUserPolicyBoundary:
     def test_explicit_enable_applies_once_and_a_second_request_short_circuits(
         self, copy_of_idb, tmp_path
     ) -> None:
-        function_ea, branch = _first_encodable_candidate()
-        operation = _build_operation(function_ea, branch)
-        plan = _build_plan(function_ea, operation)
+        _, plan = _build_proven_plan()
+        operation = plan.operations[0]
 
         with _fresh_journal(tmp_path) as journal:
-            gateway = _build_gateway(journal)
+            gateway = _build_gateway(
+                journal, database_identity=plan.database_identity.idb_uuid
+            )
 
             first = authorize_and_apply(
                 NativeNormalizationRequest(plan=plan, user_enabled=True),
