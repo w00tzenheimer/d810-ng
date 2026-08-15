@@ -64,6 +64,7 @@ from d810.capabilities.frontend_normalization import (
 )
 from d810.manager.decompilation_lifecycle import DecompilationSessionContext
 from d810.manager.native_normalization import NativeNormalizationOutcome
+from d810.transforms.native_cfg_normalization import NativeCfgFreezeReason
 from d810.optimizers.microcode.flow.jumps import computed_goto_resolver
 from d810.optimizers.microcode.flow.jumps.resolver_session_state import (
     resolver_session_state,
@@ -546,7 +547,9 @@ def test_current_mba_identity_index_accepts_typed_frontend_evidence_before_locop
     monkeypatch.setattr(
         NativePreanalysisSessionState,
         "frontend_normalization_evidence_for",
-        lambda self, key: object() if self is native_preanalysis and key == NATIVE_KEY else None,
+        lambda self, key: (
+            object() if self is native_preanalysis and key == NATIVE_KEY else None
+        ),
     )
     monkeypatch.setattr(
         MbaBlockIdentityIndex,
@@ -1428,3 +1431,85 @@ def test_decompile_controller_fails_on_distinct_post_recovery_poison(
         manager.decompile_with_native_preanalysis(0x401000, decompile, lambda: None)
 
     assert rounds == 2
+
+
+def test_decompile_controller_scopes_and_closes_stage_c_collector(monkeypatch) -> None:
+    session = DecompilationSessionContext(
+        function_ea=0x401000,
+        database_identity="stage-c-idb",
+        top_level_epoch=1,
+        native_key=NATIVE_KEY,
+    )
+
+    class _Lifecycle:
+        @staticmethod
+        def current_session(_function_ea: int):
+            return session
+
+        @staticmethod
+        def has_exhausted_poison_restart(_function_ea: int) -> bool:
+            return False
+
+        @staticmethod
+        def has_pending_generated_restart(_function_ea: int) -> bool:
+            return False
+
+    manager = D810Manager.__new__(D810Manager)
+    manager.decompilation_lifecycle = _Lifecycle()
+    monkeypatch.setattr(manager, "prepare_native_preanalysis", lambda _ea: 0)
+    monkeypatch.setattr(manager, "_stage_c_collection_enabled", lambda _ea: True)
+    collectors = []
+    outcomes = []
+
+    def decompile():
+        assert session.native_cfg_collector is not None
+        collectors.append(session.native_cfg_collector)
+        return "cfunc"
+
+    manager._stage_c_topology_consumer = lambda **kwargs: outcomes.append(kwargs)
+
+    assert (
+        manager.decompile_with_native_preanalysis(0x401000, decompile, lambda: None)
+        == "cfunc"
+    )
+
+    assert session.native_cfg_collector is None
+    assert len(collectors) == 1
+    assert collectors[0].closed is True
+    assert outcomes[0]["native_key"] == NATIVE_KEY
+    assert (
+        outcomes[0]["topology_outcome"].reason
+        is NativeCfgFreezeReason.MISSING_PIPELINE_FREEZE
+    )
+
+
+def test_decompile_controller_closes_stage_c_collector_on_exception(
+    monkeypatch,
+) -> None:
+    session = DecompilationSessionContext(
+        function_ea=0x401000,
+        database_identity="stage-c-idb",
+        top_level_epoch=1,
+        native_key=NATIVE_KEY,
+    )
+
+    class _Lifecycle:
+        @staticmethod
+        def current_session(_function_ea: int):
+            return session
+
+    manager = D810Manager.__new__(D810Manager)
+    manager.decompilation_lifecycle = _Lifecycle()
+    monkeypatch.setattr(manager, "prepare_native_preanalysis", lambda _ea: 0)
+    monkeypatch.setattr(manager, "_stage_c_collection_enabled", lambda _ea: True)
+    collectors = []
+
+    def fail():
+        collectors.append(session.native_cfg_collector)
+        raise RuntimeError("decompile failed")
+
+    with pytest.raises(RuntimeError, match="decompile failed"):
+        manager.decompile_with_native_preanalysis(0x401000, fail, lambda: None)
+
+    assert session.native_cfg_collector is None
+    assert collectors[0].closed is True

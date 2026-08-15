@@ -130,6 +130,7 @@ class DecompilationSessionContext:
     rhad_generated_checksum_observed_maturities: set[str] = field(default_factory=set)
     preopt_ready_emitted_for_current_mba: bool = False
     resolver_attachment: ResolverEvidenceAttachment | None = None
+    native_cfg_collector: object | None = field(default=None, repr=False)
     frontend_normalization_plan_authority: SessionFrontendNormalizationPlanAuthority = (
         field(init=False)
     )

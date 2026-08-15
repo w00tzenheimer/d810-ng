@@ -128,7 +128,10 @@ from d810.capabilities.frontend_normalization import (
     FrontendNormalizationPreparedBodyCapability,
 )
 from d810.capabilities.resolver import CapabilitySet
-from d810.capabilities.native_cfg_normalization import NativeEdgeStateProofCapability
+from d810.capabilities.native_cfg_normalization import (
+    NativeCfgFreezeObserver,
+    NativeEdgeStateProofCapability,
+)
 from d810.capabilities.semantic_routes import (
     CanonicalSemanticCandidateEvidenceCapability,
     CanonicalSemanticEvidenceCapability,
@@ -3687,6 +3690,12 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             UseDefSafetyCapability: HexRaysUseDefSafetyBackend(),
             NativeEdgeStateProofCapability: HexRaysNativeEdgeStateProof(mba),
         }
+        flow_context = getattr(self, "flow_context", None)
+        observer_for_callback = (
+            None if flow_context is None else flow_context.native_cfg_freeze_observer()
+        )
+        if observer_for_callback is not None:
+            cap_instances[NativeCfgFreezeObserver] = observer_for_callback
         # Concolic precision oracle (M3 slice 1, llr-11du): the prove-exact-or-abstain
         # block emulator switch/indirect next-state folds consume. ADDITIVE — no standard
         # pass requires "emulation", and the INDIRECT pipeline that reads it never runs in

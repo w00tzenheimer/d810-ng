@@ -55,6 +55,7 @@ class NativeCfgFreezeReason(str, Enum):
     UNSUPPORTED_EDGE_SHAPE = "unsupported_edge_shape"
     MISSING_CTREE_NATIVE_RANGE = "missing_ctree_native_range"
     AMBIGUOUS_CTREE_NATIVE_RANGE = "ambiguous_ctree_native_range"
+    MISSING_PIPELINE_FREEZE = "missing_pipeline_freeze"
 
 
 @dataclass(frozen=True, slots=True)

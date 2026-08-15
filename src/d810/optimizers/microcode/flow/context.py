@@ -175,6 +175,7 @@ class FlowMaturityContext:
             ]
             | None
         ) = None
+        self._native_cfg_freeze_observer: object | None = None
 
     @property
     def hint_summary(self) -> FlowContextHintSummary | None:
@@ -208,6 +209,14 @@ class FlowMaturityContext:
         if self._execution_attempt_context is None:
             return (None, None, None)
         return self._execution_attempt_context
+
+    def set_native_cfg_freeze_observer(self, observer: object | None) -> None:
+        """Attach the exact manager-owned Stage C observer for this callback."""
+        self._native_cfg_freeze_observer = observer
+
+    def native_cfg_freeze_observer(self) -> object | None:
+        """Return the callback-local Stage C observer, never an EA registry value."""
+        return self._native_cfg_freeze_observer
 
     def set_outcome_callback(
         self,

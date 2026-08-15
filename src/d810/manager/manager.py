@@ -891,6 +891,7 @@ class D810Manager:
         """
         function_ea = int(function_ea)
         result: typing.Any = None
+        final_stage_c_collection: tuple[object, object] | None = None
         # Two accepted frontend evidence retries plus two dispatcher-recovery
         # retries can follow the initial decompile. The first dispatcher bind
         # exposes the complete rebound route closure; the fifth round binds
@@ -902,6 +903,22 @@ class D810Manager:
             )
 
             session = self.decompilation_lifecycle.current_session(function_ea)
+            stage_c_collector = None
+            if session is not None and self._stage_c_collection_enabled(function_ea):
+                from d810.manager.native_cfg_normalization import (
+                    NativeCfgNormalizationCollector,
+                )
+
+                stage_c_collector = NativeCfgNormalizationCollector(
+                    function_ea=function_ea,
+                    native_key=session.native_key,
+                    session_id=session.session_id,
+                )
+                if session.native_cfg_collector is not None:
+                    raise RuntimeError(
+                        "native CFG collector already attached to decompilation session"
+                    )
+                session.native_cfg_collector = stage_c_collector
             capacity_witness_lease = (
                 None
                 if session is None
@@ -913,9 +930,18 @@ class D810Manager:
             try:
                 invalidate_cached_cfunc()
                 result = decompile()
+            except BaseException:
+                if stage_c_collector is not None:
+                    stage_c_collector.close()
+                raise
             finally:
                 if capacity_witness_lease is not None:
                     capacity_witness_lease.release()
+                if (
+                    session is not None
+                    and session.native_cfg_collector is stage_c_collector
+                ):
+                    session.native_cfg_collector = None
             if self.decompilation_lifecycle.has_exhausted_poison_restart(function_ea):
                 raise RuntimeError(
                     "native preanalysis poison restart exhausted for "
@@ -924,12 +950,31 @@ class D810Manager:
             if not self.decompilation_lifecycle.has_pending_generated_restart(
                 function_ea
             ):
+                if stage_c_collector is not None:
+                    final_stage_c_collection = (stage_c_collector, result)
                 break
+            if stage_c_collector is not None:
+                stage_c_collector.close()
         else:
             raise RuntimeError(
                 "native preanalysis generated-restart budget exhausted with "
                 f"a restart still pending for 0x{function_ea:X}"
             )
+        if final_stage_c_collection is not None:
+            stage_c_collector, stage_c_result = final_stage_c_collection
+            try:
+                stage_c_outcome = stage_c_collector.take_topology_outcome()
+                stage_c_consumer = getattr(self, "_stage_c_topology_consumer", None)
+                if callable(stage_c_consumer):
+                    stage_c_consumer(
+                        function_ea=function_ea,
+                        native_key=stage_c_collector.native_key,
+                        topology_outcome=stage_c_outcome,
+                        decompilation_result=stage_c_result,
+                    )
+            finally:
+                stage_c_collector.close()
+
         dead_edge_normalizer = getattr(self, "_dead_edge_normalizer", None)
         if callable(dead_edge_normalizer):
             from d810.manager.native_normalization import NativeNormalizationOutcome
@@ -943,6 +988,27 @@ class D810Manager:
                 invalidate_cached_cfunc()
                 result = decompile()
         return result
+
+    def _stage_c_collection_enabled(self, function_ea: int) -> bool:
+        """Require native policy plus an exact lower-pass config-v2 opt-in."""
+        from d810.manager.native_patch_policy import (
+            native_patch_function_is_authorized,
+        )
+
+        if not native_patch_function_is_authorized(
+            globally_available=bool(self.config.get("native_patch_enabled", False)),
+            function_tags=self.get_function_tags(int(function_ea)),
+        ):
+            return False
+        try:
+            configs = pipeline_configs_from_project_config(self.config)
+        except Exception:
+            return False
+        return any(
+            config.pass_id == "lower_state_machine"
+            and config.options.get("native_cfg_persistence") is True
+            for config in configs
+        )
 
     @property
     def storage(self):

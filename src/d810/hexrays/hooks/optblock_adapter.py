@@ -974,9 +974,11 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                 self._flow_context,
                 mba,
             )
+            self._bind_native_cfg_freeze_observer(self._flow_context, mba)
         else:
             self._flow_context.refresh_mba(mba)
         self._bind_execution_attempt_context(self._flow_context, mba)
+        self._bind_native_cfg_freeze_observer(self._flow_context, mba)
         self._flow_context.set_function_priors_provider(self._function_priors_provider)
         self._flow_context.set_phase(
             priority=phase_priority,
@@ -1132,6 +1134,29 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             journal,
             getattr(session, "session_id", None),
             getattr(session, "preanalysis_attempt_id", None),
+        )
+
+    def _bind_native_cfg_freeze_observer(
+        self,
+        flow_context: FlowMaturityContext,
+        mba: ida_hexrays.mbl_array_t,
+    ) -> None:
+        """Bind only the collector owned by the current lifecycle session."""
+        set_observer = getattr(flow_context, "set_native_cfg_freeze_observer", None)
+        if not callable(set_observer):
+            return
+        lifecycle = self._decompilation_lifecycle
+        if lifecycle is None:
+            set_observer(None)
+            return
+        function_ea = int(getattr(mba, "entry_ea", 0) or 0)
+        try:
+            session = lifecycle.current_session(function_ea)
+        except Exception:
+            set_observer(None)
+            return
+        set_observer(
+            None if session is None else getattr(session, "native_cfg_collector", None)
         )
 
     def _bind_resolver_session_state(
