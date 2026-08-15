@@ -159,6 +159,11 @@ class EgglogOptimizer(PeepholeSimplificationRule):
     def _provider_outcome_capture_enabled(self) -> bool:
         return self._provider_outcome_capture_depth > 0
 
+    def _provider_outcome_history_enabled(self) -> bool:
+        """Retain bounded outcomes for explicit captures and timing profiles."""
+
+        return self._provider_outcome_capture_enabled() or self.collect_stage_timings
+
     def begin_provider_outcome_capture(self) -> None:
         if not self._provider_outcome_capture_enabled():
             self.provider_outcome_history.clear()
@@ -781,7 +786,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         self.last_rule_family = family
         self.last_rule_provenance = provenance
         self.last_derivation_trace = extraction.derivation_trace
-        if self._provider_outcome_capture_enabled():
+        if self._provider_outcome_history_enabled():
             self.rule_provenance_history.append(provenance)
         return new_ins
 
@@ -856,7 +861,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         self.last_extraction_receipt = receipt
         outcome = egglog_receipt_to_outcome(receipt)
         self._last_provider_outcome = outcome
-        if self._provider_outcome_capture_enabled():
+        if self._provider_outcome_history_enabled():
             if self._attempt_outcome_index is None:
                 self._attempt_outcome_index = self.provider_outcome_history.append(
                     outcome
