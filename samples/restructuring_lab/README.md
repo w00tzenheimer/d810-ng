@@ -65,6 +65,10 @@ function.
 - `masm/lab_asm_branch.asm` — `lab_asm_branch`: a hand-written direct two-arm
   branch (hypothesis: forces clean if/else microcode edges the C compiler would
   normalize away).
+- `masm/stage_c_explicit_dispatch.asm` — `lab_stage_c_explicit_dispatch`: an
+  OLLVM-shaped state dispatcher whose handlers use explicit native jumps. This
+  is the production Stage C apply/certificate/restore witness; it avoids
+  compiler-created fallthroughs that cannot be rewritten as pure terminators.
 
 ## Observe (existing harness)
 

@@ -411,6 +411,76 @@ def test_unregistered_issuer_is_rejected_before_the_journal_or_idb_is_written(
 
 
 class TestApplySuccess:
+    def test_aggregate_edge_plan_uses_one_transaction_and_restores_both_ranges(
+        self,
+        tmp_path,
+    ) -> None:
+        first = fixtures.operation(operation_id="edge-1")
+        second = fixtures.operation(
+            operation_id="edge-2",
+            start_ea=0x1010,
+            end_ea=0x1012,
+        )
+        rig = build_gateway(tmp_path, (first, second))
+        try:
+            receipt = rig.gateway.apply(
+                fixtures.plan(operations=(first, second), plan_id="stage-c-aggregate")
+            )
+            assert receipt.ok
+            assert (
+                len(
+                    rig.journal._conn.execute(  # noqa: SLF001 - test introspection
+                        "SELECT transaction_id FROM native_patch_transactions"
+                    ).fetchall()
+                )
+                == 1
+            )
+            assert rig.db.bytes[0x1000] == 0xEB
+            assert rig.db.bytes[0x1010] == 0xEB
+
+            restored = rig.gateway.restore(receipt.transaction_id)
+
+            assert restored.ok
+            assert rig.db.bytes[0x1000] == 0x75
+            assert rig.db.bytes[0x1010] == 0x75
+            assert rig.redo.calls.count(0x1000) == 2
+        finally:
+            rig.journal.close()
+
+    def test_second_aggregate_edge_write_failure_recovers_the_first_edge(
+        self,
+        tmp_path,
+    ) -> None:
+        first = fixtures.operation(operation_id="edge-1")
+        second = fixtures.operation(
+            operation_id="edge-2",
+            start_ea=0x1010,
+            end_ea=0x1012,
+        )
+        rig = build_gateway(tmp_path, (first, second))
+        original_patch_byte = rig.db.patch_byte
+
+        def _fail_second(ea, value):
+            if ea == 0x1010:
+                raise RuntimeError("injected second edge write")
+            original_patch_byte(ea, value)
+
+        rig.db.patch_byte = _fail_second
+        try:
+            with pytest.raises(RuntimeError, match="second edge write"):
+                rig.gateway.apply(
+                    fixtures.plan(
+                        operations=(first, second), plan_id="stage-c-aggregate-fail"
+                    )
+                )
+
+            assert rig.db.bytes[0x1000] == 0x75
+            assert rig.db.bytes[0x1001] == 0x01
+            assert rig.db.bytes[0x1010] == 0x75
+            assert rig.db.bytes[0x1011] == 0x01
+        finally:
+            rig.journal.close()
+
     def test_apply_certifies_and_writes_only_replacement_bytes(self, rig) -> None:
         before = dict(rig.db.bytes)
         receipt = rig.gateway.apply(fixtures.plan())

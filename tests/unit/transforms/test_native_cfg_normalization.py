@@ -4,7 +4,13 @@ import pytest
 
 from d810.core.execution_journal import ExecutionEffectRef
 from d810.ir.edge_state_contract import EdgeStateContract
-from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot
+from d810.ir.flowgraph import (
+    BlockKind,
+    BlockSnapshot,
+    FlowGraph,
+    InsnKind,
+    InsnSnapshot,
+)
 from d810.ir.maturity import IRMaturity
 from d810.ir.native_range_projection import (
     CtreeNativeRangeProjection,
@@ -281,6 +287,198 @@ def test_binds_every_surviving_block_to_ctree_ranges() -> None:
     )
 
 
+def test_native_cfg_ignores_unique_addressless_stop_sentinel() -> None:
+    baseline = _graph({0: (1,), 1: (), 2: (), 3: ()})
+    final = _graph({0: (2,), 1: (), 2: (), 3: ()})
+    sentinel = BlockSnapshot(
+        serial=3,
+        block_type=0,
+        succs=(),
+        preds=(),
+        flags=0,
+        start_ea=0xFFFFFFFFFFFFFFFF,
+        native_start_ea=None,
+        insn_snapshots=(),
+        kind=BlockKind.ZERO_WAY,
+    )
+    baseline = FlowGraph(
+        blocks={**baseline.blocks, 3: sentinel},
+        entry_serial=baseline.entry_serial,
+        func_ea=baseline.func_ea,
+    )
+    final = FlowGraph(
+        blocks={**final.blocks, 3: sentinel},
+        entry_serial=final.entry_serial,
+        func_ea=final.func_ea,
+    )
+
+    frozen = _freeze(
+        baseline,
+        final,
+        (_observation(baseline, final, source=0),),
+    ).topology
+    assert frozen is not None
+    projected_graph = FlowGraph(
+        blocks={serial: block for serial, block in final.blocks.items() if serial != 3},
+        entry_serial=final.entry_serial,
+        func_ea=final.func_ea,
+    )
+
+    outcome = bind_ctree_native_ranges(
+        frozen=frozen,
+        target_projection=_projection(projected_graph),
+    )
+
+    assert outcome.intent is not None
+    assert tuple(row.block_serial for row in outcome.intent.block_range_bindings) == (
+        0,
+        1,
+        2,
+    )
+
+
+def test_native_cfg_uses_first_instruction_origin_when_block_anchor_is_missing() -> (
+    None
+):
+    baseline = _graph({0: (1,), 1: (), 2: ()})
+    final = _graph({0: (2,), 1: (), 2: ()})
+    baseline = FlowGraph(
+        blocks={
+            **baseline.blocks,
+            2: BlockSnapshot(
+                serial=2,
+                block_type=baseline.blocks[2].block_type,
+                succs=(),
+                preds=(),
+                flags=0,
+                start_ea=0xFFFFFFFFFFFFFFFF,
+                native_start_ea=None,
+                insn_snapshots=baseline.blocks[2].insn_snapshots,
+            ),
+        },
+        entry_serial=baseline.entry_serial,
+        func_ea=baseline.func_ea,
+    )
+    final = FlowGraph(
+        blocks={
+            **final.blocks,
+            2: BlockSnapshot(
+                serial=2,
+                block_type=final.blocks[2].block_type,
+                succs=(),
+                preds=(0,),
+                flags=0,
+                start_ea=0xFFFFFFFFFFFFFFFF,
+                native_start_ea=None,
+                insn_snapshots=final.blocks[2].insn_snapshots,
+            ),
+        },
+        entry_serial=final.entry_serial,
+        func_ea=final.func_ea,
+    )
+
+    outcome = _freeze(
+        baseline,
+        final,
+        (_observation(baseline, final, source=0),),
+    )
+
+    assert outcome.topology is not None
+    assert outcome.topology.edge_intents[0].target_native_eas == (0x1044,)
+
+
+def test_unchanged_block_does_not_require_a_native_terminator_origin() -> None:
+    baseline = _graph({0: (1,), 1: (), 2: ()})
+    final = _graph({0: (2,), 1: (), 2: ()})
+    synthetic_tail = InsnSnapshot(
+        opcode=1,
+        ea=0xFFFFFFFFFFFFFFFF,
+        native_ea=None,
+        operands=(),
+        kind=InsnKind.GOTO,
+    )
+    baseline = FlowGraph(
+        blocks={
+            **baseline.blocks,
+            1: BlockSnapshot(
+                serial=1,
+                block_type=baseline.blocks[1].block_type,
+                succs=(),
+                preds=(0,),
+                flags=0,
+                start_ea=baseline.blocks[1].start_ea,
+                native_start_ea=baseline.blocks[1].native_start_ea,
+                insn_snapshots=(synthetic_tail,),
+            ),
+        },
+        entry_serial=baseline.entry_serial,
+        func_ea=baseline.func_ea,
+    )
+    final = FlowGraph(
+        blocks={
+            **final.blocks,
+            1: BlockSnapshot(
+                serial=1,
+                block_type=final.blocks[1].block_type,
+                succs=(),
+                preds=(),
+                flags=0,
+                start_ea=final.blocks[1].start_ea,
+                native_start_ea=final.blocks[1].native_start_ea,
+                insn_snapshots=(synthetic_tail,),
+            ),
+        },
+        entry_serial=final.entry_serial,
+        func_ea=final.func_ea,
+    )
+
+    outcome = _freeze(
+        baseline,
+        final,
+        (_observation(baseline, final, source=0),),
+    )
+
+    assert outcome.topology is not None
+
+
+def test_optimizer_body_canonicalization_does_not_break_topology_chain() -> None:
+    baseline = _graph({0: (1,), 1: (), 2: ()})
+    observed = _graph({0: (2,), 1: (), 2: ()})
+    canonicalized_body = InsnSnapshot(
+        opcode=2,
+        ea=0x1002,
+        native_ea=0x1002,
+        operands=(),
+        kind=InsnKind.MOV,
+    )
+    final = FlowGraph(
+        blocks={
+            **observed.blocks,
+            0: BlockSnapshot(
+                serial=0,
+                block_type=observed.blocks[0].block_type,
+                succs=observed.blocks[0].succs,
+                preds=observed.blocks[0].preds,
+                flags=observed.blocks[0].flags,
+                start_ea=observed.blocks[0].start_ea,
+                native_start_ea=observed.blocks[0].native_start_ea,
+                insn_snapshots=(canonicalized_body, *observed.blocks[0].insn_snapshots),
+            ),
+        },
+        entry_serial=observed.entry_serial,
+        func_ea=observed.func_ea,
+    )
+
+    outcome = _freeze(
+        baseline,
+        final,
+        (_observation(baseline, observed, source=0),),
+    )
+
+    assert outcome.topology is not None
+    assert outcome.topology.edge_intents[0].target_native_eas == (0x1040,)
+
+
 def test_binding_rejects_absent_or_ambiguous_ctree_ranges() -> None:
     baseline = _graph({0: (1,), 1: (), 2: ()})
     final = _graph({0: (2,), 1: (), 2: ()})
@@ -351,6 +549,139 @@ def test_binding_accepts_shared_identical_range_rows() -> None:
 
     assert outcome.intent is not None
     assert outcome.intent.block_range_bindings[0].ctree_statement_indices == (20, 21)
+
+
+def test_binding_uses_statement_range_when_anchor_is_not_an_exact_eamap_key() -> None:
+    baseline = _graph({0: (1,), 1: (), 2: ()})
+    final = _graph({0: (2,), 1: (), 2: ()})
+    frozen = _freeze(
+        baseline,
+        final,
+        (_observation(baseline, final, source=0),),
+    ).topology
+    assert frozen is not None
+    exact = _projection(final)
+    projection = CtreeNativeRangeProjection(
+        function_ea=exact.function_ea,
+        function_ranges=exact.function_ranges,
+        statements=exact.statements,
+        ea_to_statement_indices=tuple(
+            row for row in exact.ea_to_statement_indices if row[0] != 0x1040
+        ),
+    )
+
+    outcome = bind_ctree_native_ranges(
+        frozen=frozen,
+        target_projection=projection,
+    )
+
+    assert outcome.intent is not None
+    block_two = next(
+        item for item in outcome.intent.block_range_bindings if item.block_serial == 2
+    )
+    assert block_two.ctree_statement_indices
+
+
+def test_binding_falls_forward_to_an_instruction_native_origin() -> None:
+    baseline = _graph({0: (1,), 1: (), 2: ()})
+    final = _graph({0: (2,), 1: (), 2: ()})
+    frozen = _freeze(
+        baseline,
+        final,
+        (_observation(baseline, final, source=0),),
+    ).topology
+    assert frozen is not None
+    projection = _projection(
+        final,
+        overrides={
+            2: (
+                CtreeStatementNativeRanges(
+                    22,
+                    71,
+                    0x1044,
+                    (NativeRange(0x1044, 0x1045),),
+                ),
+            )
+        },
+    )
+
+    outcome = bind_ctree_native_ranges(
+        frozen=frozen,
+        target_projection=projection,
+    )
+
+    assert outcome.intent is not None
+    block_two = next(
+        item for item in outcome.intent.block_range_bindings if item.block_serial == 2
+    )
+    assert block_two.microcode_native_ea == 0x1044
+    assert block_two.ctree_statement_indices == (22,)
+
+
+def test_binding_requires_ctree_ranges_only_for_rewritten_sources() -> None:
+    baseline = _graph({0: (1,), 1: (), 2: ()})
+    final = _graph({0: (2,), 1: (), 2: ()})
+    frozen = _freeze(
+        baseline,
+        final,
+        (_observation(baseline, final, source=0),),
+    ).topology
+    assert frozen is not None
+    source_row = CtreeStatementNativeRanges(
+        20,
+        71,
+        0x1000,
+        (NativeRange(0x1000, 0x1010),),
+    )
+    projection = CtreeNativeRangeProjection(
+        function_ea=final.func_ea,
+        function_ranges=(NativeRange(0x1000, 0x1100),),
+        statements=(source_row,),
+        ea_to_statement_indices=((0x1000, (20,)),),
+    )
+
+    outcome = bind_ctree_native_ranges(
+        frozen=frozen,
+        target_projection=projection,
+    )
+
+    assert outcome.intent is not None
+    assert tuple(item.block_serial for item in outcome.intent.block_range_bindings) == (
+        0,
+    )
+
+
+def test_global_ctree_projection_can_omit_a_rewritten_microblock() -> None:
+    baseline = _graph({0: (1,), 1: (), 2: ()})
+    final = _graph({0: (2,), 1: (), 2: ()})
+    frozen = _freeze(
+        baseline,
+        final,
+        (_observation(baseline, final, source=0),),
+    ).topology
+    assert frozen is not None
+    target_row = CtreeStatementNativeRanges(
+        22,
+        71,
+        0x1040,
+        (NativeRange(0x1040, 0x1050),),
+    )
+    projection = CtreeNativeRangeProjection(
+        function_ea=final.func_ea,
+        function_ranges=(NativeRange(0x1000, 0x1100),),
+        statements=(target_row,),
+        ea_to_statement_indices=((0x1040, (22,)),),
+    )
+
+    outcome = bind_ctree_native_ranges(
+        frozen=frozen,
+        target_projection=projection,
+    )
+
+    assert outcome.intent is not None
+    assert tuple(item.block_serial for item in outcome.intent.block_range_bindings) == (
+        2,
+    )
 
 
 def test_projection_fingerprint_is_bound_into_final_intent_hash() -> None:

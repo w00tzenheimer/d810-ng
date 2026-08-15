@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 
 import pytest
@@ -130,6 +131,10 @@ def _case(kind: NativeCfgEdgeKind):
         final_eas = (0x1002,)
         predicate = PredicateKind.NE
     image[: source.length] = b"\x75\x00" + b"\x90" * (source.length - 2)
+    source = dataclasses.replace(
+        source,
+        bytes_hash=hashlib.sha256(bytes(image[: source.length])).hexdigest(),
+    )
     ownership = NativeFunctionOwnership(
         owning_function_entry_ea=0x1000,
         chunk_ranges=(NativeAddressRange(0x1000, 0x1100),),
@@ -234,6 +239,126 @@ def test_builds_supported_edge_plan(kind):
     assert reader.write_count == 0
 
 
+def test_target_head_can_be_validated_from_function_range_without_ctree_row() -> None:
+    intent, reader, mapper, attestation = _case(NativeCfgEdgeKind.REDIRECT)
+    intent = dataclasses.replace(
+        intent,
+        block_range_bindings=(intent.block_range_bindings[0],),
+    )
+    mapper.rows[((0x1000, 0x1100),)] = NativeOriginDecode(
+        (_insn(0x1020, 1, "nop"),),
+        (),
+    )
+
+    outcome = build_native_cfg_plan(
+        intent=intent,
+        reader=reader,
+        origin_mapper=mapper,
+        encoder=MinimalX86BranchEncoder(),
+        attestation=attestation,
+    )
+
+    assert outcome.plan is not None
+
+
+def test_source_transfer_can_be_validated_from_function_range_without_ctree_row() -> (
+    None
+):
+    intent, reader, mapper, attestation = _case(NativeCfgEdgeKind.REDIRECT)
+    source_decode = mapper.rows[((0x1000, 0x1005),)]
+    target_decode = mapper.rows[((0x1020, 0x1021),)]
+    intent = dataclasses.replace(intent, block_range_bindings=())
+    mapper.rows[((0x1000, 0x1100),)] = NativeOriginDecode(
+        (*source_decode.instructions, *target_decode.instructions),
+        source_decode.control_transfers,
+    )
+
+    outcome = build_native_cfg_plan(
+        intent=intent,
+        reader=reader,
+        origin_mapper=mapper,
+        encoder=MinimalX86BranchEncoder(),
+        attestation=attestation,
+    )
+
+    assert outcome.plan is not None
+
+
+def test_source_hint_selects_one_transfer_inside_a_broad_ctree_range() -> None:
+    intent, reader, mapper, attestation = _case(NativeCfgEdgeKind.REDIRECT)
+    source_binding = dataclasses.replace(
+        intent.block_range_bindings[0],
+        native_ranges=(NativeRange(0x1000, 0x1010),),
+    )
+    intent = dataclasses.replace(
+        intent,
+        block_range_bindings=(source_binding, *intent.block_range_bindings[1:]),
+    )
+    source = _insn(0x1000, 5, "jmp")
+    source = dataclasses.replace(
+        source,
+        bytes_hash=hashlib.sha256(reader.image[:5]).hexdigest(),
+    )
+    other = _insn(0x1008, 5, "jmp")
+    mapper.rows[((0x1000, 0x1010),)] = NativeOriginDecode(
+        (source, other),
+        (
+            NativeDecodedControlTransfer(source, (0x1010,), None),
+            NativeDecodedControlTransfer(other, (0x1010,), None),
+        ),
+    )
+
+    outcome = build_native_cfg_plan(
+        intent=intent,
+        reader=reader,
+        origin_mapper=mapper,
+        encoder=MinimalX86BranchEncoder(),
+        attestation=attestation,
+    )
+
+    assert outcome.plan is not None
+    assert outcome.plan.operations[0].range.start_ea == 0x1000
+
+
+def test_builds_two_way_retarget_with_native_fallthrough() -> None:
+    intent, reader, mapper, attestation = _case(NativeCfgEdgeKind.FORCE_TAKEN)
+    edge = dataclasses.replace(
+        intent.edge_intents[0],
+        final_successors=(3, 2),
+        target_native_eas=(0x1030, 0x1006),
+        kind=NativeCfgEdgeKind.REDIRECT,
+    )
+    intent = dataclasses.replace(
+        intent,
+        block_range_bindings=(
+            intent.block_range_bindings[0],
+            _binding(3, 0x1030),
+            _binding(2, 0x1006),
+        ),
+        edge_intents=(edge,),
+    )
+    mapper.rows[((0x1030, 0x1031),)] = NativeOriginDecode(
+        (_insn(0x1030, 1, "nop"),), ()
+    )
+    mapper.rows[((0x1006, 0x1007),)] = NativeOriginDecode(
+        (_insn(0x1006, 1, "nop"),), ()
+    )
+
+    outcome = build_native_cfg_plan(
+        intent=intent,
+        reader=reader,
+        origin_mapper=mapper,
+        encoder=MinimalX86BranchEncoder(),
+        attestation=attestation,
+    )
+
+    assert outcome.plan is not None
+    operation = outcome.plan.operations[0]
+    assert operation.expected_after_successors == (0x1030, 0x1006)
+    assert operation.expected_after_shape.heads[0].mnemonic == "jne"
+    assert len(operation.replacement_bytes) == 6
+
+
 def test_source_hint_outside_frozen_ranges_abstains_without_writes():
     intent, reader, mapper, attestation = _case(NativeCfgEdgeKind.REDIRECT)
     bad_binding = _binding(0, 0x1001, 0x1005)
@@ -264,5 +389,40 @@ def test_missing_unique_current_terminator_abstains_without_writes():
         attestation=attestation,
     )
 
-    assert outcome.reason == NativeCfgPlanBuildReason.AMBIGUOUS_NATIVE_TERMINATOR.value
+    assert outcome.reason is not None
+    assert outcome.reason.startswith(
+        NativeCfgPlanBuildReason.AMBIGUOUS_NATIVE_TERMINATOR.value
+    )
+    assert reader.write_count == 0
+
+
+def test_decode_capture_byte_race_abstains_without_writes():
+    intent, reader, mapper, attestation = _case(NativeCfgEdgeKind.REDIRECT)
+    key = ((0x1000, 0x1005),)
+    decoded = mapper.rows[key]
+    transfer = decoded.control_transfers[0]
+    stale_instruction = dataclasses.replace(
+        transfer.instruction,
+        bytes_hash=hashlib.sha256(b"different bytes").hexdigest(),
+    )
+    mapper.rows[key] = NativeOriginDecode(
+        (stale_instruction,),
+        (
+            NativeDecodedControlTransfer(
+                stale_instruction,
+                transfer.successors,
+                transfer.predicate,
+            ),
+        ),
+    )
+
+    outcome = build_native_cfg_plan(
+        intent=intent,
+        reader=reader,
+        origin_mapper=mapper,
+        encoder=MinimalX86BranchEncoder(),
+        attestation=attestation,
+    )
+
+    assert outcome.reason == NativeCfgPlanBuildReason.STALE_NATIVE_TERMINATOR.value
     assert reader.write_count == 0

@@ -13,6 +13,7 @@ from d810.ir.flowgraph import BlockSnapshot, FlowGraph
 from d810.ir.maturity import IRMaturity
 from d810.ir.native_range_projection import (
     CtreeNativeRangeProjection,
+    CtreeStatementNativeRanges,
     NativeRange,
 )
 
@@ -160,6 +161,7 @@ class NativeCfgNormalizationIntent:
 class NativeCfgTopologyFreezeOutcome:
     topology: FrozenNativeCfgTopology | None = None
     reason: NativeCfgFreezeReason | None = None
+    detail: str | None = None
 
     def __post_init__(self) -> None:
         if (self.topology is None) == (self.reason is None):
@@ -170,6 +172,7 @@ class NativeCfgTopologyFreezeOutcome:
 class NativeCfgFreezeOutcome:
     intent: NativeCfgNormalizationIntent | None = None
     reason: NativeCfgFreezeReason | None = None
+    detail: str | None = None
 
     def __post_init__(self) -> None:
         if (self.intent is None) == (self.reason is None):
@@ -185,18 +188,10 @@ def _block_projection(block: BlockSnapshot) -> tuple[object, ...]:
     tail = block.tail
     return (
         block.serial,
-        block.native_start_ea,
+        _block_native_anchor(block),
         tuple(block.succs),
         block.tail_kind.value if block.tail_kind is not None else None,
         tail.native_ea if tail is not None else None,
-        tuple(
-            (
-                insn.kind.value,
-                insn.native_ea,
-                insn.raw_opcode,
-            )
-            for insn in block.insn_snapshots[:-1]
-        ),
     )
 
 
@@ -229,6 +224,33 @@ def _edge_kind(
     return None
 
 
+def _is_addressless_stop_sentinel(block: BlockSnapshot) -> bool:
+    """Whether ``block`` is Hex-Rays' non-native terminal sentinel."""
+    return bool(
+        not block.succs and not block.insn_snapshots and block.native_start_ea is None
+    )
+
+
+def _block_native_candidates(block: BlockSnapshot) -> tuple[int, ...]:
+    """Return stable native origins represented by a microcode block."""
+    candidates: list[int] = []
+    if block.native_start_ea is not None:
+        candidates.append(int(block.native_start_ea))
+    for instruction in block.insn_snapshots:
+        if (
+            instruction.native_ea is not None
+            and int(instruction.native_ea) not in candidates
+        ):
+            candidates.append(int(instruction.native_ea))
+    return tuple(candidates)
+
+
+def _block_native_anchor(block: BlockSnapshot) -> int | None:
+    """Resolve the first native origin represented by a microcode block."""
+    candidates = _block_native_candidates(block)
+    return candidates[0] if candidates else None
+
+
 def _order_observations(
     baseline_fingerprint: str,
     target_fingerprint: str,
@@ -257,8 +279,11 @@ def _order_observations(
     return tuple(ordered)
 
 
-def _failure(reason: NativeCfgFreezeReason) -> NativeCfgTopologyFreezeOutcome:
-    return NativeCfgTopologyFreezeOutcome(reason=reason)
+def _failure(
+    reason: NativeCfgFreezeReason,
+    detail: str | None = None,
+) -> NativeCfgTopologyFreezeOutcome:
+    return NativeCfgTopologyFreezeOutcome(reason=reason, detail=detail)
 
 
 def freeze_native_cfg_topology(
@@ -281,17 +306,21 @@ def freeze_native_cfg_topology(
     for serial in final_ids:
         baseline_block = baseline_graph.blocks[serial]
         final_block = final_graph.blocks[serial]
-        if (
-            baseline_block.native_start_ea is None
-            or final_block.native_start_ea is None
-            or baseline_block.tail is None
-            or baseline_block.tail.native_ea is None
+        if _is_addressless_stop_sentinel(baseline_block) and (
+            _is_addressless_stop_sentinel(final_block)
         ):
-            return _failure(NativeCfgFreezeReason.MISSING_NATIVE_ANCHOR)
-        if baseline_block.native_start_ea != final_block.native_start_ea:
+            continue
+        baseline_anchor = _block_native_anchor(baseline_block)
+        final_anchor = _block_native_anchor(final_block)
+        if baseline_anchor is None or final_anchor is None:
+            return _failure(
+                NativeCfgFreezeReason.MISSING_NATIVE_ANCHOR,
+                "block="
+                f"{serial} baseline_anchor={baseline_anchor} "
+                f"final_anchor={final_anchor}",
+            )
+        if baseline_anchor != final_anchor:
             return _failure(NativeCfgFreezeReason.REANCHORED_BLOCK)
-        if baseline_block.insn_snapshots[:-1] != final_block.insn_snapshots[:-1]:
-            return _failure(NativeCfgFreezeReason.BODY_REWRITE_UNSUPPORTED)
         if any(target not in final_ids for target in final_block.succs):
             return _failure(NativeCfgFreezeReason.DANGLING_FINAL_EDGE)
 
@@ -311,7 +340,19 @@ def freeze_native_cfg_topology(
         observations,
     )
     if ordered is None:
-        return _failure(NativeCfgFreezeReason.OBSERVATION_CHAIN_MISMATCH)
+        observation_edges = tuple(
+            (
+                item.pass_id,
+                cfg_fingerprint(item.pre_graph)[:12],
+                cfg_fingerprint(item.post_graph)[:12],
+            )
+            for item in observations
+        )
+        return _failure(
+            NativeCfgFreezeReason.OBSERVATION_CHAIN_MISMATCH,
+            f"baseline={baseline_fingerprint[:12]} "
+            f"target={target_fingerprint[:12]} observations={observation_edges}",
+        )
     if any(
         item.maturity is not maturity
         or item.pre_graph.func_ea != function_ea
@@ -355,15 +396,21 @@ def freeze_native_cfg_topology(
             return _failure(NativeCfgFreezeReason.UNSUPPORTED_EDGE_SHAPE)
         inherited_target_native_eas: list[int] = []
         for target in baseline_block.succs:
-            target_ea = baseline_graph.blocks[target].native_start_ea
+            target_ea = _block_native_anchor(baseline_graph.blocks[target])
             if target_ea is None:
-                return _failure(NativeCfgFreezeReason.MISSING_NATIVE_ANCHOR)
+                return _failure(
+                    NativeCfgFreezeReason.MISSING_NATIVE_ANCHOR,
+                    f"source={source} inherited_target={target}",
+                )
             inherited_target_native_eas.append(target_ea)
         target_native_eas: list[int] = []
         for target in final_block.succs:
-            target_ea = final_graph.blocks[target].native_start_ea
+            target_ea = _block_native_anchor(final_graph.blocks[target])
             if target_ea is None:
-                return _failure(NativeCfgFreezeReason.MISSING_NATIVE_ANCHOR)
+                return _failure(
+                    NativeCfgFreezeReason.MISSING_NATIVE_ANCHOR,
+                    f"source={source} final_target={target}",
+                )
             target_native_eas.append(target_ea)
         source_ea = baseline_block.tail.native_ea
         if source_ea is None:
@@ -425,33 +472,69 @@ def bind_ctree_native_ranges(
 ) -> NativeCfgFreezeOutcome:
     if target_projection.function_ea != frozen.function_ea:
         return NativeCfgFreezeOutcome(reason=NativeCfgFreezeReason.FUNCTION_MISMATCH)
+    if not target_projection.statements:
+        return NativeCfgFreezeOutcome(
+            reason=NativeCfgFreezeReason.MISSING_CTREE_NATIVE_RANGE,
+            detail="target C-tree projection contains no statements",
+        )
     statement_by_index = {
         item.citem_index: item for item in target_projection.statements
     }
     reverse = dict(target_projection.ea_to_statement_indices)
+    source_native_eas = {
+        edge.source_block: edge.source_native_ea for edge in frozen.edge_intents
+    }
     bindings: list[NativeCfgBlockRangeBinding] = []
     for serial, block in sorted(frozen.final_graph.blocks.items()):
-        anchor = block.native_start_ea
-        if anchor is None:
-            return NativeCfgFreezeOutcome(
-                reason=NativeCfgFreezeReason.MISSING_NATIVE_ANCHOR
+        if _is_addressless_stop_sentinel(block):
+            continue
+        anchors = _block_native_candidates(block)
+        source_native_ea = source_native_eas.get(serial)
+        if source_native_ea is not None:
+            anchors = (
+                source_native_ea,
+                *(anchor for anchor in anchors if anchor != source_native_ea),
             )
-        indices = reverse.get(anchor, ())
-        matching = tuple(
-            statement_by_index[index]
-            for index in indices
-            if index in statement_by_index
-            and any(span.contains(anchor) for span in statement_by_index[index].ranges)
-        )
-        if not matching:
-            return NativeCfgFreezeOutcome(
-                reason=NativeCfgFreezeReason.MISSING_CTREE_NATIVE_RANGE
+        if not anchors:
+            continue
+        selected: (
+            tuple[
+                int,
+                tuple[CtreeStatementNativeRanges, ...],
+            ]
+            | None
+        ) = None
+        for anchor in anchors:
+            indices = set(reverse.get(anchor, ()))
+            indices.update(
+                item.citem_index
+                for item in target_projection.statements
+                if any(span.contains(anchor) for span in item.ranges)
             )
-        range_sets = {item.ranges for item in matching}
-        if len(range_sets) != 1:
-            return NativeCfgFreezeOutcome(
-                reason=NativeCfgFreezeReason.AMBIGUOUS_CTREE_NATIVE_RANGE
+            matching = tuple(
+                statement_by_index[index]
+                for index in sorted(indices)
+                if index in statement_by_index
+                and any(
+                    span.contains(anchor) for span in statement_by_index[index].ranges
+                )
             )
+            if not matching:
+                continue
+            range_sets = {item.ranges for item in matching}
+            if len(range_sets) != 1:
+                if serial not in source_native_eas:
+                    selected = None
+                    break
+                return NativeCfgFreezeOutcome(
+                    reason=NativeCfgFreezeReason.AMBIGUOUS_CTREE_NATIVE_RANGE,
+                    detail=f"block={serial} anchor=0x{anchor:X}",
+                )
+            selected = (anchor, matching)
+            break
+        if selected is None:
+            continue
+        anchor, matching = selected
         bindings.append(
             NativeCfgBlockRangeBinding(
                 block_serial=serial,

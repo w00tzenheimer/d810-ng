@@ -52,9 +52,7 @@ from d810.transforms.plan import (
 )
 
 DISPATCHER_CORRIDOR_COVERAGE_METADATA = "dispatcher_corridor_coverage"
-DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA = (
-    "dispatcher_removal_preflight_proof"
-)
+DISPATCHER_REMOVAL_PREFLIGHT_PROOF_METADATA = "dispatcher_removal_preflight_proof"
 UNFLATTEN_COMPLETION_STATUS_METADATA = "unflatten_completion_status"
 FULL_UNFLATTENING_CLAIM_METADATA = "full_unflattening_claim"
 USE_DEF_SEVERANCE_AUDIT_METADATA = "use_def_severance_audit"
@@ -224,16 +222,10 @@ class DispatcherRemovalPreflightProof:
             "retired_infrastructure": [
                 item.to_payload() for item in self.retired_infrastructure
             ],
-            "lost_blocks": [
-                anchor.to_payload() for anchor in self.lost_block_anchors
-            ],
-            "state_plumbing": [
-                anchor.to_payload() for anchor in self.state_plumbing
-            ],
+            "lost_blocks": [anchor.to_payload() for anchor in self.lost_block_anchors],
+            "state_plumbing": [anchor.to_payload() for anchor in self.state_plumbing],
             "producer_safety": dict(self.producer_safety),
-            "coverage_enumeration_complete": bool(
-                self.coverage_enumeration_complete
-            ),
+            "coverage_enumeration_complete": bool(self.coverage_enumeration_complete),
             "residual_corridor_count": int(self.residual_corridor_count),
         }
 
@@ -389,9 +381,7 @@ class TerminalSwitchCycleBreakProof:
             "shared_merge": self.shared_merge.to_payload(),
             "terminal_target": self.terminal_target.to_payload(),
             "terminal_stop": self.terminal_stop.to_payload(),
-            "retired_residue": [
-                anchor.to_payload() for anchor in self.retired_residue
-            ],
+            "retired_residue": [anchor.to_payload() for anchor in self.retired_residue],
         }
 
 
@@ -551,8 +541,7 @@ def _predecessors(
         for target in targets:
             predecessors.setdefault(int(target), []).append(int(source))
     return {
-        serial: tuple(sorted(set(sources)))
-        for serial, sources in predecessors.items()
+        serial: tuple(sorted(set(sources))) for serial, sources in predecessors.items()
     }
 
 
@@ -599,10 +588,9 @@ def _upstream_corridor_paths(
         """
         nonlocal complete
         incoming_to_predecessor = predecessors.get(int(predecessor), ())
-        if (
-            len(incoming_to_predecessor) > 1
-            and successors.get(int(predecessor), ()) == (int(suffix[0]),)
-        ):
+        if len(incoming_to_predecessor) > 1 and successors.get(
+            int(predecessor), ()
+        ) == (int(suffix[0]),):
             for merge_input in incoming_to_predecessor:
                 merge_input = int(merge_input)
                 if merge_input in seen:
@@ -721,9 +709,10 @@ def _coverage_from_post_successors(
     modification objects.  Sharing this classifier prevents plan metadata from
     relabeling a still-reachable dispatcher corridor as covered.
     """
-    if dispatcher_entry_serial is None or flow_graph.get_block(
-        int(dispatcher_entry_serial)
-    ) is None:
+    if (
+        dispatcher_entry_serial is None
+        or flow_graph.get_block(int(dispatcher_entry_serial)) is None
+    ):
         return DispatcherCorridorCoverage(
             function_ea=int(flow_graph.func_ea),
             dispatcher=None,
@@ -779,7 +768,14 @@ def analyze_dispatcher_corridor_coverage(
 
 
 def _stable_block_start_ea(block: object) -> int | None:
-    """Return the native block-start identity, if the snapshot carries one."""
+    """Return the earliest native identity carried by one block snapshot.
+
+    Generated Hex-Rays blocks can have ``BADADDR`` as their block coordinate
+    while their instructions still retain native origins.  The instruction
+    origin is the same address correspondence used by pseudocode/text-view
+    synchronization and is valid portable identity for immediate post-mutation
+    reconciliation.
+    """
     for field_name in ("native_start_ea", "start_ea"):
         try:
             value = int(getattr(block, field_name))
@@ -787,7 +783,44 @@ def _stable_block_start_ea(block: object) -> int | None:
             continue
         if 0 <= value < 0xFFFFFFFFFFFFFFFF:
             return value
+    instructions = tuple(getattr(block, "insn_snapshots", ()) or ())
+    for field_name in ("native_ea", "ea"):
+        for instruction in instructions:
+            try:
+                value = int(getattr(instruction, field_name))
+            except (AttributeError, TypeError, ValueError):
+                continue
+            if 0 <= value < 0xFFFFFFFFFFFFFFFF:
+                return value
     return None
+
+
+def _addressless_block_signature(block: object) -> tuple[object, ...]:
+    """Return a conservative identity for a native-addressless sentinel.
+
+    This deliberately excludes topology: the transaction is validating a CFG
+    rewrite, so predecessor/successor changes are expected.  Multiple blocks
+    with the same signature remain ambiguous below.
+    """
+    instructions = tuple(getattr(block, "insn_snapshots", ()) or ())
+    return (
+        getattr(block, "kind", None),
+        getattr(block, "block_type", None),
+        getattr(block, "raw_block_type", None),
+        getattr(block, "tail_kind", None),
+        getattr(block, "tail_opcode", None),
+        getattr(block, "raw_tail_opcode", None),
+        tuple(
+            (
+                getattr(instruction, "kind", None),
+                getattr(instruction, "opcode", None),
+                getattr(instruction, "raw_opcode", None),
+                getattr(instruction, "predicate_kind", None),
+                getattr(instruction, "compare_width", None),
+            )
+            for instruction in instructions
+        ),
+    )
 
 
 def canonicalize_observed_dispatcher_graph(
@@ -805,7 +838,9 @@ def canonicalize_observed_dispatcher_graph(
     terminate at one of its declared arms.  Every other identity or topology
     drift fails closed.
     """
-    if not isinstance(pre_graph, FlowGraph) or not isinstance(observed_graph, FlowGraph):
+    if not isinstance(pre_graph, FlowGraph) or not isinstance(
+        observed_graph, FlowGraph
+    ):
         raise TypeError("dispatcher observation canonicalization requires FlowGraphs")
 
     lowerings: list[PatchLowerConditionalStateTransition] = []
@@ -822,35 +857,92 @@ def canonicalize_observed_dispatcher_graph(
     if int(pre_graph.func_ea) != int(observed_graph.func_ea):
         raise drift("function identity changed")
 
-    pre_by_anchor: dict[int, int] = {}
+    pre_by_anchor: dict[int, list[int]] = {}
+    addressless_pre: list[int] = []
     for serial, block in pre_graph.blocks.items():
         anchor = _stable_block_start_ea(block)
         if anchor is None:
-            raise drift(f"pre block {int(serial)} lacks a stable block-start EA")
-        if anchor in pre_by_anchor:
-            raise drift(f"pre block-start EA 0x{anchor:x} is ambiguous")
-        pre_by_anchor[anchor] = int(serial)
+            addressless_pre.append(int(serial))
+            continue
+        pre_by_anchor.setdefault(anchor, []).append(int(serial))
 
     observed_by_anchor: dict[int, list[int]] = {}
+    addressless_observed: list[int] = []
     for serial, block in observed_graph.blocks.items():
         anchor = _stable_block_start_ea(block)
         if anchor is None:
-            raise drift(f"observed block {int(serial)} lacks a stable block-start EA")
+            addressless_observed.append(int(serial))
+            continue
         observed_by_anchor.setdefault(anchor, []).append(int(serial))
 
     observed_for_pre: dict[int, int] = {}
-    for anchor, pre_serial in pre_by_anchor.items():
-        candidates = tuple(observed_by_anchor.get(anchor, ()))
-        if not candidates:
-            raise drift(f"pre block {pre_serial}@0x{anchor:x} is missing")
-        if pre_serial in candidates:
-            observed_for_pre[pre_serial] = pre_serial
-        elif len(candidates) == 1:
-            observed_for_pre[pre_serial] = candidates[0]
-        else:
+    claimed_observed: set[int] = set()
+    # Hex-Rays commonly clones a block without assigning a distinct native
+    # start EA.  A preserved serial plus the same native anchor is stronger
+    # identity than the anchor alone, so bind those exact pairs first.
+    for anchor, pre_serials in pre_by_anchor.items():
+        candidates = set(observed_by_anchor.get(anchor, ()))
+        for pre_serial in pre_serials:
+            if pre_serial in candidates:
+                observed_for_pre[pre_serial] = pre_serial
+                claimed_observed.add(pre_serial)
+
+    # Helper insertion can shift a remaining original serial.  After the exact
+    # pairs have been claimed, accept only a one-to-one residual anchor match.
+    for anchor, pre_serials in pre_by_anchor.items():
+        unmatched_pre = tuple(
+            serial for serial in pre_serials if serial not in observed_for_pre
+        )
+        unmatched_observed = tuple(
+            serial
+            for serial in observed_by_anchor.get(anchor, ())
+            if serial not in claimed_observed
+        )
+        # Extra observed blocks at an already-matched anchor can be generated
+        # conditional-lowering helpers. Their exact ownership is validated
+        # below; they must not make the preserved original appear missing.
+        if not unmatched_pre:
+            continue
+        if len(unmatched_pre) != len(unmatched_observed):
+            missing = unmatched_pre[0] if unmatched_pre else pre_serials[0]
+            raise drift(f"pre block {missing}@0x{anchor:x} is missing")
+        if len(unmatched_pre) > 1:
             raise drift(
-                f"pre block {pre_serial}@0x{anchor:x} has ambiguous observed serials"
+                f"pre block-start EA 0x{anchor:x} has ambiguous residual serials"
             )
+        if unmatched_pre:
+            observed_for_pre[unmatched_pre[0]] = unmatched_observed[0]
+            claimed_observed.add(unmatched_observed[0])
+
+    addressless_observed_set = set(addressless_observed)
+    for pre_serial in addressless_pre:
+        if pre_serial in addressless_observed_set and _addressless_block_signature(
+            pre_graph.blocks[pre_serial]
+        ) == _addressless_block_signature(observed_graph.blocks[pre_serial]):
+            observed_for_pre[pre_serial] = pre_serial
+            claimed_observed.add(pre_serial)
+
+    unmatched_addressless_pre: dict[tuple[object, ...], list[int]] = {}
+    unmatched_addressless_observed: dict[tuple[object, ...], list[int]] = {}
+    for serial in addressless_pre:
+        if serial not in observed_for_pre:
+            unmatched_addressless_pre.setdefault(
+                _addressless_block_signature(pre_graph.blocks[serial]), []
+            ).append(serial)
+    for serial in addressless_observed:
+        if serial not in claimed_observed:
+            unmatched_addressless_observed.setdefault(
+                _addressless_block_signature(observed_graph.blocks[serial]), []
+            ).append(serial)
+    for signature, pre_serials in unmatched_addressless_pre.items():
+        candidates = unmatched_addressless_observed.get(signature, [])
+        if len(pre_serials) != 1 or len(candidates) != 1:
+            raise drift(
+                "addressless pre block identity is missing or ambiguous: "
+                f"pre={tuple(pre_serials)} observed={tuple(candidates)}"
+            )
+        observed_for_pre[pre_serials[0]] = candidates[0]
+        claimed_observed.add(candidates[0])
 
     pre_for_observed = {
         observed_serial: pre_serial
@@ -865,9 +957,13 @@ def canonicalize_observed_dispatcher_graph(
         if len(set(succs)) != len(succs) or len(set(preds)) != len(preds):
             raise drift(f"CFG_50858 duplicate edge data at observed block {serial}")
         if any(target not in observed_serials for target in succs):
-            raise drift(f"CFG_50858 observed block {serial} references a missing successor")
+            raise drift(
+                f"CFG_50858 observed block {serial} references a missing successor"
+            )
         if any(source not in observed_serials for source in preds):
-            raise drift(f"CFG_50858 observed block {serial} references a missing predecessor")
+            raise drift(
+                f"CFG_50858 observed block {serial} references a missing predecessor"
+            )
         expected_preds = tuple(
             sorted(
                 source
@@ -1051,8 +1147,7 @@ def canonicalize_observed_dispatcher_graph(
                 and nested_left.size == size
                 and isinstance(nested_right, MopSnapshot)
                 and nested_right.kind is OperandKind.NUMBER
-                and nested_right.value
-                == int(condition.bound) & ((1 << (8 * size)) - 1)
+                and nested_right.value == int(condition.bound) & ((1 << (8 * size)) - 1)
                 and nested_right.size == size
                 and isinstance(right, MopSnapshot)
                 and right.kind is OperandKind.NUMBER
@@ -1078,7 +1173,9 @@ def canonicalize_observed_dispatcher_graph(
             InsnKind.COND_JUMP,
             InsnKind.EQUALITY_JUMP,
         }:
-            raise drift(f"conditional source {source} lacks an observed conditional tail")
+            raise drift(
+                f"conditional source {source} lacks an observed conditional tail"
+            )
         rewrite_ea = int(lowering.rewrite_from_ea)
         insns = tuple(getattr(observed_block, "insn_snapshots", ()) or ())
         matches = tuple(insn for insn in insns if rewrite_ea in instruction_eas(insn))
@@ -1162,7 +1259,9 @@ def canonicalize_observed_dispatcher_graph(
         stateful_helper = all(
             value is not None for value in (state_register, state_size, state_value)
         )
-        if (role == "fallthrough" or stateful_helper) and helper != observed_source + expected_offset:
+        if (
+            role == "fallthrough" or stateful_helper
+        ) and helper != observed_source + expected_offset:
             raise drift(
                 f"conditional source {source} {role} helper is not physically adjacent"
             )
@@ -1205,8 +1304,7 @@ def canonicalize_observed_dispatcher_graph(
                 and int(rewrite_ea) in instruction_eas(assignment)
                 and getattr(source_operand, "kind", None) is OperandKind.NUMBER
                 and getattr(source_operand, "size", None) == size
-                and getattr(source_operand, "value", None)
-                == int(state_value) & mask
+                and getattr(source_operand, "value", None) == int(state_value) & mask
                 and getattr(dest_operand, "kind", None) is OperandKind.REGISTER
                 and getattr(dest_operand, "reg", None) == int(state_register)
                 and getattr(dest_operand, "size", None) == size
@@ -1242,7 +1340,9 @@ def canonicalize_observed_dispatcher_graph(
             if any(value is not None for value in state_fields) and not all(
                 value is not None for value in state_fields
             ):
-                raise drift(f"conditional source {pre_serial} has partial arm-state proof")
+                raise drift(
+                    f"conditional source {pre_serial} has partial arm-state proof"
+                )
             stateful = all(value is not None for value in state_fields)
             observed_fallthrough = int(observed_block.succs[0])
             observed_taken = int(observed_block.succs[1])
@@ -1256,7 +1356,9 @@ def canonicalize_observed_dispatcher_graph(
                 state_size=lowering.state_size if stateful else None,
                 state_value=(
                     lowering.false_state if is_true_taken else lowering.true_state
-                ) if stateful else None,
+                )
+                if stateful
+                else None,
                 rewrite_ea=int(lowering.rewrite_from_ea),
             )
             if stateful:
@@ -1296,7 +1398,9 @@ def canonicalize_observed_dispatcher_graph(
         unconsumed = sorted(helper_serials - owned_helpers)
         raise drift(f"unconsumed observed helper serials: {unconsumed}")
 
-    predecessors: dict[int, list[int]] = {int(serial): [] for serial in pre_graph.blocks}
+    predecessors: dict[int, list[int]] = {
+        int(serial): [] for serial in pre_graph.blocks
+    }
     for source, targets in canonical_successors.items():
         for target in targets:
             if target not in predecessors:
@@ -1374,11 +1478,8 @@ def _retired_dispatcher_infrastructure(
         ):
             roles_by_serial.setdefault(int(feeder.serial), "dispatcher_feeder")
         state_merge = corridor.state_merge
-        if (
-            state_merge is not None
-            and _is_effect_free_dispatcher_router(
-                flow_graph.get_block(int(state_merge.serial))
-            )
+        if state_merge is not None and _is_effect_free_dispatcher_router(
+            flow_graph.get_block(int(state_merge.serial))
         ):
             roles_by_serial.setdefault(int(state_merge.serial), "state_merge")
     return tuple(
@@ -1434,10 +1535,10 @@ def _independent_comparison_dispatcher_region(
         if block is None:
             continue
         successors = tuple(getattr(block, "succs", ()) or ())
-        is_comparison = (
-            len(successors) == 2
-            and getattr(block, "kind", None) in {BlockKind.TWO_WAY, BlockKind.N_WAY}
-        )
+        is_comparison = len(successors) == 2 and getattr(block, "kind", None) in {
+            BlockKind.TWO_WAY,
+            BlockKind.N_WAY,
+        }
         is_control_only_exit_leaf = allow_exit_leaf and len(successors) == 1
         if not (is_comparison or is_control_only_exit_leaf):
             continue
@@ -1461,9 +1562,7 @@ def _feeder_is_retireable(
         return False
     if _is_effect_free_dispatcher_router(block):
         return True
-    return int(feeder_serial) in {
-        int(serial) for serial in state_plumbing_serials
-    }
+    return int(feeder_serial) in {int(serial) for serial in state_plumbing_serials}
 
 
 def build_dispatcher_removal_preflight_proof(
@@ -1510,7 +1609,9 @@ def build_dispatcher_removal_preflight_proof(
         post_graph,
         frozenset(serial for serial in handlers if serial in post_reachable),
     )
-    pre_terminals = frozenset(int(serial) for serial in reachable_terminal_blocks(flow_graph))
+    pre_terminals = frozenset(
+        int(serial) for serial in reachable_terminal_blocks(flow_graph)
+    )
     post_terminal_serials = frozenset(
         int(serial) for serial in reachable_terminal_blocks(post_graph)
     )
@@ -1569,8 +1670,7 @@ def build_dispatcher_removal_preflight_proof(
         passed = False
         reason = "untyped_lost_block"
     elif any(
-        safety.get(name) is not expected
-        for name, expected in required_safety.items()
+        safety.get(name) is not expected for name, expected in required_safety.items()
     ):
         passed = False
         reason = "producer_safety_missing"
@@ -1738,8 +1838,12 @@ def _diagnostic_outcome_scope(*, plan_id: str | None, attempt_id: str | None) ->
     if plan_id is None and attempt_id is None:
         return ""
     normalized_plan = str(plan_id).strip() if plan_id is not None else "unknown"
-    normalized_attempt = str(attempt_id).strip() if attempt_id is not None else "unknown"
-    return f"plan={normalized_plan or 'unknown'}:attempt={normalized_attempt or 'unknown'}"
+    normalized_attempt = (
+        str(attempt_id).strip() if attempt_id is not None else "unknown"
+    )
+    return (
+        f"plan={normalized_plan or 'unknown'}:attempt={normalized_attempt or 'unknown'}"
+    )
 
 
 def _use_def_optional_int(value: object) -> int | None:
@@ -1798,9 +1902,7 @@ def collect_use_def_severance_observations_from_metadata(
     if not executed:
         enforcement_status = "safety_unavailable"
     elif severance_count > 0:
-        enforcement_status = (
-            "fragment_rejected" if enforced else "heuristic_observed"
-        )
+        enforcement_status = "fragment_rejected" if enforced else "heuristic_observed"
     else:
         enforcement_status = "clean"
     scope = _diagnostic_outcome_scope(plan_id=plan_id, attempt_id=attempt_id)
@@ -2115,7 +2217,9 @@ def collect_unflatten_dispatcher_outcome_observations_from_metadata(
         function_ea = (
             None
             if coverage_validation is None
-            else _use_def_optional_int(getattr(coverage_validation, "function_ea", None))
+            else _use_def_optional_int(
+                getattr(coverage_validation, "function_ea", None)
+            )
         )
         if function_ea is not None:
             # A malformed present claim cannot be rehydrated into corridors,
@@ -2183,6 +2287,7 @@ def validate_dispatcher_corridor_coverage_metadata(
     narrow full-retirement authority, but they still cannot publish a planned
     covered corridor when the observed CFG reaches that dispatcher again.
     """
+
     def rejected(reason: str) -> DispatcherCorridorCoverageValidation:
         return DispatcherCorridorCoverageValidation(
             passed=False,
@@ -2210,10 +2315,9 @@ def validate_dispatcher_corridor_coverage_metadata(
     if dispatcher is None:
         return rejected("dispatcher_corridor_coverage_dispatcher_malformed")
     pre_dispatcher = pre_graph.get_block(int(dispatcher.serial))
-    if (
-        pre_dispatcher is None
-        or int(getattr(pre_dispatcher, "start_ea", 0) or 0) != int(dispatcher.ea)
-    ):
+    if pre_dispatcher is None or int(
+        getattr(pre_dispatcher, "start_ea", 0) or 0
+    ) != int(dispatcher.ea):
         return rejected("dispatcher_corridor_coverage_dispatcher_anchor_stale")
     observed_coverage = _coverage_from_post_successors(
         pre_graph,
@@ -2236,7 +2340,8 @@ def validate_dispatcher_corridor_coverage_metadata(
 _STATE_WRITER_OPERATIONS = frozenset(
     operation
     for operation in ValueOpKind
-    if operation not in {
+    if operation
+    not in {
         ValueOpKind.LOAD,
         ValueOpKind.STORE,
         ValueOpKind.VENDOR,
@@ -2273,8 +2378,7 @@ def _dispatcher_state_identity(
         (index, instruction)
         for index, instruction in enumerate(instructions)
         if instruction.control is not None
-        and instruction.control.transfer
-        is ControlTransferKind.CONDITIONAL_BRANCH
+        and instruction.control.transfer is ControlTransferKind.CONDITIONAL_BRANCH
     )
     if len(branches) != 1:
         return None
@@ -2433,8 +2537,7 @@ def _route_dispatcher_constant(
             instruction
             for instruction in instructions
             if instruction.control is not None
-            and instruction.control.transfer
-            is ControlTransferKind.CONDITIONAL_BRANCH
+            and instruction.control.transfer is ControlTransferKind.CONDITIONAL_BRANCH
         )
         if len(branches) != 1:
             return None
@@ -2549,9 +2652,7 @@ def _interval_state_normalizer_retirement_allowance(
         if writer is not None:
             state_writers[int(serial)] = writer
 
-    handler_serials = {
-        int(anchor.serial) for anchor in proof.authoritative_handlers
-    }
+    handler_serials = {int(anchor.serial) for anchor in proof.authoritative_handlers}
     normalizer_routes: list[IntervalStateNormalizerRouteProof] = []
     normalizer_serials: set[int] = set()
     for serial in sorted(lost & handler_serials):
@@ -2609,7 +2710,9 @@ def _interval_state_normalizer_retirement_allowance(
     semantic_handlers = _anchors_for_serials(pre_graph, semantic_handler_serials)
     post_handlers = _anchors_for_serials(
         post_graph,
-        frozenset(serial for serial in semantic_handler_serials if serial in post_reachable),
+        frozenset(
+            serial for serial in semantic_handler_serials if serial in post_reachable
+        ),
     )
     if set(semantic_handlers) != set(post_handlers):
         return None
@@ -2632,8 +2735,8 @@ def _interval_state_normalizer_retirement_allowance(
             ):
                 return None
 
-    allowed_lost = comparison_region | frozenset(state_writers) | frozenset(
-        normalizer_serials
+    allowed_lost = (
+        comparison_region | frozenset(state_writers) | frozenset(normalizer_serials)
     )
     if not lost.issubset(allowed_lost):
         return None
@@ -2645,7 +2748,9 @@ def _interval_state_normalizer_retirement_allowance(
             else "dispatcher_state_merge"
         )
         retired.append(
-            RetiredDispatcherInfrastructure(role=role, anchor=_anchor(pre_graph, serial))
+            RetiredDispatcherInfrastructure(
+                role=role, anchor=_anchor(pre_graph, serial)
+            )
         )
     retired.extend(
         RetiredDispatcherInfrastructure(
@@ -2924,7 +3029,11 @@ def validate_dispatcher_removal_preflight_proof(
         )
     dispatcher = _anchor_from_payload(raw_proof.get("dispatcher"))
     coverage_dispatcher = _anchor_from_payload(raw_coverage.get("dispatcher"))
-    if dispatcher is None or coverage_dispatcher is None or dispatcher != coverage_dispatcher:
+    if (
+        dispatcher is None
+        or coverage_dispatcher is None
+        or dispatcher != coverage_dispatcher
+    ):
         return DispatcherRemovalPreflightValidation(
             passed=False,
             reason="dispatcher_removal_proof_dispatcher_mismatch",
@@ -2990,11 +3099,15 @@ def validate_dispatcher_removal_preflight_proof(
             )
         role = item.get("role")
         anchor = _anchor_from_payload(item.get("anchor"))
-        if role not in {
-            "comparison_dispatcher",
-            "dispatcher_feeder",
-            "state_merge",
-        } or anchor is None:
+        if (
+            role
+            not in {
+                "comparison_dispatcher",
+                "dispatcher_feeder",
+                "state_merge",
+            }
+            or anchor is None
+        ):
             return DispatcherRemovalPreflightValidation(
                 passed=False,
                 reason="dispatcher_removal_proof_infrastructure_malformed",
@@ -3013,9 +3126,7 @@ def validate_dispatcher_removal_preflight_proof(
         )
     state_plumbing_anchors = tuple(
         anchor
-        for anchor in (
-            _anchor_from_payload(value) for value in raw_state_plumbing
-        )
+        for anchor in (_anchor_from_payload(value) for value in raw_state_plumbing)
         if anchor is not None
     )
     if len(state_plumbing_anchors) != len(raw_state_plumbing) or any(
@@ -3241,9 +3352,7 @@ def validate_terminal_switch_cycle_break_allowance(
     redirects = _resolved_goto_redirects(patch_plan)
     if redirects is None:
         return removal_validation
-    handler_serials = {
-        int(anchor.serial) for anchor in proof.authoritative_handlers
-    }
+    handler_serials = {int(anchor.serial) for anchor in proof.authoritative_handlers}
     candidates: list[tuple[int, int, int, int]] = []
     for merge, old_dispatcher, target in redirects:
         if old_dispatcher != int(dispatcher.serial):

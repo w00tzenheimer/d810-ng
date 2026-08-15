@@ -43,6 +43,9 @@ from d810.transforms.detached_route_oracle import DetachedRouteOracleResult
 from d810.hexrays.mutation.semantic_fragment_failure import (
     MbaSemanticFragmentFailure,
 )
+from d810.hexrays.preanalysis.flowchart_preanalysis import (
+    run_flowchart_preanalysis_handlers,
+)
 from d810.ir.semantic_edge import SemanticEdgeRole
 from d810.ir.block_identity import (
     CurrentMbaBlockIdentityBinding,
@@ -73,6 +76,47 @@ from tests.native_preanalysis import make_native_key
 
 
 NATIVE_KEY = make_native_key()
+
+
+def test_manager_installs_and_uninstalls_generated_restart_consumer() -> None:
+    session = DecompilationSessionContext(
+        function_ea=0x401000,
+        database_identity="stage-c-idb",
+        top_level_epoch=1,
+        native_key=NATIVE_KEY,
+    )
+    state = session.native_preanalysis
+    assert state.request_generated_restart(
+        evidence_family="dispatcher_recovery_evidence",
+        reason="bind recovered dispatcher evidence into a fresh MBA",
+    )
+    decision: dict[str, object] = {"session": session, "request_redo": False}
+
+    computed_goto_resolver.uninstall()
+    D810Manager._install_native_preanalysis_handlers()
+    try:
+        run_flowchart_preanalysis_handlers(
+            function_ea=0x401000,
+            mba=SimpleNamespace(entry_ea=0x401000),
+            decision=decision,
+        )
+    finally:
+        D810Manager._uninstall_native_preanalysis_handlers()
+
+    assert decision["request_redo"] is True
+    assert decision["reason"] == "computed_goto_calls_evidence_rebind"
+    assert not state.has_pending_generated_restart
+
+    second_decision: dict[str, object] = {
+        "session": session,
+        "request_redo": False,
+    }
+    run_flowchart_preanalysis_handlers(
+        function_ea=0x401000,
+        mba=SimpleNamespace(entry_ea=0x401000),
+        decision=second_decision,
+    )
+    assert second_decision["request_redo"] is False
 
 
 def _current_mba_identity_binding() -> CurrentMbaIdentityBindingSnapshot:
@@ -1242,6 +1286,19 @@ def test_decompile_controller_releases_stack_capacity_witness_when_decompile_rai
         ("decompile", 0x401000),
         ("release", session),
     ]
+
+
+def test_stage_c_collection_abstains_before_policy_lookup_without_configuration(
+    monkeypatch,
+) -> None:
+    manager = D810Manager.__new__(D810Manager)
+    monkeypatch.setattr(
+        manager,
+        "get_function_tags",
+        lambda _function_ea: pytest.fail("disabled Stage C must not query tags"),
+    )
+
+    assert manager._stage_c_collection_enabled(0x401000) is False
 
 
 def test_decompile_controller_services_poison_restart_from_second_round(

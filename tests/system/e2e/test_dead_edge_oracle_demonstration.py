@@ -279,6 +279,11 @@ class TestDeadEdgeOracleDemonstration:
                 enabled=True,
             )
             try:
+                execution_journal = state.manager._native_patch_execution_journal
+                prior_attempt_ids = {
+                    attempt.attempt_id
+                    for attempt in execution_journal.attempts_for_function(func_ea)
+                }
                 cfunc = state.manager.decompile_with_native_preanalysis(
                     func_ea,
                     lambda: idaapi.decompile(
@@ -288,11 +293,11 @@ class TestDeadEdgeOracleDemonstration:
                     lambda: ida_hexrays.mark_cfunc_dirty(func_ea),
                 )
                 assert cfunc is not None
-                execution_journal = state.manager._native_patch_execution_journal
                 attempts = tuple(
                     attempt
                     for attempt in execution_journal.attempts_for_function(func_ea)
                     if attempt.stage_id == "native_dead_edge_normalizer"
+                    and attempt.attempt_id not in prior_attempt_ids
                 )
                 assert len(attempts) == 1
                 attempt = attempts[0]

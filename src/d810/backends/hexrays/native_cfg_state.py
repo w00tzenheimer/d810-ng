@@ -64,35 +64,6 @@ def _native_block_ea(graph: FlowGraph, serial: int) -> int | None:
     return int(block.native_start_ea)
 
 
-def _reachable(graph: FlowGraph, start: int) -> set[int]:
-    seen: set[int] = set()
-    pending = [start]
-    while pending:
-        serial = pending.pop()
-        if serial in seen or serial not in graph.blocks:
-            continue
-        seen.add(serial)
-        pending.extend(graph.blocks[serial].succs)
-    return seen
-
-
-def _can_reach(graph: FlowGraph, target: int) -> set[int]:
-    predecessors: dict[int, set[int]] = {serial: set() for serial in graph.blocks}
-    for serial, block in graph.blocks.items():
-        for successor in block.succs:
-            if successor in predecessors:
-                predecessors[successor].add(serial)
-    seen: set[int] = set()
-    pending = [target]
-    while pending:
-        serial = pending.pop()
-        if serial in seen:
-            continue
-        seen.add(serial)
-        pending.extend(predecessors.get(serial, ()))
-    return seen
-
-
 def _bypassed_corridor(
     graph: FlowGraph,
     inherited_successors: tuple[int, ...],
@@ -110,16 +81,25 @@ def _bypassed_corridor(
         return None
     corridor: set[int] = set()
     for target in added_targets:
-        target_predecessors = _can_reach(graph, target)
-        matched = False
+        routes: list[tuple[int, ...]] = []
         for root in removed_roots:
-            path_nodes = _reachable(graph, root) & target_predecessors
-            if target in path_nodes:
-                matched = True
-                path_nodes.discard(target)
-                corridor.update(path_nodes)
-        if not matched:
+            pending: list[tuple[int, tuple[int, ...], frozenset[int]]] = [
+                (root, (root,), frozenset((root,)))
+            ]
+            while pending:
+                current, route, seen = pending.pop()
+                if current == target:
+                    routes.append(route[:-1])
+                    if len(routes) > 1:
+                        return None
+                    continue
+                for successor in reversed(graph.blocks[current].succs):
+                    if successor not in graph.blocks or successor in seen:
+                        continue
+                    pending.append((successor, (*route, successor), seen | {successor}))
+        if len(routes) != 1:
             return None
+        corridor.update(routes[0])
     return tuple(sorted(corridor))
 
 

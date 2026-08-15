@@ -108,9 +108,7 @@ def _conditional_observation_fixture(
                 0x1000,
                 kind=BlockKind.TWO_WAY if preserve_live else BlockKind.ONE_WAY,
                 insns=(predicate,) if preserve_live else (),
-                tail_kind=(
-                    InsnKind.COND_JUMP if preserve_live else InsnKind.GOTO
-                ),
+                tail_kind=(InsnKind.COND_JUMP if preserve_live else InsnKind.GOTO),
             ),
             20: _block(20, (), (10,), 0x1100, kind=BlockKind.ZERO_WAY),
             30: _block(
@@ -163,17 +161,18 @@ def _conditional_observation_fixture(
     if stateful:
         fallthrough_state = 0x11 if true_is_taken else 0x22
         taken_state = 0x22 if true_is_taken else 0x11
+
         def state_write(value: int, target: int) -> tuple[InsnSnapshot, ...]:
             return (
                 InsnSnapshot(
-                opcode=0x01,
-                ea=predicate_ea,
-                native_ea=predicate_ea,
-                operands=(),
-                l=MopSnapshot(kind=OperandKind.NUMBER, value=value, size=4),
-                d=MopSnapshot(kind=OperandKind.REGISTER, reg=7, size=4),
-                kind=InsnKind.MOV,
-            ),
+                    opcode=0x01,
+                    ea=predicate_ea,
+                    native_ea=predicate_ea,
+                    operands=(),
+                    l=MopSnapshot(kind=OperandKind.NUMBER, value=value, size=4),
+                    d=MopSnapshot(kind=OperandKind.REGISTER, reg=7, size=4),
+                    kind=InsnKind.MOV,
+                ),
                 InsnSnapshot(
                     opcode=0x02,
                     ea=predicate_ea,
@@ -183,6 +182,7 @@ def _conditional_observation_fixture(
                     kind=InsnKind.GOTO,
                 ),
             )
+
         observed_blocks[11] = replace(
             observed_blocks[11],
             insn_snapshots=state_write(fallthrough_state, fallthrough_observed),
@@ -196,9 +196,7 @@ def _conditional_observation_fixture(
             insns=state_write(taken_state, taken_observed),
             tail_kind=InsnKind.GOTO,
         )
-    predecessor_map: dict[int, list[int]] = {
-        serial: [] for serial in observed_blocks
-    }
+    predecessor_map: dict[int, list[int]] = {serial: [] for serial in observed_blocks}
     for source, targets in successors.items():
         for target in targets:
             predecessor_map[target].append(source)
@@ -351,6 +349,89 @@ def test_observed_lowering_defaults_true_is_taken_to_true() -> None:
     assert canonical.blocks[10].succs == (30, 40)
 
 
+def test_observed_lowering_disambiguates_cloned_native_starts_by_stable_serial() -> (
+    None
+):
+    pre, observed, plan = _conditional_observation_fixture()
+    pre = replace(
+        pre,
+        blocks={
+            **pre.blocks,
+            30: replace(pre.blocks[30], start_ea=pre.blocks[10].start_ea),
+        },
+    )
+    observed = replace(
+        observed,
+        blocks={
+            **observed.blocks,
+            31: replace(observed.blocks[31], start_ea=observed.blocks[10].start_ea),
+        },
+    )
+
+    canonical = canonicalize_observed_dispatcher_graph(pre, observed, plan)
+
+    assert canonical.blocks[10].succs == (30, 40)
+
+
+def test_observed_lowering_uses_first_native_instruction_for_generated_block() -> None:
+    pre, observed, plan = _conditional_observation_fixture()
+    generated_insn = InsnSnapshot(
+        opcode=1,
+        ea=0xFFFFFFFFFFFFFFFF,
+        native_ea=0x1300,
+        operands=(),
+        kind=InsnKind.GOTO,
+    )
+    pre = replace(
+        pre,
+        blocks={
+            **pre.blocks,
+            40: replace(
+                pre.blocks[40],
+                start_ea=0xFFFFFFFFFFFFFFFF,
+                insn_snapshots=(generated_insn,),
+            ),
+        },
+    )
+    observed = replace(
+        observed,
+        blocks={
+            **observed.blocks,
+            41: replace(
+                observed.blocks[41],
+                start_ea=0xFFFFFFFFFFFFFFFF,
+                insn_snapshots=(generated_insn,),
+            ),
+        },
+    )
+
+    canonical = canonicalize_observed_dispatcher_graph(pre, observed, plan)
+
+    assert canonical.blocks[10].succs == (30, 40)
+
+
+def test_observed_lowering_matches_one_unique_addressless_terminal_sentinel() -> None:
+    pre, observed, plan = _conditional_observation_fixture()
+    pre = replace(
+        pre,
+        blocks={
+            **pre.blocks,
+            40: replace(pre.blocks[40], start_ea=0xFFFFFFFFFFFFFFFF),
+        },
+    )
+    observed = replace(
+        observed,
+        blocks={
+            **observed.blocks,
+            41: replace(observed.blocks[41], start_ea=0xFFFFFFFFFFFFFFFF),
+        },
+    )
+
+    canonical = canonicalize_observed_dispatcher_graph(pre, observed, plan)
+
+    assert canonical.blocks[10].succs == (30, 40)
+
+
 def test_observed_predecessor_mismatch_is_not_repaired() -> None:
     pre, observed, plan = _conditional_observation_fixture()
     corrupted = _replace_observed_edges(
@@ -408,10 +489,7 @@ def test_observed_lowering_requires_exact_helper_inventory_and_ownership() -> No
     shared = _replace_observed_edges(
         direct_arms,
         {
-            **{
-                serial: block.succs
-                for serial, block in direct_arms.blocks.items()
-            },
+            **{serial: block.succs for serial, block in direct_arms.blocks.items()},
             10: (11, 11),
             11: (31,),
         },
@@ -510,9 +588,7 @@ def test_observed_stateful_helpers_require_exact_adjacent_state_writes() -> None
     with pytest.raises(ValueError, match="state write"):
         canonicalize_observed_dispatcher_graph(pre, wrong_value, plan)
 
-    successors = {
-        serial: block.succs for serial, block in observed.blocks.items()
-    }
+    successors = {serial: block.succs for serial, block in observed.blocks.items()}
     moved_blocks = dict(observed.blocks)
     moved_blocks[99] = replace(
         moved_blocks.pop(12),
@@ -755,9 +831,7 @@ def _interval_state_normalizer_fixture(
         RedirectGoto(from_serial=10, old_target=3, new_target=43),
     ]
     if not retain_dynamic_corridor:
-        modifications.append(
-            RedirectGoto(from_serial=12, old_target=65, new_target=71)
-        )
+        modifications.append(RedirectGoto(from_serial=12, old_target=65, new_target=71))
     coverage = analyze_dispatcher_corridor_coverage(
         pre_graph,
         modifications=tuple(modifications),
@@ -839,9 +913,7 @@ def _state_transition_plumbing_fixture(
                 (10,),
                 0x1100,
                 kind=BlockKind.ONE_WAY,
-                insns=(
-                    value(ValueOpKind.XOR, 0x1100, eax, ecx, merge_destination),
-                ),
+                insns=(value(ValueOpKind.XOR, 0x1100, eax, ecx, merge_destination),),
                 tail_kind=InsnKind.GOTO,
             ),
             3: _block(
@@ -850,9 +922,7 @@ def _state_transition_plumbing_fixture(
                 (123,),
                 0x1110,
                 kind=BlockKind.ONE_WAY,
-                insns=(
-                    value(ValueOpKind.MOVE, 0x1110, edx, None, feeder_destination),
-                ),
+                insns=(value(ValueOpKind.MOVE, 0x1110, edx, None, feeder_destination),),
                 tail_kind=InsnKind.GOTO,
             ),
             112: _block(
@@ -861,9 +931,7 @@ def _state_transition_plumbing_fixture(
                 (12,),
                 0x1120,
                 kind=BlockKind.ONE_WAY,
-                insns=(
-                    value(ValueOpKind.ADD, 0x1120, eax, ecx, state),
-                ),
+                insns=(value(ValueOpKind.ADD, 0x1120, eax, ecx, state),),
                 tail_kind=InsnKind.GOTO,
             ),
             4: _block(
@@ -894,8 +962,7 @@ def _state_transition_plumbing_fixture(
         pre_graph,
         {
             **{
-                serial: tuple(block.succs)
-                for serial, block in pre_graph.blocks.items()
+                serial: tuple(block.succs) for serial, block in pre_graph.blocks.items()
             },
             10: (20,),
             12: (21,),
@@ -959,9 +1026,9 @@ def test_state_transition_plumbing_retirement_is_independently_proven() -> None:
     assert len(observations) == 1
     persisted = observations[0].payload["observed_validation"]
     assert persisted["reason"] == "state_transition_plumbing_retirement"
-    assert persisted["state_transition_plumbing_retirement"]["routes"][0][
-        "source"
-    ]["ea"] in {0x1010, 0x1020}
+    assert persisted["state_transition_plumbing_retirement"]["routes"][0]["source"][
+        "ea"
+    ] in {0x1010, 0x1020}
 
 
 @pytest.mark.parametrize(
@@ -1027,16 +1094,18 @@ def test_interval_state_normalizer_retirement_is_independently_proven() -> None:
         ("dispatcher_state_merge", 65),
     }
 
-    observations = collect_dispatcher_removal_preflight_proof_observations_from_metadata(
-        proof.to_metadata(),
-        coverage_metadata=coverage.to_metadata(),
-        maturity="MMAT_GLBOPT1",
-        phase="lower_state_machine",
-        application_status="applied",
-        projected_validation=validation,
-        observed_validation=validation,
-        plan_id="interval-normalizer-plan",
-        attempt_id="interval-normalizer-attempt",
+    observations = (
+        collect_dispatcher_removal_preflight_proof_observations_from_metadata(
+            proof.to_metadata(),
+            coverage_metadata=coverage.to_metadata(),
+            maturity="MMAT_GLBOPT1",
+            phase="lower_state_machine",
+            application_status="applied",
+            projected_validation=validation,
+            observed_validation=validation,
+            plan_id="interval-normalizer-plan",
+            attempt_id="interval-normalizer-attempt",
+        )
     )
     assert len(observations) == 1
     persisted_payload = observations[0].payload
@@ -1150,12 +1219,15 @@ def test_use_def_audit_keeps_block_start_separate_from_instruction_ea() -> None:
     assert evidence.use.ea == 0x700200
     assert evidence.use.label == "blk45@0x700200"
     assert evidence.use_instruction_ea == 0x7002AA
-    assert audit.to_metadata(function_ea=0x700000)["violations"][0][
-        "use_instruction_ea"
-    ] == 0x7002AA
+    assert (
+        audit.to_metadata(function_ea=0x700000)["violations"][0]["use_instruction_ea"]
+        == 0x7002AA
+    )
 
 
-def test_target_shape_advisory_and_explicit_veto_preserve_exact_counts(monkeypatch) -> None:
+def test_target_shape_advisory_and_explicit_veto_preserve_exact_counts(
+    monkeypatch,
+) -> None:
     """43 corridors, 25 candidates, and 3 findings stay deterministic."""
     graph = _target_shape_corridor_graph()
     candidate_redirects = tuple(
@@ -1250,8 +1322,7 @@ def test_target_shape_advisory_and_explicit_veto_preserve_exact_counts(monkeypat
     assert len(observations) == 4
     assert sum(item.kind == "UnflattenUseDefSeverance" for item in observations) == 3
     assert all(
-        item.payload["use"]
-        == {"serial": 45, "ea": 0x700200, "label": "blk45@0x700200"}
+        item.payload["use"] == {"serial": 45, "ea": 0x700200, "label": "blk45@0x700200"}
         and item.payload["use_instruction_ea"] == 0x7002AA
         for item in observations
         if item.kind == "UnflattenUseDefSeverance"
@@ -1313,8 +1384,7 @@ def test_coverage_descends_one_shared_merge_behind_a_shared_feeder() -> None:
     assert {
         corridor.state_merge.serial
         for corridor in report.residual_corridors
-        if corridor.source.serial in {45, 122}
-        and corridor.state_merge is not None
+        if corridor.source.serial in {45, 122} and corridor.state_merge is not None
     } == {123}
 
 
@@ -1376,7 +1446,10 @@ def test_coverage_reports_each_reachable_nested_dispatcher_corridor() -> None:
     ]
     assert len(residual) == 2
     assert all(observation.source_block in {45, 122} for observation in residual)
-    assert all(observation.source_ea in {0x7FF859C07656, 0x7FF859C08BFE} for observation in residual)
+    assert all(
+        observation.source_ea in {0x7FF859C07656, 0x7FF859C08BFE}
+        for observation in residual
+    )
     assert all(
         observation.payload["state_merge"]
         == {
@@ -1386,16 +1459,20 @@ def test_coverage_reports_each_reachable_nested_dispatcher_corridor() -> None:
         }
         for observation in residual
     )
-    assert all("blk45@0x7ff859c07656" in observation.fact_id or "blk122@0x7ff859c08bfe" in observation.fact_id for observation in residual)
+    assert all(
+        "blk45@0x7ff859c07656" in observation.fact_id
+        or "blk122@0x7ff859c08bfe" in observation.fact_id
+        for observation in residual
+    )
 
     from_metadata = collect_dispatcher_corridor_coverage_observations_from_metadata(
         report.to_metadata(),
         maturity="MMAT_GLBOPT1",
         phase="lower_state_machine",
     )
-    assert {
-        observation.fact_id for observation in from_metadata
-    } == {observation.fact_id for observation in observations}
+    assert {observation.fact_id for observation in from_metadata} == {
+        observation.fact_id for observation in observations
+    }
 
 
 def test_coverage_marks_both_nested_corridors_covered_only_after_bypass() -> None:
@@ -1500,8 +1577,7 @@ def test_dispatcher_removal_proof_accepts_only_typed_infrastructure_loss() -> No
     }
     assert {anchor.serial for anchor in proof.post_reachable_handlers} == {34, 121}
     assert {
-        (entry.role, entry.anchor.serial)
-        for entry in proof.retired_infrastructure
+        (entry.role, entry.anchor.serial) for entry in proof.retired_infrastructure
     } == {
         ("comparison_dispatcher", 4),
         ("dispatcher_feeder", 3),
@@ -1839,7 +1915,9 @@ def test_dispatcher_removal_validation_rejects_terminal_ea_drift() -> None:
     assert validation.proof.reason == "reachable_terminal_identity_drift"
 
 
-def test_dispatcher_removal_proof_requires_typed_plumbing_for_effectful_feeder() -> None:
+def test_dispatcher_removal_proof_requires_typed_plumbing_for_effectful_feeder() -> (
+    None
+):
     graph = _nested_merge_corridor_graph()
     effectful = InsnSnapshot(
         opcode=4,

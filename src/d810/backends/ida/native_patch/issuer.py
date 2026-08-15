@@ -169,10 +169,24 @@ def dead_edge_semantic_issuers() -> tuple[NativePatchIssuerContract, ...]:
     )
 
 
+def stage_c_native_cfg_issuer() -> NativePatchIssuerContract:
+    """Production contract for pass-owned Stage C CFG normalization."""
+
+    return NativePatchIssuerContract(
+        issuer_id="stage-c-native-cfg-normalizer",
+        patch_class="semantic_deobfuscation",
+        proof_id_prefixes=("native-cfg-intent-v1:",),
+        provenance_prefix=("stage-c-native-cfg",),
+        proof_hash_matches=("target_cfg_fingerprint",),
+        byte_writes_required=True,
+    )
+
+
 __all__ = [
     "NativePatchIssuerContract",
     "NativePatchIssuerRegistry",
     "NativePatchIssuerValidation",
     "dead_edge_semantic_issuers",
     "indirect_label_materializer_issuer",
+    "stage_c_native_cfg_issuer",
 ]

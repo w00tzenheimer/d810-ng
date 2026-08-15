@@ -329,6 +329,19 @@ class TestPlanDirectJumpRegion:
 
 
 class TestPlanConditionalRegion:
+    def test_uses_one_jcc_when_false_arm_is_native_fallthrough(self) -> None:
+        outcome = plan_conditional_region(
+            0x1000,
+            0x1002,
+            condition=Condition.E,
+            true_target=0x1010,
+            false_target=0x1002,
+        )
+
+        assert outcome.ok
+        assert len(outcome.sequence.instructions) == 1
+        assert outcome.sequence.instructions[0].mnemonic == "je"
+
     """``jcc <true>; jmp <false>; pad`` -- the two-successor Mode A stencil.
 
     Each branch is encoded at the address it will actually occupy, so the

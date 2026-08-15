@@ -465,11 +465,12 @@ def plan_conditional_region(
     false_target: int,
     bitness: int = 64,
 ) -> SequenceOutcome:
-    """Lower an owned region to ``jcc <true>; jmp <false>; pad``.
+    """Lower an owned region to a conditional control-transfer image.
 
-    Widths are searched shortest-first over both branches together, because the
-    second branch sits at ``start_ea + len(first)`` -- its displacement is not
-    knowable until the first branch's width is fixed.
+    When ``false_target`` is the region end, preserve native fallthrough and
+    emit one Jcc plus padding. Otherwise emit ``jcc <true>; jmp <false>; pad``;
+    widths are searched shortest-first over both branches together because the
+    second branch's displacement depends on the first branch's width.
 
     ``condition`` is the predicate under which ``true_target`` is taken. A
     caller wanting retired-reference's jump-over shape passes ``condition.inverted()``
@@ -478,6 +479,32 @@ def plan_conditional_region(
     size = _region_size(start_ea, end_ea)
     if size is None:
         return _abstain_sequence(AbstentionReason.INVALID_REGION)
+
+    # The common native shape already owns its false arm as physical
+    # fallthrough. Retargeting only the taken arm needs one Jcc, not the more
+    # general Jcc+Jmp stencil. Keeping this form is essential for ordinary
+    # two- and six-byte x86 conditional terminators.
+    if false_target == end_ea:
+        encoded_any = False
+        for conditional_width in (8, 32):
+            conditional = encode_jcc(
+                start_ea,
+                true_target,
+                condition=condition,
+                width=conditional_width,
+                bitness=bitness,
+            )
+            if not conditional.ok:
+                continue
+            encoded_any = True
+            if len(conditional.instruction.data) > size:
+                continue
+            return _pad_to_region(start_ea, size, (conditional.instruction,))
+        return _abstain_sequence(
+            AbstentionReason.INSUFFICIENT_SPACE
+            if encoded_any
+            else AbstentionReason.UNREPRESENTABLE_BRANCH
+        )
 
     encoded_any = False
     for conditional_width in (8, 32):

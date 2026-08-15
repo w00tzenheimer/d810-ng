@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 from dataclasses import dataclass
 from enum import Enum
@@ -11,10 +12,15 @@ from d810.backends.ida.native_patch.capture import (
     capture_range_evidence,
 )
 from d810.backends.ida.native_patch.origin_mapper import NativeOriginMapper
-from d810.capabilities.native_patch import EncodingProvider
+from d810.capabilities.native_patch import (
+    EncodingProvider,
+    NativeInstructionHead,
+    NativeInstructionSequenceShape,
+)
 from d810.core.execution_journal import ExecutionAttemptId
 from d810.core.input_identity_attestation import InputIdentityAttestation
 from d810.ir.native_origin import NativeOriginCoverage, NativeOriginSpan
+from d810.ir.native_range_projection import NativeRange
 from d810.transforms.native_cfg_normalization import (
     NativeCfgBlockRangeBinding,
     NativeCfgEdgeKind,
@@ -46,6 +52,7 @@ __all__ = [
 class NativeCfgPlanBuildReason(str, Enum):
     FUNCTION_MISMATCH = "FUNCTION_MISMATCH"
     STALE_FUNCTION_BYTES = "STALE_FUNCTION_BYTES"
+    STALE_NATIVE_TERMINATOR = "STALE_NATIVE_TERMINATOR"
     MISSING_SOURCE_RANGE = "MISSING_SOURCE_RANGE"
     SOURCE_HINT_OUTSIDE_RANGE = "SOURCE_HINT_OUTSIDE_RANGE"
     AMBIGUOUS_NATIVE_TERMINATOR = "AMBIGUOUS_NATIVE_TERMINATOR"
@@ -209,25 +216,61 @@ def build_native_cfg_plan(
     bindings = {
         binding.block_serial: binding for binding in intent.block_range_bindings
     }
+    function_ranges = tuple(
+        NativeRange(item.start_ea, item.end_ea)
+        for item in function_identity.chunk_ranges
+    )
+    function_decode = None
     operations: list[NativePatchOperation] = []
     for index, edge in enumerate(
         sorted(intent.edge_intents, key=lambda item: item.source_native_ea)
     ):
         source_binding = bindings.get(edge.source_block)
         if source_binding is None:
-            return _failure(NativeCfgPlanBuildReason.MISSING_SOURCE_RANGE)
-        if not _contains(source_binding, edge.source_native_ea):
-            return _failure(NativeCfgPlanBuildReason.SOURCE_HINT_OUTSIDE_RANGE)
-        source_decode = origin_mapper.decode_ranges(source_binding.native_ranges)
-        candidates = tuple(
-            transfer
-            for transfer in source_decode.control_transfers
-            if transfer.successors == edge.inherited_target_native_eas
-            and _contains(source_binding, transfer.instruction.ea)
-            and _contains(source_binding, transfer.instruction.end_ea - 1)
+            if function_decode is None:
+                function_decode = origin_mapper.decode_ranges(function_ranges)
+            candidates = tuple(
+                transfer
+                for transfer in function_decode.control_transfers
+                if transfer.instruction.ea == edge.source_native_ea
+                and transfer.successors == edge.inherited_target_native_eas
+            )
+        else:
+            if not _contains(source_binding, edge.source_native_ea):
+                return _failure(NativeCfgPlanBuildReason.SOURCE_HINT_OUTSIDE_RANGE)
+            source_decode = origin_mapper.decode_ranges(source_binding.native_ranges)
+            candidates = tuple(
+                transfer
+                for transfer in source_decode.control_transfers
+                if transfer.instruction.ea == edge.source_native_ea
+                and transfer.successors == edge.inherited_target_native_eas
+                and _contains(source_binding, transfer.instruction.ea)
+                and _contains(source_binding, transfer.instruction.end_ea - 1)
+            )
+        diagnostic_decode = function_decode if source_binding is None else source_decode
+        successor_matches = tuple(
+            item
+            for item in diagnostic_decode.control_transfers
+            if item.successors == edge.inherited_target_native_eas
+            and (
+                source_binding is None
+                or (
+                    _contains(source_binding, item.instruction.ea)
+                    and _contains(source_binding, item.instruction.end_ea - 1)
+                )
+            )
         )
+        if not candidates and len(successor_matches) == 1:
+            candidates = successor_matches
         if len(candidates) != 1:
-            return _failure(NativeCfgPlanBuildReason.AMBIGUOUS_NATIVE_TERMINATOR)
+            return _failure(
+                f"{NativeCfgPlanBuildReason.AMBIGUOUS_NATIVE_TERMINATOR.value}: "
+                f"source=0x{edge.source_native_ea:X} "
+                f"inherited={edge.inherited_target_native_eas} "
+                f"candidates={tuple(item.instruction.ea for item in candidates)} "
+                "successor_matches="
+                f"{tuple(item.instruction.ea for item in successor_matches)}"
+            )
         transfer = candidates[0]
         if not _owned_by_function(reader, transfer.instruction.ea, function_identity):
             return _failure(NativeCfgPlanBuildReason.FUNCTION_OWNERSHIP_CHANGE_REQUIRED)
@@ -238,13 +281,18 @@ def build_native_cfg_plan(
             edge.final_successors, edge.target_native_eas, strict=True
         ):
             target_binding = bindings.get(target_serial)
-            if target_binding is None:
-                return _failure(NativeCfgPlanBuildReason.MISSING_TARGET_RANGE)
-            if target_binding.microcode_native_ea != target_hint or not _contains(
-                target_binding, target_hint
+            if (
+                target_binding is None
+                or target_binding.microcode_native_ea != target_hint
+                or not _contains(target_binding, target_hint)
             ):
-                return _failure(NativeCfgPlanBuildReason.TARGET_HINT_MISMATCH)
-            target_decode = origin_mapper.decode_ranges(target_binding.native_ranges)
+                if function_decode is None:
+                    function_decode = origin_mapper.decode_ranges(function_ranges)
+                target_decode = function_decode
+            else:
+                target_decode = origin_mapper.decode_ranges(
+                    target_binding.native_ranges
+                )
             if target_hint not in target_decode.instruction_heads:
                 return _failure(NativeCfgPlanBuildReason.INSTRUCTION_SPLIT)
             if not _owned_by_function(reader, target_hint, function_identity):
@@ -264,6 +312,11 @@ def build_native_cfg_plan(
         )
         if not captured.ok or captured.evidence is None:
             return _failure(str(captured.reason))
+        if (
+            hashlib.sha256(captured.evidence.expected_current_bytes).hexdigest()
+            != transfer.instruction.bytes_hash
+        ):
+            return _failure(NativeCfgPlanBuildReason.STALE_NATIVE_TERMINATOR)
         if (
             captured.evidence.expected_function_ownership.owning_function_entry_ea
             != function_identity.entry_ea
@@ -309,7 +362,23 @@ def build_native_cfg_plan(
             return _failure(NativeCfgPlanBuildReason.AMBIGUOUS_NATIVE_TERMINATOR)
         if not lowered.ok or lowered.operation is None:
             return _failure(str(lowered.reason))
-        operations.append(lowered.operation)
+        before = lowered.operation.expected_before_shape.heads[0]
+        operations.append(
+            dataclasses.replace(
+                lowered.operation,
+                expected_before_shape=NativeInstructionSequenceShape(
+                    heads=(
+                        NativeInstructionHead(
+                            ea=before.ea,
+                            length=before.length,
+                            mnemonic=before.mnemonic,
+                            operand_shapes=before.operand_shapes,
+                            successors=transfer.successors,
+                        ),
+                    )
+                ),
+            )
+        )
 
     provenance = (
         "stage-c-native-cfg",

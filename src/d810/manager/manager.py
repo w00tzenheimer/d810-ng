@@ -892,6 +892,7 @@ class D810Manager:
         function_ea = int(function_ea)
         result: typing.Any = None
         final_stage_c_collection: tuple[object, object] | None = None
+        stage_c_native_result = None
         # Two accepted frontend evidence retries plus two dispatcher-recovery
         # retries can follow the initial decompile. The first dispatcher bind
         # exposes the complete rebound route closure; the fifth round binds
@@ -913,6 +914,7 @@ class D810Manager:
                     function_ea=function_ea,
                     native_key=session.native_key,
                     session_id=session.session_id,
+                    parent_attempt_id=session.preanalysis_attempt_id,
                 )
                 if session.native_cfg_collector is not None:
                     raise RuntimeError(
@@ -938,7 +940,8 @@ class D810Manager:
                 if capacity_witness_lease is not None:
                     capacity_witness_lease.release()
                 if (
-                    session is not None
+                    stage_c_collector is not None
+                    and session is not None
                     and session.native_cfg_collector is stage_c_collector
                 ):
                     session.native_cfg_collector = None
@@ -966,17 +969,20 @@ class D810Manager:
                 stage_c_outcome = stage_c_collector.take_topology_outcome()
                 stage_c_consumer = getattr(self, "_stage_c_topology_consumer", None)
                 if callable(stage_c_consumer):
-                    stage_c_consumer(
+                    stage_c_native_result = stage_c_consumer(
                         function_ea=function_ea,
                         native_key=stage_c_collector.native_key,
                         topology_outcome=stage_c_outcome,
                         decompilation_result=stage_c_result,
+                        parent_attempt_id=stage_c_collector.parent_attempt_id,
                     )
             finally:
                 stage_c_collector.close()
 
         dead_edge_normalizer = getattr(self, "_dead_edge_normalizer", None)
-        if callable(dead_edge_normalizer):
+        if callable(dead_edge_normalizer) and (
+            stage_c_native_result is None or stage_c_native_result.allow_stage_b
+        ):
             from d810.manager.native_normalization import NativeNormalizationOutcome
 
             native_outcome = dead_edge_normalizer(function_ea)
@@ -995,13 +1001,18 @@ class D810Manager:
             native_patch_function_is_authorized,
         )
 
+        config = getattr(self, "config", None)
+        if not isinstance(config, dict) or not bool(
+            config.get("native_patch_enabled", False)
+        ):
+            return False
         if not native_patch_function_is_authorized(
-            globally_available=bool(self.config.get("native_patch_enabled", False)),
+            globally_available=True,
             function_tags=self.get_function_tags(int(function_ea)),
         ):
             return False
         try:
-            configs = pipeline_configs_from_project_config(self.config)
+            configs = pipeline_configs_from_project_config(config)
         except Exception:
             return False
         return any(
@@ -1983,6 +1994,11 @@ class D810Manager:
             NativePatchGateway,
         )
         from d810.backends.ida.native_patch.encoder import MinimalX86BranchEncoder
+        from d810.backends.ida.native_patch.origin_mapper import IdaNativeOriginMapper
+        from d810.backends.hexrays.ctree_fingerprint import fingerprint_ctree
+        from d810.backends.hexrays.ctree_native_ranges import (
+            capture_ctree_native_ranges,
+        )
         from d810.backends.ida.native_patch.dead_edge_oracle import (
             build_dead_edge_semantic_plan,
             find_dead_edges_for_function,
@@ -1995,6 +2011,7 @@ class D810Manager:
             NativePatchIssuerRegistry,
             dead_edge_semantic_issuers,
             indirect_label_materializer_issuer,
+            stage_c_native_cfg_issuer,
         )
         from d810.backends.ida.native_patch.journal import SQLiteNativePatchJournal
         from d810.backends.ida.native_patch.metadata import IdaMetadataActionExecutor
@@ -2017,6 +2034,9 @@ class D810Manager:
             ManagerOwnedNativePatchRequestExecutor,
             PreparedNativePatchRequest,
             native_patch_function_is_authorized,
+        )
+        from d810.manager.native_cfg_normalization import (
+            ManagerOwnedNativeCfgNormalizer,
         )
         from d810.manager.native_normalization import (
             NativeNormalizationRequest,
@@ -2061,11 +2081,13 @@ class D810Manager:
             set_indirect_materialization_default_executor(None)
             return
 
+        live_reader = IdaLiveDatabaseReader()
+        branch_encoder = MinimalX86BranchEncoder()
         gateway = NativePatchGateway(
             journal=self._native_patch_journal,
-            reader=IdaLiveDatabaseReader(),
+            reader=live_reader,
             writer=IdaNativeByteWriter(),
-            decode_replacement=MinimalX86BranchEncoder().decode,
+            decode_replacement=branch_encoder.decode,
             reanalyzer=IdaFunctionReanalyzer(),
             extent_restorer=IdaFunctionExtentRestorer(),
             flow_restorer=IdaFunctionFlowRestorer(),
@@ -2078,6 +2100,7 @@ class D810Manager:
                 (
                     indirect_label_materializer_issuer(),
                     *dead_edge_semantic_issuers(),
+                    stage_c_native_cfg_issuer(),
                 )
             ),
             current_database_identity=attestation.database_uuid,
@@ -2111,6 +2134,60 @@ class D810Manager:
                 )
             )
             return
+
+        def _observe_stage_c_postconditions(*, function_ea, function_ranges, plan):
+            import ida_hexrays
+
+            with suppress_d810_optimization():
+                cfunc = ida_hexrays.decompile(int(function_ea))
+            if cfunc is None:
+                raise RuntimeError("Stage C controlled redo produced no C-tree")
+            projection = capture_ctree_native_ranges(
+                cfunc,
+                function_ranges=function_ranges,
+            )
+            structure = fingerprint_ctree(cfunc)
+            native_cfg_matches = True
+            for operation in plan.operations:
+                current = live_reader.read_current_bytes(
+                    operation.range.start_ea, operation.range.end_ea
+                )
+                if current is None:
+                    native_cfg_matches = False
+                    break
+                decoded = branch_encoder.decode(
+                    operation.range.start_ea,
+                    current,
+                    bitness=plan.bitness,
+                )
+                if decoded != operation.expected_after_shape:
+                    native_cfg_matches = False
+                    break
+            return projection, structure, native_cfg_matches
+
+        stage_c_normalizer = ManagerOwnedNativeCfgNormalizer(
+            gateway=gateway,
+            execution_journal=self._native_patch_execution_journal,
+            reader=live_reader,
+            origin_mapper=IdaNativeOriginMapper(),
+            encoder=branch_encoder,
+            input_attestation=attestation,
+            capture_ranges=capture_ctree_native_ranges,
+            fingerprint_ctree=fingerprint_ctree,
+            post_apply_observer=_observe_stage_c_postconditions,
+        )
+
+        def _consume_stage_c(**kwargs):
+            parent_attempt_id = kwargs.pop("parent_attempt_id")
+            if parent_attempt_id is None:
+                raise RuntimeError("Stage C has no authorizing parent attempt")
+            kwargs.pop("native_key", None)
+            return stage_c_normalizer.normalize(
+                **kwargs,
+                parent_attempt_id=parent_attempt_id,
+            )
+
+        self._stage_c_topology_consumer = _consume_stage_c
 
         def _parent_attempt(request: NativePatchPlanRequest):
             session = self.decompilation_lifecycle.current_session(
@@ -2920,6 +2997,7 @@ class D810Manager:
             run_flowchart_preanalysis_handlers,
         )
 
+        self._install_native_preanalysis_handlers()
         self.event_emitter.on(
             DecompilationEvent.HEXRAYS_FLOWCHART_READY,
             run_flowchart_preanalysis_handlers,
@@ -3012,6 +3090,24 @@ class D810Manager:
         self.block_optimizer.install()
         self.hx_decompiler_hook.hook()
 
+    @staticmethod
+    def _install_native_preanalysis_handlers() -> None:
+        """Install manager-owned consumers of staged native evidence."""
+        from d810.optimizers.microcode.flow.jumps.computed_goto_resolver import (
+            install,
+        )
+
+        install()
+
+    @staticmethod
+    def _uninstall_native_preanalysis_handlers() -> None:
+        """Remove manager-owned native-preanalysis seam handlers."""
+        from d810.optimizers.microcode.flow.jumps.computed_goto_resolver import (
+            uninstall,
+        )
+
+        uninstall()
+
     def _build_pass_pipeline(
         self,
         *,
@@ -3063,6 +3159,7 @@ class D810Manager:
             uninstall_live_frontend_normalization,
         )
 
+        self._uninstall_native_preanalysis_handlers()
         uninstall_live_frontend_normalization()
         self.instruction_optimizer.remove()
         self.block_optimizer.remove()

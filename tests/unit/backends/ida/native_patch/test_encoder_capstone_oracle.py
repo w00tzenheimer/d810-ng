@@ -141,5 +141,8 @@ def test_conditional_region_decodes_and_covers_the_region(
     assert sum(insn.size for insn in decoded) == size
     assert decoded[0].mnemonic == "je"
     assert int(decoded[0].op_str, 16) == BASE + true_delta
-    assert decoded[1].mnemonic == "jmp"
-    assert int(decoded[1].op_str, 16) == BASE + false_delta
+    if false_delta == size:
+        assert all(insn.mnemonic == "nop" for insn in decoded[1:])
+    else:
+        assert decoded[1].mnemonic == "jmp"
+        assert int(decoded[1].op_str, 16) == BASE + false_delta

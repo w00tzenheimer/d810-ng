@@ -4,16 +4,35 @@ from __future__ import annotations
 
 import pytest
 
-from d810.core.execution_journal import DecompilationSessionId, ExecutionEffectRef
+from types import SimpleNamespace
+
+from d810.core.execution_journal import (
+    DecompilationSessionId,
+    ExecutionAttemptId,
+    ExecutionAttemptStatus,
+    ExecutionEffectRef,
+)
 from d810.core.native_preanalysis_key import NativePreanalysisKey
 from d810.ir.edge_state_contract import EdgeStateContract
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot
 from d810.ir.maturity import IRMaturity
-from d810.manager.native_cfg_normalization import NativeCfgNormalizationCollector
+from d810.manager.native_cfg_normalization import (
+    ManagerOwnedNativeCfgNormalizer,
+    NativeCfgNormalizationCollector,
+)
+from d810.manager.native_normalization import (
+    NativeNormalizationOutcome,
+    NativeNormalizationResult,
+)
 from d810.transforms.native_cfg_normalization import (
     NativeCfgFreezeReason,
     NativeCfgPassMutationObservation,
+    NativeCfgTopologyFreezeOutcome,
     ObservedEdgeStateContract,
+)
+from d810.transforms.native_patch_plan import (
+    NativeAddressRange,
+    NativeFunctionIdentity,
 )
 
 pytestmark = pytest.mark.pure_python
@@ -167,3 +186,221 @@ def test_close_drops_observations_and_rejects_late_attachment() -> None:
         collector.observe_native_cfg_mutation(_observation())
     with pytest.raises(RuntimeError, match="closed"):
         collector.take_topology_outcome()
+
+
+class _Journal:
+    def __init__(self, child_attempt_id):
+        self.child_attempt_id = child_attempt_id
+        self.advances = []
+
+    def begin_attempt(self, *args, **kwargs):
+        return SimpleNamespace(attempt_id=self.child_attempt_id)
+
+    def advance(self, attempt, **kwargs):
+        self.advances.append(kwargs)
+
+
+class _Gateway:
+    def __init__(self, *, restore_ok: bool = True):
+        self.restored = []
+        self.restore_ok = restore_ok
+
+    def record_diagnostic_snapshot(self, plan):
+        return "diagnostic-1"
+
+    def restore(self, transaction_id):
+        self.restored.append(transaction_id)
+        return SimpleNamespace(
+            transaction_id=transaction_id,
+            ok=self.restore_ok,
+            state=SimpleNamespace(
+                value="restored" if self.restore_ok else "restore_failed"
+            ),
+            failure_reason=None if self.restore_ok else "injected restore failure",
+        )
+
+
+def _topology_outcome():
+    collector = _collector()
+    observation = _observation()
+    collector.observe_native_cfg_mutation(observation)
+    collector.freeze_native_cfg_topology(
+        function_ea=0x1000,
+        maturity=IRMaturity.CANONICAL,
+        baseline_graph=observation.pre_graph,
+        final_graph=observation.post_graph,
+        scheduled_pass_ids=("lower_state_machine",),
+    )
+    return collector.take_topology_outcome()
+
+
+def _normalizer(
+    *,
+    post_projection="projection",
+    post_structure="structure",
+    post_error: Exception | None = None,
+    restore_ok: bool = True,
+):
+    session = DecompilationSessionId("session")
+    parent = ExecutionAttemptId(session, 1)
+    child = ExecutionAttemptId(session, 2)
+    journal = _Journal(child)
+    gateway = _Gateway(restore_ok=restore_ok)
+    function_identity = NativeFunctionIdentity(
+        entry_ea=0x1000,
+        chunk_ranges=(NativeAddressRange(0x1000, 0x1100),),
+        inherited_bytes_hash="function-hash",
+    )
+    plan = SimpleNamespace(
+        plan_id="stage-c-plan",
+        operations=(),
+    )
+    transaction_id = SimpleNamespace(value="transaction-1")
+    normalization = NativeNormalizationResult(
+        outcome=NativeNormalizationOutcome.APPLIED,
+        apply_receipt=SimpleNamespace(transaction_id=transaction_id),
+        certificate=None,
+        reason=None,
+    )
+
+    def _post_apply_observer(**kwargs):
+        if post_error is not None:
+            raise post_error
+        return (
+            SimpleNamespace(fingerprint=post_projection),
+            post_structure,
+            True,
+        )
+
+    normalizer = ManagerOwnedNativeCfgNormalizer(
+        gateway=gateway,
+        execution_journal=journal,
+        reader=object(),
+        origin_mapper=object(),
+        encoder=object(),
+        input_attestation=object(),
+        capture_ranges=lambda cfunc, *, function_ranges: SimpleNamespace(
+            fingerprint="projection"
+        ),
+        fingerprint_ctree=lambda cfunc: "structure",
+        post_apply_observer=_post_apply_observer,
+        capture_attestation=lambda **kwargs: SimpleNamespace(
+            function_identity=function_identity
+        ),
+        bind_ranges=lambda **kwargs: SimpleNamespace(intent=object(), reason=None),
+        build_plan=lambda **kwargs: SimpleNamespace(plan=plan, reason=None),
+        apply_plan=lambda candidate: normalization,
+    )
+    return normalizer, parent, journal, gateway
+
+
+def test_stage_c_success_is_terminal_and_blocks_stage_b() -> None:
+    normalizer, parent, journal, gateway = _normalizer()
+
+    result = normalizer.normalize(
+        function_ea=0x1000,
+        topology_outcome=_topology_outcome(),
+        decompilation_result=object(),
+        parent_attempt_id=parent,
+    )
+
+    assert result.normalization.outcome is NativeNormalizationOutcome.APPLIED
+    assert result.allow_stage_b is False
+    assert gateway.restored == []
+    assert journal.advances[-1]["status"] is ExecutionAttemptStatus.COMPLETED
+
+
+def test_stage_c_no_changed_edges_records_abstention_and_allows_stage_b() -> None:
+    normalizer, parent, journal, _gateway = _normalizer()
+
+    result = normalizer.normalize(
+        function_ea=0x1000,
+        topology_outcome=NativeCfgTopologyFreezeOutcome(
+            reason=NativeCfgFreezeReason.NO_CHANGED_EDGES
+        ),
+        decompilation_result=object(),
+        parent_attempt_id=parent,
+    )
+
+    assert result.normalization is None
+    assert result.allow_stage_b is True
+    assert result.reason == NativeCfgFreezeReason.NO_CHANGED_EDGES.value
+    assert journal.advances[-1]["status"] is ExecutionAttemptStatus.ABSTAINED
+
+
+@pytest.mark.parametrize(
+    ("post_projection", "post_structure", "reason"),
+    (
+        (
+            "different-projection",
+            "structure",
+            "CTREE_RANGE_POSTCONDITION_MISMATCH",
+        ),
+        (
+            "projection",
+            "different-structure",
+            "CTREE_STRUCTURE_POSTCONDITION_MISMATCH",
+        ),
+    ),
+)
+def test_stage_c_postcondition_failure_restores_and_stays_terminal(
+    post_projection,
+    post_structure,
+    reason,
+) -> None:
+    normalizer, parent, journal, gateway = _normalizer(
+        post_projection=post_projection,
+        post_structure=post_structure,
+    )
+
+    result = normalizer.normalize(
+        function_ea=0x1000,
+        topology_outcome=_topology_outcome(),
+        decompilation_result=object(),
+        parent_attempt_id=parent,
+    )
+
+    assert result.reason == reason
+    assert result.allow_stage_b is False
+    assert len(gateway.restored) == 1
+    assert journal.advances[-1]["status"] is ExecutionAttemptStatus.FAILED
+
+
+def test_stage_c_postcondition_capture_exception_restores_and_stays_terminal() -> None:
+    normalizer, parent, journal, gateway = _normalizer(
+        post_error=RuntimeError("injected recapture failure")
+    )
+
+    result = normalizer.normalize(
+        function_ea=0x1000,
+        topology_outcome=_topology_outcome(),
+        decompilation_result=object(),
+        parent_attempt_id=parent,
+    )
+
+    assert result.reason.startswith("CTREE_POSTCONDITION_CAPTURE_FAILED")
+    assert result.allow_stage_b is False
+    assert len(gateway.restored) == 1
+    assert journal.advances[-1]["status"] is ExecutionAttemptStatus.FAILED
+
+
+def test_stage_c_postcondition_reports_incomplete_emergency_restore() -> None:
+    normalizer, parent, journal, gateway = _normalizer(
+        post_projection="different-projection",
+        restore_ok=False,
+    )
+
+    result = normalizer.normalize(
+        function_ea=0x1000,
+        topology_outcome=_topology_outcome(),
+        decompilation_result=object(),
+        parent_attempt_id=parent,
+    )
+
+    assert result.reason == (
+        "CTREE_RANGE_POSTCONDITION_MISMATCH; "
+        "RESTORE_INCOMPLETE: injected restore failure"
+    )
+    assert result.allow_stage_b is False
+    assert len(gateway.restored) == 1
+    assert journal.advances[-1]["status"] is ExecutionAttemptStatus.FAILED

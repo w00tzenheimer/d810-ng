@@ -7,6 +7,7 @@ from d810.backends.ida.native_patch.issuer import (
     NativePatchIssuerRegistry,
     dead_edge_semantic_issuers,
     indirect_label_materializer_issuer,
+    stage_c_native_cfg_issuer,
 )
 from d810.transforms.native_patch_plan import (
     NativeMetadataAction,
@@ -122,3 +123,30 @@ def test_dead_edge_issuers_bind_named_proofs_to_cfg_and_byte_writes() -> None:
         assert not registry.validate(
             dataclasses.replace(valid, operations=(metadata_only_operation,))
         ).authorized
+
+
+def test_stage_c_issuer_requires_exact_pass_owned_cfg_proof() -> None:
+    registry = NativePatchIssuerRegistry((stage_c_native_cfg_issuer(),))
+    valid = dataclasses.replace(
+        fixtures.plan(),
+        patch_class="semantic_deobfuscation",
+        issuer_id="stage-c-native-cfg-normalizer",
+        proof_id="native-cfg-intent-v1:intent-hash",
+        proof_hash="cfg-proof",
+        target_cfg_fingerprint="cfg-proof",
+        provenance=("stage-c-native-cfg", "mutation:receipt-1"),
+    )
+
+    assert registry.validate(valid).authorized
+    assert not registry.validate(
+        dataclasses.replace(valid, proof_id="other:intent-hash")
+    ).authorized
+    assert not registry.validate(
+        dataclasses.replace(valid, proof_hash="different")
+    ).authorized
+    assert not registry.validate(
+        dataclasses.replace(valid, provenance=("stage-b",))
+    ).authorized
+    assert not registry.validate(
+        dataclasses.replace(valid, patch_class="lifting_normalization")
+    ).authorized

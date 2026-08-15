@@ -166,3 +166,106 @@ def test_existing_selected_edge_needs_no_bypassed_corridor() -> None:
 
     assert contract is not None
     assert contract.permits_control_only_relink is True
+
+
+def test_direct_dispatch_route_does_not_absorb_cyclic_siblings() -> None:
+    graph = FlowGraph(
+        blocks={
+            0: _block(0, (1,), 0x1000, kind=InsnKind.GOTO),
+            1: _block(1, (0, 2, 3), 0x1010, kind=InsnKind.TABLE_JUMP),
+            2: _block(2, (), 0x1020, kind=InsnKind.RET),
+            3: _block(3, (1,), 0x1030, kind=InsnKind.UNKNOWN),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    provider = HexRaysNativeEdgeStateProof(
+        _Mba(
+            {
+                0: _LiveBlock(_List(), _List()),
+                1: _LiveBlock(_List(), _List("dispatcher-state")),
+                2: _LiveBlock(_List("r0"), _List()),
+                3: _LiveBlock(_List(), _List("observable")),
+            }
+        ),
+        stack_delta_for_ea=lambda _ea: 0,
+        target_reads_flags=lambda _ea: False,
+    )
+
+    contract = provider.prove_edge_transition(
+        graph=graph,
+        source_block=0,
+        inherited_successors=(1,),
+        final_successors=(2,),
+        semantic_proof_ids=("direct-dispatch-route",),
+    )
+
+    assert contract is not None
+    assert contract.permits_control_only_relink is True
+
+
+def test_deterministic_prefix_to_dispatch_route_is_the_only_bypassed_corridor() -> None:
+    graph = FlowGraph(
+        blocks={
+            0: _block(0, (1,), 0x1000, kind=InsnKind.GOTO),
+            1: _block(1, (4,), 0x1010, kind=InsnKind.GOTO),
+            2: _block(2, (), 0x1020, kind=InsnKind.RET),
+            3: _block(3, (4,), 0x1030, kind=InsnKind.UNKNOWN),
+            4: _block(4, (0, 2, 3), 0x1040, kind=InsnKind.TABLE_JUMP),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    provider = HexRaysNativeEdgeStateProof(
+        _Mba(
+            {
+                0: _LiveBlock(_List(), _List()),
+                1: _LiveBlock(_List(), _List()),
+                2: _LiveBlock(_List("r0"), _List()),
+                3: _LiveBlock(_List(), _List("observable")),
+                4: _LiveBlock(_List(), _List("dispatcher-state")),
+            }
+        ),
+        stack_delta_for_ea=lambda _ea: 0,
+        target_reads_flags=lambda _ea: False,
+    )
+
+    contract = provider.prove_edge_transition(
+        graph=graph,
+        source_block=0,
+        inherited_successors=(1,),
+        final_successors=(2,),
+        semantic_proof_ids=("deterministic-dispatch-route",),
+    )
+
+    assert contract is not None
+    assert contract.permits_control_only_relink is True
+
+
+def test_longer_acyclic_route_to_target_forces_abstention() -> None:
+    graph = FlowGraph(
+        blocks={
+            0: _block(0, (1,), 0x1000, kind=InsnKind.GOTO),
+            1: _block(1, (2, 3), 0x1010, kind=InsnKind.COND_JUMP),
+            2: _block(2, (), 0x1020, kind=InsnKind.RET),
+            3: _block(3, (4,), 0x1030, kind=InsnKind.GOTO),
+            4: _block(4, (2,), 0x1040, kind=InsnKind.GOTO),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    provider = HexRaysNativeEdgeStateProof(
+        _Mba({serial: _LiveBlock(_List(), _List()) for serial in graph.blocks}),
+        stack_delta_for_ea=lambda _ea: 0,
+        target_reads_flags=lambda _ea: False,
+    )
+
+    contract = provider.prove_edge_transition(
+        graph=graph,
+        source_block=0,
+        inherited_successors=(1,),
+        final_successors=(2,),
+        semantic_proof_ids=("ambiguous-dispatch-route",),
+    )
+
+    assert contract is None
