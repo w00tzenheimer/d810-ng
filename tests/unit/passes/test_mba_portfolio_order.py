@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from d810.core.config import ProjectConfiguration
+from d810.passes.mba_simplify import mba_simplify_pass_registry
 from d810.passes.pipeline_v2_hook_bridge import pipeline_v2_hook_activation
 
 
@@ -67,6 +68,20 @@ def test_portfolio_spike_loads_without_a_solver_extension() -> None:
 
     assert activation.enabled is True
     assert all(rule.name != "CobraSolveRule" for rule in activation.instruction_rules)
+
+
+def test_hodur_certificate_is_registered_but_not_a_portfolio_fast_path() -> None:
+    """Config-v2 activates only explicit transforms, never all registered rules."""
+
+    registry = mba_simplify_pass_registry()
+    registered_ids = registry.transform_ids_for("mba-simplify")
+
+    assert "sub-complement-mask-hodur-1" in registered_ids
+    for path in (_CONFIG, _TELEMETRY_CONFIG, _DEEP_CONFIG):
+        transforms = _project(path).additional_configuration["pipeline_v2"][0][
+            "options"
+        ]["transforms"]
+        assert "sub-complement-mask-hodur-1" not in transforms
 
 
 def test_telemetry_profile_keeps_the_same_order_but_never_enables_egglog() -> None:

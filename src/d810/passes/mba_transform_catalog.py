@@ -164,7 +164,8 @@ _FAMILY_MEMBERSHIP: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
         (
             "sub-1-add-hackers-delight-1", "sub-1-and-1-mba-1",
             "sub-1-and-hackers-delight-1", "sub-1-or-mba-1", "sub-1-factor-1",
-            "sub-1-factor-2", "sub-hackers-delight-1", "sub-hackers-delight-2",
+            "sub-1-factor-2", "sub-complement-mask-hodur-1",
+            "sub-hackers-delight-1", "sub-hackers-delight-2",
             "sub-hackers-delight-3", "sub-hackers-delight-4",
         ),
     ),
@@ -222,6 +223,11 @@ _FAMILY_MEMBERSHIP: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
 )
 
 _SPECIAL_TRANSFORM_METADATA = {
+    "sub-complement-mask-hodur-1": {
+        "description": "Collapse Hodur's complementary-mask MBA residual to subtraction.",
+        "reference": "D810 MASM Hodur residual, generalized by complement masks.",
+        "default_selected": False,
+    },
     "mul-mba-1": {
         "description": "Simplify an MBA multiplication pattern to x * y.",
         "reference": "MBA obfuscation with double bnot verification",

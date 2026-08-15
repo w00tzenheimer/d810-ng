@@ -6,8 +6,7 @@ subtraction operations, primarily from Hacker's Delight identities and MBA patte
 All rules are verified using Z3 SMT solver.
 """
 
-from d810.core.bits import SUB_TABLE
-from d810.mba.dsl import Var, Const, when
+from d810.mba.dsl import Var, Const
 from d810.mba.rules._base import VerifiableRule
 
 # Maturity constants (from ida_hexrays)
@@ -115,7 +114,7 @@ class Sub_HackersDelightRule_4(VerifiableRule):
     REFERENCE = "Hacker's Delight with bnot verification"
 
 
-class Sub_ComplementMaskHodurRule_1:
+class Sub_ComplementMaskHodurRule_1(VerifiableRule):
     """Collapse Hodur's complementary-mask arithmetic residual to ``x - a``.
 
     The two masks are required to be exact bitwise complements.  Keeping that
@@ -128,9 +127,6 @@ class Sub_ComplementMaskHodurRule_1:
     then later native-Z3 verifies the rebuilt candidate before mutation.
     """
 
-    # This is an Egglog-only certificate.  It deliberately does not inherit
-    # ``VerifiableRule``: direct mba-simplify registration would let the legacy
-    # matcher bypass Egglog's bounded extraction/provenance path.
     EGGLOG_CERTIFICATE_PROVER = "complement-mask-hodur-v1"
 
     PATTERN = (
@@ -145,15 +141,6 @@ class Sub_ComplementMaskHodurRule_1:
 
     DESCRIPTION = "Hodur complementary-mask MBA residual to subtraction"
     REFERENCE = "D810 MASM Hodur residual, generalized by complement masks"
-    get_constraints = VerifiableRule.get_constraints
-
-    @property
-    def pattern(self):
-        return self.PATTERN
-
-    @property
-    def replacement(self):
-        return self.REPLACEMENT
 
 
 # ============================================================================

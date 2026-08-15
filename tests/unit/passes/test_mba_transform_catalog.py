@@ -45,6 +45,15 @@ def test_mul_mba_1_describes_costly_proof_without_runtime_claim() -> None:
     assert "runtime" not in item.advisory_reason.lower()
 
 
+def test_hodur_complement_mask_is_registered_but_default_disabled() -> None:
+    """Egglog may select the certified rule without making it a fast-path default."""
+
+    item = _transform("sub-complement-mask-hodur-1")
+
+    assert item.default_selected is False
+    assert "Hodur" in item.description
+
+
 @pytest.mark.parametrize("transform_id", ("mul-mba-2", "mul-mba-3"))
 def test_known_incorrect_mba_rules_remain_selectable_but_default_disabled(
     transform_id: str,
