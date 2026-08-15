@@ -1014,7 +1014,13 @@ def test_live_handler_records_extractor_unavailability_for_supported_candidate(
 
     assert handler.check_and_replace(None, _Instruction()) is None
     assert len(calls) == 1
-    assert handler.last_extraction_receipt is receipt
+    recorded = handler.last_extraction_receipt
+    assert recorded is not None
+    # Native matching is now measured before extraction.  The receipt is
+    # therefore immutable-but-enriched rather than the exact test double.
+    assert recorded.skip_reason is ExtractionSkipReason.EGGLOG_UNAVAILABLE
+    assert recorded.native_matcher_backend is not None
+    assert recorded.native_matcher_comparisons is not None
     assert handler.execution_metadata()["skip_reason"] == "egglog_unavailable"
     assert any("extraction receipt" in args[0] for args, _kwargs in log_calls)
     assert any("egglog_unavailable" in args for args, _kwargs in log_calls)
@@ -1042,13 +1048,19 @@ def test_live_handler_default_time_budget_overrun_is_clean_noop(monkeypatch):
     assert handler.check_and_replace(None, _Instruction()) is None
     assert observed_budgets == [EgglogExtractionBudget()]
     assert observed_budgets[0].time_budget_ms == 3
-    assert handler.last_extraction_receipt is receipt
+    recorded = handler.last_extraction_receipt
+    assert recorded is not None
+    assert recorded.skip_reason is ExtractionSkipReason.TIME_BUDGET
+    assert recorded.input_cost == receipt.input_cost
+    assert recorded.elapsed_ms == receipt.elapsed_ms
+    assert recorded.native_matcher_backend is not None
     assert handler.execution_metadata()["skip_reason"] == "time_budget"
 
 
 def test_live_handler_opt_in_stage_timings_publish_after_reconstruction(monkeypatch):
     import d810.optimizers.microcode.instructions.egraph.egglog_handler as handler_module
     from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
+    from d810.backends.mba.native_pod_matcher import matcher_backend
 
     candidate = _direct_add_candidate()
     replacement = _first_typed_operator_child(
@@ -1124,6 +1136,16 @@ def test_live_handler_opt_in_stage_timings_publish_after_reconstruction(monkeypa
     assert (
         handler.provider_outcome().metadata["stage_timings_ms"]
         == metadata["stage_timings_ms"]
+    )
+    assert metadata["native_matcher_backend"] == matcher_backend()
+    assert type(metadata["native_matcher_comparisons"]) is int
+    assert type(metadata["native_matcher_lazy_swaps"]) is int
+    assert type(metadata["native_fixed_binding_count"]) is int
+    assert type(metadata["native_matcher_elapsed_ms"]) is float
+    assert metadata["native_matcher_elapsed_ms"] >= 0.0
+    assert (
+        handler.provider_outcome().metadata["native_matcher_backend"]
+        == metadata["native_matcher_backend"]
     )
 
 

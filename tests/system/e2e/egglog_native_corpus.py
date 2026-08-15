@@ -126,6 +126,15 @@ def build_native_egglog_attempt_receipt(
                 "legacy_proof_verdict": legacy_verdict,
                 "template_proof_elapsed_ms": metadata.get("template_proof_elapsed_ms"),
                 "legacy_proof_elapsed_ms": metadata.get("legacy_proof_elapsed_ms"),
+                "native_matcher_backend": metadata.get("native_matcher_backend"),
+                "native_matcher_comparisons": metadata.get(
+                    "native_matcher_comparisons"
+                ),
+                "native_matcher_lazy_swaps": metadata.get("native_matcher_lazy_swaps"),
+                "native_fixed_binding_count": metadata.get(
+                    "native_fixed_binding_count"
+                ),
+                "native_matcher_elapsed_ms": metadata.get("native_matcher_elapsed_ms"),
             }
         )
 

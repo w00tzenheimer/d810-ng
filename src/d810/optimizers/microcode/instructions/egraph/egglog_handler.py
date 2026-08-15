@@ -315,22 +315,39 @@ class EgglogOptimizer(PeepholeSimplificationRule):
                 )
                 return None
             self._ensure_catalogue_configured()
+            matcher_started = (
+                time.perf_counter() if self.collect_stage_timings else None
+            )
             match_result = self._native_pattern_catalogue.match_root(
                 view, comparison_budget=_MAX_PATTERN_COMPARISONS
             )
+            matcher_elapsed_ms = (
+                None
+                if matcher_started is None
+                else (time.perf_counter() - matcher_started) * 1000.0
+            )
             if match_result.comparison_budget_exceeded:
                 self._record_extraction_receipt(
-                    extraction_receipt_for_profile(
-                        native_result.profile, ExtractionSkipReason.CANDIDATE_BUDGET
+                    self._with_native_match_telemetry(
+                        extraction_receipt_for_profile(
+                            native_result.profile,
+                            ExtractionSkipReason.CANDIDATE_BUDGET,
+                        ),
+                        match_result,
+                        elapsed_ms=matcher_elapsed_ms,
                     )
                 )
                 return None
             matches = match_result.matches
             if not matches:
                 self._record_extraction_receipt(
-                    extraction_receipt_for_profile(
-                        native_result.profile,
-                        ExtractionSkipReason.NO_DEGREE_ELIGIBLE_IMPROVEMENT,
+                    self._with_native_match_telemetry(
+                        extraction_receipt_for_profile(
+                            native_result.profile,
+                            ExtractionSkipReason.NO_DEGREE_ELIGIBLE_IMPROVEMENT,
+                        ),
+                        match_result,
+                        elapsed_ms=matcher_elapsed_ms,
                     )
                 )
                 return None
@@ -358,6 +375,14 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             )
         finally:
             self._finish_stage("egglog_extraction")
+        extraction = replace(
+            extraction,
+            receipt=self._with_native_match_telemetry(
+                extraction.receipt,
+                match_result,
+                elapsed_ms=matcher_elapsed_ms,
+            ),
+        )
         self._record_extraction_receipt(extraction.receipt)
         replacement_term = extraction.replacement_term
         if replacement_term is None:
@@ -497,6 +522,27 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             aliases,
         )
         return new_ins
+
+    @staticmethod
+    def _with_native_match_telemetry(receipt, match_result, *, elapsed_ms):
+        """Attach facts from one bounded native matcher invocation.
+
+        This runs after matching only and never influences selection, proof, or
+        mutation.  The binding count is the number of concrete live bindings
+        retained across declaration-order matches, rather than a count of
+        derived constraint values.
+        """
+
+        return replace(
+            receipt,
+            native_matcher_backend=match_result.matcher_backend,
+            native_matcher_comparisons=match_result.comparisons,
+            native_matcher_lazy_swaps=match_result.lazy_swaps,
+            native_fixed_binding_count=sum(
+                len(match.bindings.native) for match in match_result.matches
+            ),
+            native_matcher_elapsed_ms=elapsed_ms,
+        )
 
     def _begin_stage_timing(self) -> None:
         self.last_stage_timings = EMPTY_MBA_STAGE_TIMINGS
@@ -641,6 +687,11 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             "legacy_proof_verdict": receipt.legacy_proof_verdict,
             "template_proof_elapsed_ms": receipt.template_proof_elapsed_ms,
             "legacy_proof_elapsed_ms": receipt.legacy_proof_elapsed_ms,
+            "native_matcher_backend": receipt.native_matcher_backend,
+            "native_matcher_comparisons": receipt.native_matcher_comparisons,
+            "native_matcher_lazy_swaps": receipt.native_matcher_lazy_swaps,
+            "native_fixed_binding_count": receipt.native_fixed_binding_count,
+            "native_matcher_elapsed_ms": receipt.native_matcher_elapsed_ms,
         }
         if receipt.selected_source is not None:
             source_names = (receipt.selected_source, *receipt.selected_aliases)

@@ -116,6 +116,9 @@ class CompiledPatternCatalogue:
 
     rules: tuple[_CompiledPattern, ...]
     root_width_buckets: Mapping[tuple[str, int], tuple[_CompiledPattern, ...]]
+    pod_records_by_root_width: Mapping[
+        tuple[str, int], tuple[tuple[tuple[tuple[int, ...], ...], int], ...] | None
+    ]
 
     @classmethod
     def from_rules(
@@ -142,9 +145,23 @@ class CompiledPatternCatalogue:
                 continue
             for width in rule.proof_widths:
                 buckets.setdefault((operation, width), []).append(pattern)
+        frozen_buckets = {key: tuple(value) for key, value in buckets.items()}
+        pod_records = {
+            key: (
+                None
+                if any(pattern.pod_pattern is None for pattern in patterns)
+                else tuple(
+                    (pattern.pod_pattern[0], len(pattern.pod_pattern[1]))
+                    for pattern in patterns
+                    if pattern.pod_pattern is not None
+                )
+            )
+            for key, patterns in frozen_buckets.items()
+        }
         return cls(
             tuple(compiled),
-            MappingProxyType({key: tuple(value) for key, value in buckets.items()}),
+            MappingProxyType(frozen_buckets),
+            MappingProxyType(pod_records),
         )
 
     def match_root(

@@ -249,6 +249,11 @@ class EgglogExtractionReceipt:
     legacy_proof_verdict: bool | None = None
     template_proof_elapsed_ms: float | None = None
     legacy_proof_elapsed_ms: float | None = None
+    native_matcher_backend: str | None = None
+    native_matcher_comparisons: int | None = None
+    native_matcher_lazy_swaps: int | None = None
+    native_fixed_binding_count: int | None = None
+    native_matcher_elapsed_ms: float | None = None
     skip_reason: ExtractionSkipReason | None = None
 
     def __post_init__(self) -> None:
@@ -268,6 +273,30 @@ class EgglogExtractionReceipt:
             object.__setattr__(self, "input_cost", tuple(self.input_cost))
         if self.extracted_cost is not None:
             object.__setattr__(self, "extracted_cost", tuple(self.extracted_cost))
+        if (
+            self.native_matcher_backend is not None
+            and self.native_matcher_backend
+            not in {
+                "python",
+                "cython",
+            }
+        ):
+            raise ValueError("unknown native matcher backend")
+        for name in (
+            "native_matcher_comparisons",
+            "native_matcher_lazy_swaps",
+            "native_fixed_binding_count",
+        ):
+            value = getattr(self, name)
+            if value is not None and (type(value) is not int or value < 0):
+                raise ValueError(f"{name} must be a non-negative integer or null")
+        if self.native_matcher_elapsed_ms is not None and (
+            type(self.native_matcher_elapsed_ms) is not float
+            or self.native_matcher_elapsed_ms < 0
+        ):
+            raise ValueError(
+                "native_matcher_elapsed_ms must be a non-negative float or null"
+            )
 
 
 @dataclass(frozen=True)

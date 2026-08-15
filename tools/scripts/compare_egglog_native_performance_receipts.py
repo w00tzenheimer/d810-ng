@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from statistics import quantiles
 from typing import Any
 
 
@@ -47,13 +48,13 @@ _SHADOW_FALLBACK_REASONS = frozenset(
 )
 _PERFORMANCE_CONTRACT = {
     "schema_version": 1,
-    "baseline_kind": "post_redundant_template_rebinding",
-    # Five current live proof pairs per spike are enough to expose the shape of
-    # the cost, but not enough to call a noisy timing difference a win. Gate 5
-    # must expand the fixed corpus before asserting this contract.
+    "baseline_kind": "native_pod_matcher",
+    # Native view construction is shared Python work in both modes. This
+    # contract therefore measures the numeric matcher slice directly and
+    # publishes whole-native-preflight timing separately.
     "minimum_matched_pairs_per_mode": 30,
-    "minimum_p50_preflight_reduction_fraction": 0.2,
-    "minimum_p95_preflight_reduction_fraction": 0.1,
+    "minimum_p50_matcher_reduction_fraction": 0.2,
+    "minimum_p95_matcher_reduction_fraction": 0.1,
     "requires_exact_semantic_parity": True,
 }
 
@@ -230,6 +231,34 @@ def _validate_real_attempt(attempt: dict[str, Any]) -> None:
     legacy_verdict = attempt["legacy_proof_verdict"]
     template_elapsed_ms = attempt["template_proof_elapsed_ms"]
     legacy_elapsed_ms = attempt["legacy_proof_elapsed_ms"]
+    matcher_backend = attempt["native_matcher_backend"]
+    matcher_comparisons = attempt["native_matcher_comparisons"]
+    matcher_lazy_swaps = attempt["native_matcher_lazy_swaps"]
+    fixed_binding_count = attempt["native_fixed_binding_count"]
+    matcher_elapsed_ms = attempt["native_matcher_elapsed_ms"]
+    matcher_fields = (
+        matcher_backend,
+        matcher_comparisons,
+        matcher_lazy_swaps,
+        fixed_binding_count,
+    )
+    if all(value is None for value in matcher_fields):
+        # Native preflight can refuse malformed widths, unsupported leaves, or
+        # an island budget before it calls the structural matcher.
+        pass
+    else:
+        if any(value is None for value in matcher_fields):
+            raise ValueError("native matcher fields must be all present or all null")
+        if matcher_backend not in {"python", "cython"}:
+            raise ValueError("native matcher backend must be python or cython")
+        if any(type(value) is not int or value < 0 for value in matcher_fields[1:]):
+            raise ValueError("native matcher metrics must be non-negative integers")
+        if matcher_lazy_swaps > matcher_comparisons:
+            raise ValueError("native matcher lazy swaps cannot exceed comparisons")
+    if not _valid_optional_elapsed(matcher_elapsed_ms):
+        raise ValueError(
+            "native matcher elapsed time must be a non-negative float or null"
+        )
 
     if type(status) is not str or status not in _EXPECTED_OUTCOMES:
         raise ValueError("real corpus attempt has an unknown status")
@@ -422,6 +451,11 @@ def _real_corpus_receipts(
             "legacy_proof_verdict",
             "template_proof_elapsed_ms",
             "legacy_proof_elapsed_ms",
+            "native_matcher_backend",
+            "native_matcher_comparisons",
+            "native_matcher_lazy_swaps",
+            "native_fixed_binding_count",
+            "native_matcher_elapsed_ms",
         }
         if any(set(attempt) != expected_attempt_keys for attempt in attempt_rows):
             raise ValueError("real corpus attempts have an invalid schema")
@@ -585,6 +619,73 @@ def _real_corpus_proof_timings(
     )
 
 
+def _real_corpus_matcher_projection(
+    receipts: tuple[dict[str, Any], ...], *, include_backend: bool
+) -> tuple[tuple[tuple[str, str, str], tuple[tuple[object, ...], ...]], ...]:
+    """Publish one bounded native matcher fact tuple for each live attempt."""
+
+    fields = (
+        "candidate_identity",
+        "native_matcher_comparisons",
+        "native_matcher_lazy_swaps",
+        "native_fixed_binding_count",
+    )
+    if include_backend:
+        fields = (*fields, "native_matcher_backend")
+    return tuple(
+        (
+            (receipt["corpus"], receipt["function"], receipt["project"]),
+            tuple(
+                tuple(attempt[field] for field in fields)
+                for attempt in receipt["attempts"]
+            ),
+        )
+        for receipt in receipts
+    )
+
+
+def _percentile(samples: tuple[float, ...], percentile: int) -> float:
+    if len(samples) == 1:
+        return samples[0]
+    return quantiles(samples, n=100, method="inclusive")[percentile - 1]
+
+
+def _real_corpus_matcher_timing_summary(
+    receipts: tuple[dict[str, Any], ...], *, mode: str
+) -> dict[str, object]:
+    """Summarize actual matcher calls without hiding early preflight refusals."""
+
+    samples = tuple(
+        attempt["native_matcher_elapsed_ms"]
+        for receipt in receipts
+        for attempt in receipt["attempts"]
+        if attempt["native_matcher_backend"] is not None
+    )
+    if len(samples) < _PERFORMANCE_CONTRACT["minimum_matched_pairs_per_mode"]:
+        raise ValueError("real corpus must provide enough matched timing pairs")
+    if any(type(value) is not float or value < 0 for value in samples):
+        raise ValueError("matched native matcher attempts require elapsed timings")
+    return {
+        "mode": mode,
+        "sample_count": len(samples),
+        "p50_ms": _percentile(samples, 50),
+        "p95_ms": _percentile(samples, 95),
+        "max_ms": max(samples),
+    }
+
+
+def _real_corpus_uses_backend(
+    receipts: tuple[dict[str, Any], ...], backend: str
+) -> bool:
+    """Require each reached native preflight to report the active backend."""
+
+    return all(
+        attempt["native_matcher_backend"] in {None, backend}
+        for receipt in receipts
+        for attempt in receipt["attempts"]
+    )
+
+
 def compare_receipts(
     python_rows: tuple[dict[str, Any], ...],
     cython_rows: tuple[dict[str, Any], ...],
@@ -607,6 +708,29 @@ def compare_receipts(
     cython_native = _native_receipts(cython_native_rows)
     python_real = _real_corpus_receipts(python_real_rows)
     cython_real = _real_corpus_receipts(cython_real_rows)
+    python_matcher_timing = _real_corpus_matcher_timing_summary(
+        python_real, mode="python"
+    )
+    cython_matcher_timing = _real_corpus_matcher_timing_summary(
+        cython_real, mode="cython"
+    )
+    python_p50 = python_matcher_timing["p50_ms"]
+    python_p95 = python_matcher_timing["p95_ms"]
+    cython_p50 = cython_matcher_timing["p50_ms"]
+    cython_p95 = cython_matcher_timing["p95_ms"]
+    assert all(
+        type(value) is float
+        for value in (python_p50, python_p95, cython_p50, cython_p95)
+    )
+    matcher_timing_contract_met = (
+        python_matcher_timing["sample_count"] == cython_matcher_timing["sample_count"]
+        and python_p50 > 0.0
+        and python_p95 > 0.0
+        and (python_p50 - cython_p50) / python_p50
+        >= _PERFORMANCE_CONTRACT["minimum_p50_matcher_reduction_fraction"]
+        and (python_p95 - cython_p95) / python_p95
+        >= _PERFORMANCE_CONTRACT["minimum_p95_matcher_reduction_fraction"]
+    )
     comparisons = {
         "image_match": python_corpus["docker_image"] == cython_corpus["docker_image"],
         "image_digest_match": python_corpus["docker_image_id"]
@@ -651,6 +775,17 @@ def compare_receipts(
         == _real_corpus_projection(cython_real, "proof_mode_counts"),
         "real_corpus_proof_paths_match": _real_corpus_proof_projection(python_real)
         == _real_corpus_proof_projection(cython_real),
+        "real_corpus_matcher_metrics_match": _real_corpus_matcher_projection(
+            python_real, include_backend=False
+        )
+        == _real_corpus_matcher_projection(cython_real, include_backend=False),
+        "real_corpus_matcher_backend_match": (
+            _real_corpus_uses_backend(python_real, "python")
+            and _real_corpus_uses_backend(cython_real, "cython")
+            and _real_corpus_matcher_projection(python_real, include_backend=False)
+            == _real_corpus_matcher_projection(cython_real, include_backend=False)
+        ),
+        "real_corpus_matcher_timing_contract_met": matcher_timing_contract_met,
         "synthetic_stage_sample_counts_match": (
             python_synthetic_counts == cython_synthetic_counts
         ),
@@ -677,6 +812,10 @@ def compare_receipts(
                 python_real, "stage_sample_counts"
             ),
             "real_corpus_proof_timings": _real_corpus_proof_timings(python_real),
+            "real_corpus_matcher_metrics": _real_corpus_matcher_projection(
+                python_real, include_backend=True
+            ),
+            "real_corpus_matcher_timing": python_matcher_timing,
         },
         "cython": {
             "candidate_count": cython_corpus["candidate_count"],
@@ -692,6 +831,10 @@ def compare_receipts(
                 cython_real, "stage_sample_counts"
             ),
             "real_corpus_proof_timings": _real_corpus_proof_timings(cython_real),
+            "real_corpus_matcher_metrics": _real_corpus_matcher_projection(
+                cython_real, include_backend=True
+            ),
+            "real_corpus_matcher_timing": cython_matcher_timing,
         },
     }
 

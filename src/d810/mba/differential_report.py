@@ -87,6 +87,19 @@ def egglog_receipt_to_outcome(receipt: object) -> MbaProviderOutcome:
             receipt, "template_proof_elapsed_ms", None
         ),
         "legacy_proof_elapsed_ms": getattr(receipt, "legacy_proof_elapsed_ms", None),
+        "native_matcher_backend": getattr(receipt, "native_matcher_backend", None),
+        "native_matcher_comparisons": getattr(
+            receipt, "native_matcher_comparisons", None
+        ),
+        "native_matcher_lazy_swaps": getattr(
+            receipt, "native_matcher_lazy_swaps", None
+        ),
+        "native_fixed_binding_count": getattr(
+            receipt, "native_fixed_binding_count", None
+        ),
+        "native_matcher_elapsed_ms": getattr(
+            receipt, "native_matcher_elapsed_ms", None
+        ),
     }
     native_profile = getattr(receipt, "native_profile", None)
     if isinstance(native_profile, Mapping):

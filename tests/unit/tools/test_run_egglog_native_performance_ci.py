@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import subprocess
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -49,9 +50,9 @@ def test_ci_runner_profiles_real_idb_only_when_explicitly_requested() -> None:
 
 
 def _real_attempts() -> list[dict[str, object]]:
-    return [
+    applied = [
         {
-            "candidate_identity": "fixture#1:one",
+            "candidate_identity": f"fixture#{index}:matched",
             "status": "applied",
             "refusal_reason": None,
             "source_names": ["FixtureRule"],
@@ -66,9 +67,18 @@ def _real_attempts() -> list[dict[str, object]]:
             "legacy_proof_verdict": True,
             "template_proof_elapsed_ms": 1.0,
             "legacy_proof_elapsed_ms": 1.0,
-        },
+            "native_matcher_backend": "python",
+            "native_matcher_comparisons": 4,
+            "native_matcher_lazy_swaps": 1,
+            "native_fixed_binding_count": 2,
+            "native_matcher_elapsed_ms": 1.0,
+        }
+        for index in range(1, 31)
+    ]
+    return [
+        *applied,
         {
-            "candidate_identity": "fixture#2:two",
+            "candidate_identity": "fixture#31:ineligible",
             "status": "ineligible",
             "refusal_reason": "candidate_budget",
             "source_names": [],
@@ -83,6 +93,11 @@ def _real_attempts() -> list[dict[str, object]]:
             "legacy_proof_verdict": None,
             "template_proof_elapsed_ms": None,
             "legacy_proof_elapsed_ms": None,
+            "native_matcher_backend": None,
+            "native_matcher_comparisons": None,
+            "native_matcher_lazy_swaps": None,
+            "native_fixed_binding_count": None,
+            "native_matcher_elapsed_ms": None,
         },
     ]
 
@@ -97,26 +112,29 @@ def _valid_receipts() -> tuple[
         "source_names": [["FixtureRule"]],
         "stage_sample_counts": {stage: 1 for stage in _STAGES},
     }
+    real_attempts = _real_attempts()
     real_native = {
         "schema_version": 3,
         "corpus": "fixture",
         "function": "fixture_function",
         "project": "fixture_project",
-        "execution_count": 2,
-        "candidate_identities": ["fixture#1:one", "fixture#2:two"],
-        "outcomes": {"applied": 1, "ineligible": 1},
-        "source_names": [["FixtureRule"], []],
-        "proof_attempt_count": 1,
-        "proof_mode_counts": {"shadow": 1},
+        "execution_count": len(real_attempts),
+        "candidate_identities": [
+            attempt["candidate_identity"] for attempt in real_attempts
+        ],
+        "outcomes": dict(Counter(attempt["status"] for attempt in real_attempts)),
+        "source_names": [attempt["source_names"] for attempt in real_attempts],
+        "proof_attempt_count": 30,
+        "proof_mode_counts": {"shadow": 30},
         "stage_sample_counts": {
-            "root_eligibility": 2,
-            "native_preflight": 1,
-            "egglog_extraction": 1,
-            "ast_construction": 1,
-            "native_z3": 1,
-            "reconstruction": 1,
+            "root_eligibility": len(real_attempts),
+            "native_preflight": 30,
+            "egglog_extraction": 30,
+            "ast_construction": 30,
+            "native_z3": 30,
+            "reconstruction": 30,
         },
-        "attempts": _real_attempts(),
+        "attempts": real_attempts,
     }
     corpus = {
         "candidate_count": 1,
@@ -133,9 +151,13 @@ def _valid_receipts() -> tuple[
     }
     cython_corpus = copy.deepcopy(corpus)
     cython_corpus["cython_enabled"] = True
+    cython_real = copy.deepcopy(real_native)
+    for attempt in cython_real["attempts"][:-1]:
+        attempt["native_matcher_backend"] = "cython"
+        attempt["native_matcher_elapsed_ms"] = 0.5
     return (
         (native, real_native, corpus),
-        (copy.deepcopy(native), copy.deepcopy(real_native), cython_corpus),
+        (copy.deepcopy(native), cython_real, cython_corpus),
     )
 
 
@@ -161,11 +183,18 @@ def test_ci_runner_archives_two_mode_json_receipts(tmp_path: Path) -> None:
 set -eu
 printf '%s|%s\\n' "$D810_NO_CYTHON" "$*" >> "$D810_FAKE_RUNNER_LOG"
 if [[ "$*" == *"test_egglog_mba_performance.py"* ]]; then
-  if [[ "$D810_NO_CYTHON" == 0 ]]; then cython=true; else cython=false; fi
-  echo 'EGGLOG_MBA_CORPUS_PERFORMANCE_RECEIPT={"candidate_count":1,"candidate_names":["add:fixture#1"],"docker_image":"idapro-9.4-speedups:cli","docker_image_id":"sha256:fixture","egglog_version":"13.2.0","cython_enabled":'$cython',"stage_attempt_outcomes":{"accepted":1},"stage_timing_ms":{"root_eligibility":{"sample_count":1},"ast_construction":{"sample_count":1},"native_preflight":{"sample_count":1},"egglog_extraction":{"sample_count":1},"native_z3":{"sample_count":1},"reconstruction":{"sample_count":1}},"kind":"corpus"}'
+  if [[ "$D810_NO_CYTHON" == 0 ]]; then
+    printf 'EGGLOG_MBA_CORPUS_PERFORMANCE_RECEIPT=%s\\n' "$D810_FAKE_CYTHON_CORPUS"
+  else
+    printf 'EGGLOG_MBA_CORPUS_PERFORMANCE_RECEIPT=%s\\n' "$D810_FAKE_PYTHON_CORPUS"
+  fi
 else
-  echo 'EGGLOG_MBA_NATIVE_RECEIPT={"corpus":"fixture","execution_count":1,"outcomes":{"accepted":1},"source_names":[["FixtureRule"]],"stage_sample_counts":{"root_eligibility":1,"ast_construction":1,"native_preflight":1,"egglog_extraction":1,"native_z3":1,"reconstruction":1},"kind":"native"}'
-  echo 'EGGLOG_MBA_REAL_CORPUS_RECEIPT={"schema_version":3,"corpus":"fixture","function":"fixture_function","project":"fixture_project","execution_count":2,"candidate_identities":["fixture#1:one","fixture#2:two"],"outcomes":{"applied":1,"ineligible":1},"source_names":[["FixtureRule"],[]],"proof_attempt_count":1,"proof_mode_counts":{"shadow":1},"stage_sample_counts":{"root_eligibility":2,"native_preflight":1,"egglog_extraction":1,"ast_construction":1,"native_z3":1,"reconstruction":1},"attempts":[{"candidate_identity":"fixture#1:one","status":"applied","refusal_reason":null,"source_names":["FixtureRule"],"degree":1,"input_cost":[2,3],"output_cost":[1,2],"stage_timings_ms":{"root_eligibility":1.0,"native_preflight":1.0,"egglog_extraction":1.0,"ast_construction":1.0,"native_z3":1.0,"reconstruction":1.0},"proof_mode":"shadow","template_source_name":"FixtureRule","template_fallback_reason":null,"template_proof_verdict":true,"legacy_proof_verdict":true,"template_proof_elapsed_ms":1.0,"legacy_proof_elapsed_ms":1.0},{"candidate_identity":"fixture#2:two","status":"ineligible","refusal_reason":"candidate_budget","source_names":[],"degree":null,"input_cost":null,"output_cost":null,"stage_timings_ms":{"root_eligibility":1.0},"proof_mode":null,"template_source_name":null,"template_fallback_reason":null,"template_proof_verdict":null,"legacy_proof_verdict":null,"template_proof_elapsed_ms":null,"legacy_proof_elapsed_ms":null}],"kind":"real_native"}'
+  printf 'EGGLOG_MBA_NATIVE_RECEIPT=%s\\n' "$D810_FAKE_NATIVE"
+  if [[ "$D810_NO_CYTHON" == 0 ]]; then
+    printf 'EGGLOG_MBA_REAL_CORPUS_RECEIPT=%s\\n' "$D810_FAKE_CYTHON_REAL"
+  else
+    printf 'EGGLOG_MBA_REAL_CORPUS_RECEIPT=%s\\n' "$D810_FAKE_PYTHON_REAL"
+  fi
 fi
 """,
         encoding="utf-8",
@@ -173,11 +202,17 @@ fi
     runner.chmod(0o755)
     artifact_dir = tmp_path / "artifacts"
     runner_log = tmp_path / "runner.log"
+    python_rows, cython_rows = _valid_receipts()
     env = os.environ | {
         "D810_EGGLOG_PERF_ARTIFACT_DIR": str(artifact_dir),
         "D810_FAKE_RUNNER_LOG": str(runner_log),
         "D810_DOCKER_IMAGE": "idapro-9.4-speedups:cli",
         "D810_REPO_ROOT": str(tmp_path),
+        "D810_FAKE_NATIVE": json.dumps(python_rows[0]),
+        "D810_FAKE_PYTHON_REAL": json.dumps(python_rows[1]),
+        "D810_FAKE_CYTHON_REAL": json.dumps(cython_rows[1]),
+        "D810_FAKE_PYTHON_CORPUS": json.dumps(python_rows[2]),
+        "D810_FAKE_CYTHON_CORPUS": json.dumps(cython_rows[2]),
     }
 
     result = subprocess.run(
@@ -204,11 +239,9 @@ fi
             .read_text(encoding="utf-8")
             .splitlines()
         ]
-        assert [receipt["kind"] for receipt in receipts] == [
-            "native",
-            "real_native",
-            "corpus",
-        ]
+        assert len(receipts) == 3
+        assert "schema_version" in receipts[1]
+        assert "candidate_count" in receipts[2]
     comparison = json.loads(
         (artifact_dir / "comparison.json").read_text(encoding="utf-8")
     )
@@ -223,6 +256,9 @@ fi
         "native_source_identities_match": True,
         "native_stage_coverage_match": True,
         "real_corpus_attempts_match": True,
+        "real_corpus_matcher_backend_match": True,
+        "real_corpus_matcher_metrics_match": True,
+        "real_corpus_matcher_timing_contract_met": True,
         "real_corpus_outcomes_match": True,
         "real_corpus_proof_paths_match": True,
         "real_corpus_proof_modes_match": True,
@@ -276,7 +312,7 @@ def test_comparator_rejects_missing_identity_metadata(tmp_path: Path) -> None:
             "root eligibility count must equal execution_count",
         ),
         (
-            lambda real: real.update(source_names=[["FixtureRule"], ["OtherRule"]]),
+            lambda real: real.update(source_names=[["OtherRule"]] * 31),
             "sources must equal per-attempt sources",
         ),
         (
@@ -360,8 +396,8 @@ def test_comparator_rejects_incomplete_real_corpus_receipts(
             "native_stage_coverage_match",
         ),
         (
-            lambda _python, cython: cython[1].update(
-                candidate_identities=["fixture#1:one", "fixture#2:other"]
+            lambda _python, cython: cython[1]["candidate_identities"].__setitem__(
+                0, "fixture#1:other"
             ),
             "attempts must preserve candidate identities",
         ),
@@ -374,6 +410,18 @@ def test_comparator_rejects_incomplete_real_corpus_receipts(
         (
             lambda _python, cython: cython[1].update(proof_mode_counts={"shadow": 2}),
             "proof modes must equal actual proof attempts",
+        ),
+        (
+            lambda _python, cython: cython[1]["attempts"][0].update(
+                native_matcher_backend="python"
+            ),
+            "real_corpus_matcher_backend_match",
+        ),
+        (
+            lambda _python, cython: cython[1]["attempts"][0].update(
+                native_matcher_comparisons=5
+            ),
+            "real_corpus_matcher_metrics_match",
         ),
         (
             lambda _python, cython: cython[2]["stage_timing_ms"][
@@ -410,30 +458,41 @@ def test_comparator_publishes_predeclared_paired_proof_contract() -> None:
 
     assert comparison["performance_contract"] == {
         "schema_version": 1,
-        "baseline_kind": "post_redundant_template_rebinding",
+        "baseline_kind": "native_pod_matcher",
         "minimum_matched_pairs_per_mode": 30,
-        "minimum_p50_preflight_reduction_fraction": 0.2,
-        "minimum_p95_preflight_reduction_fraction": 0.1,
+        "minimum_p50_matcher_reduction_fraction": 0.2,
+        "minimum_p95_matcher_reduction_fraction": 0.1,
         "requires_exact_semantic_parity": True,
     }
-    assert comparison["python"]["real_corpus_proof_timings"] == (
-        (
-            ("fixture", "fixture_function", "fixture_project"),
-            (
-                (
-                    "fixture#1:one",
-                    ("FixtureRule",),
-                    "shadow",
-                    "FixtureRule",
-                    None,
-                    True,
-                    True,
-                    1.0,
-                    1.0,
-                ),
-            ),
-        ),
-    )
+    assert comparison["python"]["real_corpus_matcher_timing"] == {
+        "mode": "python",
+        "sample_count": 30,
+        "p50_ms": 1.0,
+        "p95_ms": 1.0,
+        "max_ms": 1.0,
+    }
+
+
+def test_comparator_rejects_missing_live_matcher_timing() -> None:
+    python_rows, cython_rows = _valid_receipts()
+    python_rows = list(copy.deepcopy(python_rows))
+    cython_rows = list(copy.deepcopy(cython_rows))
+    cython_rows[1]["attempts"][0]["native_matcher_elapsed_ms"] = None
+
+    with pytest.raises(ValueError, match="matched native matcher attempts require"):
+        compare_receipts(python_rows, cython_rows)
+
+
+def test_comparator_rejects_missing_predeclared_matcher_improvement() -> None:
+    python_rows, cython_rows = _valid_receipts()
+    python_rows = list(copy.deepcopy(python_rows))
+    cython_rows = list(copy.deepcopy(cython_rows))
+    for attempt in cython_rows[1]["attempts"]:
+        if attempt["native_matcher_backend"] is not None:
+            attempt["native_matcher_elapsed_ms"] = 1.0
+
+    with pytest.raises(ValueError, match="real_corpus_matcher_timing_contract_met"):
+        compare_receipts(python_rows, cython_rows)
 
 
 @pytest.mark.parametrize(
@@ -492,7 +551,7 @@ def test_comparator_accepts_provenance_bearing_shadow_divergence() -> None:
             legacy_proof_verdict=True,
             template_fallback_reason="shadow_divergence",
         )
-        real["outcomes"] = {"ineligible": 1, "proof_failed": 1}
+        real["outcomes"] = {"applied": 29, "ineligible": 1, "proof_failed": 1}
 
     assert all(compare_receipts(python_rows, cython_rows)["comparison"].values())
 
@@ -510,7 +569,11 @@ def test_comparator_rejects_provenance_free_proof_failure_and_unreached_proof() 
         legacy_proof_verdict=True,
         template_fallback_reason="shadow_divergence",
     )
-    cython_rows[1]["outcomes"] = {"ineligible": 1, "proof_failed": 1}
+    cython_rows[1]["outcomes"] = {
+        "applied": 29,
+        "ineligible": 1,
+        "proof_failed": 1,
+    }
 
     with pytest.raises(ValueError, match="proof failure must retain source provenance"):
         compare_receipts(python_rows, cython_rows)
@@ -518,7 +581,7 @@ def test_comparator_rejects_provenance_free_proof_failure_and_unreached_proof() 
     python_rows, cython_rows = _valid_receipts()
     python_rows = list(copy.deepcopy(python_rows))
     cython_rows = list(copy.deepcopy(cython_rows))
-    cython_rows[1]["attempts"][1]["template_source_name"] = "leaked"
+    cython_rows[1]["attempts"][30]["template_source_name"] = "leaked"
 
     with pytest.raises(
         ValueError, match="unreached proof must leave proof fields null"

@@ -466,18 +466,13 @@ def match_pod_pattern(
     return tuple(output), counter.comparisons, counter.lazy_swaps, False
 
 
-def match_pod_catalogue(
+cdef tuple _match_pod_catalogue_trusted(
     tuple patterns,
     tuple candidate_rows,
     int candidate_root_index,
     int comparison_budget,
 ):
-    """Match a root bucket in one Cython call with one global work cap.
-
-    ``patterns`` is a declaration-ordered tuple of
-    ``(pattern_rows, variable_count)`` records.  The nested result tuple has
-    one binding tuple per pattern, preserving the Python catalogue's order.
-    """
+    """Match already-validated POD rows without repeating Python validation."""
 
     cdef tuple record
     cdef tuple pattern_rows
@@ -492,39 +487,13 @@ def match_pod_catalogue(
     cdef list pattern_output
     cdef object candidate_record
 
-    if comparison_budget <= 0:
-        raise ValueError("comparison_budget must be positive")
-    if comparison_budget > MAX_POD_COMPARISONS:
-        raise ValueError("POD matcher fixed capacity exceeded")
-    if candidate_root_index < 0:
-        return (), 0, 0, False
-    if len(candidate_rows) > MAX_POD_NODES:
-        raise ValueError("POD matcher fixed capacity exceeded")
-    if any(
-        type(candidate_record) is not tuple or len(candidate_record) != 9
-        for candidate_record in candidate_rows
-    ):
-        raise ValueError("candidate POD rows must contain nine integers")
     counter.comparisons = 0
     counter.lazy_swaps = 0
     counter.limit = comparison_budget
     counter.exceeded = False
     for record in patterns:
-        if type(record) is not tuple or len(record) != 2:
-            raise ValueError("catalogue POD records must contain a pattern and arity")
         pattern_rows = <tuple>record[0]
         variable_count = <int>record[1]
-        if any(
-            type(candidate_record) is not tuple or len(candidate_record) != 7
-            for candidate_record in pattern_rows
-        ):
-            raise ValueError("pattern POD rows must contain seven integers")
-        if variable_count < 0:
-            raise ValueError("variable_count must be non-negative")
-        if variable_count > MAX_POD_BINDINGS:
-            raise ValueError("POD matcher fixed capacity exceeded")
-        if len(pattern_rows) > MAX_POD_NODES:
-            raise ValueError("POD matcher fixed capacity exceeded")
         _reset_bindings(&bindings, variable_count)
         results = _match(
             pattern_rows,
@@ -546,3 +515,60 @@ def match_pod_catalogue(
             )
         catalogue_output.append(tuple(pattern_output))
     return tuple(catalogue_output), counter.comparisons, counter.lazy_swaps, False
+
+
+def match_pod_catalogue(
+    tuple patterns,
+    tuple candidate_rows,
+    int candidate_root_index,
+    int comparison_budget,
+):
+    """Validate public POD rows, then match one root bucket numerically."""
+
+    cdef tuple record
+    cdef tuple pattern_rows
+    cdef int variable_count
+    cdef object candidate_record
+    if comparison_budget <= 0:
+        raise ValueError("comparison_budget must be positive")
+    if comparison_budget > MAX_POD_COMPARISONS:
+        raise ValueError("POD matcher fixed capacity exceeded")
+    if candidate_root_index < 0:
+        return (), 0, 0, False
+    if len(candidate_rows) > MAX_POD_NODES:
+        raise ValueError("POD matcher fixed capacity exceeded")
+    if any(
+        type(candidate_record) is not tuple or len(candidate_record) != 9
+        for candidate_record in candidate_rows
+    ):
+        raise ValueError("candidate POD rows must contain nine integers")
+    for record in patterns:
+        if type(record) is not tuple or len(record) != 2:
+            raise ValueError("catalogue POD records must contain a pattern and arity")
+        pattern_rows = <tuple>record[0]
+        variable_count = <int>record[1]
+        if any(
+            type(candidate_record) is not tuple or len(candidate_record) != 7
+            for candidate_record in pattern_rows
+        ):
+            raise ValueError("pattern POD rows must contain seven integers")
+        if variable_count < 0:
+            raise ValueError("variable_count must be non-negative")
+        if variable_count > MAX_POD_BINDINGS or len(pattern_rows) > MAX_POD_NODES:
+            raise ValueError("POD matcher fixed capacity exceeded")
+    return _match_pod_catalogue_trusted(
+        patterns, candidate_rows, candidate_root_index, comparison_budget
+    )
+
+
+def match_pod_catalogue_trusted(
+    tuple patterns,
+    tuple candidate_rows,
+    int candidate_root_index,
+    int comparison_budget,
+):
+    """Match compiler-owned packed rows from the validated native adapter."""
+
+    return _match_pod_catalogue_trusted(
+        patterns, candidate_rows, candidate_root_index, comparison_budget
+    )

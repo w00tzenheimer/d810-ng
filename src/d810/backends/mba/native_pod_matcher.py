@@ -44,7 +44,7 @@ _MAX_CYTHON_COMPARISONS = 256
 if CythonMode().is_enabled():
     try:
         from d810.speedups.mba.c_native_pod_matcher import (  # type: ignore[import-not-found]
-            match_pod_catalogue as _match_pod_catalogue,
+            match_pod_catalogue_trusted as _match_pod_catalogue,
             match_pod_pattern as _match_pod_pattern,
         )
     except ImportError:
@@ -345,13 +345,13 @@ def _match_cython_catalogue(
     assert root is not None
     candidate_rows = packed.numeric_rows()
     bucket = catalogue.root_width_buckets.get((root.operation, root.width), ())
-    if any(compiled.pod_pattern is None for compiled in bucket):
-        return None
     if _match_pod_catalogue is None:
         return None
-    pattern_records = tuple(
-        (compiled.pod_pattern[0], len(compiled.pod_pattern[1])) for compiled in bucket
+    pattern_records = catalogue.pod_records_by_root_width.get(
+        (root.operation, root.width)
     )
+    if pattern_records is None:
+        return None
     results_by_pattern, comparisons, lazy_swaps, exceeded = _match_pod_catalogue(
         pattern_records,
         candidate_rows,
