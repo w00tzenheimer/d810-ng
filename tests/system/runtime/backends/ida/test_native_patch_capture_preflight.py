@@ -22,6 +22,7 @@ import pytest
 pytestmark = [pytest.mark.requires_ida, pytest.mark.runtime, pytest.mark.hexrays]
 
 ida_bytes = pytest.importorskip("ida_bytes")
+ida_frame = pytest.importorskip("ida_frame")
 ida_funcs = pytest.importorskip("ida_funcs")
 ida_ida = pytest.importorskip("ida_ida")
 idaapi = pytest.importorskip("idaapi")
@@ -47,6 +48,7 @@ from d810.core.execution_journal import (  # noqa: E402
     ExecutionAttemptId,
 )
 from d810.ir.native_origin import NativeOriginCoverage  # noqa: E402
+from d810.ir.edge_state_contract import EdgeStateContract  # noqa: E402
 from d810.transforms.native_patch_lowering import lower_direct_edge  # noqa: E402
 from d810.transforms.native_patch_plan import (  # noqa: E402
     InheritedPatchRow,
@@ -86,6 +88,27 @@ def _authorizing_attempt_id() -> ExecutionAttemptId:
     return ExecutionAttemptId.new(session=DecompilationSessionId.new(), sequence=1)
 
 
+def _read_only_state_contract(function_ea: int, source_ea: int, target_ea: int):
+    """Witness the one state invariant lowering requires for preflight only.
+
+    This suite never passes its test plan to a gateway or writes bytes; the
+    contract only lets it exercise capture/lowering/preflight against a live
+    branch while ``MutationWitness`` proves that boundary remains read-only.
+    """
+    function = ida_funcs.get_func(function_ea)
+    assert function is not None
+    source_spd = int(ida_frame.get_spd(function, source_ea))
+    target_spd = int(ida_frame.get_spd(function, target_ea))
+    contract = EdgeStateContract(
+        source_stack_delta=source_spd,
+        target_stack_delta=target_spd,
+        proof_ids=("read-only-preflight-stack-witness",),
+    )
+    if not contract.permits_control_only_relink:
+        pytest.skip("fixture branch lacks a matching stack-state preflight witness")
+    return contract
+
+
 def _build_operation(function_ea: int):
     """Real end-to-end capture + origin correlation + lowering for one
     encodable conditional branch. Read-only throughout."""
@@ -119,6 +142,9 @@ def _build_operation(function_ea: int):
         provider_id="minimal-x86",
         provider_version="1",
         bitness=_bitness(),
+        state_contract=_read_only_state_contract(
+            function_ea, start_ea, branch.taken_target
+        ),
     )
     assert lowering.ok, lowering.reason
     return lowering.operation

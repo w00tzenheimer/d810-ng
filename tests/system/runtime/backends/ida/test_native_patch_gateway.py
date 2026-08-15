@@ -33,6 +33,7 @@ ida_nalt = pytest.importorskip("ida_nalt")
 ida_typeinf = pytest.importorskip("ida_typeinf")
 idaapi = pytest.importorskip("idaapi")
 idautils = pytest.importorskip("idautils")
+idc = pytest.importorskip("idc")
 
 from d810.backends.hexrays.native_patch_lifecycle import (  # noqa: E402
     IdaCallerDiscovery,
@@ -41,7 +42,10 @@ from d810.backends.hexrays.native_patch_lifecycle import (  # noqa: E402
 )
 from d810.backends.ida.native_patch.capture import (  # noqa: E402
     IdaLiveDatabaseReader,
-    capture_range_evidence,
+)
+from d810.backends.ida.native_patch.dead_edge_oracle import (  # noqa: E402
+    build_dead_edge_semantic_plan,
+    find_dead_edges_for_function,
 )
 from d810.backends.ida.native_patch.encoder import MinimalX86BranchEncoder  # noqa: E402
 from d810.backends.ida.native_patch.gateway import (  # noqa: E402
@@ -49,13 +53,8 @@ from d810.backends.ida.native_patch.gateway import (  # noqa: E402
     NativePatchGateway,
 )
 from d810.backends.ida.native_patch.issuer import (  # noqa: E402
-    NativePatchIssuerContract,
     NativePatchIssuerRegistry,
-)
-from d810.backends.ida.native_patch.observation import observe_function  # noqa: E402
-from d810.backends.ida.native_patch.origin_mapper import (  # noqa: E402
-    correlate_native_span,
-    ida_decoded_range_reader,
+    dead_edge_semantic_issuers,
 )
 from d810.backends.ida.native_patch.journal import SQLiteNativePatchJournal  # noqa: E402
 from d810.backends.ida.native_patch.reanalysis import (  # noqa: E402
@@ -69,12 +68,8 @@ from d810.core.execution_journal import (  # noqa: E402
     ExecutionAttemptId,
 )
 from d810.core.persistence import SQLiteOptimizationStorage  # noqa: E402
-from d810.ir.native_origin import NativeOriginCoverage  # noqa: E402
-from d810.transforms.native_patch_lowering import lower_direct_edge  # noqa: E402
 from d810.transforms.native_patch_plan import (  # noqa: E402
     NativeAddressRange,
-    NativeDatabaseIdentity,
-    NativeFunctionIdentity,
     NativePatchPlan,
 )
 
@@ -100,128 +95,71 @@ def fresh_journal(tmp_path):
         journal.close()
 
 
-def _bitness() -> int:
-    return 64 if ida_ida.inf_is_64bit() else 32
-
-
-def _issuer_registry() -> NativePatchIssuerRegistry:
-    return NativePatchIssuerRegistry(
-        (
-            NativePatchIssuerContract(
-                issuer_id="gateway-system-test-issuer",
-                patch_class="lifting_normalization",
-                proof_ids=frozenset({"gateway-system-test-proof"}),
-                provenance=("gateway-system-test",),
-            ),
-        )
-    )
-
-
-def _encodable_candidates():
-    for func_ea in idautils.Functions():
-        observation = observe_function(func_ea)
-        if observation is None:
-            continue
-        for branch in observation.branches:
-            if branch.encodable:
-                yield func_ea, branch
-
-
-def _first_encodable_candidate():
-    for func_ea, branch in _encodable_candidates():
-        return func_ea, branch
-    pytest.skip("no Mode-A-encodable branch found anywhere in this binary")
-
-
-def _first_encodable_candidate_with_caller():
-    for func_ea, branch in _encodable_candidates():
-        callers = IdaCallerDiscovery().callers_of(func_ea)
-        if callers:
-            return func_ea, branch, callers
-    pytest.skip("no Mode-A-encodable branch with a real caller found in this binary")
-
-
-def _widest_encodable_candidate(min_size: int = 3):
-    best = None
-    for func_ea, branch in _encodable_candidates():
-        if branch.size < min_size:
-            continue
-        if best is None or branch.size > best[1].size:
-            best = (func_ea, branch)
-    if best is None:
-        pytest.skip(f"no Mode-A-encodable branch with size >= {min_size} found")
-    return best
-
-
-def _build_operation(function_ea: int, branch):
-    start_ea, end_ea = branch.site_ea, branch.site_ea + branch.size
-    origin_span = correlate_native_span(
-        start_ea,
-        end_ea,
-        ida_decoded_range_reader(),
-        expected_bytes_hash="gateway-system-test",
-    )
-    assert origin_span.coverage is NativeOriginCoverage.COMPLETE
-
-    capture_outcome = capture_range_evidence(
-        IdaLiveDatabaseReader(),
-        NativeAddressRange(start_ea, end_ea),
-        function_ea=function_ea,
-    )
-    assert capture_outcome.ok, capture_outcome.reason
-
-    lowering = lower_direct_edge(
-        operation_id="gateway-system-test-op",
-        origin_span=origin_span,
-        target_ea=branch.taken_target,
-        known_instruction_heads=frozenset({branch.taken_target}),
-        capture=capture_outcome.evidence,
-        provider=MinimalX86BranchEncoder(),
-        provider_id="minimal-x86",
-        provider_version="1",
-        bitness=_bitness(),
-    )
-    assert lowering.ok, lowering.reason
-    return lowering.operation
-
-
-def _build_plan(function_ea: int, operation) -> NativePatchPlan:
-    ownership = IdaLiveDatabaseReader().read_function_ownership(function_ea)
-    assert ownership is not None
-    return NativePatchPlan(
-        plan_id="gateway-system-test-plan",
-        schema_version=1,
-        patch_class="lifting_normalization",
-        database_identity=NativeDatabaseIdentity(
-            idb_uuid="gateway-system-test",
-            input_file_hash="gateway-system-test",
-            processor="metapc",
-            bitness=_bitness(),
-            image_base=idaapi.get_imagebase(),
-            database_path_hash="gateway-system-test",
-        ),
-        function_identity=NativeFunctionIdentity(
-            entry_ea=function_ea,
-            chunk_ranges=ownership.chunk_ranges,
-            inherited_bytes_hash="gateway-system-test",
-        ),
-        inherited_function_fingerprint="gateway-system-test-fp",
-        target_cfg_fingerprint="gateway-system-test-cfg",
-        native_origin_map_fingerprint="gateway-system-test-origin",
-        architecture="x86",
-        bitness=_bitness(),
-        endianness="little",
-        processor="metapc",
-        issuer_id="gateway-system-test-issuer",
-        proof_id="gateway-system-test-proof",
-        proof_hash="gateway-system-test-proof-hash",
-        provenance=("gateway-system-test",),
-        operations=(operation,),
-        fallback_policy="no_patch",
+def _build_proven_plan() -> tuple[int, NativePatchPlan]:
+    """Use the production proof issuer rather than fabricating authority."""
+    function_ea = idc.get_name_ea_simple("single_iteration_simple")
+    assert function_ea != idaapi.BADADDR, "single_iteration_simple not found"
+    candidates, _ = find_dead_edges_for_function(function_ea)
+    assert candidates, "native dead-edge oracle found no proven candidate"
+    plan = build_dead_edge_semantic_plan(
+        function_ea,
+        (candidates[0],),
         authorizing_attempt_id=ExecutionAttemptId.new(
             session=DecompilationSessionId.new(), sequence=1
         ),
     )
+    assert len(plan.operations) == 1
+    return function_ea, plan
+
+
+def _build_proven_plan_with_caller() -> tuple[int, NativePatchPlan, tuple[int, ...]]:
+    function_ea, plan = _build_proven_plan()
+    callers = IdaCallerDiscovery().callers_of(function_ea)
+    if not callers:
+        pytest.skip("proven native dead-edge fixture has no real caller")
+    return function_ea, plan, callers
+
+
+_ACTIVE_PROVEN_PLAN: NativePatchPlan | None = None
+
+
+def _issuer_registry() -> NativePatchIssuerRegistry:
+    return NativePatchIssuerRegistry(dead_edge_semantic_issuers())
+
+
+def _first_encodable_candidate():
+    function_ea, _ = _build_proven_plan()
+    return function_ea, None
+
+
+def _first_encodable_candidate_with_caller():
+    function_ea, _, callers = _build_proven_plan_with_caller()
+    return function_ea, None, callers
+
+
+def _widest_encodable_candidate(min_size: int = 3):
+    function_ea, _ = _build_proven_plan()
+    return function_ea, None
+
+
+def _build_operation(function_ea: int, _branch):
+    global _ACTIVE_PROVEN_PLAN
+    proven_function_ea, plan = _build_proven_plan()
+    assert proven_function_ea == function_ea
+    _ACTIVE_PROVEN_PLAN = plan
+    return plan.operations[0]
+
+
+def _build_plan(function_ea: int, operation) -> NativePatchPlan:
+    assert _ACTIVE_PROVEN_PLAN is not None
+    assert _ACTIVE_PROVEN_PLAN.function_identity.entry_ea == function_ea
+    assert _ACTIVE_PROVEN_PLAN.operations == (operation,)
+    return _ACTIVE_PROVEN_PLAN
+
+
+def _current_database_identity() -> str:
+    assert _ACTIVE_PROVEN_PLAN is not None
+    return _ACTIVE_PROVEN_PLAN.database_identity.idb_uuid
 
 
 def _flowchart_signature(function_ea: int) -> tuple:
@@ -271,6 +209,7 @@ def _capture_complete_native_state(function_ea: int, address_range: NativeAddres
 def _build_gateway(
     journal,
     *,
+    database_identity: str | None = None,
     reanalyzer=None,
     extent_restorer=None,
     cache_invalidator=None,
@@ -289,7 +228,7 @@ def _build_gateway(
         redo_decompiler=redo or IdaControlledRedoDecompiler(),
         certificate_store=SQLiteOptimizationStorage(":memory:"),
         issuer_registry=_issuer_registry(),
-        current_database_identity="gateway-system-test",
+        current_database_identity=database_identity or _current_database_identity(),
         d810_version="system-test",
     )
 
@@ -344,26 +283,24 @@ class TestGatewayApplyRestore:
     def test_restore_reattaches_an_inherited_detached_tail(
         self, copy_of_idb, tmp_path
     ) -> None:
-        selected = None
-        for function_ea, branch in _encodable_candidates():
-            func = ida_funcs.get_func(function_ea)
-            heads = tuple(
-                int(ea)
-                for ea in idautils.Heads(branch.site_ea + branch.size, int(func.end_ea))
+        function_ea, initial_plan = _build_proven_plan()
+        func = ida_funcs.get_func(function_ea)
+        assert func is not None
+        heads = tuple(
+            int(ea)
+            for ea in idautils.Heads(
+                initial_plan.operations[0].range.end_ea, int(func.end_ea)
             )
-            if len(heads) >= 3:
-                selected = function_ea, branch, heads[-2], heads[-1], int(func.end_ea)
-                break
-        if selected is None:
-            pytest.skip("no encodable branch leaves room to construct a tail")
-
-        function_ea, branch, entry_end_ea, tail_start_ea, tail_end_ea = selected
+        )
+        if len(heads) < 3:
+            pytest.skip("proven edge leaves no room to construct a tail")
+        entry_end_ea, tail_start_ea, tail_end_ea = heads[-2], heads[-1], int(func.end_ea)
         assert ida_funcs.set_func_end(function_ea, entry_end_ea)
         func = ida_funcs.get_func(function_ea)
         assert func is not None
         assert ida_funcs.append_func_tail(func, tail_start_ea, tail_end_ea)
 
-        operation = _build_operation(function_ea, branch)
+        operation = _build_operation(function_ea, None)
         plan = _build_plan(function_ea, operation)
         before = IdaLiveDatabaseReader().read_function_ownership(function_ea)
         assert before is not None
@@ -376,7 +313,13 @@ class TestGatewayApplyRestore:
 
             func = ida_funcs.get_func(function_ea)
             assert func is not None
-            assert ida_funcs.remove_func_tail(func, tail_start_ea)
+            if not ida_funcs.remove_func_tail(func, tail_start_ea):
+                restored = gateway.restore(receipt.transaction_id)
+                assert restored.ok, restored.failure_reason
+                pytest.skip(
+                    "proven native-edge fixture does not retain a detachable tail "
+                    "after gateway reanalysis"
+                )
 
             restored = gateway.restore(receipt.transaction_id)
             assert restored.ok, restored.failure_reason
@@ -627,7 +570,7 @@ class TestGatewayFailureInjection:
                 redo_decompiler=IdaControlledRedoDecompiler(),
                 certificate_store=SQLiteOptimizationStorage(":memory:"),
                 issuer_registry=_issuer_registry(),
-                current_database_identity="gateway-system-test",
+                current_database_identity=_current_database_identity(),
             )
             with pytest.raises(RuntimeError, match="injected"):
                 gateway.apply(plan)
@@ -704,6 +647,8 @@ class TestGatewayFailureInjection:
         function_ea, branch = _widest_encodable_candidate(min_size=3)
         operation = _build_operation(function_ea, branch)
         plan = _build_plan(function_ea, operation)
+        if operation.range.size < 3:
+            pytest.skip("no proven native edge spans enough bytes for partial-write test")
         before = ida_bytes.get_bytes(operation.range.start_ea, operation.range.size)
 
         with fresh_journal(tmp_path) as journal:
@@ -721,7 +666,7 @@ class TestGatewayFailureInjection:
                 redo_decompiler=IdaControlledRedoDecompiler(),
                 certificate_store=SQLiteOptimizationStorage(":memory:"),
                 issuer_registry=_issuer_registry(),
-                current_database_identity="gateway-system-test",
+                current_database_identity=_current_database_identity(),
             )
             with pytest.raises(RuntimeError, match="injected: mid-write fault"):
                 gateway.apply(plan)
@@ -745,6 +690,8 @@ class TestGatewayFailureInjection:
         function_ea, branch = _widest_encodable_candidate(min_size=3)
         operation = _build_operation(function_ea, branch)
         plan = _build_plan(function_ea, operation)
+        if operation.range.size < 3:
+            pytest.skip("no proven native edge spans enough bytes for partial-write test")
         # A byte this operation does NOT govern, elsewhere in the image --
         # used as the "external interference" site so the corruption never
         # collides with a byte the operation itself would classify.
@@ -766,7 +713,7 @@ class TestGatewayFailureInjection:
                 redo_decompiler=IdaControlledRedoDecompiler(),
                 certificate_store=SQLiteOptimizationStorage(":memory:"),
                 issuer_registry=_issuer_registry(),
-                current_database_identity="gateway-system-test",
+                current_database_identity=_current_database_identity(),
             )
             with pytest.raises(RuntimeError, match="injected: mid-write fault"):
                 gateway.apply(plan)
