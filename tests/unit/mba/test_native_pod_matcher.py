@@ -13,6 +13,8 @@ from d810.backends.mba.native_pod_matcher import (
     PackedNativeMbaTerm,
     match_root_pod,
 )
+from d810.mba.rules.sub import Sub_HackersDelightRule_2
+from d810.mba.typed_term import term_fingerprint
 from d810.mba.dsl import Const, Var
 from d810.mba.rules._base import VerifiableRule
 
@@ -125,6 +127,30 @@ def test_pod_adapter_matches_portable_catalogue_exactly() -> None:
     assert match_root_pod(catalogue, candidate, comparison_budget=64) == (
         catalogue.match_root(candidate, comparison_budget=64)
     )
+
+
+def test_pod_adapter_preserves_asymmetric_subtraction_bindings() -> None:
+    """AC traversal must retain the binding orientation used by ``x - y``."""
+
+    rules = _compile_rule_families({"sub": (Sub_HackersDelightRule_2,)}).compiled_rules
+    catalogue = CompiledPatternCatalogue.from_rules(rules)
+    a, b = _leaf("a"), _leaf("b")
+    candidate = _node(
+        "sub",
+        _node("xor", a, b),
+        _node("mul", _constant(2), _node("and", a, _node("bnot", b))),
+    )
+
+    def replacement_fingerprints(result):
+        return tuple(
+            term_fingerprint(match.bindings.materialize_replacement(match.rule))
+            for match in result.matches
+        )
+
+    portable = catalogue._match_root_portable(candidate, comparison_budget=64)
+    pod = match_root_pod(catalogue, candidate, comparison_budget=64)
+
+    assert replacement_fingerprints(pod) == replacement_fingerprints(portable)
 
 
 def test_shared_feasibility_filter_preserves_later_match_under_tight_budget() -> None:

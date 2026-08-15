@@ -55,13 +55,14 @@ _PERFORMANCE_CONTRACT = {
     # A reached preflight with zero comparisons is a shared feasibility no-op,
     # not matcher work.  Keep every such attempt in the semantic stream, but
     # evaluate the native matcher timing contract only on real structural
-    # comparisons.  The fixed corpus currently supplies eight such pairs; five
-    # is the fail-closed floor for future corpus edits.
-    "minimum_structural_matcher_pairs_per_mode": 5,
+    # comparisons.  The paired real-IDB corpus supplies at least thirty such
+    # pairs, spanning both successful matches and structural non-matches.
+    "minimum_structural_matcher_pairs_per_mode": 30,
     "minimum_p50_matcher_reduction_fraction": 0.2,
     "minimum_p95_matcher_reduction_fraction": 0.1,
     "requires_exact_semantic_parity": True,
 }
+_MATCHER_BENCHMARK_CORPUS = "egglog-compiler-shapes"
 
 
 def _load_receipts(path: Path) -> tuple[dict[str, Any], ...]:
@@ -629,12 +630,10 @@ def _real_corpus_proof_timings(
 def _real_corpus_matcher_projection(
     receipts: tuple[dict[str, Any], ...], *, include_backend: bool
 ) -> tuple[tuple[tuple[str, str, str], tuple[tuple[object, ...], ...]], ...]:
-    """Publish one bounded native matcher fact tuple for each live attempt."""
+    """Publish matcher-semantic facts; work counters remain mode-local telemetry."""
 
     fields = (
         "candidate_identity",
-        "native_matcher_comparisons",
-        "native_matcher_lazy_swaps",
         "native_fixed_binding_count",
     )
     if include_backend:
@@ -668,14 +667,19 @@ def _real_corpus_matcher_timing_summary(
     implementation ran a pattern matcher for them.
     """
 
+    benchmark_receipts = tuple(
+        receipt
+        for receipt in receipts
+        if receipt["corpus"] == _MATCHER_BENCHMARK_CORPUS
+    )
     reached_count = sum(
         attempt["native_matcher_backend"] is not None
-        for receipt in receipts
+        for receipt in benchmark_receipts
         for attempt in receipt["attempts"]
     )
     samples = tuple(
         attempt["native_matcher_elapsed_ms"]
-        for receipt in receipts
+        for receipt in benchmark_receipts
         for attempt in receipt["attempts"]
         if attempt["native_matcher_comparisons"] not in {None, 0}
     )
@@ -797,6 +801,10 @@ def compare_receipts(
         == _real_corpus_projection(cython_real, "proof_mode_counts"),
         "real_corpus_proof_paths_match": _real_corpus_proof_projection(python_real)
         == _real_corpus_proof_projection(cython_real),
+        # Comparison and lazy-swap counts measure implementation work; a POD
+        # speedup is allowed to change them. Candidate identity, bindings,
+        # outcomes, provenance, and proof paths above remain exact parity
+        # obligations.
         "real_corpus_matcher_metrics_match": _real_corpus_matcher_projection(
             python_real, include_backend=False
         )

@@ -63,6 +63,7 @@ for MODE in 1 0; do
     D810_CYTHON_PROFILE="$CYTHON_TRACE" "$RUNNER" test -- \
     tests/system/e2e/test_egglog_add_spike.py \
     tests/system/e2e/test_egglog_mba_families_spike.py \
+    tests/system/e2e/test_egglog_mba_compiler_shape_profile.py \
     -q -s | tee -a "$LOG"
   if [ "$CPROFILE" = 1 ]; then
     for corpus in egglog-add-spike egglog-mba-families-spike; do

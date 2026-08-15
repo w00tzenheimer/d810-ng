@@ -73,12 +73,12 @@ def _real_attempts() -> list[dict[str, object]]:
             "native_fixed_binding_count": 2,
             "native_matcher_elapsed_ms": 1.0,
         }
-        for index in range(1, 31)
+        for index in range(1, 32)
     ]
     return [
         *applied,
         {
-            "candidate_identity": "fixture#31:ineligible",
+            "candidate_identity": "fixture#32:ineligible",
             "status": "ineligible",
             "refusal_reason": "candidate_budget",
             "source_names": [],
@@ -115,7 +115,7 @@ def _valid_receipts() -> tuple[
     real_attempts = _real_attempts()
     real_native = {
         "schema_version": 3,
-        "corpus": "fixture",
+        "corpus": "egglog-compiler-shapes",
         "function": "fixture_function",
         "project": "fixture_project",
         "execution_count": len(real_attempts),
@@ -124,15 +124,15 @@ def _valid_receipts() -> tuple[
         ],
         "outcomes": dict(Counter(attempt["status"] for attempt in real_attempts)),
         "source_names": [attempt["source_names"] for attempt in real_attempts],
-        "proof_attempt_count": 30,
-        "proof_mode_counts": {"shadow": 30},
+        "proof_attempt_count": 31,
+        "proof_mode_counts": {"shadow": 31},
         "stage_sample_counts": {
             "root_eligibility": len(real_attempts),
-            "native_preflight": 30,
-            "egglog_extraction": 30,
-            "ast_construction": 30,
-            "native_z3": 30,
-            "reconstruction": 30,
+            "native_preflight": 31,
+            "egglog_extraction": 31,
+            "ast_construction": 31,
+            "native_z3": 31,
+            "reconstruction": 31,
         },
         "attempts": real_attempts,
     }
@@ -227,9 +227,9 @@ fi
     assert result.returncode == 0, result.stderr
     assert "Wrote Egglog native performance receipts to" in result.stdout
     assert runner_log.read_text(encoding="utf-8").splitlines() == [
-        "1|test -- tests/system/e2e/test_egglog_add_spike.py tests/system/e2e/test_egglog_mba_families_spike.py -q -s",
+        "1|test -- tests/system/e2e/test_egglog_add_spike.py tests/system/e2e/test_egglog_mba_families_spike.py tests/system/e2e/test_egglog_mba_compiler_shape_profile.py -q -s",
         "1|test -- tests/system/runtime/backends/test_egglog_mba_performance.py -q -m profile -s",
-        "0|test -- tests/system/e2e/test_egglog_add_spike.py tests/system/e2e/test_egglog_mba_families_spike.py -q -s",
+        "0|test -- tests/system/e2e/test_egglog_add_spike.py tests/system/e2e/test_egglog_mba_families_spike.py tests/system/e2e/test_egglog_mba_compiler_shape_profile.py -q -s",
         "0|test -- tests/system/runtime/backends/test_egglog_mba_performance.py -q -m profile -s",
     ]
     for mode in ("python", "cython"):
@@ -312,7 +312,7 @@ def test_comparator_rejects_missing_identity_metadata(tmp_path: Path) -> None:
             "root eligibility count must equal execution_count",
         ),
         (
-            lambda real: real.update(source_names=[["OtherRule"]] * 31),
+            lambda real: real.update(source_names=[["OtherRule"]] * 32),
             "sources must equal per-attempt sources",
         ),
         (
@@ -419,7 +419,7 @@ def test_comparator_rejects_incomplete_real_corpus_receipts(
         ),
         (
             lambda _python, cython: cython[1]["attempts"][0].update(
-                native_matcher_comparisons=5
+                native_fixed_binding_count=5
             ),
             "real_corpus_matcher_metrics_match",
         ),
@@ -459,15 +459,15 @@ def test_comparator_publishes_predeclared_paired_proof_contract() -> None:
     assert comparison["performance_contract"] == {
         "schema_version": 1,
         "baseline_kind": "native_pod_matcher",
-        "minimum_structural_matcher_pairs_per_mode": 5,
+        "minimum_structural_matcher_pairs_per_mode": 30,
         "minimum_p50_matcher_reduction_fraction": 0.2,
         "minimum_p95_matcher_reduction_fraction": 0.1,
         "requires_exact_semantic_parity": True,
     }
     assert comparison["python"]["real_corpus_matcher_timing"] == {
         "mode": "python",
-        "reached_preflight_count": 30,
-        "sample_count": 30,
+        "reached_preflight_count": 31,
+        "sample_count": 31,
         "p50_ms": 1.0,
         "p95_ms": 1.0,
         "max_ms": 1.0,
@@ -488,8 +488,8 @@ def test_comparator_excludes_shared_feasibility_noops_from_matcher_timing() -> N
 
     assert comparison["python"]["real_corpus_matcher_timing"] == {
         "mode": "python",
-        "reached_preflight_count": 30,
-        "sample_count": 29,
+        "reached_preflight_count": 31,
+        "sample_count": 30,
         "p50_ms": 1.0,
         "p95_ms": 1.0,
         "max_ms": 1.0,
@@ -574,7 +574,7 @@ def test_comparator_accepts_provenance_bearing_shadow_divergence() -> None:
             legacy_proof_verdict=True,
             template_fallback_reason="shadow_divergence",
         )
-        real["outcomes"] = {"applied": 29, "ineligible": 1, "proof_failed": 1}
+        real["outcomes"] = {"applied": 30, "ineligible": 1, "proof_failed": 1}
 
     assert all(compare_receipts(python_rows, cython_rows)["comparison"].values())
 
@@ -593,7 +593,7 @@ def test_comparator_rejects_provenance_free_proof_failure_and_unreached_proof() 
         template_fallback_reason="shadow_divergence",
     )
     cython_rows[1]["outcomes"] = {
-        "applied": 29,
+        "applied": 30,
         "ineligible": 1,
         "proof_failed": 1,
     }
@@ -604,7 +604,7 @@ def test_comparator_rejects_provenance_free_proof_failure_and_unreached_proof() 
     python_rows, cython_rows = _valid_receipts()
     python_rows = list(copy.deepcopy(python_rows))
     cython_rows = list(copy.deepcopy(cython_rows))
-    cython_rows[1]["attempts"][30]["template_source_name"] = "leaked"
+    cython_rows[1]["attempts"][31]["template_source_name"] = "leaked"
 
     with pytest.raises(
         ValueError, match="unreached proof must leave proof fields null"

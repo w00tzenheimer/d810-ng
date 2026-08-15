@@ -343,10 +343,11 @@ def _match_cython_catalogue(
         return None
     root = packed.sidecar[packed.root_index]
     assert root is not None
-    candidate_rows = packed.numeric_rows()
     root_width = (root.operation, root.width)
     full_bucket = catalogue.root_width_buckets.get(root_width, ())
     bucket = catalogue.feasible_root_patterns(root)
+    if not bucket:
+        return NativePatternMatchResult((), 0, 0, matcher_backend="cython")
     if _match_pod_catalogue is None:
         return None
     if any(pattern.pod_pattern is None for pattern in bucket):
@@ -361,6 +362,7 @@ def _match_cython_catalogue(
         )
     )
     assert pattern_records is not None
+    candidate_rows = packed.numeric_rows()
     results_by_pattern, comparisons, lazy_swaps, exceeded = _match_pod_catalogue(
         pattern_records,
         candidate_rows,

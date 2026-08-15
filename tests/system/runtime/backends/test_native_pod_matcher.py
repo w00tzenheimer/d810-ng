@@ -281,6 +281,35 @@ def test_cython_pod_catalogue_adapter_matches_portable_catalogue() -> None:
 @pytest.mark.skipif(
     not CythonMode().is_enabled(), reason="requires the Cython POD matcher"
 )
+def test_cython_catalogue_returns_clean_no_match_for_unselected_root_family() -> None:
+    """A missing root/width bucket is a no-match, never a Cython exception."""
+
+    from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
+    from d810.backends.mba.egglog_add_rule_compiler import compile_add_rule_catalogue
+    from d810.backends.mba.native_mba_term_view import NativeMbaTermView
+
+    catalogue = CompiledPatternCatalogue.from_rules(
+        compile_add_rule_catalogue().compiled_rules
+    )
+    candidate = NativeMbaTermView(
+        "xor",
+        32,
+        children=(
+            NativeMbaTermView(None, 32, leaf_key=("mop", "r", "x")),
+            NativeMbaTermView(None, 32, leaf_key=("mop", "r", "y")),
+        ),
+    )
+
+    native = catalogue.match_root(candidate, comparison_budget=64)
+
+    assert native == catalogue._match_root_portable(candidate, comparison_budget=64)
+    assert native.matches == ()
+    assert native.comparison_budget_exceeded is False
+
+
+@pytest.mark.skipif(
+    not CythonMode().is_enabled(), reason="requires the Cython POD matcher"
+)
 def test_cython_catalogue_shares_feasibility_before_tight_comparison_budget() -> None:
     """An impossible first pattern cannot starve a later valid Cython match."""
 

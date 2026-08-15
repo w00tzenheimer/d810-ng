@@ -35,8 +35,10 @@ class NativeEgglogCorpusEntry:
             value = getattr(self, name)
             if type(value) is not str or not value:
                 raise ValueError(f"{name} must be a non-empty string")
-        if not self.expected_sources or not self.expected_outcomes:
-            raise ValueError("corpus entry must declare expected outcomes")
+        if bool(self.expected_sources) != bool(self.expected_outcomes):
+            raise ValueError(
+                "corpus expected sources and outcomes must both be empty or set"
+            )
         if len(self.expected_sources) != len(self.expected_outcomes):
             raise ValueError("corpus expected sources and outcomes must align")
         if any(

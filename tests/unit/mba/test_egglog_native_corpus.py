@@ -119,3 +119,28 @@ def test_real_corpus_entry_rejects_non_live_or_incomplete_manifest_data() -> Non
             expected_sources=(("Add_HackersDelightRule_2",),),
             expected_outcomes=("applied",),
         )
+
+
+def test_real_corpus_entry_allows_an_expected_structural_nonmatch() -> None:
+    """A real-IDB profiling entry may intentionally require no mutation."""
+
+    entry = NativeEgglogCorpusEntry(
+        corpus="egglog-compiler-shapes",
+        function="mba_shape_coefficient_01",
+        project="mba_compiler_shape_egglog_profile.json",
+        expected_sources=(),
+        expected_outcomes=(),
+    )
+
+    receipt = build_native_egglog_attempt_receipt(
+        (
+            _outcome(
+                status=ProviderOutcomeStatus.OVER_BUDGET,
+                sources=(),
+                refusal_reason="no_degree_eligible_improvement",
+            ),
+        ),
+        entry=entry,
+    )
+
+    assert receipt["outcomes"] == {"over_budget": 1}
