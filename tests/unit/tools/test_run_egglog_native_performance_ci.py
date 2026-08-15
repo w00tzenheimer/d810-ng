@@ -257,7 +257,7 @@ fi
         "native_stage_coverage_match": True,
         "real_corpus_attempts_match": True,
         "real_corpus_matcher_backend_match": True,
-        "real_corpus_matcher_metrics_match": True,
+        "real_corpus_matcher_semantics_match": True,
         "real_corpus_matcher_timing_contract_met": True,
         "real_corpus_outcomes_match": True,
         "real_corpus_proof_paths_match": True,
@@ -419,9 +419,9 @@ def test_comparator_rejects_incomplete_real_corpus_receipts(
         ),
         (
             lambda _python, cython: cython[1]["attempts"][0].update(
-                native_matcher_comparisons=5
+                native_matcher_comparisons=257
             ),
-            "real_corpus_matcher_metrics_match",
+            "native matcher comparisons exceed fixed capacity",
         ),
         (
             lambda _python, cython: cython[2]["stage_timing_ms"][

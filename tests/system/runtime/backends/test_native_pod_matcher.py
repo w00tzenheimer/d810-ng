@@ -8,6 +8,16 @@ from d810.backends.mba.native_pod_matcher import matcher_backend
 from d810.core.cymode import CythonMode
 
 
+def _assert_native_result_matches_portable(native, portable) -> None:
+    """The optimized matcher may use fewer structural comparisons."""
+
+    assert native.matches == portable.matches
+    assert native.comparison_budget_exceeded is portable.comparison_budget_exceeded
+    assert native.candidate_term == portable.candidate_term
+    assert native.comparisons <= portable.comparisons
+    assert native.lazy_swaps <= portable.lazy_swaps
+
+
 @pytest.mark.skipif(
     not CythonMode().is_enabled(), reason="requires the Cython POD matcher"
 )
@@ -80,6 +90,42 @@ def test_cython_pod_catalogue_matches_multiple_patterns_in_one_call() -> None:
     assert matches == (((0, 1), (1, 0)), ())
     assert comparisons >= 4
     assert lazy_swaps == 2
+    assert exceeded is False
+
+
+@pytest.mark.skipif(
+    not CythonMode().is_enabled(), reason="requires the Cython POD matcher"
+)
+def test_cython_catalogue_rejects_larger_pattern_before_structural_comparisons() -> (
+    None
+):
+    """A pattern cannot structurally fit into a smaller candidate tree."""
+
+    from d810.speedups.mba.c_native_pod_matcher import match_pod_catalogue
+
+    # ``add(x, and(y, z))`` has five structural nodes; this ``add`` root has
+    # only its two leaf children.  The cheap cardinality rejection must happen
+    # before the bounded rollback matcher increments its comparison counter.
+    larger_pattern = (
+        (2, 0, 0, 0, 0, -1, -1),
+        (2, 0, 1, 0, 0, -1, -1),
+        (2, 0, 2, 0, 0, -1, -1),
+        (3, 2, -1, 0, 0, 1, 2),
+        (3, 1, -1, 0, 0, 0, 3),
+    )
+    candidate_rows = (
+        (2, 0, 32, -1, -1, 0, 0, 0, 0),
+        (2, 0, 32, -1, -1, 0, 1, 1, 1),
+        (3, 1, 32, 0, 1, 0, -1, 2, 2),
+    )
+
+    matches, comparisons, lazy_swaps, exceeded = match_pod_catalogue(
+        ((larger_pattern, 3),), candidate_rows, 2, 64
+    )
+
+    assert matches == ((),)
+    assert comparisons == 0
+    assert lazy_swaps == 0
     assert exceeded is False
 
 
@@ -242,8 +288,9 @@ def test_public_catalogue_keeps_associative_chain_matching_in_cython(
 
     monkeypatch.setattr(native_pod_matcher, "_match_pod_catalogue", observed)
 
-    assert catalogue.match_root(candidate, comparison_budget=64) == (
-        catalogue._match_root_portable(candidate, comparison_budget=64)
+    _assert_native_result_matches_portable(
+        catalogue.match_root(candidate, comparison_budget=64),
+        catalogue._match_root_portable(candidate, comparison_budget=64),
     )
     assert calls == 1
 
@@ -273,8 +320,9 @@ def test_cython_pod_catalogue_adapter_matches_portable_catalogue() -> None:
         ),
     )
 
-    assert match_root_pod(catalogue, candidate, comparison_budget=64) == (
-        catalogue._match_root_portable(candidate, comparison_budget=64)
+    _assert_native_result_matches_portable(
+        match_root_pod(catalogue, candidate, comparison_budget=64),
+        catalogue._match_root_portable(candidate, comparison_budget=64),
     )
 
 
@@ -359,8 +407,9 @@ def test_public_catalogue_match_uses_cython_pod_backend(monkeypatch) -> None:
 
     monkeypatch.setattr(native_pod_matcher, "_match_pod_catalogue", observed)
 
-    assert catalogue.match_root(candidate, comparison_budget=64) == (
-        catalogue._match_root_portable(candidate, comparison_budget=64)
+    _assert_native_result_matches_portable(
+        catalogue.match_root(candidate, comparison_budget=64),
+        catalogue._match_root_portable(candidate, comparison_budget=64),
     )
     assert calls == 1
 

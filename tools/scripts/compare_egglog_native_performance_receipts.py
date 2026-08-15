@@ -253,6 +253,8 @@ def _validate_real_attempt(attempt: dict[str, Any]) -> None:
             raise ValueError("native matcher backend must be python or cython")
         if any(type(value) is not int or value < 0 for value in matcher_fields[1:]):
             raise ValueError("native matcher metrics must be non-negative integers")
+        if matcher_comparisons > 256:
+            raise ValueError("native matcher comparisons exceed fixed capacity")
         if matcher_lazy_swaps > matcher_comparisons:
             raise ValueError("native matcher lazy swaps cannot exceed comparisons")
     if not _valid_optional_elapsed(matcher_elapsed_ms):
@@ -622,12 +624,16 @@ def _real_corpus_proof_timings(
 def _real_corpus_matcher_projection(
     receipts: tuple[dict[str, Any], ...], *, include_backend: bool
 ) -> tuple[tuple[tuple[str, str, str], tuple[tuple[object, ...], ...]], ...]:
-    """Publish one bounded native matcher fact tuple for each live attempt."""
+    """Publish semantic native-matcher facts for every live attempt.
+
+    Native comparison and lazy-swap counts describe implementation work, not a
+    semantic result.  The POD path is allowed to reject an impossible pattern
+    before entering rollback matching, so those counters must remain bounded
+    and observable but need not equal the portable oracle's counters.
+    """
 
     fields = (
         "candidate_identity",
-        "native_matcher_comparisons",
-        "native_matcher_lazy_swaps",
         "native_fixed_binding_count",
     )
     if include_backend:
@@ -775,7 +781,7 @@ def compare_receipts(
         == _real_corpus_projection(cython_real, "proof_mode_counts"),
         "real_corpus_proof_paths_match": _real_corpus_proof_projection(python_real)
         == _real_corpus_proof_projection(cython_real),
-        "real_corpus_matcher_metrics_match": _real_corpus_matcher_projection(
+        "real_corpus_matcher_semantics_match": _real_corpus_matcher_projection(
             python_real, include_backend=False
         )
         == _real_corpus_matcher_projection(cython_real, include_backend=False),
