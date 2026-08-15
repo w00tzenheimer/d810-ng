@@ -6,6 +6,8 @@ from d810.core.input_identity_attestation import (
     CurrentInputIdentityEvidence,
     InputIdentityAttestation,
     InputIdentityRecoveryStatus,
+    InputIdentityResolution,
+    local_idb_identity,
     resolve_attested_input_identity,
 )
 
@@ -176,3 +178,22 @@ def test_loader_sha_is_authoritative_without_recovery() -> None:
     assert resolution.input_identity == "sha256:" + _SHA_B
     assert resolution.external_evidence_allowed is True
     assert resolution.provenance == "captured_from_ida"
+
+
+def test_idb_local_identity_is_canonical_and_cannot_authorize_external_evidence() -> None:
+    identity = local_idb_identity("60D2B1E4-0C0B-4CC5-9182-41D761E10013")
+    resolution = InputIdentityResolution(
+        status=InputIdentityRecoveryStatus.IDB_LOCAL,
+        input_identity=identity,
+        provenance="current_idb",
+        external_evidence_allowed=False,
+    )
+
+    assert resolution.input_identity == "idb-local:60d2b1e4-0c0b-4cc5-9182-41d761e10013"
+    with pytest.raises(ValueError, match="verified input SHA-256"):
+        InputIdentityResolution(
+            status=InputIdentityRecoveryStatus.IDB_LOCAL,
+            input_identity=identity,
+            provenance="current_idb",
+            external_evidence_allowed=True,
+        )

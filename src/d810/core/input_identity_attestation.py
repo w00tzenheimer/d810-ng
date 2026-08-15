@@ -30,6 +30,7 @@ class InputIdentityRecoveryStatus(str, Enum):
     RECOVERED_LOCAL_ONLY = "recovered_local_only"
     RECOVERED_FILE_HASH_VERIFIED = "recovered_file_hash_verified"
     INPUT_FILE_HASH_MISMATCH = "input_file_hash_mismatch"
+    IDB_LOCAL = "idb_local"
 
 
 def _normalized_sha256(value: object, *, field: str) -> str:
@@ -288,13 +289,22 @@ class InputIdentityResolution:
         if not isinstance(self.status, InputIdentityRecoveryStatus):
             raise TypeError("status must be InputIdentityRecoveryStatus")
         if self.input_identity is not None:
-            object.__setattr__(
-                self,
-                "input_identity",
-                _normalized_digest(self.input_identity, field="input_identity"),
-            )
-        if self.external_evidence_allowed and self.input_identity is None:
-            raise ValueError("external evidence requires an input identity")
+            identity = str(self.input_identity).strip()
+            if identity.startswith("idb-local:"):
+                try:
+                    identity = "idb-local:" + str(
+                        uuid.UUID(identity.removeprefix("idb-local:"))
+                    )
+                except ValueError as error:
+                    raise ValueError("input_identity requires an IDB UUID") from error
+            else:
+                identity = _normalized_digest(identity, field="input_identity")
+            object.__setattr__(self, "input_identity", identity)
+        if self.external_evidence_allowed and (
+            self.input_identity is None
+            or not self.input_identity.startswith("sha256:")
+        ):
+            raise ValueError("external evidence requires a verified input SHA-256")
         if self.database_uuid is not None:
             if not isinstance(self.database_uuid, str) or not self.database_uuid.strip():
                 raise ValueError("database_uuid must be a non-empty string when set")
@@ -321,6 +331,20 @@ def _abstain(
         external_evidence_allowed=False,
         mismatch_field=mismatch_field,
     )
+
+
+def local_idb_identity(database_uuid: str) -> str:
+    """Return an IDB-local identity for D810-owned execution state only.
+
+    This deliberately identifies an IDB, not an input file. It is safe for
+    D810-local journals and mutation coordination, but never SHA-bound
+    external evidence.
+    """
+
+    try:
+        return "idb-local:" + str(uuid.UUID(str(database_uuid)))
+    except (AttributeError, TypeError, ValueError) as error:
+        raise ValueError("database_uuid must be a UUID") from error
 
 
 def resolve_attested_input_identity(
@@ -377,5 +401,6 @@ __all__ = [
     "InputIdentityAttestation",
     "InputIdentityRecoveryStatus",
     "InputIdentityResolution",
+    "local_idb_identity",
     "resolve_attested_input_identity",
 ]

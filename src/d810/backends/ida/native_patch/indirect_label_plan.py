@@ -250,7 +250,11 @@ def _database_identity(function_ea: int) -> NativeDatabaseIdentity:
     )
     native_key = resolution.native_key
     database_uuid = resolution.identity_resolution.database_uuid
-    if native_key is None or database_uuid is None:
+    if (
+        native_key is None
+        or database_uuid is None
+        or not resolution.external_evidence_allowed
+    ):
         raise IndirectLabelPlanBuildError(
             "missing attested loader identity or durable database UUID: "
             + resolution.identity_resolution.reason

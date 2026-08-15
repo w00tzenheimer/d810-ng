@@ -2009,6 +2009,9 @@ class D810Manager:
         from d810.backends.ida.native_patch.native_cfg_observer import (
             capture_live_native_flowchart,
         )
+        from d810.backends.ida.native_patch.native_cfg_plan import (
+            capture_database_attestation,
+        )
         from d810.backends.hexrays.ctree_fingerprint import fingerprint_ctree
         from d810.backends.hexrays.ctree_native_ranges import (
             capture_ctree_native_ranges,
@@ -2085,29 +2088,34 @@ class D810Manager:
         ):
             certificate_store = NetnodeOptimizationStorage()
 
-        # A destructive gateway cannot exist without the durable IDB identity
-        # it must enforce on direct restore/recover calls. Load that identity
-        # before construction; startup with no valid attestation leaves the
-        # native writer unregistered rather than installing an unscoped API.
+        # A destructive gateway is scoped to the open IDB, not to a loader
+        # hash. The IDB-owned UUID survives unavailable input metadata and
+        # keeps journal recovery from crossing databases.
         from d810.backends.hexrays.input_identity_attestation import (
             InputIdentityAttestationMalformed,
+            NetnodeLocalDatabaseIdentityStore,
             NetnodeInputIdentityAttestationStore,
         )
 
         try:
-            attestation = NetnodeInputIdentityAttestationStore().load()
-        except InputIdentityAttestationMalformed:
-            logger.exception("native patch gateway skipped: malformed IDB identity")
-            set_indirect_materialization_default_executor(None)
-            return
+            database_uuid = NetnodeLocalDatabaseIdentityStore().load_or_create()
         except Exception:
             logger.exception("native patch gateway skipped: unavailable IDB identity")
             set_indirect_materialization_default_executor(None)
             return
-        if attestation is None:
-            logger.warning("native patch gateway skipped: no durable IDB identity")
-            set_indirect_materialization_default_executor(None)
-            return
+        try:
+            attestation = NetnodeInputIdentityAttestationStore().load()
+        except InputIdentityAttestationMalformed:
+            logger.warning(
+                "native Stage C evidence unavailable: malformed loader attestation"
+            )
+            attestation = None
+        except Exception:
+            logger.warning(
+                "native Stage C evidence unavailable: loader attestation cannot load",
+                exc_info=True,
+            )
+            attestation = None
 
         live_reader = IdaLiveDatabaseReader()
         branch_encoder = MinimalX86BranchEncoder()
@@ -2131,19 +2139,19 @@ class D810Manager:
                     stage_c_native_cfg_issuer(),
                 )
             ),
-            current_database_identity=attestation.database_uuid,
+            current_database_identity=database_uuid,
             d810_version="native-writer-migration",
         )
         self._native_patch_gateway = gateway
         # Crash recovery is a startup responsibility, but the SQLite journal
-        # is global while an IDB is not.  Read the IDB-local attestation and
+        # is global while an IDB is not. Read the IDB-local UUID and
         # recover only transactions bearing this exact durable UUID; a missing
         # or malformed attestation fails closed rather than applying another
         # database's record to the open IDB.
         recover_startup(
             journal=self._native_patch_journal,
             gateway=gateway,
-            database_identity=attestation.database_uuid,
+            database_identity=database_uuid,
         )
 
         enabled = bool(self.config.get("native_patch_enabled", False))
@@ -2217,6 +2225,11 @@ class D810Manager:
             capture_ranges=capture_ctree_native_ranges,
             fingerprint_ctree=fingerprint_ctree,
             post_apply_observer=_observe_stage_c_postconditions,
+            capture_attestation=(
+                capture_database_attestation
+                if attestation is not None
+                else lambda **_kwargs: None
+            ),
         )
 
         def _consume_stage_c(**kwargs):

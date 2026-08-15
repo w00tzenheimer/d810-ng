@@ -101,14 +101,6 @@ class D810Settings:
     pure overhead once the question is answered.
     """
 
-    allow_attested_input_identity_recovery: bool = False
-    """Allow recovery of a matching IDB-local input identity attestation.
-
-    Disabled by default.  It never authorizes SHA-bound external evidence
-    until the current input file is present and freshly hashes to the
-    attested SHA-256.
-    """
-
     @classmethod
     def _from_env(cls) -> D810Settings:
         return cls(
@@ -125,9 +117,6 @@ class D810Settings:
             ),
             fact_lifecycle=_env_bool("D810_FACT_LIFECYCLE", default=True),
             trace_decompile_callers=_env_bool("D810_TRACE_DECOMPILE_CALLERS"),
-            allow_attested_input_identity_recovery=_env_bool(
-                "D810_ALLOW_ATTESTED_INPUT_IDENTITY_RECOVERY"
-            ),
         )
 
 

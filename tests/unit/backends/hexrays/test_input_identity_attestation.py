@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 import sys
 from types import SimpleNamespace
+import uuid
 
 import pytest
 
@@ -34,6 +34,16 @@ class _MemoryStore:
 
     def save(self, attestation: InputIdentityAttestation) -> None:
         self.attestation = attestation
+
+
+class _MemoryLocalIdentityStore:
+    def __init__(self) -> None:
+        self.identity: str | None = None
+
+    def load_or_create(self) -> str:
+        if self.identity is None:
+            self.identity = "0a2c1f58-08e8-4c93-8c5c-e66a5d2cfc25"
+        return self.identity
 
 
 def _install_fake_ida(
@@ -94,13 +104,14 @@ def test_loader_sha_capture_writes_authoritative_store_and_sqlite_mirror(
 
     _install_fake_ida(monkeypatch, loader_sha256=bytes.fromhex("11" * 32))
     store = _MemoryStore()
+    local_store = _MemoryLocalIdentityStore()
     mirror_path = tmp_path / "identity.sqlite3"
 
     resolved = resolve_native_preanalysis_identity(
         0x401000,
         profile_config={"profile": "x"},
-        allow_attested_recovery=False,
         attestation_store=store,
+        local_identity_store=local_store,
         mirror_path=mirror_path,
     )
 
@@ -109,15 +120,14 @@ def test_loader_sha_capture_writes_authoritative_store_and_sqlite_mirror(
     assert store.attestation is not None
     assert store.attestation.input_sha256 == "11" * 32
     assert store.attestation.function_fingerprints[0][0] == 0x1000
-    assert (
-        resolved.identity_resolution.database_uuid == store.attestation.database_uuid
-    )
+    assert resolved.identity_resolution.database_uuid == local_store.load_or_create()
+    assert store.attestation.database_uuid == local_store.load_or_create()
     assert SqliteInputIdentityAttestationMirror(mirror_path).load(
         store.attestation.database_uuid
     ) == store.attestation
 
 
-def test_matching_attestation_recovers_local_only_when_input_is_absent(
+def test_missing_loader_sha_uses_current_idb_identity_for_local_mutation(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -126,114 +136,36 @@ def test_matching_attestation_recovers_local_only_when_input_is_absent(
     )
 
     _install_fake_ida(monkeypatch, loader_sha256=None)
-    initial_store = _MemoryStore()
-    _install_fake_ida(monkeypatch, loader_sha256=bytes.fromhex("11" * 32))
-    resolve_native_preanalysis_identity(
-        0x401000,
-        profile_config={"profile": "x"},
-        allow_attested_recovery=False,
-        attestation_store=initial_store,
-        mirror_path=tmp_path / "first.sqlite3",
-    )
-    _install_fake_ida(monkeypatch, loader_sha256=None)
 
+    local_store = _MemoryLocalIdentityStore()
     resolved = resolve_native_preanalysis_identity(
         0x401000,
         profile_config={"profile": "x"},
-        allow_attested_recovery=True,
-        attestation_store=initial_store,
-        mirror_path=tmp_path / "second.sqlite3",
-    )
-
-    assert resolved.native_key is not None
-    assert resolved.native_key.input_identity == "sha256:" + ("11" * 32)
-    assert (
-        resolved.identity_resolution.status
-        is InputIdentityRecoveryStatus.RECOVERED_LOCAL_ONLY
-    )
-    assert resolved.external_evidence_allowed is False
-
-
-def test_matching_input_file_hash_enables_external_evidence(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    from d810.backends.hexrays.native_preanalysis_key import (
-        resolve_native_preanalysis_identity,
-    )
-
-    binary = tmp_path / "candidate.bin"
-    binary.write_bytes(b"attested input")
-    digest = hashlib.sha256(binary.read_bytes()).digest()
-    store = _MemoryStore()
-    _install_fake_ida(monkeypatch, loader_sha256=digest, input_path=binary)
-    resolve_native_preanalysis_identity(
-        0x401000,
-        profile_config={"profile": "x"},
-        allow_attested_recovery=False,
-        attestation_store=store,
-        mirror_path=tmp_path / "capture.sqlite3",
-    )
-    _install_fake_ida(monkeypatch, loader_sha256=None, input_path=binary)
-
-    resolved = resolve_native_preanalysis_identity(
-        0x401000,
-        profile_config={"profile": "x"},
-        allow_attested_recovery=True,
-        attestation_store=store,
-        mirror_path=tmp_path / "recover.sqlite3",
-    )
-
-    assert resolved.native_key is not None
-    assert (
-        resolved.identity_resolution.status
-        is InputIdentityRecoveryStatus.RECOVERED_FILE_HASH_VERIFIED
-    )
-    assert resolved.external_evidence_allowed is True
-
-
-def test_mirror_never_recovers_when_authoritative_store_is_missing(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    from d810.backends.hexrays.input_identity_attestation import (
-        SqliteInputIdentityAttestationMirror,
-    )
-    from d810.backends.hexrays.native_preanalysis_key import (
-        resolve_native_preanalysis_identity,
-    )
-
-    capture_store = _MemoryStore()
-    _install_fake_ida(monkeypatch, loader_sha256=bytes.fromhex("11" * 32))
-    captured = resolve_native_preanalysis_identity(
-        0x401000,
-        profile_config={"profile": "x"},
-        allow_attested_recovery=False,
-        attestation_store=capture_store,
-        mirror_path=tmp_path / "capture.sqlite3",
-    )
-    assert capture_store.attestation is not None
-    mirror_path = tmp_path / "mirror.sqlite3"
-    SqliteInputIdentityAttestationMirror(mirror_path).save(capture_store.attestation)
-    _install_fake_ida(monkeypatch, loader_sha256=None)
-
-    recovered = resolve_native_preanalysis_identity(
-        0x401000,
-        profile_config={"profile": "x"},
-        allow_attested_recovery=True,
         attestation_store=_MemoryStore(),
-        mirror_path=mirror_path,
+        local_identity_store=local_store,
+        mirror_path=tmp_path / "identity.sqlite3",
     )
 
-    assert captured.native_key is not None
-    assert recovered.native_key is None
-    assert (
-        recovered.identity_resolution.status
-        is InputIdentityRecoveryStatus.ATTESTATION_MISSING
+    assert resolved.native_key is not None
+    assert resolved.native_key.input_identity == "idb-local:" + local_store.load_or_create()
+    assert resolved.identity_resolution.status is InputIdentityRecoveryStatus.IDB_LOCAL
+    assert resolved.external_evidence_allowed is False
+    assert resolved.identity_resolution.database_uuid == local_store.load_or_create()
+
+
+def test_local_database_identity_store_persists_a_canonical_uuid() -> None:
+    from d810.backends.hexrays.input_identity_attestation import (
+        NetnodeLocalDatabaseIdentityStore,
     )
 
+    node: dict[str, object] = {}
+    first = NetnodeLocalDatabaseIdentityStore(node=node).load_or_create()
 
-def test_malformed_authoritative_store_fails_closed(
+    assert str(uuid.UUID(first)) == first
+    assert NetnodeLocalDatabaseIdentityStore(node=node).load_or_create() == first
+
+
+def test_missing_loader_sha_ignores_stale_or_malformed_attestation_for_local_mutation(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -242,57 +174,17 @@ def test_malformed_authoritative_store_fails_closed(
     )
 
     _install_fake_ida(monkeypatch, loader_sha256=None)
-    recovered = resolve_native_preanalysis_identity(
+
+    local_store = _MemoryLocalIdentityStore()
+    resolved = resolve_native_preanalysis_identity(
         0x401000,
         profile_config={"profile": "x"},
-        allow_attested_recovery=True,
         attestation_store=_MemoryStore(malformed=True),
-        mirror_path=tmp_path / "mirror.sqlite3",
+        local_identity_store=local_store,
+        mirror_path=tmp_path / "identity.sqlite3",
     )
 
-    assert recovered.native_key is None
-    assert (
-        recovered.identity_resolution.status
-        is InputIdentityRecoveryStatus.ATTESTATION_MALFORMED
-    )
-
-
-def test_present_input_with_different_hash_fails_closed(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    from d810.backends.hexrays.native_preanalysis_key import (
-        resolve_native_preanalysis_identity,
-    )
-
-    captured_file = tmp_path / "candidate.bin"
-    captured_file.write_bytes(b"initial")
-    store = _MemoryStore()
-    _install_fake_ida(
-        monkeypatch,
-        loader_sha256=hashlib.sha256(captured_file.read_bytes()).digest(),
-        input_path=captured_file,
-    )
-    resolve_native_preanalysis_identity(
-        0x401000,
-        profile_config={"profile": "x"},
-        allow_attested_recovery=False,
-        attestation_store=store,
-        mirror_path=tmp_path / "capture.sqlite3",
-    )
-    captured_file.write_bytes(b"replacement")
-    _install_fake_ida(monkeypatch, loader_sha256=None, input_path=captured_file)
-
-    recovered = resolve_native_preanalysis_identity(
-        0x401000,
-        profile_config={"profile": "x"},
-        allow_attested_recovery=True,
-        attestation_store=store,
-        mirror_path=tmp_path / "recover.sqlite3",
-    )
-
-    assert recovered.native_key is None
-    assert (
-        recovered.identity_resolution.status
-        is InputIdentityRecoveryStatus.INPUT_FILE_HASH_MISMATCH
-    )
+    assert resolved.native_key is not None
+    assert resolved.native_key.input_identity == "idb-local:" + local_store.load_or_create()
+    assert resolved.identity_resolution.status is InputIdentityRecoveryStatus.IDB_LOCAL
+    assert resolved.external_evidence_allowed is False

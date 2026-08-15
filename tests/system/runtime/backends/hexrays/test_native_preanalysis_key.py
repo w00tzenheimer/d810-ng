@@ -12,6 +12,7 @@ from d810.backends.hexrays.native_preanalysis_key import (
     build_native_preanalysis_key,
     fingerprint_profile_config,
     native_toolchain_fingerprint,
+    resolve_native_preanalysis_identity,
 )
 
 
@@ -60,6 +61,12 @@ def test_build_key_uses_real_loader_function_profile_and_sdk_inputs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _install_fake_ida(monkeypatch)
+    monkeypatch.setattr(
+        "d810.backends.hexrays.native_preanalysis_key.NetnodeLocalDatabaseIdentityStore",
+        lambda: SimpleNamespace(
+            load_or_create=lambda: "60d2b1e4-0c0b-4cc5-9182-41d761e10013"
+        ),
+    )
     profile = {"project_name": "rhad", "rules": ["unflattening", "dce"]}
     function_hasher = hashlib.sha256()
     for ea, body in ((0x401000, b"\x90\x90"), (0x401002, b"\xc3")):
@@ -113,7 +120,7 @@ def test_profile_fingerprint_rejects_non_json_values() -> None:
         fingerprint_profile_config({"bad": object()})
 
 
-def test_build_key_fails_closed_without_input_hash(
+def test_missing_loader_hash_uses_idb_local_identity_for_mutation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _install_fake_ida(monkeypatch)
@@ -123,8 +130,19 @@ def test_build_key_fails_closed_without_input_hash(
         lambda: b"",
     )
 
-    with pytest.raises(ValueError, match="input SHA-256"):
-        build_native_preanalysis_key(0x401000, profile_config={"profile": "x"})
+    resolved = resolve_native_preanalysis_identity(
+        0x401000,
+        profile_config={"profile": "x"},
+        local_identity_store=SimpleNamespace(
+            load_or_create=lambda: "60d2b1e4-0c0b-4cc5-9182-41d761e10013"
+        ),
+    )
+
+    assert resolved.native_key is not None
+    assert resolved.native_key.input_identity == (
+        "idb-local:60d2b1e4-0c0b-4cc5-9182-41d761e10013"
+    )
+    assert resolved.external_evidence_allowed is False
 
 
 def test_build_key_fails_closed_without_function(

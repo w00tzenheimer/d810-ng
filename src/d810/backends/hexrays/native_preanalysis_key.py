@@ -12,25 +12,25 @@ from d810 import __version__ as D810_VERSION
 from d810.backends.hexrays.input_identity_attestation import (
     InputIdentityAttestationMalformed,
     InputIdentityAttestationStore,
+    LocalDatabaseIdentityStore,
+    NetnodeLocalDatabaseIdentityStore,
     NetnodeInputIdentityAttestationStore,
     SqliteInputIdentityAttestationMirror,
     collect_current_input_identity_evidence,
     default_mirror_path,
-    input_file_path,
     input_size,
     loader_sha256,
     make_attestation,
-    sha256_file,
 )
 from d810.core.input_identity_attestation import (
     InputIdentityAttestation,
     InputIdentityRecoveryStatus,
     InputIdentityResolution,
+    local_idb_identity,
     resolve_attested_input_identity,
 )
 from d810.core.logging import getLogger
 from d810.core.native_preanalysis_key import NativePreanalysisKey
-from d810.core.settings import get_settings
 
 
 logger = getLogger("d810.native_preanalysis_key")
@@ -54,7 +54,7 @@ def native_toolchain_fingerprint(
 
 @dataclass(frozen=True, slots=True)
 class NativePreanalysisIdentityResolution:
-    """A native key together with its loader or attestation provenance."""
+    """A native key together with loader-SHA or IDB-local provenance."""
 
     native_key: NativePreanalysisKey | None
     identity_resolution: InputIdentityResolution
@@ -88,21 +88,13 @@ def _default_attestation_store() -> InputIdentityAttestationStore | None:
         return None
 
 
-def _malformed_resolution() -> InputIdentityResolution:
-    return InputIdentityResolution(
-        status=InputIdentityRecoveryStatus.ATTESTATION_MALFORMED,
-        input_identity=None,
-        provenance=None,
-        external_evidence_allowed=False,
-    )
-
-
 def _refresh_attestation(
     *,
     store: InputIdentityAttestationStore | None,
     mirror_path: Path | None,
     current,
     loader_digest: str,
+    database_uuid: str,
     ida_nalt: object,
 ) -> InputIdentityAttestation | None:
     if store is None:
@@ -118,6 +110,7 @@ def _refresh_attestation(
             input_sha256=loader_digest,
             input_size_bytes=input_size(ida_nalt),
             previous=previous,
+            database_uuid=database_uuid,
         )
         store.save(attestation)
     except Exception as error:
@@ -136,11 +129,11 @@ def resolve_native_preanalysis_identity(
     function_ea: int,
     *,
     profile_config: Mapping[str, object],
-    allow_attested_recovery: bool | None = None,
     attestation_store: InputIdentityAttestationStore | None = None,
+    local_identity_store: LocalDatabaseIdentityStore | None = None,
     mirror_path: str | Path | None = None,
 ) -> NativePreanalysisIdentityResolution:
-    """Derive a native key without treating input-path text as identity."""
+    """Derive a local mutation key without treating input-path text as identity."""
 
     import ida_bytes
     import ida_funcs
@@ -161,6 +154,12 @@ def resolve_native_preanalysis_identity(
         idaapi=idaapi,
         idautils=idautils,
     )
+    local_store = (
+        local_identity_store
+        if local_identity_store is not None
+        else NetnodeLocalDatabaseIdentityStore()
+    )
+    database_uuid = local_store.load_or_create()
     loader_digest = loader_sha256(ida_nalt)
     store = (
         attestation_store
@@ -171,11 +170,12 @@ def resolve_native_preanalysis_identity(
         Path(mirror_path) if mirror_path is not None else default_mirror_path()
     )
     if loader_digest is not None:
-        refreshed_attestation = _refresh_attestation(
+        _refresh_attestation(
             store=store,
             mirror_path=resolved_mirror_path,
             current=current,
             loader_digest=loader_digest,
+            database_uuid=database_uuid,
             ida_nalt=ida_nalt,
         )
         identity_resolution = resolve_attested_input_identity(
@@ -186,46 +186,24 @@ def resolve_native_preanalysis_identity(
             input_file_exists=False,
             input_file_sha256=None,
         )
-        if refreshed_attestation is not None:
-            identity_resolution = replace(
-                identity_resolution,
-                database_uuid=refreshed_attestation.database_uuid,
-            )
+        identity_resolution = replace(
+            identity_resolution,
+            database_uuid=database_uuid,
+        )
     else:
-        attestation = None
-        try:
-            attestation = None if store is None else store.load()
-        except InputIdentityAttestationMalformed:
-            identity_resolution = _malformed_resolution()
-        else:
-            candidate_path = input_file_path(ida_nalt)
-            candidate_hash = (
-                None if candidate_path is None else sha256_file(candidate_path)
-            )
-            identity_resolution = resolve_attested_input_identity(
-                loader_sha256=None,
-                allow_recovery=(
-                    get_settings().allow_attested_input_identity_recovery
-                    if allow_attested_recovery is None
-                    else bool(allow_attested_recovery)
-                ),
-                attestation=attestation,
-                current=current,
-                input_file_exists=candidate_path is not None
-                and candidate_path.is_file(),
-                input_file_sha256=(
-                    None if candidate_hash is None else candidate_hash[0]
-                ),
-            )
-            if attestation is not None:
-                identity_resolution = replace(
-                    identity_resolution,
-                    database_uuid=attestation.database_uuid,
-                )
-    if identity_resolution.input_identity is None:
-        return NativePreanalysisIdentityResolution(None, identity_resolution)
+        identity_resolution = InputIdentityResolution(
+            status=InputIdentityRecoveryStatus.IDB_LOCAL,
+            input_identity=local_idb_identity(local_store.load_or_create()),
+            provenance="current_idb",
+            external_evidence_allowed=False,
+            database_uuid=database_uuid,
+        )
     native_key = NativePreanalysisKey(
-        input_identity=identity_resolution.input_identity,
+        input_identity=(
+            identity_resolution.input_identity
+            if identity_resolution.input_identity is not None
+            else _raise_missing_identity()
+        ),
         processor=current.processor,
         bitness=current.bitness,
         function_rva=current.function_rva,
@@ -241,6 +219,10 @@ def resolve_native_preanalysis_identity(
     return NativePreanalysisIdentityResolution(native_key, identity_resolution)
 
 
+def _raise_missing_identity() -> str:
+    raise ValueError("current database has no valid local identity")
+
+
 def build_native_preanalysis_key(
     function_ea: int,
     *,
@@ -253,10 +235,7 @@ def build_native_preanalysis_key(
         profile_config=profile_config,
     )
     if resolution.native_key is None:
-        raise ValueError(
-            "current database has no valid input SHA-256: "
-            + resolution.identity_resolution.reason
-        )
+        raise ValueError("current database has no valid local identity")
     return resolution.native_key
 
 

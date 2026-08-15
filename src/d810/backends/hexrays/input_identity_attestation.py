@@ -23,6 +23,8 @@ logger = getLogger("d810.input_identity_attestation")
 
 ATTESTATION_NETNODE_NAME = "$ d810.input_identity_attestation.v1"
 ATTESTATION_NETNODE_KEY = "current"
+LOCAL_IDENTITY_NETNODE_NAME = "$ d810.local_database_identity.v1"
+LOCAL_IDENTITY_NETNODE_KEY = "current"
 _MAX_ATTESTED_FUNCTIONS = 8
 
 
@@ -35,6 +37,39 @@ class InputIdentityAttestationStore(Protocol):
     def load(self) -> InputIdentityAttestation | None: ...
 
     def save(self, attestation: InputIdentityAttestation) -> None: ...
+
+
+@runtime_checkable
+class LocalDatabaseIdentityStore(Protocol):
+    """Own a durable identity for the currently open IDB."""
+
+    def load_or_create(self) -> str: ...
+
+
+class NetnodeLocalDatabaseIdentityStore:
+    """Authoritative IDB-local identity, independent from input-file metadata."""
+
+    def __init__(
+        self,
+        *,
+        node: object | None = None,
+        node_name: str = LOCAL_IDENTITY_NETNODE_NAME,
+    ) -> None:
+        self._node = Netnode(node_name) if node is None else node
+
+    def load_or_create(self) -> str:
+        try:
+            value = self._node[LOCAL_IDENTITY_NETNODE_KEY]
+        except KeyError:
+            value = None
+        if isinstance(value, str):
+            try:
+                return str(uuid.UUID(value))
+            except ValueError:
+                pass
+        identity = str(uuid.uuid4())
+        self._node[LOCAL_IDENTITY_NETNODE_KEY] = identity
+        return identity
 
 
 class NetnodeInputIdentityAttestationStore:
@@ -287,8 +322,9 @@ def make_attestation(
     input_sha256: str,
     input_size_bytes: int,
     previous: InputIdentityAttestation | None,
+    database_uuid: str,
 ) -> InputIdentityAttestation:
-    """Refresh a bounded function inventory only for the same loader identity."""
+    """Refresh SHA evidence under the durable identity of the current IDB."""
 
     reuse_previous = (
         previous is not None
@@ -311,9 +347,7 @@ def make_attestation(
     )
     selected = tuple(selected_items[:_MAX_ATTESTED_FUNCTIONS])
     return InputIdentityAttestation(
-        database_uuid=(
-            previous.database_uuid if reuse_previous and previous is not None else str(uuid.uuid4())
-        ),
+        database_uuid=database_uuid,
         input_sha256=input_sha256,
         input_size=input_size_bytes,
         idb_creation_time=current.idb_creation_time,
@@ -345,6 +379,10 @@ __all__ = [
     "ATTESTATION_NETNODE_NAME",
     "InputIdentityAttestationMalformed",
     "InputIdentityAttestationStore",
+    "LOCAL_IDENTITY_NETNODE_KEY",
+    "LOCAL_IDENTITY_NETNODE_NAME",
+    "LocalDatabaseIdentityStore",
+    "NetnodeLocalDatabaseIdentityStore",
     "NetnodeInputIdentityAttestationStore",
     "SqliteInputIdentityAttestationMirror",
     "collect_current_input_identity_evidence",
