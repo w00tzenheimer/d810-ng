@@ -78,6 +78,7 @@ _ARITH_OPCODES = frozenset(
 )
 _VALID_SIZES = frozenset({1, 2, 4, 8})
 _DEFAULT_FAMILIES = ("add",)
+_MAX_NATIVE_Z3_TIMEOUT_MS = 250
 _MAX_PATTERN_COMPARISONS = 256
 
 
@@ -950,7 +951,10 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         if self.native_proof_mode == "legacy":
             legacy_started = time.perf_counter()
             legacy_proved = self._prove_ast_equivalence(
-                original, replacement, width=width
+                original,
+                replacement,
+                width=width,
+                timeout_ms=self._native_z3_timeout_ms(),
             )
             return (
                 legacy_proved,
@@ -989,7 +993,12 @@ class EgglogOptimizer(PeepholeSimplificationRule):
                 if not template_proved:
                     fallback_reason = "template_proof_failed"
         legacy_started = time.perf_counter()
-        legacy_proved = self._prove_ast_equivalence(original, replacement, width=width)
+        legacy_proved = self._prove_ast_equivalence(
+            original,
+            replacement,
+            width=width,
+            timeout_ms=self._native_z3_timeout_ms(),
+        )
         legacy_elapsed_ms = (time.perf_counter() - legacy_started) * 1000.0
         if self.native_proof_mode == "shadow":
             if template_proved is not None and template_proved != legacy_proved:
@@ -1031,11 +1040,24 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             legacy_elapsed_ms,
         )
 
+    def _native_z3_timeout_ms(self) -> int:
+        """Bound the final proof by the configured test/runtime budget.
+
+        The interactive 3 ms configuration never reaches this path.  Larger
+        admitted runs must not inherit the historical 50 ms solver cutoff:
+        it can produce nondeterministic refusal for valid 64-bit identities.
+        The independent native proof remains mandatory, with a finite ceiling.
+        """
+
+        return min(max(50, self.time_budget_ms), _MAX_NATIVE_Z3_TIMEOUT_MS)
+
     @staticmethod
     def _prove_ast_equivalence(
-        original: AstNode, replacement: AstNode, *, width: int
+        original: AstNode, replacement: AstNode, *, width: int, timeout_ms: int = 50
     ) -> bool:
         """Prove concrete native AST equivalence at the destination width."""
+        if type(timeout_ms) is not int or timeout_ms <= 0:
+            return False
         try:
             import z3
 
@@ -1074,7 +1096,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
                 return operation()
 
             solver = z3.Solver()
-            solver.set(timeout=50)
+            solver.set(timeout=timeout_ms)
             solver.add(visit(original) != visit(replacement))
             return solver.check() == z3.unsat
         except Exception:

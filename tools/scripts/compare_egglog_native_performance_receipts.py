@@ -805,7 +805,7 @@ def compare_receipts(
         # speedup is allowed to change them. Candidate identity, bindings,
         # outcomes, provenance, and proof paths above remain exact parity
         # obligations.
-        "real_corpus_matcher_metrics_match": _real_corpus_matcher_projection(
+        "real_corpus_matcher_binding_semantics_match": _real_corpus_matcher_projection(
             python_real, include_backend=False
         )
         == _real_corpus_matcher_projection(cython_real, include_backend=False),
