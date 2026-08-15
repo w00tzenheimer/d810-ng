@@ -68,8 +68,8 @@ def test_every_supported_jump_uses_exact_tri_state_comparison(
 
     tail = SimpleNamespace(
         opcode=opcode,
-        l=object(),
-        r=object(),
+        l=SimpleNamespace(size=4),
+        r=SimpleNamespace(size=4),
         d=SimpleNamespace(t=ida_hexrays.mop_b, b=1),
         ea=0x1000,
     )
@@ -101,8 +101,8 @@ def test_undecidable_relational_predicate_produces_no_candidate(monkeypatch):
 
     tail = SimpleNamespace(
         opcode=ida_hexrays.m_jl,
-        l=object(),
-        r=object(),
+        l=SimpleNamespace(size=4),
+        r=SimpleNamespace(size=4),
         d=SimpleNamespace(t=ida_hexrays.mop_b, b=1),
         ea=0x1000,
     )
@@ -131,8 +131,8 @@ def test_equality_jumps_use_the_width_safe_tri_state_prover(
 
     tail = SimpleNamespace(
         opcode=opcode,
-        l=object(),
-        r=object(),
+        l=SimpleNamespace(size=4),
+        r=SimpleNamespace(size=4),
         d=SimpleNamespace(t=ida_hexrays.mop_b, b=1),
         ea=0x1000,
     )
@@ -161,8 +161,8 @@ def test_undecidable_equality_predicate_produces_no_candidate(monkeypatch, opcod
 
     tail = SimpleNamespace(
         opcode=opcode,
-        l=object(),
-        r=object(),
+        l=SimpleNamespace(size=4),
+        r=SimpleNamespace(size=4),
         d=SimpleNamespace(t=ida_hexrays.mop_b, b=1),
         ea=0x1000,
     )
@@ -174,3 +174,60 @@ def test_undecidable_equality_predicate_produces_no_candidate(monkeypatch, opcod
 
     assert candidates == []
     assert abstentions == []
+
+
+def test_unsupported_operand_width_abstains_before_the_prover(monkeypatch):
+    class _Prover:
+        def prove_comparison(self, *_args, **_kwargs):
+            pytest.fail("unsupported-width operands must not reach the prover")
+
+    tail = SimpleNamespace(
+        opcode=ida_hexrays.m_jz,
+        l=SimpleNamespace(size=8),
+        r=SimpleNamespace(size=8),
+        d=SimpleNamespace(t=ida_hexrays.mop_b, b=1),
+        ea=0x1000,
+    )
+    monkeypatch.setattr(oracle, "Z3MopProver", _Prover)
+
+    candidates, abstentions = oracle._find_opaque_edges(
+        _FakeMba(tail), function_ea=0x1000
+    )
+
+    assert candidates == []
+    assert [item.reason for item in abstentions] == [
+        "UNSUPPORTED_COMPARISON_WIDTH:left=8,right=8"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("left_size", "right_size"),
+    (
+        (object(), 4),
+        (4, object()),
+    ),
+)
+def test_malformed_operand_width_abstains_before_the_prover(
+    monkeypatch,
+    left_size,
+    right_size,
+):
+    class _Prover:
+        def prove_comparison(self, *_args, **_kwargs):
+            pytest.fail("malformed-width operands must not reach the prover")
+
+    tail = SimpleNamespace(
+        opcode=ida_hexrays.m_jz,
+        l=SimpleNamespace(size=left_size),
+        r=SimpleNamespace(size=right_size),
+        d=SimpleNamespace(t=ida_hexrays.mop_b, b=1),
+        ea=0x1000,
+    )
+    monkeypatch.setattr(oracle, "Z3MopProver", _Prover)
+
+    candidates, abstentions = oracle._find_opaque_edges(
+        _FakeMba(tail), function_ea=0x1000
+    )
+
+    assert candidates == []
+    assert [item.reason for item in abstentions] == ["MALFORMED_COMPARISON_WIDTH"]

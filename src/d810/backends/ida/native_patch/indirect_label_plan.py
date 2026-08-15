@@ -10,6 +10,7 @@ below Hex-Rays in the import contract.
 from __future__ import annotations
 
 import hashlib
+import enum
 from dataclasses import dataclass
 
 from d810.backends.ida.native_patch.capture import (
@@ -35,13 +36,48 @@ from d810.transforms.native_patch_plan import (
 
 __all__ = [
     "IndirectLabelPlanBuildError",
+    "IndirectLabelPlanFailureReason",
     "IndirectLabelPlanRequest",
     "build_indirect_label_metadata_plan",
 ]
 
 
+class IndirectLabelPlanFailureReason(str, enum.Enum):
+    """Stable machine-readable reasons for planner abstention receipts."""
+
+    UNCLASSIFIED = "unclassified"
+    LOSSLESS_ITEM_RECREATION_UNSUPPORTED = "lossless_item_recreation_unsupported"
+
+
 class IndirectLabelPlanBuildError(ValueError):
     """Live evidence cannot honestly lower the requested materialization."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        reason: IndirectLabelPlanFailureReason = (
+            IndirectLabelPlanFailureReason.UNCLASSIFIED
+        ),
+        ea: int | None = None,
+        before_shape: str | None = None,
+        after_shape: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        if not isinstance(reason, IndirectLabelPlanFailureReason):
+            raise TypeError("reason must be an IndirectLabelPlanFailureReason")
+        if (
+            reason
+            is IndirectLabelPlanFailureReason.LOSSLESS_ITEM_RECREATION_UNSUPPORTED
+        ):
+            if ea is None or not before_shape or not after_shape:
+                raise ValueError(
+                    "lossless item recreation errors require EA and both shapes"
+                )
+        self.reason = reason
+        self.ea = None if ea is None else int(ea)
+        self.before_shape = before_shape
+        self.after_shape = after_shape
 
 
 @dataclass(frozen=True, slots=True)
@@ -315,7 +351,13 @@ def build_indirect_label_metadata_plan(
             )
         elif before != after:
             raise IndirectLabelPlanBuildError(
-                f"cannot losslessly recreate {before!r} as {after!r} at {target_ea:#x}"
+                f"cannot losslessly recreate {before!r} as {after!r} at {target_ea:#x}",
+                reason=(
+                    IndirectLabelPlanFailureReason.LOSSLESS_ITEM_RECREATION_UNSUPPORTED
+                ),
+                ea=int(target_ea),
+                before_shape=before,
+                after_shape=after,
             )
 
     import idaapi

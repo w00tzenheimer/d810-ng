@@ -240,28 +240,21 @@ class TestTigressIndirectSemanticOracle:
                 "no REDIRECT_EDGE after a non-abstaining native attempt: "
                 f"{native_materialization_attempts}"
             )
-            known_abstention_fragments = (
-                "function-tail adoption is not yet proven losslessly reversible",
-                "missing label-boundary flow xref has no stable reversible "
-                "representation",
-                "unknown-item recreation is not yet proven reversible",
-                "cannot losslessly recreate",
-                "switch-info installation has no read-only exact after-state witness",
-            )
             for attempt in native_materialization_attempts:
                 details = dict(attempt.details)
                 assert details.get("kind") == "native_plan_unavailable", details
                 assert details.get("error_type") == "IndirectLabelPlanBuildError", (
                     details
                 )
-                message = details.get("message")
-                assert isinstance(message, str)
-                assert any(
-                    fragment in message for fragment in known_abstention_fragments
-                ), (
-                    "unrecognized native abstention must not be swallowed by "
-                    f"the Tigress xfail: {message}"
-                )
+                assert details.get("reason") == (
+                    "lossless_item_recreation_unsupported"
+                ), details
+                assert details.get("ea") == 0x180013EAA, details
+                assert details.get("before_shape") == "data:6", details
+                assert details.get("after_shape") == "code:7", details
+                assert details.get("message") == (
+                    "cannot losslessly recreate 'data:6' as 'code:7' at 0x180013eaa"
+                ), details
             pytest.xfail(
                 "verified native materialization abstention(s): "
                 + "; ".join(

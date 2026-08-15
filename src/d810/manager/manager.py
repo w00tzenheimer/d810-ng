@@ -649,6 +649,16 @@ class D810Manager:
         init=False,
         repr=False,
     )
+    _native_patch_gateway: typing.Any = dataclasses.field(
+        default=None,
+        init=False,
+        repr=False,
+    )
+    _dead_edge_normalizer: typing.Any = dataclasses.field(
+        default=None,
+        init=False,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         self.profiling = ProfilingController(self.log_dir)
@@ -1933,6 +1943,9 @@ class D810Manager:
             NativePatchPlanRequest,
             set_indirect_materialization_default_executor,
         )
+        from d810.hexrays.hooks.optimization_suppression import (
+            suppress_d810_optimization,
+        )
         from d810.manager.native_writer_migration import (
             ManagerOwnedDeadEdgeNormalizer,
             ManagerOwnedNativePatchRequestExecutor,
@@ -2004,6 +2017,7 @@ class D810Manager:
             current_database_identity=attestation.database_uuid,
             d810_version="native-writer-migration",
         )
+        self._native_patch_gateway = gateway
         # Crash recovery is a startup responsibility, but the SQLite journal
         # is global while an IDB is not.  Read the IDB-local attestation and
         # recover only transactions bearing this exact durable UUID; a missing
@@ -2118,16 +2132,22 @@ class D810Manager:
             )
         )
 
-        def _dead_edge_parent(function_ea: int):
+        @contextlib.contextmanager
+        def _dead_edge_parent_scope(function_ea: int):
             session = self.decompilation_lifecycle.current_session(function_ea)
+            created = False
             if session is None or session.preanalysis_attempt_id is None:
-                session, _created = self.decompilation_lifecycle.ensure_hexrays_session(
+                session, created = self.decompilation_lifecycle.ensure_hexrays_session(
                     function_ea=int(function_ea),
                     database_identity=self._database_identity,
                 )
             if session.preanalysis_attempt_id is None:
                 raise RuntimeError("native semantic pass has no preanalysis parent")
-            return session.preanalysis_attempt_id
+            try:
+                yield session.preanalysis_attempt_id
+            finally:
+                if created:
+                    self.decompilation_lifecycle.finish(session.native_key)
 
         def _discover_dead_edges(function_ea: int):
             session = self.decompilation_lifecycle.current_session(function_ea)
@@ -2138,7 +2158,8 @@ class D810Manager:
                 )
             self.decompilation_lifecycle.begin_native_preanalysis(session)
             try:
-                return find_dead_edges_for_function(int(function_ea))
+                with suppress_d810_optimization():
+                    return find_dead_edges_for_function(int(function_ea))
             finally:
                 self.decompilation_lifecycle.finish_native_preanalysis(session)
 
@@ -2149,7 +2170,7 @@ class D810Manager:
                 function_tags=self.get_function_tags(function_ea),
             ),
             execution_journal=self._native_patch_execution_journal,
-            parent_attempt_for_function=_dead_edge_parent,
+            parent_attempt_scope_for_function=_dead_edge_parent_scope,
             discover_candidates=_discover_dead_edges,
             build_plan=lambda function_ea, candidates, attempt_id: (
                 build_dead_edge_semantic_plan(
@@ -2998,6 +3019,8 @@ class D810Manager:
         if self._native_patch_journal is not None:
             self._native_patch_journal.close()
             self._native_patch_journal = None
+        self._native_patch_gateway = None
+        self._dead_edge_normalizer = None
         if self._native_patch_execution_journal is not None:
             self._native_patch_execution_journal.close()
             self._native_patch_execution_journal = None

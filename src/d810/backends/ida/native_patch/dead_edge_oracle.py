@@ -683,6 +683,18 @@ def _find_opaque_edges(
             )
 
         try:
+            left_size = int(getattr(tail.l, "size", -1))
+            right_size = int(getattr(tail.r, "size", -1))
+        except Exception:
+            _abstain("MALFORMED_COMPARISON_WIDTH")
+            continue
+        if (left_size, right_size) != (4, 4):
+            _abstain(
+                f"UNSUPPORTED_COMPARISON_WIDTH:left={left_size},right={right_size}"
+            )
+            continue
+
+        try:
             # Native authorization must use the width-safe tri-state API for
             # every predicate, including equality.  The legacy boolean helpers
             # model all leaves as 32-bit values and cannot distinguish an

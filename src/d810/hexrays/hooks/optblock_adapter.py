@@ -1736,6 +1736,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         maturity_name: str,
         function_ea: int,
         mutation: typing.Callable[[], int],
+        receipt_provider: typing.Callable[[], tuple[object, ...]] | None = None,
     ) -> int:
         """Run one late MBA writer under the normal mutation-attempt ledger."""
         journal, session_id, parent_attempt_id = _flow_rule_execution_context(
@@ -1752,14 +1753,54 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             stage_id=stage_id,
             domain=ExecutionDomain.MUTATION,
         )
+
+        def _receipt_effects() -> tuple[ExecutionEffectRef, ...]:
+            if receipt_provider is None:
+                return ()
+            try:
+                receipts = tuple(receipt_provider())
+            except Exception:
+                optimizer_logger.debug(
+                    "late MBA mutation receipt lookup failed for route=%s",
+                    route_name,
+                    exc_info=True,
+                )
+                return ()
+            effects: list[ExecutionEffectRef] = []
+            for receipt in receipts:
+                receipt_id = str(getattr(receipt, "mutation_batch_id", "") or "")
+                if not receipt_id:
+                    continue
+                detail: dict[str, object] = {}
+                for field_name in (
+                    "operation_count",
+                    "planned_operation_count",
+                    "pre_generation",
+                    "post_generation",
+                    "evidence_generation",
+                ):
+                    value = getattr(receipt, field_name, None)
+                    if isinstance(value, int) and not isinstance(value, bool):
+                        detail[field_name] = value
+                effects.append(
+                    ExecutionEffectRef(
+                        kind="mutation_receipt",
+                        ref_id=receipt_id,
+                        detail=detail,
+                    )
+                )
+            return tuple(effects)
+
         try:
             patch_count = int(mutation())
         except Exception as error:
+            effects = _receipt_effects()
             _safe_advance_execution_attempt(
                 journal,
                 attempt,
                 status=ExecutionAttemptStatus.FAILED,
                 reason_code=f"{type(error).__name__}: {error}",
+                effect_refs=effects,
                 details={
                     "maturity": maturity_name,
                     "function_ea": int(function_ea),
@@ -1773,8 +1814,8 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             "function_ea": int(function_ea),
         }
         if patch_count > 0:
-            effects = ()
-            if attempt is not None:
+            effects = _receipt_effects()
+            if not effects and receipt_provider is None and attempt is not None:
                 effects = (
                     ExecutionEffectRef(
                         kind="mba_rule_edit",
@@ -1816,6 +1857,8 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         if key in self._impossible_return_artifact_rewrite_applied:
             return 0
 
+        mutation_gateway_holder: list[object] = []
+
         def _mutate() -> int:
             from d810.hexrays.mutation.byte_emit_tail_isolation_runtime import (
                 impossible_return_artifact_rewrite_enabled,
@@ -1824,9 +1867,10 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
 
             if not impossible_return_artifact_rewrite_enabled():
                 return 0
+            mutation_gateway = self._flow_context.new_mba_mutation_gateway()
+            mutation_gateway_holder.append(mutation_gateway)
             applied = maybe_rewrite_impossible_return_artifact_edges(
-                mba,
-                mutation_gateway=self._flow_context.new_mba_mutation_gateway(),
+                mba, mutation_gateway=mutation_gateway
             )
             if not applied:
                 return 0
@@ -1846,6 +1890,11 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                 maturity_name=maturity_to_string(self.current_maturity),
                 function_ea=func_ea,
                 mutation=_mutate,
+                receipt_provider=lambda: tuple(
+                    receipt
+                    for gateway in mutation_gateway_holder
+                    for receipt in tuple(getattr(gateway, "receipts", ()) or ())
+                ),
             )
         except Exception:
             optimizer_logger.exception(
@@ -1932,6 +1981,8 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                 )
                 fact_view = None
 
+        mutation_gateway_holder: list[object] = []
+
         def _mutate() -> int:
             from d810.analyses.control_flow.runtime_evidence import (
                 ensure_terminal_byte_fact_view,
@@ -1962,6 +2013,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                     func_ea,
                 )
                 return 0
+            mutation_gateway_holder.append(mutation_gateway)
             applied = maybe_run_terminal_tail_cascade_egress_lowering(
                 mba,
                 mutation_gateway=mutation_gateway,
@@ -1988,6 +2040,11 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                 maturity_name=current_maturity_name,
                 function_ea=func_ea,
                 mutation=_mutate,
+                receipt_provider=lambda: tuple(
+                    receipt
+                    for gateway in mutation_gateway_holder
+                    for receipt in tuple(getattr(gateway, "receipts", ()) or ())
+                ),
             )
         except Exception:
             optimizer_logger.exception(
@@ -2010,6 +2067,8 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         if key in self._terminal_zero_literal_rewrite_applied:
             return 0
 
+        mutation_gateway_holder: list[object] = []
+
         def _mutate() -> int:
             from d810.hexrays.mutation.byte_emit_tail_isolation_runtime import (
                 maybe_rewrite_terminal_zero_guard_literal_return_edges,
@@ -2021,9 +2080,10 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                 return 0
             if not terminal_zero_guard_literal_return_values(mba):
                 return 0
+            mutation_gateway = self._flow_context.new_mba_mutation_gateway()
+            mutation_gateway_holder.append(mutation_gateway)
             applied = maybe_rewrite_terminal_zero_guard_literal_return_edges(
-                mba,
-                mutation_gateway=self._flow_context.new_mba_mutation_gateway(),
+                mba, mutation_gateway=mutation_gateway
             )
             if not applied:
                 return 0
@@ -2043,6 +2103,11 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                 maturity_name=maturity_to_string(self.current_maturity),
                 function_ea=func_ea,
                 mutation=_mutate,
+                receipt_provider=lambda: tuple(
+                    receipt
+                    for gateway in mutation_gateway_holder
+                    for receipt in tuple(getattr(gateway, "receipts", ()) or ())
+                ),
             )
         except Exception:
             optimizer_logger.exception(

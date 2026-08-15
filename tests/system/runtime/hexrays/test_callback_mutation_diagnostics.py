@@ -803,6 +803,120 @@ def test_late_mba_mutation_failure_is_recorded_before_propagation(tmp_path) -> N
         assert attempt.reason_code == "RuntimeError: injected late mutation failure"
 
 
+def test_late_mba_mutation_effect_references_committed_gateway_receipt(
+    tmp_path,
+) -> None:
+    receipt = SimpleNamespace(
+        mutation_batch_id="batch-7",
+        operation_count=2,
+        planned_operation_count=2,
+        pre_generation=4,
+        post_generation=5,
+        evidence_generation=3,
+    )
+    with ExecutionJournalStore(tmp_path / "execution.sqlite") as journal:
+        session_id = DecompilationSessionId.new()
+        parent = journal.begin_attempt(
+            session_id,
+            stage_id="hexrays_preanalysis",
+            domain=ExecutionDomain.HOOK,
+        )
+        flow_context = SimpleNamespace(
+            execution_attempt_context=lambda: (
+                journal,
+                session_id,
+                parent.attempt_id,
+            )
+        )
+        manager = object.__new__(BlockOptimizerManager)
+
+        assert (
+            manager._run_recorded_mba_mutation_attempt(
+                flow_context=flow_context,
+                route_name="terminal_tail_cascade_egress",
+                maturity_name="MMAT_GLBOPT1",
+                function_ea=0x401000,
+                mutation=lambda: 2,
+                receipt_provider=lambda: (receipt,),
+            )
+            == 2
+        )
+
+        attempt = journal.only_attempt(
+            session_id,
+            stage_id=(
+                "mba_late_mutation:terminal_tail_cascade_egress:"
+                "maturity=MMAT_GLBOPT1:function=0x401000"
+            ),
+        )
+        assert [(effect.kind, effect.ref_id) for effect in attempt.effect_refs] == [
+            ("mutation_receipt", "batch-7")
+        ]
+        assert attempt.effect_refs[0].detail == {
+            "operation_count": 2,
+            "planned_operation_count": 2,
+            "pre_generation": 4,
+            "post_generation": 5,
+            "evidence_generation": 3,
+        }
+
+
+def test_late_mba_mutation_failure_preserves_receipt_committed_before_bookkeeping(
+    tmp_path,
+) -> None:
+    committed = []
+    receipt = SimpleNamespace(
+        mutation_batch_id="batch-before-bookkeeping-failure",
+        operation_count=1,
+        planned_operation_count=1,
+        pre_generation=8,
+        post_generation=9,
+        evidence_generation=4,
+    )
+
+    def mutate_then_fail():
+        committed.append(receipt)
+        raise RuntimeError("post-commit bookkeeping failed")
+
+    with ExecutionJournalStore(tmp_path / "execution.sqlite") as journal:
+        session_id = DecompilationSessionId.new()
+        parent = journal.begin_attempt(
+            session_id,
+            stage_id="hexrays_preanalysis",
+            domain=ExecutionDomain.HOOK,
+        )
+        flow_context = SimpleNamespace(
+            execution_attempt_context=lambda: (
+                journal,
+                session_id,
+                parent.attempt_id,
+            )
+        )
+        manager = object.__new__(BlockOptimizerManager)
+
+        with pytest.raises(RuntimeError, match="post-commit bookkeeping failed"):
+            manager._run_recorded_mba_mutation_attempt(
+                flow_context=flow_context,
+                route_name="terminal_tail_cascade_egress",
+                maturity_name="MMAT_GLBOPT1",
+                function_ea=0x401000,
+                mutation=mutate_then_fail,
+                receipt_provider=lambda: tuple(committed),
+            )
+
+        attempt = journal.only_attempt(
+            session_id,
+            stage_id=(
+                "mba_late_mutation:terminal_tail_cascade_egress:"
+                "maturity=MMAT_GLBOPT1:function=0x401000"
+            ),
+        )
+        assert attempt.status is ExecutionAttemptStatus.FAILED
+        assert [(effect.kind, effect.ref_id) for effect in attempt.effect_refs] == [
+            ("mutation_receipt", "batch-before-bookkeeping-failure")
+        ]
+
+
 @pytest.mark.parametrize(
     ("route_name", "maturity"),
     (

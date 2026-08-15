@@ -31,6 +31,7 @@ from d810.backends.ida.native_patch.gateway import (  # noqa: E402
 )
 from d810.backends.ida.native_patch.indirect_label_plan import (  # noqa: E402
     IndirectLabelPlanBuildError,
+    IndirectLabelPlanFailureReason,
     IndirectLabelPlanRequest,
     build_indirect_label_metadata_plan,
 )
@@ -130,7 +131,15 @@ def test_plan_build_abstention_records_a_typed_diagnostic(tmp_path) -> None:
         execution_journal=journal,
         parent_attempt_for_request=lambda _request: parent.attempt_id,
         build_plan=lambda _request, _attempt: (_ for _ in ()).throw(
-            IndirectLabelPlanBuildError("typed data cannot round trip")
+            IndirectLabelPlanBuildError(
+                "cannot losslessly recreate 'data:6' as 'code:7' at 0x180013eaa",
+                reason=(
+                    IndirectLabelPlanFailureReason.LOSSLESS_ITEM_RECREATION_UNSUPPORTED
+                ),
+                ea=0x180013EAA,
+                before_shape="data:6",
+                after_shape="code:7",
+            )
         ),
     )
 
@@ -142,7 +151,11 @@ def test_plan_build_abstention_records_a_typed_diagnostic(tmp_path) -> None:
     assert dict(child.details) == {
         "kind": "native_plan_unavailable",
         "error_type": "IndirectLabelPlanBuildError",
-        "message": "typed data cannot round trip",
+        "reason": "lossless_item_recreation_unsupported",
+        "ea": 0x180013EAA,
+        "before_shape": "data:6",
+        "after_shape": "code:7",
+        "message": ("cannot losslessly recreate 'data:6' as 'code:7' at 0x180013eaa"),
     }
     journal.close()
 

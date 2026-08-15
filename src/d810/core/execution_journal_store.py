@@ -709,6 +709,32 @@ class ExecutionJournalStore:
         )
         return tuple(attempt for attempt in attempts if attempt is not None)
 
+    def attempts_for_function(self, function_ea: int) -> tuple[ExecutionAttempt, ...]:
+        """Return attempts from every session durably bound to one function."""
+        if isinstance(function_ea, bool) or not isinstance(function_ea, int):
+            raise TypeError("function_ea must be an integer")
+        rows = self._conn.execute(
+            """
+            SELECT b.session_id, i.sequence
+            FROM execution_session_bindings AS b
+            JOIN execution_attempt_identities AS i
+              ON i.session_id = b.session_id
+            WHERE b.function_ea = ?
+            ORDER BY b.binding_id ASC, i.sequence ASC
+            """,
+            (function_ea,),
+        ).fetchall()
+        attempts = (
+            self.get_attempt(
+                ExecutionAttemptId(
+                    session=DecompilationSessionId(str(row["session_id"])),
+                    sequence=int(row["sequence"]),
+                )
+            )
+            for row in rows
+        )
+        return tuple(attempt for attempt in attempts if attempt is not None)
+
     def attempts_for_stage(
         self, session_id: DecompilationSessionId, *, stage_id: str
     ) -> tuple[ExecutionAttempt, ...]:

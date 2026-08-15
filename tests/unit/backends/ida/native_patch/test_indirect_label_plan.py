@@ -1,4 +1,29 @@
-from d810.backends.ida.native_patch.indirect_label_plan import _missing_cref_targets
+from d810.backends.ida.native_patch.indirect_label_plan import (
+    IndirectLabelPlanBuildError,
+    IndirectLabelPlanFailureReason,
+    _missing_cref_targets,
+)
+
+
+def test_lossless_recreation_error_carries_exact_item_transition() -> None:
+    error = IndirectLabelPlanBuildError(
+        "cannot losslessly recreate 'data:6' as 'code:7' at 0x180013eaa",
+        reason=IndirectLabelPlanFailureReason.LOSSLESS_ITEM_RECREATION_UNSUPPORTED,
+        ea=0x180013EAA,
+        before_shape="data:6",
+        after_shape="code:7",
+    )
+
+    assert (
+        error.reason
+        is IndirectLabelPlanFailureReason.LOSSLESS_ITEM_RECREATION_UNSUPPORTED
+    )
+    assert error.ea == 0x180013EAA
+    assert error.before_shape == "data:6"
+    assert error.after_shape == "code:7"
+    assert str(error) == (
+        "cannot losslessly recreate 'data:6' as 'code:7' at 0x180013eaa"
+    )
 
 
 def test_existing_automatic_flow_edge_satisfies_target_materialization() -> None:

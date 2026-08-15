@@ -9,6 +9,7 @@ registration boundary and supplies the backend-specific plan builder.
 from __future__ import annotations
 
 from collections.abc import Callable
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 
 from d810.backends.ida.native_patch.gateway import NativePatchGateway
@@ -49,6 +50,44 @@ __all__ = [
 
 
 DEAD_EDGE_NATIVE_PASS_ID = "native_dead_edge_normalizer"
+_DEAD_EDGE_PROOF_KIND_PRIORITY = (
+    "single_trip_loop_peel",
+    "z3_opaque_predicate",
+)
+
+
+def _select_dead_edge_candidate_batch(
+    candidates: tuple[Any, ...],
+) -> tuple[tuple[Any, ...], tuple[Any, ...]]:
+    """Choose one certificate-compatible homogeneous proof batch.
+
+    The largest batch wins so one function-slot certificate covers the most
+    proven sites. Ties use a fixed proof-kind priority rather than discovery
+    order, keeping selection stable when recognizers are reordered.
+    """
+    by_kind: dict[str, list[Any]] = {}
+    for candidate in candidates:
+        proof_kind = str(getattr(candidate, "proof_kind", ""))
+        by_kind.setdefault(proof_kind, []).append(candidate)
+    priority = {
+        proof_kind: index
+        for index, proof_kind in enumerate(_DEAD_EDGE_PROOF_KIND_PRIORITY)
+    }
+    selected_kind = min(
+        by_kind,
+        key=lambda proof_kind: (
+            -len(by_kind[proof_kind]),
+            priority.get(proof_kind, len(priority)),
+            proof_kind,
+        ),
+    )
+    selected = tuple(by_kind[selected_kind])
+    deferred = tuple(
+        candidate
+        for candidate in candidates
+        if str(getattr(candidate, "proof_kind", "")) != selected_kind
+    )
+    return selected, deferred
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,15 +113,19 @@ class ManagerOwnedDeadEdgeNormalizer:
         gateway: NativePatchGateway,
         user_enabled: Callable[[int], bool],
         execution_journal: ExecutionJournalStore,
-        parent_attempt_for_function: Callable[[int], ExecutionAttemptId],
+        parent_attempt_scope_for_function: Callable[
+            [int], AbstractContextManager[ExecutionAttemptId]
+        ],
         discover_candidates: Callable[[int], tuple[tuple[Any, ...], tuple[Any, ...]]],
-        build_plan: Callable[[int, tuple[Any, ...], ExecutionAttemptId], NativePatchPlan],
+        build_plan: Callable[
+            [int, tuple[Any, ...], ExecutionAttemptId], NativePatchPlan
+        ],
         apply_plan: Callable[[NativePatchPlan], NativeNormalizationResult],
     ) -> None:
         self._gateway = gateway
         self._user_enabled = user_enabled
         self._execution_journal = execution_journal
-        self._parent_attempt_for_function = parent_attempt_for_function
+        self._parent_attempt_scope_for_function = parent_attempt_scope_for_function
         self._discover_candidates = discover_candidates
         self._build_plan = build_plan
         self._apply_plan = apply_plan
@@ -97,7 +140,14 @@ class ManagerOwnedDeadEdgeNormalizer:
                 reason="USER_NOT_OPTED_IN",
             )
 
-        parent_attempt_id = self._parent_attempt_for_function(function_ea)
+        with self._parent_attempt_scope_for_function(function_ea) as parent_attempt_id:
+            return self._normalize_with_parent(function_ea, parent_attempt_id)
+
+    def _normalize_with_parent(
+        self,
+        function_ea: int,
+        parent_attempt_id: ExecutionAttemptId,
+    ) -> NativeNormalizationResult:
         attempt = self._execution_journal.begin_attempt(
             parent_attempt_id.session,
             parent_attempt_id=parent_attempt_id,
@@ -125,7 +175,14 @@ class ManagerOwnedDeadEdgeNormalizer:
                     reason="NO_PROVEN_DEAD_EDGES",
                 )
 
-            plan = self._build_plan(function_ea, candidates, attempt.attempt_id)
+            selected_candidates, deferred_candidates = (
+                _select_dead_edge_candidate_batch(candidates)
+            )
+            plan = self._build_plan(
+                function_ea,
+                selected_candidates,
+                attempt.attempt_id,
+            )
             diagnostic_snapshot_id = self._gateway.record_diagnostic_snapshot(plan)
             outcome = self._apply_plan(plan)
         except Exception as error:
@@ -144,8 +201,7 @@ class ManagerOwnedDeadEdgeNormalizer:
                 kind="native_patch_preflight",
                 ref_id=(
                     receipt.preflight_receipt_id
-                    if receipt is not None
-                    and receipt.preflight_receipt_id is not None
+                    if receipt is not None and receipt.preflight_receipt_id is not None
                     else self._gateway.record_certificate_validation_receipt(
                         plan, outcome.certificate
                     )
@@ -182,6 +238,14 @@ class ManagerOwnedDeadEdgeNormalizer:
             details={
                 "function_ea": function_ea,
                 "candidate_count": len(candidates),
+                "selected_candidate_count": len(selected_candidates),
+                "selected_proof_kind": str(selected_candidates[0].proof_kind),
+                "deferred_candidate_count": len(deferred_candidates),
+                "deferred_proof_kinds": tuple(
+                    sorted(
+                        {str(candidate.proof_kind) for candidate in deferred_candidates}
+                    )
+                ),
             },
         )
         return outcome
@@ -244,6 +308,10 @@ class ManagerOwnedNativePatchRequestExecutor:
                 details={
                     "kind": "native_plan_unavailable",
                     "error_type": type(error).__name__,
+                    "reason": error.reason.value,
+                    "ea": error.ea,
+                    "before_shape": error.before_shape,
+                    "after_shape": error.after_shape,
                     "message": str(error),
                 },
             )

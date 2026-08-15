@@ -114,6 +114,30 @@ def test_profile_attempt_query_requires_an_exact_attested_native_key(store) -> N
     assert store.latest_native_key_for_function(0x401000) == foreign_key
 
 
+def test_function_attempt_query_follows_all_durable_session_bindings(store) -> None:
+    first = DecompilationSessionId.new()
+    other = DecompilationSessionId.new()
+    latest = DecompilationSessionId.new()
+    store.bind_session(first, function_ea=0x401000, native_key=_native_key())
+    store.bind_session(other, function_ea=0x402000, native_key=_native_key())
+    store.bind_session(latest, function_ea=0x401000)
+    for session, stage_id in (
+        (first, "first"),
+        (other, "other"),
+        (latest, "latest"),
+    ):
+        attempt = store.begin_attempt(
+            session,
+            stage_id=stage_id,
+            domain=ExecutionDomain.PASS,
+        )
+        store.advance(attempt, status=ExecutionAttemptStatus.COMPLETED)
+
+    attempts = store.attempts_for_function(0x401000)
+
+    assert [attempt.stage_id for attempt in attempts] == ["first", "latest"]
+
+
 # ---------------------------------------------------------------------------
 # Monotonic per-session sequence allocation
 # ---------------------------------------------------------------------------

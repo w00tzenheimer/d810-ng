@@ -64,6 +64,7 @@ pytestmark = [
 
 ida_bytes = pytest.importorskip("ida_bytes")
 ida_funcs = pytest.importorskip("ida_funcs")
+ida_hexrays = pytest.importorskip("ida_hexrays")
 idaapi = pytest.importorskip("idaapi")
 idc = pytest.importorskip("idc")
 
@@ -96,11 +97,14 @@ from d810.backends.ida.native_patch.reanalysis import (  # noqa: E402
     IdaFunctionFlowRestorer,
     IdaFunctionReanalyzer,
 )
+from d810.capabilities.native_patch import NativePatchTransactionId  # noqa: E402
 from d810.core.execution_journal import (  # noqa: E402
     DecompilationSessionId,
     ExecutionAttemptId,
+    ExecutionAttemptStatus,
 )
 from d810.core.persistence import SQLiteOptimizationStorage  # noqa: E402
+from d810.manager.manager import d810_hooks_suppressed  # noqa: E402
 from d810.testing.runner import _resolve_test_project_index  # noqa: E402
 
 FUNCTION_NAME = "single_iteration_simple"
@@ -119,14 +123,6 @@ PROJECT_NAME = "bogus_loops.json"
 EXPECTED_SITE_OFFSET = 0x36
 EXPECTED_CURRENT_TARGET_OFFSET = 0x18
 EXPECTED_PROPOSED_TARGET_OFFSET = 0x38
-
-# Functions carrying a Z3-proven opaque predicate rather than a single-trip
-# loop. Measured over all 280 functions of the fixture; see the second test.
-OPAQUE_FUNCTION_NAMES = (
-    "fake_jump_opaque_predicate",
-    "test_opaque_predicate",
-    "test_function_ollvm_fla_bcf_sub",
-)
 
 
 def _get_func_ea(name: str) -> int:
@@ -242,6 +238,94 @@ def _emulate_range_safely(func_ea: int, func_end_ea: int):
 
 class TestDeadEdgeOracleDemonstration:
     binary_name = "libobfuscated.dll"
+
+    def test_manager_owned_stage_b_is_reachable_and_restorable(
+        self, copy_of_idb, d810_state, pseudocode_to_string
+    ) -> None:
+        """The normal manager decompile path owns semantic plan issuance."""
+        with d810_state() as state:
+            project_index = _resolve_test_project_index(state, PROJECT_NAME)
+            state.load_project(project_index)
+            func_ea = _get_func_ea(FUNCTION_NAME)
+            assert func_ea != idaapi.BADADDR, f"{FUNCTION_NAME} not found"
+
+            state.stop_d810()
+            baseline_off = _decompile_text(pseudocode_to_string, func_ea)
+
+            runtime_project = state.current_runtime_project
+            assert runtime_project is not None
+            runtime_config = runtime_project.additional_configuration
+            had_prior_enabled = "native_patch_enabled" in runtime_config
+            prior_enabled = runtime_config.get("native_patch_enabled")
+            prior_manager_config = dict(state.manager.config)
+            runtime_config["native_patch_enabled"] = True
+            state.manager.configure(
+                **{**prior_manager_config, "native_patch_enabled": True}
+            )
+
+            from d810.backends.hexrays.native_preanalysis_key import (
+                resolve_native_preanalysis_identity,
+            )
+
+            identity = resolve_native_preanalysis_identity(func_ea, profile_config={})
+            assert identity.native_key is not None
+            state.start_d810()
+            assert state.manager._dead_edge_normalizer is not None
+            assert state.manager._native_patch_gateway is not None
+
+            was_opted_in = state.manager.is_native_patch_opted_in(func_ea)
+            state.manager.set_native_patch_opted_in(
+                function_addr=func_ea,
+                enabled=True,
+            )
+            try:
+                cfunc = state.manager.decompile_with_native_preanalysis(
+                    func_ea,
+                    lambda: idaapi.decompile(
+                        func_ea,
+                        flags=idaapi.DECOMP_NO_CACHE,
+                    ),
+                    lambda: ida_hexrays.mark_cfunc_dirty(func_ea),
+                )
+                assert cfunc is not None
+                execution_journal = state.manager._native_patch_execution_journal
+                attempts = tuple(
+                    attempt
+                    for attempt in execution_journal.attempts_for_function(func_ea)
+                    if attempt.stage_id == "native_dead_edge_normalizer"
+                )
+                assert len(attempts) == 1
+                attempt = attempts[0]
+                assert attempt.status is ExecutionAttemptStatus.COMPLETED
+                transaction_effects = tuple(
+                    effect
+                    for effect in attempt.effect_refs
+                    if effect.kind == "native_patch_transaction"
+                )
+                assert len(transaction_effects) == 1
+                transaction_id = NativePatchTransactionId(
+                    value=transaction_effects[0].ref_id
+                )
+
+                with d810_hooks_suppressed(state.manager):
+                    patched_off = _decompile_text(pseudocode_to_string, func_ea)
+                assert patched_off != baseline_off
+                restore = state.manager._native_patch_gateway.restore(transaction_id)
+                assert restore.ok, restore
+                with d810_hooks_suppressed(state.manager):
+                    reverted_off = _decompile_text(pseudocode_to_string, func_ea)
+                assert reverted_off == baseline_off
+            finally:
+                if not was_opted_in:
+                    state.manager.set_native_patch_opted_in(
+                        function_addr=func_ea,
+                        enabled=False,
+                    )
+                state.manager.configure(**prior_manager_config)
+                if had_prior_enabled:
+                    runtime_config["native_patch_enabled"] = prior_enabled
+                else:
+                    runtime_config.pop("native_patch_enabled", None)
 
     def test_native_patch_persists_proven_deobfuscation(
         self, copy_of_idb, d810_state, pseudocode_to_string, tmp_path
@@ -381,218 +465,219 @@ class TestDeadEdgeOracleDemonstration:
                 "baseline_off exactly"
             )
 
-    def test_opaque_predicate_patch_persists_proven_deobfuscation(
-        self, copy_of_idb, d810_state, pseudocode_to_string, tmp_path
+    def test_opaque_predicate_native_authorization_abstains_on_unsupported_width(
+        self, copy_of_idb, d810_state, pseudocode_to_string
     ) -> None:
-        """The same claim as above, for the second recognizer.
-
-        The single-trip-loop class rewrites an *unconditional* ``jmp``. This
-        one rewrites *conditional* branches, and exercises the other two
-        actions: ``FORCE_TAKEN`` (retarget to the taken edge) and
-        ``FORCE_FALLTHROUGH`` (erase the branch to NOP fill). It also applies
-        a multi-operation plan -- ``test_function_ollvm_fla_bcf_sub`` carries
-        eight proven sites in one function.
-
-        Each function is asserted to be a genuine deobfuscation target first
-        (``baseline_off != baseline_on``). Without that guard a function d810
-        does not touch would pass trivially, which is the exact way an earlier
-        attempt at this demonstration proved nothing.
-        """
+        """D810 may simplify these predicates, but native issuance must abstain."""
         with d810_state() as state:
             project_index = _resolve_test_project_index(state, PROJECT_NAME)
             state.load_project(project_index)
 
-            examined: list[str] = []
-            for function_name in OPAQUE_FUNCTION_NAMES:
-                func_ea = _get_func_ea(function_name)
-                assert func_ea != idaapi.BADADDR, f"{function_name} not found"
-                IdaFunctionReanalyzer().reanalyze_function(func_ea)
-
-                state.stop_d810()
-                baseline_off = _decompile_text(pseudocode_to_string, func_ea)
-                state.start_d810()
-                baseline_on = _decompile_text(pseudocode_to_string, func_ea)
-
-                if baseline_off == baseline_on:
-                    # Not a deobfuscation target under this project: patching
-                    # it would prove nothing either way. Record and move on
-                    # rather than assert -- the claim under test is about the
-                    # functions d810 *does* change.
-                    print(
-                        f"[opaque-demo] {function_name}: d810 does not change "
-                        f"this function under {PROJECT_NAME}; skipping"
-                    )
-                    continue
-
-                state.stop_d810()
-                off_mba = generate_pre_lvars_microcode(func_ea)
-                assert off_mba is not None
-                candidates, abstentions = find_dead_edges(off_mba, function_ea=func_ea)
-                opaque = [
-                    c for c in candidates if c.proof_kind == "z3_opaque_predicate"
-                ]
-                print(
-                    f"[opaque-demo] {function_name}: "
-                    f"{[c.describe() for c in opaque]} abstentions={abstentions}"
-                )
-                assert opaque, f"{function_name} yielded no opaque candidate"
-                assert all(
-                    c.action
-                    in (DeadEdgeAction.FORCE_TAKEN, DeadEdgeAction.FORCE_FALLTHROUGH)
-                    for c in opaque
-                ), "an opaque-predicate proof must never authorize a RETARGET"
-
-                # Capture the byte window as plain ints *before* applying.
-                # Re-reading ``func.end_ea`` afterwards compares two different
-                # windows: the gateway reanalyzes, which can resize the
-                # function (erasing a branch can orphan its target block), and
-                # the pre-patch SWIG ``func_t`` may be stale by then. Both
-                # emulations must run over the same address range for the
-                # comparison to mean anything.
-                func = ida_funcs.get_func(func_ea)
-                emu_start_ea, emu_end_ea = int(func.start_ea), int(func.end_ea)
-                before_emulation = _emulate_range_safely(emu_start_ea, emu_end_ea)
-
-                # Pre-patch site bytes, for the post-restore byte comparison.
-                site_bytes_before = {
-                    c.site_ea: bytes(ida_bytes.get_bytes(c.site_ea, c.site_size) or b"")
-                    for c in opaque
-                }
-
-                plan = _build_plan_from_candidates(func_ea, opaque)
-
-                with _fresh_journal(tmp_path / function_name) as journal:
-                    gateway = _build_gateway(
-                        journal, database_identity=plan.database_identity.idb_uuid
-                    )
-                    apply_receipt = gateway.apply(plan)
-                    assert apply_receipt.ok, apply_receipt.rejection_reasons
-
-                    state.stop_d810()
-                    patched_off = _decompile_text(pseudocode_to_string, func_ea)
-
-                    sim_to_on = _similarity(patched_off, baseline_on)
-                    sim_to_off = _similarity(patched_off, baseline_off)
-                    print(
-                        f"[opaque-demo] {function_name}: "
-                        f"exact={patched_off == baseline_on} "
-                        f"to_on={sim_to_on:.3f} to_off={sim_to_off:.3f}"
-                    )
-                    assert sim_to_on > sim_to_off, (
-                        f"{function_name}: patched_off must be strictly closer "
-                        f"to baseline_on than to baseline_off "
-                        f"(to_on={sim_to_on:.3f}, to_off={sim_to_off:.3f})"
-                    )
-
-                    # Semantics: compare emulated behaviour before and after,
-                    # rather than against a hand-known expected value. Only
-                    # meaningful where the pre-patch emulation itself ran --
-                    # a function that faults under Unicorn yields no evidence
-                    # in either direction, so it is reported, not asserted.
-                    after_emulation = _emulate_range_safely(emu_start_ea, emu_end_ea)
-                    if before_emulation is not None:
-                        assert after_emulation == before_emulation, (
-                            f"{function_name}: patch changed emulated behaviour "
-                            f"{before_emulation} -> {after_emulation}"
-                        )
-                    else:
-                        print(
-                            f"[opaque-demo] {function_name}: not emulatable; "
-                            "semantic equivalence not checked by emulation"
-                        )
-
-                    restore_receipt = gateway.restore(apply_receipt.transaction_id)
-                    assert restore_receipt.ok, restore_receipt
-
-                # Byte-level reversal, then pseudocode-level reversal. Both
-                # are asserted because byte equality is not evidence of
-                # restoration on its own: this round-trip was byte-perfect
-                # while still decompiling to an empty function (see
-                # ``test_force_fallthrough_restore_reverts_the_function_completely``).
-                for site_ea, before in site_bytes_before.items():
-                    size = len(before)
-                    after = bytes(ida_bytes.get_bytes(site_ea, size) or b"")
-                    assert after == before, (
-                        f"{function_name}: site {site_ea:#x} bytes not restored: "
-                        f"{before.hex()} -> {after.hex()}"
-                    )
-
-                state.stop_d810()
-                reverted_off = _decompile_text(pseudocode_to_string, func_ea)
-                assert reverted_off == baseline_off, (
-                    f"{function_name}: post-restore pseudocode must revert to "
-                    "baseline_off exactly"
-                )
-                examined.append(function_name)
-
-            assert examined, (
-                "no opaque-predicate function was a deobfuscation target under "
-                f"{PROJECT_NAME} -- this test proved nothing"
-            )
-            print(f"[opaque-demo] demonstrated on: {examined}")
-
-    def test_force_fallthrough_restore_reverts_the_function_completely(
-        self, copy_of_idb, d810_state, pseudocode_to_string, tmp_path
-    ) -> None:
-        """Full reversibility for the action that erases a branch.
-
-        Reversibility is this design's premise, and FORCE_FALLTHROUGH is the
-        action that stresses it: the single-trip-loop class never could,
-        because a retarget keeps a branch instruction present and orphans no
-        block.
-
-        This was a measured defect before three things were fixed, each of
-        which had to be undone explicitly because none of them is derived from
-        the bytes:
-
-        1. **Function extent.** Erasing the branch orphaned its target block
-           and IDA shrank the function. The journal persisted bytes only, so
-           restore re-read ownership from the already-shrunken database.
-           Measured: [0x1800099d0,0x180009a1e) -> apply -> [...,0x180009a00)
-           -> restore -> [...,0x1800099fe) -- it shrank *further* on restore.
-        2. **FUNC_NORET.** While truncated the function ended without a
-           ``ret``, so IDA marked it no-return.
-        3. **The guessed prototype.** Stored as ``void`` from the same
-           truncated shape.
-
-        With bytes, boundaries and items all restored exactly, (2) and (3)
-        alone still produced ``void f(int, int) { ; }`` -- a byte-perfect
-        database that decompiled to an empty function. That is why this test
-        asserts on *pseudocode*, not on bytes: byte equality was true the
-        whole time it was broken.
-        """
-        function_name = "fake_jump_opaque_predicate"
-        with d810_state() as state:
-            project_index = _resolve_test_project_index(state, PROJECT_NAME)
-            state.load_project(project_index)
-
+            function_name = "fake_jump_opaque_predicate"
             func_ea = _get_func_ea(function_name)
             assert func_ea != idaapi.BADADDR
             IdaFunctionReanalyzer().reanalyze_function(func_ea)
 
             state.stop_d810()
             baseline_off = _decompile_text(pseudocode_to_string, func_ea)
-
-            off_mba = generate_pre_lvars_microcode(func_ea)
-            assert off_mba is not None
-            candidates, _ = find_dead_edges(off_mba, function_ea=func_ea)
-            opaque = [
-                c for c in candidates if c.action is DeadEdgeAction.FORCE_FALLTHROUGH
-            ]
-            assert opaque, "expected a FORCE_FALLTHROUGH candidate"
-
-            plan = _build_plan_from_candidates(func_ea, opaque)
-            with _fresh_journal(tmp_path / "xfail") as journal:
-                gateway = _build_gateway(
-                    journal, database_identity=plan.database_identity.idb_uuid
-                )
-                apply_receipt = gateway.apply(plan)
-                assert apply_receipt.ok, apply_receipt.rejection_reasons
-                restore_receipt = gateway.restore(apply_receipt.transaction_id)
-                assert restore_receipt.ok, restore_receipt
+            func = ida_funcs.get_func(func_ea)
+            start_ea, end_ea = int(func.start_ea), int(func.end_ea)
+            bytes_before = bytes(ida_bytes.get_bytes(start_ea, end_ea - start_ea))
+            state.start_d810()
+            baseline_on = _decompile_text(pseudocode_to_string, func_ea)
+            assert baseline_off != baseline_on
 
             state.stop_d810()
-            reverted_off = _decompile_text(pseudocode_to_string, func_ea)
-            assert reverted_off == baseline_off, (
-                "post-restore pseudocode must revert to baseline_off exactly"
+            off_mba = generate_pre_lvars_microcode(func_ea)
+            assert off_mba is not None
+            candidates, abstentions = find_dead_edges(off_mba, function_ea=func_ea)
+            assert all(
+                candidate.proof_kind != "z3_opaque_predicate"
+                for candidate in candidates
             )
+            assert [
+                item.reason
+                for item in abstentions
+                if item.proof_kind == "z3_opaque_predicate"
+            ] == ["UNSUPPORTED_COMPARISON_WIDTH:left=1,right=1"]
+            assert (
+                bytes(ida_bytes.get_bytes(start_ea, end_ea - start_ea)) == bytes_before
+            )
+
+    def test_width_safe_opaque_predicate_applies_and_restores_losslessly(
+        self, copy_of_idb, d810_state, pseudocode_to_string, tmp_path
+    ) -> None:
+        """Retain native round-trip coverage on predicates modeled exactly."""
+        with d810_state() as state:
+            project_index = _resolve_test_project_index(state, PROJECT_NAME)
+            state.load_project(project_index)
+            actions_seen: set[DeadEdgeAction] = set()
+
+            for function_name in ("test_opaque_predicate",):
+                func_ea = _get_func_ea(function_name)
+                assert func_ea != idaapi.BADADDR
+                IdaFunctionReanalyzer().reanalyze_function(func_ea)
+
+                state.stop_d810()
+                baseline_off = _decompile_text(pseudocode_to_string, func_ea)
+                state.start_d810()
+                baseline_on = _decompile_text(pseudocode_to_string, func_ea)
+                assert baseline_off != baseline_on
+
+                state.stop_d810()
+                off_mba = generate_pre_lvars_microcode(func_ea)
+                assert off_mba is not None
+                candidates, abstentions = find_dead_edges(off_mba, function_ea=func_ea)
+                opaque = tuple(
+                    candidate
+                    for candidate in candidates
+                    if candidate.proof_kind == "z3_opaque_predicate"
+                )
+                assert opaque, abstentions
+                actions_seen.update(candidate.action for candidate in opaque)
+
+                func = ida_funcs.get_func(func_ea)
+                start_ea, end_ea = int(func.start_ea), int(func.end_ea)
+                bytes_before = bytes(ida_bytes.get_bytes(start_ea, end_ea - start_ea))
+                before_emulation = _emulate_range_safely(start_ea, end_ea)
+                plan = _build_plan_from_candidates(func_ea, opaque)
+
+                with _fresh_journal(tmp_path / function_name) as journal:
+                    gateway = _build_gateway(
+                        journal,
+                        database_identity=plan.database_identity.idb_uuid,
+                    )
+                    apply_receipt = gateway.apply(plan)
+                    assert apply_receipt.ok, apply_receipt.rejection_reasons
+                    state.stop_d810()
+                    patched_off = _decompile_text(pseudocode_to_string, func_ea)
+                    assert _similarity(patched_off, baseline_on) > _similarity(
+                        patched_off, baseline_off
+                    )
+                    if before_emulation is not None:
+                        assert (
+                            _emulate_range_safely(start_ea, end_ea) == before_emulation
+                        )
+                    restore_receipt = gateway.restore(apply_receipt.transaction_id)
+                    assert restore_receipt.ok, restore_receipt
+
+                assert (
+                    bytes(ida_bytes.get_bytes(start_ea, end_ea - start_ea))
+                    == bytes_before
+                )
+                state.stop_d810()
+                assert _decompile_text(pseudocode_to_string, func_ea) == baseline_off
+
+            assert DeadEdgeAction.FORCE_TAKEN in actions_seen
+
+    def test_manager_stage_b_makes_zero_writes_for_unsupported_width(
+        self, copy_of_idb, d810_state, monkeypatch
+    ) -> None:
+        """The production pass records an abstention and never opens a transaction."""
+        function_name = "fake_jump_opaque_predicate"
+        with d810_state() as state:
+            project_index = _resolve_test_project_index(state, PROJECT_NAME)
+            state.load_project(project_index)
+            func_ea = _get_func_ea(function_name)
+            assert func_ea != idaapi.BADADDR
+            IdaFunctionReanalyzer().reanalyze_function(func_ea)
+
+            state.stop_d810()
+            func = ida_funcs.get_func(func_ea)
+            start_ea, end_ea = int(func.start_ea), int(func.end_ea)
+            bytes_before = bytes(ida_bytes.get_bytes(start_ea, end_ea - start_ea))
+
+            runtime_project = state.current_runtime_project
+            assert runtime_project is not None
+            runtime_config = runtime_project.additional_configuration
+            had_prior_enabled = "native_patch_enabled" in runtime_config
+            prior_enabled = runtime_config.get("native_patch_enabled")
+            prior_manager_config = dict(state.manager.config)
+            runtime_config["native_patch_enabled"] = True
+            state.manager.configure(
+                **{**prior_manager_config, "native_patch_enabled": True}
+            )
+            from d810.backends.hexrays.native_preanalysis_key import (
+                resolve_native_preanalysis_identity,
+            )
+
+            identity = resolve_native_preanalysis_identity(func_ea, profile_config={})
+            assert identity.native_key is not None
+
+            import d810.backends.ida.native_patch.dead_edge_oracle as oracle_module
+            from d810.hexrays.hooks.optimization_suppression import (
+                d810_optimization_is_suppressed,
+            )
+
+            discover = oracle_module.find_dead_edges_for_function
+            discovery_suppression: list[bool] = []
+
+            def _discover_with_suppression_witness(function_ea: int):
+                discovery_suppression.append(d810_optimization_is_suppressed())
+                return discover(function_ea)
+
+            monkeypatch.setattr(
+                oracle_module,
+                "find_dead_edges_for_function",
+                _discover_with_suppression_witness,
+            )
+            state.start_d810()
+            assert state.manager._dead_edge_normalizer is not None
+            was_opted_in = state.manager.is_native_patch_opted_in(func_ea)
+            state.manager.set_native_patch_opted_in(
+                function_addr=func_ea,
+                enabled=True,
+            )
+            assert state.manager.is_native_patch_opted_in(func_ea)
+            execution_journal = state.manager._native_patch_execution_journal
+            prior_attempt_ids = {
+                attempt.attempt_id
+                for attempt in execution_journal.attempts_for_function(func_ea)
+            }
+            try:
+                cfunc = state.manager.decompile_with_native_preanalysis(
+                    func_ea,
+                    lambda: idaapi.decompile(
+                        func_ea,
+                        flags=idaapi.DECOMP_NO_CACHE,
+                    ),
+                    lambda: ida_hexrays.mark_cfunc_dirty(func_ea),
+                )
+                assert cfunc is not None
+                new_attempts = tuple(
+                    attempt
+                    for attempt in execution_journal.attempts_for_function(func_ea)
+                    if attempt.attempt_id not in prior_attempt_ids
+                    and attempt.stage_id == "native_dead_edge_normalizer"
+                )
+                assert len(new_attempts) == 1
+                attempt = new_attempts[0]
+                assert attempt.status is ExecutionAttemptStatus.ABSTAINED
+                assert attempt.reason_code == "NO_PROVEN_DEAD_EDGES"
+                assert discovery_suppression == [True]
+                assert (
+                    state.manager.decompilation_lifecycle.current_session(func_ea)
+                    is None
+                )
+                parent = execution_journal.get_attempt(attempt.parent_attempt_id)
+                assert parent is not None
+                assert parent.status is ExecutionAttemptStatus.COMPLETED
+                assert all(
+                    effect.kind != "native_patch_transaction"
+                    for effect in attempt.effect_refs
+                )
+                assert (
+                    bytes(ida_bytes.get_bytes(start_ea, end_ea - start_ea))
+                    == bytes_before
+                )
+            finally:
+                if not was_opted_in:
+                    state.manager.set_native_patch_opted_in(
+                        function_addr=func_ea,
+                        enabled=False,
+                    )
+                state.manager.configure(**prior_manager_config)
+                if had_prior_enabled:
+                    runtime_config["native_patch_enabled"] = prior_enabled
+                else:
+                    runtime_config.pop("native_patch_enabled", None)
