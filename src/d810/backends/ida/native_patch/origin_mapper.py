@@ -32,16 +32,24 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Callable
+from dataclasses import dataclass
 
+from d810.core.typing import Protocol, runtime_checkable
+from d810.ir.native_range_projection import NativeRange
 from d810.ir.native_origin import (
     MicroblockNativeOrigin,
     NativeInstructionIdentity,
     NativeOriginCoverage,
     NativeOriginSpan,
 )
+from d810.ir.semantics import PredicateKind
 
 __all__ = [
     "DecodedRangeReader",
+    "IdaNativeOriginMapper",
+    "NativeDecodedControlTransfer",
+    "NativeOriginDecode",
+    "NativeOriginMapper",
     "correlate_microblock_origin",
     "correlate_native_span",
     "ida_decoded_range_reader",
@@ -52,6 +60,121 @@ __all__ = [
 # d810.backends.ida.native_patch.journal.NativeCurrentByteReader's precedent
 # of a plain injected Callable rather than a Protocol class.
 DecodedRangeReader = Callable[[int, int], tuple[NativeInstructionIdentity, ...]]
+
+
+@dataclass(frozen=True, slots=True)
+class NativeDecodedControlTransfer:
+    """One freshly decoded direct native branch and its ordered successors."""
+
+    instruction: NativeInstructionIdentity
+    successors: tuple[int, ...]
+    predicate: PredicateKind | None
+
+
+@dataclass(frozen=True, slots=True)
+class NativeOriginDecode:
+    """Fresh instruction-head and direct-control decode for a range set."""
+
+    instructions: tuple[NativeInstructionIdentity, ...]
+    control_transfers: tuple[NativeDecodedControlTransfer, ...]
+
+    @property
+    def instruction_heads(self) -> frozenset[int]:
+        return frozenset(item.ea for item in self.instructions)
+
+
+@runtime_checkable
+class NativeOriginMapper(Protocol):
+    """Read-only decoder used to resolve frozen C-tree ranges to native code."""
+
+    def decode_ranges(self, ranges: tuple[NativeRange, ...]) -> NativeOriginDecode: ...
+
+
+_JCC_PREDICATES = {
+    "je": PredicateKind.EQ,
+    "jz": PredicateKind.EQ,
+    "jne": PredicateKind.NE,
+    "jnz": PredicateKind.NE,
+    "jae": PredicateKind.UGE,
+    "jnb": PredicateKind.UGE,
+    "jnc": PredicateKind.UGE,
+    "ja": PredicateKind.UGT,
+    "jnbe": PredicateKind.UGT,
+    "jbe": PredicateKind.ULE,
+    "jna": PredicateKind.ULE,
+    "jb": PredicateKind.ULT,
+    "jnae": PredicateKind.ULT,
+    "jc": PredicateKind.ULT,
+    "jge": PredicateKind.SGE,
+    "jnl": PredicateKind.SGE,
+    "jg": PredicateKind.SGT,
+    "jnle": PredicateKind.SGT,
+    "jle": PredicateKind.SLE,
+    "jng": PredicateKind.SLE,
+    "jl": PredicateKind.SLT,
+    "jnge": PredicateKind.SLT,
+}
+
+
+class IdaNativeOriginMapper:
+    """Live IDA implementation; all reads are fresh and mutation-free."""
+
+    def decode_ranges(self, ranges: tuple[NativeRange, ...]) -> NativeOriginDecode:
+        import ida_bytes
+        import ida_ua
+
+        instructions: dict[int, NativeInstructionIdentity] = {}
+        transfers: dict[int, NativeDecodedControlTransfer] = {}
+        for native_range in ranges:
+            cursor = int(native_range.start_ea)
+            while cursor < int(native_range.end_ea):
+                flags = ida_bytes.get_flags(cursor)
+                if (
+                    not ida_bytes.is_code(flags)
+                    or ida_bytes.get_item_head(cursor) != cursor
+                ):
+                    cursor += 1
+                    continue
+                insn = ida_ua.insn_t()
+                length = int(ida_ua.decode_insn(insn, cursor))
+                if length <= 0 or cursor + length > int(native_range.end_ea):
+                    cursor += 1
+                    continue
+                data = ida_bytes.get_bytes(cursor, length) or b""
+                mnemonic = str(ida_ua.print_insn_mnem(cursor) or "?").lower()
+                identity = NativeInstructionIdentity(
+                    ea=cursor,
+                    end_ea=cursor + length,
+                    bytes_hash=hashlib.sha256(data).hexdigest(),
+                    mnemonic=mnemonic,
+                    operand_shape=tuple(
+                        str(int(op.type))
+                        for op in insn.ops
+                        if int(op.type) != int(ida_ua.o_void)
+                    ),
+                    pc_relative_sites=(),
+                )
+                instructions[cursor] = identity
+                if mnemonic == "jmp" or mnemonic in _JCC_PREDICATES:
+                    first = insn.ops[0]
+                    if int(first.type) in (int(ida_ua.o_near), int(ida_ua.o_far)):
+                        target_ea = int(first.addr)
+                        if mnemonic == "jmp":
+                            successors = (target_ea,)
+                            predicate = None
+                        else:
+                            successors = (target_ea, cursor + length)
+                            predicate = _JCC_PREDICATES[mnemonic]
+                        transfers[cursor] = NativeDecodedControlTransfer(
+                            instruction=identity,
+                            successors=successors,
+                            predicate=predicate,
+                        )
+                cursor += length
+        return NativeOriginDecode(
+            instructions=tuple(instructions[ea] for ea in sorted(instructions)),
+            control_transfers=tuple(transfers[ea] for ea in sorted(transfers)),
+        )
 
 
 def _has_overlap(ordered: tuple[NativeInstructionIdentity, ...]) -> bool:

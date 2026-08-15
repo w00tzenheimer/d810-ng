@@ -289,6 +289,44 @@ def _dead_edge_function_identity(reader, ownership):
     )
 
 
+def _dead_edge_state_contract(candidate: DeadEdgeCandidate):
+    """Prove the retained native edge preserves the inherited stack state.
+
+    Stage B only selects one already-existing arm of a pure conditional
+    branch.  It does not bypass a native body corridor, so register, flag,
+    memory, and call effects on the retained edge are unchanged.  The one
+    ambient machine-state fact that still needs a live witness is the stack
+    delta at the branch and selected target.
+    """
+    import ida_frame
+    import ida_funcs
+
+    from d810.ir.edge_state_contract import EdgeStateContract
+
+    function = ida_funcs.get_func(int(candidate.function_ea))
+    if function is None:
+        raise DeadEdgePlanBuildError("dead-edge candidate has no owning function")
+    try:
+        source_spd = int(ida_frame.get_spd(function, int(candidate.site_ea)))
+        target_spd = int(ida_frame.get_spd(function, int(candidate.proposed_target_ea)))
+    except Exception as exc:
+        raise DeadEdgePlanBuildError(
+            f"cannot prove dead-edge stack state at {candidate.site_ea:#x}"
+        ) from exc
+    contract = EdgeStateContract(
+        source_stack_delta=source_spd,
+        target_stack_delta=target_spd,
+        proof_ids=(
+            f"{candidate.proof_kind}:{candidate.site_ea:#x}:retained-native-edge",
+        ),
+    )
+    if not contract.permits_control_only_relink:
+        raise DeadEdgePlanBuildError(
+            f"dead-edge stack state differs at {candidate.site_ea:#x}"
+        )
+    return contract
+
+
 def build_dead_edge_semantic_plan(
     function_ea: int,
     candidates: tuple[DeadEdgeCandidate, ...],
@@ -375,6 +413,7 @@ def build_dead_edge_semantic_plan(
             )
 
         operation_id = f"dead-edge-{proof_kind}-{index}"
+        state_contract = _dead_edge_state_contract(candidate)
         if candidate.action is DeadEdgeAction.FORCE_FALLTHROUGH:
             lowering = lower_removed_edge(
                 operation_id=operation_id,
@@ -384,6 +423,7 @@ def build_dead_edge_semantic_plan(
                 provider_id="minimal-x86",
                 provider_version="1",
                 bitness=64 if ida_ida.inf_is_64bit() else 32,
+                state_contract=state_contract,
             )
         else:
             lowering = lower_direct_edge(
@@ -396,6 +436,7 @@ def build_dead_edge_semantic_plan(
                 provider_id="minimal-x86",
                 provider_version="1",
                 bitness=64 if ida_ida.inf_is_64bit() else 32,
+                state_contract=state_contract,
             )
         if not lowering.ok or lowering.operation is None:
             raise DeadEdgePlanBuildError(

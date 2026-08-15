@@ -27,13 +27,14 @@ from d810.ir.native_origin import (
     NativeOriginCoverage,
     NativeOriginSpan,
 )
+from d810.ir.edge_state_contract import EdgeStateContract
 from d810.ir.semantics import PredicateKind
 from d810.transforms.native_patch_lowering import (
     NativeEdgeAbstentionReason,
     NativeEdgeCaptureEvidence,
-    lower_conditional_edge,
-    lower_direct_edge,
-    lower_removed_edge,
+    lower_conditional_edge as _lower_conditional_edge,
+    lower_direct_edge as _lower_direct_edge,
+    lower_removed_edge as _lower_removed_edge,
 )
 from d810.transforms.native_patch_plan import (
     NativeAddressRange,
@@ -47,6 +48,29 @@ from d810.transforms.native_patch_plan import (
 pytestmark = pytest.mark.pure_python
 
 _PROVIDER = MinimalX86BranchEncoder()
+
+
+def _state_contract() -> EdgeStateContract:
+    return EdgeStateContract(
+        source_stack_delta=0,
+        target_stack_delta=0,
+        proof_ids=("unit-edge-state",),
+    )
+
+
+def lower_direct_edge(**kwargs):
+    kwargs.setdefault("state_contract", _state_contract())
+    return _lower_direct_edge(**kwargs)
+
+
+def lower_conditional_edge(**kwargs):
+    kwargs.setdefault("state_contract", _state_contract())
+    return _lower_conditional_edge(**kwargs)
+
+
+def lower_removed_edge(**kwargs):
+    kwargs.setdefault("state_contract", _state_contract())
+    return _lower_removed_edge(**kwargs)
 
 
 def _insn(ea: int, length: int = 2, mnemonic: str = "jcc") -> NativeInstructionIdentity:
@@ -177,6 +201,43 @@ class TestLowerDirectEdgePositive:
 
 
 class TestLowerDirectEdgeNegatives:
+    @pytest.mark.parametrize(
+        "contract",
+        (
+            None,
+            EdgeStateContract(),
+            EdgeStateContract(
+                source_stack_delta=0,
+                target_stack_delta=8,
+                proof_ids=("unequal-stack",),
+            ),
+            EdgeStateContract(
+                source_stack_delta=0,
+                target_stack_delta=0,
+                proof_ids=("alias",),
+                unresolved_aliases=True,
+            ),
+        ),
+    )
+    def test_missing_or_unresolved_state_contract_abstains(self, contract) -> None:
+        outcome = lower_direct_edge(
+            operation_id="missing-state-contract",
+            origin_span=_origin_span(),
+            target_ea=0x1010,
+            known_instruction_heads=frozenset({0x1010}),
+            capture=_capture(0x1000, 2),
+            provider=_PROVIDER,
+            provider_id="minimal-x86",
+            provider_version="1",
+            state_contract=contract,
+        )
+
+        assert not outcome.ok
+        assert (
+            outcome.reason
+            == NativeEdgeAbstentionReason.EDGE_STATE_CONTRACT_REQUIRED.value
+        )
+
     def test_rel8_boundary_one_byte_past_reach_falls_back_and_succeeds(self) -> None:
         """Not a negative by itself -- proves the boundary is exact: one byte
         beyond rel8 range still succeeds by promoting to rel32 when the

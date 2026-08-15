@@ -161,6 +161,7 @@ def test_freezes_direct_redirect_with_exact_receipt_and_contract() -> None:
     edge = outcome.topology.edge_intents[0]
     assert edge.kind is NativeCfgEdgeKind.REDIRECT
     assert edge.source_native_ea == 0x1004
+    assert edge.inherited_target_native_eas == (0x1020,)
     assert edge.target_native_eas == (0x1040,)
     assert edge.owner_pass_ids == ("lower_state_machine",)
     assert tuple(ref.ref_id for ref in edge.receipt_refs) == ("receipt-1",)

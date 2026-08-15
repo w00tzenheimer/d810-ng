@@ -116,6 +116,7 @@ class NativeCfgEdgeIntent:
     source_native_ea: int
     inherited_successors: tuple[int, ...]
     final_successors: tuple[int, ...]
+    inherited_target_native_eas: tuple[int, ...]
     target_native_eas: tuple[int, ...]
     kind: NativeCfgEdgeKind
     owner_pass_ids: tuple[str, ...]
@@ -352,6 +353,12 @@ def freeze_native_cfg_topology(
         kind = _edge_kind(baseline_block.succs, final_block.succs)
         if kind is None:
             return _failure(NativeCfgFreezeReason.UNSUPPORTED_EDGE_SHAPE)
+        inherited_target_native_eas: list[int] = []
+        for target in baseline_block.succs:
+            target_ea = baseline_graph.blocks[target].native_start_ea
+            if target_ea is None:
+                return _failure(NativeCfgFreezeReason.MISSING_NATIVE_ANCHOR)
+            inherited_target_native_eas.append(target_ea)
         target_native_eas: list[int] = []
         for target in final_block.succs:
             target_ea = final_graph.blocks[target].native_start_ea
@@ -367,6 +374,7 @@ def freeze_native_cfg_topology(
                 source_native_ea=source_ea,
                 inherited_successors=baseline_block.succs,
                 final_successors=final_block.succs,
+                inherited_target_native_eas=tuple(inherited_target_native_eas),
                 target_native_eas=tuple(target_native_eas),
                 kind=kind,
                 owner_pass_ids=(observation.pass_id,),
@@ -386,6 +394,7 @@ def freeze_native_cfg_topology(
                 item.source_native_ea,
                 item.inherited_successors,
                 item.final_successors,
+                item.inherited_target_native_eas,
                 item.target_native_eas,
                 item.kind.value,
                 item.owner_pass_ids,

@@ -28,20 +28,15 @@ encoder for the same reason -- it is a naming convention, not encoder logic,
 and importing the encoder module just to reuse it would reintroduce the
 forbidden edge.
 
-The EdgeStateContract is deliberately NOT designed here
---------------------------------------------------------------------------
+Edge-state authority
+--------------------
 
-``EdgeStateContract`` does not exist yet -- it is an unresolved P0 design item
-the implementer plan explicitly defers. This module does not invent it.
-Instead, whenever a candidate rewrite would eliminate a register/memory/flag
-definition, lowering abstains with the stable reason
-``EDGE_STATE_CONTRACT_REQUIRED`` rather than silently dropping the
-definition. Mode A only ever replaces a *pure control-transfer* instruction
-(the region's own terminator); a captured origin span whose ``instructions``
-contains anything else -- more than one instruction, or a single instruction
-that is not itself a jmp/jcc -- is exactly a "state-store edge": authorizing
-its removal needs a data-flow authority this codebase does not have yet.
-Abstain-by-default is the correct, honest posture here.
+Every lowering entry point requires a positive portable ``EdgeStateContract``
+issued by the pass-owned proof adapter. The contract proves target live-ins,
+stack state, skipped effects, aliases, and calls; lowering still restricts the
+writable span to exactly one pure native control-transfer instruction. A
+positive state proof therefore cannot accidentally authorize overwriting body
+instructions or a state-defining terminator.
 
 Origin coverage (global constraint)
 --------------------------------------------------------------------------
@@ -64,6 +59,7 @@ from d810.capabilities.native_patch import (
     NativeInstructionSequenceShape,
 )
 from d810.ir.native_origin import NativeOriginCoverage, NativeOriginSpan
+from d810.ir.edge_state_contract import EdgeStateContract
 from d810.ir.semantics import PredicateKind
 from d810.transforms.native_patch_plan import (
     InheritedPatchRow,
@@ -97,7 +93,7 @@ class NativeEdgeAbstentionReason(str, Enum):
     ``EDGE_STATE_CONTRACT_REQUIRED`` are not in that list -- both are
     deliberate additions documented in the module and report: section 16 only
     names partial/ambiguous explicitly, and the EdgeStateContract reason is
-    new by design (see the module docstring).
+    part of the Stage C authorization boundary (see the module docstring).
     """
 
     PARTIAL_NATIVE_ORIGIN = "PARTIAL_NATIVE_ORIGIN"
@@ -190,7 +186,10 @@ class NativeEdgeLoweringOutcome:
         return self.operation is not None
 
 
-def _origin_state_check(origin_span: NativeOriginSpan) -> str | None:
+def _origin_state_check(
+    origin_span: NativeOriginSpan,
+    state_contract: EdgeStateContract | None,
+) -> str | None:
     """Return an abstention reason, or ``None`` if lowering may proceed.
 
     Coverage is checked first (global constraint: partial/ambiguous/synthetic
@@ -204,6 +203,12 @@ def _origin_state_check(origin_span: NativeOriginSpan) -> str | None:
         return NativeEdgeAbstentionReason.AMBIGUOUS_NATIVE_ORIGIN.value
     if origin_span.coverage is NativeOriginCoverage.SYNTHETIC:
         return NativeEdgeAbstentionReason.SYNTHETIC_NATIVE_ORIGIN.value
+
+    if (
+        not isinstance(state_contract, EdgeStateContract)
+        or not state_contract.permits_control_only_relink
+    ):
+        return NativeEdgeAbstentionReason.EDGE_STATE_CONTRACT_REQUIRED.value
 
     # COMPLETE.
     if len(origin_span.instructions) != 1:
@@ -289,9 +294,10 @@ def lower_direct_edge(
     provider_id: str,
     provider_version: str,
     bitness: int = 64,
+    state_contract: EdgeStateContract | None = None,
 ) -> NativeEdgeLoweringOutcome:
     """Lower an owned terminator region to a single unconditional jump."""
-    reason = _origin_state_check(origin_span)
+    reason = _origin_state_check(origin_span, state_contract)
     if reason is not None:
         return NativeEdgeLoweringOutcome(reason=reason)
     if target_ea not in known_instruction_heads:
@@ -330,6 +336,7 @@ def lower_removed_edge(
     provider_id: str,
     provider_version: str,
     bitness: int = 64,
+    state_contract: EdgeStateContract | None = None,
 ) -> NativeEdgeLoweringOutcome:
     """Erase an owned terminator region so control falls through.
 
@@ -345,7 +352,7 @@ def lower_removed_edge(
     valid regions whenever the caller's head set happened not to enumerate the
     fallthrough.
     """
-    reason = _origin_state_check(origin_span)
+    reason = _origin_state_check(origin_span, state_contract)
     if reason is not None:
         return NativeEdgeLoweringOutcome(reason=reason)
 
@@ -384,9 +391,10 @@ def lower_conditional_edge(
     provider_id: str,
     provider_version: str,
     bitness: int = 64,
+    state_contract: EdgeStateContract | None = None,
 ) -> NativeEdgeLoweringOutcome:
     """Lower an owned terminator region to ``jcc <true>; jmp <false>``."""
-    reason = _origin_state_check(origin_span)
+    reason = _origin_state_check(origin_span, state_contract)
     if reason is not None:
         return NativeEdgeLoweringOutcome(reason=reason)
     if (
