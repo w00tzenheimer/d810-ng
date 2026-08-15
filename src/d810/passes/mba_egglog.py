@@ -44,6 +44,7 @@ class MbaEgglogOptions:
     residual_only: bool = False
     require_proof: bool = True
     collect_stage_timings: bool = False
+    execution_mode: str = "interactive"
     native_proof_mode: str = "legacy"
     families: tuple[str, ...] = DEFAULT_FAMILIES
     maturities: tuple[str, ...] = DEFAULT_MATURITIES
@@ -67,6 +68,7 @@ class MbaEgglogPass(PipelinePass):
     residual_only: bool = False
     require_proof: bool = True
     collect_stage_timings: bool = False
+    execution_mode: str = "interactive"
     native_proof_mode: str = "legacy"
     families: tuple[str, ...] = DEFAULT_FAMILIES
     maturities: tuple[str, ...] = DEFAULT_MATURITIES
@@ -100,6 +102,7 @@ def parse_mba_egglog_options(
         "residual_only",
         "require_proof",
         "collect_stage_timings",
+        "execution_mode",
         "native_proof_mode",
         "families",
         "maturities",
@@ -134,6 +137,7 @@ def parse_mba_egglog_options(
     residual_only = options.get("residual_only", False)
     require_proof = options.get("require_proof", True)
     collect_stage_timings = options.get("collect_stage_timings", False)
+    execution_mode = options.get("execution_mode", "interactive")
     native_proof_mode = options.get("native_proof_mode", "legacy")
     families = options.get("families", list(DEFAULT_FAMILIES))
     maturities = options.get("maturities", DEFAULT_MATURITIES)
@@ -187,6 +191,10 @@ def parse_mba_egglog_options(
     if type(collect_stage_timings) is not bool:
         raise PipelineConfigError(
             "mba-egglog options.collect_stage_timings must be a boolean"
+        )
+    if execution_mode not in {"interactive", "noninteractive"}:
+        raise PipelineConfigError(
+            "mba-egglog options.execution_mode must be interactive or noninteractive"
         )
     if native_proof_mode not in {"legacy", "shadow"}:
         raise PipelineConfigError(
@@ -242,6 +250,7 @@ def parse_mba_egglog_options(
         residual_only=residual_only,
         require_proof=require_proof,
         collect_stage_timings=collect_stage_timings,
+        execution_mode=execution_mode,
         native_proof_mode=native_proof_mode,
         families=resolved_families,
         maturities=resolved,
@@ -265,6 +274,7 @@ def build_mba_egglog_pass(config: PipelineConfig) -> MbaEgglogPass:
         residual_only=options.residual_only,
         require_proof=options.require_proof,
         collect_stage_timings=options.collect_stage_timings,
+        execution_mode=options.execution_mode,
         native_proof_mode=options.native_proof_mode,
         families=options.families,
         maturities=options.maturities,
@@ -289,6 +299,7 @@ def register_mba_egglog_pass(registry: PassRegistry) -> PassRegistry:
                 "time_budget_ms": 3,
                 "require_proof": True,
                 "collect_stage_timings": False,
+                "execution_mode": "interactive",
                 "families": list(DEFAULT_FAMILIES),
                 "maturities": list(DEFAULT_MATURITIES),
             },

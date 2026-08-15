@@ -175,6 +175,7 @@ def _stage_profile_handler() -> EgglogOptimizer:
             "max_rule_firings": 32,
             # This profile measures an admitted pipeline; production remains 3 ms.
             "time_budget_ms": 1000,
+            "execution_mode": "noninteractive",
             "require_proof": True,
             "collect_stage_timings": True,
         }

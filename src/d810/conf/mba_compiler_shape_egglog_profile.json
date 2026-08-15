@@ -16,6 +16,7 @@
           "max_enodes": 128,
           "max_rule_firings": 32,
           "time_budget_ms": 1000,
+          "execution_mode": "noninteractive",
           "require_proof": true,
           "collect_stage_timings": true
         }

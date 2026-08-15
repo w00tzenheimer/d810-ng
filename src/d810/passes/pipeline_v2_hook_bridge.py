@@ -167,6 +167,7 @@ def _mba_egglog_options(config: PipelineConfig) -> dict[str, object]:
         "residual_only": adapter.residual_only,
         "require_proof": adapter.require_proof,
         "collect_stage_timings": adapter.collect_stage_timings,
+        "execution_mode": adapter.execution_mode,
         "native_proof_mode": adapter.native_proof_mode,
         "families": list(adapter.families),
         # Keep portable maturity vocabulary across the config-v2 boundary.

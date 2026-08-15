@@ -79,6 +79,7 @@ _ARITH_OPCODES = frozenset(
 _VALID_SIZES = frozenset({1, 2, 4, 8})
 _DEFAULT_FAMILIES = ("add",)
 _MAX_NATIVE_Z3_TIMEOUT_MS = 250
+_INTERACTIVE_NATIVE_Z3_TIMEOUT_MS = 50
 _MAX_PATTERN_COMPARISONS = 256
 
 
@@ -116,6 +117,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         self._native_pattern_catalogue = CompiledPatternCatalogue.from_rules(())
         self._proof_templates = MappingProxyType({})
         self.native_proof_mode = "legacy"
+        self.execution_mode = "interactive"
         self._catalogue_configured = False
         self.last_extraction_receipt: EgglogExtractionReceipt | None = None
         self.last_rule_family: str | None = None
@@ -156,6 +158,11 @@ class EgglogOptimizer(PeepholeSimplificationRule):
                 "EgglogOptimizer native_proof_mode must be legacy or shadow; "
                 "enforced is not rollout-authorized"
             )
+        execution_mode = config.get("execution_mode", "interactive")
+        if execution_mode not in {"interactive", "noninteractive"}:
+            raise ValueError(
+                "EgglogOptimizer execution_mode must be interactive or noninteractive"
+            )
         super().configure(config)
         if maturity_names is not None:
             try:
@@ -193,6 +200,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         self._publish_budget_attributes(budget)
         self.collect_stage_timings = collect_stage_timings
         self.native_proof_mode = native_proof_mode
+        self.execution_mode = execution_mode
         self.families = families
         self._catalogue = selected_catalogue
 
@@ -1041,15 +1049,16 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         )
 
     def _native_z3_timeout_ms(self) -> int:
-        """Bound the final proof by the configured test/runtime budget.
+        """Use the extended native-proof timeout only when explicitly opted in.
 
-        The interactive 3 ms configuration never reaches this path.  Larger
-        admitted runs must not inherit the historical 50 ms solver cutoff:
-        it can produce nondeterministic refusal for valid 64-bit identities.
-        The independent native proof remains mandatory, with a finite ceiling.
+        A large extraction budget alone does not alter interactive mutation
+        behavior.  Noninteractive corpus/profile configurations may request a
+        longer proof, but it remains finitely capped.
         """
 
-        return min(max(50, self.time_budget_ms), _MAX_NATIVE_Z3_TIMEOUT_MS)
+        if self.execution_mode == "noninteractive":
+            return min(self.time_budget_ms, _MAX_NATIVE_Z3_TIMEOUT_MS)
+        return _INTERACTIVE_NATIVE_Z3_TIMEOUT_MS
 
     @staticmethod
     def _prove_ast_equivalence(

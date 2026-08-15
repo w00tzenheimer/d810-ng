@@ -533,6 +533,17 @@ def _configured_live_handler(**overrides) -> EgglogOptimizer:
     return handler
 
 
+def test_native_z3_timeout_requires_explicit_noninteractive_execution_mode():
+    interactive = _configured_live_handler(time_budget_ms=1000)
+    noninteractive = _configured_live_handler(
+        time_budget_ms=1000,
+        execution_mode="noninteractive",
+    )
+
+    assert interactive._native_z3_timeout_ms() == 50
+    assert noninteractive._native_z3_timeout_ms() == 250
+
+
 def test_live_handler_admits_and_extracts_real_degree_two_boolean_candidate():
     candidate = _degree_two_candidate()
     handler = _configured_live_handler(

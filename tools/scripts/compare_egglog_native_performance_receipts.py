@@ -630,7 +630,7 @@ def _real_corpus_proof_timings(
 def _real_corpus_matcher_projection(
     receipts: tuple[dict[str, Any], ...], *, include_backend: bool
 ) -> tuple[tuple[tuple[str, str, str], tuple[tuple[object, ...], ...]], ...]:
-    """Publish matcher-semantic facts; work counters remain mode-local telemetry."""
+    """Publish candidate identity and fixed-binding counts, not binding maps."""
 
     fields = (
         "candidate_identity",
@@ -802,10 +802,11 @@ def compare_receipts(
         "real_corpus_proof_paths_match": _real_corpus_proof_projection(python_real)
         == _real_corpus_proof_projection(cython_real),
         # Comparison and lazy-swap counts measure implementation work; a POD
-        # speedup is allowed to change them. Candidate identity, bindings,
+        # speedup is allowed to change them. Candidate identity, fixed-binding
+        # counts,
         # outcomes, provenance, and proof paths above remain exact parity
         # obligations.
-        "real_corpus_matcher_binding_semantics_match": _real_corpus_matcher_projection(
+        "real_corpus_matcher_binding_count_match": _real_corpus_matcher_projection(
             python_real, include_backend=False
         )
         == _real_corpus_matcher_projection(cython_real, include_backend=False),
