@@ -1,42 +1,79 @@
-"""Tests for persisted developer runtime setting precedence."""
+"""Behavioral tests for persisted developer runtime setting precedence."""
 
 from __future__ import annotations
 
-import ast
-from pathlib import Path
+import json
+
+import pytest
+
+from d810.core.config import D810Configuration
+from d810.core.settings import (
+    apply_saved_runtime_settings,
+    get_settings,
+    reset_settings,
+)
 
 
-def _state_methods() -> dict[str, str]:
-    state_path = (
-        Path(__file__).resolve().parents[3] / "src" / "d810" / "manager" / "state.py"
-    )
-    tree = ast.parse(state_path.read_text(encoding="utf-8"), filename=str(state_path))
-    state = next(
-        node
-        for node in tree.body
-        if isinstance(node, ast.ClassDef) and node.name == "D810State"
-    )
-    return {
-        node.name: ast.unparse(node)
-        for node in state.body
-        if isinstance(node, ast.FunctionDef)
-    }
+@pytest.fixture(autouse=True)
+def _reset_runtime_settings(monkeypatch):
+    yield
+    monkeypatch.undo()
+    reset_settings()
 
 
-def test_state_reset_reapplies_saved_developer_preferences() -> None:
-    methods = _state_methods()
-
-    assert "self._apply_runtime_settings_preferences()" in methods["reset"]
-    apply_source = methods["_apply_runtime_settings_preferences"]
-    assert "'native_perf': 'D810_NATIVE_PERF'" in apply_source
-    assert "'nomut_matching': 'D810_NOMUT_MATCHING'" in apply_source
-    assert "configure_settings" in apply_source
+def _options(tmp_path, options: dict[str, object]) -> D810Configuration:
+    path = tmp_path / "options.json"
+    path.write_text(json.dumps(options), encoding="utf-8")
+    return D810Configuration(path)
 
 
-def test_saved_developer_preferences_are_skipped_when_environment_is_explicit() -> None:
-    apply_source = _state_methods()["_apply_runtime_settings_preferences"]
+def test_saved_native_perf_preference_applies_without_environment_override(
+    monkeypatch, tmp_path
+):
+    """Catches a production break where state reset omits native_perf."""
+    monkeypatch.delenv("D810_NATIVE_PERF", raising=False)
+    reset_settings()
+    config = _options(tmp_path, {"native_perf": True})
 
-    assert "if environment_name in os.environ" in apply_source
-    assert "continue" in apply_source
-    assert "'native_perf'" in apply_source
-    assert "'nomut_matching'" in apply_source
+    apply_saved_runtime_settings(config)
+
+    assert get_settings().native_perf is True
+
+
+def test_saved_nomut_matching_preference_applies_without_environment_override(
+    monkeypatch, tmp_path
+):
+    """Catches a production break where state reset omits nomut_matching."""
+    monkeypatch.delenv("D810_NOMUT_MATCHING", raising=False)
+    reset_settings()
+    config = _options(tmp_path, {"nomut_matching": True})
+
+    apply_saved_runtime_settings(config)
+
+    assert get_settings().nomut_matching is True
+
+
+def test_native_perf_environment_override_wins_over_saved_preference(
+    monkeypatch, tmp_path
+):
+    """Catches a production break that lets saved native_perf override env."""
+    monkeypatch.setenv("D810_NATIVE_PERF", "1")
+    reset_settings()
+    config = _options(tmp_path, {"native_perf": False})
+
+    apply_saved_runtime_settings(config)
+
+    assert get_settings().native_perf is True
+
+
+def test_nomut_matching_environment_override_wins_over_saved_preference(
+    monkeypatch, tmp_path
+):
+    """Catches a production break that lets saved nomut_matching override env."""
+    monkeypatch.setenv("D810_NOMUT_MATCHING", "1")
+    reset_settings()
+    config = _options(tmp_path, {"nomut_matching": False})
+
+    apply_saved_runtime_settings(config)
+
+    assert get_settings().nomut_matching is True

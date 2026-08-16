@@ -12,6 +12,7 @@ phases will migrate the remaining ~25 env vars here.
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass, fields
 
 from d810.core.maturity_labels import MaturityNumbering, mmat_value
@@ -66,6 +67,47 @@ def _env_maturity(name: str, default: int | None = None) -> int | None:
         "(expected one of: GENERATED, PREOPTIMIZED, LOCOPT, CALLS, "
         "GLBOPT1, GLBOPT2, GLBOPT3, LVARS)"
     )
+
+
+_RUNTIME_SETTING_ENVIRONMENT = {
+    "debug_logging": "D810_DEBUG_LOGGING",
+    "verify_capture": "D810_VERIFY_CAPTURE",
+    "verify_capture_dir": "D810_VERIFY_CAPTURE_DIR",
+    "capture_post_maturity": "D810_CAPTURE_POST_MATURITY",
+    "capture_post_file": "D810_CAPTURE_POST_FILE",
+    "fact_lifecycle": "D810_FACT_LIFECYCLE",
+    "trace_decompile_callers": "D810_TRACE_DECOMPILE_CALLERS",
+    "native_perf": "D810_NATIVE_PERF",
+    "nomut_matching": "D810_NOMUT_MATCHING",
+}
+
+
+def apply_saved_runtime_settings(
+    config: object,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> None:
+    """Apply saved runtime settings while preserving explicit env precedence.
+
+    ``D810State.reset()`` calls this narrow boundary after loading
+    ``options.json``.  Keeping the preference merge independent of manager
+    construction makes its precedence behavior directly testable.
+    """
+    config_get = getattr(config, "get", None)
+    if not callable(config_get):
+        raise TypeError("runtime settings config must provide get()")
+
+    environment = os.environ if environ is None else environ
+    missing = object()
+    overrides = {}
+    for setting_name, environment_name in _RUNTIME_SETTING_ENVIRONMENT.items():
+        if environment_name in environment:
+            continue
+        saved_value = config_get(setting_name, missing)
+        if saved_value is not missing:
+            overrides[setting_name] = saved_value
+    if overrides:
+        configure_settings(**overrides)
 
 
 @dataclass

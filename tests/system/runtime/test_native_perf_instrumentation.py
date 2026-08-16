@@ -632,6 +632,45 @@ class TestNativePerfInstrumentation:
             reset_settings()
 
     @pytest.mark.ida_required
+    def test_state_runtime_preferences_apply_saved_values_and_env_precedence(
+        self, monkeypatch, tmp_path
+    ):
+        """The real state seam merges saved values without starting a manager."""
+        import json
+
+        from d810.core.config import D810Configuration
+        from d810.core.settings import get_settings, reset_settings
+        from d810.manager.state import D810State
+
+        options_path = tmp_path / "options.json"
+        options_path.write_text(
+            json.dumps({"native_perf": True, "nomut_matching": True}),
+            encoding="utf-8",
+        )
+        state = object.__new__(D810State)
+        state.d810_config = D810Configuration(options_path)
+
+        monkeypatch.delenv("D810_NATIVE_PERF", raising=False)
+        monkeypatch.delenv("D810_NOMUT_MATCHING", raising=False)
+        reset_settings()
+        state._apply_runtime_settings_preferences()
+        assert get_settings().native_perf is True
+        assert get_settings().nomut_matching is True
+
+        options_path.write_text(
+            json.dumps({"native_perf": False, "nomut_matching": False}),
+            encoding="utf-8",
+        )
+        state.d810_config = D810Configuration(options_path)
+        monkeypatch.setenv("D810_NATIVE_PERF", "1")
+        monkeypatch.setenv("D810_NOMUT_MATCHING", "1")
+        reset_settings()
+        state._apply_runtime_settings_preferences()
+        assert get_settings().native_perf is True
+        assert get_settings().nomut_matching is True
+        reset_settings()
+
+    @pytest.mark.ida_required
     @pytest.mark.skipif(
         not _cython_disabled_by_environment(), reason="Python mode is disabled"
     )
