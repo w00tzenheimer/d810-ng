@@ -106,8 +106,30 @@ def apply_saved_runtime_settings(
         saved_value = config_get(setting_name, missing)
         if saved_value is not missing:
             overrides[setting_name] = saved_value
-    if overrides:
-        configure_settings(**overrides)
+    apply_runtime_settings(overrides, environ=environment)
+
+
+def apply_runtime_settings(
+    overrides: Mapping[str, object],
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> None:
+    """Apply runtime overrides without letting explicit env values be replaced.
+
+    The settings dialog uses this boundary for immediate checkbox changes;
+    startup preference loading uses it for the same precedence semantics.
+    Callers may still persist the requested values separately so they become
+    effective when the corresponding environment override is later removed.
+    """
+    environment = os.environ if environ is None else environ
+    effective_overrides = {}
+    for setting_name, setting_value in overrides.items():
+        environment_name = _RUNTIME_SETTING_ENVIRONMENT.get(setting_name)
+        if environment_name is not None and environment_name in environment:
+            continue
+        effective_overrides[setting_name] = setting_value
+    if effective_overrides:
+        configure_settings(**effective_overrides)
 
 
 @dataclass
@@ -115,7 +137,7 @@ class D810Settings:
     """Flat bag of every D810 runtime toggle.
 
     Constructed from env vars by ``_from_env()``.  Fields are grouped by
-    phase — only Phase 1 (diagnostics) is wired up initially.
+    phase; diagnostic fields and developer runtime controls are wired up.
     """
 
     # -- Phase 1: Diagnostics --

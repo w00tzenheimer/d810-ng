@@ -60,6 +60,33 @@ def test_bound_core_backends_make_allowed_speedups_enabled():
     )
 
 
+def test_active_core_backends_remain_enabled_during_pending_disabled_policy():
+    """The title reports loaded backends until the requested reload finishes."""
+    availability = SpeedupAvailability(installed=True, detail="")
+
+    assert (
+        current_speedup_headline(
+            availability,
+            cython_allowed=False,
+            core_backends_active=True,
+        )
+        is SpeedupHeadline.ENABLED
+    )
+
+
+def test_inactive_core_backends_follow_allowed_policy_states():
+    availability = SpeedupAvailability(installed=True, detail="")
+
+    assert (
+        current_speedup_headline(
+            availability,
+            cython_allowed=False,
+            core_backends_active=False,
+        )
+        is SpeedupHeadline.DISABLED
+    )
+
+
 def test_core_speedup_probe_requires_ast_and_pattern_cython_bindings():
     ast_module = type("AstDispatcher", (), {"_USING_CYTHON": True})()
     pattern_module = type(

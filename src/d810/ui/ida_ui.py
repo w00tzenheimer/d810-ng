@@ -24,7 +24,7 @@ if typing.TYPE_CHECKING:
 from d810.core.logging import LoggerConfigurator, getLogger
 from d810.core.maturity_labels import IDA_MATURITY_NAMES
 from d810.core.cymode import CythonMode
-from d810.core.settings import configure_settings, get_settings
+from d810.core.settings import apply_runtime_settings, configure_settings, get_settings
 from d810.core.speedup_session import (
     core_speedups_active,
     current_speedup_headline,
@@ -721,7 +721,7 @@ class PluginConfigurationFileForm_t(QtWidgets.QDialog):
             native_perf=self.checkbox_native_perf.isChecked(),
             nomut_matching=self.checkbox_nomut_matching.isChecked(),
         )
-        configure_settings(**runtime_overrides)
+        apply_runtime_settings(runtime_overrides)
         if self.log_dir_changed:
             self.state.d810_config.set("log_dir", self.log_dir)
         self.state.d810_config.set(

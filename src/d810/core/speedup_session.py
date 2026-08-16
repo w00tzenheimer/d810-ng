@@ -46,17 +46,22 @@ def current_speedup_headline(
 
     ``core_backends_active`` is optional for compatibility with the pure
     capability/policy projector.  UI callers pass the observed state of the
-    AST and pattern-engine dispatchers so a pending policy cannot be reported
-    as active before the supported reload has completed.
+    AST and pattern-engine dispatchers so a pending policy change cannot
+    replace the implementations that are active until the supported reload
+    has completed.
     """
 
     if not availability.installed:
         return SpeedupHeadline.UNAVAILABLE
-    if not cython_allowed:
-        return SpeedupHeadline.DISABLED
+    if core_backends_active is True:
+        return SpeedupHeadline.ENABLED
     if core_backends_active is False:
-        return SpeedupHeadline.UNAVAILABLE
-    return SpeedupHeadline.ENABLED
+        return (
+            SpeedupHeadline.DISABLED
+            if not cython_allowed
+            else SpeedupHeadline.UNAVAILABLE
+        )
+    return SpeedupHeadline.ENABLED if cython_allowed else SpeedupHeadline.DISABLED
 
 
 def core_speedups_active(module_lookup=sys.modules.get) -> bool:
