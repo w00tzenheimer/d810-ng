@@ -63,6 +63,46 @@ CTYPE_UNSIGNED_TABLE: dict[int, type] = {
 }
 
 
+# Canonical names of binary mcode operations whose concrete result is pure and
+# therefore safe to calculate without an IDA runtime.  Callers map their
+# vendor opcode representation to these names at the boundary.
+BINARY_FOLD_OPCODES: frozenset[str] = frozenset(
+    {
+        "add",
+        "sub",
+        "mul",
+        "udiv",
+        "sdiv",
+        "umod",
+        "smod",
+        "and",
+        "or",
+        "xor",
+        "shl",
+        "shr",
+        "sar",
+        "cfadd",
+        "ofadd",
+        "seto",
+        "setp",
+        "setz",
+        "setnz",
+        "setae",
+        "setb",
+        "seta",
+        "setbe",
+        "setg",
+        "setge",
+        "setl",
+        "setle",
+    }
+)
+
+UNARY_FOLD_OPCODES: frozenset[str] = frozenset(
+    {"mov", "neg", "lnot", "bnot", "xds", "xdu", "low", "high", "sets"}
+)
+
+
 # =============================================================================
 # Conversion Functions
 # =============================================================================
@@ -173,6 +213,150 @@ def get_parity_flag(op1: int, op2: int, nb_bytes: int) -> int:
     else:
         tmp = CTYPE_UNSIGNED_TABLE[nb_bytes](op1 - op2).value
     return (bin(tmp).count("1") + 1) % 2
+
+
+def fold_binary_opcode(
+    opcode: str,
+    left: int,
+    right: int,
+    *,
+    left_bytes: int,
+    right_bytes: int,
+    result_bytes: int,
+) -> int | None:
+    """Evaluate a pure binary microcode operation with explicit widths.
+
+    ``opcode`` is the canonical Hex-Rays opcode name without its ``m_``
+    prefix (for example ``"setb"`` or ``"ofadd"``).  The explicit source and
+    result widths are essential for flag operations: their result is a byte,
+    while their arithmetic and comparison semantics are defined at the source
+    operand width.
+
+    Return ``None`` when the operation is unsupported, structurally invalid,
+    or cannot be evaluated safely (such as division by zero).
+    """
+
+    if (
+        left_bytes not in AND_TABLE
+        or right_bytes not in AND_TABLE
+        or result_bytes not in AND_TABLE
+    ):
+        return None
+
+    # Hex-Rays' binary arithmetic, flag, and comparison opcodes require
+    # identically sized value operands.  Shifts are the exception: their
+    # count may be a narrower byte operand.
+    if opcode not in {"shl", "shr", "sar"} and left_bytes != right_bytes:
+        return None
+
+    left &= AND_TABLE[left_bytes]
+    right &= AND_TABLE[right_bytes]
+    result_mask = AND_TABLE[result_bytes]
+
+    if opcode == "add":
+        return (left + right) & result_mask
+    if opcode == "sub":
+        return (left - right) & result_mask
+    if opcode == "mul":
+        return (left * right) & result_mask
+    if opcode == "udiv":
+        return None if right == 0 else (left // right) & result_mask
+    if opcode == "sdiv":
+        signed_left = unsigned_to_signed(left, left_bytes)
+        signed_right = unsigned_to_signed(right, right_bytes)
+        if signed_right == 0:
+            return None
+        quotient = (abs(signed_left) // abs(signed_right)) * (
+            -1 if (signed_left < 0) ^ (signed_right < 0) else 1
+        )
+        return signed_to_unsigned(quotient, result_bytes) & result_mask
+    if opcode == "umod":
+        return None if right == 0 else (left % right) & result_mask
+    if opcode == "smod":
+        signed_left = unsigned_to_signed(left, left_bytes)
+        signed_right = unsigned_to_signed(right, right_bytes)
+        if signed_right == 0:
+            return None
+        quotient = (abs(signed_left) // abs(signed_right)) * (
+            -1 if (signed_left < 0) ^ (signed_right < 0) else 1
+        )
+        remainder = signed_left - (quotient * signed_right)
+        return signed_to_unsigned(remainder, result_bytes) & result_mask
+    if opcode == "and":
+        return (left & right) & result_mask
+    if opcode == "or":
+        return (left | right) & result_mask
+    if opcode == "xor":
+        return (left ^ right) & result_mask
+    if opcode == "shl":
+        return (left << right) & result_mask
+    if opcode == "shr":
+        return (left >> right) & result_mask
+    if opcode == "sar":
+        return (unsigned_to_signed(left, left_bytes) >> right) & result_mask
+    if opcode == "cfadd":
+        return get_add_cf(left, right, left_bytes)
+    if opcode == "ofadd":
+        return get_add_of(left, right, left_bytes)
+    if opcode == "seto":
+        return get_sub_of(left, right, left_bytes)
+    if opcode == "setp":
+        return get_parity_flag(left, right, left_bytes)
+    if opcode == "setz":
+        return int(left == right)
+    if opcode == "setnz":
+        return int(left != right)
+    if opcode == "setae":
+        return int(left >= right)
+    if opcode == "setb":
+        return int(left < right)
+    if opcode == "seta":
+        return int(left > right)
+    if opcode == "setbe":
+        return int(left <= right)
+
+    signed_left = unsigned_to_signed(left, left_bytes)
+    signed_right = unsigned_to_signed(right, right_bytes)
+    if opcode == "setg":
+        return int(signed_left > signed_right)
+    if opcode == "setge":
+        return int(signed_left >= signed_right)
+    if opcode == "setl":
+        return int(signed_left < signed_right)
+    if opcode == "setle":
+        return int(signed_left <= signed_right)
+    return None
+
+
+def fold_unary_opcode(
+    opcode: str,
+    value: int,
+    *,
+    input_bytes: int,
+    result_bytes: int,
+) -> int | None:
+    """Evaluate a pure unary microcode operation with explicit widths."""
+
+    if input_bytes not in AND_TABLE or result_bytes not in AND_TABLE:
+        return None
+
+    value &= AND_TABLE[input_bytes]
+    result_mask = AND_TABLE[result_bytes]
+    if opcode in {"mov", "xdu", "low"}:
+        return value & result_mask
+    if opcode == "neg":
+        return (-value) & result_mask
+    if opcode == "lnot":
+        return int(value == 0) & result_mask
+    if opcode == "bnot":
+        return (~value) & result_mask
+    if opcode == "xds":
+        return signed_to_unsigned(unsigned_to_signed(value, input_bytes), result_bytes)
+    if opcode == "high":
+        return (value >> (result_bytes * 8)) & result_mask
+    if opcode == "sets":
+        return int(unsigned_to_signed(value, input_bytes) < 0)
+    return None
 
 
 # =============================================================================

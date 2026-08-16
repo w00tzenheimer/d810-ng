@@ -7,7 +7,12 @@ import ida_hexrays
 from d810.core import typing
 from d810.core import CacheImpl
 from d810.core import getLogger
-from d810.core.bits import get_parity_flag, get_sub_of
+from d810.core.bits import (
+    BINARY_FOLD_OPCODES,
+    UNARY_FOLD_OPCODES,
+    fold_binary_opcode,
+    fold_unary_opcode,
+)
 from d810.evaluator.helpers.rotate import _RotateHelper as _HelperLookup
 from d810.hexrays.expr.ast import AstBase, AstLeaf, AstNode
 from d810.hexrays.ir.mop_utils import mop_to_ast
@@ -524,58 +529,53 @@ def _fold_bottom_up(
         if val is not None:
             return _folded_constant_leaf(val, bits), True
     elif ast.left is not None and ast.right is not None:
-        lval = _eval_subtree(ast.left, bits, blk=blk, ins=ins)
-        rval = _eval_subtree(ast.right, bits, blk=blk, ins=ins)
+        left_bits = _ast_result_bits(ast.left, bits)
+        right_bits = _ast_result_bits(ast.right, bits)
+        lval = _eval_subtree(ast.left, left_bits, blk=blk, ins=ins)
+        rval = _eval_subtree(ast.right, right_bits, blk=blk, ins=ins)
         if lval is not None and rval is not None:
-            val = _fold(ast.opcode, lval, rval, bits)
+            val = _fold(
+                ast.opcode,
+                lval,
+                rval,
+                bits,
+                left_bits=left_bits,
+                right_bits=right_bits,
+            )
             if val is not None:
                 return _folded_constant_leaf(val, bits), True
 
     return ast, changed
 
 
-def _fold(op, a, b, bits):
-    mask = _get_mask(bits)
-    if op == ida_hexrays.m_add:
-        return (a + b) & mask
-    if op == ida_hexrays.m_ofadd:
-        return (a + b) & mask
-    if op == ida_hexrays.m_sub:
-        return (a - b) & mask
-    if op == ida_hexrays.m_mul:
-        return (a * b) & mask
-    if op == ida_hexrays.m_and:
-        return (a & b) & mask
-    if op == ida_hexrays.m_or:
-        return (a | b) & mask
-    if op == ida_hexrays.m_xor:
-        return (a ^ b) & mask
-    if op == ida_hexrays.m_shl:
-        return (a << b) & mask
-    if op == ida_hexrays.m_shr:
-        return (a >> b) & mask
-    if op == ida_hexrays.m_sar:
-        mask = _get_mask(bits)
-        a &= mask
-        if a & (1 << (bits - 1)):
-            a -= 1 << bits
-        return (a >> b) & mask
-    if op == ida_hexrays.m_setp:
-        # Parity flag is set when low-byte of (a - b) has even parity (PF=1 -> result 1)
-        nb_bytes = bits // 8 if bits else 1
-        return 1 if get_parity_flag(a, b, nb_bytes) else 0
-    if op == ida_hexrays.m_setb:
-        # Carry flag after a subtraction: unsigned a < b.
-        return 1 if (a & mask) < (b & mask) else 0
-    if op == ida_hexrays.m_seto:
-        # Overflow flag after a subtraction.  This is the same predicate used
-        # by the concrete evaluator for Hex-Rays' m_seto opcode.
-        return get_sub_of(a, b, bits // 8)
+def _fold(
+    op: int,
+    a: int,
+    b: int,
+    bits: int,
+    *,
+    left_bits: int | None = None,
+    right_bits: int | None = None,
+) -> int | None:
+    """Fold a pure binary mcode operation with separate source/result widths."""
 
+    left_bits = bits if left_bits is None else left_bits
+    right_bits = bits if right_bits is None else right_bits
     _mcode_op: dict[str, typing.Any] = OPCODES_INFO[op]
+    opcode_name = _mcode_op["name"]
+    if opcode_name in BINARY_FOLD_OPCODES:
+        return fold_binary_opcode(
+            opcode_name,
+            a,
+            b,
+            left_bytes=left_bits // 8,
+            right_bytes=right_bits // 8,
+            result_bytes=bits // 8,
+        )
+
     logger.error(
         "[fold_const] [_fold] Unknown opcode: %s with args: %s %s and bits: %s",
-        _mcode_op["name"],
+        opcode_name,
         a,
         b,
         bits,
@@ -596,6 +596,8 @@ def _eval_subtree(
     """
     if ast is None:
         return None
+
+    bits = _ast_result_bits(ast, bits)
 
     if ast.is_leaf():
         ast = typing.cast(AstLeaf, ast)
@@ -668,45 +670,27 @@ def _eval_subtree(
     ast = typing.cast(AstNode, ast)
     if ast.right is None:
         ast = typing.cast(AstNode, ast)
-        val = _eval_subtree(ast.left, bits, blk=blk, ins=ins)
+        if ast.left is None:
+            return None
+        left_bits = _ast_result_bits(ast.left, bits)
+        val = _eval_subtree(ast.left, left_bits, blk=blk, ins=ins)
         if val is None:
             return None
-        if ast.opcode == ida_hexrays.m_neg:
-            return (-val) & _get_mask(bits)
-        if ast.opcode == ida_hexrays.m_bnot:
-            return (~val) & _get_mask(bits)
-        # Extract low/high half-words
-        if ast.opcode == ida_hexrays.m_low:
-            return val & _get_mask(bits)
-        if ast.opcode == ida_hexrays.m_high:
-            return (val >> bits) & _get_mask(bits)
-        if ast.left and ast.left.dest_size:
-            if ast.opcode == ida_hexrays.m_xds:
-                left_bits = ast.left.dest_size * 8
-                val = _eval_subtree(ast.left, left_bits, blk=blk, ins=ins)
-                if val is None:
-                    return None
-                mask = _get_mask(bits)
-                sign_bit = 1 << (left_bits - 1)
-                if val & sign_bit:
-                    val |= ~((1 << left_bits) - 1) & mask
-                return val & mask
-            if ast.opcode == ida_hexrays.m_xdu:
-                # Zero-extend: just mask the underlying value to the destination size
-                left_bits = (
-                    ast.left.dest_size * 8
-                    if getattr(ast.left, "dest_size", None)
-                    else bits
-                )
-                val = _eval_subtree(ast.left, left_bits, blk=blk, ins=ins)
-                if val is None:
-                    return None
-                return val & _get_mask(bits)
+        opcode_name = OPCODES_INFO[ast.opcode]["name"]
+        if opcode_name in UNARY_FOLD_OPCODES:
+            return fold_unary_opcode(
+                opcode_name,
+                val,
+                input_bytes=left_bits // 8,
+                result_bytes=bits // 8,
+            )
         return None
 
     # binary
-    l = _eval_subtree(ast.left, bits, blk=blk, ins=ins)  # type: ignore
-    r = _eval_subtree(ast.right, bits, blk=blk, ins=ins)  # type: ignore
+    left_bits = _ast_result_bits(ast.left, bits)  # type: ignore[arg-type]
+    right_bits = _ast_result_bits(ast.right, bits)  # type: ignore[arg-type]
+    l = _eval_subtree(ast.left, left_bits, blk=blk, ins=ins)  # type: ignore
+    r = _eval_subtree(ast.right, right_bits, blk=blk, ins=ins)  # type: ignore
     if l is None or r is None:
         return None
 
@@ -728,4 +712,11 @@ def _eval_subtree(
             bits,
         )
         return None
-    return _fold(ast.opcode, l, r, bits)  # type: ignore
+    return _fold(
+        ast.opcode,
+        l,
+        r,
+        bits,
+        left_bits=left_bits,
+        right_bits=right_bits,
+    )  # type: ignore

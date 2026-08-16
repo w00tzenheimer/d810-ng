@@ -25,6 +25,10 @@ import ida_hexrays
 
 from d810.core.bits import (
     AND_TABLE,
+    BINARY_FOLD_OPCODES,
+    UNARY_FOLD_OPCODES,
+    fold_binary_opcode,
+    fold_unary_opcode,
     get_add_cf,
     get_add_of,
     get_parity_flag,
@@ -38,6 +42,16 @@ from d810.evaluator.protocol import EvaluatorProtocol
 from d810.hexrays.ir.mop_snapshot import MopSnapshot
 
 logger = getLogger(__name__)
+
+
+_BINARY_OPCODE_NAMES: dict[int, str] = {
+    getattr(ida_hexrays, f"m_{opcode_name}"): opcode_name
+    for opcode_name in BINARY_FOLD_OPCODES
+}
+_UNARY_OPCODE_NAMES: dict[int, str] = {
+    getattr(ida_hexrays, f"m_{opcode_name}"): opcode_name
+    for opcode_name in UNARY_FOLD_OPCODES
+}
 
 
 class ConcreteEvaluator(EvaluatorProtocol):
@@ -224,6 +238,33 @@ class ConcreteEvaluator(EvaluatorProtocol):
         opcode = node.opcode  # type: ignore[union-attr]
         left = node.left  # type: ignore[union-attr]
         right = node.right  # type: ignore[union-attr]
+
+        opcode_name = _UNARY_OPCODE_NAMES.get(opcode)
+        if opcode_name is not None:
+            value = _ev(left)
+            if value is None:
+                return None
+            return fold_unary_opcode(
+                opcode_name,
+                value,
+                input_bytes=left.dest_size,
+                result_bytes=node.dest_size,  # type: ignore[union-attr]
+            )
+
+        opcode_name = _BINARY_OPCODE_NAMES.get(opcode)
+        if opcode_name is not None:
+            assert right is not None
+            lv, rv = _ev(left), _ev(right)
+            if lv is None or rv is None:
+                return None
+            return fold_binary_opcode(
+                opcode_name,
+                lv,
+                rv,
+                left_bytes=left.dest_size,
+                right_bytes=right.dest_size,
+                result_bytes=node.dest_size,  # type: ignore[union-attr]
+            )
 
         match opcode:
             case ida_hexrays.m_mov:

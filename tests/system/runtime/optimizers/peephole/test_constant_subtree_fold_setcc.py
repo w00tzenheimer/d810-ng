@@ -12,3 +12,19 @@ def test_fold_setb_and_seto_match_the_reported_byte_operands() -> None:
 
     assert _fold(ida_hexrays.m_setb, 109, 249, 8) == 1
     assert _fold(ida_hexrays.m_seto, 109, 249, 8) == 0
+
+
+def test_fold_setcc_uses_source_width_not_the_flag_width() -> None:
+    """Flag results are bytes, but their inputs retain their native width."""
+
+    assert _fold(
+        ida_hexrays.m_setb, 0x100, 0xFF, 8, left_bits=32, right_bits=32
+    ) == 0
+    assert _fold(
+        ida_hexrays.m_seto,
+        0x7FFFFFFF,
+        0xFFFFFFFF,
+        8,
+        left_bits=32,
+        right_bits=32,
+    ) == 1
