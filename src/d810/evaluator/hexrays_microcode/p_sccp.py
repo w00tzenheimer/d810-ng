@@ -457,6 +457,8 @@ def solve(program: SccpProgram, *, work_budget: int | None = None) -> SccpResult
         successor = block.successors[1] if condition.value != 0 else block.successors[0]
         enqueue_edge((block.index, successor))
 
+    # Seed the entry block with a virtual edge.  It establishes reachability,
+    # but is not real CFG work and must not consume the real-edge budget.
     enqueue_edge((-1, 0))
     peak_cfg_queue = 1
 
@@ -467,8 +469,10 @@ def solve(program: SccpProgram, *, work_budget: int | None = None) -> SccpResult
         if pending_edges:
             edge = pending_edges.popleft()
             pending_edge_set.remove(edge)
-            cfg_events += 1
             source, target = edge
+            is_virtual_entry = source < 0
+            if not is_virtual_entry:
+                cfg_events += 1
             if source >= 0:
                 executable_edges.add(edge)
             if target not in blocks:

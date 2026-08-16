@@ -171,6 +171,25 @@ def test_duplicate_uses_are_indexed() -> None:
     assert result.value_events <= 2 * len(result.constants)
 
 
+def test_default_budget_does_not_charge_virtual_entry_seed() -> None:
+    program = SccpProgram.from_parts(
+        blocks=(
+            SccpBlock(index=0, successors=(1,), instruction_indices=()),
+            SccpBlock(index=1, successors=(), instruction_indices=()),
+        ),
+        instructions=(),
+        mop_keys_by_value={},
+        fingerprint_seed="two-block-empty",
+    )
+
+    result = solve(program)
+
+    assert result.status is SccpStatus.CONVERGED
+    assert result.executable_edges == frozenset({(0, 1)})
+    assert result.reachable_blocks == frozenset({0, 1})
+    assert result.cfg_events == 1
+
+
 def test_unsupported_operand_converges_to_none_constant() -> None:
     unsupported = SccpOperand(kind=OperandKind.UNSUPPORTED, size=4)
     program = SccpProgram.from_parts(

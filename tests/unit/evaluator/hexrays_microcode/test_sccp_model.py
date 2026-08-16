@@ -159,3 +159,30 @@ def test_equal_programs_have_equal_fingerprints_and_ea_changes_it() -> None:
     assert same.fingerprint == equal.fingerprint
     assert same.fingerprint != changed.fingerprint
     assert len(same.fingerprint) == 64
+
+
+def test_program_freezes_nested_mop_key_containers() -> None:
+    mutable_key = ["s", {"offset": 8}, [4], {"stack", "read"}]
+    program = SccpProgram.from_parts(
+        blocks=(SccpBlock(index=0, successors=(), instruction_indices=()),),
+        instructions=(),
+        mop_keys_by_value={1: mutable_key},
+        fingerprint_seed="mutable-key",
+    )
+    fingerprint_before = program.fingerprint
+    key_before = repr(program.mop_key_for(1))
+
+    mutable_key[0] = "r"
+    mutable_key[1]["offset"] = 16
+    mutable_key[2].append(8)
+    mutable_key[3].add("write")
+
+    assert program.fingerprint == fingerprint_before
+    assert repr(program.mop_key_for(1)) == key_before
+
+    returned_key = program.mop_key_for(1)
+    assert returned_key is not None
+    with pytest.raises(TypeError):
+        returned_key[0] = "r"  # type: ignore[index]
+    with pytest.raises(TypeError):
+        returned_key[1]["offset"] = 16  # type: ignore[index]

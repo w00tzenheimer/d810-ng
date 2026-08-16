@@ -149,9 +149,34 @@ def _canonical(value: Any) -> Any:
         return {"__bytes__": value.hex()}
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
-    if hasattr(value, "__dict__"):
-        return _canonical(vars(value))
     raise TypeError(f"value is not JSON-canonicalizable: {type(value).__name__}")
+
+
+def _freeze_primitive(value: Any) -> Any:
+    """Recursively freeze JSON-like primitive containers.
+
+    Snapshot keys are tuples of primitive values, but accepting nested lists,
+    mappings, and sets here keeps the model boundary useful for adapters and
+    tests while preventing a caller from mutating a program after hashing.
+    Arbitrary/live objects are rejected rather than retained by reference.
+    """
+
+    if value is None or isinstance(value, (str, int, float, bool, bytes)):
+        return value
+    if isinstance(value, (tuple, list)):
+        return tuple(_freeze_primitive(item) for item in value)
+    if isinstance(value, (set, frozenset)):
+        return frozenset(_freeze_primitive(item) for item in value)
+    if isinstance(value, Mapping):
+        frozen_items = [
+            (_freeze_primitive(key), _freeze_primitive(item))
+            for key, item in value.items()
+        ]
+        try:
+            return MappingProxyType(dict(frozen_items))
+        except TypeError as exc:
+            raise TypeError("mapping keys must freeze to hashable primitives") from exc
+    raise TypeError(f"value is not a supported primitive: {type(value).__name__}")
 
 
 def _operand_payload(operand: SccpOperand | None) -> Any:
@@ -195,7 +220,10 @@ class SccpProgram:
             int(value_id): tuple(indices)
             for value_id, indices in self.uses_by_value.items()
         }
-        mop_keys = dict(self.mop_keys_by_value)
+        mop_keys = {
+            value_id: _freeze_primitive(key)
+            for value_id, key in self.mop_keys_by_value.items()
+        }
         object.__setattr__(self, "uses_by_value", MappingProxyType(uses))
         object.__setattr__(self, "mop_keys_by_value", MappingProxyType(mop_keys))
 
@@ -221,7 +249,11 @@ class SccpProgram:
                     indices.append(instruction.index)
 
         uses_tuple = {value_id: tuple(indices) for value_id, indices in uses.items()}
-        mop_keys = dict(mop_keys_by_value)
+        mop_keys = {
+            value_id: _freeze_primitive(key)
+            for value_id, key in mop_keys_by_value.items()
+        }
+        frozen_fingerprint_seed = _freeze_primitive(fingerprint_seed)
         payload = {
             "blocks": [
                 {
@@ -234,7 +266,7 @@ class SccpProgram:
             "instructions": [_instruction_payload(instruction) for instruction in instructions_tuple],
             "uses_by_value": uses_tuple,
             "mop_keys_by_value": mop_keys,
-            "fingerprint_seed": fingerprint_seed,
+            "fingerprint_seed": frozen_fingerprint_seed,
         }
         canonical_json = json.dumps(
             _canonical(payload),
