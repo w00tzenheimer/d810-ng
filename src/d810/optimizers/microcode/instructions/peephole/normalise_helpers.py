@@ -7,7 +7,7 @@ import ida_hexrays
 from d810.core import typing
 from d810.core import CacheImpl
 from d810.core import getLogger
-from d810.core.bits import get_parity_flag
+from d810.core.bits import get_parity_flag, get_sub_of
 from d810.evaluator.helpers.rotate import _RotateHelper as _HelperLookup
 from d810.hexrays.expr.ast import AstBase, AstLeaf, AstNode
 from d810.hexrays.ir.mop_utils import mop_to_ast
@@ -564,6 +564,13 @@ def _fold(op, a, b, bits):
         # Parity flag is set when low-byte of (a - b) has even parity (PF=1 -> result 1)
         nb_bytes = bits // 8 if bits else 1
         return 1 if get_parity_flag(a, b, nb_bytes) else 0
+    if op == ida_hexrays.m_setb:
+        # Carry flag after a subtraction: unsigned a < b.
+        return 1 if (a & mask) < (b & mask) else 0
+    if op == ida_hexrays.m_seto:
+        # Overflow flag after a subtraction.  This is the same predicate used
+        # by the concrete evaluator for Hex-Rays' m_seto opcode.
+        return get_sub_of(a, b, bits // 8)
 
     _mcode_op: dict[str, typing.Any] = OPCODES_INFO[op]
     logger.error(
