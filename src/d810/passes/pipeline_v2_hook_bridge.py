@@ -67,6 +67,21 @@ class PipelineV2HookActivation:
     native_state_machine_pass_ids: tuple[str, ...] = ()
 
 
+def requires_native_preanalysis_handlers(
+    activation: PipelineV2HookActivation,
+) -> bool:
+    """Whether this config-v2 activation needs generated-restart consumption.
+
+    The complete native state-machine spine can stage dispatcher-recovery
+    evidence after the first generated MBA.  Its controller-owned retry must
+    reach the flowchart handler that consumes that evidence exactly once.
+    """
+    return bool(
+        activation.enabled
+        and activation.native_state_machine_pass_ids == STATE_MACHINE_NATIVE_PASS_IDS
+    )
+
+
 def _rule_config(name: str, config: object) -> RuleConfiguration:
     if config is None:
         config = {}
@@ -387,4 +402,5 @@ __all__ = [
     "STATE_MACHINE_UNFLATTENER_RULE",
     "pipeline_v2_hook_activation",
     "pipeline_v2_native_state_machine_configs",
+    "requires_native_preanalysis_handlers",
 ]

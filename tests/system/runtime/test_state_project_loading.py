@@ -133,6 +133,49 @@ def test_load_first_valid_project_returns_none_when_everything_is_broken(
             _restore(state, original_index)
 
 
+def test_config_v2_native_spine_syncs_generated_restart_consumer(
+    d810_state,
+    monkeypatch,
+) -> None:
+    """A config-v2 native spine installs its handler and removes it on fallback."""
+    with d810_state() as state:
+        original_index = state.current_project_index
+        native_index = state.project_manager.index("hodur_flag2_config_v2_canary.json")
+        legacy_index = state.project_manager.index("default_instruction_only.json")
+        manager = state.manager
+        calls: list[str] = []
+        monkeypatch.setattr(
+            manager,
+            "_install_native_preanalysis_handlers",
+            lambda: calls.append("install"),
+        )
+        monkeypatch.setattr(
+            manager,
+            "_uninstall_native_preanalysis_handlers",
+            lambda: calls.append("uninstall"),
+        )
+        real_configure = manager.configure
+
+        def configure_as_live_manager(**kwargs) -> None:
+            manager._started = True
+            try:
+                real_configure(**kwargs)
+            finally:
+                # This state-loading test has no licensed Hex-Rays runtime,
+                # so keep later rule configuration on its inert path.
+                manager._started = False
+
+        monkeypatch.setattr(manager, "configure", configure_as_live_manager)
+        try:
+            assert state.load_project(native_index) is not None
+            assert manager.config["config_v2_native_state_machine_active"] is True
+            assert state.load_project(legacy_index) is not None
+            assert calls == ["install", "uninstall"]
+        finally:
+            monkeypatch.undo()
+            _restore(state, original_index)
+
+
 @pytest.mark.parametrize("index", [0])
 def test_invalid_projects_starts_empty(d810_state, index: int) -> None:
     with d810_state() as state:

@@ -88,7 +88,10 @@ from d810.manager.workbench_recipe_models import (
 )
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
 from d810.optimizers.microcode.instructions.handler import InstructionOptimizationRule
-from d810.passes.pipeline_v2_hook_bridge import pipeline_v2_hook_activation
+from d810.passes.pipeline_v2_hook_bridge import (
+    pipeline_v2_hook_activation,
+    requires_native_preanalysis_handlers,
+)
 from d810.passes.state_machine_options import StateMachineCffOptions
 
 if TYPE_CHECKING:
@@ -455,6 +458,13 @@ class D810State(metaclass=SingletonMeta):
                     self.current_blk_rules.append(blk_rule)
         logger.debug("Block rules configured")
         cfg = dict(runtime_project.additional_configuration)
+        # This is derived from the validated config-v2 activation rather than
+        # user-editable project JSON.  A complete native state-machine spine
+        # may stage one generated-MBA restart, whose flowchart consumer must
+        # therefore be installed while this runtime project is active.
+        cfg["config_v2_native_state_machine_active"] = (
+            requires_native_preanalysis_handlers(hook_activation)
+        )
         cfg.setdefault("project_name", self.current_project.path.name)
         cfg.setdefault("runtime_project_name", runtime_project.path.name)
         self.manager.configure(**cfg)

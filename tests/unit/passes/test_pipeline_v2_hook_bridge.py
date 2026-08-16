@@ -15,8 +15,10 @@ from d810.passes.pass_pipeline import PipelineConfigError
 from d810.passes.pipeline_v2_hook_bridge import (
     STATE_MACHINE_NATIVE_PASS_IDS,
     STATE_MACHINE_UNFLATTENER_RULE,
+    PipelineV2HookActivation,
     pipeline_v2_hook_activation,
     pipeline_v2_native_state_machine_configs,
+    requires_native_preanalysis_handlers,
 )
 
 _CONF_DIR = Path("src/d810/conf")
@@ -359,6 +361,25 @@ def test_native_state_machine_config_filter_excludes_live_hook_passes():
     configs = pipeline_v2_native_state_machine_configs(project)
 
     assert [config.pass_id for config in configs] == list(STATE_MACHINE_NATIVE_PASS_IDS)
+
+
+def test_config_v2_native_state_machine_activation_requires_restart_consumer() -> None:
+    """The complete native spine needs the flowchart handler that consumes redo."""
+    assert requires_native_preanalysis_handlers(
+        PipelineV2HookActivation(
+            enabled=True,
+            native_state_machine_pass_ids=STATE_MACHINE_NATIVE_PASS_IDS,
+        )
+    )
+    assert not requires_native_preanalysis_handlers(
+        PipelineV2HookActivation(enabled=True)
+    )
+    assert not requires_native_preanalysis_handlers(
+        PipelineV2HookActivation(
+            enabled=False,
+            native_state_machine_pass_ids=STATE_MACHINE_NATIVE_PASS_IDS,
+        )
+    )
 
 
 def test_state_machine_native_spine_rejects_partial_sequence():

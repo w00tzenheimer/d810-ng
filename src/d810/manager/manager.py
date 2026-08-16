@@ -659,6 +659,11 @@ class D810Manager:
         init=False,
         repr=False,
     )
+    _native_preanalysis_handlers_installed: bool = dataclasses.field(
+        default=False,
+        init=False,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         self.profiling = ProfilingController(self.log_dir)
@@ -1575,6 +1580,8 @@ class D810Manager:
         self._load_function_analysis_priors_from_config(
             kwargs.get("function_analysis_priors", {})
         )
+        if self._started:
+            self._sync_native_preanalysis_handlers()
 
     def reconfigure_function_storage(
         self,
@@ -3054,8 +3061,7 @@ class D810Manager:
         # path.  Installing it for every project steals ordinary ``m_ijmp``
         # candidates from the selected IndirectBranchResolver before that
         # rule reaches LOCOPT.
-        if bool(self.config.get("legacy_direct_indirect_materialization", False)):
-            self._install_native_preanalysis_handlers()
+        self._sync_native_preanalysis_handlers()
         self.event_emitter.on(
             DecompilationEvent.HEXRAYS_FLOWCHART_READY,
             run_flowchart_preanalysis_handlers,
@@ -3166,6 +3172,24 @@ class D810Manager:
 
         uninstall()
 
+    def _native_preanalysis_handlers_required(self) -> bool:
+        """Return whether the active project can stage a generated restart."""
+        return bool(
+            self.config.get("legacy_direct_indirect_materialization", False)
+            or self.config.get("config_v2_native_state_machine_active", False)
+        )
+
+    def _sync_native_preanalysis_handlers(self) -> None:
+        """Keep the generated-restart consumer aligned with active config."""
+        required = self._native_preanalysis_handlers_required()
+        if required == self._native_preanalysis_handlers_installed:
+            return
+        if required:
+            self._install_native_preanalysis_handlers()
+        else:
+            self._uninstall_native_preanalysis_handlers()
+        self._native_preanalysis_handlers_installed = required
+
     def _build_pass_pipeline(
         self,
         *,
@@ -3217,7 +3241,9 @@ class D810Manager:
             uninstall_live_frontend_normalization,
         )
 
-        self._uninstall_native_preanalysis_handlers()
+        if self._native_preanalysis_handlers_installed:
+            self._uninstall_native_preanalysis_handlers()
+            self._native_preanalysis_handlers_installed = False
         uninstall_live_frontend_normalization()
         self.instruction_optimizer.remove()
         self.block_optimizer.remove()
