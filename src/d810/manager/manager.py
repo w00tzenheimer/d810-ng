@@ -2726,7 +2726,7 @@ class D810Manager:
             self._telemetry_lifecycle_depth = depth
         return stack, depth
 
-    def _safe_telemetry_cleanup(
+    def _safe_lifecycle_step(
         self,
         label: str,
         callback: typing.Callable[..., typing.Any],
@@ -2761,13 +2761,13 @@ class D810Manager:
             # Telemetry must never prevent the lifecycle owner from releasing
             # the session or running its ordinary cleanup callbacks.
             pass
-        self._safe_telemetry_cleanup("profiling.stop", self.stop_profiling, event)
-        self._safe_telemetry_cleanup("optimization.report", self.stats.report)
-        self._safe_telemetry_cleanup(
+        self._safe_lifecycle_step("profiling.stop", self.stop_profiling, event)
+        self._safe_lifecycle_step("optimization.report", self.stats.report)
+        self._safe_lifecycle_step(
             "block.perf_report",
             self.block_optimizer.report_perf_counters,
         )
-        self._safe_telemetry_cleanup("timer.stop", self._stop_timer)
+        self._safe_lifecycle_step("timer.stop", self._stop_timer)
 
     def _on_session_started(self, event: DecompilationSessionEvent) -> None:
         """Reset observer-only state after the coordinator has opened a session."""
@@ -3590,12 +3590,12 @@ class D810Manager:
     def stop(self):
         if not self._started:
             if self._discard_telemetry_lifecycle():
-                self._safe_telemetry_cleanup(
+                self._safe_lifecycle_step(
                     "profiling.stop",
                     self.stop_profiling,
                     None,
                 )
-                self._safe_telemetry_cleanup(
+                self._safe_lifecycle_step(
                     "timer.stop",
                     self._stop_timer,
                     False,
@@ -3603,45 +3603,74 @@ class D810Manager:
             return
         self._started = False
         telemetry_active = self._discard_telemetry_lifecycle()
-        self._safe_telemetry_cleanup("profiling.stop", self.stop_profiling)
+        self._safe_lifecycle_step("profiling.stop", self.stop_profiling)
         if telemetry_active:
-            self._safe_telemetry_cleanup("timer.stop", self._stop_timer, False)
-        from d810.manager.hexrays_frontend_normalization import (
-            uninstall_live_frontend_normalization,
-        )
+            self._safe_lifecycle_step("timer.stop", self._stop_timer, False)
+
+        def _uninstall_frontend_normalization() -> None:
+            from d810.manager.hexrays_frontend_normalization import (
+                uninstall_live_frontend_normalization,
+            )
+
+            uninstall_live_frontend_normalization()
+
+        def _clear_indirect_materialization_executor() -> None:
+            from d810.hexrays.preanalysis.indirect_jump_labels import (
+                set_indirect_materialization_default_executor,
+            )
+
+            set_indirect_materialization_default_executor(None)
 
         if self._native_preanalysis_handlers_installed:
-            self._uninstall_native_preanalysis_handlers()
+            self._safe_lifecycle_step(
+                "native.handlers.uninstall",
+                self._uninstall_native_preanalysis_handlers,
+            )
             self._native_preanalysis_handlers_installed = False
-        uninstall_live_frontend_normalization()
-        self.instruction_optimizer.remove()
-        self.block_optimizer.remove()
-        self.hx_decompiler_hook.unhook()
-        if self._analysis_runtime is not None:
-            try:
-                self._analysis_runtime.flush_active_session()
-            except Exception:
-                logger.exception(
-                    "Failed to flush active preanalysis outcome session during stop"
-                )
-        shutdown_all_writers()
-        self.event_emitter.clear()
-        from d810.hexrays.preanalysis.indirect_jump_labels import (
-            set_indirect_materialization_default_executor,
+        self._safe_lifecycle_step(
+            "frontend.uninstall",
+            _uninstall_frontend_normalization,
         )
-
-        set_indirect_materialization_default_executor(None)
-        if self._native_patch_journal is not None:
-            self._native_patch_journal.close()
+        self._safe_lifecycle_step(
+            "instruction.remove",
+            self.instruction_optimizer.remove,
+        )
+        self._safe_lifecycle_step("block.remove", self.block_optimizer.remove)
+        self._safe_lifecycle_step("hooks.unhook", self.hx_decompiler_hook.unhook)
+        if self._analysis_runtime is not None:
+            self._safe_lifecycle_step(
+                "analysis.flush_active_session",
+                self._analysis_runtime.flush_active_session,
+            )
+        self._safe_lifecycle_step("writers.shutdown", shutdown_all_writers)
+        self._safe_lifecycle_step("event_emitter.clear", self.event_emitter.clear)
+        self._safe_lifecycle_step(
+            "executor.clear",
+            _clear_indirect_materialization_executor,
+        )
+        native_patch_journal = self._native_patch_journal
+        if native_patch_journal is not None:
+            self._safe_lifecycle_step(
+                "native.patch.close",
+                native_patch_journal.close,
+            )
             self._native_patch_journal = None
         self._native_patch_gateway = None
         self._dead_edge_normalizer = None
-        if self._native_patch_execution_journal is not None:
-            self._native_patch_execution_journal.close()
+        native_patch_execution_journal = self._native_patch_execution_journal
+        if native_patch_execution_journal is not None:
+            self._safe_lifecycle_step(
+                "native.execution.close",
+                native_patch_execution_journal.close,
+            )
             self._native_patch_execution_journal = None
-        self.function_storage_runtime.close()
-        if self._analysis_bundle is not None:
-            self._analysis_bundle.close()
+        self._safe_lifecycle_step(
+            "function_storage.close",
+            self.function_storage_runtime.close,
+        )
+        analysis_bundle = self._analysis_bundle
+        if analysis_bundle is not None:
+            self._safe_lifecycle_step("analysis.bundle.close", analysis_bundle.close)
             self._analysis_bundle = None
         self._preanalysis_runtime = None
         self._analysis_runtime = None

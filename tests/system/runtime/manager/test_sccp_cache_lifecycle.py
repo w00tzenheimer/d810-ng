@@ -73,25 +73,50 @@ class _BlockOptimizer:
 class _Hook:
     def __init__(self, calls: _CallLog) -> None:
         self._calls = calls
+        self.unhooked = False
 
     def unhook(self) -> None:
+        self.unhooked = True
         self._calls.record("hook.unhook")
 
 
 class _EventEmitter:
     def __init__(self, calls: _CallLog) -> None:
         self._calls = calls
+        self.cleared = False
 
     def clear(self) -> None:
+        self.cleared = True
         self._calls.record("event.clear")
 
 
 class _StorageRuntime:
     def __init__(self, calls: _CallLog) -> None:
         self._calls = calls
+        self.closed = False
 
     def close(self) -> None:
+        self.closed = True
         self._calls.record("storage.close")
+
+
+class _AnalysisRuntime:
+    def __init__(self, calls: _CallLog) -> None:
+        self._calls = calls
+
+    def flush_active_session(self) -> None:
+        self._calls.record("analysis.flush")
+
+
+class _Closeable:
+    def __init__(self, calls: _CallLog, name: str) -> None:
+        self._calls = calls
+        self._name = name
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+        self._calls.record(self._name)
 
 
 class _LogHandler(logging.Handler):
@@ -131,11 +156,17 @@ def _manager(calls: _CallLog, *, started: bool = False):
     manager._start_timer = lambda: calls.record("timer.start")
     manager._stop_timer = lambda report=True: calls.record("timer.stop")
     manager._started = started
-    manager._native_preanalysis_handlers_installed = False
-    manager._analysis_runtime = None
-    manager._analysis_bundle = None
-    manager._native_patch_journal = None
-    manager._native_patch_execution_journal = None
+    manager._native_preanalysis_handlers_installed = True
+    manager._uninstall_native_preanalysis_handlers = lambda: calls.record(
+        "native.handlers.uninstall"
+    )
+    manager._analysis_runtime = _AnalysisRuntime(calls)
+    manager._analysis_bundle = _Closeable(calls, "analysis.bundle.close")
+    manager._native_patch_journal = _Closeable(calls, "native.patch.close")
+    manager._native_patch_execution_journal = _Closeable(
+        calls,
+        "native.exec.close",
+    )
     manager._native_patch_gateway = None
     manager._dead_edge_normalizer = None
     manager.event_emitter = _EventEmitter(calls)
@@ -401,22 +432,103 @@ def test_stop_cleanup_continues_after_failures_and_recovers() -> None:
     assert calls.events.count("profiling.start") == 2
 
 
-def test_started_stop_clears_ownership_when_teardown_raises() -> None:
-    calls = _CallLog({"instruction.remove"})
+def test_native_handler_registration_helpers_are_reversible(monkeypatch) -> None:
+    calls = _CallLog()
+    manager = _manager(calls)
+
+    import d810.optimizers.microcode.flow.jumps.computed_goto_resolver as resolver
+
+    monkeypatch.setattr(
+        resolver,
+        "install",
+        lambda: calls.record("native.handlers.install"),
+    )
+    monkeypatch.setattr(
+        resolver,
+        "uninstall",
+        lambda: calls.record("native.handlers.uninstall"),
+    )
+
+    manager._install_native_preanalysis_handlers()
+    manager._uninstall_native_preanalysis_handlers()
+
+    assert calls.events.count("native.handlers.install") == 1
+    assert calls.events.count("native.handlers.uninstall") == 1
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "instruction.remove",
+        "event.clear",
+        "analysis.bundle.close",
+    ],
+)
+def test_started_stop_attempts_every_cleanup_step(
+    monkeypatch,
+    failure: str,
+) -> None:
+    calls = _CallLog({failure})
     manager = _manager(calls, started=True)
-    session_a = DecompilationSessionId("started-stop-a")
-    manager._on_session_started(_event(session_id=session_a))
 
-    with pytest.raises(RuntimeError, match="instruction.remove failed"):
-        manager.stop()
+    import d810.manager.hexrays_frontend_normalization as frontend_module
+    import d810.hexrays.preanalysis.indirect_jump_labels as labels_module
 
+    monkeypatch.setattr(
+        frontend_module,
+        "uninstall_live_frontend_normalization",
+        lambda: calls.record("frontend.uninstall"),
+    )
+    monkeypatch.setattr(
+        manager_module,
+        "shutdown_all_writers",
+        lambda: calls.record("writers.shutdown"),
+    )
+    monkeypatch.setattr(
+        labels_module,
+        "set_indirect_materialization_default_executor",
+        lambda _executor: calls.record("executor.clear"),
+    )
+
+    manager._on_session_started(_event(session_id=DecompilationSessionId("stop")))
+    manager.stop()
+
+    expected = {
+        "profiling.stop",
+        "timer.stop",
+        "native.handlers.uninstall",
+        "frontend.uninstall",
+        "instruction.remove",
+        "block.remove",
+        "hook.unhook",
+        "analysis.flush",
+        "writers.shutdown",
+        "event.clear",
+        "executor.clear",
+        "native.patch.close",
+        "native.exec.close",
+        "storage.close",
+        "analysis.bundle.close",
+    }
+    for name in expected:
+        assert calls.events.count(name) == 1, name
     assert not manager.started
     assert not manager._telemetry_lifecycle_stack
     assert not manager._telemetry_lifecycle_depth
-    assert calls.events.count("profiling.stop") == 1
+    assert not manager._native_preanalysis_handlers_installed
+    assert manager.event_emitter.cleared
+    assert manager.hx_decompiler_hook.unhooked
+    assert manager.function_storage_runtime.closed
+    assert manager._analysis_bundle is None
+    assert manager._native_patch_journal is None
+    assert manager._native_patch_execution_journal is None
 
-    calls.failures.remove("instruction.remove")
-    session_b = DecompilationSessionId("started-stop-b")
-    manager._on_session_started(_event(top_level_epoch=2, session_id=session_b))
+    # A subsequent lifecycle callback can start cleanly after best-effort
+    # teardown, even when the production stop collaborator failed.
+    next_session = _event(
+        top_level_epoch=2,
+        session_id=DecompilationSessionId("restart"),
+    )
+    manager._on_session_started(next_session)
     assert sccp_session_stats().requests == 0
-    manager._on_session_finished(_event(top_level_epoch=2, session_id=session_b))
+    manager._on_session_finished(next_session)
