@@ -1181,6 +1181,15 @@ class EvidenceLifecycleTransition:
     recovery_mode: str | None = None
 
 
+class NativeMutationBoundary(Enum):
+    """Callback boundary where native mutation may be quarantined."""
+
+    OPTINSN = "optinsn"
+    OPTBLOCK = "optblock"
+    LOCOPT = "locopt"
+    CTREE = "ctree"
+
+
 class GeneratedRestartKind(Enum):
     """Why a generated-MBA restart was staged."""
 
@@ -3405,6 +3414,7 @@ __all__ = [
     "GeneratedRestartConsumer",
     "GeneratedRestartKind",
     "GeneratedRestartReceipt",
+    "NativeMutationBoundary",
     "NativePreanalysisFacts",
     "NativePreanalysisSessionState",
     "PreoptUnionPreparationResult",

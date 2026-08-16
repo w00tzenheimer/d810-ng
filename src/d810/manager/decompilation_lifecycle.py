@@ -8,6 +8,7 @@ import json
 from d810.analyses.control_flow.native_preanalysis_session import (
     GeneratedRestartConsumer,
     GeneratedRestartReceipt,
+    NativeMutationBoundary,
     NativePreanalysisFacts,
     NativePreanalysisSessionState,
     ResolverEvidenceAttachment,
@@ -132,6 +133,9 @@ class DecompilationSessionContext:
     rhad_generated_checksum_committed_for_current_mba: bool = False
     rhad_generated_checksum_observed_maturities: set[str] = field(default_factory=set)
     preopt_ready_emitted_for_current_mba: bool = False
+    native_mutation_quarantine_observations: set[
+        tuple[int, int, NativeMutationBoundary]
+    ] = field(default_factory=set, repr=False)
     resolver_attachment: ResolverEvidenceAttachment | None = None
     native_cfg_collector: object | None = field(default=None, repr=False)
     frontend_normalization_plan_authority: SessionFrontendNormalizationPlanAuthority = (
@@ -663,6 +667,51 @@ class DecompilationLifecycleCoordinator:
             and session.native_preanalysis.native_mutation_quarantined
         )
 
+    def observe_native_mutation_quarantine(
+        self,
+        *,
+        function_ea: int,
+        maturity: int,
+        boundary: NativeMutationBoundary,
+    ) -> bool:
+        """Return the quarantine predicate and emit one boundary observation."""
+        if not isinstance(boundary, NativeMutationBoundary):
+            raise TypeError("native mutation quarantine requires a typed boundary")
+        session = self.current_session(int(function_ea))
+        if session is None:
+            return False
+        state = session.native_preanalysis
+        if not state.native_mutation_quarantined:
+            return False
+        maturity = int(maturity)
+        generation = int(session.current_mba_generation)
+        observation_key = (generation, maturity, boundary)
+        if observation_key not in session.native_mutation_quarantine_observations:
+            session.native_mutation_quarantine_observations.add(observation_key)
+            emit_diagnostic(
+                LifecycleEventObserved(
+                    session_id=session.identity_key,
+                    func_ea=int(function_ea),
+                    event_kind="native_mutation_quarantined",
+                    provider="native_preanalysis",
+                    maturity=str(maturity),
+                    phase="mutation_quarantine",
+                    evidence_generation=int(state.evidence_generation),
+                    mba_generation_before=generation,
+                    mba_generation_after=generation,
+                    summary=(
+                        f"native mutation quarantined at {boundary.value}"
+                    ),
+                    payload={
+                        "boundary": boundary.value,
+                        "maturity": maturity,
+                        "current_mba_generation": generation,
+                        "reason": "poisoned native MBA generation",
+                    },
+                )
+            )
+        return True
+
     def generated_restart_consumed_count(self, function_ea: int) -> int:
         """Return how many staged restarts this session has actually consumed."""
         session = self.current_session(int(function_ea))
@@ -827,6 +876,12 @@ class DecompilationLifecycleCoordinator:
         """
         session = self.current_session(int(function_ea))
         if session is None:
+            return None
+        if session.native_preanalysis.native_mutation_quarantined:
+            logger.debug(
+                "current MBA mutation gateway abstained for quarantined func=0x%x",
+                int(function_ea),
+            )
             return None
         index = session.current_mba_identity_index
         if index is None:

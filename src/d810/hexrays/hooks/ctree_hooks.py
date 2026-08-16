@@ -19,6 +19,9 @@ from d810.core.execution_journal_store import (
     TerminalExecutionAttempt,
 )
 from d810.core import getLogger, typing
+from d810.analyses.control_flow.native_preanalysis_session import (
+    NativeMutationBoundary,
+)
 from d810.core.provider_phase import ProviderPhaseSnapshot
 from d810.core.registry import Registrant
 from d810.core.stats import OptimizationStatistics
@@ -258,8 +261,8 @@ class CtreeOptimizerManager:
         :return: total number of patches applied
         """
         lifecycle = self._decompilation_lifecycle
+        func_ea = int(getattr(cfunc, "entry_ea", 0) or 0)
         if lifecycle is not None:
-            func_ea = int(getattr(cfunc, "entry_ea", 0) or 0)
             provider_phase = ProviderPhaseSnapshot(
                 provider_name=HEXRAYS_CTREE_PROVIDER,
                 provider_level=int(new_maturity),
@@ -274,6 +277,17 @@ class CtreeOptimizerManager:
                 function_ea=func_ea,
                 source="analyzed",
             )
+            observe_quarantine = getattr(
+                lifecycle,
+                "observe_native_mutation_quarantine",
+                None,
+            )
+            if callable(observe_quarantine) and observe_quarantine(
+                function_ea=func_ea,
+                maturity=int(new_maturity),
+                boundary=NativeMutationBoundary.CTREE,
+            ):
+                return 0
 
         if ida_hexrays is not None and new_maturity != ida_hexrays.CMAT_FINAL:
             return 0

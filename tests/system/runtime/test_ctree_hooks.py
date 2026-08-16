@@ -6,8 +6,11 @@ in tests/unit by the import-linter contract.  They live here in tests/system.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import ida_hexrays
 
+from d810.analyses.control_flow.native_preanalysis_session import NativeMutationBoundary
 from d810.core.execution_journal import (
     DecompilationSessionId,
     ExecutionAttemptStatus,
@@ -37,6 +40,38 @@ class TestCtreeOptimizerManager:
         # When ida_hexrays is None, CMAT_FINAL comparison is skipped
         # and all rules are evaluated. With no rules, result is 0.
         assert mgr.on_maturity(None, 3) == 0
+
+    def test_on_maturity_keeps_capture_but_skips_rules_when_quarantined(self):
+        counts = {"capture": 0, "analyze": 0, "observe": 0, "rule": 0}
+        lifecycle = SimpleNamespace(
+            capture_ctree=lambda *_args, **_kwargs: counts.__setitem__(
+                "capture", counts["capture"] + 1
+            ),
+            analyze_current_function=lambda **_kwargs: counts.__setitem__(
+                "analyze", counts["analyze"] + 1
+            ),
+            observe_native_mutation_quarantine=lambda **kwargs: (
+                counts.__setitem__("observe", counts["observe"] + 1)
+                or kwargs["boundary"] is NativeMutationBoundary.CTREE
+            ),
+        )
+
+        class CountingRule(CtreeOptimizationRule):
+            NAME = "quarantined_ctree_rule"
+
+            def optimize_ctree(self, _cfunc):
+                counts["rule"] += 1
+                return 1
+
+        mgr = CtreeOptimizerManager(
+            OptimizationStatistics(),
+            decompilation_lifecycle=lifecycle,
+        )
+        mgr.add_rule(CountingRule())
+        cfunc = SimpleNamespace(entry_ea=0x40A560)
+
+        assert mgr.on_maturity(cfunc, ida_hexrays.CMAT_FINAL) == 0
+        assert counts == {"capture": 1, "analyze": 1, "observe": 1, "rule": 0}
 
 
 # -------------------------------------------------------------------------

@@ -1510,6 +1510,40 @@ def test_locopt_hook_continues_after_preanalysis_modifies_microcode() -> None:
     assert events == [DecompilationEvent.HEXRAYS_LOCOPT_READY]
 
 
+def test_locopt_hook_keeps_read_only_setup_but_abstains_after_poison() -> None:
+    from d810.analyses.control_flow.native_preanalysis_session import (
+        NativeMutationBoundary,
+    )
+
+    calls = {"ensure": 0, "gateway": 0, "callback": 0}
+    session = SimpleNamespace(native_preanalysis_depth=0)
+    lifecycle = SimpleNamespace(
+        ensure_hexrays_session=lambda **_kwargs: (
+            calls.__setitem__("ensure", calls["ensure"] + 1) or (session, False)
+        ),
+        current_session=lambda _function_ea: session,
+        observe_native_mutation_quarantine=lambda **kwargs: (
+            calls.__setitem__("boundary", kwargs["boundary"]) or True
+        ),
+        new_current_mba_mutation_gateway=lambda **_kwargs: (
+            calls.__setitem__("gateway", calls["gateway"] + 1) or object()
+        ),
+    )
+    hook = SimpleNamespace(
+        callback=lambda *_args, **_kwargs: calls.__setitem__(
+            "callback", calls["callback"] + 1
+        ),
+        _decompilation_lifecycle=lifecycle,
+    )
+    mba = SimpleNamespace(entry_ea=0x40A560, maturity=ida_hexrays.MMAT_LOCOPT)
+
+    assert HexraysDecompilationHook.locopt(hook, mba) == 0
+    assert calls["ensure"] == 1
+    assert calls["gateway"] == 0
+    assert calls["callback"] == 0
+    assert calls["boundary"] is NativeMutationBoundary.LOCOPT
+
+
 def test_preoptimized_hook_does_not_own_structural_publication() -> None:
     """hxe_preoptimized cannot acknowledge a successful structural write."""
 

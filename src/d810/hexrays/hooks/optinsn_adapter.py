@@ -13,6 +13,9 @@ from d810.core import getLogger, typing
 from d810.core.cymode import CythonMode
 from d810.core.decompilation_session import DecompilationEvent
 from d810.core.execution_scope import ExecutionPipeline, ExecutionStageIdentity
+from d810.analyses.control_flow.native_preanalysis_session import (
+    NativeMutationBoundary,
+)
 from d810.core.execution_journal import (
     ExecutionAttemptStatus,
     ExecutionDomain,
@@ -496,18 +499,29 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             )
 
     def func(self, blk: ida_hexrays.mblock_t, ins: ida_hexrays.minsn_t) -> bool:
+        lifecycle = getattr(self, "_decompilation_lifecycle", None)
+        mba = getattr(blk, "mba", None)
+        function_ea = int(getattr(mba, "entry_ea", 0) or 0)
+        journal_maturity = int(getattr(mba, "maturity", -1))
+        observe_quarantine = (
+            None
+            if lifecycle is None
+            else getattr(lifecycle, "observe_native_mutation_quarantine", None)
+        )
+        if callable(observe_quarantine) and observe_quarantine(
+            function_ea=function_ea,
+            maturity=journal_maturity,
+            boundary=NativeMutationBoundary.OPTINSN,
+        ):
+            return False
         # ``optinsn_t`` is a direct MBA mutation seam.  Record its observable
         # callback outcome under the manager-owned session, but never let a
         # journal failure alter the Hex-Rays callback contract.
         journal = None
         journal_attempt = None
         journal_session = None
-        journal_maturity = int(getattr(getattr(blk, "mba", None), "maturity", -1))
         journal_instruction_ea = int(getattr(ins, "ea", 0) or 0)
         try:
-            lifecycle = getattr(self, "_decompilation_lifecycle", None)
-            mba = getattr(blk, "mba", None)
-            function_ea = int(getattr(mba, "entry_ea", 0) or 0)
             session = (
                 None if lifecycle is None else lifecycle.current_session(function_ea)
             )

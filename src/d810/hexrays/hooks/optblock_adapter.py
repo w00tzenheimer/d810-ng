@@ -15,6 +15,9 @@ from d810.hexrays.hooks.optimization_suppression import (
 
 from d810.core import getLogger, typing
 from d810.core.decompilation_session import DecompilationEvent
+from d810.analyses.control_flow.native_preanalysis_session import (
+    NativeMutationBoundary,
+)
 from d810.core.execution_journal import (
     ExecutionAttempt,
     ExecutionAttemptStatus,
@@ -546,6 +549,24 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
     def func(self, blk: ida_hexrays.mblock_t):
         """Never propagate a Python exception through Hex-Rays' SWIG bridge."""
         try:
+            lifecycle = getattr(self, "_decompilation_lifecycle", None)
+            mba = getattr(blk, "mba", None)
+            function_ea = int(getattr(mba, "entry_ea", 0) or 0)
+            maturity_value = getattr(mba, "maturity", None)
+            if maturity_value is None:
+                maturity_value = getattr(self, "current_maturity", -1)
+            maturity = int(-1 if maturity_value is None else maturity_value)
+            observe_quarantine = (
+                None
+                if lifecycle is None
+                else getattr(lifecycle, "observe_native_mutation_quarantine", None)
+            )
+            if callable(observe_quarantine) and observe_quarantine(
+                function_ea=function_ea,
+                maturity=maturity,
+                boundary=NativeMutationBoundary.OPTBLOCK,
+            ):
+                return 0
             result = self._func(blk)
             if (
                 int(result) == 0

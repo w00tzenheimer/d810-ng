@@ -9,6 +9,9 @@ import idaapi
 
 from d810.core import getLogger, typing
 from d810.core.decompilation_session import DecompilationEvent
+from d810.analyses.control_flow.native_preanalysis_session import (
+    NativeMutationBoundary,
+)
 from d810.core.settings import get_settings
 from d810.hexrays.hooks.ctree_hooks import CtreeOptimizerManager
 from d810.hexrays.hooks.glbopt_diagnostics import (
@@ -375,6 +378,18 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
         """Run profile-gated mutation after LOCOPT and before call analysis."""
         decision = HexraysDecompilationHook._decision_for_mba(self, mba)
         function_ea = HexraysDecompilationHook._function_owner_ea(mba)
+        lifecycle = getattr(self, "_decompilation_lifecycle", None)
+        observe_quarantine = (
+            None
+            if lifecycle is None
+            else getattr(lifecycle, "observe_native_mutation_quarantine", None)
+        )
+        if callable(observe_quarantine) and observe_quarantine(
+            function_ea=function_ea,
+            maturity=int(getattr(mba, "maturity", -1)),
+            boundary=NativeMutationBoundary.LOCOPT,
+        ):
+            return 0
         try:
             self.callback(
                 DecompilationEvent.HEXRAYS_LOCOPT_READY,
