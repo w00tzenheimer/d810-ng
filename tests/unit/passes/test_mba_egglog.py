@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from d810.core.config import ProjectConfiguration
+from d810.core.pass_editor_spec import FieldControlKind
 from d810.core.pass_ids import PassId
 from d810.passes.mba_egglog import (
     MBA_EGGLOG_IMPLEMENTATION,
@@ -155,7 +156,6 @@ class TestMbaEgglogOptions(unittest.TestCase):
             {"cross_block_constant_preparation": 1},
             {"time_budget_ms": 0},
             {"time_budget_ms": "3"},
-            {"function_time_budget_ms": 0},
             {"function_time_budget_ms": "1000"},
             {"function_time_budget_ms": 5001},
             {"residual_only": 1},
@@ -174,6 +174,11 @@ class TestMbaEgglogOptions(unittest.TestCase):
             with self.subTest(options=options):
                 with self.assertRaises(PipelineConfigError):
                     parse_mba_egglog_options(_config(options))
+
+    def test_zero_function_budget_means_no_function_cap(self):
+        options = parse_mba_egglog_options(_config({"function_time_budget_ms": 0}))
+
+        self.assertIsNone(options.function_time_budget_ms)
 
     def test_legacy_rounds_alias_is_normalized_and_conflicts_are_rejected(self):
         with self.assertWarns(DeprecationWarning):
@@ -195,12 +200,49 @@ class TestMbaEgglogOptions(unittest.TestCase):
 
 
 class TestMbaEgglogRegistration(unittest.TestCase):
-    def test_private_instruction_stage_names_the_live_rule(self):
+    def test_public_instruction_stage_names_the_live_rule_and_exposes_all_options(self):
         registry = register_mba_egglog_pass(PassRegistry())
         descriptor = registry.stages_for(MBA_EGGLOG_PASS_ID)[0]
 
         self.assertEqual(descriptor.implementation_name, MBA_EGGLOG_IMPLEMENTATION)
-        self.assertNotIn(MBA_EGGLOG_PASS_ID, registry.public_pass_ids())
+        self.assertIn(MBA_EGGLOG_PASS_ID, registry.public_pass_ids())
+        editor = registry.editor_spec_for(MBA_EGGLOG_PASS_ID)
+        self.assertIsNotNone(editor)
+        assert editor is not None
+        self.assertEqual(
+            {field.path for field in editor.fields},
+            {
+                ("max_leaves",),
+                ("max_operator_nodes",),
+                ("max_degree",),
+                ("saturation_rounds",),
+                ("max_eclasses",),
+                ("max_enodes",),
+                ("max_rule_firings",),
+                ("cross_block_constant_preparation",),
+                ("cross_block_def_use_preparation",),
+                ("time_budget_ms",),
+                ("function_time_budget_ms",),
+                ("residual_only",),
+                ("require_proof",),
+                ("collect_stage_timings",),
+                ("execution_mode",),
+                ("native_proof_mode",),
+                ("families",),
+                ("maturities",),
+            },
+        )
+        function_budget = next(
+            field
+            for field in editor.fields
+            if field.path == ("function_time_budget_ms",)
+        )
+        self.assertEqual(function_budget.control, FieldControlKind.INTEGER)
+        self.assertEqual(function_budget.default, 0)
+        proof = next(
+            field for field in editor.fields if field.path == ("require_proof",)
+        )
+        self.assertTrue(proof.read_only)
 
     def test_hook_bridge_forwards_all_validated_options(self):
         project = ProjectConfiguration(

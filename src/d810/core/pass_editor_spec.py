@@ -78,6 +78,7 @@ class FieldEditorSpec:
     choices: tuple[str, ...] = ()
     minimum: int | None = None
     maximum: int | None = None
+    read_only: bool = False
     experimental: bool = False
     experimental_reason: str = ""
     advisory: AdvisoryTone = AdvisoryTone.NONE
@@ -117,6 +118,10 @@ class FieldEditorSpec:
             raise ValueError("field maximum is only supported by integer fields")
         if self.minimum is not None and self.maximum is not None and self.minimum > self.maximum:
             raise ValueError("field minimum must not exceed maximum")
+        if not isinstance(self.read_only, bool):
+            raise ValueError("read_only must be a bool")
+        if self.read_only and not self.has_default:
+            raise ValueError("read-only fields require defaults")
         if not isinstance(self.experimental, bool):
             raise ValueError("experimental must be a bool")
         if self.experimental:

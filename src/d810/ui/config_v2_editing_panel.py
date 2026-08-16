@@ -1011,6 +1011,8 @@ if IDA_AVAILABLE:
                 annotations: list[str] = []
                 if field.experimental:
                     annotations.append(f"Experimental: {field.experimental_reason}")
+                if field.read_only:
+                    annotations.append("Fixed: this safety setting cannot be disabled.")
                 if field.advisory.value != "none":
                     annotations.append(
                         f"Advisory: {field.advisory_reason}"
@@ -1018,6 +1020,7 @@ if IDA_AVAILABLE:
                 label = QtWidgets.QLabel(field.label)
                 label.setToolTip("\n".join((field.description, *annotations)))
                 control.setToolTip(field.description)
+                control.setEnabled(not field.read_only)
                 if not annotations:
                     self.typed_options_layout.addRow(label, control)
                     continue

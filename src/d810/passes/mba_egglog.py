@@ -6,6 +6,12 @@ import warnings
 from dataclasses import dataclass
 
 from d810.core.pass_ids import PassId
+from d810.core.pass_editor_spec import (
+    AdvisoryTone,
+    FieldControlKind,
+    FieldEditorSpec,
+    PassEditorSpec,
+)
 from d810.core.typing import Mapping
 from d810.ir.maturity import IRMaturity
 from d810.passes.execution_stages import ExecutionPipeline, ExecutionStageDescriptor
@@ -163,11 +169,13 @@ def parse_mba_egglog_options(
             )
     if function_time_budget_ms is not None and (
         type(function_time_budget_ms) is not int
-        or not 1 <= function_time_budget_ms <= 5_000
+        or not 0 <= function_time_budget_ms <= 5_000
     ):
         raise PipelineConfigError(
-            "mba-egglog options.function_time_budget_ms must be an integer from 1 to 5000"
+            "mba-egglog options.function_time_budget_ms must be an integer from 0 to 5000"
         )
+    if function_time_budget_ms == 0:
+        function_time_budget_ms = None
     if type(residual_only) is not bool:
         raise PipelineConfigError("mba-egglog options.residual_only must be boolean")
     if type(max_degree) is not int or max_degree not in (1, 2):
@@ -284,6 +292,183 @@ def build_mba_egglog_pass(config: PipelineConfig) -> MbaEgglogPass:
     )
 
 
+def mba_egglog_editor_spec() -> PassEditorSpec:
+    """Return the complete public config-v2 editor contract for Egglog."""
+    maturity_choices = tuple(member.name for member in IRMaturity)
+    return PassEditorSpec.fields_editor(
+        (
+            FieldEditorSpec(
+                field_id="max_leaves",
+                label="Maximum leaves",
+                path=("max_leaves",),
+                control=FieldControlKind.INTEGER,
+                description="Reject candidates with more live leaves before extraction.",
+                minimum=1,
+                maximum=8,
+                default=2,
+            ),
+            FieldEditorSpec(
+                field_id="max_operator_nodes",
+                label="Maximum operator nodes",
+                path=("max_operator_nodes",),
+                control=FieldControlKind.INTEGER,
+                description="Reject candidate roots that exceed this operator budget.",
+                minimum=1,
+                default=10,
+            ),
+            FieldEditorSpec(
+                field_id="max_degree",
+                label="Maximum derivation degree",
+                path=("max_degree",),
+                control=FieldControlKind.INTEGER,
+                description="Maximum number of certified identities in one extraction.",
+                minimum=1,
+                maximum=2,
+                default=1,
+            ),
+            FieldEditorSpec(
+                field_id="saturation_rounds",
+                label="Saturation rounds",
+                path=("saturation_rounds",),
+                control=FieldControlKind.INTEGER,
+                description="Maximum bounded Egglog rounds after admission.",
+                minimum=1,
+                maximum=6,
+                default=2,
+            ),
+            FieldEditorSpec(
+                field_id="max_eclasses",
+                label="Maximum e-classes",
+                path=("max_eclasses",),
+                control=FieldControlKind.INTEGER,
+                description="Fail closed when the projected or observed e-class cap is reached.",
+                minimum=1,
+                default=64,
+            ),
+            FieldEditorSpec(
+                field_id="max_enodes",
+                label="Maximum e-nodes",
+                path=("max_enodes",),
+                control=FieldControlKind.INTEGER,
+                description="Fail closed when the projected or observed e-node cap is reached.",
+                minimum=1,
+                default=128,
+            ),
+            FieldEditorSpec(
+                field_id="max_rule_firings",
+                label="Maximum rule firings",
+                path=("max_rule_firings",),
+                control=FieldControlKind.INTEGER,
+                description="Bound the certified rewrite work for one candidate.",
+                minimum=1,
+                default=32,
+            ),
+            FieldEditorSpec(
+                field_id="cross_block_constant_preparation",
+                label="Prepare cross-block constants",
+                path=("cross_block_constant_preparation",),
+                control=FieldControlKind.BOOLEAN,
+                description="Inline one safe reaching constant before root extraction.",
+                default=False,
+                experimental=True,
+                experimental_reason="Cross-block preparation is bounded but has narrower native coverage.",
+            ),
+            FieldEditorSpec(
+                field_id="cross_block_def_use_preparation",
+                label="Prepare cross-block def-use",
+                path=("cross_block_def_use_preparation",),
+                control=FieldControlKind.BOOLEAN,
+                description="Traverse one safe reaching def-use edge before root extraction.",
+                default=False,
+                experimental=True,
+                experimental_reason="Cross-block traversal is bounded but has narrower native coverage.",
+            ),
+            FieldEditorSpec(
+                field_id="time_budget_ms",
+                label="Candidate telemetry budget (ms)",
+                path=("time_budget_ms",),
+                control=FieldControlKind.INTEGER,
+                description="Admission and post-run telemetry budget for one candidate.",
+                minimum=1,
+                default=3,
+                advisory=AdvisoryTone.WARNING,
+                advisory_reason="Budgets below 50 ms deliberately do not invoke Egglog.",
+            ),
+            FieldEditorSpec(
+                field_id="function_time_budget_ms",
+                label="Function budget (ms; 0 disables)",
+                path=("function_time_budget_ms",),
+                control=FieldControlKind.INTEGER,
+                description="Optional aggregate function budget; zero means no function cap.",
+                minimum=0,
+                maximum=5_000,
+                default=0,
+            ),
+            FieldEditorSpec(
+                field_id="residual_only",
+                label="Residual candidates only",
+                path=("residual_only",),
+                control=FieldControlKind.BOOLEAN,
+                description="Run only after the configured direct MBA catalogue leaves a residual.",
+                default=False,
+            ),
+            FieldEditorSpec(
+                field_id="require_proof",
+                label="Require native proof",
+                path=("require_proof",),
+                control=FieldControlKind.BOOLEAN,
+                description="Every reconstructed candidate requires native equivalence proof.",
+                default=True,
+                read_only=True,
+            ),
+            FieldEditorSpec(
+                field_id="collect_stage_timings",
+                label="Collect stage timings",
+                path=("collect_stage_timings",),
+                control=FieldControlKind.BOOLEAN,
+                description="Record per-stage Egglog timing telemetry.",
+                default=False,
+            ),
+            FieldEditorSpec(
+                field_id="execution_mode",
+                label="Execution mode",
+                path=("execution_mode",),
+                control=FieldControlKind.ENUM,
+                description="Select interactive or noninteractive Egglog admission semantics.",
+                choices=("interactive", "noninteractive"),
+                default="interactive",
+            ),
+            FieldEditorSpec(
+                field_id="native_proof_mode",
+                label="Native proof mode",
+                path=("native_proof_mode",),
+                control=FieldControlKind.ENUM,
+                description="Use the rollout-authorized native proof implementation.",
+                choices=("legacy", "shadow"),
+                default="legacy",
+            ),
+            FieldEditorSpec(
+                field_id="families",
+                label="Certified rule families",
+                path=("families",),
+                control=FieldControlKind.STRING_LIST,
+                description="Ordered subset of certified MBA rule families available to Egglog.",
+                choices=MBA_EGGLOG_FAMILIES,
+                default=list(DEFAULT_FAMILIES),
+            ),
+            FieldEditorSpec(
+                field_id="maturities",
+                label="Maturities",
+                path=("maturities",),
+                control=FieldControlKind.STRING_LIST,
+                description="Hex-Rays maturities at which Egglog candidate roots may run.",
+                choices=maturity_choices,
+                default=list(DEFAULT_MATURITIES),
+            ),
+        )
+    )
+
+
 def register_mba_egglog_pass(registry: PassRegistry) -> PassRegistry:
     registry.register_configured(
         MBA_EGGLOG_PASS_ID,
@@ -299,10 +484,14 @@ def register_mba_egglog_pass(registry: PassRegistry) -> PassRegistry:
                 "max_enodes": 128,
                 "max_rule_firings": 32,
                 "cross_block_constant_preparation": False,
+                "cross_block_def_use_preparation": False,
                 "time_budget_ms": 3,
+                "function_time_budget_ms": 0,
+                "residual_only": False,
                 "require_proof": True,
                 "collect_stage_timings": False,
                 "execution_mode": "interactive",
+                "native_proof_mode": "legacy",
                 "families": list(DEFAULT_FAMILIES),
                 "maturities": list(DEFAULT_MATURITIES),
             },
@@ -315,7 +504,7 @@ def register_mba_egglog_pass(registry: PassRegistry) -> PassRegistry:
                 implementation_name=MBA_EGGLOG_IMPLEMENTATION,
             ),
         ),
-        public=False,
+        editor_spec=mba_egglog_editor_spec(),
     )
     return registry
 
@@ -327,6 +516,7 @@ __all__ = [
     "MBA_EGGLOG_STAGE_ID",
     "MbaEgglogOptions",
     "build_mba_egglog_pass",
+    "mba_egglog_editor_spec",
     "parse_mba_egglog_options",
     "register_mba_egglog_pass",
 ]
