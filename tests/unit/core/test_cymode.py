@@ -5,20 +5,10 @@ Cython-accelerated implementations at runtime.
 """
 
 import os
-import sys
 import unittest
 from unittest.mock import patch
 
 from d810.core.cymode import CythonMode, CythonImporter, _get_default_cython_enabled
-
-
-def _cython_importable() -> bool:
-    try:
-        import cython  # noqa: F401
-
-        return True
-    except ImportError:
-        return False
 
 
 _original_import = __import__
@@ -31,15 +21,15 @@ def _block_cython_import(name, *args, **kwargs):
 
 
 class TestGetDefaultCythonEnabled(unittest.TestCase):
-    """Test the _get_default_cython_enabled function that reads D810_NO_CYTHON env var."""
+    """Test the startup policy derived from D810_NO_CYTHON."""
 
-    def test_no_env_var_defaults_to_availability(self):
-        """When D810_NO_CYTHON is not set, result depends on Cython availability."""
+    def test_no_env_var_defaults_to_enabled(self):
+        """Without an override, the session starts with Cython allowed."""
         with patch.dict(os.environ, {}, clear=False):
             # Remove D810_NO_CYTHON if it exists
             os.environ.pop("D810_NO_CYTHON", None)
             result = _get_default_cython_enabled()
-            self.assertEqual(result, _cython_importable())
+            self.assertTrue(result)
 
     def test_env_var_1_disables_cython(self):
         """D810_NO_CYTHON=1 should disable Cython."""
@@ -67,29 +57,29 @@ class TestGetDefaultCythonEnabled(unittest.TestCase):
                 self.assertFalse(result, f"Failed for value: {value}")
 
     def test_env_var_0_does_not_disable(self):
-        """D810_NO_CYTHON=0 should not force-disable; result depends on availability."""
+        """D810_NO_CYTHON=0 should not force-disable the session policy."""
         with patch.dict(os.environ, {"D810_NO_CYTHON": "0"}):
             result = _get_default_cython_enabled()
-            self.assertEqual(result, _cython_importable())
+            self.assertTrue(result)
 
     def test_env_var_empty_does_not_disable(self):
-        """D810_NO_CYTHON='' (empty) should not force-disable; depends on availability."""
+        """D810_NO_CYTHON='' should not force-disable the session policy."""
         with patch.dict(os.environ, {"D810_NO_CYTHON": ""}):
             result = _get_default_cython_enabled()
-            self.assertEqual(result, _cython_importable())
+            self.assertTrue(result)
 
     def test_env_var_arbitrary_value_does_not_disable(self):
-        """D810_NO_CYTHON with arbitrary value should not force-disable; depends on availability."""
+        """An unrecognized D810_NO_CYTHON value should not disable the policy."""
         with patch.dict(os.environ, {"D810_NO_CYTHON": "some_random_value"}):
             result = _get_default_cython_enabled()
-            self.assertEqual(result, _cython_importable())
+            self.assertTrue(result)
 
-    def test_cython_not_installed_returns_false(self):
-        """When Cython is not importable, should return False even without env var."""
+    def test_cython_not_installed_does_not_disable_policy(self):
+        """The Python Cython package does not determine session policy."""
         os.environ.pop("D810_NO_CYTHON", None)
         with patch("builtins.__import__", side_effect=_block_cython_import):
             result = _get_default_cython_enabled()
-            self.assertFalse(result)
+            self.assertTrue(result)
 
 
 class TestCythonModeSingleton(unittest.TestCase):
@@ -310,7 +300,7 @@ class TestCythonModeIntegration(unittest.TestCase):
 
         with patch.dict(os.environ, {"D810_NO_CYTHON": "0"}):
             result = _get_default_cython_enabled()
-            self.assertEqual(result, _cython_importable())
+            self.assertTrue(result)
 
     def test_runtime_toggle_overrides_env_var(self):
         """Runtime enable/disable should override initial env var setting."""

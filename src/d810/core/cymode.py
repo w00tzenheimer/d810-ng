@@ -9,16 +9,9 @@ logger = logging.getLogger(__name__)
 
 
 def _get_default_cython_enabled() -> bool:
-    """Check D810_NO_CYTHON env var and Cython availability."""
+    """Return the initial session policy from D810_NO_CYTHON."""
     env_val = os.environ.get("D810_NO_CYTHON", "").lower()
-    if env_val in ("1", "true", "yes"):
-        return False
-    try:
-        import cython  # noqa: F401
-
-        return True
-    except ImportError:
-        return False
+    return env_val not in ("1", "true", "yes")
 
 
 @survives_reload()
