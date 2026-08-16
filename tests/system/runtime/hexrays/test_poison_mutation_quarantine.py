@@ -5,6 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import ida_hexrays
+import pytest
 
 from d810.analyses.control_flow.native_preanalysis_session import (
     GeneratedRestartConsumer,
@@ -152,6 +153,58 @@ def test_locopt_keeps_read_only_session_setup_but_skips_mutation_dispatch() -> N
     ]
 
 
+def test_locopt_checks_quarantine_before_transient_return_refinement(monkeypatch) -> None:
+    calls: list[str] = []
+    lifecycle = _CountingLifecycle()
+    session = SimpleNamespace(native_preanalysis_depth=0)
+    lifecycle.ensure_hexrays_session = lambda **_kwargs: (session, False)
+    lifecycle.current_session = lambda _function_ea: session
+
+    monkeypatch.setattr(
+        HexraysDecompilationHook,
+        "_refine_session_terminal_return_type",
+        staticmethod(lambda *_args: calls.append("refine")),
+    )
+    hook = SimpleNamespace(
+        callback=lambda *_args, **_kwargs: calls.append("callback"),
+        _database_identity="",
+        _decompilation_lifecycle=lifecycle,
+    )
+    mba = SimpleNamespace(entry_ea=FUNCTION_EA, maturity=ida_hexrays.MMAT_LOCOPT)
+
+    assert HexraysDecompilationHook.locopt(hook, mba) == 0
+    assert calls == []
+
+
+def test_locopt_refines_only_after_quarantine_gate(monkeypatch) -> None:
+    calls: list[str] = []
+    lifecycle = _CountingLifecycle(quarantined=False)
+    session = SimpleNamespace(native_preanalysis_depth=0)
+    lifecycle.ensure_hexrays_session = lambda **_kwargs: (session, False)
+    lifecycle.current_session = lambda _function_ea: session
+
+    def observe(**kwargs):
+        del kwargs
+        calls.append("observe")
+        return False
+
+    lifecycle.observe_native_mutation_quarantine = observe
+    monkeypatch.setattr(
+        HexraysDecompilationHook,
+        "_refine_session_terminal_return_type",
+        staticmethod(lambda *_args: calls.append("refine")),
+    )
+    hook = SimpleNamespace(
+        callback=lambda *_args, **_kwargs: calls.append("callback"),
+        _database_identity="",
+        _decompilation_lifecycle=lifecycle,
+    )
+    mba = SimpleNamespace(entry_ea=FUNCTION_EA, maturity=ida_hexrays.MMAT_LOCOPT)
+
+    assert HexraysDecompilationHook.locopt(hook, mba) == 0
+    assert calls == ["observe", "refine", "callback"]
+
+
 def test_coordinator_deduplicates_quarantine_events_per_generation_boundary(
     monkeypatch,
 ) -> None:
@@ -200,6 +253,97 @@ def test_coordinator_deduplicates_quarantine_events_per_generation_boundary(
         if getattr(event, "event_kind", "") == "native_mutation_quarantined"
     ]
     assert len(quarantine_events) == 2
+
+
+def test_adapter_quarantine_events_use_real_coordinator_deduplication(
+    monkeypatch,
+) -> None:
+    import d810.manager.decompilation_lifecycle as lifecycle_module
+
+    observed: list[object] = []
+    monkeypatch.setattr(lifecycle_module, "emit_diagnostic", observed.append)
+    coordinator = DecompilationLifecycleCoordinator(
+        preanalysis_runtime=None,
+        analysis_runtime=None,
+        execution_scope_service=None,
+        native_preanalysis_key_provider=lambda _function_ea: make_native_key(),
+    )
+    session, _created = coordinator.ensure_hexrays_session(
+        function_ea=FUNCTION_EA,
+        database_identity="poison-adapter-idb",
+    )
+    assert session.native_preanalysis.request_poisoned_generation_restart(
+        reason="poisoned MBA"
+    )
+    assert coordinator.consume_generated_restart(
+        FUNCTION_EA,
+        consumer=GeneratedRestartConsumer.MANAGER,
+    ) is not None
+
+    mba = SimpleNamespace(entry_ea=FUNCTION_EA, maturity=ida_hexrays.MMAT_LOCOPT)
+    block = SimpleNamespace(mba=mba)
+    instruction = SimpleNamespace(ea=FUNCTION_EA + 1)
+
+    instruction_manager = object.__new__(InstructionOptimizerManager)
+    instruction_manager._decompilation_lifecycle = coordinator
+    assert InstructionOptimizerManager.func(instruction_manager, block, instruction) is False
+    assert InstructionOptimizerManager.func(instruction_manager, block, instruction) is False
+
+    mba.maturity = ida_hexrays.MMAT_CALLS
+    assert InstructionOptimizerManager.func(instruction_manager, block, instruction) is False
+
+    coordinator.begin_current_mba_generation(function_ea=FUNCTION_EA)
+    mba.maturity = ida_hexrays.MMAT_LOCOPT
+    assert InstructionOptimizerManager.func(instruction_manager, block, instruction) is False
+
+    block_manager = object.__new__(BlockOptimizerManager)
+    block_manager._decompilation_lifecycle = coordinator
+    assert BlockOptimizerManager.func(block_manager, block) == 0
+    assert BlockOptimizerManager.func(block_manager, block) == 0
+
+    ctree_manager = CtreeOptimizerManager(
+        OptimizationStatistics(),
+        decompilation_lifecycle=coordinator,
+    )
+    cfunc = SimpleNamespace(entry_ea=FUNCTION_EA)
+    assert ctree_manager.on_maturity(cfunc, ida_hexrays.CMAT_FINAL) == 0
+    assert ctree_manager.on_maturity(cfunc, ida_hexrays.CMAT_FINAL) == 0
+    assert ctree_manager.on_maturity(cfunc, ida_hexrays.CMAT_ZERO) == 0
+
+    hook = SimpleNamespace(
+        callback=lambda *_args, **_kwargs: pytest.fail(
+            "quarantined LOCOPT callback must not dispatch"
+        ),
+        _database_identity="poison-adapter-idb",
+        _decompilation_lifecycle=coordinator,
+    )
+    mba.maturity = ida_hexrays.MMAT_LOCOPT
+    assert HexraysDecompilationHook.locopt(hook, mba) == 0
+    assert HexraysDecompilationHook.locopt(hook, mba) == 0
+
+    quarantine_events = [
+        event
+        for event in observed
+        if getattr(event, "event_kind", "") == "native_mutation_quarantined"
+    ]
+    event_keys = {
+        (
+            int(event.payload["current_mba_generation"]),
+            int(event.payload["maturity"]),
+            event.payload["boundary"],
+        )
+        for event in quarantine_events
+    }
+    assert event_keys == {
+        (0, ida_hexrays.MMAT_LOCOPT, NativeMutationBoundary.OPTINSN.value),
+        (0, ida_hexrays.MMAT_CALLS, NativeMutationBoundary.OPTINSN.value),
+        (1, ida_hexrays.MMAT_LOCOPT, NativeMutationBoundary.OPTINSN.value),
+        (1, ida_hexrays.MMAT_LOCOPT, NativeMutationBoundary.OPTBLOCK.value),
+        (1, ida_hexrays.CMAT_FINAL, NativeMutationBoundary.CTREE.value),
+        (1, ida_hexrays.CMAT_ZERO, NativeMutationBoundary.CTREE.value),
+        (1, ida_hexrays.MMAT_LOCOPT, NativeMutationBoundary.LOCOPT.value),
+    }
+    assert len(quarantine_events) == len(event_keys)
 
 
 def test_coordinator_does_not_create_gateway_while_quarantined() -> None:

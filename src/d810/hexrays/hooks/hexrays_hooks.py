@@ -146,11 +146,22 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
             tuple(carrier.return_width for carrier in terminal_carriers),
         )
 
+    @staticmethod
+    def _refine_decision_terminal_return_type(
+        decision: dict[str, object],
+        mba: object,
+    ) -> None:
+        """Refine a decision only after its callback boundary permits mutation."""
+        session = decision.get("session")
+        if session is not None:
+            HexraysDecompilationHook._refine_session_terminal_return_type(session, mba)
+
     def _decision_for_mba(
         self,
         mba: ida_hexrays.mbl_array_t,
         *,
         bind_live_identity: bool = False,
+        refine_terminal_return_type: bool = True,
     ) -> dict[str, object]:
         """Create an event decision with the active portable session, if any.
 
@@ -176,7 +187,8 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
         if session is None:
             return decision
         decision["session"] = session
-        HexraysDecompilationHook._refine_session_terminal_return_type(session, mba)
+        if refine_terminal_return_type:
+            HexraysDecompilationHook._refine_session_terminal_return_type(session, mba)
         if not bind_live_identity:
             return decision
         build_identity_index = getattr(
@@ -376,7 +388,11 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
 
     def locopt(self, mba: ida_hexrays.mbl_array_t) -> "int":
         """Run profile-gated mutation after LOCOPT and before call analysis."""
-        decision = HexraysDecompilationHook._decision_for_mba(self, mba)
+        decision = HexraysDecompilationHook._decision_for_mba(
+            self,
+            mba,
+            refine_terminal_return_type=False,
+        )
         function_ea = HexraysDecompilationHook._function_owner_ea(mba)
         lifecycle = getattr(self, "_decompilation_lifecycle", None)
         observe_quarantine = (
@@ -390,6 +406,7 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
             boundary=NativeMutationBoundary.LOCOPT,
         ):
             return 0
+        HexraysDecompilationHook._refine_decision_terminal_return_type(decision, mba)
         try:
             self.callback(
                 DecompilationEvent.HEXRAYS_LOCOPT_READY,
