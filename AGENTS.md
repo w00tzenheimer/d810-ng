@@ -70,6 +70,44 @@ Four things that reliably waste time:
   it needs is tracked before concluding your change is at fault, and re-check
   after any rebase rather than carrying the old conclusion forward.
 
+## Profiling Long-Running IDA Tests
+
+Do not wait through repeated long, CPU-bound decompilations without attribution.
+Once a run is demonstrably spending minutes in an uninstrumented interval, stop
+the blind benchmark, retain its partial log, and profile a bounded reproduction
+before changing code or starting another full matrix.
+
+- Run IDA-dependent profiling through
+  `tools/scripts/run_system_tests_docker.sh` from the main repository root, just
+  like other system tests. Pass `-w <worktree>`, write artifacts to the
+  worktree's `.tmp`, and keep the input, function, project configuration,
+  logging, cache policy, and timeout identical between comparisons.
+- Use D810's existing `pyinstrument` support first for low-overhead wall-time
+  call-tree attribution. Use its `cProfile` controller and per-maturity
+  `d810_cprofile_MMAT_*.prof` snapshots when deterministic call counts or
+  maturity ownership are needed.
+- For Cython attribution, invoke the Docker runner with
+  `D810_NO_CYTHON=0 D810_CYTHON_PROFILE=1`. The runner builds trace-enabled
+  extensions using `CYTHON_TRACE`; use this only after narrowing the suspected
+  compiled path because tracing perturbs performance.
+- Use native Linux profilers when Python-level profiles stop at an extension or
+  IDA/Hex-Rays boundary. Prefer statistical `perf record -g` evidence; add only
+  the narrowly required Docker capabilities (normally `PERFMON` and/or
+  `SYS_PTRACE`) and avoid privileged containers unless proven necessary.
+- Compare one dimension at a time. When investigating one subsystem, do not use
+  a global Cython-disabled run as its baseline because that changes the entire
+  optimizer portfolio. Prefer the normal production configuration with only
+  the suspected rule, overlay, backend, or cache policy changed.
+- Save the exact command, environment, commit, fixture hash, timeout, profiler
+  output, and a textual top-functions/top-symbols report under `.tmp`. A useful
+  report identifies the dominant Python call path, native/Cython symbols by CPU
+  percentage, time by Hex-Rays maturity, and the interval responsible for the
+  observed wall time.
+- Do not optimize from invocation counts alone. Require timing or sampled-CPU
+  evidence, add a regression for the measured behavior, implement the narrow
+  correction, and rerun the bounded profile before resuming expensive
+  end-to-end acceptance runs.
+
 ## Unflattening Safety Lessons
 
 - Never report a microcode block serial without an accompanying EA anchor
