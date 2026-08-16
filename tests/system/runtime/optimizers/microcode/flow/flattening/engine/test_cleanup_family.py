@@ -6,6 +6,9 @@ from types import SimpleNamespace
 
 import ida_hexrays
 
+from d810.analyses.control_flow.native_preanalysis_session import (
+    NativePreanalysisSessionState,
+)
 from d810.ir.flowgraph import (
     BlockSnapshot,
     FlowGraph,
@@ -337,6 +340,35 @@ def test_simple_cleanup_rule_configures_dead_store_elimination_opt_in() -> None:
     rule.configure({"enable_dead_store_elimination": True})
 
     assert rule._family.strategies[-1].name == "dead_store_elimination"
+
+
+def test_simple_cleanup_rule_abstains_while_generated_restart_is_pending() -> None:
+    """Never plan another cleanup mutation against an obsolete live MBA."""
+    calls: list[str] = []
+
+    class _Family:
+        def detect(self, _mba: object) -> None:
+            calls.append("detect")
+            raise AssertionError("cleanup detection must not run after poison")
+
+    native_preanalysis = NativePreanalysisSessionState(evidence_generation=7)
+    assert native_preanalysis.request_poisoned_generation_restart(
+        reason="post-observation reachability rejected"
+    )
+    resolver_state = SimpleNamespace(native_preanalysis=native_preanalysis)
+    flow_context = SimpleNamespace(
+        resolver_session_state=lambda: resolver_state,
+    )
+    mba = SimpleNamespace(
+        entry_ea=0x401000,
+        maturity=ida_hexrays.MMAT_GLBOPT1,
+    )
+    rule = SimpleFlatteningCleanupUnflattener()
+    rule._family = _Family()
+    rule.set_flow_context(flow_context)
+
+    assert rule.optimize(SimpleNamespace(mba=mba)) == 0
+    assert calls == []
 
 
 def test_live_cleanup_backend_wraps_existing_collectors(monkeypatch) -> None:
