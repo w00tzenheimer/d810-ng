@@ -45,6 +45,7 @@ from d810.analyses.control_flow.native_preanalysis_session import (
     ComputedGotoResolution,
     GeneratedRestartConsumer,
     GeneratedRestartKind,
+    GeneratedRestartReceipt,
     PreoptUnionPreparationResult,
     PrepatchPreoptUnionSource,
     NativePreanalysisSessionState,
@@ -465,6 +466,68 @@ def test_poison_recovery_receipt_is_owned_by_manager_and_quarantines_mutation() 
     ) == receipt
     assert state.pending_generated_restart is None
     assert state.native_mutation_quarantined
+
+
+def test_evidence_rebind_cannot_replace_pending_poison_recovery() -> None:
+    observed = []
+    state = NativePreanalysisSessionState(
+        evidence_generation=5,
+        event_observer=observed.append,
+    )
+
+    assert state.request_poisoned_generation_restart(reason="first poison")
+    receipt = state.pending_generated_restart
+    assert receipt is not None
+
+    assert not state.request_generated_restart(
+        evidence_family="ordinary_evidence",
+        reason="ordinary evidence arrived while poison recovery is pending",
+    )
+    assert state.pending_generated_restart == receipt
+    assert receipt.kind is GeneratedRestartKind.POISON_RECOVERY
+    assert state.native_mutation_quarantined
+    assert observed[-1].outcome == "abstained"
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "error"),
+    (
+        ("kind", "evidence_rebind", TypeError),
+        ("evidence_family", None, TypeError),
+        ("evidence_family", "   ", ValueError),
+        ("reason", None, TypeError),
+        ("reason", "   ", ValueError),
+        ("evidence_generation", "5", TypeError),
+        ("evidence_generation", True, TypeError),
+        ("evidence_generation", -1, ValueError),
+    ),
+)
+def test_generated_restart_receipt_rejects_untyped_or_invalid_fields(
+    field: str,
+    value: object,
+    error: type[Exception],
+) -> None:
+    values: dict[str, object] = {
+        "kind": GeneratedRestartKind.EVIDENCE_REBIND,
+        "evidence_family": "family",
+        "reason": "reason",
+        "evidence_generation": 5,
+    }
+    values[field] = value
+
+    with pytest.raises(error):
+        GeneratedRestartReceipt(**values)
+
+
+def test_restart_requests_reject_untyped_provenance_before_normalization() -> None:
+    state = NativePreanalysisSessionState(evidence_generation=5)
+
+    with pytest.raises(TypeError):
+        state.request_generated_restart(evidence_family=None, reason="reason")  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        state.request_generated_restart(evidence_family="family", reason=None)  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        state.request_poisoned_generation_restart(reason=None)  # type: ignore[arg-type]
 
 
 def test_second_poison_in_one_evidence_epoch_exhausts_recovery() -> None:

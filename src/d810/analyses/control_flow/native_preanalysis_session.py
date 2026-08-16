@@ -1200,11 +1200,24 @@ class GeneratedRestartReceipt:
     def __post_init__(self) -> None:
         if not isinstance(self.kind, GeneratedRestartKind):
             raise TypeError("generated restart receipt requires a restart kind")
-        evidence_family = str(self.evidence_family).strip()
-        reason = str(self.reason).strip()
-        evidence_generation = int(self.evidence_generation)
-        if not evidence_family or not reason:
-            raise ValueError("generated restart receipt requires provenance")
+        if not isinstance(self.evidence_family, str):
+            raise TypeError("generated restart receipt family must be a string")
+        if not isinstance(self.reason, str):
+            raise TypeError("generated restart receipt reason must be a string")
+        if not isinstance(self.evidence_generation, int) or isinstance(
+            self.evidence_generation,
+            bool,
+        ):
+            raise TypeError(
+                "generated restart receipt generation must be an int, not bool"
+            )
+        evidence_family = self.evidence_family.strip()
+        reason = self.reason.strip()
+        evidence_generation = self.evidence_generation
+        if not evidence_family:
+            raise ValueError("generated restart receipt family must not be blank")
+        if not reason:
+            raise ValueError("generated restart receipt reason must not be blank")
         if evidence_generation < 0:
             raise ValueError(
                 "generated restart receipt requires a non-negative evidence generation"
@@ -3111,11 +3124,34 @@ class NativePreanalysisSessionState:
         The owning decompile controller must initiate a follow-up pass; its
         flowchart callback then consumes this request and returns ``MERR_REDO``.
         """
-        evidence_family = str(evidence_family).strip()
-        reason = str(reason).strip()
-        if not evidence_family or not reason:
-            raise ValueError("generated restart requires typed evidence provenance")
+        if not isinstance(evidence_family, str):
+            raise TypeError("generated restart evidence family must be a string")
+        if not isinstance(reason, str):
+            raise TypeError("generated restart reason must be a string")
+        evidence_family = evidence_family.strip()
+        reason = reason.strip()
+        if not evidence_family:
+            raise ValueError("generated restart evidence family must not be blank")
+        if not reason:
+            raise ValueError("generated restart reason must not be blank")
         generation = int(self.evidence_generation)
+        pending_restart = self.pending_generated_restart
+        if (
+            pending_restart is not None
+            and pending_restart.evidence_generation == generation
+            and pending_restart.kind is GeneratedRestartKind.POISON_RECOVERY
+        ):
+            self._observe_transition(
+                operation="generated_restart_requested",
+                previous_generation=generation,
+                evidence_family=evidence_family,
+                outcome="abstained",
+                reason=(
+                    f"{reason}; poison recovery receipt remains pending for "
+                    f"evidence generation {generation}"
+                ),
+            )
+            return False
         if not self.request_controlled_redo():
             self._observe_transition(
                 operation="generated_restart_requested",
@@ -3143,9 +3179,11 @@ class NativePreanalysisSessionState:
 
     def request_poisoned_generation_restart(self, *, reason: str) -> bool:
         """Stage one poison recovery even after an ordinary redo was consumed."""
-        reason = str(reason).strip()
+        if not isinstance(reason, str):
+            raise TypeError("poisoned restart reason must be a string")
+        reason = reason.strip()
         if not reason:
-            raise ValueError("poisoned restart requires a reason")
+            raise ValueError("poisoned restart reason must not be blank")
         generation = int(self.evidence_generation)
         if self.poisoned_restart_generation == generation:
             if not self.has_pending_generated_restart:
