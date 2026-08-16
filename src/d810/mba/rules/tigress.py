@@ -24,11 +24,16 @@ x+y``), which is already active in the config.
 """
 
 from d810.mba.dsl import Const, Var
+from d810.mba.maturity import MicrocodeMaturity
 from d810.mba.rules._base import VerifiableRule
 
-# Maturity constants (from ida_hexrays): fire early like the other MBA rules.
-# MMAT_PREOPTIMIZED=2, MMAT_LOCOPT=3, MMAT_CALLS=4, MMAT_GLBOPT1=5
-_ALL_MATURITIES = [2, 3, 4, 5]
+# Fire early like the other MBA rules.
+_ALL_MATURITIES = [
+    MicrocodeMaturity.PREOPTIMIZED,
+    MicrocodeMaturity.LOCOPT,
+    MicrocodeMaturity.CALLS,
+    MicrocodeMaturity.GLBOPT1,
+]
 
 # The sign-bit (FORM3) and multiply (FORM2a) rules drive the hardened def-search /
 # subtree-descent path. A prior matcher attempt segfaulted IDA during PREOPT

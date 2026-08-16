@@ -12,12 +12,16 @@ Rules are organized by category:
 """
 
 from d810.mba.dsl import Var, Const, when, NEGATIVE_ONE
+from d810.mba.maturity import MicrocodeMaturity
 from d810.mba.rules._base import VerifiableRule
 
-# Maturity constants (from ida_hexrays)
-# MMAT_PREOPTIMIZED=2, MMAT_LOCOPT=3, MMAT_CALLS=4, MMAT_GLBOPT1=5
-# MBA/HackersDelight patterns need to fire early (including MMAT_PREOPTIMIZED)
-_ALL_MATURITIES = [2, 3, 4, 5]
+# MBA/HackersDelight patterns need to fire early.
+_ALL_MATURITIES = [
+    MicrocodeMaturity.PREOPTIMIZED,
+    MicrocodeMaturity.LOCOPT,
+    MicrocodeMaturity.CALLS,
+    MicrocodeMaturity.GLBOPT1,
+]
 
 # Define variables for pattern matching
 x, y = Var("x_0"), Var("x_1")

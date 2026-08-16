@@ -13,13 +13,17 @@ All rules are mathematically proven correct by Z3 SMT solver.
 """
 
 from d810.mba.dsl import NEGATIVE_TWO, Const, Var
+from d810.mba.maturity import MicrocodeMaturity
 
 from ._base import VerifiableRule
 
-# Maturity constants (from ida_hexrays)
-# MMAT_PREOPTIMIZED=2, MMAT_LOCOPT=3, MMAT_CALLS=4, MMAT_GLBOPT1=5
-# MBA/HackersDelight patterns need to fire early (including MMAT_PREOPTIMIZED)
-_ALL_MATURITIES = [2, 3, 4, 5]
+# MBA/HackersDelight patterns need to fire early.
+_ALL_MATURITIES = [
+    MicrocodeMaturity.PREOPTIMIZED,
+    MicrocodeMaturity.LOCOPT,
+    MicrocodeMaturity.CALLS,
+    MicrocodeMaturity.GLBOPT1,
+]
 
 # Create symbolic variables
 x, y, z = Var("x"), Var("y"), Var("z")

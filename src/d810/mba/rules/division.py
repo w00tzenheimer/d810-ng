@@ -5,9 +5,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from d810.mba.dsl import Const, High, Umod, Var, Zext
+from d810.mba.maturity import MicrocodeMaturity
 from d810.mba.rules._base import VerifiableRule
 
-_ALL_MATURITIES = [2, 3, 4, 5]
+_ALL_MATURITIES = [
+    MicrocodeMaturity.PREOPTIMIZED,
+    MicrocodeMaturity.LOCOPT,
+    MicrocodeMaturity.CALLS,
+    MicrocodeMaturity.GLBOPT1,
+]
 
 x = Var("x_0")
 magic = Var("magic")

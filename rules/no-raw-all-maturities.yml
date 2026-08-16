@@ -1,0 +1,39 @@
+# ``_ALL_MATURITIES`` is shared rule policy, not a convenient place to hide
+# provider ids.  The named SDK-free enum documents the stages and keeps MBA
+# rules importable outside IDA.
+#
+# BAD:  _ALL_MATURITIES = [2, 3, 4, 5]
+# GOOD: _ALL_MATURITIES = [MicrocodeMaturity.PREOPTIMIZED, ...]
+#
+# This intentionally targets only the conventionally named complete maturity
+# list.  It does not police unrelated numeric values or per-rule special cases.
+
+id: no-raw-all-maturities
+language: python
+severity: error
+
+files:
+  - "src/d810/mba/rules/**/*.py"
+
+message: |
+  _ALL_MATURITIES must use named MicrocodeMaturity members, not raw integers.
+
+  Import MicrocodeMaturity from d810.mba.maturity and declare the list with
+  members such as MicrocodeMaturity.PREOPTIMIZED and MicrocodeMaturity.GLBOPT2.
+
+rule:
+  all:
+    - kind: assignment
+    - has:
+        field: left
+        pattern: _ALL_MATURITIES
+    - has:
+        field: right
+        kind: list
+        has:
+          kind: integer
+
+note: |
+  Named members preserve direct compatibility with the native integer matcher
+  because MicrocodeMaturity is an IntEnum, while keeping portable MBA rules
+  independent from ida_hexrays.
