@@ -56,6 +56,7 @@ from d810.analyses.control_flow.native_semantic_closure import (
 from d810.analyses.control_flow.native_preanalysis_session import (
     ComputedGotoPatchPlan,
     ComputedGotoResolution,
+    GeneratedRestartConsumer,
     PreoptUnionPreparationResult,
     PrepatchPreoptUnionSource,
     ResolverLifecycleSession,
@@ -13369,7 +13370,9 @@ def _on_flowchart_preanalysis(*, function_ea: int, mba: object, decision: dict) 
     state = _resolver_state_from_decision(decision)
     if state is None or state.snippet_capture_active:
         return
-    if state.native_preanalysis.consume_generated_restart():
+    if state.native_preanalysis.consume_generated_restart(
+        consumer=GeneratedRestartConsumer.FLOWCHART,
+    ):
         request_hexrays_redo(
             decision,
             "computed_goto_calls_evidence_rebind",

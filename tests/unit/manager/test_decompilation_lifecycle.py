@@ -9,6 +9,7 @@ import pytest
 from d810.analyses.control_flow.native_preanalysis_session import (
     BootstrapRouteEvidence,
     BootstrapRouteProofKind,
+    GeneratedRestartConsumer,
     NativePreanalysisFacts,
 )
 from d810.analyses.control_flow.detached_handler_island import (
@@ -1146,7 +1147,9 @@ def test_pending_generated_restart_retains_owner_until_flowchart_consumes_it() -
     assert coordinator.current_session(0x401000) is session
     assert coordinator.has_pending_generated_restart(0x401000)
 
-    assert session.native_preanalysis.consume_generated_restart()
+    assert session.native_preanalysis.consume_generated_restart(
+        consumer=GeneratedRestartConsumer.FLOWCHART,
+    ) is not None
     assert coordinator.finish_hexrays_session() is None
     assert coordinator.current_session(0x401000) is None
 

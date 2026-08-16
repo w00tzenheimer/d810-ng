@@ -10,6 +10,7 @@ import pytest
 from d810.hexrays.mutation import mba_mutation_events as mutation_events
 from d810.hexrays.mutation import semantic_fragment_publication as publication
 from d810.analyses.control_flow.native_preanalysis_session import (
+    GeneratedRestartConsumer,
     NativePreanalysisSessionState,
 )
 from d810.core.events import EventEmitter
@@ -1808,8 +1809,12 @@ def test_live_divergence_poisons_generation_without_cleanup_and_restarts_once(
         plan,
         failure,
     )
-    assert lifecycle.consume_generated_restart()
-    assert not lifecycle.consume_generated_restart()
+    assert lifecycle.consume_generated_restart(
+        consumer=GeneratedRestartConsumer.MANAGER,
+    ) is not None
+    assert lifecycle.consume_generated_restart(
+        consumer=GeneratedRestartConsumer.MANAGER,
+    ) is None
 
     get_mblock_calls = backend.get_mblock_calls
     with pytest.raises(CfgGenerationPoisoned):

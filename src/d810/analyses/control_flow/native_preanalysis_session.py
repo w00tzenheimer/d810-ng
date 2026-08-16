@@ -1174,6 +1174,52 @@ class EvidenceLifecycleTransition:
     reason: str
 
 
+class GeneratedRestartKind(Enum):
+    """Why a generated-MBA restart was staged."""
+
+    EVIDENCE_REBIND = "evidence_rebind"
+    POISON_RECOVERY = "poison_recovery"
+
+
+class GeneratedRestartConsumer(Enum):
+    """Lifecycle owner authorized to consume one restart kind."""
+
+    FLOWCHART = "flowchart"
+    MANAGER = "manager"
+
+
+@dataclass(frozen=True, slots=True)
+class GeneratedRestartReceipt:
+    """Immutable provenance for one staged generated-MBA restart."""
+
+    kind: GeneratedRestartKind
+    evidence_family: str
+    reason: str
+    evidence_generation: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.kind, GeneratedRestartKind):
+            raise TypeError("generated restart receipt requires a restart kind")
+        evidence_family = str(self.evidence_family).strip()
+        reason = str(self.reason).strip()
+        evidence_generation = int(self.evidence_generation)
+        if not evidence_family or not reason:
+            raise ValueError("generated restart receipt requires provenance")
+        if evidence_generation < 0:
+            raise ValueError(
+                "generated restart receipt requires a non-negative evidence generation"
+            )
+        object.__setattr__(self, "evidence_family", evidence_family)
+        object.__setattr__(self, "reason", reason)
+        object.__setattr__(self, "evidence_generation", evidence_generation)
+
+
+_RESTART_KIND_BY_CONSUMER = {
+    GeneratedRestartConsumer.FLOWCHART: GeneratedRestartKind.EVIDENCE_REBIND,
+    GeneratedRestartConsumer.MANAGER: GeneratedRestartKind.POISON_RECOVERY,
+}
+
+
 @dataclass(frozen=True, slots=True)
 class SemanticFragmentBlockOwner:
     """Serial-free ownership of one committed semantic operation source."""
@@ -1275,8 +1321,10 @@ class NativePreanalysisSessionState:
     published_state_write_route_inventory_revision: int | None = None
     bound_state_write_route_generation: int | None = None
     redo_generation: int | None = None
-    pending_generated_restart_generation: int | None = None
-    pending_generated_restart_family: str | None = None
+    _pending_generated_restart: GeneratedRestartReceipt | None = field(
+        default=None,
+        repr=False,
+    )
     # Monotonic across the whole session. The decompile controller compares it
     # across rounds to tell "the restart ran and was consumed" apart from "no
     # consumer ever reached it", which otherwise look identical from outside.
@@ -1324,6 +1372,16 @@ class NativePreanalysisSessionState:
             raise ValueError(
                 "portable evidence-ready generation must equal current evidence"
             )
+        pending_restart = self._pending_generated_restart
+        if pending_restart is not None:
+            if not isinstance(pending_restart, GeneratedRestartReceipt):
+                raise TypeError(
+                    "pending generated restart must be a typed receipt"
+                )
+            if pending_restart.evidence_generation > generation:
+                raise ValueError(
+                    "pending generated restart exceeds current evidence generation"
+                )
         publication_revision = int(self.normalization_work_item_publication_revision)
         if publication_revision < 0:
             raise ValueError(
@@ -2811,15 +2869,27 @@ class NativePreanalysisSessionState:
     ) -> None:
         """Advance one evidence epoch without first-pass coalescing."""
         previous_generation = int(self.evidence_generation)
-        restart_pending = self.pending_generated_restart_generation is not None
+        pending_restart = self.pending_generated_restart
+        restart_pending = (
+            pending_restart is not None
+            and pending_restart.evidence_generation == previous_generation
+        )
         poisoned_restart_pending = (
-            restart_pending and self.poisoned_restart_generation == previous_generation
+            restart_pending
+            and pending_restart is not None
+            and pending_restart.kind is GeneratedRestartKind.POISON_RECOVERY
+            and self.poisoned_restart_generation == previous_generation
         )
         self.evidence_generation += 1
         self.portable_evidence_ready_generation = self.evidence_generation
         self.redo_generation = None
-        self.pending_generated_restart_generation = (
-            self.evidence_generation if restart_pending else None
+        self._pending_generated_restart = (
+            replace(
+                pending_restart,
+                evidence_generation=self.evidence_generation,
+            )
+            if restart_pending and pending_restart is not None
+            else None
         )
         self.poisoned_restart_generation = (
             self.evidence_generation if poisoned_restart_pending else None
@@ -2982,7 +3052,28 @@ class NativePreanalysisSessionState:
     @property
     def has_pending_generated_restart(self) -> bool:
         """Whether CALLS staged a controller-owned generated-MBA restart."""
-        return self.pending_generated_restart_generation == self.evidence_generation
+        receipt = self.pending_generated_restart
+        return bool(
+            receipt is not None
+            and receipt.evidence_generation == self.evidence_generation
+        )
+
+    @property
+    def pending_generated_restart(self) -> GeneratedRestartReceipt | None:
+        """Return the sole typed authority for the staged generated restart."""
+        return self._pending_generated_restart
+
+    @property
+    def pending_generated_restart_generation(self) -> int | None:
+        """Read-only compatibility projection of the pending receipt generation."""
+        receipt = self.pending_generated_restart
+        return None if receipt is None else int(receipt.evidence_generation)
+
+    @property
+    def pending_generated_restart_family(self) -> str | None:
+        """Read-only compatibility projection of the pending receipt family."""
+        receipt = self.pending_generated_restart
+        return None if receipt is None else receipt.evidence_family
 
     @property
     def has_exhausted_poison_restart(self) -> bool:
@@ -2993,6 +3084,20 @@ class NativePreanalysisSessionState:
     def is_poison_recovery_generation(self) -> bool:
         """Whether this evidence epoch has already required poison recovery."""
         return self.poisoned_restart_generation == self.evidence_generation
+
+    @property
+    def native_mutation_quarantined(self) -> bool:
+        """Whether native mutation is quarantined for the current evidence epoch."""
+        receipt = self.pending_generated_restart
+        return bool(
+            (
+                receipt is not None
+                and receipt.evidence_generation == self.evidence_generation
+                and receipt.kind is GeneratedRestartKind.POISON_RECOVERY
+            )
+            or self.is_poison_recovery_generation
+            or self.has_exhausted_poison_restart
+        )
 
     def request_generated_restart(
         self,
@@ -3022,8 +3127,12 @@ class NativePreanalysisSessionState:
                 ),
             )
             return False
-        self.pending_generated_restart_generation = self.evidence_generation
-        self.pending_generated_restart_family = evidence_family
+        self._pending_generated_restart = GeneratedRestartReceipt(
+            kind=GeneratedRestartKind.EVIDENCE_REBIND,
+            evidence_family=evidence_family,
+            reason=reason,
+            evidence_generation=generation,
+        )
         self._observe_transition(
             operation="generated_restart_requested",
             previous_generation=generation,
@@ -3056,8 +3165,12 @@ class NativePreanalysisSessionState:
             )
             return False
         self.poisoned_restart_generation = generation
-        self.pending_generated_restart_generation = generation
-        self.pending_generated_restart_family = "poisoned_generation_restart"
+        self._pending_generated_restart = GeneratedRestartReceipt(
+            kind=GeneratedRestartKind.POISON_RECOVERY,
+            evidence_family="poisoned_generation_restart",
+            reason=reason,
+            evidence_generation=generation,
+        )
         self._observe_transition(
             operation="generated_restart_requested",
             previous_generation=generation,
@@ -3066,22 +3179,47 @@ class NativePreanalysisSessionState:
         )
         return True
 
-    def consume_generated_restart(self) -> bool:
-        """Consume the current generation's staged flowchart restart once."""
-        if not self.has_pending_generated_restart:
-            return False
+    def consume_generated_restart(
+        self,
+        *,
+        consumer: GeneratedRestartConsumer,
+    ) -> GeneratedRestartReceipt | None:
+        """Consume one restart receipt only by its owning lifecycle consumer."""
+        if not isinstance(consumer, GeneratedRestartConsumer):
+            raise TypeError("generated restart consumption requires a typed consumer")
+        receipt = self.pending_generated_restart
+        if (
+            receipt is None
+            or receipt.evidence_generation != self.evidence_generation
+        ):
+            return None
+        expected_kind = _RESTART_KIND_BY_CONSUMER[consumer]
+        if receipt.kind is not expected_kind:
+            self._observe_transition(
+                operation="generated_restart_consumed",
+                previous_generation=int(self.evidence_generation),
+                evidence_family=receipt.evidence_family,
+                outcome="abstained",
+                reason=(
+                    f"{consumer.value} cannot consume "
+                    f"{receipt.kind.value} generated-MBA restart"
+                ),
+            )
+            return None
         generation = int(self.evidence_generation)
-        self.pending_generated_restart_generation = None
-        evidence_family = self.pending_generated_restart_family or "controller_restart"
-        self.pending_generated_restart_family = None
+        self._pending_generated_restart = None
         self.generated_restart_consumed_count += 1
         self._observe_transition(
             operation="generated_restart_consumed",
             previous_generation=generation,
-            evidence_family=evidence_family,
-            reason="flowchart consumed the staged generated-MBA restart",
+            evidence_family=receipt.evidence_family,
+            reason=(
+                "flowchart consumed the staged generated-MBA restart"
+                if consumer is GeneratedRestartConsumer.FLOWCHART
+                else "manager consumed the staged poisoned-generation restart"
+            ),
         )
-        return True
+        return receipt
 
     def needs_bootstrap_route_binding(self) -> bool:
         """Whether a current portable route still lacks a live PREOPT bind."""
@@ -3151,6 +3289,9 @@ __all__ = [
     "ComputedGotoPatchPlan",
     "ComputedGotoResolution",
     "CommittedSemanticFragmentOwnership",
+    "GeneratedRestartConsumer",
+    "GeneratedRestartKind",
+    "GeneratedRestartReceipt",
     "NativePreanalysisFacts",
     "NativePreanalysisSessionState",
     "PreoptUnionPreparationResult",

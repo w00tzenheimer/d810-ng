@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import ida_hexrays
 
 from d810.analyses.control_flow.native_preanalysis_session import (
+    GeneratedRestartConsumer,
     NativePreanalysisSessionState,
 )
 from d810.ir.flowgraph import (
@@ -384,7 +385,9 @@ def test_simple_cleanup_rule_abstains_during_consumed_poison_recovery() -> None:
     assert native_preanalysis.request_poisoned_generation_restart(
         reason="post-observation reachability rejected"
     )
-    assert native_preanalysis.consume_generated_restart()
+    assert native_preanalysis.consume_generated_restart(
+        consumer=GeneratedRestartConsumer.MANAGER,
+    ) is not None
     assert not native_preanalysis.has_pending_generated_restart
     resolver_state = SimpleNamespace(native_preanalysis=native_preanalysis)
     flow_context = SimpleNamespace(

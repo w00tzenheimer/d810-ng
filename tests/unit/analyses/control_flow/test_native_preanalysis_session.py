@@ -43,6 +43,8 @@ from d810.analyses.control_flow.native_preanalysis_session import (
     BootstrapRouteProofKind,
     ComputedGotoPatchPlan,
     ComputedGotoResolution,
+    GeneratedRestartConsumer,
+    GeneratedRestartKind,
     PreoptUnionPreparationResult,
     PrepatchPreoptUnionSource,
     NativePreanalysisSessionState,
@@ -379,7 +381,9 @@ def test_evidence_observer_sees_generated_restart_request_and_consumption() -> N
         evidence_family="calls_evidence",
         reason="CALLS staged resolver evidence for PREOPT",
     )
-    assert state.consume_generated_restart()
+    assert state.consume_generated_restart(
+        consumer=GeneratedRestartConsumer.FLOWCHART,
+    )
 
     assert [
         (row.operation, row.outcome, row.evidence_family, row.reason)
@@ -405,6 +409,103 @@ def test_evidence_observer_sees_generated_restart_request_and_consumption() -> N
             "flowchart consumed the staged generated-MBA restart",
         ),
     ]
+
+
+def test_evidence_rebind_restart_receipt_is_owned_by_flowchart() -> None:
+    state = NativePreanalysisSessionState(evidence_generation=2)
+
+    assert state.request_generated_restart(
+        evidence_family="calls_evidence",
+        reason="CALLS staged resolver evidence for PREOPT",
+    )
+    receipt = state.pending_generated_restart
+    assert receipt is not None
+    assert receipt.kind is GeneratedRestartKind.EVIDENCE_REBIND
+    assert receipt.evidence_family == "calls_evidence"
+    assert receipt.reason == "CALLS staged resolver evidence for PREOPT"
+    assert receipt.evidence_generation == 2
+
+    assert state.consume_generated_restart(
+        consumer=GeneratedRestartConsumer.MANAGER,
+    ) is None
+    assert state.pending_generated_restart == receipt
+    assert state.generated_restart_consumed_count == 0
+
+    assert state.consume_generated_restart(
+        consumer=GeneratedRestartConsumer.FLOWCHART,
+    ) == receipt
+    assert state.pending_generated_restart is None
+
+
+def test_poison_recovery_receipt_is_owned_by_manager_and_quarantines_mutation() -> None:
+    state = NativePreanalysisSessionState(evidence_generation=5)
+
+    assert state.request_poisoned_generation_restart(
+        reason="poisoned fragment generation during stage: INTERR 50856"
+    )
+    receipt = state.pending_generated_restart
+    assert receipt is not None
+    assert receipt.kind is GeneratedRestartKind.POISON_RECOVERY
+    assert receipt.evidence_family == "poisoned_generation_restart"
+    assert receipt.reason == (
+        "poisoned fragment generation during stage: INTERR 50856"
+    )
+    assert receipt.evidence_generation == 5
+    assert state.evidence_generation == 5
+    assert state.native_mutation_quarantined
+
+    assert state.consume_generated_restart(
+        consumer=GeneratedRestartConsumer.FLOWCHART,
+    ) is None
+    assert state.pending_generated_restart == receipt
+    assert state.generated_restart_consumed_count == 0
+
+    assert state.consume_generated_restart(
+        consumer=GeneratedRestartConsumer.MANAGER,
+    ) == receipt
+    assert state.pending_generated_restart is None
+    assert state.native_mutation_quarantined
+
+
+def test_second_poison_in_one_evidence_epoch_exhausts_recovery() -> None:
+    state = NativePreanalysisSessionState(evidence_generation=5)
+
+    assert state.request_poisoned_generation_restart(reason="first poison")
+    assert state.consume_generated_restart(
+        consumer=GeneratedRestartConsumer.MANAGER,
+    ) is not None
+
+    assert not state.request_poisoned_generation_restart(
+        reason="second poison in the same evidence epoch"
+    )
+    assert state.pending_generated_restart is None
+    assert state.has_exhausted_poison_restart
+    assert state.native_mutation_quarantined
+
+
+def test_evidence_rebind_receipt_tracks_a_new_evidence_generation() -> None:
+    state = NativePreanalysisSessionState(
+        evidence_generation=1,
+        normalization_staged_generation=1,
+        normalization_validated_generation=1,
+        normalization_published_postvalidated_generation=1,
+    )
+
+    assert state.request_generated_restart(
+        evidence_family="calls_evidence",
+        reason="CALLS staged resolver evidence for PREOPT",
+    )
+    state.mark_evidence_changed(
+        evidence_family="native_facts",
+        reason="new native evidence discovered",
+    )
+
+    receipt = state.pending_generated_restart
+    assert receipt is not None
+    assert receipt.kind is GeneratedRestartKind.EVIDENCE_REBIND
+    assert receipt.evidence_generation == 2
+    assert receipt.evidence_family == "calls_evidence"
+    assert receipt.reason == "CALLS staged resolver evidence for PREOPT"
 
 
 def test_poisoned_generation_restart_retains_reason_and_is_requested_once() -> None:
@@ -435,7 +536,9 @@ def test_poisoned_restart_survives_prior_consumed_ordinary_redo() -> None:
         evidence_family="ordinary",
         reason="ordinary evidence retry",
     )
-    assert state.consume_generated_restart()
+    assert state.consume_generated_restart(
+        consumer=GeneratedRestartConsumer.FLOWCHART,
+    )
     assert not state.has_pending_generated_restart
 
     assert state.request_poisoned_generation_restart(
@@ -446,14 +549,20 @@ def test_poisoned_restart_survives_prior_consumed_ordinary_redo() -> None:
     )
     assert state.has_pending_generated_restart
     assert not state.has_exhausted_poison_restart
-    assert state.consume_generated_restart()
-    assert not state.consume_generated_restart()
+    assert state.consume_generated_restart(
+        consumer=GeneratedRestartConsumer.MANAGER,
+    ) is not None
+    assert state.consume_generated_restart(
+        consumer=GeneratedRestartConsumer.MANAGER,
+    ) is None
 
 
 def test_distinct_poison_after_consumed_poison_restart_becomes_terminal() -> None:
     state = NativePreanalysisSessionState(evidence_generation=5)
     assert state.request_poisoned_generation_restart(reason="first poison incident")
-    assert state.consume_generated_restart()
+    assert state.consume_generated_restart(
+        consumer=GeneratedRestartConsumer.MANAGER,
+    ) is not None
 
     assert not state.request_poisoned_generation_restart(
         reason="fresh poison incident after recovery retry"
@@ -467,7 +576,9 @@ def test_changed_first_pass_facts_open_fresh_epoch_after_poison_exhaustion() -> 
     assert state.portable_evidence_ready_generation == 1
     assert state.normalization_published_postvalidated_generation is None
     assert state.request_poisoned_generation_restart(reason="first poison incident")
-    assert state.consume_generated_restart()
+    assert state.consume_generated_restart(
+        consumer=GeneratedRestartConsumer.MANAGER,
+    ) is not None
     assert not state.request_poisoned_generation_restart(
         reason="distinct poison incident after recovery"
     )

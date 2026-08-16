@@ -10,6 +10,7 @@ import ida_hexrays
 import pytest
 
 from d810.analyses.control_flow.native_preanalysis_session import (
+    GeneratedRestartConsumer,
     NativePreanalysisSessionState,
 )
 from d810.core.observability_events import (
@@ -1454,7 +1455,9 @@ def test_decompile_controller_fails_on_distinct_post_recovery_poison(
         evidence_family="ordinary",
         reason="ordinary evidence retry",
     )
-    assert state.consume_generated_restart()
+    assert state.consume_generated_restart(
+        consumer=GeneratedRestartConsumer.FLOWCHART,
+    ) is not None
 
     class _Lifecycle:
         @staticmethod
@@ -1480,7 +1483,9 @@ def test_decompile_controller_fails_on_distinct_post_recovery_poison(
         if rounds == 1:
             assert state.request_poisoned_generation_restart(reason="first poison")
         else:
-            assert state.consume_generated_restart()
+            assert state.consume_generated_restart(
+                consumer=GeneratedRestartConsumer.MANAGER,
+            ) is not None
             assert not state.request_poisoned_generation_restart(
                 reason="fresh third-round poison"
             )

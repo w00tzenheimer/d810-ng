@@ -14,6 +14,7 @@ import ida_hexrays
 import pytest
 
 from d810.analyses.control_flow.native_preanalysis_session import (
+    GeneratedRestartConsumer,
     NativePreanalysisSessionState,
 )
 from d810.core.provider_phase import ProviderPhaseSnapshot
@@ -46,7 +47,7 @@ _ANALYSIS_RUNTIME = _ROOT / "src/d810/passes/runtime.py"
 _PREANALYSIS_RUNTIME = _ROOT / "src/d810/passes/preanalysis_runtime.py"
 
 
-def test_poisoned_generation_restart_yields_exactly_one_hook_merr_redo(
+def test_poisoned_generation_restart_does_not_yield_hook_merr_redo(
     monkeypatch,
 ) -> None:
     state = NativePreanalysisSessionState(evidence_generation=4)
@@ -58,7 +59,9 @@ def test_poisoned_generation_restart_yields_exactly_one_hook_merr_redo(
     def callback(event, **kwargs) -> None:
         if (
             event is DecompilationEvent.HEXRAYS_FLOWCHART_READY
-            and state.consume_generated_restart()
+            and state.consume_generated_restart(
+                consumer=GeneratedRestartConsumer.FLOWCHART,
+            )
         ):
             kwargs["decision"]["request_redo"] = True
             kwargs["decision"]["reason"] = "poisoned_generation_restart"
@@ -79,10 +82,12 @@ def test_poisoned_generation_restart_yields_exactly_one_hook_merr_redo(
         staticmethod(lambda _mba: 0x40A560),
     )
 
-    assert (
-        HexraysDecompilationHook.flowchart(hook, object(), mba, object(), 0)
-        == ida_hexrays.MERR_REDO
-    )
+    assert HexraysDecompilationHook.flowchart(hook, object(), mba, object(), 0) == 0
+    assert state.has_pending_generated_restart
+    assert state.consume_generated_restart(
+        consumer=GeneratedRestartConsumer.MANAGER,
+    ) is not None
+    assert state.native_mutation_quarantined
     decision["request_redo"] = False
     assert (
         HexraysDecompilationHook.flowchart(
