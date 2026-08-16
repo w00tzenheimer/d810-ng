@@ -322,17 +322,17 @@
       "id": "lifecycle_poison_restart",
       "donor_source": "src/d810/manager/fragment_publication_lifecycle.py::def request_poisoned_generation_restart(",
       "donor_test": "tests/system/runtime/hexrays/test_decompilation_lifecycle.py::def test_poisoned_generation_restart_yields_exactly_one_hook_merr_redo",
-      "current_production_seam": "src/d810/manager/fragment_publication_lifecycle.py::class SessionFragmentPublicationLifecycleAuthority:",
+      "current_production_seam": "src/d810/manager/manager.py::def decompile_with_native_preanalysis(",
       "current_status": "accepted",
-      "required_port": "Propagate typed poison across PREOPT and consume one lifecycle-owned poison restart as exactly one MERR_REDO, separate from ordinary redo.",
+      "required_port": "Propagate typed poison across PREOPT as a POISON_RECOVERY receipt; the manager consumes one lifecycle-owned fresh-decompile recovery, separate from ordinary FLOWCHART-owned MERR_REDO.",
       "diagnostic_proof": {
         "tables": ["lifecycle_events", "cfg_transaction_attempts"],
-        "events": ["poisoned_restart_required", "poison_restart_consumed"],
-        "assertion": "One poisoned attempt causes exactly one controlled restart and no successful PREOPT claim."
+        "events": ["poisoned_restart_required", "generated_restart_requested", "generated_restart_consumed"],
+        "assertion": "One poisoned attempt stages a typed POISON_RECOVERY receipt; the manager consumes it for one fresh-decompile recovery, while the poisoned flowchart emits no MERR_REDO and no successful PREOPT claim."
       },
       "acceptance_test": {
         "donor": "tests/system/runtime/hexrays/test_decompilation_lifecycle.py::def test_poisoned_generation_restart_yields_exactly_one_hook_merr_redo",
-        "current": "tests/system/runtime/hexrays/test_decompilation_lifecycle.py::def test_poisoned_generation_restart_yields_exactly_one_hook_merr_redo"
+        "current": "tests/system/runtime/hexrays/test_decompilation_lifecycle.py::def test_poisoned_generation_restart_does_not_yield_hook_merr_redo"
       }
     },
     {
