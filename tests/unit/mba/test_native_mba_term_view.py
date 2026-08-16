@@ -83,6 +83,25 @@ def test_direct_view_canonicalizes_ac_children_without_mutating_mops() -> None:
     assert instruction.r is right
 
 
+def test_direct_view_materializes_one_raw_and_canonical_term_view() -> None:
+    right = _leaf("a")
+    left = _leaf("b")
+    instruction = _Insn(10, left, right, 4)
+
+    result = NativeMbaTermView.from_instruction(
+        instruction, destination_size=4, runtime=_RUNTIME
+    )
+
+    assert result.view is not None
+    canonical_view = result.view.to_canonical_view()
+
+    assert canonical_view.raw_term == result.view.to_typed_term()
+    assert canonical_view.canonical_term.children[0].leaf_key == ("mop", "a")
+    assert canonical_view.canonical_term.children[1].leaf_key == ("mop", "b")
+    assert instruction.l is left
+    assert instruction.r is right
+
+
 def test_direct_view_recurses_mop_d_without_an_ast_adapter() -> None:
     x = _leaf("x")
     y = _leaf("y")

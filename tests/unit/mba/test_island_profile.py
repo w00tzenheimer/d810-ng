@@ -9,7 +9,8 @@ from d810.mba.island_profile import (
     MbaIslandClass,
     profile_typed_term,
 )
-from d810.mba.typed_term import TypedBvTerm
+from d810.mba.semantic_canonicalization import canonicalize_mba_term
+from d810.mba.typed_term import TypedBvTerm, term_fingerprint
 
 
 def _leaf(name: str) -> TypedBvTerm:
@@ -74,3 +75,19 @@ def test_profiles_have_a_stable_fingerprint_for_equivalent_terms():
     second = _node("or", _leaf("x"), _leaf("y"))
 
     assert profile_typed_term(first).fingerprint == profile_typed_term(second).fingerprint
+
+
+def test_profile_costs_describe_the_exact_raw_or_canonical_term_passed():
+    raw = _node("mul", _constant(-2), _leaf("x"))
+    canonical = canonicalize_mba_term(raw).canonical_term
+
+    raw_profile = profile_typed_term(raw)
+    canonical_profile = profile_typed_term(canonical)
+
+    assert raw_profile.operator_count == 1
+    assert raw_profile.total_node_count == 3
+    assert raw_profile.fingerprint == term_fingerprint(raw)
+    assert canonical.operation == "neg"
+    assert canonical_profile.operator_count == 2
+    assert canonical_profile.total_node_count == 4
+    assert canonical_profile.fingerprint == term_fingerprint(canonical)

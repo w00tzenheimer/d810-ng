@@ -68,7 +68,13 @@ def profile_typed_term(
     *,
     blockers: Iterable[IslandBlocker] = (),
 ) -> MbaIslandProfile:
-    """Classify a portable term without importing native or provider objects."""
+    """Classify a portable term without importing native or provider objects.
+
+    Operator and node counts are measured from the exact term supplied by the
+    caller.  Only the persisted fingerprint uses the existing homogeneous-AC
+    normalization; callers that have a separate semantic canonical term must
+    pass that term explicitly when they need its fingerprint.
+    """
 
     normalized_blockers = tuple(sorted(set(blockers), key=str))
     if any(not isinstance(blocker, IslandBlocker) for blocker in normalized_blockers):

@@ -13,6 +13,7 @@ from d810.backends.mba.hexrays_island import (  # noqa: E402
 from d810.hexrays.expr import ast as ast_dispatcher  # noqa: E402
 from d810.hexrays.ir.mop_snapshot import MopSnapshot  # noqa: E402
 from d810.mba.island_profile import IslandBlocker, MbaIslandClass  # noqa: E402
+from d810.mba.typed_term import TypedBvTerm, term_fingerprint  # noqa: E402
 
 
 def _leaf(name: str, register: int, size: int = 4):
@@ -34,6 +35,28 @@ def _node(opcode: int, left, right=None, size: int = 4):
     node = ast_dispatcher.AstNode(opcode, left, right)
     node.dest_size = size
     return node
+
+
+class _AstFactory:
+    def xor_negative_coefficient(self, width_bytes: int = 4):
+        x = _leaf("x", 1, width_bytes)
+        y = _leaf("y", 2, width_bytes)
+        return _node(
+            ida_hexrays.m_add,
+            _node(
+                ida_hexrays.m_mul,
+                _constant(-2, width_bytes),
+                x,
+                width_bytes,
+            ),
+            y,
+            width_bytes,
+        )
+
+
+@pytest.fixture
+def ast_factory():
+    return _AstFactory()
 
 
 def test_lowering_preserves_live_leafs_paths_and_rebuilds_supported_island():
@@ -94,9 +117,43 @@ def test_lowering_retains_raw_source_order_term_and_paths_alongside_canonical_te
 
     assert lowering.term is not None
     assert lowering.raw_term is not None
+    assert lowering.canonical_view is not None
+    assert lowering.raw_term == lowering.canonical_view.raw_term
+    assert lowering.term == lowering.canonical_view.canonical_term
+    assert lowering.profile.fingerprint == term_fingerprint(lowering.term)
     assert lowering.raw_term.children[0].leaf_key != lowering.term.children[0].leaf_key
     assert lowering.raw_native_nodes_by_path[(0,)] is b
     assert lowering.raw_native_nodes_by_path[(1,)] is a
+
+
+def test_negative_coefficient_lowering_preserves_raw_native_provenance(ast_factory):
+    source = ast_factory.xor_negative_coefficient(width_bytes=4)
+    rendered_before = str(source)
+    lowering = lower_hexrays_island(source, destination_size=4)
+
+    assert lowering.canonical_view is not None
+    assert lowering.raw_term == lowering.canonical_view.raw_term
+    assert lowering.term == lowering.canonical_view.canonical_term
+    assert lowering.term.operation == "sub"
+    assert str(source) == rendered_before
+    assert lowering.raw_native_nodes_by_path[()] is source
+    assert () not in lowering.native_nodes_by_path
+    assert len(lowering.leafs) == 2
+    assert any(leaf is source.left.right for leaf in lowering.leafs.values())
+    assert any(leaf is source.right for leaf in lowering.leafs.values())
+
+    x_key, y_key = sorted(lowering.leafs, key=repr)
+    replacement = TypedBvTerm(
+        "xor",
+        32,
+        children=(
+            TypedBvTerm(None, 32, leaf_key=x_key),
+            TypedBvTerm(None, 32, leaf_key=y_key),
+        ),
+    )
+    assert rebuild_hexrays_island(
+        replacement, lowering=lowering, destination_size=4
+    ) is not None
 
 
 @pytest.mark.parametrize(

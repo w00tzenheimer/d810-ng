@@ -16,6 +16,10 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from d810.core.typing import Any
 from d810.mba.island_profile import IslandBlocker, MbaIslandClass, MbaIslandProfile
+from d810.mba.semantic_canonicalization import (
+    CanonicalMbaTermView,
+    canonicalize_mba_term,
+)
 from d810.mba.typed_term import TypedBvTerm, _leaf_key_fingerprint
 
 
@@ -107,6 +111,11 @@ class NativeMbaTermView:
             self.width,
             children=tuple(child.to_typed_term() for child in self.children),
         )
+
+    def to_canonical_view(self) -> CanonicalMbaTermView:
+        """Materialize one raw term and its shared canonical companion."""
+
+        return canonicalize_mba_term(self.to_typed_term())
 
     @classmethod
     def from_instruction(

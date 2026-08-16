@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import importlib
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import MappingProxyType
 from d810.core.typing import Any
 from d810.backends.mba.native_mba_term_view import semantic_native_leaf_key
@@ -19,7 +19,11 @@ from d810.mba.island_profile import (
     MbaIslandProfile,
     profile_typed_term,
 )
-from d810.mba.typed_term import TypedBvTerm, _leaf_key_fingerprint, canonicalize_ac_term
+from d810.mba.semantic_canonicalization import (
+    CanonicalMbaTermView,
+    canonicalize_mba_term,
+)
+from d810.mba.typed_term import TypedBvTerm, _leaf_key_fingerprint, term_fingerprint
 
 
 _VALID_DESTINATION_SIZES = frozenset({1, 2, 4, 8})
@@ -36,6 +40,7 @@ class HexRaysIslandLowering:
     leafs: Mapping[tuple[object, ...], Any]
     native_nodes_by_path: Mapping[tuple[int, ...], Any]
     raw_native_nodes_by_path: Mapping[tuple[int, ...], Any]
+    canonical_view: CanonicalMbaTermView | None = None
 
 
 @dataclass(frozen=True)
@@ -279,6 +284,7 @@ def lower_hexrays_island(
             leafs=MappingProxyType({}),
             native_nodes_by_path=MappingProxyType({}),
             raw_native_nodes_by_path=MappingProxyType({}),
+            canonical_view=None,
         )
     try:
         runtime = _load_native_runtime()
@@ -293,6 +299,7 @@ def lower_hexrays_island(
                 leafs=MappingProxyType({}),
                 native_nodes_by_path=MappingProxyType({}),
                 raw_native_nodes_by_path=MappingProxyType({}),
+                canonical_view=None,
             )
         blockers: set[IslandBlocker] = set()
         leafs: dict[tuple[object, ...], Any] = {}
@@ -364,8 +371,8 @@ def lower_hexrays_island(
                 operation, destination_size * 8, children=(lowered_left, lowered_right)
             )
 
-        term = lower(root, ())
-        if term is None or blockers:
+        raw_term = lower(root, ())
+        if raw_term is None or blockers:
             return HexRaysIslandLowering(
                 term=None,
                 raw_term=None,
@@ -375,19 +382,27 @@ def lower_hexrays_island(
                 leafs=MappingProxyType(dict(leafs)),
                 native_nodes_by_path=MappingProxyType(dict(nodes)),
                 raw_native_nodes_by_path=MappingProxyType(dict(nodes)),
+                canonical_view=None,
             )
-        normalized = canonicalize_ac_term(term)
+        canonical_view = canonicalize_mba_term(raw_term)
+        normalized = canonical_view.canonical_term
+        raw_profile = profile_typed_term(raw_term)
+        profile = replace(
+            raw_profile,
+            fingerprint=term_fingerprint(canonical_view.canonical_term),
+        )
         return HexRaysIslandLowering(
             term=normalized,
-            raw_term=term,
-            profile=profile_typed_term(normalized),
+            raw_term=raw_term,
+            profile=profile,
             leafs=MappingProxyType(dict(leafs)),
             native_nodes_by_path=_canonical_native_nodes_by_path(
-                term,
+                raw_term,
                 normalized,
                 nodes,
             ),
             raw_native_nodes_by_path=MappingProxyType(dict(nodes)),
+            canonical_view=canonical_view,
         )
     except Exception:
         return HexRaysIslandLowering(
@@ -399,6 +414,7 @@ def lower_hexrays_island(
             leafs=MappingProxyType({}),
             native_nodes_by_path=MappingProxyType({}),
             raw_native_nodes_by_path=MappingProxyType({}),
+            canonical_view=None,
         )
 
 
