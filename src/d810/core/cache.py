@@ -166,6 +166,7 @@ def _const_one(_: object) -> float:
 
 class CacheImpl(Cache[K, V]):
     SKIP = object()
+    _MISSING = object()
     _LISTENER_MUTATION_ERROR = "cache mutation is not allowed from a removal listener"
 
     @dataclasses.dataclass(slots=True)
@@ -488,6 +489,73 @@ class CacheImpl(Cache[K, V]):
         if not found:
             raise KeyError(key)
         return value  # type: ignore
+
+    def setdefault(self, key: K, default: V | None = None) -> V | None:
+        self._check_listener_mutation()
+        try:
+            return self[key]
+        except KeyError:
+            self[key] = default  # type: ignore[assignment]
+            return default
+
+    def pop(self, key: K, default: V | object = _MISSING) -> V | object:
+        self._check_listener_mutation()
+        try:
+            value = self[key]
+        except KeyError:
+            if default is self._MISSING:
+                raise
+            return default
+        del self[key]
+        return value
+
+    def popitem(self) -> tuple[K, V]:
+        self._check_listener_mutation()
+        with self._lock:
+            self._reap()
+
+            while True:
+                link = self._root.ins_prev
+                if link is self._root:
+                    raise KeyError
+
+                key = link.key
+                if self._weak_keys:
+                    key = key() if key is not None else None
+                    if key is None:
+                        self._kill(link, RemovalReason.WEAK_REFERENCE)
+                        continue
+
+                value = link.value
+                if self._weak_values:
+                    value = value() if value is not None else None
+                    if value is None:
+                        self._kill(link, RemovalReason.WEAK_REFERENCE)
+                        continue
+
+                self._kill(link, RemovalReason.EXPLICIT)
+                return key, value  # type: ignore
+
+    def update(self, other=(), /, **kwargs) -> None:
+        self._check_listener_mutation()
+        if other is self:
+            other = ()
+        if isinstance(other, collections.abc.Mapping):
+            for key in other:
+                self[key] = other[key]
+        elif hasattr(other, "keys"):
+            for key in other.keys():
+                self[key] = other[key]
+        else:
+            for key, value in other:
+                self[key] = value
+        for key, value in kwargs.items():
+            self[key] = value
+
+    def __ior__(self, other):
+        self._check_listener_mutation()
+        self.update(other)
+        return self
 
     @staticmethod
     def _weak_die(dead_ref: weakref.ref, link: Link, key_ref: weakref.ref) -> None:  # noqa

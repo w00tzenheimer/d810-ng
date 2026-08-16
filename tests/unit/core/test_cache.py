@@ -16,6 +16,20 @@ class FixedClock:
         return self.time
 
 
+class BoundedNonReentrantLock:
+    def __init__(self):
+        self._lock = threading.Lock()
+
+    def __enter__(self):
+        if not self._lock.acquire(timeout=0.1):
+            raise AssertionError("nested lock acquisition")
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self._lock.release()
+        return False
+
+
 class TestCacheImpl(unittest.TestCase):
     def test_single_lookup_counts_cached_none_as_hit(self):
         c = CacheImpl(max_size=4, max_weight=8.0, clock=FixedClock())
@@ -253,6 +267,79 @@ class TestCacheImpl(unittest.TestCase):
         self.assertEqual(c.lookup("after"), (True, 2))
         self.assertEqual(c.stats.explicit_removals, 1)
 
+    def _assert_listener_mutator_rejected(self, mutate):
+        mutation_errors = []
+        worker_errors = []
+        cache_holder = {}
+
+        def listener(key, value):
+            try:
+                mutate(cache_holder["cache"])
+            except RuntimeError as exc:
+                mutation_errors.append(str(exc))
+
+        c = CacheImpl(
+            max_size=1,
+            lock=BoundedNonReentrantLock(),  # type: ignore[arg-type]
+            removal_listener=listener,
+            clock=FixedClock(),
+        )
+        cache_holder["cache"] = c
+        c["a"] = 1
+
+        def trigger_eviction():
+            try:
+                c["outer"] = 2
+            except BaseException as exc:  # pragma: no cover - assertion below
+                worker_errors.append(exc)
+
+        worker = threading.Thread(target=trigger_eviction)
+        worker.start()
+        worker.join(timeout=1.0)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(worker_errors, [])
+        self.assertEqual(
+            mutation_errors, ["cache mutation is not allowed from a removal listener"]
+        )
+        self.assertEqual(c.stats.capacity_evictions, 1)
+        self.assertEqual(c.stats.size, 1)
+        self.assertIn("outer", c)
+
+    def test_setdefault_is_guarded_before_lookup(self):
+        self._assert_listener_mutator_rejected(lambda c: c.setdefault("blocked", 2))
+
+    def test_pop_is_guarded_before_lookup(self):
+        self._assert_listener_mutator_rejected(lambda c: c.pop("a", None))
+
+    def test_popitem_is_guarded_before_iteration(self):
+        self._assert_listener_mutator_rejected(lambda c: c.popitem())
+
+    def test_update_is_guarded_before_source_iteration(self):
+        self._assert_listener_mutator_rejected(lambda c: c.update(c))
+
+    def test_ior_is_guarded_before_source_iteration(self):
+        self._assert_listener_mutator_rejected(lambda c: c.__ior__(c))
+
+    def test_mapping_convenience_mutators_preserve_standard_semantics(self):
+        c = CacheImpl(max_size=4, clock=FixedClock())
+
+        self.assertEqual(c.setdefault("a", None), None)
+        self.assertEqual(c.setdefault("a", 2), None)
+        self.assertIsNone(c.update({"b": 2}, c=3))
+        self.assertEqual(c.lookup("b"), (True, 2))
+        self.assertEqual(c.lookup("c"), (True, 3))
+        self.assertIs(c.__ior__({"d": 4}), c)
+        self.assertEqual(c.lookup("d"), (True, 4))
+
+        self.assertEqual(c.pop("a"), None)
+        self.assertEqual(c.pop("missing", "fallback"), "fallback")
+        with self.assertRaises(KeyError):
+            c.pop("missing")
+
+        self.assertEqual(c.popitem(), ("d", 4))
+        self.assertEqual(c.stats.explicit_removals, 2)
+
     def test_removal_listener_exception_preserves_accounting(self):
         removed = []
 
@@ -277,19 +364,6 @@ class TestCacheImpl(unittest.TestCase):
         self.assertEqual(stats.capacity_evictions, 1)
 
     def test_reconfigure_capacity_uses_one_nonreentrant_lock_acquisition(self):
-        class BoundedNonReentrantLock:
-            def __init__(self):
-                self._lock = threading.Lock()
-
-            def __enter__(self):
-                if not self._lock.acquire(timeout=0.1):
-                    raise AssertionError("nested lock acquisition")
-                return self
-
-            def __exit__(self, exc_type, exc_value, traceback):
-                self._lock.release()
-                return False
-
         c = CacheImpl(
             max_size=2,
             lock=BoundedNonReentrantLock(),  # type: ignore[arg-type]
