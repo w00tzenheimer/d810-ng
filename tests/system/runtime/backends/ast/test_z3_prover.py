@@ -169,21 +169,33 @@ class TestZ3MopProverAPI:
         ("left_size", "right_size"),
         ((1, 1), (2, 2), (8, 8), (4, 8), (8, 4)),
     )
-    def test_prove_comparison_never_translates_unmodeled_operand_widths(
+    def test_prove_comparison_accepts_equal_width_native_operands(
         self, monkeypatch, left_size, right_size
     ):
         import d810.backends.ast.z3 as z3mod
         from d810.backends.ast.z3 import Z3MopProver
 
+        if left_size != right_size:
+            monkeypatch.setattr(
+                z3mod,
+                "mop_list_to_z3_expression_list",
+                lambda _mops: pytest.fail("mixed-width operands reached the translator"),
+            )
+            left = SimpleNamespace(t=ida_hexrays.mop_r, size=left_size)
+            right = SimpleNamespace(t=ida_hexrays.mop_r, size=right_size)
+            assert Z3MopProver().prove_comparison(left, right, "eq") is None
+            return
+
+        bit_width = left_size * 8
         monkeypatch.setattr(
             z3mod,
             "mop_list_to_z3_expression_list",
-            lambda _mops: pytest.fail("unmodeled widths reached the translator"),
+            lambda _mops: [z3.BitVecVal(7, bit_width), z3.BitVecVal(7, bit_width)],
         )
         left = SimpleNamespace(t=ida_hexrays.mop_r, size=left_size)
         right = SimpleNamespace(t=ida_hexrays.mop_r, size=right_size)
 
-        assert Z3MopProver().prove_comparison(left, right, "eq") is None
+        assert Z3MopProver().prove_comparison(left, right, "eq") is True
 
     @pytest.mark.parametrize("comparison", ["unsupported", ""])
     def test_prove_comparison_fails_closed_for_unknown_relation(self, comparison):
@@ -235,6 +247,70 @@ class TestZ3MopProverAPI:
 
         prover = Z3MopProver()
         assert prover.are_equal(None, None) is False
+
+    def test_prover_none_mops_are_unequal_abstains(self):
+        from d810.backends.ast.z3 import Z3MopProver
+
+        prover = Z3MopProver()
+        assert prover.are_unequal(None, None) is False
+
+    @pytest.mark.parametrize("method_name", ["are_equal", "are_unequal"])
+    def test_equality_provers_reject_mixed_native_widths_before_translation(
+        self, monkeypatch, method_name
+    ):
+        import d810.backends.ast.z3 as z3mod
+        from d810.backends.ast.z3 import Z3MopProver
+
+        monkeypatch.setattr(
+            z3mod,
+            "mop_list_to_z3_expression_list",
+            lambda _mops: pytest.fail("mixed-width operands reached the translator"),
+        )
+        left = SimpleNamespace(t=ida_hexrays.mop_r, size=1)
+        right = SimpleNamespace(t=ida_hexrays.mop_r, size=4)
+
+        assert getattr(Z3MopProver(), method_name)(left, right) is False
+
+    @pytest.mark.parametrize("method_name", ["are_equal", "are_unequal"])
+    def test_equality_provers_abstain_when_translation_returns_wrong_sorts(
+        self, monkeypatch, method_name
+    ):
+        import d810.backends.ast.z3 as z3mod
+        from d810.backends.ast.z3 import Z3MopProver
+
+        monkeypatch.setattr(
+            z3mod,
+            "mop_list_to_z3_expression_list",
+            lambda _mops: [z3.BitVec("byte_value", 8), z3.BitVec("dword_value", 32)],
+        )
+        left = SimpleNamespace(t=ida_hexrays.mop_r, size=1)
+        right = SimpleNamespace(t=ida_hexrays.mop_r, size=1)
+
+        assert getattr(Z3MopProver(), method_name)(left, right) is False
+
+    @pytest.mark.parametrize(
+        ("method_name", "expected"),
+        [("are_equal", False), ("are_unequal", False), ("prove_comparison", None)],
+    )
+    def test_provers_abstain_when_z3_translation_raises(
+        self, monkeypatch, method_name, expected
+    ):
+        import d810.backends.ast.z3 as z3mod
+        from d810.backends.ast.z3 import Z3MopProver
+        from d810.errors import D810Z3Exception
+
+        def _raise(_mops):
+            raise D810Z3Exception("unsupported AST opcode")
+
+        monkeypatch.setattr(z3mod, "mop_list_to_z3_expression_list", _raise)
+        left = SimpleNamespace(t=ida_hexrays.mop_r, size=4)
+        right = SimpleNamespace(t=ida_hexrays.mop_r, size=4)
+        method = getattr(Z3MopProver(), method_name)
+
+        if method_name == "prove_comparison":
+            assert method(left, right, "eq") is expected
+        else:
+            assert method(left, right) is expected
 
     def test_prover_none_mop_is_always_zero_returns_false(self):
         from d810.backends.ast.z3 import Z3MopProver

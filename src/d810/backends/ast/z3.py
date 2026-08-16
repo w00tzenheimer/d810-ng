@@ -136,14 +136,10 @@ def create_z3_vars(leaf_list: list[AstLeaf]):
         if leaf_index == -1:
             known_leaf_list.append(leaf.mop)
             leaf_index = len(known_leaf_list) - 1
-            if leaf.mop.size in [1, 2, 4, 8]:
-                # Normally, we should create variable based on their size
-                # but for now it can cause issue when instructions like XDU are used, hence this ugly fix
-                # known_leaf_z3_var_list.append(z3.BitVec("x_{0}".format(leaf_index), 8 * leaf.mop.size))
-                known_leaf_z3_var_list.append(z3.BitVec("x_{0}".format(leaf_index), 32))
-                pass
-            else:
-                known_leaf_z3_var_list.append(z3.BitVec("x_{0}".format(leaf_index), 32))
+            width = int(getattr(leaf, "dest_size", None) or leaf.mop.size or 4) * 8
+            if width not in {8, 16, 32, 64, 128}:
+                width = 32
+            known_leaf_z3_var_list.append(z3.BitVec("x_{0}".format(leaf_index), width))
         leaf.z3_var = known_leaf_z3_var_list[leaf_index]
         leaf.z3_var_name = "x_{0}".format(leaf_index)
     return known_leaf_z3_var_list
@@ -156,6 +152,38 @@ class AstNodeZ3Visitor:
         # Reserved for visitor configuration if width/sign modes are split later.
         self.use_bitvecval = use_bitvecval
 
+    @staticmethod
+    def _ast_bits(ast: AstNode | AstLeaf | None, fallback_bits: int = 32) -> int:
+        size = getattr(ast, "dest_size", None)
+        if isinstance(size, int) and size in {1, 2, 4, 8, 16}:
+            return size * 8
+        return fallback_bits
+
+    @staticmethod
+    def _unsigned_resize(value: z3.BitVecRef, bits: int) -> z3.BitVecRef:
+        if value.size() == bits:
+            return value
+        if value.size() > bits:
+            return typing.cast(z3.BitVecRef, z3.Extract(bits - 1, 0, value))
+        return typing.cast(z3.BitVecRef, z3.ZeroExt(bits - value.size(), value))
+
+    @staticmethod
+    def _signed_resize(value: z3.BitVecRef, bits: int) -> z3.BitVecRef:
+        if value.size() == bits:
+            return value
+        if value.size() > bits:
+            return typing.cast(z3.BitVecRef, z3.Extract(bits - 1, 0, value))
+        return typing.cast(z3.BitVecRef, z3.SignExt(bits - value.size(), value))
+
+    def _flag(
+        self, ast: AstNode, condition: z3.BoolRef, fallback_bits: int
+    ) -> z3.BitVecRef:
+        bits = self._ast_bits(ast, fallback_bits)
+        return typing.cast(
+            z3.BitVecRef,
+            z3.If(condition, z3.BitVecVal(1, bits), z3.BitVecVal(0, bits)),
+        )
+
     def visit(self, ast: AstNode | AstLeaf | None):
         if ast is None:
             raise ValueError("ast is None")
@@ -166,13 +194,14 @@ class AstNodeZ3Visitor:
         return self._visit_node(typing.cast(AstNode, ast))
 
     def _visit_leaf(self, ast: AstLeaf):
+        bits = self._ast_bits(ast)
         if ast.is_constant():
             # Pattern-matching symbolic constant (e.g., Const("c_1") with z3_var).
             if hasattr(ast, "z3_var") and ast.z3_var is not None:
-                return ast.z3_var
+                return self._unsigned_resize(ast.z3_var, bits)
             # Concrete constant (e.g., Const("ONE", 1)).
-            return z3.BitVecVal(ast.value, 32)
-        return ast.z3_var
+            return z3.BitVecVal(ast.value, bits)
+        return self._unsigned_resize(ast.z3_var, bits)
 
     def _visit_udiv_operand(self, node: AstNode | AstLeaf | None):
         # Preserve existing behavior by using a dedicated traversal path.
@@ -181,22 +210,33 @@ class AstNodeZ3Visitor:
     def _visit_node(self, ast: AstNode):
         left = self.visit(ast.left)
         right = self.visit(ast.right) if ast.right else None
+        operand_bits = left.size()
+        result_bits = self._ast_bits(ast, operand_bits)
+        if right is not None:
+            if right.size() != operand_bits and ast.opcode not in {
+                ida_hexrays.m_shl,
+                ida_hexrays.m_shr,
+                ida_hexrays.m_sar,
+                ida_hexrays.m_call,
+            }:
+                raise D810Z3Exception(
+                    "Z3 evaluation: mixed-width operands for "
+                    f"{opcode_to_string(ast.opcode)}: "
+                    f"{operand_bits} and {right.size()} bits"
+                )
+            right = self._unsigned_resize(right, operand_bits)
 
         match ast.opcode:
+            case ida_hexrays.m_mov:
+                return self._unsigned_resize(left, result_bits)
             case ida_hexrays.m_neg:
-                return -left
+                return self._unsigned_resize(-left, result_bits)
             case ida_hexrays.m_lnot:
-                # Logical NOT (!) returns 1 when the operand is zero, otherwise 0.
-                # Implemented via a 32-bit conditional expression to avoid casting
-                # the symbolic BitVec to a Python bool (which would raise a Z3
-                # exception).
-                return z3.If(
-                    left == z3.BitVecVal(0, 32),
-                    z3.BitVecVal(1, 32),
-                    z3.BitVecVal(0, 32),
+                return self._flag(
+                    ast, left == z3.BitVecVal(0, operand_bits), operand_bits
                 )
             case ida_hexrays.m_bnot:
-                return ~left
+                return self._unsigned_resize(~left, result_bits)
             case ida_hexrays.m_add:
                 return left + right
             case ida_hexrays.m_sub:
@@ -213,7 +253,7 @@ class AstNodeZ3Visitor:
             case ida_hexrays.m_umod:
                 return z3.URem(left, right)
             case ida_hexrays.m_smod:
-                return left % right
+                return z3.SRem(left, right)
             case ida_hexrays.m_or:
                 return left | right
             case ida_hexrays.m_and:
@@ -227,62 +267,35 @@ class AstNodeZ3Visitor:
             case ida_hexrays.m_sar:
                 return left >> right
             case ida_hexrays.m_setnz:
-                compared = right if right is not None else z3.BitVecVal(0, 32)
-                return z3.If(
-                    left != compared,
-                    z3.BitVecVal(1, 32),
-                    z3.BitVecVal(0, 32),
+                compared = (
+                    right if right is not None else z3.BitVecVal(0, operand_bits)
                 )
+                return self._flag(ast, left != compared, operand_bits)
             case ida_hexrays.m_setz:
-                compared = right if right is not None else z3.BitVecVal(0, 32)
-                return z3.If(
-                    left == compared,
-                    z3.BitVecVal(1, 32),
-                    z3.BitVecVal(0, 32),
+                compared = (
+                    right if right is not None else z3.BitVecVal(0, operand_bits)
                 )
+                return self._flag(ast, left == compared, operand_bits)
             case ida_hexrays.m_setae:
-                return z3.If(
-                    z3.UGE(left, right),
-                    z3.BitVecVal(1, 32),
-                    z3.BitVecVal(0, 32),
-                )
+                return self._flag(ast, z3.UGE(left, right), operand_bits)
             case ida_hexrays.m_setb:
-                return z3.If(
-                    z3.ULT(left, right),
-                    z3.BitVecVal(1, 32),
-                    z3.BitVecVal(0, 32),
-                )
+                return self._flag(ast, z3.ULT(left, right), operand_bits)
             case ida_hexrays.m_seta:
-                return z3.If(
-                    z3.UGT(left, right),
-                    z3.BitVecVal(1, 32),
-                    z3.BitVecVal(0, 32),
-                )
+                return self._flag(ast, z3.UGT(left, right), operand_bits)
             case ida_hexrays.m_setbe:
-                return z3.If(
-                    z3.ULE(left, right),
-                    z3.BitVecVal(1, 32),
-                    z3.BitVecVal(0, 32),
-                )
+                return self._flag(ast, z3.ULE(left, right), operand_bits)
             case ida_hexrays.m_setg:
-                return z3.If(left > right, z3.BitVecVal(1, 32), z3.BitVecVal(0, 32))
+                return self._flag(ast, left > right, operand_bits)
             case ida_hexrays.m_setge:
-                return z3.If(
-                    left >= right,
-                    z3.BitVecVal(1, 32),
-                    z3.BitVecVal(0, 32),
-                )
+                return self._flag(ast, left >= right, operand_bits)
             case ida_hexrays.m_setl:
-                return z3.If(left < right, z3.BitVecVal(1, 32), z3.BitVecVal(0, 32))
+                return self._flag(ast, left < right, operand_bits)
             case ida_hexrays.m_setle:
-                return z3.If(
-                    left <= right,
-                    z3.BitVecVal(1, 32),
-                    z3.BitVecVal(0, 32),
-                )
+                return self._flag(ast, left <= right, operand_bits)
             case ida_hexrays.m_setp:
-                # 1) isolate the low byte
-                lo_byte = typing.cast(z3.BitVecRef, z3.Extract(7, 0, left))
+                # PF is the parity of the low byte of (left - right).
+                difference = left - right
+                lo_byte = typing.cast(z3.BitVecRef, z3.Extract(7, 0, difference))
                 # 2) XOR-reduce single-bit slices to get 1 -> odd, 0 -> even
                 bit0 = typing.cast(z3.BitVecRef, z3.Extract(0, 0, lo_byte))
                 parity_bv = bit0
@@ -290,11 +303,10 @@ class AstNodeZ3Visitor:
                     parity_bv = parity_bv ^ z3.Extract(i, i, lo_byte)
                 # 3) PF is set when the parity is even (parity_bv == 0)
                 pf_is_set = parity_bv == z3.BitVecVal(0, 1)
-                # 4) widen bool-like result to 32-bit {1,0}
-                return z3.If(pf_is_set, z3.BitVecVal(1, 32), z3.BitVecVal(0, 32))
+                return self._flag(ast, pf_is_set, operand_bits)
             case ida_hexrays.m_sets:
-                is_negative = left < z3.BitVecVal(0, 32)
-                return z3.If(is_negative, z3.BitVecVal(1, 32), z3.BitVecVal(0, 32))
+                is_negative = left < z3.BitVecVal(0, operand_bits)
+                return self._flag(ast, is_negative, operand_bits)
             case ida_hexrays.m_seto:
                 # Signed-subtraction overflow flag OF(left - right): set when the
                 # operands differ in sign and the result's sign differs from the
@@ -305,44 +317,33 @@ class AstNodeZ3Visitor:
                 # reaches the prover as flag ops (<s expands to SF ^ OF). Without
                 # this case the conversion aborts ("Unknown opcode seto") and the
                 # tautology (an OLLVM/Tigress BCF opaque predicate) is never folded.
-                compared = right if right is not None else z3.BitVecVal(0, 32)
+                compared = right if right is not None else z3.BitVecVal(0, operand_bits)
                 difference = left - compared
                 overflow_bit = z3.Extract(
-                    31, 31, (left ^ difference) & (left ^ compared)
+                    operand_bits - 1,
+                    operand_bits - 1,
+                    (left ^ difference) & (left ^ compared),
                 )
-                return z3.If(
-                    overflow_bit == z3.BitVecVal(1, 1),
-                    z3.BitVecVal(1, 32),
-                    z3.BitVecVal(0, 32),
+                return self._flag(ast, overflow_bit == z3.BitVecVal(1, 1), operand_bits)
+            case ida_hexrays.m_cfadd:
+                return self._flag(ast, z3.ULT(left + right, left), operand_bits)
+            case ida_hexrays.m_ofadd:
+                result = left + right
+                overflow_bit = z3.Extract(
+                    operand_bits - 1,
+                    operand_bits - 1,
+                    (left ^ result) & ~(left ^ right),
                 )
-            case ida_hexrays.m_xdu | ida_hexrays.m_xds:
-                # Extend or keep the same width; in this simplified model we
-                # forward the operand directly.
-                return left
+                return self._flag(ast, overflow_bit == z3.BitVecVal(1, 1), operand_bits)
+            case ida_hexrays.m_xdu:
+                return self._unsigned_resize(left, result_bits)
+            case ida_hexrays.m_xds:
+                return self._signed_resize(left, result_bits)
             case ida_hexrays.m_low:
-                # Extract the lower half (dest_size) bits of the operand.
-                dest_bits = (ast.dest_size or 4) * 8
-                # Ensure we do not extract beyond source width.
-                high_bit = min(dest_bits - 1, left.size() - 1)
-                extracted = typing.cast(z3.BitVecRef, z3.Extract(high_bit, 0, left))
-                # Zero-extend to 32-bit to avoid sort mismatches downstream.
-                if extracted.size() < 32:
-                    extracted = typing.cast(
-                        z3.BitVecRef, z3.ZeroExt(32 - extracted.size(), extracted)
-                    )
-                return extracted
+                return self._unsigned_resize(left, result_bits)
             case ida_hexrays.m_high:
-                # Extract the upper half by shifting right by dest_bits.
-                dest_bits = (ast.dest_size or 4) * 8
-                shifted = z3.LShR(left, dest_bits)
-                high_bit = min(dest_bits - 1, shifted.size() - 1)
-                extracted = typing.cast(z3.BitVecRef, z3.Extract(high_bit, 0, shifted))
-                # Zero-extend to 32-bit for consistency with the rest of the engine.
-                if extracted.size() < 32:
-                    extracted = typing.cast(
-                        z3.BitVecRef, z3.ZeroExt(32 - extracted.size(), extracted)
-                    )
-                return extracted
+                shifted = z3.LShR(left, result_bits)
+                return self._unsigned_resize(shifted, result_bits)
             case ida_hexrays.m_call:
                 # Handle rotate helper calls (__ROL*/__ROR*) emitted by mop_to_ast.
                 # These AstNodes carry a func_name attribute set during AST construction.
@@ -390,6 +391,19 @@ def mop_list_to_z3_expression_list(mop_list: list[ida_hexrays.mop_t]):
         )
     visitor = AstNodeZ3Visitor()
     return [visitor.visit(ast) for ast in valid_ast_list]
+
+
+def _translate_mop_pair(
+    mop1: ida_hexrays.mop_t, mop2: ida_hexrays.mop_t, *, operation: str
+) -> tuple[z3.BitVecRef, z3.BitVecRef] | None:
+    try:
+        expressions = mop_list_to_z3_expression_list([mop1, mop2])
+    except Exception as exc:
+        logger.debug("%s: failed to translate operands to Z3: %s", operation, exc)
+        return None
+    if len(expressions) != 2:
+        return None
+    return expressions[0], expressions[1]
 
 
 class Z3MopProver:
@@ -472,6 +486,9 @@ class Z3MopProver:
         if not hasattr(mop2, "t") or not hasattr(mop2, "size"):
             logger.warning("are_equal: mop2 is invalid or freed SWIG object")
             return False
+        native_size = int(mop1.size)
+        if native_size not in {1, 2, 4, 8, 16} or native_size != int(mop2.size):
+            return False
         if logger.debug_on:
             logger.debug(
                 "are_equal: mop1: %s, mop2: %s",
@@ -505,15 +522,20 @@ class Z3MopProver:
         cached = self._eq_cache.get(cache_key)
         if cached is not None:
             return cached
-        exprs = mop_list_to_z3_expression_list([mop1, mop2])
-        if len(exprs) != 2:
+        expressions = _translate_mop_pair(mop1, mop2, operation="are_equal")
+        if expressions is None:
             return False
-        z3_mop1, z3_mop2 = exprs
+        z3_mop1, z3_mop2 = expressions
+        native_bits = native_size * 8
+        if z3_mop1.size() != native_bits or z3_mop2.size() != native_bits:
+            return False
         _solver = solver if solver is not None else get_solver()
         _solver.push()
-        _solver.add(z3.Not(z3_mop1 == z3_mop2))
-        is_equal = _solver.check() == z3.unsat
-        _solver.pop()
+        try:
+            _solver.add(z3.Not(z3_mop1 == z3_mop2))
+            is_equal = _solver.check() == z3.unsat
+        finally:
+            _solver.pop()
         self._eq_cache[cache_key] = is_equal
         return is_equal
 
@@ -529,7 +551,7 @@ class Z3MopProver:
     ) -> bool:
         """Prove mop1 != mop2 for all inputs. Replaces z3_check_mop_inequality."""
         if mop1 is None or mop2 is None:
-            return True
+            return False
         blk, ins = self._resolve_context(blk, ins)
         destination_mba = getattr(blk, "mba", None)
         # Convert MopSnapshot to mop_t at boundary
@@ -540,10 +562,13 @@ class Z3MopProver:
         # Validate SWIG objects
         if not hasattr(mop1, "t") or not hasattr(mop1, "size"):
             logger.warning("are_unequal: mop1 is invalid or freed SWIG object")
-            return True
+            return False
         if not hasattr(mop2, "t") or not hasattr(mop2, "size"):
             logger.warning("are_unequal: mop2 is invalid or freed SWIG object")
-            return True
+            return False
+        native_size = int(mop1.size)
+        if native_size not in {1, 2, 4, 8, 16} or native_size != int(mop2.size):
+            return False
         if logger.debug_on:
             logger.debug(
                 "are_unequal: mop1: %s, mop2: %s",
@@ -577,8 +602,8 @@ class Z3MopProver:
         cached = self._neq_cache.get(cache_key)
         if cached is not None:
             return cached
-        exprs = mop_list_to_z3_expression_list([mop1, mop2])
-        if len(exprs) != 2:
+        expressions = _translate_mop_pair(mop1, mop2, operation="are_unequal")
+        if expressions is None:
             # SOUNDNESS (ticket llr-mra1): proving inequality requires an actual Z3
             # proof. When an operand fails AST conversion -- e.g. a memory load
             # ``[ds:p].1`` (m_ldx is an unsupported root opcode for the AST builder) --
@@ -590,12 +615,17 @@ class Z3MopProver:
             # Approov ``if (*v6)`` loop-exit, collapsing the function to an infinite
             # loop. An unconvertible operand is unknown, never provably-unequal.
             return False
-        z3_mop1, z3_mop2 = exprs
+        z3_mop1, z3_mop2 = expressions
+        native_bits = native_size * 8
+        if z3_mop1.size() != native_bits or z3_mop2.size() != native_bits:
+            return False
         _solver = solver if solver is not None else get_solver()
         _solver.push()
-        _solver.add(z3_mop1 == z3_mop2)
-        is_unequal = _solver.check() == z3.unsat
-        _solver.pop()
+        try:
+            _solver.add(z3_mop1 == z3_mop2)
+            is_unequal = _solver.check() == z3.unsat
+        finally:
+            _solver.pop()
         self._neq_cache[cache_key] = is_unequal
         return is_unequal
 
@@ -652,14 +682,11 @@ class Z3MopProver:
             logger.warning("prove_comparison: mop2 is invalid or freed SWIG object")
             return None
 
-        # ``AstNodeZ3Visitor`` currently represents every leaf and concrete
-        # constant as a 32-bit bit-vector.  That model is exact only when both
-        # native operands are themselves 32 bits: widening smaller operands
-        # changes their wrap semantics, while truncating larger operands can
-        # turn a false 64-bit predicate into a proof over its low half.  Native
-        # edge authorization must therefore abstain until the translator is
-        # width-faithful for any other shape.
-        if (int(mop1.size), int(mop2.size)) != (4, 4):
+        # The symbolic sort must exactly attest to the native operand width.
+        # Mixed-width comparisons are not a native mcode value operation and
+        # are rejected rather than silently extending either side.
+        native_size = int(mop1.size)
+        if native_size not in {1, 2, 4, 8, 16} or native_size != int(mop2.size):
             return None
 
         def _operand_key(mop):
@@ -673,11 +700,15 @@ class Z3MopProver:
         if cache_key in self._comparison_cache:
             return self._comparison_cache[cache_key]
 
-        exprs = mop_list_to_z3_expression_list([mop1, mop2])
-        if len(exprs) != 2:
+        expressions = _translate_mop_pair(mop1, mop2, operation="prove_comparison")
+        if expressions is None:
             self._comparison_cache[cache_key] = None
             return None
-        left, right = exprs
+        left, right = expressions
+        native_bits = native_size * 8
+        if left.size() != native_bits or right.size() != native_bits:
+            self._comparison_cache[cache_key] = None
+            return None
         _solver = solver if solver is not None else get_solver()
         try:
             predicate = build_predicate(left, right)
