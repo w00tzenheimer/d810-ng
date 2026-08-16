@@ -65,6 +65,7 @@ from d810.transforms.graph_modification import (
     RedirectBranch,
     RedirectGoto,
 )
+from d810.transforms.cfg_transaction import CfgGenerationPoisoned
 from d810.transforms.plan import (
     ExecutionPolicy,
     PatchPlan,
@@ -739,6 +740,7 @@ class TransactionalExecutor:
                 tx_failure_phase or "backend_apply",
                 "" if tx_error is None else str(tx_error),
             )
+            generation_poisoned = isinstance(tx_error, CfgGenerationPoisoned)
             executor_logger.warning(
                 "Transaction coordinator rejected stage %s at phase %s detail %s: %s",
                 fragment.strategy_name,
@@ -746,15 +748,22 @@ class TransactionalExecutor:
                 tx_failure_detail,
                 tx_error,
             )
+            if generation_poisoned:
+                executor_logger.warning(
+                    "CFG generation poisoned during stage %s; quarantining "
+                    "the remaining pipeline until controller-owned regeneration",
+                    fragment.strategy_name,
+                )
             result = StageResult(
                 strategy_name=fragment.strategy_name,
                 success=False,
                 rollback_needed=classification.rollback_needed,
-                quarantine=classification.quarantine,
+                quarantine=classification.quarantine or generation_poisoned,
                 error=str(tx_error) if tx_error else tx_failure_phase,
                 failure_phase=tx_failure_phase or "lowering",
             )
             result.metadata["failure_detail"] = tx_failure_detail
+            result.metadata["generation_poisoned"] = generation_poisoned
             result.metadata["gate_accounting"] = gate_accounting
             executor_logger.info("Gate accounting: %s", gate_accounting.summary())
             return result

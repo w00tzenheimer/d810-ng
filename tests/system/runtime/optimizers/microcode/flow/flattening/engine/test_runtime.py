@@ -5,6 +5,9 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from d810.optimizers.microcode.flow.flattening import engine
+from d810.optimizers.microcode.flow.flattening.engine import (
+    executor as executor_module,
+)
 from d810.analyses.control_flow.native_preanalysis_session import (
     CommittedSemanticFragmentOwnership,
     SemanticFragmentBlockOwner,
@@ -44,7 +47,14 @@ from d810.optimizers.microcode.flow.flattening.engine.runtime import (
     run_family_pass,
     run_ordered_family_hooks,
 )
-from d810.transforms.cfg_transaction import NativeBlockRef, PlanBlockRef
+from d810.transforms.cfg_transaction import (
+    CfgGenerationPoisoned,
+    CfgTransactionFailure,
+    CfgTransactionPhase,
+    NativeBlockRef,
+    PlanBlockRef,
+    TransactionAttemptId,
+)
 from d810.transforms.plan import PatchBlockSpec, PatchConvertToGoto, PatchPlan
 from d810.transforms.plan_fragment import (
     BenefitMetrics,
@@ -186,6 +196,106 @@ def test_new_block_origin_logging_resolves_native_template_reference() -> None:
         _origin_graph(),
         realized_serials={created_ref: 7},
     )
+
+
+def test_generation_poison_quarantines_stage_and_aborts_pipeline(monkeypatch) -> None:
+    """A poisoned live MBA must not receive the next planned fragment."""
+    fragment = _fragment("fake_jump")
+    follow_up = _fragment("follow_up")
+    fragment.metadata["safeguard_min_required"] = 1
+    follow_up.metadata["safeguard_min_required"] = 1
+    pre_cfg = FlowGraph(blocks={}, entry_serial=0, func_ea=0x401000)
+    poison = CfgGenerationPoisoned(
+        CfgTransactionFailure(
+            attempt_id=TransactionAttemptId(
+                plan_id="poisoned-plan",
+                session_id="test-session",
+                generation=1,
+                attempt_id="test-attempt",
+            ),
+            phase=CfgTransactionPhase.POISONED_RESTART_REQUIRED,
+            reason="observed reachability rejected",
+            live_mutation_started=True,
+            failure_phase="post_observation_contract",
+        )
+    )
+
+    class _Translator:
+        last_lowering_phase = None
+        last_lowering_subphase = None
+        contract = None
+
+        @staticmethod
+        def lift(_mba):
+            return pre_cfg
+
+    class _PoisonedBackend:
+        def __init__(self, **_kwargs):
+            self.last_patch_execution = None
+            self.last_patch_failure = poison
+
+        def apply(self, _plan, _mba):
+            raise poison
+
+    executor = TransactionalExecutor(
+        SimpleNamespace(qty=0),
+        translator=_Translator(),
+    )
+    executor.set_mutation_gateway_factory(
+        lambda: SimpleNamespace(
+            identity_index=SimpleNamespace(
+                maturity=0,
+                snapshot_id="snapshot",
+                generation=1,
+                plan_refs_by_serial=lambda: {},
+            ),
+            lifecycle_authority=None,
+        )
+    )
+    monkeypatch.setattr(
+        executor_module,
+        "filter_return_carrier_fact_redirects",
+        lambda modifications, **_kwargs: (modifications, ()),
+    )
+    monkeypatch.setattr(
+        executor_module,
+        "filter_terminal_byte_emit_fact_redirects",
+        lambda modifications, **_kwargs: (modifications, ()),
+    )
+    monkeypatch.setattr(
+        executor,
+        "_filter_backend_unsupported_modifications",
+        lambda modifications: (modifications, 0),
+    )
+    monkeypatch.setattr(
+        executor,
+        "_run_preflight",
+        lambda _fragment, _cfg, modifications, _policy, **_kwargs: (
+            modifications,
+            PatchPlan(plan_id="poisoned-plan"),
+            None,
+            0,
+        ),
+    )
+    monkeypatch.setattr(executor_module, "HexRaysMutationBackend", _PoisonedBackend)
+
+    stage_result = executor.execute_stage(fragment, total_handlers=1)
+
+    assert stage_result.success is False
+    assert stage_result.quarantine is True
+
+    executed: list[str] = []
+    monkeypatch.setattr(
+        executor,
+        "execute_stage",
+        lambda candidate, _total_handlers: (
+            executed.append(candidate.strategy_name) or stage_result
+        ),
+    )
+    results = executor.execute_pipeline([fragment, follow_up], total_handlers=1)
+
+    assert executed == ["fake_jump"]
+    assert results == [stage_result]
 
 
 def test_committed_semantic_ownership_gate_rejects_before_transaction() -> None:
