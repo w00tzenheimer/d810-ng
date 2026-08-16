@@ -15,10 +15,12 @@ import pytest
 
 from d810.analyses.control_flow.native_preanalysis_session import (
     GeneratedRestartConsumer,
+    GeneratedRestartKind,
     NativePreanalysisSessionState,
 )
 from d810.core.provider_phase import ProviderPhaseSnapshot
 from d810.core.decompilation_session import DecompilationEvent
+from d810.core.observability_events import LifecycleEventObserved
 from d810.hexrays.hooks.optblock_adapter import BlockOptimizerManager
 from d810.hexrays.hooks.hexrays_hooks import HexraysDecompilationHook
 from d810.manager.decompilation_lifecycle import (
@@ -100,6 +102,96 @@ def test_poisoned_generation_restart_does_not_yield_hook_merr_redo(
         == 0
     )
     assert not state.has_pending_generated_restart
+
+
+def test_coordinator_projects_restart_owners_and_observability(monkeypatch) -> None:
+    import d810.manager.decompilation_lifecycle as lifecycle_module
+
+    observed: list[object] = []
+    monkeypatch.setattr(lifecycle_module, "emit_diagnostic", observed.append)
+    coordinator = DecompilationLifecycleCoordinator(
+        preanalysis_runtime=None,
+        analysis_runtime=None,
+        execution_scope_service=None,
+        native_preanalysis_key_provider=lambda _function_ea: NATIVE_KEY,
+    )
+    session, created = coordinator.ensure_hexrays_session(
+        function_ea=0x40A560,
+        database_identity="restart-routing-idb",
+    )
+    assert created
+    state = session.native_preanalysis
+
+    assert state.request_generated_restart(
+        evidence_family="bootstrap_routes",
+        reason="bind bootstrap evidence",
+    )
+    evidence_receipt = coordinator.pending_generated_restart(0x40A560)
+    assert evidence_receipt is not None
+    assert evidence_receipt.kind is GeneratedRestartKind.EVIDENCE_REBIND
+    assert coordinator.native_mutation_quarantined(0x40A560) is False
+    assert (
+        coordinator.consume_generated_restart(
+            0x40A560,
+            consumer=GeneratedRestartConsumer.MANAGER,
+        )
+        is None
+    )
+    assert coordinator.pending_generated_restart(0x40A560) == evidence_receipt
+    assert (
+        coordinator.consume_generated_restart(
+            0x40A560,
+            consumer=GeneratedRestartConsumer.FLOWCHART,
+        )
+        == evidence_receipt
+    )
+
+    assert state.request_poisoned_generation_restart(reason="discard poisoned MBA")
+    poison_receipt = coordinator.pending_generated_restart(0x40A560)
+    assert poison_receipt is not None
+    assert poison_receipt.kind is GeneratedRestartKind.POISON_RECOVERY
+    assert coordinator.native_mutation_quarantined(0x40A560) is True
+    assert (
+        coordinator.consume_generated_restart(
+            0x40A560,
+            consumer=GeneratedRestartConsumer.FLOWCHART,
+        )
+        is None
+    )
+    assert coordinator.pending_generated_restart(0x40A560) == poison_receipt
+    assert (
+        coordinator.consume_generated_restart(
+            0x40A560,
+            consumer=GeneratedRestartConsumer.MANAGER,
+        )
+        == poison_receipt
+    )
+    assert coordinator.native_mutation_quarantined(0x40A560) is True
+
+    restart_events = [
+        event
+        for event in observed
+        if isinstance(event, LifecycleEventObserved)
+        and event.event_kind.startswith("generated_restart_")
+    ]
+    assert restart_events
+    poison_consumed = next(
+        event
+        for event in restart_events
+        if event.event_kind == "generated_restart_consumed"
+        and event.payload["restart_kind"] == "poison_recovery"
+        and event.payload["consumer"] == "manager"
+    )
+    assert poison_consumed.payload == {
+        "restart_kind": "poison_recovery",
+        "evidence_family": "poisoned_generation_restart",
+        "requester": "native_preanalysis",
+        "consumer": "manager",
+        "evidence_generation_before": 0,
+        "evidence_generation_after": 0,
+        "native_inputs_changed": False,
+        "recovery_mode": "fresh_decompile",
+    }
 
 
 def test_instruction_preopt_callback_propagates_poison_instead_of_continuing() -> None:

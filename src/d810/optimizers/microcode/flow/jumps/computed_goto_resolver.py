@@ -13370,15 +13370,20 @@ def _on_flowchart_preanalysis(*, function_ea: int, mba: object, decision: dict) 
     state = _resolver_state_from_decision(decision)
     if state is None or state.snippet_capture_active:
         return
-    if state.native_preanalysis.consume_generated_restart(
+    receipt = state.native_preanalysis.consume_generated_restart(
         consumer=GeneratedRestartConsumer.FLOWCHART,
-    ):
+    )
+    if receipt is not None:
         request_hexrays_redo(
             decision,
-            "computed_goto_calls_evidence_rebind",
+            f"{receipt.evidence_family}_evidence_rebind",
             function_ea=key,
-            evidence_generation=state.evidence_generation,
+            evidence_generation=receipt.evidence_generation,
         )
+        return
+    if state.native_preanalysis.native_mutation_quarantined:
+        # Poison recovery belongs to the manager's fresh-decompile boundary;
+        # this flowchart callback must never turn it into MERR_REDO.
         return
     if state.materialized:
         return

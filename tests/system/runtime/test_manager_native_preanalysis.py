@@ -105,7 +105,7 @@ def test_manager_installs_and_uninstalls_generated_restart_consumer() -> None:
         D810Manager._uninstall_native_preanalysis_handlers()
 
     assert decision["request_redo"] is True
-    assert decision["reason"] == "computed_goto_calls_evidence_rebind"
+    assert decision["reason"] == "dispatcher_recovery_evidence_evidence_rebind"
     assert not state.has_pending_generated_restart
 
     second_decision: dict[str, object] = {
@@ -1342,6 +1342,141 @@ def test_decompile_controller_services_poison_restart_from_second_round(
     assert result == "fresh-third"
     assert [kind for kind, _ea in calls].count("decompile") == 3
     assert [kind for kind, _ea in calls].count("pending") == 3
+
+
+def test_decompile_controller_routes_poison_to_manager_fresh_recovery(
+    monkeypatch,
+) -> None:
+    function_ea = 0x401000
+    session = DecompilationSessionContext(
+        function_ea=function_ea,
+        database_identity="poison-recovery-idb",
+        top_level_epoch=1,
+        native_key=NATIVE_KEY,
+    )
+    state = session.native_preanalysis
+    consumed: list[GeneratedRestartConsumer] = []
+    collectors: list[object] = []
+    prepares: list[int] = []
+
+    class _Lifecycle:
+        @staticmethod
+        def current_session(_function_ea: int):
+            return session
+
+        @staticmethod
+        def pending_generated_restart(_function_ea: int):
+            return state.pending_generated_restart
+
+        @staticmethod
+        def consume_generated_restart(
+            _function_ea: int,
+            *,
+            consumer: GeneratedRestartConsumer,
+        ):
+            consumed.append(consumer)
+            return state.consume_generated_restart(consumer=consumer)
+
+        @staticmethod
+        def has_exhausted_poison_restart(_function_ea: int) -> bool:
+            return state.has_exhausted_poison_restart
+
+    manager = D810Manager.__new__(D810Manager)
+    manager.decompilation_lifecycle = _Lifecycle()
+    monkeypatch.setattr(
+        manager,
+        "prepare_native_preanalysis",
+        lambda ea: prepares.append(ea) or 0,
+    )
+    monkeypatch.setattr(manager, "_stage_c_collection_enabled", lambda _ea: True)
+
+    outputs = iter(("poisoned", "recovered"))
+
+    def decompile():
+        collector = session.native_cfg_collector
+        assert collector is not None
+        collectors.append(collector)
+        if len(collectors) == 1:
+            assert state.request_poisoned_generation_restart(
+                reason="discard poisoned generated MBA",
+            )
+            return next(outputs)
+        assert collectors[0].closed is True
+        assert state.native_mutation_quarantined
+        return next(outputs)
+
+    result = manager.decompile_with_native_preanalysis(
+        function_ea,
+        decompile,
+        lambda: None,
+    )
+
+    assert result == "recovered"
+    assert len(collectors) == 2
+    assert collectors[1].closed is True
+    assert consumed == [GeneratedRestartConsumer.MANAGER]
+    assert prepares == [function_ea]
+
+
+def test_decompile_controller_refuses_second_poison_after_manager_recovery(
+    monkeypatch,
+) -> None:
+    function_ea = 0x401000
+    session = DecompilationSessionContext(
+        function_ea=function_ea,
+        database_identity="poison-recovery-idb",
+        top_level_epoch=1,
+        native_key=NATIVE_KEY,
+    )
+    state = session.native_preanalysis
+    consumed: list[GeneratedRestartConsumer] = []
+
+    class _Lifecycle:
+        @staticmethod
+        def current_session(_function_ea: int):
+            return session
+
+        @staticmethod
+        def pending_generated_restart(_function_ea: int):
+            return state.pending_generated_restart
+
+        @staticmethod
+        def consume_generated_restart(
+            _function_ea: int,
+            *,
+            consumer: GeneratedRestartConsumer,
+        ):
+            consumed.append(consumer)
+            return state.consume_generated_restart(consumer=consumer)
+
+        @staticmethod
+        def has_exhausted_poison_restart(_function_ea: int) -> bool:
+            return state.has_exhausted_poison_restart
+
+    manager = D810Manager.__new__(D810Manager)
+    manager.decompilation_lifecycle = _Lifecycle()
+    monkeypatch.setattr(manager, "prepare_native_preanalysis", lambda _ea: 0)
+    rounds = 0
+
+    def decompile():
+        nonlocal rounds
+        rounds += 1
+        if rounds == 1:
+            assert state.request_poisoned_generation_restart(
+                reason="first poison",
+            )
+            return "poisoned-first"
+        assert state.native_mutation_quarantined
+        assert not state.request_poisoned_generation_restart(
+            reason="second poison",
+        )
+        return "poisoned-second"
+
+    with pytest.raises(RuntimeError, match="poison restart exhausted"):
+        manager.decompile_with_native_preanalysis(function_ea, decompile, lambda: None)
+
+    assert rounds == 2
+    assert consumed == [GeneratedRestartConsumer.MANAGER]
 
 
 def test_decompile_controller_binds_post_recovery_dispatcher_evidence(

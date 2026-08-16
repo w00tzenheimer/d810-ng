@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 import hashlib
 import json
 from d810.analyses.control_flow.native_preanalysis_session import (
+    GeneratedRestartConsumer,
+    GeneratedRestartReceipt,
     NativePreanalysisFacts,
     NativePreanalysisSessionState,
     ResolverEvidenceAttachment,
@@ -37,6 +39,7 @@ from d810.core.observability_events import (
     DiagnosticSessionObserved,
     EvidenceGenerationObserved,
     InputIdentityResolutionObserved,
+    LifecycleEventObserved,
 )
 from d810.capabilities.semantic_routes import SemanticRouteReferenceOracleCapability
 from d810.manager.frontend_normalization import (
@@ -317,6 +320,37 @@ class DecompilationLifecycleCoordinator:
                 reason=transition.reason,
             )
         )
+        if transition.operation in {
+            "generated_restart_requested",
+            "generated_restart_consumed",
+        }:
+            emit_diagnostic(
+                LifecycleEventObserved(
+                    session_id=session.identity_key,
+                    func_ea=int(session.function_ea),
+                    event_kind=transition.operation,
+                    provider="native_preanalysis",
+                    phase="generated_restart",
+                    evidence_generation=int(transition.resulting_generation),
+                    summary=(
+                        f"{transition.evidence_family} {transition.outcome}"
+                    ),
+                    payload={
+                        "restart_kind": transition.restart_kind,
+                        "evidence_family": transition.evidence_family,
+                        "requester": transition.requester,
+                        "consumer": transition.consumer,
+                        "evidence_generation_before": (
+                            transition.evidence_generation_before
+                        ),
+                        "evidence_generation_after": (
+                            transition.evidence_generation_after
+                        ),
+                        "native_inputs_changed": transition.native_inputs_changed,
+                        "recovery_mode": transition.recovery_mode,
+                    },
+                )
+            )
 
     def ensure(
         self,
@@ -595,10 +629,38 @@ class DecompilationLifecycleCoordinator:
 
     def has_pending_generated_restart(self, function_ea: int) -> bool:
         """Return whether the active owner needs one controller follow-up."""
+        return self.pending_generated_restart(int(function_ea)) is not None
+
+    def pending_generated_restart(
+        self,
+        function_ea: int,
+    ) -> GeneratedRestartReceipt | None:
+        """Return the active session's typed restart receipt, if current."""
+        session = self.current_session(int(function_ea))
+        if session is None:
+            return None
+        return session.native_preanalysis.pending_generated_restart
+
+    def consume_generated_restart(
+        self,
+        function_ea: int,
+        *,
+        consumer: GeneratedRestartConsumer,
+    ) -> GeneratedRestartReceipt | None:
+        """Consume one current restart receipt through its owning boundary."""
+        session = self.current_session(int(function_ea))
+        if session is None:
+            return None
+        return session.native_preanalysis.consume_generated_restart(
+            consumer=consumer,
+        )
+
+    def native_mutation_quarantined(self, function_ea: int) -> bool:
+        """Return whether native mutation is quarantined for the active owner."""
         session = self.current_session(int(function_ea))
         return bool(
             session is not None
-            and session.native_preanalysis.has_pending_generated_restart
+            and session.native_preanalysis.native_mutation_quarantined
         )
 
     def generated_restart_consumed_count(self, function_ea: int) -> int:

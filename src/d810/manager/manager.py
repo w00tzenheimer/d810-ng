@@ -138,6 +138,9 @@ from d810.manager.workbench_recipe_service import RecipeService
 
 D810_LOG_DIR_NAME = "d810_logs"
 
+_MAX_EVIDENCE_REBIND_RETRIES = 4
+_MAX_POISON_RECOVERY_RETRIES = 1
+
 logger = getLogger("d810")
 
 
@@ -899,17 +902,39 @@ class D810Manager:
         result: typing.Any = None
         final_stage_c_collection: tuple[object, object] | None = None
         stage_c_native_result = None
-        # Two accepted frontend evidence retries plus two dispatcher-recovery
-        # retries can follow the initial decompile. The first dispatcher bind
-        # exposes the complete rebound route closure; the fifth round binds
-        # that closure into GENERATED/PREOPT and must reach a fixed point.
-        for _round in range(5):
-            self.prepare_native_preanalysis(function_ea)
+        evidence_rebind_retries = 0
+        poison_recovery_retries = 0
+        recovery_mode = False
+
+        from d810.analyses.control_flow.native_preanalysis_session import (
+            GeneratedRestartConsumer,
+            GeneratedRestartKind,
+        )
+
+        lifecycle = self.decompilation_lifecycle
+
+        def pending_restart():
+            pending = getattr(lifecycle, "pending_generated_restart", None)
+            if callable(pending):
+                return pending(function_ea)
+            # Keep test doubles and older injected coordinators readable while
+            # the typed coordinator projection is adopted everywhere.
+            legacy_pending = getattr(lifecycle, "has_pending_generated_restart", None)
+            if callable(legacy_pending) and legacy_pending(function_ea):
+                return True
+            return None
+
+        # Evidence rebinding retains its existing four-follow-up budget. Poison
+        # recovery is a separate, explicit one-follow-up budget: it is never
+        # folded into the evidence loop and never routed through MERR_REDO.
+        while True:
+            if not recovery_mode:
+                self.prepare_native_preanalysis(function_ea)
             from d810.optimizers.microcode.flow.jumps.computed_goto_resolver import (
                 acquire_detached_call_stack_capacity_witness,
             )
 
-            session = self.decompilation_lifecycle.current_session(function_ea)
+            session = lifecycle.current_session(function_ea)
             stage_c_collector = None
             if session is not None and self._stage_c_collection_enabled(function_ea):
                 from d810.manager.native_cfg_normalization import (
@@ -929,7 +954,7 @@ class D810Manager:
                 session.native_cfg_collector = stage_c_collector
             capacity_witness_lease = (
                 None
-                if session is None
+                if session is None or recovery_mode
                 else acquire_detached_call_stack_capacity_witness(session)
             )
             # Native preanalysis may generate top-level or snippet cfuncs while
@@ -951,24 +976,85 @@ class D810Manager:
                     and session.native_cfg_collector is stage_c_collector
                 ):
                     session.native_cfg_collector = None
-            if self.decompilation_lifecycle.has_exhausted_poison_restart(function_ea):
+            if lifecycle.has_exhausted_poison_restart(function_ea):
+                if stage_c_collector is not None:
+                    stage_c_collector.close()
                 raise RuntimeError(
                     "native preanalysis poison restart exhausted for "
                     f"0x{function_ea:X}; refusing poisoned output"
                 )
-            if not self.decompilation_lifecycle.has_pending_generated_restart(
-                function_ea
-            ):
+            receipt = pending_restart()
+            if receipt is None:
                 if stage_c_collector is not None:
                     final_stage_c_collection = (stage_c_collector, result)
                 break
+
+            if recovery_mode:
+                if stage_c_collector is not None:
+                    stage_c_collector.close()
+                raise RuntimeError(
+                    "native preanalysis recovery decompile requested another "
+                    f"restart for 0x{function_ea:X}"
+                )
+
+            if (
+                getattr(receipt, "kind", None)
+                is GeneratedRestartKind.POISON_RECOVERY
+            ):
+                if poison_recovery_retries >= _MAX_POISON_RECOVERY_RETRIES:
+                    if stage_c_collector is not None:
+                        stage_c_collector.close()
+                    raise RuntimeError(
+                        "native preanalysis poison restart budget exhausted with "
+                        f"a restart still pending for 0x{function_ea:X}"
+                    )
+                consume = getattr(lifecycle, "consume_generated_restart", None)
+                if not callable(consume):
+                    if stage_c_collector is not None:
+                        stage_c_collector.close()
+                    raise RuntimeError(
+                        "native preanalysis poison restart has no manager consumer"
+                    )
+                consumed = consume(
+                    function_ea,
+                    consumer=GeneratedRestartConsumer.MANAGER,
+                )
+                if consumed is None:
+                    if stage_c_collector is not None:
+                        stage_c_collector.close()
+                    raise RuntimeError(
+                        "native preanalysis poison restart was not consumed by manager"
+                    )
+                poison_recovery_retries += 1
+                recovery_mode = True
+                if stage_c_collector is not None:
+                    stage_c_collector.close()
+                continue
+
+            # The legacy boolean fallback above has no kind and therefore
+            # remains an evidence-rebind retry. Typed receipts must be
+            # evidence-owned here; the manager never consumes them.
+            if evidence_rebind_retries >= _MAX_EVIDENCE_REBIND_RETRIES:
+                if stage_c_collector is not None:
+                    stage_c_collector.close()
+                raise RuntimeError(
+                    "native preanalysis restart budget exhausted: "
+                    "evidence-rebind budget exhausted with "
+                    f"a restart still pending for 0x{function_ea:X}"
+                )
+            if (
+                getattr(receipt, "kind", GeneratedRestartKind.EVIDENCE_REBIND)
+                is not GeneratedRestartKind.EVIDENCE_REBIND
+            ):
+                if stage_c_collector is not None:
+                    stage_c_collector.close()
+                raise RuntimeError(
+                    "native preanalysis restart has an unsupported lifecycle kind "
+                    f"for 0x{function_ea:X}"
+                )
+            evidence_rebind_retries += 1
             if stage_c_collector is not None:
                 stage_c_collector.close()
-        else:
-            raise RuntimeError(
-                "native preanalysis generated-restart budget exhausted with "
-                f"a restart still pending for 0x{function_ea:X}"
-            )
         if final_stage_c_collection is not None:
             stage_c_collector, stage_c_result = final_stage_c_collection
             try:

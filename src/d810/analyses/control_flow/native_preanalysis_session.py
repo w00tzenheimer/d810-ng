@@ -1172,6 +1172,13 @@ class EvidenceLifecycleTransition:
     evidence_family: str
     outcome: str
     reason: str
+    restart_kind: str | None = None
+    requester: str | None = None
+    consumer: str | None = None
+    evidence_generation_before: int | None = None
+    evidence_generation_after: int | None = None
+    native_inputs_changed: bool | None = None
+    recovery_mode: str | None = None
 
 
 class GeneratedRestartKind(Enum):
@@ -1901,6 +1908,13 @@ class NativePreanalysisSessionState:
         evidence_family: str,
         outcome: str = "accepted",
         reason: str = "",
+        restart_kind: GeneratedRestartKind | None = None,
+        requester: str | None = None,
+        consumer: GeneratedRestartConsumer | None = None,
+        evidence_generation_before: int | None = None,
+        evidence_generation_after: int | None = None,
+        native_inputs_changed: bool | None = None,
+        recovery_mode: str | None = None,
     ) -> None:
         observer = self.event_observer
         if observer is None:
@@ -1914,6 +1928,15 @@ class NativePreanalysisSessionState:
                     evidence_family=evidence_family,
                     outcome=outcome,
                     reason=reason,
+                    restart_kind=(
+                        None if restart_kind is None else restart_kind.value
+                    ),
+                    requester=requester,
+                    consumer=None if consumer is None else consumer.value,
+                    evidence_generation_before=evidence_generation_before,
+                    evidence_generation_after=evidence_generation_after,
+                    native_inputs_changed=native_inputs_changed,
+                    recovery_mode=recovery_mode,
                 )
             )
         except Exception:
@@ -3150,6 +3173,13 @@ class NativePreanalysisSessionState:
                     f"{reason}; poison recovery receipt remains pending for "
                     f"evidence generation {generation}"
                 ),
+                restart_kind=GeneratedRestartKind.POISON_RECOVERY,
+                requester="native_preanalysis",
+                consumer=GeneratedRestartConsumer.MANAGER,
+                evidence_generation_before=generation,
+                evidence_generation_after=generation,
+                native_inputs_changed=False,
+                recovery_mode="fresh_decompile",
             )
             return False
         if not self.request_controlled_redo():
@@ -3161,6 +3191,13 @@ class NativePreanalysisSessionState:
                 reason=(
                     f"{reason}; evidence generation already owns a controlled redo"
                 ),
+                restart_kind=GeneratedRestartKind.EVIDENCE_REBIND,
+                requester="native_preanalysis",
+                consumer=GeneratedRestartConsumer.FLOWCHART,
+                evidence_generation_before=generation,
+                evidence_generation_after=generation,
+                native_inputs_changed=False,
+                recovery_mode="merr_redo",
             )
             return False
         self._pending_generated_restart = GeneratedRestartReceipt(
@@ -3174,6 +3211,13 @@ class NativePreanalysisSessionState:
             previous_generation=generation,
             evidence_family=evidence_family,
             reason=reason,
+            restart_kind=GeneratedRestartKind.EVIDENCE_REBIND,
+            requester="native_preanalysis",
+            consumer=GeneratedRestartConsumer.FLOWCHART,
+            evidence_generation_before=generation,
+            evidence_generation_after=generation,
+            native_inputs_changed=False,
+            recovery_mode="merr_redo",
         )
         return True
 
@@ -3200,6 +3244,13 @@ class NativePreanalysisSessionState:
                     if self.has_pending_generated_restart
                     else "distinct poison incident exhausted the generation retry"
                 ),
+                restart_kind=GeneratedRestartKind.POISON_RECOVERY,
+                requester="native_preanalysis",
+                consumer=GeneratedRestartConsumer.MANAGER,
+                evidence_generation_before=generation,
+                evidence_generation_after=generation,
+                native_inputs_changed=False,
+                recovery_mode="fresh_decompile",
             )
             return False
         self.poisoned_restart_generation = generation
@@ -3214,6 +3265,13 @@ class NativePreanalysisSessionState:
             previous_generation=generation,
             evidence_family="poisoned_generation_restart",
             reason=reason,
+            restart_kind=GeneratedRestartKind.POISON_RECOVERY,
+            requester="native_preanalysis",
+            consumer=GeneratedRestartConsumer.MANAGER,
+            evidence_generation_before=generation,
+            evidence_generation_after=generation,
+            native_inputs_changed=False,
+            recovery_mode="fresh_decompile",
         )
         return True
 
@@ -3242,6 +3300,17 @@ class NativePreanalysisSessionState:
                     f"{consumer.value} cannot consume "
                     f"{receipt.kind.value} generated-MBA restart"
                 ),
+                restart_kind=receipt.kind,
+                requester="native_preanalysis",
+                consumer=consumer,
+                evidence_generation_before=int(self.evidence_generation),
+                evidence_generation_after=int(self.evidence_generation),
+                native_inputs_changed=False,
+                recovery_mode=(
+                    "merr_redo"
+                    if receipt.kind is GeneratedRestartKind.EVIDENCE_REBIND
+                    else "fresh_decompile"
+                ),
             )
             return None
         generation = int(self.evidence_generation)
@@ -3255,6 +3324,17 @@ class NativePreanalysisSessionState:
                 "flowchart consumed the staged generated-MBA restart"
                 if consumer is GeneratedRestartConsumer.FLOWCHART
                 else "manager consumed the staged poisoned-generation restart"
+            ),
+            restart_kind=receipt.kind,
+            requester="native_preanalysis",
+            consumer=consumer,
+            evidence_generation_before=generation,
+            evidence_generation_after=generation,
+            native_inputs_changed=False,
+            recovery_mode=(
+                "merr_redo"
+                if receipt.kind is GeneratedRestartKind.EVIDENCE_REBIND
+                else "fresh_decompile"
             ),
         )
         return receipt

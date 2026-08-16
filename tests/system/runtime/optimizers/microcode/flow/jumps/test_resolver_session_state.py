@@ -25,6 +25,7 @@ from d810.analyses.control_flow.native_preanalysis_session import (
     BootstrapRouteProofKind,
     CallResultCarrier,
     ComputedGotoResolution,
+    GeneratedRestartKind,
     NativePreanalysisFacts,
     NativePreanalysisSessionState,
     PreoptUnionPreparationResult,
@@ -425,11 +426,77 @@ def test_generated_restart_is_staged_once_then_consumed_by_flowchart(
     assert decision["request_redo"] is True
     assert redo == [
         (
-            "computed_goto_calls_evidence_rebind",
+            "test_evidence_evidence_rebind",
             {"function_ea": 0x40D200, "evidence_generation": 3},
         )
     ]
     assert not state.native_preanalysis.has_pending_generated_restart
+
+
+def test_flowchart_consumes_only_evidence_receipts_and_preserves_poison(
+    monkeypatch,
+) -> None:
+    import d810.optimizers.microcode.flow.jumps.computed_goto_resolver as resolver
+
+    session = SimpleNamespace(
+        native_preanalysis=NativePreanalysisSessionState(evidence_generation=7),
+        resolver_attachment=None,
+        native_key=NATIVE_KEY,
+    )
+    state = resolver_session_state(session)
+    redo: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        resolver,
+        "request_hexrays_redo",
+        lambda decision, reason, **details: (
+            decision.__setitem__("request_redo", True),
+            redo.append((reason, details)),
+        ),
+    )
+
+    assert state.native_preanalysis.request_generated_restart(
+        evidence_family="bootstrap_routes",
+        reason="bind bootstrap evidence",
+    )
+    evidence_decision = {"session": session, "request_redo": False}
+    _on_flowchart_preanalysis(
+        function_ea=0x40D200,
+        mba=object(),
+        decision=evidence_decision,
+    )
+
+    assert evidence_decision["request_redo"] is True
+    assert redo == [
+        (
+            "bootstrap_routes_evidence_rebind",
+            {"function_ea": 0x40D200, "evidence_generation": 7},
+        )
+    ]
+    assert not state.native_preanalysis.has_pending_generated_restart
+
+    state.materialized = True
+    assert state.native_preanalysis.request_poisoned_generation_restart(
+        reason="discard poisoned generated MBA",
+    )
+    poison_decision = {"session": session, "request_redo": False}
+    _on_flowchart_preanalysis(
+        function_ea=0x40D200,
+        mba=object(),
+        decision=poison_decision,
+    )
+
+    assert poison_decision["request_redo"] is False
+    assert state.native_preanalysis.pending_generated_restart is not None
+    assert (
+        state.native_preanalysis.pending_generated_restart.kind
+        is GeneratedRestartKind.POISON_RECOVERY
+    )
+    assert redo == [
+        (
+            "bootstrap_routes_evidence_rebind",
+            {"function_ea": 0x40D200, "evidence_generation": 7},
+        )
+    ]
 
 
 def test_call_companion_requests_are_portable_monotonic_and_acknowledged() -> None:
@@ -611,7 +678,7 @@ def test_callinfo_transfer_stages_one_controller_restart_and_rebinds_next_genera
     assert flowchart_decision["request_redo"] is True
     assert redo == [
         (
-            "computed_goto_calls_evidence_rebind",
+            "materialized_transfers_evidence_rebind",
             {"function_ea": function_ea, "evidence_generation": 2},
         )
     ]
