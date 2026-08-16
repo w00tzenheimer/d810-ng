@@ -7,8 +7,15 @@ from types import SimpleNamespace
 import ida_hexrays
 import pytest
 
+from d810.analyses.control_flow.transition_builder import (
+    StateHandler,
+    TransitionResult,
+)
 from d810.backends.hexrays.evidence.bad_while_loop_dependency_diagnostics import (
     build_bad_while_loop_dependency_diagnostic,
+)
+from d810.backends.hexrays.evidence.flattening.dynamic_state_transition_recovery import (
+    recover_dynamic_state_write_transitions,
 )
 from d810.evaluator.hexrays_microcode import (
     definition_rescue_backend as definition_backend_module,
@@ -55,6 +62,17 @@ def _dynamic_mba():
     return SimpleNamespace(
         qty=1,
         get_mblock=lambda serial: block if int(serial) == 0 else None,
+    )
+
+
+def _dynamic_transition_result() -> TransitionResult:
+    return TransitionResult(
+        handlers={
+            0x10: StateHandler(state_value=0x10, check_block=0),
+            0x20: StateHandler(state_value=0x20, check_block=1),
+        },
+        transitions=[],
+        strategy_name="test_dynamic_state_write",
     )
 
 
@@ -159,3 +177,87 @@ def test_nonconverged_overlay_stops_definition_and_dynamic_rescue(
     # Direct backend projection, definition diagnostics, and dynamic-state
     # resolver each reached the public SCCP gate exactly once.
     assert sccp_requests == [mba, mba, mba]
+
+
+@pytest.mark.parametrize("status", NON_CONVERGED_STATUSES)
+def test_nonconverged_dynamic_recovery_does_not_append_transitions(
+    monkeypatch: pytest.MonkeyPatch,
+    status: SccpStatus,
+) -> None:
+    """The real dynamic consumer preserves handlers when SCCP has no proof."""
+
+    mba = _dynamic_mba()
+    initial = _dynamic_transition_result()
+    result = SccpResult.empty(
+        status=status,
+        program_fingerprint=f"dynamic-{status.value}",
+        fallback_reason="test non-convergence",
+    )
+    sccp_requests: list[object] = []
+
+    def run_sccp_ex(current_mba: object) -> SccpResult:
+        sccp_requests.append(current_mba)
+        return result
+
+    monkeypatch.setenv("D810_FOLD_CROSS_BLOCK", "1")
+    monkeypatch.setattr(sccp_module, "run_sccp_ex", run_sccp_ex)
+
+    recovered = recover_dynamic_state_write_transitions(
+        mba=mba,
+        flow_graph=None,
+        transition_result=initial,
+        dispatcher_entry_serial=2,
+        state_var_stkoff=0x20,
+        known_states=(0x10, 0x20),
+    )
+
+    assert sccp_requests == [mba]
+    assert recovered.transitions == []
+    assert all(not handler.transitions for handler in recovered.handlers.values())
+    assert initial.transitions == []
+    assert all(not handler.transitions for handler in initial.handlers.values())
+    assert recovered.strategy_name == initial.strategy_name
+
+
+def test_converged_dynamic_recovery_reaches_append_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A converged cross-block constant reaches the real transition append."""
+
+    mba = _dynamic_mba()
+    initial = _dynamic_transition_result()
+    # Hand-derived get_mop_key(mop_S(size=4, off=0x24)) representation.
+    converged = SccpResult(
+        status=SccpStatus.CONVERGED,
+        constants={(ida_hexrays.mop_S, 4, 0x24): 0x20},
+        executable_edges=frozenset(),
+        reachable_blocks=frozenset(),
+        program_fingerprint="dynamic-converged",
+    )
+    sccp_requests: list[object] = []
+
+    def run_sccp_ex(current_mba: object) -> SccpResult:
+        sccp_requests.append(current_mba)
+        return converged
+
+    monkeypatch.setenv("D810_FOLD_CROSS_BLOCK", "1")
+    monkeypatch.setattr(sccp_module, "run_sccp_ex", run_sccp_ex)
+
+    recovered = recover_dynamic_state_write_transitions(
+        mba=mba,
+        flow_graph=None,
+        transition_result=initial,
+        dispatcher_entry_serial=2,
+        state_var_stkoff=0x20,
+        known_states=(0x10, 0x20),
+    )
+
+    assert sccp_requests == [mba]
+    assert len(recovered.transitions) == 1
+    transition = recovered.transitions[0]
+    assert transition.from_state == 0x10
+    assert transition.to_state == 0x20
+    assert transition.provenance_kind == "constant_folded_state_write"
+    assert len(recovered.handlers[0x10].transitions) == 1
+    assert initial.transitions == []
+    assert all(not handler.transitions for handler in initial.handlers.values())

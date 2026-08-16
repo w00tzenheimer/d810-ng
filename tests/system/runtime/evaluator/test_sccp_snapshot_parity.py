@@ -49,32 +49,41 @@ def _compiled_required() -> bool:
     return os.environ.get("D810_REQUIRE_COMPILED_SCCP") == "1"
 
 
-def _fixture_available(binary_name: str) -> bool:
-    current = idaapi.get_root_filename() or ""
-    if current and (binary_name in current or current.endswith(binary_name)):
-        return True
+def _fixture_input_path(binary_name: str) -> Path | None:
     root = Path(__file__).resolve().parents[4]
-    return any(
-        (root / relative / binary_name).is_file()
-        for relative in ("samples/bins", "tests/_resources/bin", "tests/system/bins")
-    )
+    for relative in ("samples/bins", "tests/_resources/bin", "tests/system/bins"):
+        candidate = root / relative / binary_name
+        if candidate.is_file():
+            return candidate
+    return None
 
 
-@pytest.fixture
+@pytest.fixture(scope="session", autouse=True)
 def compiled_sccp_runtime_prerequisite():
-    """Make required-mode fixture/plugin absence a failure, never a skip."""
+    """Fail required-mode setup before class fixtures can skip the test."""
 
     if not _compiled_required():
         return
     binary_name = _default_binary()
-    if not _fixture_available(binary_name):
+    fixture_path = _fixture_input_path(binary_name)
+    if fixture_path is None:
         pytest.fail(
             "D810_REQUIRE_COMPILED_SCCP=1 but the configured fixture is missing: "
             f"{binary_name}"
         )
-    if not idaapi.init_hexrays_plugin():
+    try:
+        compiled = importlib.import_module("d810.speedups.evaluator.c_sccp")
+    except Exception as exc:
         pytest.fail(
-            "D810_REQUIRE_COMPILED_SCCP=1 but the Hex-Rays runtime is unavailable"
+            "D810_REQUIRE_COMPILED_SCCP=1 but the compiled SCCP extension "
+            f"could not be imported: {exc}"
+        )
+    if not callable(getattr(compiled, "solve", None)):
+        pytest.fail("D810_REQUIRE_COMPILED_SCCP=1 but c_sccp.solve is not callable")
+    if not CythonMode().is_enabled():
+        pytest.fail(
+            "D810_REQUIRE_COMPILED_SCCP=1 but CythonMode is disabled; "
+            f"fixture={fixture_path}"
         )
 
 
