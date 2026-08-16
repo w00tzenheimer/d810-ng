@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from d810.core.pass_editor_spec import (
     AdvisoryTone,
+    FieldControlKind,
+    FieldEditorSpec,
     PassEditorSpec,
     TransformCost,
     TransformEditorSpec,
@@ -317,10 +319,27 @@ def _build_specs() -> tuple[TransformEditorSpec, ...]:
 
 MBA_TRANSFORM_SPECS = _build_specs()
 
+_MBA_SIMPLIFY_EDITOR_FIELDS = (
+    FieldEditorSpec(
+        field_id="generate_commutative_permutations",
+        label="Generate commutative permutations",
+        path=("generate_commutative_permutations",),
+        control=FieldControlKind.BOOLEAN,
+        default=True,
+        description=(
+            "Generate legacy commutative pattern variants for selected MBA "
+            "transforms. Disable when using residual Egglog routing."
+        ),
+    ),
+)
+
 
 def mba_transform_editor_spec() -> PassEditorSpec:
     """Return the fixed transform-catalog editor for ``mba-simplify``."""
-    return PassEditorSpec.transform_catalog(MBA_TRANSFORM_SPECS)
+    return PassEditorSpec.transform_catalog(
+        MBA_TRANSFORM_SPECS,
+        fields=_MBA_SIMPLIFY_EDITOR_FIELDS,
+    )
 
 
 __all__ = ["MBA_TRANSFORM_SPECS", "mba_transform_editor_spec"]

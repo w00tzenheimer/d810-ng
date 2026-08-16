@@ -433,8 +433,14 @@ class PassEditorSpec:
     def transform_catalog(
         cls,
         transforms: tuple[TransformEditorSpec, ...],
+        *,
+        fields: tuple[FieldEditorSpec, ...] = (),
     ) -> PassEditorSpec:
-        return cls(PassEditorKind.TRANSFORM_CATALOG, transforms=transforms)
+        return cls(
+            PassEditorKind.TRANSFORM_CATALOG,
+            fields=fields,
+            transforms=transforms,
+        )
 
     @classmethod
     def rule_catalog(

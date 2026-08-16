@@ -54,6 +54,20 @@ def test_hodur_complement_mask_is_registered_but_default_disabled() -> None:
     assert "Hodur" in item.description
 
 
+def test_mba_catalog_exposes_commutative_generation_as_a_boolean_option() -> None:
+    """Public config-v2 projects must be able to disable generated variants."""
+
+    catalog = _catalog_module()
+    field = next(
+        item
+        for item in catalog.mba_transform_editor_spec().fields
+        if item.path == ("generate_commutative_permutations",)
+    )
+
+    assert field.control is catalog.FieldControlKind.BOOLEAN
+    assert field.default is True
+
+
 @pytest.mark.parametrize("transform_id", ("mul-mba-2", "mul-mba-3"))
 def test_known_incorrect_mba_rules_remain_selectable_but_default_disabled(
     transform_id: str,
