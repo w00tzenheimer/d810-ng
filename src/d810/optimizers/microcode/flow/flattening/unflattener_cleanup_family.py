@@ -157,12 +157,16 @@ class SimpleFlatteningCleanupUnflattener(ComposedUnflatteningRule):
 
         resolver_state = self.current_resolver_session_state()
         native_preanalysis = getattr(resolver_state, "native_preanalysis", None)
-        if bool(getattr(native_preanalysis, "has_pending_generated_restart", False)):
+        if bool(
+            getattr(native_preanalysis, "has_pending_generated_restart", False)
+        ) or bool(
+            getattr(native_preanalysis, "is_poison_recovery_generation", False)
+        ):
             # A mutation or evidence callback has already requested a fresh
-            # GENERATED/PREOPT MBA.  The current graph is obsolete (and may be
-            # poisoned), so a second cleanup plan must not inspect or mutate it.
+            # GENERATED/PREOPT MBA, or this is the clean retry after a poison.
+            # A second cleanup plan must not inspect or mutate either graph.
             unflat_logger.info(
-                "Simple cleanup deferring mutation for staged restart at "
+                "Simple cleanup deferring mutation for restart recovery at "
                 "evidence generation %d",
                 int(getattr(native_preanalysis, "evidence_generation", 0)),
             )

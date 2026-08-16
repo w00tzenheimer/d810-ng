@@ -2989,6 +2989,11 @@ class NativePreanalysisSessionState:
         """Whether poison recurred after this evidence epoch's recovery retry."""
         return self.exhausted_poison_restart_generation == self.evidence_generation
 
+    @property
+    def is_poison_recovery_generation(self) -> bool:
+        """Whether this evidence epoch has already required poison recovery."""
+        return self.poisoned_restart_generation == self.evidence_generation
+
     def request_generated_restart(
         self,
         *,

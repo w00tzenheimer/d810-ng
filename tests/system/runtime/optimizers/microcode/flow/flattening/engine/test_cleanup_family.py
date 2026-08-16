@@ -371,6 +371,37 @@ def test_simple_cleanup_rule_abstains_while_generated_restart_is_pending() -> No
     assert calls == []
 
 
+def test_simple_cleanup_rule_abstains_during_consumed_poison_recovery() -> None:
+    """Do not replay the mutator that poisoned the regenerated live MBA."""
+    calls: list[str] = []
+
+    class _Family:
+        def detect(self, _mba: object) -> None:
+            calls.append("detect")
+            raise AssertionError("cleanup detection must not run during recovery")
+
+    native_preanalysis = NativePreanalysisSessionState(evidence_generation=7)
+    assert native_preanalysis.request_poisoned_generation_restart(
+        reason="post-observation reachability rejected"
+    )
+    assert native_preanalysis.consume_generated_restart()
+    assert not native_preanalysis.has_pending_generated_restart
+    resolver_state = SimpleNamespace(native_preanalysis=native_preanalysis)
+    flow_context = SimpleNamespace(
+        resolver_session_state=lambda: resolver_state,
+    )
+    mba = SimpleNamespace(
+        entry_ea=0x401000,
+        maturity=ida_hexrays.MMAT_GLBOPT1,
+    )
+    rule = SimpleFlatteningCleanupUnflattener()
+    rule._family = _Family()
+    rule.set_flow_context(flow_context)
+
+    assert rule.optimize(SimpleNamespace(mba=mba)) == 0
+    assert calls == []
+
+
 def test_live_cleanup_backend_wraps_existing_collectors(monkeypatch) -> None:
     fake_jump_fix = FakeJumpPredFix(fake_block=2, pred_block=5, new_target=10)
     single_iteration_fix = SingleIterationPredFix(
