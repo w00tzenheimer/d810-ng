@@ -138,8 +138,8 @@ class FunctionObservation:
 def _has_interior_incoming_ref(start_ea: int, end_ea: int) -> bool:
     """Whether anything branches *into* the region rather than to its head.
 
-    Mirrors the precondition retired-reference checks before overwriting a dispatcher
-    tail. IDA's xrefs are evidence rather than proof of complete incoming-edge
+    Requires the precondition used before overwriting a dispatcher tail. IDA's
+    xrefs are evidence rather than proof of complete incoming-edge
     knowledge, so a False here is a reason not to abstain, never a licence.
     """
     for ea in range(start_ea + 1, end_ea):

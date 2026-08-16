@@ -126,8 +126,8 @@ class TestEncodeJmpAbstention:
 class TestConditionInversion:
     """Inverting a predicate is XOR 1 over the low ``tttn`` nibble.
 
-    Mode A's stencil and retired-reference's compact-dispatcher rewrite both need the
-    inverse predicate to build a jump-over, so the encoder owns the operation
+    Mode A's stencil needs the inverse predicate to build a jump-over, so the
+    encoder owns the operation
     rather than leaving each caller to open-code ``condition ^ 1``.
     """
 

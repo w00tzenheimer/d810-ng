@@ -2,8 +2,9 @@
 
 The plan's review finding P1 ("There is no safe IDA/Hex-Rays apply point") was
 argued from the ``execute_sync`` contract rather than measured, and two shipping
-implementations contradict it -- d810's own computed-goto resolver and retired-reference
-both patch from the flowchart seam and return ``MERR_REDO``. This module replaces
+implementations contradict it -- d810's own computed-goto resolver and the
+native-patch strategy both patch from the flowchart seam and return ``MERR_REDO``.
+This module replaces
 the argument with numbers.
 
 Strategy A  patch inside ``hxe_flowchart``, return ``MERR_REDO``
@@ -112,7 +113,7 @@ class _FlowchartPatcher(ida_hexrays.Hexrays_Hooks):
 
     Records every invocation so re-entrancy is measured rather than assumed --
     the handler must not patch again on the rebuild it just requested, which is
-    the one-redo guard both d810 and retired-reference implement.
+    the one-redo guard required by both strategies.
     """
 
     def __init__(self, function_ea: int, patch_ea: int, data: bytes):

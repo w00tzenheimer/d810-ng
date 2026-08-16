@@ -473,7 +473,7 @@ def plan_conditional_region(
     second branch's displacement depends on the first branch's width.
 
     ``condition`` is the predicate under which ``true_target`` is taken. A
-    caller wanting retired-reference's jump-over shape passes ``condition.inverted()``
+    caller wanting the jump-over shape passes ``condition.inverted()``
     and swaps the targets; this function does not infer that intent.
     """
     size = _region_size(start_ea, end_ea)
