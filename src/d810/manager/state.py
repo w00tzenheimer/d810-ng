@@ -209,6 +209,8 @@ class D810State(metaclass=SingletonMeta):
             "capture_post_file": "D810_CAPTURE_POST_FILE",
             "fact_lifecycle": "D810_FACT_LIFECYCLE",
             "trace_decompile_callers": "D810_TRACE_DECOMPILE_CALLERS",
+            "native_perf": "D810_NATIVE_PERF",
+            "nomut_matching": "D810_NOMUT_MATCHING",
         }
         missing = object()
         overrides = {}

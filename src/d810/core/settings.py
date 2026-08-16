@@ -5,8 +5,8 @@ Replaces scattered ``os.environ.get("D810_*")`` calls with a single
 ``get_settings()`` call, seeded from environment variables, and can be
 overridden at runtime via ``configure_settings(**overrides)``.
 
-Phase 1 covers 6 diagnostic env vars.  Later phases will migrate the
-remaining ~25 env vars here.
+Phase 1 covers diagnostic env vars and the developer runtime controls. Later
+phases will migrate the remaining ~25 env vars here.
 """
 
 from __future__ import annotations
@@ -117,6 +117,13 @@ class D810Settings:
     retaining exact mutations and failures. ``full`` persists every callback.
     """
 
+    # -- Developer runtime controls --
+    native_perf: bool = False
+    """Emit native performance receipts (D810_NATIVE_PERF)."""
+
+    nomut_matching: bool = False
+    """Use non-mutating pattern matching (D810_NOMUT_MATCHING)."""
+
     @classmethod
     def _from_env(cls) -> D810Settings:
         return cls(
@@ -137,6 +144,8 @@ class D810Settings:
                 _env_str("D810_EXECUTION_CALLBACK_DETAIL", "summary"),
                 source="D810_EXECUTION_CALLBACK_DETAIL",
             ),
+            native_perf=_env_bool("D810_NATIVE_PERF"),
+            nomut_matching=_env_bool("D810_NOMUT_MATCHING"),
         )
 
 

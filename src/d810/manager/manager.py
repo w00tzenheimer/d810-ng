@@ -2631,7 +2631,7 @@ class D810Manager:
                 "session_id": str(getattr(event, "session_id", "")),
             }
         )
-        native_perf.configure_from_env()
+        native_perf.configure(get_settings().native_perf)
         if native_perf.enabled():
             self._ensure_native_perf_providers()
         self.start_profiling(event)

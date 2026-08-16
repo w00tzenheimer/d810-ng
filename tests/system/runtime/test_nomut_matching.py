@@ -20,6 +20,7 @@ from d810.optimizers.microcode.instructions.pattern_matching import (
     handler as pattern_handler,
 )
 from d810.core.stats import OptimizationStatistics
+from d810.core.settings import reset_settings
 from d810.backends.mba.ida import IDAPatternAdapter
 from d810.mba.provider_outcome import ProviderOutcomeStatus
 
@@ -32,6 +33,7 @@ class TestNomutMatchingHotPath:
         # Clear any existing env var
         monkeypatch.delenv("D810_NOMUT_MATCHING", raising=False)
         monkeypatch.delenv("D810_LEGACY_STORAGE", raising=False)
+        reset_settings()
 
         optimizer = PatternOptimizer(
             maturities=[],
@@ -45,6 +47,7 @@ class TestNomutMatchingHotPath:
         """Verify D810_NOMUT_MATCHING=0 disables nomut matching."""
         monkeypatch.setenv("D810_NOMUT_MATCHING", "0")
         monkeypatch.delenv("D810_LEGACY_STORAGE", raising=False)
+        reset_settings()
 
         optimizer = PatternOptimizer(
             maturities=[],
@@ -58,6 +61,7 @@ class TestNomutMatchingHotPath:
         """Verify D810_NOMUT_MATCHING=1 enables nomut matching."""
         monkeypatch.setenv("D810_NOMUT_MATCHING", "1")
         monkeypatch.delenv("D810_LEGACY_STORAGE", raising=False)
+        reset_settings()
 
         optimizer = PatternOptimizer(
             maturities=[],
@@ -67,11 +71,31 @@ class TestNomutMatchingHotPath:
 
         assert optimizer._use_nomut_matching is True
 
+    def test_nomut_matching_enabled_from_runtime_setting(self, monkeypatch):
+        """A configured runtime setting selects non-mutating matching."""
+        from d810.core.settings import configure_settings, reset_settings
+
+        monkeypatch.delenv("D810_NOMUT_MATCHING", raising=False)
+        monkeypatch.delenv("D810_LEGACY_STORAGE", raising=False)
+        reset_settings()
+        configure_settings(nomut_matching=True)
+
+        try:
+            optimizer = PatternOptimizer(
+                maturities=[],
+                stats=None,
+                log_dir=None,
+            )
+            assert optimizer._use_nomut_matching is True
+        finally:
+            reset_settings()
+
     def test_nomut_matching_requires_indexed_storage(self, monkeypatch):
         """Verify nomut only activates when not using legacy storage."""
         # Enable nomut but force legacy storage
         monkeypatch.setenv("D810_NOMUT_MATCHING", "1")
         monkeypatch.setenv("D810_LEGACY_STORAGE", "1")
+        reset_settings()
 
         optimizer = PatternOptimizer(
             maturities=[],
@@ -90,6 +114,7 @@ class TestNomutMatchingHotPath:
         """Verify _match_bindings is created at init."""
         monkeypatch.delenv("D810_NOMUT_MATCHING", raising=False)
         monkeypatch.delenv("D810_LEGACY_STORAGE", raising=False)
+        reset_settings()
 
         optimizer = PatternOptimizer(
             maturities=[],
@@ -107,6 +132,7 @@ class TestNomutMatchingHotPath:
         """Verify legacy path is active when nomut is disabled."""
         monkeypatch.setenv("D810_NOMUT_MATCHING", "0")
         monkeypatch.delenv("D810_LEGACY_STORAGE", raising=False)
+        reset_settings()
 
         optimizer = PatternOptimizer(
             maturities=[],
@@ -123,6 +149,7 @@ class TestNomutMatchingHotPath:
         """Verify nomut path is active when explicitly enabled with indexed storage."""
         monkeypatch.setenv("D810_NOMUT_MATCHING", "1")
         monkeypatch.delenv("D810_LEGACY_STORAGE", raising=False)
+        reset_settings()
 
         optimizer = PatternOptimizer(
             maturities=[],
@@ -552,6 +579,7 @@ def test_direct_catalogue_outer_rejection_keeps_candidate_non_applied():
         # Test case 1: Default (nomut OFF, indexed storage)
         monkeypatch.delenv("D810_NOMUT_MATCHING", raising=False)
         monkeypatch.delenv("D810_LEGACY_STORAGE", raising=False)
+        reset_settings()
         opt1 = PatternOptimizer(maturities=[], stats=None, log_dir=None)
         assert opt1._use_nomut_matching is False
         assert opt1._use_legacy_storage is False
@@ -559,6 +587,7 @@ def test_direct_catalogue_outer_rejection_keeps_candidate_non_applied():
         # Test case 2: Nomut ON, indexed storage (opt-in fast path)
         monkeypatch.setenv("D810_NOMUT_MATCHING", "1")
         monkeypatch.delenv("D810_LEGACY_STORAGE", raising=False)
+        reset_settings()
         opt2 = PatternOptimizer(maturities=[], stats=None, log_dir=None)
         assert opt2._use_nomut_matching is True
         assert opt2._use_legacy_storage is False
@@ -566,6 +595,7 @@ def test_direct_catalogue_outer_rejection_keeps_candidate_non_applied():
         # Test case 3: Nomut ON, legacy storage (nomut disabled by legacy check)
         monkeypatch.setenv("D810_NOMUT_MATCHING", "1")
         monkeypatch.setenv("D810_LEGACY_STORAGE", "1")
+        reset_settings()
         opt3 = PatternOptimizer(maturities=[], stats=None, log_dir=None)
         assert opt3._use_nomut_matching is True  # Flag set
         assert opt3._use_legacy_storage is True  # But legacy storage takes precedence
@@ -575,6 +605,7 @@ def test_direct_catalogue_outer_rejection_keeps_candidate_non_applied():
         # Test case 4: Both disabled (full legacy path)
         monkeypatch.setenv("D810_NOMUT_MATCHING", "0")
         monkeypatch.setenv("D810_LEGACY_STORAGE", "1")
+        reset_settings()
         opt4 = PatternOptimizer(maturities=[], stats=None, log_dir=None)
         assert opt4._use_nomut_matching is False
         assert opt4._use_legacy_storage is True
