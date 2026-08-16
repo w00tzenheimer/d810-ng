@@ -156,6 +156,43 @@ def test_negative_coefficient_lowering_preserves_raw_native_provenance(ast_facto
     ) is not None
 
 
+def test_ac_reordering_retains_a_moved_exact_raw_subtree():
+    x = _leaf("x", 1)
+    y = _leaf("y", 2)
+    z = _leaf("z", 3)
+    nested = _node(ida_hexrays.m_xor, x, y)
+    source = _node(ida_hexrays.m_xor, z, nested)
+
+    lowering = lower_hexrays_island(source, destination_size=4)
+
+    assert lowering.term is not None
+    assert lowering.term.operation == "xor"
+    assert lowering.term.children[0].operation == "xor"
+    assert lowering.native_nodes_by_path[(0,)] is nested
+    assert lowering.raw_native_nodes_by_path[(1,)] is nested
+
+
+def test_ac_rebracketing_leaves_a_new_internal_group_unmapped():
+    x = _leaf("x", 1)
+    y = _leaf("y", 2)
+    z = _leaf("z", 3)
+    nested = _node(ida_hexrays.m_xor, y, z)
+    source = _node(ida_hexrays.m_xor, x, nested)
+
+    lowering = lower_hexrays_island(source, destination_size=4)
+
+    assert lowering.term is not None
+    assert lowering.term.children[0].operation == "xor"
+    assert lowering.term.children[0].children[0].leaf_key == (
+        "mop",
+        ida_hexrays.mop_r,
+        4,
+        1,
+    )
+    assert (0,) not in lowering.native_nodes_by_path
+    assert lowering.raw_native_nodes_by_path[(1,)] is nested
+
+
 @pytest.mark.parametrize(
     ("opcode_name", "has_right"),
     (
