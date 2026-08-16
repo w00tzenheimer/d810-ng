@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 """Global forward constant-propagation of stack / frame variables and registers.
 
 This pass is a *function-level* optimisation implemented as a
@@ -11,6 +9,9 @@ those constants back into the micro-code.
 Compared with the former peephole rule this implementation is
 function-wide and therefore safe at control-flow merge points.
 """
+
+from __future__ import annotations
+
 import weakref
 
 import idaapi
@@ -36,9 +37,6 @@ from d810.optimizers.microcode.flow.handler import (
     FlowRulePriority,
 )
 from d810.optimizers.microcode.handler import ConfigParam
-
-logger = getLogger(__name__)
-
 from d810.ir.lattice import (
     BOTTOM,
     TOP,
@@ -47,6 +45,8 @@ from d810.ir.lattice import (
     LatticeMeet,
     LatticeValue,
 )
+
+logger = getLogger(__name__)
 
 ConstMap = LatticeEnv  # backward-compat alias
 
@@ -72,6 +72,13 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
     CONFIG_SCHEMA = FlowOptimizationRule.CONFIG_SCHEMA + (
         ConfigParam(
             "cython_enabled", bool, False, "Use Cython fast path for propagation"
+        ),
+        ConfigParam(
+            "sccp_overlay",
+            str,
+            "auto",
+            "SCCP overlay policy",
+            choices=("on", "off", "auto"),
         ),
     )
 
@@ -140,6 +147,7 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
             weakref.WeakKeyDictionary()
         )  # mba -> (maturity, generation)
         self.cython_enabled = CythonMode().is_enabled()
+        self.sccp_overlay = "auto"
         self._meet_strategy: MeetStrategy = meet_strategy or LatticeMeet(
             default_missing=TOP
         )
@@ -152,6 +160,9 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
     def configure(self, kwargs):
         super().configure(kwargs)
         self.cython_enabled = kwargs.get("cython_enabled", CythonMode().is_enabled())
+        self.sccp_overlay = kwargs.get("sccp_overlay", "auto")
+        if self.sccp_overlay not in ("on", "off", "auto"):
+            raise ValueError("sccp_overlay must be one of: on, off, auto")
 
     @typing.override
     def optimize(self, blk: ida_hexrays.mblock_t):
@@ -296,29 +307,47 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
         invalidates simple instruction list iterators.
 
         If Cython is enabled and available, delegates to a highly optimized
-        Cython implementation for better performance.
+        Cython implementation for better performance only when the explicit
+        SCCP policy does not require the shared rewrite path.  A requested
+        overlay must be merged by ``_slow_run_on_function``; the Cython full
+        pass has no SCCP overlay seam and therefore cannot authorize that
+        route.
         """
         if not self.cython_enabled:
             # Fallback to the slower, pure-Python implementation if Cython is disabled
             return self._slow_run_on_function(mba)
 
-        try:
-            from d810.analyses.data_flow.constant_prop_dataflow import (
-                _fast_dataflow,
-            )
+        # The Cython full pass is deliberately limited to the paths that do
+        # not request an SCCP overlay.  In particular, ``on`` and
+        # ``auto``-with-demand must use the shared slow path even when the
+        # extension is available.
+        if self.sccp_overlay == "off" or (
+            self.sccp_overlay == "auto" and not self._sccp_demand_present(mba)
+        ):
+            try:
+                total_changes = self._run_cython_full_pass(mba)
+            except (ImportError, AttributeError, TypeError):
+                logger.warning(
+                    "Cython module `_fast_dataflow` not found. Falling back to slow Python implementation."
+                )
+                self.cython_enabled = False
+                return self._slow_run_on_function(mba)
 
-            total_changes = _fast_dataflow.cy_run_full_pass(mba)
-        except (ImportError, AttributeError, TypeError):
-            logger.warning(
-                "Cython module `_fast_dataflow` not found. Falling back to slow Python implementation."
-            )
-            self.cython_enabled = False
-            return self._slow_run_on_function(mba)
+            if total_changes > 0:
+                safe_verify(mba, "rewriting", logger_func=logger.error)
 
-        if total_changes > 0:
-            safe_verify(mba, "rewriting", logger_func=logger.error)
+            return total_changes
 
-        return total_changes
+        # Unknown policy values are fail-closed here as well.  ``configure``
+        # rejects them, but a direct attribute assignment must not silently
+        # authorize the overlay-free Cython path.
+        return self._slow_run_on_function(mba)
+
+    def _run_cython_full_pass(self, mba: ida_hexrays.mba_t) -> int:
+        """Run the overlay-free Cython dataflow/rewrite pass."""
+        from d810.analyses.data_flow.constant_prop_dataflow import _fast_dataflow
+
+        return _fast_dataflow.cy_run_full_pass(mba)
 
     def _run_dataflow(self, mba: ida_hexrays.mba_t):
         """Phase A - classic forward data-flow (GEN/KILL)."""
@@ -356,8 +385,11 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
         if not IN:
             return 0
 
-        # Try SCCP for MBA-aware constants (optional enhancement)
-        sccp_overlay = self._get_sccp_overlay(mba)
+        # Try SCCP for MBA-aware constants only after the classic fixpoint
+        # completed successfully.  ``_get_sccp_overlay`` returns an empty
+        # mapping for every unavailable or non-converged result, preserving
+        # the proof boundary before any rewrite scan starts.
+        sccp_overlay = self._requested_sccp_overlay(mba, IN)
 
         total_changes = 0
         # Phase B: Iterate over each block and apply optimizations until the
@@ -546,6 +578,109 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
         except Exception:
             return None
 
+    def _requested_sccp_overlay(
+        self,
+        mba: ida_hexrays.mba_t,
+        consts_by_block: dict,
+    ) -> typing.Optional[dict]:
+        """Return an SCCP overlay when the configured policy requests one.
+
+        ``consts_by_block`` is intentionally accepted at this boundary even
+        though demand discovery is conservative today.  The classic fixpoint
+        has already succeeded when this method is called; retaining that
+        explicit input keeps the ordering contract visible to future demand
+        refinements without letting the overlay run before the soundness gate.
+        """
+        del consts_by_block
+        if self.sccp_overlay == "off":
+            return None
+        if self.sccp_overlay == "auto" and not self._sccp_demand_present(mba):
+            return None
+        # Unknown values are fail-closed: configure() rejects them, while a
+        # direct assignment still takes the shared path rather than silently
+        # authorizing the overlay-free Cython pass.
+        return self._get_sccp_overlay(mba)
+
+    def _sccp_demand_present(self, mba: ida_hexrays.mba_t) -> bool:
+        """Conservatively detect supported unresolved operands without SCCP.
+
+        The scan is read-only.  Any malformed live object, missing field, or
+        cyclic instruction chain demands the shared path, because a false
+        negative would let the overlay-free Cython pass bypass SCCP.
+        """
+
+        def has_unresolved_operand(op: object, seen: set[int]) -> bool:
+            if op is None:
+                return False
+            try:
+                op_type = op.t
+            except Exception:
+                return True
+            if op_type in (ida_hexrays.mop_S, ida_hexrays.mop_r):
+                return True
+            if op_type == ida_hexrays.mop_d:
+                try:
+                    sub_ins = op.d
+                except Exception:
+                    return True
+                if sub_ins is None:
+                    return True
+                marker = id(sub_ins)
+                if marker in seen:
+                    return True
+                seen.add(marker)
+                try:
+                    return any(
+                        has_unresolved_operand(getattr(sub_ins, attr), seen)
+                        for attr in ("l", "r", "d")
+                    )
+                except Exception:
+                    return True
+            if op_type == ida_hexrays.mop_f:
+                try:
+                    args = op.f.args
+                except Exception:
+                    return True
+                try:
+                    return any(has_unresolved_operand(arg, seen) for arg in args)
+                except Exception:
+                    return True
+            return False
+
+        try:
+            qty = int(mba.qty)
+            if qty < 0:
+                return True
+            for block_index in range(qty):
+                block = mba.get_mblock(block_index)
+                if block is None:
+                    return True
+                ins = block.head
+                seen_instructions: set[int] = set()
+                while ins is not None:
+                    marker = id(ins)
+                    if marker in seen_instructions:
+                        return True
+                    seen_instructions.add(marker)
+                    if ins.opcode not in self.ALLOW_PROPAGATION_OPCODES:
+                        ins = ins.next
+                        continue
+                    # ``d`` is a destination for ordinary operations and must
+                    # not create demand.  m_call stores its arguments in d,
+                    # which _slow_process_operand can rewrite.
+                    slots = (
+                        ("l", "r", "d")
+                        if ins.opcode == ida_hexrays.m_call
+                        else ("l", "r")
+                    )
+                    for attr in slots:
+                        if has_unresolved_operand(getattr(ins, attr), set()):
+                            return True
+                    ins = ins.next
+        except Exception:
+            return True
+        return False
+
     def _merge_sccp_into_constmap(
         self,
         consts: ConstMap,
@@ -564,6 +699,8 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
         The merge scans the block's instructions to find ``mop_S`` / ``mop_r``
         operands, builds the ``mop_key`` for each, and checks the SCCP overlay.
         """
+        if not sccp_overlay:
+            return
         from d810.hexrays.expr.p_ast import get_mop_key
 
         ins = blk.head
