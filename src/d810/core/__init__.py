@@ -231,21 +231,39 @@ def temporary_mop_cache_policy(
     original_ast = MOP_TO_AST_CACHE.stats.configured_max_size
     primary_error: BaseException | None = None
     restoration_errors: list[BaseException] = []
+    restoration_warnings: list[str] = []
 
     def _restore_capacity(cache, original_capacity, cache_name: str) -> None:
-        """Restore one cache from its observed state, even after a failed write."""
+        """Restore one cache, retrying a transient failure from observed state."""
 
-        try:
-            current_capacity = cache.stats.configured_max_size
-            if current_capacity == original_capacity:
+        max_attempts = 2
+        last_error: BaseException | None = None
+        observed_capacity: object = "unavailable"
+        for attempt in range(max_attempts):
+            try:
+                observed_capacity = cache.stats.configured_max_size
+            except BaseException as exc:
+                observed_capacity = f"unavailable ({exc})"
+            try:
+                # Reconfigure even when the observed limit already matches:
+                # this call is also the cache entry/statistics reset boundary.
+                cache.reconfigure_capacity(original_capacity)
                 return
-            cache.reconfigure_capacity(original_capacity)
-        except BaseException as exc:
-            restoration_error = RuntimeError(
-                f"failed to restore {cache_name} cache capacity: {exc}"
-            )
-            restoration_error.__cause__ = exc
-            restoration_errors.append(restoration_error)
+            except BaseException as exc:
+                last_error = exc
+                if attempt + 1 < max_attempts:
+                    restoration_warnings.append(
+                        f"{cache_name} cache restore attempt {attempt + 1} "
+                        f"failed: {exc}"
+                    )
+                    continue
+
+        restoration_error = RuntimeError(
+            f"failed to restore {cache_name} cache capacity after "
+            f"{max_attempts} attempts (observed={observed_capacity}): {last_error}"
+        )
+        restoration_error.__cause__ = last_error
+        restoration_errors.append(restoration_error)
 
     try:
         try:
@@ -263,11 +281,15 @@ def temporary_mop_cache_policy(
         _restore_capacity(MOP_CONSTANT_CACHE, original_constant, "constant")
 
     if primary_error is not None:
+        for restoration_warning in restoration_warnings:
+            primary_error.add_note(restoration_warning)
         for restoration_error in restoration_errors:
             primary_error.add_note(str(restoration_error))
         raise primary_error
     if restoration_errors:
         primary_error = restoration_errors[0]
+        for restoration_warning in restoration_warnings:
+            primary_error.add_note(restoration_warning)
         for restoration_error in restoration_errors[1:]:
             primary_error.add_note(str(restoration_error))
         raise primary_error

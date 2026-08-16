@@ -667,15 +667,19 @@ class D810Manager:
     ctree_optimizer: CtreeOptimizerManager = dataclasses.field(init=False)
     hx_decompiler_hook: HexraysDecompilationHook = dataclasses.field(init=False)
     _started: bool = dataclasses.field(default=False, init=False)
-    _telemetry_lifecycle_stack: list[tuple[str, int, int]] = dataclasses.field(
-        default_factory=list,
-        init=False,
-        repr=False,
+    _telemetry_lifecycle_stack: list[tuple[str, object, str, int, int]] = (
+        dataclasses.field(
+            default_factory=list,
+            init=False,
+            repr=False,
+        )
     )
-    _telemetry_lifecycle_depth: dict[tuple[str, int, int], int] = dataclasses.field(
-        default_factory=dict,
-        init=False,
-        repr=False,
+    _telemetry_lifecycle_depth: dict[tuple[str, object, str, int, int], int] = (
+        dataclasses.field(
+            default_factory=dict,
+            init=False,
+            repr=False,
+        )
     )
     _preanalysis_runtime: typing.Any = dataclasses.field(default=None, init=False)
     _analysis_runtime: typing.Any = dataclasses.field(default=None, init=False)
@@ -2684,8 +2688,21 @@ class D810Manager:
     @staticmethod
     def _telemetry_lifecycle_key(
         event: DecompilationSessionEvent,
-    ) -> tuple[str, int, int]:
+    ) -> tuple[str, object, str, int, int]:
+        session_id = getattr(event, "session_id", None)
+        session_value = getattr(session_id, "value", None)
+        if isinstance(session_value, str) and session_value.strip():
+            identity_kind = "session"
+            identity_value: object = session_value
+        else:
+            # Older publishers may not carry a session_id.  Object identity is
+            # deliberately fail-closed: distinct legacy events cannot merge
+            # merely because their function/generation fields match.
+            identity_kind = "legacy"
+            identity_value = id(event)
         return (
+            identity_kind,
+            identity_value,
             str(event.database_identity),
             int(event.function_ea),
             int(event.top_level_epoch),
@@ -2693,7 +2710,10 @@ class D810Manager:
 
     def _telemetry_lifecycle_state(
         self,
-    ) -> tuple[list[tuple[str, int, int]], dict[tuple[str, int, int], int]]:
+    ) -> tuple[
+        list[tuple[str, object, str, int, int]],
+        dict[tuple[str, object, str, int, int], int],
+    ]:
         """Return lifecycle state, including compatibility instances made without init."""
 
         stack = getattr(self, "_telemetry_lifecycle_stack", None)

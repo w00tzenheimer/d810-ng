@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import logging
+from types import SimpleNamespace
 
 import pytest
 
 from d810.core import MOP_CONSTANT_CACHE, MOP_TO_AST_CACHE
 from d810.core.decompilation_session import DecompilationSessionEvent
+from d810.core.execution_journal import DecompilationSessionId
 from d810.evaluator.hexrays_microcode.sccp import sccp_session_stats
 import d810.manager.manager as manager_module
 
@@ -44,6 +46,9 @@ class _InstructionOptimizer:
     def reset_run_later_state(self) -> None:
         self._calls.record("instruction.run_later")
 
+    def remove(self) -> None:
+        self._calls.record("instruction.remove")
+
 
 class _BlockOptimizer:
     def __init__(self, calls: _CallLog) -> None:
@@ -61,6 +66,33 @@ class _BlockOptimizer:
     def report_perf_counters(self) -> None:
         self._calls.record("block.perf_report")
 
+    def remove(self) -> None:
+        self._calls.record("block.remove")
+
+
+class _Hook:
+    def __init__(self, calls: _CallLog) -> None:
+        self._calls = calls
+
+    def unhook(self) -> None:
+        self._calls.record("hook.unhook")
+
+
+class _EventEmitter:
+    def __init__(self, calls: _CallLog) -> None:
+        self._calls = calls
+
+    def clear(self) -> None:
+        self._calls.record("event.clear")
+
+
+class _StorageRuntime:
+    def __init__(self, calls: _CallLog) -> None:
+        self._calls = calls
+
+    def close(self) -> None:
+        self._calls.record("storage.close")
+
 
 class _LogHandler(logging.Handler):
     def __init__(self) -> None:
@@ -76,24 +108,38 @@ def _event(
     function_ea: int = 0x1000,
     database_identity: str = "runtime",
     top_level_epoch: int = 1,
+    session_id: DecompilationSessionId | None = None,
 ) -> DecompilationSessionEvent:
-    return DecompilationSessionEvent(
-        function_ea=function_ea,
-        database_identity=database_identity,
-        top_level_epoch=top_level_epoch,
-    )
+    kwargs = {
+        "function_ea": function_ea,
+        "database_identity": database_identity,
+        "top_level_epoch": top_level_epoch,
+    }
+    if session_id is not None:
+        kwargs["session_id"] = session_id
+    return DecompilationSessionEvent(**kwargs)
 
 
-def _manager(calls: _CallLog):
+def _manager(calls: _CallLog, *, started: bool = False):
     manager = object.__new__(manager_module.D810Manager)
     manager.stats = _OptimizationStats(calls)
     manager.instruction_optimizer = _InstructionOptimizer(calls)
     manager.block_optimizer = _BlockOptimizer(calls)
+    manager.hx_decompiler_hook = _Hook(calls)
     manager.start_profiling = lambda _event: calls.record("profiling.start")
     manager.stop_profiling = lambda _event=None: calls.record("profiling.stop")
     manager._start_timer = lambda: calls.record("timer.start")
     manager._stop_timer = lambda report=True: calls.record("timer.stop")
-    manager._started = False
+    manager._started = started
+    manager._native_preanalysis_handlers_installed = False
+    manager._analysis_runtime = None
+    manager._analysis_bundle = None
+    manager._native_patch_journal = None
+    manager._native_patch_execution_journal = None
+    manager._native_patch_gateway = None
+    manager._dead_edge_normalizer = None
+    manager.event_emitter = _EventEmitter(calls)
+    manager.function_storage_runtime = _StorageRuntime(calls)
     return manager
 
 
@@ -207,6 +253,55 @@ def test_out_of_order_and_duplicate_finish_do_not_wipe_active_state() -> None:
     assert calls.events.count("profiling.stop") == 1
 
 
+def test_late_finish_from_stopped_generation_cannot_finish_new_generation() -> None:
+    calls = _CallLog()
+    manager = _manager(calls, started=True)
+    session_a = DecompilationSessionId("session-a")
+    session_b = DecompilationSessionId("session-b")
+    event_a = _event(session_id=session_a)
+    event_b = _event(session_id=session_b)
+
+    manager._on_session_started(event_a)
+    manager.stop()
+    assert calls.events.count("profiling.stop") == 1
+
+    manager._on_session_started(event_b)
+    manager._on_session_finished(event_a)
+    assert calls.events.count("profiling.stop") == 1
+    assert len(manager._telemetry_lifecycle_stack) == 1
+
+    manager._on_session_finished(event_b)
+    assert calls.events.count("profiling.stop") == 2
+    assert not manager._telemetry_lifecycle_stack
+
+
+def test_missing_session_id_fails_closed_for_distinct_legacy_events() -> None:
+    calls = _CallLog()
+    manager = _manager(calls)
+    legacy_a = SimpleNamespace(
+        function_ea=0x1000,
+        database_identity="runtime",
+        top_level_epoch=1,
+    )
+    legacy_b = SimpleNamespace(
+        function_ea=0x1000,
+        database_identity="runtime",
+        top_level_epoch=1,
+        session_id=None,
+    )
+
+    manager._on_session_started(legacy_a)
+    manager._on_session_started(legacy_b)
+    assert len(manager._telemetry_lifecycle_depth) == 2
+    manager._on_session_finished(legacy_a)
+    assert calls.events.count("profiling.stop") == 0
+    assert len(manager._telemetry_lifecycle_stack) == 1
+
+    manager._on_session_finished(legacy_b)
+    assert calls.events.count("profiling.stop") == 1
+    assert not manager._telemetry_lifecycle_stack
+
+
 def test_finish_cleanup_continues_after_each_individual_failure() -> None:
     calls = _CallLog(
         {
@@ -217,8 +312,9 @@ def test_finish_cleanup_continues_after_each_individual_failure() -> None:
         }
     )
     manager = _manager(calls)
-    manager._on_session_started(_event())
-    manager._on_session_finished(_event())
+    event = _event()
+    manager._on_session_started(event)
+    manager._on_session_finished(event)
 
     assert {
         "profiling.stop",
@@ -241,8 +337,9 @@ def test_stats_collection_failure_still_releases_lifecycle(monkeypatch) -> None:
 
     monkeypatch.setattr(manager_module, "_session_telemetry_summary", fail_summary)
 
-    manager._on_session_started(_event())
-    manager._on_session_finished(_event())
+    event = _event()
+    manager._on_session_started(event)
+    manager._on_session_finished(event)
 
     assert calls.events.count("profiling.stop") == 1
     assert calls.events.count("optimization.report") == 1
@@ -260,8 +357,9 @@ def test_logging_failure_still_releases_lifecycle(monkeypatch) -> None:
 
     monkeypatch.setattr(manager_module.logger, "info", fail_logging)
 
-    manager._on_session_started(_event())
-    manager._on_session_finished(_event())
+    event = _event()
+    manager._on_session_started(event)
+    manager._on_session_finished(event)
 
     assert calls.events.count("profiling.stop") == 1
     assert calls.events.count("optimization.report") == 1
@@ -301,3 +399,24 @@ def test_stop_cleanup_continues_after_failures_and_recovers() -> None:
 
     manager._on_session_started(_event(top_level_epoch=2))
     assert calls.events.count("profiling.start") == 2
+
+
+def test_started_stop_clears_ownership_when_teardown_raises() -> None:
+    calls = _CallLog({"instruction.remove"})
+    manager = _manager(calls, started=True)
+    session_a = DecompilationSessionId("started-stop-a")
+    manager._on_session_started(_event(session_id=session_a))
+
+    with pytest.raises(RuntimeError, match="instruction.remove failed"):
+        manager.stop()
+
+    assert not manager.started
+    assert not manager._telemetry_lifecycle_stack
+    assert not manager._telemetry_lifecycle_depth
+    assert calls.events.count("profiling.stop") == 1
+
+    calls.failures.remove("instruction.remove")
+    session_b = DecompilationSessionId("started-stop-b")
+    manager._on_session_started(_event(top_level_epoch=2, session_id=session_b))
+    assert sccp_session_stats().requests == 0
+    manager._on_session_finished(_event(top_level_epoch=2, session_id=session_b))

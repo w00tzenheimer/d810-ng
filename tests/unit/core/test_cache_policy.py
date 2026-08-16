@@ -64,6 +64,52 @@ def test_nested_policy_restores_the_outer_limits() -> None:
     assert MOP_TO_AST_CACHE.stats.configured_max_size == 40960
 
 
+def test_same_capacity_policy_clears_at_entry_and_exit() -> None:
+    MOP_CONSTANT_CACHE["before"] = 1
+    MOP_TO_AST_CACHE["before"] = 1
+    MOP_CONSTANT_CACHE.lookup("before")
+    MOP_TO_AST_CACHE.lookup("before")
+
+    with temporary_mop_cache_policy(4096, 40960):
+        assert len(MOP_CONSTANT_CACHE) == 0
+        assert len(MOP_TO_AST_CACHE) == 0
+        assert MOP_CONSTANT_CACHE.stats.lookups == 0
+        assert MOP_TO_AST_CACHE.stats.lookups == 0
+        MOP_CONSTANT_CACHE["inside"] = 1
+        MOP_TO_AST_CACHE["inside"] = 1
+        MOP_CONSTANT_CACHE.lookup("inside")
+        MOP_TO_AST_CACHE.lookup("inside")
+
+    assert len(MOP_CONSTANT_CACHE) == 0
+    assert len(MOP_TO_AST_CACHE) == 0
+    assert MOP_CONSTANT_CACHE.stats.lookups == 0
+    assert MOP_TO_AST_CACHE.stats.lookups == 0
+
+
+def test_nested_same_capacity_policy_clears_at_each_boundary() -> None:
+    with temporary_mop_cache_policy(4096, 40960):
+        MOP_CONSTANT_CACHE["outer"] = 1
+        MOP_TO_AST_CACHE["outer"] = 1
+        MOP_CONSTANT_CACHE.lookup("outer")
+        MOP_TO_AST_CACHE.lookup("outer")
+
+        with temporary_mop_cache_policy(4096, 40960):
+            assert len(MOP_CONSTANT_CACHE) == 0
+            assert len(MOP_TO_AST_CACHE) == 0
+            MOP_CONSTANT_CACHE["inner"] = 1
+            MOP_TO_AST_CACHE["inner"] = 1
+
+        assert len(MOP_CONSTANT_CACHE) == 0
+        assert len(MOP_TO_AST_CACHE) == 0
+        assert MOP_CONSTANT_CACHE.stats.lookups == 0
+        assert MOP_TO_AST_CACHE.stats.lookups == 0
+
+    assert len(MOP_CONSTANT_CACHE) == 0
+    assert len(MOP_TO_AST_CACHE) == 0
+    assert MOP_CONSTANT_CACHE.stats.lookups == 0
+    assert MOP_TO_AST_CACHE.stats.lookups == 0
+
+
 def test_policy_restores_nondefault_configured_limits() -> None:
     MOP_CONSTANT_CACHE.reconfigure_capacity(7)
     MOP_TO_AST_CACHE.reconfigure_capacity(11)
@@ -205,6 +251,78 @@ def test_policy_preserves_body_error_when_second_restore_mutates_then_raises(
     assert raised.value.__notes__
     assert "AST restore failed" in raised.value.__notes__[0]
     assert MOP_TO_AST_CACHE.stats.configured_max_size == original_capacity
+
+
+def test_policy_retries_first_restore_failure_before_mutation(monkeypatch) -> None:
+    original_reconfigure = MOP_CONSTANT_CACHE.reconfigure_capacity
+    original_capacity = MOP_CONSTANT_CACHE.stats.configured_max_size
+    state = {"failed": False}
+
+    def fail_once_before_mutation(capacity: int) -> None:
+        if capacity == original_capacity and not state["failed"]:
+            state["failed"] = True
+            raise RuntimeError("transient constant restore failure")
+        original_reconfigure(capacity)
+
+    monkeypatch.setattr(
+        MOP_CONSTANT_CACHE,
+        "reconfigure_capacity",
+        fail_once_before_mutation,
+    )
+
+    with temporary_mop_cache_policy(17, 19):
+        pass
+
+    assert MOP_CONSTANT_CACHE.stats.configured_max_size == original_capacity
+    assert MOP_TO_AST_CACHE.stats.configured_max_size == 40960
+    assert MOP_CONSTANT_CACHE.stats.lookups == 0
+    assert MOP_TO_AST_CACHE.stats.lookups == 0
+
+
+def test_policy_retries_second_restore_failure_before_mutation(monkeypatch) -> None:
+    original_reconfigure = MOP_TO_AST_CACHE.reconfigure_capacity
+    original_capacity = MOP_TO_AST_CACHE.stats.configured_max_size
+    state = {"failed": False}
+
+    def fail_once_before_mutation(capacity: int) -> None:
+        if capacity == original_capacity and not state["failed"]:
+            state["failed"] = True
+            raise RuntimeError("transient AST restore failure")
+        original_reconfigure(capacity)
+
+    monkeypatch.setattr(
+        MOP_TO_AST_CACHE,
+        "reconfigure_capacity",
+        fail_once_before_mutation,
+    )
+
+    with temporary_mop_cache_policy(17, 19):
+        pass
+
+    assert MOP_CONSTANT_CACHE.stats.configured_max_size == 4096
+    assert MOP_TO_AST_CACHE.stats.configured_max_size == original_capacity
+    assert MOP_CONSTANT_CACHE.stats.lookups == 0
+    assert MOP_TO_AST_CACHE.stats.lookups == 0
+
+
+def test_policy_reports_restore_failure_without_body_error(monkeypatch) -> None:
+    original_reconfigure = MOP_CONSTANT_CACHE.reconfigure_capacity
+    original_capacity = MOP_CONSTANT_CACHE.stats.configured_max_size
+
+    def fail_restore(capacity: int) -> None:
+        if capacity == original_capacity:
+            raise RuntimeError("constant restore failed permanently")
+        original_reconfigure(capacity)
+
+    monkeypatch.setattr(MOP_CONSTANT_CACHE, "reconfigure_capacity", fail_restore)
+
+    with pytest.raises(RuntimeError, match="constant restore failed permanently"):
+        with temporary_mop_cache_policy(17, 19):
+            pass
+
+    assert MOP_CONSTANT_CACHE.stats.configured_max_size == 17
+    monkeypatch.undo()
+    MOP_CONSTANT_CACHE.reconfigure_capacity(original_capacity)
 
 
 @pytest.mark.parametrize("bad_capacity", [0, -1, True, 1.5])
