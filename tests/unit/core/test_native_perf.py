@@ -46,6 +46,8 @@ def test_provider_configuration_reset_and_snapshot_are_explicit():
         },
         "session_generation": 1,
         "session": {},
+        "lifecycle_depth": 0,
+        "lifecycle_errors": [],
         "clock": {
             "native_source": "std::chrono::steady_clock",
             "python_source": "time.perf_counter_ns",
@@ -99,6 +101,8 @@ def test_enabled_receipt_has_deterministic_json_schema(monkeypatch):
         },
         "session_generation": 0,
         "session": {},
+        "lifecycle_depth": 0,
+        "lifecycle_errors": [],
         "clock": {
             "native_source": "std::chrono::steady_clock",
             "python_source": "time.perf_counter_ns",
@@ -150,6 +154,33 @@ def test_provider_replacement_retires_previous_hot_path_callback():
 
     assert ("first", False) in events
     assert events[-1] == ("second", True)
+
+
+def test_failed_provider_retirement_remains_visible_after_successor_installation():
+    retired = {"enabled": False}
+
+    def first_configure(enabled: bool) -> None:
+        if enabled:
+            retired["enabled"] = True
+        elif retired["enabled"]:
+            raise RuntimeError("retirement boom")
+
+    native_perf.register_provider(
+        "same",
+        snapshot=lambda: {"backend": "first", "counters": {}},
+        configure=first_configure,
+    )
+    native_perf.configure(True)
+    native_perf.register_provider(
+        "same",
+        snapshot=lambda: {"backend": "second", "counters": {}},
+        configure=lambda _enabled: None,
+    )
+
+    report = native_perf.snapshot()
+    assert report["providers"]["same"]["backend"] == "second"
+    assert report["complete"] is False
+    assert "retire" in report["provider_errors"]["same"]
 
 
 def test_provider_callback_failures_are_reported_without_aborting_receipt():
@@ -206,3 +237,37 @@ def test_session_metadata_is_safe_and_receipt_generation_is_deterministic():
         "counter_domain": "native",
         "provider_version": 7,
     }
+
+
+def test_nested_sessions_reset_once_and_emit_one_outer_receipt():
+    resets: list[str] = []
+    native_perf.register_provider(
+        "nested",
+        snapshot=lambda: {"backend": "test", "counters": {}},
+        reset=lambda: resets.append("reset"),
+    )
+    native_perf.configure(True)
+
+    outer_generation = native_perf.begin_session(
+        {"session_id": "outer", "function_ea": 0x401000}
+    )
+    child_generation = native_perf.begin_session(
+        {"session_id": "child", "function_ea": 0x402000}
+    )
+
+    assert child_generation == outer_generation
+    assert resets == ["reset"]
+    assert native_perf.end_session("child") is None
+    receipt = native_perf.end_session("outer")
+    assert receipt is not None
+    assert receipt.startswith(native_perf.RECEIPT_PREFIX)
+    report = json.loads(receipt.split("=", 1)[1])
+    assert report["session"] == {
+        "function_ea": 0x401000,
+        "session_id": "outer",
+    }
+    assert native_perf.end_session("underflow") is None
+    assert native_perf.snapshot()["complete"] is False
+    native_perf.begin_session({"session_id": "next"})
+    assert native_perf.snapshot()["lifecycle_errors"] == []
+    assert native_perf.end_session("next") is not None

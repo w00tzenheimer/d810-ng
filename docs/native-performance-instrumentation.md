@@ -3,7 +3,7 @@
 The bounded instrumentation phase is enabled only when
 `D810_NATIVE_PERF=1`. With the flag unset (or set to any value other than
 `1`), the hot path checks a provider-local boolean and does not read a clock,
-increment a counter, allocate a snapshot object, or import the registry.
+increment a counter, allocate a snapshot object, or call into the registry.
 The `clock_reads` counter is exposed so the disabled-path contract can be
 tested directly.
 
@@ -32,10 +32,14 @@ generation, safe session metadata, clock provenance, the
 errors. Values are copied through a JSON-safe boundary; unknown IDA/SWIG
 objects become a type marker and are never retained in the receipt.
 
-Sessions are process-local lifecycle events. Nested sessions receive distinct
-reset generations and the manager's event metadata includes function EA,
-database identity, top-level epoch, and session id. The receipt is not a
-cross-process aggregation format.
+Sessions are process-local lifecycle events. The outermost `begin_session`
+resets providers and captures function EA, database identity, top-level epoch,
+and session id. Nested owners share that generation and counters, and their
+work is included in the single outer receipt. `end_session` validates the
+optional primitive session token; a mismatch or underflow records a lifecycle
+error without emitting a receipt. Only the matching outermost end emits the
+receipt; lifecycle errors are cleared when the next outermost session begins.
+The receipt is not a cross-process aggregation format.
 
 ## Counter domains and actual paths
 

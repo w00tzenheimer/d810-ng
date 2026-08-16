@@ -89,12 +89,17 @@ def _native_perf_ast_constructed() -> None:
         _NATIVE_PERF_COUNTERS["ast_constructions"] += 1
 
 
-_register_native_perf_provider(
-    "ast_builder",
-    snapshot=_native_perf_snapshot,
-    configure=_native_perf_configure,
-    reset=_native_perf_reset,
-)
+def register_native_perf_provider() -> None:
+    """Select the Python-boundary AST builder provider."""
+    _register_native_perf_provider(
+        "ast_builder",
+        snapshot=_native_perf_snapshot,
+        configure=_native_perf_configure,
+        reset=_native_perf_reset,
+    )
+
+
+register_native_perf_provider()
 
 
 class AstBuilderContext:

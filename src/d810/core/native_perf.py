@@ -50,6 +50,8 @@ _provider_errors: dict[str, str] = {}
 _enabled = False
 _session_generation = 0
 _session_context: dict[str, Any] = {}
+_session_stack: list[str | None] = []
+_lifecycle_errors: list[str] = []
 
 
 def _safe_value(value: Any) -> Any:
@@ -99,6 +101,7 @@ def register_provider(
 
     with _lock:
         previous = _providers.get(provider_name)
+        retirement_failed = False
         if previous is not None and previous.configure is not None:
             try:
                 # Retire a replaced provider before installing its successor;
@@ -107,9 +110,11 @@ def register_provider(
                 previous.configure(False)
             except Exception as exc:  # noqa: BLE001 - provider isolation
                 _record_provider_error(provider_name, "retire", exc)
+                retirement_failed = True
         _providers[provider_name] = _Provider(snapshot, configure, reset)
         enabled = _enabled
-        _provider_errors.pop(provider_name, None)
+        if not retirement_failed:
+            _provider_errors.pop(provider_name, None)
         if configure is not None:
             try:
                 configure(enabled)
@@ -151,6 +156,27 @@ def configure_from_env(
     return configure(values.get("D810_NATIVE_PERF", "") == "1")
 
 
+def _reset_locked(session: Mapping[str, Any] | None = None) -> int:
+    """Reset providers while ``_lock`` is held."""
+
+    global _session_context, _session_generation
+    _session_generation += 1
+    _session_context = {} if session is None else dict(_safe_value(session))
+    # Lifecycle errors describe the session that just ended (or an invalid
+    # close attempt before this reset). Do not carry them into a fresh outer
+    # session and permanently mark every later receipt incomplete.
+    _lifecycle_errors.clear()
+    for name, provider in sorted(_providers.items()):
+        if provider.reset is None:
+            continue
+        try:
+            provider.reset()
+            _provider_errors.pop(name, None)
+        except Exception as exc:  # noqa: BLE001 - provider isolation
+            _record_provider_error(name, "reset", exc)
+    return _session_generation
+
+
 def reset(session: Mapping[str, Any] | None = None) -> int:
     """Reset counters and advance the lifecycle generation.
 
@@ -158,21 +184,56 @@ def reset(session: Mapping[str, Any] | None = None) -> int:
     event metadata without allowing native/IDA objects into the receipt.
     """
 
-    global _session_context, _session_generation
     with _lock:
-        _session_generation += 1
-        _session_context = (
-            {} if session is None else dict(_safe_value(session))
-        )
-        for name, provider in sorted(_providers.items()):
-            if provider.reset is None:
-                continue
-            try:
-                provider.reset()
-                _provider_errors.pop(name, None)
-            except Exception as exc:  # noqa: BLE001 - provider isolation
-                _record_provider_error(name, "reset", exc)
-        return _session_generation
+        return _reset_locked(session)
+
+
+def begin_session(session: Mapping[str, Any] | None = None) -> int:
+    """Begin a possibly nested lifecycle session.
+
+    Only the outermost owner resets providers and captures session metadata.
+    Nested owners share that generation and are included in the outer receipt.
+    The stack stores only a primitive session-id token, never an IDA/SWIG
+    object.
+    """
+
+    global _session_stack
+    with _lock:
+        safe_session = {} if session is None else dict(_safe_value(session))
+        token = safe_session.get("session_id")
+        token = None if token is None else str(token)
+        if not _session_stack:
+            generation = _reset_locked(safe_session)
+        else:
+            generation = _session_generation
+        _session_stack.append(token)
+        return generation
+
+
+def end_session(session_id: object | None = None) -> str | None:
+    """End a nested lifecycle owner and return only the outer receipt.
+
+    An underflow or mismatched token is recorded without mutating the stack,
+    allowing a later correct owner to close the session safely.
+    """
+
+    global _session_stack
+    with _lock:
+        if not _session_stack:
+            _lifecycle_errors.append("end_session underflow")
+            return None
+        expected = _session_stack[-1]
+        received = None if session_id is None else str(session_id)
+        if received is not None and received != expected:
+            _lifecycle_errors.append(
+                f"end_session mismatch: expected={expected!r} received={received!r}"
+            )
+            return None
+        _session_stack.pop()
+        outermost = not _session_stack
+    if not outermost:
+        return None
+    return receipt_line()
 
 
 def snapshot() -> dict[str, Any]:
@@ -183,6 +244,8 @@ def snapshot() -> dict[str, Any]:
         current_enabled = _enabled
         generation = _session_generation
         session = dict(_session_context)
+        lifecycle_depth = len(_session_stack)
+        lifecycle_errors = tuple(_lifecycle_errors)
 
     snapshots: dict[str, Any] = {}
     for name, provider in provider_items:
@@ -233,9 +296,11 @@ def snapshot() -> dict[str, Any]:
         "provider_identities": provider_identities,
         "session_generation": generation,
         "session": session,
+        "lifecycle_depth": lifecycle_depth,
+        "lifecycle_errors": list(lifecycle_errors),
         "clock": dict(_CLOCK_METADATA),
         "cython_profile_requested": os.environ.get("D810_CYTHON_PROFILE") == "1",
-        "complete": not provider_errors,
+        "complete": not provider_errors and not lifecycle_errors,
         "provider_errors": provider_errors,
         "providers": snapshots,
     }
@@ -263,7 +328,7 @@ def clear_providers_for_tests() -> None:
     importable for the lifetime of the IDA process and may re-register safely.
     """
 
-    global _enabled, _session_context, _session_generation
+    global _enabled, _session_context, _session_generation, _session_stack
     with _lock:
         callbacks = tuple(
             provider.configure
@@ -280,15 +345,19 @@ def clear_providers_for_tests() -> None:
         _enabled = False
         _session_generation = 0
         _session_context = {}
+        _session_stack = []
+        _lifecycle_errors.clear()
 
 
 __all__ = [
     "RECEIPT_PREFIX",
     "SCHEMA_VERSION",
+    "begin_session",
     "clear_providers_for_tests",
     "configure",
     "configure_from_env",
     "enabled",
+    "end_session",
     "receipt_json",
     "receipt_line",
     "register_provider",

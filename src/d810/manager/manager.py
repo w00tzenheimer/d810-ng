@@ -2626,14 +2626,14 @@ class D810Manager:
         native_perf.configure_from_env()
         if native_perf.enabled():
             self._ensure_native_perf_providers()
-            native_perf.reset(
-                {
-                    "function_ea": int(event.function_ea),
-                    "database_identity": str(event.database_identity),
-                    "top_level_epoch": int(event.top_level_epoch),
-                    "session_id": str(getattr(event, "session_id", "")),
-                }
-            )
+        native_perf.begin_session(
+            {
+                "function_ea": int(event.function_ea),
+                "database_identity": str(event.database_identity),
+                "top_level_epoch": int(event.top_level_epoch),
+                "session_id": str(getattr(event, "session_id", "")),
+            }
+        )
         self.start_profiling(event)
         self.stats.reset()
         MOP_CONSTANT_CACHE.clear()
@@ -2654,15 +2654,18 @@ class D810Manager:
         logger.info("MOP_TO_AST_CACHE stats: %s", MOP_TO_AST_CACHE.stats)
         self.block_optimizer.report_perf_counters()
         self._stop_timer()
-        receipt = native_perf.receipt_line()
+        receipt = native_perf.end_session(
+            str(getattr(event, "session_id", ""))
+        )
         if receipt is not None:
             logger.info("%s", receipt)
 
     @staticmethod
     def _ensure_native_perf_providers() -> None:
-        """Import optional providers only for an opted-in native perf session."""
+        """Select providers through the active backend dispatchers."""
         modules = (
-            "d810.optimizers.microcode.instructions.pattern_matching.pattern_speedups",
+            "d810.optimizers.microcode.instructions.pattern_matching.engine",
+            "d810.hexrays.expr.ast",
             "d810.hexrays.ir.mop_utils",
         )
         for module_name in modules:
@@ -2678,24 +2681,6 @@ class D810Manager:
                     exc_info=True,
                 )
 
-        # The Python provider modules above remain importable when Cython is
-        # disabled.  When enabled, importing the compiled modules registers the
-        # native C-struct providers under the same stable schema names.
-        for module_name in (
-            "d810.speedups.optimizers.c_pattern_match",
-            "d810.speedups.expr.c_ast",
-        ):
-            try:
-                module = importlib.import_module(module_name)
-                register = getattr(module, "register_native_perf_provider", None)
-                if register is not None:
-                    register()
-            except Exception:
-                logger.debug(
-                    "native Cython performance provider unavailable: %s",
-                    module_name,
-                    exc_info=True,
-                )
 
     @staticmethod
     def _stable_identity_anchor(identity) -> int:

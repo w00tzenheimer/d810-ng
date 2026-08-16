@@ -72,7 +72,12 @@ else:
 
 # Register only the selected implementation.  The core registry retires a
 # provider registered under this stable name by an older/imported backend.
-_register_pattern_native_perf_provider()
+def register_native_perf_provider() -> None:
+    """Select the provider belonging to the active matcher dispatcher backend."""
+    _register_pattern_native_perf_provider()
+
+
+register_native_perf_provider()
 
 
 def get_engine_info() -> dict:

@@ -148,7 +148,12 @@ else:
 # ``p_ast`` and ``c_ast`` intentionally share one stable provider name.  The
 # explicit dispatcher selection handles reload/import-order changes and lets
 # the core registry retire the previous backend's callback immediately.
-_register_ast_native_perf_provider()
+def register_native_perf_provider() -> None:
+    """Select the provider belonging to the active AST dispatcher backend."""
+    _register_ast_native_perf_provider()
+
+
+register_native_perf_provider()
 
 __all__ = [
     # Classes

@@ -217,3 +217,115 @@ class TestNativePerfInstrumentation:
         )
         print("D810_CYTHON_PROFILE_ARTIFACT=" + str(profile_path))
         print("D810_CYTHON_PROFILE_FUNCTIONS=" + json.dumps(compiled))
+
+    @pytest.mark.ida_required
+    def test_manager_provider_discovery_keeps_selected_cython_backends(
+        self, monkeypatch
+    ):
+        """Manager discovery must select dispatchers, not Python fallback modules."""
+        import importlib
+
+        from d810.manager.manager import D810Manager
+
+        python_pattern = importlib.import_module(
+            "d810.optimizers.microcode.instructions.pattern_matching.pattern_speedups"
+        )
+        fallback_registration = []
+        monkeypatch.setattr(
+            python_pattern,
+            "register_native_perf_provider",
+            lambda: fallback_registration.append(True),
+        )
+        native_perf.clear_providers_for_tests()
+        native_perf.configure(True)
+        D810Manager._ensure_native_perf_providers()
+
+        providers = native_perf.snapshot()["providers"]
+        assert fallback_registration == []
+        assert providers["pattern_match"]["backend"] == "cython"
+        assert providers["ast_types"]["backend"] == "cython"
+        assert providers["ast_builder"]["backend"] == "python"
+        assert providers["ast_builder"]["counter_domain"] == "python-boundary"
+        native_perf.configure(False)
+
+    @pytest.mark.ida_required
+    def test_nested_lifecycle_emits_one_real_receipt(self, monkeypatch, caplog):
+        """Manager callbacks retain outer metadata and print one receipt."""
+        import types
+
+        from d810.core.decompilation_session import DecompilationSessionEvent
+        from d810.manager import manager as manager_module
+        from d810.manager.manager import D810Manager
+
+        # Exercise the manager-owned lifecycle callbacks without starting all
+        # of the optimizer/hook machinery. Every callback dependency that the
+        # lifecycle methods touch is a no-op test double; provider selection,
+        # begin/end, receipt logging, and event metadata remain production code.
+        manager = object.__new__(D810Manager)
+        manager.start_profiling = lambda _event: None
+        manager.stop_profiling = lambda _event: None
+        manager._start_timer = lambda: None
+        manager._stop_timer = lambda: None
+        manager.stats = types.SimpleNamespace(
+            reset=lambda: None,
+            report=lambda: None,
+        )
+        manager.instruction_optimizer = types.SimpleNamespace(
+            reset_cycle_detection=lambda: None,
+            reset_run_later_state=lambda: None,
+        )
+        manager.block_optimizer = types.SimpleNamespace(
+            reset_pass_counter=lambda: None,
+            reset_pipeline_tracker=lambda: None,
+            reset_perf_counters=lambda: None,
+            report_perf_counters=lambda: None,
+        )
+        monkeypatch.setattr(
+            manager_module,
+            "Z3MopProver",
+            lambda: types.SimpleNamespace(clear_caches=lambda: None),
+        )
+        monkeypatch.setenv("D810_NATIVE_PERF", "1")
+        native_perf.clear_providers_for_tests()
+
+        outer = DecompilationSessionEvent(
+            function_ea=0x401000,
+            database_identity="idb",
+            top_level_epoch=1,
+            session_id="outer",
+        )
+        child = DecompilationSessionEvent(
+            function_ea=0x402000,
+            database_identity="idb",
+            top_level_epoch=2,
+            session_id="child",
+        )
+        manager._on_session_started(outer)
+        manager._on_session_started(child)
+        with caplog.at_level("INFO", logger="d810"):
+            manager._on_session_finished(child)
+            child_receipts = [
+                record.getMessage()
+                for record in caplog.records
+                if record.getMessage().startswith(native_perf.RECEIPT_PREFIX)
+            ]
+            manager._on_session_finished(outer)
+        receipts = [
+            record.getMessage()
+            for record in caplog.records
+            if record.getMessage().startswith(native_perf.RECEIPT_PREFIX)
+        ]
+        assert child_receipts == []
+        assert len(receipts) == 1
+        payload = json.loads(receipts[0].split("=", 1)[1])
+        assert payload["session"] == {
+            "database_identity": "idb",
+            "function_ea": 0x401000,
+            "session_id": "outer",
+            "top_level_epoch": 1,
+        }
+        assert payload["provider_identities"]["pattern_match"]["backend"] == (
+            "cython"
+        )
+        print(receipts[0])
+        native_perf.configure(False)
