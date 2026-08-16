@@ -62,6 +62,22 @@
         "edges_exposed": { "$ref": "#/$defs/non_negative_number" }
       }
     },
+    "abstention_reason": { "type": "string", "minLength": 1 },
+    "fcp_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rule", "patch_counts", "patch_total", "consumer_status", "consumer_backend", "consumer_outcome", "fallback_reason", "abstention_reasons"],
+      "properties": {
+        "rule": { "const": "ForwardConstantPropagationRule" },
+        "patch_counts": { "type": "array", "items": { "$ref": "#/$defs/non_negative_integer" } },
+        "patch_total": { "$ref": "#/$defs/non_negative_integer" },
+        "consumer_status": { "enum": ["converged", "work_limit", "block_limit", "error"] },
+        "consumer_backend": { "$ref": "#/$defs/non_empty_string" },
+        "consumer_outcome": { "enum": ["converged", "abstained"] },
+        "fallback_reason": { "type": "string" },
+        "abstention_reasons": { "type": "array", "items": { "$ref": "#/$defs/abstention_reason" } }
+      }
+    },
     "parity_projection": {
       "type": "object",
       "additionalProperties": false,
@@ -272,7 +288,7 @@
         { "$ref": "#/$defs/common_row" },
         {
           "type": "object",
-          "required": ["phase", "run_id", "process_id", "process_identity", "database_marker", "fresh_process", "kind", "label", "function_ea", "maturity", "overlay", "backend", "status", "program_fingerprint", "program_identity_group", "wall_seconds", "adapter_seconds", "solver_seconds", "sccp_summary", "fcp_patches", "abstentions", "cache_stats", "memory_delta_bytes", "rss_before_bytes", "rss_after_bytes", "rss_current_bytes", "rss_peak_bytes", "pseudocode_sha256", "live_pseudocode_sha256", "cfg_sha256", "live_cfg_sha256", "evidence_origin", "parity_projection", "parity_sha256", "compiled_provenance", "capacity"],
+          "required": ["phase", "run_id", "process_id", "process_identity", "database_marker", "fresh_process", "kind", "label", "function_ea", "maturity", "overlay", "backend", "status", "program_fingerprint", "program_identity_group", "wall_seconds", "adapter_seconds", "solver_seconds", "sccp_summary", "fcp_patches", "fcp_evidence", "abstentions", "cache_stats", "memory_delta_bytes", "rss_before_bytes", "rss_after_bytes", "rss_current_bytes", "rss_peak_bytes", "pseudocode_sha256", "live_pseudocode_sha256", "cfg_sha256", "live_cfg_sha256", "evidence_origin", "parity_projection", "parity_sha256", "compiled_provenance", "capacity"],
           "properties": {
             "phase": { "enum": ["baseline", "candidate", "auto", "winner"] },
             "kind": { "const": "full_decomp" },
@@ -282,7 +298,8 @@
             "adapter_seconds": { "$ref": "#/$defs/positive_number" },
             "solver_seconds": { "$ref": "#/$defs/positive_number" },
             "fcp_patches": { "$ref": "#/$defs/non_negative_integer" },
-            "abstentions": { "type": "array", "maxItems": 0 },
+            "fcp_evidence": { "$ref": "#/$defs/fcp_evidence" },
+            "abstentions": { "type": "array", "items": { "$ref": "#/$defs/abstention_reason" } },
             "cache_stats": { "$ref": "#/$defs/cache_stats" },
             "memory_delta_bytes": { "type": "integer" },
             "rss_before_bytes": { "$ref": "#/$defs/non_negative_integer" },

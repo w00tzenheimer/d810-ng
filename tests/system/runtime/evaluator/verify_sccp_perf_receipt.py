@@ -76,6 +76,7 @@ _FULL_ONLY_FIELDS = frozenset(
         "cfg_sha256",
         "live_cfg_sha256",
         "fcp_patches",
+        "fcp_evidence",
         "abstentions",
         "cache_stats",
         "rss_before_bytes",
@@ -982,9 +983,33 @@ def _validate_solver_rows(
         if row["workload_fingerprint"] != metadata["workload_fingerprint"]:
             raise ReceiptError(f"{label} workload fingerprint differs from capture")
         _validate_parity(row, label)
-        _validate_sccp_summary(
-            row["sccp_summary"], field_prefix=f"{label}.sccp_summary"
+        summary = row["sccp_summary"]
+        _validate_sccp_summary(summary, field_prefix=f"{label}.sccp_summary")
+        expected_replays = int(row["warmup"]) + int(row["iterations"])
+        requests = _require_nonnegative_integer(
+            summary["requests"], f"{label}.sccp_summary.requests", positive=True
         )
+        executions = _require_nonnegative_integer(
+            summary["executions"], f"{label}.sccp_summary.executions", positive=True
+        )
+        if requests < executions:
+            raise ReceiptError(f"{label} requests are below executions")
+        if executions != expected_replays or requests != expected_replays:
+            raise ReceiptError(
+                f"{label} SCCP telemetry is not bound to its {expected_replays} replay calls"
+            )
+        if summary["converged"] != executions:
+            raise ReceiptError(
+                f"{label} converged count is not bound to executions"
+            )
+        backend_counter = "python_runs" if row["backend"] == "python" else "cython_runs"
+        other_counter = "cython_runs" if backend_counter == "python_runs" else "python_runs"
+        if summary[backend_counter] != executions:
+            raise ReceiptError(
+                f"{label} backend run counter is not bound to executions"
+            )
+        if summary[other_counter] != 0:
+            raise ReceiptError(f"{label} recorded runs for the wrong backend")
     parity_fields = (
         "status",
         "constants",
@@ -1161,6 +1186,67 @@ def _cache_stats_memory(
     return total_evictions, memory_delta
 
 
+def _validate_fcp_evidence(row: dict[str, Any]) -> list[str]:
+    """Bind FCP usage and abstentions to the live SCCP consumer outcome."""
+
+    label = row["label"]
+    evidence = row.get("fcp_evidence")
+    if not isinstance(evidence, dict):
+        raise ReceiptError(f"{label} is missing live FCP evidence")
+    expected_fields = {
+        "rule",
+        "patch_counts",
+        "patch_total",
+        "consumer_status",
+        "consumer_backend",
+        "consumer_outcome",
+        "fallback_reason",
+        "abstention_reasons",
+    }
+    if set(evidence) != expected_fields:
+        raise ReceiptError(f"{label} FCP evidence fields are incomplete")
+    if evidence["rule"] != "ForwardConstantPropagationRule":
+        raise ReceiptError(f"{label} FCP evidence names the wrong rule")
+    patch_counts = evidence["patch_counts"]
+    if not isinstance(patch_counts, list):
+        raise ReceiptError(f"{label} FCP patch counts are not a list")
+    for index, count in enumerate(patch_counts):
+        _require_nonnegative_integer(count, f"{label}.fcp_evidence.patch_counts[{index}]")
+    patch_total = _require_nonnegative_integer(
+        evidence["patch_total"], f"{label}.fcp_evidence.patch_total"
+    )
+    if patch_total != sum(patch_counts):
+        raise ReceiptError(f"{label} FCP patch total is not bound to live usage")
+    if row["fcp_patches"] != patch_total:
+        raise ReceiptError(f"{label} fcp_patches is not bound to live usage")
+    if evidence["consumer_status"] != row["status"]:
+        raise ReceiptError(f"{label} FCP consumer status differs from SCCP status")
+    if evidence["consumer_backend"] != row["backend"]:
+        raise ReceiptError(f"{label} FCP consumer backend differs from selected backend")
+    if not isinstance(evidence["fallback_reason"], str):
+        raise ReceiptError(f"{label} FCP fallback reason is not text")
+    summary = row["sccp_summary"]
+    reasons: list[str] = []
+    if row["status"] != "converged":
+        reasons.append(f"sccp_status:{row['status']}")
+    if evidence["fallback_reason"]:
+        reasons.append(f"sccp_fallback:{evidence['fallback_reason']}")
+    for field in ("fallbacks", "work_limit", "block_limit", "errors"):
+        count = _require_nonnegative_integer(
+            summary[field], f"{label}.sccp_summary.{field}"
+        )
+        if count:
+            reasons.append(f"sccp_{field}:{count}")
+    expected_outcome = "converged" if not reasons else "abstained"
+    if evidence["consumer_outcome"] != expected_outcome:
+        raise ReceiptError(f"{label} FCP consumer outcome is not evidence-derived")
+    if evidence["abstention_reasons"] != reasons:
+        raise ReceiptError(f"{label} FCP abstentions are not evidence-derived")
+    if row["abstentions"] != reasons:
+        raise ReceiptError(f"{label} row abstentions are not bound to live evidence")
+    return reasons
+
+
 def _validate_full_rows(
     rows: dict[str, dict[str, Any]], metadata: dict[str, Any]
 ) -> None:
@@ -1186,8 +1272,6 @@ def _validate_full_rows(
             raise ReceiptError(f"{label} selected the wrong backend or overlay")
         if row["program_identity_group"] != "full_decomp":
             raise ReceiptError(f"{label} is not bound to the full-decomp identity group")
-        if row["status"] != "converged" or row["abstentions"]:
-            raise ReceiptError(f"{label} contains an abstained proof consumer")
         if row["function_ea"] != metadata["function_ea"]:
             raise ReceiptError(f"{label} function_ea differs from metadata")
         _require_finite_number(
@@ -1197,6 +1281,9 @@ def _validate_full_rows(
             _require_finite_number(row[field], f"{label}.{field}", positive=True)
         summary = row["sccp_summary"]
         _validate_sccp_summary(summary, field_prefix=f"{label}.sccp_summary")
+        _validate_fcp_evidence(row)
+        if row["status"] != "converged" or row["abstentions"]:
+            raise ReceiptError(f"{label} contains an abstained proof consumer")
         for field in ("requests", "executions", "converged"):
             _require_nonnegative_integer(
                 summary[field], f"{label}.sccp_summary.{field}", positive=True
@@ -1410,6 +1497,12 @@ def _validate_cache_matrix(
             raise ReceiptError(f"{prefix} peak weight is not bound to cache stats")
     if workload_hashes != {metadata["workload_hash"]}:
         raise ReceiptError("cache matrix workload hashes are inconsistent")
+    if metadata.get("gate_mode") == "exact" and not any(
+        row["evictions"] > 0 for row in cache_rows
+    ):
+        raise ReceiptError(
+            "exact cache matrix has no real capacity evictions across its nine pairs"
+        )
 
 
 def _rows_by_label(receipt: dict[str, Any]) -> dict[str, dict[str, Any]]:

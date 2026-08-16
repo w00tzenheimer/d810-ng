@@ -21,6 +21,7 @@ import statistics
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 from d810.core.typing import Any
 
 import pytest
@@ -40,6 +41,9 @@ from verify_sccp_perf_receipt import (  # noqa: E402
     merge_phase_fragments,
     phase_fragment_path,
     _process_start_evidence,
+    _rows_by_label,
+    _validate_cache_matrix,
+    _validate_full_rows,
     verify,
     write_phase_fragment,
 )
@@ -843,27 +847,29 @@ def _zero_summary() -> dict[str, int | float]:
 
 
 def _solver_summary(
-    result: object, backend: str, *, adapter_seconds: float = 0.0
+    results: list[object], backend: str, *, adapter_seconds: float = 0.0
 ) -> dict[str, int | float]:
     summary = _zero_summary()
-    summary.update(
-        {
-            "requests": 1,
-            "executions": 1,
-            "converged": 1 if result.status.value == "converged" else 0,
-            "work_limit": 1 if result.status.value == "work_limit" else 0,
-            "block_limit": 1 if result.status.value == "block_limit" else 0,
-            "errors": 1 if result.status.value == "error" else 0,
-            "python_runs": 1 if backend == "python" else 0,
-            "cython_runs": 1 if backend == "cython" else 0,
-            "cfg_events": int(result.cfg_events),
-            "value_events": int(result.value_events),
-            "adapter_seconds": float(adapter_seconds),
-            "solver_seconds": float(result.solver_seconds),
-            "constants_exposed": len(result.constants),
-            "edges_exposed": len(result.executable_edges),
-        }
-    )
+    summary["requests"] = len(results)
+    summary["executions"] = len(results)
+    summary["adapter_seconds"] = float(adapter_seconds)
+    for result in results:
+        status = result.status.value
+        summary["converged"] += int(status == "converged")
+        summary["work_limit"] += int(status == "work_limit")
+        summary["block_limit"] += int(status == "block_limit")
+        summary["errors"] += int(status == "error")
+        actual_backend = str(result.backend).lower()
+        summary["python_runs"] += int(actual_backend.startswith("python"))
+        summary["cython_runs"] += int(actual_backend.startswith("cython"))
+        summary["fallbacks"] += int(
+            "fallback" in actual_backend or bool(result.fallback_reason)
+        )
+        summary["cfg_events"] += int(result.cfg_events)
+        summary["value_events"] += int(result.value_events)
+        summary["solver_seconds"] += float(result.solver_seconds)
+        summary["constants_exposed"] += len(result.constants)
+        summary["edges_exposed"] += len(result.executable_edges)
     return summary
 
 
@@ -884,25 +890,35 @@ def _solver_phase(backend: str) -> dict[str, Any]:
         solver = _fast_sccp.solve
     warmup = 3
     iterations = 10
+    replay_results: list[object] = []
     for _ in range(warmup):
-        solver(program)
+        replay_results.append(solver(program))
     samples: list[float] = []
-    results: list[object] = []
+    measured_results: list[object] = []
     for _ in range(iterations):
         started = time.perf_counter()
         result = solver(program)
         samples.append(time.perf_counter() - started)
-        results.append(result)
-    first = results[0]
+        measured_results.append(result)
+    replay_results.extend(measured_results)
+    first = measured_results[0]
     if any(
         _parity_projection(result) != _parity_projection(first)
-        for result in results[1:]
+        for result in replay_results[1:]
     ):
         raise RuntimeError(
             f"{backend} solver changed semantics across measured replays"
         )
-    if backend == "cython" and first.backend != "cython":
-        pytest.fail("BLOCKED: compiled solver phase selected a fallback", pytrace=False)
+    if any(result.status.value != "converged" for result in replay_results):
+        pytest.fail(
+            f"BLOCKED: {backend} solver replay did not converge for every call",
+            pytrace=False,
+        )
+    if any(str(result.backend).lower() != backend for result in replay_results):
+        pytest.fail(
+            f"BLOCKED: {backend} solver phase selected a fallback",
+            pytrace=False,
+        )
     projection = _parity_projection(first)
     row = {
         "phase": f"solver_{backend}",
@@ -923,7 +939,7 @@ def _solver_phase(backend: str) -> dict[str, Any]:
         "snapshot_fingerprint": capture["metadata"]["snapshot_fingerprint"],
         "workload_fingerprint": capture["metadata"]["workload_fingerprint"],
         "wall_seconds": float(sum(samples)),
-        "sccp_summary": _solver_summary(first, backend),
+        "sccp_summary": _solver_summary(replay_results, backend),
         "parity_projection": projection,
         "parity_sha256": _canonical_hash(projection),
         "samples_seconds": samples,
@@ -1150,6 +1166,49 @@ def _configure_policy(state: object, backend: str, overlay: str) -> None:
         )
 
 
+def _full_fcp_evidence(
+    state: object, result: object, session: dict[str, Any]
+) -> tuple[dict[str, Any], list[str]]:
+    """Project the live FCP usage and SCCP consumer outcome into the row."""
+
+    stats = getattr(state, "stats", None)
+    usage_map = getattr(stats, "cfg_rule_usages", {}) if stats is not None else {}
+    raw_counts = list(usage_map.get("ForwardConstantPropagationRule", ()))
+    patch_counts: list[int] = []
+    for index, count in enumerate(raw_counts):
+        if type(count) is not int or count < 0:
+            pytest.fail(
+                "BLOCKED: invalid live ForwardConstantPropagationRule patch count "
+                f"at index {index}: {count!r}",
+                pytrace=False,
+            )
+        patch_counts.append(count)
+
+    abstention_reasons: list[str] = []
+    consumer_status = str(result.status.value)
+    fallback_reason = str(getattr(result, "fallback_reason", "") or "")
+    if consumer_status != "converged":
+        abstention_reasons.append(f"sccp_status:{consumer_status}")
+    if fallback_reason:
+        abstention_reasons.append(f"sccp_fallback:{fallback_reason}")
+    for field in ("fallbacks", "work_limit", "block_limit", "errors"):
+        count = int(session.get(field, 0))
+        if count:
+            abstention_reasons.append(f"sccp_{field}:{count}")
+    consumer_outcome = "converged" if not abstention_reasons else "abstained"
+    evidence = {
+        "rule": "ForwardConstantPropagationRule",
+        "patch_counts": patch_counts,
+        "patch_total": sum(patch_counts),
+        "consumer_status": consumer_status,
+        "consumer_backend": str(result.backend),
+        "consumer_outcome": consumer_outcome,
+        "fallback_reason": fallback_reason,
+        "abstention_reasons": list(abstention_reasons),
+    }
+    return evidence, abstention_reasons
+
+
 def _full_phase(
     state: object, label: str, backend: str, overlay: str
 ) -> dict[str, Any]:
@@ -1239,6 +1298,7 @@ def _full_phase(
         pytest.fail(
             "BLOCKED: full phase emitted no real SCCP request/execution", pytrace=False
         )
+    fcp_evidence, abstention_reasons = _full_fcp_evidence(state, result, session)
     build = (
         _require_compiled_backend(full=backend == "cython")
         if backend == "cython"
@@ -1264,16 +1324,9 @@ def _full_phase(
         "adapter_seconds": float(session["adapter_seconds"]),
         "solver_seconds": float(session["solver_seconds"]),
         "sccp_summary": session,
-        "fcp_patches": int(
-            getattr(getattr(state, "stats", None), "cfg_rule_usages", {}).get(
-                "ForwardConstantPropagationRule", [0]
-            )[-1]
-            if getattr(getattr(state, "stats", None), "cfg_rule_usages", {}).get(
-                "ForwardConstantPropagationRule"
-            )
-            else 0
-        ),
-        "abstentions": [],
+        "fcp_patches": int(fcp_evidence["patch_total"]),
+        "fcp_evidence": fcp_evidence,
+        "abstentions": abstention_reasons,
         "cache_stats": cache_stats,
         "memory_delta_bytes": memory_delta,
         "rss_before_bytes": rss_before,
@@ -1621,6 +1674,19 @@ def _sample_sccp_summary(*, backend: str, requests: int = 1) -> dict[str, Any]:
     return summary
 
 
+def _sample_fcp_evidence(backend: str) -> dict[str, Any]:
+    return {
+        "rule": "ForwardConstantPropagationRule",
+        "patch_counts": [1],
+        "patch_total": 1,
+        "consumer_status": "converged",
+        "consumer_backend": backend,
+        "consumer_outcome": "converged",
+        "fallback_reason": "",
+        "abstention_reasons": [],
+    }
+
+
 def _sample_projection() -> dict[str, Any]:
     return {
         "status": "converged",
@@ -1682,7 +1748,9 @@ def _sample_row(
     evictions: int = 0,
 ) -> dict[str, Any]:
     projection = _sample_projection()
-    summary = _sample_sccp_summary(backend=backend)
+    summary = _sample_sccp_summary(
+        backend=backend, requests=13 if label.startswith("solver_") else 1
+    )
     if label.startswith("solver_"):
         samples = [wall / 10] * 10
         return {
@@ -1734,6 +1802,7 @@ def _sample_row(
         "solver_seconds": 0.001,
         "sccp_summary": summary,
         "fcp_patches": 1,
+        "fcp_evidence": _sample_fcp_evidence(backend),
         "abstentions": [],
         "cache_stats": _sample_cache_stats(evictions, memory_delta),
         "memory_delta_bytes": memory_delta,
@@ -2341,6 +2410,41 @@ def test_replay_contract_counts_all_three_block_one_instructions() -> None:
     } == {(1, 0), (1, 1), (1, 2)}
 
 
+def test_full_fcp_evidence_aggregates_all_live_usage_entries() -> None:
+    state = SimpleNamespace(
+        stats=SimpleNamespace(
+            cfg_rule_usages={"ForwardConstantPropagationRule": [2, 0, 3]}
+        )
+    )
+    result = SimpleNamespace(
+        status=SimpleNamespace(value="converged"),
+        backend="python",
+        fallback_reason="",
+    )
+    evidence, abstentions = _full_fcp_evidence(state, result, _zero_summary())
+    assert evidence["patch_counts"] == [2, 0, 3]
+    assert evidence["patch_total"] == 5
+    assert evidence["consumer_outcome"] == "converged"
+    assert evidence["abstention_reasons"] == []
+    assert abstentions == []
+
+
+def test_full_fcp_evidence_derives_sccp_abstention() -> None:
+    state = SimpleNamespace(stats=SimpleNamespace(cfg_rule_usages={}))
+    result = SimpleNamespace(
+        status=SimpleNamespace(value="error"),
+        backend="python",
+        fallback_reason="snapshot failed",
+    )
+    session = _zero_summary()
+    session["errors"] = 1
+    evidence, abstentions = _full_fcp_evidence(state, result, session)
+    expected = ["sccp_status:error", "sccp_fallback:snapshot failed", "sccp_errors:1"]
+    assert evidence["consumer_outcome"] == "abstained"
+    assert evidence["abstention_reasons"] == expected
+    assert abstentions == expected
+
+
 def test_verifier_rejects_solver_cache_telemetry_and_nonfinite_timing(
     tmp_path: Path,
 ) -> None:
@@ -2373,6 +2477,95 @@ def test_verifier_rejects_full_zero_sccp_and_rss_mismatch(tmp_path: Path) -> Non
     receipt.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(ValueError, match="memory"):
         verify(receipt)
+
+
+@pytest.mark.parametrize("field", ("requests", "executions", "converged", "python_runs"))
+def test_verifier_rejects_solver_zero_telemetry(
+    tmp_path: Path, field: str
+) -> None:
+    payload = _sample_receipt()
+    payload["runs"][0]["sccp_summary"][field] = 0
+    payload["sccp_summary"][field] = sum(
+        row["sccp_summary"][field] for row in payload["runs"]
+    )
+    receipt = tmp_path / f"solver-zero-{field}.json"
+    receipt.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="solver|positive|replay|counter"):
+        verify(receipt)
+
+
+def test_verifier_rejects_solver_execution_count_not_bound_to_replay(
+    tmp_path: Path,
+) -> None:
+    payload = _sample_receipt()
+    payload["runs"][0]["sccp_summary"]["requests"] = 1
+    payload["runs"][0]["sccp_summary"]["executions"] = 1
+    for field in ("requests", "executions"):
+        payload["sccp_summary"][field] = sum(
+            row["sccp_summary"][field] for row in payload["runs"]
+        )
+    receipt = tmp_path / "solver-replay-count.json"
+    receipt.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="replay|warmup|execution|request"):
+        verify(receipt)
+
+
+def test_verifier_rejects_fcp_patch_total_drift(tmp_path: Path) -> None:
+    payload = _sample_receipt()
+    payload["runs"][2]["fcp_evidence"] = {
+        "rule": "ForwardConstantPropagationRule",
+        "patch_counts": [2, 3],
+        "patch_total": 5,
+        "consumer_status": "converged",
+        "consumer_backend": "python",
+        "consumer_outcome": "converged",
+        "fallback_reason": "",
+        "abstention_reasons": [],
+    }
+    receipt = tmp_path / "fcp-patch-drift.json"
+    receipt.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="FCP|fcp|patch"):
+        _validate_full_rows(_rows_by_label(payload), payload["metadata"])
+
+
+def test_verifier_rejects_fcp_abstention_projection_drift(tmp_path: Path) -> None:
+    payload = _sample_receipt()
+    payload["runs"][2]["fcp_evidence"] = {
+        "rule": "ForwardConstantPropagationRule",
+        "patch_counts": [1],
+        "patch_total": 1,
+        "consumer_status": "converged",
+        "consumer_backend": "python",
+        "consumer_outcome": "converged",
+        "fallback_reason": "",
+        "abstention_reasons": ["fabricated-abstention"],
+    }
+    receipt = tmp_path / "fcp-abstention-drift.json"
+    receipt.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="abstention|consumer|FCP|fcp"):
+        _validate_full_rows(_rows_by_label(payload), payload["metadata"])
+
+
+def test_verifier_rejects_full_row_abstention_drift(tmp_path: Path) -> None:
+    payload = _sample_receipt()
+    payload["runs"][2]["abstentions"] = ["fabricated-abstention"]
+    receipt = tmp_path / "full-abstention-drift.json"
+    receipt.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="abstention|consumer|FCP|fcp"):
+        _validate_full_rows(_rows_by_label(payload), payload["metadata"])
+
+
+def test_verifier_requires_exact_cache_evictions_but_not_smoke_or_unit() -> None:
+    payload = _sample_receipt()
+    exact_metadata = {**payload["metadata"], "gate_mode": "exact"}
+    with pytest.raises(ValueError, match="eviction"):
+        _validate_cache_matrix(payload["cache_matrix"], exact_metadata)
+    _validate_cache_matrix(
+        payload["cache_matrix"], {**payload["metadata"], "gate_mode": "smoke"}
+    )
+    _validate_cache_matrix(
+        payload["cache_matrix"], {**payload["metadata"], "gate_mode": "unit"}
+    )
 
 
 def test_verifier_rejects_cache_workload_and_winner_capacity_mutations(
