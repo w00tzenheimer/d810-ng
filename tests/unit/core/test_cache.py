@@ -145,8 +145,9 @@ class TestCacheImpl(unittest.TestCase):
             with self.assertRaises(ValueError):
                 c.reconfigure_capacity(invalid)
 
-    def test_reentrant_listener_sees_committed_removal_accounting(self):
+    def test_listener_mutation_is_rejected_after_removal_accounting(self):
         observed = []
+        mutation_errors = []
         cache_holder = {}
 
         def listener(key, value):
@@ -163,7 +164,11 @@ class TestCacheImpl(unittest.TestCase):
                         stats.capacity_evictions,
                     )
                 )
-                c["b"] = 10
+                if len(observed) == 1:
+                    try:
+                        c["a"] = 10
+                    except RuntimeError as exc:
+                        mutation_errors.append(str(exc))
 
         def weigh(value):
             return float(value)
@@ -181,11 +186,72 @@ class TestCacheImpl(unittest.TestCase):
         c["c"] = 10
 
         self.assertEqual(observed, [("a", 10, False, 0, 0.0, 1)])
+        self.assertEqual(
+            mutation_errors, ["cache mutation is not allowed from a removal listener"]
+        )
         stats = c.stats
         self.assertEqual(stats.size, 1)
         self.assertEqual(stats.weight, 10.0)
         self.assertEqual(stats.max_size_ever, 1)
         self.assertEqual(stats.max_weight_ever, 10.0)
+        self.assertNotIn("a", c)
+        self.assertIn("c", c)
+
+    def test_listener_cross_key_mutation_cycle_is_rejected(self):
+        callbacks = []
+        mutation_errors = []
+        cache_holder = {}
+
+        def attempt(key, value):
+            try:
+                cache_holder["cache"][key] = value
+            except RuntimeError as exc:
+                mutation_errors.append(str(exc))
+
+        def listener(key, value):
+            callbacks.append((key, value))
+            if len(callbacks) == 1 and key == "a":
+                attempt("b", 2)
+            elif len(callbacks) == 2 and key == "b":
+                attempt("a", 3)
+
+        c = CacheImpl(max_size=1, removal_listener=listener, clock=FixedClock())
+        cache_holder["cache"] = c
+
+        c["a"] = 1
+        c["outer"] = 4
+
+        self.assertEqual(callbacks, [("a", 1)])
+        self.assertEqual(
+            mutation_errors, ["cache mutation is not allowed from a removal listener"]
+        )
+        self.assertEqual(c.stats.capacity_evictions, 1)
+        self.assertEqual(c.stats.insertions, 2)
+        self.assertEqual(c.stats.size, 1)
+        self.assertIn("outer", c)
+
+    def test_listener_mutation_guard_clears_after_callback(self):
+        cache_holder = {}
+        mutation_errors = []
+
+        def listener(key, value):
+            try:
+                cache_holder["cache"]["blocked"] = value
+            except RuntimeError as exc:
+                mutation_errors.append(str(exc))
+
+        c = CacheImpl(max_size=2, removal_listener=listener, clock=FixedClock())
+        cache_holder["cache"] = c
+
+        c["a"] = 1
+        del c["a"]
+        c["after"] = 2
+
+        self.assertEqual(
+            mutation_errors, ["cache mutation is not allowed from a removal listener"]
+        )
+        self.assertEqual(c.lookup("after"), (True, 2))
+        self.assertEqual(c.stats.explicit_removals, 1)
 
     def test_removal_listener_exception_preserves_accounting(self):
         removed = []

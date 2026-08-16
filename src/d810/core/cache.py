@@ -166,6 +166,7 @@ def _const_one(_: object) -> float:
 
 class CacheImpl(Cache[K, V]):
     SKIP = object()
+    _LISTENER_MUTATION_ERROR = "cache mutation is not allowed from a removal listener"
 
     @dataclasses.dataclass(slots=True)
     class Link:
@@ -219,6 +220,7 @@ class CacheImpl(Cache[K, V]):
         self._expire_after_access = expire_after_access
         self._expire_after_write = expire_after_write
         self._removal_listener = removal_listener
+        self._notification_state = threading.local()
         self._clock = clock
         self._weak_keys = weak_keys
         self._weak_values = weak_values
@@ -280,6 +282,28 @@ class CacheImpl(Cache[K, V]):
         else:
             raise ValueError(f"Unknown cache removal reason: {reason!r}")
 
+    def _check_listener_mutation(self) -> None:
+        """Reject same-thread cache mutation from a removal listener."""
+        if getattr(self._notification_state, "depth", 0):
+            raise RuntimeError(self._LISTENER_MUTATION_ERROR)
+
+    def _notify_removal(self, key, value) -> None:
+        listener = self._removal_listener
+        if listener is None:
+            return
+
+        state = self._notification_state
+        state.depth = getattr(state, "depth", 0) + 1
+        try:
+            try:
+                listener(key, value)
+            except Exception as e:
+                logger.exception(
+                    "Removal listener raised exception: %s", e, exc_info=True
+                )
+        finally:
+            state.depth -= 1
+
     def _unlink(self, link: Link, reason: RemovalReason) -> None:
         if link is self._root:
             raise TypeError
@@ -304,13 +328,7 @@ class CacheImpl(Cache[K, V]):
         self._record_removal(reason)
         link.unlinked = True
 
-        if self._removal_listener is not None:
-            try:
-                self._removal_listener(link.key, link.value)
-            except Exception as e:
-                logger.exception(
-                    "Removal listener raised exception: %s", e, exc_info=True
-                )
+        self._notify_removal(link.key, link.value)
 
         link.key = link.value = None
 
@@ -335,6 +353,8 @@ class CacheImpl(Cache[K, V]):
 
     def _reap(self) -> None:
         if self._weak_dead is not None:
+            if self._weak_dead:
+                self._check_listener_mutation()
             while True:
                 try:
                     link = self._weak_dead.popleft()
@@ -352,6 +372,7 @@ class CacheImpl(Cache[K, V]):
                 link = self._root.ins_next
                 if link.written > deadline:
                     break
+                self._check_listener_mutation()
                 self._kill(link, RemovalReason.EXPIRATION)
 
         if self._expire_after_access is not None:
@@ -363,9 +384,11 @@ class CacheImpl(Cache[K, V]):
                 link = self._root.lru_next
                 if link.accessed > deadline:
                     break
+                self._check_listener_mutation()
                 self._kill(link, RemovalReason.EXPIRATION)
 
     def reap(self) -> None:
+        self._check_listener_mutation()
         with self._lock:
             self._reap()
 
@@ -377,6 +400,7 @@ class CacheImpl(Cache[K, V]):
             raise Exception
 
         def fail(reason: RemovalReason):
+            self._check_listener_mutation()
             with contextlib.suppress(KeyError):
                 del self._cache[cache_key]
             self._unlink(link, reason)
@@ -492,11 +516,13 @@ class CacheImpl(Cache[K, V]):
             self._reset_stats_locked()
 
     def clear(self, reset_stats: bool = False) -> None:
+        self._check_listener_mutation()
         with self._lock:
             self._clear_locked(reset_stats)
 
     def reconfigure_capacity(self, max_size: int) -> None:
         """Clear the current session and atomically set a new size limit."""
+        self._check_listener_mutation()
         if isinstance(max_size, bool) or not isinstance(max_size, int) or max_size <= 0:
             raise ValueError("max_size must be a positive integer")
 
@@ -527,10 +553,12 @@ class CacheImpl(Cache[K, V]):
         After calling this, `stats()` will report zeros for `hits`, `misses`,
         `max_size_ever`, `max_weight_ever`, and `seq`.
         """
+        self._check_listener_mutation()
         with self._lock:
             self._reset_stats_locked()
 
     def __setitem__(self, key: K, value: V) -> None:
+        self._check_listener_mutation()
         weight = self._weigher(value)
 
         with self._lock:
@@ -598,6 +626,7 @@ class CacheImpl(Cache[K, V]):
             self._insertions += 1
 
     def __delitem__(self, key: K) -> None:
+        self._check_listener_mutation()
         with self._lock:
             self._reap()
 
