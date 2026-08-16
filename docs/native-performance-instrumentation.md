@@ -51,13 +51,15 @@ The receipt is not a cross-process aggregation format.
 The `pattern_match` provider is a C struct in `c_pattern_match.pyx` when the
 Cython backend is selected, and a matching Python dictionary provider in
 `pattern_speedups.py` otherwise. The production matcher remains the legacy
-mutating path by default; `D810_NOMUT_MATCHING=1` is required to opt into the
-indexed `COpcodeIndexedStorage` and `match_pattern_nomut` path covered here.
-That path records fingerprint calls/time, indexed bucket lookups/hits/misses,
-entries scanned/accepted, non-mutating matcher calls/time/nodes, binding
-additions, repeated-binding equality checks/time, and result-list and
-`to_dict` materialization counts. The legacy `PatternStorage` path is not
-instrumented.
+mutating path by default, but indexed storage and its fingerprint/bucket
+lookup counters are also on by default. `D810_LEGACY_STORAGE=1` selects the
+legacy `PatternStorage` lookup and bypasses those indexed lookup counters.
+Only `D810_NOMUT_MATCHING=1` opts into the non-mutating
+`match_pattern_nomut` final matcher and its match/node/binding counters. The
+indexed path records fingerprint calls/time, bucket lookups/hits/misses,
+entries scanned/accepted, repeated-binding equality checks/time, and
+result-list and `to_dict` materialization counts. The legacy `PatternStorage`
+path is not instrumented.
 
 The production AST path is not the standalone Cython `mop_to_ast` helper. It
 is `minsn_utils.minsn_to_ast` -> Python `mop_utils.mop_to_ast` and its recursive

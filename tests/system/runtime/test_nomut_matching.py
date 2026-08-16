@@ -135,6 +135,106 @@ class TestNomutMatchingHotPath:
         assert optimizer._use_legacy_storage is False
         # The hot loop will use _match_nomut + BindingsProxy
 
+    def test_pattern_optimizer_route_uses_indexed_candidates_and_selected_matcher(
+        self, monkeypatch
+    ):
+        """Default lookup is indexed; final matching follows the NOMUT flag."""
+
+        class Rule:
+            name = "RouteRule"
+            maturities = [7]
+
+            def __init__(self):
+                self.legacy_calls = 0
+
+            def check_pattern_and_replace(self, _pattern, _candidate):
+                self.legacy_calls += 1
+                return None
+
+        class IndexedStorage:
+            def __init__(self, info):
+                self.info = info
+                self.calls = 0
+
+            def get_candidates(self, _candidate):
+                self.calls += 1
+                return [self.info]
+
+        class LegacyStorage:
+            def __init__(self):
+                self.calls = 0
+
+            def get_matching_rule_pattern_info(self, _candidate):
+                self.calls += 1
+                return []
+
+        def build_optimizer(*, use_nomut, indexed, legacy):
+            optimizer = object.__new__(PatternOptimizer)
+            optimizer.cur_maturity = 7
+            optimizer.stats = None
+            optimizer._use_nomut_matching = use_nomut
+            optimizer._use_legacy_storage = False
+            optimizer._use_indexed_legacy_fallback = False
+            optimizer._indexed_storage = indexed
+            optimizer.pattern_storage = legacy
+            optimizer._structural_rules_by_root_opcode = {}
+            optimizer._match_bindings = pattern_handler.MatchBindings()
+            optimizer._run_later_callback = None
+            optimizer._pending_replacement_rule = None
+            optimizer._get_candidates = PatternOptimizer._get_candidates.__get__(
+                optimizer
+            )
+            return optimizer
+
+        legacy_rule = Rule()
+        legacy_info = RulePatternInfo(legacy_rule, object())
+        indexed = IndexedStorage(legacy_info)
+        legacy = LegacyStorage()
+        default_optimizer = build_optimizer(
+            use_nomut=False,
+            indexed=indexed,
+            legacy=legacy,
+        )
+        default_optimizer._try_matches(
+            None,
+            object(),
+            object(),
+            allowed_rule_names=None,
+            scheduled_rule_names=None,
+            source_label="route-default",
+        )
+        assert indexed.calls == 1
+        assert legacy.calls == 0
+        assert legacy_rule.legacy_calls == 1
+
+        nomut_rule = Rule()
+        nomut_info = RulePatternInfo(nomut_rule, object())
+        nomut_indexed = IndexedStorage(nomut_info)
+        nomut_legacy = LegacyStorage()
+        nomut_optimizer = build_optimizer(
+            use_nomut=True,
+            indexed=nomut_indexed,
+            legacy=nomut_legacy,
+        )
+        nomut_calls = []
+        monkeypatch.setattr(
+            pattern_handler,
+            "_match_nomut",
+            lambda *_args: nomut_calls.append(True) or False,
+        )
+        nomut_optimizer._try_matches(
+            None,
+            object(),
+            object(),
+            allowed_rule_names=None,
+            scheduled_rule_names=None,
+            source_label="route-nomut",
+        )
+        assert nomut_indexed.calls == 1
+        assert nomut_legacy.calls == 0
+        assert nomut_calls == [True]
+        assert nomut_rule.legacy_calls == 0
+
 
 def test_pattern_optimizer_forwards_catalogue_outcome_to_central_statistics():
     """A direct-provider adapter's outcome survives the PatternOptimizer path."""

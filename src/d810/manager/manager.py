@@ -2648,17 +2648,36 @@ class D810Manager:
 
     def _on_session_finished(self, event: DecompilationSessionEvent) -> None:
         """Report observer-only state after the coordinator has closed a session."""
-        self.stop_profiling(event)
-        self.stats.report()
-        logger.info("MOP_CONSTANT_CACHE stats: %s", MOP_CONSTANT_CACHE.stats)
-        logger.info("MOP_TO_AST_CACHE stats: %s", MOP_TO_AST_CACHE.stats)
-        self.block_optimizer.report_perf_counters()
-        self._stop_timer()
-        receipt = native_perf.end_session(
-            str(getattr(event, "session_id", ""))
-        )
-        if receipt is not None:
-            logger.info("%s", receipt)
+        primary_error: BaseException | None = None
+        receipt = None
+        try:
+            self.stop_profiling(event)
+            self.stats.report()
+            logger.info("MOP_CONSTANT_CACHE stats: %s", MOP_CONSTANT_CACHE.stats)
+            logger.info("MOP_TO_AST_CACHE stats: %s", MOP_TO_AST_CACHE.stats)
+            self.block_optimizer.report_perf_counters()
+            self._stop_timer()
+        except BaseException as exc:
+            # Preserve the first reporting failure while still closing the
+            # native session exactly once in the finally block below.
+            primary_error = exc
+        finally:
+            try:
+                receipt = native_perf.end_session(
+                    str(getattr(event, "session_id", ""))
+                )
+            except BaseException as close_error:
+                if primary_error is None:
+                    raise close_error
+            else:
+                if receipt is not None:
+                    try:
+                        logger.info("%s", receipt)
+                    except BaseException as receipt_error:
+                        if primary_error is None:
+                            raise receipt_error
+        if primary_error is not None:
+            raise primary_error.with_traceback(primary_error.__traceback__)
 
     @staticmethod
     def _ensure_native_perf_providers() -> None:

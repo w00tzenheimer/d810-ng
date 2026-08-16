@@ -442,6 +442,98 @@ class TestNativePerfInstrumentation:
         native_perf.configure(False)
 
     @pytest.mark.ida_required
+    def test_manager_finish_closes_native_session_after_reporting_failures(
+        self, monkeypatch
+    ):
+        """Finalization closes once, preserves failures, and starts fresh next time."""
+        import types
+
+        from d810.core.decompilation_session import DecompilationSessionEvent
+        from d810.manager import manager as manager_module
+        from d810.manager.manager import D810Manager
+
+        manager = object.__new__(D810Manager)
+        manager.start_profiling = lambda _event: None
+
+        def fail_stop_profiling(_event):
+            raise RuntimeError("stop profiling failed")
+
+        manager.stop_profiling = fail_stop_profiling
+        manager._start_timer = lambda: None
+        manager._stop_timer = lambda: None
+        manager.stats = types.SimpleNamespace(
+            reset=lambda: None,
+            report=lambda: None,
+        )
+        manager.instruction_optimizer = types.SimpleNamespace(
+            reset_cycle_detection=lambda: None,
+            reset_run_later_state=lambda: None,
+        )
+        manager.block_optimizer = types.SimpleNamespace(
+            reset_pass_counter=lambda: None,
+            reset_pipeline_tracker=lambda: None,
+            reset_perf_counters=lambda: None,
+            report_perf_counters=lambda: None,
+        )
+        monkeypatch.setattr(
+            manager_module,
+            "Z3MopProver",
+            lambda: types.SimpleNamespace(clear_caches=lambda: None),
+        )
+        monkeypatch.setenv("D810_NATIVE_PERF", "1")
+        native_perf.clear_providers_for_tests()
+        finish_calls = []
+        original_end_session = native_perf.end_session
+
+        def spy_end_session(session_id):
+            finish_calls.append(str(session_id))
+            return original_end_session(session_id)
+
+        monkeypatch.setattr(native_perf, "end_session", spy_end_session)
+        outer = DecompilationSessionEvent(
+            function_ea=0x401000,
+            database_identity="idb",
+            top_level_epoch=1,
+            session_id="outer",
+        )
+        next_event = DecompilationSessionEvent(
+            function_ea=0x402000,
+            database_identity="idb",
+            top_level_epoch=2,
+            session_id="next",
+        )
+        manager._on_session_started(outer)
+
+        with pytest.raises(RuntimeError, match="stop profiling failed"):
+            manager._on_session_finished(outer)
+        assert finish_calls == ["outer"]
+        assert native_perf.snapshot()["lifecycle_depth"] == 0
+
+        manager.stop_profiling = lambda _event: None
+        manager._on_session_started(next_event)
+        fresh = native_perf.snapshot()
+        assert fresh["lifecycle_depth"] == 1
+        assert fresh["session"] == {
+            "database_identity": "idb",
+            "function_ea": 0x402000,
+            "session_id": "next",
+            "top_level_epoch": 2,
+        }
+        assert fresh["session_generation"] == 2
+
+        def fail_receipt_logging(message, *args, **kwargs):
+            if message == "%s":
+                raise RuntimeError("receipt logging failed")
+            return None
+
+        monkeypatch.setattr(manager_module.logger, "info", fail_receipt_logging)
+        with pytest.raises(RuntimeError, match="receipt logging failed"):
+            manager._on_session_finished(next_event)
+        assert finish_calls == ["outer", "next"]
+        assert native_perf.snapshot()["lifecycle_depth"] == 0
+        native_perf.configure(False)
+
+    @pytest.mark.ida_required
     @pytest.mark.skipif(
         not _cython_disabled_by_environment(), reason="Python mode is disabled"
     )
