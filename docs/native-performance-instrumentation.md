@@ -11,9 +11,10 @@ exposed so the disabled-path contract can be tested directly.
 
 ## Lifecycle and receipt
 
-The manager configures providers at `SESSION_STARTED`, resets them after the
-session has been opened, and emits one line at `SESSION_FINISHED` when the
-flag is enabled:
+At `SESSION_STARTED`, the manager begins the outer lifecycle session and
+resets providers first, then applies the environment configuration and
+discovers/validates providers. The outer `SESSION_FINISHED` emits one line
+when the flag is enabled:
 
 ```
 D810_NATIVE_PERF_RECEIPT={...}
