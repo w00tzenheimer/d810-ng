@@ -5,8 +5,13 @@ from pathlib import Path
 
 import pytest
 
+from d810.backends.mba.native_z3_proof_template import (
+    _lower_validated_term as lower_typed_term_to_z3,
+)
 from d810.mba.semantic_canonicalization import (
     CanonicalizationKind,
+    CanonicalMbaTermView,
+    CanonicalizationStep,
     canonicalize_mba_term,
 )
 from d810.mba.typed_term import (
@@ -93,6 +98,51 @@ def test_deterministic_ac_order_after_local_normalization():
     assert any(step.kind is CanonicalizationKind.AC_REORDER for step in first.steps)
 
 
+def test_signed_addition_is_association_invariant_and_trace_stable():
+    width = 32
+    x = leaf("x", width)
+    y = leaf("y", width)
+    z = leaf("z", width)
+    left_associated = node("add", width, neg(x), node("add", width, z, neg(y)))
+    right_associated = node(
+        "add", width, node("add", width, neg(x), z), neg(y)
+    )
+
+    left = canonicalize_mba_term(left_associated)
+    right = canonicalize_mba_term(right_associated)
+
+    assert left.canonical_term == right.canonical_term
+    assert left.steps == right.steps
+    assert left.canonical_term == node(
+        "sub", width, node("sub", width, z, x), y
+    )
+
+
+def test_canonicalization_api_uses_the_planned_enum_and_slot_contract():
+    assert CanonicalizationKind.NEGATE_CONSTANT.value == "negate_constant"
+    assert CanonicalizationKind.DOUBLE_NEGATION.value == "double_negation"
+    assert CanonicalizationKind.NEGATIVE_COEFFICIENT.value == "negative_coefficient"
+    assert CanonicalizationKind.ADD_NEG_TO_SUB.value == "add_neg_to_sub"
+    assert CanonicalizationKind.SUB_NEG_TO_ADD.value == "sub_neg_to_add"
+    assert CanonicalizationKind.AC_REORDER.value == "ac_reorder"
+    assert not hasattr(CanonicalizationKind, "ADD_NEGATED_OPERANDS")
+    assert not hasattr(CanonicalizationKind, "SUB_NEGATION_TO_ADD")
+    assert "__slots__" in CanonicalizationStep.__dict__
+    assert "__slots__" in CanonicalMbaTermView.__dict__
+
+
+def test_raw_and_canonical_costs_remain_separate_for_negative_coefficients():
+    width = 16
+    source = node("mul", width, const(-2, width), leaf("x", width))
+
+    result = canonicalize_mba_term(source)
+
+    assert result.raw_term is source
+    assert result.raw_cost == (1, 3)
+    assert result.canonical_cost == (2, 4)
+    assert result.raw_cost != result.canonical_cost
+
+
 @pytest.mark.parametrize("width", [8, 16, 32, 64])
 def test_local_normalizations_are_modular_and_idempotent(width: int):
     x = leaf("x", width)
@@ -177,64 +227,48 @@ def test_canonicalizer_does_not_import_provider_backends():
     assert "z3" not in source
 
 
-def _to_z3(term: TypedBvTerm, variables: dict[tuple[object, ...], object]):
-    import z3
-
-    if term.operation is None:
-        if term.value is not None:
-            return z3.BitVecVal(term.value, term.width)
-        assert term.leaf_key is not None
-        return variables.setdefault(
-            term.leaf_key,
-            z3.BitVec("_".join(map(str, term.leaf_key)), term.width),
-        )
-    children = tuple(_to_z3(child, variables) for child in term.children)
-    if term.operation == "add":
-        return children[0] + children[1]
-    if term.operation == "and":
-        return children[0] & children[1]
-    if term.operation == "mul":
-        return children[0] * children[1]
-    if term.operation == "or":
-        return children[0] | children[1]
-    if term.operation == "sub":
-        return children[0] - children[1]
-    if term.operation == "xor":
-        return children[0] ^ children[1]
-    if term.operation == "bnot":
-        return ~children[0]
-    if term.operation == "neg":
-        return -children[0]
-    raise AssertionError(term.operation)
-
-
-@pytest.mark.parametrize("width", [8, 16])
-def test_bounded_generated_terms_preserve_fixed_width_semantics(width: int):
-    import z3
+def _generated_terms(width: int) -> tuple[TypedBvTerm, ...]:
+    """Build a reproducible operation/depth matrix without random state."""
 
     x = leaf("x", width)
     y = leaf("y", width)
-    xy = node("and", width, x, y)
-    terms = (
-        x,
-        neg(const(3, width)),
-        neg(neg(x)),
-        node("sub", width, x, neg(y)),
-        node("add", width, x, neg(y)),
-        node("mul", width, const(-2, width), x),
-        node(
-            "add",
-            width,
-            node("add", width, y, x),
-            node("mul", width, const(-2, width), xy),
-        ),
-        node("xor", width, node("xor", width, y, x), const(1, width)),
-    )
-    for source in terms:
+    levels: list[tuple[TypedBvTerm, ...]] = [
+        (x, y, const(1, width), const(-2, width), neg(x))
+    ]
+    operations = ("add", "and", "mul", "or", "sub", "xor", "neg", "bnot")
+    for depth in range(1, 4):
+        previous = levels[-1]
+        generated: list[TypedBvTerm] = []
+        for index, operation in enumerate(operations):
+            if operation in {"neg", "bnot"}:
+                generated.append(node(operation, width, previous[index % len(previous)]))
+            else:
+                generated.append(
+                    node(
+                        operation,
+                        width,
+                        previous[index % len(previous)],
+                        previous[(index + depth) % len(previous)],
+                    )
+                )
+        levels.append(tuple(generated))
+    return tuple(term for level in levels for term in level)
+
+
+@pytest.mark.parametrize("width", [8, 16])
+def test_deterministic_generated_terms_preserve_fixed_width_semantics(width: int):
+    import z3
+
+    # `_lower_validated_term` is the repository's existing pure
+    # TypedBvTerm-to-Z3 seam; it does not require a live native object.
+    for source in _generated_terms(width):
         canonical = canonicalize_mba_term(source).canonical_term
         variables: dict[tuple[object, ...], object] = {}
         solver = z3.Solver()
-        solver.add(_to_z3(source, variables) != _to_z3(canonical, variables))
+        solver.add(
+            lower_typed_term_to_z3(source, variables=variables, z3=z3)
+            != lower_typed_term_to_z3(canonical, variables=variables, z3=z3)
+        )
         assert solver.check() == z3.unsat
 
 

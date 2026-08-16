@@ -23,16 +23,12 @@ class CanonicalizationKind(str, enum.Enum):
     NEGATE_CONSTANT = "negate_constant"
     DOUBLE_NEGATION = "double_negation"
     NEGATIVE_COEFFICIENT = "negative_coefficient"
-    ADD_NEGATED_OPERANDS = "add_negated_operands"
-    SUB_NEGATION_TO_ADD = "sub_negation_to_add"
+    ADD_NEG_TO_SUB = "add_neg_to_sub"
+    SUB_NEG_TO_ADD = "sub_neg_to_add"
     AC_REORDER = "ac_reorder"
 
-    # Descriptive aliases retained for callers that name the algebraic form.
-    SIGNED_ADDITION = "add_negated_operands"
-    SUB_NEGATED_OPERAND = "sub_negation_to_add"
 
-
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class CanonicalizationStep:
     """One observed rewrite, represented only by stable term fingerprints."""
 
@@ -59,7 +55,7 @@ class CanonicalizationStep:
         }
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class CanonicalMbaTermView:
     """The untouched source term and its deterministic canonical companion."""
 
@@ -195,7 +191,7 @@ def _rewrite_add(
     result = _rebuild_ac("add", term.width, positive)
     for operand in negative:
         result = TypedBvTerm("sub", term.width, children=(result, operand))
-    _record(steps, CanonicalizationKind.ADD_NEGATED_OPERANDS, term, result)
+    _record(steps, CanonicalizationKind.ADD_NEG_TO_SUB, term, result)
     return result
 
 
@@ -226,10 +222,34 @@ def _rewrite_local(
         result = TypedBvTerm(
             "add", term.width, children=(term.children[0], term.children[1].children[0])
         )
-        _record(steps, CanonicalizationKind.SUB_NEGATION_TO_ADD, term, result)
+        _record(steps, CanonicalizationKind.SUB_NEG_TO_ADD, term, result)
         return result
 
     return term
+
+
+def _rewrite_add_forest(
+    term: TypedBvTerm, steps: list[CanonicalizationStep]
+) -> TypedBvTerm:
+    """Normalize every operand before orienting one homogeneous add forest."""
+
+    operands: list[TypedBvTerm] = []
+
+    def collect(node: TypedBvTerm) -> None:
+        if node.operation == "add" and node.width == term.width:
+            for child in node.children:
+                collect(child)
+            return
+
+        normalized = _rewrite_once(node, steps)
+        if normalized.operation == "add" and normalized.width == term.width:
+            collect(normalized)
+        else:
+            operands.append(normalized)
+
+    collect(term)
+    flattened = _rebuild_ac("add", term.width, operands)
+    return _rewrite_add(flattened, steps)
 
 
 def _rewrite_once(
@@ -237,6 +257,8 @@ def _rewrite_once(
 ) -> TypedBvTerm:
     if term.operation is None:
         return term
+    if term.operation == "add":
+        return _rewrite_add_forest(term, steps)
     normalized = TypedBvTerm(
         operation=term.operation,
         width=term.width,
