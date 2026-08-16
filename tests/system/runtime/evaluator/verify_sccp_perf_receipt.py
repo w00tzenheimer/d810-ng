@@ -18,6 +18,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import socket
 import statistics
 import sys
 import tempfile
@@ -79,6 +80,7 @@ _FULL_ONLY_FIELDS = frozenset(
         "cache_stats",
         "rss_before_bytes",
         "rss_after_bytes",
+        "rss_current_bytes",
         "rss_peak_bytes",
         "capacity",
         "constant_capacity",
@@ -100,6 +102,62 @@ class ReceiptError(ValueError):
 
 class FixtureAttestationError(ReceiptError):
     """Raised when a fixture source changes while it is being copied."""
+
+
+def _process_start_evidence() -> dict[str, Any]:
+    """Return OS-derived process/container identity for fresh-phase evidence."""
+
+    started_at: datetime | None = None
+    source = "fallback-import-time"
+    try:
+        stat_text = Path("/proc/self/stat").read_text(encoding="utf-8")
+        tail = stat_text.rsplit(")", 1)[1].split()
+        start_ticks = int(tail[19])
+        clock_ticks = int(os.sysconf("SC_CLK_TCK"))
+        boot_seconds = None
+        for line in Path("/proc/stat").read_text(encoding="utf-8").splitlines():
+            if line.startswith("btime "):
+                boot_seconds = int(line.split()[1])
+                break
+        if boot_seconds is not None and clock_ticks > 0:
+            started_at = datetime.fromtimestamp(
+                boot_seconds + (start_ticks / clock_ticks), timezone.utc
+            )
+            source = "procfs"
+    except (OSError, ValueError, IndexError):
+        pass
+    if started_at is None:
+        started_at = datetime.now(timezone.utc)
+    try:
+        boot_id = Path("/proc/sys/kernel/random/boot_id").read_text(
+            encoding="utf-8"
+        ).strip()
+    except OSError:
+        boot_id = "unknown"
+    return {
+        "pid": os.getpid(),
+        "process_start_at_utc": started_at.isoformat(),
+        "process_start_source": source,
+        "hostname": socket.gethostname(),
+        "boot_id": boot_id or "unknown",
+    }
+
+
+def _process_identity_key(identity: dict[str, Any]) -> tuple[object, ...]:
+    return (
+        identity.get("pid"),
+        identity.get("process_start_at_utc"),
+        identity.get("hostname"),
+        identity.get("boot_id"),
+    )
+
+
+def _runtime_path(path: Path) -> Path:
+    """Map a Docker /work path back to this checkout for host verification."""
+
+    if path.is_absolute() and path.parts[:2] == ("/", "work"):
+        return _HERE.parents[3] / Path(*path.parts[2:])
+    return path
 
 
 def _canonical_json(value: Any) -> bytes:
@@ -188,6 +246,7 @@ def write_phase_fragment(
     *,
     process_id: str | None = None,
     database_marker: str | None = None,
+    process_identity: dict[str, Any] | None = None,
 ) -> Path:
     """Atomically write one fresh-process phase fragment.
 
@@ -200,14 +259,39 @@ def write_phase_fragment(
         raise ReceiptError(f"duplicate phase fragment already exists: {path.name}")
     if not isinstance(payload, dict):
         raise TypeError("phase fragment payload must be an object")
+    identity = dict(process_identity or _process_start_evidence())
+    required_identity = {
+        "pid",
+        "process_start_at_utc",
+        "process_start_source",
+        "hostname",
+        "boot_id",
+    }
+    if set(identity) != required_identity:
+        raise ReceiptError(
+            "process_identity must contain pid, process start, source, hostname, and boot_id"
+        )
+    if type(identity["pid"]) is not int or identity["pid"] <= 0:
+        raise ReceiptError("process_identity.pid must be positive")
+    _require_nonempty(
+        identity["process_start_at_utc"], "process_identity.process_start_at_utc"
+    )
+    _require_nonempty(
+        identity["process_start_source"], "process_identity.process_start_source"
+    )
+    _require_nonempty(identity["hostname"], "process_identity.hostname")
+    _require_nonempty(identity["boot_id"], "process_identity.boot_id")
     envelope = {
         "run_id": run_id,
         "phase": phase,
         "phase_index": PHASE_INDEX[phase],
-        "process_id": _require_nonempty(process_id or str(os.getpid()), "process_id"),
+        "process_id": _require_nonempty(
+            process_id or f"pid-{identity['pid']}", "process_id"
+        ),
         "database_marker": _require_nonempty(
             database_marker or "unknown-database", "database_marker"
         ),
+        "process_identity": identity,
         "fresh_process": True,
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "payload_sha256": _sha256_bytes(_canonical_json(payload)),
@@ -230,8 +314,8 @@ def copy_fixture_with_attestation(
     temporary file and is never refreshed by later verification.
     """
 
-    source = Path(source)
-    destination = Path(destination)
+    source = Path(source).resolve()
+    destination = Path(destination).resolve()
     if not source.is_file():
         raise FixtureAttestationError(f"fixture source does not exist: {source}")
     source_sha_before = _sha256_file(source)
@@ -259,7 +343,10 @@ def copy_fixture_with_attestation(
             f"copied fixture SHA256 mismatch: {fixture_sha} != {source_sha_before}"
         )
     return {
+        "schema_version": 1,
         "source_path": str(source),
+        "source_sha256_before": source_sha_before,
+        "source_sha256_after": source_sha_after,
         "source_sha256_at_copy": source_sha_before,
         "fixture_path": str(destination),
         "fixture_sha256": fixture_sha,
@@ -267,6 +354,58 @@ def copy_fixture_with_attestation(
         "source_size_bytes": int(source_size),
         "fixture_copied_at_utc": copied_at,
     }
+
+
+def load_fixture_attestation(path: Path) -> dict[str, Any]:
+    """Load and validate the immutable host fixture-copy attestation."""
+
+    path = Path(path)
+    if not path.is_file():
+        raise ReceiptError(f"fixture attestation does not exist: {path}")
+    try:
+        attestation = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ReceiptError(f"fixture attestation is unreadable: {path}: {exc}") from exc
+    if not isinstance(attestation, dict):
+        raise ReceiptError("fixture attestation must be an object")
+    source = _require_nonempty(attestation.get("source_path"), "attestation.source_path")
+    fixture = _require_nonempty(
+        attestation.get("fixture_path"), "attestation.fixture_path"
+    )
+    if not Path(source).is_absolute() or not Path(fixture).is_absolute():
+        raise ReceiptError("attestation source and fixture paths must be absolute")
+    before = _require_sha(
+        attestation.get("source_sha256_before"), "attestation.source_sha256_before"
+    )
+    after = _require_sha(
+        attestation.get("source_sha256_after"), "attestation.source_sha256_after"
+    )
+    at_copy = _require_sha(
+        attestation.get("source_sha256_at_copy"), "attestation.source_sha256_at_copy"
+    )
+    fixture_sha = _require_sha(
+        attestation.get("fixture_sha256"), "attestation.fixture_sha256"
+    )
+    if not (before == after == at_copy == fixture_sha):
+        raise ReceiptError("fixture attestation source/fixture SHA values disagree")
+    source_size = _require_nonnegative_integer(
+        attestation.get("source_size_bytes"), "attestation.source_size_bytes", positive=True
+    )
+    fixture_size = _require_nonnegative_integer(
+        attestation.get("fixture_size_bytes"), "attestation.fixture_size_bytes", positive=True
+    )
+    if source_size != fixture_size:
+        raise ReceiptError("fixture attestation source/fixture sizes disagree")
+    copied_at = _require_nonempty(
+        attestation.get("fixture_copied_at_utc"), "attestation.fixture_copied_at_utc"
+    )
+    try:
+        copied_datetime = datetime.fromisoformat(copied_at)
+    except ValueError as exc:
+        raise ReceiptError("fixture attestation timestamp is not ISO-8601") from exc
+    if copied_datetime <= datetime.fromtimestamp(1, timezone.utc):
+        raise ReceiptError("fixture attestation timestamp is epoch-like")
+    return attestation
 
 
 def _resolve_ref(schema: dict[str, Any], ref: str) -> dict[str, Any]:
@@ -400,6 +539,39 @@ def _load_fragment(path: Path, run_id: str, phase: str) -> dict[str, Any]:
         raise ReceiptError(f"phase fragment {path.name} is not fresh-process evidence")
     _require_nonempty(envelope.get("process_id"), f"{path.name}.process_id")
     _require_nonempty(envelope.get("database_marker"), f"{path.name}.database_marker")
+    identity = envelope.get("process_identity")
+    if not isinstance(identity, dict):
+        raise ReceiptError(f"{path.name} is missing process identity")
+    if set(identity) != {
+        "pid",
+        "process_start_at_utc",
+        "process_start_source",
+        "hostname",
+        "boot_id",
+    }:
+        raise ReceiptError(f"{path.name} has incomplete process identity")
+    if type(identity["pid"]) is not int or identity["pid"] <= 0:
+        raise ReceiptError(f"{path.name} has invalid process identity pid")
+    for field in (
+        "process_start_at_utc",
+        "process_start_source",
+        "hostname",
+        "boot_id",
+    ):
+        _require_nonempty(identity[field], f"{path.name}.process_identity.{field}")
+    try:
+        datetime.fromisoformat(identity["process_start_at_utc"])
+    except ValueError as exc:
+        raise ReceiptError(f"{path.name} process start is not ISO-8601") from exc
+    created_at = _require_nonempty(
+        envelope.get("created_at_utc"), f"{path.name}.created_at_utc"
+    )
+    try:
+        created_datetime = datetime.fromisoformat(created_at)
+    except ValueError as exc:
+        raise ReceiptError(f"{path.name} creation time is not ISO-8601") from exc
+    if created_datetime <= datetime.fromtimestamp(1, timezone.utc):
+        raise ReceiptError(f"{path.name} creation time is epoch-like")
     payload = envelope.get("payload")
     if not isinstance(payload, dict):
         raise ReceiptError(f"phase fragment {path.name} is missing payload")
@@ -438,8 +610,11 @@ def merge_phase_fragments(
         for path, phase in zip(expected_paths, PHASE_ORDER, strict=True)
     ]
     process_ids = [envelope["process_id"] for envelope in envelopes]
+    identities = [envelope["process_identity"] for envelope in envelopes]
     if len(set(process_ids)) != len(process_ids):
-        raise ReceiptError("phase fragments reused a process identity")
+        raise ReceiptError("phase fragments reused a process marker")
+    if len({_process_identity_key(identity) for identity in identities}) != len(identities):
+        raise ReceiptError("phase fragments reused a process start/container identity")
     database_markers = [envelope["database_marker"] for envelope in envelopes]
     if len(set(database_markers)) != len(database_markers):
         raise ReceiptError("phase fragments reused a database identity")
@@ -448,6 +623,31 @@ def merge_phase_fragments(
     metadata = capture_payload.get("metadata")
     if not isinstance(metadata, dict):
         raise ReceiptError("capture phase is missing metadata")
+    capture_blocks = capture_payload.get("blocks")
+    capture_operations = capture_payload.get("operations")
+    capture_counts = capture_payload.get("operation_counts")
+    if not isinstance(capture_blocks, list) or not isinstance(capture_operations, list):
+        raise ReceiptError("capture phase is missing detached workload descriptors")
+    if not isinstance(capture_counts, dict):
+        raise ReceiptError("capture phase is missing operation counts")
+    if _sha256_bytes(_canonical_json(capture_blocks)) != metadata.get(
+        "workload_blocks_fingerprint"
+    ):
+        raise ReceiptError("capture block descriptors do not match metadata")
+    if _sha256_bytes(
+        _canonical_json({"blocks": capture_blocks, "operations": capture_operations})
+    ) != metadata.get("workload_fingerprint"):
+        raise ReceiptError("capture workload descriptors do not match metadata")
+    if _sha256_bytes(
+        _canonical_json(
+            {"blocks": capture_blocks, "operations": capture_operations, "counts": capture_counts}
+        )
+    ) != metadata.get("workload_hash"):
+        raise ReceiptError("capture workload contract does not match metadata")
+    if len(capture_operations) != metadata.get("workload_operations"):
+        raise ReceiptError("capture operation count does not match metadata")
+    if capture_counts != metadata.get("capture_operation_counts"):
+        raise ReceiptError("capture operation counts do not match metadata")
     rows: list[dict[str, Any]] = []
     for envelope in envelopes[1:6]:
         row = envelope["payload"].get("row")
@@ -483,6 +683,8 @@ def merge_phase_fragments(
             "run_id": envelope["run_id"],
             "process_id": envelope["process_id"],
             "database_marker": envelope["database_marker"],
+            "process_identity": envelope["process_identity"],
+            "created_at_utc": envelope["created_at_utc"],
             "payload_sha256": envelope["payload_sha256"],
         }
         for envelope in envelopes
@@ -512,30 +714,77 @@ def _validate_metadata(receipt: dict[str, Any]) -> dict[str, Any]:
     source_sha = _require_sha(
         metadata.get("source_sha256_at_copy"), "metadata.source_sha256_at_copy"
     )
+    source_before = _require_sha(
+        metadata.get("source_sha256_before"), "metadata.source_sha256_before"
+    )
+    source_after = _require_sha(
+        metadata.get("source_sha256_after"), "metadata.source_sha256_after"
+    )
     fixture_sha = _require_sha(
         metadata.get("fixture_sha256"), "metadata.fixture_sha256"
     )
-    if source_sha != fixture_sha:
+    if not (source_before == source_after == source_sha == fixture_sha):
         raise ReceiptError("source-at-copy SHA256 does not match fixture SHA256")
     if metadata.get("binary_sha256") != fixture_sha:
         raise ReceiptError("binary_sha256 does not match attested fixture SHA256")
     size = _require_nonnegative_integer(
         metadata.get("fixture_size_bytes"), "metadata.fixture_size_bytes", positive=True
     )
+    source_size = _require_nonnegative_integer(
+        metadata.get("source_size_bytes"), "metadata.source_size_bytes", positive=True
+    )
+    if source_size != size:
+        raise ReceiptError("source and fixture sizes do not match")
     _require_nonempty(
         metadata.get("fixture_copied_at_utc"), "metadata.fixture_copied_at_utc"
     )
     try:
-        datetime.fromisoformat(str(metadata["fixture_copied_at_utc"]))
+        copied_at = datetime.fromisoformat(str(metadata["fixture_copied_at_utc"]))
     except ValueError as exc:
         raise ReceiptError(
             "metadata.fixture_copied_at_utc is not an ISO timestamp"
         ) from exc
+    if copied_at <= datetime.fromtimestamp(1, timezone.utc):
+        raise ReceiptError("metadata.fixture_copied_at_utc is epoch-like")
     mode = metadata.get("gate_mode")
     if mode not in {"exact", "smoke", "unit"}:
         raise ReceiptError("metadata.gate_mode must be exact, smoke, or unit")
+    attestation_path = _require_nonempty(
+        metadata.get("fixture_attestation_path"),
+        "metadata.fixture_attestation_path",
+    )
+    attestation_file = _runtime_path(Path(attestation_path))
+    attestation: dict[str, Any] | None = None
+    if attestation_file.is_file():
+        attestation = load_fixture_attestation(attestation_file)
+        if attestation["source_path"] != source:
+            raise ReceiptError("metadata source_path differs from fixture attestation")
+        for field in (
+            "source_sha256_before",
+            "source_sha256_after",
+            "source_sha256_at_copy",
+            "fixture_sha256",
+            "fixture_size_bytes",
+            "source_size_bytes",
+            "fixture_copied_at_utc",
+        ):
+            metadata_field = field
+            if metadata_field == "source_size_bytes":
+                expected_value = metadata.get("source_size_bytes")
+            else:
+                expected_value = metadata.get(metadata_field)
+            if expected_value != attestation[field]:
+                raise ReceiptError(
+                    f"metadata {metadata_field} differs from fixture attestation"
+                )
+        if Path(attestation["fixture_path"]).name != Path(fixture).name:
+            raise ReceiptError("metadata fixture path differs from fixture attestation")
+        if metadata.get("attestation_fixture_path") != attestation["fixture_path"]:
+            raise ReceiptError("metadata attestation fixture path is not exact")
+    elif mode != "unit":
+        raise ReceiptError(f"fixture attestation is not mounted: {attestation_path}")
     if mode != "unit":
-        path = Path(fixture)
+        path = _runtime_path(Path(fixture))
         if not path.is_file():
             raise ReceiptError(f"attested fixture is not mounted: {fixture}")
         if path.stat().st_size != size or _sha256_file(path) != fixture_sha:
@@ -545,6 +794,17 @@ def _validate_metadata(receipt: dict[str, Any]) -> dict[str, Any]:
             raise ReceiptError("D810_EXPECTED_FIXTURE_SHA256 is required")
         if expected != fixture_sha:
             raise ReceiptError("D810_EXPECTED_FIXTURE_SHA256 does not match fixture")
+        if os.environ.get("D810_PERF_HOST_VERIFY") == "1":
+            source_file = Path(source)
+            if not source_file.is_file():
+                raise ReceiptError(f"attested source path does not exist: {source}")
+            current_source_sha = _sha256_file(source_file)
+            if current_source_sha != source_sha:
+                print(
+                    "SCCP performance gate WARNING: source drift after attestation: "
+                    f"{source_sha} -> {current_source_sha}",
+                    file=sys.stderr,
+                )
     if mode == "exact" and metadata.get("fixture_source") != source:
         raise ReceiptError("metadata fixture_source is not the exact source path")
     if metadata.get("capture_hooks_stopped") is not True:
@@ -559,8 +819,15 @@ def _validate_metadata(receipt: dict[str, Any]) -> dict[str, Any]:
     )
     _require_sha(metadata.get("workload_fingerprint"), "metadata.workload_fingerprint")
     _require_sha(metadata.get("workload_hash"), "metadata.workload_hash")
+    _require_sha(
+        metadata.get("workload_blocks_fingerprint"),
+        "metadata.workload_blocks_fingerprint",
+    )
     _require_sha(metadata.get("snapshot_fingerprint"), "metadata.snapshot_fingerprint")
     _require_sha(metadata.get("build_source_sha256"), "metadata.build_source_sha256")
+    capture_counts = metadata.get("capture_operation_counts")
+    if not isinstance(capture_counts, dict):
+        raise ReceiptError("metadata.capture_operation_counts is missing")
     return metadata
 
 
@@ -575,6 +842,7 @@ def _validate_fragment_headers(
     run_id = metadata["run_id"]
     process_ids: set[str] = set()
     db_markers: set[str] = set()
+    process_identities: set[tuple[object, ...]] = set()
     for index, (fragment, phase) in enumerate(zip(fragments, PHASE_ORDER, strict=True)):
         if fragment["run_id"] != run_id or fragment["phase"] != phase:
             raise ReceiptError("phase fragment run identity or label mismatch")
@@ -582,10 +850,30 @@ def _validate_fragment_headers(
             raise ReceiptError("phase fragment order mismatch")
         process_ids.add(fragment["process_id"])
         db_markers.add(fragment["database_marker"])
+        identity = fragment.get("process_identity")
+        if not isinstance(identity, dict):
+            raise ReceiptError("phase fragment is missing process identity")
+        process_identities.add(_process_identity_key(identity))
+        created_at = _require_nonempty(
+            fragment.get("created_at_utc"),
+            f"phase_fragments[{index}].created_at_utc",
+        )
+        try:
+            created_datetime = datetime.fromisoformat(created_at)
+        except ValueError as exc:
+            raise ReceiptError(
+                f"phase_fragments[{index}] creation time is not ISO-8601"
+            ) from exc
+        if created_datetime <= datetime.fromtimestamp(1, timezone.utc):
+            raise ReceiptError(f"phase_fragments[{index}] creation time is epoch-like")
         _require_sha(
             fragment["payload_sha256"], f"phase_fragments[{index}].payload_sha256"
         )
-    if len(process_ids) != len(PHASE_ORDER) or len(db_markers) != len(PHASE_ORDER):
+    if (
+        len(process_ids) != len(PHASE_ORDER)
+        or len(db_markers) != len(PHASE_ORDER)
+        or len(process_identities) != len(PHASE_ORDER)
+    ):
         raise ReceiptError(
             "phase fragments are not independent fresh process/database evidence"
         )
@@ -636,6 +924,8 @@ def _validate_solver_rows(
             raise ReceiptError(f"{label} phase/kind/label mismatch")
         if row["run_id"] != metadata["run_id"] or row["fresh_process"] is not True:
             raise ReceiptError(f"{label} does not identify its fresh run")
+        if row["program_identity_group"] != "capture_snapshot":
+            raise ReceiptError(f"{label} is not bound to the capture identity group")
         if row["function_ea"] != metadata["function_ea"]:
             raise ReceiptError(f"{label} function_ea differs from metadata")
         if row["status"] != "converged":
@@ -685,6 +975,12 @@ def _validate_solver_rows(
             "workload_fingerprint",
         ):
             _require_sha(row[field], f"{label}.{field}")
+        if row["program_fingerprint"] != metadata["program_fingerprint"]:
+            raise ReceiptError(f"{label} program fingerprint differs from capture")
+        if row["snapshot_fingerprint"] != metadata["snapshot_fingerprint"]:
+            raise ReceiptError(f"{label} snapshot fingerprint differs from capture")
+        if row["workload_fingerprint"] != metadata["workload_fingerprint"]:
+            raise ReceiptError(f"{label} workload fingerprint differs from capture")
         _validate_parity(row, label)
         _validate_sccp_summary(
             row["sccp_summary"], field_prefix=f"{label}.sccp_summary"
@@ -716,11 +1012,16 @@ def _validate_build_provenance(metadata: dict[str, Any], row: dict[str, Any]) ->
     provenance = row.get("compiled_provenance") or metadata.get("build_provenance")
     if not isinstance(provenance, dict):
         raise ReceiptError(f"{row['label']} is missing compiled build provenance")
-    for name in ("c_sccp", "_fast_dataflow"):
+    for name in ("c_sccp", "c_dataflow"):
         item = provenance.get(name)
         if not isinstance(item, dict):
             raise ReceiptError(f"{row['label']} is missing {name} build provenance")
         _require_nonempty(item.get("module_file"), f"{row['label']}.{name}.module_file")
+        module_file = str(item["module_file"])
+        if not re.search(r"\.(?:so|dylib|pyd)$", module_file):
+            raise ReceiptError(
+                f"{row['label']} {name} is not a compiled extension: {module_file}"
+            )
         _require_sha(item.get("module_sha256"), f"{row['label']}.{name}.module_sha256")
         _require_nonempty(item.get("build_abi"), f"{row['label']}.{name}.build_abi")
         _require_nonempty(item.get("source_hash"), f"{row['label']}.{name}.source_hash")
@@ -731,15 +1032,71 @@ def _validate_build_provenance(metadata: dict[str, Any], row: dict[str, Any]) ->
         )
         if item.get("callable") is not True:
             raise ReceiptError(f"{row['label']} {name} is not callable")
+        source_path = _require_nonempty(
+            item.get("source_path"), f"{row['label']}.{name}.source_path"
+        )
+        if not source_path.endswith(".pyx"):
+            raise ReceiptError(
+                f"{row['label']} {name} source is not a Cython .pyx: {source_path}"
+            )
+        expected_source = {
+            "c_sccp": "/speedups/evaluator/c_sccp.pyx",
+            "c_dataflow": "/speedups/optimizers/microcode/flow/constant_prop/c_dataflow.pyx",
+        }[name]
+        if not source_path.endswith(expected_source):
+            raise ReceiptError(
+                f"{row['label']} {name} source path is not source-matched: {source_path}"
+            )
+        if metadata.get("gate_mode") != "unit":
+            source_file = _runtime_path(Path(source_path))
+            if not source_file.is_file():
+                raise ReceiptError(
+                    f"{row['label']} {name} source attestation is not mounted: {source_path}"
+                )
+            if _sha256_file(source_file) != item["source_hash"]:
+                raise ReceiptError(
+                    f"{row['label']} {name} source hash is stale: {source_path}"
+                )
+            module_file_path = _runtime_path(Path(module_file))
+            if not module_file_path.is_file():
+                raise ReceiptError(
+                    f"{row['label']} {name} compiled module is not mounted: {module_file}"
+                )
+            if _sha256_file(module_file_path) != item["module_sha256"]:
+                raise ReceiptError(
+                    f"{row['label']} {name} module hash is stale: {module_file}"
+                )
+            if module_file_path.stat().st_mtime_ns != item["module_mtime_ns"]:
+                raise ReceiptError(
+                    f"{row['label']} {name} module mtime is stale: {module_file}"
+                )
+    expected_source_tree = _sha256_bytes(
+        _canonical_json(
+            {
+                "c_sccp": provenance["c_sccp"]["source_hash"],
+                "c_dataflow": provenance["c_dataflow"]["source_hash"],
+            }
+        )
+    )
+    if provenance.get("source_tree_sha256") != expected_source_tree:
+        raise ReceiptError(
+            f"{row['label']} build source aggregate is not bound to source hashes"
+        )
     if provenance.get("source_tree_sha256") != metadata["build_source_sha256"]:
         raise ReceiptError(
             f"{row['label']} build sources are not bound to the current source tree"
         )
 
 
-def _cache_stats_memory(row: dict[str, Any]) -> tuple[int, int]:
+def _cache_stats_memory(
+    row: dict[str, Any], *, expected_constant: int | None = None, expected_ast: int | None = None
+) -> tuple[int, int]:
     stats = row["cache_stats"]
     total_evictions = 0
+    expected_capacities = {
+        "MOP_CONSTANT_CACHE": expected_constant,
+        "MOP_TO_AST_CACHE": expected_ast,
+    }
     for name in ("MOP_CONSTANT_CACHE", "MOP_TO_AST_CACHE"):
         cache = stats[name]
         for field in ("lookups", "insertions", "capacity_evictions", "real_api_calls"):
@@ -747,6 +1104,11 @@ def _cache_stats_memory(row: dict[str, Any]) -> tuple[int, int]:
         total_evictions += cache["capacity_evictions"]
         if cache["real_api_calls"] <= 0 or cache["lookups"] <= 0:
             raise ReceiptError(f"{row['label']} did not exercise {name}")
+        expected_capacity = expected_capacities[name]
+        if expected_capacity is not None and cache["configured_max_size"] != expected_capacity:
+            raise ReceiptError(
+                f"{row['label']} {name} configured capacity is not bound to the request"
+            )
     if stats["total_evictions"] != total_evictions:
         raise ReceiptError(f"{row['label']} cache eviction total is inconsistent")
     if stats["real_api_calls"] != sum(
@@ -754,9 +1116,48 @@ def _cache_stats_memory(row: dict[str, Any]) -> tuple[int, int]:
         for name in ("MOP_CONSTANT_CACHE", "MOP_TO_AST_CACHE")
     ):
         raise ReceiptError(f"{row['label']} cache API count is inconsistent")
+    for field in (
+        "memory_delta_bytes",
+        "rss_before_bytes",
+        "rss_after_bytes",
+        "rss_current_bytes",
+        "rss_peak_bytes",
+    ):
+        if type(stats[field]) is not int:
+            raise ReceiptError(f"{row['label']} cache {field} is not an integer")
+    if stats["rss_current_bytes"] != stats["rss_after_bytes"]:
+        raise ReceiptError(f"{row['label']} cache current RSS is not its after RSS")
+    if stats["rss_peak_bytes"] < max(
+        stats["rss_before_bytes"],
+        stats["rss_after_bytes"],
+        stats["rss_current_bytes"],
+    ):
+        raise ReceiptError(f"{row['label']} cache RSS peak is inconsistent")
+    if stats["memory_delta_bytes"] != (
+        stats["rss_after_bytes"] - stats["rss_before_bytes"]
+    ):
+        raise ReceiptError(f"{row['label']} cache memory delta is inconsistent with RSS")
+    for field in (
+        "memory_delta_bytes",
+        "rss_before_bytes",
+        "rss_after_bytes",
+        "rss_current_bytes",
+        "rss_peak_bytes",
+    ):
+        if stats[field] != row[field]:
+            raise ReceiptError(
+                f"{row['label']} cache {field} is not bound to row telemetry"
+            )
+        for name in ("MOP_CONSTANT_CACHE", "MOP_TO_AST_CACHE"):
+            if stats[name][field] != stats[field]:
+                raise ReceiptError(
+                    f"{row['label']} {name} {field} is not bound to aggregate telemetry"
+                )
+    if "rebuilds" in row and row["rebuilds"] != sum(
+        stats[name]["insertions"] for name in ("MOP_CONSTANT_CACHE", "MOP_TO_AST_CACHE")
+    ):
+        raise ReceiptError(f"{row['label']} rebuild count is not bound to cache insertions")
     memory_delta = stats["memory_delta_bytes"]
-    if type(memory_delta) is not int:
-        raise ReceiptError(f"{row['label']} cache memory delta is not an integer")
     return total_evictions, memory_delta
 
 
@@ -770,6 +1171,7 @@ def _validate_full_rows(
         "winner": ("cython", "auto"),
     }
     hashes: set[tuple[str, str]] = set()
+    program_fingerprints: set[str] = set()
     for label, (backend, overlay) in expected_modes.items():
         row = rows[label]
         if (
@@ -782,6 +1184,8 @@ def _validate_full_rows(
             raise ReceiptError(f"{label} does not identify its fresh process")
         if row["backend"] != backend or row["overlay"] != overlay:
             raise ReceiptError(f"{label} selected the wrong backend or overlay")
+        if row["program_identity_group"] != "full_decomp":
+            raise ReceiptError(f"{label} is not bound to the full-decomp identity group")
         if row["status"] != "converged" or row["abstentions"]:
             raise ReceiptError(f"{label} contains an abstained proof consumer")
         if row["function_ea"] != metadata["function_ea"]:
@@ -805,9 +1209,18 @@ def _validate_full_rows(
                 f"{label} SCCP summary contains fallback/error/abstention"
             )
         _require_nonnegative_integer(row["fcp_patches"], f"{label}.fcp_patches")
-        for field in ("rss_before_bytes", "rss_after_bytes", "rss_peak_bytes"):
+        for field in (
+            "rss_before_bytes",
+            "rss_after_bytes",
+            "rss_current_bytes",
+            "rss_peak_bytes",
+        ):
             _require_nonnegative_integer(row[field], f"{label}.{field}")
-        if row["rss_peak_bytes"] < max(row["rss_before_bytes"], row["rss_after_bytes"]):
+        if row["rss_current_bytes"] != row["rss_after_bytes"]:
+            raise ReceiptError(f"{label} current RSS is not its after RSS")
+        if row["rss_peak_bytes"] < max(
+            row["rss_before_bytes"], row["rss_after_bytes"], row["rss_current_bytes"]
+        ):
             raise ReceiptError(f"{label} RSS peak is below before/after RSS")
         expected_delta = row["rss_after_bytes"] - row["rss_before_bytes"]
         if row["memory_delta_bytes"] != expected_delta:
@@ -844,12 +1257,19 @@ def _validate_full_rows(
             raise ReceiptError(
                 f"{label} parity projection is not bound to its live program"
             )
-        _cache_stats_memory(row)
+        _cache_stats_memory(
+            row,
+            expected_constant=int(row["capacity"]["constant"]),
+            expected_ast=int(row["capacity"]["ast"]),
+        )
         _validate_build_provenance(metadata, row)
+        program_fingerprints.add(row["program_fingerprint"])
     if len(hashes) != 1:
         raise ReceiptError(
             "pseudocode and live CFG hashes are not equal across full captures"
         )
+    if len(program_fingerprints) != 1:
+        raise ReceiptError("full rows do not share one final program fingerprint")
     baseline = rows["baseline"]
     candidate = rows["candidate"]
     if (
@@ -920,27 +1340,43 @@ def _validate_cache_matrix(
             or workload_hash != metadata["workload_hash"]
         ):
             raise ReceiptError(f"{prefix} workload fingerprint differs from capture")
-        _require_nonnegative_integer(
-            row["workload_operations"], f"{prefix}.workload_operations", positive=True
-        )
+        if row["workload_operations"] != metadata["workload_operations"]:
+            raise ReceiptError(f"{prefix} workload operation count differs from capture")
+        if row["replayed_operations"] != row["workload_operations"]:
+            raise ReceiptError(f"{prefix} replayed operation count is incomplete")
         counts = row["operation_counts"]
         for name in (
             "l",
             "r",
             "d",
+            "minsn_to_ast",
             "reconstructed_instruction_mops",
+            "mop_to_ast",
+            "get_constant_mop",
             "p_ast",
             "mop_utils",
         ):
             _require_nonnegative_integer(
-                counts.get(name), f"{prefix}.operation_counts.{name}", positive=True
+                counts.get(name), f"{prefix}.operation_counts.{name}"
             )
+        capture_counts = metadata.get("capture_operation_counts")
+        if not isinstance(capture_counts, dict) or counts != capture_counts:
+            raise ReceiptError(f"{prefix} operation counts differ from captured workload")
         _require_finite_number(
             row["wall_seconds"], f"{prefix}.wall_seconds", positive=True
         )
-        for field in ("rss_before_bytes", "rss_after_bytes", "rss_peak_bytes"):
+        for field in (
+            "rss_before_bytes",
+            "rss_after_bytes",
+            "rss_current_bytes",
+            "rss_peak_bytes",
+        ):
             _require_nonnegative_integer(row[field], f"{prefix}.{field}")
-        if row["rss_peak_bytes"] < max(row["rss_before_bytes"], row["rss_after_bytes"]):
+        if row["rss_current_bytes"] != row["rss_after_bytes"]:
+            raise ReceiptError(f"{prefix} current RSS is not its after RSS")
+        if row["rss_peak_bytes"] < max(
+            row["rss_before_bytes"], row["rss_after_bytes"], row["rss_current_bytes"]
+        ):
             raise ReceiptError(f"{prefix} RSS peak is inconsistent")
         if (
             row["memory_delta_bytes"]
@@ -959,7 +1395,19 @@ def _validate_cache_matrix(
         )
         if row["real_api_calls"] != row["cache_stats"]["real_api_calls"]:
             raise ReceiptError(f"{prefix} real API count is not bound to cache stats")
-        _cache_stats_memory(row)
+        cache_evictions, _cache_memory = _cache_stats_memory(
+            row,
+            expected_constant=int(row["constant_capacity"]),
+            expected_ast=int(row["ast_capacity"]),
+        )
+        if row["evictions"] != cache_evictions:
+            raise ReceiptError(f"{prefix} evictions are not bound to cache stats")
+        expected_peak_weight = sum(
+            row["cache_stats"][name]["max_weight_ever"]
+            for name in ("MOP_CONSTANT_CACHE", "MOP_TO_AST_CACHE")
+        )
+        if not math.isclose(row["peak_weight"], expected_peak_weight, rel_tol=1e-9):
+            raise ReceiptError(f"{prefix} peak weight is not bound to cache stats")
     if workload_hashes != {metadata["workload_hash"]}:
         raise ReceiptError("cache matrix workload hashes are inconsistent")
 
@@ -979,6 +1427,36 @@ def _verify_receipt(receipt: dict[str, Any]) -> None:
     rows = _rows_by_label(receipt)
     if metadata["run_id"] != receipt["phase_fragments"][0]["run_id"]:
         raise ReceiptError("receipt run_id does not match phase fragments")
+    fragments_by_phase = {
+        fragment["phase"]: fragment for fragment in receipt["phase_fragments"]
+    }
+    row_phase_by_label = {
+        "solver_python": "solver_python",
+        "solver_cython": "solver_cython",
+        "baseline": "baseline",
+        "candidate": "candidate",
+        "auto": "auto",
+        "winner": "winner",
+    }
+    for label, phase in row_phase_by_label.items():
+        fragment = fragments_by_phase[phase]
+        row = rows[label]
+        if row["process_id"] != fragment["process_id"]:
+            raise ReceiptError(f"{label} row process marker differs from its phase")
+        if _process_identity_key(row["process_identity"]) != _process_identity_key(
+            fragment["process_identity"]
+        ):
+            raise ReceiptError(f"{label} row process identity differs from its phase")
+    cache_fragment = fragments_by_phase["cache"]
+    for index, row in enumerate(receipt["cache_matrix"]):
+        if row["process_id"] != cache_fragment["process_id"]:
+            raise ReceiptError(f"cache_matrix[{index}] process marker differs from cache phase")
+        if _process_identity_key(row["process_identity"]) != _process_identity_key(
+            cache_fragment["process_identity"]
+        ):
+            raise ReceiptError(
+                f"cache_matrix[{index}] process identity differs from cache phase"
+            )
     _validate_solver_rows(rows, metadata)
     _validate_full_rows(rows, metadata)
     cache_rows = receipt["cache_matrix"]

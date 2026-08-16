@@ -78,23 +78,37 @@
         "peak_value_queue": { "$ref": "#/$defs/non_negative_number" }
       }
     },
+    "process_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pid", "process_start_at_utc", "process_start_source", "hostname", "boot_id"],
+      "properties": {
+        "pid": { "$ref": "#/$defs/positive_integer" },
+        "process_start_at_utc": { "$ref": "#/$defs/non_empty_string" },
+        "process_start_source": { "$ref": "#/$defs/non_empty_string" },
+        "hostname": { "$ref": "#/$defs/non_empty_string" },
+        "boot_id": { "$ref": "#/$defs/non_empty_string" }
+      }
+    },
     "phase_fragment": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["phase", "phase_index", "run_id", "process_id", "database_marker", "payload_sha256"],
+      "required": ["phase", "phase_index", "run_id", "process_id", "process_identity", "database_marker", "created_at_utc", "payload_sha256"],
       "properties": {
         "phase": { "enum": ["capture", "solver_python", "solver_cython", "baseline", "candidate", "auto", "cache", "winner"] },
         "phase_index": { "$ref": "#/$defs/non_negative_integer" },
         "run_id": { "$ref": "#/$defs/non_empty_string" },
         "process_id": { "$ref": "#/$defs/non_empty_string" },
+        "process_identity": { "$ref": "#/$defs/process_identity" },
         "database_marker": { "$ref": "#/$defs/non_empty_string" },
+        "created_at_utc": { "$ref": "#/$defs/non_empty_string" },
         "payload_sha256": { "$ref": "#/$defs/sha256" }
       }
     },
     "cache_stat": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["seq", "size", "weight", "hits", "misses", "max_size_ever", "max_weight_ever", "lookups", "insertions", "replacements", "capacity_evictions", "expirations", "explicit_removals", "weak_reference_removals", "configured_max_size", "configured_max_weight", "memory_delta_bytes", "real_api_calls"],
+      "required": ["seq", "size", "weight", "hits", "misses", "max_size_ever", "max_weight_ever", "lookups", "insertions", "replacements", "capacity_evictions", "expirations", "explicit_removals", "weak_reference_removals", "configured_max_size", "configured_max_weight", "memory_delta_bytes", "rss_before_bytes", "rss_after_bytes", "rss_current_bytes", "rss_peak_bytes", "real_api_calls"],
       "properties": {
         "seq": { "$ref": "#/$defs/non_negative_integer" },
         "size": { "$ref": "#/$defs/non_negative_integer" },
@@ -113,30 +127,39 @@
         "configured_max_size": { "type": ["integer", "null"], "minimum": 1 },
         "configured_max_weight": { "type": ["number", "null"], "minimum": 0 },
         "memory_delta_bytes": { "type": "integer" },
+        "rss_before_bytes": { "$ref": "#/$defs/non_negative_integer" },
+        "rss_after_bytes": { "$ref": "#/$defs/non_negative_integer" },
+        "rss_current_bytes": { "$ref": "#/$defs/non_negative_integer" },
+        "rss_peak_bytes": { "$ref": "#/$defs/non_negative_integer" },
         "real_api_calls": { "$ref": "#/$defs/non_negative_integer" }
       }
     },
     "cache_stats": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["MOP_CONSTANT_CACHE", "MOP_TO_AST_CACHE", "total_evictions", "memory_delta_bytes", "real_api_calls"],
+      "required": ["MOP_CONSTANT_CACHE", "MOP_TO_AST_CACHE", "total_evictions", "memory_delta_bytes", "rss_before_bytes", "rss_after_bytes", "rss_current_bytes", "rss_peak_bytes", "real_api_calls"],
       "properties": {
         "MOP_CONSTANT_CACHE": { "$ref": "#/$defs/cache_stat" },
         "MOP_TO_AST_CACHE": { "$ref": "#/$defs/cache_stat" },
         "total_evictions": { "$ref": "#/$defs/non_negative_integer" },
         "memory_delta_bytes": { "type": "integer" },
+        "rss_before_bytes": { "$ref": "#/$defs/non_negative_integer" },
+        "rss_after_bytes": { "$ref": "#/$defs/non_negative_integer" },
+        "rss_current_bytes": { "$ref": "#/$defs/non_negative_integer" },
+        "rss_peak_bytes": { "$ref": "#/$defs/non_negative_integer" },
         "real_api_calls": { "$ref": "#/$defs/positive_integer" }
       }
     },
     "build_item": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["module_file", "module_sha256", "module_mtime_ns", "build_abi", "source_hash", "callable"],
+      "required": ["module_file", "module_sha256", "module_mtime_ns", "build_abi", "source_path", "source_hash", "callable"],
       "properties": {
-        "module_file": { "$ref": "#/$defs/non_empty_string" },
+        "module_file": { "type": "string", "pattern": ".*\\.(so|dylib|pyd)$" },
         "module_sha256": { "$ref": "#/$defs/sha256" },
         "module_mtime_ns": { "$ref": "#/$defs/positive_integer" },
         "build_abi": { "$ref": "#/$defs/non_empty_string" },
+        "source_path": { "type": "string", "pattern": ".*\\.pyx$" },
         "source_hash": { "$ref": "#/$defs/sha256" },
         "callable": { "const": true }
       }
@@ -144,10 +167,10 @@
     "build_provenance": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["c_sccp", "_fast_dataflow", "source_sha256_at_build", "source_tree_sha256"],
+      "required": ["c_sccp", "c_dataflow", "source_sha256_at_build", "source_tree_sha256"],
       "properties": {
         "c_sccp": { "$ref": "#/$defs/build_item" },
-        "_fast_dataflow": { "$ref": "#/$defs/build_item" },
+        "c_dataflow": { "$ref": "#/$defs/build_item" },
         "source_sha256_at_build": { "$ref": "#/$defs/sha256" },
         "source_tree_sha256": { "$ref": "#/$defs/sha256" }
       }
@@ -155,7 +178,7 @@
     "metadata": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["run_id", "gate_mode", "binary", "binary_sha256", "function_ea", "function_name", "maturity", "platform", "python", "ida_version", "source_path", "fixture_source", "source_sha256_at_copy", "fixture_path", "fixture_copy", "fixture_sha256", "fixture_size_bytes", "fixture_copied_at_utc", "capture_method", "capture_hooks_stopped", "capture_lifecycle_events", "capture_optimizer_attempts", "workload_operations", "workload_fingerprint", "workload_hash", "snapshot_fingerprint", "warmup", "iterations", "build_source_sha256", "build_provenance"],
+      "required": ["run_id", "gate_mode", "binary", "binary_sha256", "function_ea", "function_name", "maturity", "platform", "python", "ida_version", "source_path", "fixture_source", "source_sha256_at_copy", "source_sha256_before", "source_sha256_after", "source_size_bytes", "fixture_path", "fixture_copy", "fixture_attestation_path", "attestation_fixture_path", "fixture_sha256", "fixture_size_bytes", "fixture_copied_at_utc", "capture_method", "capture_hooks_stopped", "capture_lifecycle_events", "capture_optimizer_attempts", "workload_operations", "workload_fingerprint", "workload_hash", "workload_blocks_fingerprint", "snapshot_fingerprint", "program_fingerprint", "capture_operation_counts", "warmup", "iterations", "build_source_sha256", "build_provenance"],
       "properties": {
         "run_id": { "$ref": "#/$defs/non_empty_string" },
         "gate_mode": { "enum": ["exact", "smoke", "unit"] },
@@ -170,8 +193,13 @@
         "source_path": { "$ref": "#/$defs/non_empty_string" },
         "fixture_source": { "$ref": "#/$defs/non_empty_string" },
         "source_sha256_at_copy": { "$ref": "#/$defs/sha256" },
+        "source_sha256_before": { "$ref": "#/$defs/sha256" },
+        "source_sha256_after": { "$ref": "#/$defs/sha256" },
+        "source_size_bytes": { "$ref": "#/$defs/positive_integer" },
         "fixture_path": { "$ref": "#/$defs/non_empty_string" },
         "fixture_copy": { "$ref": "#/$defs/non_empty_string" },
+        "fixture_attestation_path": { "$ref": "#/$defs/non_empty_string" },
+        "attestation_fixture_path": { "$ref": "#/$defs/non_empty_string" },
         "fixture_sha256": { "$ref": "#/$defs/sha256" },
         "fixture_size_bytes": { "$ref": "#/$defs/positive_integer" },
         "fixture_copied_at_utc": { "$ref": "#/$defs/non_empty_string" },
@@ -182,9 +210,11 @@
         "workload_operations": { "$ref": "#/$defs/positive_integer" },
         "workload_fingerprint": { "$ref": "#/$defs/sha256" },
         "workload_hash": { "$ref": "#/$defs/sha256" },
+        "workload_blocks_fingerprint": { "$ref": "#/$defs/sha256" },
         "snapshot_fingerprint": { "$ref": "#/$defs/sha256" },
-        "workload_lifetime": { "$ref": "#/$defs/non_empty_string" },
+        "program_fingerprint": { "$ref": "#/$defs/sha256" },
         "capture_operation_counts": { "$ref": "#/$defs/operation_counts" },
+        "workload_lifetime": { "$ref": "#/$defs/non_empty_string" },
         "warmup": { "const": 3 },
         "iterations": { "const": 10 },
         "build_source_sha256": { "$ref": "#/$defs/sha256" },
@@ -196,7 +226,7 @@
       "properties": {
         "phase": { "$ref": "#/$defs/non_empty_string" },
         "run_id": { "$ref": "#/$defs/non_empty_string" },
-        "process_id": { "$ref": "#/$defs/non_empty_string" },
+        "process_identity": { "$ref": "#/$defs/process_identity" },
         "database_marker": { "$ref": "#/$defs/non_empty_string" },
         "fresh_process": { "const": true },
         "kind": { "$ref": "#/$defs/non_empty_string" },
@@ -207,6 +237,7 @@
         "backend": { "$ref": "#/$defs/non_empty_string" },
         "status": { "$ref": "#/$defs/non_empty_string" },
         "program_fingerprint": { "$ref": "#/$defs/sha256" },
+        "program_identity_group": { "enum": ["capture_snapshot", "full_decomp"] },
         "wall_seconds": { "$ref": "#/$defs/positive_number" },
         "sccp_summary": { "$ref": "#/$defs/sccp_summary" },
         "parity_projection": { "$ref": "#/$defs/parity_projection" },
@@ -218,7 +249,7 @@
         { "$ref": "#/$defs/common_row" },
         {
           "type": "object",
-          "required": ["phase", "run_id", "process_id", "database_marker", "fresh_process", "kind", "label", "function_ea", "maturity", "overlay", "backend", "status", "program_fingerprint", "snapshot_fingerprint", "workload_fingerprint", "wall_seconds", "sccp_summary", "parity_projection", "parity_sha256", "samples_seconds", "median_seconds", "p95_seconds", "warmup", "iterations"],
+          "required": ["phase", "run_id", "process_id", "process_identity", "database_marker", "fresh_process", "kind", "label", "function_ea", "maturity", "overlay", "backend", "status", "program_fingerprint", "program_identity_group", "snapshot_fingerprint", "workload_fingerprint", "wall_seconds", "sccp_summary", "parity_projection", "parity_sha256", "samples_seconds", "median_seconds", "p95_seconds", "warmup", "iterations"],
           "properties": {
             "phase": { "enum": ["solver_python", "solver_cython"] },
             "kind": { "const": "solver_replay" },
@@ -241,7 +272,7 @@
         { "$ref": "#/$defs/common_row" },
         {
           "type": "object",
-          "required": ["phase", "run_id", "process_id", "database_marker", "fresh_process", "kind", "label", "function_ea", "maturity", "overlay", "backend", "status", "program_fingerprint", "wall_seconds", "adapter_seconds", "solver_seconds", "sccp_summary", "fcp_patches", "abstentions", "cache_stats", "memory_delta_bytes", "rss_before_bytes", "rss_after_bytes", "rss_peak_bytes", "pseudocode_sha256", "live_pseudocode_sha256", "cfg_sha256", "live_cfg_sha256", "evidence_origin", "parity_projection", "parity_sha256", "compiled_provenance", "capacity"],
+          "required": ["phase", "run_id", "process_id", "process_identity", "database_marker", "fresh_process", "kind", "label", "function_ea", "maturity", "overlay", "backend", "status", "program_fingerprint", "program_identity_group", "wall_seconds", "adapter_seconds", "solver_seconds", "sccp_summary", "fcp_patches", "abstentions", "cache_stats", "memory_delta_bytes", "rss_before_bytes", "rss_after_bytes", "rss_current_bytes", "rss_peak_bytes", "pseudocode_sha256", "live_pseudocode_sha256", "cfg_sha256", "live_cfg_sha256", "evidence_origin", "parity_projection", "parity_sha256", "compiled_provenance", "capacity"],
           "properties": {
             "phase": { "enum": ["baseline", "candidate", "auto", "winner"] },
             "kind": { "const": "full_decomp" },
@@ -256,6 +287,7 @@
             "memory_delta_bytes": { "type": "integer" },
             "rss_before_bytes": { "$ref": "#/$defs/non_negative_integer" },
             "rss_after_bytes": { "$ref": "#/$defs/non_negative_integer" },
+            "rss_current_bytes": { "$ref": "#/$defs/non_negative_integer" },
             "rss_peak_bytes": { "$ref": "#/$defs/non_negative_integer" },
             "pseudocode_sha256": { "$ref": "#/$defs/sha256" },
             "live_pseudocode_sha256": { "$ref": "#/$defs/sha256" },
@@ -271,24 +303,28 @@
     "operation_counts": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["l", "r", "d", "reconstructed_instruction_mops", "p_ast", "mop_utils"],
+      "required": ["l", "r", "d", "minsn_to_ast", "reconstructed_instruction_mops", "mop_to_ast", "get_constant_mop", "p_ast", "mop_utils"],
       "properties": {
-        "l": { "$ref": "#/$defs/positive_integer" },
-        "r": { "$ref": "#/$defs/positive_integer" },
-        "d": { "$ref": "#/$defs/positive_integer" },
+        "l": { "$ref": "#/$defs/non_negative_integer" },
+        "r": { "$ref": "#/$defs/non_negative_integer" },
+        "d": { "$ref": "#/$defs/non_negative_integer" },
+        "minsn_to_ast": { "$ref": "#/$defs/positive_integer" },
         "reconstructed_instruction_mops": { "$ref": "#/$defs/positive_integer" },
-        "p_ast": { "$ref": "#/$defs/positive_integer" },
+        "mop_to_ast": { "$ref": "#/$defs/non_negative_integer" },
+        "get_constant_mop": { "$ref": "#/$defs/non_negative_integer" },
+        "p_ast": { "$ref": "#/$defs/non_negative_integer" },
         "mop_utils": { "$ref": "#/$defs/positive_integer" }
       }
     },
     "cache_row": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["phase", "run_id", "process_id", "database_marker", "fresh_process", "kind", "label", "function_ea", "maturity", "overlay", "backend", "status", "wall_seconds", "workload_fingerprint", "workload_hash", "workload_operations", "operation_counts", "cache_stats", "constant_capacity", "ast_capacity", "rebuilds", "evictions", "peak_weight", "memory_delta_bytes", "rss_before_bytes", "rss_after_bytes", "rss_peak_bytes", "real_api_calls"],
+      "required": ["phase", "run_id", "process_id", "process_identity", "database_marker", "fresh_process", "kind", "label", "function_ea", "maturity", "overlay", "backend", "status", "wall_seconds", "workload_fingerprint", "workload_hash", "workload_operations", "replayed_operations", "operation_counts", "cache_stats", "constant_capacity", "ast_capacity", "rebuilds", "evictions", "peak_weight", "memory_delta_bytes", "rss_before_bytes", "rss_after_bytes", "rss_current_bytes", "rss_peak_bytes", "real_api_calls"],
       "properties": {
         "phase": { "const": "cache" },
         "run_id": { "$ref": "#/$defs/non_empty_string" },
         "process_id": { "$ref": "#/$defs/non_empty_string" },
+        "process_identity": { "$ref": "#/$defs/process_identity" },
         "database_marker": { "$ref": "#/$defs/non_empty_string" },
         "fresh_process": { "const": true },
         "kind": { "const": "cache_replay" },
@@ -302,6 +338,7 @@
         "workload_fingerprint": { "$ref": "#/$defs/sha256" },
         "workload_hash": { "$ref": "#/$defs/sha256" },
         "workload_operations": { "$ref": "#/$defs/positive_integer" },
+        "replayed_operations": { "$ref": "#/$defs/positive_integer" },
         "operation_counts": { "$ref": "#/$defs/operation_counts" },
         "cache_stats": { "$ref": "#/$defs/cache_stats" },
         "constant_capacity": { "$ref": "#/$defs/positive_integer" },
@@ -312,6 +349,7 @@
         "memory_delta_bytes": { "type": "integer" },
         "rss_before_bytes": { "$ref": "#/$defs/non_negative_integer" },
         "rss_after_bytes": { "$ref": "#/$defs/non_negative_integer" },
+        "rss_current_bytes": { "$ref": "#/$defs/non_negative_integer" },
         "rss_peak_bytes": { "$ref": "#/$defs/non_negative_integer" },
         "real_api_calls": { "$ref": "#/$defs/positive_integer" }
       }

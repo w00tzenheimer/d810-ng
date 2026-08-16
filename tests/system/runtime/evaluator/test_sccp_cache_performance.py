@@ -13,11 +13,12 @@ from dataclasses import asdict
 import hashlib
 import importlib
 import json
+import gc
 import os
 from pathlib import Path
 import platform
-import resource
 import statistics
+import subprocess
 import sys
 import time
 from d810.core.typing import Any
@@ -35,8 +36,10 @@ from verify_sccp_perf_receipt import (  # noqa: E402
     PHASE_ORDER,
     FixtureAttestationError,
     copy_fixture_with_attestation,
+    load_fixture_attestation,
     merge_phase_fragments,
     phase_fragment_path,
+    _process_start_evidence,
     verify,
     write_phase_fragment,
 )
@@ -66,14 +69,25 @@ _SCCP_COUNTERS = (
     "constants_exposed",
     "edges_exposed",
 )
-_PROCESS_MARKER = f"{os.getpid()}-{time.time_ns()}"
+
+# This is deliberately computed once from the running process.  A caller may
+# choose the phase label, but may not inject a marker that pretends to be a
+# fresh process.
+_PROCESS_IDENTITY: dict[str, Any] | None = None
 
 
 def _phase_process_id(phase: str) -> str:
     """Identify the current fresh invocation, not only its container PID."""
 
-    configured = os.environ.get("D810_PERF_PROCESS_MARKER")
-    return f"{phase}:{configured or _PROCESS_MARKER}"
+    identity = _phase_process_identity()
+    return f"{phase}:pid-{identity['pid']}:{identity['process_start_at_utc']}"
+
+
+def _phase_process_identity() -> dict[str, Any]:
+    global _PROCESS_IDENTITY
+    if _PROCESS_IDENTITY is None:
+        _PROCESS_IDENTITY = _process_start_evidence()
+    return dict(_PROCESS_IDENTITY)
 
 
 def _sha256_bytes(value: bytes) -> str:
@@ -158,6 +172,20 @@ def _binary_path() -> Path:
     return path
 
 
+def _fixture_attestation() -> tuple[Path, dict[str, Any]]:
+    configured = os.environ.get("D810_FIXTURE_ATTESTATION")
+    if not configured:
+        pytest.fail(
+            "BLOCKED: D810_FIXTURE_ATTESTATION is required for every phase",
+            pytrace=False,
+        )
+    path = Path(configured)
+    try:
+        return path, load_fixture_attestation(path)
+    except Exception as exc:
+        pytest.fail(f"BLOCKED: invalid fixture attestation: {exc}", pytrace=False)
+
+
 def _function_ea() -> int:
     configured = os.environ.get("D810_SCCP_FUNCTION_EA")
     if configured:
@@ -180,8 +208,8 @@ def _require_compiled_backend(*, full: bool = False) -> dict[str, Any]:
 
     try:
         c_sccp = importlib.import_module("d810.speedups.evaluator.c_sccp")
-        fast_dataflow = importlib.import_module(
-            "d810.analyses.data_flow.constant_prop_dataflow._fast_dataflow"
+        c_dataflow = importlib.import_module(
+            "d810.speedups.optimizers.microcode.flow.constant_prop.c_dataflow"
         )
     except Exception as exc:
         pytest.fail(
@@ -189,11 +217,11 @@ def _require_compiled_backend(*, full: bool = False) -> dict[str, Any]:
             pytrace=False,
         )
     c_solve = getattr(c_sccp, "solve", None)
-    dataflow = getattr(fast_dataflow, "run_dataflow_cython", None)
+    dataflow = getattr(c_dataflow, "run_dataflow_cython", None)
     if not callable(c_solve) or not callable(dataflow):
         pytest.fail(
             "BLOCKED: required compiled c_sccp.solve and "
-            "_fast_dataflow.run_dataflow_cython are not callable",
+            "c_dataflow.run_dataflow_cython are not callable",
             pytrace=False,
         )
     if full and os.environ.get("D810_REQUIRE_COMPILED_SCCP") == "1":
@@ -205,45 +233,61 @@ def _require_compiled_backend(*, full: bool = False) -> dict[str, Any]:
                 pytrace=False,
             )
 
-    def item(module: object, source_names: tuple[str, ...]) -> dict[str, Any]:
+    def item(
+        module: object,
+        source_path: Path,
+        callable_name: str,
+    ) -> dict[str, Any]:
         module_file = Path(str(getattr(module, "__file__", ""))).resolve()
         if not module_file.is_file():
             pytest.fail(
                 f"BLOCKED: compiled module has no live file: {module_file}",
                 pytrace=False,
             )
-        source_hashes = []
-        for source_name in source_names:
-            source_path = Path(__file__).resolve().parents[4] / source_name
-            if source_path.is_file():
-                source_hashes.append(_sha256_file(source_path))
-        if not source_hashes:
+        if not source_path.is_file():
             pytest.fail(
                 "BLOCKED: compiled source attestation is unavailable", pytrace=False
+            )
+        if module_file.suffix not in {".so", ".dylib", ".pyd"}:
+            pytest.fail(
+                f"BLOCKED: {module_file} is not a compiled extension", pytrace=False
+            )
+        if not callable(getattr(module, callable_name, None)):
+            pytest.fail(
+                f"BLOCKED: compiled module is missing callable {callable_name}",
+                pytrace=False,
             )
         return {
             "module_file": str(module_file),
             "module_sha256": _sha256_file(module_file),
             "module_mtime_ns": int(module_file.stat().st_mtime_ns),
             "build_abi": f"python-{platform.python_version()}-{platform.machine()}",
-            "source_hash": _sha256_bytes("".join(source_hashes).encode("ascii")),
+            "source_path": str(source_path),
+            "source_hash": _sha256_file(source_path),
             "callable": True,
         }
 
-    c_item = item(c_sccp, ("src/d810/speedups/evaluator/c_sccp.pyx",))
+    repo_root = Path(__file__).resolve().parents[4]
+    c_item = item(
+        c_sccp,
+        repo_root / "src/d810/speedups/evaluator/c_sccp.pyx",
+        "solve",
+    )
     dataflow_item = item(
-        fast_dataflow,
-        ("src/d810/analyses/data_flow/constant_prop_dataflow/_fast_dataflow.py",),
+        c_dataflow,
+        repo_root
+        / "src/d810/speedups/optimizers/microcode/flow/constant_prop/c_dataflow.pyx",
+        "run_dataflow_cython",
     )
     source_sha = _canonical_hash(
         {
             "c_sccp": c_item["source_hash"],
-            "_fast_dataflow": dataflow_item["source_hash"],
+            "c_dataflow": dataflow_item["source_hash"],
         }
     )
     return {
         "c_sccp": c_item,
-        "_fast_dataflow": dataflow_item,
+        "c_dataflow": dataflow_item,
         "source_sha256_at_build": source_sha,
         "source_tree_sha256": source_sha,
     }
@@ -252,6 +296,7 @@ def _require_compiled_backend(*, full: bool = False) -> dict[str, Any]:
 def _metadata_base(
     function_name: str,
     program: dict[str, Any],
+    blocks: list[dict[str, Any]],
     operations: list[dict[str, Any]],
     counts: dict[str, int],
     fixture: Path,
@@ -260,8 +305,23 @@ def _metadata_base(
     capture_optimizer_attempts: int = 0,
 ) -> dict[str, Any]:
     fixture_sha = _sha256_file(fixture)
-    workload_fingerprint = _canonical_hash(operations)
-    workload_hash = _canonical_hash({"operations": operations, "counts": counts})
+    attestation_path, attestation = _fixture_attestation()
+    if fixture_sha != attestation["fixture_sha256"]:
+        pytest.fail(
+            "BLOCKED: mounted fixture does not match attested fixture SHA256",
+            pytrace=False,
+        )
+    if int(fixture.stat().st_size) != int(attestation["fixture_size_bytes"]):
+        pytest.fail(
+            "BLOCKED: mounted fixture does not match attested fixture size",
+            pytrace=False,
+        )
+    workload_fingerprint = _canonical_hash(
+        {"blocks": blocks, "operations": operations}
+    )
+    workload_hash = _canonical_hash(
+        {"blocks": blocks, "operations": operations, "counts": counts}
+    )
     build = _require_compiled_backend()
     return {
         "run_id": _run_id(),
@@ -274,16 +334,19 @@ def _metadata_base(
         "platform": f"{platform.system()}-{platform.machine()}",
         "python": platform.python_version(),
         "ida_version": str(__import__("idaapi").get_kernel_version()),
-        "source_path": _SOURCE_IDB,
-        "fixture_source": _SOURCE_IDB,
-        "source_sha256_at_copy": fixture_sha,
+        "source_path": attestation["source_path"],
+        "fixture_source": attestation["source_path"],
+        "source_sha256_at_copy": attestation["source_sha256_at_copy"],
+        "source_sha256_before": attestation["source_sha256_before"],
+        "source_sha256_after": attestation["source_sha256_after"],
+        "source_size_bytes": attestation["source_size_bytes"],
         "fixture_path": str(fixture.resolve()),
         "fixture_copy": str(fixture.resolve()),
-        "fixture_sha256": fixture_sha,
+        "fixture_sha256": attestation["fixture_sha256"],
         "fixture_size_bytes": int(fixture.stat().st_size),
-        "fixture_copied_at_utc": os.environ.get(
-            "D810_FIXTURE_COPIED_AT_UTC", "1970-01-01T00:00:00+00:00"
-        ),
+        "fixture_copied_at_utc": attestation["fixture_copied_at_utc"],
+        "fixture_attestation_path": str(attestation_path.resolve()),
+        "attestation_fixture_path": attestation["fixture_path"],
         "capture_method": "one hook-free GLBOPT1 MBA; detached primitive SCCP snapshot and live-coordinate cache replay",
         "capture_hooks_stopped": True,
         "capture_lifecycle_events": capture_lifecycle_events,
@@ -291,7 +354,9 @@ def _metadata_base(
         "workload_operations": len(operations),
         "workload_fingerprint": workload_fingerprint,
         "workload_hash": workload_hash,
+        "workload_blocks_fingerprint": _canonical_hash(blocks),
         "snapshot_fingerprint": program["fingerprint"],
+        "program_fingerprint": program["fingerprint"],
         "warmup": 3,
         "iterations": 10,
         "build_source_sha256": build["source_tree_sha256"],
@@ -345,6 +410,108 @@ def _operand_to_dict(operand: object | None) -> dict[str, Any] | None:
     return mop_to_dict(operand)
 
 
+def _snapshot_descriptor(snapshot: object) -> dict[str, Any]:
+    """Return every scalar field of a MopSnapshot, excluding its owned clone."""
+
+    return {
+        field: getattr(snapshot, field)
+        for field in (
+            "t",
+            "size",
+            "valnum",
+            "value",
+            "reg",
+            "stkoff",
+            "gaddr",
+            "lvar_idx",
+            "lvar_off",
+            "block_num",
+            "helper_name",
+            "const_str",
+            "pair_lo_t",
+            "pair_hi_t",
+        )
+    }
+
+
+def _mop_descriptor(mop: object | None) -> dict[str, Any] | None:
+    if mop is None:
+        return None
+    from d810.hexrays.ir.mop_snapshot import MopSnapshot
+
+    snapshot = MopSnapshot.from_mop(mop)
+    return {
+        "snapshot": _snapshot_descriptor(snapshot),
+        "mop": _operand_to_dict(mop),
+    }
+
+
+def _instruction_descriptor(
+    block_index: int,
+    block: object,
+    instruction_index: int,
+    instruction: object,
+) -> dict[str, Any]:
+    return {
+        "block_index": block_index,
+        "block_serial": int(getattr(block, "serial", block_index)),
+        "instruction_index": instruction_index,
+        "opcode": int(getattr(instruction, "opcode", -1)),
+        "ea": int(getattr(instruction, "ea", 0)),
+        "size": int(getattr(instruction, "size", 0)),
+        "text": str(instruction._print()) if hasattr(instruction, "_print") else str(instruction),
+        "operands": {
+            attribute: _mop_descriptor(getattr(instruction, attribute, None))
+            for attribute in ("l", "r", "d")
+        },
+    }
+
+
+def _block_descriptor(
+    block_index: int, block: object, instructions: list[dict[str, Any]]
+) -> dict[str, Any]:
+    return {
+        "index": block_index,
+        "serial": int(getattr(block, "serial", block_index)),
+        "start_ea": int(getattr(block, "start_ea", 0)),
+        "end_ea": int(getattr(block, "end_ea", 0)),
+        "type": int(getattr(block, "type", -1)),
+        "flags": int(getattr(block, "flags", 0)),
+        "predecessors": sorted(int(serial) for serial in list(block.predset)),
+        "successors": sorted(int(serial) for serial in list(block.succset)),
+        "instructions": instructions,
+    }
+
+
+def _mba_workload_descriptors(mba: object) -> list[dict[str, Any]]:
+    """Capture all blocks/instructions and their complete l/r/d descriptors."""
+
+    blocks: list[dict[str, Any]] = []
+    for block_index in range(int(mba.qty)):
+        block = mba.get_mblock(block_index)
+        if block is None:
+            continue
+        instructions: list[dict[str, Any]] = []
+        instruction = block.head
+        instruction_index = 0
+        while instruction is not None:
+            instructions.append(
+                _instruction_descriptor(
+                    block_index, block, instruction_index, instruction
+                )
+            )
+            instruction = instruction.next
+            instruction_index += 1
+        blocks.append(_block_descriptor(block_index, block, instructions))
+    if not blocks or not any(block["instructions"] for block in blocks):
+        raise RuntimeError("captured MBA has no blocks/instructions")
+    return blocks
+
+
+def _operation_outcome(value: object) -> str:
+    return "none" if value is None else "value"
+
+
 def _capture_real_workload(
     function_ea: int, fixture: Path
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -355,35 +522,87 @@ def _capture_real_workload(
     from d810.hexrays.expr.p_ast import get_constant_mop
     from d810.hexrays.ir.minsn_utils import minsn_to_ast
     from d810.hexrays.ir.mop_utils import mop_to_ast
-    from d810.hexrays.ir.mop_snapshot import MopSnapshot
     import ida_hexrays
     import idaapi
 
     mba = _gen_mba(function_ea)
     program = snapshot_from_mba(mba)
+    blocks = _mba_workload_descriptors(mba)
     operations: list[dict[str, Any]] = []
     counts = {
         "l": 0,
         "r": 0,
         "d": 0,
+        "minsn_to_ast": 0,
         "reconstructed_instruction_mops": 0,
+        "mop_to_ast": 0,
+        "get_constant_mop": 0,
+        # Compatibility aliases retained, but they are derived from the
+        # captured stream rather than estimated constants.
         "p_ast": 0,
         "mop_utils": 0,
     }
-    for block_index in range(int(mba.qty)):
-        block = mba.get_mblock(block_index)
-        if block is None:
-            continue
-        instruction = block.head
-        instruction_index = 0
-        while instruction is not None:
+
+    for block in blocks:
+        block_index = int(block["index"])
+        live_block = mba.get_mblock(block_index)
+        instruction = live_block.head
+        for descriptor in block["instructions"]:
+            instruction_index = int(descriptor["instruction_index"])
+            location = {
+                "block_index": block_index,
+                "block_serial": int(block["serial"]),
+                "instruction_index": instruction_index,
+            }
             try:
-                minsn_to_ast(instruction)
-                counts["mop_utils"] += 1
-            except Exception:
-                # The production helper is attempted for every instruction;
-                # unsupported diagnostics remain part of the real stream.
-                pass
+                result = minsn_to_ast(instruction)
+                outcome = _operation_outcome(result)
+            except Exception as exc:
+                outcome = f"exception:{type(exc).__name__}"
+            operations.append({**location, "kind": "minsn_to_ast", "outcome": outcome})
+            counts["minsn_to_ast"] += 1
+            counts["mop_utils"] += 1
+
+            reconstructed = ida_hexrays.mop_t()
+            try:
+                reconstructed.create_from_insn(instruction)
+            except Exception as exc:
+                operations.append(
+                    {
+                        **location,
+                        "kind": "reconstructed_instruction_mop",
+                        "outcome": f"exception:{type(exc).__name__}",
+                        "descriptor": None,
+                    }
+                )
+                counts["reconstructed_instruction_mops"] += 1
+            else:
+                reconstructed_descriptor = _mop_descriptor(reconstructed)
+                operations.append(
+                    {
+                        **location,
+                        "kind": "reconstructed_instruction_mop",
+                        "outcome": "value",
+                        "descriptor": reconstructed_descriptor,
+                    }
+                )
+                counts["reconstructed_instruction_mops"] += 1
+                try:
+                    result = mop_to_ast(reconstructed)
+                    outcome = _operation_outcome(result)
+                except Exception as exc:
+                    outcome = f"exception:{type(exc).__name__}"
+                operations.append(
+                    {
+                        **location,
+                        "kind": "reconstructed_mop_to_ast",
+                        "outcome": outcome,
+                        "descriptor": reconstructed_descriptor,
+                    }
+                )
+                counts["mop_to_ast"] += 1
+                counts["p_ast"] += 1
+
             for attribute in ("l", "r", "d"):
                 mop = getattr(instruction, attribute, None)
                 if mop is None or int(getattr(mop, "t", ida_hexrays.mop_z)) == int(
@@ -391,53 +610,56 @@ def _capture_real_workload(
                 ):
                     continue
                 counts[attribute] += 1
-                try:
-                    snapshot = MopSnapshot.from_mop(mop)
-                    descriptor = _operand_to_dict(mop)
-                    mop_to_ast(mop)
-                    counts["p_ast"] += 1
-                    if int(getattr(mop, "t", -1)) == int(ida_hexrays.mop_n):
-                        value = getattr(getattr(mop, "nnn", None), "value", None)
-                        if value is not None:
-                            get_constant_mop(int(value), int(getattr(mop, "size", 0)))
-                except Exception as exc:
-                    raise RuntimeError(
-                        f"real MOP operation capture failed block={block_index} instruction={instruction_index} attribute={attribute}: {exc}"
-                    ) from exc
+                descriptor_value = _mop_descriptor(mop)
                 operations.append(
                     {
-                        "block_index": block_index,
-                        "block_serial": int(getattr(block, "serial", block_index)),
-                        "instruction_index": instruction_index,
+                        **location,
+                        "kind": "mop_to_ast",
                         "attribute": attribute,
-                        "snapshot": {
-                            "t": int(snapshot.t),
-                            "size": int(snapshot.size),
-                            "value": snapshot.value,
-                            "reg": snapshot.reg,
-                            "stkoff": snapshot.stkoff,
-                            "gaddr": snapshot.gaddr,
-                            "lvar_idx": snapshot.lvar_idx,
-                            "lvar_off": snapshot.lvar_off,
-                            "block_num": snapshot.block_num,
-                            "helper_name": snapshot.helper_name,
-                            "const_str": snapshot.const_str,
-                            "pair_lo_t": snapshot.pair_lo_t,
-                            "pair_hi_t": snapshot.pair_hi_t,
-                        },
-                        "mop": descriptor,
+                        "outcome": "pending",
+                        "descriptor": descriptor_value,
                     }
                 )
-            counts["reconstructed_instruction_mops"] += 3
+                operation = operations[-1]
+                try:
+                    result = mop_to_ast(mop)
+                    operation["outcome"] = _operation_outcome(result)
+                except Exception as exc:
+                    operation["outcome"] = f"exception:{type(exc).__name__}"
+                counts["mop_to_ast"] += 1
+                counts["p_ast"] += 1
+                if int(getattr(mop, "t", -1)) == int(ida_hexrays.mop_n):
+                    value = getattr(getattr(mop, "nnn", None), "value", None)
+                    if value is not None:
+                        constant_operation = {
+                            **location,
+                            "kind": "get_constant_mop",
+                            "attribute": attribute,
+                            "value": int(value),
+                            "size": int(getattr(mop, "size", 0)),
+                            "outcome": "pending",
+                        }
+                        try:
+                            result = get_constant_mop(
+                                int(value), int(getattr(mop, "size", 0))
+                            )
+                            constant_operation["outcome"] = _operation_outcome(result)
+                        except Exception as exc:
+                            constant_operation["outcome"] = (
+                                f"exception:{type(exc).__name__}"
+                            )
+                        operations.append(constant_operation)
+                        counts["get_constant_mop"] += 1
             instruction = instruction.next
-            instruction_index += 1
+
     if not operations:
-        pytest.fail("BLOCKED: real MBA produced no l/r/d MOP operations", pytrace=False)
+        pytest.fail("BLOCKED: real MBA produced no helper operations", pytrace=False)
     function_name = idaapi.get_name(function_ea) or f"sub_{function_ea:x}"
     lifecycle_after = _assert_capture_hooks_stopped()
     metadata = _metadata_base(
         function_name,
         {"fingerprint": program.fingerprint},
+        blocks,
         operations,
         counts,
         fixture,
@@ -448,6 +670,7 @@ def _capture_real_workload(
     payload = {
         "metadata": metadata,
         "program": _program_to_dict(program),
+        "blocks": blocks,
         "operations": operations,
         "operation_counts": counts,
     }
@@ -566,9 +789,33 @@ def _load_capture() -> dict[str, Any]:
     return envelope["payload"]
 
 
-def _rss_bytes() -> int:
-    value = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
-    return value if platform.system() == "Darwin" else value * 1024
+def _current_rss_bytes() -> int:
+    """Read current resident RSS, avoiding ru_maxrss high-water semantics."""
+
+    if platform.system() == "Linux":
+        try:
+            resident_pages = int(Path("/proc/self/statm").read_text().split()[1])
+            return resident_pages * int(os.sysconf("SC_PAGE_SIZE"))
+        except (OSError, ValueError, IndexError):
+            pass
+    if platform.system() == "Darwin":
+        try:
+            result = subprocess.run(
+                ["ps", "-o", "rss=", "-p", str(os.getpid())],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            return int(result.stdout.strip()) * 1024
+        except (OSError, ValueError, subprocess.SubprocessError):
+            pass
+    try:
+        import resource
+
+        value = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+        return value * 1024
+    except (ImportError, OSError, ValueError):
+        return 0
 
 
 def _parity_projection(result: object) -> dict[str, Any]:
@@ -661,6 +908,7 @@ def _solver_phase(backend: str) -> dict[str, Any]:
         "phase": f"solver_{backend}",
         "run_id": _run_id(),
         "process_id": _phase_process_id(f"solver_{backend}"),
+        "process_identity": _phase_process_identity(),
         "database_marker": f"{Path(__file__).name}:{_phase_process_id(f'solver_{backend}')}",
         "fresh_process": True,
         "kind": "solver_replay",
@@ -671,6 +919,7 @@ def _solver_phase(backend: str) -> dict[str, Any]:
         "backend": backend,
         "status": first.status.value,
         "program_fingerprint": first.program_fingerprint,
+        "program_identity_group": "capture_snapshot",
         "snapshot_fingerprint": capture["metadata"]["snapshot_fingerprint"],
         "workload_fingerprint": capture["metadata"]["workload_fingerprint"],
         "wall_seconds": float(sum(samples)),
@@ -717,25 +966,51 @@ def _pseudocode_sha256(cfunc: object) -> str:
 
 
 def _cache_stat_dict(
-    cache: object, *, memory_delta: int, real_api_calls: int
+    cache: object,
+    *,
+    memory_delta: int,
+    rss_before: int,
+    rss_after: int,
+    rss_current: int,
+    rss_peak: int,
+    real_api_calls: int,
 ) -> dict[str, Any]:
     stats = asdict(cache.stats)
     stats["memory_delta_bytes"] = int(memory_delta)
+    stats["rss_before_bytes"] = int(rss_before)
+    stats["rss_after_bytes"] = int(rss_after)
+    stats["rss_current_bytes"] = int(rss_current)
+    stats["rss_peak_bytes"] = int(rss_peak)
     stats["real_api_calls"] = int(real_api_calls)
     return stats
 
 
-def _cache_stats(*, memory_delta: int) -> dict[str, Any]:
+def _cache_stats(
+    *,
+    memory_delta: int,
+    rss_before: int,
+    rss_after: int,
+    rss_current: int,
+    rss_peak: int,
+) -> dict[str, Any]:
     from d810.core import MOP_CONSTANT_CACHE, MOP_TO_AST_CACHE
 
     constant = _cache_stat_dict(
         MOP_CONSTANT_CACHE,
         memory_delta=memory_delta,
+        rss_before=rss_before,
+        rss_after=rss_after,
+        rss_current=rss_current,
+        rss_peak=rss_peak,
         real_api_calls=int(MOP_CONSTANT_CACHE.stats.lookups),
     )
     ast = _cache_stat_dict(
         MOP_TO_AST_CACHE,
         memory_delta=memory_delta,
+        rss_before=rss_before,
+        rss_after=rss_after,
+        rss_current=rss_current,
+        rss_peak=rss_peak,
         real_api_calls=int(MOP_TO_AST_CACHE.stats.lookups),
     )
     return {
@@ -745,6 +1020,10 @@ def _cache_stats(*, memory_delta: int) -> dict[str, Any]:
             constant["capacity_evictions"] + ast["capacity_evictions"]
         ),
         "memory_delta_bytes": int(memory_delta),
+        "rss_before_bytes": int(rss_before),
+        "rss_after_bytes": int(rss_after),
+        "rss_current_bytes": int(rss_current),
+        "rss_peak_bytes": int(rss_peak),
         "real_api_calls": int(constant["real_api_calls"] + ast["real_api_calls"]),
     }
 
@@ -756,6 +1035,92 @@ def _reset_runtime_state() -> None:
     MOP_CONSTANT_CACHE.clear(reset_stats=True)
     MOP_TO_AST_CACHE.clear(reset_stats=True)
     reset_sccp_session()
+
+
+def _live_instruction(mba: object, operation: dict[str, Any]) -> object:
+    block = mba.get_mblock(int(operation["block_index"]))
+    if block is None:
+        raise RuntimeError(f"workload block {operation['block_index']} disappeared")
+    instruction = block.head
+    for _ in range(int(operation["instruction_index"])):
+        if instruction is None:
+            raise RuntimeError("workload instruction coordinate disappeared")
+        instruction = instruction.next
+    if instruction is None:
+        raise RuntimeError("workload instruction coordinate resolved to null")
+    return instruction
+
+
+def _replay_operation(
+    mba: object,
+    operation: dict[str, Any],
+    *,
+    minsn_to_ast: object,
+    mop_to_ast: object,
+    get_constant_mop: object,
+    ida_hexrays: object,
+) -> str:
+    instruction = _live_instruction(mba, operation)
+    kind = operation["kind"]
+    try:
+        if kind == "minsn_to_ast":
+            result = minsn_to_ast(instruction)
+        elif kind == "reconstructed_instruction_mop":
+            mop = ida_hexrays.mop_t()
+            mop.create_from_insn(instruction)
+            result = mop
+        elif kind == "reconstructed_mop_to_ast":
+            mop = ida_hexrays.mop_t()
+            mop.create_from_insn(instruction)
+            result = mop_to_ast(mop)
+        elif kind == "mop_to_ast":
+            mop = getattr(instruction, operation["attribute"])
+            result = mop_to_ast(mop)
+        elif kind == "get_constant_mop":
+            result = get_constant_mop(int(operation["value"]), int(operation["size"]))
+        else:
+            raise RuntimeError(f"unknown captured workload operation {kind!r}")
+    except Exception as exc:
+        outcome = f"exception:{type(exc).__name__}"
+    else:
+        outcome = _operation_outcome(result)
+    if outcome != operation["outcome"]:
+        raise RuntimeError(
+            "captured workload operation result changed: "
+            f"{kind} at block={operation['block_index']} "
+            f"instruction={operation['instruction_index']} "
+            f"{operation['outcome']!r} != {outcome!r}"
+        )
+    return outcome
+
+
+def _replay_operation_counts(operations: list[dict[str, Any]]) -> dict[str, int]:
+    counts = {
+        "l": 0,
+        "r": 0,
+        "d": 0,
+        "minsn_to_ast": 0,
+        "reconstructed_instruction_mops": 0,
+        "mop_to_ast": 0,
+        "get_constant_mop": 0,
+        "p_ast": 0,
+        "mop_utils": 0,
+    }
+    for operation in operations:
+        kind = operation["kind"]
+        if kind == "minsn_to_ast":
+            counts["minsn_to_ast"] += 1
+            counts["mop_utils"] += 1
+        elif kind == "reconstructed_instruction_mop":
+            counts["reconstructed_instruction_mops"] += 1
+        elif kind in {"reconstructed_mop_to_ast", "mop_to_ast"}:
+            counts["mop_to_ast"] += 1
+            counts["p_ast"] += 1
+            if kind == "mop_to_ast":
+                counts[str(operation["attribute"])] += 1
+        elif kind == "get_constant_mop":
+            counts["get_constant_mop"] += 1
+    return counts
 
 
 def _configure_policy(state: object, backend: str, overlay: str) -> None:
@@ -815,28 +1180,43 @@ def _full_phase(
             ),
         )
         capacity = (int(winner["constant_capacity"]), int(winner["ast_capacity"]))
-    rss_before = _rss_bytes()
-    started = time.perf_counter()
+    rss_before = _current_rss_bytes()
     cache_stats: dict[str, Any] | None = None
     if capacity is None:
+        started = time.perf_counter()
         cfunc = idaapi.decompile(function_ea, flags=idaapi.DECOMP_NO_CACHE)
+        wall_seconds = time.perf_counter() - started
+        rss_after = _current_rss_bytes()
     else:
         with temporary_mop_cache_policy(*capacity):
+            started = time.perf_counter()
             cfunc = idaapi.decompile(function_ea, flags=idaapi.DECOMP_NO_CACHE)
-            cache_stats = _cache_stats(memory_delta=0)
-    wall_seconds = time.perf_counter() - started
-    rss_after = _rss_bytes()
-    rss_peak = max(rss_before, rss_after, _rss_bytes())
+            wall_seconds = time.perf_counter() - started
+            rss_after = _current_rss_bytes()
+            cache_stats = _cache_stats(
+                memory_delta=rss_after - rss_before,
+                rss_before=rss_before,
+                rss_after=rss_after,
+                rss_current=rss_after,
+                rss_peak=rss_after,
+            )
+    rss_peak = max(rss_before, rss_after, _current_rss_bytes())
     if cfunc is None:
         pytest.fail(
             f"BLOCKED: full decompilation failed for 0x{function_ea:x}", pytrace=False
         )
     if cache_stats is None:
-        cache_stats = _cache_stats(memory_delta=0)
+        cache_stats = _cache_stats(
+            memory_delta=rss_after - rss_before,
+            rss_before=rss_before,
+            rss_after=rss_after,
+            rss_current=rss_after,
+            rss_peak=rss_peak,
+        )
     memory_delta = rss_after - rss_before
-    cache_stats["memory_delta_bytes"] = memory_delta
-    cache_stats["MOP_CONSTANT_CACHE"]["memory_delta_bytes"] = memory_delta
-    cache_stats["MOP_TO_AST_CACHE"]["memory_delta_bytes"] = memory_delta
+    cache_stats["rss_peak_bytes"] = rss_peak
+    cache_stats["MOP_CONSTANT_CACHE"]["rss_peak_bytes"] = rss_peak
+    cache_stats["MOP_TO_AST_CACHE"]["rss_peak_bytes"] = rss_peak
     pseudocode_sha = _pseudocode_sha256(cfunc)
     live_pseudocode_sha = _pseudocode_sha256(cfunc)
     cfg_sha = _live_cfg_sha256(function_ea)
@@ -868,6 +1248,7 @@ def _full_phase(
         "phase": label,
         "run_id": _run_id(),
         "process_id": _phase_process_id(label),
+        "process_identity": _phase_process_identity(),
         "database_marker": f"{Path(__file__).name}:{_phase_process_id(label)}",
         "fresh_process": True,
         "kind": "full_decomp",
@@ -878,6 +1259,7 @@ def _full_phase(
         "backend": backend,
         "status": result.status.value,
         "program_fingerprint": live_program.fingerprint,
+        "program_identity_group": "full_decomp",
         "wall_seconds": wall_seconds,
         "adapter_seconds": float(session["adapter_seconds"]),
         "solver_seconds": float(session["solver_seconds"]),
@@ -896,6 +1278,7 @@ def _full_phase(
         "memory_delta_bytes": memory_delta,
         "rss_before_bytes": rss_before,
         "rss_after_bytes": rss_after,
+        "rss_current_bytes": rss_after,
         "rss_peak_bytes": rss_peak,
         "pseudocode_sha256": pseudocode_sha,
         "live_pseudocode_sha256": live_pseudocode_sha,
@@ -920,6 +1303,7 @@ def _cache_phase() -> dict[str, Any]:
     """Replay one captured workload through nine real cache policies exactly once."""
 
     capture = _load_capture()
+    captured_blocks = capture["blocks"]
     operations = capture["operations"]
     counts = capture["operation_counts"]
     function_ea = int(capture["metadata"]["function_ea"])
@@ -936,35 +1320,66 @@ def _cache_phase() -> dict[str, Any]:
     rows = []
     for constant_capacity in (1000, 4096, 8192):
         for ast_capacity in (20480, 40960, 81920):
+            gc.collect()
             _reset_runtime_state()
             mba = _gen_mba(function_ea)
-            rss_before = _rss_bytes()
-            started = time.perf_counter()
+            fresh_blocks = _mba_workload_descriptors(mba)
+            expected_blocks_hash = capture["metadata"]["workload_blocks_fingerprint"]
+            if _canonical_hash(fresh_blocks) != expected_blocks_hash:
+                raise RuntimeError(
+                    "fresh MBA block/instruction descriptors differ from capture"
+                )
+            expected_workload = capture["metadata"]["workload_fingerprint"]
+            if _canonical_hash(
+                {"blocks": fresh_blocks, "operations": operations}
+            ) != expected_workload:
+                raise RuntimeError("fresh MBA workload fingerprint differs from capture")
+            if captured_blocks != fresh_blocks and _canonical_hash(captured_blocks) != _canonical_hash(fresh_blocks):
+                raise RuntimeError("captured and fresh block descriptors are not equal")
+            rss_before = _current_rss_bytes()
+            rss_peak = rss_before
+            replay_counts = {name: 0 for name in counts}
             with temporary_mop_cache_policy(constant_capacity, ast_capacity):
+                started = time.perf_counter()
                 for operation in operations:
-                    block = mba.get_mblock(int(operation["block_index"]))
-                    instruction = block.head
-                    for _ in range(int(operation["instruction_index"])):
-                        instruction = instruction.next
-                    mop = getattr(instruction, operation["attribute"])
-                    mop_to_ast(mop)
-                    if int(operation["snapshot"]["t"]) == int(ida_hexrays.mop_n):
-                        value = operation["snapshot"].get("value")
-                        if value is not None:
-                            get_constant_mop(
-                                int(value), int(operation["snapshot"]["size"])
-                            )
-                # Exercise the production instruction/MOP helper surface too.
-                block = mba.get_mblock(0)
-                instruction = block.head if block is not None else None
-                while instruction is not None:
-                    try:
-                        minsn_to_ast(instruction)
-                    except Exception:
-                        pass
-                    instruction = instruction.next
+                    _replay_operation(
+                        mba,
+                        operation,
+                        minsn_to_ast=minsn_to_ast,
+                        mop_to_ast=mop_to_ast,
+                        get_constant_mop=get_constant_mop,
+                        ida_hexrays=ida_hexrays,
+                    )
+                    kind = operation["kind"]
+                    if kind == "minsn_to_ast":
+                        replay_counts["minsn_to_ast"] += 1
+                        replay_counts["mop_utils"] += 1
+                    elif kind == "reconstructed_instruction_mop":
+                        replay_counts["reconstructed_instruction_mops"] += 1
+                    elif kind in {"mop_to_ast", "reconstructed_mop_to_ast"}:
+                        replay_counts["mop_to_ast"] += 1
+                        replay_counts["p_ast"] += 1
+                        if kind == "mop_to_ast":
+                            replay_counts[str(operation["attribute"])] += 1
+                    elif kind == "get_constant_mop":
+                        replay_counts["get_constant_mop"] += 1
+                    rss_peak = max(rss_peak, _current_rss_bytes())
+                if replay_counts != counts:
+                    raise RuntimeError(
+                        "cache replay operation counts differ from capture: "
+                        f"{replay_counts!r} != {counts!r}"
+                    )
+                replayed_operations = len(operations)
+                rss_after = _current_rss_bytes()
+                rss_peak = max(rss_peak, rss_after)
                 wall_seconds = time.perf_counter() - started
-                cache_stats = _cache_stats(memory_delta=0)
+                cache_stats = _cache_stats(
+                    memory_delta=rss_after - rss_before,
+                    rss_before=rss_before,
+                    rss_after=rss_after,
+                    rss_current=rss_after,
+                    rss_peak=rss_peak,
+                )
                 rebuilds = int(
                     MOP_CONSTANT_CACHE.stats.insertions
                     + MOP_TO_AST_CACHE.stats.insertions
@@ -974,17 +1389,13 @@ def _cache_phase() -> dict[str, Any]:
                     MOP_CONSTANT_CACHE.stats.max_weight_ever
                     + MOP_TO_AST_CACHE.stats.max_weight_ever
                 )
-            rss_after = _rss_bytes()
-            rss_peak = max(rss_before, rss_after, _rss_bytes())
             memory_delta = rss_after - rss_before
-            cache_stats["memory_delta_bytes"] = memory_delta
-            cache_stats["MOP_CONSTANT_CACHE"]["memory_delta_bytes"] = memory_delta
-            cache_stats["MOP_TO_AST_CACHE"]["memory_delta_bytes"] = memory_delta
             rows.append(
                 {
                     "phase": "cache",
                     "run_id": _run_id(),
                     "process_id": _phase_process_id("cache"),
+                    "process_identity": _phase_process_identity(),
                     "database_marker": f"{Path(__file__).name}:{_phase_process_id('cache')}:{constant_capacity}:{ast_capacity}",
                     "fresh_process": True,
                     "kind": "cache_replay",
@@ -998,6 +1409,7 @@ def _cache_phase() -> dict[str, Any]:
                     "workload_fingerprint": capture["metadata"]["workload_fingerprint"],
                     "workload_hash": capture["metadata"]["workload_hash"],
                     "workload_operations": len(operations),
+                    "replayed_operations": replayed_operations,
                     "operation_counts": counts,
                     "cache_stats": cache_stats,
                     "constant_capacity": constant_capacity,
@@ -1008,6 +1420,7 @@ def _cache_phase() -> dict[str, Any]:
                     "memory_delta_bytes": memory_delta,
                     "rss_before_bytes": rss_before,
                     "rss_after_bytes": rss_after,
+                    "rss_current_bytes": rss_after,
                     "rss_peak_bytes": rss_peak,
                     "real_api_calls": int(cache_stats["real_api_calls"]),
                 }
@@ -1028,6 +1441,7 @@ def _write_phase(phase: str, payload: dict[str, Any]) -> None:
         payload,
         process_id=_phase_process_id(phase),
         database_marker=f"{Path(__file__).name}:{_phase_process_id(phase)}",
+        process_identity=_phase_process_identity(),
     )
 
 
@@ -1047,6 +1461,7 @@ def _perf_gate_session_prerequisite() -> None:
     fixture = _fixture_input_path(binary_name)
     if fixture is None:
         pytest.fail(f"BLOCKED: fixture is unavailable: {binary_name}", pytrace=False)
+    _attestation_path, attestation = _fixture_attestation()
     expected = os.environ.get("D810_EXPECTED_FIXTURE_SHA256")
     if not expected:
         pytest.fail("BLOCKED: D810_EXPECTED_FIXTURE_SHA256 is required", pytrace=False)
@@ -1054,6 +1469,13 @@ def _perf_gate_session_prerequisite() -> None:
     if expected != actual:
         pytest.fail(
             "BLOCKED: mounted fixture SHA256 does not match D810_EXPECTED_FIXTURE_SHA256",
+            pytrace=False,
+        )
+    if actual != attestation["fixture_sha256"] or int(fixture.stat().st_size) != int(
+        attestation["fixture_size_bytes"]
+    ):
+        pytest.fail(
+            "BLOCKED: mounted fixture does not match D810_FIXTURE_ATTESTATION",
             pytrace=False,
         )
     if (
@@ -1150,6 +1572,10 @@ def _sample_cache_stat(
         "configured_max_size": capacity,
         "configured_max_weight": None,
         "memory_delta_bytes": 10,
+        "rss_before_bytes": 100,
+        "rss_after_bytes": 110,
+        "rss_current_bytes": 110,
+        "rss_peak_bytes": 110,
         "real_api_calls": calls,
     }
 
@@ -1157,13 +1583,20 @@ def _sample_cache_stat(
 def _sample_cache_stats(evictions: int = 0, memory_delta: int = 10) -> dict[str, Any]:
     constant = _sample_cache_stat(4096, evictions=evictions)
     ast = _sample_cache_stat(40960, evictions=evictions)
-    constant["memory_delta_bytes"] = memory_delta
-    ast["memory_delta_bytes"] = memory_delta
+    for item in (constant, ast):
+        item["memory_delta_bytes"] = memory_delta
+        item["rss_after_bytes"] = 100 + memory_delta
+        item["rss_current_bytes"] = 100 + memory_delta
+        item["rss_peak_bytes"] = 100 + memory_delta
     return {
         "MOP_CONSTANT_CACHE": constant,
         "MOP_TO_AST_CACHE": ast,
         "total_evictions": evictions * 2,
         "memory_delta_bytes": memory_delta,
+        "rss_before_bytes": 100,
+        "rss_after_bytes": 100 + memory_delta,
+        "rss_current_bytes": 100 + memory_delta,
+        "rss_peak_bytes": 100 + memory_delta,
         "real_api_calls": 8,
     }
 
@@ -1202,20 +1635,39 @@ def _sample_projection() -> dict[str, Any]:
     }
 
 
+def _sample_process_identity(label: str) -> dict[str, Any]:
+    return {
+        "pid": 1000 + len(label),
+        "process_start_at_utc": "2026-08-16T00:00:00+00:00",
+        "process_start_source": "unit",
+        "hostname": f"unit-{label}",
+        "boot_id": f"boot-{label}",
+    }
+
+
 def _sample_build() -> dict[str, Any]:
     item = {
         "module_file": "/tmp/compiled.so",
         "module_sha256": _SHA,
         "module_mtime_ns": 1,
         "build_abi": "unit",
+        "source_path": "/src/d810/speedups/evaluator/c_sccp.pyx",
         "source_hash": _SHA,
         "callable": True,
     }
+    dataflow_item = dict(item)
+    dataflow_item["module_file"] = "/tmp/c_dataflow.so"
+    dataflow_item["source_path"] = (
+        "/src/d810/speedups/optimizers/microcode/flow/constant_prop/c_dataflow.pyx"
+    )
+    source_tree = _canonical_hash(
+        {"c_sccp": item["source_hash"], "c_dataflow": dataflow_item["source_hash"]}
+    )
     return {
         "c_sccp": dict(item),
-        "_fast_dataflow": dict(item),
-        "source_sha256_at_build": _SHA,
-        "source_tree_sha256": _SHA,
+        "c_dataflow": dataflow_item,
+        "source_sha256_at_build": source_tree,
+        "source_tree_sha256": source_tree,
     }
 
 
@@ -1237,6 +1689,7 @@ def _sample_row(
             "phase": phase or label,
             "run_id": "unit-run",
             "process_id": f"pid-{label}",
+            "process_identity": _sample_process_identity(label),
             "database_marker": f"db-{label}",
             "fresh_process": True,
             "kind": "solver_replay",
@@ -1247,6 +1700,7 @@ def _sample_row(
             "backend": backend,
             "status": "converged",
             "program_fingerprint": _SHA,
+            "program_identity_group": "capture_snapshot",
             "snapshot_fingerprint": _SHA,
             "workload_fingerprint": _SHA,
             "wall_seconds": wall,
@@ -1263,6 +1717,7 @@ def _sample_row(
         "phase": phase or label,
         "run_id": "unit-run",
         "process_id": f"pid-{label}",
+        "process_identity": _sample_process_identity(label),
         "database_marker": f"db-{label}",
         "fresh_process": True,
         "kind": "full_decomp",
@@ -1273,6 +1728,7 @@ def _sample_row(
         "backend": backend,
         "status": "converged",
         "program_fingerprint": _SHA,
+        "program_identity_group": "full_decomp",
         "wall_seconds": wall,
         "adapter_seconds": 0.001,
         "solver_seconds": 0.001,
@@ -1283,6 +1739,7 @@ def _sample_row(
         "memory_delta_bytes": memory_delta,
         "rss_before_bytes": 100,
         "rss_after_bytes": 100 + memory_delta,
+        "rss_current_bytes": 100 + memory_delta,
         "rss_peak_bytes": 100 + memory_delta,
         "pseudocode_sha256": _SHA,
         "live_pseudocode_sha256": _SHA,
@@ -1296,8 +1753,17 @@ def _sample_row(
         "parity_projection": projection,
         "parity_sha256": _canonical_hash(projection),
         "compiled_provenance": _sample_build(),
-        "capacity": {"constant": 1000, "ast": 20480},
+        "capacity": {
+            "constant": 1000 if label == "winner" else 4096,
+            "ast": 20480 if label == "winner" else 40960,
+        },
     }
+    row["cache_stats"]["MOP_CONSTANT_CACHE"]["configured_max_size"] = row[
+        "capacity"
+    ]["constant"]
+    row["cache_stats"]["MOP_TO_AST_CACHE"]["configured_max_size"] = row[
+        "capacity"
+    ]["ast"]
     return row
 
 
@@ -1308,7 +1774,8 @@ def _sample_cache_row(constant: int, ast: int, wall: float = 2.0) -> dict[str, A
     return {
         "phase": "cache",
         "run_id": "unit-run",
-        "process_id": f"pid-cache-{constant}-{ast}",
+        "process_id": "pid-cache",
+        "process_identity": _sample_process_identity("cache"),
         "database_marker": f"db-cache-{constant}-{ast}",
         "fresh_process": True,
         "kind": "cache_replay",
@@ -1321,25 +1788,30 @@ def _sample_cache_row(constant: int, ast: int, wall: float = 2.0) -> dict[str, A
         "wall_seconds": wall,
         "workload_fingerprint": _SHA,
         "workload_hash": _SHA,
-        "workload_operations": 10,
+        "workload_operations": 13,
+        "replayed_operations": 13,
         "operation_counts": {
-            "l": 2,
-            "r": 2,
-            "d": 2,
+            "l": 1,
+            "r": 1,
+            "d": 1,
+            "minsn_to_ast": 3,
             "reconstructed_instruction_mops": 3,
-            "p_ast": 4,
-            "mop_utils": 5,
+            "mop_to_ast": 6,
+            "get_constant_mop": 1,
+            "p_ast": 6,
+            "mop_utils": 3,
         },
         "cache_stats": stats,
         "constant_capacity": constant,
         "ast_capacity": ast,
         "rebuilds": 2,
         "evictions": 0,
-        "peak_weight": 1.0,
-        "memory_delta_bytes": 0,
+        "peak_weight": 2.0,
+        "memory_delta_bytes": 10,
         "rss_before_bytes": 100,
-        "rss_after_bytes": 100,
-        "rss_peak_bytes": 100,
+        "rss_after_bytes": 110,
+        "rss_current_bytes": 110,
+        "rss_peak_bytes": 110,
         "real_api_calls": stats["real_api_calls"],
     }
 
@@ -1399,8 +1871,13 @@ def _sample_receipt() -> dict[str, Any]:
         "source_path": "/source/fixture.i64",
         "fixture_source": "/source/fixture.i64",
         "source_sha256_at_copy": _SHA,
+        "source_sha256_before": _SHA,
+        "source_sha256_after": _SHA,
+        "source_size_bytes": 1,
         "fixture_path": "/work/fixture.i64",
         "fixture_copy": "/work/fixture.i64",
+        "fixture_attestation_path": "/work/fixture-attestation.json",
+        "attestation_fixture_path": "/source/fixture.i64",
         "fixture_sha256": _SHA,
         "fixture_size_bytes": 1,
         "fixture_copied_at_utc": "2026-08-16T00:00:00+00:00",
@@ -1408,13 +1885,26 @@ def _sample_receipt() -> dict[str, Any]:
         "capture_hooks_stopped": True,
         "capture_lifecycle_events": 0,
         "capture_optimizer_attempts": 0,
-        "workload_operations": 10,
+        "workload_operations": 13,
         "workload_fingerprint": _SHA,
         "workload_hash": _SHA,
+        "workload_blocks_fingerprint": _SHA,
         "snapshot_fingerprint": _SHA,
+        "program_fingerprint": _SHA,
+        "capture_operation_counts": {
+            "l": 1,
+            "r": 1,
+            "d": 1,
+            "minsn_to_ast": 3,
+            "reconstructed_instruction_mops": 3,
+            "mop_to_ast": 6,
+            "get_constant_mop": 1,
+            "p_ast": 6,
+            "mop_utils": 3,
+        },
         "warmup": 3,
         "iterations": 10,
-        "build_source_sha256": _SHA,
+        "build_source_sha256": _sample_build()["source_tree_sha256"],
         "build_provenance": _sample_build(),
     }
     fragments = [
@@ -1423,12 +1913,13 @@ def _sample_receipt() -> dict[str, Any]:
             "phase_index": index,
             "run_id": "unit-run",
             "process_id": f"pid-{phase}",
+            "process_identity": _sample_process_identity(phase),
             "database_marker": f"db-{phase}",
+            "created_at_utc": "2026-08-16T00:00:01+00:00",
             "payload_sha256": _SHA,
         }
         for index, phase in enumerate(PHASE_ORDER)
     ]
-    rows[5]["capacity"] = {"constant": 1000, "ast": 20480}
     return {
         "schema_version": 2,
         "metadata": metadata,
@@ -1533,12 +2024,93 @@ def test_merge_rejects_missing_duplicate_and_out_of_order_fragments(
 
 def test_merge_assembles_exact_order_and_verifies_rows(tmp_path: Path) -> None:
     sample = _sample_receipt()
+    capture_blocks = [
+        {
+            "index": 1,
+            "serial": 1,
+            "start_ea": 0,
+            "end_ea": 3,
+            "type": 0,
+            "flags": 0,
+            "predecessors": [],
+            "successors": [],
+            "instructions": [],
+        }
+    ]
+    capture_operations = [
+        {
+            "block_index": 1,
+            "block_serial": 1,
+            "instruction_index": 0,
+            "kind": "minsn_to_ast",
+            "outcome": "none",
+        },
+        {
+            "block_index": 1,
+            "block_serial": 1,
+            "instruction_index": 0,
+            "kind": "reconstructed_instruction_mop",
+            "outcome": "value",
+            "descriptor": None,
+        },
+        {
+            "block_index": 1,
+            "block_serial": 1,
+            "instruction_index": 0,
+            "kind": "reconstructed_mop_to_ast",
+            "outcome": "none",
+            "descriptor": None,
+        },
+    ]
+    capture_counts = {
+        "l": 0,
+        "r": 0,
+        "d": 0,
+        "minsn_to_ast": 1,
+        "reconstructed_instruction_mops": 1,
+        "mop_to_ast": 1,
+        "get_constant_mop": 0,
+        "p_ast": 1,
+        "mop_utils": 1,
+    }
+    capture_metadata = dict(sample["metadata"])
+    capture_metadata["workload_operations"] = len(capture_operations)
+    capture_metadata["workload_blocks_fingerprint"] = _canonical_hash(capture_blocks)
+    capture_metadata["workload_fingerprint"] = _canonical_hash(
+        {"blocks": capture_blocks, "operations": capture_operations}
+    )
+    capture_metadata["workload_hash"] = _canonical_hash(
+        {"blocks": capture_blocks, "operations": capture_operations, "counts": capture_counts}
+    )
+    capture_metadata["capture_operation_counts"] = capture_counts
+    for row in sample["runs"]:
+        if row["kind"] == "solver_replay":
+            row["workload_fingerprint"] = capture_metadata["workload_fingerprint"]
+        else:
+            row["workload_fingerprint"] = capture_metadata["workload_fingerprint"]
+    for row in sample["cache_matrix"]:
+        row["workload_fingerprint"] = capture_metadata["workload_fingerprint"]
+        row["workload_hash"] = capture_metadata["workload_hash"]
+        row["workload_operations"] = len(capture_operations)
+        row["replayed_operations"] = len(capture_operations)
+        row["operation_counts"] = dict(capture_counts)
+    for row, phase_index in zip(sample["runs"][:5], range(1, 6), strict=True):
+        row["process_id"] = f"pid-{phase_index}"
+        row["process_identity"] = _sample_process_identity(
+            f"phase-{phase_index}"
+        )
+    for row in sample["cache_matrix"]:
+        row["process_id"] = "pid-6"
+        row["process_identity"] = _sample_process_identity("phase-6")
+    sample["runs"][5]["process_id"] = "pid-7"
+    sample["runs"][5]["process_identity"] = _sample_process_identity("phase-7")
     payloads: dict[str, dict[str, Any]] = {
         "capture": {
-            "metadata": sample["metadata"],
+            "metadata": capture_metadata,
             "program": {},
-            "operations": [],
-            "operation_counts": {},
+            "blocks": capture_blocks,
+            "operations": capture_operations,
+            "operation_counts": capture_counts,
         },
         "solver_python": {"row": sample["runs"][0]},
         "solver_cython": {"row": sample["runs"][1]},
@@ -1556,6 +2128,7 @@ def test_merge_assembles_exact_order_and_verifies_rows(tmp_path: Path) -> None:
             payloads[phase],
             process_id=f"pid-{index}",
             database_marker=f"db-{index}",
+            process_identity=_sample_process_identity(f"phase-{index}"),
         )
     output = tmp_path / "merged.json"
     merged = merge_phase_fragments(tmp_path, "unit-run", output)
@@ -1608,6 +2181,164 @@ def test_verifier_rejects_phase_order_and_reused_process(tmp_path: Path) -> None
     receipt.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(ValueError, match="independent|process"):
         verify(receipt)
+
+
+def test_verifier_rejects_python_dispatcher_as_compiled_dataflow(
+    tmp_path: Path,
+) -> None:
+    payload = _sample_receipt()
+    payload["metadata"]["build_provenance"]["c_dataflow"]["module_file"] = (
+        "/work/src/d810/analyses/data_flow/constant_prop_dataflow/_fast_dataflow.py"
+    )
+    receipt = tmp_path / "python-dataflow-wrapper.json"
+    receipt.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="compiled|extension|dataflow|pattern"):
+        verify(receipt)
+
+
+def test_verifier_rejects_stale_c_dataflow_source_hash(tmp_path: Path) -> None:
+    payload = _sample_receipt()
+    payload["metadata"]["build_provenance"]["c_dataflow"]["source_hash"] = "b" * 64
+    for row in payload["runs"]:
+        if row["kind"] == "full_decomp":
+            row["compiled_provenance"]["c_dataflow"]["source_hash"] = "b" * 64
+    receipt = tmp_path / "stale-c-dataflow-source.json"
+    receipt.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="aggregate|source|build"):
+        verify(receipt)
+
+
+def test_verifier_rejects_missing_fixture_attestation(tmp_path: Path) -> None:
+    payload = _sample_receipt()
+    payload["metadata"]["fixture_attestation_path"] = ""
+    receipt = tmp_path / "missing-attestation.json"
+    receipt.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="attestation"):
+        verify(receipt)
+
+
+def test_verifier_rejects_nonexistent_source_during_host_verification(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = tmp_path / "fixture.i64"
+    fixture.write_bytes(b"fixture")
+    fixture_sha = _sha256_file(fixture)
+    attestation = tmp_path / "attestation.json"
+    attestation.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "source_path": str(tmp_path / "missing-source.i64"),
+                "source_sha256_before": fixture_sha,
+                "source_sha256_after": fixture_sha,
+                "source_sha256_at_copy": fixture_sha,
+                "fixture_path": str(fixture),
+                "fixture_sha256": fixture_sha,
+                "fixture_size_bytes": fixture.stat().st_size,
+                "source_size_bytes": fixture.stat().st_size,
+                "fixture_copied_at_utc": "2026-08-16T00:00:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+    payload = _sample_receipt()
+    payload["metadata"].update(
+        {
+            "gate_mode": "smoke",
+            "binary_sha256": fixture_sha,
+            "source_path": str(tmp_path / "missing-source.i64"),
+            "fixture_source": str(tmp_path / "missing-source.i64"),
+            "source_sha256_at_copy": fixture_sha,
+            "source_sha256_before": fixture_sha,
+            "source_sha256_after": fixture_sha,
+            "fixture_sha256": fixture_sha,
+            "fixture_size_bytes": fixture.stat().st_size,
+            "source_size_bytes": fixture.stat().st_size,
+            "fixture_path": str(fixture),
+            "fixture_copy": str(fixture),
+            "fixture_attestation_path": str(attestation),
+            "attestation_fixture_path": str(fixture),
+        }
+    )
+    receipt = tmp_path / "missing-source.json"
+    receipt.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("D810_PERF_HOST_VERIFY", "1")
+    monkeypatch.setenv("D810_EXPECTED_FIXTURE_SHA256", fixture_sha)
+    with pytest.raises(ValueError, match="source path does not exist"):
+        verify(receipt)
+
+
+def test_verifier_rejects_cache_capacity_and_workload_count_drift(
+    tmp_path: Path,
+) -> None:
+    payload = _sample_receipt()
+    payload["cache_matrix"][0]["cache_stats"]["MOP_CONSTANT_CACHE"][
+        "configured_max_size"
+    ] += 1
+    receipt = tmp_path / "cache-capacity-drift.json"
+    receipt.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="capacity"):
+        verify(receipt)
+
+    payload = _sample_receipt()
+    payload["cache_matrix"][0]["operation_counts"]["mop_utils"] += 1
+    receipt = tmp_path / "cache-workload-drift.json"
+    receipt.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="workload|operation"):
+        verify(receipt)
+
+
+def test_verifier_rejects_full_program_identity_drift_even_with_projection_update(
+    tmp_path: Path,
+) -> None:
+    payload = _sample_receipt()
+    winner = payload["runs"][-1]
+    winner["program_fingerprint"] = "b" * 64
+    winner["parity_projection"]["program_fingerprint"] = "b" * 64
+    winner["parity_sha256"] = _canonical_hash(winner["parity_projection"])
+    receipt = tmp_path / "full-program-drift.json"
+    receipt.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="program|identity"):
+        verify(receipt)
+
+
+def test_verifier_rejects_reused_process_start_identity(tmp_path: Path) -> None:
+    payload = _sample_receipt()
+    payload["phase_fragments"][1]["process_identity"] = payload[
+        "phase_fragments"
+    ][0]["process_identity"]
+    receipt = tmp_path / "process-start-reuse.json"
+    receipt.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="process|identity|fresh"):
+        verify(receipt)
+
+
+def test_verifier_rejects_impossible_current_rss(tmp_path: Path) -> None:
+    payload = _sample_receipt()
+    payload["runs"][2]["rss_current_bytes"] = 1
+    receipt = tmp_path / "rss-current.json"
+    receipt.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="RSS|memory|current"):
+        verify(receipt)
+
+
+def test_replay_contract_counts_all_three_block_one_instructions() -> None:
+    operations = [
+        {
+            "block_index": 1,
+            "instruction_index": index,
+            "kind": "minsn_to_ast",
+            "outcome": "none",
+        }
+        for index in range(3)
+    ]
+    counts = _replay_operation_counts(operations)
+    assert counts["minsn_to_ast"] == 3
+    assert counts["mop_utils"] == 3
+    assert {
+        (operation["block_index"], operation["instruction_index"])
+        for operation in operations
+    } == {(1, 0), (1, 1), (1, 2)}
 
 
 def test_verifier_rejects_solver_cache_telemetry_and_nonfinite_timing(
