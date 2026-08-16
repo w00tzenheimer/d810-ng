@@ -299,6 +299,11 @@ class CacheImpl(Cache[K, V]):
             link.lfu_next.lfu_prev = link.lfu_prev
             link.lfu_next = link.lfu_prev = link
 
+        self._size -= 1
+        self._weight -= link.weight
+        self._record_removal(reason)
+        link.unlinked = True
+
         if self._removal_listener is not None:
             try:
                 self._removal_listener(link.key, link.value)
@@ -307,11 +312,7 @@ class CacheImpl(Cache[K, V]):
                     "Removal listener raised exception: %s", e, exc_info=True
                 )
 
-        self._size -= 1
-        self._weight -= link.weight
-        self._record_removal(reason)
         link.key = link.value = None
-        link.unlinked = True
 
     def _kill(self, link: Link, reason: RemovalReason) -> None:
         if link is self._root:
@@ -478,18 +479,21 @@ class CacheImpl(Cache[K, V]):
             return True
         return False
 
+    def _clear_locked(self, reset_stats: bool) -> None:
+        self._cache.clear()
+        while True:
+            link = self._root.ins_prev
+            if link is self._root:
+                break
+            if link.unlinked:
+                raise TypeError
+            self._unlink(link, RemovalReason.EXPLICIT)
+        if reset_stats:
+            self._reset_stats_locked()
+
     def clear(self, reset_stats: bool = False) -> None:
         with self._lock:
-            self._cache.clear()
-            while True:
-                link = self._root.ins_prev
-                if link is self._root:
-                    break
-                if link.unlinked:
-                    raise TypeError
-                self._unlink(link, RemovalReason.EXPLICIT)
-            if reset_stats:
-                self.reset_stats()
+            self._clear_locked(reset_stats)
 
     def reconfigure_capacity(self, max_size: int) -> None:
         """Clear the current session and atomically set a new size limit."""
@@ -497,8 +501,22 @@ class CacheImpl(Cache[K, V]):
             raise ValueError("max_size must be a positive integer")
 
         with self._lock:
-            self.clear(reset_stats=True)
+            self._clear_locked(reset_stats=True)
             self._max_size = max_size
+
+    def _reset_stats_locked(self) -> None:
+        self._hits = 0
+        self._misses = 0
+        self._lookups = 0
+        self._insertions = 0
+        self._replacements = 0
+        self._capacity_evictions = 0
+        self._expirations = 0
+        self._explicit_removals = 0
+        self._weak_reference_removals = 0
+        self._max_size_ever = 0
+        self._max_weight_ever = 0.0
+        self._seq = 0
 
     def reset_stats(self) -> None:
         """Reset all statistics counters for this cache.
@@ -510,18 +528,7 @@ class CacheImpl(Cache[K, V]):
         `max_size_ever`, `max_weight_ever`, and `seq`.
         """
         with self._lock:
-            self._hits = 0
-            self._misses = 0
-            self._lookups = 0
-            self._insertions = 0
-            self._replacements = 0
-            self._capacity_evictions = 0
-            self._expirations = 0
-            self._explicit_removals = 0
-            self._weak_reference_removals = 0
-            self._max_size_ever = 0
-            self._max_weight_ever = 0.0
-            self._seq = 0
+            self._reset_stats_locked()
 
     def __setitem__(self, key: K, value: V) -> None:
         weight = self._weigher(value)

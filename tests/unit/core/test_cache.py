@@ -1,6 +1,7 @@
 import gc
 import importlib
 import sys
+import threading
 import unittest
 import weakref
 
@@ -143,6 +144,97 @@ class TestCacheImpl(unittest.TestCase):
         for invalid in (0, -1, True):
             with self.assertRaises(ValueError):
                 c.reconfigure_capacity(invalid)
+
+    def test_reentrant_listener_sees_committed_removal_accounting(self):
+        observed = []
+        cache_holder = {}
+
+        def listener(key, value):
+            c = cache_holder["cache"]
+            if key == "a":
+                stats = c.stats
+                observed.append(
+                    (
+                        key,
+                        value,
+                        "a" in c,
+                        stats.size,
+                        stats.weight,
+                        stats.capacity_evictions,
+                    )
+                )
+                c["b"] = 10
+
+        def weigh(value):
+            return float(value)
+
+        c = CacheImpl(
+            max_size=1,
+            max_weight=20.0,
+            removal_listener=listener,
+            weigher=weigh,
+            clock=FixedClock(),
+        )
+        cache_holder["cache"] = c
+
+        c["a"] = 10
+        c["c"] = 10
+
+        self.assertEqual(observed, [("a", 10, False, 0, 0.0, 1)])
+        stats = c.stats
+        self.assertEqual(stats.size, 1)
+        self.assertEqual(stats.weight, 10.0)
+        self.assertEqual(stats.max_size_ever, 1)
+        self.assertEqual(stats.max_weight_ever, 10.0)
+
+    def test_removal_listener_exception_preserves_accounting(self):
+        removed = []
+
+        def listener(key, value):
+            removed.append((key, value))
+            raise RuntimeError("listener failure")
+
+        c = CacheImpl(
+            max_size=1,
+            removal_listener=listener,
+            clock=FixedClock(),
+        )
+        c["a"] = 1
+        c["b"] = 2
+
+        self.assertEqual(removed, [("a", 1)])
+        self.assertNotIn("a", c)
+        self.assertEqual(c.lookup("b"), (True, 2))
+        stats = c.stats
+        self.assertEqual(stats.size, 1)
+        self.assertEqual(stats.weight, 1.0)
+        self.assertEqual(stats.capacity_evictions, 1)
+
+    def test_reconfigure_capacity_uses_one_nonreentrant_lock_acquisition(self):
+        class BoundedNonReentrantLock:
+            def __init__(self):
+                self._lock = threading.Lock()
+
+            def __enter__(self):
+                if not self._lock.acquire(timeout=0.1):
+                    raise AssertionError("nested lock acquisition")
+                return self
+
+            def __exit__(self, exc_type, exc_value, traceback):
+                self._lock.release()
+                return False
+
+        c = CacheImpl(
+            max_size=2,
+            lock=BoundedNonReentrantLock(),  # type: ignore[arg-type]
+            clock=FixedClock(),
+        )
+        c["a"] = 1
+
+        c.reconfigure_capacity(1)
+
+        self.assertEqual(len(c), 0)
+        self.assertEqual(c.stats.configured_max_size, 1)
 
     def test_weak_cleanup_has_weak_reference_reason(self):
         class Key:
