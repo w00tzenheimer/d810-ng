@@ -29,6 +29,22 @@ class TestD810Settings:
         assert s.capture_post_file == "/tmp/d810_capture.txt"
         assert s.fact_lifecycle is True
         assert s.trace_decompile_callers is False
+        assert s.execution_callback_detail == "summary"
+
+    @pytest.mark.parametrize("mode", ["summary", "full"])
+    def test_from_env_reads_execution_callback_detail(self, monkeypatch, mode):
+        monkeypatch.setenv("D810_EXECUTION_CALLBACK_DETAIL", mode)
+        reset_settings()
+        assert get_settings().execution_callback_detail == mode
+
+    def test_from_env_rejects_invalid_execution_callback_detail(self, monkeypatch):
+        monkeypatch.setenv("D810_EXECUTION_CALLBACK_DETAIL", "verbose")
+        with pytest.raises(ValueError, match="D810_EXECUTION_CALLBACK_DETAIL"):
+            reset_settings()
+
+    def test_configure_rejects_invalid_execution_callback_detail(self):
+        with pytest.raises(ValueError, match="execution_callback_detail"):
+            configure_settings(execution_callback_detail="verbose")
 
     def test_from_env_reads_trace_decompile_callers(self, monkeypatch):
         monkeypatch.setenv("D810_TRACE_DECOMPILE_CALLERS", "1")

@@ -1081,23 +1081,31 @@ def canonicalize_observed_dispatcher_graph(
             and getattr(condition, "stack_size", None) is not None
             and getattr(condition, "value", None) is not None
         ):
-            if not (
-                getattr(observed_tail, "predicate_kind", None) is PredicateKind.NE
+            tail_predicate = getattr(observed_tail, "predicate_kind", None)
+            direct_comparison = tail_predicate is PredicateKind.EQ
+            wrapped_comparison = (
+                tail_predicate is PredicateKind.NE
                 and isinstance(nested, MopSnapshot)
                 and nested.kind is OperandKind.SUBINSN
                 and nested.sub_predicate_kind is PredicateKind.EQ
-                and isinstance(nested_left, MopSnapshot)
-                and nested_left.kind is OperandKind.STACK
-                and nested_left.stkoff == int(condition.stack_stkoff)
-                and nested_left.size == int(condition.stack_size)
-                and isinstance(nested_right, MopSnapshot)
-                and nested_right.kind is OperandKind.NUMBER
-                and nested_right.value
-                == int(condition.value) & ((1 << (8 * int(condition.stack_size))) - 1)
-                and nested_right.size == int(condition.stack_size)
                 and isinstance(right, MopSnapshot)
                 and right.kind is OperandKind.NUMBER
                 and right.value == 0
+            )
+            compared_left = left if direct_comparison else nested_left
+            compared_right = right if direct_comparison else nested_right
+            size = int(condition.stack_size)
+            if not (
+                (direct_comparison or wrapped_comparison)
+                and isinstance(compared_left, MopSnapshot)
+                and compared_left.kind is OperandKind.STACK
+                and compared_left.stkoff == int(condition.stack_stkoff)
+                and compared_left.size == size
+                and isinstance(compared_right, MopSnapshot)
+                and compared_right.kind is OperandKind.NUMBER
+                and compared_right.value
+                == int(condition.value) & ((1 << (8 * size)) - 1)
+                and compared_right.size == size
             ):
                 raise drift(
                     f"conditional source {source} synthetic stack predicate identity mismatch"
@@ -1127,31 +1135,39 @@ def canonicalize_observed_dispatcher_graph(
                 if expected_counter_kind is OperandKind.REGISTER
                 else getattr(condition, "counter_stkoff", None)
             )
-            actual_counter = (
-                nested_left.reg
-                if isinstance(nested_left, MopSnapshot)
-                and expected_counter_kind is OperandKind.REGISTER
-                else nested_left.stkoff
-                if isinstance(nested_left, MopSnapshot)
-                else None
-            )
             size = int(condition.counter_size)
-            if not (
-                getattr(observed_tail, "predicate_kind", None) is PredicateKind.NE
+            tail_predicate = getattr(observed_tail, "predicate_kind", None)
+            direct_comparison = tail_predicate is expected_predicate
+            wrapped_comparison = (
+                tail_predicate is PredicateKind.NE
                 and isinstance(nested, MopSnapshot)
                 and nested.kind is OperandKind.SUBINSN
                 and nested.sub_predicate_kind is expected_predicate
-                and isinstance(nested_left, MopSnapshot)
-                and nested_left.kind is expected_counter_kind
-                and actual_counter == int(expected_counter)
-                and nested_left.size == size
-                and isinstance(nested_right, MopSnapshot)
-                and nested_right.kind is OperandKind.NUMBER
-                and nested_right.value == int(condition.bound) & ((1 << (8 * size)) - 1)
-                and nested_right.size == size
                 and isinstance(right, MopSnapshot)
                 and right.kind is OperandKind.NUMBER
                 and right.value == 0
+            )
+            compared_left = left if direct_comparison else nested_left
+            compared_right = right if direct_comparison else nested_right
+            actual_counter = (
+                compared_left.reg
+                if isinstance(compared_left, MopSnapshot)
+                and expected_counter_kind is OperandKind.REGISTER
+                else compared_left.stkoff
+                if isinstance(compared_left, MopSnapshot)
+                else None
+            )
+            if not (
+                (direct_comparison or wrapped_comparison)
+                and isinstance(compared_left, MopSnapshot)
+                and compared_left.kind is expected_counter_kind
+                and actual_counter == int(expected_counter)
+                and compared_left.size == size
+                and isinstance(compared_right, MopSnapshot)
+                and compared_right.kind is OperandKind.NUMBER
+                and compared_right.value
+                == int(condition.bound) & ((1 << (8 * size)) - 1)
+                and compared_right.size == size
             ):
                 raise drift(
                     f"conditional source {source} synthetic counter predicate identity mismatch"

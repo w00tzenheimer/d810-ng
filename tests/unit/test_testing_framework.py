@@ -107,6 +107,33 @@ class TestDeobfuscationCase:
             "ifs": 5,
         }
 
+    @pytest.mark.parametrize(
+        ("case_kwargs", "expected"),
+        (
+            ({"must_change": False}, False),
+            ({"must_change": True}, True),
+            ({"must_change": False, "obfuscated_contains": ["x"]}, True),
+            ({"must_change": False, "obfuscated_regexes": ["x"]}, True),
+            ({"must_change": False, "obfuscated_not_contains": ["x"]}, True),
+            ({"must_change": False, "operator_complexity_mode": "decrease"}, True),
+            (
+                {
+                    "must_change": False,
+                    "semantic_reference": "reference.c",
+                    "deobfuscated_contains": ["return"],
+                    "expected_ast_stats": {"ifs": 1},
+                },
+                False,
+            ),
+        ),
+    )
+    def test_requires_baseline_tracks_only_before_state_consumers(
+        self, case_kwargs, expected
+    ):
+        case = DeobfuscationCase(function="baseline_contract", **case_kwargs)
+
+        assert case.requires_baseline is expected
+
 
 class TestBinaryOverride:
     """Tests for BinaryOverride and get_effective_config."""

@@ -758,6 +758,7 @@ OLLVM_CASES = [
         deobfuscated_not_contains=[
             "v15 | 1",
             "v19 | 1",
+            "JUMPOUT",
         ],
         must_change=True,
         # The OLLVM profile now routes this case through the cleanup family; the

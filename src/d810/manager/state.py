@@ -139,6 +139,8 @@ class D810State(metaclass=SingletonMeta):
         self._initialized: bool = False
         self.d810_config: D810Configuration = d810_config or D810Configuration()
         self._apply_diagnostics_capture_preference()
+        self._apply_execution_callback_detail_preference()
+        self._apply_runtime_settings_preferences()
         self.project_manager = ProjectManager(self.d810_config)
         self.current_project_index: int = 0
         self.current_ins_rules: typing.List = []
@@ -185,6 +187,39 @@ class D810State(metaclass=SingletonMeta):
                 runtime_default=get_settings().diag_snapshots,
             )
         )
+
+    def _apply_execution_callback_detail_preference(self) -> None:
+        """Reapply the saved callback detail unless an environment override wins."""
+        if "D810_EXECUTION_CALLBACK_DETAIL" in os.environ:
+            return
+        configure_settings(
+            execution_callback_detail=self.d810_config.get(
+                "execution_callback_detail",
+                get_settings().execution_callback_detail,
+            )
+        )
+
+    def _apply_runtime_settings_preferences(self) -> None:
+        """Reapply every other saved runtime setting with env taking precedence."""
+        environment_by_setting = {
+            "debug_logging": "D810_DEBUG_LOGGING",
+            "verify_capture": "D810_VERIFY_CAPTURE",
+            "verify_capture_dir": "D810_VERIFY_CAPTURE_DIR",
+            "capture_post_maturity": "D810_CAPTURE_POST_MATURITY",
+            "capture_post_file": "D810_CAPTURE_POST_FILE",
+            "fact_lifecycle": "D810_FACT_LIFECYCLE",
+            "trace_decompile_callers": "D810_TRACE_DECOMPILE_CALLERS",
+        }
+        missing = object()
+        overrides = {}
+        for setting_name, environment_name in environment_by_setting.items():
+            if environment_name in os.environ:
+                continue
+            saved_value = self.d810_config.get(setting_name, missing)
+            if saved_value is not missing:
+                overrides[setting_name] = saved_value
+        if overrides:
+            configure_settings(**overrides)
 
     def diagnostics_capture_enabled(self) -> bool:
         return bool(get_settings().diag_snapshots)
@@ -357,8 +392,8 @@ class D810State(metaclass=SingletonMeta):
                 continue
             if rule.name == rule_conf.name:
                 effective_config = resolve_arch_config(rule_conf.config)
-                effective_config["dump_intermediate_microcode"] = (
-                    self.d810_config.get("dump_intermediate_microcode")
+                effective_config["dump_intermediate_microcode"] = self.d810_config.get(
+                    "dump_intermediate_microcode"
                 )
                 rule.configure(effective_config)
                 rule.set_log_dir(self.log_dir)
@@ -1108,6 +1143,7 @@ class D810State(metaclass=SingletonMeta):
             predicate_root_recovery_native,
             rotate_idiom_recovery_native,
         )
+
         return [
             rule_cls()
             for rule_cls in FlowOptimizationRule.registry.values()

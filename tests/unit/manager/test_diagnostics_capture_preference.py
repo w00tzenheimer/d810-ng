@@ -4,8 +4,6 @@ import json
 import ast
 from pathlib import Path
 
-import pytest
-
 from d810.core.config import D810Configuration
 from d810.core.diagnostics_capture_preferences import (
     diagnostics_capture_enabled,
@@ -38,7 +36,9 @@ def test_state_reset_reapplies_the_saved_capture_preference() -> None:
     path = Path(__file__).resolve().parents[3] / "src" / "d810" / "manager" / "state.py"
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     state = next(
-        node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "D810State"
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "D810State"
     )
     methods = {
         node.name: ast.unparse(node)
@@ -48,9 +48,31 @@ def test_state_reset_reapplies_the_saved_capture_preference() -> None:
 
     assert "self._apply_diagnostics_capture_preference()" in methods["reset"]
     assert "configure_settings" in methods["_apply_diagnostics_capture_preference"]
-    assert "enable_diagnostics_capture(self.d810_config)" in methods[
-        "enable_diagnostics_capture"
-    ]
-    assert "_update_diagnostics_capture_indicator" in methods[
-        "enable_diagnostics_capture"
-    ]
+    assert (
+        "enable_diagnostics_capture(self.d810_config)"
+        in methods["enable_diagnostics_capture"]
+    )
+    assert (
+        "_update_diagnostics_capture_indicator" in methods["enable_diagnostics_capture"]
+    )
+
+
+def test_state_reset_reapplies_persisted_callback_detail_unless_env_overrides() -> None:
+    path = Path(__file__).resolve().parents[3] / "src" / "d810" / "manager" / "state.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    state = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "D810State"
+    )
+    methods = {
+        node.name: ast.unparse(node)
+        for node in state.body
+        if isinstance(node, ast.FunctionDef)
+    }
+
+    assert "self._apply_execution_callback_detail_preference()" in methods["reset"]
+    apply_source = methods["_apply_execution_callback_detail_preference"]
+    assert "D810_EXECUTION_CALLBACK_DETAIL" in apply_source
+    assert "execution_callback_detail" in apply_source
+    assert "configure_settings" in apply_source

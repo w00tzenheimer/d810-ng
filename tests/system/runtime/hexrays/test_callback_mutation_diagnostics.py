@@ -706,6 +706,62 @@ def test_instruction_optimizer_records_a_completed_mba_mutation_child(
         assert mutation.effect_refs[0].kind == "mba_instruction_edit"
 
 
+def test_instruction_optimizer_summarizes_a_noop_callback_by_default(
+    tmp_path,
+) -> None:
+    instruction = _Instruction(ida_hexrays.m_mov, 0x401010)
+    block = _Block(
+        serial=9,
+        start=0x401000,
+        end=0x401020,
+        head=instruction,
+    )
+    _Mba((block,))
+
+    with ExecutionJournalStore(tmp_path / "execution.sqlite") as journal:
+        session_id = DecompilationSessionId.new()
+        parent = journal.begin_attempt(
+            session_id,
+            stage_id="hexrays_preanalysis",
+            domain=ExecutionDomain.HOOK,
+        )
+        session = SimpleNamespace(
+            session_id=session_id,
+            preanalysis_attempt_id=parent.attempt_id,
+            execution_journal=journal,
+        )
+        manager = SimpleNamespace(
+            _fact_consumer_callback=None,
+            current_maturity=ida_hexrays.MMAT_GLBOPT2,
+            instruction_visitor=SimpleNamespace(blk=None),
+            _last_optimizer_tried="synthetic_noop",
+            _decompilation_lifecycle=SimpleNamespace(
+                current_session=lambda _func_ea: session
+            ),
+        )
+        manager._capture_callback_nop_sites = MethodType(
+            InstructionOptimizerManager._capture_callback_nop_sites,
+            manager,
+        )
+        manager._report_callback_nop_delta = MethodType(
+            InstructionOptimizerManager._report_callback_nop_delta,
+            manager,
+        )
+        manager.log_info_on_input = lambda _blk, _ins: False
+        manager.optimize = lambda _blk, _ins: False
+
+        assert InstructionOptimizerManager.func(manager, block, instruction) is False
+        assert len(journal.attempts_for_session(session_id)) == 1
+
+        summary = journal.flush_callback_summaries(
+            session_id, parent_attempt_id=parent.attempt_id
+        )
+
+        assert summary is not None
+        assert summary.details["total_abstentions"] == 1
+        assert summary.details["groups"][0]["callback_kind"] == "optinsn"
+
+
 @pytest.mark.parametrize(
     "route_name",
     (

@@ -314,7 +314,9 @@ def test_cython_catalogue_returns_clean_no_match_for_unselected_root_family() ->
 @pytest.mark.skipif(
     not CythonMode().is_enabled(), reason="requires the Cython POD matcher"
 )
-def test_cython_catalogue_shares_feasibility_before_tight_comparison_budget() -> None:
+def test_cython_catalogue_shares_feasibility_before_tight_comparison_budget(
+    monkeypatch,
+) -> None:
     """An impossible first pattern cannot starve a later valid Cython match."""
 
     from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
@@ -322,6 +324,10 @@ def test_cython_catalogue_shares_feasibility_before_tight_comparison_budget() ->
     from d810.backends.mba.native_mba_term_view import NativeMbaTermView
     from d810.mba.dsl import Const, Var
     from d810.mba.rules._base import VerifiableRule
+
+    # Local rule classes auto-register. Isolate that registry mutation so this
+    # Cython regression cannot alter later production-rule inventory tests.
+    monkeypatch.setattr(VerifiableRule, "registry", dict(VerifiableRule.registry))
 
     x, y, z = Var("x"), Var("y"), Var("z")
     zero = Const("zero", 0)

@@ -60,6 +60,7 @@ markers = [
     "e2e: End-to-end pipeline tests with golden output comparison",
     "hexrays: Tests that require Hex-Rays decompiler",
     "slow: Slow tests (>10s) - typically Z3 verification or complex deobfuscation",
+    "speedup_parity: Runtime-boundary slice that must pass with Cython enabled and disabled",
     "profile: marks tests as performance profiling (deselect with '-m \"not profile\"')",
     "pseudocode_dump: manual utility tests for before/after pseudocode dumping",
     "manual: manual utility tests that are opt-in for local diagnostics",

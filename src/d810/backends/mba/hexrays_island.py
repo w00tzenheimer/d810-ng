@@ -12,6 +12,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 from d810.core.typing import Any
+from d810.backends.mba.native_mba_term_view import semantic_native_leaf_key
 
 from d810.mba.island_profile import (
     IslandBlocker,
@@ -115,7 +116,9 @@ def _load_native_runtime() -> _NativeAstRuntime:
         AstLeaf=ast_module.AstLeaf,
         AstConstant=ast_module.AstConstant,
         AstProxy=ast_module.AstProxy,
-        operation_by_opcode={opcode: name for name, opcode in opcode_by_operation.items()},
+        operation_by_opcode={
+            opcode: name for name, opcode in opcode_by_operation.items()
+        },
         opcode_by_operation=opcode_by_operation,
         blocker_by_opcode=MappingProxyType(blockers),
         get_mop_key=ast_module.get_mop_key,
@@ -190,8 +193,14 @@ def _live_leaf_key(leaf: Any, runtime: _NativeAstRuntime) -> tuple[object, ...] 
     if mop is None:
         return None
     try:
-        to_cache_key = getattr(mop, "to_cache_key", None)
-        raw_key = to_cache_key() if callable(to_cache_key) else runtime.get_mop_key(mop)
+        # Direct-native matching and delayed AST lowering must agree even when
+        # the active Python/Cython AST cache uses a different tuple encoding.
+        # The direct matcher admits only these exact native location leaves;
+        # retain the runtime key as a fail-closed fallback for other AST paths.
+        try:
+            raw_key = semantic_native_leaf_key(mop)
+        except (ImportError, ValueError):
+            raw_key = runtime.get_mop_key(mop)
         key = tuple(raw_key)
         hash(key)
         live_key = ("mop", *key)
@@ -259,7 +268,10 @@ def lower_hexrays_island(
     untouched native tree for future exact binding and reconstruction.
     """
 
-    if type(destination_size) is not int or destination_size not in _VALID_DESTINATION_SIZES:
+    if (
+        type(destination_size) is not int
+        or destination_size not in _VALID_DESTINATION_SIZES
+    ):
         return HexRaysIslandLowering(
             term=None,
             raw_term=None,
@@ -275,7 +287,9 @@ def lower_hexrays_island(
             return HexRaysIslandLowering(
                 term=None,
                 raw_term=None,
-                profile=_unsupported_profile(destination_size, {IslandBlocker.UNSUPPORTED_OPCODE}),
+                profile=_unsupported_profile(
+                    destination_size, {IslandBlocker.UNSUPPORTED_OPCODE}
+                ),
                 leafs=MappingProxyType({}),
                 native_nodes_by_path=MappingProxyType({}),
                 raw_native_nodes_by_path=MappingProxyType({}),
@@ -310,7 +324,9 @@ def lower_hexrays_island(
                 blockers.add(IslandBlocker.UNSUPPORTED_OPCODE)
                 return None
             nodes[path] = node
-            if not _native_width_matches(node, destination_size, require_destination_witness=True):
+            if not _native_width_matches(
+                node, destination_size, require_destination_witness=True
+            ):
                 blockers.add(IslandBlocker.MIXED_WIDTH)
                 return None
             opcode = getattr(node, "opcode", None)
@@ -334,7 +350,9 @@ def lower_hexrays_island(
                 if right is not None:
                     blockers.add(IslandBlocker.UNSUPPORTED_OPCODE)
                     return None
-                return TypedBvTerm(operation, destination_size * 8, children=(lowered_left,))
+                return TypedBvTerm(
+                    operation, destination_size * 8, children=(lowered_left,)
+                )
             if right is None:
                 blockers.add(IslandBlocker.UNSUPPORTED_OPCODE)
                 return None
@@ -342,14 +360,18 @@ def lower_hexrays_island(
             if lowered_right is None or lowered_right.width != lowered_left.width:
                 blockers.add(IslandBlocker.MIXED_WIDTH)
                 return None
-            return TypedBvTerm(operation, destination_size * 8, children=(lowered_left, lowered_right))
+            return TypedBvTerm(
+                operation, destination_size * 8, children=(lowered_left, lowered_right)
+            )
 
         term = lower(root, ())
         if term is None or blockers:
             return HexRaysIslandLowering(
                 term=None,
                 raw_term=None,
-                profile=_unsupported_profile(destination_size, blockers or {IslandBlocker.UNSUPPORTED_OPCODE}),
+                profile=_unsupported_profile(
+                    destination_size, blockers or {IslandBlocker.UNSUPPORTED_OPCODE}
+                ),
                 leafs=MappingProxyType(dict(leafs)),
                 native_nodes_by_path=MappingProxyType(dict(nodes)),
                 raw_native_nodes_by_path=MappingProxyType(dict(nodes)),
@@ -371,7 +393,9 @@ def lower_hexrays_island(
         return HexRaysIslandLowering(
             term=None,
             raw_term=None,
-            profile=_unsupported_profile(destination_size, {IslandBlocker.UNSUPPORTED_OPCODE}),
+            profile=_unsupported_profile(
+                destination_size, {IslandBlocker.UNSUPPORTED_OPCODE}
+            ),
             leafs=MappingProxyType({}),
             native_nodes_by_path=MappingProxyType({}),
             raw_native_nodes_by_path=MappingProxyType({}),
@@ -400,7 +424,9 @@ def rebuild_hexrays_island(
             if node.width != destination_size * 8:
                 return None
             if node.operation is None and node.value is not None:
-                constant = runtime.AstConstant(str(node.value), node.value, destination_size)
+                constant = runtime.AstConstant(
+                    str(node.value), node.value, destination_size
+                )
                 constant.dest_size = destination_size
                 return constant
             if node.operation is None:
@@ -413,7 +439,9 @@ def rebuild_hexrays_island(
                 ):
                     return None
                 current_key = _live_leaf_key(leaf, runtime)
-                if current_key is None or _leaf_key_fingerprint(current_key) != _leaf_key_fingerprint(node.leaf_key):
+                if current_key is None or _leaf_key_fingerprint(
+                    current_key
+                ) != _leaf_key_fingerprint(node.leaf_key):
                     return None
                 return leaf.clone()
             opcode = runtime.opcode_by_operation.get(node.operation)
@@ -422,7 +450,9 @@ def rebuild_hexrays_island(
             children = tuple(rebuild(child) for child in node.children)
             if any(child is None for child in children):
                 return None
-            native = runtime.AstNode(opcode, children[0], children[1] if len(children) == 2 else None)
+            native = runtime.AstNode(
+                opcode, children[0], children[1] if len(children) == 2 else None
+            )
             native.dest_size = destination_size
             return native
 

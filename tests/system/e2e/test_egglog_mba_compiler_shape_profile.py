@@ -72,6 +72,22 @@ class TestEgglogCompilerShapeProfile:
     def setup_class(cls) -> None:
         _build_native_corpus_binary()
 
+    @pytest.fixture(scope="class", autouse=True)
+    @classmethod
+    def _retain_singleton_provider_history_between_cases(cls, ida_database):
+        """Exercise the same retained optimizer lifetime as a full-suite run."""
+        from d810.manager import D810State
+
+        state = D810State()
+        was_loaded = state.is_loaded()
+        if not was_loaded:
+            state.load(gui=False)
+        try:
+            yield
+        finally:
+            if not was_loaded:
+                state.unload(gui=False)
+
     @pytest.mark.parametrize("function", _PROFILE_FUNCTIONS)
     def test_records_one_real_matcher_attempt_per_compiler_shape(
         self,
@@ -123,6 +139,17 @@ class TestEgglogCompilerShapeProfile:
             expected_outcomes=("applied",) if expect_provider_outcome else (),
         )
         captured_attempts = ()
+        captured_optimizer = None
+        provider_cursor = 0
+
+        def prepare_runtime_state(state) -> None:
+            nonlocal captured_optimizer, provider_cursor
+            captured_optimizer = next(
+                rule
+                for rule in state.current_ins_rules
+                if rule.name == "EgglogOptimizer"
+            )
+            provider_cursor = captured_optimizer.provider_outcome_cursor()
 
         def capture_runtime_state(state) -> None:
             nonlocal captured_attempts
@@ -131,7 +158,8 @@ class TestEgglogCompilerShapeProfile:
                 for rule in state.current_ins_rules
                 if rule.name == "EgglogOptimizer"
             )
-            captured_attempts = optimizer.provider_outcomes()
+            assert optimizer is captured_optimizer
+            captured_attempts = optimizer.provider_outcomes_since(provider_cursor)
 
         run_deobfuscation_test(
             DeobfuscationCase(
@@ -144,6 +172,7 @@ class TestEgglogCompilerShapeProfile:
             ),
             d810_state=d810_state,
             pseudocode_to_string=pseudocode_to_string,
+            prepare_runtime_state=prepare_runtime_state,
             capture_runtime_state=capture_runtime_state,
         )
 

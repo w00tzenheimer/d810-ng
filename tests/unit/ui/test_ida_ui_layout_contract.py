@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import ast
+from dataclasses import fields
 from pathlib import Path
 from types import SimpleNamespace
+
+from d810.core.settings import D810Settings
 
 
 IDA_UI = Path(__file__).resolve().parents[3] / "src" / "d810" / "ui" / "ida_ui.py"
@@ -72,9 +75,7 @@ class _Action:
 def test_active_pipeline_overview_owns_the_project_pipeline_pane() -> None:
     source = ast.unparse(_method("OnCreate"))
 
-    assert (
-        "self._pipeline_overview = ConfigV2PipelineOverviewWidget(" in source
-    )
+    assert "self._pipeline_overview = ConfigV2PipelineOverviewWidget(" in source
     assert (
         "self._pipeline_overview.inspect_requested.connect("
         "self._inspect_config_v2_pass)" in source
@@ -225,3 +226,30 @@ def test_plugin_settings_validate_and_apply_storage_without_restart() -> None:
     assert "parse_function_recipe_storage" in save_source
     assert "self.state.manager.reconfigure_function_storage" in save_source
     assert "FunctionStorageConfigurationError" in save_source
+
+
+def test_plugin_settings_expose_callback_evidence_detail() -> None:
+    init_source = ast.unparse(_plugin_method("__init__"))
+
+    assert "self.combo_execution_callback_detail" in init_source
+    assert "Summary (recommended)" in init_source
+    assert "Full per-callback detail (slow)" in init_source
+    assert "execution_callback_detail" in init_source
+
+
+def test_plugin_settings_persist_and_apply_callback_evidence_without_restart() -> None:
+    save_source = ast.unparse(_plugin_method("save_config"))
+
+    assert "configure_settings(execution_callback_detail=" in save_source
+    assert "self.state.manager.reconfigure_execution_callback_detail" in save_source
+    assert "self.state.d810_config.set('execution_callback_detail'" in save_source
+
+
+def test_every_runtime_setting_has_a_settings_dialog_control_and_save_path() -> None:
+    source = ast.unparse(_plugin_method("__init__")) + ast.unparse(
+        _plugin_method("save_config")
+    )
+
+    missing = [field.name for field in fields(D810Settings) if field.name not in source]
+
+    assert missing == []

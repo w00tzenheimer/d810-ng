@@ -22,6 +22,8 @@ if typing.TYPE_CHECKING:
     from d810.manager import D810State, ProjectRuntimeSnapshot
 
 from d810.core.logging import LoggerConfigurator, getLogger
+from d810.core.maturity_labels import IDA_MATURITY_NAMES
+from d810.core.settings import configure_settings, get_settings
 from d810.core.function_storage_config import (
     FunctionStorageConfigurationError,
     parse_function_recipe_storage,
@@ -338,6 +340,49 @@ class PluginConfigurationFileForm_t(QtWidgets.QDialog):
         self.dump_intermediate_microcode = self.state.d810_config.get(
             "dump_intermediate_microcode"
         )
+        self.execution_callback_detail = str(
+            self.state.d810_config.get(
+                "execution_callback_detail",
+                get_settings().execution_callback_detail,
+            )
+        )
+        runtime_settings = get_settings()
+        self.runtime_diag_snapshots = bool(
+            self.state.d810_config.get(
+                "diag_snapshots", runtime_settings.diag_snapshots
+            )
+        )
+        self.runtime_debug_logging = bool(
+            self.state.d810_config.get("debug_logging", runtime_settings.debug_logging)
+        )
+        self.runtime_verify_capture = bool(
+            self.state.d810_config.get(
+                "verify_capture", runtime_settings.verify_capture
+            )
+        )
+        self.runtime_verify_capture_dir = str(
+            self.state.d810_config.get(
+                "verify_capture_dir", runtime_settings.verify_capture_dir
+            )
+        )
+        self.runtime_capture_post_maturity = self.state.d810_config.get(
+            "capture_post_maturity", runtime_settings.capture_post_maturity
+        )
+        self.runtime_capture_post_file = str(
+            self.state.d810_config.get(
+                "capture_post_file", runtime_settings.capture_post_file
+            )
+        )
+        self.runtime_fact_lifecycle = bool(
+            self.state.d810_config.get(
+                "fact_lifecycle", runtime_settings.fact_lifecycle
+            )
+        )
+        self.runtime_trace_decompile_callers = bool(
+            self.state.d810_config.get(
+                "trace_decompile_callers", runtime_settings.trace_decompile_callers
+            )
+        )
         raw_storage = self.state.d810_config.get(
             "function_recipe_storage",
             {"backend": "netnode"},
@@ -428,6 +473,85 @@ class PluginConfigurationFileForm_t(QtWidgets.QDialog):
         )
         settings_layout.addWidget(self.checkbox_erase_logs_on_reload)
 
+        callback_detail_layout = QtWidgets.QHBoxLayout()
+        callback_detail_layout.addWidget(QtWidgets.QLabel("Callback evidence:", self))
+        self.combo_execution_callback_detail = QtWidgets.QComboBox(self)
+        self.combo_execution_callback_detail.addItem("Summary (recommended)", "summary")
+        self.combo_execution_callback_detail.addItem(
+            "Full per-callback detail (slow)", "full"
+        )
+        detail_index = self.combo_execution_callback_detail.findData(
+            self.execution_callback_detail
+        )
+        self.combo_execution_callback_detail.setCurrentIndex(max(0, detail_index))
+        self.combo_execution_callback_detail.setToolTip(
+            "Summary keeps exact mutations and failures while aggregating no-op "
+            "callbacks. Full records every callback and can substantially slow "
+            "decompilation."
+        )
+        callback_detail_layout.addWidget(self.combo_execution_callback_detail, 1)
+        settings_layout.addLayout(callback_detail_layout)
+
+        diagnostics_group = QGroupBox("Runtime diagnostics")
+        diagnostics_layout = QtWidgets.QFormLayout()
+
+        self.checkbox_diag_snapshots = QtWidgets.QCheckBox(
+            "Persist SQLite diagnostic snapshots", self
+        )
+        self.checkbox_diag_snapshots.setChecked(self.runtime_diag_snapshots)
+        diagnostics_layout.addRow(self.checkbox_diag_snapshots)
+
+        self.checkbox_debug_logging = QtWidgets.QCheckBox("Enable debug logging", self)
+        self.checkbox_debug_logging.setChecked(self.runtime_debug_logging)
+        diagnostics_layout.addRow(self.checkbox_debug_logging)
+
+        self.checkbox_verify_capture = QtWidgets.QCheckBox(
+            "Capture CFG verification failures", self
+        )
+        self.checkbox_verify_capture.setChecked(self.runtime_verify_capture)
+        diagnostics_layout.addRow(self.checkbox_verify_capture)
+
+        self.edit_verify_capture_dir = QtWidgets.QLineEdit(self)
+        self.edit_verify_capture_dir.setText(self.runtime_verify_capture_dir)
+        diagnostics_layout.addRow(
+            "Verification capture directory:", self.edit_verify_capture_dir
+        )
+
+        self.combo_capture_post_maturity = QtWidgets.QComboBox(self)
+        self.combo_capture_post_maturity.addItem("Disabled", None)
+        for maturity_value, maturity_name in enumerate(IDA_MATURITY_NAMES):
+            self.combo_capture_post_maturity.addItem(maturity_name, maturity_value)
+        maturity_index = self.combo_capture_post_maturity.findData(
+            self.runtime_capture_post_maturity
+        )
+        self.combo_capture_post_maturity.setCurrentIndex(max(0, maturity_index))
+        diagnostics_layout.addRow(
+            "Post-maturity capture:", self.combo_capture_post_maturity
+        )
+
+        self.edit_capture_post_file = QtWidgets.QLineEdit(self)
+        self.edit_capture_post_file.setText(self.runtime_capture_post_file)
+        diagnostics_layout.addRow(
+            "Post-maturity output file:", self.edit_capture_post_file
+        )
+
+        self.checkbox_fact_lifecycle = QtWidgets.QCheckBox(
+            "Capture maturity fact lifecycle", self
+        )
+        self.checkbox_fact_lifecycle.setChecked(self.runtime_fact_lifecycle)
+        diagnostics_layout.addRow(self.checkbox_fact_lifecycle)
+
+        self.checkbox_trace_decompile_callers = QtWidgets.QCheckBox(
+            "Trace top-level decompilation callers", self
+        )
+        self.checkbox_trace_decompile_callers.setChecked(
+            self.runtime_trace_decompile_callers
+        )
+        diagnostics_layout.addRow(self.checkbox_trace_decompile_callers)
+
+        diagnostics_group.setLayout(diagnostics_layout)
+        settings_layout.addWidget(diagnostics_group)
+
         settings_group.setLayout(settings_layout)
         self.config_layout.addWidget(settings_group)
 
@@ -495,6 +619,9 @@ class PluginConfigurationFileForm_t(QtWidgets.QDialog):
 
     def save_config(self):
         storage_payload = self._function_storage_payload()
+        execution_callback_detail = str(
+            self.combo_execution_callback_detail.currentData()
+        )
         effective_log_dir = pathlib.Path(self.state.log_dir)
         if self.log_dir_changed:
             effective_log_dir = pathlib.Path(self.log_dir) / effective_log_dir.name
@@ -506,6 +633,31 @@ class PluginConfigurationFileForm_t(QtWidgets.QDialog):
         except FunctionStorageConfigurationError as exc:
             QtWidgets.QMessageBox.critical(self, "Invalid recipe storage", str(exc))
             return
+        try:
+            self.state.manager.reconfigure_execution_callback_detail(
+                execution_callback_detail
+            )
+        except (RuntimeError, ValueError) as exc:
+            QtWidgets.QMessageBox.critical(
+                self,
+                "Callback evidence setting unavailable",
+                str(exc),
+            )
+            return
+        configure_settings(execution_callback_detail=execution_callback_detail)
+        runtime_overrides = {
+            "diag_snapshots": self.checkbox_diag_snapshots.isChecked(),
+            "debug_logging": self.checkbox_debug_logging.isChecked(),
+            "verify_capture": self.checkbox_verify_capture.isChecked(),
+            "verify_capture_dir": self.edit_verify_capture_dir.text().strip(),
+            "capture_post_maturity": self.combo_capture_post_maturity.currentData(),
+            "capture_post_file": self.edit_capture_post_file.text().strip(),
+            "fact_lifecycle": self.checkbox_fact_lifecycle.isChecked(),
+            "trace_decompile_callers": (
+                self.checkbox_trace_decompile_callers.isChecked()
+            ),
+        }
+        configure_settings(**runtime_overrides)
         if self.log_dir_changed:
             self.state.d810_config.set("log_dir", self.log_dir)
         self.state.d810_config.set(
@@ -519,6 +671,11 @@ class PluginConfigurationFileForm_t(QtWidgets.QDialog):
             self.checkbox_dump_intermediate_microcode.isChecked(),
         )
         self.state.d810_config.set("function_recipe_storage", storage_payload)
+        self.state.d810_config.set(
+            "execution_callback_detail", execution_callback_detail
+        )
+        for setting_name, setting_value in runtime_overrides.items():
+            self.state.d810_config.set(setting_name, setting_value)
         self.state.d810_config.save()
         self.state.manager.reconfigure_function_storage(storage_config)
         self.accept()

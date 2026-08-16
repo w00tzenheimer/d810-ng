@@ -333,7 +333,9 @@ def test_block_optimizer_threads_its_lifecycle_attempt_into_pass_pipeline(
 
 
 def test_block_optimizer_records_rule_and_mba_mutation_attempts(tmp_path) -> None:
-    journal = ExecutionJournalStore(tmp_path / "execution.sqlite")
+    journal = ExecutionJournalStore(
+        tmp_path / "execution.sqlite", callback_detail="full"
+    )
     session_id = DecompilationSessionId.new()
     parent = journal.begin_attempt(
         session_id,
@@ -381,7 +383,9 @@ def test_block_optimizer_records_rule_and_mba_mutation_attempts(tmp_path) -> Non
 
 
 def test_block_optimizer_records_noop_and_failure_attempts(tmp_path) -> None:
-    journal = ExecutionJournalStore(tmp_path / "execution.sqlite")
+    journal = ExecutionJournalStore(
+        tmp_path / "execution.sqlite", callback_detail="full"
+    )
     session_id = DecompilationSessionId.new()
     parent = journal.begin_attempt(
         session_id,
@@ -429,6 +433,54 @@ def test_block_optimizer_records_noop_and_failure_attempts(tmp_path) -> None:
         assert failed_attempt.status is ExecutionAttemptStatus.FAILED
         assert failed_mutation.status is ExecutionAttemptStatus.FAILED
         assert failed_attempt.reason_code == "RuntimeError: flow rule failure"
+    finally:
+        journal.close()
+
+
+def test_block_optimizer_summarizes_noop_rule_by_default(tmp_path) -> None:
+    journal = ExecutionJournalStore(tmp_path / "execution.sqlite")
+    session_id = DecompilationSessionId.new()
+    parent = journal.begin_attempt(
+        session_id,
+        stage_id="hexrays_preanalysis",
+        domain=ExecutionDomain.HOOK,
+    )
+    manager = BlockOptimizerManager(
+        OptimizationStatistics(), Path("."), ctx_cls=FlowMaturityContext
+    )
+    manager.current_maturity = ida_hexrays.MMAT_GLBOPT1
+    noop = _DummyRule("summarized_noop")
+    failing = _FailingRule("summarized_failure")
+    lifecycle = _MutationGatewayLifecycle(object(), object())
+    lifecycle.execution_journal = journal
+    lifecycle.current_session = lambda _function_ea: SimpleNamespace(
+        session_id=session_id,
+        preanalysis_attempt_id=parent.attempt_id,
+    )
+    manager.configure(
+        execution_scope_service=_FakeExecutionScopeService((noop, failing)),
+        execution_scope_project_name="proj",
+        execution_scope_idb_key="idb",
+        decompilation_lifecycle=lifecycle,
+    )
+
+    try:
+        with pytest.raises(RuntimeError, match="flow rule failure"):
+            manager.optimize(_make_block(maturity=ida_hexrays.MMAT_GLBOPT1))
+        attempts = journal.attempts_for_session(session_id)
+        assert [attempt.stage_id for attempt in attempts] == [
+            "hexrays_preanalysis",
+            "flow_rule:summarized_failure:maturity=MMAT_GLBOPT1:unknown",
+            "mba_rule_mutation:summarized_failure:maturity=MMAT_GLBOPT1:unknown",
+        ]
+        assert attempts[1].status is ExecutionAttemptStatus.FAILED
+        assert attempts[2].status is ExecutionAttemptStatus.FAILED
+        summary = journal.flush_callback_summaries(
+            session_id, parent_attempt_id=parent.attempt_id
+        )
+        assert summary is not None
+        assert summary.details["total_abstentions"] == 1
+        assert summary.details["groups"][0]["callback_kind"] == "optblock"
     finally:
         journal.close()
 

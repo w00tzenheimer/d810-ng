@@ -31,6 +31,7 @@ from d810.core.execution_scope import (
     FunctionExecutionMetadata,
 )
 from d810.core.stats import OptimizationStatistics
+from d810.core.settings import get_settings
 from d810.backends.ast.z3 import Z3MopProver
 from d810.backends.hexrays.registration import (
     ensure_hexrays_fact_lifter_registered,
@@ -1992,7 +1993,19 @@ class D810Manager:
         from d810.core.execution_journal_store import ExecutionJournalStore
 
         self.log_dir.mkdir(parents=True, exist_ok=True)
-        return ExecutionJournalStore(self.log_dir / "native_patch_execution.sqlite")
+        return ExecutionJournalStore(
+            self.log_dir / "native_patch_execution.sqlite",
+            callback_detail=get_settings().execution_callback_detail,
+        )
+
+    def reconfigure_execution_callback_detail(self, callback_detail: str) -> None:
+        """Apply the persisted callback-retention choice to the live journal."""
+        normalized_detail = str(callback_detail).strip().lower()
+        if normalized_detail not in {"summary", "full"}:
+            raise ValueError("callback_detail must be 'summary' or 'full'")
+        journal = self._native_patch_execution_journal
+        if journal is not None:
+            journal.configure_callback_detail(normalized_detail)
 
     def _install_native_writer_migration(self) -> None:
         """Inject the one manager-authorized indirect-label executor.
@@ -2324,7 +2337,9 @@ class D810Manager:
             ManagerOwnedNativePatchRequestExecutor(
                 gateway=gateway,
                 user_enabled=lambda request: native_patch_function_is_authorized(
-                    globally_available=bool(self.config.get("native_patch_enabled", False)),
+                    globally_available=bool(
+                        self.config.get("native_patch_enabled", False)
+                    ),
                     function_tags=self.get_function_tags(
                         request.materialization.function_ea
                     ),

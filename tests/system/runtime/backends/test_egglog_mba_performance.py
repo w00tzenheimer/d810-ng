@@ -420,10 +420,10 @@ def test_stage_timing_report_requires_consistent_ordered_stages() -> None:
         (
             {
                 "root_eligibility": 1.0,
-                "ast_construction": 2.0,
                 "native_preflight": 3.0,
+                "egglog_extraction": 2.0,
             },
-            {"root_eligibility": 3.0, "ast_construction": 6.0},
+            {"root_eligibility": 3.0, "native_preflight": 6.0},
         )
     )
 
@@ -434,17 +434,17 @@ def test_stage_timing_report_requires_consistent_ordered_stages() -> None:
             "p95_ms": pytest.approx(2.9),
             "max_ms": 3.0,
         },
-        "ast_construction": {
+        "native_preflight": {
             "sample_count": 2,
-            "p50_ms": 4.0,
-            "p95_ms": pytest.approx(5.8),
+            "p50_ms": 4.5,
+            "p95_ms": pytest.approx(5.85),
             "max_ms": 6.0,
         },
-        "native_preflight": {
+        "egglog_extraction": {
             "sample_count": 1,
-            "p50_ms": 3.0,
-            "p95_ms": 3.0,
-            "max_ms": 3.0,
+            "p50_ms": 2.0,
+            "p95_ms": 2.0,
+            "max_ms": 2.0,
         },
     }
     with pytest.raises(ValueError, match="ordered pipeline prefixes"):

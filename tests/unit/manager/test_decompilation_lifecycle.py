@@ -473,6 +473,50 @@ def test_new_top_level_session_is_durably_bound_to_its_function(tmp_path) -> Non
         assert journal.latest_session_for_function(0x401000) == session.session_id
 
 
+def test_session_finish_flushes_callback_summary_before_parent_completion(
+    tmp_path, monkeypatch
+) -> None:
+    coordinator, _runtime = _coordinator([])
+    with ExecutionJournalStore(tmp_path / "execution.sqlite") as journal:
+        coordinator.execution_journal = journal
+        session, _created = coordinator.ensure_hexrays_session(
+            function_ea=0x401000,
+            database_identity="sample.i64",
+        )
+        assert session.preanalysis_attempt_id is not None
+        journal.summarize_callback_abstention(
+            session.session_id,
+            parent_attempt_id=session.preanalysis_attempt_id,
+            callback_kind="optinsn",
+            stage_id="instruction_optimizer",
+            maturity="GLBOPT1",
+            reason_code="no_instruction_change",
+        )
+        observed_parent_statuses: list[ExecutionAttemptStatus] = []
+        original_flush = journal.flush_callback_summaries
+
+        def observe_flush(*args, **kwargs):
+            parent = journal.get_attempt(session.preanalysis_attempt_id)
+            assert parent is not None
+            observed_parent_statuses.append(parent.status)
+            return original_flush(*args, **kwargs)
+
+        monkeypatch.setattr(journal, "flush_callback_summaries", observe_flush)
+
+        coordinator.finish_hexrays_session()
+
+        assert observed_parent_statuses == [ExecutionAttemptStatus.STARTED]
+        assert (
+            journal.only_attempt(
+                session.session_id, stage_id="callback_summary"
+            ).details["total_abstentions"]
+            == 1
+        )
+        assert journal.get_attempt(session.preanalysis_attempt_id).status is (
+            ExecutionAttemptStatus.COMPLETED
+        )
+
+
 @pytest.mark.parametrize("operation", ("bind_session", "begin_attempt"))
 def test_journal_setup_failure_does_not_block_a_live_decompilation(
     tmp_path,

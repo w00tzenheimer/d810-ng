@@ -150,9 +150,7 @@ class DeobfuscationCase:
     # Hex-Rays rendering and ctree simplification can legitimately change
     # statement shape across SDK releases without changing semantics.  Keep
     # those baselines exact and explicit instead of weakening them to ranges.
-    expected_ast_stats_by_sdk: dict[int, dict[str, int]] = field(
-        default_factory=dict
-    )
+    expected_ast_stats_by_sdk: dict[int, dict[str, int]] = field(default_factory=dict)
 
     # Behavioral semantic-equivalence oracle: repo-root-relative path to a C
     # source file containing ``int <function>(int input){...}``.  When set, the
@@ -186,6 +184,21 @@ class DeobfuscationCase:
         """Return the exact AST baseline declared for one IDA SDK."""
         return self.expected_ast_stats_by_sdk.get(
             int(sdk_version), self.expected_ast_stats
+        )
+
+    @property
+    def requires_baseline(self) -> bool:
+        """Whether this case consumes D810-off pseudocode.
+
+        After-only semantic, rendering, AST, and rule assertions do not need a
+        second decompilation merely to manufacture an unused before string.
+        """
+        return bool(
+            self.must_change
+            or self.obfuscated_contains
+            or self.obfuscated_regexes
+            or self.obfuscated_not_contains
+            or self.operator_complexity_mode
         )
 
     def get_effective_config(self, binary_suffix: str) -> DeobfuscationCase:

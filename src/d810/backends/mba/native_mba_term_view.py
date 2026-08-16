@@ -148,6 +148,32 @@ class NativeMbaViewResult:
     profile: MbaIslandProfile
 
 
+def semantic_native_leaf_key(mop: Any) -> tuple[object, ...]:
+    """Return one runtime-independent identity for an admitted native leaf.
+
+    Python and Cython AST implementations use different cache-key encodings,
+    but native proof terms need the same identity on both sides of delayed AST
+    construction. These three leaf kinds have exact location identities that
+    do not depend on transient SSA ``valnum`` values or wrapper object IDs.
+    """
+
+    ida_hexrays = importlib.import_module("ida_hexrays")
+    kind = getattr(mop, "t", None)
+    size = getattr(mop, "size", None)
+    if type(size) is not int:
+        raise ValueError("native MBA leaf is missing its width")
+    if kind == ida_hexrays.mop_r:
+        return (kind, size, mop.r)
+    if kind == ida_hexrays.mop_S:
+        stack = getattr(mop, "s", None)
+        if stack is None:
+            raise ValueError("stack operand is missing its stack slot")
+        return (kind, size, stack.off)
+    if kind == ida_hexrays.mop_v:
+        return (kind, size, mop.g)
+    raise ValueError("unsupported direct native MBA leaf kind")
+
+
 def _load_live_mop_runtime() -> NativeMopRuntime:
     """Resolve only the direct Hex-Rays SDK names used by this backend adapter."""
 
@@ -173,29 +199,6 @@ def _load_live_mop_runtime() -> NativeMopRuntime:
         if type(opcode) is int:
             blockers[opcode] = blocker
 
-    def direct_leaf_key(mop: Any) -> tuple[object, ...]:
-        """Read the AST cache-key fields directly, without a snapshot adapter."""
-
-        kind = mop.t
-        return (
-            kind,
-            mop.size,
-            getattr(mop, "valnum", 0),
-            None,
-            mop.r if kind == ida_hexrays.mop_r else None,
-            (
-                None
-                if kind != ida_hexrays.mop_S or getattr(mop, "s", None) is None
-                else mop.s.off
-            ),
-            mop.g if kind == ida_hexrays.mop_v else None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
-
     return NativeMopRuntime(
         mop_z=ida_hexrays.mop_z,
         mop_n=ida_hexrays.mop_n,
@@ -207,7 +210,7 @@ def _load_live_mop_runtime() -> NativeMopRuntime:
         ),
         operation_by_opcode=MappingProxyType(operations),
         blocker_by_opcode=MappingProxyType(blockers),
-        get_mop_key=direct_leaf_key,
+        get_mop_key=semantic_native_leaf_key,
     )
 
 

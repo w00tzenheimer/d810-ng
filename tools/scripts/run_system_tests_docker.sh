@@ -77,6 +77,10 @@
 #   ./run_system_tests_docker.sh shell -w verifycpp-on-ngFlowGraphTransform -l
 #   ./run_system_tests_docker.sh exec -- python -c 'print("hello world")'
 #   ./run_system_tests_docker.sh exec -- bash -c 'echo hi && $PYTHON -m pytest tests/unit/ -v'
+#   # Routine runtime matrix: full Cython plus the owned pure-Python parity slice.
+#   D810_NO_CYTHON=0 ./run_system_tests_docker.sh system -w my-worktree -o system-cython.txt -- -q
+#   D810_NO_CYTHON=1 ./run_system_tests_docker.sh system -w my-worktree -o system-python-parity.txt -- -m speedup_parity -q
+#   # Release/scheduled evidence still runs the complete suite in both modes.
 #   ./run_system_tests_docker.sh dump -f sub_7FFD3338C040 -m LOCOPT,CALLS,GLBOPT1,GLBOPT2 -p hodur_flag2.json -o hodur_flag2_dump.txt
 #   ./run_system_tests_docker.sh dump -f AntiDebug_ExceptionFilter -p example_libobfuscated.json -o antidebug_dump4.txt -w verifycpp-on-ngFlowGraphTransform -l
 #

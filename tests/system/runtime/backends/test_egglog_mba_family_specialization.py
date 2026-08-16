@@ -17,6 +17,11 @@ from d810.backends.mba.egglog_saturation import (  # noqa: E402
     EgglogExtractionBudget,
     extract_bounded_candidate,
 )
+from d810.backends.mba.hexrays_island import lower_hexrays_island  # noqa: E402
+from d810.backends.mba.native_mba_term_view import (  # noqa: E402
+    NativeMbaTermView,
+    NativeMbaViewResult,
+)
 from d810.core.stats import OptimizationStatistics  # noqa: E402
 from d810.hexrays.expr.ast import (  # noqa: E402
     AstBase,
@@ -85,6 +90,32 @@ def _node(opcode: int, left, right=None, size: int = 4) -> AstNode:
     node = AstNode(opcode, left, right)
     node.dest_size = size
     return node
+
+
+def _native_view_from_typed_term(term):
+    if term.operation is None:
+        if term.value is not None:
+            return NativeMbaTermView(None, term.width, constant_value=term.value)
+        return NativeMbaTermView(None, term.width, leaf_key=term.leaf_key)
+    return NativeMbaTermView(
+        term.operation,
+        term.width,
+        children=tuple(_native_view_from_typed_term(child) for child in term.children),
+    )
+
+
+def _native_view_from_candidate(
+    candidate, destination_size: int
+) -> NativeMbaViewResult:
+    lowering = lower_hexrays_island(candidate, destination_size=destination_size)
+    return NativeMbaViewResult(
+        view=(
+            None
+            if lowering.term is None
+            else _native_view_from_typed_term(lowering.term)
+        ),
+        profile=lowering.profile,
+    )
 
 
 def _bnot_of(variable_name: str) -> AstNode:
@@ -419,6 +450,13 @@ def test_central_statistics_records_selected_family_provenance(monkeypatch):
     monkeypatch.setattr(
         "d810.optimizers.microcode.instructions.egraph.egglog_handler.minsn_to_ast",
         lambda _ins: candidate,
+    )
+    monkeypatch.setattr(
+        handler,
+        "_read_native_view",
+        lambda _ins, destination_size: _native_view_from_candidate(
+            candidate, destination_size
+        ),
     )
     monkeypatch.setattr(handler, "_candidate_skip_reason", lambda _ast, _ins: None)
     monkeypatch.setattr(

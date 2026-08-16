@@ -14,7 +14,10 @@ from d810.core.execution_journal import (
     ExecutionDomain,
     ExecutionEffectRef,
 )
-from d810.core.execution_journal_store import ExecutionJournalStore
+from d810.core.execution_journal_store import (
+    ExecutionJournalStore,
+    TerminalExecutionAttempt,
+)
 from d810.core import getLogger, typing
 from d810.core.provider_phase import ProviderPhaseSnapshot
 from d810.core.registry import Registrant
@@ -202,6 +205,49 @@ class CtreeOptimizerManager:
                 exc_info=True,
             )
 
+    @staticmethod
+    def _record_terminal_attempts(
+        journal: ExecutionJournalStore,
+        session_id: object,
+        parent_attempt_id: object,
+        records: tuple[TerminalExecutionAttempt, ...],
+    ) -> None:
+        try:
+            journal.record_terminal_attempts(
+                session_id,
+                parent_attempt_id=parent_attempt_id,
+                records=records,
+            )
+        except Exception:
+            logger.debug(
+                "ctree execution journal terminal record failed",
+                exc_info=True,
+            )
+
+    @staticmethod
+    def _summarize_abstention(
+        journal: ExecutionJournalStore,
+        session_id: object,
+        parent_attempt_id: object,
+        *,
+        stage_id: str,
+        maturity: str,
+    ) -> None:
+        try:
+            journal.summarize_callback_abstention(
+                session_id,
+                parent_attempt_id=parent_attempt_id,
+                callback_kind="ctree",
+                stage_id=stage_id,
+                maturity=maturity,
+                reason_code="no_modifications",
+            )
+        except Exception:
+            logger.debug(
+                "ctree execution journal callback summary failed",
+                exc_info=True,
+            )
+
     def on_maturity(self, cfunc: typing.Any, new_maturity: int) -> int:
         """Called when ctree maturity changes.
 
@@ -240,7 +286,11 @@ class CtreeOptimizerManager:
         for rule in self.ctree_rules:
             attempt = None
             mutation_attempt = None
-            if journal is not None and session_id is not None:
+            if (
+                journal is not None
+                and session_id is not None
+                and journal.callback_detail_is_full
+            ):
                 try:
                     attempt = journal.begin_attempt(
                         session_id,
@@ -305,6 +355,38 @@ class CtreeOptimizerManager:
                         effect_refs=effects,
                         details=details,
                     )
+                    if (
+                        journal is not None
+                        and session_id is not None
+                        and attempt is None
+                    ):
+                        effect = ExecutionEffectRef(
+                            kind="ctree_edit",
+                            ref_id=f"ctree_rule:{rule.name}",
+                            detail=details,
+                        )
+                        self._record_terminal_attempts(
+                            journal,
+                            session_id,
+                            parent_attempt_id,
+                            (
+                                TerminalExecutionAttempt(
+                                    stage_id=f"ctree_rule:{rule.name}",
+                                    domain=ExecutionDomain.HOOK,
+                                    status=ExecutionAttemptStatus.COMPLETED,
+                                    effect_refs=(effect,),
+                                    details=details,
+                                ),
+                                TerminalExecutionAttempt(
+                                    stage_id=f"ctree_mutation:{rule.name}",
+                                    domain=ExecutionDomain.MUTATION,
+                                    status=ExecutionAttemptStatus.COMPLETED,
+                                    effect_refs=(effect,),
+                                    details=details,
+                                    parent_record_index=0,
+                                ),
+                            ),
+                        )
                 else:
                     self._advance_rule_attempt(
                         journal,
@@ -320,6 +402,18 @@ class CtreeOptimizerManager:
                         reason_code="no_modifications",
                         details={**maturity_detail, "patch_count": 0},
                     )
+                    if (
+                        journal is not None
+                        and session_id is not None
+                        and attempt is None
+                    ):
+                        self._summarize_abstention(
+                            journal,
+                            session_id,
+                            parent_attempt_id,
+                            stage_id=f"ctree_rule:{rule.name}",
+                            maturity=str(maturity_detail["maturity"]),
+                        )
             except Exception as exc:
                 self._advance_rule_attempt(
                     journal,
@@ -335,5 +429,29 @@ class CtreeOptimizerManager:
                     reason_code=f"{type(exc).__name__}: {exc}",
                     details=maturity_detail,
                 )
+                if journal is not None and session_id is not None and attempt is None:
+                    reason_code = f"{type(exc).__name__}: {exc}"
+                    self._record_terminal_attempts(
+                        journal,
+                        session_id,
+                        parent_attempt_id,
+                        (
+                            TerminalExecutionAttempt(
+                                stage_id=f"ctree_rule:{rule.name}",
+                                domain=ExecutionDomain.HOOK,
+                                status=ExecutionAttemptStatus.FAILED,
+                                reason_code=reason_code,
+                                details=maturity_detail,
+                            ),
+                            TerminalExecutionAttempt(
+                                stage_id=f"ctree_mutation:{rule.name}",
+                                domain=ExecutionDomain.MUTATION,
+                                status=ExecutionAttemptStatus.FAILED,
+                                reason_code=reason_code,
+                                details=maturity_detail,
+                                parent_record_index=0,
+                            ),
+                        ),
+                    )
                 logger.exception("Ctree rule %s failed", rule.name)
         return total

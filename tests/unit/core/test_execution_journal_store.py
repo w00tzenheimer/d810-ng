@@ -29,6 +29,7 @@ from d810.core.execution_journal_store import (
     AmbiguousExecutionAttemptLookupError,
     DuplicateExecutionAttemptError,
     ExecutionJournalStore,
+    TerminalExecutionAttempt,
     UnknownExecutionAttemptError,
 )
 from d810.core.native_preanalysis_key import NativePreanalysisKey
@@ -59,6 +60,189 @@ def _native_key(*, function_fingerprint: str = "a" * 64) -> NativePreanalysisKey
         profile_fingerprint="c" * 64,
         sdk_fingerprint="ida-9.4+d810-test",
     )
+
+
+def test_summary_mode_collapses_repeated_callback_abstentions(tmp_path: Path) -> None:
+    session = DecompilationSessionId.new()
+    with ExecutionJournalStore(
+        tmp_path / "execution.sqlite", callback_detail="summary"
+    ) as journal:
+        parent = journal.begin_attempt(
+            session,
+            stage_id="hexrays_preanalysis",
+            domain=ExecutionDomain.PASS,
+        )
+        for _ in range(1_000):
+            journal.summarize_callback_abstention(
+                session,
+                parent_attempt_id=parent.attempt_id,
+                callback_kind="optinsn",
+                stage_id="instruction_optimizer",
+                maturity="GLBOPT1",
+                reason_code="no_instruction_change",
+            )
+
+        assert [a.stage_id for a in journal.attempts_for_session(session)] == [
+            "hexrays_preanalysis"
+        ]
+
+        summary = journal.flush_callback_summaries(
+            session, parent_attempt_id=parent.attempt_id
+        )
+
+        assert summary is not None
+        assert summary.stage_id == "callback_summary"
+        assert summary.status is ExecutionAttemptStatus.COMPLETED
+        assert summary.details["total_abstentions"] == 1_000
+        assert summary.details["groups"] == (
+            {
+                "callback_kind": "optinsn",
+                "count": 1_000,
+                "maturity": "GLBOPT1",
+                "reason_code": "no_instruction_change",
+                "stage_id": "instruction_optimizer",
+            },
+        )
+        assert (
+            journal.flush_callback_summaries(
+                session, parent_attempt_id=parent.attempt_id
+            )
+            is None
+        )
+
+
+def test_full_mode_does_not_accept_summary_only_abstentions(tmp_path: Path) -> None:
+    session = DecompilationSessionId.new()
+    with ExecutionJournalStore(
+        tmp_path / "execution.sqlite", callback_detail="full"
+    ) as journal:
+        assert journal.callback_detail_is_full is True
+        with pytest.raises(RuntimeError, match="full callback detail"):
+            journal.summarize_callback_abstention(
+                session,
+                parent_attempt_id=None,
+                callback_kind="optinsn",
+                stage_id="instruction_optimizer",
+                maturity="GLBOPT1",
+                reason_code="no_instruction_change",
+            )
+
+
+def test_callback_detail_can_be_reconfigured_between_sessions(tmp_path: Path) -> None:
+    with ExecutionJournalStore(tmp_path / "execution.sqlite") as journal:
+        journal.configure_callback_detail("full")
+        assert journal.callback_detail_is_full is True
+
+        journal.configure_callback_detail("summary")
+        assert journal.callback_detail_is_full is False
+
+
+def test_callback_detail_reconfiguration_refuses_to_drop_pending_summary(
+    tmp_path: Path,
+) -> None:
+    session = DecompilationSessionId.new()
+    with ExecutionJournalStore(tmp_path / "execution.sqlite") as journal:
+        journal.summarize_callback_abstention(
+            session,
+            parent_attempt_id=None,
+            callback_kind="optinsn",
+            stage_id="instruction_optimizer",
+            maturity="GLBOPT1",
+            reason_code="no_instruction_change",
+        )
+
+        with pytest.raises(RuntimeError, match="pending callback summaries"):
+            journal.configure_callback_detail("full")
+
+        assert journal.callback_detail_is_full is False
+
+
+def test_terminal_attempt_batch_persists_callback_and_mutation_atomically(
+    tmp_path: Path,
+) -> None:
+    session = DecompilationSessionId.new()
+    with ExecutionJournalStore(tmp_path / "execution.sqlite") as journal:
+        parent = journal.begin_attempt(
+            session,
+            stage_id="hexrays_preanalysis",
+            domain=ExecutionDomain.PASS,
+        )
+
+        callback, mutation = journal.record_terminal_attempts(
+            session,
+            parent_attempt_id=parent.attempt_id,
+            records=(
+                TerminalExecutionAttempt(
+                    stage_id="optinsn_callback:maturity=4:insn=0x401000",
+                    domain=ExecutionDomain.HOOK,
+                    status=ExecutionAttemptStatus.COMPLETED,
+                    details={"instruction_ea": 0x401000},
+                ),
+                TerminalExecutionAttempt(
+                    stage_id="mba_mutation:optinsn:maturity=4:insn=0x401000",
+                    domain=ExecutionDomain.MUTATION,
+                    status=ExecutionAttemptStatus.COMPLETED,
+                    parent_record_index=0,
+                    effect_refs=(
+                        ExecutionEffectRef(
+                            kind="mba_instruction_edit",
+                            ref_id="maturity=4:insn=0x401000",
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        assert callback.parent_attempt_id == parent.attempt_id
+        assert mutation.parent_attempt_id == callback.attempt_id
+        assert callback.status is ExecutionAttemptStatus.COMPLETED
+        assert mutation.status is ExecutionAttemptStatus.COMPLETED
+        assert [
+            attempt.stage_id for attempt in journal.attempts_for_session(session)
+        ] == [
+            "hexrays_preanalysis",
+            "optinsn_callback:maturity=4:insn=0x401000",
+            "mba_mutation:optinsn:maturity=4:insn=0x401000",
+        ]
+
+
+def test_terminal_attempt_batch_rolls_back_every_record_on_late_validation_failure(
+    tmp_path: Path,
+) -> None:
+    session = DecompilationSessionId.new()
+    with ExecutionJournalStore(tmp_path / "execution.sqlite") as journal:
+        parent = journal.begin_attempt(
+            session,
+            stage_id="hexrays_preanalysis",
+            domain=ExecutionDomain.PASS,
+        )
+
+        with pytest.raises(ValueError, match="earlier record"):
+            journal.record_terminal_attempts(
+                session,
+                parent_attempt_id=parent.attempt_id,
+                records=(
+                    TerminalExecutionAttempt(
+                        stage_id="callback",
+                        domain=ExecutionDomain.HOOK,
+                        status=ExecutionAttemptStatus.COMPLETED,
+                    ),
+                    TerminalExecutionAttempt(
+                        stage_id="invalid-child",
+                        domain=ExecutionDomain.MUTATION,
+                        status=ExecutionAttemptStatus.COMPLETED,
+                        parent_record_index=1,
+                    ),
+                ),
+            )
+
+        assert journal.attempts_for_session(session) == (parent,)
+        next_attempt = journal.begin_attempt(
+            session,
+            stage_id="after-rollback",
+            domain=ExecutionDomain.PASS,
+        )
+        assert next_attempt.attempt_id.sequence == 2
 
 
 # ---------------------------------------------------------------------------

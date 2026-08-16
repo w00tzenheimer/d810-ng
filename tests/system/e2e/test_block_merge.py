@@ -48,17 +48,10 @@ def _get_default_binary() -> str:
 # ---------------------------------------------------------------------------
 
 BLOCK_MERGE_CASES = [
-    DeobfuscationCase(
-        function="test_function_ollvm_fla_bcf_sub",
-        description=(
-            "OLLVM FLA+BCF+SUB function produces many small blocks after "
-            "unflattening. Cleanup-family block merge must stay safe in this path."
-        ),
-        project="default_unflattening_ollvm.json",
-        must_change=True,
-        check_stats=True,
-        deobfuscated_not_contains=["JUMPOUT"],
-    ),
+    # ``TestOLLVMPatterns`` in test_libdeobfuscated_dsl.py already runs
+    # test_function_ollvm_fla_bcf_sub through this exact binary/project key and
+    # additionally requires SimpleFlatteningCleanupUnflattener plus stronger
+    # before/after assertions. Keep one authoritative decompile for that key.
     DeobfuscationCase(
         function="tigress_minmaxarray",
         description=(

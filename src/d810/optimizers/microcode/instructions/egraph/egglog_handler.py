@@ -40,7 +40,10 @@ from d810.backends.mba.hexrays_island import (
     rebuild_hexrays_island,
 )
 from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
-from d810.backends.mba.native_mba_term_view import NativeMbaTermView
+from d810.backends.mba.native_mba_term_view import (
+    NativeMbaTermView,
+    semantic_native_leaf_key,
+)
 from d810.backends.mba.native_z3 import prove_native_ast_equivalence
 from d810.backends.mba.native_z3_proof_template import (
     NativeZ3ProofTemplate,
@@ -1274,14 +1277,29 @@ class EgglogOptimizer(PeepholeSimplificationRule):
     ]:
         """Run the configured template mode without weakening native proof."""
 
-        if self.native_proof_mode == "legacy":
-            legacy_started = time.perf_counter()
-            legacy_proved = self._prove_ast_equivalence(
+        certificate = self._native_proof_certificate(selected[1])
+
+        def prove_native_ast() -> bool:
+            if certificate is not None:
+                return prove_native_ast_equivalence(
+                    original,
+                    replacement,
+                    width=width,
+                    certificate=certificate,
+                    generic_native_z3_before_certificate=(
+                        self.generic_native_z3_before_certificate
+                    ),
+                )
+            return self._prove_ast_equivalence(
                 original,
                 replacement,
                 width=width,
                 timeout_ms=self._native_z3_timeout_ms(),
             )
+
+        if self.native_proof_mode == "legacy":
+            legacy_started = time.perf_counter()
+            legacy_proved = prove_native_ast()
             return (
                 legacy_proved,
                 None,
@@ -1319,12 +1337,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
                 if not template_proved:
                     fallback_reason = "template_proof_failed"
         legacy_started = time.perf_counter()
-        legacy_proved = self._prove_ast_equivalence(
-            original,
-            replacement,
-            width=width,
-            timeout_ms=self._native_z3_timeout_ms(),
-        )
+        legacy_proved = prove_native_ast()
         legacy_elapsed_ms = (time.perf_counter() - legacy_started) * 1000.0
         if self.native_proof_mode == "shadow":
             if template_proved is not None and template_proved != legacy_proved:
@@ -1397,11 +1410,10 @@ class EgglogOptimizer(PeepholeSimplificationRule):
                     if node.is_constant():
                         return z3.BitVecVal(int(node.value), width)
                     mop = getattr(node, "mop", None)
-                    try:
-                        hash(mop)
-                        key = ("mop", mop)
-                    except TypeError:
-                        key = ("mop", repr(mop))
+                    if mop is None:
+                        raise ValueError("missing AST leaf operand")
+                    key = ("mop", *semantic_native_leaf_key(mop))
+                    hash(key)
                     return variables.setdefault(
                         key, z3.BitVec(f"egglog_leaf_{len(variables)}", width)
                     )

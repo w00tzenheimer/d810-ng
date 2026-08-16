@@ -64,7 +64,7 @@ import sqlite3
 import threading
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from d810.core import logging
@@ -218,6 +218,31 @@ class _IdentityRow:
         return ExecutionAttemptId(session=self.session_id, sequence=self.sequence)
 
 
+@dataclass(frozen=True, slots=True)
+class TerminalExecutionAttempt:
+    """One terminal attempt to append atomically with sibling records.
+
+    ``parent_record_index`` links a record to an earlier record in the same
+    batch. ``None`` links it to the external parent passed to
+    :meth:`ExecutionJournalStore.record_terminal_attempts`.
+    """
+
+    stage_id: str
+    domain: ExecutionDomain
+    status: ExecutionAttemptStatus
+    reason_code: str | None = None
+    effect_refs: tuple[ExecutionEffectRef, ...] = ()
+    elapsed_ms: float | None = None
+    details: Mapping[str, object] = field(default_factory=dict)
+    parent_record_index: int | None = None
+
+    def __post_init__(self) -> None:
+        if not self.status.is_terminal:
+            raise ValueError("terminal attempt status must be terminal")
+        if self.parent_record_index is not None and self.parent_record_index < 0:
+            raise ValueError("parent_record_index must not be negative")
+
+
 class ExecutionJournalStore:
     """Append-only SQLite-backed store for :class:`ExecutionAttempt` provenance.
 
@@ -238,8 +263,21 @@ class ExecutionJournalStore:
         >>> store.close()
     """
 
-    def __init__(self, db_path: str | Path) -> None:
+    def __init__(
+        self,
+        db_path: str | Path,
+        *,
+        callback_detail: str = "summary",
+    ) -> None:
         self.db_path = Path(db_path)
+        normalized_detail = str(callback_detail).strip().lower()
+        if normalized_detail not in {"summary", "full"}:
+            raise ValueError("callback_detail must be 'summary' or 'full'")
+        self._callback_detail = normalized_detail
+        self._callback_summaries: dict[
+            tuple[str, int | None],
+            dict[tuple[str, str, str, str], int],
+        ] = {}
         self._lock = threading.Lock()
         self._conn: sqlite3.Connection = sqlite3.connect(
             str(self.db_path), check_same_thread=False
@@ -250,6 +288,119 @@ class ExecutionJournalStore:
         self._migrate_event_columns()
         self._migrate_session_binding_columns()
         self._conn.commit()
+
+    @property
+    def callback_detail_is_full(self) -> bool:
+        """Whether every callback should retain its exact attempt identity."""
+        return self._callback_detail == "full"
+
+    def configure_callback_detail(self, callback_detail: str) -> None:
+        """Change callback retention without discarding an active summary window."""
+        normalized_detail = str(callback_detail).strip().lower()
+        if normalized_detail not in {"summary", "full"}:
+            raise ValueError("callback_detail must be 'summary' or 'full'")
+        with self._lock:
+            if normalized_detail == "full" and self._callback_summaries:
+                raise RuntimeError(
+                    "cannot enable full callback detail with pending callback summaries"
+                )
+            self._callback_detail = normalized_detail
+
+    def summarize_callback_abstention(
+        self,
+        session_id: DecompilationSessionId,
+        *,
+        parent_attempt_id: ExecutionAttemptId | None,
+        callback_kind: str,
+        stage_id: str,
+        maturity: str,
+        reason_code: str,
+    ) -> None:
+        """Count one no-op callback without touching SQLite.
+
+        This API is intentionally unavailable in full-detail mode so a caller
+        cannot accidentally claim exact retention while collapsing events.
+        """
+        if self.callback_detail_is_full:
+            raise RuntimeError("full callback detail requires exact attempts")
+        if not isinstance(session_id, DecompilationSessionId):
+            raise TypeError("session_id must be a DecompilationSessionId")
+        if parent_attempt_id is not None and parent_attempt_id.session != session_id:
+            raise ValueError("parent_attempt_id must belong to session_id")
+        group = (
+            str(callback_kind),
+            str(stage_id),
+            str(maturity),
+            str(reason_code),
+        )
+        parent_sequence = (
+            None if parent_attempt_id is None else parent_attempt_id.sequence
+        )
+        with self._lock:
+            counts = self._callback_summaries.setdefault(
+                (session_id.value, parent_sequence), {}
+            )
+            counts[group] = counts.get(group, 0) + 1
+
+    def flush_callback_summaries(
+        self,
+        session_id: DecompilationSessionId,
+        *,
+        parent_attempt_id: ExecutionAttemptId | None,
+    ) -> ExecutionAttempt | None:
+        """Persist and clear one session's grouped callback abstentions."""
+        if self.callback_detail_is_full:
+            return None
+        if not isinstance(session_id, DecompilationSessionId):
+            raise TypeError("session_id must be a DecompilationSessionId")
+        if parent_attempt_id is not None and parent_attempt_id.session != session_id:
+            raise ValueError("parent_attempt_id must belong to session_id")
+        parent_sequence = (
+            None if parent_attempt_id is None else parent_attempt_id.sequence
+        )
+        summary_key = (session_id.value, parent_sequence)
+        with self._lock:
+            counts = self._callback_summaries.get(summary_key)
+            if not counts:
+                return None
+            groups = tuple(
+                {
+                    "callback_kind": callback_kind,
+                    "stage_id": stage_id,
+                    "maturity": maturity,
+                    "reason_code": reason_code,
+                    "count": count,
+                }
+                for (
+                    callback_kind,
+                    stage_id,
+                    maturity,
+                    reason_code,
+                ), count in sorted(counts.items())
+            )
+            total = sum(counts.values())
+            try:
+                (summary,) = self._record_terminal_attempts_locked(
+                    session_id,
+                    parent_attempt_id=parent_attempt_id,
+                    records=(
+                        TerminalExecutionAttempt(
+                            stage_id="callback_summary",
+                            domain=ExecutionDomain.HOOK,
+                            status=ExecutionAttemptStatus.COMPLETED,
+                            details={
+                                "total_abstentions": total,
+                                "groups": groups,
+                            },
+                        ),
+                    ),
+                )
+            except Exception:
+                self._conn.rollback()
+                raise
+            self._conn.commit()
+            del self._callback_summaries[summary_key]
+            return summary
 
     def _migrate_event_columns(self) -> None:
         """Add additive event fields when opening an older journal database."""
@@ -416,6 +567,85 @@ class ExecutionJournalStore:
             self._insert_event_locked(attempt)
             self._conn.commit()
             return attempt
+
+    def record_terminal_attempts(
+        self,
+        session_id: DecompilationSessionId,
+        *,
+        parent_attempt_id: ExecutionAttemptId | None,
+        records: tuple[TerminalExecutionAttempt, ...],
+    ) -> tuple[ExecutionAttempt, ...]:
+        """Append complete attempts in one transaction.
+
+        Each returned attempt has both its immutable ``STARTED`` event and its
+        requested terminal event. This is the low-overhead path for callback
+        mutations/failures whose outcome is already known.
+        """
+        if not isinstance(session_id, DecompilationSessionId):
+            raise TypeError("session_id must be a DecompilationSessionId")
+        if parent_attempt_id is not None and parent_attempt_id.session != session_id:
+            raise ValueError("parent_attempt_id must belong to session_id")
+        if not records:
+            return ()
+        if not all(isinstance(record, TerminalExecutionAttempt) for record in records):
+            raise TypeError("records must contain TerminalExecutionAttempt values")
+        with self._lock:
+            try:
+                attempts = self._record_terminal_attempts_locked(
+                    session_id,
+                    parent_attempt_id=parent_attempt_id,
+                    records=records,
+                )
+            except Exception:
+                self._conn.rollback()
+                raise
+            self._conn.commit()
+            return attempts
+
+    def _record_terminal_attempts_locked(
+        self,
+        session_id: DecompilationSessionId,
+        *,
+        parent_attempt_id: ExecutionAttemptId | None,
+        records: tuple[TerminalExecutionAttempt, ...],
+    ) -> tuple[ExecutionAttempt, ...]:
+        completed: list[ExecutionAttempt] = []
+        for record_index, record in enumerate(records):
+            local_parent_index = record.parent_record_index
+            if local_parent_index is not None:
+                if local_parent_index >= record_index:
+                    raise ValueError(
+                        "parent_record_index must refer to an earlier record"
+                    )
+                record_parent_id = completed[local_parent_index].attempt_id
+            else:
+                record_parent_id = parent_attempt_id
+            sequence = self._allocate_sequence_locked(session_id)
+            started = ExecutionAttempt(
+                attempt_id=ExecutionAttemptId(
+                    session=session_id,
+                    sequence=sequence,
+                ),
+                parent_attempt_id=record_parent_id,
+                stage_id=record.stage_id,
+                domain=record.domain,
+                status=ExecutionAttemptStatus.STARTED,
+                reason_code=None,
+                effect_refs=(),
+            )
+            terminal = advance_attempt(
+                started,
+                status=record.status,
+                reason_code=record.reason_code,
+                effect_refs=record.effect_refs,
+                elapsed_ms=record.elapsed_ms,
+                details=record.details,
+            )
+            self._insert_identity_locked(started)
+            self._insert_event_locked(started)
+            self._insert_event_locked(terminal)
+            completed.append(terminal)
+        return tuple(completed)
 
     def _allocate_sequence_locked(self, session_id: DecompilationSessionId) -> int:
         """``next_sequence``'s body, callable while ``self._lock`` is already held."""

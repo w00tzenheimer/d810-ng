@@ -28,6 +28,15 @@ def _env_str(name: str, default: str = "") -> str:
     return os.environ.get(name, default)
 
 
+def _execution_callback_detail(value: object, *, source: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{source} must be 'summary' or 'full'")
+    normalized = value.strip().lower()
+    if normalized not in {"summary", "full"}:
+        raise ValueError(f"{source} must be 'summary' or 'full', got {value!r}")
+    return normalized
+
+
 def _env_int(name: str, default: int | None = None) -> int | None:
     raw = os.environ.get(name, "")
     if not raw:
@@ -101,6 +110,13 @@ class D810Settings:
     pure overhead once the question is answered.
     """
 
+    execution_callback_detail: str = "summary"
+    """Callback provenance retention (`D810_EXECUTION_CALLBACK_DETAIL`).
+
+    ``summary`` aggregates no-op callbacks per decompilation session while
+    retaining exact mutations and failures. ``full`` persists every callback.
+    """
+
     @classmethod
     def _from_env(cls) -> D810Settings:
         return cls(
@@ -117,6 +133,10 @@ class D810Settings:
             ),
             fact_lifecycle=_env_bool("D810_FACT_LIFECYCLE", default=True),
             trace_decompile_callers=_env_bool("D810_TRACE_DECOMPILE_CALLERS"),
+            execution_callback_detail=_execution_callback_detail(
+                _env_str("D810_EXECUTION_CALLBACK_DETAIL", "summary"),
+                source="D810_EXECUTION_CALLBACK_DETAIL",
+            ),
         )
 
 
@@ -142,6 +162,8 @@ def configure_settings(**overrides: object) -> D810Settings:
     for k, v in overrides.items():
         if k not in valid:
             raise ValueError(f"Unknown D810Settings field: {k!r}")
+        if k == "execution_callback_detail":
+            v = _execution_callback_detail(v, source=k)
         setattr(s, k, v)
     return s
 

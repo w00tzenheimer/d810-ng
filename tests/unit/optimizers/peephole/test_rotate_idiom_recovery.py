@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import ast
 import importlib
 import importlib.util
+from pathlib import Path
 
 import pytest
 
@@ -11,12 +13,35 @@ MASK64 = (1 << 64) - 1
 C1 = 0x87C37B91114253D5
 C2 = 0x4CF5AD432745937F
 _MODULE = "d810.optimizers.microcode.instructions.peephole.rotate_idiom_recovery"
+_NATIVE_MODULE_PATH = (
+    Path(__file__).parents[4]
+    / "src/d810/optimizers/microcode/instructions/peephole/rotate_idiom_recovery_native.py"
+)
 
 
 def _api():
-    assert importlib.util.find_spec(_MODULE) is not None, "rotate idiom matcher module is missing"
+    assert importlib.util.find_spec(_MODULE) is not None, (
+        "rotate idiom matcher module is missing"
+    )
     module = importlib.import_module(_MODULE)
     return module.Binary, module.Constant, module.Variable, module.match_rol64_idiom
+
+
+def test_native_lowering_does_not_cache_idb_local_type_handles() -> None:
+    """Disposable IDBs invalidate every ``tinfo_t`` created by the prior IDB."""
+
+    module = ast.parse(_NATIVE_MODULE_PATH.read_text(encoding="utf-8"))
+    module_assignments = (
+        node for node in module.body if isinstance(node, (ast.Assign, ast.AnnAssign))
+    )
+
+    assert not any(
+        isinstance(candidate, ast.Call)
+        and isinstance(candidate.func, ast.Attribute)
+        and candidate.func.attr == "tinfo_t"
+        for assignment in module_assignments
+        for candidate in ast.walk(assignment)
+    ), "IDA tinfo_t handles must be constructed inside the active database"
 
 
 def _mul(left, right):
@@ -24,7 +49,9 @@ def _mul(left, right):
     return Binary("mul", 64, left, right)
 
 
-def _rol_idiom(constant: int, variable, rotation: int, *, swap_or: bool, swap_mul: bool):
+def _rol_idiom(
+    constant: int, variable, rotation: int, *, swap_or: bool, swap_mul: bool
+):
     Binary, Constant, _, _ = _api()
     base = _mul(Constant(constant, 64), variable)
     shifted_constant = Constant((constant << rotation) & MASK64, 64)
@@ -35,7 +62,10 @@ def _rol_idiom(constant: int, variable, rotation: int, *, swap_or: bool, swap_mu
     right_shift = Binary(
         "shr",
         64,
-        _mul(variable if swap_mul else Constant(constant, 64), Constant(constant, 64) if swap_mul else variable),
+        _mul(
+            variable if swap_mul else Constant(constant, 64),
+            Constant(constant, 64) if swap_mul else variable,
+        ),
         Constant(64 - rotation, 8),
     )
     return Binary(
@@ -79,13 +109,22 @@ def test_rejects_non_exact_or_mixed_width_rotate_lookalikes() -> None:
     )
 
     lookalikes = (
-        Binary("or", 64, _mul(Constant(0x1234, 64), Variable("input", 64)), source.right),
-        Binary("or", 64, source.left, Binary("shr", 64, source.right.left, Constant(32, 8))),
+        Binary(
+            "or", 64, _mul(Constant(0x1234, 64), Variable("input", 64)), source.right
+        ),
+        Binary(
+            "or", 64, source.left, Binary("shr", 64, source.right.left, Constant(32, 8))
+        ),
         Binary(
             "or",
             64,
             source.left,
-            Binary("shr", 64, _mul(Constant(C1, 64), Variable("other", 64)), source.right.right),
+            Binary(
+                "shr",
+                64,
+                _mul(Constant(C1, 64), Variable("other", 64)),
+                source.right.right,
+            ),
         ),
         Binary("or", 32, source.left, source.right),
     )
@@ -100,9 +139,8 @@ def test_z3_proves_every_fixed_nonzero_64_bit_rotation() -> None:
 
     for rotation in range(1, 64):
         base = constant * value
-        recovered = (
-            (z3.BitVecVal((C1 << rotation) & MASK64, 64) * value)
-            | z3.LShR(base, 64 - rotation)
+        recovered = (z3.BitVecVal((C1 << rotation) & MASK64, 64) * value) | z3.LShR(
+            base, 64 - rotation
         )
         rol = (base << rotation) | z3.LShR(base, 64 - rotation)
         solver = z3.Solver()

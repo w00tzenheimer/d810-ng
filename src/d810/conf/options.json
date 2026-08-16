@@ -2,6 +2,7 @@
     "erase_logs_on_reload": true,
     "generate_z3_code": false,
     "dump_intermediate_microcode": false,
+    "execution_callback_detail": "summary",
     "log_dir": null,
     "function_recipe_storage": {
         "backend": "netnode"

@@ -127,7 +127,9 @@ class TestCtreeOptimizerManagerRuleExecution:
                 del cfunc
                 raise RuntimeError("ctree failure")
 
-        journal = ExecutionJournalStore(tmp_path / "execution.sqlite")
+        journal = ExecutionJournalStore(
+            tmp_path / "execution.sqlite", callback_detail="full"
+        )
         session_id = DecompilationSessionId.new()
         parent = journal.begin_attempt(
             session_id,
@@ -200,6 +202,56 @@ class TestCtreeOptimizerManagerRuleExecution:
                 session_id, stage_id="ctree_mutation:ctree_failing"
             )
             assert failed_mutation.status is ExecutionAttemptStatus.FAILED
+        finally:
+            journal.close()
+
+    def test_noop_rule_is_summarized_by_default(self, tmp_path):
+        class NoOpRule(CtreeOptimizationRule):
+            NAME = "ctree_summary_noop"
+
+            def optimize_ctree(self, cfunc):
+                del cfunc
+                return 0
+
+        journal = ExecutionJournalStore(tmp_path / "execution.sqlite")
+        session_id = DecompilationSessionId.new()
+        parent = journal.begin_attempt(
+            session_id,
+            stage_id="hexrays_preanalysis",
+            domain=ExecutionDomain.HOOK,
+        )
+        lifecycle = type(
+            "Lifecycle",
+            (),
+            {
+                "execution_journal": journal,
+                "current_session": lambda self, _function_ea: type(
+                    "Session",
+                    (),
+                    {
+                        "session_id": session_id,
+                        "preanalysis_attempt_id": parent.attempt_id,
+                    },
+                )(),
+                "capture_ctree": lambda self, *args, **kwargs: None,
+                "analyze_current_function": lambda self, **kwargs: None,
+            },
+        )()
+        manager = CtreeOptimizerManager(
+            OptimizationStatistics(),
+            decompilation_lifecycle=lifecycle,
+        )
+        manager.add_rule(NoOpRule())
+        cfunc = type("Cfunc", (), {"entry_ea": 0x401000})()
+
+        try:
+            assert manager.on_maturity(cfunc, ida_hexrays.CMAT_FINAL) == 0
+            assert len(journal.attempts_for_session(session_id)) == 1
+            summary = journal.flush_callback_summaries(
+                session_id, parent_attempt_id=parent.attempt_id
+            )
+            assert summary is not None
+            assert summary.details["groups"][0]["callback_kind"] == "ctree"
         finally:
             journal.close()
 

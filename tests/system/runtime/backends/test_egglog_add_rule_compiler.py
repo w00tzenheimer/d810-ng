@@ -102,9 +102,7 @@ def test_live_handler_selects_certified_catalogue_rule_with_alias_provenance():
     )
 
     handler = EgglogOptimizer()
-    specialization = handler._select_specialization(
-        candidate_ast, destination_size=4
-    )
+    specialization = handler._select_specialization(candidate_ast, destination_size=4)
 
     assert specialization is not None
     assert specialization.rule.source_name == "Add_HackersDelightRule_2"
@@ -139,14 +137,20 @@ def test_live_handler_selects_later_certified_specialization_with_lower_cost(
         replacement_ast=_node(ida_hexrays.m_add, x.clone(), y.clone()),
     )
     handler = EgglogOptimizer()
-    handler._catalogue = SimpleNamespace(compiled_rules=(earlier_rule, later_rule))
+    handler._compiled_rules = (earlier_rule, later_rule)
+    handler._rules_by_root_opcode = handler._build_root_opcode_buckets(
+        handler._compiled_rules
+    )
+    handler._catalogue_configured = True
     monkeypatch.setattr(
         "d810.optimizers.microcode.instructions.egraph.egglog_handler.specialize",
         lambda rule, _ast, **_kwargs: (
             earlier if rule is earlier_rule else later if rule is later_rule else None
         ),
     )
-    monkeypatch.setattr(handler, "_prove_ast_equivalence", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        handler, "_prove_ast_equivalence", lambda *_args, **_kwargs: True
+    )
 
     assert handler._select_specialization(candidate, destination_size=4) is later
 
@@ -173,14 +177,20 @@ def test_live_handler_breaks_equal_cost_selection_ties_by_catalogue_order(monkey
         replacement_ast=_node(ida_hexrays.m_add, y.clone(), x.clone()),
     )
     handler = EgglogOptimizer()
-    handler._catalogue = SimpleNamespace(compiled_rules=(earlier_rule, later_rule))
+    handler._compiled_rules = (earlier_rule, later_rule)
+    handler._rules_by_root_opcode = handler._build_root_opcode_buckets(
+        handler._compiled_rules
+    )
+    handler._catalogue_configured = True
     monkeypatch.setattr(
         "d810.optimizers.microcode.instructions.egraph.egglog_handler.specialize",
         lambda rule, _ast, **_kwargs: (
             earlier if rule is earlier_rule else later if rule is later_rule else None
         ),
     )
-    monkeypatch.setattr(handler, "_prove_ast_equivalence", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        handler, "_prove_ast_equivalence", lambda *_args, **_kwargs: True
+    )
 
     assert handler._select_specialization(candidate, destination_size=4) is earlier
 
@@ -261,6 +271,7 @@ def test_central_statistics_records_and_serializes_egglog_provenance(monkeypatch
         selected_source="Add_HackersDelightRule_2",
         selected_aliases=("Add_OllvmRule_3",),
     )
+
     class _Instruction:
         opcode = ida_hexrays.m_add
         ea = 0x401000
@@ -269,9 +280,7 @@ def test_central_statistics_records_and_serializes_egglog_provenance(monkeypatch
         def _print():
             return "fake instruction"
 
-    monkeypatch.setattr(
-        handler, "check_and_replace", lambda _blk, _ins: _Instruction()
-    )
+    monkeypatch.setattr(handler, "check_and_replace", lambda _blk, _ins: _Instruction())
     optimizer.add_rule(handler)
 
     class _Mba:

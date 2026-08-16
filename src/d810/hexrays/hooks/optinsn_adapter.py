@@ -18,6 +18,7 @@ from d810.core.execution_journal import (
     ExecutionDomain,
     ExecutionEffectRef,
 )
+from d810.core.execution_journal_store import TerminalExecutionAttempt
 from d810.errors import D810Exception
 from d810.hexrays.hooks.callback_mutation_diagnostics import (
     LiveNopSite,
@@ -81,6 +82,29 @@ def hash_minsn(ins: ida_hexrays.minsn_t, func_entry_ea: int = 0) -> int:
         except Exception:
             pass
     return _hash_minsn_fallback(ins, func_entry_ea)
+
+
+def _rewrite_history_key(
+    blk: object,
+    ins: object,
+    *,
+    func_ea: int,
+    maturity: int,
+) -> tuple[object, ...]:
+    """Identify one production rewrite stream or isolated synthetic object.
+
+    Hex-Rays can rebuild several microinstructions for one native instruction
+    while simplifying it. Those representations form one convergence stream,
+    so production history is intentionally keyed by function, maturity, and
+    native EA. Objects without a live block coordinate are independent test or
+    adapter values and use their Python identity instead.
+    """
+    try:
+        int(getattr(blk, "serial"))
+        getattr(blk, "mba")
+    except (AttributeError, TypeError, ValueError):
+        return (func_ea, maturity, "object", id(ins))
+    return (func_ea, maturity, int(getattr(ins, "ea", 0) or 0))
 
 
 # Note: VerifiableRule and adapt_rules are loaded/filtered in manager.py
@@ -166,11 +190,9 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         )
         self._scheduled_implementation_names: frozenset[str] = frozenset()
 
-        # Cycle detection records pre-rewrite states per function/maturity
-        # instruction site. A state is a cycle only when it reappears after
-        # another distinct state (X -> Y -> X). Hex-Rays may legitimately
-        # re-present the same pre-state across callbacks, so that is allowed.
-        self._rewrite_seen: dict[tuple[int, int, int], set[int]] = defaultdict(set)
+        # Cycle detection records installed states per production native site,
+        # while unpositioned adapter/test objects retain independent histories.
+        self._rewrite_seen: dict[tuple[object, ...], set[int]] = defaultdict(set)
         # A real state revisit identifies the producer that closed the cycle.
         # Quarantine it at this function/maturity/instruction site; merely
         # refusing one rewrite leaves Hex-Rays free to invoke it again.
@@ -492,6 +514,9 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             journal = None if session is None else session.execution_journal
             if journal is not None:
                 journal_session = session
+            if journal is not None and bool(
+                getattr(journal, "callback_detail_is_full", True)
+            ):
                 journal_attempt = journal.begin_attempt(
                     session.session_id,
                     parent_attempt_id=session.preanalysis_attempt_id,
@@ -624,6 +649,80 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                 except Exception:
                     optimizer_logger.debug(
                         "execution journal: failed to record optinsn callback outcome",
+                        exc_info=True,
+                    )
+            elif journal is not None and journal_session is not None:
+                try:
+                    detail = {
+                        "maturity": journal_maturity,
+                        "instruction_ea": journal_instruction_ea,
+                    }
+                    callback_stage = (
+                        "optinsn_callback:"
+                        f"maturity={journal_maturity}:"
+                        f"insn=0x{journal_instruction_ea:X}"
+                    )
+                    if callback_exception_name is not None:
+                        journal.record_terminal_attempts(
+                            journal_session.session_id,
+                            parent_attempt_id=journal_session.preanalysis_attempt_id,
+                            records=(
+                                TerminalExecutionAttempt(
+                                    stage_id=callback_stage,
+                                    domain=ExecutionDomain.HOOK,
+                                    status=ExecutionAttemptStatus.FAILED,
+                                    reason_code=callback_exception_name,
+                                    details=detail,
+                                ),
+                            ),
+                        )
+                    elif callback_result:
+                        effect = ExecutionEffectRef(
+                            kind="mba_instruction_edit",
+                            ref_id=(
+                                f"maturity={journal_maturity}:"
+                                f"insn=0x{journal_instruction_ea:X}"
+                            ),
+                            detail=detail,
+                        )
+                        journal.record_terminal_attempts(
+                            journal_session.session_id,
+                            parent_attempt_id=journal_session.preanalysis_attempt_id,
+                            records=(
+                                TerminalExecutionAttempt(
+                                    stage_id=callback_stage,
+                                    domain=ExecutionDomain.HOOK,
+                                    status=ExecutionAttemptStatus.COMPLETED,
+                                    effect_refs=(effect,),
+                                    details=detail,
+                                ),
+                                TerminalExecutionAttempt(
+                                    stage_id=(
+                                        "mba_mutation:optinsn:"
+                                        f"maturity={journal_maturity}:"
+                                        f"insn=0x{journal_instruction_ea:X}"
+                                    ),
+                                    domain=ExecutionDomain.MUTATION,
+                                    status=ExecutionAttemptStatus.COMPLETED,
+                                    effect_refs=(effect,),
+                                    details=detail,
+                                    parent_record_index=0,
+                                ),
+                            ),
+                        )
+                    else:
+                        journal.summarize_callback_abstention(
+                            journal_session.session_id,
+                            parent_attempt_id=journal_session.preanalysis_attempt_id,
+                            callback_kind="optinsn",
+                            stage_id="instruction_optimizer",
+                            maturity=str(journal_maturity),
+                            reason_code="no_instruction_change",
+                        )
+                except Exception:
+                    optimizer_logger.debug(
+                        "execution journal: failed to record summarized optinsn "
+                        "callback outcome",
                         exc_info=True,
                     )
 
@@ -1165,15 +1264,13 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                     # --- end expression size guard ---
 
                     # --- cycle detection guard ---
-                    # Record pre-rewrite states, rather than replacement
-                    # states. Re-presenting the same pre-state is a normal
-                    # Hex-Rays callback pattern; only returning to a state
-                    # after another state has intervened is a real cycle.
                     pre_hash = hash_minsn(ins, func_ea)
-                    post_hash = hash_minsn(new_ins, func_ea)
+                    ins.swap(new_ins)
+                    post_hash = hash_minsn(ins, func_ea)
                     ins_key = int(getattr(ins, "ea", 0) or 0)
 
                     if post_hash == pre_hash:
+                        ins.swap(new_ins)
                         record_rejected = getattr(
                             ins_optimizer, "record_mutation_rejected", None
                         )
@@ -1186,11 +1283,19 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                         )
                         return False
 
-                    seen_states = self._rewrite_seen[site_key]
-                    if pre_hash in seen_states and len(seen_states) > 1:
-                        # We have reached a previously observed state after
-                        # traversing at least one different state: X -> Y -> X.
+                    history_key = _rewrite_history_key(
+                        blk,
+                        ins,
+                        func_ea=func_ea,
+                        maturity=maturity,
+                    )
+                    seen = self._rewrite_seen[history_key]
+                    if post_hash in seen:
+                        # Cycle detected: this instruction was already
+                        # rewritten to this exact form. Undo the swap and
+                        # refuse the rewrite to break the cycle.
                         # Refuse the rewrite and quarantine only its producer.
+                        ins.swap(new_ins)
                         producer_rule_name = getattr(
                             ins_optimizer,
                             "last_matched_rule_name",
@@ -1225,8 +1330,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                             )
                         return False
 
-                    seen_states.add(pre_hash)
-                    ins.swap(new_ins)
+                    seen.add(post_hash)
                     # --- end cycle detection guard ---
 
                     record_accepted = getattr(

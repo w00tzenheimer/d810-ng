@@ -117,6 +117,7 @@ def run_deobfuscation_test(
     pseudocode_to_string: Callable,
     code_comparator: Optional[Any] = None,
     capture_stats: Optional[Callable] = None,
+    prepare_runtime_state: Optional[Callable] = None,
     capture_runtime_state: Optional[Callable] = None,
     load_expected_stats: Optional[Callable] = None,
     db_capture: Optional[Any] = None,
@@ -136,6 +137,8 @@ def run_deobfuscation_test(
         pseudocode_to_string: Function to convert pseudocode to string.
         code_comparator: Optional CodeComparator for AST comparison.
         capture_stats: Optional function to capture statistics.
+        prepare_runtime_state: Optional function called with the live D810 state
+            immediately before the D810-enabled decompilation.
         capture_runtime_state: Optional function called with the live D810 state
             after decompilation and before the state context closes.
         load_expected_stats: Optional function to load expected stats.
@@ -185,40 +188,43 @@ def run_deobfuscation_test(
             project_index = _resolve_test_project_index(state, effective_case.project)
             state.load_project(project_index)
 
-        # ==========================================
-        # BEFORE: Decompile without d810 (obfuscated)
-        # ==========================================
-        state.stop_d810()
-        decompiled_before = idaapi.decompile(func_ea, flags=idaapi.DECOMP_NO_CACHE)
-        if decompiled_before is None:
-            raise AssertionError(
-                f"Decompilation failed for '{effective_case.function}'"
-            )
+        code_before: str | None = None
+        baseline_required = effective_case.requires_baseline or db_capture is not None
+        if baseline_required:
+            # ==========================================
+            # BEFORE: Decompile without d810 (obfuscated)
+            # ==========================================
+            state.stop_d810()
+            decompiled_before = idaapi.decompile(func_ea, flags=idaapi.DECOMP_NO_CACHE)
+            if decompiled_before is None:
+                raise AssertionError(
+                    f"Decompilation failed for '{effective_case.function}'"
+                )
 
-        code_before = pseudocode_to_string(decompiled_before.get_pseudocode())
+            code_before = pseudocode_to_string(decompiled_before.get_pseudocode())
 
-        # Assert obfuscation patterns are present
-        if effective_case.obfuscated_contains:
-            assert_contains(
-                code_before,
-                effective_case.obfuscated_contains,
-                context="obfuscated code",
-            )
+            # Assert obfuscation patterns are present
+            if effective_case.obfuscated_contains:
+                assert_contains(
+                    code_before,
+                    effective_case.obfuscated_contains,
+                    context="obfuscated code",
+                )
 
-        if effective_case.obfuscated_regexes:
-            assert_regex_contains(
-                code_before,
-                effective_case.obfuscated_regexes,
-                context="obfuscated code",
-            )
+            if effective_case.obfuscated_regexes:
+                assert_regex_contains(
+                    code_before,
+                    effective_case.obfuscated_regexes,
+                    context="obfuscated code",
+                )
 
-        # Assert forbidden patterns are not present
-        if effective_case.obfuscated_not_contains:
-            assert_not_contains(
-                code_before,
-                effective_case.obfuscated_not_contains,
-                context="obfuscated code",
-            )
+            # Assert forbidden patterns are not present
+            if effective_case.obfuscated_not_contains:
+                assert_not_contains(
+                    code_before,
+                    effective_case.obfuscated_not_contains,
+                    context="obfuscated code",
+                )
 
         # ==========================================
         # AFTER: Decompile with d810 (deobfuscated)
@@ -237,10 +243,42 @@ def run_deobfuscation_test(
             )
             recipe_activation = state.activate_workbench_recipe(draft)
         with recipe_activation:
+            if prepare_runtime_state is not None:
+                prepare_runtime_state(state)
+            # Exercise the production decompilation lifecycle. Config-v2
+            # state-machine passes can stage evidence at CALLS for a fresh
+            # GENERATED/PREOPT graph; a raw one-shot ``idaapi.decompile``
+            # cannot consume that request after it unwinds. Manager-less
+            # adapter states retain the historical one-shot capability.
+            manager = getattr(state, "manager", None)
+            controlled_decompile = getattr(
+                manager,
+                "decompile_with_native_preanalysis",
+                None,
+            )
             decompiled_after = idaapi.decompile(
                 func_ea,
                 flags=idaapi.DECOMP_NO_CACHE,
             )
+            lifecycle = getattr(manager, "decompilation_lifecycle", None)
+            has_pending_restart = getattr(
+                lifecycle,
+                "has_pending_generated_restart",
+                None,
+            )
+            if (
+                callable(controlled_decompile)
+                and callable(has_pending_restart)
+                and has_pending_restart(func_ea)
+            ):
+                decompiled_after = controlled_decompile(
+                    func_ea,
+                    lambda: idaapi.decompile(
+                        func_ea,
+                        flags=idaapi.DECOMP_NO_CACHE,
+                    ),
+                    lambda: idaapi.mark_cfunc_dirty(func_ea, False),
+                )
         if decompiled_after is None:
             raise AssertionError(
                 f"Decompilation with d810 failed for '{effective_case.function}'"
@@ -254,6 +292,7 @@ def run_deobfuscation_test(
         # unchanged text is accepted only when its required block rule recorded
         # an actual positive microcode patch.
         if effective_case.must_change:
+            assert code_before is not None
             if code_before != code_after:
                 assert_code_changed(code_before, code_after)
             elif not effective_case.allow_unchanged_pseudocode_if_rules_fired:
@@ -293,6 +332,7 @@ def run_deobfuscation_test(
 
         # Optional operator-complexity trend checks (case-specific)
         if effective_case.operator_complexity_mode:
+            assert code_before is not None
             assert_operator_complexity(
                 code_before,
                 code_after,
@@ -401,7 +441,8 @@ def run_deobfuscation_test(
         # ==========================================
         # DATABASE CAPTURE: Record results if enabled
         # ==========================================
-        if db_capture:
+        if db_capture is not None:
+            assert code_before is not None
             db_capture.record(
                 function_name=effective_case.function,
                 code_before=code_before,

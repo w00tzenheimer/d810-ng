@@ -28,10 +28,19 @@ _BINARY_OPCODE_NAMES = {
     ida_hexrays.m_mul: "mul",
     ida_hexrays.m_shr: "shr",
 }
-_UINT64 = ida_typeinf.tinfo_t()
-_UINT64.create_simple_type(ida_typeinf.BTF_UINT64)
-_UINT8 = ida_typeinf.tinfo_t()
-_UINT8.create_simple_type(ida_typeinf.BTF_UINT8)
+
+
+def _fresh_uint_type(declaration: int) -> ida_typeinf.tinfo_t:
+    """Create a type handle owned by the currently open IDB.
+
+    IDA type handles do not survive disposable-database teardown.  Keeping one
+    at module scope makes later databases fail helper construction depending on
+    test or plugin load order.
+    """
+
+    type_info = ida_typeinf.tinfo_t()
+    type_info.create_simple_type(declaration)
+    return type_info
 
 
 def _width_of(mop: ida_hexrays.mop_t | None) -> int:
@@ -114,19 +123,21 @@ def make_rol8_helper_call(
     ):
         return None
     try:
+        uint64_type = _fresh_uint_type(ida_typeinf.BTF_UINT64)
+        uint8_type = _fresh_uint_type(ida_typeinf.BTF_UINT8)
         value_arg = ida_hexrays.mcallarg_t()
         value_arg.copy_mop(dup_mop(base))
-        value_arg.type = _UINT64
+        value_arg.type = uint64_type
         count_arg = ida_hexrays.mcallarg_t()
         count_arg.make_number(int(rotation), 1, ea)
-        count_arg.type = _UINT8
+        count_arg.type = uint8_type
         args = ida_hexrays.mcallargs_t()
         args.push_back(value_arg)
         args.push_back(count_arg)
         return block.mba.create_helper_call(
             ea,
             "__ROL8__",
-            _UINT64,
+            uint64_type,
             args,
             dup_mop(output),
         )
@@ -281,8 +292,7 @@ class RotateIdiomRecoveryRule(PeepholeSimplificationRule):
         if maturity_names is not None:
             try:
                 self.maturities = [
-                    ir_maturity_to_ida(IRMaturity[str(name)])
-                    for name in maturity_names
+                    ir_maturity_to_ida(IRMaturity[str(name)]) for name in maturity_names
                 ]
             except (KeyError, TypeError, ValueError) as exc:
                 raise ValueError(
@@ -328,8 +338,7 @@ class RotateIdiomRecoveryBlockRule(FlowOptimizationRule):
         if maturity_names is not None:
             try:
                 self.maturities = [
-                    ir_maturity_to_ida(IRMaturity[str(name)])
-                    for name in maturity_names
+                    ir_maturity_to_ida(IRMaturity[str(name)]) for name in maturity_names
                 ]
             except (KeyError, TypeError, ValueError) as exc:
                 raise ValueError(

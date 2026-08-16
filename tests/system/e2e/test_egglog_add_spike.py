@@ -144,6 +144,17 @@ class TestEgglogAddSpike:
         load_expected_stats,
     ) -> None:
         captured_attempts = ()
+        captured_optimizer = None
+        provider_cursor = 0
+
+        def prepare_runtime_state(state) -> None:
+            nonlocal captured_optimizer, provider_cursor
+            captured_optimizer = next(
+                rule
+                for rule in state.current_ins_rules
+                if rule.name == "EgglogOptimizer"
+            )
+            provider_cursor = captured_optimizer.provider_outcome_cursor()
 
         def capture_runtime_state(state) -> None:
             nonlocal captured_attempts
@@ -152,7 +163,8 @@ class TestEgglogAddSpike:
                 for rule in state.current_ins_rules
                 if rule.name == "EgglogOptimizer"
             )
-            captured_attempts = optimizer.provider_outcomes()
+            assert optimizer is captured_optimizer
+            captured_attempts = optimizer.provider_outcomes_since(provider_cursor)
 
         def capture_and_assert_provenance(stats):
             captured = capture_stats(stats)
@@ -203,6 +215,7 @@ class TestEgglogAddSpike:
                 pseudocode_to_string=pseudocode_to_string,
                 code_comparator=code_comparator,
                 capture_stats=capture_and_assert_provenance,
+                prepare_runtime_state=prepare_runtime_state,
                 capture_runtime_state=capture_runtime_state,
                 load_expected_stats=load_expected_stats,
             ),

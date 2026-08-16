@@ -21,6 +21,7 @@ from d810.core.execution_journal import (
     ExecutionDomain,
     ExecutionEffectRef,
 )
+from d810.core.execution_journal_store import TerminalExecutionAttempt
 from d810.core.execution_scope import ExecutionPipeline, ExecutionStageIdentity
 from d810.errors import D810Exception
 from d810.hexrays.hooks.callback_mutation_diagnostics import (
@@ -1571,30 +1572,37 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                         block_ea,
                         block_anchor,
                     ) = _optblock_callback_exception_context(blk)
-                    rule_attempt = _safe_begin_execution_attempt(
-                        journal,
-                        session_id,
-                        parent_attempt_id=parent_attempt_id,
-                        stage_id=(
-                            f"flow_rule:{rule_name}:maturity={maturity_name}:"
-                            f"{block_anchor}"
-                        ),
-                        domain=ExecutionDomain.HOOK,
+                    detailed_callback = bool(
+                        getattr(journal, "callback_detail_is_full", True)
                     )
-                    mutation_attempt = _safe_begin_execution_attempt(
-                        journal,
-                        session_id,
-                        parent_attempt_id=(
-                            rule_attempt.attempt_id
-                            if rule_attempt is not None
-                            else parent_attempt_id
-                        ),
-                        stage_id=(
-                            f"mba_rule_mutation:{rule_name}:maturity={maturity_name}:"
-                            f"{block_anchor}"
-                        ),
-                        domain=ExecutionDomain.MUTATION,
+                    rule_stage = (
+                        f"flow_rule:{rule_name}:maturity={maturity_name}:{block_anchor}"
                     )
+                    mutation_stage = (
+                        f"mba_rule_mutation:{rule_name}:maturity={maturity_name}:"
+                        f"{block_anchor}"
+                    )
+                    rule_attempt = None
+                    mutation_attempt = None
+                    if detailed_callback:
+                        rule_attempt = _safe_begin_execution_attempt(
+                            journal,
+                            session_id,
+                            parent_attempt_id=parent_attempt_id,
+                            stage_id=rule_stage,
+                            domain=ExecutionDomain.HOOK,
+                        )
+                        mutation_attempt = _safe_begin_execution_attempt(
+                            journal,
+                            session_id,
+                            parent_attempt_id=(
+                                rule_attempt.attempt_id
+                                if rule_attempt is not None
+                                else parent_attempt_id
+                            ),
+                            stage_id=mutation_stage,
+                            domain=ExecutionDomain.MUTATION,
+                        )
                     restore_attempt_context = None
                     set_attempt_context = getattr(
                         flow_context,
@@ -1653,6 +1661,38 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                             status=ExecutionAttemptStatus.FAILED,
                             reason_code=reason_code,
                         )
+                        if (
+                            not detailed_callback
+                            and journal is not None
+                            and session_id is not None
+                        ):
+                            try:
+                                journal.record_terminal_attempts(
+                                    session_id,
+                                    parent_attempt_id=parent_attempt_id,
+                                    records=(
+                                        TerminalExecutionAttempt(
+                                            stage_id=rule_stage,
+                                            domain=ExecutionDomain.HOOK,
+                                            status=ExecutionAttemptStatus.FAILED,
+                                            reason_code=reason_code,
+                                        ),
+                                        TerminalExecutionAttempt(
+                                            stage_id=mutation_stage,
+                                            domain=ExecutionDomain.MUTATION,
+                                            status=ExecutionAttemptStatus.FAILED,
+                                            reason_code=reason_code,
+                                            parent_record_index=0,
+                                        ),
+                                    ),
+                                )
+                            except Exception:
+                                optimizer_logger.debug(
+                                    "execution journal summarized failure record "
+                                    "failed for rule=%s",
+                                    rule_name,
+                                    exc_info=True,
+                                )
                         raise
                     finally:
                         self._report_callback_block_nop_delta(
@@ -1717,6 +1757,48 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                             effect_refs=effects,
                             details=details,
                         )
+                        if (
+                            not detailed_callback
+                            and journal is not None
+                            and session_id is not None
+                        ):
+                            try:
+                                summary_effect = ExecutionEffectRef(
+                                    kind="mba_rule_edit",
+                                    ref_id=(
+                                        f"{rule_name}:maturity={maturity_name}:"
+                                        f"{block_anchor}"
+                                    ),
+                                    detail=details,
+                                )
+                                journal.record_terminal_attempts(
+                                    session_id,
+                                    parent_attempt_id=parent_attempt_id,
+                                    records=(
+                                        TerminalExecutionAttempt(
+                                            stage_id=rule_stage,
+                                            domain=ExecutionDomain.HOOK,
+                                            status=ExecutionAttemptStatus.COMPLETED,
+                                            effect_refs=(summary_effect,),
+                                            details=details,
+                                        ),
+                                        TerminalExecutionAttempt(
+                                            stage_id=mutation_stage,
+                                            domain=ExecutionDomain.MUTATION,
+                                            status=ExecutionAttemptStatus.COMPLETED,
+                                            effect_refs=(summary_effect,),
+                                            details=details,
+                                            parent_record_index=0,
+                                        ),
+                                    ),
+                                )
+                            except Exception:
+                                optimizer_logger.debug(
+                                    "execution journal summarized mutation record "
+                                    "failed for rule=%s",
+                                    rule_name,
+                                    exc_info=True,
+                                )
                         _safe_advance_execution_attempt(
                             journal,
                             rule_attempt,
@@ -1749,6 +1831,26 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                         reason_code="no_modifications",
                         details={"patch_count": 0, "maturity": maturity_name},
                     )
+                    if (
+                        not detailed_callback
+                        and journal is not None
+                        and session_id is not None
+                    ):
+                        try:
+                            journal.summarize_callback_abstention(
+                                session_id,
+                                parent_attempt_id=parent_attempt_id,
+                                callback_kind="optblock",
+                                stage_id=f"flow_rule:{rule_name}",
+                                maturity=maturity_name,
+                                reason_code="no_modifications",
+                            )
+                        except Exception:
+                            optimizer_logger.debug(
+                                "execution journal callback summary failed for rule=%s",
+                                rule_name,
+                                exc_info=True,
+                            )
                     _safe_advance_execution_attempt(
                         journal,
                         rule_attempt,

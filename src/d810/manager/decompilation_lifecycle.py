@@ -1301,6 +1301,17 @@ class DecompilationLifecycleCoordinator:
             self.execution_journal is not None
             and session.preanalysis_attempt_id is not None
         ):
+            try:
+                self.execution_journal.flush_callback_summaries(
+                    session.session_id,
+                    parent_attempt_id=session.preanalysis_attempt_id,
+                )
+            except Exception:
+                logger.debug(
+                    "execution journal: failed to flush callback summary for func=0x%x",
+                    session.function_ea,
+                    exc_info=True,
+                )
             attempt = self.execution_journal.get_attempt(session.preanalysis_attempt_id)
             if attempt is not None and attempt.status is ExecutionAttemptStatus.STARTED:
                 self.execution_journal.advance(
