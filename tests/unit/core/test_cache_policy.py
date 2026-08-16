@@ -103,6 +103,110 @@ def test_policy_rolls_back_first_cache_if_second_setup_fails(monkeypatch) -> Non
     assert MOP_TO_AST_CACHE.stats.configured_max_size == 40960
 
 
+def test_policy_restores_after_first_setup_mutates_then_raises(monkeypatch) -> None:
+    constant_object = MOP_CONSTANT_CACHE
+    ast_object = MOP_TO_AST_CACHE
+    original_reconfigure = MOP_CONSTANT_CACHE.reconfigure_capacity
+    state = {"raise": True}
+
+    def mutate_then_raise(capacity: int) -> None:
+        original_reconfigure(capacity)
+        if state["raise"]:
+            state["raise"] = False
+            raise RuntimeError("constant setup failed after mutation")
+
+    monkeypatch.setattr(MOP_CONSTANT_CACHE, "reconfigure_capacity", mutate_then_raise)
+
+    with pytest.raises(RuntimeError, match="constant setup failed"):
+        with temporary_mop_cache_policy(17, 19):
+            pass
+
+    assert MOP_CONSTANT_CACHE is constant_object
+    assert MOP_TO_AST_CACHE is ast_object
+    assert MOP_CONSTANT_CACHE.stats.configured_max_size == 4096
+    assert MOP_TO_AST_CACHE.stats.configured_max_size == 40960
+
+
+def test_policy_restores_after_second_setup_mutates_then_raises(monkeypatch) -> None:
+    constant_object = MOP_CONSTANT_CACHE
+    ast_object = MOP_TO_AST_CACHE
+    original_reconfigure = MOP_TO_AST_CACHE.reconfigure_capacity
+    state = {"raise": True}
+
+    def mutate_then_raise(capacity: int) -> None:
+        original_reconfigure(capacity)
+        if state["raise"]:
+            state["raise"] = False
+            raise RuntimeError("AST setup failed after mutation")
+
+    monkeypatch.setattr(MOP_TO_AST_CACHE, "reconfigure_capacity", mutate_then_raise)
+
+    with pytest.raises(RuntimeError, match="AST setup failed"):
+        with temporary_mop_cache_policy(17, 19):
+            pass
+
+    assert MOP_CONSTANT_CACHE is constant_object
+    assert MOP_TO_AST_CACHE is ast_object
+    assert MOP_CONSTANT_CACHE.stats.configured_max_size == 4096
+    assert MOP_TO_AST_CACHE.stats.configured_max_size == 40960
+
+
+def test_policy_preserves_body_error_when_first_restore_mutates_then_raises(
+    monkeypatch,
+) -> None:
+    original_reconfigure = MOP_CONSTANT_CACHE.reconfigure_capacity
+    original_capacity = MOP_CONSTANT_CACHE.stats.configured_max_size
+    state = {"raise": False}
+
+    def mutate_then_raise_on_restore(capacity: int) -> None:
+        original_reconfigure(capacity)
+        if capacity == original_capacity and not state["raise"]:
+            state["raise"] = True
+            raise RuntimeError("constant restore failed after mutation")
+
+    monkeypatch.setattr(
+        MOP_CONSTANT_CACHE,
+        "reconfigure_capacity",
+        mutate_then_raise_on_restore,
+    )
+
+    with pytest.raises(RuntimeError, match="body failure") as raised:
+        with temporary_mop_cache_policy(17, 19):
+            raise RuntimeError("body failure")
+
+    assert raised.value.__notes__
+    assert "constant restore failed" in raised.value.__notes__[0]
+    assert MOP_CONSTANT_CACHE.stats.configured_max_size == original_capacity
+
+
+def test_policy_preserves_body_error_when_second_restore_mutates_then_raises(
+    monkeypatch,
+) -> None:
+    original_reconfigure = MOP_TO_AST_CACHE.reconfigure_capacity
+    original_capacity = MOP_TO_AST_CACHE.stats.configured_max_size
+    state = {"raise": False}
+
+    def mutate_then_raise_on_restore(capacity: int) -> None:
+        original_reconfigure(capacity)
+        if capacity == original_capacity and not state["raise"]:
+            state["raise"] = True
+            raise RuntimeError("AST restore failed after mutation")
+
+    monkeypatch.setattr(
+        MOP_TO_AST_CACHE,
+        "reconfigure_capacity",
+        mutate_then_raise_on_restore,
+    )
+
+    with pytest.raises(RuntimeError, match="body failure") as raised:
+        with temporary_mop_cache_policy(17, 19):
+            raise RuntimeError("body failure")
+
+    assert raised.value.__notes__
+    assert "AST restore failed" in raised.value.__notes__[0]
+    assert MOP_TO_AST_CACHE.stats.configured_max_size == original_capacity
+
+
 @pytest.mark.parametrize("bad_capacity", [0, -1, True, 1.5])
 def test_policy_rejects_invalid_capacities_without_mutating_globals(
     bad_capacity,

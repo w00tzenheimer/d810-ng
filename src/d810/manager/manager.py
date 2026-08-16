@@ -667,6 +667,16 @@ class D810Manager:
     ctree_optimizer: CtreeOptimizerManager = dataclasses.field(init=False)
     hx_decompiler_hook: HexraysDecompilationHook = dataclasses.field(init=False)
     _started: bool = dataclasses.field(default=False, init=False)
+    _telemetry_lifecycle_stack: list[tuple[str, int, int]] = dataclasses.field(
+        default_factory=list,
+        init=False,
+        repr=False,
+    )
+    _telemetry_lifecycle_depth: dict[tuple[str, int, int], int] = dataclasses.field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
     _preanalysis_runtime: typing.Any = dataclasses.field(default=None, init=False)
     _analysis_runtime: typing.Any = dataclasses.field(default=None, init=False)
     _analysis_bundle: typing.Any = dataclasses.field(default=None, init=False)
@@ -2671,8 +2681,83 @@ class D810Manager:
     def _stop_timer(self, report: bool = True):
         self.profiling.stop_timer(report=report)
 
+    @staticmethod
+    def _telemetry_lifecycle_key(
+        event: DecompilationSessionEvent,
+    ) -> tuple[str, int, int]:
+        return (
+            str(event.database_identity),
+            int(event.function_ea),
+            int(event.top_level_epoch),
+        )
+
+    def _telemetry_lifecycle_state(
+        self,
+    ) -> tuple[list[tuple[str, int, int]], dict[tuple[str, int, int], int]]:
+        """Return lifecycle state, including compatibility instances made without init."""
+
+        stack = getattr(self, "_telemetry_lifecycle_stack", None)
+        if stack is None:
+            stack = []
+            self._telemetry_lifecycle_stack = stack
+        depth = getattr(self, "_telemetry_lifecycle_depth", None)
+        if depth is None:
+            depth = {}
+            self._telemetry_lifecycle_depth = depth
+        return stack, depth
+
+    def _safe_telemetry_cleanup(
+        self,
+        label: str,
+        callback: typing.Callable[..., typing.Any],
+        *args: typing.Any,
+    ) -> None:
+        try:
+            callback(*args)
+        except BaseException:
+            try:
+                logger.exception("Decompilation lifecycle cleanup failed: %s", label)
+            except BaseException:
+                pass
+
+    def _discard_telemetry_lifecycle(self) -> bool:
+        stack, depth = self._telemetry_lifecycle_state()
+        was_active = bool(stack)
+        stack.clear()
+        depth.clear()
+        return was_active
+
+    def _finish_telemetry_lifecycle(
+        self,
+        event: DecompilationSessionEvent | None,
+    ) -> None:
+        try:
+            aggregate = _session_telemetry_summary()
+        except BaseException:
+            aggregate = {"error": "unavailable"}
+        try:
+            logger.info("Decompilation session aggregate: %s", aggregate)
+        except BaseException:
+            # Telemetry must never prevent the lifecycle owner from releasing
+            # the session or running its ordinary cleanup callbacks.
+            pass
+        self._safe_telemetry_cleanup("profiling.stop", self.stop_profiling, event)
+        self._safe_telemetry_cleanup("optimization.report", self.stats.report)
+        self._safe_telemetry_cleanup(
+            "block.perf_report",
+            self.block_optimizer.report_perf_counters,
+        )
+        self._safe_telemetry_cleanup("timer.stop", self._stop_timer)
+
     def _on_session_started(self, event: DecompilationSessionEvent) -> None:
         """Reset observer-only state after the coordinator has opened a session."""
+        stack, depth = self._telemetry_lifecycle_state()
+        key = self._telemetry_lifecycle_key(event)
+        was_active = bool(stack)
+        stack.append(key)
+        depth[key] = depth.get(key, 0) + 1
+        if was_active:
+            return
         native_perf.begin_session(
             {
                 "function_ea": int(event.function_ea),
@@ -2699,26 +2784,30 @@ class D810Manager:
 
     def _on_session_finished(self, event: DecompilationSessionEvent) -> None:
         """Report observer-only state after the coordinator has closed a session."""
+        stack, depth = self._telemetry_lifecycle_state()
+        key = self._telemetry_lifecycle_key(event)
+        try:
+            stack_index = next(
+                index for index in range(len(stack) - 1, -1, -1) if stack[index] == key
+            )
+        except StopIteration:
+            # Duplicate or stale finishes must not release a newer session.
+            return
+
+        del stack[stack_index]
+        remaining = depth.get(key, 1) - 1
+        if remaining > 0:
+            depth[key] = remaining
+        else:
+            depth.pop(key, None)
+        if stack:
+            return
+        depth.clear()
         primary_error: BaseException | None = None
         receipt = None
         try:
-            try:
-                aggregate = _session_telemetry_summary()
-            except Exception:
-                aggregate = {"error": "unavailable"}
-            try:
-                logger.info("Decompilation session aggregate: %s", aggregate)
-            except Exception:
-                # Telemetry must never prevent the lifecycle owner from
-                # releasing the session or running ordinary cleanup callbacks.
-                pass
-            self.stop_profiling(event)
-            self.stats.report()
-            self.block_optimizer.report_perf_counters()
-            self._stop_timer()
+            self._finish_telemetry_lifecycle(event)
         except BaseException as exc:
-            # Preserve the first reporting failure while still closing the
-            # native session exactly once in the finally block below.
             primary_error = exc
         finally:
             try:
@@ -3480,8 +3569,23 @@ class D810Manager:
 
     def stop(self):
         if not self._started:
+            if self._discard_telemetry_lifecycle():
+                self._safe_telemetry_cleanup(
+                    "profiling.stop",
+                    self.stop_profiling,
+                    None,
+                )
+                self._safe_telemetry_cleanup(
+                    "timer.stop",
+                    self._stop_timer,
+                    False,
+                )
             return
         self._started = False
+        telemetry_active = self._discard_telemetry_lifecycle()
+        self._safe_telemetry_cleanup("profiling.stop", self.stop_profiling)
+        if telemetry_active:
+            self._safe_telemetry_cleanup("timer.stop", self._stop_timer, False)
         from d810.manager.hexrays_frontend_normalization import (
             uninstall_live_frontend_normalization,
         )
@@ -3502,7 +3606,6 @@ class D810Manager:
                 )
         shutdown_all_writers()
         self.event_emitter.clear()
-        self.stop_profiling()
         from d810.hexrays.preanalysis.indirect_jump_labels import (
             set_indirect_materialization_default_executor,
         )

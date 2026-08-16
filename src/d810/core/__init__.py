@@ -229,21 +229,48 @@ def temporary_mop_cache_policy(
 
     original_constant = MOP_CONSTANT_CACHE.stats.configured_max_size
     original_ast = MOP_TO_AST_CACHE.stats.configured_max_size
-    constant_applied = False
-    ast_applied = False
-    try:
-        MOP_CONSTANT_CACHE.reconfigure_capacity(constant_capacity)
-        constant_applied = True
-        MOP_TO_AST_CACHE.reconfigure_capacity(ast_capacity)
-        ast_applied = True
-        yield
-    finally:
+    primary_error: BaseException | None = None
+    restoration_errors: list[BaseException] = []
+
+    def _restore_capacity(cache, original_capacity, cache_name: str) -> None:
+        """Restore one cache from its observed state, even after a failed write."""
+
         try:
-            if ast_applied:
-                MOP_TO_AST_CACHE.reconfigure_capacity(original_ast)
-        finally:
-            if constant_applied:
-                MOP_CONSTANT_CACHE.reconfigure_capacity(original_constant)
+            current_capacity = cache.stats.configured_max_size
+            if current_capacity == original_capacity:
+                return
+            cache.reconfigure_capacity(original_capacity)
+        except BaseException as exc:
+            restoration_error = RuntimeError(
+                f"failed to restore {cache_name} cache capacity: {exc}"
+            )
+            restoration_error.__cause__ = exc
+            restoration_errors.append(restoration_error)
+
+    try:
+        try:
+            MOP_CONSTANT_CACHE.reconfigure_capacity(constant_capacity)
+            MOP_TO_AST_CACHE.reconfigure_capacity(ast_capacity)
+            yield
+        except BaseException as exc:
+            primary_error = exc
+    finally:
+        # Restore in reverse setup order.  Each cache is independent so a
+        # failure in one write must not prevent the other cache from rolling
+        # back.  Looking at configured state handles implementations that
+        # mutate before raising from reconfigure_capacity().
+        _restore_capacity(MOP_TO_AST_CACHE, original_ast, "AST")
+        _restore_capacity(MOP_CONSTANT_CACHE, original_constant, "constant")
+
+    if primary_error is not None:
+        for restoration_error in restoration_errors:
+            primary_error.add_note(str(restoration_error))
+        raise primary_error
+    if restoration_errors:
+        primary_error = restoration_errors[0]
+        for restoration_error in restoration_errors[1:]:
+            primary_error.add_note(str(restoration_error))
+        raise primary_error
 
 
 __all__ = [
