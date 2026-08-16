@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from d810.mba.semantic_canonicalization import canonicalize_mba_term
 from d810.mba.typed_term import (
     TypedBvTerm,
     canonicalize_ac_term,
@@ -69,3 +70,15 @@ def test_mixed_width_children_fail_closed():
             width=32,
             children=(_leaf("wide", width=32), _leaf("narrow", width=16)),
         )
+
+
+def test_typed_term_cost_and_fingerprint_are_suitable_for_canonical_views():
+    term = _node("add", _leaf("x"), _constant(-2))
+    view = canonicalize_mba_term(term)
+
+    assert term_cost(term) == (1, 3)
+    assert view.raw_term is term
+    assert view.raw_cost == term_cost(term)
+    assert view.canonical_term == canonicalize_ac_term(term)
+    assert view.canonical_cost == term_cost(view.canonical_term)
+    assert term_fingerprint(view.canonical_term)
