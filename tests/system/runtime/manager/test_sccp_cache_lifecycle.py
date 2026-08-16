@@ -10,6 +10,8 @@ import pytest
 from d810.core import MOP_CONSTANT_CACHE, MOP_TO_AST_CACHE
 from d810.core.decompilation_session import DecompilationSessionEvent
 from d810.core.execution_journal import DecompilationSessionId
+from d810.core.events import EventEmitter
+from d810.core.execution_scope import ExecutionScopeEvent, ExecutionScopeService
 from d810.evaluator.hexrays_microcode.sccp import sccp_session_stats
 import d810.manager.manager as manager_module
 
@@ -88,6 +90,14 @@ class _EventEmitter:
     def clear(self) -> None:
         self.cleared = True
         self._calls.record("event.clear")
+
+
+class _ExecutionScopeService:
+    def __init__(self, calls: _CallLog) -> None:
+        self._calls = calls
+
+    def detach(self) -> None:
+        self._calls.record("execution_scope.detach")
 
 
 class _StorageRuntime:
@@ -170,7 +180,14 @@ def _manager(calls: _CallLog, *, started: bool = False):
     manager._native_patch_gateway = None
     manager._dead_edge_normalizer = None
     manager.event_emitter = _EventEmitter(calls)
+    manager.execution_scope_service = _ExecutionScopeService(calls)
     manager.function_storage_runtime = _StorageRuntime(calls)
+    manager.decompilation_lifecycle = None
+    manager._post_d810_runtime = None
+    manager._recon_phase = None
+    manager._recon_runtime = None
+    manager._recon_bundle = None
+    manager._flowgraph_ready_subscriber = None
     return manager
 
 
@@ -333,6 +350,99 @@ def test_missing_session_id_fails_closed_for_distinct_legacy_events() -> None:
     assert not manager._telemetry_lifecycle_stack
 
 
+def test_execution_scope_detach_is_idempotent_and_rebinds_once() -> None:
+    service = ExecutionScopeService()
+    emitter = EventEmitter()
+    unrelated_calls: list[object] = []
+
+    def unrelated(payload=None) -> None:
+        unrelated_calls.append(payload)
+
+    service.attach(emitter)
+    service.attach(emitter)
+    for event in ExecutionScopeEvent:
+        assert len(emitter._listeners[event]) == 1
+        emitter.on(event, unrelated)
+
+    service.detach()
+    service.detach()
+    for event in ExecutionScopeEvent:
+        assert service._on_event not in emitter._listeners[event]
+        assert unrelated in emitter._listeners[event]
+
+    service.attach(emitter)
+    service.attach(emitter)
+    for event in ExecutionScopeEvent:
+        assert len(emitter._listeners[event]) == 2
+
+
+def test_stop_detaches_execution_scope_before_clearing_emitter() -> None:
+    calls = _CallLog()
+    manager = _manager(calls, started=True)
+
+    manager.stop()
+
+    assert calls.events.index("execution_scope.detach") < calls.events.index(
+        "event.clear"
+    )
+    assert calls.events.count("execution_scope.detach") == 1
+
+
+def test_manager_stop_allows_execution_scope_rebind_after_emitter_clear() -> None:
+    calls = _CallLog()
+    manager = _manager(calls, started=True)
+    emitter = EventEmitter()
+    service = ExecutionScopeService()
+    manager.event_emitter = emitter
+    manager.execution_scope_service = service
+
+    service.attach(emitter)
+    service.attach(emitter)
+    assert all(len(emitter._listeners[event]) == 1 for event in ExecutionScopeEvent)
+
+    manager.stop()
+
+    assert all(not emitter._listeners[event] for event in ExecutionScopeEvent)
+    service.detach()
+    service.attach(emitter)
+    service.attach(emitter)
+    assert all(len(emitter._listeners[event]) == 1 for event in ExecutionScopeEvent)
+
+
+def test_stop_clears_closed_runtime_owners_and_preanalysis_fails_closed() -> None:
+    calls = _CallLog()
+    manager = _manager(calls, started=True)
+
+    class _ClosedLifecycle:
+        def ensure_hexrays_session(self, **_kwargs):
+            raise AssertionError("closed lifecycle was reused")
+
+    manager.decompilation_lifecycle = _ClosedLifecycle()
+    manager._post_d810_runtime = object()
+    manager._recon_phase = object()
+    manager._recon_runtime = object()
+    manager._recon_bundle = object()
+    manager._flowgraph_ready_subscriber = object()
+    manager._stage_c_topology_consumer = object()
+
+    manager.stop()
+
+    assert manager.decompilation_lifecycle is None
+    assert manager._post_d810_runtime is None
+    assert manager._recon_phase is None
+    assert manager._recon_runtime is None
+    assert manager._recon_bundle is None
+    assert manager._flowgraph_ready_subscriber is None
+    assert manager._stage_c_topology_consumer is None
+    assert manager.prepare_native_preanalysis(0x1000) == 0
+    with pytest.raises(RuntimeError, match="not started"):
+        manager.decompile_with_native_preanalysis(
+            0x1000,
+            lambda: None,
+            lambda: None,
+        )
+
+
 def test_finish_cleanup_continues_after_each_individual_failure() -> None:
     calls = _CallLog(
         {
@@ -462,6 +572,7 @@ def test_native_handler_registration_helpers_are_reversible(monkeypatch) -> None
         "instruction.remove",
         "event.clear",
         "analysis.bundle.close",
+        "native.handlers.uninstall",
     ],
 )
 def test_started_stop_attempts_every_cleanup_step(
@@ -509,13 +620,21 @@ def test_started_stop_attempts_every_cleanup_step(
         "native.exec.close",
         "storage.close",
         "analysis.bundle.close",
+        "execution_scope.detach",
     }
     for name in expected:
         assert calls.events.count(name) == 1, name
     assert not manager.started
     assert not manager._telemetry_lifecycle_stack
     assert not manager._telemetry_lifecycle_depth
-    assert not manager._native_preanalysis_handlers_installed
+    if failure == "native.handlers.uninstall":
+        assert manager._native_preanalysis_handlers_installed
+        calls.failures.remove(failure)
+        manager.stop()
+        assert calls.events.count("native.handlers.uninstall") == 2
+        assert not manager._native_preanalysis_handlers_installed
+    else:
+        assert not manager._native_preanalysis_handlers_installed
     assert manager.event_emitter.cleared
     assert manager.hx_decompiler_hook.unhooked
     assert manager.function_storage_runtime.closed

@@ -695,6 +695,7 @@ class D810Manager:
     _flowgraph_ready_subscriber: typing.Any = dataclasses.field(
         default=None, init=False
     )
+    _stage_c_topology_consumer: typing.Any = dataclasses.field(default=None, init=False)
     _function_analysis_priors: dict[str, FunctionAnalysisPriors] = dataclasses.field(
         default_factory=dict, init=False
     )
@@ -787,7 +788,9 @@ class D810Manager:
         the first MBA is generated.  No function-EA registry or second UI
         preflight lifecycle is retained.
         """
-        lifecycle = self.decompilation_lifecycle
+        if not getattr(self, "_started", False):
+            return 0
+        lifecycle = getattr(self, "decompilation_lifecycle", None)
         if lifecycle is None:
             return 0
         function_ea = int(function_ea)
@@ -958,6 +961,11 @@ class D810Manager:
         after the first decompile unwinds; the retained session lets its
         flowchart callback issue the one supported ``MERR_REDO``.
         """
+        if (
+            not getattr(self, "_started", False)
+            or getattr(self, "decompilation_lifecycle", None) is None
+        ):
+            raise RuntimeError("D810 manager is not started")
         function_ea = int(function_ea)
         result: typing.Any = None
         final_stage_c_collection: tuple[object, object] | None = None
@@ -2731,14 +2739,26 @@ class D810Manager:
         label: str,
         callback: typing.Callable[..., typing.Any],
         *args: typing.Any,
-    ) -> None:
+    ) -> bool:
         try:
             callback(*args)
+            return True
         except BaseException:
             try:
                 logger.exception("Decompilation lifecycle cleanup failed: %s", label)
             except BaseException:
                 pass
+            return False
+
+    def _uninstall_native_preanalysis_handlers_if_installed(self) -> None:
+        """Retry native-handler teardown until one uninstall succeeds."""
+        if not getattr(self, "_native_preanalysis_handlers_installed", False):
+            return
+        if self._safe_lifecycle_step(
+            "native.handlers.uninstall",
+            self._uninstall_native_preanalysis_handlers,
+        ):
+            self._native_preanalysis_handlers_installed = False
 
     def _discard_telemetry_lifecycle(self) -> bool:
         stack, depth = self._telemetry_lifecycle_state()
@@ -3600,6 +3620,18 @@ class D810Manager:
                     self._stop_timer,
                     False,
                 )
+            self._uninstall_native_preanalysis_handlers_if_installed()
+            execution_scope_service = getattr(self, "execution_scope_service", None)
+            detach = getattr(execution_scope_service, "detach", None)
+            if callable(detach):
+                self._safe_lifecycle_step("execution_scope.detach", detach)
+            self.decompilation_lifecycle = None
+            self._post_d810_runtime = None
+            self._recon_phase = None
+            self._recon_runtime = None
+            self._recon_bundle = None
+            self._flowgraph_ready_subscriber = None
+            self._stage_c_topology_consumer = None
             return
         self._started = False
         telemetry_active = self._discard_telemetry_lifecycle()
@@ -3621,12 +3653,7 @@ class D810Manager:
 
             set_indirect_materialization_default_executor(None)
 
-        if self._native_preanalysis_handlers_installed:
-            self._safe_lifecycle_step(
-                "native.handlers.uninstall",
-                self._uninstall_native_preanalysis_handlers,
-            )
-            self._native_preanalysis_handlers_installed = False
+        self._uninstall_native_preanalysis_handlers_if_installed()
         self._safe_lifecycle_step(
             "frontend.uninstall",
             _uninstall_frontend_normalization,
@@ -3643,6 +3670,10 @@ class D810Manager:
                 self._analysis_runtime.flush_active_session,
             )
         self._safe_lifecycle_step("writers.shutdown", shutdown_all_writers)
+        execution_scope_service = getattr(self, "execution_scope_service", None)
+        detach = getattr(execution_scope_service, "detach", None)
+        if callable(detach):
+            self._safe_lifecycle_step("execution_scope.detach", detach)
         self._safe_lifecycle_step("event_emitter.clear", self.event_emitter.clear)
         self._safe_lifecycle_step(
             "executor.clear",
@@ -3674,6 +3705,14 @@ class D810Manager:
             self._analysis_bundle = None
         self._preanalysis_runtime = None
         self._analysis_runtime = None
+        self.decompilation_lifecycle = None
+        self._post_d810_runtime = None
+        self._recon_phase = None
+        self._recon_runtime = None
+        self._recon_bundle = None
+        self._flowgraph_ready_subscriber = None
+        self._stage_c_topology_consumer = None
+        self._database_identity = ""
 
 
 @contextlib.contextmanager

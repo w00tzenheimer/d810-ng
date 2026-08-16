@@ -179,6 +179,7 @@ class ExecutionScopeService:
             tuple[str, str, int, str, int], tuple[ExpandedExecutionStage, ...]
         ] = {}
         self._attached = False
+        self._attached_emitter: EventEmitter | None = None
 
     @property
     def generation(self) -> int:
@@ -190,10 +191,42 @@ class ExecutionScopeService:
 
     def attach(self, emitter: EventEmitter) -> None:
         if self._attached:
-            return
-        for event in ExecutionScopeEvent:
-            emitter.on(event, self._on_event)
+            if self._attached_emitter is emitter:
+                return
+            self.detach()
+
+        attached_events: list[ExecutionScopeEvent] = []
+        try:
+            for event in ExecutionScopeEvent:
+                emitter.on(event, self._on_event)
+                attached_events.append(event)
+        except BaseException:
+            for event in attached_events:
+                try:
+                    emitter.remove(event, self._on_event)
+                except BaseException:
+                    pass
+            raise
         self._attached = True
+        self._attached_emitter = emitter
+
+    def detach(self) -> None:
+        """Remove this service's listeners while preserving other listeners.
+
+        Detach is intentionally idempotent so manager teardown can call it on
+        every stop path, including retries after a partial cleanup failure.
+        Attachment state is cleared even if an emitter implementation raises
+        while removing one listener; the manager's subsequent emitter clear
+        remains an independent cleanup step.
+        """
+        emitter = self._attached_emitter
+        try:
+            if emitter is not None:
+                for event in ExecutionScopeEvent:
+                    emitter.remove(event, self._on_event)
+        finally:
+            self._attached = False
+            self._attached_emitter = None
 
     def _on_event(self, payload: ExecutionScopeInvalidation | None = None) -> None:
         if payload is not None:
@@ -284,10 +317,10 @@ class ExecutionScopeService:
         # it would incorrectly block the GLBOPT2 recovery pass.  Consume only
         # that precise stale encoding; every other explicit suppression keeps
         # its unconditional meaning.
-        legacy_flattening_forward_suppression = (
-            getattr(hints, "obfuscation_type", None) == "ollvm_flat"
-            and "unflattening"
-            in tuple(getattr(hints, "recommended_inferences", ()))
+        legacy_flattening_forward_suppression = getattr(
+            hints, "obfuscation_type", None
+        ) == "ollvm_flat" and "unflattening" in tuple(
+            getattr(hints, "recommended_inferences", ())
         )
         suppressed = tuple(
             stage_id
@@ -356,8 +389,7 @@ class ExecutionScopeService:
             stage
             for stage in self._stages
             if stage.implementation is implementation
-            and str(getattr(stage.pipeline, "value", stage.pipeline))
-            == pipeline_value
+            and str(getattr(stage.pipeline, "value", stage.pipeline)) == pipeline_value
         )
         if not matches:
             return None
@@ -366,8 +398,7 @@ class ExecutionScopeService:
                 f"{stage.pass_id}/{stage.stage_id}" for stage in matches
             )
             raise ValueError(
-                "implementation is bound to multiple configured stages: "
-                f"{identities}"
+                f"implementation is bound to multiple configured stages: {identities}"
             )
         return ExecutionStageIdentity(matches[0].pass_id, matches[0].stage_id)
 
@@ -383,8 +414,7 @@ class ExecutionScopeService:
             stage
             for stage in self._stages
             if stage.implementation is not None
-            and str(getattr(stage.pipeline, "value", stage.pipeline))
-            == pipeline_value
+            and str(getattr(stage.pipeline, "value", stage.pipeline)) == pipeline_value
             and target_id in {stage.pass_id, stage.stage_id}
         )
         if not matches:
@@ -416,8 +446,7 @@ class ExecutionScopeService:
             stage
             for stage in self._stages
             if ExecutionStageIdentity(stage.pass_id, stage.stage_id) in requested
-            and str(getattr(stage.pipeline, "value", stage.pipeline))
-            == pipeline_value
+            and str(getattr(stage.pipeline, "value", stage.pipeline)) == pipeline_value
             and stage.implementation is not None
             and self._evaluate(stage, int(func_ea), None, tags).active
         )
