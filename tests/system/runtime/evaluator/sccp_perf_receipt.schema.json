@@ -1,71 +1,100 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://d810.local/sccp-cache-performance-receipt.schema.json",
-  "title": "D810 SCCP and MOP cache performance receipt",
+  "$id": "https://d810.local/sccp-cache-performance-receipt-v2.schema.json",
+  "title": "D810 isolated SCCP and MOP cache performance receipt",
   "type": "object",
   "additionalProperties": false,
-  "required": [
-    "schema_version",
-    "metadata",
-    "runs",
-    "cache_matrix",
-    "sccp_summary"
-  ],
+  "required": ["schema_version", "metadata", "phase_order", "phase_fragments", "runs", "cache_matrix", "sccp_summary"],
   "properties": {
-    "schema_version": { "const": 1 },
+    "schema_version": { "const": 2 },
     "metadata": { "$ref": "#/$defs/metadata" },
+    "phase_order": {
+      "type": "array",
+      "const": ["capture", "solver_python", "solver_cython", "baseline", "candidate", "auto", "cache", "winner"]
+    },
+    "phase_fragments": {
+      "type": "array",
+      "minItems": 8,
+      "maxItems": 8,
+      "items": { "$ref": "#/$defs/phase_fragment" }
+    },
     "runs": {
       "type": "array",
       "minItems": 6,
-      "items": { "$ref": "#/$defs/run" }
+      "maxItems": 6,
+      "items": { "oneOf": [{ "$ref": "#/$defs/solver_row" }, { "$ref": "#/$defs/full_row" }] }
     },
     "cache_matrix": {
       "type": "array",
       "minItems": 9,
+      "maxItems": 9,
       "items": { "$ref": "#/$defs/cache_row" }
     },
     "sccp_summary": { "$ref": "#/$defs/sccp_summary" }
   },
   "$defs": {
-    "non_empty_string": {
-      "type": "string",
-      "minLength": 1
+    "non_empty_string": { "type": "string", "minLength": 1 },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "non_negative_integer": { "type": "integer", "minimum": 0 },
+    "positive_integer": { "type": "integer", "minimum": 1 },
+    "non_negative_number": { "type": "number", "minimum": 0 },
+    "positive_number": { "type": "number", "minimum": 0 },
+    "sccp_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requests", "executions", "reuses", "fallbacks", "converged", "work_limit", "block_limit", "errors", "python_runs", "cython_runs", "cfg_events", "value_events", "adapter_seconds", "solver_seconds", "constants_exposed", "edges_exposed"],
+      "properties": {
+        "requests": { "$ref": "#/$defs/non_negative_number" },
+        "executions": { "$ref": "#/$defs/non_negative_number" },
+        "reuses": { "$ref": "#/$defs/non_negative_number" },
+        "fallbacks": { "$ref": "#/$defs/non_negative_number" },
+        "converged": { "$ref": "#/$defs/non_negative_number" },
+        "work_limit": { "$ref": "#/$defs/non_negative_number" },
+        "block_limit": { "$ref": "#/$defs/non_negative_number" },
+        "errors": { "$ref": "#/$defs/non_negative_number" },
+        "python_runs": { "$ref": "#/$defs/non_negative_number" },
+        "cython_runs": { "$ref": "#/$defs/non_negative_number" },
+        "cfg_events": { "$ref": "#/$defs/non_negative_number" },
+        "value_events": { "$ref": "#/$defs/non_negative_number" },
+        "adapter_seconds": { "$ref": "#/$defs/non_negative_number" },
+        "solver_seconds": { "$ref": "#/$defs/non_negative_number" },
+        "constants_exposed": { "$ref": "#/$defs/non_negative_number" },
+        "edges_exposed": { "$ref": "#/$defs/non_negative_number" }
+      }
     },
-    "non_negative_number": {
-      "type": "number",
-      "minimum": 0
+    "parity_projection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "constants", "executable_edges", "reachable_blocks", "program_fingerprint"],
+      "properties": {
+        "status": { "$ref": "#/$defs/non_empty_string" },
+        "constants": { "type": "array" },
+        "executable_edges": { "type": "array" },
+        "reachable_blocks": { "type": "array" },
+        "program_fingerprint": { "$ref": "#/$defs/sha256" },
+        "cfg_events": { "$ref": "#/$defs/non_negative_number" },
+        "value_events": { "$ref": "#/$defs/non_negative_number" },
+        "peak_cfg_queue": { "$ref": "#/$defs/non_negative_number" },
+        "peak_value_queue": { "$ref": "#/$defs/non_negative_number" }
+      }
     },
-    "non_negative_integer": {
-      "type": "integer",
-      "minimum": 0
-    },
-    "sha256": {
-      "type": "string",
-      "pattern": "^[0-9a-f]{64}$"
+    "phase_fragment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["phase", "phase_index", "run_id", "process_id", "database_marker", "payload_sha256"],
+      "properties": {
+        "phase": { "enum": ["capture", "solver_python", "solver_cython", "baseline", "candidate", "auto", "cache", "winner"] },
+        "phase_index": { "$ref": "#/$defs/non_negative_integer" },
+        "run_id": { "$ref": "#/$defs/non_empty_string" },
+        "process_id": { "$ref": "#/$defs/non_empty_string" },
+        "database_marker": { "$ref": "#/$defs/non_empty_string" },
+        "payload_sha256": { "$ref": "#/$defs/sha256" }
+      }
     },
     "cache_stat": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "seq",
-        "size",
-        "weight",
-        "hits",
-        "misses",
-        "max_size_ever",
-        "max_weight_ever",
-        "lookups",
-        "insertions",
-        "replacements",
-        "capacity_evictions",
-        "expirations",
-        "explicit_removals",
-        "weak_reference_removals",
-        "configured_max_size",
-        "configured_max_weight",
-        "memory_delta_bytes",
-        "real_api_calls"
-      ],
+      "required": ["seq", "size", "weight", "hits", "misses", "max_size_ever", "max_weight_ever", "lookups", "insertions", "replacements", "capacity_evictions", "expirations", "explicit_removals", "weak_reference_removals", "configured_max_size", "configured_max_weight", "memory_delta_bytes", "real_api_calls"],
       "properties": {
         "seq": { "$ref": "#/$defs/non_negative_integer" },
         "size": { "$ref": "#/$defs/non_negative_integer" },
@@ -96,167 +125,40 @@
         "MOP_TO_AST_CACHE": { "$ref": "#/$defs/cache_stat" },
         "total_evictions": { "$ref": "#/$defs/non_negative_integer" },
         "memory_delta_bytes": { "type": "integer" },
-        "real_api_calls": { "$ref": "#/$defs/non_negative_integer" }
+        "real_api_calls": { "$ref": "#/$defs/positive_integer" }
       }
     },
-    "parity_projection": {
+    "build_item": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["status", "constants", "executable_edges", "reachable_blocks", "program_fingerprint", "cfg_events", "value_events", "peak_cfg_queue", "peak_value_queue"],
+      "required": ["module_file", "module_sha256", "module_mtime_ns", "build_abi", "source_hash", "callable"],
       "properties": {
-        "status": { "$ref": "#/$defs/non_empty_string" },
-        "constants": { "type": "array" },
-        "executable_edges": { "type": "array" },
-        "reachable_blocks": { "type": "array" },
-        "program_fingerprint": { "$ref": "#/$defs/non_empty_string" },
-        "cfg_events": { "$ref": "#/$defs/non_negative_integer" },
-        "value_events": { "$ref": "#/$defs/non_negative_integer" },
-        "peak_cfg_queue": { "$ref": "#/$defs/non_negative_integer" },
-        "peak_value_queue": { "$ref": "#/$defs/non_negative_integer" }
+        "module_file": { "$ref": "#/$defs/non_empty_string" },
+        "module_sha256": { "$ref": "#/$defs/sha256" },
+        "module_mtime_ns": { "$ref": "#/$defs/positive_integer" },
+        "build_abi": { "$ref": "#/$defs/non_empty_string" },
+        "source_hash": { "$ref": "#/$defs/sha256" },
+        "callable": { "const": true }
       }
     },
-    "run": {
+    "build_provenance": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "kind",
-        "label",
-        "function_ea",
-        "maturity",
-        "overlay",
-        "backend",
-        "status",
-        "program_fingerprint",
-        "wall_seconds",
-        "adapter_seconds",
-        "solver_seconds",
-        "cfg_events",
-        "value_events",
-        "constants_exposed",
-        "edges_exposed",
-        "fcp_patches",
-        "cache_stats",
-        "pseudocode_sha256",
-        "cfg_sha256",
-        "parity_projection",
-        "parity_sha256",
-        "real_api_calls"
-      ],
+      "required": ["c_sccp", "_fast_dataflow", "source_sha256_at_build", "source_tree_sha256"],
       "properties": {
-        "kind": { "enum": ["solver_replay", "full_decomp", "cache_replay"] },
-        "label": { "$ref": "#/$defs/non_empty_string" },
-        "function_ea": { "$ref": "#/$defs/non_negative_integer" },
-        "maturity": { "$ref": "#/$defs/non_empty_string" },
-        "overlay": { "enum": ["off", "on", "auto", "replay"] },
-        "backend": { "enum": ["python", "cython", "python-fallback"] },
-        "status": { "enum": ["converged", "work_limit", "block_limit", "error"] },
-        "program_fingerprint": { "$ref": "#/$defs/non_empty_string" },
-        "wall_seconds": { "$ref": "#/$defs/non_negative_number" },
-        "adapter_seconds": { "$ref": "#/$defs/non_negative_number" },
-        "solver_seconds": { "$ref": "#/$defs/non_negative_number" },
-        "cfg_events": { "$ref": "#/$defs/non_negative_integer" },
-        "value_events": { "$ref": "#/$defs/non_negative_integer" },
-        "constants_exposed": { "$ref": "#/$defs/non_negative_integer" },
-        "edges_exposed": { "$ref": "#/$defs/non_negative_integer" },
-        "fcp_patches": { "$ref": "#/$defs/non_negative_integer" },
-        "cache_stats": { "$ref": "#/$defs/cache_stats" },
-        "pseudocode_sha256": { "$ref": "#/$defs/sha256" },
-        "cfg_sha256": { "$ref": "#/$defs/sha256" },
-        "parity_projection": { "$ref": "#/$defs/parity_projection" },
-        "parity_sha256": { "$ref": "#/$defs/sha256" },
-        "median_seconds": { "$ref": "#/$defs/non_negative_number" },
-        "p95_seconds": { "$ref": "#/$defs/non_negative_number" },
-        "warmup": { "$ref": "#/$defs/non_negative_integer" },
-        "iterations": { "$ref": "#/$defs/non_negative_integer" },
-        "constant_capacity": { "type": ["integer", "null"], "minimum": 1 },
-        "ast_capacity": { "type": ["integer", "null"], "minimum": 1 },
-        "real_api_calls": { "$ref": "#/$defs/non_negative_integer" }
-      }
-    },
-    "cache_row": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "kind",
-        "label",
-        "function_ea",
-        "maturity",
-        "overlay",
-        "backend",
-        "status",
-        "program_fingerprint",
-        "wall_seconds",
-        "adapter_seconds",
-        "solver_seconds",
-        "cfg_events",
-        "value_events",
-        "constants_exposed",
-        "edges_exposed",
-        "fcp_patches",
-        "cache_stats",
-        "pseudocode_sha256",
-        "cfg_sha256",
-        "constant_capacity",
-        "ast_capacity",
-        "workload_operations",
-        "rebuilds",
-        "evictions",
-        "peak_weight",
-        "memory_delta_bytes",
-        "real_api_calls"
-      ],
-      "properties": {
-        "kind": { "const": "cache_replay" },
-        "label": { "$ref": "#/$defs/non_empty_string" },
-        "function_ea": { "$ref": "#/$defs/non_negative_integer" },
-        "maturity": { "$ref": "#/$defs/non_empty_string" },
-        "overlay": { "const": "replay" },
-        "backend": { "enum": ["python", "cython"] },
-        "status": { "enum": ["converged", "work_limit", "block_limit", "error"] },
-        "program_fingerprint": { "$ref": "#/$defs/non_empty_string" },
-        "wall_seconds": { "$ref": "#/$defs/non_negative_number" },
-        "adapter_seconds": { "$ref": "#/$defs/non_negative_number" },
-        "solver_seconds": { "$ref": "#/$defs/non_negative_number" },
-        "cfg_events": { "$ref": "#/$defs/non_negative_integer" },
-        "value_events": { "$ref": "#/$defs/non_negative_integer" },
-        "constants_exposed": { "$ref": "#/$defs/non_negative_integer" },
-        "edges_exposed": { "$ref": "#/$defs/non_negative_integer" },
-        "fcp_patches": { "$ref": "#/$defs/non_negative_integer" },
-        "cache_stats": { "$ref": "#/$defs/cache_stats" },
-        "pseudocode_sha256": { "$ref": "#/$defs/sha256" },
-        "cfg_sha256": { "$ref": "#/$defs/sha256" },
-        "constant_capacity": { "type": "integer", "minimum": 1 },
-        "ast_capacity": { "type": "integer", "minimum": 1 },
-        "workload_operations": { "$ref": "#/$defs/non_negative_integer" },
-        "rebuilds": { "$ref": "#/$defs/non_negative_integer" },
-        "evictions": { "$ref": "#/$defs/non_negative_integer" },
-        "peak_weight": { "$ref": "#/$defs/non_negative_number" },
-        "memory_delta_bytes": { "type": "integer" },
-        "real_api_calls": { "$ref": "#/$defs/non_negative_integer" }
+        "c_sccp": { "$ref": "#/$defs/build_item" },
+        "_fast_dataflow": { "$ref": "#/$defs/build_item" },
+        "source_sha256_at_build": { "$ref": "#/$defs/sha256" },
+        "source_tree_sha256": { "$ref": "#/$defs/sha256" }
       }
     },
     "metadata": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "binary",
-        "binary_sha256",
-        "function_ea",
-        "function_name",
-        "maturity",
-        "platform",
-        "python",
-        "ida_version",
-        "fixture_source",
-        "fixture_copy",
-        "fixture_sha256",
-        "capture_method",
-        "workload_operations",
-        "real_api_calls",
-        "warmup",
-        "iterations"
-      ],
+      "required": ["run_id", "gate_mode", "binary", "binary_sha256", "function_ea", "function_name", "maturity", "platform", "python", "ida_version", "source_path", "fixture_source", "source_sha256_at_copy", "fixture_path", "fixture_copy", "fixture_sha256", "fixture_size_bytes", "fixture_copied_at_utc", "capture_method", "capture_hooks_stopped", "capture_lifecycle_events", "capture_optimizer_attempts", "workload_operations", "workload_fingerprint", "workload_hash", "snapshot_fingerprint", "warmup", "iterations", "build_source_sha256", "build_provenance"],
       "properties": {
+        "run_id": { "$ref": "#/$defs/non_empty_string" },
+        "gate_mode": { "enum": ["exact", "smoke", "unit"] },
         "binary": { "$ref": "#/$defs/non_empty_string" },
         "binary_sha256": { "$ref": "#/$defs/sha256" },
         "function_ea": { "$ref": "#/$defs/non_negative_integer" },
@@ -265,54 +167,153 @@
         "platform": { "$ref": "#/$defs/non_empty_string" },
         "python": { "$ref": "#/$defs/non_empty_string" },
         "ida_version": { "$ref": "#/$defs/non_empty_string" },
+        "source_path": { "$ref": "#/$defs/non_empty_string" },
         "fixture_source": { "$ref": "#/$defs/non_empty_string" },
+        "source_sha256_at_copy": { "$ref": "#/$defs/sha256" },
+        "fixture_path": { "$ref": "#/$defs/non_empty_string" },
         "fixture_copy": { "$ref": "#/$defs/non_empty_string" },
         "fixture_sha256": { "$ref": "#/$defs/sha256" },
+        "fixture_size_bytes": { "$ref": "#/$defs/positive_integer" },
+        "fixture_copied_at_utc": { "$ref": "#/$defs/non_empty_string" },
         "capture_method": { "$ref": "#/$defs/non_empty_string" },
-        "workload_operations": { "$ref": "#/$defs/non_negative_integer" },
-        "real_api_calls": { "$ref": "#/$defs/non_negative_integer" },
+        "capture_hooks_stopped": { "const": true },
+        "capture_lifecycle_events": { "$ref": "#/$defs/non_negative_integer" },
+        "capture_optimizer_attempts": { "$ref": "#/$defs/non_negative_integer" },
+        "workload_operations": { "$ref": "#/$defs/positive_integer" },
+        "workload_fingerprint": { "$ref": "#/$defs/sha256" },
+        "workload_hash": { "$ref": "#/$defs/sha256" },
+        "snapshot_fingerprint": { "$ref": "#/$defs/sha256" },
+        "workload_lifetime": { "$ref": "#/$defs/non_empty_string" },
+        "capture_operation_counts": { "$ref": "#/$defs/operation_counts" },
         "warmup": { "const": 3 },
-        "iterations": { "const": 10 }
+        "iterations": { "const": 10 },
+        "build_source_sha256": { "$ref": "#/$defs/sha256" },
+        "build_provenance": { "$ref": "#/$defs/build_provenance" }
       }
     },
-    "sccp_summary": {
+    "common_row": {
+      "type": "object",
+      "properties": {
+        "phase": { "$ref": "#/$defs/non_empty_string" },
+        "run_id": { "$ref": "#/$defs/non_empty_string" },
+        "process_id": { "$ref": "#/$defs/non_empty_string" },
+        "database_marker": { "$ref": "#/$defs/non_empty_string" },
+        "fresh_process": { "const": true },
+        "kind": { "$ref": "#/$defs/non_empty_string" },
+        "label": { "$ref": "#/$defs/non_empty_string" },
+        "function_ea": { "$ref": "#/$defs/non_negative_integer" },
+        "maturity": { "$ref": "#/$defs/non_empty_string" },
+        "overlay": { "$ref": "#/$defs/non_empty_string" },
+        "backend": { "$ref": "#/$defs/non_empty_string" },
+        "status": { "$ref": "#/$defs/non_empty_string" },
+        "program_fingerprint": { "$ref": "#/$defs/sha256" },
+        "wall_seconds": { "$ref": "#/$defs/positive_number" },
+        "sccp_summary": { "$ref": "#/$defs/sccp_summary" },
+        "parity_projection": { "$ref": "#/$defs/parity_projection" },
+        "parity_sha256": { "$ref": "#/$defs/sha256" }
+      }
+    },
+    "solver_row": {
+      "allOf": [
+        { "$ref": "#/$defs/common_row" },
+        {
+          "type": "object",
+          "required": ["phase", "run_id", "process_id", "database_marker", "fresh_process", "kind", "label", "function_ea", "maturity", "overlay", "backend", "status", "program_fingerprint", "snapshot_fingerprint", "workload_fingerprint", "wall_seconds", "sccp_summary", "parity_projection", "parity_sha256", "samples_seconds", "median_seconds", "p95_seconds", "warmup", "iterations"],
+          "properties": {
+            "phase": { "enum": ["solver_python", "solver_cython"] },
+            "kind": { "const": "solver_replay" },
+            "label": { "enum": ["solver_python", "solver_cython"] },
+            "overlay": { "const": "replay" },
+            "backend": { "enum": ["python", "cython"] },
+            "samples_seconds": { "type": "array", "minItems": 10, "maxItems": 10, "items": { "$ref": "#/$defs/positive_number" } },
+            "median_seconds": { "$ref": "#/$defs/positive_number" },
+            "p95_seconds": { "$ref": "#/$defs/positive_number" },
+            "warmup": { "const": 3 },
+            "iterations": { "const": 10 },
+            "snapshot_fingerprint": { "$ref": "#/$defs/sha256" },
+            "workload_fingerprint": { "$ref": "#/$defs/sha256" }
+          }
+        }
+      ]
+    },
+    "full_row": {
+      "allOf": [
+        { "$ref": "#/$defs/common_row" },
+        {
+          "type": "object",
+          "required": ["phase", "run_id", "process_id", "database_marker", "fresh_process", "kind", "label", "function_ea", "maturity", "overlay", "backend", "status", "program_fingerprint", "wall_seconds", "adapter_seconds", "solver_seconds", "sccp_summary", "fcp_patches", "abstentions", "cache_stats", "memory_delta_bytes", "rss_before_bytes", "rss_after_bytes", "rss_peak_bytes", "pseudocode_sha256", "live_pseudocode_sha256", "cfg_sha256", "live_cfg_sha256", "evidence_origin", "parity_projection", "parity_sha256", "compiled_provenance", "capacity"],
+          "properties": {
+            "phase": { "enum": ["baseline", "candidate", "auto", "winner"] },
+            "kind": { "const": "full_decomp" },
+            "label": { "enum": ["baseline", "candidate", "auto", "winner"] },
+            "overlay": { "enum": ["off", "on", "auto"] },
+            "backend": { "enum": ["python", "cython"] },
+            "adapter_seconds": { "$ref": "#/$defs/positive_number" },
+            "solver_seconds": { "$ref": "#/$defs/positive_number" },
+            "fcp_patches": { "$ref": "#/$defs/non_negative_integer" },
+            "abstentions": { "type": "array", "maxItems": 0 },
+            "cache_stats": { "$ref": "#/$defs/cache_stats" },
+            "memory_delta_bytes": { "type": "integer" },
+            "rss_before_bytes": { "$ref": "#/$defs/non_negative_integer" },
+            "rss_after_bytes": { "$ref": "#/$defs/non_negative_integer" },
+            "rss_peak_bytes": { "$ref": "#/$defs/non_negative_integer" },
+            "pseudocode_sha256": { "$ref": "#/$defs/sha256" },
+            "live_pseudocode_sha256": { "$ref": "#/$defs/sha256" },
+            "cfg_sha256": { "$ref": "#/$defs/sha256" },
+            "live_cfg_sha256": { "$ref": "#/$defs/sha256" },
+            "evidence_origin": { "type": "object", "additionalProperties": false, "required": ["pseudocode", "cfg", "program"], "properties": { "pseudocode": { "const": "live_cfunc" }, "cfg": { "const": "live_flowchart" }, "program": { "const": "live_mba" } } },
+            "compiled_provenance": { "$ref": "#/$defs/build_provenance" },
+            "capacity": { "type": "object", "additionalProperties": false, "required": ["constant", "ast"], "properties": { "constant": { "$ref": "#/$defs/positive_integer" }, "ast": { "$ref": "#/$defs/positive_integer" } } }
+          }
+        }
+      ]
+    },
+    "operation_counts": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "requests",
-        "executions",
-        "reuses",
-        "fallbacks",
-        "converged",
-        "work_limit",
-        "block_limit",
-        "errors",
-        "python_runs",
-        "cython_runs",
-        "cfg_events",
-        "value_events",
-        "adapter_seconds",
-        "solver_seconds",
-        "constants_exposed",
-        "edges_exposed"
-      ],
+      "required": ["l", "r", "d", "reconstructed_instruction_mops", "p_ast", "mop_utils"],
       "properties": {
-        "requests": { "$ref": "#/$defs/non_negative_integer" },
-        "executions": { "$ref": "#/$defs/non_negative_integer" },
-        "reuses": { "$ref": "#/$defs/non_negative_integer" },
-        "fallbacks": { "$ref": "#/$defs/non_negative_integer" },
-        "converged": { "$ref": "#/$defs/non_negative_integer" },
-        "work_limit": { "$ref": "#/$defs/non_negative_integer" },
-        "block_limit": { "$ref": "#/$defs/non_negative_integer" },
-        "errors": { "$ref": "#/$defs/non_negative_integer" },
-        "python_runs": { "$ref": "#/$defs/non_negative_integer" },
-        "cython_runs": { "$ref": "#/$defs/non_negative_integer" },
-        "cfg_events": { "$ref": "#/$defs/non_negative_integer" },
-        "value_events": { "$ref": "#/$defs/non_negative_integer" },
-        "adapter_seconds": { "$ref": "#/$defs/non_negative_number" },
-        "solver_seconds": { "$ref": "#/$defs/non_negative_number" },
-        "constants_exposed": { "$ref": "#/$defs/non_negative_integer" },
-        "edges_exposed": { "$ref": "#/$defs/non_negative_integer" }
+        "l": { "$ref": "#/$defs/positive_integer" },
+        "r": { "$ref": "#/$defs/positive_integer" },
+        "d": { "$ref": "#/$defs/positive_integer" },
+        "reconstructed_instruction_mops": { "$ref": "#/$defs/positive_integer" },
+        "p_ast": { "$ref": "#/$defs/positive_integer" },
+        "mop_utils": { "$ref": "#/$defs/positive_integer" }
+      }
+    },
+    "cache_row": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["phase", "run_id", "process_id", "database_marker", "fresh_process", "kind", "label", "function_ea", "maturity", "overlay", "backend", "status", "wall_seconds", "workload_fingerprint", "workload_hash", "workload_operations", "operation_counts", "cache_stats", "constant_capacity", "ast_capacity", "rebuilds", "evictions", "peak_weight", "memory_delta_bytes", "rss_before_bytes", "rss_after_bytes", "rss_peak_bytes", "real_api_calls"],
+      "properties": {
+        "phase": { "const": "cache" },
+        "run_id": { "$ref": "#/$defs/non_empty_string" },
+        "process_id": { "$ref": "#/$defs/non_empty_string" },
+        "database_marker": { "$ref": "#/$defs/non_empty_string" },
+        "fresh_process": { "const": true },
+        "kind": { "const": "cache_replay" },
+        "label": { "$ref": "#/$defs/non_empty_string" },
+        "function_ea": { "$ref": "#/$defs/non_negative_integer" },
+        "maturity": { "$ref": "#/$defs/non_empty_string" },
+        "overlay": { "const": "replay" },
+        "backend": { "enum": ["python", "cython", "runtime"] },
+        "status": { "const": "converged" },
+        "wall_seconds": { "$ref": "#/$defs/positive_number" },
+        "workload_fingerprint": { "$ref": "#/$defs/sha256" },
+        "workload_hash": { "$ref": "#/$defs/sha256" },
+        "workload_operations": { "$ref": "#/$defs/positive_integer" },
+        "operation_counts": { "$ref": "#/$defs/operation_counts" },
+        "cache_stats": { "$ref": "#/$defs/cache_stats" },
+        "constant_capacity": { "$ref": "#/$defs/positive_integer" },
+        "ast_capacity": { "$ref": "#/$defs/positive_integer" },
+        "rebuilds": { "$ref": "#/$defs/positive_integer" },
+        "evictions": { "$ref": "#/$defs/non_negative_integer" },
+        "peak_weight": { "$ref": "#/$defs/positive_number" },
+        "memory_delta_bytes": { "type": "integer" },
+        "rss_before_bytes": { "$ref": "#/$defs/non_negative_integer" },
+        "rss_after_bytes": { "$ref": "#/$defs/non_negative_integer" },
+        "rss_peak_bytes": { "$ref": "#/$defs/non_negative_integer" },
+        "real_api_calls": { "$ref": "#/$defs/positive_integer" }
       }
     }
   }
