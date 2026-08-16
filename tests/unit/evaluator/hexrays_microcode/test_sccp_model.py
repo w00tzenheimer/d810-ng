@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
+import gc
 import sys
 import types
+import weakref
 from pathlib import Path
 
 import pytest
@@ -26,6 +28,7 @@ from d810.evaluator.hexrays_microcode.sccp_model import (  # noqa: E402
     SccpResult,
     SccpStatus,
 )
+from d810.evaluator.hexrays_microcode import sccp_model  # noqa: E402
 
 
 def _constant(value: int, *, size: int = 4) -> SccpOperand:
@@ -229,3 +232,114 @@ def test_converged_result_accepts_proof_fields() -> None:
     assert result.constants == {("s", 1): 7}
     assert result.executable_edges == frozenset({(0, 1)})
     assert result.reachable_blocks == frozenset({0, 1})
+
+
+class _FakeLiveObject:
+    """Weak-referenceable stand-in for a live IDA/SWIG object."""
+
+
+def test_program_rejects_live_block_before_retaining_it() -> None:
+    live = _FakeLiveObject()
+    live_ref = weakref.ref(live)
+
+    with pytest.raises(TypeError, match="SccpBlock"):
+        SccpProgram(
+            blocks=(live,),  # type: ignore[arg-type]
+            instructions=(),
+            uses_by_value={},
+            mop_keys_by_value={},
+            fingerprint="live-block",
+        )
+
+    del live
+    gc.collect()
+    assert live_ref() is None
+
+
+def test_program_rejects_live_instruction_before_retaining_it() -> None:
+    live = _FakeLiveObject()
+    live_ref = weakref.ref(live)
+
+    with pytest.raises(TypeError, match="SccpInstruction"):
+        SccpProgram(
+            blocks=(),
+            instructions=(live,),  # type: ignore[arg-type]
+            uses_by_value={},
+            mop_keys_by_value={},
+            fingerprint="live-instruction",
+        )
+
+    del live
+    gc.collect()
+    assert live_ref() is None
+
+
+def test_from_parts_rejects_nonprimitive_mop_value_id_before_hashing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        sccp_model.hashlib,
+        "sha256",
+        lambda *_args, **_kwargs: pytest.fail("invalid model was hashed"),
+    )
+    with pytest.raises(TypeError, match="MOP key value id must be an integer"):
+        SccpProgram.from_parts(
+            blocks=(SccpBlock(0, (), ()),),
+            instructions=(),
+            mop_keys_by_value={"live": ("s", 1)},  # type: ignore[dict-item]
+        )
+
+
+@pytest.mark.parametrize(
+    "blocks, instructions, message",
+    (
+        (
+            (SccpBlock(0, (), ()), SccpBlock(0, (), ())),
+            (),
+            "duplicate block index",
+        ),
+        (
+            (SccpBlock(0, (), (0, 0)),),
+            (SccpInstruction(0, 0, "nop", 0x1000, 4),),
+            "duplicate instruction index",
+        ),
+        (
+            (SccpBlock(0, (), (1,)),),
+            (SccpInstruction(0, 0, "nop", 0x1000, 4),),
+            "unknown instruction index",
+        ),
+        (
+            (SccpBlock(0, (), ()),),
+            (SccpInstruction(0, 0, "nop", 0x1000, 4),),
+            "unreferenced instruction",
+        ),
+        (
+            (SccpBlock(0, (1,), ()),),
+            (),
+            "unknown successor",
+        ),
+        (
+            (SccpBlock(0, (1, 1), ()), SccpBlock(1, (), ())),
+            (),
+            "duplicate successor",
+        ),
+        (
+            (SccpBlock(0, (), (0,)),),
+            (SccpInstruction(0, 1, "nop", 0x1000, 4),),
+            "belongs to another block",
+        ),
+    ),
+)
+def test_program_rejects_inconsistent_structure(
+    blocks: tuple[SccpBlock, ...],
+    instructions: tuple[SccpInstruction, ...],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        SccpProgram(
+            blocks=blocks,
+            instructions=instructions,
+            uses_by_value={},
+            mop_keys_by_value={},
+            fingerprint="invalid-structure",
+        )

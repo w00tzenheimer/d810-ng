@@ -19,6 +19,13 @@ class OperandKind(enum.StrEnum):
     UNSUPPORTED = "unsupported"
 
 
+def _validate_index(value: Any, field: str) -> None:
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise TypeError(f"{field} must be an integer")
+    if value < 0:
+        raise ValueError(f"{field} must be non-negative")
+
+
 @dataclass(frozen=True, slots=True)
 class SccpOperand:
     """A source operand with no live IDA/SWIG object references."""
@@ -34,10 +41,7 @@ class SccpOperand:
                 object.__setattr__(self, "kind", OperandKind(self.kind))
             except (TypeError, ValueError) as exc:
                 raise ValueError(f"invalid operand kind: {self.kind!r}") from exc
-        if not isinstance(self.size, int) or isinstance(self.size, bool):
-            raise TypeError("operand size must be an integer")
-        if self.size < 0:
-            raise ValueError("operand size must be non-negative")
+        _validate_index(self.size, "operand size")
 
         if self.kind is OperandKind.CONSTANT:
             if self.constant is None or self.value_id is not None:
@@ -47,8 +51,7 @@ class SccpOperand:
         elif self.kind is OperandKind.VALUE:
             if self.value_id is None or self.constant is not None:
                 raise ValueError("VALUE operands require value_id only")
-            if not isinstance(self.value_id, int) or isinstance(self.value_id, bool):
-                raise TypeError("value_id must be an integer")
+            _validate_index(self.value_id, "value_id")
         elif self.constant is not None or self.value_id is not None:
             raise ValueError("UNSUPPORTED operands cannot carry a value")
 
@@ -67,16 +70,11 @@ class SccpInstruction:
     destination_value_id: int | None = None
 
     def __post_init__(self) -> None:
-        if not isinstance(self.index, int) or isinstance(self.index, bool):
-            raise TypeError("instruction index must be an integer")
-        if not isinstance(self.block_index, int) or isinstance(self.block_index, bool):
-            raise TypeError("instruction block index must be an integer")
+        _validate_index(self.index, "instruction index")
+        _validate_index(self.block_index, "instruction block index")
         if not isinstance(self.ea, int) or isinstance(self.ea, bool):
             raise TypeError("instruction ea must be an integer")
-        if not isinstance(self.size, int) or isinstance(self.size, bool):
-            raise TypeError("instruction size must be an integer")
-        if self.size < 0:
-            raise ValueError("instruction size must be non-negative")
+        _validate_index(self.size, "instruction size")
         if not isinstance(self.opcode, str):
             raise TypeError("instruction opcode must be a normalized string")
 
@@ -96,6 +94,8 @@ class SccpInstruction:
             or isinstance(self.destination_value_id, bool)
         ):
             raise TypeError("destination value id must be an integer or None")
+        if self.destination_value_id is not None and self.destination_value_id < 0:
+            raise ValueError("destination value id must be non-negative")
 
     @property
     def destination(self) -> int | None:
@@ -113,19 +113,87 @@ class SccpBlock:
     instruction_indices: tuple[int, ...]
 
     def __post_init__(self) -> None:
-        if not isinstance(self.index, int) or isinstance(self.index, bool):
-            raise TypeError("block index must be an integer")
+        _validate_index(self.index, "block index")
         successors = tuple(self.successors)
         instruction_indices = tuple(self.instruction_indices)
-        if any(not isinstance(value, int) or isinstance(value, bool) for value in successors):
-            raise TypeError("block successors must be integers")
-        if any(
-            not isinstance(value, int) or isinstance(value, bool)
-            for value in instruction_indices
-        ):
-            raise TypeError("instruction indices must be integers")
+        for value in successors:
+            _validate_index(value, "block successor")
+        for value in instruction_indices:
+            _validate_index(value, "block instruction index")
         object.__setattr__(self, "successors", successors)
         object.__setattr__(self, "instruction_indices", instruction_indices)
+
+
+def _validate_program_structure(
+    blocks: tuple[Any, ...], instructions: tuple[Any, ...]
+) -> None:
+    """Validate the complete primitive CFG/instruction boundary."""
+
+    block_by_index: dict[int, SccpBlock] = {}
+    for block in blocks:
+        if not isinstance(block, SccpBlock):
+            raise TypeError("program blocks must contain only SccpBlock")
+        _validate_index(block.index, "block index")
+        if not isinstance(block.successors, tuple) or not isinstance(
+            block.instruction_indices, tuple
+        ):
+            raise TypeError("SccpBlock collections must be tuples")
+        if block.index in block_by_index:
+            raise ValueError(f"duplicate block index: {block.index}")
+        block_by_index[block.index] = block
+        for successor in block.successors:
+            _validate_index(successor, "block successor")
+        if len(block.successors) != len(set(block.successors)):
+            raise ValueError(f"duplicate successor in block {block.index}")
+        for instruction_index in block.instruction_indices:
+            _validate_index(instruction_index, "block instruction index")
+
+    instruction_by_index: dict[int, SccpInstruction] = {}
+    for instruction in instructions:
+        if not isinstance(instruction, SccpInstruction):
+            raise TypeError("program instructions must contain only SccpInstruction")
+        _validate_index(instruction.index, "instruction index")
+        _validate_index(instruction.block_index, "instruction block index")
+        if not isinstance(instruction.opcode, str) or not instruction.opcode:
+            raise TypeError("instruction opcode must be a non-empty string")
+        if not isinstance(instruction.ea, int) or isinstance(instruction.ea, bool):
+            raise TypeError("instruction ea must be an integer")
+        _validate_index(instruction.size, "instruction size")
+        if instruction.left is not None and not isinstance(instruction.left, SccpOperand):
+            raise TypeError("instruction left operand must be SccpOperand or None")
+        if instruction.right is not None and not isinstance(instruction.right, SccpOperand):
+            raise TypeError("instruction right operand must be SccpOperand or None")
+        if instruction.destination_value_id is not None:
+            _validate_index(instruction.destination_value_id, "destination value id")
+        if instruction.index in instruction_by_index:
+            raise ValueError(f"duplicate instruction index: {instruction.index}")
+        instruction_by_index[instruction.index] = instruction
+
+    for block in blocks:
+        if any(successor not in block_by_index for successor in block.successors):
+            missing = next(
+                successor for successor in block.successors if successor not in block_by_index
+            )
+            raise ValueError(f"unknown successor: {missing}")
+
+    referenced_indices: list[int] = []
+    for block in blocks:
+        for instruction_index in block.instruction_indices:
+            if instruction_index in referenced_indices:
+                raise ValueError(f"duplicate instruction index: {instruction_index}")
+            if instruction_index not in instruction_by_index:
+                raise ValueError(f"unknown instruction index: {instruction_index}")
+            instruction = instruction_by_index[instruction_index]
+            if instruction.block_index != block.index:
+                raise ValueError(
+                    f"instruction {instruction_index} belongs to another block"
+                )
+            referenced_indices.append(instruction_index)
+
+    unreferenced = set(instruction_by_index).difference(referenced_indices)
+    if unreferenced:
+        missing = min(unreferenced)
+        raise ValueError(f"unreferenced instruction: {missing}")
 
 
 def _canonical(value: Any) -> Any:
@@ -214,16 +282,43 @@ class SccpProgram:
     fingerprint: str
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "blocks", tuple(self.blocks))
-        object.__setattr__(self, "instructions", tuple(self.instructions))
-        uses = {
-            int(value_id): tuple(indices)
-            for value_id, indices in self.uses_by_value.items()
-        }
+        blocks = tuple(self.blocks)
+        instructions = tuple(self.instructions)
+        _validate_program_structure(blocks, instructions)
+        if not isinstance(self.uses_by_value, Mapping):
+            raise TypeError("uses_by_value must be a mapping")
+        if not isinstance(self.mop_keys_by_value, Mapping):
+            raise TypeError("mop_keys_by_value must be a mapping")
+        if not isinstance(self.fingerprint, str):
+            raise TypeError("fingerprint must be a string")
+
+        object.__setattr__(self, "blocks", blocks)
+        object.__setattr__(self, "instructions", instructions)
+        instruction_indices = {instruction.index for instruction in instructions}
+        uses: dict[int, tuple[int, ...]] = {}
+        for value_id, raw_indices in self.uses_by_value.items():
+            _validate_index(value_id, "use value id")
+            try:
+                indices = tuple(raw_indices)
+            except TypeError as exc:
+                raise TypeError(
+                    f"use instruction indexes for value {value_id} must be iterable"
+                ) from exc
+            seen_indices: set[int] = set()
+            for instruction_index in indices:
+                _validate_index(instruction_index, "use instruction index")
+                if instruction_index not in instruction_indices:
+                    raise ValueError(f"unknown use instruction index: {instruction_index}")
+                if instruction_index in seen_indices:
+                    raise ValueError(f"duplicate use instruction index for value {value_id}")
+                seen_indices.add(instruction_index)
+            uses[value_id] = indices
         mop_keys = {
             value_id: _freeze_primitive(key)
             for value_id, key in self.mop_keys_by_value.items()
         }
+        for value_id in mop_keys:
+            _validate_index(value_id, "MOP key value id")
         object.__setattr__(self, "uses_by_value", MappingProxyType(uses))
         object.__setattr__(self, "mop_keys_by_value", MappingProxyType(mop_keys))
 
@@ -237,6 +332,11 @@ class SccpProgram:
     ) -> "SccpProgram":
         blocks_tuple = tuple(blocks)
         instructions_tuple = tuple(instructions)
+        _validate_program_structure(blocks_tuple, instructions_tuple)
+        if not isinstance(mop_keys_by_value, Mapping):
+            raise TypeError("mop_keys_by_value must be a mapping")
+        for value_id in mop_keys_by_value:
+            _validate_index(value_id, "MOP key value id")
 
         uses: dict[int, list[int]] = {}
         for instruction in instructions_tuple:

@@ -235,11 +235,12 @@ def test_work_limit_records_solver_seconds(monkeypatch: pytest.MonkeyPatch) -> N
 def test_error_records_solver_seconds(monkeypatch: pytest.MonkeyPatch) -> None:
     ticks = iter((8.0, 8.5))
     monkeypatch.setattr(p_sccp.time, "perf_counter", lambda: next(ticks))
-    program = SccpProgram.from_parts(
-        blocks=(SccpBlock(index=0, successors=(9,), instruction_indices=()),),
-        instructions=(),
-        mop_keys_by_value={},
-    )
+    program = diamond_program()
+
+    def fail_validation(_program: SccpProgram) -> dict[int, SccpBlock]:
+        raise ValueError("synthetic validation failure")
+
+    monkeypatch.setattr(p_sccp, "_block_map", fail_validation)
 
     result = solve(program)
 
