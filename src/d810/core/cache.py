@@ -2,6 +2,7 @@ import abc
 import collections
 import contextlib
 import dataclasses
+import enum
 import functools
 import sys
 import threading
@@ -51,6 +52,14 @@ class OverweightError(Exception):
     pass
 
 
+class RemovalReason(enum.StrEnum):
+    CAPACITY = "capacity"
+    EXPIRATION = "expiration"
+    EXPLICIT = "explicit"
+    WEAK_REFERENCE = "weak_reference"
+    REPLACEMENT = "replacement"
+
+
 class Cache(typing.MutableMapping[K, V], metaclass=SurvivesReload):
     @abc.abstractmethod
     def reap(self) -> None: ...
@@ -69,6 +78,15 @@ class Stats:
     misses: int
     max_size_ever: int
     max_weight_ever: float
+    lookups: int
+    insertions: int
+    replacements: int
+    capacity_evictions: int
+    expirations: int
+    explicit_removals: int
+    weak_reference_removals: int
+    configured_max_size: int | None
+    configured_max_weight: float | None
 
 
 def LRU(cache: "Cache") -> None:
@@ -97,7 +115,7 @@ def LRU(cache: "Cache") -> None:
         expected private helpers.  The function mutates *cache* in-place and
         has no return value.
     """
-    cache._kill(cache._root.lru_next)  # type: ignore
+    cache._kill(cache._root.lru_next, RemovalReason.CAPACITY)  # type: ignore
 
 
 def LRI(cache: "Cache") -> None:
@@ -117,7 +135,7 @@ def LRI(cache: "Cache") -> None:
         The cache instance to operate on.  Must be compatible with
         :class:`CacheImpl`'s private interface.
     """
-    cache._kill(cache._root.ins_next)  # type: ignore
+    cache._kill(cache._root.ins_next, RemovalReason.CAPACITY)  # type: ignore
 
 
 def LFU(cache: "Cache") -> None:
@@ -139,7 +157,7 @@ def LFU(cache: "Cache") -> None:
         The cache instance subject to eviction.  Expected to be a
         :class:`CacheImpl` or compatible object.
     """
-    cache._kill(cache._root.lfu_prev)  # type: ignore
+    cache._kill(cache._root.lfu_prev, RemovalReason.CAPACITY)  # type: ignore
 
 
 def _const_one(_: object) -> float:
@@ -238,10 +256,31 @@ class CacheImpl(Cache[K, V]):
         self._weight = 0.0
         self._hits = 0
         self._misses = 0
+        self._lookups = 0
+        self._insertions = 0
+        self._replacements = 0
+        self._capacity_evictions = 0
+        self._expirations = 0
+        self._explicit_removals = 0
+        self._weak_reference_removals = 0
         self._max_size_ever = 0
         self._max_weight_ever = 0.0
 
-    def _unlink(self, link: Link) -> None:
+    def _record_removal(self, reason: RemovalReason) -> None:
+        if reason is RemovalReason.CAPACITY:
+            self._capacity_evictions += 1
+        elif reason is RemovalReason.EXPIRATION:
+            self._expirations += 1
+        elif reason is RemovalReason.EXPLICIT:
+            self._explicit_removals += 1
+        elif reason is RemovalReason.WEAK_REFERENCE:
+            self._weak_reference_removals += 1
+        elif reason is RemovalReason.REPLACEMENT:
+            self._replacements += 1
+        else:
+            raise ValueError(f"Unknown cache removal reason: {reason!r}")
+
+    def _unlink(self, link: Link, reason: RemovalReason) -> None:
         if link is self._root:
             raise TypeError
         if link.unlinked:
@@ -270,10 +309,11 @@ class CacheImpl(Cache[K, V]):
 
         self._size -= 1
         self._weight -= link.weight
+        self._record_removal(reason)
         link.key = link.value = None
         link.unlinked = True
 
-    def _kill(self, link: Link) -> None:
+    def _kill(self, link: Link, reason: RemovalReason) -> None:
         if link is self._root:
             raise RuntimeError
 
@@ -290,7 +330,7 @@ class CacheImpl(Cache[K, V]):
             if cache_link is link:
                 del self._cache[cache_key]
 
-        self._unlink(link)
+        self._unlink(link, reason)
 
     def _reap(self) -> None:
         if self._weak_dead is not None:
@@ -299,7 +339,7 @@ class CacheImpl(Cache[K, V]):
                     link = self._weak_dead.popleft()
                 except IndexError:
                     break
-                self._kill(link)
+                self._kill(link, RemovalReason.WEAK_REFERENCE)
 
         clock = None
 
@@ -311,7 +351,7 @@ class CacheImpl(Cache[K, V]):
                 link = self._root.ins_next
                 if link.written > deadline:
                     break
-                self._kill(link)
+                self._kill(link, RemovalReason.EXPIRATION)
 
         if self._expire_after_access is not None:
             if clock is None:
@@ -322,7 +362,7 @@ class CacheImpl(Cache[K, V]):
                 link = self._root.lru_next
                 if link.accessed > deadline:
                     break
-                self._kill(link)
+                self._kill(link, RemovalReason.EXPIRATION)
 
     def reap(self) -> None:
         with self._lock:
@@ -335,10 +375,10 @@ class CacheImpl(Cache[K, V]):
         if link.unlinked:
             raise Exception
 
-        def fail():
+        def fail(reason: RemovalReason):
             with contextlib.suppress(KeyError):
                 del self._cache[cache_key]
-            self._unlink(link)
+            self._unlink(link, reason)
             raise KeyError(key)
 
         if self._identity_keys:
@@ -346,61 +386,83 @@ class CacheImpl(Cache[K, V]):
             if self._weak_keys:
                 link_key = link_key()
                 if link_key is None:
-                    fail()
+                    fail(RemovalReason.WEAK_REFERENCE)
             if key is not link_key:
-                fail()
+                fail(
+                    RemovalReason.WEAK_REFERENCE
+                    if self._weak_keys
+                    else RemovalReason.EXPLICIT
+                )
 
         value = link.value
         if self._weak_values:
             if value is not None:
                 value = value()
             if value is None:
-                fail()
+                fail(RemovalReason.WEAK_REFERENCE)
 
         return link, value  # type: ignore
 
-    def __getitem__(self, key: K) -> V:
+    def _touch(self, link: Link) -> None:
+        if link.lru_next is not self._root:
+            link.lru_prev.lru_next = link.lru_next
+            link.lru_next.lru_prev = link.lru_prev
+
+            lru_last = self._root.lru_prev
+            lru_last.lru_next = self._root.lru_prev = link
+            link.lru_prev = lru_last
+            link.lru_next = self._root
+
+        if self._track_frequency:
+            # _root.lfu_prev = LFU (lowest hits, evicted first).
+            # New items are inserted at _root.lfu_prev (0 hits).
+            # After a hit, the item must move AWAY from _root.lfu_prev toward
+            # _root.lfu_next (MFU end).  Traverse lfu_next to find the first
+            # node with FEWER hits than link, then insert link just before it.
+            lfu_pos = link.lfu_next
+            while lfu_pos is not self._root and lfu_pos.hits >= link.hits:
+                lfu_pos = lfu_pos.lfu_next
+
+            if link.lfu_next is not lfu_pos:
+                link.lfu_prev.lfu_next = link.lfu_next
+                link.lfu_next.lfu_prev = link.lfu_prev
+
+                lfu_last = lfu_pos.lfu_prev
+                lfu_last.lfu_next = lfu_pos.lfu_prev = link
+                link.lfu_prev = lfu_last
+                link.lfu_next = lfu_pos
+
+        link.accessed = self._clock()
+        link.hits += 1
+
+    def lookup(self, key: K) -> tuple[bool, V | None]:
+        """Look up *key* once and return ``(found, value)``.
+
+        A cached ``None`` is represented by ``(True, None)``; callers must use
+        the first tuple element to distinguish it from a miss.  Membership
+        checks intentionally remain separate and do not contribute to lookup
+        telemetry.
+        """
         with self._lock:
             self._reap()
 
             try:
                 link, value = self._get_link(key)
             except KeyError:
+                self._lookups += 1
                 self._misses += 1
-                raise KeyError(key) from None
+                return False, None
 
-            if link.lru_next is not self._root:
-                link.lru_prev.lru_next = link.lru_next
-                link.lru_next.lru_prev = link.lru_prev
-
-                lru_last = self._root.lru_prev
-                lru_last.lru_next = self._root.lru_prev = link
-                link.lru_prev = lru_last
-                link.lru_next = self._root
-
-            if self._track_frequency:
-                # _root.lfu_prev = LFU (lowest hits, evicted first).
-                # New items are inserted at _root.lfu_prev (0 hits).
-                # After a hit, the item must move AWAY from _root.lfu_prev toward
-                # _root.lfu_next (MFU end).  Traverse lfu_next to find the first
-                # node with FEWER hits than link, then insert link just before it.
-                lfu_pos = link.lfu_next
-                while lfu_pos is not self._root and lfu_pos.hits >= link.hits:
-                    lfu_pos = lfu_pos.lfu_next
-
-                if link.lfu_next is not lfu_pos:
-                    link.lfu_prev.lfu_next = link.lfu_next
-                    link.lfu_next.lfu_prev = link.lfu_prev
-
-                    lfu_last = lfu_pos.lfu_prev
-                    lfu_last.lfu_next = lfu_pos.lfu_prev = link
-                    link.lfu_prev = lfu_last
-                    link.lfu_next = lfu_pos
-
-            link.accessed = self._clock()
-            link.hits += 1
+            self._touch(link)
+            self._lookups += 1
             self._hits += 1
-            return value
+            return True, value
+
+    def __getitem__(self, key: K) -> V:
+        found, value = self.lookup(key)
+        if not found:
+            raise KeyError(key)
+        return value  # type: ignore
 
     @staticmethod
     def _weak_die(dead_ref: weakref.ref, link: Link, key_ref: weakref.ref) -> None:  # noqa
@@ -425,9 +487,18 @@ class CacheImpl(Cache[K, V]):
                     break
                 if link.unlinked:
                     raise TypeError
-                self._unlink(link)
+                self._unlink(link, RemovalReason.EXPLICIT)
             if reset_stats:
                 self.reset_stats()
+
+    def reconfigure_capacity(self, max_size: int) -> None:
+        """Clear the current session and atomically set a new size limit."""
+        if isinstance(max_size, bool) or not isinstance(max_size, int) or max_size <= 0:
+            raise ValueError("max_size must be a positive integer")
+
+        with self._lock:
+            self.clear(reset_stats=True)
+            self._max_size = max_size
 
     def reset_stats(self) -> None:
         """Reset all statistics counters for this cache.
@@ -441,6 +512,13 @@ class CacheImpl(Cache[K, V]):
         with self._lock:
             self._hits = 0
             self._misses = 0
+            self._lookups = 0
+            self._insertions = 0
+            self._replacements = 0
+            self._capacity_evictions = 0
+            self._expirations = 0
+            self._explicit_removals = 0
+            self._weak_reference_removals = 0
             self._max_size_ever = 0
             self._max_weight_ever = 0.0
             self._seq = 0
@@ -458,11 +536,11 @@ class CacheImpl(Cache[K, V]):
                     return
 
             try:
-                existing_link, existing_value = self._get_link(key)
+                existing_link, _ = self._get_link(key)
             except KeyError:
                 pass
             else:
-                self._unlink(existing_link)
+                self._kill(existing_link, RemovalReason.REPLACEMENT)
 
             while self._full:
                 self._eviction(self)
@@ -510,17 +588,14 @@ class CacheImpl(Cache[K, V]):
 
             cache_key = id(key) if self._identity_keys else key
             self._cache[cache_key] = link
+            self._insertions += 1
 
     def __delitem__(self, key: K) -> None:
         with self._lock:
             self._reap()
 
-            link, value = self._get_link(key)
-
-            cache_key = id(key) if self._identity_keys else key
-            del self._cache[cache_key]
-
-            self._unlink(link)
+            link, _ = self._get_link(key)
+            self._kill(link, RemovalReason.EXPLICIT)
 
     def __len__(self) -> int:
         with self._lock:
@@ -570,6 +645,15 @@ class CacheImpl(Cache[K, V]):
                 misses=self._misses,
                 max_size_ever=self._max_size_ever,
                 max_weight_ever=self._max_weight_ever,
+                lookups=self._lookups,
+                insertions=self._insertions,
+                replacements=self._replacements,
+                capacity_evictions=self._capacity_evictions,
+                expirations=self._expirations,
+                explicit_removals=self._explicit_removals,
+                weak_reference_removals=self._weak_reference_removals,
+                configured_max_size=self._max_size,
+                configured_max_weight=self._max_weight,
             )
 
 

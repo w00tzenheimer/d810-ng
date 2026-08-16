@@ -16,6 +16,194 @@ class FixedClock:
 
 
 class TestCacheImpl(unittest.TestCase):
+    def test_single_lookup_counts_cached_none_as_hit(self):
+        c = CacheImpl(max_size=4, max_weight=8.0, clock=FixedClock())
+
+        self.assertEqual(c.lookup("missing"), (False, None))
+        c["none"] = None
+        self.assertEqual(c.lookup("none"), (True, None))
+
+        stats = c.stats
+        self.assertEqual(stats.lookups, 2)
+        self.assertEqual(stats.hits, 1)
+        self.assertEqual(stats.misses, 1)
+        self.assertEqual(stats.configured_max_size, 4)
+        self.assertEqual(stats.configured_max_weight, 8.0)
+
+    def test_getitem_delegates_to_single_lookup(self):
+        c = CacheImpl(clock=FixedClock())
+        c["value"] = 3
+
+        self.assertEqual(c["value"], 3)
+        with self.assertRaises(KeyError):
+            _ = c["missing"]
+
+        stats = c.stats
+        self.assertEqual(stats.lookups, 2)
+        self.assertEqual(stats.hits, 1)
+        self.assertEqual(stats.misses, 1)
+
+    def test_contains_does_not_account_or_touch_value_lookup(self):
+        c = CacheImpl(clock=FixedClock())
+        c["value"] = 3
+
+        self.assertTrue("value" in c)
+        self.assertFalse("missing" in c)
+        self.assertEqual(c.stats.lookups, 0)
+        self.assertEqual(c.stats.hits, 0)
+        self.assertEqual(c.stats.misses, 0)
+
+    def test_removal_reasons_are_distinct(self):
+        clock = FixedClock()
+        removed = []
+        c = CacheImpl(
+            max_size=1,
+            expire_after_write=5,
+            removal_listener=lambda key, value: removed.append((key, value)),
+            clock=clock,
+        )
+
+        c["a"] = 1
+        c["a"] = 2
+        c["b"] = 3
+        self.assertEqual(c.stats.replacements, 1)
+        self.assertEqual(c.stats.capacity_evictions, 1)
+
+        clock.time = 6
+        c.reap()
+        self.assertEqual(c.stats.expirations, 1)
+
+        c["d"] = 5
+        del c["d"]
+        self.assertEqual(c.stats.explicit_removals, 1)
+        self.assertEqual(len(removed), 4)
+
+    def test_clear_reset_stats_removes_entries_then_resets_session(self):
+        removed = []
+        c = CacheImpl(
+            max_size=3,
+            removal_listener=lambda key, value: removed.append((key, value)),
+            clock=FixedClock(),
+        )
+        c["a"] = 1
+        c["b"] = 2
+        self.assertEqual(c.lookup("a"), (True, 1))
+
+        c.clear(reset_stats=True)
+
+        self.assertEqual(removed, [("b", 2), ("a", 1)])
+        self.assertEqual(len(c), 0)
+        stats = c.stats
+        self.assertEqual(stats.seq, 0)
+        self.assertEqual(stats.lookups, 0)
+        self.assertEqual(stats.hits, 0)
+        self.assertEqual(stats.misses, 0)
+        self.assertEqual(stats.insertions, 0)
+        self.assertEqual(stats.replacements, 0)
+        self.assertEqual(stats.capacity_evictions, 0)
+        self.assertEqual(stats.expirations, 0)
+        self.assertEqual(stats.explicit_removals, 0)
+        self.assertEqual(stats.weak_reference_removals, 0)
+        self.assertEqual(stats.max_size_ever, 0)
+        self.assertEqual(stats.max_weight_ever, 0.0)
+
+    def test_reconfigure_capacity_clears_and_preserves_policy(self):
+        clock = FixedClock()
+
+        def listener(key, value):
+            return None
+
+        def weigher(value):
+            return float(value)
+
+        c = CacheImpl(
+            max_size=3,
+            max_weight=10.0,
+            expire_after_write=5,
+            removal_listener=listener,
+            weak_values=False,
+            weigher=weigher,
+            clock=clock,
+        )
+        c["a"] = 1
+        self.assertEqual(c.lookup("a"), (True, 1))
+
+        c.reconfigure_capacity(2)
+
+        self.assertEqual(len(c), 0)
+        self.assertEqual(c.stats.configured_max_size, 2)
+        self.assertEqual(c.stats.configured_max_weight, 10.0)
+        self.assertIs(c._weigher, weigher)
+        self.assertIs(c._removal_listener, listener)
+        self.assertEqual(c._expire_after_write, 5)
+        self.assertFalse(c._weak_values)
+        self.assertEqual(c.stats.lookups, 0)
+        self.assertEqual(c.stats.insertions, 0)
+
+        for invalid in (0, -1, True):
+            with self.assertRaises(ValueError):
+                c.reconfigure_capacity(invalid)
+
+    def test_weak_cleanup_has_weak_reference_reason(self):
+        class Key:
+            pass
+
+        key = Key()
+        c = CacheImpl(weak_keys=True, clock=FixedClock())
+        c[key] = "value"
+        del key
+        gc.collect()
+        c.reap()
+        self.assertEqual(c.stats.weak_reference_removals, 1)
+
+        class Value:
+            pass
+
+        value = Value()
+        c = CacheImpl(weak_values=True, clock=FixedClock())
+        c["key"] = value
+        del value
+        gc.collect()
+        c.reap()
+        self.assertEqual(c.stats.weak_reference_removals, 1)
+
+    def test_overweight_rejection_inserts_nothing(self):
+        c = CacheImpl(
+            max_size=2,
+            max_weight=5.0,
+            weigher=lambda value: float(value),  # type: ignore[arg-type]
+            clock=FixedClock(),
+        )
+
+        c["accepted"] = 3
+        c["rejected"] = 10
+
+        self.assertEqual(len(c), 1)
+        self.assertNotIn("rejected", c)
+        stats = c.stats
+        self.assertEqual(stats.insertions, 1)
+        self.assertEqual(stats.replacements, 0)
+        self.assertEqual(stats.seq, 1)
+
+    def test_lru_and_lfu_ordering_are_unchanged(self):
+        lru = CacheImpl(max_size=2, clock=FixedClock())
+        lru["a"] = 1
+        lru["b"] = 2
+        self.assertEqual(lru.lookup("a"), (True, 1))
+        lru["c"] = 3
+        self.assertNotIn("b", lru)
+        self.assertEqual(lru.lookup("a"), (True, 1))
+        self.assertEqual(lru.lookup("c"), (True, 3))
+
+        lfu = CacheImpl(max_size=2, eviction=LFU, clock=FixedClock())
+        lfu["a"] = 1
+        lfu["b"] = 2
+        self.assertEqual(lfu.lookup("a"), (True, 1))
+        self.assertEqual(lfu.lookup("a"), (True, 1))
+        lfu["c"] = 3
+        self.assertNotIn("a", lfu)
+        self.assertEqual(lfu.lookup("b"), (True, 2))
+
     def test_basic_set_get(self):
         c = CacheImpl(max_size=10, clock=FixedClock())
         c["a"] = 1

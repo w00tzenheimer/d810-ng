@@ -84,8 +84,9 @@ def get_constant_mop(value: int, size: int) -> ida_hexrays.mop_t:
     This avoids repeated calls to mop_t.__init__ and make_number.
     """
     key = (value, size)
-    if key in MOP_CONSTANT_CACHE:
-        return MOP_CONSTANT_CACHE[key]
+    found, cached_mop = MOP_CONSTANT_CACHE.lookup(key)
+    if found:
+        return cached_mop
 
     # Not in cache, create it once and store it.
     cst_mop = ida_hexrays.mop_t()
@@ -1971,8 +1972,8 @@ def mop_to_ast(mop: ida_hexrays.mop_t) -> AstProxy | None:
     cache_key = _mop_ast_cache_key(mop)
 
     # 2. Global template cache: return a proxy if we already know the template
-    if cache_key in MOP_TO_AST_CACHE:
-        cached_template = MOP_TO_AST_CACHE[cache_key]
+    found, cached_template = MOP_TO_AST_CACHE.lookup(cache_key)
+    if found:
         if cached_template is None:
             return None  # Previously determined unconvertible.
         return AstProxy(cached_template)

@@ -543,10 +543,10 @@ def mop_to_ast(mop: ida_hexrays.mop_t) -> AstProxy | None:
     # 2. Global template cache: return a proxy if we already know the template
     if _NATIVE_PERF_ENABLED:
         _NATIVE_PERF_COUNTERS["global_cache_lookups"] += 1
-    if cache_key in MOP_TO_AST_CACHE:
+    found, cached_template = MOP_TO_AST_CACHE.lookup(cache_key)
+    if found:
         if _NATIVE_PERF_ENABLED:
             _NATIVE_PERF_COUNTERS["global_cache_hits"] += 1
-        cached_template = MOP_TO_AST_CACHE[cache_key]
         if cached_template is None:
             return None  # Previously determined unconvertible.
         if _NATIVE_PERF_ENABLED:

@@ -90,8 +90,9 @@ def get_constant_mop(value: int, size: int) -> ida_hexrays.mop_t:
     This avoids repeated calls to mop_t.__init__ and make_number.
     """
     key = (value, size)
-    if key in MOP_CONSTANT_CACHE:
-        return MOP_CONSTANT_CACHE[key]
+    found, cached_mop = MOP_CONSTANT_CACHE.lookup(key)
+    if found:
+        return cached_mop  # type: ignore
 
     # Not in cache, create it once and store it.
     cst_mop = ida_hexrays.mop_t()
