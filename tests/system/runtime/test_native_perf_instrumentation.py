@@ -53,10 +53,14 @@ def _cython_disabled_by_environment() -> bool:
 
 
 def _activate_cython_providers() -> None:
-    """Re-select compiled providers after any test imported pure fallbacks."""
+    """Re-select the complete compiled composition through production dispatchers."""
     _require_compiled_extensions()
-    c_pattern_match.register_native_perf_provider()
-    c_ast.register_native_perf_provider()
+    from d810.manager.manager import D810Manager
+
+    # Registry-clearing unit tests can run before this module in a combined
+    # invocation. Reuse the manager's selected-dispatcher composition so the
+    # Python-boundary ast_builder provider is restored alongside Cython ones.
+    D810Manager._ensure_native_perf_providers()
 
 
 class TestNativePerfInstrumentation:
@@ -306,6 +310,24 @@ class TestNativePerfInstrumentation:
         assert providers["ast_types"]["backend"] == "cython"
         assert providers["ast_builder"]["backend"] == "python"
         assert providers["ast_builder"]["counter_domain"] == "python-boundary"
+        native_perf.configure(False)
+
+    @pytest.mark.ida_required
+    @pytest.mark.skipif(
+        _cython_disabled_by_environment(), reason="compiled mode is disabled"
+    )
+    def test_cython_provider_activation_restores_complete_selected_composition(self):
+        """Test helpers restore every selected provider after registry clearing."""
+        _require_compiled_extensions()
+        native_perf.clear_providers_for_tests()
+        _activate_cython_providers()
+
+        providers = native_perf.snapshot()["providers"]
+        assert {
+            "ast_builder",
+            "ast_types",
+            "pattern_match",
+        }.issubset(providers)
         native_perf.configure(False)
 
     @pytest.mark.ida_required
