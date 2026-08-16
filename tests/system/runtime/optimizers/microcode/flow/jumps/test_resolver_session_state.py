@@ -25,6 +25,7 @@ from d810.analyses.control_flow.native_preanalysis_session import (
     BootstrapRouteProofKind,
     CallResultCarrier,
     ComputedGotoResolution,
+    GeneratedRestartConsumer,
     GeneratedRestartKind,
     NativePreanalysisFacts,
     NativePreanalysisSessionState,
@@ -472,6 +473,7 @@ def test_flowchart_consumes_only_evidence_receipts_and_preserves_poison(
             {"function_ea": 0x40D200, "evidence_generation": 7},
         )
     ]
+
     assert not state.native_preanalysis.has_pending_generated_restart
 
     state.materialized = True
@@ -497,6 +499,86 @@ def test_flowchart_consumes_only_evidence_receipts_and_preserves_poison(
             {"function_ea": 0x40D200, "evidence_generation": 7},
         )
     ]
+
+
+def test_flowchart_abstains_after_manager_consumes_poison_before_evidence_request(
+    monkeypatch,
+) -> None:
+    import d810.optimizers.microcode.flow.jumps.computed_goto_resolver as resolver
+
+    session = SimpleNamespace(
+        native_preanalysis=NativePreanalysisSessionState(evidence_generation=7),
+        resolver_attachment=None,
+        native_key=NATIVE_KEY,
+    )
+    state = resolver_session_state(session)
+    redo: list[tuple[str, dict[str, object]]] = []
+    monkeypatch.setattr(
+        resolver,
+        "request_hexrays_redo",
+        lambda decision, reason, **details: (
+            decision.__setitem__("request_redo", True),
+            redo.append((reason, details)),
+        ),
+    )
+
+    assert state.native_preanalysis.request_poisoned_generation_restart(
+        reason="discard poisoned generated MBA",
+    )
+    assert state.native_preanalysis.consume_generated_restart(
+        consumer=GeneratedRestartConsumer.MANAGER,
+    ) is not None
+    assert state.native_preanalysis.native_mutation_quarantined
+    assert not state.native_preanalysis.request_generated_restart(
+        evidence_family="bootstrap_routes",
+        reason="evidence arrived during poison recovery",
+    )
+
+    decision = {"session": session, "request_redo": False}
+    _on_flowchart_preanalysis(
+        function_ea=0x40D200,
+        mba=object(),
+        decision=decision,
+    )
+
+    assert decision["request_redo"] is False
+    assert redo == []
+    assert state.native_preanalysis.pending_generated_restart is None
+    assert not state.native_preanalysis.has_pending_generated_restart
+
+
+def test_calls_done_does_not_stage_evidence_during_poison_recovery(monkeypatch) -> None:
+    import d810.hexrays.mutation.detached_handler_island as detached_handler_island
+
+    session = SimpleNamespace(
+        native_preanalysis=NativePreanalysisSessionState(evidence_generation=7),
+        resolver_attachment=None,
+        native_key=NATIVE_KEY,
+    )
+    state = resolver_session_state(session)
+    state.materialized = True
+    assert state.native_preanalysis.request_poisoned_generation_restart(
+        reason="discard poisoned generated MBA",
+    )
+    assert state.native_preanalysis.consume_generated_restart(
+        consumer=GeneratedRestartConsumer.MANAGER,
+    ) is not None
+
+    monkeypatch.setattr(
+        detached_handler_island,
+        "imported_detached_snippet_instruction_origins",
+        lambda _mba: pytest.fail("quarantined CALLS callback must abstain"),
+    )
+
+    decision = {"session": session, "request_redo": False}
+    _on_calls_done_preanalysis(
+        function_ea=0x40D200,
+        mba=object(),
+        decision=decision,
+    )
+
+    assert decision["request_redo"] is False
+    assert state.native_preanalysis.pending_generated_restart is None
 
 
 def test_call_companion_requests_are_portable_monotonic_and_acknowledged() -> None:

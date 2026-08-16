@@ -13370,6 +13370,11 @@ def _on_flowchart_preanalysis(*, function_ea: int, mba: object, decision: dict) 
     state = _resolver_state_from_decision(decision)
     if state is None or state.snippet_capture_active:
         return
+    if state.native_preanalysis.native_mutation_quarantined:
+        # Poison recovery belongs to the manager's fresh-decompile boundary;
+        # this flowchart callback must neither consume a receipt nor emit
+        # MERR_REDO while the generation remains quarantined.
+        return
     receipt = state.native_preanalysis.consume_generated_restart(
         consumer=GeneratedRestartConsumer.FLOWCHART,
     )
@@ -13380,10 +13385,6 @@ def _on_flowchart_preanalysis(*, function_ea: int, mba: object, decision: dict) 
             function_ea=key,
             evidence_generation=receipt.evidence_generation,
         )
-        return
-    if state.native_preanalysis.native_mutation_quarantined:
-        # Poison recovery belongs to the manager's fresh-decompile boundary;
-        # this flowchart callback must never turn it into MERR_REDO.
         return
     if state.materialized:
         return
@@ -13441,6 +13442,10 @@ def _on_calls_done_preanalysis(
     key = int(function_ea)
     state = _resolver_state_from_decision(decision)
     if state is None or state.snippet_capture_active:
+        return
+    if state.native_preanalysis.native_mutation_quarantined:
+        # A manager-owned poison recovery keeps CALLS evidence callbacks from
+        # staging another flowchart-owned restart in the same generation.
         return
     if state.native_preanalysis.has_pending_generated_restart:
         # Hex-Rays may emit CALLS more than once before control returns to the

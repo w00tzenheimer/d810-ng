@@ -468,6 +468,22 @@ def test_poison_recovery_receipt_is_owned_by_manager_and_quarantines_mutation() 
     assert state.native_mutation_quarantined
 
 
+def test_evidence_rebind_is_declined_after_manager_consumes_poison() -> None:
+    state = NativePreanalysisSessionState(evidence_generation=5)
+
+    assert state.request_poisoned_generation_restart(reason="first poison")
+    assert state.consume_generated_restart(
+        consumer=GeneratedRestartConsumer.MANAGER,
+    ) is not None
+    assert state.native_mutation_quarantined
+
+    assert not state.request_generated_restart(
+        evidence_family="ordinary_evidence",
+        reason="evidence arrived during poison recovery",
+    )
+    assert state.pending_generated_restart is None
+
+
 def test_evidence_rebind_cannot_replace_pending_poison_recovery() -> None:
     observed = []
     state = NativePreanalysisSessionState(

@@ -11,6 +11,8 @@ import pytest
 
 from d810.analyses.control_flow.native_preanalysis_session import (
     GeneratedRestartConsumer,
+    GeneratedRestartKind,
+    GeneratedRestartReceipt,
     NativePreanalysisSessionState,
 )
 from d810.core.observability_events import (
@@ -77,6 +79,15 @@ from tests.native_preanalysis import make_native_key
 
 
 NATIVE_KEY = make_native_key()
+
+
+def _evidence_receipt() -> GeneratedRestartReceipt:
+    return GeneratedRestartReceipt(
+        kind=GeneratedRestartKind.EVIDENCE_REBIND,
+        evidence_family="test_evidence",
+        reason="test evidence restart",
+        evidence_generation=0,
+    )
 
 
 def test_manager_installs_and_uninstalls_generated_restart_consumer() -> None:
@@ -1157,9 +1168,9 @@ def test_decompile_controller_runs_one_followup_for_pending_generated_restart(
             return False
 
         @staticmethod
-        def has_pending_generated_restart(function_ea: int) -> bool:
+        def pending_generated_restart(function_ea: int):
             calls.append(("pending", function_ea))
-            return next(pending)
+            return _evidence_receipt() if next(pending) else None
 
     manager = D810Manager.__new__(D810Manager)
     manager.decompilation_lifecycle = _Lifecycle()
@@ -1204,8 +1215,8 @@ def test_decompile_controller_runs_stage_b_after_decompile_and_refreshes_applied
             return False
 
         @staticmethod
-        def has_pending_generated_restart(_function_ea: int) -> bool:
-            return False
+        def pending_generated_restart(_function_ea: int):
+            return None
 
     manager = D810Manager.__new__(D810Manager)
     manager.decompilation_lifecycle = _Lifecycle()
@@ -1320,9 +1331,9 @@ def test_decompile_controller_services_poison_restart_from_second_round(
             return False
 
         @staticmethod
-        def has_pending_generated_restart(function_ea: int) -> bool:
+        def pending_generated_restart(function_ea: int):
             calls.append(("pending", function_ea))
-            return next(pending)
+            return _evidence_receipt() if next(pending) else None
 
     manager = D810Manager.__new__(D810Manager)
     manager.decompilation_lifecycle = _Lifecycle()
@@ -1479,6 +1490,78 @@ def test_decompile_controller_refuses_second_poison_after_manager_recovery(
     assert consumed == [GeneratedRestartConsumer.MANAGER]
 
 
+def test_decompile_controller_requires_typed_pending_restart_projection(
+    monkeypatch,
+) -> None:
+    class _Lifecycle:
+        @staticmethod
+        def current_session(_function_ea: int):
+            return None
+
+        @staticmethod
+        def has_exhausted_poison_restart(_function_ea: int) -> bool:
+            return False
+
+        @staticmethod
+        def pending_generated_restart(_function_ea: int):
+            return True
+
+    manager = D810Manager.__new__(D810Manager)
+    manager.decompilation_lifecycle = _Lifecycle()
+    monkeypatch.setattr(manager, "prepare_native_preanalysis", lambda _ea: 0)
+
+    with pytest.raises(TypeError, match="GeneratedRestartReceipt"):
+        manager.decompile_with_native_preanalysis(
+            0x401000,
+            lambda: "untyped-pending",
+            lambda: None,
+        )
+
+
+def test_decompile_controller_validates_manager_consumed_restart_kind(
+    monkeypatch,
+) -> None:
+    poison_receipt = GeneratedRestartReceipt(
+        kind=GeneratedRestartKind.POISON_RECOVERY,
+        evidence_family="poisoned_generation_restart",
+        reason="first poison",
+        evidence_generation=0,
+    )
+
+    class _Lifecycle:
+        @staticmethod
+        def current_session(_function_ea: int):
+            return None
+
+        @staticmethod
+        def has_exhausted_poison_restart(_function_ea: int) -> bool:
+            return False
+
+        @staticmethod
+        def pending_generated_restart(_function_ea: int):
+            return poison_receipt
+
+        @staticmethod
+        def consume_generated_restart(
+            _function_ea: int,
+            *,
+            consumer: GeneratedRestartConsumer,
+        ) -> GeneratedRestartReceipt:
+            assert consumer is GeneratedRestartConsumer.MANAGER
+            return _evidence_receipt()
+
+    manager = D810Manager.__new__(D810Manager)
+    manager.decompilation_lifecycle = _Lifecycle()
+    monkeypatch.setattr(manager, "prepare_native_preanalysis", lambda _ea: 0)
+
+    with pytest.raises(RuntimeError, match="consumed.*POISON_RECOVERY"):
+        manager.decompile_with_native_preanalysis(
+            0x401000,
+            lambda: "poisoned",
+            lambda: None,
+        )
+
+
 def test_decompile_controller_binds_post_recovery_dispatcher_evidence(
     monkeypatch,
 ) -> None:
@@ -1494,8 +1577,8 @@ def test_decompile_controller_binds_post_recovery_dispatcher_evidence(
             return False
 
         @staticmethod
-        def has_pending_generated_restart(_function_ea: int) -> bool:
-            return next(pending)
+        def pending_generated_restart(_function_ea: int):
+            return _evidence_receipt() if next(pending) else None
 
     manager = D810Manager.__new__(D810Manager)
     manager.decompilation_lifecycle = _Lifecycle()
@@ -1527,8 +1610,8 @@ def test_decompile_controller_binds_rebound_dispatcher_route_closure(
             return False
 
         @staticmethod
-        def has_pending_generated_restart(_function_ea: int) -> bool:
-            return next(pending)
+        def pending_generated_restart(_function_ea: int):
+            return _evidence_receipt() if next(pending) else None
 
     manager = D810Manager.__new__(D810Manager)
     manager.decompilation_lifecycle = _Lifecycle()
@@ -1558,8 +1641,8 @@ def test_decompile_controller_fails_loudly_if_restart_remains_after_poison_retry
             return False
 
         @staticmethod
-        def has_pending_generated_restart(_function_ea: int) -> bool:
-            return True
+        def pending_generated_restart(_function_ea: int):
+            return _evidence_receipt()
 
     manager = D810Manager.__new__(D810Manager)
     manager.decompilation_lifecycle = _Lifecycle()
@@ -1600,8 +1683,16 @@ def test_decompile_controller_fails_on_distinct_post_recovery_poison(
             return None
 
         @staticmethod
-        def has_pending_generated_restart(_function_ea: int) -> bool:
-            return state.has_pending_generated_restart
+        def pending_generated_restart(_function_ea: int):
+            return state.pending_generated_restart
+
+        @staticmethod
+        def consume_generated_restart(
+            _function_ea: int,
+            *,
+            consumer: GeneratedRestartConsumer,
+        ):
+            return state.consume_generated_restart(consumer=consumer)
 
         @staticmethod
         def has_exhausted_poison_restart(_function_ea: int) -> bool:
@@ -1618,9 +1709,6 @@ def test_decompile_controller_fails_on_distinct_post_recovery_poison(
         if rounds == 1:
             assert state.request_poisoned_generation_restart(reason="first poison")
         else:
-            assert state.consume_generated_restart(
-                consumer=GeneratedRestartConsumer.MANAGER,
-            ) is not None
             assert not state.request_poisoned_generation_restart(
                 reason="fresh third-round poison"
             )
@@ -1650,8 +1738,8 @@ def test_decompile_controller_scopes_and_closes_stage_c_collector(monkeypatch) -
             return False
 
         @staticmethod
-        def has_pending_generated_restart(_function_ea: int) -> bool:
-            return False
+        def pending_generated_restart(_function_ea: int):
+            return None
 
     manager = D810Manager.__new__(D810Manager)
     manager.decompilation_lifecycle = _Lifecycle()
@@ -1700,8 +1788,8 @@ def test_decompile_controller_returns_stage_c_validated_cfunc(monkeypatch) -> No
             return False
 
         @staticmethod
-        def has_pending_generated_restart(_function_ea: int) -> bool:
-            return False
+        def pending_generated_restart(_function_ea: int):
+            return None
 
     inherited_cfunc = object()
     validated_cfunc = object()

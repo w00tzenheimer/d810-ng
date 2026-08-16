@@ -909,20 +909,28 @@ class D810Manager:
         from d810.analyses.control_flow.native_preanalysis_session import (
             GeneratedRestartConsumer,
             GeneratedRestartKind,
+            GeneratedRestartReceipt,
         )
 
         lifecycle = self.decompilation_lifecycle
 
-        def pending_restart():
+        def pending_restart() -> GeneratedRestartReceipt | None:
             pending = getattr(lifecycle, "pending_generated_restart", None)
-            if callable(pending):
-                return pending(function_ea)
-            # Keep test doubles and older injected coordinators readable while
-            # the typed coordinator projection is adopted everywhere.
-            legacy_pending = getattr(lifecycle, "has_pending_generated_restart", None)
-            if callable(legacy_pending) and legacy_pending(function_ea):
-                return True
-            return None
+            if not callable(pending):
+                raise RuntimeError(
+                    "native preanalysis manager requires the typed "
+                    "pending_generated_restart projection"
+                )
+            receipt = pending(function_ea)
+            if receipt is not None and not isinstance(
+                receipt,
+                GeneratedRestartReceipt,
+            ):
+                raise TypeError(
+                    "native preanalysis pending restart must be a "
+                    "GeneratedRestartReceipt or None"
+                )
+            return receipt
 
         # Evidence rebinding retains its existing four-follow-up budget. Poison
         # recovery is a separate, explicit one-follow-up budget: it is never
@@ -997,10 +1005,7 @@ class D810Manager:
                     f"restart for 0x{function_ea:X}"
                 )
 
-            if (
-                getattr(receipt, "kind", None)
-                is GeneratedRestartKind.POISON_RECOVERY
-            ):
+            if receipt.kind is GeneratedRestartKind.POISON_RECOVERY:
                 if poison_recovery_retries >= _MAX_POISON_RECOVERY_RETRIES:
                     if stage_c_collector is not None:
                         stage_c_collector.close()
@@ -1025,15 +1030,29 @@ class D810Manager:
                     raise RuntimeError(
                         "native preanalysis poison restart was not consumed by manager"
                     )
+                if not isinstance(consumed, GeneratedRestartReceipt):
+                    if stage_c_collector is not None:
+                        stage_c_collector.close()
+                    raise TypeError(
+                        "native preanalysis manager consumed restart must be a "
+                        "GeneratedRestartReceipt"
+                    )
+                if consumed.kind is not GeneratedRestartKind.POISON_RECOVERY:
+                    if stage_c_collector is not None:
+                        stage_c_collector.close()
+                    raise RuntimeError(
+                        "native preanalysis manager consumed a "
+                        f"{consumed.kind.name} receipt; expected "
+                        f"{GeneratedRestartKind.POISON_RECOVERY.name}"
+                    )
                 poison_recovery_retries += 1
                 recovery_mode = True
                 if stage_c_collector is not None:
                     stage_c_collector.close()
                 continue
 
-            # The legacy boolean fallback above has no kind and therefore
-            # remains an evidence-rebind retry. Typed receipts must be
-            # evidence-owned here; the manager never consumes them.
+            # Evidence receipts remain flowchart-owned; the manager never
+            # consumes them.
             if evidence_rebind_retries >= _MAX_EVIDENCE_REBIND_RETRIES:
                 if stage_c_collector is not None:
                     stage_c_collector.close()
@@ -1042,10 +1061,7 @@ class D810Manager:
                     "evidence-rebind budget exhausted with "
                     f"a restart still pending for 0x{function_ea:X}"
                 )
-            if (
-                getattr(receipt, "kind", GeneratedRestartKind.EVIDENCE_REBIND)
-                is not GeneratedRestartKind.EVIDENCE_REBIND
-            ):
+            if receipt.kind is not GeneratedRestartKind.EVIDENCE_REBIND:
                 if stage_c_collector is not None:
                     stage_c_collector.close()
                 raise RuntimeError(

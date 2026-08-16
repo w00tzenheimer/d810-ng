@@ -3158,20 +3158,15 @@ class NativePreanalysisSessionState:
         if not reason:
             raise ValueError("generated restart reason must not be blank")
         generation = int(self.evidence_generation)
-        pending_restart = self.pending_generated_restart
-        if (
-            pending_restart is not None
-            and pending_restart.evidence_generation == generation
-            and pending_restart.kind is GeneratedRestartKind.POISON_RECOVERY
-        ):
+        if self.native_mutation_quarantined:
             self._observe_transition(
                 operation="generated_restart_requested",
                 previous_generation=generation,
                 evidence_family=evidence_family,
                 outcome="abstained",
                 reason=(
-                    f"{reason}; poison recovery receipt remains pending for "
-                    f"evidence generation {generation}"
+                    f"{reason}; native mutation remains quarantined for poison "
+                    f"recovery in evidence generation {generation}"
                 ),
                 restart_kind=GeneratedRestartKind.POISON_RECOVERY,
                 requester="native_preanalysis",
