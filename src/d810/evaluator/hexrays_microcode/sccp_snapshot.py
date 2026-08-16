@@ -7,9 +7,9 @@ produced here, so no SWIG object can cross into a cached result.
 
 from __future__ import annotations
 
+import importlib
 import operator
 from collections.abc import Mapping
-import importlib
 
 from d810.evaluator.hexrays_microcode.sccp_model import (
     OperandKind,
@@ -91,8 +91,10 @@ def _as_index(value: object, path: str) -> int:
         raise SccpSnapshotError(f"{path} must be an integer") from exc
 
 
-def _non_negative_size(value: object, path: str) -> int:
+def _operand_size(value: object, path: str, *, supported: bool = False) -> int:
     size = _as_index(value, path)
+    if supported and size <= 0:
+        raise SccpSnapshotError(f"{path} must be positive for a supported operand")
     # Hex-Rays uses negative sizes for a few unsupported/helper operands.  A
     # zero size is the model's conservative representation for those values.
     return max(0, size)
@@ -129,9 +131,12 @@ class _ValueIds:
         self.keys: dict[int, object] = {}
 
     def for_mop(self, mop: object, path: str) -> int:
+        # These are the malformed/missing SWIG attribute and indexing errors
+        # the live-key helper can raise.  RuntimeError and other exceptions
+        # remain programming failures and must reach the caller unchanged.
         try:
             key = self._get_mop_key(mop)  # type: ignore[operator]
-        except Exception as exc:
+        except (AttributeError, IndexError, KeyError, TypeError, ValueError) as exc:
             raise SccpSnapshotError(f"cannot identify {path}") from exc
         key = _primitive(key, f"{path}.key")
         try:
@@ -175,10 +180,14 @@ def _snapshot_operand(
     mop_z = _as_index(_read(hx, "mop_z", "ida_hexrays"), "ida_hexrays.mop_z")
     if mop_type == mop_z:
         return None
-    size = _non_negative_size(_read(mop, "size", path), f"{path}.size")
     mop_n = _as_index(_read(hx, "mop_n", "ida_hexrays"), "ida_hexrays.mop_n")
     mop_r = _as_index(_read(hx, "mop_r", "ida_hexrays"), "ida_hexrays.mop_r")
     mop_s = _as_index(_read(hx, "mop_S", "ida_hexrays"), "ida_hexrays.mop_S")
+    size = _operand_size(
+        _read(mop, "size", path),
+        f"{path}.size",
+        supported=mop_type in (mop_n, mop_r, mop_s),
+    )
 
     if mop_type == mop_n:
         number = _read(mop, "nnn", path)
@@ -212,7 +221,15 @@ def _destination_value_id(
     return value_ids.for_mop(mop, path)
 
 
-def _successors(block: object, index: int, qty: int) -> tuple[int, ...]:
+def _block_serial(block: object, position: int) -> int:
+    path = f"mba.block[{position}].serial"
+    serial = _as_index(_read(block, "serial", f"mba.block[{position}]"), path)
+    if serial < 0:
+        raise SccpSnapshotError(f"{path} must be non-negative")
+    return serial
+
+
+def _successors(block: object, index: int, serials: frozenset[int]) -> tuple[int, ...]:
     raw = _read(block, "succset", f"mba.block[{index}]")
     try:
         values = list(raw)  # type: ignore[arg-type]
@@ -221,17 +238,29 @@ def _successors(block: object, index: int, qty: int) -> tuple[int, ...]:
         count = _as_index(size() if callable(size) else size, f"mba.block[{index}].succset.size")
         try:
             values = [raw[pos] for pos in range(count)]  # type: ignore[index]
-        except Exception as exc:
+        except (AttributeError, IndexError, KeyError, TypeError, ValueError) as exc:
             raise SccpSnapshotError(f"cannot read successors for block {index}") from exc
     result: list[int] = []
     for pos, successor in enumerate(values):
         target = _as_index(successor, f"mba.block[{index}].succset[{pos}]")
-        if target < 0 or target >= qty:
+        if target < 0 or target not in serials:
             raise SccpSnapshotError(
-                f"block {index} has invalid successor {target} (qty={qty})"
+                f"block {index} has invalid successor {target} (known serials={sorted(serials)})"
             )
         result.append(target)
     return tuple(result)
+
+
+def _size_for_mop(mop: object, hx: object, path: str) -> int:
+    mop_type = _mop_type(mop, path)
+    mop_n = _as_index(_read(hx, "mop_n", "ida_hexrays"), "ida_hexrays.mop_n")
+    mop_r = _as_index(_read(hx, "mop_r", "ida_hexrays"), "ida_hexrays.mop_r")
+    mop_s = _as_index(_read(hx, "mop_S", "ida_hexrays"), "ida_hexrays.mop_S")
+    return _operand_size(
+        _read(mop, "size", path),
+        f"{path}.size",
+        supported=mop_type in (mop_n, mop_r, mop_s),
+    )
 
 
 def _instructions(
@@ -270,14 +299,11 @@ def _instructions(
         )
         destination_size = 0
         if destination_mop is not None:
-            destination_size = _non_negative_size(
-                _read(destination_mop, "size", f"{path}.d"),
-                f"{path}.d.size",
-            )
+            destination_size = _size_for_mop(destination_mop, hx, f"{path}.d")
         if destination_size == 0:
             for operand in (left_mop, right_mop):
                 if operand is not None:
-                    destination_size = _non_negative_size(
+                    destination_size = _operand_size(
                         _read(operand, "size", f"{path}.operand"),
                         f"{path}.operand.size",
                     )
@@ -318,19 +344,29 @@ def snapshot_from_mba(mba: object) -> SccpProgram:
     if qty <= 0:
         raise SccpSnapshotError(f"mba.qty must be positive, got {qty}")
     value_ids = _ValueIds(get_mop_key)
+    ordered_blocks: list[tuple[int, object, int]] = []
+    blocks_by_serial: dict[int, object] = {}
+    for position in range(qty):
+        try:
+            block = mba.get_mblock(position)
+        except (AttributeError, IndexError, KeyError, TypeError, ValueError) as exc:
+            raise SccpSnapshotError(f"cannot read mba.block[{position}]") from exc
+        if block is None:
+            raise SccpSnapshotError(f"mba.block[{position}] is missing")
+        serial = _block_serial(block, position)
+        if serial in blocks_by_serial:
+            raise SccpSnapshotError(f"duplicate block serial {serial}")
+        blocks_by_serial[serial] = block
+        ordered_blocks.append((position, block, serial))
+
+    serials = frozenset(blocks_by_serial)
     blocks: list[SccpBlock] = []
     instructions: list[SccpInstruction] = []
-    for block_index in range(qty):
-        try:
-            block = mba.get_mblock(block_index)
-        except AttributeError as exc:
-            raise SccpSnapshotError("mba is missing get_mblock") from exc
-        if block is None:
-            raise SccpSnapshotError(f"mba.block[{block_index}] is missing")
-        successors = _successors(block, block_index, qty)
+    for _position, block, serial in ordered_blocks:
+        successors = _successors(block, serial, serials)
         block_instructions, indices = _instructions(
             block,
-            block_index,
+            serial,
             ida_hexrays,
             value_ids,
             len(instructions),
@@ -338,7 +374,7 @@ def snapshot_from_mba(mba: object) -> SccpProgram:
         instructions.extend(block_instructions)
         blocks.append(
             SccpBlock(
-                index=block_index,
+                index=serial,
                 successors=successors,
                 instruction_indices=indices,
             )

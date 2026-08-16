@@ -29,6 +29,7 @@ DEFAULT_SOLVER = p_sccp.solve
 
 SnapshotFn = Callable[[object], SccpProgram]
 SolveFn = Callable[[SccpProgram], SccpResult]
+ClockFn = Callable[[], float]
 
 
 @dataclass(slots=True)
@@ -100,9 +101,11 @@ class SccpFacade:
         self,
         snapshot_fn: SnapshotFn = snapshot_from_mba,
         solve_fn: SolveFn = DEFAULT_SOLVER,
+        clock: ClockFn = time.perf_counter,
     ) -> None:
         self._snapshot_fn = snapshot_fn
         self._solve_fn = solve_fn
+        self._clock = clock
         self._memo: dict[str, SccpResult] = {}
         self._stats = SccpSessionStats()
 
@@ -165,7 +168,7 @@ class SccpFacade:
         """Run SCCP for *mba*, returning a proof-aware immutable result."""
 
         self._stats.requests += 1
-        adapter_started = time.perf_counter()
+        adapter_started = self._clock()
         try:
             program = self._snapshot_fn(mba)
         except SccpSnapshotError as exc:
@@ -177,11 +180,9 @@ class SccpFacade:
                 fallback_reason=f"snapshot: {exc}",
             )
         finally:
-            elapsed = time.perf_counter() - adapter_started
-            # Tiny injected adapters are test doubles rather than live-MBA
-            # work; avoid presenting their call overhead as measured adapter
-            # cost while retaining real snapshot timings.
-            self._stats.adapter_seconds += elapsed if elapsed >= 1e-3 else 0.0
+            elapsed = self._clock() - adapter_started
+            if elapsed >= 0.0:
+                self._stats.adapter_seconds += elapsed
 
         if not isinstance(program, SccpProgram):
             raise TypeError("snapshot_fn must return SccpProgram")
@@ -194,6 +195,8 @@ class SccpFacade:
         result = self._solve_fn(program)
         if not isinstance(result, SccpResult):
             raise TypeError("solve_fn must return SccpResult")
+        if not isinstance(result.status, SccpStatus):
+            raise TypeError("solve_fn must return SccpResult with a valid SccpStatus")
         self._memo[program.fingerprint] = result
         self._record_execution(result)
         return result
@@ -215,11 +218,38 @@ def sccp_session_stats() -> SccpSessionStats:
 
 
 def _ida_unavailable(exc: ImportError) -> bool:
+    supported_roots = {
+        "ida_auto",
+        "ida_bytes",
+        "ida_dbg",
+        "ida_diskio",
+        "ida_fpro",
+        "ida_funcs",
+        "ida_graph",
+        "ida_hexrays",
+        "ida_idaapi",
+        "ida_kernwin",
+        "ida_lines",
+        "ida_loader",
+        "ida_name",
+        "ida_nalt",
+        "ida_pro",
+        "ida_search",
+        "ida_segment",
+        "ida_struct",
+        "ida_typeinf",
+        "ida_ua",
+        "ida_xref",
+        "idaapi",
+        "idautils",
+        "idc",
+        "idapro",
+    }
     name = getattr(exc, "name", None)
     if not isinstance(name, str):
         return False
     root = name.split(".", 1)[0]
-    return root.startswith("ida") or root in {"idc", "idautils", "idapython"}
+    return root in supported_roots
 
 
 def run_sccp_ex(mba: object) -> SccpResult | None:

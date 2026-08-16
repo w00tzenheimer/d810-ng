@@ -127,6 +127,7 @@ class TestSccpSingleTripLoop:
             f"func_ea=0x{func_ea:x}",
         ]
         ran_any = False
+        saw_nonconverged = False
         saw_any_backedge = False
         proved_any_dead_backedge = False
 
@@ -138,9 +139,10 @@ class TestSccpSingleTripLoop:
 
             res = run_sccp_ex(mba)
             if res is None:
-                lines.append(f"[{label}] run_sccp_ex -> None (IDA/solver failure)")
+                lines.append(f"[{label}] run_sccp_ex -> None (IDA unavailable)")
                 continue
-            ran_any = True
+            if not isinstance(res, SccpResult):
+                pytest.fail(f"[{label}] run_sccp_ex returned {type(res).__name__}, not SccpResult")
 
             fg, _ = _flowgraph_from_live_mba(mba)
             back = fg.back_edges()
@@ -148,7 +150,14 @@ class TestSccpSingleTripLoop:
                 saw_any_backedge = True
             dead_back = res.dead_edges_among(back)
             if res.status is not SccpStatus.CONVERGED:
+                saw_nonconverged = True
                 assert dead_back == frozenset()
+                lines.append(
+                    f"[{label}] SCCP abstained: status={res.status.value} "
+                    f"reason={res.fallback_reason or 'unspecified'}"
+                )
+                continue
+            ran_any = True
             if dead_back:
                 proved_any_dead_backedge = True
 
@@ -174,9 +183,12 @@ class TestSccpSingleTripLoop:
         print(report)
         print(
             f"\nVERDICT: saw_backedge={saw_any_backedge} "
-            f"sccp_proved_single_trip={proved_any_dead_backedge}"
+            f"sccp_proved_single_trip={proved_any_dead_backedge} "
+            f"saw_nonconverged={saw_nonconverged}"
         )
 
-        # The mechanism must run end-to-end; the peel verdict is a finding we
-        # read from the dump, not a pass/fail condition for plain SCCP.
-        assert ran_any, "run_sccp_ex never produced a result:\n" + report
+        # Only a CONVERGED result is a successful reachability proof.  An
+        # ERROR/WORK_LIMIT/BLOCK_LIMIT result is diagnosed above and may
+        # abstain, but the configured fixture should still produce a proof at
+        # at least one maturity.
+        assert ran_any, "run_sccp_ex never produced a CONVERGED proof:\n" + report
