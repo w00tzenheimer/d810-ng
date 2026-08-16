@@ -2623,9 +2623,6 @@ class D810Manager:
 
     def _on_session_started(self, event: DecompilationSessionEvent) -> None:
         """Reset observer-only state after the coordinator has opened a session."""
-        native_perf.configure_from_env()
-        if native_perf.enabled():
-            self._ensure_native_perf_providers()
         native_perf.begin_session(
             {
                 "function_ea": int(event.function_ea),
@@ -2634,6 +2631,9 @@ class D810Manager:
                 "session_id": str(getattr(event, "session_id", "")),
             }
         )
+        native_perf.configure_from_env()
+        if native_perf.enabled():
+            self._ensure_native_perf_providers()
         self.start_profiling(event)
         self.stats.reset()
         MOP_CONSTANT_CACHE.clear()
@@ -2674,12 +2674,15 @@ class D810Manager:
                 register = getattr(module, "register_native_perf_provider", None)
                 if register is not None:
                     register()
-            except Exception:
+            except Exception as exc:
+                native_perf.record_error(module_name, "load", exc)
                 logger.debug(
                     "native performance provider unavailable: %s",
                     module_name,
                     exc_info=True,
                 )
+        if native_perf.enabled():
+            native_perf.require_providers()
 
 
     @staticmethod

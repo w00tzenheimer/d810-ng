@@ -5,18 +5,56 @@ from __future__ import annotations
 import os
 import platform
 import json
+import importlib
 
 import pytest
 
 from d810.core import MOP_TO_AST_CACHE, native_perf
 from d810.hexrays.ir.minsn_utils import minsn_to_ast
 
-c_pattern_match = pytest.importorskip("d810.speedups.optimizers.c_pattern_match")
-c_ast = pytest.importorskip("d810.speedups.expr.c_ast")
+try:
+    c_pattern_match = importlib.import_module(
+        "d810.speedups.optimizers.c_pattern_match"
+    )
+    c_ast = importlib.import_module("d810.speedups.expr.c_ast")
+    _CYTHON_EXTENSION_IMPORT_ERROR = None
+except ImportError as exc:
+    # Keep Python-mode tests runnable when optional extensions are absent, but
+    # compiled-focused tests below fail closed instead of skipping the module.
+    c_pattern_match = None
+    c_ast = None
+    _CYTHON_EXTENSION_IMPORT_ERROR = exc
+
+
+def _require_extension_modules_present() -> None:
+    if c_pattern_match is None or c_ast is None:
+        pytest.fail(
+            "compiled Cython extensions are required; import failed: "
+            + repr(_CYTHON_EXTENSION_IMPORT_ERROR)
+        )
+    assert c_pattern_match.__file__.endswith((".so", ".pyd", ".dylib"))
+    assert c_ast.__file__.endswith((".so", ".pyd", ".dylib"))
+
+
+def _require_compiled_extensions() -> None:
+    _require_extension_modules_present()
+    from d810.core.cymode import CythonMode
+
+    if not CythonMode().is_enabled():
+        pytest.fail("CythonMode is disabled in the compiled-focused test")
+
+
+def _cython_disabled_by_environment() -> bool:
+    return os.environ.get("D810_NO_CYTHON", "").lower() in {
+        "1",
+        "true",
+        "yes",
+    }
 
 
 def _activate_cython_providers() -> None:
     """Re-select compiled providers after any test imported pure fallbacks."""
+    _require_compiled_extensions()
     c_pattern_match.register_native_perf_provider()
     c_ast.register_native_perf_provider()
 
@@ -28,14 +66,25 @@ class TestNativePerfInstrumentation:
     )
 
     @pytest.mark.ida_required
+    @pytest.mark.skipif(
+        _cython_disabled_by_environment(), reason="compiled mode is disabled"
+    )
     def test_compiled_pattern_match_counters_cover_real_ast_work(self, real_asts):
         """Fingerprint, lookup, match, binding, and materialization counters move."""
+        _require_extension_modules_present()
+        print(
+            "D810_CYTHON_EXTENSION_PATHS="
+            + json.dumps(
+                {
+                    "c_pattern_match": c_pattern_match.__file__,
+                    "c_ast": c_ast.__file__,
+                },
+                sort_keys=True,
+            )
+        )
         _activate_cython_providers()
         native_perf.configure(True)
         native_perf.reset()
-
-        assert c_pattern_match.__file__.endswith((".so", ".pyd", ".dylib"))
-        assert c_ast.__file__.endswith((".so", ".pyd", ".dylib"))
 
         pattern = next((ast for ast, _ins in real_asts if ast.is_node()), None)
         if pattern is None:
@@ -87,8 +136,12 @@ class TestNativePerfInstrumentation:
         assert all(value == 0 for value in disabled.values())
 
     @pytest.mark.ida_required
+    @pytest.mark.skipif(
+        _cython_disabled_by_environment(), reason="compiled mode is disabled"
+    )
     def test_compiled_ast_counters_cover_builder_and_global_cache(self, real_asts):
         """The actual minsn->AST route records keys, local/global caches, and proxies."""
+        _require_compiled_extensions()
         _activate_cython_providers()
         native_perf.configure(True)
         native_perf.reset()
@@ -176,8 +229,12 @@ class TestNativePerfInstrumentation:
         )
 
     @pytest.mark.ida_required
+    @pytest.mark.skipif(
+        _cython_disabled_by_environment(), reason="compiled mode is disabled"
+    )
     def test_trace_profile_records_compiled_pattern_functions(self, real_asts):
         """Trace mode is attribution-only and must expose compiled Cython frames."""
+        _require_compiled_extensions()
         if os.environ.get("D810_CYTHON_PROFILE") != "1":
             pytest.skip("D810_CYTHON_PROFILE=1 is required for trace attribution")
 
@@ -219,6 +276,9 @@ class TestNativePerfInstrumentation:
         print("D810_CYTHON_PROFILE_FUNCTIONS=" + json.dumps(compiled))
 
     @pytest.mark.ida_required
+    @pytest.mark.skipif(
+        _cython_disabled_by_environment(), reason="compiled mode is disabled"
+    )
     def test_manager_provider_discovery_keeps_selected_cython_backends(
         self, monkeypatch
     ):
@@ -249,13 +309,47 @@ class TestNativePerfInstrumentation:
         native_perf.configure(False)
 
     @pytest.mark.ida_required
-    def test_nested_lifecycle_emits_one_real_receipt(self, monkeypatch, caplog):
-        """Manager callbacks retain outer metadata and print one receipt."""
+    def test_manager_provider_discovery_failure_marks_receipt_incomplete(
+        self, monkeypatch
+    ):
+        """Provider import failures are explicit receipt errors, not backend none."""
+        from d810.manager import manager as manager_module
+        from d810.manager.manager import D810Manager
+
+        native_perf.clear_providers_for_tests()
+        native_perf.configure(True)
+
+        def fail_import(_module_name):
+            raise ImportError("provider import failed")
+
+        monkeypatch.setattr(manager_module.importlib, "import_module", fail_import)
+        D810Manager._ensure_native_perf_providers()
+
+        report = native_perf.snapshot()
+        assert report["complete"] is False
+        assert "required" in report["provider_errors"]
+        assert "missing required providers" in report["provider_errors"]["required"]
+        assert any(
+            "load" in error and "ImportError" in error
+            for error in report["provider_errors"].values()
+        )
+        native_perf.configure(False)
+
+    @pytest.mark.ida_required
+    @pytest.mark.skipif(
+        _cython_disabled_by_environment(), reason="compiled mode is disabled"
+    )
+    def test_nested_lifecycle_emits_one_real_receipt(
+        self, real_asts, monkeypatch, caplog
+    ):
+        """Manager callbacks retain child counters and flag wrong-order close."""
         import types
 
         from d810.core.decompilation_session import DecompilationSessionEvent
         from d810.manager import manager as manager_module
         from d810.manager.manager import D810Manager
+
+        _require_compiled_extensions()
 
         # Exercise the manager-owned lifecycle callbacks without starting all
         # of the optimizer/hook machinery. Every callback dependency that the
@@ -302,7 +396,21 @@ class TestNativePerfInstrumentation:
         )
         manager._on_session_started(outer)
         manager._on_session_started(child)
+
+        pattern = next((ast for ast, _ins in real_asts if ast.is_node()), None)
+        if pattern is None:
+            pytest.skip("no real AST node available for nested matcher work")
+        storage = c_pattern_match.COpcodeIndexedStorage()
+        storage.add_pattern(pattern, object())
+        assert storage.get_candidates(pattern)
+        assert c_pattern_match.match_pattern_nomut(pattern, pattern)
+
         with caplog.at_level("INFO", logger="d810"):
+            # Closing the outer owner first must not pop the child or emit a
+            # receipt. The mismatch is sticky and makes the eventual receipt
+            # incomplete, while the child and outer owners remain closable.
+            manager._on_session_finished(outer)
+            assert native_perf.snapshot()["lifecycle_depth"] == 2
             manager._on_session_finished(child)
             child_receipts = [
                 record.getMessage()
@@ -324,8 +432,49 @@ class TestNativePerfInstrumentation:
             "session_id": "outer",
             "top_level_epoch": 1,
         }
-        assert payload["provider_identities"]["pattern_match"]["backend"] == (
-            "cython"
-        )
+        counters = payload["providers"]["pattern_match"]["counters"]
+        assert payload["complete"] is False
+        assert payload["lifecycle_errors"]
+        assert counters["match_calls"] >= 1
+        assert counters["bucket_lookups"] >= 1
+        assert payload["provider_identities"]["pattern_match"]["backend"] == "cython"
         print(receipts[0])
+        native_perf.configure(False)
+
+    @pytest.mark.ida_required
+    @pytest.mark.skipif(
+        not _cython_disabled_by_environment(), reason="Python mode is disabled"
+    )
+    def test_python_mode_selects_python_providers_with_extensions_present(self):
+        """D810_NO_CYTHON selects Python dispatchers even when .so files exist."""
+        from d810.core.cymode import CythonMode
+        from d810.hexrays.expr import ast as ast_dispatcher
+        from d810.manager.manager import D810Manager
+        from d810.optimizers.microcode.instructions.pattern_matching import (
+            engine as pattern_dispatcher,
+        )
+
+        _require_extension_modules_present()
+        assert not CythonMode().is_enabled()
+        print(
+            "D810_CYTHON_EXTENSION_PATHS="
+            + json.dumps(
+                {
+                    "c_pattern_match": c_pattern_match.__file__,
+                    "c_ast": c_ast.__file__,
+                },
+                sort_keys=True,
+            )
+        )
+        native_perf.clear_providers_for_tests()
+        native_perf.configure(True)
+        D810Manager._ensure_native_perf_providers()
+
+        providers = native_perf.snapshot()["providers"]
+        assert pattern_dispatcher.get_engine_info()["backend"] == "python"
+        assert ast_dispatcher._USING_CYTHON is False
+        assert providers["pattern_match"]["backend"] == "python"
+        assert providers["pattern_match"]["counter_domain"] == "python"
+        assert providers["ast_types"]["backend"] == "python"
+        assert providers["ast_types"]["counter_domain"] == "python"
         native_perf.configure(False)

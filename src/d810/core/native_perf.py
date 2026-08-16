@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import os
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from d810.core.typing import Any
 
 SCHEMA_VERSION = 1
@@ -24,6 +24,7 @@ _CLOCK_METADATA = {
     "monotonic": True,
     "read_counter": "counters.clock_reads",
 }
+_REQUIRED_PROVIDER_NAMES = ("ast_builder", "ast_types", "pattern_match")
 
 SnapshotCallback = Callable[[], Mapping[str, Any]]
 ConfigureCallback = Callable[[bool], None]
@@ -65,7 +66,22 @@ def _safe_value(value: Any) -> Any:
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
     if isinstance(value, Mapping):
-        return {str(key): _safe_value(item) for key, item in value.items()}
+        safe_mapping = {}
+        for key, item in value.items():
+            if type(key) is str:
+                safe_key = key
+            elif type(key) is bool:
+                safe_key = "true" if key else "false"
+            elif type(key) is int:
+                safe_key = str(key)
+            elif type(key) is float:
+                safe_key = str(key)
+            elif key is None:
+                safe_key = "null"
+            else:
+                safe_key = f"<non-serializable-key:{type(key).__name__}>"
+            safe_mapping[safe_key] = _safe_value(item)
+        return safe_mapping
     if isinstance(value, (list, tuple)):
         return [_safe_value(item) for item in value]
     return f"<non-serializable:{type(value).__name__}>"
@@ -73,6 +89,31 @@ def _safe_value(value: Any) -> Any:
 
 def _record_provider_error(name: str, phase: str, exc: Exception) -> None:
     _provider_errors[name] = f"{phase}: {type(exc).__name__}: {exc}"
+
+
+def record_error(name: str, phase: str, detail: object) -> None:
+    """Record a composition/provider error without aborting lifecycle work."""
+
+    with _lock:
+        if isinstance(detail, Exception):
+            _record_provider_error(str(name), phase, detail)
+        else:
+            _provider_errors[str(name)] = f"{phase}: {detail}"
+
+
+def require_providers(
+    names: Iterable[str] = _REQUIRED_PROVIDER_NAMES,
+) -> tuple[str, ...]:
+    """Mark required providers absent from an enabled composition as errors."""
+
+    required = tuple(sorted({str(name) for name in names}))
+    with _lock:
+        missing = tuple(name for name in required if name not in _providers)
+        if missing:
+            _provider_errors["required"] = (
+                "missing required providers: " + ", ".join(missing)
+            )
+        return missing
 
 
 def register_provider(
@@ -101,7 +142,6 @@ def register_provider(
 
     with _lock:
         previous = _providers.get(provider_name)
-        retirement_failed = False
         if previous is not None and previous.configure is not None:
             try:
                 # Retire a replaced provider before installing its successor;
@@ -110,11 +150,8 @@ def register_provider(
                 previous.configure(False)
             except Exception as exc:  # noqa: BLE001 - provider isolation
                 _record_provider_error(provider_name, "retire", exc)
-                retirement_failed = True
         _providers[provider_name] = _Provider(snapshot, configure, reset)
         enabled = _enabled
-        if not retirement_failed:
-            _provider_errors.pop(provider_name, None)
         if configure is not None:
             try:
                 configure(enabled)
@@ -141,7 +178,6 @@ def configure(value: bool) -> bool:
                 continue
             try:
                 provider.configure(requested)
-                _provider_errors.pop(name, None)
             except Exception as exc:  # noqa: BLE001 - provider isolation
                 _record_provider_error(name, "configure", exc)
     return requested
@@ -156,22 +192,27 @@ def configure_from_env(
     return configure(values.get("D810_NATIVE_PERF", "") == "1")
 
 
-def _reset_locked(session: Mapping[str, Any] | None = None) -> int:
+def _reset_locked(
+    session: Mapping[str, Any] | None = None,
+    *,
+    clear_errors: bool = False,
+) -> int:
     """Reset providers while ``_lock`` is held."""
 
     global _session_context, _session_generation
     _session_generation += 1
     _session_context = {} if session is None else dict(_safe_value(session))
-    # Lifecycle errors describe the session that just ended (or an invalid
-    # close attempt before this reset). Do not carry them into a fresh outer
-    # session and permanently mark every later receipt incomplete.
-    _lifecycle_errors.clear()
+    if clear_errors:
+        # Errors are sticky for the current session: successful configure or
+        # reset callbacks must not make a receipt green after a failure. Only
+        # a fresh outer session starts a new error/completeness epoch.
+        _provider_errors.clear()
+        _lifecycle_errors.clear()
     for name, provider in sorted(_providers.items()):
         if provider.reset is None:
             continue
         try:
             provider.reset()
-            _provider_errors.pop(name, None)
         except Exception as exc:  # noqa: BLE001 - provider isolation
             _record_provider_error(name, "reset", exc)
     return _session_generation
@@ -203,7 +244,7 @@ def begin_session(session: Mapping[str, Any] | None = None) -> int:
         token = safe_session.get("session_id")
         token = None if token is None else str(token)
         if not _session_stack:
-            generation = _reset_locked(safe_session)
+            generation = _reset_locked(safe_session, clear_errors=True)
         else:
             generation = _session_generation
         _session_stack.append(token)
@@ -358,9 +399,11 @@ __all__ = [
     "configure_from_env",
     "enabled",
     "end_session",
+    "record_error",
     "receipt_json",
     "receipt_line",
     "register_provider",
+    "require_providers",
     "reset",
     "snapshot",
 ]

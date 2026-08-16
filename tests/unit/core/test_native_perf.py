@@ -199,6 +199,76 @@ def test_provider_callback_failures_are_reported_without_aborting_receipt():
     assert "broken" in report["provider_errors"]
 
 
+def test_provider_errors_stay_sticky_until_next_outer_session():
+    fail_once = {"enabled": True}
+
+    def configure(enabled: bool) -> None:
+        if enabled and fail_once["enabled"]:
+            fail_once["enabled"] = False
+            raise RuntimeError("configure once")
+
+    native_perf.register_provider(
+        "sticky",
+        snapshot=lambda: {"backend": "test", "counters": {}},
+        configure=configure,
+    )
+    native_perf.begin_session({"session_id": "current"})
+    native_perf.configure(True)
+    native_perf.configure(True)
+    native_perf.reset()
+
+    current = native_perf.snapshot()
+    assert current["complete"] is False
+    assert "configure" in current["provider_errors"]["sticky"]
+    receipt = native_perf.end_session("current")
+    assert receipt is not None
+    assert json.loads(receipt.split("=", 1)[1])["complete"] is False
+
+    native_perf.begin_session({"session_id": "next"})
+    assert native_perf.snapshot()["complete"] is True
+    assert native_perf.snapshot()["provider_errors"] == {}
+    native_perf.end_session("next")
+
+
+def test_reset_errors_stay_sticky_until_next_outer_session():
+    fail_once = {"reset": True}
+
+    def reset() -> None:
+        if fail_once["reset"]:
+            fail_once["reset"] = False
+            raise RuntimeError("reset once")
+
+    native_perf.register_provider(
+        "reset-sticky",
+        snapshot=lambda: {"backend": "test", "counters": {}},
+        reset=reset,
+    )
+    native_perf.configure(True)
+    native_perf.begin_session({"session_id": "current"})
+    native_perf.reset()
+    native_perf.reset()
+
+    assert native_perf.snapshot()["complete"] is False
+    assert "reset" in native_perf.snapshot()["provider_errors"]["reset-sticky"]
+    native_perf.end_session("current")
+
+    native_perf.begin_session({"session_id": "next"})
+    assert native_perf.snapshot()["complete"] is True
+    native_perf.end_session("next")
+
+
+def test_required_provider_validation_reports_missing_provider_explicitly():
+    native_perf.configure(True)
+
+    native_perf.require_providers(("ast_types", "pattern_match"))
+
+    report = native_perf.snapshot()
+    assert report["complete"] is False
+    assert report["provider_errors"]["required"] == (
+        "missing required providers: ast_types, pattern_match"
+    )
+
+
 def test_session_metadata_is_safe_and_receipt_generation_is_deterministic():
     class NativeObject:
         pass
@@ -239,6 +309,23 @@ def test_session_metadata_is_safe_and_receipt_generation_is_deterministic():
     }
 
 
+def test_safe_value_never_stringifies_unknown_mapping_keys():
+    class ExplodingKey:
+        def __str__(self):
+            raise AssertionError("unknown mapping key was stringified")
+
+    native_perf.register_provider(
+        "safe-key",
+        snapshot=lambda: {"backend": "test", "counters": {}},
+    )
+    native_perf.configure(True)
+    native_perf.reset({"metadata": {ExplodingKey(): "value"}})
+
+    assert native_perf.snapshot()["session"] == {
+        "metadata": {"<non-serializable-key:ExplodingKey>": "value"}
+    }
+
+
 def test_nested_sessions_reset_once_and_emit_one_outer_receipt():
     resets: list[str] = []
     native_perf.register_provider(
@@ -271,3 +358,26 @@ def test_nested_sessions_reset_once_and_emit_one_outer_receipt():
     native_perf.begin_session({"session_id": "next"})
     assert native_perf.snapshot()["lifecycle_errors"] == []
     assert native_perf.end_session("next") is not None
+
+
+def test_mismatched_nested_end_preserves_stack_and_marks_outer_receipt_incomplete():
+    native_perf.register_provider(
+        "nested-mismatch",
+        snapshot=lambda: {"backend": "test", "counters": {}},
+    )
+    native_perf.configure(True)
+    native_perf.begin_session({"session_id": "outer"})
+    native_perf.begin_session({"session_id": "child"})
+
+    assert native_perf.end_session("outer") is None
+    after_mismatch = native_perf.snapshot()
+    assert after_mismatch["lifecycle_depth"] == 2
+    assert after_mismatch["complete"] is False
+    assert after_mismatch["lifecycle_errors"]
+
+    assert native_perf.end_session("child") is None
+    receipt = native_perf.end_session("outer")
+    assert receipt is not None
+    report = json.loads(receipt.split("=", 1)[1])
+    assert report["complete"] is False
+    assert report["lifecycle_depth"] == 0
