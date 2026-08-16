@@ -19,6 +19,9 @@
 # SETUP (same for all commands): export IDA/PYTHONPATH env; install Python
 # dependencies unless the image carries d810's baked-runtime label; optionally
 # build native Cython speedups.
+# Native speedup builds can take several minutes. This runner waits for Docker
+# to exit; when a host terminal or agent shows partial output, only the final
+# [docker] completion line and exit status are authoritative.
 #
 # Options (system/test/shell/exec):
 #   -w, --worktree REL      Use worktree at REPO_ROOT/WORKTREE_ROOT/REL as /work. REL is relative to
@@ -510,10 +513,22 @@ _d810_quote_args() {
   printf '%s' "$out"
 }
 
+_run_docker_container() {
+  printf '[docker] starting container; native speedup builds may take several minutes\n'
+  if docker "$@"; then
+    printf '[docker] container completed successfully (exit=0)\n'
+    return 0
+  else
+    local status=$?
+    printf '[docker] container failed with exit status %s\n' "$status" >&2
+    return "$status"
+  fi
+}
+
 run_bash() {
   local inner="$1"
   local extra_env="$(_d810_extra_env_flags)"
-  docker run --rm \
+  _run_docker_container run --rm \
     --add-host files.pythonhosted.org:151.101.0.223 \
     --memory "$DOCKER_MEMORY" \
     -e "D810_MEMORY_LIMIT_BYTES=$MEMORY_BYTES" \
@@ -528,7 +543,7 @@ run_bash() {
 run_bash_it() {
   local inner="$1"
   local extra_env="$(_d810_extra_env_flags)"
-  docker run -it --rm \
+  _run_docker_container run -it --rm \
     --memory "$DOCKER_MEMORY" \
     -e "D810_MEMORY_LIMIT_BYTES=$MEMORY_BYTES" \
     $extra_env \
@@ -547,7 +562,7 @@ run_bash_it() {
 run_bash_exec() {
   local inner="export $ENV_TEST && $SETUP_CMD && exec \"\$@\""
   local extra_env="$(_d810_extra_env_flags)"
-  docker run --rm \
+  _run_docker_container run --rm \
     --add-host files.pythonhosted.org:151.101.0.223 \
     --memory "$DOCKER_MEMORY" \
     -e "D810_MEMORY_LIMIT_BYTES=$MEMORY_BYTES" \

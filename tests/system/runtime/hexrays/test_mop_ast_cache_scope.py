@@ -73,6 +73,15 @@ def test_cython_ast_cache_key_scopes_stack_operands_by_mba(
     assert c_ast._mop_ast_cache_key(first) != c_ast._mop_ast_cache_key(second)
 
 
+def test_cython_ast_depth_signature_supports_uncached_depth() -> None:
+    """Deep MBA patterns must register without producing a float multiplier."""
+    if not CythonMode().is_enabled():
+        pytest.skip("Cython speedups are disabled for this runtime")
+    c_ast = pytest.importorskip("d810.speedups.expr.c_ast")
+
+    assert c_ast.AstConstant("constant").get_depth_signature(10) == ["N"] * 512
+
+
 class TestCythonAstMopSnapshot:
     binary_name = os.environ.get(
         "D810_TEST_BINARY",

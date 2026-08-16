@@ -13,11 +13,11 @@ RUNTIME_LABEL = "dev-emulation-z3-v1"
 
 def _make_harness(tmp_path: Path) -> tuple[Path, Path]:
     script = tmp_path / "tools" / "scripts" / DOCKER_RUNNER.name
-    script.parent.mkdir(parents=True)
+    script.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(DOCKER_RUNNER, script)
 
     bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
+    bin_dir.mkdir(exist_ok=True)
     docker_log = tmp_path / "docker.log"
     docker = bin_dir / "docker"
     docker.write_text(
@@ -26,6 +26,9 @@ set -eu
 printf '%s\\n' "$*" >> "$DOCKER_LOG"
 if [ "${1:-}" = image ] && [ "${2:-}" = inspect ]; then
   printf '%s\\n' "${MOCK_DOCKER_LABEL:-}"
+fi
+if [ "${1:-}" = run ]; then
+  exit "${MOCK_DOCKER_RUN_EXIT:-0}"
 fi
 """,
         encoding="utf-8",
@@ -120,6 +123,25 @@ def test_unlabeled_runtime_keeps_dependency_setup(tmp_path: Path) -> None:
     command = _container_run(calls)
     assert ".[dev,emulation,egraph]" in command
     assert "d810.speedups.install" in command
+
+
+def test_reports_docker_completion_and_preserves_failure_status(tmp_path: Path) -> None:
+    success, _ = _run(tmp_path, "exec", "--", "true")
+
+    assert success.returncode == 0, success.stderr
+    assert "[docker] starting container; native speedup builds may take several minutes" in success.stdout
+    assert "[docker] container completed successfully (exit=0)" in success.stdout
+
+    failed, _ = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        extra_env={"MOCK_DOCKER_RUN_EXIT": "23"},
+    )
+
+    assert failed.returncode == 23
+    assert "[docker] container failed with exit status 23" in failed.stderr
 
 
 def test_baked_runtime_preserves_native_cython_build(tmp_path: Path) -> None:

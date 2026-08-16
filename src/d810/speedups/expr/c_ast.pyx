@@ -67,15 +67,15 @@ cdef inline uint64_t _native_perf_now() noexcept nogil:
 
 
 # Pre-computed "N" signature lists for depth signatures.
-# _N_SIGS[k] == ["N"] * (2 ** k) for k in 0..7 (covers depths up to 8).
+# _N_SIGS[k] == ["N"] * (1 << k) for k in 0..7 (covers depths up to 8).
 cdef tuple _N_SIGS = tuple(["N"] * (2**k) for k in range(8))
 
 
 cdef inline list _get_n_sig(int k):
-    """Return cached ["N"] * (2**k) list, or compute if k >= 8."""
+    """Return cached ["N"] * (1 << k) list, or compute if k >= 8."""
     if k < 8:
         return _N_SIGS[k]
-    return ["N"] * (2**k)
+    return ["N"] * (1 << k)
 
 
 def get_constant_mop(value: int, size: int) -> ida_hexrays.mop_t:
