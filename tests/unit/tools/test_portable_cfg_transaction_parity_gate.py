@@ -77,3 +77,10 @@ def test_lifecycle_poison_restart_contract_is_manager_owned() -> None:
     assertion = entry["diagnostic_proof"]["assertion"]
     assert "typed POISON_RECOVERY receipt" in assertion
     assert "no MERR_REDO" in assertion
+    events = entry["diagnostic_proof"]["events"]
+    assert {
+        "poisoned_restart_required",
+        "generated_restart_requested",
+        "generated_restart_consumed",
+    }.issubset(events)
+    assert "poison_restart_consumed" not in events
