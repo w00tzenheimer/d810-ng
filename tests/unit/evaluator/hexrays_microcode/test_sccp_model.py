@@ -23,6 +23,8 @@ from d810.evaluator.hexrays_microcode.sccp_model import (  # noqa: E402
     SccpInstruction,
     SccpOperand,
     SccpProgram,
+    SccpResult,
+    SccpStatus,
 )
 
 
@@ -186,3 +188,44 @@ def test_program_freezes_nested_mop_key_containers() -> None:
         returned_key[0] = "r"  # type: ignore[index]
     with pytest.raises(TypeError):
         returned_key[1]["offset"] = 16  # type: ignore[index]
+
+
+@pytest.mark.parametrize(
+    "status",
+    (SccpStatus.WORK_LIMIT, SccpStatus.BLOCK_LIMIT, SccpStatus.ERROR),
+)
+@pytest.mark.parametrize(
+    "field, value",
+    (
+        ("constants", {("s", 1): 7}),
+        ("executable_edges", frozenset({(0, 1)})),
+        ("reachable_blocks", frozenset({0})),
+    ),
+)
+def test_nonconverged_result_rejects_populated_proof_fields(
+    status: SccpStatus,
+    field: str,
+    value: object,
+) -> None:
+    fields: dict[str, object] = {
+        "constants": {},
+        "executable_edges": frozenset(),
+        "reachable_blocks": frozenset(),
+    }
+    fields[field] = value
+
+    with pytest.raises(ValueError, match="proof-empty"):
+        SccpResult(status=status, **fields)  # type: ignore[arg-type]
+
+
+def test_converged_result_accepts_proof_fields() -> None:
+    result = SccpResult(
+        status=SccpStatus.CONVERGED,
+        constants={("s", 1): 7},
+        executable_edges=frozenset({(0, 1)}),
+        reachable_blocks=frozenset({0, 1}),
+    )
+
+    assert result.constants == {("s", 1): 7}
+    assert result.executable_edges == frozenset({(0, 1)})
+    assert result.reachable_blocks == frozenset({0, 1})

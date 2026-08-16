@@ -4,6 +4,8 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
+
 # The legacy package initializer imports live IDA modules.  These solver tests
 # deliberately exercise the pure-Python subpackage without requiring IDA.
 _package_name = "d810.evaluator.hexrays_microcode"
@@ -23,6 +25,7 @@ from d810.evaluator.hexrays_microcode.sccp_model import (  # noqa: E402
     SccpProgram,
     SccpStatus,
 )
+from d810.evaluator.hexrays_microcode import p_sccp  # noqa: E402
 
 
 def _constant(value: int, *, size: int = 4) -> SccpOperand:
@@ -188,6 +191,63 @@ def test_default_budget_does_not_charge_virtual_entry_seed() -> None:
     assert result.executable_edges == frozenset({(0, 1)})
     assert result.reachable_blocks == frozenset({0, 1})
     assert result.cfg_events == 1
+
+
+def test_block_limit_records_solver_seconds(monkeypatch: pytest.MonkeyPatch) -> None:
+    ticks = iter((3.0, 3.25))
+    monkeypatch.setattr(p_sccp.time, "perf_counter", lambda: next(ticks))
+    block_count = 501
+    program = SccpProgram.from_parts(
+        blocks=tuple(
+            SccpBlock(
+                index=index,
+                successors=((index + 1,) if index + 1 < block_count else ()),
+                instruction_indices=(),
+            )
+            for index in range(block_count)
+        ),
+        instructions=(),
+        mop_keys_by_value={},
+    )
+
+    result = solve(program)
+
+    assert result.status is SccpStatus.BLOCK_LIMIT
+    assert result.solver_seconds == pytest.approx(0.25)
+    assert result.constants == {}
+    assert result.executable_edges == frozenset()
+    assert result.reachable_blocks == frozenset()
+
+
+def test_work_limit_records_solver_seconds(monkeypatch: pytest.MonkeyPatch) -> None:
+    ticks = iter((4.0, 4.125))
+    monkeypatch.setattr(p_sccp.time, "perf_counter", lambda: next(ticks))
+
+    result = solve(diamond_program(), work_budget=1)
+
+    assert result.status is SccpStatus.WORK_LIMIT
+    assert result.solver_seconds == pytest.approx(0.125)
+    assert result.constants == {}
+    assert result.executable_edges == frozenset()
+    assert result.reachable_blocks == frozenset()
+
+
+def test_error_records_solver_seconds(monkeypatch: pytest.MonkeyPatch) -> None:
+    ticks = iter((8.0, 8.5))
+    monkeypatch.setattr(p_sccp.time, "perf_counter", lambda: next(ticks))
+    program = SccpProgram.from_parts(
+        blocks=(SccpBlock(index=0, successors=(9,), instruction_indices=()),),
+        instructions=(),
+        mop_keys_by_value={},
+    )
+
+    result = solve(program)
+
+    assert result.status is SccpStatus.ERROR
+    assert result.solver_seconds == pytest.approx(0.5)
+    assert result.constants == {}
+    assert result.executable_edges == frozenset()
+    assert result.reachable_blocks == frozenset()
 
 
 def test_unsupported_operand_converges_to_none_constant() -> None:

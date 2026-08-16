@@ -320,6 +320,10 @@ class SccpResult:
     def __post_init__(self) -> None:
         if not isinstance(self.status, SccpStatus):
             object.__setattr__(self, "status", SccpStatus(self.status))
+        if self.status is not SccpStatus.CONVERGED and (
+            self.constants or self.executable_edges or self.reachable_blocks
+        ):
+            raise ValueError("non-converged SCCP results must be proof-empty")
         object.__setattr__(self, "constants", MappingProxyType(dict(self.constants)))
         object.__setattr__(
             self,
@@ -336,6 +340,7 @@ class SccpResult:
         program_fingerprint: str = "",
         backend: str = "python",
         fallback_reason: str = "",
+        solver_seconds: float = 0.0,
     ) -> "SccpResult":
         return cls(
             status=status,
@@ -344,6 +349,7 @@ class SccpResult:
             reachable_blocks=frozenset(),
             program_fingerprint=program_fingerprint,
             backend=backend,
+            solver_seconds=solver_seconds,
             fallback_reason=fallback_reason,
         )
 

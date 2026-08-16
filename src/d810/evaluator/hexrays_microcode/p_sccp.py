@@ -341,12 +341,14 @@ def _empty_nonconverged(
     *,
     backend: str = "python",
     fallback_reason: str = "",
+    solver_seconds: float = 0.0,
 ) -> SccpResult:
     return SccpResult.empty(
         status=status,
         program_fingerprint=program.fingerprint,
         backend=backend,
         fallback_reason=fallback_reason,
+        solver_seconds=solver_seconds,
     )
 
 
@@ -361,7 +363,11 @@ def solve(program: SccpProgram, *, work_budget: int | None = None) -> SccpResult
     started = time.perf_counter()
     try:
         if len(program.blocks) > _MAX_BLOCKS:
-            return _empty_nonconverged(SccpStatus.BLOCK_LIMIT, program)
+            return _empty_nonconverged(
+                SccpStatus.BLOCK_LIMIT,
+                program,
+                solver_seconds=time.perf_counter() - started,
+            )
         blocks = _block_map(program)
         instructions = _instruction_map(program)
         _validate_program(program, blocks, instructions)
@@ -370,6 +376,7 @@ def solve(program: SccpProgram, *, work_budget: int | None = None) -> SccpResult
             SccpStatus.ERROR,
             program,
             fallback_reason=f"invalid SCCP program: {exc}",
+            solver_seconds=time.perf_counter() - started,
         )
 
     edge_count = sum(len(block.successors) for block in program.blocks)
@@ -386,10 +393,15 @@ def solve(program: SccpProgram, *, work_budget: int | None = None) -> SccpResult
                 SccpStatus.ERROR,
                 program,
                 fallback_reason="work_budget must be an integer",
+                solver_seconds=time.perf_counter() - started,
             )
 
     if budget == 0:
-        return _empty_nonconverged(SccpStatus.WORK_LIMIT, program)
+        return _empty_nonconverged(
+            SccpStatus.WORK_LIMIT,
+            program,
+            solver_seconds=time.perf_counter() - started,
+        )
 
     lattice: dict[int, object] = {}
     executable_edges: set[tuple[int, int]] = set()
@@ -464,7 +476,11 @@ def solve(program: SccpProgram, *, work_budget: int | None = None) -> SccpResult
 
     while pending_edges or pending_values:
         if cfg_events + value_events >= budget:
-            return _empty_nonconverged(SccpStatus.WORK_LIMIT, program)
+            return _empty_nonconverged(
+                SccpStatus.WORK_LIMIT,
+                program,
+                solver_seconds=time.perf_counter() - started,
+            )
 
         if pending_edges:
             edge = pending_edges.popleft()
@@ -480,6 +496,7 @@ def solve(program: SccpProgram, *, work_budget: int | None = None) -> SccpResult
                     SccpStatus.ERROR,
                     program,
                     fallback_reason=f"edge targets unknown block {target}",
+                    solver_seconds=time.perf_counter() - started,
                 )
 
             was_visited = target in block_visited
