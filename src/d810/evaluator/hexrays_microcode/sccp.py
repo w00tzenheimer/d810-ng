@@ -12,7 +12,7 @@ from dataclasses import dataclass
 import time
 
 from d810.core.logging import getLogger
-from d810.evaluator.hexrays_microcode import p_sccp
+from d810.evaluator.hexrays_microcode import _fast_sccp
 from d810.evaluator.hexrays_microcode.sccp_model import (
     SccpProgram,
     SccpResult,
@@ -25,7 +25,7 @@ from d810.evaluator.hexrays_microcode.sccp_snapshot import (
 
 
 logger = getLogger(__name__)
-DEFAULT_SOLVER = p_sccp.solve
+DEFAULT_SOLVER = _fast_sccp.solve
 
 SnapshotFn = Callable[[object], SccpProgram]
 SolveFn = Callable[[SccpProgram], SccpResult]

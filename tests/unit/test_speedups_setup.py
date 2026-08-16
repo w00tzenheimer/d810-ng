@@ -26,6 +26,25 @@ def test_linux_sdk_lib_subdir_uses_current_ida_sdk_layout(monkeypatch):
     assert lib_subdir("intel32", False) == "x86_linux_32"
 
 
+def test_macos_sdk_lib_subdir_uses_current_ida_sdk_layout(monkeypatch):
+    helpers = _load_setup_helpers(monkeypatch)
+    lib_subdir = helpers["_macos_sdk_lib_subdir"]
+
+    assert lib_subdir("arm64", True) == "arm64_mac_clang_64"
+    assert lib_subdir("aarch64", True) == "arm64_mac_clang_64"
+    assert lib_subdir("amd64", True) == "x64_mac_clang_64"
+    assert lib_subdir("intel32", False) == "x64_mac_clang_64"
+
+
+def test_speedups_glob_includes_sccp_extension(monkeypatch):
+    _load_setup_helpers(monkeypatch)
+
+    assert "src/d810/speedups/evaluator/c_sccp.pyx" in {
+        str(path.relative_to(ROOT))
+        for path in (ROOT / "src" / "d810" / "speedups").glob("**/*.pyx")
+    }
+
+
 def test_linux_sdk_lib_dir_falls_back_to_legacy_layout(monkeypatch, tmp_path):
     helpers = _load_setup_helpers(monkeypatch)
     select_lib_dir = helpers["_select_linux_sdk_lib_dir"]

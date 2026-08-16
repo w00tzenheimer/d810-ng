@@ -81,6 +81,13 @@ def _linux_sdk_lib_subdir(library: str = LIBRARY, is_64bit: bool = x64) -> str:
     return "x86_linux_32"
 
 
+def _macos_sdk_lib_subdir(library: str = LIBRARY, is_64bit: bool = x64) -> str:
+    """Return the IDA SDK macOS library subdirectory for this architecture."""
+    if str(library).lower() in ("aarch64", "arm64"):
+        return "arm64_mac_clang_64"
+    return "x64_mac_clang_64"
+
+
 def _select_linux_sdk_lib_dir(sdk_path: pathlib.Path) -> pathlib.Path:
     """Return the best Linux SDK library directory, with legacy SDK fallback."""
     current = _sdk_lib_dir(sdk_path, _linux_sdk_lib_subdir())
@@ -314,7 +321,7 @@ def get_ext_modules():
         # those libraries made the link fail on a .lib that no longer exists.
         libraries = ["ida", "idalib"]
     elif OSTYPE == "Darwin":
-        subdir = "arm64_mac_clang_64" if LIBRARY == "arm64" else "x64_mac_clang_64"
+        subdir = _macos_sdk_lib_subdir()
         library_dirs.append(str(_sdk_lib_dir(IDA_SDK, subdir)))
         libraries = []
     else:  # Linux
