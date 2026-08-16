@@ -313,16 +313,31 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
         pass has no SCCP overlay seam and therefore cannot authorize that
         route.
         """
+        # Demand is an invocation-local decision.  In particular, do not let
+        # the shared path rescan the MBA after classic dataflow has run: the
+        # legacy Cython pass and the overlay path must make the same routing
+        # decision for this invocation.
+        if self.sccp_overlay == "auto":
+            sccp_demand = self._sccp_demand_present(mba)
+        elif self.sccp_overlay == "on":
+            sccp_demand = True
+        elif self.sccp_overlay == "off":
+            sccp_demand = False
+        else:
+            # ``configure`` rejects unknown values, but direct assignment must
+            # remain fail-closed and use the shared overlay seam.
+            sccp_demand = True
+
         if not self.cython_enabled:
-            # Fallback to the slower, pure-Python implementation if Cython is disabled
-            return self._slow_run_on_function(mba)
+            # Fallback to the slower, pure-Python implementation if Cython is disabled.
+            return self._slow_run_on_function(mba, sccp_demand=sccp_demand)
 
         # The Cython full pass is deliberately limited to the paths that do
         # not request an SCCP overlay.  In particular, ``on`` and
         # ``auto``-with-demand must use the shared slow path even when the
         # extension is available.
         if self.sccp_overlay == "off" or (
-            self.sccp_overlay == "auto" and not self._sccp_demand_present(mba)
+            self.sccp_overlay == "auto" and not sccp_demand
         ):
             try:
                 total_changes = self._run_cython_full_pass(mba)
@@ -331,7 +346,7 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
                     "Cython module `_fast_dataflow` not found. Falling back to slow Python implementation."
                 )
                 self.cython_enabled = False
-                return self._slow_run_on_function(mba)
+                return self._slow_run_on_function(mba, sccp_demand=sccp_demand)
 
             if total_changes > 0:
                 safe_verify(mba, "rewriting", logger_func=logger.error)
@@ -341,7 +356,7 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
         # Unknown policy values are fail-closed here as well.  ``configure``
         # rejects them, but a direct attribute assignment must not silently
         # authorize the overlay-free Cython path.
-        return self._slow_run_on_function(mba)
+        return self._slow_run_on_function(mba, sccp_demand=sccp_demand)
 
     def _run_cython_full_pass(self, mba: ida_hexrays.mba_t) -> int:
         """Run the overlay-free Cython dataflow/rewrite pass."""
@@ -366,7 +381,12 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
                 self.cython_enabled = False
         return self._slow_dataflow(mba)
 
-    def _slow_run_on_function(self, mba: ida_hexrays.mba_t) -> int:
+    def _slow_run_on_function(
+        self,
+        mba: ida_hexrays.mba_t,
+        *,
+        sccp_demand: bool | None = None,
+    ) -> int:
         """The pure Python implementation of the analysis and rewrite pass.
 
         Phase A: Dataflow analysis to find where constants are known at the
@@ -389,7 +409,11 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
         # completed successfully.  ``_get_sccp_overlay`` returns an empty
         # mapping for every unavailable or non-converged result, preserving
         # the proof boundary before any rewrite scan starts.
-        sccp_overlay = self._requested_sccp_overlay(mba, IN)
+        sccp_overlay = self._requested_sccp_overlay(
+            mba,
+            IN,
+            sccp_demand=sccp_demand,
+        )
 
         total_changes = 0
         # Phase B: Iterate over each block and apply optimizations until the
@@ -582,6 +606,8 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
         self,
         mba: ida_hexrays.mba_t,
         consts_by_block: dict,
+        *,
+        sccp_demand: bool | None = None,
     ) -> typing.Optional[dict]:
         """Return an SCCP overlay when the configured policy requests one.
 
@@ -594,8 +620,11 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
         del consts_by_block
         if self.sccp_overlay == "off":
             return None
-        if self.sccp_overlay == "auto" and not self._sccp_demand_present(mba):
-            return None
+        if self.sccp_overlay == "auto":
+            if sccp_demand is None:
+                sccp_demand = self._sccp_demand_present(mba)
+            if not sccp_demand:
+                return None
         # Unknown values are fail-closed: configure() rejects them, while a
         # direct assignment still takes the shared path rather than silently
         # authorizing the overlay-free Cython pass.
@@ -609,9 +638,54 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
         negative would let the overlay-free Cython pass bypass SCCP.
         """
 
-        def has_unresolved_operand(op: object, seen: set[int]) -> bool:
+        def known_int_constants(prefix: str) -> frozenset[int]:
+            try:
+                return frozenset(
+                    value
+                    for name in dir(ida_hexrays)
+                    if name.startswith(prefix)
+                    and isinstance(value := getattr(ida_hexrays, name), int)
+                )
+            except Exception:
+                # A broken IDA module surface must never authorize the
+                # overlay-free Cython pass.
+                return frozenset()
+
+        known_mop_types = known_int_constants("mop_")
+        known_opcodes = known_int_constants("m_")
+
+        def scan_instruction(ins: object, seen_instructions: set[int]) -> bool:
+            marker = id(ins)
+            if marker in seen_instructions:
+                return True
+            seen_instructions.add(marker)
+            try:
+                opcode = int(ins.opcode)
+            except Exception:
+                return True
+            if opcode not in known_opcodes:
+                return True
+            seen_operands: set[int] = set()
+            for attr in ("l", "r"):
+                try:
+                    op = getattr(ins, attr)
+                except Exception:
+                    return True
+                if scan_operand(op, seen_operands, seen_instructions):
+                    return True
+            return False
+
+        def scan_operand(
+            op: object,
+            seen_operands: set[int],
+            seen_instructions: set[int],
+        ) -> bool:
             if op is None:
-                return False
+                return True
+            marker = id(op)
+            if marker in seen_operands:
+                return True
+            seen_operands.add(marker)
             try:
                 op_type = op.t
             except Exception:
@@ -625,58 +699,51 @@ class ForwardConstantPropagationRule(FlowOptimizationRule):
                     return True
                 if sub_ins is None:
                     return True
-                marker = id(sub_ins)
-                if marker in seen:
+                return scan_instruction(sub_ins, seen_instructions)
+            if op_type == ida_hexrays.mop_f:
+                try:
+                    callinfo = op.f
+                    args = callinfo.args
+                except Exception:
                     return True
-                seen.add(marker)
+                if args is None:
+                    return True
                 try:
                     return any(
-                        has_unresolved_operand(getattr(sub_ins, attr), seen)
-                        for attr in ("l", "r", "d")
+                        scan_operand(arg, seen_operands, seen_instructions)
+                        for arg in args
                     )
                 except Exception:
                     return True
-            if op_type == ida_hexrays.mop_f:
-                try:
-                    args = op.f.args
-                except Exception:
-                    return True
-                try:
-                    return any(has_unresolved_operand(arg, seen) for arg in args)
-                except Exception:
-                    return True
+            if op_type not in known_mop_types:
+                return True
             return False
 
         try:
             qty = int(mba.qty)
             if qty < 0:
                 return True
+            seen_blocks: set[int] = set()
             for block_index in range(qty):
                 block = mba.get_mblock(block_index)
                 if block is None:
                     return True
-                ins = block.head
+                block_marker = id(block)
+                if block_marker in seen_blocks:
+                    return True
+                seen_blocks.add(block_marker)
+                try:
+                    ins = block.head
+                except Exception:
+                    return True
                 seen_instructions: set[int] = set()
                 while ins is not None:
-                    marker = id(ins)
-                    if marker in seen_instructions:
+                    if scan_instruction(ins, seen_instructions):
                         return True
-                    seen_instructions.add(marker)
-                    if ins.opcode not in self.ALLOW_PROPAGATION_OPCODES:
+                    try:
                         ins = ins.next
-                        continue
-                    # ``d`` is a destination for ordinary operations and must
-                    # not create demand.  m_call stores its arguments in d,
-                    # which _slow_process_operand can rewrite.
-                    slots = (
-                        ("l", "r", "d")
-                        if ins.opcode == ida_hexrays.m_call
-                        else ("l", "r")
-                    )
-                    for attr in slots:
-                        if has_unresolved_operand(getattr(ins, attr), set()):
-                            return True
-                    ins = ins.next
+                    except Exception:
+                        return True
         except Exception:
             return True
         return False

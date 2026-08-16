@@ -62,14 +62,56 @@ def test_cython_mode_does_not_bypass_requested_overlay(monkeypatch):
     rule = ForwardConstantPropagationRule()
     rule.cython_enabled = True
     rule.sccp_overlay = "on"
-    rule._sccp_demand_present = lambda _mba: True
-    rule._slow_run_on_function = lambda _mba: 4
+    demand_calls: list[object] = []
+
+    def record_demand(mba: object) -> bool:
+        demand_calls.append(mba)
+        return True
+
+    rule._sccp_demand_present = record_demand
+    rule._slow_run_on_function = lambda _mba, **_kwargs: 4
 
     def forbidden_full_pass(_mba: object) -> int:
         raise AssertionError("overlay bypass")
 
     rule._run_cython_full_pass = forbidden_full_pass
     assert rule._run_on_function(object()) == 4
+    assert demand_calls == []
+
+
+def test_off_cython_path_does_not_scan_for_sccp_demand():
+    rule = ForwardConstantPropagationRule()
+    rule.cython_enabled = True
+    rule.sccp_overlay = "off"
+    rule._sccp_demand_present = lambda _mba: pytest.fail("off policy scanned")
+    rule._run_cython_full_pass = lambda _mba: 0
+
+    assert rule._run_on_function(object()) == 0
+
+
+def test_auto_demand_is_scanned_once_and_passed_to_shared_path():
+    rule = ForwardConstantPropagationRule()
+    rule.cython_enabled = True
+    rule.sccp_overlay = "auto"
+    demand_calls: list[object] = []
+
+    def record_demand(mba: object) -> bool:
+        demand_calls.append(mba)
+        return True
+
+    rule._sccp_demand_present = record_demand
+    rule._get_sccp_overlay = lambda _mba: {}
+
+    def shared_path(mba: object, **kwargs: object) -> int:
+        rule._requested_sccp_overlay(mba, {}, **kwargs)
+        return 4
+
+    rule._slow_run_on_function = shared_path
+    rule._run_cython_full_pass = lambda _mba: pytest.fail("auto demand bypass")
+
+    mba = object()
+    assert rule._run_on_function(mba) == 4
+    assert demand_calls == [mba]
 
 
 def test_empty_overlay_does_not_merge_or_call_rewrite(monkeypatch):
@@ -129,6 +171,31 @@ def test_auto_demand_is_read_only_and_conservative():
     assert rule._sccp_demand_present(malformed_qty) is True
 
 
+@pytest.mark.parametrize(
+    ("opcode", "mop_type"),
+    (
+        (ida_hexrays.m_ldx, ida_hexrays.mop_S),
+        (ida_hexrays.m_ldx, ida_hexrays.mop_r),
+        (None, ida_hexrays.mop_S),
+        (None, ida_hexrays.mop_r),
+    ),
+)
+def test_auto_demand_covers_every_legacy_cython_operand_surface(opcode, mop_type):
+    rule = ForwardConstantPropagationRule()
+    unresolved = SimpleNamespace(t=mop_type, size=4, next=None)
+    instruction = SimpleNamespace(
+        opcode=opcode,
+        l=unresolved,
+        r=None,
+        d=None,
+        next=None,
+    )
+    block = SimpleNamespace(head=instruction)
+    mba = SimpleNamespace(qty=1, get_mblock=lambda _index: block)
+
+    assert rule._sccp_demand_present(mba) is True
+
+
 def _get_default_binary() -> str:
     override = os.environ.get("D810_TEST_BINARY")
     if override:
@@ -136,6 +203,10 @@ def _get_default_binary() -> str:
     return (
         "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
     )
+
+
+def _compiled_sccp_required() -> bool:
+    return os.environ.get("D810_REQUIRE_COMPILED_SCCP") == "1"
 
 
 def _function_ea(name: str) -> int:
@@ -195,7 +266,10 @@ def _run_disposable_mba(func_ea: int, *, cython_enabled: bool, policy: str):
         reset_sccp_session()
         mba = _gen_mba(func_ea)
         if mba is None:
-            pytest.skip("could not generate disposable MBA")
+            message = "could not generate disposable MBA"
+            if _compiled_sccp_required():
+                pytest.fail(message)
+            pytest.skip(message)
 
         rule = ForwardConstantPropagationRule()
         rule.configure({"cython_enabled": cython_enabled, "sccp_overlay": policy})
@@ -204,7 +278,15 @@ def _run_disposable_mba(func_ea: int, *, cython_enabled: bool, policy: str):
         original_get_overlay = rule._get_sccp_overlay
 
         def capture_overlay(current_mba):
-            solver_results.append(run_sccp_ex(current_mba))
+            result = run_sccp_ex(current_mba)
+            if result is None:
+                message = "SCCP request fell back to an unavailable backend"
+                if _compiled_sccp_required():
+                    pytest.fail(message)
+                pytest.skip(message)
+            if cython_enabled and _compiled_sccp_required():
+                assert result.backend == "cython"
+            solver_results.append(result)
             overlay = original_get_overlay(current_mba)
             overlays.append(dict(overlay or {}))
             return overlay
@@ -238,7 +320,10 @@ class TestSccpOverlayRuntimeParity:
     def test_on_and_auto_demand_match_python_and_cython(self, libobfuscated_setup):
         func_ea = _function_ea("test_chained_add")
         if func_ea == idaapi.BADADDR:
-            pytest.skip("test_chained_add not present in test binary")
+            message = "test_chained_add not present in test binary"
+            if _compiled_sccp_required():
+                pytest.fail(message)
+            pytest.skip(message)
 
         for policy in ("on", "auto"):
             python_run = _run_disposable_mba(
@@ -256,6 +341,8 @@ class TestSccpOverlayRuntimeParity:
             assert python_run[0], f"{policy} must request an SCCP overlay"
             assert python_run[4], f"{policy} must execute an SCCP request"
             assert cython_run[4], f"{policy} must execute an SCCP request"
+            if _compiled_sccp_required():
+                assert all(result[1] == "cython" for result in cython_run[4])
             assert all(
                 result[0] == SccpStatus.CONVERGED.value for result in python_run[4]
             )
