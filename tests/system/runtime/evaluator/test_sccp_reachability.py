@@ -28,7 +28,7 @@ import ida_hexrays
 import idaapi
 import idc
 
-from d810.evaluator.hexrays_microcode.sccp import SccpResult, run_sccp_ex
+from d810.evaluator.hexrays_microcode.sccp import SccpResult, SccpStatus, run_sccp_ex
 from d810.optimizers.microcode.flow.context import _flowgraph_from_live_mba
 
 
@@ -83,9 +83,18 @@ def test_sccp_result_dead_edge_semantics():
     not executable -- an edge out of an *unreached* block is not a proof.
     """
     res = SccpResult(
+        status=SccpStatus.CONVERGED,
         constants={("i",): None},
         executable_edges=frozenset({(0, 1), (1, 2)}),  # (2, 1) back-edge is absent
         reachable_blocks=frozenset({0, 1, 2}),
+        program_fingerprint="test",
+        backend="python",
+        cfg_events=1,
+        value_events=1,
+        peak_cfg_queue=1,
+        peak_value_queue=1,
+        adapter_seconds=0.0,
+        solver_seconds=0.0,
     )
     # Reachable source + non-executable edge => proven dead (peelable back-edge).
     assert res.is_edge_dead(2, 1) is True
@@ -138,13 +147,15 @@ class TestSccpSingleTripLoop:
             if back:
                 saw_any_backedge = True
             dead_back = res.dead_edges_among(back)
+            if res.status is not SccpStatus.CONVERGED:
+                assert dead_back == frozenset()
             if dead_back:
                 proved_any_dead_backedge = True
 
             n_const = sum(1 for v in res.constants.values() if v is not None)
             n_top = sum(1 for v in res.constants.values() if v is None)
             lines.append(
-                f"[{label}] qty={mba.qty} "
+                f"[{label}] status={res.status.value} qty={mba.qty} "
                 f"backedges={sorted(back)} "
                 f"exec_edges={len(res.executable_edges)} "
                 f"reachable_blocks={len(res.reachable_blocks)} "
