@@ -23,7 +23,13 @@ from d810.analyses.control_flow.provenance import (
 )
 from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
 from d810.ir.block_identity import StableBlockIdentity
-from d810.ir.flowgraph import BlockKind, BlockSnapshot, FlowGraph, InsnKind
+from d810.ir.flowgraph import (
+    BlockKind,
+    BlockSnapshot,
+    FlowGraph,
+    InsnKind,
+    InsnSnapshot,
+)
 from d810.ir.maturity import MaturityEnvelope
 from d810.optimizers.microcode.flow.flattening.engine.executor import (
     TransactionalExecutor,
@@ -56,6 +62,7 @@ from d810.transforms.cfg_transaction import (
     TransactionAttemptId,
 )
 from d810.transforms.plan import PatchBlockSpec, PatchConvertToGoto, PatchPlan
+from d810.transforms.graph_modification import RedirectGoto
 from d810.transforms.plan_fragment import (
     BenefitMetrics,
     OwnershipScope,
@@ -166,6 +173,241 @@ def _origin_graph() -> FlowGraph:
         entry_serial=4,
         func_ea=0x401000,
     )
+
+
+def _effectful_fake_jump_graph(*, effectful: bool = True) -> FlowGraph:
+    """Small graph whose block 2 models the observed local CALL site."""
+    effect_kind = InsnKind.CALL if effectful else InsnKind.MOV
+    effect_insn = InsnSnapshot(
+        opcode=0,
+        ea=0x7FF85662A96E,
+        operands=(),
+        kind=effect_kind,
+    )
+    return FlowGraph(
+        blocks={
+            0: BlockSnapshot(
+                serial=0,
+                block_type=1,
+                succs=(1,),
+                preds=(),
+                flags=0,
+                start_ea=0x7FF856629E30,
+                insn_snapshots=(),
+                kind=BlockKind.ONE_WAY,
+                tail_kind=InsnKind.GOTO,
+            ),
+            1: BlockSnapshot(
+                serial=1,
+                block_type=1,
+                succs=(2,),
+                preds=(0,),
+                flags=0,
+                start_ea=0x7FF85662A950,
+                insn_snapshots=(),
+                kind=BlockKind.ONE_WAY,
+                tail_kind=InsnKind.GOTO,
+            ),
+            2: BlockSnapshot(
+                serial=2,
+                block_type=1,
+                succs=(3,),
+                preds=(1,),
+                flags=0,
+                start_ea=0x7FF85662A96E,
+                insn_snapshots=(effect_insn,),
+                kind=BlockKind.ONE_WAY,
+                tail_kind=effect_kind,
+            ),
+            3: BlockSnapshot(
+                serial=3,
+                block_type=0,
+                succs=(),
+                preds=(2,),
+                flags=0,
+                start_ea=0x7FF85662AA10,
+                insn_snapshots=(),
+                kind=BlockKind.STOP,
+                tail_kind=InsnKind.RET,
+            ),
+        },
+        entry_serial=0,
+        func_ea=0x7FF856629E30,
+    )
+
+
+def _fake_jump_fragment(modification: RedirectGoto) -> PlanFragment:
+    return PlanFragment(
+        strategy_name="fake_jump",
+        family="cleanup",
+        ownership=OwnershipScope(
+            blocks=frozenset({modification.from_serial}),
+            edges=frozenset(
+                {(modification.from_serial, modification.old_target)}
+            ),
+            transitions=frozenset(),
+        ),
+        prerequisites=[],
+        expected_benefit=BenefitMetrics(
+            handlers_resolved=1,
+            transitions_resolved=1,
+            blocks_freed=1,
+            conflict_density=0.0,
+        ),
+        risk_score=0.0,
+        metadata={"safeguard_min_required": 1},
+        modifications=[modification],
+    )
+
+
+def _run_fake_jump_preflight(
+    monkeypatch,
+    cfg: FlowGraph,
+    modification: RedirectGoto,
+):
+    executor = object.__new__(TransactionalExecutor)
+    compile_calls: list[object] = []
+    monkeypatch.setattr(
+        executor_module,
+        "compile_patch_plan",
+        lambda *args, **kwargs: (
+            compile_calls.append((args, kwargs))
+            or PatchPlan(plan_id="control-plan")
+        ),
+    )
+    result = executor._run_preflight(
+        _fake_jump_fragment(modification),
+        cfg,
+        [modification],
+        executor_module.ExecutionPolicy.STRICT,
+        snapshot_id="snapshot",
+        source_maturity=MaturityEnvelope(ir=None, provider="hexrays", provider_id=0),
+        source_generation=1,
+        block_refs_by_serial={},
+    )
+    return result, compile_calls
+
+
+def test_fake_jump_preflight_rejects_lost_effectful_call_before_backend(
+    monkeypatch,
+) -> None:
+    """Keep the observed local CALL reachable before any live mutation."""
+    pre_cfg = _effectful_fake_jump_graph()
+    fragment = _fake_jump_fragment(
+        RedirectGoto(from_serial=0, old_target=1, new_target=3)
+    )
+    compile_calls: list[object] = []
+    backend_counts = {"construct": 0, "apply": 0}
+
+    class _Translator:
+        contract = None
+        last_lowering_phase = None
+        last_lowering_subphase = None
+
+        def lift(self, _mba):
+            return pre_cfg
+
+    class _MBA:
+        qty = 0
+        entry_ea = pre_cfg.func_ea
+
+    gateway = SimpleNamespace(
+        identity_index=SimpleNamespace(
+            maturity=0,
+            snapshot_id="snapshot",
+            generation=1,
+            plan_refs_by_serial=lambda: {},
+        ),
+        lifecycle_authority=None,
+        begin_count=0,
+        poison_requests=[],
+    )
+
+    class _Backend:
+        def __init__(self, **_kwargs):
+            backend_counts["construct"] += 1
+            self.last_patch_execution = SimpleNamespace(
+                applied_count=1,
+                creation_receipts=(),
+            )
+            self.last_patch_failure = None
+
+        def apply(self, _plan, _mba):
+            backend_counts["apply"] += 1
+            return pre_cfg
+
+    monkeypatch.setattr(
+        executor_module,
+        "compile_patch_plan",
+        lambda *args, **kwargs: (
+            compile_calls.append((args, kwargs))
+            or PatchPlan(plan_id="must-not-reach-backend")
+        ),
+    )
+    monkeypatch.setattr(executor_module, "HexRaysMutationBackend", _Backend)
+    monkeypatch.setattr(
+        executor_module,
+        "filter_return_carrier_fact_redirects",
+        lambda modifications, **_kwargs: (modifications, ()),
+    )
+    monkeypatch.setattr(
+        executor_module,
+        "filter_terminal_byte_emit_fact_redirects",
+        lambda modifications, **_kwargs: (modifications, ()),
+    )
+
+    executor = TransactionalExecutor(_MBA(), translator=_Translator())
+    executor.set_mutation_gateway_factory(lambda: gateway)
+    monkeypatch.setattr(
+        executor,
+        "_filter_backend_unsupported_modifications",
+        lambda modifications: (modifications, 0),
+    )
+
+    result = executor.execute_stage(fragment, total_handlers=1)
+
+    assert result.success is False
+    assert result.failure_phase == "preflight"
+    assert result.metadata["effectful_reachability"].lost_block_serials == frozenset(
+        {2}
+    )
+    assert result.metadata["lost_effectful_ea_anchors"] == (0x7FF85662A96E,)
+    assert compile_calls == []
+    assert backend_counts == {"construct": 0, "apply": 0}
+    assert gateway.begin_count == 0
+    assert gateway.poison_requests == []
+
+
+def test_fake_jump_effectful_preflight_allows_call_preserving_redirect(
+    monkeypatch,
+) -> None:
+    cfg = _effectful_fake_jump_graph()
+    result_tuple, compile_calls = _run_fake_jump_preflight(
+        monkeypatch,
+        cfg,
+        RedirectGoto(from_serial=0, old_target=1, new_target=2),
+    )
+
+    _modifications, patch_plan, result, _cycle_removed = result_tuple
+    assert result is None
+    assert patch_plan is not None
+    assert compile_calls
+
+
+def test_fake_jump_effectful_preflight_allows_dead_control_only_block(
+    monkeypatch,
+) -> None:
+    cfg = _effectful_fake_jump_graph(effectful=False)
+    result_tuple, compile_calls = _run_fake_jump_preflight(
+        monkeypatch,
+        cfg,
+        RedirectGoto(from_serial=0, old_target=1, new_target=3),
+    )
+
+    _modifications, patch_plan, result, _cycle_removed = result_tuple
+    assert result is None
+    assert patch_plan is not None
+    assert compile_calls
 
 
 def test_new_block_origin_logging_resolves_native_template_reference() -> None:

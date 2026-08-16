@@ -42,6 +42,7 @@ from d810.analyses.control_flow.graph_checks import (
     SemanticGate,
     check_entry_reachability_counts_not_collapsed,
     check_entry_reachability_not_collapsed,
+    check_effectful_reachability_preserved,
     check_terminal_reachability_preserved,
     check_edge_split_structural_legality,
     detect_terminal_cycles,
@@ -1296,6 +1297,33 @@ class TransactionalExecutor:
             return modifications, None, result, 0
 
         if fragment.strategy_name == "fake_jump":
+            effectful = check_effectful_reachability_preserved(
+                pre_cfg,
+                post_adj=sim_adj,
+            )
+            if not effectful.passed:
+                lost_effectful_ea_anchors = tuple(
+                    pre_cfg.get_block(serial).start_ea
+                    for serial in sorted(effectful.lost_block_serials)
+                )
+                executor_logger.warning(
+                    "Preflight REJECT: fake_jump stranded effectful blocks "
+                    "serials=%s ea_anchors=%s reason=%s",
+                    sorted(effectful.lost_block_serials),
+                    [f"0x{ea:x}" for ea in lost_effectful_ea_anchors],
+                    effectful.reason,
+                )
+                result = StageResult(
+                    strategy_name=fragment.strategy_name,
+                    success=False,
+                    error=f"semantic preflight: {effectful.reason}",
+                    failure_phase="preflight",
+                )
+                result.metadata["effectful_reachability"] = effectful
+                result.metadata["lost_effectful_ea_anchors"] = (
+                    lost_effectful_ea_anchors
+                )
+                return modifications, None, result, 0
             entry_reachability = check_entry_reachability_not_collapsed(
                 pre_cfg,
                 post_adj=sim_adj,
