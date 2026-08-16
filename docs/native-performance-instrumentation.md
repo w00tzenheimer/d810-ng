@@ -9,6 +9,54 @@ module load; this guarantee is limited to the instrumented hot path and does
 not prohibit unrelated Python allocations. The `clock_reads` counter is
 exposed so the disabled-path contract can be tested directly.
 
+## Operator controls
+
+Open the D-810 configuration dialog and choose **Settings > Developer**. The
+developer tab contains the performance controls:
+
+- **Emit native performance receipts** selects the `D810_NATIVE_PERF` behavior.
+- **Use non-mutating pattern matcher** selects the `D810_NOMUT_MATCHING`
+  behavior.
+- **Do not use Cython speedups** selects the current IDA session's Python
+  dispatchers when compatible compiled speedups are installed.
+
+The first two controls are runtime settings. Saving them writes
+`native_perf` and `nomut_matching` to D810's `options.json`; they are restored
+on the next D810 load. An explicitly set environment variable remains
+authoritative over its saved value:
+
+| Setting | Saved key | Environment override |
+| --- | --- | --- |
+| Native performance receipts | `native_perf` | `D810_NATIVE_PERF` |
+| Non-mutating pattern matcher | `nomut_matching` | `D810_NOMUT_MATCHING` |
+
+When an override is present, the dialog may still save the checkbox value, but
+that saved value is not effective until the environment variable is unset.
+
+The Cython checkbox has a different boundary. Its value is session-only and is
+never written to `options.json`. `D810_NO_CYTHON` determines the initial policy
+when IDA starts; when it explicitly disables Cython (`1`, `true`, or `yes`),
+the checkbox is disabled and the dialog reports `Disabled by D810_NO_CYTHON`.
+On the next IDA launch, the session choice again comes from the environment.
+
+Changing the Cython checkbox and saving schedules D810's supported
+`D810:reload_plugin` action after the dialog closes. The full plugin reload is
+required because the AST and pattern-engine dispatchers select their Python or
+Cython implementations at import time. The main D-810 configuration title
+reports the implementations from the last completed load as exactly
+`SPEEDUPS ENABLED`, `SPEEDUPS DISABLED`, or `SPEEDUPS UNAVAILABLE`.
+
+If compatible compiled speedups cannot be imported, the Cython checkbox is
+disabled and the exact availability copy is **`Speedups not installed`**. A
+missing optional extension is retained as diagnostic detail; it does not add a
+partial or degraded title state.
+
+`D810_CYTHON_PROFILE=1` is build-time instrumentation. The Cython extensions
+must be rebuilt with that flag so they contain tracing support; the Developer
+settings dialog cannot retrofit line tracing into an extension that was already
+built. This is separate from `D810_NATIVE_PERF`, which controls runtime
+receipts in the loaded plugin.
+
 ## Lifecycle and receipt
 
 At `SESSION_STARTED`, the manager begins the outer lifecycle session and
