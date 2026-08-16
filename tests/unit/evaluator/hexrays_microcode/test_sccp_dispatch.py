@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import importlib
+import os
 import sys
 import types
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -39,6 +42,24 @@ from d810.evaluator.hexrays_microcode.sccp_model import (  # noqa: E402
 
 def make_program() -> SccpProgram:
     return SccpProgram.from_parts((SccpBlock(0, (), ()),), (), {})
+
+
+def make_constant_program(value: int) -> SccpProgram:
+    constant = SccpOperand(OperandKind.CONSTANT, 1, constant=value)
+    instruction = SccpInstruction(
+        0,
+        0,
+        "mov",
+        0x4000,
+        1,
+        constant,
+        destination_value_id=1,
+    )
+    return SccpProgram.from_parts(
+        (SccpBlock(0, (), (0,)),),
+        (instruction,),
+        {1: ("r", 1)},
+    )
 
 
 def make_diamond() -> SccpProgram:
@@ -388,8 +409,51 @@ def test_no_parity_check_in_normal_mode(monkeypatch: pytest.MonkeyPatch) -> None
     assert result.fallback_reason == "native diagnostic metadata"
 
 
+def _load_compiled_solver_or_skip() -> object:
+    try:
+        return importlib.import_module("d810.speedups.evaluator.c_sccp")
+    except Exception as exc:
+        if os.environ.get("D810_REQUIRE_COMPILED_SCCP") == "1":
+            pytest.fail(
+                "D810_REQUIRE_COMPILED_SCCP=1 but the compiled SCCP extension "
+                f"could not be imported: {exc}"
+            )
+        pytest.skip(f"compiled SCCP extension unavailable: {exc}")
+
+
+def test_compiled_solver_gate_fails_when_extension_is_required(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def missing_extension(_name: str) -> object:
+        raise ImportError("extension intentionally unavailable")
+
+    monkeypatch.setattr(importlib, "import_module", missing_extension)
+    monkeypatch.setenv("D810_REQUIRE_COMPILED_SCCP", "1")
+
+    with pytest.raises(pytest.fail.Exception, match="D810_REQUIRE_COMPILED_SCCP=1"):
+        _load_compiled_solver_or_skip()
+
+
+def test_compiled_view_cache_rejects_same_fingerprint_different_programs() -> None:
+    c_sccp = _load_compiled_solver_or_skip()
+
+    first = replace(make_constant_program(7), fingerprint="forced-cache-collision")
+    second = replace(make_constant_program(9), fingerprint=first.fingerprint)
+
+    assert first is not second
+    assert first.fingerprint == second.fingerprint
+    assert first != second
+
+    actual_first = c_sccp.solve(first)
+    actual_second = c_sccp.solve(second)
+
+    assert actual_first.parity_key() == p_sccp.solve(first).parity_key()
+    assert actual_second.parity_key() == p_sccp.solve(second).parity_key()
+    assert actual_first.constants != actual_second.constants
+
+
 def test_compiled_solver_matches_python_when_extension_is_built() -> None:
-    c_sccp = pytest.importorskip("d810.speedups.evaluator.c_sccp")
+    c_sccp = _load_compiled_solver_or_skip()
 
     cases = (
         (make_diamond(), None),

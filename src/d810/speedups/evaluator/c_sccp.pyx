@@ -13,6 +13,7 @@ import time
 
 from d810.evaluator.hexrays_microcode.sccp_model import (
     OperandKind,
+    SccpProgram,
     SccpResult,
     SccpStatus,
 )
@@ -42,10 +43,11 @@ cdef object _CONDITIONAL_BRANCHES = frozenset(
 )
 cdef object _BRANCH_OPCODES = _CONDITIONAL_BRANCHES | frozenset(("goto",))
 
-# SccpProgram is frozen and fingerprinted, so this compact detached view is
-# safe to reuse across repeated solver-only replays of the same snapshot.  A
-# small bounded cache removes adapter-like tuple conversion from the measured
-# hot path without replacing the facade's proof-result memo.
+# SccpProgram is frozen and contains only detached primitive values.  Retain
+# that object beside the compact view so a fingerprint collision cannot reuse
+# the wrong snapshot; live MBA/SWIG objects are never retained here.  A small
+# bounded cache removes adapter-like tuple conversion from repeated solver-
+# only replays without replacing the facade's proof-result memo.
 cdef int _PROGRAM_CACHE_LIMIT = 8
 cdef dict _PROGRAM_CACHE = {}
 cdef list _PROGRAM_CACHE_ORDER = []
@@ -517,7 +519,10 @@ cpdef object solve(object program, object work_budget=None):
     cdef object state
     cdef dict constants
     cdef object elapsed
+    cdef object cached_entry
     cdef object cached_program
+    cdef bint cache_hit
+    cdef bint cacheable_program
 
     try:
         blocks_source = program.blocks
@@ -530,8 +535,15 @@ cpdef object solve(object program, object work_budget=None):
                 time.perf_counter() - started,
             )
 
-        cached_program = _PROGRAM_CACHE.get(fingerprint)
-        if cached_program is not None:
+        cacheable_program = isinstance(program, SccpProgram)
+        cached_entry = _PROGRAM_CACHE.get(fingerprint) if cacheable_program else None
+        cache_hit = False
+        if cached_entry is not None:
+            cached_program = cached_entry[0]
+            if cached_program is program or cached_program == program:
+                cached_program = cached_entry[1]
+                cache_hit = True
+        if cache_hit:
             (
                 blocks,
                 instructions,
@@ -598,16 +610,20 @@ cpdef object solve(object program, object work_budget=None):
             if fingerprint not in _PROGRAM_CACHE:
                 if len(_PROGRAM_CACHE_ORDER) >= _PROGRAM_CACHE_LIMIT:
                     _PROGRAM_CACHE.pop(_PROGRAM_CACHE_ORDER.pop(0), None)
-                _PROGRAM_CACHE[fingerprint] = (
-                    tuple(blocks),
-                    tuple(instructions),
-                    block_map,
-                    instruction_map,
-                    uses,
-                    mop_keys,
-                    edge_count,
-                )
                 _PROGRAM_CACHE_ORDER.append(fingerprint)
+            if cacheable_program:
+                _PROGRAM_CACHE[fingerprint] = (
+                    program,
+                    (
+                        tuple(blocks),
+                        tuple(instructions),
+                        block_map,
+                        instruction_map,
+                        uses,
+                        mop_keys,
+                        edge_count,
+                    ),
+                )
         value_count = len(mop_keys)
         instruction_count = len(instructions)
         budget = max(1, 2 * value_count + edge_count + instruction_count)
