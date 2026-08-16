@@ -42,6 +42,9 @@ if CythonMode().is_enabled():
             COpcodeIndexedStorage as OpcodeIndexedStorage,
         )
         from d810.speedups.optimizers.c_pattern_match import match_pattern_nomut
+        from d810.speedups.optimizers.c_pattern_match import (
+            register_native_perf_provider as _register_pattern_native_perf_provider,
+        )
 
         _USING_CYTHON = True
         logger.debug("Pattern engine: using Cython backend")
@@ -50,6 +53,7 @@ if CythonMode().is_enabled():
             MatchBindings,
             OpcodeIndexedStorage,
             match_pattern_nomut,
+            register_native_perf_provider as _register_pattern_native_perf_provider,
         )
 
         _USING_CYTHON = False
@@ -59,10 +63,16 @@ else:
         MatchBindings,
         OpcodeIndexedStorage,
         match_pattern_nomut,
+        register_native_perf_provider as _register_pattern_native_perf_provider,
     )
 
     _USING_CYTHON = False
     logger.debug("Pattern engine: CythonMode disabled, using Python backend")
+
+
+# Register only the selected implementation.  The core registry retires a
+# provider registered under this stable name by an older/imported backend.
+_register_pattern_native_perf_provider()
 
 
 def get_engine_info() -> dict:

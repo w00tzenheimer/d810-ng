@@ -12,6 +12,7 @@ import functools
 import ida_hexrays
 
 from d810.core import MOP_TO_AST_CACHE, getLogger
+from d810.core.native_perf import register_provider as _register_native_perf_provider
 from d810.hexrays.expr.ast import (
     AstBase,
     AstConstant,
@@ -47,6 +48,55 @@ _VALID_MOP_SIZES = VALID_MOP_SIZES
 _MAX_MAKE_NUMBER_SIZE = MAX_MAKE_NUMBER_SIZE
 
 
+_NATIVE_PERF_ENABLED = False
+_NATIVE_PERF_COUNTERS: dict[str, int] = {
+    "builder_calls": 0,
+    "local_cache_lookups": 0,
+    "local_cache_hits": 0,
+    "local_cache_misses": 0,
+    "global_cache_lookups": 0,
+    "global_cache_hits": 0,
+    "global_cache_misses": 0,
+    "owner_scope_key_calls": 0,
+    "ast_constructions": 0,
+    "proxy_returns": 0,
+}
+
+
+def _native_perf_configure(enabled: bool) -> None:
+    global _NATIVE_PERF_ENABLED
+    _NATIVE_PERF_ENABLED = bool(enabled)
+
+
+def _native_perf_reset() -> None:
+    for key in _NATIVE_PERF_COUNTERS:
+        _NATIVE_PERF_COUNTERS[key] = 0
+
+
+def _native_perf_snapshot() -> dict:
+    return {
+        "backend": "python",
+        "counter_domain": "python-boundary",
+        "provider_version": 1,
+        "coverage": "minsn_utils -> mop_utils builder, local cache, global MOP_TO_AST_CACHE",
+        "timing_model": "counts only; AST construction timing is not sampled",
+        "counters": dict(_NATIVE_PERF_COUNTERS),
+    }
+
+
+def _native_perf_ast_constructed() -> None:
+    if _NATIVE_PERF_ENABLED:
+        _NATIVE_PERF_COUNTERS["ast_constructions"] += 1
+
+
+_register_native_perf_provider(
+    "ast_builder",
+    snapshot=_native_perf_snapshot,
+    configure=_native_perf_configure,
+    reset=_native_perf_reset,
+)
+
+
 class AstBuilderContext:
     """Manages the state during the recursive construction of an AST.
 
@@ -65,6 +115,8 @@ class AstBuilderContext:
 
 def _mop_ast_cache_key(mop: object) -> tuple[object, tuple[int, ...]]:
     """Scope structural AST templates by embedded native MBA ownership."""
+    if _NATIVE_PERF_ENABLED:
+        _NATIVE_PERF_COUNTERS["owner_scope_key_calls"] += 1
     return get_mop_key(mop), mop_mba_owner_scope(mop)
 
 
@@ -177,6 +229,8 @@ def mop_to_ast_internal(
     mop: ida_hexrays.mop_t, context: AstBuilderContext, root: bool = False
 ) -> AstBase | None:
     """Recursively convert a mop_t operand tree into an AST."""
+    if _NATIVE_PERF_ENABLED:
+        _NATIVE_PERF_COUNTERS["builder_calls"] += 1
     # Only log at root
     if root and logger.debug_on:
         logger.debug(
@@ -211,9 +265,15 @@ def mop_to_ast_internal(
     # 2. Thread-local deduplication: if we've already built an AST for *this*
     #    mop during the current recursive walk, return the existing instance to
     #    avoid exponential explosion.
+    if _NATIVE_PERF_ENABLED:
+        _NATIVE_PERF_COUNTERS["local_cache_lookups"] += 1
     if key in context.mop_key_to_index:
+        if _NATIVE_PERF_ENABLED:
+            _NATIVE_PERF_COUNTERS["local_cache_hits"] += 1
         existing_index = context.mop_key_to_index[key]
         return context.unique_asts[existing_index]
+    if _NATIVE_PERF_ENABLED:
+        _NATIVE_PERF_COUNTERS["local_cache_misses"] += 1
 
     # Build AST nodes for rotate helper calls (__ROL*/__ROR*).
     # These are m_call instructions with an mop_h callee.  RotateHelperInlineRule
@@ -267,6 +327,7 @@ def mop_to_ast_internal(
 
                 if left_ast is not None and right_ast is not None:
                     tree = AstNode(ida_hexrays.m_call, left_ast, right_ast)
+                    _native_perf_ast_constructed()
                     tree.func_name = helper_name
 
                     if hasattr(mop, "size") and mop.size:
@@ -324,6 +385,7 @@ def mop_to_ast_internal(
                 mop_to_ast_internal(mop.d.d, context) if mop.d.d is not None else None
             )
             tree = AstNode(mop.d.opcode, left_ast, right_ast, dst_ast)
+            _native_perf_ast_constructed()
 
             # Set dest_size robustly
             if hasattr(mop, "size") and mop.size:
@@ -366,6 +428,7 @@ def mop_to_ast_internal(
             const_size = ldc_src.size
 
             const_leaf = AstConstant(hex(const_val), const_val, const_size)
+            _native_perf_ast_constructed()
             # Clone numeric mop to detach from Hex-Rays internal storage
             cloned_mop = ida_hexrays.mop_t()
             safe_make_number(cloned_mop, const_val, const_size)
@@ -392,6 +455,7 @@ def mop_to_ast_internal(
             const_val = int(mop.nnn.value)
             const_size = mop.size
             tree = AstConstant(hex(const_val), const_val, const_size)
+            _native_perf_ast_constructed()
             # Re-use a shared constant mop_t from the global cache to avoid the
             # overhead of allocating a fresh object for every identical literal.
             tree.mop = get_constant_mop(const_val, const_size)
@@ -412,6 +476,7 @@ def mop_to_ast_internal(
         # ------------------------------------------------------------------
         if tree is None:
             tree = AstLeaf(format_mop_t(mop))
+            _native_perf_ast_constructed()
             if logger.debug_on:
                 logger.debug(
                     "[mop_to_ast_internal] Tree is NONE! Defaulting to AstLeaf for mop type %s dstr=%s",
@@ -431,6 +496,7 @@ def mop_to_ast_internal(
         else:
             # Non-constant leaf: store snapshot instead of borrowed reference
             tree = AstLeaf(format_mop_t(mop))
+            _native_perf_ast_constructed()
             if logger.debug_on:
                 logger.debug(
                     "[mop_to_ast_internal] Fallback to AstLeaf for mop type %s dstr=%s",
@@ -470,11 +536,19 @@ def mop_to_ast(mop: ida_hexrays.mop_t) -> AstProxy | None:
     cache_key = _mop_ast_cache_key(mop)
 
     # 2. Global template cache: return a proxy if we already know the template
+    if _NATIVE_PERF_ENABLED:
+        _NATIVE_PERF_COUNTERS["global_cache_lookups"] += 1
     if cache_key in MOP_TO_AST_CACHE:
+        if _NATIVE_PERF_ENABLED:
+            _NATIVE_PERF_COUNTERS["global_cache_hits"] += 1
         cached_template = MOP_TO_AST_CACHE[cache_key]
         if cached_template is None:
             return None  # Previously determined unconvertible.
+        if _NATIVE_PERF_ENABLED:
+            _NATIVE_PERF_COUNTERS["proxy_returns"] += 1
         return AstProxy(cached_template)
+    if _NATIVE_PERF_ENABLED:
+        _NATIVE_PERF_COUNTERS["global_cache_misses"] += 1
 
     builder_context = AstBuilderContext()
     # Start the optimized recursive build.
@@ -494,6 +568,8 @@ def mop_to_ast(mop: ida_hexrays.mop_t) -> AstProxy | None:
     MOP_TO_AST_CACHE[cache_key] = mop_ast
 
     # 5. Return a proxy to the caller for safety.
+    if _NATIVE_PERF_ENABLED:
+        _NATIVE_PERF_COUNTERS["proxy_returns"] += 1
     return AstProxy(mop_ast)
 
 

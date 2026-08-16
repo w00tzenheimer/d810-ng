@@ -14,6 +14,7 @@ import cython
 
 from libc.stdint cimport uint16_t, uint64_t
 from libc.string cimport memset
+from d810.core.native_perf import register_provider as _register_native_perf_provider
 
 # --------------------------------------------------------------------------
 # SIMD utilities from d810_simd.h
@@ -22,6 +23,9 @@ cdef extern from "d810_simd.h" nogil:
     bint mem_eq_16(const void* a, const void* b)
     uint64_t hash_u64(uint64_t x)
     uint64_t hash_combine(uint64_t h1, uint64_t h2)
+
+cdef extern from "d810_perf.h" nogil:
+    uint64_t d810_perf_now_ns() noexcept
 
 
 # --------------------------------------------------------------------------
@@ -36,6 +40,57 @@ cdef struct PatternFingerprint:
     # 4 bytes padding to reach 16 bytes for SIMD comparison
     uint16_t _pad1
     uint16_t _pad2
+
+
+cdef struct PatternPerfCounters:
+    uint64_t clock_reads
+    uint64_t fingerprint_calls
+    uint64_t fingerprint_time_ns
+    uint64_t bucket_lookups
+    uint64_t bucket_hits
+    uint64_t bucket_misses
+    uint64_t entries_scanned
+    uint64_t entries_accepted
+    uint64_t match_calls
+    uint64_t match_time_ns
+    uint64_t match_nodes
+    uint64_t binding_additions
+    uint64_t repeated_binding_checks
+    uint64_t repeated_binding_time_ns
+    uint64_t result_list_materializations
+    uint64_t result_list_items
+    uint64_t to_dict_calls
+    uint64_t to_dict_items
+
+
+cdef bint _native_perf_enabled = False
+cdef PatternPerfCounters _native_perf_counters
+
+
+cdef inline uint64_t _perf_now() noexcept nogil:
+    _native_perf_counters.clock_reads += 1
+    return d810_perf_now_ns()
+
+
+cdef inline uint64_t _perf_start() noexcept nogil:
+    return _perf_now()
+
+
+cdef inline void _perf_record_fingerprint(uint64_t started) noexcept nogil:
+    if _native_perf_enabled:
+        _native_perf_counters.fingerprint_calls += 1
+        _native_perf_counters.fingerprint_time_ns += _perf_now() - started
+
+
+cdef inline void _compute_fingerprint(
+    object node, PatternFingerprint* fp
+):
+    cdef uint64_t started = 0
+    if _native_perf_enabled:
+        started = _perf_start()
+    _compute_fingerprint_recursive(node, fp, 0)
+    if _native_perf_enabled:
+        _perf_record_fingerprint(started)
 
 
 cdef inline void fingerprint_init(PatternFingerprint* fp) noexcept nogil:
@@ -82,7 +137,7 @@ def compute_fingerprint_py(ast_node) -> dict:
     """
     cdef PatternFingerprint fp
     fingerprint_init(&fp)
-    _compute_fingerprint_recursive(ast_node, &fp, 0)
+    _compute_fingerprint(ast_node, &fp)
 
     return {
         "opcode_hash": fp.opcode_hash,
@@ -179,12 +234,17 @@ cdef class CMatchBindings:
         self.names.append(name)
         self.mops.append(mop)
         self.count += 1
+        if _native_perf_enabled:
+            _native_perf_counters.binding_additions += 1
         return True
 
     def to_dict(self) -> dict:
         """Convert bindings to {name: mop} dict."""
         cdef dict result = {}
         cdef int i
+        if _native_perf_enabled:
+            _native_perf_counters.to_dict_calls += 1
+            _native_perf_counters.to_dict_items += self.count
         for i in range(self.count):
             result[self.names[i]] = self.mops[i]
         return result
@@ -193,6 +253,9 @@ cdef class CMatchBindings:
         """Get bindings indexed by name (last wins for duplicates)."""
         cdef dict result = {}
         cdef int i
+        if _native_perf_enabled:
+            _native_perf_counters.result_list_materializations += 1
+            _native_perf_counters.result_list_items += self.count
         for i in range(self.count):
             result[self.names[i]] = self.mops[i]
         return result
@@ -213,6 +276,10 @@ def match_pattern_nomut(pattern, candidate, bindings=None):
         True if pattern matches candidate.
     """
     cdef CMatchBindings cb
+    cdef uint64_t started = 0
+    if _native_perf_enabled:
+        _native_perf_counters.match_calls += 1
+        started = _perf_start()
     if bindings is None:
         cb = CMatchBindings()
     elif isinstance(bindings, CMatchBindings):
@@ -223,13 +290,20 @@ def match_pattern_nomut(pattern, candidate, bindings=None):
         cb = CMatchBindings()
 
     if not _match_recursive(pattern, candidate, cb):
+        if _native_perf_enabled:
+            _native_perf_counters.match_time_ns += _perf_now() - started
         return False
 
-    return _check_binding_equalities(cb)
+    result = _check_binding_equalities(cb)
+    if _native_perf_enabled:
+        _native_perf_counters.match_time_ns += _perf_now() - started
+    return result
 
 
 cdef bint _match_recursive(object pattern, object candidate, CMatchBindings bindings):
     """Recursive structural match without mutation."""
+    if _native_perf_enabled:
+        _native_perf_counters.match_nodes += 1
     if pattern is None and candidate is None:
         return True
     if pattern is None or candidate is None:
@@ -315,19 +389,35 @@ cdef bint _check_binding_equalities(CMatchBindings bindings):
     cdef dict seen = {}
     cdef int i
     cdef object name, mop, prev_mop
+    cdef uint64_t equality_started
 
     for i in range(bindings.count):
         name = bindings.names[i]
         mop = bindings.mops[i]
         if name in seen:
             prev_mop = seen[name]
+            if _native_perf_enabled:
+                _native_perf_counters.repeated_binding_checks += 1
+                equality_started = _perf_start()
             try:
                 from d810.hexrays.utils.hexrays_helpers import equal_mops_ignore_size
                 if not equal_mops_ignore_size(prev_mop, mop):
+                    if _native_perf_enabled:
+                        _native_perf_counters.repeated_binding_time_ns += (
+                            _perf_now() - equality_started
+                        )
                     return False
             except ImportError:
                 if prev_mop is not mop:
+                    if _native_perf_enabled:
+                        _native_perf_counters.repeated_binding_time_ns += (
+                            _perf_now() - equality_started
+                        )
                     return False
+            if _native_perf_enabled:
+                _native_perf_counters.repeated_binding_time_ns += (
+                    _perf_now() - equality_started
+                )
         else:
             seen[name] = mop
     return True
@@ -347,7 +437,7 @@ cdef class CRulePatternEntry:
         self.rule = rule
         self.pattern = pattern
         fingerprint_init(&self.fingerprint)
-        _compute_fingerprint_recursive(pattern, &self.fingerprint, 0)
+        _compute_fingerprint(pattern, &self.fingerprint)
 
 
 cdef class COpcodeIndexedStorage:
@@ -381,20 +471,35 @@ cdef class COpcodeIndexedStorage:
         """
         cdef int opcode = self._get_root_opcode(candidate)
         cdef list entries = self._by_opcode.get(opcode)
+        if _native_perf_enabled:
+            _native_perf_counters.bucket_lookups += 1
         if entries is None:
+            if _native_perf_enabled:
+                _native_perf_counters.bucket_misses += 1
+                _native_perf_counters.result_list_materializations += 1
             return []
+        if _native_perf_enabled:
+            _native_perf_counters.bucket_hits += 1
 
         # Compute candidate fingerprint
         cdef PatternFingerprint cand_fp
         fingerprint_init(&cand_fp)
-        _compute_fingerprint_recursive(candidate, &cand_fp, 0)
+        _compute_fingerprint(candidate, &cand_fp)
 
         # Filter by fingerprint compatibility
         cdef list result = []
         cdef CRulePatternEntry entry
         for entry in entries:
+            if _native_perf_enabled:
+                _native_perf_counters.entries_scanned += 1
             if fingerprint_compatible(&entry.fingerprint, &cand_fp):
                 result.append(entry)
+                if _native_perf_enabled:
+                    _native_perf_counters.entries_accepted += 1
+
+        if _native_perf_enabled:
+            _native_perf_counters.result_list_materializations += 1
+            _native_perf_counters.result_list_items += len(result)
 
         return result
 
@@ -408,3 +513,61 @@ cdef class COpcodeIndexedStorage:
             opcode = getattr(ast, "opcode", None)
             return <int>(opcode if opcode is not None else -1)
         return -1
+
+
+def _native_perf_configure(enabled):
+    """Configure the C-level counters without allocating hot-path objects."""
+    global _native_perf_enabled
+    _native_perf_enabled = bool(enabled)
+
+
+def _native_perf_reset():
+    """Reset all C-level counters at a manager session boundary."""
+    memset(&_native_perf_counters, 0, sizeof(PatternPerfCounters))
+
+
+def _native_perf_snapshot() -> dict:
+    """Materialize the C counters for the opt-in lifecycle receipt."""
+    cdef PatternPerfCounters counters = _native_perf_counters
+    return {
+        "backend": "cython",
+        "counter_domain": "native",
+        "provider_version": 1,
+        "coverage": "indexed matcher only; legacy PatternStorage is not instrumented",
+        "timing_model": "inclusive steady-clock spans around top-level calls",
+        "counters": {
+            "clock_reads": int(counters.clock_reads),
+            "fingerprint_calls": int(counters.fingerprint_calls),
+            "fingerprint_time_ns": int(counters.fingerprint_time_ns),
+            "bucket_lookups": int(counters.bucket_lookups),
+            "bucket_hits": int(counters.bucket_hits),
+            "bucket_misses": int(counters.bucket_misses),
+            "entries_scanned": int(counters.entries_scanned),
+            "entries_accepted": int(counters.entries_accepted),
+            "match_calls": int(counters.match_calls),
+            "match_time_ns": int(counters.match_time_ns),
+            "match_nodes": int(counters.match_nodes),
+            "binding_additions": int(counters.binding_additions),
+            "repeated_binding_checks": int(counters.repeated_binding_checks),
+            "repeated_binding_time_ns": int(counters.repeated_binding_time_ns),
+            "result_list_materializations": int(
+                counters.result_list_materializations
+            ),
+            "result_list_items": int(counters.result_list_items),
+            "to_dict_calls": int(counters.to_dict_calls),
+            "to_dict_items": int(counters.to_dict_items),
+        },
+    }
+
+
+def register_native_perf_provider():
+    """Select the Cython provider when this backend is active."""
+    _register_native_perf_provider(
+        "pattern_match",
+        snapshot=_native_perf_snapshot,
+        configure=_native_perf_configure,
+        reset=_native_perf_reset,
+    )
+
+
+register_native_perf_provider()

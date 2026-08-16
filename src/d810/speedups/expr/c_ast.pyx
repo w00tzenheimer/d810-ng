@@ -11,6 +11,12 @@ import cython
 
 import ida_hexrays
 import idaapi
+from libc.stdint cimport uint64_t
+from libc.string cimport memset
+from d810.core.native_perf import register_provider as _register_native_perf_provider
+
+cdef extern from "d810_perf.h" nogil:
+    uint64_t d810_perf_now_ns() noexcept
 
 from d810._vendor import typing_extensions as _compat
 from d810.core import getLogger
@@ -42,6 +48,22 @@ from d810.hexrays.ir.mop_snapshot import MopSnapshot
 from d810.hexrays.ir.mop_ownership import mop_mba_owner_scope
 
 logger = getLogger(__name__)
+
+
+cdef struct AstTypePerfCounters:
+    uint64_t clock_reads
+    uint64_t structural_key_calls
+    uint64_t structural_key_time_ns
+    uint64_t ast_proxy_creations
+
+
+cdef bint _native_perf_enabled = False
+cdef AstTypePerfCounters _native_perf_counters
+
+
+cdef inline uint64_t _native_perf_now() noexcept nogil:
+    _native_perf_counters.clock_reads += 1
+    return d810_perf_now_ns()
 
 
 # Pre-computed "N" signature lists for depth signatures.
@@ -1165,6 +1187,8 @@ cdef class AstProxy(AstBase):
     cdef public bint _mutable
 
     def __init__(self, target_ast: AstBase):
+        if _native_perf_enabled:
+            _native_perf_counters.ast_proxy_creations += 1
         self._target = target_ast
         self._mutable = <bint>False
 
@@ -1375,35 +1399,47 @@ def get_mop_key(mop: ida_hexrays.mop_t) -> tuple:
     Generates a fast, hashable key for a `mop_t` using the structural hash.
     Avoids `dstr()` entirely and ignores SSA valnum differences.
     """
+    cdef uint64_t started = 0
+    cdef object result
+    if _native_perf_enabled:
+        _native_perf_counters.structural_key_calls += 1
+        started = _native_perf_now()
+
     t = mop.t
     sz = mop.size
     try:
         h = int(structural_mop_hash(mop, 0))
-        return (t, sz, h)
+        result = (t, sz, h)
     except Exception:
         # Fallback: rely on cheap structural fields only; still avoid dstr().
         if t == ida_hexrays.mop_n:
-            return (t, sz, mop.valnum, mop.nnn.value)
+            result = (t, sz, mop.valnum, mop.nnn.value)
         elif t == ida_hexrays.mop_r:
-            return (t, sz, mop.r)
+            result = (t, sz, mop.r)
         elif t == ida_hexrays.mop_d:
             # Use EA if available; do not call dstr()
-            return (t, sz, mop.d.ea if mop.d else idaapi.BADADDR)
+            result = (t, sz, mop.d.ea if mop.d else idaapi.BADADDR)
         elif t == ida_hexrays.mop_S:
-            return (t, sz, mop.s.off)
+            result = (t, sz, mop.s.off)
         elif t == ida_hexrays.mop_v:
-            return (t, sz, mop.g)
+            result = (t, sz, mop.g)
         elif t == ida_hexrays.mop_l:
-            return (t, sz, mop.l.idx, mop.l.off)
+            result = (t, sz, mop.l.idx, mop.l.off)
         elif t == ida_hexrays.mop_b:
-            return (t, sz, mop.b)
+            result = (t, sz, mop.b)
         elif t == ida_hexrays.mop_h:
-            return (t, sz, mop.helper)
+            result = (t, sz, mop.helper)
         elif t == ida_hexrays.mop_str:
-            return (t, sz, mop.cstr)
+            result = (t, sz, mop.cstr)
         else:
             # Last resort: identity-based key
-            return (t, sz, id(mop))
+            result = (t, sz, id(mop))
+
+    if _native_perf_enabled:
+        _native_perf_counters.structural_key_time_ns += (
+            _native_perf_now() - started
+        )
+    return result
 
 
 def _mop_ast_cache_key(mop: object) -> tuple:
@@ -2200,3 +2236,44 @@ def minsn_to_ast(instruction: ida_hexrays.minsn_t) -> AstProxy | None:
 #             exc_info=True,
 #         )
 #         raise
+
+
+def _native_perf_configure(enabled):
+    """Configure Cython AST type counters from the core registry."""
+    global _native_perf_enabled
+    _native_perf_enabled = bool(enabled)
+
+
+def _native_perf_reset():
+    """Reset Cython AST type counters at a session boundary."""
+    memset(&_native_perf_counters, 0, sizeof(AstTypePerfCounters))
+
+
+def _native_perf_snapshot() -> dict:
+    """Materialize Cython AST type counters for the lifecycle receipt."""
+    cdef AstTypePerfCounters counters = _native_perf_counters
+    return {
+        "backend": "cython",
+        "counter_domain": "native",
+        "provider_version": 1,
+        "coverage": "Cython AST types and get_mop_key only",
+        "counters": {
+            "clock_reads": int(counters.clock_reads),
+            "structural_key_calls": int(counters.structural_key_calls),
+            "structural_key_time_ns": int(counters.structural_key_time_ns),
+            "ast_proxy_creations": int(counters.ast_proxy_creations),
+        },
+    }
+
+
+def register_native_perf_provider():
+    """Select the Cython provider when this backend is active."""
+    _register_native_perf_provider(
+        "ast_types",
+        snapshot=_native_perf_snapshot,
+        configure=_native_perf_configure,
+        reset=_native_perf_reset,
+    )
+
+
+register_native_perf_provider()

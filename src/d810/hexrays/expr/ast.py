@@ -111,6 +111,7 @@ if CythonMode().is_enabled():
             AstProxy,
             get_constant_mop,
             get_mop_key,
+            register_native_perf_provider as _register_ast_native_perf_provider,
         )
 
         _USING_CYTHON = True
@@ -124,6 +125,7 @@ if CythonMode().is_enabled():
             AstProxy,
             get_constant_mop,
             get_mop_key,
+            register_native_perf_provider as _register_ast_native_perf_provider,
         )
 
         _USING_CYTHON = False
@@ -137,9 +139,16 @@ else:
         AstProxy,
         get_constant_mop,
         get_mop_key,
+        register_native_perf_provider as _register_ast_native_perf_provider,
     )
 
     _USING_CYTHON = False
+
+
+# ``p_ast`` and ``c_ast`` intentionally share one stable provider name.  The
+# explicit dispatcher selection handles reload/import-order changes and lets
+# the core registry retire the previous backend's callback immediately.
+_register_ast_native_perf_provider()
 
 __all__ = [
     # Classes

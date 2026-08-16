@@ -12,12 +12,82 @@ Three optimizations:
 
 from __future__ import annotations
 
+import time
+
 from d810.core import typing
+from d810.core.cymode import CythonMode
+from d810.core.native_perf import register_provider as _register_native_perf_provider
 
 if typing.TYPE_CHECKING:
     from d810.hexrays.expr.p_ast import AstBase, AstConstant, AstLeaf, AstNode
 
 from d810.hexrays.ir.mop_snapshot import MopSnapshot
+
+
+_NATIVE_PERF_ENABLED = False
+_NATIVE_PERF_COUNTERS: dict[str, int] = {
+    "clock_reads": 0,
+    "fingerprint_calls": 0,
+    "fingerprint_time_ns": 0,
+    "bucket_lookups": 0,
+    "bucket_hits": 0,
+    "bucket_misses": 0,
+    "entries_scanned": 0,
+    "entries_accepted": 0,
+    "match_calls": 0,
+    "match_time_ns": 0,
+    "match_nodes": 0,
+    "binding_additions": 0,
+    "repeated_binding_checks": 0,
+    "repeated_binding_time_ns": 0,
+    "result_list_materializations": 0,
+    "result_list_items": 0,
+    "to_dict_calls": 0,
+    "to_dict_items": 0,
+}
+
+
+def _native_perf_now_ns() -> int:
+    _NATIVE_PERF_COUNTERS["clock_reads"] += 1
+    return time.perf_counter_ns()
+
+
+def _native_perf_configure(enabled: bool) -> None:
+    global _NATIVE_PERF_ENABLED
+    _NATIVE_PERF_ENABLED = bool(enabled)
+
+
+def _native_perf_reset() -> None:
+    for key in _NATIVE_PERF_COUNTERS:
+        _NATIVE_PERF_COUNTERS[key] = 0
+
+
+def _native_perf_snapshot() -> dict:
+    return {
+        "backend": "python",
+        "counter_domain": "python",
+        "provider_version": 1,
+        "coverage": "indexed matcher only; legacy PatternStorage is not instrumented",
+        "timing_model": "inclusive perf_counter_ns spans around top-level calls",
+        "counters": dict(_NATIVE_PERF_COUNTERS),
+    }
+
+
+def register_native_perf_provider() -> None:
+    """Select the Python provider when this is the active matcher backend."""
+    _register_native_perf_provider(
+        "pattern_match",
+        snapshot=_native_perf_snapshot,
+        configure=_native_perf_configure,
+        reset=_native_perf_reset,
+    )
+
+
+# The dispatcher calls the registration helper after selecting a backend.  A
+# direct Python-mode import still needs to make the provider available for
+# callers that use this compatibility module without importing ``engine``.
+if not CythonMode().is_enabled():
+    register_native_perf_provider()
 
 
 # =========================================================================
@@ -129,6 +199,7 @@ def compute_fingerprint(ast: AstBase) -> PatternFingerprint:
     Walks the tree once, counting nodes/leaves/constants and
     building a hash of the opcode structure.
     """
+    started = _native_perf_now_ns() if _NATIVE_PERF_ENABLED else 0
     opcode_hash = 0
     depth = 0
     node_count = 0
@@ -164,13 +235,19 @@ def compute_fingerprint(ast: AstBase) -> PatternFingerprint:
 
     depth = _walk(ast, 0)
 
-    return PatternFingerprint(
+    result = PatternFingerprint(
         opcode_hash=opcode_hash,
         depth=depth,
         node_count=node_count,
         leaf_count=leaf_count,
         const_count=const_count,
     )
+    if _NATIVE_PERF_ENABLED:
+        _NATIVE_PERF_COUNTERS["fingerprint_calls"] += 1
+        _NATIVE_PERF_COUNTERS["fingerprint_time_ns"] += (
+            _native_perf_now_ns() - started
+        )
+    return result
 
 
 # =========================================================================
@@ -254,6 +331,8 @@ class MatchBindings:
             return False
         self.bindings.append(MatchBinding(name, mop, dest_size, ea))
         self.count += 1
+        if _NATIVE_PERF_ENABLED:
+            _NATIVE_PERF_COUNTERS["binding_additions"] += 1
         return True
 
     def to_dict(self) -> dict[str, object]:
@@ -261,6 +340,9 @@ class MatchBindings:
 
         Returns MopSnapshot objects (not raw mop_t), which are safe to cache.
         """
+        if _NATIVE_PERF_ENABLED:
+            _NATIVE_PERF_COUNTERS["to_dict_calls"] += 1
+            _NATIVE_PERF_COUNTERS["to_dict_items"] += self.count
         return {b.name: b.mop for b in self.bindings}
 
     def get_leafs_by_name(self) -> dict[str, MatchBinding]:
@@ -269,6 +351,9 @@ class MatchBindings:
         Assumes _check_binding_equalities has validated that duplicate
         names bind to equal mops, so last-wins dict construction is safe.
         """
+        if _NATIVE_PERF_ENABLED:
+            _NATIVE_PERF_COUNTERS["result_list_materializations"] += 1
+            _NATIVE_PERF_COUNTERS["result_list_items"] += self.count
         return {b.name: b for b in self.bindings[: self.count]}
 
 
@@ -293,17 +378,25 @@ def match_pattern_nomut(
         True if the pattern matches the candidate, False otherwise.
         If True, bindings contains the variable->mop mappings.
     """
+    started = _native_perf_now_ns() if _NATIVE_PERF_ENABLED else 0
+    if _NATIVE_PERF_ENABLED:
+        _NATIVE_PERF_COUNTERS["match_calls"] += 1
     if bindings is None:
         bindings = MatchBindings()
     else:
         bindings.reset()
 
     if not _match_recursive(pattern, candidate, bindings):
+        if _NATIVE_PERF_ENABLED:
+            _NATIVE_PERF_COUNTERS["match_time_ns"] += _native_perf_now_ns() - started
         return False
 
     # Check implicit equalities: if the same variable name appears
     # multiple times, all bound mops must be equal
-    return _check_binding_equalities(bindings)
+    result = _check_binding_equalities(bindings)
+    if _NATIVE_PERF_ENABLED:
+        _NATIVE_PERF_COUNTERS["match_time_ns"] += _native_perf_now_ns() - started
+    return result
 
 
 def _match_recursive(
@@ -312,6 +405,8 @@ def _match_recursive(
     bindings: MatchBindings,
 ) -> bool:
     """Recursive structural match without mutation."""
+    if _NATIVE_PERF_ENABLED:
+        _NATIVE_PERF_COUNTERS["match_nodes"] += 1
     if pattern is None and candidate is None:
         return True
     if pattern is None or candidate is None:
@@ -423,59 +518,70 @@ def _check_binding_equalities(bindings: MatchBindings) -> bool:
         if binding.name in seen:
             prev_snap = seen[binding.name]
             curr_snap = binding.mop
+            equality_started = (
+                _native_perf_now_ns() if _NATIVE_PERF_ENABLED else 0
+            )
+            if _NATIVE_PERF_ENABLED:
+                _NATIVE_PERF_COUNTERS["repeated_binding_checks"] += 1
 
-            # Compare MopSnapshot objects using structural equality.
-            # We compare cache keys which include all relevant fields
-            # except size (matching equal_mops_ignore_size semantics).
-            if prev_snap is None or curr_snap is None:
-                if prev_snap is not curr_snap:
-                    return False
-            else:
-                # Compare type and value fields, ignoring size
-                if prev_snap.t != curr_snap.t:
-                    return False
-                # Type-specific comparison
-                if prev_snap.t == 0:  # mop_n
-                    try:
-                        import ida_hexrays
-
-                        if (
-                            prev_snap.t == ida_hexrays.mop_n
-                            and prev_snap.value != curr_snap.value
-                        ):
-                            return False
-                    except ImportError:
-                        pass
-                else:
-                    # For other types, compare the full cache key (minus size)
-                    prev_key = (
-                        prev_snap.t,
-                        prev_snap.valnum,
-                        prev_snap.value,
-                        prev_snap.reg,
-                        prev_snap.stkoff,
-                        prev_snap.gaddr,
-                        prev_snap.lvar_idx,
-                        prev_snap.lvar_off,
-                        prev_snap.block_num,
-                        prev_snap.helper_name,
-                        prev_snap.const_str,
-                    )
-                    curr_key = (
-                        curr_snap.t,
-                        curr_snap.valnum,
-                        curr_snap.value,
-                        curr_snap.reg,
-                        curr_snap.stkoff,
-                        curr_snap.gaddr,
-                        curr_snap.lvar_idx,
-                        curr_snap.lvar_off,
-                        curr_snap.block_num,
-                        curr_snap.helper_name,
-                        curr_snap.const_str,
-                    )
-                    if prev_key != curr_key:
+            try:
+                # Compare MopSnapshot objects using structural equality.
+                # We compare cache keys which include all relevant fields
+                # except size (matching equal_mops_ignore_size semantics).
+                if prev_snap is None or curr_snap is None:
+                    if prev_snap is not curr_snap:
                         return False
+                else:
+                    # Compare type and value fields, ignoring size
+                    if prev_snap.t != curr_snap.t:
+                        return False
+                    # Type-specific comparison
+                    if prev_snap.t == 0:  # mop_n
+                        try:
+                            import ida_hexrays
+
+                            if (
+                                prev_snap.t == ida_hexrays.mop_n
+                                and prev_snap.value != curr_snap.value
+                            ):
+                                return False
+                        except ImportError:
+                            pass
+                    else:
+                        # For other types, compare the full cache key (minus size)
+                        prev_key = (
+                            prev_snap.t,
+                            prev_snap.valnum,
+                            prev_snap.value,
+                            prev_snap.reg,
+                            prev_snap.stkoff,
+                            prev_snap.gaddr,
+                            prev_snap.lvar_idx,
+                            prev_snap.lvar_off,
+                            prev_snap.block_num,
+                            prev_snap.helper_name,
+                            prev_snap.const_str,
+                        )
+                        curr_key = (
+                            curr_snap.t,
+                            curr_snap.valnum,
+                            curr_snap.value,
+                            curr_snap.reg,
+                            curr_snap.stkoff,
+                            curr_snap.gaddr,
+                            curr_snap.lvar_idx,
+                            curr_snap.lvar_off,
+                            curr_snap.block_num,
+                            curr_snap.helper_name,
+                            curr_snap.const_str,
+                        )
+                        if prev_key != curr_key:
+                            return False
+            finally:
+                if _NATIVE_PERF_ENABLED:
+                    _NATIVE_PERF_COUNTERS["repeated_binding_time_ns"] += (
+                        _native_perf_now_ns() - equality_started
+                    )
         else:
             seen[binding.name] = binding.mop
     return True
@@ -560,18 +666,31 @@ class OpcodeIndexedStorage:
         compatible with the candidate.
         """
         opcode = self._get_root_opcode(candidate)
-        entries = self._by_opcode.get(opcode, [])
+        entries = self._by_opcode.get(opcode)
+        if _NATIVE_PERF_ENABLED:
+            _NATIVE_PERF_COUNTERS["bucket_lookups"] += 1
 
         if not entries:
+            if _NATIVE_PERF_ENABLED:
+                _NATIVE_PERF_COUNTERS["bucket_misses"] += 1
+                _NATIVE_PERF_COUNTERS["result_list_materializations"] += 1
             return []
+        if _NATIVE_PERF_ENABLED:
+            _NATIVE_PERF_COUNTERS["bucket_hits"] += 1
 
         # Pre-filter using fingerprints
         candidate_fp = compute_fingerprint(candidate)
         result = []
         for entry in entries:
+            if _NATIVE_PERF_ENABLED:
+                _NATIVE_PERF_COUNTERS["entries_scanned"] += 1
             if entry.fingerprint.compatible_with(candidate_fp):
                 result.append(entry)
-
+                if _NATIVE_PERF_ENABLED:
+                    _NATIVE_PERF_COUNTERS["entries_accepted"] += 1
+        if _NATIVE_PERF_ENABLED:
+            _NATIVE_PERF_COUNTERS["result_list_materializations"] += 1
+            _NATIVE_PERF_COUNTERS["result_list_items"] += len(result)
         return result
 
     @property

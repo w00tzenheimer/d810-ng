@@ -17,6 +17,7 @@ from d810.core.decompilation_session import (
     DecompilationSessionEvent,
 )
 from d810.core.logging import getLogger
+from d810.core import native_perf
 from d810.core.observability import get_active_diag_path
 from d810.core.provider_phase import ProviderPhaseSnapshot
 from d810.core.project import (
@@ -2622,6 +2623,17 @@ class D810Manager:
 
     def _on_session_started(self, event: DecompilationSessionEvent) -> None:
         """Reset observer-only state after the coordinator has opened a session."""
+        native_perf.configure_from_env()
+        if native_perf.enabled():
+            self._ensure_native_perf_providers()
+            native_perf.reset(
+                {
+                    "function_ea": int(event.function_ea),
+                    "database_identity": str(event.database_identity),
+                    "top_level_epoch": int(event.top_level_epoch),
+                    "session_id": str(getattr(event, "session_id", "")),
+                }
+            )
         self.start_profiling(event)
         self.stats.reset()
         MOP_CONSTANT_CACHE.clear()
@@ -2642,6 +2654,48 @@ class D810Manager:
         logger.info("MOP_TO_AST_CACHE stats: %s", MOP_TO_AST_CACHE.stats)
         self.block_optimizer.report_perf_counters()
         self._stop_timer()
+        receipt = native_perf.receipt_line()
+        if receipt is not None:
+            logger.info("%s", receipt)
+
+    @staticmethod
+    def _ensure_native_perf_providers() -> None:
+        """Import optional providers only for an opted-in native perf session."""
+        modules = (
+            "d810.optimizers.microcode.instructions.pattern_matching.pattern_speedups",
+            "d810.hexrays.ir.mop_utils",
+        )
+        for module_name in modules:
+            try:
+                module = importlib.import_module(module_name)
+                register = getattr(module, "register_native_perf_provider", None)
+                if register is not None:
+                    register()
+            except Exception:
+                logger.debug(
+                    "native performance provider unavailable: %s",
+                    module_name,
+                    exc_info=True,
+                )
+
+        # The Python provider modules above remain importable when Cython is
+        # disabled.  When enabled, importing the compiled modules registers the
+        # native C-struct providers under the same stable schema names.
+        for module_name in (
+            "d810.speedups.optimizers.c_pattern_match",
+            "d810.speedups.expr.c_ast",
+        ):
+            try:
+                module = importlib.import_module(module_name)
+                register = getattr(module, "register_native_perf_provider", None)
+                if register is not None:
+                    register()
+            except Exception:
+                logger.debug(
+                    "native Cython performance provider unavailable: %s",
+                    module_name,
+                    exc_info=True,
+                )
 
     @staticmethod
     def _stable_identity_anchor(identity) -> int:

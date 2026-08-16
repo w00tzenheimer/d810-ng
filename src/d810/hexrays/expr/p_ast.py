@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import abc
 import dataclasses
+import time
 import ida_hexrays
 import idaapi
 
 import d810.core.typing as typing
+from d810.core.cymode import CythonMode
 from d810.core import getLogger
 from d810.errors import AstEvaluationException
 from d810.core.bits import (
@@ -31,8 +33,43 @@ from d810.hexrays.utils.hexrays_helpers import (
 from d810.hexrays.ir.mop_snapshot import MopSnapshot
 from d810.core import NOT_GIVEN, NotGiven
 from d810.hexrays.ir.number_operand import safe_make_number
+from d810.core.native_perf import register_provider as _register_native_perf_provider
 
 logger = getLogger(__name__)
+
+
+_NATIVE_PERF_ENABLED = False
+_NATIVE_PERF_COUNTERS: dict[str, int] = {
+    "clock_reads": 0,
+    "structural_key_calls": 0,
+    "structural_key_time_ns": 0,
+    "ast_proxy_creations": 0,
+}
+
+
+def _native_perf_now_ns() -> int:
+    _NATIVE_PERF_COUNTERS["clock_reads"] += 1
+    return time.perf_counter_ns()
+
+
+def _native_perf_configure(enabled: bool) -> None:
+    global _NATIVE_PERF_ENABLED
+    _NATIVE_PERF_ENABLED = bool(enabled)
+
+
+def _native_perf_reset() -> None:
+    for key in _NATIVE_PERF_COUNTERS:
+        _NATIVE_PERF_COUNTERS[key] = 0
+
+
+def _native_perf_snapshot() -> dict:
+    return {
+        "backend": "python",
+        "counter_domain": "python",
+        "provider_version": 1,
+        "coverage": "Python AST types and get_mop_key only",
+        "counters": dict(_NATIVE_PERF_COUNTERS),
+    }
 
 
 # Pre-computed "N" signature lists for depth signatures.
@@ -954,6 +991,8 @@ class AstConstant(AstLeaf):
 
 class AstProxy(AstBase):
     def __init__(self, target_ast: AstBase):
+        if _NATIVE_PERF_ENABLED:
+            _NATIVE_PERF_COUNTERS["ast_proxy_creations"] += 1
         # The proxy initially holds a reference to the shared, frozen template
         self._target = target_ast
 
@@ -1145,7 +1184,7 @@ class AstProxy(AstBase):
         self._target.ast_index = value
 
 
-def get_mop_key(mop: ida_hexrays.mop_t) -> tuple:
+def _get_mop_key_impl(mop: ida_hexrays.mop_t) -> tuple:
     """
     Generates a fast, hashable key from a mop_t's essential attributes.
     This is significantly faster than using mop.dstr().
@@ -1208,3 +1247,29 @@ def get_mop_key(mop: ida_hexrays.mop_t) -> tuple:
                     mop_type_to_string(t),
                 )
                 return key + (f"unsupported_mop_t_{t}",)
+
+
+def get_mop_key(mop: ida_hexrays.mop_t) -> tuple:
+    """Build a structural key and record the optional Python timing."""
+    started = _native_perf_now_ns() if _NATIVE_PERF_ENABLED else 0
+    result = _get_mop_key_impl(mop)
+    if _NATIVE_PERF_ENABLED:
+        _NATIVE_PERF_COUNTERS["structural_key_calls"] += 1
+        _NATIVE_PERF_COUNTERS["structural_key_time_ns"] += (
+            _native_perf_now_ns() - started
+        )
+    return result
+
+
+def register_native_perf_provider() -> None:
+    """Select the Python provider when this is the active AST backend."""
+    _register_native_perf_provider(
+        "ast_types",
+        snapshot=_native_perf_snapshot,
+        configure=_native_perf_configure,
+        reset=_native_perf_reset,
+    )
+
+
+if not CythonMode().is_enabled():
+    register_native_perf_provider()
