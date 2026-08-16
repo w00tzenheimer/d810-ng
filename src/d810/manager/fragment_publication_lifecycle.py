@@ -48,6 +48,11 @@ class SessionFragmentPublicationLifecycleAuthority:
     def evidence_generation(self) -> int:
         return int(self.state.evidence_generation)
 
+    @property
+    def native_mutation_quarantined(self) -> bool:
+        """Project the session's active poison quarantine to the gateway port."""
+        return bool(self.state.native_mutation_quarantined)
+
     def _require_typed_plan(self, plan: FragmentPlan) -> None:
         if not isinstance(plan, FragmentPlan):
             raise TypeError("fragment lifecycle authority requires a FragmentPlan")

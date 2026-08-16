@@ -13,6 +13,7 @@ import re
 
 from d810.hexrays.mutation.fragment_publication_lifecycle import (
     FragmentPublicationLifecycleAuthority,
+    NativeMutationQuarantined,
 )
 from d810.hexrays.mutation.semantic_fragment_failure import (
     MbaSemanticFragmentFailure,
@@ -1040,8 +1041,12 @@ def execute_patch_transaction(
         raise RuntimeError(
             "semantic fragment transaction requires an independent batch"
         )
-    _require_backend_port(backend)
     lifecycle_authority = _require_lifecycle_authority(gateway)
+    if lifecycle_authority.native_mutation_quarantined:
+        raise NativeMutationQuarantined(
+            "native mutation is quarantined for the current evidence generation"
+        )
+    _require_backend_port(backend)
     transaction_attempt = TransactionAttemptId.new(
         plan.plan_id,
         str(gateway.session_id),
@@ -1115,6 +1120,7 @@ def execute_patch_transaction(
 
 __all__ = [
     "BoundSemanticCfgTransaction",
+    "NativeMutationQuarantined",
     "PreparedSemanticCfgTransaction",
     "SemanticFragmentCfgProjection",
     "SemanticFragmentPublicationRejected",

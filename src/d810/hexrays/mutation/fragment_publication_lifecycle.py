@@ -14,11 +14,18 @@ from d810.transforms.cfg_transaction import (
 )
 
 
+class NativeMutationQuarantined(RuntimeError):
+    """A publication was attempted after lifecycle-owned poison quarantine."""
+
+
 @runtime_checkable
 class FragmentPublicationLifecycleAuthority(Protocol):
     """Receipt-backed lifecycle port owned outside the mutation backend."""
 
     evidence_generation: int
+
+    @property
+    def native_mutation_quarantined(self) -> bool: ...
 
     def record_fragment_plan_ready(self, plan: FragmentPlan) -> None: ...
 
@@ -60,4 +67,7 @@ class FragmentPublicationLifecycleAuthority(Protocol):
     ) -> bool: ...
 
 
-__all__ = ["FragmentPublicationLifecycleAuthority"]
+__all__ = [
+    "FragmentPublicationLifecycleAuthority",
+    "NativeMutationQuarantined",
+]

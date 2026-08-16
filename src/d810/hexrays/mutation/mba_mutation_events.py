@@ -8,6 +8,7 @@ import uuid
 
 from d810.hexrays.mutation.fragment_publication_lifecycle import (
     FragmentPublicationLifecycleAuthority,
+    NativeMutationQuarantined,
 )
 from d810.core.events import EventEmitter
 from d810.core.logging import getLogger
@@ -783,6 +784,14 @@ class MbaMutationGateway:
     def _require_generation_usable(self) -> None:
         self.identity_index.require_generation_usable()
 
+    def _require_mutation_permitted(self) -> None:
+        """Reject a gateway race after the lifecycle enters poison quarantine."""
+        authority = self.lifecycle_authority
+        if authority is not None and authority.native_mutation_quarantined:
+            raise NativeMutationQuarantined(
+                "native mutation is quarantined for the current evidence generation"
+            )
+
     def _record_cfg_attempt_planned(
         self,
         *,
@@ -1060,6 +1069,7 @@ class MbaMutationGateway:
         carries neither this gateway's active batch nor its receipt history.
         """
         self._require_generation_usable()
+        self._require_mutation_permitted()
         return MbaMutationGateway(
             native_key=self.native_key,
             generation=int(self.identity_index.generation),
@@ -1088,6 +1098,7 @@ class MbaMutationGateway:
         patch_plan_refs: Iterable[PlanBlockRef] = (),
     ) -> None:
         self._require_generation_usable()
+        self._require_mutation_permitted()
         if self.active:
             raise RuntimeError("a structural mutation batch is already active")
         if not isinstance(kind, StructuralMutationKind):
@@ -1268,6 +1279,8 @@ class MbaMutationGateway:
         plan_refs: Iterable[PlanBlockRef],
     ) -> None:
         """Cross the SDK-write boundary for exactly reserved patch blocks."""
+        self._require_generation_usable()
+        self._require_mutation_permitted()
         self._require_active()
         if attempt != self._current_transaction_attempt:
             raise ValueError("patch realization attempt is not the active batch")
@@ -2108,6 +2121,7 @@ class MbaMutationGateway:
     ) -> MbaMutationReceipt:
         """Lower, bind, realize, observe, and commit one semantic PatchPlan."""
         self._require_generation_usable()
+        self._require_mutation_permitted()
         from d810.hexrays.mutation.semantic_fragment_publication import (
             _failure_message,
             _first_failed_obligation,

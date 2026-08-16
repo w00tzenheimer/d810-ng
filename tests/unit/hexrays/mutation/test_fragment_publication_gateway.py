@@ -31,6 +31,7 @@ from d810.hexrays.mutation.mba_mutation_events import (
     StructuralMutationKind,
 )
 from d810.hexrays.mutation.semantic_fragment_publication import (
+    NativeMutationQuarantined,
     SemanticFragmentPublicationRejected,
     SemanticFragmentRollbackFailed,
 )
@@ -384,6 +385,7 @@ def _semantic_lifecycle() -> NativePreanalysisSessionState:
 class _ReceiptLifecycleAuthority:
     def __init__(self) -> None:
         self.evidence_generation = 1
+        self.native_mutation_quarantined = False
         self.events: list[tuple[str, object]] = []
 
     def record_fragment_plan_ready(self, plan: FragmentPlan) -> None:
@@ -1075,6 +1077,79 @@ def test_gateway_commits_only_after_pre_and_post_semantic_validation() -> None:
     assert [event.phase_index for event in authority_events] == list(range(7))
     assert len({event.attempt_id for event in authority_events}) == 1
     assert all(event.attempt_id.plan_id == plan.plan_id for event in authority_events)
+
+
+def test_quarantine_backstop_rejects_raced_gateway_before_publication() -> None:
+    plan = _plan()
+    state = _semantic_lifecycle()
+    lifecycle = SessionFragmentPublicationLifecycleAuthority(
+        native_key=NATIVE_KEY,
+        state=state,
+    )
+    gateway, committed, aborted = _gateway(
+        plan,
+        lifecycle_authority=lifecycle,
+    )
+    backend = _FragmentBackend(gateway)
+    planned: list[MbaMutationPlanned] = []
+    authority_events: list[MbaCfgTransactionAuthorityObserved] = []
+    lifecycle_events: list[str] = []
+    gateway.event_emitter.on(MbaMutationPlanned, planned.append)
+    gateway.event_emitter.on(
+        MbaCfgTransactionAuthorityObserved,
+        authority_events.append,
+    )
+    state.event_observer = lambda transition: lifecycle_events.append(
+        transition.operation
+    )
+
+    assert state.request_poisoned_generation_restart(reason="raced gateway")
+    assert lifecycle.native_mutation_quarantined
+    planned.clear()
+    authority_events.clear()
+    lifecycle_events.clear()
+
+    attempt = TransactionAttemptId.new(
+        "raced-patch",
+        gateway.session_id,
+        gateway.generation,
+    )
+    operations = (
+        lambda: gateway.new_transaction(),
+        lambda: gateway.begin_batch(StructuralMutationKind.BLOCK_INSERT),
+        lambda: gateway.begin_patch_realization(attempt, plan_refs=()),
+        lambda: gateway.execute_patch_transaction(backend, plan),
+    )
+    for operation in operations:
+        with pytest.raises(
+            NativeMutationQuarantined,
+            match="native mutation is quarantined",
+        ):
+            operation()
+
+    assert gateway.active is False
+    assert gateway.current_transaction_attempt is None
+    assert gateway.receipts == ()
+    assert planned == []
+    assert authority_events == []
+    assert lifecycle_events == []
+    assert committed == []
+    assert aborted == []
+    assert backend.calls == []
+
+
+def test_nonquarantined_gateway_commits_ordinary_transaction() -> None:
+    gateway, committed, aborted = _gateway(_plan())
+
+    receipt = gateway.record(
+        StructuralMutationKind.BLOCK_INSERT,
+        description="ordinary transaction",
+    )
+
+    assert receipt.kind is StructuralMutationKind.BLOCK_INSERT
+    assert gateway.active is False
+    assert len(committed) == 1
+    assert aborted == []
 
 
 def test_generated_preflight_rejection_is_clean_and_write_free() -> None:
