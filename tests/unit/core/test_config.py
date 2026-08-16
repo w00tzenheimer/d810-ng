@@ -208,7 +208,8 @@ class TestConfiguration(unittest.TestCase):
 
                 # 2. Run discovery with explicit ida_user_dir
                 config = D810Configuration(ida_user_dir=ida_dir)
-                projects = config.discover_projects()
+                with self.assertLogs("d810.core.config", level="WARNING") as logs:
+                    projects = config.discover_projects()
 
                 # 3. Verify results
                 project_map = {p.path.name: p for p in projects}
@@ -227,6 +228,14 @@ class TestConfiguration(unittest.TestCase):
                 self.assertEqual(
                     project_map["hodur_flag2.json"].description,
                     "User Override for Hodur",
+                )
+                self.assertTrue(
+                    any(
+                        "hodur_flag2.json shadows the bundled project" in message
+                        and "bundled updates will not apply" in message
+                        for message in logs.output
+                    ),
+                    logs.output,
                 )
 
                 # Check that a built-in project that was NOT overridden is still loaded

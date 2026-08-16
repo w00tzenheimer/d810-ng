@@ -822,6 +822,70 @@ def _verify_complement_mask_hodur_v1(rule: Any, bit_width: int) -> bool:
         return False
 
 
+def _eidolon_key_schedule_3_expected_rule():
+    """Build the audited coefficient-six Eidolon identity."""
+
+    from d810.mba.dsl import Const, Var
+
+    x, y = Var("x_0"), Var("x_1")
+    six = Const("6", 6)
+    pattern = (
+        six * (~(x | y))
+        + six * (y & ~x)
+        + (x ^ y)
+        + six * (x & y)
+        - six * ((~x) | y)
+    )
+    return pattern, x ^ y
+
+
+def _verify_eidolon_key_schedule_3_v1(rule: Any, bit_width: int) -> bool:
+    """Certify the coefficient-six identity through small Z3 obligations."""
+
+    if type(bit_width) is not int or bit_width <= 0:
+        return False
+    try:
+        expected_pattern, expected_replacement = (
+            _eidolon_key_schedule_3_expected_rule()
+        )
+        if _symbolic_expression_signature(rule.pattern) != _symbolic_expression_signature(
+            expected_pattern
+        ):
+            return False
+        if _symbolic_expression_signature(
+            rule.replacement
+        ) != _symbolic_expression_signature(expected_replacement):
+            return False
+        if tuple(getattr(rule, "CONSTRAINTS", ()) or ()):
+            return False
+
+        x = z3.BitVec("certificate_x", bit_width)
+        y = z3.BitVec("certificate_y", bit_width)
+        not_x = ~x
+        neither = ~(x | y)
+        only_y = y & not_x
+        both = x & y
+        union = not_x | y
+
+        # The masks are disjoint partitions, so their modular arithmetic sum
+        # is the same as their bitwise union.  Prove the two partitions and the
+        # ring distribution independently to avoid one impractical bit-blast.
+        if not _is_unsat(neither + only_y != not_x):
+            return False
+        if not _is_unsat(not_x + both != union):
+            return False
+        if not _is_unsat(
+            6 * neither + 6 * only_y + 6 * both
+            != 6 * (neither + only_y + both)
+        ):
+            return False
+
+        reduced = 6 * union + (x ^ y) - 6 * union
+        return _is_unsat(reduced != (x ^ y))
+    except Exception:
+        return False
+
+
 def verify_rule(
     rule,
     bit_width: int | None = None,
@@ -881,6 +945,12 @@ def verify_rule(
     # Resolve bit_width: parameter > rule.BIT_WIDTH > default 32
     if bit_width is None:
         bit_width = getattr(rule, "BIT_WIDTH", 32)
+
+    z3_certificate_prover = getattr(rule, "Z3_CERTIFICATE_PROVER", None)
+    if z3_certificate_prover is not None:
+        if z3_certificate_prover != "eidolon-key-schedule-3-v1":
+            return False
+        return _verify_eidolon_key_schedule_3_v1(rule, bit_width)
 
     certificate_prover = getattr(rule, "EGGLOG_CERTIFICATE_PROVER", None)
     if certificate_prover is not None:

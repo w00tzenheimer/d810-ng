@@ -272,10 +272,20 @@ class D810Configuration:
             if p.name != ConfigConstants.OPTIONS_FILENAME
         }
 
+        plugin_by_name = {p.name: p for p in plugin_configs}
+        user_by_name = {p.name: p for p in user_configs}
+        for name in sorted(plugin_by_name.keys() & user_by_name.keys()):
+            logger.warning(
+                "User project %s shadows the bundled project; bundled updates will "
+                "not apply while override %s exists",
+                name,
+                user_by_name[name],
+            )
+
         # User configs override plugin configs with the same name.
         # Create a dictionary of name -> path to handle overrides.
-        config_paths = {p.name: p for p in plugin_configs}
-        config_paths.update({p.name: p for p in user_configs})
+        config_paths = dict(plugin_by_name)
+        config_paths.update(user_by_name)
 
         projects = []
         # The list of configuration names should be persisted for the UI.

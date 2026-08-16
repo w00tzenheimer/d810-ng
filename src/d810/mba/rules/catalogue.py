@@ -254,6 +254,7 @@ MBA_RULE_FAMILIES: Mapping[str, tuple[type[VerifiableRule], ...]] = (
                 xor.Xor_HackersDelightRule_5,
                 eidolon.Xor_EidolonKeySchedule_1,
                 eidolon.Xor_EidolonKeySchedule_2,
+                eidolon.Xor_EidolonKeySchedule_3,
                 xor.Xor_MbaRule_1,
                 xor.Xor_MbaRule_2,
                 xor.Xor_MbaRule_3,

@@ -29,6 +29,7 @@ _ALL_MATURITIES = [
 x, y = Var("x_0"), Var("x_1")
 ONE = Const("1", 1)
 TWO = Const("2", 2)
+SIX = Const("6", 6)
 
 
 class Xor_EidolonKeySchedule_1(VerifiableRule):
@@ -81,3 +82,27 @@ class Xor_EidolonKeySchedule_2(VerifiableRule):
 
     DESCRIPTION = "Simplify the Eidolon 6-term linear-MBA XOR to x ^ y"
     REFERENCE = "Eidolon loader message-template key schedule (0x70FC53)"
+
+
+class Xor_EidolonKeySchedule_3(VerifiableRule):
+    """Simplify a second unconditional six-term expression to ``x ^ y``.
+
+    The coefficient-six terms cancel because the three disjoint masks
+    ``~x & ~y``, ``~x & y``, and ``x & y`` sum to ``~x | y`` at every
+    operand width.
+    """
+
+    maturities = _ALL_MATURITIES
+    Z3_CERTIFICATE_PROVER = "eidolon-key-schedule-3-v1"
+
+    PATTERN = (
+        SIX * (~(x | y))
+        + SIX * (y & ~x)
+        + (x ^ y)
+        + SIX * (x & y)
+        - SIX * ((~x) | y)
+    )
+    REPLACEMENT = x ^ y
+
+    DESCRIPTION = "Simplify the Eidolon coefficient-six linear-MBA XOR to x ^ y"
+    REFERENCE = "Eidolon loader message-template rolling XOR"

@@ -210,7 +210,8 @@ _FAMILY_MEMBERSHIP: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
         "XOR",
         (
             "xor-1-mba-1", "xor-almost-1", "xor-chain",
-            "xor-eidolon-key-schedule-1", "xor-eidolon-key-schedule-2", "xor-factor-1",
+            "xor-eidolon-key-schedule-1", "xor-eidolon-key-schedule-2",
+            "xor-eidolon-key-schedule-3", "xor-factor-1",
             "xor-factor-2", "xor-factor-3", "xor-hackers-delight-1",
             "xor-hackers-delight-2", "xor-hackers-delight-3",
             "xor-hackers-delight-4", "xor-hackers-delight-5", "xor-hodur-1",
