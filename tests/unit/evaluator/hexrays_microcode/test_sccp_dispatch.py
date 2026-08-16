@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import gc
 import importlib
 import os
 import sys
 import types
 from dataclasses import replace
 from pathlib import Path
+from types import MappingProxyType
+import weakref
 
 import pytest
 
@@ -154,8 +157,10 @@ def make_unsupported() -> SccpProgram:
     )
 
 
-def make_invalid_program() -> SccpProgram:
-    return SccpProgram.from_parts((SccpBlock(0, (9,), ()),), (), {})
+def make_error_program() -> SccpProgram:
+    """A valid empty model whose virtual entry edge has no target block."""
+
+    return SccpProgram.from_parts((), (), {})
 
 
 def test_disabled_mode_is_python(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -323,7 +328,7 @@ def test_cython_dispatch_preserves_limit_and_error_proof_invariants(
     monkeypatch.setattr(_fast_sccp, "_load_cython_solver", lambda: Compiled)
 
     limited = _fast_sccp.solve(make_diamond(), work_budget=0)
-    invalid = _fast_sccp.solve(make_invalid_program())
+    invalid = _fast_sccp.solve(make_error_program())
 
     for result in (limited, invalid):
         assert result.constants == {}
@@ -331,6 +336,31 @@ def test_cython_dispatch_preserves_limit_and_error_proof_invariants(
         assert result.reachable_blocks == frozenset()
     assert limited.status is SccpStatus.WORK_LIMIT
     assert invalid.status is SccpStatus.ERROR
+
+
+class _FakeLiveBlock:
+    """Stand-in for a live IDA/SWIG block that must not cross the model boundary."""
+
+
+def test_detached_cache_boundary_rejects_live_blocks_and_freezes_valid_inputs() -> None:
+    live = _FakeLiveBlock()
+    live_ref = weakref.ref(live)
+
+    with pytest.raises(TypeError, match="SccpBlock"):
+        SccpProgram.from_parts((live,), (), {})  # type: ignore[arg-type]
+
+    del live
+    gc.collect()
+    assert live_ref() is None
+
+    valid = make_constant_program(7)
+    assert isinstance(valid.blocks, tuple)
+    assert all(isinstance(block, SccpBlock) for block in valid.blocks)
+    assert isinstance(valid.instructions, tuple)
+    assert all(isinstance(instruction, SccpInstruction) for instruction in valid.instructions)
+    assert isinstance(valid.uses_by_value, MappingProxyType)
+    assert isinstance(valid.mop_keys_by_value, MappingProxyType)
+    assert isinstance(valid.mop_keys_by_value[1], tuple)
 
 
 def test_facade_default_uses_dispatcher_and_can_expose_cython_backend(
@@ -461,7 +491,7 @@ def test_compiled_solver_matches_python_when_extension_is_built() -> None:
         (make_unsupported(), None),
         (make_diamond(), 0),
         (make_diamond(), 1),
-        (make_invalid_program(), None),
+        (make_error_program(), None),
     )
     for model, budget in cases:
         actual = c_sccp.solve(model, work_budget=budget)
