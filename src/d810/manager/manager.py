@@ -55,6 +55,10 @@ from d810.diagnostics.workbench_models import (
 from d810.evaluator.hexrays_microcode.dispatcher_artifacts import (
     plan_dispatcher_state_return_carrier_artifact,
 )
+from d810.evaluator.hexrays_microcode.sccp import (
+    reset_sccp_session,
+    sccp_session_stats,
+)
 from d810.hexrays.hooks.ctree_hooks import CtreeOptimizerManager
 from d810.hexrays.hooks.hexrays_hooks import HexraysDecompilationHook
 from d810.hexrays.hooks.optblock_adapter import BlockOptimizerManager
@@ -143,6 +147,47 @@ _MAX_EVIDENCE_REBIND_RETRIES = 4
 _MAX_POISON_RECOVERY_RETRIES = 1
 
 logger = getLogger("d810")
+
+
+def _cache_session_summary(cache) -> dict[str, int | float | None]:
+    stats = cache.stats
+    return {
+        "seq": int(stats.seq),
+        "size": int(stats.size),
+        "weight": float(stats.weight),
+        "hits": int(stats.hits),
+        "misses": int(stats.misses),
+        "max_size_ever": int(stats.max_size_ever),
+        "max_weight_ever": float(stats.max_weight_ever),
+        "lookups": int(stats.lookups),
+        "insertions": int(stats.insertions),
+        "replacements": int(stats.replacements),
+        "capacity_evictions": int(stats.capacity_evictions),
+        "expirations": int(stats.expirations),
+        "explicit_removals": int(stats.explicit_removals),
+        "weak_reference_removals": int(stats.weak_reference_removals),
+        "configured_max_size": stats.configured_max_size,
+        "configured_max_weight": stats.configured_max_weight,
+    }
+
+
+def _session_telemetry_summary() -> dict[str, object]:
+    """Capture one detached summary before the next session can reset state."""
+
+    summary: dict[str, object] = {}
+    try:
+        summary["sccp"] = dict(sccp_session_stats().as_dict())
+    except Exception:
+        summary["sccp"] = {"error": "unavailable"}
+    try:
+        summary["mop_constant_cache"] = _cache_session_summary(MOP_CONSTANT_CACHE)
+    except Exception:
+        summary["mop_constant_cache"] = {"error": "unavailable"}
+    try:
+        summary["mop_to_ast_cache"] = _cache_session_summary(MOP_TO_AST_CACHE)
+    except Exception:
+        summary["mop_to_ast_cache"] = {"error": "unavailable"}
+    return summary
 
 
 def _load_semantic_route_reference_oracle_registry(
@@ -2639,16 +2684,17 @@ class D810Manager:
         native_perf.configure(get_settings().native_perf)
         if native_perf.enabled():
             self._ensure_native_perf_providers()
-        self.start_profiling(event)
+        reset_sccp_session()
         self.stats.reset()
-        MOP_CONSTANT_CACHE.clear()
-        MOP_TO_AST_CACHE.clear()
+        MOP_CONSTANT_CACHE.clear(reset_stats=True)
+        MOP_TO_AST_CACHE.clear(reset_stats=True)
         Z3MopProver().clear_caches()
         self.instruction_optimizer.reset_cycle_detection()
         self.instruction_optimizer.reset_run_later_state()
         self.block_optimizer.reset_pass_counter()
         self.block_optimizer.reset_pipeline_tracker()
         self.block_optimizer.reset_perf_counters()
+        self.start_profiling(event)
         self._start_timer()
 
     def _on_session_finished(self, event: DecompilationSessionEvent) -> None:
@@ -2656,10 +2702,18 @@ class D810Manager:
         primary_error: BaseException | None = None
         receipt = None
         try:
+            try:
+                aggregate = _session_telemetry_summary()
+            except Exception:
+                aggregate = {"error": "unavailable"}
+            try:
+                logger.info("Decompilation session aggregate: %s", aggregate)
+            except Exception:
+                # Telemetry must never prevent the lifecycle owner from
+                # releasing the session or running ordinary cleanup callbacks.
+                pass
             self.stop_profiling(event)
             self.stats.report()
-            logger.info("MOP_CONSTANT_CACHE stats: %s", MOP_CONSTANT_CACHE.stats)
-            logger.info("MOP_TO_AST_CACHE stats: %s", MOP_TO_AST_CACHE.stats)
             self.block_optimizer.report_perf_counters()
             self._stop_timer()
         except BaseException as exc:
@@ -2707,7 +2761,6 @@ class D810Manager:
                 )
         if native_perf.enabled():
             native_perf.require_providers()
-
 
     @staticmethod
     def _stable_identity_anchor(identity) -> int:

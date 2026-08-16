@@ -24,6 +24,8 @@ Removed (dead code, 0 production consumers):
     patching    - PatchAction, PatchRecorder, BinaryPatcher (deleted)
 """
 
+import contextlib
+
 # Configuration
 from .config import (
     D810Configuration,
@@ -189,9 +191,8 @@ class _SharedMopCaches:
     """
 
     def __init__(self) -> None:
-        # Keep sizes reasonable; tweak as needed elsewhere.
-        self.MOP_CONSTANT_CACHE = CacheImpl(max_size=1000)
-        self.MOP_TO_AST_CACHE = CacheImpl(max_size=20480)
+        self.MOP_CONSTANT_CACHE = CacheImpl(max_size=4096)
+        self.MOP_TO_AST_CACHE = CacheImpl(max_size=40960)
 
 
 _shared_caches = _SharedMopCaches()
@@ -202,6 +203,47 @@ MOP_CONSTANT_CACHE = _shared_caches.MOP_CONSTANT_CACHE
 
 MOP_TO_AST_CACHE = _shared_caches.MOP_TO_AST_CACHE
 """Cache for microcode operand to AST conversions."""
+
+
+def _validate_mop_cache_capacity(name: str, capacity: int) -> None:
+    if isinstance(capacity, bool) or not isinstance(capacity, int) or capacity <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+
+
+@contextlib.contextmanager
+def temporary_mop_cache_policy(
+    constant_capacity: int,
+    ast_capacity: int,
+):
+    """Temporarily resize the shared MOP caches for a replay session.
+
+    The global cache objects are deliberately retained.  Reconfiguring the
+    existing objects keeps all Python and Cython callers on the same cache,
+    while the cache's reset semantics make each policy interval a fresh
+    telemetry session.  Both limits are restored even when setup or the
+    replay body fails.
+    """
+
+    _validate_mop_cache_capacity("constant_capacity", constant_capacity)
+    _validate_mop_cache_capacity("ast_capacity", ast_capacity)
+
+    original_constant = MOP_CONSTANT_CACHE.stats.configured_max_size
+    original_ast = MOP_TO_AST_CACHE.stats.configured_max_size
+    constant_applied = False
+    ast_applied = False
+    try:
+        MOP_CONSTANT_CACHE.reconfigure_capacity(constant_capacity)
+        constant_applied = True
+        MOP_TO_AST_CACHE.reconfigure_capacity(ast_capacity)
+        ast_applied = True
+        yield
+    finally:
+        try:
+            if ast_applied:
+                MOP_TO_AST_CACHE.reconfigure_capacity(original_ast)
+        finally:
+            if constant_applied:
+                MOP_CONSTANT_CACHE.reconfigure_capacity(original_constant)
 
 
 __all__ = [
@@ -311,6 +353,7 @@ __all__ = [
     # MOP caches
     "MOP_CONSTANT_CACHE",
     "MOP_TO_AST_CACHE",
+    "temporary_mop_cache_policy",
     # ctree_snapshot
     "serialize_ctree",
     "deserialize_ctree",
