@@ -849,6 +849,23 @@ DAC_MASM_CASES = [
         skip_if_function_absent=True,
     ),
     DeobfuscationCase(
+        function="sub_7FF856629E30",
+        description=(
+            "Exact live Eidolon call-preservation fixture. The direct "
+            "effectful helper call and its control-flow operands must remain "
+            "visible in the rebuilt export. Portable fake-jump preflight "
+            "coverage is provided separately by the executor tests."
+        ),
+        project="eidolon_v3_const_solve.json",
+        obfuscated_contains=["while ( 1 )", "0x6CD333EA", "0x35", "0x16"],
+        deobfuscated_contains=["MEMORY[0x200000000]"],
+        deobfuscated_regexes=[
+            r"MEMORY\[0x200000000\]\(.*a3: 0x35,.*a4: 0x16,.*a5: 0x28",
+        ],
+        must_change=True,
+        skip_if_function_absent=True,
+    ),
+    DeobfuscationCase(
         function="sub_7FF85A59E4D0",
         description=(
             "Live Eidolon state-machine export with residual effect-free "
