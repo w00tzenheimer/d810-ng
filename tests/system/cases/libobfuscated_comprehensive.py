@@ -814,6 +814,19 @@ DAC_MASM_CASES = [
         skip_if_function_absent=True,
     ),
     DeobfuscationCase(
+        function="finite_zero_set_predicate32",
+        description=(
+            "Mixed-width bounded partitioned-affine predicate. The proven "
+            "semantic lift renders both recovered finite roots."
+        ),
+        project="eidolon_v3_const_solve.json",
+        obfuscated_contains=["0xFFFFFF8F", "0x70"],
+        deobfuscated_contains=["0x124924AF", "0x924924AF"],
+        must_change=True,
+        required_rules=["FiniteZeroSetPredicateBlockRule"],
+        skip_if_function_absent=True,
+    ),
+    DeobfuscationCase(
         function="Eidolon_RunFiberWorker13",
         description=(
             "Live Eidolon worker-loop export. Guards the transaction preflight "

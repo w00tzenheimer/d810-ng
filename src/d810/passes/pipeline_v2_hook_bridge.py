@@ -12,6 +12,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from d810.core.config import RuleConfiguration
+from d810.core.execution_scope import ExecutionPipeline
 from d810.core.maturity_labels import POST_STATE_MACHINE_FCP_MATURITIES
 from d810.passes.cleanup_family_adapter import (
     SIMPLE_FLATTENING_CLEANUP_PASS_ID,
@@ -23,6 +24,7 @@ from d810.passes.constant_simplification import (
 )
 from d810.passes.hook_transform_passes import build_hook_transform_pass
 from d810.passes.mba_simplify import MBA_SIMPLIFY_PASS_ID, build_mba_simplify_pass
+from d810.passes.mba_transform_options import mba_transform_stages
 from d810.passes.mba_solve import (
     MBA_SOLVE_PASS_ID,
     build_mba_solve_pass,
@@ -111,24 +113,45 @@ def _state_machine_rule_config(
     )
 
 
-def _instruction_rules_from(config: PipelineConfig) -> tuple[RuleConfiguration, ...]:
+def _mba_simplify_rules_from(
+    config: PipelineConfig,
+) -> tuple[tuple[RuleConfiguration, ...], tuple[RuleConfiguration, ...]]:
+    """Route selected MBA transforms through their declared execution pipeline."""
     adapter = build_mba_simplify_pass(config)
-    return tuple(
-        _rule_config(
-            implementation_name,
-            {
-                **adapter.transform_options.get(transform_id, {}),
-                "generate_commutative_permutations": (
-                    adapter.generate_commutative_permutations
-                ),
-            },
-        )
-        for transform_id, implementation_name in zip(
-            adapter.transform_ids,
-            adapter.implementation_names,
-            strict=True,
-        )
-    )
+    stages_by_id = {stage.stage_id: stage for stage in mba_transform_stages()}
+    instruction_rules: list[RuleConfiguration] = []
+    block_rules: list[RuleConfiguration] = []
+    for transform_id, implementation_name in zip(
+        adapter.transform_ids,
+        adapter.implementation_names,
+        strict=True,
+    ):
+        stage = stages_by_id[transform_id]
+        if stage.pipeline is ExecutionPipeline.INSTRUCTION:
+            instruction_rules.append(
+                _rule_config(
+                    implementation_name,
+                    {
+                        **adapter.transform_options.get(transform_id, {}),
+                        "generate_commutative_permutations": (
+                            adapter.generate_commutative_permutations
+                        ),
+                    },
+                )
+            )
+        elif stage.pipeline is ExecutionPipeline.FLOW:
+            block_rules.append(
+                _rule_config(
+                    implementation_name,
+                    adapter.transform_options.get(transform_id, {}),
+                )
+            )
+        else:
+            raise PipelineConfigError(
+                f"mba-simplify transform {transform_id!r} has unsupported pipeline "
+                f"{stage.pipeline.value!r}"
+            )
+    return tuple(instruction_rules), tuple(block_rules)
 
 
 # The rule implementing ``mba-solve`` is declared by whichever extension
@@ -290,7 +313,9 @@ def pipeline_v2_hook_activation(project_config) -> PipelineV2HookActivation:
             block_rules.extend(bundle.block_rules)
             continue
         if pass_id == MBA_SIMPLIFY_PASS_ID:
-            instruction_rules.extend(_instruction_rules_from(config))
+            mba_instruction_rules, mba_block_rules = _mba_simplify_rules_from(config)
+            instruction_rules.extend(mba_instruction_rules)
+            block_rules.extend(mba_block_rules)
             continue
         if pass_id == MBA_SOLVE_PASS_ID:
             # Solver-backed simplification is a single instruction rule rather

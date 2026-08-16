@@ -44,11 +44,23 @@ _LIVE_IMPLEMENTATION_NAMES = (
     "Z3setzRuleGeneric",
 )
 
+# These semantic lifts need native microcode block construction, but they are
+# still selectable MBA simplification transforms.  Keep their private binding
+# here as strings so the portable pass layer does not import Hex-Rays code.
+_LIVE_FLOW_IMPLEMENTATION_NAMES = frozenset(
+    {
+        "FiniteZeroSetPredicateBlockRule",
+        "ModularProductNonzeroBlockRule",
+    }
+)
+
 # Two historically distinct XNOR rewrites normalize to the same mechanical
 # spelling. Stable semantic IDs make the distinction explicit.
 _TRANSFORM_ID_OVERRIDES = {
     "BnotXor_Rule_1": "bnot-xor-paired-not-1",
     "Bnot_XorRule_1": "bnot-xor-demorgan-1",
+    "FiniteZeroSetPredicateBlockRule": "finite-zero-set-predicate",
+    "ModularProductNonzeroBlockRule": "modular-product-nonzero",
 }
 
 # The existing hook adapter and bundled projects use these implementation
@@ -165,13 +177,21 @@ def mba_transform_stages() -> tuple[ExecutionStageDescriptor, ...]:
         if rule_type.__module__.startswith("d810.mba.rules.")
     }
     implementation_names = tuple(
-        sorted(portable_names | set(_LIVE_IMPLEMENTATION_NAMES))
+        sorted(
+            portable_names
+            | set(_LIVE_IMPLEMENTATION_NAMES)
+            | _LIVE_FLOW_IMPLEMENTATION_NAMES
+        )
     )
     return tuple(
         ExecutionStageDescriptor(
             pass_id=MBA_SIMPLIFY_PASS_ID,
             stage_id=mba_transform_id(implementation_name),
-            pipeline=ExecutionPipeline.INSTRUCTION,
+            pipeline=(
+                ExecutionPipeline.FLOW
+                if implementation_name in _LIVE_FLOW_IMPLEMENTATION_NAMES
+                else ExecutionPipeline.INSTRUCTION
+            ),
             implementation_name=implementation_name,
         )
         for implementation_name in implementation_names

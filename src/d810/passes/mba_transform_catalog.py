@@ -99,14 +99,20 @@ _FAMILY_MEMBERSHIP: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
         "Analysis and normalization",
         "heuristics",
         "Heuristics and identities",
-        ("example-guessing", "get-ident-1", "get-ident-2", "get-ident-3"),
+        (
+            "example-guessing", "finite-zero-set-predicate", "get-ident-1",
+            "get-ident-2", "get-ident-3",
+        ),
     ),
     (
         "arithmetic",
         "Arithmetic",
         "multiplication",
         "Multiplication",
-        ("mul-factor-1", "mul-factor-2", "mul-mba-1", "mul-mba-2", "mul-mba-3", "mul-mba-4"),
+        (
+            "modular-product-nonzero", "mul-factor-1", "mul-factor-2",
+            "mul-mba-1", "mul-mba-2", "mul-mba-3", "mul-mba-4",
+        ),
     ),
     (
         "arithmetic",
@@ -225,6 +231,20 @@ _FAMILY_MEMBERSHIP: tuple[tuple[str, str, str, str, tuple[str, ...]], ...] = (
 )
 
 _SPECIAL_TRANSFORM_METADATA = {
+    "finite-zero-set-predicate": {
+        "label": "Finite zero-set predicate recovery",
+        "description": "Recover a bounded, Z3-proven exclusion predicate from an MBA expression.",
+        "reference": "Native finite-zero-set matcher with mandatory Z3 equivalence proof.",
+        "verification": VerificationStatus.VERIFIED,
+        "verification_reason": "Every emitted replacement is checked against the matched source predicate by Z3.",
+    },
+    "modular-product-nonzero": {
+        "label": "Modular product nonzero recovery",
+        "description": "Lift an exact 32-bit modular product predicate to a trailing-zero budget.",
+        "reference": "Native modular-product matcher with mandatory Z3 equivalence proof.",
+        "verification": VerificationStatus.VERIFIED,
+        "verification_reason": "Every emitted replacement is checked against the matched source predicate by Z3.",
+    },
     "sub-complement-mask-hodur-1": {
         "description": "Collapse Hodur's complementary-mask MBA residual to subtraction.",
         "reference": "D810 MASM Hodur residual, generalized by complement masks.",
