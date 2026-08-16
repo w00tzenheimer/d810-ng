@@ -1,13 +1,16 @@
 # Opt-in native performance instrumentation
 
-The bounded instrumentation phase is enabled only when
-`D810_NATIVE_PERF=1`. With the flag unset (or set to any value other than
-`1`), the hot path checks a provider-local boolean and does not read a clock,
-increment a counter, allocate an instrumentation snapshot object, or call
-into the registry. Optional modules may still import and register providers at
-module load; this guarantee is limited to the instrumented hot path and does
-not prohibit unrelated Python allocations. The `clock_reads` counter is
-exposed so the disabled-path contract can be tested directly.
+The bounded instrumentation phase follows the resolved `native_perf` runtime
+setting. **Emit native performance receipts** in Settings > Developer can
+select it, and saving the control persists `native_perf` in `options.json`.
+An explicit `D810_NATIVE_PERF` environment variable overrides that saved value.
+When the resolved setting is disabled, the hot path checks a provider-local
+boolean and does not read a clock, increment a counter, allocate an
+instrumentation snapshot object, or call into the registry. Optional modules
+may still import and register providers at module load; this guarantee is
+limited to the instrumented hot path and does not prohibit unrelated Python
+allocations. The `clock_reads` counter is exposed so the disabled-path contract
+can be tested directly.
 
 ## Operator controls
 
@@ -60,9 +63,9 @@ receipts in the loaded plugin.
 ## Lifecycle and receipt
 
 At `SESSION_STARTED`, the manager begins the outer lifecycle session and
-resets providers first, then applies the environment configuration and
-discovers/validates providers. The outer `SESSION_FINISHED` emits one line
-when the flag is enabled:
+resets providers first, then applies the resolved runtime configuration and
+discovers/validates providers. The outer `SESSION_FINISHED` emits one line when
+`native_perf` is enabled:
 
 ```
 D810_NATIVE_PERF_RECEIPT={...}
@@ -102,9 +105,12 @@ Cython backend is selected, and a matching Python dictionary provider in
 mutating path by default, but indexed storage and its fingerprint/bucket
 lookup counters are also on by default. `D810_LEGACY_STORAGE=1` selects the
 legacy `PatternStorage` lookup and bypasses those indexed lookup counters.
-Only `D810_NOMUT_MATCHING=1` opts into the non-mutating
-`match_pattern_nomut` final matcher and its match/node/binding counters. The
-indexed path records fingerprint calls/time, bucket lookups/hits/misses,
+When the resolved `nomut_matching` setting is enabled, the non-mutating
+`match_pattern_nomut` final matcher and its match/node/binding counters are
+used. The **Use non-mutating pattern matcher** control in Settings > Developer
+persists `nomut_matching` in `options.json`; an explicit `D810_NOMUT_MATCHING`
+environment variable overrides that saved value. The indexed path records
+fingerprint calls/time, bucket lookups/hits/misses,
 entries scanned/accepted, repeated-binding equality checks/time, and
 result-list and `to_dict` materialization counts. The legacy `PatternStorage`
 path is not instrumented.

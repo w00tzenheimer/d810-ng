@@ -142,9 +142,12 @@ Before the Task 4 commit, `git status --short` showed only:
 ```
 
 The worktree diff was one documentation file with 48 added lines. The
-`git diff --stat cfg-recon-mainline...HEAD` baseline inspection showed the 15
-files from Tasks 1-3 (`761 insertions, 63 deletions`); those existing feature
-commits were not changed by Task 4.
+historical pre-Task-4 baseline was explicitly measured with
+`git diff --stat cfg-recon-mainline...20750043b`, where `20750043b` is the
+Task 3 tip (`feat(ui): add developer speedup controls`). That command showed
+the 15 files from Tasks 1-3 (`761 insertions, 63 deletions`); those existing
+feature commits were not changed by Task 4. It was not a claim about the final
+post-Task-4 `HEAD`.
 
 ## Graph refresh concern
 
@@ -176,3 +179,39 @@ updated with this worktree as a substitute.
 - `D810_CYTHON_PROFILE=1` is documented as build-time instrumentation and not
   as a dialog-toggleable runtime feature.
 - No placeholder text was added to the operator documentation or this report.
+
+## Fix round 1
+
+Addressed review findings without changing production or test files:
+
+- Replaced the stale `D810_NATIVE_PERF=1`-only description with the resolved
+  `native_perf` setting boundary, Developer persistence, and explicit
+  environment precedence.
+- Replaced the stale `D810_NOMUT_MATCHING=1`-only description with the
+  resolved `nomut_matching` setting boundary, Developer persistence, and
+  explicit environment precedence.
+- Anchored the Task 4 baseline count to `cfg-recon-mainline...20750043b` and
+  identified `20750043b` as the pre-Task-4 tip.
+
+Fresh consistency and hygiene commands:
+
+```text
+rg -n -i "D810_NATIVE_PERF=1|Only \`D810_NOMUT_MATCHING=1\`|resolved \`native_perf\`|resolved \`nomut_matching\`" docs/native-performance-instrumentation.md
+```
+
+Exit code: `0`; the search found the resolved-setting wording and no stale
+only-environment descriptions.
+
+```text
+git diff --check
+```
+
+Exit code: `0`; no whitespace errors.
+
+```text
+git diff --stat cfg-recon-mainline...20750043b
+```
+
+Output: `15 files changed, 761 insertions(+), 63 deletions(-)` before this
+fix-round commit. This is explicitly the historical Task 1-3 baseline, not the
+post-fix `HEAD` count.
