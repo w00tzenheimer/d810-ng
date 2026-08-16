@@ -31,6 +31,9 @@ from d810.evaluator.hexrays_microcode.sccp_snapshot import (  # noqa: E402
     snapshot_from_mba,
 )
 sccp_module = importlib.import_module("d810.evaluator.hexrays_microcode.sccp")
+sccp_snapshot_module = importlib.import_module(
+    "d810.evaluator.hexrays_microcode.sccp_snapshot"
+)
 
 
 def make_program(seed: object) -> SccpProgram:
@@ -119,6 +122,22 @@ class _FakeInsn:
     r: _FakeMop | None = None
     d: _FakeMop | None = None
     next: object | None = None
+
+
+class _RecycledInsnProxy:
+    """One wrapper that successively exposes distinct native-like nodes."""
+
+    def __init__(self, nodes: tuple[_FakeInsn, ...]) -> None:
+        self._nodes = nodes
+        self._position = 0
+
+    def __getattr__(self, name: str) -> object:
+        if name == "next":
+            self._position += 1
+            if self._position == len(self._nodes):
+                return None
+            return self
+        return getattr(self._nodes[self._position], name)
 
 
 @dataclass
@@ -229,6 +248,44 @@ def test_snapshot_rejects_invalid_successor(monkeypatch: pytest.MonkeyPatch) -> 
 
     with pytest.raises(SccpSnapshotError, match="successor"):
         snapshot_from_mba(mba)
+
+
+def test_snapshot_terminates_when_proxy_wrapper_is_recycled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ida_hexrays = _install_fake_ida(monkeypatch)
+    nodes = tuple(
+        _FakeInsn(
+            ida_hexrays.m_mov,
+            0x3000 + (position * 4),
+            l=_FakeMop(ida_hexrays.mop_n, nnn=_FakeNumber(position)),
+        )
+        for position in range(8)
+    )
+    head = _RecycledInsnProxy(nodes)
+
+    program = snapshot_from_mba(_FakeMba((_FakeBlock((), head, serial=0),)))
+
+    assert len(program.instructions) == len(nodes)
+    assert tuple(instruction.ea for instruction in program.instructions) == tuple(
+        node.ea for node in nodes
+    )
+
+
+def test_snapshot_bounds_a_genuine_cycle_without_native_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ida_hexrays = _install_fake_ida(monkeypatch)
+    instruction = _FakeInsn(
+        ida_hexrays.m_mov,
+        0x3000,
+        l=_FakeMop(ida_hexrays.mop_n, nnn=_FakeNumber(1)),
+    )
+    instruction.next = instruction
+    monkeypatch.setattr(sccp_snapshot_module, "_MAX_INSTRUCTIONS_PER_BLOCK", 4)
+
+    with pytest.raises(SccpSnapshotError, match="instruction limit"):
+        snapshot_from_mba(_FakeMba((_FakeBlock((), instruction, serial=0),)))
 
 
 def test_snapshot_failure_is_error_and_proof_empty() -> None:

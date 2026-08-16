@@ -25,6 +25,7 @@ class SccpSnapshotError(RuntimeError):
 
 
 _MISSING = object()
+_MAX_INSTRUCTIONS_PER_BLOCK = 100_000
 _OPCODE_NAMES = (
     "mov",
     "neg",
@@ -263,6 +264,22 @@ def _size_for_mop(mop: object, hx: object, path: str) -> int:
     )
 
 
+def _native_instruction_identity(instruction: object) -> int | None:
+    """Return a stable SWIG pointee identity without retaining the proxy."""
+
+    try:
+        native = getattr(instruction, "this")
+    except AttributeError:
+        return None
+    if native is None:
+        return None
+    try:
+        identity = int(native)
+    except (OverflowError, TypeError, ValueError):
+        return None
+    return identity if identity > 0 else None
+
+
 def _instructions(
     block: object,
     block_index: int,
@@ -275,14 +292,20 @@ def _instructions(
     except AttributeError as exc:
         raise SccpSnapshotError(f"mba.block[{block_index}] is missing head") from exc
     current = None if head is None else head
-    seen: set[int] = set()
+    native_seen: set[int] = set()
     instructions: list[SccpInstruction] = []
     indices: list[int] = []
     while current is not None:
-        identity = id(current)
-        if identity in seen:
-            raise SccpSnapshotError(f"instruction list cycles in block {block_index}")
-        seen.add(identity)
+        if len(instructions) >= _MAX_INSTRUCTIONS_PER_BLOCK:
+            raise SccpSnapshotError(
+                f"instruction limit exceeded in block {block_index} "
+                f"(limit={_MAX_INSTRUCTIONS_PER_BLOCK})"
+            )
+        native_identity = _native_instruction_identity(current)
+        if native_identity is not None:
+            if native_identity in native_seen:
+                raise SccpSnapshotError(f"instruction list cycles in block {block_index}")
+            native_seen.add(native_identity)
         path = f"mba.block[{block_index}].insn[{len(instructions)}]"
         opcode = _normalize_opcode(_read(current, "opcode", path), hx, f"{path}.opcode")
         ea = _as_index(_read(current, "ea", path), f"{path}.ea")
