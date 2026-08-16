@@ -321,6 +321,43 @@ def test_adapter_quarantine_events_use_real_coordinator_deduplication(
     assert HexraysDecompilationHook.locopt(hook, mba) == 0
     assert HexraysDecompilationHook.locopt(hook, mba) == 0
 
+    glbopt_decisions: list[str] = []
+    glbopt_mutations: list[str] = []
+    monkeypatch.setattr(
+        HexraysDecompilationHook,
+        "_decision_for_mba",
+        lambda *_args, **_kwargs: glbopt_decisions.append("decision") or {},
+    )
+    monkeypatch.setattr(
+        HexraysDecompilationHook,
+        "_refine_decision_terminal_return_type",
+        staticmethod(lambda *_args: glbopt_mutations.append("refine")),
+    )
+    monkeypatch.setattr(
+        "d810.hexrays.hooks.hexrays_hooks.imported_terminal_return_edges",
+        lambda *_args, **_kwargs: glbopt_mutations.append("imports") or (),
+    )
+    monkeypatch.setattr(
+        "d810.hexrays.hooks.hexrays_hooks.canonicalize_explicit_return_to_stop_edge",
+        lambda *_args, **_kwargs: glbopt_mutations.append("canonicalize") or False,
+    )
+    monkeypatch.setattr(
+        "d810.hexrays.hooks.hexrays_hooks.apply_return_const_corruption_cleanup",
+        lambda *_args, **_kwargs: glbopt_mutations.append("cleanup") or 1,
+    )
+    monkeypatch.setattr(
+        "d810.hexrays.hooks.hexrays_hooks.release_scalar_return_register",
+        lambda *_args, **_kwargs: glbopt_mutations.append("release") or None,
+    )
+    glbopt_hook = HexraysDecompilationHook(
+        lambda *_args, **_kwargs: pytest.fail(
+            "quarantined GLBOPT callback must not dispatch"
+        ),
+        decompilation_lifecycle=coordinator,
+    )
+    mba.maturity = ida_hexrays.MMAT_GLBOPT2
+    assert glbopt_hook.glbopt(mba) == 0
+
     quarantine_events = [
         event
         for event in observed
@@ -342,8 +379,135 @@ def test_adapter_quarantine_events_use_real_coordinator_deduplication(
         (1, ida_hexrays.CMAT_FINAL, NativeMutationBoundary.CTREE.value),
         (1, ida_hexrays.CMAT_ZERO, NativeMutationBoundary.CTREE.value),
         (1, ida_hexrays.MMAT_LOCOPT, NativeMutationBoundary.LOCOPT.value),
+        (1, ida_hexrays.MMAT_GLBOPT2, NativeMutationBoundary.GLBOPT.value),
     }
     assert len(quarantine_events) == len(event_keys)
+    assert glbopt_decisions == ["decision"]
+    assert glbopt_mutations == []
+
+
+def test_glbopt_runs_after_quarantine_gate_for_an_ordinary_generation(
+    monkeypatch,
+) -> None:
+    lifecycle = _CountingLifecycle(quarantined=False)
+    cleanup_calls: list[str] = []
+    hook = HexraysDecompilationHook(
+        lambda *_args, **_kwargs: pytest.fail(
+            "GLBOPT cleanup is not a decompilation event"
+        ),
+        decompilation_lifecycle=lifecycle,
+    )
+    monkeypatch.setattr(
+        HexraysDecompilationHook,
+        "_decision_for_mba",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        "d810.hexrays.hooks.hexrays_hooks.prune_unreachable_condition_chain",
+        lambda *_args, **_kwargs: 0,
+    )
+    monkeypatch.setattr(
+        "d810.hexrays.hooks.hexrays_hooks.imported_terminal_return_edges",
+        lambda *_args, **_kwargs: (),
+    )
+    monkeypatch.setattr(
+        "d810.hexrays.hooks.hexrays_hooks.apply_return_const_corruption_cleanup",
+        lambda *_args, **_kwargs: cleanup_calls.append("cleanup") or 1,
+    )
+    mba = SimpleNamespace(
+        entry_ea=FUNCTION_EA,
+        maturity=ida_hexrays.MMAT_GLBOPT2,
+    )
+
+    assert hook.glbopt(mba) == ida_hexrays.MERR_LOOP
+    assert cleanup_calls == ["cleanup"]
+    assert lifecycle.observations == [
+        (FUNCTION_EA, ida_hexrays.MMAT_GLBOPT2, NativeMutationBoundary.GLBOPT)
+    ]
+
+
+def test_real_coordinator_quarantines_glbopt_in_poison_and_recovery_generations(
+    monkeypatch,
+) -> None:
+    import d810.manager.decompilation_lifecycle as lifecycle_module
+
+    observed: list[object] = []
+    monkeypatch.setattr(lifecycle_module, "emit_diagnostic", observed.append)
+    coordinator = DecompilationLifecycleCoordinator(
+        preanalysis_runtime=None,
+        analysis_runtime=None,
+        execution_scope_service=None,
+        native_preanalysis_key_provider=lambda _function_ea: make_native_key(),
+    )
+    session, _created = coordinator.ensure_hexrays_session(
+        function_ea=FUNCTION_EA,
+        database_identity="poison-glbopt-generations-idb",
+    )
+    assert session.native_preanalysis.request_poisoned_generation_restart(
+        reason="poisoned MBA"
+    )
+    assert coordinator.consume_generated_restart(
+        FUNCTION_EA,
+        consumer=GeneratedRestartConsumer.MANAGER,
+    ) is not None
+
+    decisions: list[str] = []
+    mutations: list[str] = []
+    monkeypatch.setattr(
+        HexraysDecompilationHook,
+        "_decision_for_mba",
+        lambda *_args, **_kwargs: decisions.append("decision") or {},
+    )
+    monkeypatch.setattr(
+        HexraysDecompilationHook,
+        "_refine_decision_terminal_return_type",
+        staticmethod(lambda *_args: mutations.append("refine")),
+    )
+    for name in (
+        "imported_terminal_return_edges",
+        "canonicalize_explicit_return_to_stop_edge",
+        "apply_return_const_corruption_cleanup",
+        "release_scalar_return_register",
+    ):
+        monkeypatch.setattr(
+            f"d810.hexrays.hooks.hexrays_hooks.{name}",
+            lambda *_args, _name=name, **_kwargs: mutations.append(_name) or (),
+        )
+    hook = HexraysDecompilationHook(
+        lambda *_args, **_kwargs: pytest.fail(
+            "quarantined GLBOPT callback must not dispatch"
+        ),
+        decompilation_lifecycle=coordinator,
+    )
+    mba = SimpleNamespace(
+        entry_ea=FUNCTION_EA,
+        maturity=ida_hexrays.MMAT_GLBOPT2,
+    )
+
+    assert hook.glbopt(mba) == 0
+    coordinator.begin_current_mba_generation(function_ea=FUNCTION_EA)
+    assert hook.glbopt(mba) == 0
+    assert hook.glbopt(mba) == 0
+
+    quarantine_events = [
+        event
+        for event in observed
+        if getattr(event, "event_kind", "") == "native_mutation_quarantined"
+        and event.payload.get("boundary") == NativeMutationBoundary.GLBOPT.value
+    ]
+    assert {
+        (
+            int(event.payload["current_mba_generation"]),
+            int(event.payload["maturity"]),
+        )
+        for event in quarantine_events
+    } == {
+        (0, ida_hexrays.MMAT_GLBOPT2),
+        (1, ida_hexrays.MMAT_GLBOPT2),
+    }
+    assert len(quarantine_events) == 2
+    assert decisions == ["decision", "decision", "decision"]
+    assert mutations == []
 
 
 def test_coordinator_does_not_create_gateway_while_quarantined() -> None:

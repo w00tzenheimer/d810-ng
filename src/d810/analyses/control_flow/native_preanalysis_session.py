@@ -1179,6 +1179,7 @@ class EvidenceLifecycleTransition:
     evidence_generation_after: int | None = None
     native_inputs_changed: bool | None = None
     recovery_mode: str | None = None
+    native_mutation_quarantined: bool = False
 
 
 class NativeMutationBoundary(Enum):
@@ -1187,6 +1188,7 @@ class NativeMutationBoundary(Enum):
     OPTINSN = "optinsn"
     OPTBLOCK = "optblock"
     LOCOPT = "locopt"
+    GLBOPT = "glbopt"
     CTREE = "ctree"
 
 
@@ -1946,6 +1948,9 @@ class NativePreanalysisSessionState:
                     evidence_generation_after=evidence_generation_after,
                     native_inputs_changed=native_inputs_changed,
                     recovery_mode=recovery_mode,
+                    native_mutation_quarantined=bool(
+                        self.native_mutation_quarantined
+                    ),
                 )
             )
         except Exception:

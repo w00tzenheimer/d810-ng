@@ -489,7 +489,31 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
 
     def glbopt(self, mba: ida_hexrays.mbl_array_t) -> "int":
         function_ea = HexraysDecompilationHook._function_owner_ea(mba)
-        decision = self._decision_for_mba(mba, bind_live_identity=True)
+        decision = self._decision_for_mba(
+            mba,
+            bind_live_identity=True,
+            refine_terminal_return_type=False,
+        )
+        lifecycle = getattr(self, "_decompilation_lifecycle", None)
+        observe_quarantine = (
+            None
+            if lifecycle is None
+            else getattr(lifecycle, "observe_native_mutation_quarantine", None)
+        )
+        if callable(observe_quarantine) and observe_quarantine(
+            function_ea=function_ea,
+            maturity=int(getattr(mba, "maturity", -1)),
+            boundary=NativeMutationBoundary.GLBOPT,
+        ):
+            # GLBOPT has no lifecycle event that can be safely replayed here.
+            # Keep this callback read-only after poison: the structural hook
+            # remains responsible for lifecycle completion.
+            main_logger.info(
+                "glbopt mutation quarantined for function at %s",
+                hex(function_ea),
+            )
+            return 0
+        HexraysDecompilationHook._refine_decision_terminal_return_type(decision, mba)
         session = decision.get("session")
         resolver_evidence = getattr(
             getattr(session, "native_preanalysis", None),

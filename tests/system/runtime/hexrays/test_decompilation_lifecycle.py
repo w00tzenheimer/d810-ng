@@ -175,6 +175,20 @@ def test_coordinator_projects_restart_owners_and_observability(monkeypatch) -> N
         and event.event_kind.startswith("generated_restart_")
     ]
     assert restart_events
+    evidence_requested = next(
+        event
+        for event in restart_events
+        if event.event_kind == "generated_restart_requested"
+        and event.payload["restart_kind"] == "evidence_rebind"
+    )
+    assert evidence_requested.payload["native_mutation_quarantined"] is False
+    poison_requested = next(
+        event
+        for event in restart_events
+        if event.event_kind == "generated_restart_requested"
+        and event.payload["restart_kind"] == "poison_recovery"
+    )
+    assert poison_requested.payload["native_mutation_quarantined"] is True
     poison_consumed = next(
         event
         for event in restart_events
@@ -191,6 +205,7 @@ def test_coordinator_projects_restart_owners_and_observability(monkeypatch) -> N
         "evidence_generation_after": 0,
         "native_inputs_changed": False,
         "recovery_mode": "fresh_decompile",
+        "native_mutation_quarantined": True,
     }
 
 

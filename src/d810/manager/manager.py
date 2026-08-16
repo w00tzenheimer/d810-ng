@@ -991,7 +991,16 @@ class D810Manager:
                     "native preanalysis poison restart exhausted for "
                     f"0x{function_ea:X}; refusing poisoned output"
                 )
-            receipt = pending_restart()
+            try:
+                receipt = pending_restart()
+            except BaseException:
+                # Receipt projection is part of the controller boundary, not
+                # the decompile callback's finally block.  A malformed or
+                # failing projection must not strand a detached Stage-C
+                # collector after the generated MBA has already unwound.
+                if stage_c_collector is not None:
+                    stage_c_collector.close()
+                raise
             if receipt is None:
                 if stage_c_collector is not None:
                     final_stage_c_collection = (stage_c_collector, result)
@@ -1099,7 +1108,7 @@ class D810Manager:
                 stage_c_collector.close()
 
         dead_edge_normalizer = getattr(self, "_dead_edge_normalizer", None)
-        if callable(dead_edge_normalizer) and (
+        if callable(dead_edge_normalizer) and not recovery_mode and (
             stage_c_native_result is None or stage_c_native_result.allow_stage_b
         ):
             from d810.manager.native_normalization import NativeNormalizationOutcome

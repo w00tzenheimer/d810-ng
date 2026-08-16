@@ -1394,6 +1394,11 @@ def test_decompile_controller_routes_poison_to_manager_fresh_recovery(
 
     manager = D810Manager.__new__(D810Manager)
     manager.decompilation_lifecycle = _Lifecycle()
+    normalizer_calls: list[int] = []
+    manager._dead_edge_normalizer = lambda ea: (
+        normalizer_calls.append(ea)
+        or pytest.fail("poison recovery must not run a post-recovery normalizer")
+    )
     monkeypatch.setattr(
         manager,
         "prepare_native_preanalysis",
@@ -1427,6 +1432,7 @@ def test_decompile_controller_routes_poison_to_manager_fresh_recovery(
     assert collectors[1].closed is True
     assert consumed == [GeneratedRestartConsumer.MANAGER]
     assert prepares == [function_ea]
+    assert normalizer_calls == []
 
 
 def test_decompile_controller_refuses_second_poison_after_manager_recovery(
@@ -1841,4 +1847,50 @@ def test_decompile_controller_closes_stage_c_collector_on_exception(
         manager.decompile_with_native_preanalysis(0x401000, fail, lambda: None)
 
     assert session.native_cfg_collector is None
+    assert collectors[0].closed is True
+
+
+def test_decompile_controller_closes_stage_c_collector_when_pending_projection_fails(
+    monkeypatch,
+) -> None:
+    session = DecompilationSessionContext(
+        function_ea=0x401000,
+        database_identity="stage-c-malformed-receipt-idb",
+        top_level_epoch=1,
+        native_key=NATIVE_KEY,
+    )
+
+    class _Lifecycle:
+        @staticmethod
+        def current_session(_function_ea: int):
+            return session
+
+        @staticmethod
+        def has_exhausted_poison_restart(_function_ea: int) -> bool:
+            return False
+
+        @staticmethod
+        def pending_generated_restart(_function_ea: int):
+            raise TypeError("malformed pending restart projection")
+
+    manager = D810Manager.__new__(D810Manager)
+    manager.decompilation_lifecycle = _Lifecycle()
+    monkeypatch.setattr(manager, "prepare_native_preanalysis", lambda _ea: 0)
+    monkeypatch.setattr(manager, "_stage_c_collection_enabled", lambda _ea: True)
+    collectors: list[object] = []
+
+    def decompile():
+        assert session.native_cfg_collector is not None
+        collectors.append(session.native_cfg_collector)
+        return "cfunc"
+
+    with pytest.raises(TypeError, match="malformed pending restart"):
+        manager.decompile_with_native_preanalysis(
+            0x401000,
+            decompile,
+            lambda: None,
+        )
+
+    assert session.native_cfg_collector is None
+    assert len(collectors) == 1
     assert collectors[0].closed is True

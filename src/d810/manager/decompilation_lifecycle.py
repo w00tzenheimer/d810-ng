@@ -352,6 +352,9 @@ class DecompilationLifecycleCoordinator:
                         ),
                         "native_inputs_changed": transition.native_inputs_changed,
                         "recovery_mode": transition.recovery_mode,
+                        "native_mutation_quarantined": (
+                            transition.native_mutation_quarantined
+                        ),
                     },
                 )
             )
