@@ -5,6 +5,7 @@ from d810.core.speedup_session import (
     SpeedupAvailability,
     SpeedupHeadline,
     apply_session_cython_disabled,
+    core_speedups_active,
     current_speedup_headline,
     probe_speedup_availability,
     speedup_title_suffix,
@@ -31,6 +32,50 @@ def test_installed_speedups_report_enabled_or_disabled_from_session_policy():
         current_speedup_headline(availability, cython_allowed=False)
         is SpeedupHeadline.DISABLED
     )
+
+
+def test_allowed_speedups_are_unavailable_until_core_backends_are_bound():
+    availability = SpeedupAvailability(installed=True, detail="")
+
+    assert (
+        current_speedup_headline(
+            availability,
+            cython_allowed=True,
+            core_backends_active=False,
+        )
+        is SpeedupHeadline.UNAVAILABLE
+    )
+
+
+def test_bound_core_backends_make_allowed_speedups_enabled():
+    availability = SpeedupAvailability(installed=True, detail="")
+
+    assert (
+        current_speedup_headline(
+            availability,
+            cython_allowed=True,
+            core_backends_active=True,
+        )
+        is SpeedupHeadline.ENABLED
+    )
+
+
+def test_core_speedup_probe_requires_ast_and_pattern_cython_bindings():
+    ast_module = type("AstDispatcher", (), {"_USING_CYTHON": True})()
+    pattern_module = type(
+        "PatternDispatcher",
+        (),
+        {"get_engine_info": lambda self: {"backend": "cython"}},
+    )()
+    modules = {
+        "d810.hexrays.expr.ast": ast_module,
+        "d810.optimizers.microcode.instructions.pattern_matching.engine": pattern_module,
+    }
+
+    assert core_speedups_active(modules.get) is True
+
+    pattern_module.get_engine_info = lambda: {"backend": "python"}
+    assert core_speedups_active(modules.get) is False
 
 
 def test_title_suffix_has_no_partial_or_degraded_state():

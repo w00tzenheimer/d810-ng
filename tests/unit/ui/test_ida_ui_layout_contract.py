@@ -34,6 +34,19 @@ def _plugin_method(name: str) -> ast.FunctionDef:
     raise AssertionError(f"PluginConfigurationFileForm_t.{name} not found")
 
 
+def _state_method(name: str) -> ast.FunctionDef:
+    state_path = (
+        Path(__file__).resolve().parents[3] / "src" / "d810" / "manager" / "state.py"
+    )
+    tree = ast.parse(state_path.read_text(encoding="utf-8"), filename=str(state_path))
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and node.name == "D810State":
+            for item in node.body:
+                if isinstance(item, ast.FunctionDef) and item.name == name:
+                    return item
+    raise AssertionError(f"D810State.{name} not found")
+
+
 def _compiled_config_form_method(name: str):
     method = _method(name)
     class_node = ast.ClassDef(
@@ -226,6 +239,63 @@ def test_plugin_settings_validate_and_apply_storage_without_restart() -> None:
     assert "parse_function_recipe_storage" in save_source
     assert "self.state.manager.reconfigure_function_storage" in save_source
     assert "FunctionStorageConfigurationError" in save_source
+
+
+def test_plugin_settings_have_general_and_developer_tabs() -> None:
+    source = ast.unparse(_plugin_method("__init__"))
+
+    assert "self.tabs = QtWidgets.QTabWidget" in source
+    assert "self.tabs.addTab(self.general_tab, 'General')" in source
+    assert "self.tabs.addTab(self.developer_tab, 'Developer')" in source
+
+
+def test_cython_disable_is_session_only_and_uses_exact_unavailable_copy() -> None:
+    init_source = ast.unparse(_plugin_method("__init__"))
+    save_source = ast.unparse(_plugin_method("save_config"))
+
+    assert "Do not use Cython speedups" in init_source
+    assert "Speedups not installed" in init_source
+    assert "set_session_cython_disabled" in save_source
+    assert "d810_config.set('disable_cython" not in save_source
+    assert "d810_config.set('no_cython" not in save_source
+
+
+def test_developer_runtime_settings_are_serialized_but_cython_is_not() -> None:
+    init_source = ast.unparse(_plugin_method("__init__"))
+    save_source = ast.unparse(_plugin_method("save_config"))
+
+    assert "self.checkbox_native_perf" in init_source
+    assert "self.checkbox_nomut_matching" in init_source
+    assert "native_perf=self.checkbox_native_perf.isChecked()" in save_source
+    assert "nomut_matching=self.checkbox_nomut_matching.isChecked()" in save_source
+    assert "for setting_name, setting_value in runtime_overrides.items()" in save_source
+    assert "d810_config.set('disable_cython" not in save_source
+    assert "d810_config.set('no_cython" not in save_source
+
+
+def test_cython_policy_change_schedules_registered_reload_after_accept() -> None:
+    source = ast.unparse(_plugin_method("save_config"))
+
+    assert "self.accept()" in source
+    assert "QtCore.QTimer.singleShot(0" in source
+    assert "ida_kernwin.process_ui_action('D810:reload_plugin')" in source
+
+
+def test_d810_state_exposes_session_cython_policy_without_ui_action_imports() -> None:
+    source = ast.unparse(_state_method("set_session_cython_disabled"))
+
+    assert "apply_session_cython_disabled" in source
+    assert "ida_kernwin" not in source
+
+
+def test_main_title_contains_only_the_three_state_speedup_suffix() -> None:
+    source = ast.unparse(_method("Show"))
+
+    assert "probe_speedup_availability" in source
+    assert "current_speedup_headline" in source
+    assert "speedup_title_suffix" in source
+    assert "DEGRADED" not in source
+    assert "PARTIAL" not in source
 
 
 def test_plugin_settings_expose_callback_evidence_detail() -> None:

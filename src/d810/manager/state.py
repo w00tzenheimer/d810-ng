@@ -45,6 +45,7 @@ from d810.core.settings import (
     configure_settings,
     get_settings,
 )
+from d810.core.speedup_session import apply_session_cython_disabled
 from d810.core.typing import TYPE_CHECKING
 from d810.diagnostics.workbench_models import (
     DiagnosticCleanupPlan,
@@ -206,6 +207,10 @@ class D810State(metaclass=SingletonMeta):
     def _apply_runtime_settings_preferences(self) -> None:
         """Reapply every other saved runtime setting with env taking precedence."""
         apply_saved_runtime_settings(self.d810_config)
+
+    def set_session_cython_disabled(self, disabled: bool) -> bool:
+        """Apply the current-session Cython policy and report reload need."""
+        return apply_session_cython_disabled(disabled)
 
     def diagnostics_capture_enabled(self) -> bool:
         return bool(get_settings().diag_snapshots)

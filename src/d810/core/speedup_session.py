@@ -3,6 +3,7 @@
 import dataclasses
 import enum
 import importlib
+import sys
 
 from .cymode import CythonMode
 
@@ -39,16 +40,46 @@ def current_speedup_headline(
     availability: SpeedupAvailability,
     *,
     cython_allowed: bool,
+    core_backends_active: bool | None = None,
 ) -> SpeedupHeadline:
-    """Project capability and session policy into the title headline."""
+    """Project capability, policy, and loaded backends into the headline.
+
+    ``core_backends_active`` is optional for compatibility with the pure
+    capability/policy projector.  UI callers pass the observed state of the
+    AST and pattern-engine dispatchers so a pending policy cannot be reported
+    as active before the supported reload has completed.
+    """
 
     if not availability.installed:
         return SpeedupHeadline.UNAVAILABLE
-    return (
-        SpeedupHeadline.ENABLED
-        if cython_allowed
-        else SpeedupHeadline.DISABLED
+    if not cython_allowed:
+        return SpeedupHeadline.DISABLED
+    if core_backends_active is False:
+        return SpeedupHeadline.UNAVAILABLE
+    return SpeedupHeadline.ENABLED
+
+
+def core_speedups_active(module_lookup=sys.modules.get) -> bool:
+    """Return whether both core dispatchers are bound to Cython.
+
+    The lookup intentionally observes already-loaded modules instead of
+    importing them while the title is being rendered.  That makes the title
+    describe the last completed load rather than causing a new binding as a
+    side effect of opening the dock.
+    """
+
+    ast_dispatcher = module_lookup("d810.hexrays.expr.ast")
+    pattern_dispatcher = module_lookup(
+        "d810.optimizers.microcode.instructions.pattern_matching.engine"
     )
+    if ast_dispatcher is None or pattern_dispatcher is None:
+        return False
+    if not bool(getattr(ast_dispatcher, "_USING_CYTHON", False)):
+        return False
+    try:
+        return pattern_dispatcher.get_engine_info().get("backend") == "cython"
+    except Exception:  # noqa: BLE001 - status must fail closed during reloads
+        return False
 
 
 def speedup_title_suffix(headline: SpeedupHeadline) -> str:
@@ -74,6 +105,7 @@ __all__ = [
     "SpeedupAvailability",
     "SpeedupHeadline",
     "apply_session_cython_disabled",
+    "core_speedups_active",
     "current_speedup_headline",
     "probe_speedup_availability",
     "speedup_title_suffix",
