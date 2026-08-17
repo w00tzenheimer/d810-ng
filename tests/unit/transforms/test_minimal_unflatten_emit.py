@@ -47,7 +47,10 @@ from d810.analyses.control_flow.native_preanalysis_session import (
     BootstrapRouteProofKind,
 )
 from d810.analyses.control_flow.residual_entry_bridge import EntryBridgeEvidence
-from d810.analyses.control_flow.route_predicate import DecisionDag, RouteComparison
+from d810.analyses.control_flow.route_predicate import (
+    DecisionDag,
+    RouteComparison,
+)
 from d810.analyses.control_flow.state_machine_analysis import (
     run_snapshot_constant_fixpoint,
 )
@@ -2835,6 +2838,245 @@ def test_conditional_handler_redirects_unique_arm_glue_before_bst_spine(_seam) -
         if isinstance(mod, RedirectGoto)
     }
     assert gotos == {(195, 131, 221), (230, 9, 104)}
+
+
+def test_conditional_handler_shared_write_preserves_effectful_arm_corridors(
+    _seam,
+) -> None:
+    """A shared-write conditional must not bypass work on either arm.
+
+    The native lowering backend may insert a helper immediately after the
+    selecting branch.  The arm's original path can still contain observable
+    work before the shared state-write block.  Redirecting the branch edge
+    directly to the next handler (the historical behavior) severs that path;
+    the owned edge is the last arm-local predecessor into the shared write.
+    """
+    fg = FlowGraph(
+        blocks={
+            8: _b(8, (20, 30), (200,)),
+            20: _b(20, (), (8,)),
+            30: _b(30, (), (8,)),
+            99: _b(99, (), ()),
+            100: _b(100, (101, 103), ()),
+            101: _b(101, (102,), (100,)),
+            102: _b(102, (200,), (101,), (_call_reg(0x2102, 7),)),
+            103: _b(103, (104,), (100,)),
+            104: _b(104, (200,), (103,)),
+            # The shared suffix is state plumbing only.  The arm-local cut may
+            # bypass it once that fact is made explicit; it must not bypass a
+            # non-state effect hidden in the same block.
+            200: _b(200, (8,), (102, 104), (_mov_state(0x2200, 0x20),)),
+        },
+        entry_serial=100,
+        func_ea=0x2000,
+    )
+    handler = HandlerTransition(
+        handler=100,
+        states=(0xA0,),
+        arms=(
+            TransitionArm(
+                0x10,
+                20,
+                False,
+                100,
+                200,
+                200,
+                (100, 101, 102, 200),
+            ),
+            TransitionArm(
+                0x20,
+                30,
+                False,
+                100,
+                200,
+                200,
+                (100, 103, 104, 200),
+            ),
+        ),
+    )
+
+    mods = build_conditional_arm_redirects(
+        fg,
+        _disp({0x10: 20, 0x20: 30}, exit_block=99),
+        (handler,),
+        dispatcher_entry_serial=8,
+        existing=set(),
+        state_var_stkoff=_STATE,
+    )
+
+    assert {
+        (type(mod).__name__, mod.from_serial, mod.old_target, mod.new_target)
+        for mod in mods
+        if isinstance(mod, (RedirectGoto, RedirectBranch))
+    } == {
+        ("RedirectGoto", 102, 200, 20),
+        ("RedirectGoto", 104, 200, 30),
+    }
+
+
+@pytest.mark.parametrize("near_miss", ("other_successor", "stale_path"))
+def test_conditional_handler_abstains_on_near_miss_shared_boundary(
+    _seam,
+    near_miss,
+) -> None:
+    """A shared cut requires current CFG/path evidence, not stale metadata."""
+    shared_succs = (8, 99) if near_miss == "other_successor" else (8,)
+    first_path = (100, 101, 105, 200) if near_miss == "stale_path" else (100, 101, 102, 200)
+    fg = FlowGraph(
+        blocks={
+            8: _b(8, (20, 30), (200,)),
+            20: _b(20, (), (8,)),
+            30: _b(30, (), (8,)),
+            99: _b(99, (), ()),
+            100: _b(100, (101, 103), ()),
+            101: _b(101, (102,), (100,)),
+            102: _b(102, (200,), (101,), (_call_reg(0x2602, 7),)),
+            103: _b(103, (104,), (100,)),
+            104: _b(104, (200,), (103,)),
+            200: _b(
+                200,
+                shared_succs,
+                (102, 104),
+                (_mov_state(0x2600, 0x20),),
+            ),
+        },
+        entry_serial=100,
+        func_ea=0x2300,
+    )
+    handler = HandlerTransition(
+        handler=100,
+        states=(0xA0,),
+        arms=(
+            TransitionArm(0x10, 20, False, 100, 200, 200, first_path),
+            TransitionArm(0x20, 30, False, 100, 200, 200, (100, 103, 104, 200)),
+        ),
+    )
+
+    mods = build_conditional_arm_redirects(
+        fg,
+        _disp({0x10: 20, 0x20: 30}, exit_block=99),
+        (handler,),
+        dispatcher_entry_serial=8,
+        existing=set(),
+        state_var_stkoff=_STATE,
+    )
+
+    assert not any(
+        isinstance(mod, (RedirectGoto, RedirectBranch))
+        for mod in mods
+    )
+
+
+def test_conditional_handler_abstains_when_shared_suffix_has_effect(
+    _seam,
+) -> None:
+    """Never cut around a shared block that carries a non-state effect."""
+    fg = FlowGraph(
+        blocks={
+            8: _b(8, (20, 30), (200,)),
+            20: _b(20, (), (8,)),
+            30: _b(30, (), (8,)),
+            99: _b(99, (), ()),
+            100: _b(100, (101, 103), ()),
+            101: _b(101, (102,), (100,)),
+            102: _b(102, (200,), (101,), (_call_reg(0x2302, 7),)),
+            103: _b(103, (104,), (100,)),
+            104: _b(104, (200,), (103,)),
+            # The shared state write is accompanied by a live carrier write.
+            # Redirecting 102/104 past this block would silently drop it.
+            200: _b(
+                200,
+                (8,),
+                (102, 104),
+                (_mov_state(0x2400, 0x20), _mov_carrier(0x2404, 0x80)),
+            ),
+        },
+        entry_serial=100,
+        func_ea=0x2100,
+    )
+    handler = HandlerTransition(
+        handler=100,
+        states=(0xA0,),
+        arms=(
+            TransitionArm(0x10, 20, False, 100, 200, 200, (100, 101, 102, 200)),
+            TransitionArm(0x20, 30, False, 100, 200, 200, (100, 103, 104, 200)),
+        ),
+    )
+
+    mods = build_conditional_arm_redirects(
+        fg,
+        _disp({0x10: 20, 0x20: 30}, exit_block=99),
+        (handler,),
+        dispatcher_entry_serial=8,
+        existing=set(),
+        state_var_stkoff=_STATE,
+    )
+
+    assert not any(
+        isinstance(mod, (RedirectGoto, RedirectBranch))
+        for mod in mods
+    )
+
+
+@pytest.mark.parametrize("effect", ("memory_store", "unknown"))
+def test_conditional_handler_abstains_on_unclassified_shared_suffix_effect(
+    _seam,
+    effect,
+) -> None:
+    """Unresolved/memory-shaped shared work is not treated as state glue."""
+    effect_insn = (
+        _stx_reg(0x2504, 0x1234, 1)
+        if effect == "memory_store"
+        else InsnSnapshot(
+            opcode=0x99,
+            ea=0x2504,
+            operands=(),
+            kind=InsnKind.UNKNOWN,
+        )
+    )
+    fg = FlowGraph(
+        blocks={
+            8: _b(8, (20, 30), (200,)),
+            20: _b(20, (), (8,)),
+            30: _b(30, (), (8,)),
+            99: _b(99, (), ()),
+            100: _b(100, (101, 103), ()),
+            101: _b(101, (102,), (100,)),
+            102: _b(102, (200,), (101,), (_call_reg(0x2502, 7),)),
+            103: _b(103, (104,), (100,)),
+            104: _b(104, (200,), (103,)),
+            200: _b(
+                200,
+                (8,),
+                (102, 104),
+                (_mov_state(0x2500, 0x20), effect_insn),
+            ),
+        },
+        entry_serial=100,
+        func_ea=0x2200,
+    )
+    handler = HandlerTransition(
+        handler=100,
+        states=(0xA0,),
+        arms=(
+            TransitionArm(0x10, 20, False, 100, 200, 200, (100, 101, 102, 200)),
+            TransitionArm(0x20, 30, False, 100, 200, 200, (100, 103, 104, 200)),
+        ),
+    )
+
+    mods = build_conditional_arm_redirects(
+        fg,
+        _disp({0x10: 20, 0x20: 30}, exit_block=99),
+        (handler,),
+        dispatcher_entry_serial=8,
+        existing=set(),
+        state_var_stkoff=_STATE,
+    )
+
+    assert not any(
+        isinstance(mod, (RedirectGoto, RedirectBranch))
+        for mod in mods
+    )
 
 
 def test_conditional_handler_abstains_on_unmatched_materialized_arm(_seam) -> None:

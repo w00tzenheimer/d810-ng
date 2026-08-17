@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 from d810.optimizers.microcode.flow.flattening import engine
@@ -33,6 +34,7 @@ from d810.ir.flowgraph import (
 from d810.ir.maturity import MaturityEnvelope
 from d810.optimizers.microcode.flow.flattening.engine.executor import (
     TransactionalExecutor,
+    _committed_receipt_for_execution,
     _committed_semantic_ownership_gate,
 )
 from d810.optimizers.microcode.flow.flattening.engine.runtime import (
@@ -70,6 +72,17 @@ from d810.transforms.plan_fragment import (
     StageResult,
 )
 from tests.native_preanalysis import make_native_key
+
+
+def _committed_receipt(generation: int = 1) -> SimpleNamespace:
+    """Minimal receipt authority used by executor convergence tests."""
+    return SimpleNamespace(
+        mutation_batch_id=f"batch:g{generation}",
+        pre_generation=generation,
+        post_generation=generation + 1,
+        evidence_generation=0,
+        operation_count=1,
+    )
 
 
 def _fragment(name: str) -> PlanFragment:
@@ -408,6 +421,345 @@ def test_fake_jump_effectful_preflight_allows_dead_control_only_block(
     assert result is None
     assert patch_plan is not None
     assert compile_calls
+
+
+def test_idempotent_redirect_is_discarded_before_mutation_gateway(
+    monkeypatch,
+) -> None:
+    """A desired edge already present in the live CFG needs no transaction."""
+    original = _effectful_fake_jump_graph()
+    pre_cfg = FlowGraph(
+        blocks={
+            **original.blocks,
+            0: replace(original.blocks[0], succs=(2,)),
+        },
+        entry_serial=original.entry_serial,
+        func_ea=original.func_ea,
+    )
+    fragment = _fake_jump_fragment(
+        RedirectGoto(from_serial=0, old_target=1, new_target=2)
+    )
+    backend_calls = 0
+
+    class _Translator:
+        contract = None
+        last_lowering_phase = None
+        last_lowering_subphase = None
+
+        def lift(self, _mba):
+            return pre_cfg
+
+    class _MBA:
+        qty = 0
+        entry_ea = pre_cfg.func_ea
+
+    class _Backend:
+        def __init__(self, **_kwargs):
+            self.last_patch_execution = SimpleNamespace(
+                applied_count=1,
+                creation_receipts=(),
+                receipt=_committed_receipt(),
+            )
+            self.last_patch_failure = None
+
+        def apply(self, _plan, _mba):
+            nonlocal backend_calls
+            backend_calls += 1
+            return pre_cfg
+
+    monkeypatch.setattr(executor_module, "HexRaysMutationBackend", _Backend)
+    executor = TransactionalExecutor(_MBA(), translator=_Translator())
+    executor.set_mutation_gateway_factory(
+        lambda: (_ for _ in ()).throw(AssertionError("gateway must not be opened"))
+    )
+
+    result = executor.execute_stage(fragment, total_handlers=1)
+
+    assert result.success is True
+    assert result.edits_applied == 0
+    assert result.metadata["idempotence"]["status"] == "already_satisfied"
+    assert backend_calls == 0
+
+
+def test_equivalent_fake_jump_batch_converges_without_replaying_backend(
+    monkeypatch,
+) -> None:
+    """A repeated logical batch must not issue a second mutation receipt."""
+    pre_cfg = _effectful_fake_jump_graph()
+    fragment = _fake_jump_fragment(
+        RedirectGoto(from_serial=0, old_target=1, new_target=2)
+    )
+    backend_calls = 0
+
+    class _Translator:
+        contract = None
+        last_lowering_phase = None
+        last_lowering_subphase = None
+
+        def lift(self, _mba):
+            return pre_cfg
+
+    class _MBA:
+        qty = 0
+        entry_ea = pre_cfg.func_ea
+
+    gateway = SimpleNamespace(
+        identity_index=SimpleNamespace(
+            maturity=0,
+            snapshot_id="snapshot",
+            generation=1,
+            plan_refs_by_serial=lambda: {},
+        ),
+        lifecycle_authority=None,
+    )
+
+    class _Backend:
+        def __init__(self, **_kwargs):
+            self.last_patch_execution = SimpleNamespace(
+                applied_count=1,
+                creation_receipts=(),
+                receipt=_committed_receipt(),
+            )
+            self.last_patch_failure = None
+
+        def apply(self, _plan, _mba):
+            nonlocal backend_calls
+            backend_calls += 1
+            return pre_cfg
+
+    monkeypatch.setattr(executor_module, "HexRaysMutationBackend", _Backend)
+    monkeypatch.setattr(
+        executor_module,
+        "filter_return_carrier_fact_redirects",
+        lambda modifications, **_kwargs: (modifications, ()),
+    )
+    monkeypatch.setattr(
+        executor_module,
+        "filter_terminal_byte_emit_fact_redirects",
+        lambda modifications, **_kwargs: (modifications, ()),
+    )
+    monkeypatch.setattr(
+        executor_module,
+        "compile_patch_plan",
+        lambda *args, **kwargs: PatchPlan(plan_id="equivalent-batch"),
+    )
+
+    executor = TransactionalExecutor(_MBA(), translator=_Translator())
+    executor.set_mutation_gateway_factory(lambda: gateway)
+    monkeypatch.setattr(
+        executor,
+        "_filter_backend_unsupported_modifications",
+        lambda modifications: (modifications, 0),
+    )
+
+    first = executor.execute_stage(fragment, total_handlers=1)
+    second = executor.execute_stage(fragment, total_handlers=1)
+
+    assert first.success is True
+    assert second.success is True
+    assert second.edits_applied == 0
+    assert second.metadata["transaction_convergence"]["status"] == (
+        "equivalent_batch_already_committed"
+    )
+    assert backend_calls == 1
+
+
+def test_equivalent_fake_jump_batch_converges_across_executor_instances(
+    monkeypatch,
+) -> None:
+    """Only a shared receipt authority can suppress a later family-pass replay."""
+    pre_cfg = _effectful_fake_jump_graph()
+    fragment = _fake_jump_fragment(
+        RedirectGoto(from_serial=0, old_target=1, new_target=2)
+    )
+    backend_calls = 0
+
+    class _Lifecycle:
+        def __init__(self) -> None:
+            self.receipts = {}
+
+        def committed_semantic_ownership(self):
+            return ()
+
+        def committed_logical_batch_receipt(self, key):
+            return self.receipts.get(key)
+
+        def record_logical_batch_commit(self, key, receipt):
+            self.receipts[key] = receipt
+
+    lifecycle = _Lifecycle()
+    identity = SimpleNamespace(
+        maturity=0,
+        snapshot_id="snapshot",
+        generation=1,
+        evidence_generation=0,
+        plan_refs_by_serial=lambda: {},
+    )
+    gateway = SimpleNamespace(identity_index=identity, lifecycle_authority=lifecycle)
+
+    class _Translator:
+        contract = None
+        last_lowering_phase = None
+        last_lowering_subphase = None
+
+        def lift(self, _mba):
+            return pre_cfg
+
+    class _MBA:
+        qty = 0
+        entry_ea = pre_cfg.func_ea
+
+    class _Backend:
+        def __init__(self, **_kwargs):
+            self.last_patch_execution = SimpleNamespace(
+                applied_count=1,
+                creation_receipts=(),
+                receipt=_committed_receipt(),
+            )
+            self.last_patch_failure = None
+
+        def apply(self, _plan, _mba):
+            nonlocal backend_calls
+            backend_calls += 1
+            return pre_cfg
+
+    monkeypatch.setattr(executor_module, "HexRaysMutationBackend", _Backend)
+    monkeypatch.setattr(
+        executor_module,
+        "filter_return_carrier_fact_redirects",
+        lambda modifications, **_kwargs: (modifications, ()),
+    )
+    monkeypatch.setattr(
+        executor_module,
+        "filter_terminal_byte_emit_fact_redirects",
+        lambda modifications, **_kwargs: (modifications, ()),
+    )
+    monkeypatch.setattr(
+        executor_module,
+        "compile_patch_plan",
+        lambda *args, **kwargs: PatchPlan(plan_id="equivalent-batch"),
+    )
+
+    def new_executor() -> TransactionalExecutor:
+        executor = TransactionalExecutor(_MBA(), translator=_Translator())
+        executor.set_mutation_gateway_factory(lambda: gateway)
+        monkeypatch.setattr(
+            executor,
+            "_filter_backend_unsupported_modifications",
+            lambda modifications: (modifications, 0),
+        )
+        return executor
+
+    first = new_executor().execute_stage(fragment, total_handlers=1)
+    second = new_executor().execute_stage(fragment, total_handlers=1)
+
+    assert first.success is True
+    assert second.success is True
+    assert second.edits_applied == 0
+    assert second.metadata["transaction_convergence"]["status"] == (
+        "equivalent_batch_already_committed"
+    )
+    assert backend_calls == 1
+
+
+def test_convergence_cache_accepts_only_a_committed_receipt() -> None:
+    """Applied-count diagnostics alone cannot authorize convergence."""
+    assert (
+        _committed_receipt_for_execution(
+            SimpleNamespace(applied_count=1),
+            source_generation=1,
+        )
+        is None
+    )
+    receipt = _committed_receipt_for_execution(
+        SimpleNamespace(
+            applied_count=1,
+            receipt=_committed_receipt(1),
+        ),
+        source_generation=1,
+    )
+    assert receipt is not None
+    assert receipt.mutation_batch_id == "batch:g1"
+
+
+def test_equivalent_fake_jump_batch_replays_for_new_source_generation(
+    monkeypatch,
+) -> None:
+    """A later immutable source generation is a distinct edit opportunity."""
+    pre_cfg = _effectful_fake_jump_graph()
+    fragment = _fake_jump_fragment(
+        RedirectGoto(from_serial=0, old_target=1, new_target=2)
+    )
+    backend_calls = 0
+    identity = SimpleNamespace(
+        maturity=0,
+        snapshot_id="snapshot:g1",
+        generation=1,
+        plan_refs_by_serial=lambda: {},
+    )
+    gateway = SimpleNamespace(identity_index=identity, lifecycle_authority=None)
+
+    class _Translator:
+        contract = None
+        last_lowering_phase = None
+        last_lowering_subphase = None
+
+        def lift(self, _mba):
+            return pre_cfg
+
+    class _MBA:
+        qty = 0
+        entry_ea = pre_cfg.func_ea
+
+    class _Backend:
+        def __init__(self, **_kwargs):
+            self.last_patch_execution = SimpleNamespace(
+                applied_count=1,
+                creation_receipts=(),
+                receipt=_committed_receipt(),
+            )
+            self.last_patch_failure = None
+
+        def apply(self, _plan, _mba):
+            nonlocal backend_calls
+            backend_calls += 1
+            return pre_cfg
+
+    monkeypatch.setattr(executor_module, "HexRaysMutationBackend", _Backend)
+    monkeypatch.setattr(
+        executor_module,
+        "filter_return_carrier_fact_redirects",
+        lambda modifications, **_kwargs: (modifications, ()),
+    )
+    monkeypatch.setattr(
+        executor_module,
+        "filter_terminal_byte_emit_fact_redirects",
+        lambda modifications, **_kwargs: (modifications, ()),
+    )
+    monkeypatch.setattr(
+        executor_module,
+        "compile_patch_plan",
+        lambda *args, **kwargs: PatchPlan(plan_id="equivalent-batch"),
+    )
+
+    executor = TransactionalExecutor(_MBA(), translator=_Translator())
+    executor.set_mutation_gateway_factory(lambda: gateway)
+    monkeypatch.setattr(
+        executor,
+        "_filter_backend_unsupported_modifications",
+        lambda modifications: (modifications, 0),
+    )
+
+    first = executor.execute_stage(fragment, total_handlers=1)
+    identity.generation = 2
+    identity.snapshot_id = "snapshot:g2"
+    second = executor.execute_stage(fragment, total_handlers=1)
+
+    assert first.success is True
+    assert second.success is True
+    assert second.edits_applied == 1
+    assert "transaction_convergence" not in second.metadata
+    assert backend_calls == 2
 
 
 def test_new_block_origin_logging_resolves_native_template_reference() -> None:

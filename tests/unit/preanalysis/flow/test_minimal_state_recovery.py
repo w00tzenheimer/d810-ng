@@ -1767,6 +1767,59 @@ def test_terminal_when_next_state_routes_to_exit(_seam) -> None:
     assert arm.is_return is True
 
 
+def test_default_compare_corridor_with_valid_next_state_is_recovered(_seam) -> None:
+    """The comparison-chain fall-through can be a real handler corridor.
+
+    The default target is not automatically an exit: this corridor computes a
+    concrete state and loops back to the dispatcher, so it must remain in the
+    recovered handler set.
+    """
+    fg = FlowGraph(
+        blocks={
+            2: _blk(2, (10, 20, 30), (10, 20, 31), ()),
+            10: _blk(
+                10,
+                (2,),
+                (2,),
+                (_mov(0x1000, _num(0x20), _stk(_STATE_OFF)),),
+            ),
+            20: _blk(20, (2,), (2,), ()),
+            30: _blk(30, (31,), (2,), ()),
+            31: _blk(
+                31,
+                (2,),
+                (30,),
+                (_mov(0x3100, _num(0x20), _stk(_STATE_OFF)),),
+            ),
+        },
+        entry_serial=2,
+        func_ea=0x1000,
+    )
+    dispatcher = IntervalDispatcher(
+        [
+            IntervalRow(0x10, 0x11, 10),
+            IntervalRow(0x20, 0x21, 20),
+        ],
+        default_target=30,
+    )
+
+    transitions = {
+        transition.handler: transition
+        for transition in recover_handler_transitions(
+            fg,
+            dispatcher,
+            _STATE_OFF,
+            dispatcher_entry_serial=2,
+        )
+    }
+
+    assert set(transitions) == {10, 20, 30}
+    corridor = transitions[30]
+    assert corridor.arms[0].next_state == 0x20
+    assert corridor.arms[0].target_handler == 20
+    assert corridor.arms[0].is_return is False
+
+
 def test_scan_stops_at_other_handler_entry(_seam) -> None:
     # blk10 writes NO state and its only successor is another handler entry
     # (blk20). The scan must stop at blk20 (boundary), not absorb blk20's write.

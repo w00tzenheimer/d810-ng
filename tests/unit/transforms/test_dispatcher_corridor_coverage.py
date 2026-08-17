@@ -1058,8 +1058,6 @@ def test_state_transition_plumbing_retirement_rejects_near_misses(
     assert validation.reason == "dispatcher_removal_proof_drift"
     assert validation.proof is not None
     assert validation.proof.reason == "untyped_lost_block"
-
-
 def test_interval_state_normalizer_retirement_is_independently_proven() -> None:
     pre_graph, post_graph, coverage, proof = _interval_state_normalizer_fixture()
 
@@ -1582,6 +1580,184 @@ def test_dispatcher_removal_proof_accepts_only_typed_infrastructure_loss() -> No
         ("comparison_dispatcher", 4),
         ("dispatcher_feeder", 3),
         ("state_merge", 123),
+    }
+
+
+def test_dispatcher_removal_proof_types_control_only_upstream_corridors_from_coverage() -> None:
+    """Covered multi-forest paths may retire only their verified control nodes."""
+    graph = _nested_merge_corridor_graph()
+    coverage = analyze_dispatcher_corridor_coverage(
+        graph,
+        modifications=(
+            RedirectGoto(from_serial=45, old_target=123, new_target=121),
+            RedirectGoto(from_serial=122, old_target=123, new_target=34),
+        ),
+        dispatcher_entry_serial=4,
+    )
+
+    # The committed projection bypasses both forests at the entry, so the
+    # source nodes 45 and 122 are lost alongside the shared merge/feeder and
+    # dispatcher.  Their exact covered paths are the only source of authority.
+    post_graph = FlowGraph(
+        blocks={
+            **graph.blocks,
+            0: _block(0, (121, 34), (), 0x7FF859C06F60),
+        },
+        entry_serial=0,
+        func_ea=0x7FF859C06F60,
+    )
+
+    proof = build_dispatcher_removal_preflight_proof(
+        graph,
+        post_graph=post_graph,
+        coverage=coverage,
+        dispatcher_entry_serial=4,
+        authoritative_handler_serials=frozenset({34, 121}),
+        dispatcher_region_serials=frozenset({4}),
+        producer_safety=_executed_fragment_safety(),
+    )
+
+    assert proof.passed
+    assert proof.lost_blocks == {3, 4, 45, 122, 123}
+    assert {
+        (entry.role, entry.anchor.serial) for entry in proof.retired_infrastructure
+    } >= {
+        ("comparison_corridor", 45),
+        ("comparison_corridor", 122),
+    }
+    validation = validate_dispatcher_removal_preflight_proof(
+        graph,
+        post_graph=post_graph,
+        plan_metadata={
+            "dispatcher_corridor_coverage": coverage.to_metadata(),
+            "dispatcher_removal_preflight_proof": proof.to_metadata(),
+        },
+    )
+    assert validation.passed
+    assert validation.reason == "comparison_corridor_retirement"
+
+
+def test_dispatcher_removal_proof_rejects_semantic_upstream_corridor_fragment() -> None:
+    """One value/effect instruction vetoes retirement of every sibling path."""
+    graph = _nested_merge_corridor_graph()
+    semantic = InsnSnapshot(
+        opcode=4,
+        ea=0x7FF859C07656,
+        operands=(),
+        kind=InsnKind.MOV,
+    )
+    graph = FlowGraph(
+        blocks={
+            **graph.blocks,
+            45: _block(
+                45,
+                (123,),
+                (0,),
+                0x7FF859C07656,
+                insns=(semantic,),
+            ),
+        },
+        entry_serial=0,
+        func_ea=0x7FF859C06F60,
+    )
+    coverage = analyze_dispatcher_corridor_coverage(
+        graph,
+        modifications=(
+            RedirectGoto(from_serial=45, old_target=123, new_target=121),
+            RedirectGoto(from_serial=122, old_target=123, new_target=34),
+        ),
+        dispatcher_entry_serial=4,
+    )
+    post_graph = FlowGraph(
+        blocks={
+            **graph.blocks,
+            0: _block(0, (121, 34), (), 0x7FF859C06F60),
+        },
+        entry_serial=0,
+        func_ea=0x7FF859C06F60,
+    )
+
+    proof = build_dispatcher_removal_preflight_proof(
+        graph,
+        post_graph=post_graph,
+        coverage=coverage,
+        dispatcher_entry_serial=4,
+        authoritative_handler_serials=frozenset({34, 121}),
+        dispatcher_region_serials=frozenset({4}),
+        producer_safety=_executed_fragment_safety(),
+    )
+
+    assert not proof.passed
+    assert proof.reason == "untyped_lost_block"
+    assert all(
+        entry.role != "comparison_corridor"
+        for entry in proof.retired_infrastructure
+    )
+    forged = proof.to_metadata()
+    forged["proof_status"] = "accepted"
+    forged["reason"] = "typed_dispatcher_infrastructure_removed"
+    forged["producer_safety"] = _executed_fragment_safety()
+    validation = validate_dispatcher_removal_preflight_proof(
+        graph,
+        post_graph=post_graph,
+        plan_metadata={
+            "dispatcher_corridor_coverage": coverage.to_metadata(),
+            "dispatcher_removal_preflight_proof": forged,
+        },
+    )
+    assert not validation.passed
+
+
+def test_dispatcher_removal_proof_skips_direct_corridor_in_mixed_coverage() -> None:
+    """A direct feeder must not veto an independently typed merge forest."""
+    nested = _nested_merge_corridor_graph()
+    graph = FlowGraph(
+        blocks={
+            **nested.blocks,
+            0: _block(0, (45, 122, 200), (), 0x7FF859C06F60),
+            4: _block(4, (121, 34), (3, 200), 0x7FF859C070C4),
+            200: _block(200, (4,), (0,), 0x7FF859C09000),
+        },
+        entry_serial=0,
+        func_ea=0x7FF859C06F60,
+    )
+    coverage = analyze_dispatcher_corridor_coverage(
+        graph,
+        modifications=(
+            RedirectGoto(from_serial=45, old_target=123, new_target=121),
+            RedirectGoto(from_serial=122, old_target=123, new_target=34),
+            RedirectGoto(from_serial=200, old_target=4, new_target=121),
+        ),
+        dispatcher_entry_serial=4,
+    )
+    assert any(
+        corridor.state_merge is None
+        for corridor in coverage.covered_corridors
+    )
+    post_graph = FlowGraph(
+        blocks={
+            **graph.blocks,
+            45: _block(45, (121,), (0,), 0x7FF859C07656),
+            122: _block(122, (34,), (0,), 0x7FF859C08BFE),
+            200: _block(200, (121,), (0,), 0x7FF859C09000),
+        },
+        entry_serial=0,
+        func_ea=0x7FF859C06F60,
+    )
+    proof = build_dispatcher_removal_preflight_proof(
+        graph,
+        post_graph=post_graph,
+        coverage=coverage,
+        dispatcher_entry_serial=4,
+        authoritative_handler_serials=frozenset({34, 121}),
+        dispatcher_region_serials=frozenset({4}),
+        producer_safety=_executed_fragment_safety(),
+    )
+
+    assert proof.passed
+    assert ("comparison_corridor", 200) not in {
+        (entry.role, entry.anchor.serial)
+        for entry in proof.retired_infrastructure
     }
 
 
