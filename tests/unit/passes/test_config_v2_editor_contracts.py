@@ -293,6 +293,25 @@ def test_operational_config_v2_public_passes_have_complete_editor_contracts() ->
     assert registry.validate_editor_contracts() == ()
 
 
+def test_mba_egglog_replay_options_are_flat_typed_and_editor_visible() -> None:
+    entry = next(item for item in registered_pass_catalog() if item.pass_id == "mba-egglog")
+    fields = {field.path: field for field in entry.editor_spec.fields}
+
+    assert set(fields) >= {
+        ("learned_replay_enabled",),
+        ("learned_replay_max_entries",),
+        ("learned_replay_max_bytes",),
+    }
+    assert fields[("learned_replay_enabled",)].control is FieldControlKind.BOOLEAN
+    assert fields[("learned_replay_enabled",)].default is False
+    assert fields[("learned_replay_max_entries",)].minimum == 1
+    assert fields[("learned_replay_max_entries",)].maximum == 4096
+    assert fields[("learned_replay_max_entries",)].default == 256
+    assert fields[("learned_replay_max_bytes",)].minimum == 1
+    assert fields[("learned_replay_max_bytes",)].maximum == 16_777_216
+    assert fields[("learned_replay_max_bytes",)].default == 2_097_152
+
+
 def test_shipped_passes_project_their_declared_primary_editor_surface() -> None:
     by_pass_id = {entry.pass_id: entry for entry in registered_pass_catalog()}
 

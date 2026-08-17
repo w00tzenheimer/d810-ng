@@ -201,8 +201,15 @@ def _mba_egglog_options(config: PipelineConfig) -> dict[str, object]:
         "max_eclasses": adapter.max_eclasses,
         "max_enodes": adapter.max_enodes,
         "max_rule_firings": adapter.max_rule_firings,
-        "cross_block_constant_preparation": (adapter.cross_block_constant_preparation),
-        "cross_block_def_use_preparation": (adapter.cross_block_def_use_preparation),
+        "cross_block_constant_preparation": (
+            adapter.cross_block_constant_preparation
+        ),
+        "cross_block_def_use_preparation": (
+            adapter.cross_block_def_use_preparation
+        ),
+        "learned_replay_enabled": adapter.learned_replay_enabled,
+        "learned_replay_max_entries": adapter.learned_replay_max_entries,
+        "learned_replay_max_bytes": adapter.learned_replay_max_bytes,
         "time_budget_ms": adapter.time_budget_ms,
         "function_time_budget_ms": adapter.function_time_budget_ms,
         "residual_only": adapter.residual_only,

@@ -8,6 +8,8 @@ or expressions leak between instructions or decompilations.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import time
 from dataclasses import dataclass, replace
 from types import MappingProxyType
@@ -32,6 +34,8 @@ from d810.backends.mba.egglog_saturation import (
     extract_bounded_candidate,
     extract_bounded_term,
 )
+from d810.backends.mba import egglog_saturation
+from d810.backends.mba.egglog_idb_composite_cache import EgglogIdbCompositeCache
 from d810.backends.mba.cross_block_preparation import (
     prepare_ast_with_cross_block_constants,
     prepare_ast_with_def_use_constants,
@@ -57,17 +61,25 @@ from d810.backends.mba.native_z3_proof_template import (
 from d810.backends.mba.egglog_structural_rules import (
     compile_all_fixed_rotate_rules,
 )
+from d810.backends.mba.egglog_statistics import SUPPORTED_EGGLOG_VERSION
 from d810.core import getLogger
 from d810.hexrays.expr.ast import AstNode
 from d810.hexrays.ir_maturity import ir_maturity_to_ida
 from d810.hexrays.ir.minsn_utils import minsn_to_ast
 from d810.ir.maturity import IRMaturity
 from d810.mba.differential_report import egglog_receipt_to_outcome
+from d810.mba.egglog_composite_rewrite import (
+    CompositeRewriteMalformed,
+    CompositeRewriteSemantics,
+    EgglogCompositeRewrite,
+)
 from d810.mba.performance_timing import (
     EMPTY_MBA_STAGE_TIMINGS,
     MbaStageTimer,
 )
 from d810.mba.semantic_canonicalization import canonicalize_mba_term
+from d810.mba.semantic_canonicalization import CANONICALIZER_SCHEMA_VERSION
+from d810.mba.typed_term import TypedBvTerm, term_cost
 from d810.mba.provider_outcome import MbaProviderOutcome, ProviderOutcomeStatus
 from d810.mba.provider_history import ProviderOutcomeHistory
 from d810.optimizers.microcode.instructions.peephole.handler import (
@@ -113,6 +125,8 @@ _DEFAULT_FAMILIES = ("add",)
 _MAX_NATIVE_Z3_TIMEOUT_MS = 250
 _INTERACTIVE_NATIVE_Z3_TIMEOUT_MS = 50
 _MAX_PATTERN_COMPARISONS = 256
+_CACHE_STATUSES = frozenset({"disabled", "miss", "hit", "stale", "malformed", "evicted"})
+_REPLAY_SEMANTICS_UNAVAILABLE = object()
 
 
 @dataclass(frozen=True)
@@ -165,6 +179,18 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         self._last_provider_outcome: MbaProviderOutcome | None = None
         self.cross_block_constant_preparation = False
         self.cross_block_def_use_preparation = False
+        self.learned_replay_enabled = False
+        self.learned_replay_max_entries = 256
+        self.learned_replay_max_bytes = 2_097_152
+        self._composite_cache: EgglogIdbCompositeCache | object | None = None
+        self._pending_composite_rewrite: EgglogCompositeRewrite | None = None
+        self._replay_semantics: CompositeRewriteSemantics | object | None = None
+        self._cache_lookup_context: tuple[str, str | None, float, str | None] = (
+            "disabled",
+            None,
+            0.0,
+            None,
+        )
         self.generic_native_z3_before_certificate = False
         self.function_time_budget_ms: int | None = None
         self._function_budget: EgglogFunctionBudget | None = None
@@ -179,6 +205,8 @@ class EgglogOptimizer(PeepholeSimplificationRule):
 
         self._attempt_outcome_index = None
         self._last_provider_outcome = None
+        self._pending_composite_rewrite = None
+        self._cache_lookup_context = ("disabled", None, 0.0, None)
 
     def _provider_outcome_capture_enabled(self) -> bool:
         return self._provider_outcome_capture_depth > 0
@@ -250,6 +278,21 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             raise ValueError(
                 "EgglogOptimizer cross_block_def_use_preparation must be boolean"
             )
+        learned_replay_enabled = self.config.get("learned_replay_enabled", False)
+        if type(learned_replay_enabled) is not bool:
+            raise ValueError("EgglogOptimizer learned_replay_enabled must be boolean")
+        learned_replay_max_entries = self.config.get(
+            "learned_replay_max_entries", 256
+        )
+        if type(learned_replay_max_entries) is not int or not 1 <= learned_replay_max_entries <= 4_096:
+            raise ValueError(
+                "EgglogOptimizer learned_replay_max_entries must be an integer from 1 to 4096"
+            )
+        learned_replay_max_bytes = self.config.get("learned_replay_max_bytes", 2_097_152)
+        if type(learned_replay_max_bytes) is not int or not 1 <= learned_replay_max_bytes <= 16_777_216:
+            raise ValueError(
+                "EgglogOptimizer learned_replay_max_bytes must be an integer from 1 to 16777216"
+            )
         generic_native_z3_before_certificate = self.config.get(
             "generic_native_z3_before_certificate", False
         )
@@ -306,6 +349,15 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         self._catalogue = selected_catalogue
         self.cross_block_constant_preparation = preparation
         self.cross_block_def_use_preparation = def_use_preparation
+        self.learned_replay_enabled = learned_replay_enabled
+        self.learned_replay_max_entries = learned_replay_max_entries
+        self.learned_replay_max_bytes = learned_replay_max_bytes
+        # Configuration changes start a new bounded learned session.  The
+        # cache itself remains lazy so telemetry-only profiles never construct
+        # it merely by being configured.
+        self._composite_cache = None
+        self._pending_composite_rewrite = None
+        self._replay_semantics = None
         self.generic_native_z3_before_certificate = generic_native_z3_before_certificate
         self.function_time_budget_ms = function_time_budget_ms
         self._function_budget = (
@@ -315,6 +367,11 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         )
         self.residual_only = residual_only
         self._residual_admitted = False
+        if self.learned_replay_enabled:
+            try:
+                self._current_replay_semantics()
+            except Exception:
+                self._replay_semantics = _REPLAY_SEMANTICS_UNAVAILABLE
 
     def _publish_budget_attributes(self, budget: EgglogExtractionBudget) -> None:
         self.max_leaves = budget.max_leaves
@@ -336,6 +393,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
     @_catalogue.setter
     def _catalogue(self, catalogue) -> None:
         self.__catalogue = catalogue
+        self._replay_semantics = None
         self._compiled_rules = catalogue.compiled_rules
         self._rules_by_root_opcode = self._build_root_opcode_buckets(
             self._compiled_rules
@@ -363,6 +421,576 @@ class EgglogOptimizer(PeepholeSimplificationRule):
                 self._catalogue = _SelectedRuleCatalogue(
                     compiled_rules_for_families(self.families)
                 )
+
+    def _create_composite_cache(self) -> EgglogIdbCompositeCache:
+        """Construct the bounded replay cache after admission only."""
+
+        return EgglogIdbCompositeCache(
+            max_entries=self.learned_replay_max_entries,
+            max_bytes=self.learned_replay_max_bytes,
+        )
+
+    def _create_egglog_runtime(self):
+        """Load the optional Egglog runtime after all replay admission gates."""
+
+        return egglog_saturation._load_egglog_module()
+
+    def _ensure_composite_cache(self):
+        cache = self._composite_cache
+        if cache is None:
+            cache = self._create_composite_cache()
+            self._composite_cache = cache
+        return cache
+
+    @staticmethod
+    def _normalize_cache_status(status: object) -> str:
+        return status if type(status) is str and status in _CACHE_STATUSES else "malformed"
+
+    @staticmethod
+    def _cache_lookup(
+        cache,
+        bucket_key: tuple[object, ...],
+    ) -> tuple[str, tuple[EgglogCompositeRewrite, ...]]:
+        """Normalize the IDB cache and fail-closed test seams."""
+
+        try:
+            lookup = getattr(cache, "lookup", None)
+            if callable(lookup):
+                raw = lookup(bucket_key)
+            else:
+                getter = getattr(cache, "get", None)
+                raw = None if not callable(getter) else getter(bucket_key)
+        except Exception:
+            return "malformed", ()
+        if raw is None:
+            return "miss", ()
+        if isinstance(raw, (list, tuple)) and all(
+            isinstance(item, EgglogCompositeRewrite) for item in raw
+        ):
+            normalized = tuple(raw)
+            return ("hit", normalized) if normalized else ("miss", ())
+        if isinstance(raw, tuple) and len(raw) == 2 and type(raw[0]) is str:
+            status, records = raw
+            status = EgglogOptimizer._normalize_cache_status(status)
+            try:
+                normalized = tuple(records or ())
+            except TypeError:
+                return "malformed", ()
+            if any(not isinstance(item, EgglogCompositeRewrite) for item in normalized):
+                return "malformed", ()
+            return status, normalized
+        status = getattr(raw, "status", None)
+        records = getattr(raw, "rewrites", getattr(raw, "templates", ()))
+        if type(status) is str:
+            status = EgglogOptimizer._normalize_cache_status(status)
+            try:
+                normalized = tuple(records or ())
+            except TypeError:
+                return "malformed", ()
+            if any(not isinstance(item, EgglogCompositeRewrite) for item in normalized):
+                return "malformed", ()
+            return status, normalized
+        return "malformed", ()
+
+    @staticmethod
+    def _cache_key(bucket_key: tuple[object, ...]) -> str:
+        return json.dumps(list(bucket_key), ensure_ascii=True, separators=(",", ":"))
+
+    def _replay_profile_digest(self) -> str:
+        """Fingerprint the configured replay/extraction semantic profile."""
+
+        payload = {
+            "families": tuple(self.families),
+            "maturities": tuple(self.maturities),
+            "max_leaves": self.max_leaves,
+            "max_operator_nodes": self.max_operator_nodes,
+            "max_degree": self.max_degree,
+            "saturation_rounds": self.saturation_rounds,
+            "max_eclasses": self.max_eclasses,
+            "max_enodes": self.max_enodes,
+            "max_rule_firings": self.max_rule_firings,
+            "time_budget_ms": self.time_budget_ms,
+            "require_proof": self.require_proof,
+            "native_proof_mode": self.native_proof_mode,
+            "execution_mode": self.execution_mode,
+            "cross_block_constant_preparation": self.cross_block_constant_preparation,
+            "cross_block_def_use_preparation": self.cross_block_def_use_preparation,
+            "generic_native_z3_before_certificate": (
+                self.generic_native_z3_before_certificate
+            ),
+            "function_time_budget_ms": self.function_time_budget_ms,
+            "residual_only": self.residual_only,
+            "learned_replay_enabled": self.learned_replay_enabled,
+            "learned_replay_max_entries": self.learned_replay_max_entries,
+            "learned_replay_max_bytes": self.learned_replay_max_bytes,
+        }
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("ascii")
+        return hashlib.sha256(encoded).hexdigest()
+
+    def _current_replay_semantics(self) -> CompositeRewriteSemantics:
+        """Build the exact Task 10 semantic descriptor for this handler."""
+
+        if self._replay_semantics is _REPLAY_SEMANTICS_UNAVAILABLE:
+            raise CompositeRewriteMalformed(
+                "active Egglog catalogue has no available semantic snapshot"
+            )
+        if self._replay_semantics is not None:
+            return self._replay_semantics
+
+        from d810.mba.certified_catalogue import build_certified_catalogue_snapshot
+
+        structural_rules = self._compiled_rules if self.families == ("fixed_rotate",) else ()
+        try:
+            snapshot = build_certified_catalogue_snapshot(
+                self._compiled_rules,
+                compiler_version="verifiable-rule-dsl-v1",
+                enabled_families=tuple(self.families),
+                structural_rules=structural_rules,
+            )
+        except (TypeError, ValueError) as exc:
+            raise CompositeRewriteMalformed(
+                "active Egglog catalogue has no portable semantic snapshot"
+            ) from exc
+        active_rule_names = tuple(
+            (str(rule.family), str(rule.source_name)) for rule in self._compiled_rules
+        )
+        semantics = CompositeRewriteSemantics(
+            canonicalizer_version=CANONICALIZER_SCHEMA_VERSION,
+            catalogue_digest=snapshot.fingerprint,
+            profile_digest=self._replay_profile_digest(),
+            egglog_version=SUPPORTED_EGGLOG_VERSION,
+            proof_mode=self.native_proof_mode,
+            active_rule_names=active_rule_names,
+        )
+        self._replay_semantics = semantics
+        return semantics
+
+    @staticmethod
+    def _provenance_from_rule(rule) -> tuple[str, str, tuple[str, ...]]:
+        return (str(rule.family), str(rule.source_name), tuple(rule.aliases))
+
+    def _direct_native_application(
+        self,
+        *,
+        candidate_term: TypedBvTerm,
+        structural_route: bool,
+        structural_matches,
+        match_result,
+        canonical_match_result,
+    ) -> tuple[TypedBvTerm, tuple[str, str, tuple[str, ...]]] | None:
+        """Materialize one direct catalogue match without invoking Egglog."""
+
+        candidates = []
+        if structural_route and structural_matches:
+            candidates.extend(
+                (replacement, self._provenance_from_rule(rule))
+                for rule, replacement, _declaration_index in structural_matches
+            )
+        elif canonical_match_result is not None:
+            candidates.extend(
+                (
+                    match.compiled_pattern.materialize_replacement(match.bindings),
+                    self._provenance_from_rule(match.compiled_pattern.rule),
+                )
+                for match in canonical_match_result.matches
+            )
+        elif match_result is not None:
+            candidates.extend(
+                (
+                    match.bindings.materialize_replacement(match.rule),
+                    self._provenance_from_rule(match.rule),
+                )
+                for match in match_result.matches
+            )
+        input_cost = term_cost(candidate_term)
+        for replacement, provenance in candidates:
+            if term_cost(replacement) < input_cost:
+                return replacement, provenance
+        return None
+
+    @staticmethod
+    def _term_extraction_result(
+        *,
+        candidate_term: TypedBvTerm,
+        replacement_term: TypedBvTerm,
+        profile,
+        provenance: tuple[str, str, tuple[str, ...]],
+        derivation_trace: tuple[tuple[str, str, tuple[str, ...]], ...],
+        execution_path: str,
+        cache_status: str,
+        cache_key: str | None,
+        cache_lookup_elapsed_ms: float | None = None,
+    ) -> EgglogExtractionResult:
+        input_cost = term_cost(candidate_term)
+        extracted_cost = term_cost(replacement_term)
+        receipt = EgglogExtractionReceipt(
+            input_cost=input_cost,
+            extracted_cost=extracted_cost,
+            degree=0,
+            elapsed_ms=0.0,
+            selected_family=provenance[0],
+            selected_source=provenance[1],
+            selected_aliases=provenance[2],
+            derivation_trace=derivation_trace,
+            island_class=profile.island_class.value,
+            island_fingerprint=profile.fingerprint,
+            operator_count=profile.operator_count,
+            distinct_leaf_count=profile.distinct_leaf_count,
+            nonlinear_product_count=profile.nonlinear_product_count,
+            blockers=tuple(blocker.value for blocker in profile.blockers),
+            execution_path=execution_path,
+            cache_status=cache_status,
+            cache_key=cache_key,
+            replayed_trace=(
+                derivation_trace if execution_path == "learned_replay" else ()
+            ),
+            cache_lookup_elapsed_ms=cache_lookup_elapsed_ms,
+            egglog_work_units=0,
+        )
+        return EgglogExtractionResult(
+            replacement_ast=None,
+            replacement_term=replacement_term,
+            receipt=receipt,
+            selected_provenance=provenance,
+            derivation_trace=derivation_trace,
+        )
+
+    def _try_learned_replay(
+        self,
+        *,
+        candidate_term: TypedBvTerm,
+        canonical_candidate_term: TypedBvTerm,
+        profile,
+    ) -> EgglogExtractionResult | None:
+        """Return a current-term replay candidate, or safely miss."""
+
+        try:
+            semantics = self._current_replay_semantics()
+        except Exception:
+            self._replay_semantics = _REPLAY_SEMANTICS_UNAVAILABLE
+            self._cache_lookup_context = ("malformed", None, 0.0, None)
+            return None
+
+        try:
+            bucket_key = (
+                semantics.catalogue_digest,
+                semantics.profile_digest,
+                semantics.canonicalizer_version,
+                semantics.egglog_version,
+                semantics.proof_mode,
+                canonical_candidate_term.width,
+                canonical_candidate_term.operation,
+                len(canonical_candidate_term.children),
+            )
+            cache_key = self._cache_key(bucket_key)
+            lookup_started = time.perf_counter()
+            cache = self._ensure_composite_cache()
+            status, rewrites = self._cache_lookup(cache, bucket_key)
+            lookup_elapsed_ms = (time.perf_counter() - lookup_started) * 1000.0
+        except Exception:
+            self._cache_lookup_context = ("malformed", None, 0.0, None)
+            return None
+
+        self._cache_lookup_context = (
+            status,
+            cache_key,
+            lookup_elapsed_ms,
+            semantics.profile_digest,
+        )
+        if status != "hit" or not rewrites:
+            return None
+
+        for rewrite in rewrites:
+            try:
+                bindings = rewrite.match(
+                    canonical_candidate_term,
+                    semantics=semantics,
+                )
+                if bindings is None:
+                    continue
+                replacement_term = rewrite.materialize(
+                    bindings,
+                    semantics=semantics,
+                )
+                if term_cost(replacement_term) >= term_cost(candidate_term):
+                    continue
+                trace = tuple(rewrite.derivation_trace)
+                if not trace:
+                    continue
+                provenance = trace[-1]
+                return self._term_extraction_result(
+                    candidate_term=candidate_term,
+                    replacement_term=replacement_term,
+                    profile=profile,
+                    provenance=provenance,
+                    derivation_trace=trace,
+                    execution_path="learned_replay",
+                    cache_status="hit",
+                    cache_key=cache_key,
+                    cache_lookup_elapsed_ms=lookup_elapsed_ms,
+                )
+            except Exception:
+                continue
+        self._cache_lookup_context = (
+            "stale",
+            cache_key,
+            lookup_elapsed_ms,
+            semantics.profile_digest,
+        )
+        return None
+
+    def _run_fresh_saturation(self, candidate_term, **kwargs) -> EgglogExtractionResult:
+        """Admit the runtime only after direct and replay paths miss."""
+
+        return self._select_native_extraction(
+            candidate_term,
+            egglog_runtime=self._create_egglog_runtime(),
+            **kwargs,
+        )
+
+    def _finish_extraction_candidate(
+        self,
+        extraction: EgglogExtractionResult,
+        *,
+        ins,
+        blk,
+        destination_size: int,
+        candidate_term: TypedBvTerm,
+        canonical_candidate_term: TypedBvTerm,
+        profile,
+        telemetry_match_result=None,
+        matcher_elapsed_ms: float | None = None,
+        allow_fallback: bool = False,
+        candidate_ast=None,
+        candidate_lowering=None,
+        expected_lowering_term: TypedBvTerm | None = None,
+        template_input_term: TypedBvTerm | None = None,
+        known_constants=None,
+    ):
+        """Rebuild, strictly cost-check, prove, and record one candidate."""
+
+        if telemetry_match_result is not None:
+            extraction = replace(
+                extraction,
+                receipt=self._with_native_match_telemetry(
+                    extraction.receipt,
+                    telemetry_match_result,
+                    elapsed_ms=matcher_elapsed_ms,
+                ),
+            )
+        replacement_term = extraction.replacement_term
+        if replacement_term is None:
+            if allow_fallback:
+                return None
+            self._record_extraction_receipt(extraction.receipt)
+            return None
+        ast = candidate_ast
+        if ast is None:
+            self._begin_stage("ast_construction")
+            try:
+                ast = minsn_to_ast(ins)
+            finally:
+                self._finish_stage("ast_construction")
+        if ast is None:
+            if allow_fallback:
+                return None
+            self._record_extraction_receipt(
+                replace(
+                    extraction.receipt,
+                    skip_reason=ExtractionSkipReason.LOWERING_FAILED,
+                    derivation_trace=(),
+                )
+            )
+            return None
+        lowering = candidate_lowering
+        if lowering is None:
+            lowering = lower_hexrays_island(ast, destination_size=destination_size)
+        expected_term = (
+            canonical_candidate_term
+            if expected_lowering_term is None
+            else expected_lowering_term
+        )
+        if lowering.term is None or lowering.term != expected_term:
+            if allow_fallback:
+                return None
+            self._record_extraction_receipt(
+                replace(
+                    extraction.receipt,
+                    skip_reason=ExtractionSkipReason.LOWERING_FAILED,
+                    derivation_trace=(),
+                )
+            )
+            return None
+        replay_rebuild_started = (
+            time.perf_counter()
+            if extraction.receipt.execution_path == "learned_replay"
+            else None
+        )
+        try:
+            replacement = rebuild_hexrays_island(
+                replacement_term,
+                lowering=lowering,
+                destination_size=destination_size,
+                block=blk,
+                destination=ins.d,
+            )
+        except Exception:
+            replacement = None
+        replay_rebuild_elapsed_ms = (
+            None
+            if replay_rebuild_started is None
+            else (time.perf_counter() - replay_rebuild_started) * 1000.0
+        )
+        if replacement is None:
+            if allow_fallback:
+                return None
+            self._record_extraction_receipt(
+                replace(
+                    extraction.receipt,
+                    skip_reason=ExtractionSkipReason.LOWERING_FAILED,
+                    derivation_trace=(),
+                )
+            )
+            return None
+        if term_cost(replacement_term) >= term_cost(candidate_term) or (
+            replacement_term.operation not in {"rol", "ror"}
+            and self._node_count(replacement) >= self._node_count(ast)
+        ):
+            if allow_fallback:
+                return None
+            self._record_extraction_receipt(
+                replace(
+                    extraction.receipt,
+                    skip_reason=ExtractionSkipReason.NO_DEGREE_ELIGIBLE_IMPROVEMENT,
+                )
+            )
+            return None
+        selected = extraction.selected_provenance
+        if selected is None:
+            if allow_fallback:
+                return None
+            self._record_extraction_receipt(
+                replace(
+                    extraction.receipt,
+                    skip_reason=ExtractionSkipReason.INTERNAL_ERROR,
+                )
+            )
+            return None
+        replay_proof_started = (
+            time.perf_counter()
+            if extraction.receipt.execution_path == "learned_replay"
+            else None
+        )
+        self._begin_stage("native_z3")
+        try:
+            (
+                proved,
+                template_source,
+                fallback_reason,
+                template_verdict,
+                legacy_verdict,
+                template_elapsed_ms,
+                legacy_elapsed_ms,
+            ) = self._prove_selected_replacement(
+                ast,
+                replacement,
+                original_term=lowering.term,
+                replacement_term=replacement_term,
+                selected=selected,
+                width=int(ins.d.size) * 8,
+                known_constants=known_constants,
+            )
+        finally:
+            self._finish_stage("native_z3")
+        replay_proof_elapsed_ms = (
+            None
+            if replay_proof_started is None
+            else (time.perf_counter() - replay_proof_started) * 1000.0
+        )
+        if not proved:
+            if allow_fallback:
+                return None
+            self._record_extraction_receipt(
+                replace(
+                    extraction.receipt,
+                    skip_reason=ExtractionSkipReason.NATIVE_Z3_FAILED,
+                    derivation_trace=(),
+                    proof_mode=self.native_proof_mode,
+                    template_source_name=template_source,
+                    template_fallback_reason=fallback_reason,
+                    template_proof_verdict=template_verdict,
+                    legacy_proof_verdict=legacy_verdict,
+                    template_proof_elapsed_ms=template_elapsed_ms,
+                    legacy_proof_elapsed_ms=legacy_elapsed_ms,
+                )
+            )
+            return None
+        extraction = replace(
+            extraction,
+            receipt=replace(
+                extraction.receipt,
+                replay_rebuild_elapsed_ms=replay_rebuild_elapsed_ms,
+                replay_proof_elapsed_ms=replay_proof_elapsed_ms,
+                proof_mode=self.native_proof_mode,
+                template_source_name=template_source,
+                template_fallback_reason=fallback_reason,
+                template_proof_verdict=template_verdict,
+                legacy_proof_verdict=legacy_verdict,
+                template_proof_elapsed_ms=template_elapsed_ms,
+                legacy_proof_elapsed_ms=legacy_elapsed_ms,
+            ),
+        )
+        self._begin_stage("reconstruction")
+        try:
+            new_ins = self._create_instruction(replacement, ins)
+        finally:
+            self._finish_stage("reconstruction")
+        if new_ins is None:
+            if allow_fallback:
+                return None
+            self._record_extraction_receipt(
+                replace(
+                    extraction.receipt,
+                    skip_reason=ExtractionSkipReason.LOWERING_FAILED,
+                    derivation_trace=(),
+                )
+            )
+            return None
+        self._record_extraction_receipt(extraction.receipt)
+        if extraction.receipt.execution_path == "fresh_saturation" and self.learned_replay_enabled:
+            try:
+                self._pending_composite_rewrite = EgglogCompositeRewrite.from_extraction(
+                    input_term=(
+                        canonical_candidate_term
+                        if template_input_term is None
+                        else template_input_term
+                    ),
+                    output_term=replacement_term,
+                    derivation_trace=extraction.derivation_trace,
+                    semantics=self._current_replay_semantics(),
+                )
+            except (CompositeRewriteMalformed, TypeError, ValueError):
+                self._pending_composite_rewrite = None
+        family, source_name, aliases = selected
+        provenance = (source_name, *aliases)
+        self.last_rule_family = family
+        self.last_rule_provenance = provenance
+        self.last_derivation_trace = extraction.derivation_trace
+        if self._provider_outcome_history_enabled():
+            self.rule_provenance_history.append(provenance)
+        logger.info(
+            "egglog MBA rewrite at %#x: family=%s source=%s aliases=%s",
+            getattr(ins, "ea", 0),
+            family,
+            source_name,
+            aliases,
+        )
+        return new_ins
 
     def check_and_replace(self, blk, ins):
         """Return a replacement only after extraction, shrink, and proof."""
@@ -505,14 +1133,6 @@ class EgglogOptimizer(PeepholeSimplificationRule):
                 return None
             matches = () if match_result is None else match_result.matches
             canonical_match_result = None
-            if structural_route and not structural_matches:
-                self._record_extraction_receipt(
-                    extraction_receipt_for_profile(
-                        native_result.profile,
-                        ExtractionSkipReason.NO_DEGREE_ELIGIBLE_IMPROVEMENT,
-                    )
-                )
-                return None
             if not structural_route and not matches:
                 canonical_term = canonicalize_mba_term(view.to_typed_term()).canonical_term
                 canonical_match_result = self._native_pattern_catalogue.match_canonical_root(
@@ -532,18 +1152,6 @@ class EgglogOptimizer(PeepholeSimplificationRule):
                     )
                     return None
                 matches = canonical_match_result.matches
-                if not matches:
-                    self._record_extraction_receipt(
-                        self._with_native_match_telemetry(
-                            extraction_receipt_for_profile(
-                                native_result.profile,
-                                ExtractionSkipReason.NO_DEGREE_ELIGIBLE_IMPROVEMENT,
-                            ),
-                            canonical_match_result,
-                            elapsed_ms=matcher_elapsed_ms,
-                        )
-                    )
-                    return None
         finally:
             self._finish_stage("native_preflight")
         extraction_budget = self._candidate_extraction_budget(blk)
@@ -566,192 +1174,120 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             self._record_extraction_receipt(receipt)
             return None
         candidate_term = view.to_typed_term()
-        if structural_route:
-            initial_replacements = {}
-        elif canonical_match_result is None:
-            initial_replacements = {
-                id(match.rule): match.bindings.materialize_replacement(match.rule)
-                for match in matches
-            }
-        else:
-            initial_replacements = {
-                id(match.compiled_pattern.rule): match.compiled_pattern.materialize_replacement(
-                    match.bindings
+        canonical_candidate_term = canonicalize_mba_term(candidate_term).canonical_term
+        if extraction_budget.time_budget_ms < 50:
+            receipt = extraction_receipt_for_profile(
+                native_result.profile,
+                ExtractionSkipReason.TIME_BUDGET,
+            )
+            receipt = replace(
+                receipt,
+                execution_path="telemetry_only",
+                cache_status="disabled",
+            )
+            if telemetry_match_result is not None:
+                receipt = self._with_native_match_telemetry(
+                    receipt,
+                    telemetry_match_result,
+                    elapsed_ms=matcher_elapsed_ms,
                 )
-                for match in matches
-            }
+            self._record_extraction_receipt(receipt)
+            return None
+        direct_application = self._direct_native_application(
+            candidate_term=candidate_term,
+            structural_route=structural_route,
+            structural_matches=structural_matches,
+            match_result=match_result,
+            canonical_match_result=canonical_match_result,
+        )
+        if direct_application is not None:
+            replacement_term, selected = direct_application
+            if term_cost(replacement_term) < term_cost(candidate_term):
+                extraction = self._term_extraction_result(
+                    candidate_term=candidate_term,
+                    replacement_term=replacement_term,
+                    profile=native_result.profile,
+                    provenance=selected,
+                    derivation_trace=(selected,),
+                    execution_path="direct_catalogue",
+                    cache_status="disabled",
+                    cache_key=None,
+                )
+                return self._finish_extraction_candidate(
+                    extraction,
+                    ins=ins,
+                    blk=blk,
+                    destination_size=destination_size,
+                    candidate_term=candidate_term,
+                    canonical_candidate_term=canonical_candidate_term,
+                    profile=native_result.profile,
+                    telemetry_match_result=telemetry_match_result,
+                    matcher_elapsed_ms=matcher_elapsed_ms,
+                )
 
+        if self.learned_replay_enabled:
+            replay = self._try_learned_replay(
+                candidate_term=candidate_term,
+                canonical_candidate_term=canonical_candidate_term,
+                profile=native_result.profile,
+            )
+            if replay is not None:
+                replacement = self._finish_extraction_candidate(
+                    replay,
+                    ins=ins,
+                    blk=blk,
+                    destination_size=destination_size,
+                    candidate_term=candidate_term,
+                    canonical_candidate_term=canonical_candidate_term,
+                    profile=native_result.profile,
+                    telemetry_match_result=telemetry_match_result,
+                    matcher_elapsed_ms=matcher_elapsed_ms,
+                    allow_fallback=True,
+                )
+                if replacement is not None:
+                    return replacement
+
+        cache_status, cache_key, cache_lookup_elapsed_ms, _profile_digest = (
+            self._cache_lookup_context
+        )
         self._begin_stage("egglog_extraction")
         try:
             extraction_kwargs = {
                 "destination_size": destination_size,
                 "profile": native_result.profile,
-                "initial_replacements": initial_replacements,
+                "initial_replacements": {},
+                "block": blk,
+                "destination": ins.d,
             }
             if extraction_budget != self.extraction_budget:
                 extraction_kwargs["budget"] = extraction_budget
-            extraction = self._select_native_extraction(
+            extraction = self._run_fresh_saturation(
                 candidate_term,
-                block=blk,
-                destination=ins.d,
                 **extraction_kwargs,
             )
         finally:
             self._finish_stage("egglog_extraction")
-        if telemetry_match_result is not None:
-            extraction = replace(
-                extraction,
-                receipt=self._with_native_match_telemetry(
-                    extraction.receipt,
-                    telemetry_match_result,
-                    elapsed_ms=matcher_elapsed_ms,
-                ),
-            )
-        self._record_extraction_receipt(extraction.receipt)
-        replacement_term = extraction.replacement_term
-        if replacement_term is None:
-            return None
-        # AST construction is intentionally deferred until the direct native
-        # preflight and Egglog extraction have selected a concrete winner.
-        self._begin_stage("ast_construction")
-        try:
-            ast = minsn_to_ast(ins)
-        finally:
-            self._finish_stage("ast_construction")
-        if ast is None:
-            self._record_extraction_receipt(
-                replace(
-                    extraction.receipt,
-                    skip_reason=ExtractionSkipReason.LOWERING_FAILED,
-                    derivation_trace=(),
-                )
-            )
-            return None
-        lowering = lower_hexrays_island(ast, destination_size=destination_size)
-        canonical_candidate_term = canonicalize_mba_term(candidate_term).canonical_term
-        if lowering.term is None or lowering.term != canonical_candidate_term:
-            self._record_extraction_receipt(
-                replace(
-                    extraction.receipt,
-                    skip_reason=ExtractionSkipReason.LOWERING_FAILED,
-                    derivation_trace=(),
-                )
-            )
-            return None
-        replacement = rebuild_hexrays_island(
-            replacement_term,
-            lowering=lowering,
-            destination_size=destination_size,
-            block=blk,
-            destination=ins.d,
-        )
-        if replacement is None:
-            self._record_extraction_receipt(
-                replace(
-                    extraction.receipt,
-                    skip_reason=ExtractionSkipReason.LOWERING_FAILED,
-                    derivation_trace=(),
-                )
-            )
-            return None
-        if replacement_term.operation not in {"rol", "ror"} and self._node_count(
-            replacement
-        ) >= self._node_count(ast):
-            self._record_extraction_receipt(
-                replace(
-                    extraction.receipt,
-                    skip_reason=ExtractionSkipReason.NO_DEGREE_ELIGIBLE_IMPROVEMENT,
-                )
-            )
-            return None
-        selected = extraction.selected_provenance
-        if selected is None:
-            self._record_extraction_receipt(
-                replace(
-                    extraction.receipt,
-                    skip_reason=ExtractionSkipReason.INTERNAL_ERROR,
-                )
-            )
-            return None
-        width = int(ins.d.size) * 8
-        self._begin_stage("native_z3")
-        try:
-            (
-                proved,
-                template_source,
-                fallback_reason,
-                template_verdict,
-                legacy_verdict,
-                template_elapsed_ms,
-                legacy_elapsed_ms,
-            ) = self._prove_selected_replacement(
-                ast,
-                replacement,
-                original_term=lowering.term,
-                replacement_term=replacement_term,
-                selected=selected,
-                width=width,
-            )
-        finally:
-            self._finish_stage("native_z3")
-        if not proved:
-            self._record_extraction_receipt(
-                replace(
-                    extraction.receipt,
-                    skip_reason=ExtractionSkipReason.NATIVE_Z3_FAILED,
-                    derivation_trace=(),
-                    proof_mode=self.native_proof_mode,
-                    template_source_name=template_source,
-                    template_fallback_reason=fallback_reason,
-                    template_proof_verdict=template_verdict,
-                    legacy_proof_verdict=legacy_verdict,
-                    template_proof_elapsed_ms=template_elapsed_ms,
-                    legacy_proof_elapsed_ms=legacy_elapsed_ms,
-                )
-            )
-            return None
         extraction = replace(
             extraction,
             receipt=replace(
                 extraction.receipt,
-                proof_mode=self.native_proof_mode,
-                template_source_name=template_source,
-                template_fallback_reason=fallback_reason,
-                template_proof_verdict=template_verdict,
-                legacy_proof_verdict=legacy_verdict,
-                template_proof_elapsed_ms=template_elapsed_ms,
-                legacy_proof_elapsed_ms=legacy_elapsed_ms,
+                execution_path="fresh_saturation",
+                cache_status=(cache_status if cache_status != "disabled" else "disabled"),
+                cache_key=cache_key,
+                cache_lookup_elapsed_ms=cache_lookup_elapsed_ms,
             ),
         )
-        self._record_extraction_receipt(extraction.receipt)
-        self._begin_stage("reconstruction")
-        try:
-            new_ins = self._create_instruction(replacement, ins)
-        finally:
-            self._finish_stage("reconstruction")
-        if new_ins is None:
-            self._record_extraction_receipt(
-                replace(
-                    extraction.receipt,
-                    skip_reason=ExtractionSkipReason.LOWERING_FAILED,
-                    derivation_trace=(),
-                )
-            )
-            return None
-        family, source_name, aliases = selected
-        provenance = (source_name, *aliases)
-        self.last_rule_family = family
-        self.last_rule_provenance = provenance
-        self.last_derivation_trace = extraction.derivation_trace
-        self.rule_provenance_history.append(provenance)
-        logger.info(
-            "egglog MBA rewrite at %#x: family=%s source=%s aliases=%s",
-            getattr(ins, "ea", 0),
-            family,
-            source_name,
-            aliases,
+        return self._finish_extraction_candidate(
+            extraction,
+            ins=ins,
+            blk=blk,
+            destination_size=destination_size,
+            candidate_term=candidate_term,
+            canonical_candidate_term=canonical_candidate_term,
+            profile=native_result.profile,
+            telemetry_match_result=telemetry_match_result,
+            matcher_elapsed_ms=matcher_elapsed_ms,
         )
-        return new_ins
 
     def _check_and_replace_with_prepared_ast(
         self,
@@ -760,13 +1296,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         blk,
         destination_size: int,
     ):
-        """Retain the configured cross-block preparation path.
-
-        Native matcher terms deliberately reflect only one instruction.  When
-        cross-block constant preparation is explicitly enabled, retain the
-        established AST preparation/proof path rather than pretending those
-        external constants are available to the local native view.
-        """
+        """Route the prepared AST through direct, replay, then fresh Egglog."""
 
         self._begin_stage("ast_construction")
         try:
@@ -822,82 +1352,150 @@ class EgglogOptimizer(PeepholeSimplificationRule):
                     )
                 )
                 return None
+            extraction_lowering = lower_hexrays_island(
+                extraction_ast,
+                destination_size=destination_size,
+            )
+            prepared_term = extraction_lowering.term
+            if prepared_term is None:
+                self._record_extraction_receipt(
+                    extraction_receipt_for_lowering(
+                        lowering,
+                        ExtractionSkipReason.LOWERING_FAILED,
+                    )
+                )
+                return None
         finally:
             self._finish_stage("native_preflight")
+        prepared_candidate_term = canonicalize_mba_term(prepared_term).canonical_term
+        native_candidate_term = lowering.raw_term or lowering.term
+        expected_lowering_term = lowering.term
+        matcher_started = time.perf_counter()
+        try:
+            canonical_match_result = self._native_pattern_catalogue.match_canonical_root(
+                prepared_candidate_term,
+                comparison_budget=_MAX_PATTERN_COMPARISONS,
+            )
+        except CanonicalPatternComparisonBudgetExceeded:
+            self._record_extraction_receipt(
+                extraction_receipt_for_lowering(
+                    lowering,
+                    ExtractionSkipReason.CANDIDATE_BUDGET,
+                )
+            )
+            return None
+        matcher_elapsed_ms = (time.perf_counter() - matcher_started) * 1000.0
+        if canonical_match_result.stop_reason.value == "comparison_budget":
+            self._record_extraction_receipt(
+                replace(
+                    extraction_receipt_for_lowering(
+                        lowering,
+                        ExtractionSkipReason.CANDIDATE_BUDGET,
+                    ),
+                    native_matcher_comparisons=canonical_match_result.comparisons,
+                    native_matcher_lazy_swaps=canonical_match_result.commuted_branches,
+                    native_matcher_elapsed_ms=matcher_elapsed_ms,
+                )
+            )
+            return None
+        if extraction_budget.time_budget_ms < 50:
+            self._record_extraction_receipt(
+                replace(
+                    extraction_receipt_for_lowering(
+                        lowering,
+                        ExtractionSkipReason.TIME_BUDGET,
+                    ),
+                    execution_path="telemetry_only",
+                    cache_status="disabled",
+                    native_matcher_comparisons=canonical_match_result.comparisons,
+                    native_matcher_lazy_swaps=canonical_match_result.commuted_branches,
+                    native_matcher_elapsed_ms=matcher_elapsed_ms,
+                )
+            )
+            return None
+        direct_application = self._direct_native_application(
+            candidate_term=prepared_candidate_term,
+            structural_route=False,
+            structural_matches=(),
+            match_result=None,
+            canonical_match_result=canonical_match_result,
+        )
+        common_kwargs = {
+            "ins": ins,
+            "blk": blk,
+            "destination_size": destination_size,
+            "candidate_term": native_candidate_term,
+            "canonical_candidate_term": prepared_candidate_term,
+            "profile": lowering.profile,
+            "telemetry_match_result": canonical_match_result,
+            "matcher_elapsed_ms": matcher_elapsed_ms,
+            "candidate_ast": ast,
+            "candidate_lowering": lowering,
+            "expected_lowering_term": expected_lowering_term,
+            "template_input_term": prepared_candidate_term,
+            "known_constants": known_constants,
+        }
+        if direct_application is not None:
+            replacement_term, selected = direct_application
+            extraction = self._term_extraction_result(
+                candidate_term=prepared_candidate_term,
+                replacement_term=replacement_term,
+                profile=lowering.profile,
+                provenance=selected,
+                derivation_trace=(selected,),
+                execution_path="direct_catalogue",
+                cache_status="disabled",
+                cache_key=None,
+            )
+            replacement = self._finish_extraction_candidate(
+                extraction,
+                **common_kwargs,
+            )
+            if replacement is not None:
+                return replacement
+
+        if self.learned_replay_enabled:
+            replay = self._try_learned_replay(
+                candidate_term=prepared_candidate_term,
+                canonical_candidate_term=prepared_candidate_term,
+                profile=lowering.profile,
+            )
+            if replay is not None:
+                replacement = self._finish_extraction_candidate(
+                    replay,
+                    allow_fallback=True,
+                    **common_kwargs,
+                )
+                if replacement is not None:
+                    return replacement
+
+        cache_status, cache_key, cache_lookup_elapsed_ms, _profile_digest = (
+            self._cache_lookup_context
+        )
         self._begin_stage("egglog_extraction")
         try:
             extraction = self._select_extraction(
                 extraction_ast,
                 destination_size=destination_size,
                 budget=extraction_budget,
+                egglog_runtime=self._create_egglog_runtime(),
             )
         finally:
             self._finish_stage("egglog_extraction")
-        self._record_extraction_receipt(extraction.receipt)
-        replacement = extraction.replacement_ast
-        if replacement is None:
-            return None
-        if self._node_count(replacement) >= self._node_count(ast):
-            self._record_extraction_receipt(
-                replace(
-                    extraction.receipt,
-                    skip_reason=ExtractionSkipReason.NO_DEGREE_ELIGIBLE_IMPROVEMENT,
-                )
-            )
-            return None
-        selected = extraction.selected_provenance
-        if selected is None:
-            self._record_extraction_receipt(
-                replace(
-                    extraction.receipt, skip_reason=ExtractionSkipReason.INTERNAL_ERROR
-                )
-            )
-            return None
-        proof_kwargs: dict[str, object] = {"width": destination_size * 8}
-        if known_constants is not None:
-            proof_kwargs["known_constants"] = known_constants
-        certificate = self._native_proof_certificate(selected[1])
-        if certificate is not None:
-            proof_kwargs["certificate"] = certificate
-            proof_kwargs["generic_native_z3_before_certificate"] = (
-                self.generic_native_z3_before_certificate
-            )
-        self._begin_stage("native_z3")
-        try:
-            proved = prove_native_ast_equivalence(ast, replacement, **proof_kwargs)
-        finally:
-            self._finish_stage("native_z3")
-        if not proved:
-            self._record_extraction_receipt(
-                replace(
-                    extraction.receipt,
-                    skip_reason=ExtractionSkipReason.NATIVE_Z3_FAILED,
-                    derivation_trace=(),
-                )
-            )
-            return None
-        self._begin_stage("reconstruction")
-        try:
-            new_ins = self._create_instruction(replacement, ins)
-        finally:
-            self._finish_stage("reconstruction")
-        if new_ins is None:
-            self._record_extraction_receipt(
-                replace(
-                    extraction.receipt,
-                    skip_reason=ExtractionSkipReason.LOWERING_FAILED,
-                    derivation_trace=(),
-                )
-            )
-            return None
-        family, source_name, aliases = selected
-        provenance = (source_name, *aliases)
-        self.last_rule_family = family
-        self.last_rule_provenance = provenance
-        self.last_derivation_trace = extraction.derivation_trace
-        if self._provider_outcome_history_enabled():
-            self.rule_provenance_history.append(provenance)
-        return new_ins
+        extraction = replace(
+            extraction,
+            receipt=replace(
+                extraction.receipt,
+                execution_path="fresh_saturation",
+                cache_status=cache_status,
+                cache_key=cache_key,
+                cache_lookup_elapsed_ms=cache_lookup_elapsed_ms,
+            ),
+        )
+        return self._finish_extraction_candidate(
+            extraction,
+            **common_kwargs,
+        )
 
     @staticmethod
     def _with_native_match_telemetry(receipt, match_result, *, elapsed_ms):
@@ -1060,10 +1658,20 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             )
 
     def record_mutation_accepted(self) -> None:
+        super().record_mutation_accepted()
         self._finalize_candidate_outcome(accepted=True)
+        pending = self._pending_composite_rewrite
+        self._pending_composite_rewrite = None
+        if pending is not None and self._composite_cache is not None:
+            try:
+                self._composite_cache.store(pending)
+            except Exception as error:
+                logger.warning("Egglog composite cache write failed: %s", error)
 
     def record_mutation_rejected(self, reason: str) -> None:
+        self._pending_composite_rewrite = None
         self._finalize_candidate_outcome(accepted=False, reason=reason)
+        super().record_mutation_rejected(reason)
 
     def execution_metadata(self) -> dict[str, object]:
         """Expose the latest extraction receipt and successful provenance."""
@@ -1078,6 +1686,11 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             "execution_path": receipt.execution_path,
             "cache_status": receipt.cache_status,
             "cache_key": receipt.cache_key,
+            "replayed_trace": receipt.replayed_trace,
+            "cache_lookup_elapsed_ms": receipt.cache_lookup_elapsed_ms,
+            "replay_rebuild_elapsed_ms": receipt.replay_rebuild_elapsed_ms,
+            "replay_proof_elapsed_ms": receipt.replay_proof_elapsed_ms,
+            "egglog_work_units": receipt.egglog_work_units,
             "extracted_cost": receipt.extracted_cost,
             "degree": receipt.degree,
             "eclass_count": receipt.eclass_count,
@@ -1172,6 +1785,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         *,
         destination_size: int,
         budget: EgglogExtractionBudget | None = None,
+        egglog_runtime=egglog_saturation._RUNTIME_UNSET,
     ) -> EgglogExtractionResult:
         """Run one fresh bounded extraction with the configured rule objects."""
         self._ensure_catalogue_configured()
@@ -1181,6 +1795,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             self.extraction_budget if budget is None else budget,
             int(destination_size),
             catalogue=self._native_pattern_catalogue,
+            egglog_runtime=egglog_runtime,
         )
 
     def _select_native_extraction(
@@ -1193,6 +1808,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         block=None,
         destination=None,
         budget: EgglogExtractionBudget | None = None,
+        egglog_runtime=egglog_saturation._RUNTIME_UNSET,
     ) -> EgglogExtractionResult:
         """Run bounded extraction after a direct ``minsn_t``/``mop_t`` match."""
 
@@ -1206,6 +1822,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             catalogue=self._native_pattern_catalogue,
             block=block,
             destination=destination,
+            egglog_runtime=egglog_runtime,
         )
 
     @staticmethod
@@ -1403,6 +2020,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         replacement_term,
         selected: tuple[str, str, tuple[str, ...]],
         width: int,
+        known_constants=None,
     ) -> tuple[
         bool,
         str | None,
@@ -1429,11 +2047,12 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         certificate = self._native_proof_certificate(selected[1])
 
         def prove_native_ast() -> bool:
-            if certificate is not None:
+            if certificate is not None or known_constants is not None:
                 return prove_native_ast_equivalence(
                     original,
                     replacement,
                     width=width,
+                    known_constants=known_constants,
                     certificate=certificate,
                     generic_native_z3_before_certificate=(
                         self.generic_native_z3_before_certificate

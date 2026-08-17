@@ -76,6 +76,17 @@ def egglog_receipt_to_outcome(receipt: object) -> MbaProviderOutcome:
         "execution_path": getattr(receipt, "execution_path", None),
         "cache_status": getattr(receipt, "cache_status", None),
         "cache_key": getattr(receipt, "cache_key", None),
+        "replayed_trace": tuple(
+            tuple(row) for row in getattr(receipt, "replayed_trace", ())
+        ),
+        "cache_lookup_elapsed_ms": getattr(
+            receipt, "cache_lookup_elapsed_ms", None
+        ),
+        "replay_rebuild_elapsed_ms": getattr(
+            receipt, "replay_rebuild_elapsed_ms", None
+        ),
+        "replay_proof_elapsed_ms": getattr(receipt, "replay_proof_elapsed_ms", None),
+        "egglog_work_units": getattr(receipt, "egglog_work_units", 0),
         "degree": getattr(receipt, "degree", None),
         "eclass_count": getattr(receipt, "eclass_count", None),
         "enode_count": getattr(receipt, "enode_count", None),

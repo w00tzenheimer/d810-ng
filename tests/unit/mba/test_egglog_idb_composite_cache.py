@@ -320,6 +320,37 @@ def test_corrupt_manifest_clears_only_this_feature_node_state(
     assert fake_store["unrelated"] == {"keep": True}
 
 
+def test_lookup_reports_malformed_state_while_get_stays_compatible(
+    fake_store: dict[str, object],
+    rewrites: tuple[EgglogCompositeRewrite, ...],
+) -> None:
+    from d810.backends.mba.egglog_idb_composite_cache import EgglogIdbCompositeCache
+
+    cache = EgglogIdbCompositeCache(fake_store)
+    cache.store(rewrites[0])
+    fake_store[f"entry:{rewrites[0].template_id}"] = {"corrupt": True}
+
+    result = cache.lookup(rewrites[0].bucket_key)
+    assert result.status == "malformed"
+    assert result.rewrites == ()
+    assert cache.get(rewrites[0].bucket_key) == ()
+
+
+@pytest.mark.parametrize(
+    "status, rewrites",
+    [("unknown", ()), ("hit", []), ("hit", (object(),))],
+)
+def test_lookup_result_rejects_unknown_status_or_rewrite_shape(
+    status: str, rewrites: object
+) -> None:
+    from d810.backends.mba.egglog_idb_composite_cache import (
+        EgglogCompositeCacheLookup,
+    )
+
+    with pytest.raises(ValueError):
+        EgglogCompositeCacheLookup(status, rewrites)  # type: ignore[arg-type]
+
+
 def test_manifest_over_entry_bound_is_cleared(
     fake_store: dict[str, object],
     rewrites: tuple[EgglogCompositeRewrite, ...],

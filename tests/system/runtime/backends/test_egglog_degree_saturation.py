@@ -29,6 +29,9 @@ from d810.backends.mba.egglog_saturation import (  # noqa: E402
     extract_bounded_term,
     extract_bounded_candidate,
 )
+from d810.backends.mba.egglog_idb_composite_cache import (  # noqa: E402
+    EgglogIdbCompositeCache,
+)
 from d810.backends.mba.hexrays_island import lower_hexrays_island  # noqa: E402
 from d810.hexrays.utils.hexrays_helpers import dup_mop  # noqa: E402
 from d810.backends.mba.native_mba_term_view import (  # noqa: E402
@@ -42,6 +45,11 @@ from d810.optimizers.microcode.instructions.egraph.egglog_handler import (  # no
     EgglogOptimizer,
 )
 from d810.mba.semantic_canonicalization import canonicalize_mba_term  # noqa: E402
+from d810.mba.ac_matching import AcMatchStopReason  # noqa: E402
+from d810.mba.egglog_composite_rewrite import (  # noqa: E402
+    CompositeRewriteMalformed,
+    EgglogCompositeRewrite,
+)
 from d810.mba.typed_term import term_cost  # noqa: E402
 from tests.system.runtime.conftest import gen_microcode_at_maturity  # noqa: E402
 
@@ -813,6 +821,603 @@ def _configured_live_handler(**overrides) -> EgglogOptimizer:
     return handler
 
 
+class _NoDirectCatalogue:
+    def __init__(self, delegate=None):
+        self._delegate = delegate
+
+    def match_root(self, _view, *, comparison_budget):
+        del comparison_budget
+        return SimpleNamespace(
+            matches=(),
+            comparisons=0,
+            lazy_swaps=0,
+            comparison_budget_exceeded=False,
+        )
+
+    def match_canonical_root(self, _term, *, comparison_budget):
+        del comparison_budget
+        return SimpleNamespace(
+            matches=(),
+            comparisons=0,
+            commuted_branches=0,
+            flattened_nodes=0,
+            stop_reason=AcMatchStopReason.MISS,
+        )
+
+    def canonical_applications(self, term, *, comparison_budget):
+        if self._delegate is None:
+            return ()
+        return self._delegate.canonical_applications(
+            term,
+            comparison_budget=comparison_budget,
+        )
+
+
+def _prepare_route_handler(monkeypatch, *, families=("xor",), **overrides):
+    import d810.optimizers.microcode.instructions.egraph.egglog_handler as handler_module
+
+    candidate = _direct_add_candidate()
+    handler = _configured_live_handler(families=list(families), **overrides)
+    monkeypatch.setattr(handler_module, "minsn_to_ast", lambda _ins: candidate)
+    monkeypatch.setattr(
+        handler_module,
+        "rebuild_hexrays_island",
+        lambda *_args, **_kwargs: object(),
+    )
+    monkeypatch.setattr(handler, "_create_instruction", lambda *_args: object())
+    monkeypatch.setattr(
+        handler,
+        "_prove_selected_replacement",
+        lambda *_args, **_kwargs: (True, "rule", None, True, True, 0.1, 0.1),
+    )
+    monkeypatch.setattr(
+        handler,
+        "_node_count",
+        lambda node: 10 if node is candidate else 1,
+    )
+    handler._native_pattern_catalogue = _NoDirectCatalogue()
+    source = lower_hexrays_island(candidate, destination_size=4).term
+    assert source is not None
+    replacement = source.children[0]
+    return handler, candidate, source, replacement
+
+
+def _disable_direct_route(handler):
+    handler._native_pattern_catalogue = _NoDirectCatalogue(
+        handler._native_pattern_catalogue
+    )
+
+
+def _fresh_result(source, replacement, *, cache_status="miss"):
+    trace = (("xor", "Xor_HackersDelightRule_3", ()),)
+    if cache_status not in {"disabled", "miss", "hit", "stale", "malformed", "evicted"}:
+        cache_status = "malformed"
+    return EgglogExtractionResult(
+        replacement_ast=None,
+        replacement_term=replacement,
+        receipt=EgglogExtractionReceipt(
+            input_cost=term_cost(source),
+            extracted_cost=term_cost(replacement),
+            selected_family="xor",
+            selected_source=trace[0][1],
+            derivation_trace=trace,
+            execution_path="fresh_saturation",
+            cache_status=cache_status,
+        ),
+        selected_provenance=trace[0],
+        derivation_trace=trace,
+    )
+
+
+def test_direct_catalogue_hit_bypasses_replay_and_runtime(monkeypatch):
+    import d810.optimizers.microcode.instructions.egraph.egglog_handler as handler_module
+
+    candidate = _direct_add_candidate()
+    handler = _configured_live_handler(families=["add"], time_budget_ms=1000)
+    monkeypatch.setattr(handler_module, "minsn_to_ast", lambda _ins: candidate)
+    monkeypatch.setattr(
+        handler_module,
+        "rebuild_hexrays_island",
+        lambda *_args, **_kwargs: object(),
+    )
+    monkeypatch.setattr(handler, "_create_instruction", lambda *_args: object())
+    monkeypatch.setattr(
+        handler,
+        "_node_count",
+        lambda node: 10 if node is candidate else 1,
+    )
+    monkeypatch.setattr(
+        handler,
+        "_prove_selected_replacement",
+        lambda *_args, **_kwargs: (True, "rule", None, True, True, 0.1, 0.1),
+    )
+    cache_calls = []
+    runtime_calls = []
+    monkeypatch.setattr(handler, "_create_composite_cache", lambda: cache_calls.append(1))
+    monkeypatch.setattr(handler, "_create_egglog_runtime", lambda: runtime_calls.append(1))
+
+    assert handler._check_and_replace(_Instruction()) is not None
+    assert cache_calls == []
+    assert runtime_calls == []
+    assert handler.last_extraction_receipt.execution_path == "direct_catalogue"
+    assert handler.last_extraction_receipt.cache_status == "disabled"
+
+
+def test_direct_catalogue_scans_past_equal_cost_match_for_strict_improvement():
+    handler = _configured_live_handler(families=["add"], time_budget_ms=1000)
+    candidate = TypedBvTerm(
+        "add",
+        32,
+        children=(
+            TypedBvTerm(None, 32, leaf_key=("register", "x")),
+            TypedBvTerm(None, 32, leaf_key=("register", "y")),
+        ),
+    )
+    equal = candidate
+    strict = TypedBvTerm(None, 32, leaf_key=("register", "x"))
+
+    class _Bindings:
+        def __init__(self, replacement):
+            self.replacement = replacement
+
+        def materialize_replacement(self, _rule):
+            return self.replacement
+
+    rule = SimpleNamespace(family="add", source_name="equal", aliases=())
+    strict_rule = SimpleNamespace(family="add", source_name="strict", aliases=())
+    result = handler._direct_native_application(
+        candidate_term=candidate,
+        structural_route=False,
+        structural_matches=(),
+        match_result=SimpleNamespace(
+            matches=(
+                SimpleNamespace(rule=rule, bindings=_Bindings(equal)),
+                SimpleNamespace(rule=strict_rule, bindings=_Bindings(strict)),
+            )
+        ),
+        canonical_match_result=None,
+    )
+
+    assert result == (strict, ("add", "strict", ()))
+
+
+def test_three_ms_strict_direct_candidate_stays_telemetry_only(monkeypatch):
+    import d810.optimizers.microcode.instructions.egraph.egglog_handler as handler_module
+
+    candidate = _direct_add_candidate()
+    handler = _configured_live_handler(families=["add"], time_budget_ms=3)
+    monkeypatch.setattr(handler_module, "minsn_to_ast", lambda _ins: candidate)
+    monkeypatch.setattr(handler, "_create_instruction", lambda *_args: object())
+    cache_calls = []
+    runtime_calls = []
+    monkeypatch.setattr(handler, "_create_composite_cache", lambda: cache_calls.append(1))
+    monkeypatch.setattr(handler, "_create_egglog_runtime", lambda: runtime_calls.append(1))
+
+    assert handler._check_and_replace(_Instruction()) is None
+    assert cache_calls == []
+    assert runtime_calls == []
+    assert handler.last_extraction_receipt.execution_path == "telemetry_only"
+
+
+def test_replay_hit_rebinds_current_terms_and_never_runs_fresh(monkeypatch):
+    handler, candidate, source, replacement = _prepare_route_handler(
+        monkeypatch,
+        learned_replay_enabled=True,
+    )
+    semantics = handler._current_replay_semantics()
+    rewrite = EgglogCompositeRewrite.from_extraction(
+        input_term=source,
+        output_term=replacement,
+        derivation_trace=(("xor", "Xor_HackersDelightRule_3", ()),),
+        semantics=semantics,
+    )
+    store = {}
+    cache = EgglogIdbCompositeCache(store)
+    cache.store(rewrite)
+    handler._composite_cache = cache
+    runtime_calls = []
+    monkeypatch.setattr(handler, "_create_egglog_runtime", lambda: runtime_calls.append(1))
+    fresh_calls = []
+    monkeypatch.setattr(
+        handler,
+        "_run_fresh_saturation",
+        lambda *args, **kwargs: fresh_calls.append((args, kwargs)),
+    )
+
+    handler.begin_provider_outcome_capture()
+    assert handler._check_and_replace(_Instruction()) is not None
+    receipt = handler.last_extraction_receipt
+    assert receipt.execution_path == "learned_replay"
+    assert receipt.cache_status == "hit"
+    assert receipt.replayed_trace == rewrite.derivation_trace
+    assert receipt.egglog_work_units == 0
+    assert receipt.replay_rebuild_elapsed_ms is not None
+    assert receipt.replay_proof_elapsed_ms is not None
+    assert fresh_calls == []
+    assert runtime_calls == []
+    assert len(handler.provider_outcomes()) == 1
+    assert handler.provider_outcomes()[0].status.value == "improved"
+    handler.record_mutation_accepted()
+    assert len(handler.provider_outcomes()) == 1
+    assert handler.provider_outcomes()[0].status.value == "applied"
+    handler.end_provider_outcome_capture()
+
+
+def test_cross_block_prepared_route_replays_before_fresh_saturation(monkeypatch):
+    import d810.optimizers.microcode.instructions.egraph.egglog_handler as handler_module
+
+    handler, candidate, source, replacement = _prepare_route_handler(
+        monkeypatch,
+        learned_replay_enabled=True,
+        cross_block_constant_preparation=True,
+        max_leaves=4,
+    )
+    monkeypatch.setattr(
+        handler_module,
+        "prepare_ast_with_cross_block_constants",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            ast=candidate,
+            known_constants={},
+        ),
+    )
+    handler._native_pattern_catalogue = _NoDirectCatalogue()
+    semantics = handler._current_replay_semantics()
+    rewrite = EgglogCompositeRewrite.from_extraction(
+        input_term=source,
+        output_term=replacement,
+        derivation_trace=(("xor", "Xor_HackersDelightRule_3", ()),),
+        semantics=semantics,
+    )
+    cache = EgglogIdbCompositeCache({})
+    cache.store(rewrite)
+    handler._composite_cache = cache
+    monkeypatch.setattr(
+        handler,
+        "_select_extraction",
+        lambda *_args, **_kwargs: pytest.fail(
+            "prepared replay hit must not run fresh extraction"
+        ),
+    )
+    monkeypatch.setattr(
+        handler,
+        "_create_egglog_runtime",
+        lambda: pytest.fail("prepared replay hit must not construct Egglog"),
+    )
+
+    block = SimpleNamespace(mba=object())
+    assert handler._check_and_replace(_Instruction(), blk=block) is not None
+    assert handler.last_extraction_receipt.execution_path == "learned_replay"
+
+
+def test_replay_profile_digest_is_stable_and_changes_with_configured_semantics():
+    first = _configured_live_handler(
+        learned_replay_enabled=True,
+        max_degree=1,
+        families=["xor"],
+    )
+    second = _configured_live_handler(
+        learned_replay_enabled=True,
+        max_degree=1,
+        families=["xor"],
+    )
+    changed = _configured_live_handler(
+        learned_replay_enabled=True,
+        max_degree=2,
+        families=["xor"],
+    )
+
+    first_semantics = first._current_replay_semantics()
+    assert first_semantics is first._current_replay_semantics()
+    assert first_semantics.profile_digest == (
+        second._current_replay_semantics().profile_digest
+    )
+    assert first_semantics.profile_digest != (
+        changed._current_replay_semantics().profile_digest
+    )
+
+
+def test_replay_semantics_snapshot_is_built_once_after_final_configuration(
+    monkeypatch,
+):
+    import d810.mba.certified_catalogue as certified_catalogue
+
+    calls = []
+    real_snapshot = certified_catalogue.build_certified_catalogue_snapshot
+
+    def counted_snapshot(*args, **kwargs):
+        calls.append((args, kwargs))
+        return real_snapshot(*args, **kwargs)
+
+    monkeypatch.setattr(
+        certified_catalogue,
+        "build_certified_catalogue_snapshot",
+        counted_snapshot,
+    )
+    handler = _configured_live_handler(
+        families=["xor"],
+        learned_replay_enabled=True,
+    )
+
+    assert len(calls) == 1
+    assert handler._current_replay_semantics() is handler._current_replay_semantics()
+    assert len(calls) == 1
+
+
+def test_replay_semantics_snapshot_failure_is_memoized(monkeypatch):
+    import d810.mba.certified_catalogue as certified_catalogue
+
+    calls = []
+
+    def failing_snapshot(*args, **kwargs):
+        del args, kwargs
+        calls.append(1)
+        raise RuntimeError("snapshot unavailable")
+
+    monkeypatch.setattr(
+        certified_catalogue,
+        "build_certified_catalogue_snapshot",
+        failing_snapshot,
+    )
+    handler = _configured_live_handler(
+        families=["xor"],
+        learned_replay_enabled=True,
+    )
+
+    assert len(calls) == 1
+    for _ in range(2):
+        with pytest.raises(CompositeRewriteMalformed):
+            handler._current_replay_semantics()
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("cache_status", ("miss", "stale", "malformed", "bogus"))
+def test_replay_nonhit_status_falls_through_to_fresh(monkeypatch, cache_status):
+    handler, _candidate, source, replacement = _prepare_route_handler(
+        monkeypatch,
+        learned_replay_enabled=True,
+    )
+
+    class _StatusCache:
+        def get(self, _bucket_key):
+            return cache_status, ()
+
+    handler._composite_cache = _StatusCache()
+    fresh_calls = []
+    monkeypatch.setattr(
+        handler,
+        "_run_fresh_saturation",
+        lambda *args, **kwargs: fresh_calls.append((args, kwargs))
+        or _fresh_result(source, replacement, cache_status=cache_status),
+    )
+
+    assert handler._check_and_replace(_Instruction()) is not None
+    assert len(fresh_calls) == 1
+    assert handler.last_extraction_receipt.execution_path == "fresh_saturation"
+    assert handler.last_extraction_receipt.cache_status == (
+        cache_status if cache_status != "bogus" else "malformed"
+    )
+
+
+def test_real_cache_corruption_is_reported_as_malformed_before_fresh(monkeypatch):
+    handler, _candidate, source, replacement = _prepare_route_handler(
+        monkeypatch,
+        learned_replay_enabled=True,
+    )
+    semantics = handler._current_replay_semantics()
+    bucket_key = (
+        semantics.catalogue_digest,
+        semantics.profile_digest,
+        semantics.canonicalizer_version,
+        semantics.egglog_version,
+        semantics.proof_mode,
+        source.width,
+        source.operation,
+        len(source.children),
+    )
+    store = {
+        "manifest": {
+            "schema_version": 1,
+            "sequence": 1,
+            "total_bytes": 1,
+            "entries": [
+                {
+                    "template_id": "bad",
+                    "bucket_key": list(bucket_key),
+                    "byte_size": 1,
+                    "created_sequence": 1,
+                    "last_used_sequence": 1,
+                }
+            ],
+        },
+        "entry:bad": {"corrupt": True},
+    }
+    handler._composite_cache = EgglogIdbCompositeCache(store)
+    fresh_calls = []
+    monkeypatch.setattr(
+        handler,
+        "_run_fresh_saturation",
+        lambda *args, **kwargs: fresh_calls.append((args, kwargs))
+        or _fresh_result(source, replacement, cache_status="malformed"),
+    )
+
+    assert handler._check_and_replace(_Instruction()) is not None
+    assert len(fresh_calls) == 1
+    assert handler.last_extraction_receipt.cache_status == "malformed"
+
+
+@pytest.mark.parametrize("failure", ("rebuild", "proof"))
+def test_replay_failure_falls_through_to_fresh(monkeypatch, failure):
+    import d810.optimizers.microcode.instructions.egraph.egglog_handler as handler_module
+
+    handler, _candidate, source, replacement = _prepare_route_handler(
+        monkeypatch,
+        learned_replay_enabled=True,
+    )
+    semantics = handler._current_replay_semantics()
+    rewrite = EgglogCompositeRewrite.from_extraction(
+        input_term=source,
+        output_term=replacement,
+        derivation_trace=(("xor", "Xor_HackersDelightRule_3", ()),),
+        semantics=semantics,
+    )
+    cache = EgglogIdbCompositeCache({})
+    cache.store(rewrite)
+    handler._composite_cache = cache
+    if failure == "rebuild":
+        rebuild_calls = []
+
+        def fail_replay_rebuild(*_args, **_kwargs):
+            if not rebuild_calls:
+                rebuild_calls.append(1)
+                return None
+            return object()
+
+        monkeypatch.setattr(
+            handler_module,
+            "rebuild_hexrays_island",
+            fail_replay_rebuild,
+        )
+    else:
+        proof_calls = []
+
+        def fail_replay_proof(*_args, **_kwargs):
+            if not proof_calls:
+                proof_calls.append(1)
+                return (False, "rule", "failed", False, False, 0.1, 0.1)
+            return (True, "rule", None, True, True, 0.1, 0.1)
+
+        monkeypatch.setattr(
+            handler,
+            "_prove_selected_replacement",
+            fail_replay_proof,
+        )
+    fresh_calls = []
+    monkeypatch.setattr(
+        handler,
+        "_run_fresh_saturation",
+        lambda *args, **kwargs: fresh_calls.append((args, kwargs))
+        or _fresh_result(source, replacement, cache_status="hit"),
+    )
+
+    assert handler._check_and_replace(_Instruction()) is not None
+    assert len(fresh_calls) == 1
+    assert handler.last_extraction_receipt.execution_path == "fresh_saturation"
+
+
+def test_fresh_template_stores_only_after_outer_acceptance(monkeypatch):
+    handler, _candidate, source, replacement = _prepare_route_handler(
+        monkeypatch,
+        learned_replay_enabled=True,
+    )
+    class _RecordingCache:
+        def __init__(self):
+            self.stored = []
+
+        def get(self, _bucket_key):
+            return ()
+
+        def store(self, rewrite):
+            self.stored.append(rewrite)
+
+    cache = _RecordingCache()
+    handler._composite_cache = cache
+    monkeypatch.setattr(
+        handler,
+        "_run_fresh_saturation",
+        lambda *args, **kwargs: _fresh_result(source, replacement),
+    )
+    handler.begin_provider_outcome_capture()
+    assert handler._check_and_replace(_Instruction()) is not None
+    assert cache.stored == []
+    assert handler._pending_composite_rewrite is not None
+    assert len(handler.provider_outcomes()) == 1
+    assert handler.provider_outcomes()[0].status.value == "improved"
+    handler.record_mutation_accepted()
+    assert len(cache.stored) == 1
+    assert len(handler.provider_outcomes()) == 1
+    assert handler.provider_outcomes()[0].status.value == "applied"
+    handler.end_provider_outcome_capture()
+
+
+def test_disabled_replay_does_not_create_pending_template(monkeypatch):
+    handler, _candidate, source, replacement = _prepare_route_handler(
+        monkeypatch,
+        learned_replay_enabled=False,
+    )
+    monkeypatch.setattr(
+        handler,
+        "_run_fresh_saturation",
+        lambda *args, **kwargs: _fresh_result(source, replacement),
+    )
+
+    assert handler._check_and_replace(_Instruction()) is not None
+    assert handler._pending_composite_rewrite is None
+
+
+def test_rejected_or_next_attempt_clears_pending_and_storage_failure_is_safe(monkeypatch):
+    handler, _candidate, source, replacement = _prepare_route_handler(
+        monkeypatch,
+        learned_replay_enabled=True,
+    )
+    class _FailingCache:
+        def get(self, _bucket_key):
+            return ()
+
+        def store(self, _rewrite):
+            raise RuntimeError("cache unavailable")
+
+    handler._composite_cache = _FailingCache()
+    monkeypatch.setattr(
+        handler,
+        "_run_fresh_saturation",
+        lambda *args, **kwargs: _fresh_result(source, replacement),
+    )
+    handler.begin_provider_outcome_capture()
+    assert handler._check_and_replace(_Instruction()) is not None
+    assert handler._pending_composite_rewrite is not None
+    assert len(handler.provider_outcomes()) == 1
+    assert handler.provider_outcomes()[0].status.value == "improved"
+    handler.record_mutation_rejected("outer_guard")
+    assert handler._pending_composite_rewrite is None
+    first = handler.provider_outcomes()[0]
+    assert first.status.value == "improved"
+    assert first.metadata["mutation_outcome"] == "rejected"
+    assert first.refusal_reason == "outer_guard"
+    assert handler._check_and_replace(_Instruction()) is not None
+    assert handler._pending_composite_rewrite is not None
+    assert len(handler.provider_outcomes()) == 2
+    assert handler.provider_outcomes()[1].status.value == "improved"
+    handler.record_mutation_accepted()
+    assert handler._pending_composite_rewrite is None
+    assert len(handler.provider_outcomes()) == 2
+    assert handler.provider_outcomes()[1].status.value == "applied"
+    handler.end_provider_outcome_capture()
+
+
+def test_three_ms_replay_admission_never_constructs_cache_or_runtime(monkeypatch):
+    import d810.optimizers.microcode.instructions.egraph.egglog_handler as handler_module
+
+    handler = _configured_live_handler(
+        time_budget_ms=3,
+        learned_replay_enabled=True,
+    )
+    candidate = _direct_add_candidate()
+    monkeypatch.setattr(handler_module, "minsn_to_ast", lambda _ins: candidate)
+    assert callable(handler._create_composite_cache)
+    assert callable(handler._create_egglog_runtime)
+    cache_calls = []
+    runtime_calls = []
+    monkeypatch.setattr(handler, "_create_composite_cache", lambda: cache_calls.append(1))
+    monkeypatch.setattr(handler, "_create_egglog_runtime", lambda: runtime_calls.append(1))
+
+    assert handler._check_and_replace(_Instruction()) is None
+    assert cache_calls == []
+    assert runtime_calls == []
+    assert handler.last_extraction_receipt is not None
+    assert handler.last_extraction_receipt.execution_path == "telemetry_only"
+    assert handler.last_extraction_receipt.cache_status == "disabled"
+
+
 def test_native_z3_timeout_requires_explicit_noninteractive_execution_mode():
     interactive = _configured_live_handler(time_budget_ms=1000)
     noninteractive = _configured_live_handler(
@@ -1049,7 +1654,7 @@ def test_live_handler_receipts_mixed_width_candidate_without_extraction_or_mutat
     assert handler.execution_metadata()["skip_reason"] == "unsupported_width_semantics"
 
 
-def test_live_handler_extracts_once_with_exact_configured_rules_then_proves_before_mop(
+def test_live_handler_direct_catalogue_proves_before_mop_without_egglog(
     monkeypatch,
 ):
     if ast_dispatcher._USING_CYTHON:
@@ -1092,16 +1697,14 @@ def test_live_handler_extracts_once_with_exact_configured_rules_then_proves_befo
 
     replacement = handler._check_and_replace(_Instruction())
 
-    assert len(extraction_calls) == 1
-    assert extraction_calls[0][0][0].width == 32
+    assert extraction_calls == []
     assert handler._compiled_rules is configured_rules
     assert handler.extraction_budget == EgglogExtractionBudget(
         max_eclasses=256,
         max_enodes=512,
         time_budget_ms=1000,
     )
-    assert extraction_calls[0][1]["destination_size"] == 4
-    assert events == ["extract", "native_z3", "create_mop"]
+    assert events == ["native_z3", "create_mop"]
     assert replacement is not None
     assert replacement.opcode == ida_hexrays.m_mov
     receipt = handler.last_extraction_receipt
@@ -1113,7 +1716,9 @@ def test_live_handler_extracts_once_with_exact_configured_rules_then_proves_befo
     metadata = handler.execution_metadata()
     assert metadata["input_cost"] == receipt.input_cost
     assert metadata["extracted_cost"] == receipt.extracted_cost
-    assert metadata["degree"] == 1
+    assert receipt.execution_path == "direct_catalogue"
+    assert receipt.cache_status == "disabled"
+    assert metadata["degree"] == 0
     assert metadata["eclass_count"] == receipt.eclass_count
     assert metadata["enode_count"] == receipt.enode_count
     assert metadata["rule_firings"] == receipt.rule_firings
@@ -1174,9 +1779,15 @@ def test_shadow_proof_divergence_is_a_noop_before_reconstruction(monkeypatch):
     import d810.optimizers.microcode.instructions.egraph.egglog_handler as handler_module
 
     candidate = _direct_add_candidate()
-    handler = _configured_live_handler(native_proof_mode="shadow")
+    handler = _configured_live_handler(
+        native_proof_mode="shadow",
+        learned_replay_enabled=True,
+    )
     verdicts = iter((False,))
     mop_calls = []
+    cache_calls = []
+    runtime_calls = []
+    fresh_calls = []
     monkeypatch.setattr(handler_module, "minsn_to_ast", lambda _ins: candidate)
     monkeypatch.setattr(
         handler,
@@ -1200,11 +1811,31 @@ def test_shadow_proof_divergence_is_a_noop_before_reconstruction(monkeypatch):
         "_create_instruction",
         lambda *_args: mop_calls.append("create_mop"),
     )
+    monkeypatch.setattr(
+        handler,
+        "_create_composite_cache",
+        lambda: cache_calls.append("cache"),
+    )
+    monkeypatch.setattr(
+        handler,
+        "_create_egglog_runtime",
+        lambda: runtime_calls.append("runtime"),
+    )
+    monkeypatch.setattr(
+        handler,
+        "_run_fresh_saturation",
+        lambda *args, **kwargs: fresh_calls.append((args, kwargs)),
+    )
 
     assert handler._check_and_replace(_Instruction()) is None
     assert mop_calls == []
+    assert cache_calls == []
+    assert runtime_calls == []
+    assert fresh_calls == []
     receipt = handler.last_extraction_receipt
     assert receipt is not None
+    assert receipt.execution_path == "direct_catalogue"
+    assert receipt.cache_status == "disabled"
     assert receipt.skip_reason is ExtractionSkipReason.NATIVE_Z3_FAILED
     assert receipt.template_fallback_reason == "shadow_divergence"
 
@@ -1285,6 +1916,7 @@ def test_live_handler_native_z3_failure_records_skip_without_creating_mop(monkey
 
     candidate = _direct_add_candidate()
     handler = _configured_live_handler()
+    _disable_direct_route(handler)
     real_extract = handler._select_native_extraction
     extracted = []
     minsn_calls = []
@@ -1327,18 +1959,41 @@ def test_live_handler_lowering_failure_clears_uncommitted_derivation_trace(monke
     import d810.optimizers.microcode.instructions.egraph.egglog_handler as handler_module
 
     candidate = _direct_add_candidate()
-    handler = _configured_live_handler()
+    handler = _configured_live_handler(learned_replay_enabled=True)
+    cache_calls = []
+    runtime_calls = []
+    fresh_calls = []
     monkeypatch.setattr(handler_module, "minsn_to_ast", lambda _ins: candidate)
     monkeypatch.setattr(handler, "_candidate_skip_reason", lambda _ast, _ins: None)
     monkeypatch.setattr(
         handler, "_prove_ast_equivalence", lambda *_args, **_kwargs: True
     )
     monkeypatch.setattr(handler, "_create_instruction", lambda *_args: None)
+    monkeypatch.setattr(
+        handler,
+        "_create_composite_cache",
+        lambda: cache_calls.append("cache"),
+    )
+    monkeypatch.setattr(
+        handler,
+        "_create_egglog_runtime",
+        lambda: runtime_calls.append("runtime"),
+    )
+    monkeypatch.setattr(
+        handler,
+        "_run_fresh_saturation",
+        lambda *args, **kwargs: fresh_calls.append((args, kwargs)),
+    )
 
     assert handler._check_and_replace(_Instruction()) is None
 
+    assert cache_calls == []
+    assert runtime_calls == []
+    assert fresh_calls == []
     receipt = handler.last_extraction_receipt
     assert receipt is not None
+    assert receipt.execution_path == "direct_catalogue"
+    assert receipt.cache_status == "disabled"
     assert receipt.skip_reason is ExtractionSkipReason.LOWERING_FAILED
     assert receipt.derivation_trace == ()
     assert "derivation_trace" not in handler.execution_metadata()
@@ -1351,6 +2006,7 @@ def test_live_handler_records_extractor_unavailability_for_supported_candidate(
 
     candidate = _direct_add_candidate()
     handler = _configured_live_handler()
+    _disable_direct_route(handler)
     receipt = EgglogExtractionReceipt(
         skip_reason=ExtractionSkipReason.EGGLOG_UNAVAILABLE
     )
@@ -1388,16 +2044,11 @@ def test_live_handler_records_extractor_unavailability_for_supported_candidate(
     assert any("egglog_unavailable" in args for args, _kwargs in log_calls)
 
 
-def test_live_handler_default_time_budget_overrun_is_clean_noop(monkeypatch):
+def test_live_handler_default_time_budget_is_telemetry_only(monkeypatch):
     import d810.optimizers.microcode.instructions.egraph.egglog_handler as handler_module
 
     candidate = _direct_add_candidate()
     handler = EgglogOptimizer()
-    receipt = EgglogExtractionReceipt(
-        input_cost=(4, 9),
-        elapsed_ms=4.25,
-        skip_reason=ExtractionSkipReason.TIME_BUDGET,
-    )
     observed_budgets = []
 
     def time_budget_result(
@@ -1411,18 +2062,21 @@ def test_live_handler_default_time_budget_overrun_is_clean_noop(monkeypatch):
     ):
         del destination_size, profile, initial_replacements, block, destination
         observed_budgets.append(handler.extraction_budget)
-        return EgglogExtractionResult(replacement_ast=None, receipt=receipt)
+        return EgglogExtractionResult(
+            replacement_ast=None,
+            receipt=EgglogExtractionReceipt(
+                skip_reason=ExtractionSkipReason.TIME_BUDGET,
+            ),
+        )
 
     monkeypatch.setattr(handler, "_select_native_extraction", time_budget_result)
     monkeypatch.setattr(handler_module, "minsn_to_ast", lambda _ins: candidate)
     assert handler.check_and_replace(None, _Instruction()) is None
-    assert observed_budgets == [EgglogExtractionBudget()]
-    assert observed_budgets[0].time_budget_ms == 3
+    assert observed_budgets == []
     recorded = handler.last_extraction_receipt
     assert recorded is not None
     assert recorded.skip_reason is ExtractionSkipReason.TIME_BUDGET
-    assert recorded.input_cost == receipt.input_cost
-    assert recorded.elapsed_ms == receipt.elapsed_ms
+    assert recorded.input_cost is None
     assert recorded.native_matcher_backend is not None
     assert handler.execution_metadata()["skip_reason"] == "time_budget"
 
@@ -1461,6 +2115,7 @@ def test_live_handler_opt_in_stage_timings_publish_after_reconstruction(monkeypa
     monkeypatch.setattr(handler_module, "minsn_to_ast", lambda _ins: candidate)
     monkeypatch.setattr(CompiledPatternCatalogue, "match_root", observed_match_root)
     monkeypatch.setattr(handler, "_finish_stage", observed_finish_stage)
+    monkeypatch.setattr(handler, "_direct_native_application", lambda **_kwargs: None)
     monkeypatch.setattr(
         handler,
         "_select_native_extraction",

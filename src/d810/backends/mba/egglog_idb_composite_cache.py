@@ -9,6 +9,7 @@ selection, and deterministic entry/byte bounds.
 from __future__ import annotations
 
 from collections.abc import Mapping, MutableMapping, Sequence
+from dataclasses import dataclass
 
 from d810.core.persistence import Netnode
 from d810.mba.egglog_composite_rewrite import (
@@ -32,6 +33,28 @@ _ENTRY_METADATA_FIELDS = frozenset(
     }
 )
 _BUCKET_LENGTH = 8
+_LOOKUP_STATUSES = frozenset({"miss", "hit", "malformed"})
+
+
+@dataclass(frozen=True)
+class EgglogCompositeCacheLookup:
+    """Validated result for one exact cache bucket lookup."""
+
+    status: str
+    rewrites: tuple[EgglogCompositeRewrite, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.status) is not str or self.status not in _LOOKUP_STATUSES:
+            raise ValueError("unknown composite cache lookup status")
+        if type(self.rewrites) is not tuple or any(
+            not isinstance(rewrite, EgglogCompositeRewrite)
+            for rewrite in self.rewrites
+        ):
+            raise ValueError(
+                "composite cache lookup rewrites must be a tuple of rewrites"
+            )
+
+
 def require_positive_int(value: object) -> int:
     """Return one strict positive integer, rejecting ``bool`` explicitly."""
 
@@ -103,20 +126,27 @@ class EgglogIdbCompositeCache:
         self._max_bytes = require_positive_int(max_bytes)
 
     def get(self, bucket_key: Sequence[object]) -> tuple[EgglogCompositeRewrite, ...]:
+        """Return records in one bucket, preserving the legacy API."""
+
+        return self.lookup(bucket_key).rewrites
+
+    def lookup(self, bucket_key: Sequence[object]) -> EgglogCompositeCacheLookup:
         """Return valid records in one exact semantic bucket.
 
         Corrupt or missing entry records are removed individually.  A valid
         lookup advances one cache sequence for every matching entry, making
         the LRU ordering deterministic.  The manifest metadata and serialized
-        rewrite sequence fields advance together transactionally.
+        rewrite sequence fields advance together transactionally.  ``status``
+        is ``miss`` or ``hit`` for clean state and ``malformed`` whenever the
+        existing validation path observes corrupt manifest or entry state.
         """
 
         try:
             requested_bucket = _normalize_bucket_key(bucket_key)
         except ValueError:
-            return ()
+            return EgglogCompositeCacheLookup("malformed", ())
 
-        state = self._load_manifest()
+        state, malformed = self._load_manifest_with_status()
         entries: list[dict[str, object]] = list(state["entries"])
         matched: list[EgglogCompositeRewrite] = []
         matched_by_id: dict[str, tuple[dict[str, object], EgglogCompositeRewrite]] = {}
@@ -129,6 +159,7 @@ class EgglogIdbCompositeCache:
             rewrite = self._decode_entry(template_id)
             if rewrite is None:
                 removed_ids.append(template_id)
+                malformed = True
                 continue
             try:
                 encoded_size = len(rewrite.to_json().encode("utf-8"))
@@ -143,12 +174,15 @@ class EgglogIdbCompositeCache:
                 valid = False
             if not valid:
                 removed_ids.append(template_id)
+                malformed = True
                 continue
             matched.append(rewrite)
             matched_by_id[template_id] = (metadata, rewrite)
 
         if not matched and not removed_ids:
-            return tuple(matched)
+            return EgglogCompositeCacheLookup(
+                "malformed" if malformed else "miss", tuple(matched)
+            )
 
         removed_id_set = set(removed_ids)
         entries = [
@@ -193,11 +227,16 @@ class EgglogIdbCompositeCache:
         except RuntimeError:
             # A cache maintenance write must never turn a valid replay into a
             # failure.  The commit helper restores its pre-write snapshot.
-            return tuple(matched)
-        return tuple(
-            updated_rewrites[str(metadata["template_id"])]
-            for metadata in state["entries"]
-            if str(metadata["template_id"]) in updated_rewrites
+            return EgglogCompositeCacheLookup(
+                "malformed" if malformed else "hit", tuple(matched)
+            )
+        return EgglogCompositeCacheLookup(
+            "malformed" if malformed else "hit",
+            tuple(
+                updated_rewrites[str(metadata["template_id"])]
+                for metadata in state["entries"]
+                if str(metadata["template_id"]) in updated_rewrites
+            ),
         )
 
     def store(self, rewrite: EgglogCompositeRewrite) -> None:
@@ -291,34 +330,30 @@ class EgglogIdbCompositeCache:
             return None
 
     def _load_manifest(self) -> dict[str, object]:
+        return self._load_manifest_with_status()[0]
+
+    def _load_manifest_with_status(self) -> tuple[dict[str, object], bool]:
         try:
             payload = self._store[MANIFEST_KEY]
         except KeyError:
-            return {
-                "schema_version": self.SCHEMA_VERSION,
-                "sequence": 0,
-                "total_bytes": 0,
-                "entries": [],
-            }
+            return self._empty_manifest(), False
         except Exception:
             self._clear_feature_state()
-            return {
-                "schema_version": self.SCHEMA_VERSION,
-                "sequence": 0,
-                "total_bytes": 0,
-                "entries": [],
-            }
+            return self._empty_manifest(), True
 
         try:
-            return self._validate_manifest(payload)
+            return self._validate_manifest(payload), False
         except (TypeError, ValueError, KeyError):
             self._clear_feature_state()
-            return {
-                "schema_version": self.SCHEMA_VERSION,
-                "sequence": 0,
-                "total_bytes": 0,
-                "entries": [],
-            }
+            return self._empty_manifest(), True
+
+    def _empty_manifest(self) -> dict[str, object]:
+        return {
+            "schema_version": self.SCHEMA_VERSION,
+            "sequence": 0,
+            "total_bytes": 0,
+            "entries": [],
+        }
 
     def _validate_manifest(self, payload: object) -> dict[str, object]:
         if type(payload) is not dict or set(payload) != _MANIFEST_FIELDS:
@@ -456,4 +491,10 @@ class EgglogIdbCompositeCache:
                 pass
 
 
-__all__ = ["EgglogIdbCompositeCache", "MANIFEST_KEY", "ENTRY_PREFIX", "require_positive_int"]
+__all__ = [
+    "EgglogCompositeCacheLookup",
+    "EgglogIdbCompositeCache",
+    "MANIFEST_KEY",
+    "ENTRY_PREFIX",
+    "require_positive_int",
+]

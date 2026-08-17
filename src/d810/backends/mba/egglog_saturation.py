@@ -68,6 +68,7 @@ _RUN_WORK_UNIT_BUDGET_MS = 1
 _EGGLOG_MODULE: Any | None = None
 _EGGLOG_IMPORT_ATTEMPTED = False
 egglog: Any | None = None
+_RUNTIME_UNSET = object()
 
 
 class BvExpr:  # pragma: no cover - replaced when the optional extra is loaded.
@@ -310,6 +311,11 @@ class EgglogExtractionReceipt:
     execution_path: str | None = None
     cache_status: str | None = None
     cache_key: str | None = None
+    replayed_trace: tuple[tuple[str, str, tuple[str, ...]], ...] = ()
+    cache_lookup_elapsed_ms: float | None = None
+    replay_rebuild_elapsed_ms: float | None = None
+    replay_proof_elapsed_ms: float | None = None
+    egglog_work_units: int = 0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "selected_aliases", tuple(self.selected_aliases))
@@ -342,9 +348,18 @@ class EgglogExtractionReceipt:
             "normalization_steps",
             tuple(str(step) for step in self.normalization_steps),
         )
+        object.__setattr__(
+            self,
+            "replayed_trace",
+            tuple(
+                (str(family), str(source_name), tuple(aliases))
+                for family, source_name, aliases in self.replayed_trace
+            ),
+        )
         if self.execution_path not in {
             None,
             "telemetry_only",
+            "direct_catalogue",
             "fresh_saturation",
             "learned_replay",
         }:
@@ -361,6 +376,18 @@ class EgglogExtractionReceipt:
             raise ValueError("unknown Egglog cache status")
         if self.cache_key is not None and type(self.cache_key) is not str:
             raise ValueError("cache_key must be a string or null")
+        if type(self.egglog_work_units) is not int or self.egglog_work_units < 0:
+            raise ValueError("egglog_work_units must be a non-negative integer")
+        for name in (
+            "cache_lookup_elapsed_ms",
+            "replay_rebuild_elapsed_ms",
+            "replay_proof_elapsed_ms",
+        ):
+            value = getattr(self, name)
+            if value is not None and (
+                type(value) not in (int, float) or value < 0
+            ):
+                raise ValueError(f"{name} must be a non-negative number or null")
         if (
             self.native_matcher_backend is not None
             and self.native_matcher_backend
@@ -558,6 +585,11 @@ def _extraction_result(
     execution_path: str | None = None,
     cache_status: str | None = None,
     cache_key: str | None = None,
+    replayed_trace: tuple[tuple[str, str, tuple[str, ...]], ...] = (),
+    cache_lookup_elapsed_ms: float | None = None,
+    replay_rebuild_elapsed_ms: float | None = None,
+    replay_proof_elapsed_ms: float | None = None,
+    egglog_work_units: int = 0,
     extracted_cost: tuple[int, int] | None = None,
     degree: int | None = None,
     eclass_count: int | None = None,
@@ -592,6 +624,11 @@ def _extraction_result(
             execution_path=execution_path,
             cache_status=cache_status,
             cache_key=cache_key,
+            replayed_trace=replayed_trace,
+            cache_lookup_elapsed_ms=cache_lookup_elapsed_ms,
+            replay_rebuild_elapsed_ms=replay_rebuild_elapsed_ms,
+            replay_proof_elapsed_ms=replay_proof_elapsed_ms,
+            egglog_work_units=egglog_work_units,
             extracted_cost=extracted_cost,
             degree=degree,
             eclass_count=eclass_count,
@@ -715,6 +752,7 @@ def _extract_bounded_term(
     catalogue: Any | None = None,
     block: Any | None = None,
     destination: Any | None = None,
+    egglog_runtime: Any = _RUNTIME_UNSET,
 ) -> EgglogExtractionResult:
     """Extract one strictly cheaper candidate through exact catalogue layers.
 
@@ -798,7 +836,11 @@ def _extract_bounded_term(
                 elapsed_ms=elapsed,
             )
 
-        egglog = _load_egglog_module()
+        egglog = (
+            _load_egglog_module()
+            if egglog_runtime is _RUNTIME_UNSET
+            else egglog_runtime
+        )
         if egglog is None:
             return _extraction_result(
                 started=started,
@@ -1112,6 +1154,7 @@ def _extract_bounded_term(
             degree=selected.degree,
             provenance=selected.provenance,
             derivation_trace=selected.derivation_trace,
+            egglog_work_units=scheduled_work_units,
             replacement_ast=None if lowering is None else replacement,
             replacement_term=selected.term,
         )
@@ -1142,6 +1185,7 @@ def extract_bounded_term(
     catalogue: Any | None = None,
     block: Any | None = None,
     destination: Any | None = None,
+    egglog_runtime: Any = _RUNTIME_UNSET,
 ) -> EgglogExtractionResult:
     """Discover a bounded replacement for an already matched native term.
 
@@ -1159,6 +1203,7 @@ def extract_bounded_term(
         catalogue=catalogue,
         block=block,
         destination=destination,
+        egglog_runtime=egglog_runtime,
     )
 
 
@@ -1171,6 +1216,7 @@ def extract_bounded_candidate(
     catalogue: Any | None = None,
     block: Any | None = None,
     destination: Any | None = None,
+    egglog_runtime: Any = _RUNTIME_UNSET,
 ) -> EgglogExtractionResult:
     """Compatibility AST entry point for callers not using native preflight."""
 
@@ -1187,6 +1233,7 @@ def extract_bounded_candidate(
         catalogue=catalogue,
         block=block,
         destination=destination,
+        egglog_runtime=egglog_runtime,
     )
 
 

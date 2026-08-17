@@ -29,6 +29,11 @@ MBA_EGGLOG_STAGE_ID = "mba-egglog"
 MBA_EGGLOG_IMPLEMENTATION = "EgglogOptimizer"
 DEFAULT_MATURITIES = ("GLOBAL_OPTIMIZED",)
 DEFAULT_FAMILIES = ("add",)
+DEFAULT_LEARNED_REPLAY_ENABLED = False
+DEFAULT_LEARNED_REPLAY_MAX_ENTRIES = 256
+DEFAULT_LEARNED_REPLAY_MAX_BYTES = 2_097_152
+MAX_LEARNED_REPLAY_ENTRIES = 4_096
+MAX_LEARNED_REPLAY_BYTES = 16_777_216
 MBA_EGGLOG_FAMILIES = (
     "add",
     "and",
@@ -55,6 +60,9 @@ class MbaEgglogOptions:
     max_rule_firings: int = 32
     cross_block_constant_preparation: bool = False
     cross_block_def_use_preparation: bool = False
+    learned_replay_enabled: bool = DEFAULT_LEARNED_REPLAY_ENABLED
+    learned_replay_max_entries: int = DEFAULT_LEARNED_REPLAY_MAX_ENTRIES
+    learned_replay_max_bytes: int = DEFAULT_LEARNED_REPLAY_MAX_BYTES
     time_budget_ms: int = 3
     function_time_budget_ms: int | None = None
     residual_only: bool = False
@@ -79,6 +87,9 @@ class MbaEgglogPass(PipelinePass):
     max_rule_firings: int = 32
     cross_block_constant_preparation: bool = False
     cross_block_def_use_preparation: bool = False
+    learned_replay_enabled: bool = DEFAULT_LEARNED_REPLAY_ENABLED
+    learned_replay_max_entries: int = DEFAULT_LEARNED_REPLAY_MAX_ENTRIES
+    learned_replay_max_bytes: int = DEFAULT_LEARNED_REPLAY_MAX_BYTES
     time_budget_ms: int = 3
     function_time_budget_ms: int | None = None
     residual_only: bool = False
@@ -113,6 +124,9 @@ def parse_mba_egglog_options(
         "max_rule_firings",
         "cross_block_constant_preparation",
         "cross_block_def_use_preparation",
+        "learned_replay_enabled",
+        "learned_replay_max_entries",
+        "learned_replay_max_bytes",
         "time_budget_ms",
         "function_time_budget_ms",
         "residual_only",
@@ -147,6 +161,15 @@ def parse_mba_egglog_options(
     )
     cross_block_def_use_preparation = options.get(
         "cross_block_def_use_preparation", False
+    )
+    learned_replay_enabled = options.get(
+        "learned_replay_enabled", DEFAULT_LEARNED_REPLAY_ENABLED
+    )
+    learned_replay_max_entries = options.get(
+        "learned_replay_max_entries", DEFAULT_LEARNED_REPLAY_MAX_ENTRIES
+    )
+    learned_replay_max_bytes = options.get(
+        "learned_replay_max_bytes", DEFAULT_LEARNED_REPLAY_MAX_BYTES
     )
     time_budget_ms = options.get("time_budget_ms", 3)
     function_time_budget_ms = options.get("function_time_budget_ms")
@@ -199,6 +222,18 @@ def parse_mba_egglog_options(
     if type(cross_block_def_use_preparation) is not bool:
         raise PipelineConfigError(
             "mba-egglog options.cross_block_def_use_preparation must be boolean"
+        )
+    if type(learned_replay_enabled) is not bool:
+        raise PipelineConfigError(
+            "mba-egglog options.learned_replay_enabled must be boolean"
+        )
+    if type(learned_replay_max_entries) is not int or not 1 <= learned_replay_max_entries <= MAX_LEARNED_REPLAY_ENTRIES:
+        raise PipelineConfigError(
+            "mba-egglog options.learned_replay_max_entries must be an integer from 1 to 4096"
+        )
+    if type(learned_replay_max_bytes) is not int or not 1 <= learned_replay_max_bytes <= MAX_LEARNED_REPLAY_BYTES:
+        raise PipelineConfigError(
+            "mba-egglog options.learned_replay_max_bytes must be an integer from 1 to 16777216"
         )
     if type(saturation_rounds) is not int or not 1 <= saturation_rounds <= 6:
         raise PipelineConfigError(
@@ -270,6 +305,9 @@ def parse_mba_egglog_options(
         max_rule_firings=max_rule_firings,
         cross_block_constant_preparation=cross_block_constant_preparation,
         cross_block_def_use_preparation=cross_block_def_use_preparation,
+        learned_replay_enabled=learned_replay_enabled,
+        learned_replay_max_entries=learned_replay_max_entries,
+        learned_replay_max_bytes=learned_replay_max_bytes,
         time_budget_ms=time_budget_ms,
         function_time_budget_ms=function_time_budget_ms,
         residual_only=residual_only,
@@ -294,6 +332,9 @@ def build_mba_egglog_pass(config: PipelineConfig) -> MbaEgglogPass:
         max_rule_firings=options.max_rule_firings,
         cross_block_constant_preparation=options.cross_block_constant_preparation,
         cross_block_def_use_preparation=options.cross_block_def_use_preparation,
+        learned_replay_enabled=options.learned_replay_enabled,
+        learned_replay_max_entries=options.learned_replay_max_entries,
+        learned_replay_max_bytes=options.learned_replay_max_bytes,
         time_budget_ms=options.time_budget_ms,
         function_time_budget_ms=options.function_time_budget_ms,
         residual_only=options.residual_only,
@@ -398,6 +439,34 @@ def mba_egglog_editor_spec() -> PassEditorSpec:
                 experimental_reason="Cross-block traversal is bounded but has narrower native coverage.",
             ),
             FieldEditorSpec(
+                field_id="learned_replay_enabled",
+                label="Learned replay",
+                path=("learned_replay_enabled",),
+                control=FieldControlKind.BOOLEAN,
+                description="Replay a previously accepted pure composite before fresh Egglog saturation.",
+                default=DEFAULT_LEARNED_REPLAY_ENABLED,
+            ),
+            FieldEditorSpec(
+                field_id="learned_replay_max_entries",
+                label="Replay cache entries",
+                path=("learned_replay_max_entries",),
+                control=FieldControlKind.INTEGER,
+                description="Bound the number of learned composite templates persisted in the IDB cache.",
+                minimum=1,
+                maximum=MAX_LEARNED_REPLAY_ENTRIES,
+                default=DEFAULT_LEARNED_REPLAY_MAX_ENTRIES,
+            ),
+            FieldEditorSpec(
+                field_id="learned_replay_max_bytes",
+                label="Replay cache bytes",
+                path=("learned_replay_max_bytes",),
+                control=FieldControlKind.INTEGER,
+                description="Bound the encoded size of learned composite templates persisted in the IDB cache.",
+                minimum=1,
+                maximum=MAX_LEARNED_REPLAY_BYTES,
+                default=DEFAULT_LEARNED_REPLAY_MAX_BYTES,
+            ),
+            FieldEditorSpec(
                 field_id="time_budget_ms",
                 label="Candidate telemetry budget (ms)",
                 path=("time_budget_ms",),
@@ -499,6 +568,9 @@ def register_mba_egglog_pass(registry: PassRegistry) -> PassRegistry:
                 "max_rule_firings": 32,
                 "cross_block_constant_preparation": False,
                 "cross_block_def_use_preparation": False,
+                "learned_replay_enabled": DEFAULT_LEARNED_REPLAY_ENABLED,
+                "learned_replay_max_entries": DEFAULT_LEARNED_REPLAY_MAX_ENTRIES,
+                "learned_replay_max_bytes": DEFAULT_LEARNED_REPLAY_MAX_BYTES,
                 "time_budget_ms": 3,
                 "function_time_budget_ms": 0,
                 "residual_only": False,

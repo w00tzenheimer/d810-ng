@@ -41,6 +41,7 @@ from d810.mba.rules._base import VerifiableRule
 from d810.mba.rules.sub import Sub_ComplementMaskHodurRule_1
 from d810.mba.rules.xor import Xor_NestedStuff
 from d810.mba.semantic_canonicalization import canonicalize_mba_term
+from d810.mba.differential_report import egglog_receipt_to_outcome
 
 
 def _leaf(name: str, *, width: int = 32) -> TypedBvTerm:
@@ -140,6 +141,7 @@ def test_full_structural_inventory_registers_one_semantic_rotate_application():
     )
     assert result.replacement_term == _fixed_shift("rol", x, 31)
     assert result.receipt.rule_firings == 1
+    assert result.receipt.egglog_work_units > 0
     assert result.receipt.derivation_trace == (
         ("fixed_rotate", "rol_64_31", ("ror_64_33",)),
     )
@@ -461,6 +463,32 @@ def test_receipt_positional_prefix_keeps_legacy_field_order():
     assert receipt.elapsed_ms == 9.0
     assert receipt.selected_family == "add"
     assert receipt.canonicalizer_version is None
+
+
+def test_replay_receipt_and_provider_outcome_keep_path_latency_and_work_telemetry():
+    trace = (("xor", "Xor_HackersDelightRule_3", ()),)
+    receipt = EgglogExtractionReceipt(
+        input_cost=(5, 8),
+        extracted_cost=(2, 3),
+        execution_path="learned_replay",
+        cache_status="hit",
+        cache_key='["catalogue"]',
+        replayed_trace=trace,
+        cache_lookup_elapsed_ms=0.25,
+        replay_rebuild_elapsed_ms=0.75,
+        replay_proof_elapsed_ms=1.25,
+        egglog_work_units=0,
+        derivation_trace=trace,
+    )
+
+    outcome = egglog_receipt_to_outcome(receipt)
+    assert outcome.metadata["execution_path"] == "learned_replay"
+    assert outcome.metadata["cache_status"] == "hit"
+    assert outcome.metadata["replayed_trace"] == trace
+    assert outcome.metadata["cache_lookup_elapsed_ms"] == 0.25
+    assert outcome.metadata["replay_rebuild_elapsed_ms"] == 0.75
+    assert outcome.metadata["replay_proof_elapsed_ms"] == 1.25
+    assert outcome.metadata["egglog_work_units"] == 0
 
 
 def test_canonical_match_budget_never_registers_partial_catalogue_application(
