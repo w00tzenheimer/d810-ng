@@ -137,6 +137,147 @@ def test_shadow_reconstruction_uses_the_active_ast_binding_context() -> None:
     assert adapter.REPLACEMENT_PATTERN.clone().update_leafs_mop(bindings)
 
 
+class TestShadowReplacementLiteral:
+    binary_name = "libobfuscated.dll"
+
+    def test_shadow_replacement_materializes_replacement_only_literal(
+        self, ida_database
+    ) -> None:
+        """Shadow emission accepts concrete replacement literals in both runtimes."""
+
+        import idautils
+
+        x = Var("x")
+
+        class Rule:
+            pattern = x + Const("two", 2)
+            replacement = x ^ Const("one", 1)
+
+        adapter = IDAPatternAdapter(Rule())
+        source = ast_dispatcher.AstNode(
+            ida_hexrays.m_add, _leaf("x", 1), _constant(2)
+        )
+        source.dest_size = 4
+        source.ea = next(iter(idautils.Functions()))
+        candidate = ida_backend._ShadowBindingCandidate(
+            {"x": source.left, "two": source.right}, source
+        )
+
+        replacement = adapter._get_shadow_replacement(candidate)
+
+        assert replacement is not None
+        assert replacement.opcode == ida_hexrays.m_xor
+        assert replacement.r.t == ida_hexrays.mop_n
+        assert replacement.r.nnn.value == 1
+        assert all(
+            leaf.mop is None for leaf in adapter.REPLACEMENT_PATTERN.get_leaf_list()
+        )
+
+
+@pytest.mark.parametrize("boundary", ("update", "materialize", "create"))
+def test_shadow_replacement_boundary_failures_are_fail_closed(monkeypatch, boundary):
+    """Injected adapter-boundary errors must not escape shadow observation."""
+
+    x = Var("x")
+
+    class Rule:
+        name = "ShadowBoundaryFailure"
+        pattern = x
+        replacement = x
+
+    adapter = IDAPatternAdapter(Rule())
+    source = ast_dispatcher.AstNode(ida_hexrays.m_add, _leaf("x", 1), _constant(0))
+    source.dest_size = 4
+    source.ea = 0x401000
+    candidate = ida_backend._ShadowBindingCandidate({"x": source.left}, source)
+
+    class FakeReplacement:
+        def clone(self):
+            return self
+
+        def get_leaf_list(self):
+            return []
+
+        def update_leafs_mop(self, _bindings):
+            if boundary == "update":
+                raise TypeError("injected update failure")
+            return True
+
+        def create_minsn(self, _ea, _dst_mop):
+            if boundary == "create":
+                raise TypeError("injected create failure")
+            return object()
+
+    fake = FakeReplacement()
+    monkeypatch.setattr(
+        type(adapter),
+        "REPLACEMENT_PATTERN",
+        property(lambda _adapter: fake),
+    )
+    if boundary == "materialize":
+        def _raise_materialize(*_args):
+            raise TypeError("injected materialize failure")
+
+        monkeypatch.setattr(adapter, "_materialize_replacement_constants", _raise_materialize)
+
+    assert adapter._get_shadow_replacement(candidate) is None
+
+
+def test_shadow_proof_marks_boundary_failure_as_refused(monkeypatch) -> None:
+    x = Var("x")
+
+    class Rule:
+        name = "ShadowProofBoundaryFailure"
+        pattern = x + Const("zero", 0)
+        replacement = x
+
+    adapter = IDAPatternAdapter(Rule())
+    source = ast_dispatcher.AstNode(ida_hexrays.m_add, _leaf("x", 1), _constant(0))
+    source.dest_size = 4
+    source.ea = 0x401000
+    adapter._attempt_destination_size = 4
+    adapter._shadow_source_ast = source
+    adapter._shadow_structural_native_paths = {"x": (0,), "zero": (1,)}
+    monkeypatch.setattr(
+        adapter,
+        "_get_shadow_replacement",
+        lambda _candidate: (_ for _ in ()).throw(TypeError("injected boundary failure")),
+    )
+
+    assert adapter._prove_structural_only_candidate() is False
+    assert adapter._shadow_structural_refused is True
+
+
+def test_shadow_parity_recording_fails_closed_on_binding_error(monkeypatch) -> None:
+    x = Var("x")
+
+    class Rule:
+        name = "ShadowParityBoundaryFailure"
+        pattern = x
+        replacement = x
+
+    adapter = IDAPatternAdapter(Rule())
+    adapter._shadow_match_report = AcMatchReport(
+        bindings=AcMatchBindings({"x": ()}),
+        comparisons=1,
+        commuted_branches=0,
+        flattened_nodes=0,
+        stop_reason=AcMatchStopReason.MATCHED,
+    )
+    adapter._shadow_parity_ledger = ShadowMatcherParityLedger()
+    monkeypatch.setattr(
+        adapter,
+        "_shadow_metadata",
+        lambda **_kwargs: (_ for _ in ()).throw(TypeError("injected binding failure")),
+    )
+
+    adapter._record_shadow_parity(legacy_match=False)
+
+    assert adapter._shadow_parity_recorded is True
+    assert adapter._shadow_parity_ledger.observation_count == 1
+    assert adapter._shadow_parity_ledger.new_safe_coverage_refused == 1
+
+
 def test_native_shadow_proof_uses_fixed_width_bit_vector_semantics() -> None:
     source = ast_dispatcher.AstNode(ida_hexrays.m_add, _leaf("x", 1), _constant(0))
     source.dest_size = 4

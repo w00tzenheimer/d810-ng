@@ -4,8 +4,15 @@ from __future__ import annotations
 
 import pytest
 
-from d810.backends.mba.egglog_add_rule_compiler import compile_add_rule_catalogue
+from d810.backends.mba.egglog_add_rule_compiler import (
+    CompiledEgglogAddRule,
+    _enroll_admitted_rule,
+    compile_add_rule_catalogue,
+)
 from d810.backends.mba.native_mba_term_view import NativeMbaTermView
+from d810.ir.expr.dsl import SymbolicExpression
+from d810.mba.dsl import Const, Var
+from d810.mba.rules._base import VerifiableRule
 from d810.mba.semantic_canonicalization import canonicalize_mba_term
 from d810.mba.typed_term import canonicalize_ac_term
 
@@ -30,6 +37,23 @@ def _xor_rule(name: str):
     from d810.backends.mba.egglog_add_rule_compiler import compile_mba_rule_catalogue
 
     return compile_mba_rule_catalogue().receipt_for("xor", name).compiled_rule
+
+
+def _admitted_probe_rule(name: str, pattern: SymbolicExpression):
+    """Build a narrowly scoped admitted rule for catalogue boundary tests."""
+
+    rule_type = type(
+        name,
+        (VerifiableRule,),
+        {
+            "pattern": pattern,
+            "replacement": Var("x"),
+            "CONSTRAINTS": (),
+        },
+    )
+    return _enroll_admitted_rule(
+        CompiledEgglogAddRule(name, (), rule_type, (32,), False)
+    )
 
 
 def test_compiled_catalogue_matches_ac_operands_without_variant_rules() -> None:
@@ -148,6 +172,34 @@ def test_compiled_catalogue_rejects_unadmitted_rule_objects() -> None:
 
     with pytest.raises(ValueError, match="admitted"):
         CompiledPatternCatalogue.from_rules((object(),))
+
+
+def test_compiled_catalogue_drops_malformed_rules_but_keeps_unsupported_shift_legacy():
+    """Malformed canonical trees cannot enter any executable catalogue bucket."""
+
+    from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
+
+    malformed = _admitted_probe_rule(
+        "MalformedCatalogueProbe",
+        SymbolicExpression(operation="add", left=Var("x"), right=None),
+    )
+    unsupported_shift = _admitted_probe_rule(
+        "UnsupportedShiftCatalogueProbe", Var("x") << Const("shift", 1)
+    )
+
+    catalogue = CompiledPatternCatalogue.from_rules((malformed, unsupported_shift))
+
+    assert tuple(item.rule for item in catalogue.rules) == (unsupported_shift,)
+    assert all(
+        all(item.rule is not malformed for item in bucket)
+        for bucket in catalogue.root_width_buckets.values()
+    )
+    assert all(
+        all(item.rule is not malformed for item in bucket)
+        for bucket in catalogue.canonical_root_width_buckets.values()
+    )
+    assert ("shl", 32) in catalogue.root_width_buckets
+    assert catalogue.root_width_buckets[("shl", 32)][0].rule is unsupported_shift
 
 
 def test_compiled_catalogue_uses_root_width_buckets_and_refuses_comparison_overrun() -> (

@@ -160,6 +160,7 @@ class CompiledPatternCatalogue:
         canonical_buckets: dict[tuple[str, int], list[_CompiledPattern]] = {}
         for index, rule in enumerate(admitted_rules):
             canonical_by_width: dict[int, CanonicalCompiledPattern] = {}
+            malformed = False
             for width in rule.proof_widths:
                 try:
                     canonical_by_width[width] = compile_canonical_pattern(
@@ -167,10 +168,17 @@ class CompiledPatternCatalogue:
                         width=width,
                         declaration_index=index,
                     )
-                except (CanonicalPatternMalformed, CanonicalPatternUnsupported):
-                    # Unsupported DSL semantics remain available to the POD
-                    # matcher and therefore stay legacy-eligible.
+                except CanonicalPatternMalformed:
+                    # A malformed tree is not a legacy fallback.  It cannot
+                    # enter the executable catalogue or any POD bucket.
+                    malformed = True
+                    break
+                except CanonicalPatternUnsupported:
+                    # Intentional unsupported DSL semantics remain available
+                    # to the POD matcher and therefore stay legacy-eligible.
                     continue
+            if malformed:
+                continue
             pattern = _CompiledPattern(
                 rule,
                 index,

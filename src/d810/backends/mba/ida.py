@@ -52,6 +52,15 @@ from d810.backends.mba.native_z3 import prove_native_ast_equivalence
 
 logger = getLogger(__name__)
 
+_REPLACEMENT_BOUNDARY_EXCEPTIONS = (
+    AstEvaluationException,
+    AttributeError,
+    TypeError,
+    ValueError,
+    OverflowError,
+    RuntimeError,
+)
+
 # Type hints only
 if TYPE_CHECKING:
     from d810.mba.rules import VerifiableRule
@@ -1025,15 +1034,28 @@ class IDAPatternAdapter:
         ledger = getattr(self, "_shadow_parity_ledger", None)
         if ledger is None:
             return
-        shadow = self._shadow_metadata(legacy_match=legacy_match)
         structural_proven = False
         structural_refused = False
-        if not legacy_match and bool(shadow["structural_match"]):
-            structural_proven = self._prove_structural_only_candidate()
-            structural_refused = bool(
-                not structural_proven
-                and getattr(self, "_shadow_structural_refused", False)
+        try:
+            shadow = self._shadow_metadata(legacy_match=legacy_match)
+            if not legacy_match and bool(shadow["structural_match"]):
+                structural_proven = self._prove_structural_only_candidate()
+                structural_refused = bool(
+                    not structural_proven
+                    and getattr(self, "_shadow_structural_refused", False)
+                )
+        except _REPLACEMENT_BOUNDARY_EXCEPTIONS as exc:
+            logger.debug(
+                "Shadow parity recording failed closed for %s: %s", self.name, exc
             )
+            structural_match = bool(getattr(self, "_shadow_match_report", None))
+            shadow = {
+                "legacy_match": bool(legacy_match),
+                "structural_match": structural_match,
+                "same_rule": False,
+                "same_bindings": None,
+            }
+            structural_refused = bool(structural_match and not legacy_match)
         ledger.record(
             **shadow,
             structural_proven=structural_proven,
@@ -1072,29 +1094,36 @@ class IDAPatternAdapter:
                 return False
             leafs_by_name[name] = native
         candidate = _ShadowBindingCandidate(leafs_by_name, source)
-        if not candidate.ea or not self._check_candidate(candidate):
+        try:
+            if not candidate.ea or not self._check_candidate(candidate):
+                self._shadow_structural_refused = True
+                return False
+            replacement_ins = self._get_shadow_replacement(candidate)
+            if replacement_ins is None:
+                self._shadow_structural_refused = True
+                return False
+            replacement = minsn_to_ast(replacement_ins)
+            input_cost = self._ast_cost(source)
+            output_cost = self._ast_cost(replacement)
+            if (
+                replacement is None
+                or input_cost is None
+                or output_cost is None
+                or output_cost >= input_cost
+            ):
+                self._shadow_structural_refused = True
+                return False
+            proven = prove_native_ast_equivalence(
+                source,
+                replacement,
+                width=int(destination_size) * 8,
+            )
+        except _REPLACEMENT_BOUNDARY_EXCEPTIONS as exc:
+            logger.debug(
+                "Shadow structural proof failed closed for %s: %s", self.name, exc
+            )
             self._shadow_structural_refused = True
             return False
-        replacement_ins = self._get_shadow_replacement(candidate)
-        if replacement_ins is None:
-            self._shadow_structural_refused = True
-            return False
-        replacement = minsn_to_ast(replacement_ins)
-        input_cost = self._ast_cost(source)
-        output_cost = self._ast_cost(replacement)
-        if (
-            replacement is None
-            or input_cost is None
-            or output_cost is None
-            or output_cost >= input_cost
-        ):
-            self._shadow_structural_refused = True
-            return False
-        proven = prove_native_ast_equivalence(
-            source,
-            replacement,
-            width=int(destination_size) * 8,
-        )
         if not proven:
             self._shadow_structural_refused = True
         return proven
@@ -1102,25 +1131,7 @@ class IDAPatternAdapter:
     def _get_shadow_replacement(self, candidate: _ShadowBindingCandidate) -> Any | None:
         """Use the native emitter without mutating its cached live pattern."""
 
-        repl_pattern = self.REPLACEMENT_PATTERN
-        if repl_pattern is None:
-            return None
-        try:
-            replacement = repl_pattern.clone()
-        except Exception:
-            return None
-        try:
-            bindings = self._shadow_binding_context(candidate)
-        except Exception:
-            return None
-        if not replacement.update_leafs_mop(bindings):
-            return None
-        if not self._materialize_replacement_constants(replacement, bindings):
-            return None
-        try:
-            return replacement.create_minsn(bindings.ea, bindings.dst_mop)
-        except AstEvaluationException:
-            return None
+        return self._create_replacement_from_candidate(candidate)
 
     @staticmethod
     def _shadow_binding_context(candidate: Any) -> AstNode:
@@ -1616,6 +1627,16 @@ class IDAPatternAdapter:
         Returns:
             A new minsn_t instruction, or None if replacement failed.
         """
+        return self._create_replacement_from_candidate(candidate)
+
+    def _create_replacement_from_candidate(self, candidate) -> Optional[Any]:
+        """Clone, bind, materialize, and emit one replacement attempt.
+
+        The live replacement template is shared by legacy and shadow paths;
+        every attempt must therefore work on a clone and cross the same
+        narrow adapter boundary before creating a native instruction.
+        """
+
         replacement_template = self.REPLACEMENT_PATTERN
         if not replacement_template:
             logger.debug(f"No replacement pattern for rule {self.name}")
@@ -1624,7 +1645,7 @@ class IDAPatternAdapter:
             # Replacement AST leaves hold the mops copied from the last
             # candidate.  Never mutate the cached template across attempts.
             repl_pat = replacement_template.clone()
-        except (AttributeError, TypeError, ValueError, RuntimeError) as exc:
+        except _REPLACEMENT_BOUNDARY_EXCEPTIONS as exc:
             logger.debug(
                 "Failed to clone replacement pattern for rule %s: %s",
                 self.name,
@@ -1634,77 +1655,47 @@ class IDAPatternAdapter:
 
         candidate_for_update = candidate
 
-        # Handle AstLeaf candidates specially - they don't have leafs_by_name
-        if isinstance(candidate, AstLeafProtocol):
-            candidate_for_update = _LeafWrapper(candidate)
-        elif not isinstance(candidate, AstNode):
-            try:
+        try:
+            # Handle AstLeaf candidates specially - they don't have
+            # leafs_by_name.  Structural and binding-proxy candidates need an
+            # active AstNode carrier for the Cython updater.
+            if isinstance(candidate, AstLeafProtocol):
+                candidate_for_update = _LeafWrapper(candidate)
+            elif not isinstance(candidate, AstNode):
                 candidate_for_update = self._shadow_binding_context(candidate)
-            except (AttributeError, TypeError, ValueError) as exc:
-                logger.debug(
-                    "Failed to materialize replacement bindings for rule %s: %s",
-                    self.name,
-                    exc,
-                )
+            is_ok = repl_pat.update_leafs_mop(candidate_for_update)
+            if not is_ok and not self._replacement_only_literals_are_resolved(
+                repl_pat, candidate_for_update
+            ):
+                logger.debug(f"Failed to update leaf mops for rule {self.name}")
                 return None
 
-        try:
-            is_ok = repl_pat.update_leafs_mop(candidate_for_update)
-        except (AttributeError, TypeError, ValueError, RuntimeError) as exc:
-            logger.debug(
-                "Failed to update replacement mops for rule %s: %s",
-                self.name,
-                exc,
-            )
-            return None
+            if not getattr(candidate_for_update, "ea", None):
+                logger.debug(f"No EA for candidate in rule {self.name}")
+                return None
 
-        if not is_ok and not self._replacement_only_literals_are_resolved(
-            repl_pat, candidate_for_update
-        ):
-            logger.debug(f"Failed to update leaf mops for rule {self.name}")
-            return None
-
-        if not candidate_for_update.ea:
-            logger.debug(f"No EA for candidate in rule {self.name}")
-            return None
-
-        try:
             constants_ok = self._materialize_replacement_constants(
                 repl_pat, candidate_for_update
             )
-        except (AttributeError, TypeError, ValueError, OverflowError, RuntimeError) as exc:
-            logger.debug(
-                "Failed to materialize replacement constants for rule %s: %s",
-                self.name,
-                exc,
-            )
-            return None
-        if not constants_ok:
-            logger.debug(
-                "Failed to materialize replacement constants for rule %s",
-                self.name,
-            )
-            return None
+            if not constants_ok:
+                logger.debug(
+                    "Failed to materialize replacement constants for rule %s",
+                    self.name,
+                )
+                return None
 
-        try:
-            new_ins = repl_pat.create_minsn(
-                candidate_for_update.ea, candidate_for_update.dst_mop
+            return repl_pat.create_minsn(
+                candidate_for_update.ea,
+                getattr(candidate_for_update, "dst_mop", None),
             )
-        except (
-            AstEvaluationException,
-            AttributeError,
-            TypeError,
-            ValueError,
-            RuntimeError,
-        ) as exc:
+        except _REPLACEMENT_BOUNDARY_EXCEPTIONS as exc:
             logger.debug(
-                "Replacement creation failed for rule %s at %r: %s",
+                "Replacement boundary failed for rule %s at %r: %s",
                 self.name,
                 getattr(candidate_for_update, "ea", None),
                 exc,
             )
             return None
-        return new_ins
 
     @staticmethod
     def _replacement_only_literals_are_resolved(repl_pat, candidate) -> bool:
