@@ -255,3 +255,54 @@ generated `samples/bins/unflattening_effect_safety.dll` was removed.
 ### Code commit
 
 Code/tests commit: `64fbca1ab`
+
+## Fix round 4: recovered-state receipt ordering
+
+Review found that entry-native candidates and accepted-entry receipts were
+constructed before `_recover_initial_state()` could replace a weaker initial
+hint. This could select stale-state entry operations or retain receipt state
+that no longer matched final consensus.
+
+### RED
+
+Two receipt-ordering regressions were added before production edits. The
+pre-refactor run was **1 failed, 1 passed, 204 deselected**: the recovered
+initial-state test received no `recovered` receipt, while the conflict test's
+empty plan naturally had no attachable receipt. The exact focused command was:
+
+```text
+PYTHONPATH=src pytest -q tests/unit/transforms/test_minimal_unflatten_emit.py \
+  -k 'scalar_entry_route_conflict_with_native_bound or entry_native_receipts_follow_recovered_initial_state'
+```
+
+### Implementation and GREEN
+
+- Entry source-keyed materialized/native routes are now built only after
+  authoritative initial-state recovery, with explicit-state filtering applied
+  to the recovered value.
+- Accepted entry routes and the combined native receipt tuple are formed only
+  after final scalar consensus and operation filtering. Back-edge receipts
+  retain their earlier evidence path.
+- Dynamic entry bridges continue to suppress scalar entry builders.
+
+Required focused suite result: **281 passed**. The two receipt regressions pass;
+Ruff, diff check, ast-grep, and import-linter also passed.
+
+### Target C boundary
+
+The fixture was rebuilt from this worktree and the exact canonical Docker gate
+was rerun. Artifact: `.tmp/task4_target_c_fix_round4.txt`; duration **10.42s**.
+It remained RED only at the expected Task 5 gate:
+
+```text
+reason=corridor_enumeration_incomplete
+lost=blk2@0x180044617, blk3@0x18004464B, blk4@0x18004464E,
+     blk5@0x180044658, blk6@0x180044663, blk7@0x18004466A,
+     blk12@0x1800447F5, blk17@0x1800448FC
+```
+
+The rebuilt DLL was removed after the run.
+
+### Code commit
+
+Code/tests commit: `f48bd4de9`
