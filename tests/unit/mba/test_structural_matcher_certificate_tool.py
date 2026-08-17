@@ -542,6 +542,48 @@ def test_artifact_certificate_rejects_forged_profile_with_matching_fingerprint(
             runtime_mode="python",
         )
 
+
+@pytest.mark.parametrize("location", ("case", "outcome"))
+@pytest.mark.parametrize(
+    "mutation",
+    ("bool_as_string", "integer_as_string", "integer_as_bool", "missing", "extra"),
+)
+def test_artifact_certificate_rejects_noncanonical_profile_wire_values(
+    tmp_path: Path, location: str, mutation: str
+) -> None:
+    ledger_path = tmp_path / "parity-ledger.json"
+    capture_path = tmp_path / "native-capture.json"
+    ledger_path.write_text(json.dumps(_ledger_artifact()), encoding="utf-8")
+    capture = _capture_artifact()
+    _add_profile_to_case(capture)
+    case = capture["cases"][0]
+    raw_profile = (
+        case["profile"]
+        if location == "case"
+        else case["outcomes"][0]["metadata"]["native_profile"]
+    )
+    assert isinstance(raw_profile, dict)
+    if mutation == "bool_as_string":
+        raw_profile["has_boolean"] = "false"
+    elif mutation == "integer_as_string":
+        raw_profile["width_bits"] = "8"
+    elif mutation == "integer_as_bool":
+        raw_profile["operator_count"] = True
+    elif mutation == "missing":
+        del raw_profile["fingerprint"]
+    elif mutation == "extra":
+        raw_profile["unexpected"] = "wire drift"
+    else:  # pragma: no cover - parameterized contract
+        raise AssertionError(mutation)
+    capture_path.write_text(json.dumps(capture), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="profile"):
+        certificate_tool.build_certificate_from_artifacts(
+            ledger_path=ledger_path,
+            capture_path=capture_path,
+            runtime_mode="python",
+        )
+
     ledger = _ledger_artifact()
     capture = _capture_artifact()
     capture["runtime_mode"] = "cython"
