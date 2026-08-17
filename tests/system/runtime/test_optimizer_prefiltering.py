@@ -103,8 +103,17 @@ class _SwappableInstruction:
         return self.label
 
 
-def _mutation_manager(optimizer, stats):
+def _new_instruction_manager() -> InstructionOptimizerManager:
+    """Build the minimal manager state required by ``optimize`` tests."""
+
     manager = InstructionOptimizerManager.__new__(InstructionOptimizerManager)
+    manager._residual_admission_cache_key = None
+    manager._residual_admission_cache_value = False
+    return manager
+
+
+def _mutation_manager(optimizer, stats):
+    manager = _new_instruction_manager()
     manager.current_maturity = ida_hexrays.MMAT_LOCOPT
     manager._active_optimizers = [optimizer]
     manager._last_optimizer_tried = None
@@ -217,7 +226,7 @@ def test_cycle_detection_allows_represented_pre_state_but_quarantines_a_revisit(
     rule = _TransitionRule("CobraSolveRule", [ida_hexrays.MMAT_LOCOPT])
     optimizer = _ConcreteOptimizer([ida_hexrays.MMAT_LOCOPT], stats=None)
     optimizer.add_rule(rule)
-    manager = InstructionOptimizerManager.__new__(InstructionOptimizerManager)
+    manager = _new_instruction_manager()
     manager._active_optimizers = [optimizer]
     manager._rewrite_seen = defaultdict(set)
     manager._cycle_quarantined_rule_names = defaultdict(set)
@@ -282,7 +291,7 @@ def test_cycle_detection_rejects_a_noop_without_quarantining_its_producer(
     rule = _IdempotentRule("CobraSolveRule", [ida_hexrays.MMAT_LOCOPT])
     optimizer = _ConcreteOptimizer([ida_hexrays.MMAT_LOCOPT], stats=None)
     optimizer.add_rule(rule)
-    manager = InstructionOptimizerManager.__new__(InstructionOptimizerManager)
+    manager = _new_instruction_manager()
     manager._active_optimizers = [optimizer]
     manager._rewrite_seen = defaultdict(set)
     manager._cycle_quarantined_rule_names = defaultdict(set)
@@ -417,7 +426,7 @@ def test_instruction_adapter_emits_top_level_preopt_with_live_ports() -> None:
             calls.append(("emit", event, kwargs))
             kwargs["decision"]["microcode_modified"] = True
 
-    manager = InstructionOptimizerManager.__new__(InstructionOptimizerManager)
+    manager = _new_instruction_manager()
     manager._decompilation_lifecycle = _Lifecycle()
     manager.event_emitter = _Emitter()
     mba = SimpleNamespace(
@@ -459,7 +468,7 @@ def test_instruction_adapter_emits_top_level_preopt_with_live_ports() -> None:
 
 
 def test_instruction_adapter_emits_preopt_for_new_mba_at_same_maturity() -> None:
-    manager = InstructionOptimizerManager.__new__(InstructionOptimizerManager)
+    manager = _new_instruction_manager()
     manager.current_maturity = ida_hexrays.MMAT_PREOPTIMIZED
     manager.current_blk_serial = None
     emitted: list[object] = []
@@ -487,7 +496,7 @@ def test_instruction_adapter_skips_duplicate_preopt_publication() -> None:
         def build_current_mba_identity_index(self, **kwargs):
             raise AssertionError("duplicate PREOPT fallback rebuilt the live index")
 
-    manager = InstructionOptimizerManager.__new__(InstructionOptimizerManager)
+    manager = _new_instruction_manager()
     manager._decompilation_lifecycle = _Lifecycle()
     manager.event_emitter = object()
     mba = SimpleNamespace(
@@ -687,7 +696,7 @@ def test_active_optimizer_list_filters_by_maturity():
         [ida_hexrays.MMAT_LOCOPT, ida_hexrays.MMAT_CALLS, ida_hexrays.MMAT_GLBOPT1],
     )
 
-    mgr = InstructionOptimizerManager.__new__(InstructionOptimizerManager)
+    mgr = _new_instruction_manager()
     # Minimal initialization for the test
     mgr.instruction_optimizers = [early_opt, locopt_opt]
     mgr.current_maturity = None
@@ -732,7 +741,7 @@ def test_instruction_optimizer_abstains_during_scoped_suppression():
     )
 
     optimizer = _MockOptimizer("LocoptOpt", [ida_hexrays.MMAT_LOCOPT])
-    mgr = InstructionOptimizerManager.__new__(InstructionOptimizerManager)
+    mgr = _new_instruction_manager()
     mgr.instruction_optimizers = [optimizer]
     mgr.current_maturity = ida_hexrays.MMAT_LOCOPT
     mgr.current_blk_serial = None
@@ -767,7 +776,7 @@ def test_instruction_optimizer_accepts_destination_owned_imported_mba():
         "EarlyOpt",
         [ida_hexrays.MMAT_PREOPTIMIZED, ida_hexrays.MMAT_LOCOPT],
     )
-    mgr = InstructionOptimizerManager.__new__(InstructionOptimizerManager)
+    mgr = _new_instruction_manager()
     mgr.current_maturity = ida_hexrays.MMAT_PREOPTIMIZED
     mgr._execution_scope_service = None
     mgr._scheduled_stage_identities = frozenset()

@@ -1555,9 +1555,8 @@ def perf_gate_prerequisite(
     _perf_gate_session_prerequisite, libobfuscated_setup
 ) -> None:
     if os.environ.get("D810_PERF_GATE") != "1":
-        pytest.fail(
-            "D810_PERF_GATE=1 is required for SCCP performance collection",
-            pytrace=False,
+        pytest.skip(
+            "SCCP performance collection is opt-in; set D810_PERF_GATE=1",
         )
     import idaapi
 
