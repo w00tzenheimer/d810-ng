@@ -21,6 +21,7 @@ from d810.mba.certified_catalogue import (
 )
 from d810.mba.typed_term import (
     TypedBvTerm,
+    canonicalize_ac_term,
     fixed_shift_term,
     term_fingerprint,
 )
@@ -326,12 +327,11 @@ def _materialize(
     )
 
 
-def _canonical_rotation_key(
-    rule: CompiledEgglogStructuralRule,
+def _canonical_rotation_result_key(
+    replacement: TypedBvTerm,
 ) -> tuple[int, int, str]:
     """Return one direction-independent key for a rotate result."""
 
-    replacement = rule.replacement
     if (
         replacement.operation not in {"rol", "ror"}
         or type(replacement.shift_count) is not int
@@ -350,15 +350,26 @@ def _canonical_rotation_key(
     )
 
 
+def _canonical_rule_application_key(
+    rule: CompiledEgglogStructuralRule,
+) -> tuple[str, tuple[int, int, str]]:
+    """Keep only aliases with the same AC-normalized source and result."""
+
+    return (
+        term_fingerprint(canonicalize_ac_term(rule.pattern)),
+        _canonical_rotation_result_key(rule.replacement),
+    )
+
+
 def _deduplicated_application_rules(
     rules: tuple[CompiledEgglogStructuralRule, ...],
 ) -> tuple[tuple[CompiledEgglogStructuralRule, int], ...]:
     """Merge semantic rotate aliases without dropping proof receipts."""
 
     applications: list[tuple[CompiledEgglogStructuralRule, int]] = []
-    application_index_by_key: dict[tuple[int, int, str], int] = {}
+    application_index_by_key: dict[tuple[str, tuple[int, int, str]], int] = {}
     for declaration_index, rule in enumerate(rules):
-        key = _canonical_rotation_key(rule)
+        key = _canonical_rule_application_key(rule)
         application_index = application_index_by_key.get(key)
         if application_index is None:
             application_index_by_key[key] = len(applications)
@@ -404,8 +415,10 @@ class StructuralRuleCatalogue:
     ) -> tuple[tuple[CompiledEgglogStructuralRule, TypedBvTerm, int], ...]:
         if type(comparison_budget) is not int or comparison_budget <= 0:
             raise ValueError("comparison_budget must be a positive integer")
-        applications = []
-        from d810.mba.typed_term import canonicalize_ac_term
+        applications: list[
+            tuple[CompiledEgglogStructuralRule, TypedBvTerm, int]
+        ] = []
+        application_index_by_result: dict[tuple[int, int, str], int] = {}
 
         canonical_candidate = canonicalize_ac_term(candidate)
         remaining_comparisons = [comparison_budget]
@@ -421,7 +434,23 @@ class StructuralRuleCatalogue:
             ):
                 continue
             replacement = _materialize(rule.replacement, bindings)
-            applications.append((rule, replacement, declaration_index))
+            result_key = _canonical_rotation_result_key(replacement)
+            application_index = application_index_by_result.get(result_key)
+            if application_index is None:
+                application_index_by_result[result_key] = len(applications)
+                applications.append((rule, replacement, declaration_index))
+                continue
+            primary, primary_replacement, primary_declaration_index = applications[
+                application_index
+            ]
+            aliases = tuple(
+                dict.fromkeys((*primary.aliases, rule.source_name, *rule.aliases))
+            )
+            applications[application_index] = (
+                _enroll(replace(primary, aliases=aliases)),
+                primary_replacement,
+                primary_declaration_index,
+            )
         return tuple(applications)
 
 

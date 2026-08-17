@@ -145,6 +145,65 @@ def test_full_structural_inventory_registers_one_semantic_rotate_application():
     )
 
 
+def test_distinct_certified_patterns_with_same_rotation_remain_applicable(monkeypatch):
+    from d810.backends.mba import egglog_structural_rules
+
+    base_rule = compile_fixed_rotate_rules(width=32, direction="rol")[4].compiled_rule
+    assert base_rule is not None
+    original_builder = egglog_structural_rules.build_rotate_identity
+    base_pattern, _base_replacement = original_builder(32, "rol", 5)
+    _ror_pattern, ror_replacement = original_builder(32, "ror", 27)
+    distinct_pattern = canonicalize_ac_term(
+        TypedBvTerm(
+            "or",
+            32,
+            children=(base_pattern, _constant(0, width=32)),
+        )
+    )
+
+    def build_distinct_pattern(width, direction, count):
+        if (width, direction, count) == (32, "ror", 27):
+            return distinct_pattern, ror_replacement
+        return original_builder(width, direction, count)
+
+    monkeypatch.setattr(
+        egglog_structural_rules,
+        "build_rotate_identity",
+        build_distinct_pattern,
+    )
+    distinct_rule = compile_fixed_rotate_rules(
+        width=32,
+        direction="ror",
+    )[26].compiled_rule
+    assert distinct_rule is not None
+    catalogue = structural_catalogue_for_rules((base_rule, distinct_rule))
+
+    x = _leaf("x")
+    base_source = _node(
+        "or",
+        _fixed_shift("shl", x, 5),
+        _fixed_shift("lshr", x, 27),
+    )
+    distinct_source = canonicalize_ac_term(
+        _node("or", base_source, _constant(0))
+    )
+
+    assert tuple(
+        rule.source_name
+        for rule, _replacement, _index in catalogue.canonical_applications(
+            base_source,
+            comparison_budget=256,
+        )
+    ) == ("rol_32_5",)
+    assert tuple(
+        rule.source_name
+        for rule, _replacement, _index in catalogue.canonical_applications(
+            distinct_source,
+            comparison_budget=256,
+        )
+    ) == ("ror_32_27",)
+
+
 def test_structural_rotate_egglog_lowering_serializes_count_as_constructor(monkeypatch):
     rule = compile_fixed_rotate_rules(width=32, direction="rol")[4].compiled_rule
     assert rule is not None
