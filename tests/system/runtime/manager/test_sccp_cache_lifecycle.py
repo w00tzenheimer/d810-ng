@@ -343,9 +343,12 @@ def test_missing_session_id_fails_closed_for_distinct_legacy_events() -> None:
     assert len(manager._telemetry_lifecycle_depth) == 2
     manager._on_session_finished(legacy_a)
     assert calls.events.count("profiling.stop") == 0
-    assert len(manager._telemetry_lifecycle_stack) == 1
+    assert len(manager._telemetry_lifecycle_stack) == 2
 
     manager._on_session_finished(legacy_b)
+    assert calls.events.count("profiling.stop") == 0
+    assert len(manager._telemetry_lifecycle_stack) == 1
+    manager._on_session_finished(legacy_a)
     assert calls.events.count("profiling.stop") == 1
     assert not manager._telemetry_lifecycle_stack
 
@@ -455,7 +458,8 @@ def test_finish_cleanup_continues_after_each_individual_failure() -> None:
     manager = _manager(calls)
     event = _event()
     manager._on_session_started(event)
-    manager._on_session_finished(event)
+    with pytest.raises(RuntimeError, match="profiling.stop failed"):
+        manager._on_session_finished(event)
 
     assert {
         "profiling.stop",

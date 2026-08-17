@@ -58,8 +58,22 @@ cdef struct AstTypePerfCounters:
     uint64_t ast_proxy_creations
 
 
+cdef struct AstBuilderPerfCounters:
+    uint64_t builder_calls
+    uint64_t local_cache_lookups
+    uint64_t local_cache_hits
+    uint64_t local_cache_misses
+    uint64_t global_cache_lookups
+    uint64_t global_cache_hits
+    uint64_t global_cache_misses
+    uint64_t owner_scope_key_calls
+    uint64_t ast_constructions
+    uint64_t proxy_returns
+
+
 cdef bint _native_perf_enabled = False
 cdef AstTypePerfCounters _native_perf_counters
+cdef AstBuilderPerfCounters _native_perf_builder_counters
 
 
 cdef inline uint64_t _native_perf_now() noexcept nogil:
@@ -1528,6 +1542,8 @@ def get_mop_key(mop: ida_hexrays.mop_t) -> tuple:
 
 def _mop_ast_cache_key(mop: object) -> tuple:
     """Scope structural AST templates by embedded native MBA ownership."""
+    if _native_perf_enabled:
+        _native_perf_builder_counters.owner_scope_key_calls += 1
     return get_mop_key(mop), mop_mba_owner_scope(mop)
 
 
@@ -1575,6 +1591,8 @@ def _mop_ast_cache_key(mop: object) -> tuple:
 def mop_to_ast_internal(
     mop: ida_hexrays.mop_t, context: AstBuilderContext, root: bool = False
 ) -> AstBase | None:
+    if _native_perf_enabled:
+        _native_perf_builder_counters.builder_calls += 1
     # Only log at root
     if root and logger.debug_on:
         logger.debug(
@@ -1609,9 +1627,15 @@ def mop_to_ast_internal(
     # 2. Thread-local deduplication: if we've already built an AST for *this*
     #    mop during the current recursive walk, return the existing instance to
     #    avoid exponential explosion.
+    if _native_perf_enabled:
+        _native_perf_builder_counters.local_cache_lookups += 1
     if key in context.mop_key_to_index:
+        if _native_perf_enabled:
+            _native_perf_builder_counters.local_cache_hits += 1
         existing_index = context.mop_key_to_index[key]
         return context.unique_asts[existing_index]
+    if _native_perf_enabled:
+        _native_perf_builder_counters.local_cache_misses += 1
 
     # Build AST nodes for rotate helper calls (__ROL*/__ROR*).
     # These are m_call instructions with an mop_h callee.  RotateHelperInlineRule
@@ -2058,16 +2082,29 @@ def mop_to_ast(mop: ida_hexrays.mop_t) -> AstProxy | None:
     cache_key = _mop_ast_cache_key(mop)
 
     # 2. Global template cache: return a proxy if we already know the template
+    if _native_perf_enabled:
+        _native_perf_builder_counters.global_cache_lookups += 1
     found, cached_template = MOP_TO_AST_CACHE.lookup(cache_key)
     if found:
+        if _native_perf_enabled:
+            _native_perf_builder_counters.global_cache_hits += 1
         if cached_template is None:
             return None  # Previously determined unconvertible.
+        if _native_perf_enabled:
+            _native_perf_builder_counters.proxy_returns += 1
         return AstProxy(cached_template)
+    if _native_perf_enabled:
+        _native_perf_builder_counters.global_cache_misses += 1
 
     builder_context = AstBuilderContext()
     # Start the optimized recursive build.
 
-    if not (mop_ast := mop_to_ast_internal(mop, builder_context, root=True)):
+    mop_ast = mop_to_ast_internal(mop, builder_context, root=True)
+    if _native_perf_enabled:
+        _native_perf_builder_counters.ast_constructions += len(
+            builder_context.unique_asts
+        )
+    if not mop_ast:
         # Cache the failure to avoid re-computing it.
         MOP_TO_AST_CACHE[cache_key] = None
         return None
@@ -2082,6 +2119,8 @@ def mop_to_ast(mop: ida_hexrays.mop_t) -> AstProxy | None:
     MOP_TO_AST_CACHE[cache_key] = mop_ast
 
     # 5. Return a proxy to the caller for safety.
+    if _native_perf_enabled:
+        _native_perf_builder_counters.proxy_returns += 1
     return AstProxy(mop_ast)
 
 
@@ -2334,6 +2373,7 @@ def _native_perf_configure(enabled):
 def _native_perf_reset():
     """Reset Cython AST type counters at a session boundary."""
     memset(&_native_perf_counters, 0, sizeof(AstTypePerfCounters))
+    memset(&_native_perf_builder_counters, 0, sizeof(AstBuilderPerfCounters))
 
 
 def _native_perf_snapshot() -> dict:
@@ -2353,8 +2393,38 @@ def _native_perf_snapshot() -> dict:
     }
 
 
+def _native_perf_builder_snapshot() -> dict:
+    """Materialize counters for the active compiled minsn-to-AST route."""
+    cdef AstBuilderPerfCounters counters = _native_perf_builder_counters
+    return {
+        "backend": "cython",
+        "counter_domain": "native",
+        "provider_version": 1,
+        "coverage": "compiled minsn/mop AST builder and local/global caches",
+        "timing_model": "counts only; AST construction timing is not sampled",
+        "counters": {
+            "builder_calls": int(counters.builder_calls),
+            "local_cache_lookups": int(counters.local_cache_lookups),
+            "local_cache_hits": int(counters.local_cache_hits),
+            "local_cache_misses": int(counters.local_cache_misses),
+            "global_cache_lookups": int(counters.global_cache_lookups),
+            "global_cache_hits": int(counters.global_cache_hits),
+            "global_cache_misses": int(counters.global_cache_misses),
+            "owner_scope_key_calls": int(counters.owner_scope_key_calls),
+            "ast_constructions": int(counters.ast_constructions),
+            "proxy_returns": int(counters.proxy_returns),
+        },
+    }
+
+
 def register_native_perf_provider():
     """Select the Cython provider when this backend is active."""
+    _register_native_perf_provider(
+        "ast_builder",
+        snapshot=_native_perf_builder_snapshot,
+        configure=_native_perf_configure,
+        reset=_native_perf_reset,
+    )
     _register_native_perf_provider(
         "ast_types",
         snapshot=_native_perf_snapshot,

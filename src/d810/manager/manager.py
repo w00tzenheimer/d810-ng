@@ -1176,8 +1176,10 @@ class D810Manager:
                 stage_c_collector.close()
 
         dead_edge_normalizer = getattr(self, "_dead_edge_normalizer", None)
-        if callable(dead_edge_normalizer) and not recovery_mode and (
-            stage_c_native_result is None or stage_c_native_result.allow_stage_b
+        if (
+            callable(dead_edge_normalizer)
+            and not recovery_mode
+            and (stage_c_native_result is None or stage_c_native_result.allow_stage_b)
         ):
             from d810.manager.native_normalization import NativeNormalizationOutcome
 
@@ -2767,6 +2769,19 @@ class D810Manager:
         depth.clear()
         return was_active
 
+    @staticmethod
+    def _discard_native_perf_lifecycle() -> None:
+        """Release native counter owners abandoned during manager teardown."""
+        try:
+            lifecycle_depth = int(native_perf.snapshot().get("lifecycle_depth", 0))
+        except BaseException:
+            return
+        for _ in range(max(0, lifecycle_depth)):
+            try:
+                native_perf.end_session()
+            except BaseException:
+                return
+
     def _finish_telemetry_lifecycle(
         self,
         event: DecompilationSessionEvent | None,
@@ -2781,13 +2796,26 @@ class D810Manager:
             # Telemetry must never prevent the lifecycle owner from releasing
             # the session or running its ordinary cleanup callbacks.
             pass
-        self._safe_lifecycle_step("profiling.stop", self.stop_profiling, event)
-        self._safe_lifecycle_step("optimization.report", self.stats.report)
-        self._safe_lifecycle_step(
-            "block.perf_report",
-            self.block_optimizer.report_perf_counters,
-        )
-        self._safe_lifecycle_step("timer.stop", self._stop_timer)
+        first_error: BaseException | None = None
+        for label, callback, args in (
+            ("profiling.stop", self.stop_profiling, (event,)),
+            ("optimization.report", self.stats.report, ()),
+            ("block.perf_report", self.block_optimizer.report_perf_counters, ()),
+            ("timer.stop", self._stop_timer, ()),
+        ):
+            try:
+                callback(*args)
+            except BaseException as exc:
+                if first_error is None:
+                    first_error = exc
+                try:
+                    logger.exception(
+                        "Decompilation lifecycle cleanup failed: %s", label
+                    )
+                except BaseException:
+                    pass
+        if first_error is not None:
+            raise first_error.with_traceback(first_error.__traceback__)
 
     def _on_session_started(self, event: DecompilationSessionEvent) -> None:
         """Reset observer-only state after the coordinator has opened a session."""
@@ -2796,8 +2824,6 @@ class D810Manager:
         was_active = bool(stack)
         stack.append(key)
         depth[key] = depth.get(key, 0) + 1
-        if was_active:
-            return
         native_perf.begin_session(
             {
                 "function_ea": int(event.function_ea),
@@ -2806,6 +2832,8 @@ class D810Manager:
                 "session_id": str(getattr(event, "session_id", "")),
             }
         )
+        if was_active:
+            return
         native_perf.configure(get_settings().native_perf)
         if native_perf.enabled():
             self._ensure_native_perf_providers()
@@ -2826,34 +2854,32 @@ class D810Manager:
         """Report observer-only state after the coordinator has closed a session."""
         stack, depth = self._telemetry_lifecycle_state()
         key = self._telemetry_lifecycle_key(event)
-        try:
-            stack_index = next(
-                index for index in range(len(stack) - 1, -1, -1) if stack[index] == key
-            )
-        except StopIteration:
-            # Duplicate or stale finishes must not release a newer session.
+        session_id = str(getattr(event, "session_id", ""))
+        if not stack or stack[-1] != key:
+            # Preserve strict LIFO ownership in both lifecycle registries.
+            # native_perf records a mismatched close without mutating its
+            # stack, while the aggregate owner remains available for the
+            # eventual correct finish.
+            native_perf.end_session(session_id)
             return
 
-        del stack[stack_index]
+        stack.pop()
         remaining = depth.get(key, 1) - 1
         if remaining > 0:
             depth[key] = remaining
         else:
             depth.pop(key, None)
-        if stack:
-            return
-        depth.clear()
         primary_error: BaseException | None = None
         receipt = None
         try:
-            self._finish_telemetry_lifecycle(event)
+            if not stack:
+                depth.clear()
+                self._finish_telemetry_lifecycle(event)
         except BaseException as exc:
             primary_error = exc
         finally:
             try:
-                receipt = native_perf.end_session(
-                    str(getattr(event, "session_id", ""))
-                )
+                receipt = native_perf.end_session(session_id)
             except BaseException as close_error:
                 if primary_error is None:
                     raise close_error
@@ -2871,9 +2897,9 @@ class D810Manager:
     def _ensure_native_perf_providers() -> None:
         """Select providers through the active backend dispatchers."""
         modules = (
+            "d810.hexrays.ir.mop_utils",
             "d810.optimizers.microcode.instructions.pattern_matching.engine",
             "d810.hexrays.expr.ast",
-            "d810.hexrays.ir.mop_utils",
         )
         for module_name in modules:
             try:
@@ -3609,7 +3635,8 @@ class D810Manager:
 
     def stop(self):
         if not self._started:
-            if self._discard_telemetry_lifecycle():
+            telemetry_active = self._discard_telemetry_lifecycle()
+            if telemetry_active:
                 self._safe_lifecycle_step(
                     "profiling.stop",
                     self.stop_profiling,
@@ -3620,6 +3647,7 @@ class D810Manager:
                     self._stop_timer,
                     False,
                 )
+                self._discard_native_perf_lifecycle()
             self._uninstall_native_preanalysis_handlers_if_installed()
             execution_scope_service = getattr(self, "execution_scope_service", None)
             detach = getattr(execution_scope_service, "detach", None)
@@ -3638,6 +3666,7 @@ class D810Manager:
         self._safe_lifecycle_step("profiling.stop", self.stop_profiling)
         if telemetry_active:
             self._safe_lifecycle_step("timer.stop", self._stop_timer, False)
+            self._discard_native_perf_lifecycle()
 
         def _uninstall_frontend_normalization() -> None:
             from d810.manager.hexrays_frontend_normalization import (

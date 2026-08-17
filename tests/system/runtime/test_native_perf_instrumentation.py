@@ -60,7 +60,7 @@ def _activate_cython_providers() -> None:
 
     # Registry-clearing unit tests can run before this module in a combined
     # invocation. Reuse the manager's selected-dispatcher composition so the
-    # Python-boundary ast_builder provider is restored alongside Cython ones.
+    # active compiled ast_builder provider replaces the Python fallback.
     D810Manager._ensure_native_perf_providers()
 
 
@@ -112,9 +112,10 @@ class TestNativePerfInstrumentation:
         assert counters["fingerprint_calls"] >= 2
         assert counters["bucket_lookups"] >= 1
         assert counters["bucket_hits"] >= 1
-        assert counters["bucket_hits"] + counters["bucket_misses"] == counters[
-            "bucket_lookups"
-        ]
+        assert (
+            counters["bucket_hits"] + counters["bucket_misses"]
+            == counters["bucket_lookups"]
+        )
         assert counters["entries_scanned"] >= 1
         assert counters["entries_accepted"] >= 1
         assert counters["entries_accepted"] <= counters["entries_scanned"]
@@ -125,8 +126,7 @@ class TestNativePerfInstrumentation:
         assert counters["result_list_materializations"] >= 1
         assert counters["clock_reads"] > 0
         print(
-            "D810_NATIVE_PERF_PATTERN_COUNTERS="
-            + json.dumps(counters, sort_keys=True)
+            "D810_NATIVE_PERF_PATTERN_COUNTERS=" + json.dumps(counters, sort_keys=True)
         )
 
         # Disabled instrumentation must not read the native steady clock and
@@ -135,9 +135,7 @@ class TestNativePerfInstrumentation:
         native_perf.reset()
         storage.get_candidates(pattern)
         c_pattern_match.match_pattern_nomut(pattern, pattern)
-        disabled = native_perf.snapshot()["providers"]["pattern_match"][
-            "counters"
-        ]
+        disabled = native_perf.snapshot()["providers"]["pattern_match"]["counters"]
         assert all(value == 0 for value in disabled.values())
 
     @pytest.mark.ida_required
@@ -274,7 +272,14 @@ class TestNativePerfInstrumentation:
         )
         assert compiled, "cProfile did not record any c_pattern_match.pyx frames"
         assert any(
-            name.endswith((":__cinit__", ":add_pattern", ":get_candidates", ":match_pattern_nomut"))
+            name.endswith(
+                (
+                    ":__cinit__",
+                    ":add_pattern",
+                    ":get_candidates",
+                    ":match_pattern_nomut",
+                )
+            )
             for name in compiled
         )
         print("D810_CYTHON_PROFILE_ARTIFACT=" + str(profile_path))
@@ -309,8 +314,8 @@ class TestNativePerfInstrumentation:
         assert fallback_registration == []
         assert providers["pattern_match"]["backend"] == "cython"
         assert providers["ast_types"]["backend"] == "cython"
-        assert providers["ast_builder"]["backend"] == "python"
-        assert providers["ast_builder"]["counter_domain"] == "python-boundary"
+        assert providers["ast_builder"]["backend"] == "cython"
+        assert providers["ast_builder"]["counter_domain"] == "native"
         native_perf.configure(False)
 
     @pytest.mark.ida_required

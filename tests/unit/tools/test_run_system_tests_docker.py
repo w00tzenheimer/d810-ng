@@ -129,7 +129,10 @@ def test_reports_docker_completion_and_preserves_failure_status(tmp_path: Path) 
     success, _ = _run(tmp_path, "exec", "--", "true")
 
     assert success.returncode == 0, success.stderr
-    assert "[docker] starting container; native speedup builds may take several minutes" in success.stdout
+    assert (
+        "[docker] starting container; native speedup builds may take several minutes"
+        in success.stdout
+    )
     assert "[docker] container completed successfully (exit=0)" in success.stdout
 
     failed, _ = _run(
