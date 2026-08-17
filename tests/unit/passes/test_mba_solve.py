@@ -188,14 +188,14 @@ class TestAutoInstallSolver(unittest.TestCase):
         sees what the bridge forwards -- so a missing key here produces a
         setting that looks configurable and has no effect.
         """
-        from d810.passes.pipeline_v2_hook_bridge import _mba_solve_options
+        from d810.passes.config_v2_hook_runtime import _mba_solve_options
 
         forwarded = _mba_solve_options(_config({"auto_install_solver": True}))
         self.assertIs(forwarded["auto_install_solver"], True)
 
     def test_every_validated_option_is_forwarded_to_the_rule(self):
         """Guards the next option too, not just this one."""
-        from d810.passes.pipeline_v2_hook_bridge import _mba_solve_options
+        from d810.passes.config_v2_hook_runtime import _mba_solve_options
 
         forwarded = set(_mba_solve_options(_config()))
         registry = mba_solve_pass_registry()

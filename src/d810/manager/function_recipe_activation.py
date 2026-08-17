@@ -19,7 +19,7 @@ from d810.manager.workbench_recipe_service import RecipeEditError
 from d810.passes.function_recipe_runtime import build_recipe_runtime_project
 from d810.passes.operational_config_v2 import operational_config_v2_pass_registry
 from d810.passes.pass_pipeline import PipelineConfigError
-from d810.passes.pipeline_v2_hook_bridge import pipeline_v2_hook_activation
+from d810.passes.config_v2_hook_runtime import compile_config_v2_hook_schedule
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -65,12 +65,12 @@ def build_workbench_recipe_projection(
         function_ea=function_ea,
     )
     runtime_project.path = pathlib.Path(base_project.path)
-    activation = pipeline_v2_hook_activation(runtime_project)
+    schedule = compile_config_v2_hook_schedule(runtime_project)
     effective_snapshot = dataclasses.replace(
         project_snapshot,
         mode=ProjectConfigMode.CONFIG_V2,
         hook_mode="config-v2",
-        effective_pass_ids=activation.configured_pass_ids,
+        effective_pass_ids=schedule.configured_pass_ids,
     )
     return FunctionRecipeWorkbenchProjection(
         runtime_project=runtime_project,

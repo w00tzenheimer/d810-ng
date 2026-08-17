@@ -34,7 +34,7 @@ from d810.passes.constant_simplification_options import (
 from d810.passes.operational_config_v2 import operational_config_v2_pass_registry
 from d810.passes.pass_pipeline import PipelineConfig, PipelineConfigError
 from d810.passes.pipeline_config_parser import pipeline_configs_from_project_config
-from d810.passes.pipeline_v2_hook_bridge import pipeline_v2_hook_activation
+from d810.passes.config_v2_hook_runtime import compile_config_v2_hook_schedule
 from d810.passes.registry import PassRegistry, PassRegistryError, UnknownPassIdError
 
 
@@ -543,9 +543,7 @@ class ConfigV2EditingService:
             description=str(document.get("description", "")),
             additional_configuration=copy.deepcopy(additional),
         )
-        activation = pipeline_v2_hook_activation(project)
-        if not activation.enabled:
-            raise ConfigV2EditError("config-v2 live hook activation is not enabled")
+        compile_config_v2_hook_schedule(project)
         policy = additional.get("router_resolution", {})
         if policy:
             if not isinstance(policy, dict):

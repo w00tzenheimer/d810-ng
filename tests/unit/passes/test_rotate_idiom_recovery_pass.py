@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 from d810.core.config import ProjectConfiguration
-from d810.passes.pipeline_v2_hook_bridge import pipeline_v2_hook_activation
+from d810.passes.config_v2_hook_runtime import compile_config_v2_hook_schedule
 
 
 _ROOT = Path(__file__).resolve().parents[3]
@@ -30,15 +30,15 @@ def test_eid_profile_places_rotate_recovery_directly_after_mba_solve() -> None:
 
 
 def test_hook_bridge_exposes_rotate_recovery_as_a_global_flow_rule() -> None:
-    activation = pipeline_v2_hook_activation(_profile())
+    activation = compile_config_v2_hook_schedule(_profile())
 
     assert "rotate-idiom-recovery" in activation.configured_pass_ids
-    assert [rule.name for rule in activation.block_rules].count(
+    assert [rule.name for rule in activation.block_bindings].count(
         "RotateIdiomRecoveryBlockRule"
     ) == 1
     rule = next(
         rule
-        for rule in activation.block_rules
+        for rule in activation.block_bindings
         if rule.name == "RotateIdiomRecoveryBlockRule"
     )
     assert rule.config == {"maturities": ["GLOBAL_OPTIMIZED"]}

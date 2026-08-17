@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 from d810.core.config import ProjectConfiguration
-from d810.passes.pipeline_v2_hook_bridge import pipeline_v2_hook_activation
+from d810.passes.config_v2_hook_runtime import compile_config_v2_hook_schedule
 
 
 _ROOT = Path(__file__).resolve().parents[3]
@@ -32,13 +32,13 @@ def test_hook_bridge_routes_selected_modular_product_transform_to_the_block_pipe
         path=_PROFILE,
         **json.loads(_PROFILE.read_text(encoding="utf-8")),
     )
-    activation = pipeline_v2_hook_activation(profile)
+    activation = compile_config_v2_hook_schedule(profile)
 
     assert activation.configured_pass_ids.count("mba-simplify") == 1
     assert "modular-product-nonzero" not in activation.configured_pass_ids
     rule = next(
         rule
-        for rule in activation.block_rules
+        for rule in activation.block_bindings
         if rule.name == "ModularProductNonzeroBlockRule"
     )
     assert rule.config == {}
