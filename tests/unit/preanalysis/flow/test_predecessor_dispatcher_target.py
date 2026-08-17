@@ -13,7 +13,11 @@ from d810.analyses.control_flow.interval_map import IntervalDispatcher, Interval
 from d810.analyses.control_flow.route_predicate import DecisionDag, RouteComparison
 from d810.analyses.control_flow.predecessor_dispatcher_target import (
     collect_predecessor_dispatcher_target_facts,
+    project_predecessor_dispatcher_target_observations,
     resolve_predecessor_dispatcher_target,
+)
+from d810.analyses.control_flow.dispatcher_discovery_facts import (
+    predecessor_dispatcher_target_observation,
 )
 from d810.analyses.control_flow import (
     predecessor_dispatcher_target as predecessor_target_module,
@@ -925,6 +929,128 @@ def test_native_entry_snapshot_fallback_accepts_exact_current_entry_path_proof()
     assert entry_facts[0].target_block_serial == 122
     assert entry_facts[0].state_var_stkoff == 52
     assert entry_facts[0].state_var_reg is None
+
+
+def _path_local_entry_observation():
+    graph, dispatch_map, range_evidence = _path_local_entry_fixture()
+    graph = replace(
+        graph,
+        blocks={
+            **graph.blocks,
+            122: replace(graph.get_block(122), native_start_ea=0x180020000),
+        },
+    )
+    support, candidate = _path_local_identity_resolutions()
+    fact = next(
+        fact
+        for fact in collect_predecessor_dispatcher_target_facts(
+            transition_result=None,
+            dispatcher_entry_serial=3,
+            state_dispatcher_map=dispatch_map,
+            range_evidence=range_evidence,
+            transition_resolutions=(support, candidate),
+            flow_graph=graph,
+            state_var_stkoff=52,
+        )
+        if fact.source_instruction_ea == _NATIVE_ENTRY_EA
+    )
+    return predecessor_dispatcher_target_observation(
+        fact,
+        maturity="locopt",
+        phase="predecessor",
+    ), fact
+
+
+def test_predecessor_observation_carries_unique_target_native_identity() -> None:
+    observation, fact = _path_local_entry_observation()
+
+    assert fact.target_native_ea == 0x180020000
+    assert observation.source_ea == _NATIVE_ENTRY_EA
+    assert observation.payload["target_native_ea"] == 0x180020000
+
+
+def test_predecessor_target_identity_does_not_guess_ambiguous_instruction_eas() -> None:
+    graph, dispatch_map, range_evidence = _path_local_entry_fixture()
+    graph = replace(
+        graph,
+        blocks={
+            **graph.blocks,
+            122: replace(
+                graph.get_block(122),
+                insn_snapshots=(
+                    InsnSnapshot(opcode=0, ea=1, operands=(), native_ea=0x180020000),
+                    InsnSnapshot(opcode=0, ea=2, operands=(), native_ea=0x180020001),
+                ),
+            ),
+        },
+    )
+    support, candidate = _path_local_identity_resolutions()
+
+    facts = collect_predecessor_dispatcher_target_facts(
+        transition_result=None,
+        dispatcher_entry_serial=3,
+        state_dispatcher_map=dispatch_map,
+        range_evidence=range_evidence,
+        transition_resolutions=(support, candidate),
+        flow_graph=graph,
+        state_var_stkoff=52,
+    )
+    fact = next(
+        fact for fact in facts if fact.source_instruction_ea == _NATIVE_ENTRY_EA
+    )
+
+    assert fact.target_native_ea is None
+
+
+def test_predecessor_observation_projects_with_target_native_identity() -> None:
+    observation, fact = _path_local_entry_observation()
+
+    projected = project_predecessor_dispatcher_target_observations(
+        (observation,)
+    )
+
+    assert projected == (fact,)
+
+
+def test_predecessor_observation_projection_rejects_missing_target_identity() -> None:
+    observation, _fact = _path_local_entry_observation()
+    malformed = replace(
+        observation,
+        payload={**observation.payload, "target_native_ea": None},
+    )
+
+    assert project_predecessor_dispatcher_target_observations((malformed,)) == ()
+
+
+def test_predecessor_observation_projection_rejects_wide_or_unsupported_facts() -> None:
+    observation, _fact = _path_local_entry_observation()
+    wide = replace(
+        observation,
+        payload={
+            **observation.payload,
+            "state_const": 1 << 32,
+            "state_const_hex": "0x0000000100000000",
+        },
+    )
+    unsupported = replace(
+        observation,
+        payload={**observation.payload, "resolver_kind": "legacy_heuristic"},
+    )
+
+    assert project_predecessor_dispatcher_target_observations((wide,)) == ()
+    assert project_predecessor_dispatcher_target_observations((unsupported,)) == ()
+
+
+def test_predecessor_observation_projection_rejects_conflicting_duplicates() -> None:
+    observation, _fact = _path_local_entry_observation()
+    conflicting = replace(
+        observation,
+        payload={**observation.payload, "target_native_ea": 0x180020001},
+    )
+
+    assert project_predecessor_dispatcher_target_observations(
+        (observation, conflicting)
+    ) == ()
 
 
 def test_native_entry_snapshot_fallback_accepts_wide_low32_source_write() -> None:

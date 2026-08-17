@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from d810.analyses.control_flow.condition_chain_model import (
     ConditionChainAnalysisResult,
@@ -13,11 +13,13 @@ from d810.analyses.control_flow.state_machine_analysis import (
     resolve_exit_via_condition_chain_default_snapshot,
 )
 from d810.analyses.control_flow.semantic_transition import (
+    SUPPORTED_PREDECESSOR_ROUTE_RESOLVERS as _SUPPORTED_PREDECESSOR_ROUTE_RESOLVERS,
     SUCCESSFUL_TRANSITION_RESOLUTION_REASONS as _SUCCESSFUL_TRANSITION_RESOLUTION_REASONS,
 )
 from d810.ir.flowgraph import OperandKind
 
 
+PREDECESSOR_DISPATCHER_TARGET_FACT_TYPE = "predecessor_dispatcher_target"
 PREDECESSOR_DISPATCHER_TARGET_FACTS_ANALYSIS = (
     "predecessor_dispatcher_target_facts"
 )
@@ -54,6 +56,7 @@ class PredecessorDispatcherTargetFact:
     confidence: float = 1.0
     source_instruction_ea: int | None = None
     state_var_reg: int | None = None
+    target_native_ea: int | None = None
 
     @property
     def state_const_hex(self) -> str:
@@ -87,6 +90,7 @@ class PredecessorDispatcherTargetFact:
             "state_var_stkoff": self.state_var_stkoff,
             "state_var_reg": self.state_var_reg,
             "source_instruction_ea": self.source_instruction_ea,
+            "target_native_ea": self.target_native_ea,
             "confidence": self.confidence,
         }
 
@@ -124,6 +128,14 @@ def _normalize_low32(value: object | None) -> int | None:
     if parsed is None:
         return None
     return parsed & _STATE_MASK_32
+
+
+def _normalize_native_ea(value: object | None) -> int | None:
+    """Return one valid non-zero native address, or ``None``."""
+    parsed = _parse_state_value(value)
+    if parsed is None or not 0 < parsed < 0xFFFFFFFFFFFFFFFF:
+        return None
+    return parsed
 
 
 def _state_block_key(predecessor: object, state: object) -> tuple[int, int] | None:
@@ -179,6 +191,7 @@ def _build_fact(
     confidence: float = 1.0,
     source_instruction_ea: int | None = None,
     state_var_reg: int | None = None,
+    target_native_ea: int | None = None,
 ) -> PredecessorDispatcherTargetFact:
     normalized_state = _normalize_state32(state_const)
     if normalized_state is None:
@@ -214,6 +227,7 @@ def _build_fact(
             else int(source_instruction_ea)
         ),
         state_var_reg=(None if state_var_reg is None else int(state_var_reg)),
+        target_native_ea=_normalize_native_ea(target_native_ea),
     )
 
 
@@ -361,6 +375,147 @@ def _dag_path_for_state(dag: object | None, state: int):
     except (AttributeError, TypeError, ValueError):
         return None
     return matches[0] if len(matches) == 1 else None
+
+
+def _unique_target_native_ea(
+    flow_graph: object | None,
+    target_block_serial: int,
+) -> int | None:
+    """Return a target block's portable native anchor when it is unique."""
+    get_block = getattr(flow_graph, "get_block", None)
+    if not callable(get_block):
+        return None
+    block = get_block(int(target_block_serial))
+    if block is None:
+        return None
+    native_start_ea = _normalize_native_ea(
+        getattr(block, "native_start_ea", None)
+    )
+    if native_start_ea is not None:
+        return native_start_ea
+    instruction_eas = {
+        native_ea
+        for instruction in getattr(block, "insn_snapshots", ()) or ()
+        if (native_ea := _normalize_native_ea(getattr(instruction, "native_ea", None)))
+        is not None
+    }
+    return next(iter(instruction_eas)) if len(instruction_eas) == 1 else None
+
+
+def _attach_target_native_ea(
+    fact: PredecessorDispatcherTargetFact,
+    flow_graph: object | None,
+) -> PredecessorDispatcherTargetFact:
+    """Attach a producer-snapshot target identity without guessing."""
+    if fact.target_native_ea is not None:
+        return fact
+    target_native_ea = _unique_target_native_ea(
+        flow_graph,
+        fact.target_block_serial,
+    )
+    if target_native_ea is None:
+        return fact
+    return replace(fact, target_native_ea=target_native_ea)
+
+
+def _fact_from_predecessor_observation(
+    observation: object,
+) -> PredecessorDispatcherTargetFact | None:
+    """Parse one validated predecessor observation without trusting its serials."""
+    if getattr(observation, "kind", None) != PREDECESSOR_DISPATCHER_TARGET_FACT_TYPE:
+        return None
+    payload = getattr(observation, "payload", None)
+    if not hasattr(payload, "get"):
+        return None
+    observation_fact_id = getattr(observation, "fact_id", None)
+    payload_fact_id = payload.get("fact_id")
+    if not isinstance(observation_fact_id, str) or payload_fact_id != observation_fact_id:
+        return None
+    resolver_kind = payload.get("resolver_kind")
+    row_kind = payload.get("row_kind")
+    if (
+        not isinstance(resolver_kind, str)
+        or resolver_kind not in _SUPPORTED_PREDECESSOR_ROUTE_RESOLVERS
+        or not isinstance(row_kind, str)
+    ):
+        return None
+    target_native_ea = _normalize_native_ea(payload.get("target_native_ea"))
+    if target_native_ea is None:
+        return None
+    state_const = _normalize_state32(payload.get("state_const"))
+    predecessor_block_serial = _maybe_int(payload.get("predecessor_block_serial"))
+    dispatcher_entry_serial = _maybe_int(payload.get("dispatcher_entry_serial"))
+    target_block_serial = _maybe_int(payload.get("target_block_serial"))
+    if (
+        state_const is None
+        or predecessor_block_serial is None
+        or dispatcher_entry_serial is None
+        or target_block_serial is None
+    ):
+        return None
+    source_instruction_ea = _maybe_int(payload.get("source_instruction_ea"))
+    observation_source_ea = _maybe_int(getattr(observation, "source_ea", None))
+    if observation_source_ea is not None and observation_source_ea != source_instruction_ea:
+        return None
+    try:
+        fact = _build_fact(
+            predecessor_block_serial=predecessor_block_serial,
+            dispatcher_entry_serial=dispatcher_entry_serial,
+            state_const=state_const,
+            target_block_serial=target_block_serial,
+            resolver_kind=resolver_kind,
+            row_kind=row_kind,
+            dispatcher_block_serial=_maybe_int(
+                payload.get("dispatcher_block_serial")
+            ),
+            compare_block_serial=_maybe_int(payload.get("compare_block_serial")),
+            branch_kind=(
+                None
+                if payload.get("branch_kind") is None
+                else str(payload.get("branch_kind"))
+            ),
+            row_lo_inclusive=_maybe_int(payload.get("row_lo_inclusive")),
+            row_hi_exclusive=_maybe_int(payload.get("row_hi_exclusive")),
+            source_state_const=_maybe_int(payload.get("source_state_const")),
+            transition_provenance_kind=(
+                None
+                if payload.get("transition_provenance_kind") is None
+                else str(payload.get("transition_provenance_kind"))
+            ),
+            condition_block_serial=_maybe_int(payload.get("condition_block_serial")),
+            state_var_stkoff=_maybe_int(payload.get("state_var_stkoff")),
+            confidence=float(payload.get("confidence", 1.0)),
+            source_instruction_ea=source_instruction_ea,
+            state_var_reg=_maybe_int(payload.get("state_var_reg")),
+            target_native_ea=target_native_ea,
+        )
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return fact if fact.fact_id == observation_fact_id else None
+
+
+def project_predecessor_dispatcher_target_observations(
+    observations: object,
+) -> tuple[PredecessorDispatcherTargetFact, ...]:
+    """Project current-session predecessor observations into typed facts.
+
+    A target native identity is mandatory for projection because block serials
+    are snapshot-local.  Identical duplicate observations collapse; conflicting
+    observations for one fact ID are discarded rather than arbitrated.
+    """
+    projected: dict[str, PredecessorDispatcherTargetFact] = {}
+    conflicts: set[str] = set()
+    for observation in observations or ():
+        fact = _fact_from_predecessor_observation(observation)
+        if fact is None or fact.fact_id in conflicts:
+            continue
+        existing = projected.get(fact.fact_id)
+        if existing is None:
+            projected[fact.fact_id] = fact
+        elif existing != fact:
+            conflicts.add(fact.fact_id)
+            projected.pop(fact.fact_id, None)
+    return tuple(projected.values())
 
 
 def resolve_current_snapshot_dispatcher_route(
@@ -994,6 +1149,8 @@ def collect_predecessor_dispatcher_target_facts(
         except (TypeError, ValueError):
             blocked_resolution_keys.add(resolution_key)
             continue
+        if fact is not None:
+            fact = _attach_target_native_ea(fact, flow_graph)
         if fact is None or fact.fact_id in seen:
             if fact is None:
                 blocked_resolution_keys.add(resolution_key)
@@ -1058,6 +1215,8 @@ def collect_predecessor_dispatcher_target_facts(
             )
         except (TypeError, ValueError):
             continue
+        if fact is not None:
+            fact = _attach_target_native_ea(fact, flow_graph)
         if fact is None or fact.fact_id in seen:
             continue
         seen.add(fact.fact_id)
@@ -1100,6 +1259,8 @@ def collect_predecessor_dispatcher_target_facts(
                 )
             except (TypeError, ValueError):
                 fact = None
+            if fact is not None:
+                fact = _attach_target_native_ea(fact, flow_graph)
             if fact is not None and fact.fact_id not in seen:
                 seen.add(fact.fact_id)
                 facts.append(fact)
@@ -1136,6 +1297,11 @@ def collect_predecessor_dispatcher_target_facts(
                 )
             except (TypeError, ValueError):
                 continue
+            if conditional_fact is not None:
+                conditional_fact = _attach_target_native_ea(
+                    conditional_fact,
+                    flow_graph,
+                )
             if conditional_fact is None or conditional_fact.fact_id in seen:
                 continue
             seen.add(conditional_fact.fact_id)
@@ -1186,6 +1352,8 @@ def collect_predecessor_dispatcher_target_facts(
             )
         except (TypeError, ValueError):
             continue
+        if fact is not None:
+            fact = _attach_target_native_ea(fact, flow_graph)
         if fact is None or fact.fact_id in seen:
             continue
         seen.add(fact.fact_id)
@@ -1211,10 +1379,12 @@ def _maybe_str(value: object | None) -> str | None:
 
 
 __all__ = [
+    "PREDECESSOR_DISPATCHER_TARGET_FACT_TYPE",
     "PREDECESSOR_DISPATCHER_TARGET_FACTS_ANALYSIS",
     "PredecessorDispatcherTargetFact",
     "StateIdentity",
     "collect_predecessor_dispatcher_target_facts",
+    "project_predecessor_dispatcher_target_observations",
     "resolve_current_snapshot_dispatcher_route",
     "resolve_predecessor_dispatcher_target",
     "select_supported_transition_identity",

@@ -15,6 +15,7 @@ from d810.analyses.control_flow.dispatcher_resolution import (
     StateDispatcherRow,
 )
 from d810.analyses.control_flow.predecessor_dispatcher_target import (
+    PREDECESSOR_DISPATCHER_TARGET_FACT_TYPE,
     PredecessorDispatcherTargetFact,
 )
 from d810.analyses.value_flow.contract_evidence import contract_evidence_payload
@@ -24,7 +25,6 @@ STATE_VARIABLE_IDENTITY_FACT_TYPE = "state_variable_identity"
 DISPATCHER_INITIAL_STATE_FACT_TYPE = "dispatcher_initial_state"
 DISPATCHER_ARTIFACT_STATE_FACT_TYPE = "dispatcher_artifact_state"
 DISPATCHER_DISCOVERY_GAP_FACT_TYPE = "dispatcher_discovery_gap"
-PREDECESSOR_DISPATCHER_TARGET_FACT_TYPE = "predecessor_dispatcher_target"
 
 
 @dataclass(frozen=True, slots=True)
@@ -447,6 +447,7 @@ def predecessor_dispatcher_target_observation(
         phase=phase,
         confidence=fact.confidence,
         source_block=fact.predecessor_block_serial,
+        source_ea=fact.source_instruction_ea,
         payload={
             **fact.to_dict(),
             "profile_name": profile_name,
