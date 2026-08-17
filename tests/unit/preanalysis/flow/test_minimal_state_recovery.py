@@ -9,6 +9,7 @@ from __future__ import annotations
 import pytest
 
 import d810.analyses.control_flow.minimal_state_recovery as minimal_state_recovery
+import d810.analyses.control_flow.semantic_transition as semantic_transition
 from d810.analyses.control_flow.interval_map import IntervalDispatcher, IntervalRow
 from d810.analyses.control_flow.materialized_indirect_transfer import (
     MaterializedIndirectTransfer,
@@ -29,6 +30,9 @@ from d810.analyses.control_flow.minimal_state_recovery import (
     resolve_materialized_indirect_transfer_targets,
     resolve_materialized_handler_exit_states,
     transitions_use_terminal_stack_alias_guard,
+)
+from d810.analyses.control_flow.semantic_transition import (
+    StateTransitionResolution,
 )
 from d810.analyses.control_flow.state_transition_domain import (
     StateValue,
@@ -317,6 +321,97 @@ def _dispatcher(
 
 
 # --- tests ----------------------------------------------------------------
+
+
+def _native_route_resolution(**overrides) -> StateTransitionResolution:
+    assert "source_instruction_ea" in StateTransitionResolution.__dataclass_fields__
+    values = {
+        "fact_id": "transition:native-bound",
+        "source_block_serial": 15,
+        "source_state_const_hex": "0x0000000016aa65e9",
+        "source_instruction_ea": 0x7FF855576BA0,
+        "resolved_next_block_serial": 7,
+        "resolved_next_state_const_hex": "0x00000000079323f9",
+        "resolved_next_state_const_u64": 0x079323F9,
+        "resolution_kind": "state_dispatcher_map",
+        "resolution_reason": "resolved_exact_state",
+        "state_var_stkoff": 0x3C,
+    }
+    values.update(overrides)
+    return StateTransitionResolution(**values)
+
+
+def _bind_native_route(resolutions):
+    binder = getattr(semantic_transition, "bind_native_bound_transition_routes", None)
+    assert callable(binder)
+    return binder(
+        tuple(resolutions),
+        block_serial_for_instruction_ea=lambda ea: {
+            0x7FF855576BA0: 42,
+        }.get(ea),
+        current_block_serials=frozenset({7, 42}),
+        dispatcher_block_serials=frozenset({2}),
+        route_target_for_state=lambda state: 7,
+        state_var_stkoff=0x3C,
+    )
+
+
+def test_native_route_binder_rejects_missing_or_ambiguous_native_rebind() -> None:
+    assert _bind_native_route(
+        (_native_route_resolution(source_instruction_ea=None),)
+    ) == ()
+    binder = getattr(semantic_transition, "bind_native_bound_transition_routes", None)
+    assert callable(binder)
+    assert binder(
+        (_native_route_resolution(),),
+        block_serial_for_instruction_ea=lambda _ea: (41, 42),
+        current_block_serials=frozenset({7, 41, 42}),
+        dispatcher_block_serials=frozenset({2}),
+        route_target_for_state=lambda _state: 7,
+        state_var_stkoff=0x3C,
+    ) == ()
+
+
+@pytest.mark.parametrize(
+    ("overrides", "current_blocks", "dispatcher_blocks", "route_target", "state_off"),
+    (
+        ({"resolved_next_block_serial": None}, {7, 42}, {2}, 7, 0x3C),
+        ({"resolved_next_block_serial": 2}, {2, 42}, {2}, 2, 0x3C),
+        ({"resolved_next_block_serial": 99}, {7, 42}, {2}, 99, 0x3C),
+        ({"source_state_const_hex": "0x0000000100000000"}, {7, 42}, {2}, 7, 0x3C),
+        ({"state_var_stkoff": 0x40}, {7, 42}, {2}, 7, 0x3C),
+        ({"resolved_next_block_serial": 8}, {7, 42}, {2}, 7, 0x3C),
+    ),
+)
+def test_native_route_binder_rejects_fail_closed_route_gates(
+    overrides,
+    current_blocks,
+    dispatcher_blocks,
+    route_target,
+    state_off,
+) -> None:
+    binder = getattr(semantic_transition, "bind_native_bound_transition_routes", None)
+    assert callable(binder)
+    assert binder(
+        (_native_route_resolution(**overrides),),
+        block_serial_for_instruction_ea=lambda _ea: 42,
+        current_block_serials=frozenset(current_blocks),
+        dispatcher_block_serials=frozenset(dispatcher_blocks),
+        route_target_for_state=lambda _state: route_target,
+        state_var_stkoff=state_off,
+    ) == ()
+
+
+def test_native_route_binder_rejects_conflicting_duplicate_source_evidence() -> None:
+    assert _bind_native_route(
+        (
+            _native_route_resolution(fact_id="transition:a"),
+            _native_route_resolution(
+                fact_id="transition:b",
+                resolved_next_block_serial=8,
+            ),
+        )
+    ) == ()
 
 
 def test_residual_state_key_upgrades_default_terminal_without_source_anchor() -> None:

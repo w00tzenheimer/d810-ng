@@ -5,12 +5,14 @@ from __future__ import annotations
 import pytest
 
 from d810.capabilities.dispatcher import RouterKind
+from d810.analyses.control_flow import semantic_transition
 from d810.analyses.control_flow.dispatcher_resolution import (
     StateDispatcherMap,
     StateDispatcherRow,
 )
 from d810.analyses.control_flow.semantic_transition import (
     StateTransitionFact,
+    StateTransitionResolution,
     StateWriteAnchor,
     facts_from_validated_view,
     rebind_state_write_anchors,
@@ -63,6 +65,11 @@ def _dispatch_map() -> StateDispatcherMap:
         state_var_lvar_idx=None,
         router_kind=RouterKind.TABLE,
     )
+
+
+def _assert_native_source_fields_exist() -> None:
+    assert "source_instruction_ea" in StateTransitionFact.__dataclass_fields__
+    assert "source_instruction_ea" in StateTransitionResolution.__dataclass_fields__
 
 
 def test_resolves_exact_state_and_next_state_write() -> None:
@@ -194,6 +201,7 @@ def test_non_branch_successor_is_not_dispatcher_bound() -> None:
 
 
 def test_projects_validated_fact_view_to_transition_evidence() -> None:
+    _assert_native_source_fields_exist()
     view = ValidatedFactView(
         maturity="MMAT_GLBOPT1",
         observations=(
@@ -208,6 +216,7 @@ def test_projects_validated_fact_view_to_transition_evidence() -> None:
                     "source_block_serial": 100,
                     "source_state_const": 0x10,
                     "source_state_const_hex": "0x00000010",
+                    "source_instruction_ea": 0x401111,
                     "successor_kind": "branch",
                     "state_var_stkoff": 0x3C,
                 },
@@ -237,6 +246,7 @@ def test_projects_validated_fact_view_to_transition_evidence() -> None:
             source_block_serial=100,
             source_state_const=0x10,
             source_state_const_hex="0x00000010",
+            source_instruction_ea=0x401111,
             successor_kind="branch",
             state_var_stkoff=0x3C,
         ),
@@ -251,6 +261,76 @@ def test_projects_validated_fact_view_to_transition_evidence() -> None:
     )
 
 
+def test_resolution_preserves_source_instruction_ea_for_unresolved_diag_rows() -> None:
+    _assert_native_source_fields_exist()
+    resolutions = resolve_state_transitions_with_dispatcher_map(
+        (
+            StateTransitionFact(
+                fact_id="transition:resolved",
+                source_block_serial=15,
+                source_state_const=0x16AA65E9,
+                source_instruction_ea=0x7FF855576BA0,
+                state_var_stkoff=0x3C,
+            ),
+            StateTransitionFact(
+                fact_id="transition:unresolved",
+                source_block_serial=16,
+                source_state_const=0x079323F9,
+                source_instruction_ea=0x7FF855576E95,
+                state_var_stkoff=0x3C,
+            ),
+        ),
+        dispatch_map=None,
+    )
+
+    assert tuple(row.source_instruction_ea for row in resolutions) == (
+        0x7FF855576BA0,
+        0x7FF855576E95,
+    )
+    assert resolutions[1].to_diag_row(resolution_maturity="MMAT_GLBOPT1")[
+        "source_instruction_ea"
+    ] == 0x7FF855576E95
+
+
+def test_native_bound_route_uses_rebound_serial_not_recorded_serial() -> None:
+    _assert_native_source_fields_exist()
+    binder = getattr(semantic_transition, "bind_native_bound_transition_routes", None)
+    route_type = getattr(semantic_transition, "NativeBoundTransitionRoute", None)
+    assert callable(binder)
+    assert route_type is not None
+    resolution = StateTransitionResolution(
+        fact_id="transition:stale-serial",
+        source_block_serial=15,
+        source_state_const_hex="0x0000000016aa65e9",
+        source_instruction_ea=0x7FF855576BA0,
+        resolved_next_block_serial=7,
+        resolved_next_state_const_hex="0x00000000079323f9",
+        resolved_next_state_const_u64=0x079323F9,
+        resolution_kind="state_dispatcher_map",
+        resolution_reason="resolved_exact_state",
+        state_var_stkoff=0x3C,
+    )
+
+    routes = binder(
+        (resolution,),
+        block_serial_for_instruction_ea=lambda ea: {
+            0x7FF855576BA0: 42,
+        }.get(ea),
+        current_block_serials=frozenset({7, 42}),
+        dispatcher_block_serials=frozenset({2}),
+        route_target_for_state=lambda state: 7,
+        state_var_stkoff=0x3C,
+    )
+
+    assert routes == (
+        route_type(
+            fact_id="transition:stale-serial",
+            source_instruction_ea=0x7FF855576BA0,
+            source_block_serial=42,
+            state_constant=0x16AA65E9,
+            target_handler_serial=7,
+        ),
+    )
 # --- Surface-1 binop-over-register next-state folding (ticket d81-7zf7) -------
 #
 # A handler whose next-state is COMPUTED (``xor eax,ecx -> state_var``) rather
