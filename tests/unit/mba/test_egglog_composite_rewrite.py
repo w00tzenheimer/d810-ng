@@ -91,31 +91,42 @@ def test_composite_rebinds_current_live_leaf_shape(semantics: ActiveSemantics) -
     )
 
     y = leaf("y")
-    bindings = learned.match(binary("add", binary("add", y, y), y))
+    bindings = learned.match(
+        binary("add", binary("add", y, y), y), semantics=semantics
+    )
 
     assert bindings is not None
-    assert learned.materialize(bindings) == binary("mul", const(3), y)
+    assert learned.materialize(bindings, semantics=semantics) == binary(
+        "mul", const(3), y
+    )
 
 
 def test_composite_rejects_changed_alias_shape(
     valid_rewrite: EgglogCompositeRewrite,
+    semantics: ActiveSemantics,
 ) -> None:
     y = leaf("y")
     z = leaf("z")
-    assert valid_rewrite.match(binary("add", binary("add", y, z), y)) is None
+    assert (
+        valid_rewrite.match(
+            binary("add", binary("add", y, z), y), semantics=semantics
+        )
+        is None
+    )
 
 
 def test_match_is_transactional_and_deterministic(
     valid_rewrite: EgglogCompositeRewrite,
+    semantics: ActiveSemantics,
 ) -> None:
     y = leaf("y")
     candidate = binary("add", binary("add", y, y), y)
-    first = valid_rewrite.match(candidate)
-    second = valid_rewrite.match(candidate)
+    first = valid_rewrite.match(candidate, semantics=semantics)
+    second = valid_rewrite.match(candidate, semantics=semantics)
     assert first == second
     assert first is not None
     first[0] = leaf("tampered")
-    assert valid_rewrite.match(candidate) == {0: y}
+    assert valid_rewrite.match(candidate, semantics=semantics) == {0: y}
 
 
 def test_composite_json_is_stable_across_round_trip(
@@ -250,15 +261,25 @@ def test_too_many_input_leaves_is_rejected(semantics: ActiveSemantics) -> None:
         )
 
 
-def test_raw_mop_leaf_key_is_rejected(semantics: ActiveSemantics) -> None:
+def test_native_shaped_leaf_key_is_local_only_and_rebinds(
+    semantics: ActiveSemantics,
+) -> None:
     x = leaf("x", kind="mop")
-    with pytest.raises(CompositeRewriteMalformed):
-        EgglogCompositeRewrite.from_extraction(
-            input_term=binary("add", binary("add", x, x), x),
-            output_term=binary("mul", const(3), x),
-            derivation_trace=(("add", "R", ()),),
-            semantics=semantics,
-        )
+    learned = EgglogCompositeRewrite.from_extraction(
+        input_term=binary("add", binary("add", x, x), x),
+        output_term=binary("mul", const(3), x),
+        derivation_trace=(("add", "R", ()),),
+        semantics=semantics,
+    )
+    assert "mop" not in learned.to_json()
+
+    y = leaf("y", kind="mop")
+    candidate = binary("add", binary("add", y, y), y)
+    bindings = learned.match(candidate, semantics=semantics)
+    assert bindings == {0: y}
+    assert learned.materialize(bindings, semantics=semantics) == binary(
+        "mul", const(3), y
+    )
 
 
 def test_supported_fixed_shift_preserves_literal_count(
@@ -283,7 +304,8 @@ def test_supported_fixed_shift_preserves_literal_count(
         fixed_shift_term("shl", WIDTH, y, 3),
         fixed_shift_term("lshr", WIDTH, y, 29),
     )
-    assert rewrite.materialize(rewrite.match(candidate)) == fixed_shift_term(
+    bindings = rewrite.match(candidate, semantics=semantics)
+    assert rewrite.materialize(bindings, semantics=semantics) == fixed_shift_term(
         "rol", WIDTH, y, 3
     )
 
@@ -309,11 +331,12 @@ def test_serialized_entry_has_hard_size_bound(
 
 def test_materialize_requires_current_typed_bindings(
     valid_rewrite: EgglogCompositeRewrite,
+    semantics: ActiveSemantics,
 ) -> None:
     with pytest.raises(CompositeRewriteMalformed):
-        valid_rewrite.materialize({0: object()})
+        valid_rewrite.materialize({0: object()}, semantics=semantics)
     with pytest.raises(CompositeRewriteMalformed):
-        valid_rewrite.materialize({})
+        valid_rewrite.materialize({}, semantics=semantics)
 
 
 def test_semantics_descriptor_is_json_safe(semantics: ActiveSemantics) -> None:
@@ -322,13 +345,48 @@ def test_semantics_descriptor_is_json_safe(semantics: ActiveSemantics) -> None:
     assert ActiveSemantics.from_json(encoded) == semantics
 
 
-def test_semantics_accepts_frozenset_rule_names() -> None:
+def test_semantics_requires_exact_frozenset_rule_pairs() -> None:
     descriptor = ActiveSemantics(
         canonicalizer_version=1,
         catalogue_digest=CATALOGUE_DIGEST,
         profile_digest=PROFILE_DIGEST,
         egglog_version="13.2.0",
         proof_mode="legacy",
-        active_rule_names=frozenset({"R"}),
+        active_rule_names=frozenset({("add", "R")}),
     )
     assert descriptor.has_rule("add", "R")
+    assert not descriptor.has_rule("xor", "R")
+    with pytest.raises(ValueError):
+        ActiveSemantics(
+            canonicalizer_version=1,
+            catalogue_digest=CATALOGUE_DIGEST,
+            profile_digest=PROFILE_DIGEST,
+            egglog_version="13.2.0",
+            proof_mode="legacy",
+            active_rule_names=frozenset({"R"}),
+        )
+
+
+def test_trace_requires_exact_rule_family_and_source(
+    semantics: ActiveSemantics,
+) -> None:
+    x = leaf("x")
+    with pytest.raises(CompositeRewriteMalformed):
+        EgglogCompositeRewrite.from_extraction(
+            input_term=binary("add", binary("add", x, x), x),
+            output_term=binary("mul", const(3), x),
+            derivation_trace=(("xor", "R", ()),),
+            semantics=semantics,
+        )
+
+
+def test_syntax_only_decode_cannot_replay_without_current_semantics(
+    valid_rewrite: EgglogCompositeRewrite,
+) -> None:
+    decoded = EgglogCompositeRewrite.from_json(valid_rewrite.to_json())
+    y = leaf("y")
+    candidate = binary("add", binary("add", y, y), y)
+    with pytest.raises(CompositeRewriteMalformed):
+        decoded.match(candidate)
+    with pytest.raises(CompositeRewriteMalformed):
+        decoded.materialize({0: y})

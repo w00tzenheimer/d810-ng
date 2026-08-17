@@ -34,19 +34,6 @@ ACTIVE_SEMANTICS_SCHEMA_VERSION = 1
 
 _DIGEST_LENGTH = 64
 _PROOF_MODES = frozenset({"legacy", "shadow"})
-_RAW_VALUE_MARKERS = frozenset(
-    {
-        "ida",
-        "live",
-        "minsn",
-        "minsn_t",
-        "mop",
-        "mop_t",
-        "native",
-        "path",
-        "solver",
-    }
-)
 _ALPHA_FIELDS = frozenset(
     {"width", "operation", "value", "leaf_slot", "shift_count", "children"}
 )
@@ -119,10 +106,8 @@ def _require_nonnegative_int(value: object, field_name: str) -> int:
 
 
 def _normalize_rule_key(value: object) -> RuleKey:
-    if type(value) is str:
-        return ("", _require_nonempty_string(value, "rule name"))
     if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
-        raise ValueError("active rule names must be strings or pairs")
+        raise ValueError("active rule names must be (family, source_name) pairs")
     if len(value) != 2:
         raise ValueError("active rule pair must contain family and source name")
     family = _require_nonempty_string(value[0], "rule family")
@@ -145,11 +130,9 @@ def _normalize_active_rule_names(values: object) -> tuple[RuleKey, ...]:
 class CompositeRewriteSemantics:
     """JSON-safe semantic context required to admit a learned rewrite.
 
-    ``active_rule_names`` contains ``(family, source_name)`` pairs.  A bare
-    source name is accepted as a convenience and is represented internally as
-    ``("", source_name)``; this permits callers with a single-family
-    catalogue to avoid inventing a family label while still making the rule
-    membership check explicit.
+    ``active_rule_names`` contains exact ``(family, source_name)`` pairs.
+    Family and source names are both required and are never treated as
+    wildcards.
     """
 
     canonicalizer_version: int
@@ -157,7 +140,7 @@ class CompositeRewriteSemantics:
     profile_digest: str
     egglog_version: str
     proof_mode: str
-    active_rule_names: tuple[RuleKey | str, ...] = ()
+    active_rule_names: tuple[RuleKey, ...] = ()
 
     def __post_init__(self) -> None:
         if not _is_exact_int(self.canonicalizer_version) or (
@@ -183,7 +166,7 @@ class CompositeRewriteSemantics:
 
     def has_rule(self, family: str, source_name: str) -> bool:
         key = (family, source_name)
-        return key in self.active_rule_names or ("", source_name) in self.active_rule_names
+        return key in self.active_rule_names
 
     def to_dict(self) -> JsonObject:
         return {
@@ -313,20 +296,6 @@ def _canonical_json(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
 
-def _reject_raw_leaf_key(leaf_key: object) -> None:
-    if type(leaf_key) is not tuple:
-        raise CompositeRewriteMalformed("leaf keys must be tuples")
-
-    def visit(value: object) -> None:
-        if type(value) is str and value.lower() in _RAW_VALUE_MARKERS:
-            raise CompositeRewriteMalformed("raw native/live leaf key is not portable")
-        if type(value) is tuple:
-            for item in value:
-                visit(item)
-
-    visit(leaf_key)
-
-
 def _alpha_normalize(
     term: TypedBvTerm,
     *,
@@ -336,7 +305,6 @@ def _alpha_normalize(
     if not isinstance(term, TypedBvTerm):
         raise CompositeRewriteMalformed("terms must be TypedBvTerm values")
     if term.leaf_key is not None:
-        _reject_raw_leaf_key(term.leaf_key)
         slot = slots.get(term.leaf_key)
         if slot is None:
             if not allow_new_slots:
@@ -806,8 +774,7 @@ class EgglogCompositeRewrite:
     ) -> dict[int, TypedBvTerm] | None:
         """Match transactionally and return fresh current-term bindings."""
 
-        if semantics is not None:
-            _validate_semantics_match(self, semantics)
+        _validate_semantics_match(self, semantics)
         if not isinstance(term, TypedBvTerm):
             return None
         bindings: dict[int, TypedBvTerm] = {}
@@ -818,9 +785,12 @@ class EgglogCompositeRewrite:
     def materialize(
         self,
         bindings: Mapping[int, TypedBvTerm] | None,
+        *,
+        semantics: CompositeRewriteSemantics | None = None,
     ) -> TypedBvTerm:
         """Build output only from the caller's current typed-term bindings."""
 
+        _validate_semantics_match(self, semantics)
         if not isinstance(bindings, Mapping):
             raise CompositeRewriteMalformed("bindings must be a mapping")
         normalized: dict[int, TypedBvTerm] = {}
@@ -829,7 +799,6 @@ class EgglogCompositeRewrite:
                 raise CompositeRewriteMalformed("bindings contain a non-portable value")
             if value.width != self.width or value.operation is not None or value.leaf_key is None:
                 raise CompositeRewriteMalformed("bindings must contain current live leaves")
-            _reject_raw_leaf_key(value.leaf_key)
             normalized[slot] = value
         try:
             return _materialize_alpha(self.output_template, normalized)
@@ -853,7 +822,7 @@ def _normalize_json_trace(value: object) -> tuple[tuple[str, str, tuple[str, ...
 
 def _validate_semantics_match(
     rewrite: EgglogCompositeRewrite,
-    semantics: CompositeRewriteSemantics,
+    semantics: CompositeRewriteSemantics | None,
 ) -> None:
     if not isinstance(semantics, CompositeRewriteSemantics):
         raise CompositeRewriteMalformed("semantics must be CompositeRewriteSemantics")
@@ -893,10 +862,6 @@ def _match_alpha(
         return False
     if pattern.leaf_slot is not None:
         if candidate.operation is not None or candidate.leaf_key is None:
-            return False
-        try:
-            _reject_raw_leaf_key(candidate.leaf_key)
-        except CompositeRewriteMalformed:
             return False
         previous = bindings.get(pattern.leaf_slot)
         if previous is None:
