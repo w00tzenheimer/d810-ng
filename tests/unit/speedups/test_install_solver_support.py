@@ -38,6 +38,7 @@ def test_reports_success_without_installing_when_z3_is_already_there():
 
     assert result.ok is True
     assert result.already_present is True
+    assert result.state_changed is False
     assert calls == []
 
 
@@ -55,6 +56,7 @@ def test_installs_when_z3_is_missing():
 
     assert result.ok is True
     assert result.already_present is False
+    assert result.state_changed is True
     assert calls == [SOLVER_SUPPORT_PACKAGES]
 
 
@@ -78,6 +80,7 @@ def test_a_failed_install_reports_rather_than_raises():
     result = install_solver_support(probe=_probe(False), installer=boom)
 
     assert result.ok is False
+    assert result.state_changed is True
     assert "network is down" in result.message
 
 
@@ -103,6 +106,7 @@ def test_verifies_the_install_actually_produced_a_working_solver():
     )
 
     assert result.ok is False
+    assert result.state_changed is True
     assert "still" in result.message.lower()
 
 
@@ -118,9 +122,7 @@ def test_success_requires_the_post_install_probe_to_pass():
 @pytest.mark.parametrize("present", [True, False])
 def test_result_is_immutable(present):
     """Callers pass this across a UI boundary; it must not be edited in flight."""
-    result = install_solver_support(
-        probe=_probe(present), installer=lambda _pkgs: None
-    )
+    result = install_solver_support(probe=_probe(present), installer=lambda _pkgs: None)
     with pytest.raises(Exception):
         result.ok = not result.ok  # type: ignore[misc]
 

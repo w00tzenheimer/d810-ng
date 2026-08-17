@@ -322,7 +322,9 @@ So an unknown obfuscator that flattens with, say, an equality-chain dispatcher i
 
 Copy the contents of this repository to `.idapro/plugins` or `%appdata%\Hex-Rays\IDA pro\plugins`.
 
-To activate [Cython](https://cython.org) speedups, install the pre-built wheels for your platform and then run the helper that keeps Z3 isolated from IDA:
+To activate [Cython](https://cython.org) speedups, install the package and run
+the bootstrap. For a pre-built wheel, the bootstrap verifies the bundled native
+modules and keeps Z3 isolated from IDA:
 
 ```bash
 pip3 install d810-ng[speedups]
@@ -333,7 +335,9 @@ Speedups are generously provided by [Mahmoud Abdelkader](https://mahmoudimus.com
 
 ### Optional speedups dependencies
 
-`d810-ng[speedups]` installs Cython speedups, but not Z3. The DLL shipped with IDA is older, so install the matching `libz3.dll` into an isolated user directory instead of `site-packages`:
+`install-speedups` verifies the native extensions and installs Z3 into an
+isolated user directory instead of `site-packages`. This avoids conflicts with
+the older DLL shipped with IDA:
 
 ```bash
 python -m d810.speedups.install
@@ -369,24 +373,36 @@ pip install -e .
 
 This installs the package in development mode so that changes to the source are immediately reflected and works on every platform and requires no compiler or IDA SDK. All Cython modules have pure-Python fallbacks.
 
-**macOS / Linux:**
+**macOS / Linux (recommended bootstrap):**
 
 ```bash
-# SDK auto-downloads from GitHub if not present
-D810_BUILD_SPEEDUPS=1 pip install -e ".[speedups]" --no-build-isolation
+# Install the editable package and any non-native optional features first.
+python -m pip install -e . --no-build-isolation
+
+# Finds this checkout, opts into the Cython build, installs solver support,
+# and verifies ABI-compatible native modules in a fresh interpreter.
+python -m d810.speedups.install
 ```
 
-To specify a local IDA SDK path:
+The SDK auto-downloads from GitHub if it is not present. To specify a local IDA
+SDK path, set it for the bootstrap:
 
 ```bash
-IDA_SDK=/path/to/ida-sdk D810_BUILD_SPEEDUPS=1 pip install -e ".[speedups]" --no-build-isolation
+IDA_SDK=/path/to/ida-sdk python -m d810.speedups.install
 ```
 
 **Windows (PowerShell):**
 
 ```powershell
-$env:D810_BUILD_SPEEDUPS=1; $env:IDA_SDK="C:\IDA\9\sdk"; python -m pip install -e ".[speedups]" --no-build-isolation
+python -m pip install -e . --no-build-isolation
+$env:IDA_SDK="C:\IDA\9\sdk"
+python -m d810.speedups.install
 ```
+
+The direct `D810_BUILD_SPEEDUPS=1` form remains available for packaging and
+advanced builds. Normal editable installs should use `install-speedups`, which
+sets it internally and verifies the result. Restart IDA after a successful
+bootstrap.
 
 **Build extensions in-place only (no install):**
 
