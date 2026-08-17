@@ -427,6 +427,34 @@ class _DualRouteDispatcher:
         return self._interval.all_targets()
 
 
+class _MalformedIntervalRow:
+    def __init__(self, error: type[BaseException]) -> None:
+        self._error = error
+
+    @property
+    def target(self):
+        raise self._error("malformed interval target")
+
+
+class _MalformedIntervalDispatcher:
+    default_target = 99
+
+    def __init__(self, error: type[BaseException], state: int) -> None:
+        self._row = _MalformedIntervalRow(error)
+        self._state = int(state) & 0xFFFFFFFF
+
+    def resolve_target(self, _state: int) -> int | None:
+        return None
+
+    def lookup_row(self, state: int):
+        if int(state) & 0xFFFFFFFF == self._state:
+            return self._row
+        return None
+
+    def all_targets(self) -> set[int]:
+        return set()
+
+
 def _eq_block(serial, const, taken, fallthrough, preds=(), insns=()):
     """Equality-chain compare block: ``jz state == const -> taken; fallthrough``."""
     tail = InsnSnapshot(
@@ -5540,6 +5568,42 @@ def test_entry_bridge_prefers_unique_materialized_state_route_over_stale_map(
     ]
 
 
+def test_scalar_entry_interval_target_must_be_a_known_handler() -> None:
+    """An interval target outside the live handler set cannot bridge entry."""
+    state = 0x16AA65E9
+    flow_graph = FlowGraph(
+        blocks={
+            0: _b(0, (2,), ()),
+            2: _b(2, (10, 13, 20, 99), (0, 10, 13, 20)),
+            10: _b(10, (2,), (2,)),
+            13: _b(13, (2,), (2,)),
+            20: _b(20, (2,), (2,)),
+            99: replace(_b(99, (), (2,)), kind=BlockKind.STOP),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    dispatcher = _DualRouteDispatcher(
+        exact_targets={},
+        # A broad interval has no independent exact/equality evidence for this
+        # state; handler membership must therefore be authoritative.
+        interval_rows=(IntervalRow(state, state + 2, 20),),
+        default_target=99,
+    )
+
+    modifications = build_state_write_redirects(
+        flow_graph,
+        dispatcher,
+        (),
+        dispatcher_entry_serial=2,
+        pre_header_serial=0,
+        initial_state=state,
+        condition_chain_handlers=frozenset({10, 13}),
+    )
+
+    assert modifications == []
+
+
 def test_materialized_state_entry_bridge_bypasses_proven_router_region() -> None:
     state = 0x34170401
     flow_graph = FlowGraph(
@@ -5611,6 +5675,52 @@ def test_native_bound_state_entry_bridge_emits_exact_redirect() -> None:
     ) == [
         RedirectGoto(from_serial=1, old_target=2, new_target=10),
     ]
+
+
+def test_emit_deduplicates_agreeing_materialized_and_native_entry_routes(
+    monkeypatch,
+) -> None:
+    """Agreeing providers emit one operation for one source edge."""
+    state = 0x16AA65E9
+    flow_graph = FlowGraph(
+        blocks={
+            0: _b(0, (1,), ()),
+            1: _b(1, (2,), (0,)),
+            2: _b(2, (10, 13), (1, 10, 13)),
+            10: _b(10, (2,), (2,)),
+            13: _b(13, (2,), (2,)),
+        },
+        entry_serial=0,
+        func_ea=0x3000,
+    )
+    dispatcher = _disp({state: 10}, exit_block=99)
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "recover_state_write_transitions_via_partitioned_fixpoint",
+        lambda *_args, **_kwargs: (),
+    )
+
+    plan = emit_minimal_unflatten(
+        flow_graph,
+        dispatcher,
+        state_var_stkoff=_STATE,
+        dispatcher_entry_serial=2,
+        materialized_computed_goto_profile=True,
+        materialized_state_routes=(MaterializedStateRoute(1, state, 10),),
+        native_bound_transition_routes=(
+            _native_bound_route(source=1, state=state, target=10),
+        ),
+        condition_chain_handlers=frozenset({10, 13}),
+        authoritative_handler_serials=frozenset({10, 13}),
+    )
+
+    assert [
+        modification
+        for modification in graph_modifications(plan)
+        if isinstance(modification, RedirectGoto)
+        and (modification.from_serial, modification.old_target)
+        == (1, 2)
+    ] == [RedirectGoto(from_serial=1, old_target=2, new_target=10)]
 
 
 @pytest.mark.parametrize(
@@ -10351,3 +10461,38 @@ def test_interval_route_source_kinds_are_retained_in_accepted_entry_proof(_seam)
             "source_kinds": ("interval",),
         },
     )
+
+
+@pytest.mark.parametrize(
+    "shape_error",
+    [AttributeError, IndexError, KeyError, TypeError, ValueError, OverflowError],
+)
+def test_malformed_interval_row_target_abstains(shape_error) -> None:
+    """Provider-shape failures do not authorize an entry redirect."""
+    state = 0x16AA65E9
+    modifications = build_state_write_redirects(
+        _interval_entry_flow_graph(),
+        _MalformedIntervalDispatcher(shape_error, state),
+        (),
+        dispatcher_entry_serial=2,
+        pre_header_serial=0,
+        initial_state=state,
+        condition_chain_handlers=frozenset({10, 13}),
+    )
+
+    assert modifications == []
+
+
+def test_runtime_error_from_interval_row_target_propagates() -> None:
+    """Unexpected provider failures remain visible to callers."""
+    state = 0x16AA65E9
+    with pytest.raises(RuntimeError, match="malformed interval target"):
+        build_state_write_redirects(
+            _interval_entry_flow_graph(),
+            _MalformedIntervalDispatcher(RuntimeError, state),
+            (),
+            dispatcher_entry_serial=2,
+            pre_header_serial=0,
+            initial_state=state,
+            condition_chain_handlers=frozenset({10, 13}),
+        )

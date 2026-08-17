@@ -2421,15 +2421,18 @@ class _FilteredIntervalStateRouteProvider:
         row = lookup_row(int(state) & 0xFFFFFFFF)
         if row is None:
             return None
-        target = getattr(row, "target", None)
         try:
+            # A provider may expose the row descriptor through a property or
+            # proxy.  Shape/value failures mean that route evidence is absent;
+            # arbitrary failures (for example RuntimeError) remain visible.
+            target = getattr(row, "target", None)
             target_i = int(target)
-        except (TypeError, ValueError, OverflowError):
+        except _PROVIDER_SHAPE_ERRORS:
             return None
         if (
             self.default_target is not None
             and target_i == int(self.default_target)
-            and not _explicit_singleton_route_is_not_default(
+            and not _explicit_singleton_route_evidence(
                 self.dispatcher, int(state), target_i
             )
         ):
@@ -2506,26 +2509,55 @@ def _dispatcher_default_target(dispatcher: object) -> int | None:
         return None
 
 
-def _explicit_singleton_route_is_not_default(
+def _explicit_singleton_route_evidence(
     dispatcher: object,
     state: int,
     target: int,
 ) -> bool:
-    """Recognize a one-row exact table whose sole target is not a catch-all."""
-    lookup_row = _provider_method(dispatcher, "lookup_row")
-    if lookup_row is None or not hasattr(dispatcher, "_rows"):
-        return False
+    """Recognize a matching explicit singleton/equality route.
+
+    A dispatcher may expose many exact rows, so table-wide cardinality is not
+    evidence about the concrete state being queried.  Inspect only the
+    matching row (or exact ``StateDispatcherMap`` entry) and require that it
+    names the requested target.
+    """
     try:
-        rows = getattr(dispatcher, "_rows")
-        row = lookup_row(int(state) & 0xFFFFFFFF)
-        return (
-            len(rows) == 1
-            and row is not None
-            and int(getattr(row, "target")) == int(target)
-            and int(getattr(row, "hi")) == int(getattr(row, "lo")) + 1
-        )
+        normalized = int(state) & 0xFFFFFFFF
+        expected_target = int(target)
     except _PROVIDER_SHAPE_ERRORS:
         return False
+    # ``StateDispatcherMap`` exposes exact rows rather than ``lookup_row``.
+    for attribute in ("rows", "_rows"):
+        try:
+            rows = getattr(dispatcher, attribute, None)
+        except _PROVIDER_SHAPE_ERRORS:
+            return False
+        if rows is None:
+            continue
+        try:
+            for row in rows:
+                state_const = getattr(row, "state_const", None)
+                target_block = getattr(row, "target_block", None)
+                if state_const is not None and target_block is not None:
+                    if (
+                        int(state_const) & 0xFFFFFFFF == normalized
+                        and int(target_block) == expected_target
+                        and bool(getattr(row, "is_handler_row", True))
+                    ):
+                        return True
+                    continue
+                row_target = int(getattr(row, "target"))
+                lo = int(getattr(row, "lo"))
+                hi = int(getattr(row, "hi"))
+                if (
+                    row_target == expected_target
+                    and lo <= normalized < hi
+                    and hi == lo + 1
+                ):
+                    return True
+        except _PROVIDER_SHAPE_ERRORS:
+            return False
+    return False
 
 
 def _resolve_concrete_route_target(
@@ -2628,21 +2660,30 @@ def _resolve_entry_state_route(
         dispatcher,
         state,
         materialized_state_routes=materialized_state_routes,
-        # Entry preflight uses explicit singleton/interval evidence and filters
-        # only structural catch-all defaults inside the resolver.  A caller's
-        # handler set can be partial when the initial state names a mid-tree leaf.
+        # The condition-chain set can be a partial mid-tree view: an exact
+        # dispatcher leaf may be the entry target without appearing in it.
+        # Interval-only entry evidence is checked against the authoritative set
+        # below, while exact/materialized evidence retains that compatibility.
         condition_chain_handlers=frozenset(),
     )
     if route is None:
         return None
     target = int(route.target_block)
+    if (
+        condition_chain_handlers
+        and target not in condition_chain_handlers
+        and not _explicit_singleton_route_evidence(
+            dispatcher, route.normalized_state, target
+        )
+    ):
+        return None
     default_target = _dispatcher_default_target(dispatcher)
     if (
         target == int(dispatcher_entry_serial)
         or (
             default_target is not None
             and target == default_target
-            and not _explicit_singleton_route_is_not_default(
+            and not _explicit_singleton_route_evidence(
                 dispatcher, route.normalized_state, target
             )
         )
@@ -3475,6 +3516,27 @@ def _existing_redirect_keys(mods: list[object]) -> set[tuple[int, int]]:
         if isinstance(m, (RedirectGoto, RedirectBranch)):
             keys.add((int(m.from_serial), int(m.old_target)))
     return keys
+
+
+def _graph_modification_identity(modification: object) -> tuple[object, ...]:
+    """Return the stable operation identity used for plan-level deduplication."""
+    if isinstance(modification, (RedirectGoto, RedirectBranch)):
+        return (
+            type(modification),
+            int(modification.from_serial),
+            int(modification.old_target),
+            int(modification.new_target),
+        )
+    if isinstance(modification, ConvertToGoto):
+        return (
+            type(modification),
+            int(modification.block_serial),
+            int(modification.goto_target),
+        )
+    raise TypeError(
+        "unsupported graph modification for operation identity: "
+        f"{type(modification).__name__}"
+    )
 
 
 def _exact_live_state_edge_keys(
@@ -8960,29 +9022,27 @@ def emit_minimal_unflatten(
         ),
         dynamic_entry_bridge_edges=dynamic_entry_bridge_edges,
     )
-    entry_route_mods = [
+    entry_route_mods: list[object] = []
+    entry_route_mod_identities: set[tuple[object, ...]] = set()
+    for modification in (
         *materialized_entry_route_mods,
         *native_bound_entry_route_mods,
-    ]
+    ):
+        identity = _graph_modification_identity(modification)
+        if identity in entry_route_mod_identities:
+            continue
+        entry_route_mod_identities.add(identity)
+        entry_route_mods.append(modification)
     if entry_route_mods:
         existing_entry_redirects = {
-            (
-                int(mod.from_serial),
-                int(mod.old_target),
-                int(mod.new_target),
-            )
+            _graph_modification_identity(mod)
             for mod in mods
-            if isinstance(mod, (RedirectGoto, RedirectBranch))
+            if isinstance(mod, (RedirectGoto, RedirectBranch, ConvertToGoto))
         }
         mods = list(mods) + [
             mod
             for mod in entry_route_mods
-            if (
-                int(mod.from_serial),
-                int(mod.old_target),
-                int(mod.new_target),
-            )
-            not in existing_entry_redirects
+            if _graph_modification_identity(mod) not in existing_entry_redirects
         ]
     # Conditional/multi-arm transitions (ticket llr-aga1): the back-edge model
     # above emits one redirect per dispatcher predecessor and collapses a
