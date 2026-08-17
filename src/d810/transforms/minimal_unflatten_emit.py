@@ -2871,9 +2871,8 @@ def build_state_write_redirects(
                 and transition.proof.kind == "native_bound_route"
             )
             if native_bound_route:
-                # Keep the transition's original return classification as
-                # metadata, while the accepted native route supplies the exact
-                # handler edge.
+                # Native enrichment has cleared the unresolved return sentinel;
+                # the accepted route supplies the exact handler edge.
                 new = transition.target_handler
             elif transition.is_return and exact_terminal_delivery:
                 new = _exact_native_terminal_redirect_target(
