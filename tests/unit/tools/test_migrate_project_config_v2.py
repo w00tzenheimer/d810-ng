@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import errno
 import json
 import hashlib
 import os
@@ -870,3 +871,273 @@ def test_cli_check_rejects_directory_symlink(tmp_path: Path) -> None:
     assert result.returncode == 2
     assert "symlink" in result.stderr
     assert "Traceback" not in result.stderr
+
+
+def test_cli_output_transient_staged_cleanup_failure_recovers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source = _write_legacy(tmp_path / "project.json")
+    destination = tmp_path / "migrated.json"
+    real_remove = migration_cli._remove_staged_path
+    attempts = 0
+
+    def fail_once_then_remove(path: Path) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("transient unlink failure")
+        real_remove(path)
+
+    monkeypatch.setattr(migration_cli, "_remove_staged_path", fail_once_then_remove)
+
+    status = migration_cli.main([str(source), "--output", str(destination)])
+    captured = capsys.readouterr()
+
+    assert status == 0
+    assert captured.out == ""
+    assert captured.err == ""
+    assert destination.exists()
+    assert attempts == 2
+    assert not list(tmp_path.glob(f".{destination.name}.*.tmp"))
+
+
+def test_cli_output_persistent_staged_cleanup_failure_reports_committed_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source = _write_legacy(tmp_path / "project.json")
+    destination = tmp_path / "migrated.json"
+
+    def always_fail(_path: Path) -> None:
+        raise OSError("persistent unlink failure")
+
+    monkeypatch.setattr(migration_cli, "_remove_staged_path", always_fail)
+
+    status = migration_cli.main([str(source), "--output", str(destination)])
+    captured = capsys.readouterr()
+    leaked = list(tmp_path.glob(f".{destination.name}.*.tmp"))
+
+    assert status == 1
+    assert captured.out == ""
+    assert destination.exists()
+    assert len(leaked) == 1
+    assert captured.err == (
+        f"warning: destination committed at {destination}; staged cleanup failed "
+        f"after 2 attempts; leaked staging path: {leaked[0]}\n"
+    )
+    assert str(leaked[0]) in captured.err
+
+
+def test_cli_output_failed_publish_cleanup_failure_preserves_primary_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source = _write_legacy(tmp_path / "project.json")
+    destination = tmp_path / "migrated.json"
+
+    def fail_link(_staged: Path, _target: Path, **_kwargs: object) -> None:
+        raise FileExistsError(errno.EEXIST, "destination exists")
+
+    def fail_remove(_path: Path) -> None:
+        raise OSError("persistent unlink failure")
+
+    monkeypatch.setattr(migration_cli.os, "link", fail_link)
+    monkeypatch.setattr(migration_cli, "_remove_staged_path", fail_remove)
+
+    status = migration_cli.main([str(source), "--output", str(destination)])
+    captured = capsys.readouterr()
+    leaked = list(tmp_path.glob(f".{destination.name}.*.tmp"))
+
+    assert status == 1
+    assert not destination.exists()
+    assert len(leaked) == 1
+    assert captured.err == (
+        f"error: {destination}: destination already exists; staged cleanup failed "
+        f"after 2 attempts; leaked staging path: {leaked[0]}\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "error",
+    (
+        OSError(errno.EXDEV, "cross-device link"),
+        PermissionError(errno.EACCES, "permission denied"),
+        OSError(errno.EOPNOTSUPP, "hard links unsupported"),
+    ),
+)
+def test_cli_output_link_capability_errors_are_controlled_and_clean(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    error: OSError,
+) -> None:
+    source = _write_legacy(tmp_path / "project.json")
+    destination = tmp_path / "migrated.json"
+
+    def fail_link(_staged: Path, _target: Path, **_kwargs: object) -> None:
+        raise error
+
+    monkeypatch.setattr(migration_cli.os, "link", fail_link)
+
+    status = migration_cli.main([str(source), "--output", str(destination)])
+    captured = capsys.readouterr()
+
+    assert status == 1
+    assert captured.err.startswith(
+        f"error: {destination}: atomic no-clobber publish failed:"
+    )
+    assert "Traceback" not in captured.err
+    assert not destination.exists()
+    assert not list(tmp_path.glob(f".{destination.name}.*.tmp"))
+
+
+def test_cli_single_file_swap_before_consumption_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source = _write_legacy(tmp_path / "project.json")
+    original = tmp_path / "project-original.json"
+    attacker = _write_legacy(tmp_path / "attacker.json")
+    real_open = migration_cli._open_single_file_descriptor
+
+    def swap_then_open(path: Path) -> int:
+        path.rename(original)
+        path.symlink_to(attacker)
+        return real_open(path)
+
+    monkeypatch.setattr(migration_cli, "_open_single_file_descriptor", swap_then_open)
+
+    status = migration_cli.main([str(source)])
+    captured = capsys.readouterr()
+
+    assert status == 1
+    assert captured.out == ""
+    assert "symlink" in captured.err or "regular" in captured.err
+    assert "attacker.json" not in captured.out
+    assert source.is_symlink()
+    assert original.exists()
+
+
+def test_cli_single_file_replacement_before_consumption_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source = _write_legacy(tmp_path / "project.json")
+    original = tmp_path / "project-original.json"
+    real_open = migration_cli._open_single_file_descriptor
+
+    def replace_then_open(path: Path) -> int:
+        path.rename(original)
+        _write_legacy(path)
+        return real_open(path)
+
+    monkeypatch.setattr(migration_cli, "_open_single_file_descriptor", replace_then_open)
+
+    status = migration_cli.main([str(source)])
+    captured = capsys.readouterr()
+
+    assert status == 1
+    assert captured.out == ""
+    assert "changed" in captured.err
+    assert original.exists()
+    assert source.exists()
+
+
+def test_cli_directory_swap_before_enumeration_uses_stable_handle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    directory = tmp_path / "projects"
+    directory.mkdir()
+    original = tmp_path / "projects-original"
+    attacker = tmp_path / "attacker"
+    attacker.mkdir()
+    _write_legacy(attacker / "attacker.json")
+    real_open = migration_cli._open_directory_handle
+
+    def open_then_swap(path: Path) -> int:
+        descriptor = real_open(path)
+        path.rename(original)
+        path.symlink_to(attacker, target_is_directory=True)
+        return descriptor
+
+    monkeypatch.setattr(migration_cli, "_open_directory_handle", open_then_swap)
+
+    status = migration_cli.main([str(directory), "--check"])
+    captured = capsys.readouterr()
+
+    assert status == 0
+    assert captured.out == ""
+    assert captured.err == ""
+    assert "attacker.json" not in captured.err
+    assert directory.is_symlink()
+    assert original.is_dir()
+
+
+def test_cli_directory_replacement_before_enumeration_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    directory = tmp_path / "projects"
+    directory.mkdir()
+    original = tmp_path / "projects-original"
+    real_open = migration_cli._open_directory_handle
+
+    def replace_then_open(path: Path) -> int:
+        path.rename(original)
+        path.mkdir()
+        _write_legacy(path / "attacker.json")
+        return real_open(path)
+
+    monkeypatch.setattr(migration_cli, "_open_directory_handle", replace_then_open)
+
+    status = migration_cli.main([str(directory), "--check"])
+    captured = capsys.readouterr()
+
+    assert status == 1
+    assert captured.out == ""
+    assert "changed" in captured.err
+    assert "attacker.json" not in captured.err
+    assert original.is_dir()
+    assert directory.is_dir()
+
+
+def test_cli_directory_child_swap_before_open_is_rejected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    directory = tmp_path / "projects"
+    directory.mkdir()
+    child = _write_legacy(directory / "project.json")
+    original = directory / "project-original.json"
+    attacker = _write_legacy(tmp_path / "attacker.json")
+    real_open = migration_cli._open_directory_child_descriptor
+
+    def swap_then_open(
+        directory_fd: int, name: str, expected_stat: os.stat_result
+    ) -> int:
+        child.rename(original)
+        child.symlink_to(attacker)
+        return real_open(directory_fd, name, expected_stat)
+
+    monkeypatch.setattr(
+        migration_cli, "_open_directory_child_descriptor", swap_then_open
+    )
+
+    status = migration_cli.main([str(directory), "--check"])
+    captured = capsys.readouterr()
+
+    assert status == 1
+    assert "changed" in captured.err or "symlink" in captured.err
+    assert "attacker.json" not in captured.err
+    assert child.is_symlink()
+    assert original.exists()
