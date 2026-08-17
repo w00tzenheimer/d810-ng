@@ -40,6 +40,8 @@ _MANIFEST = _ROOT / "tests/fixtures/mba_portfolio/compiler_shapes.json"
 _CATALOGUE_CONFIG = _ROOT / "src/d810/conf/mba_compiler_shape_catalogue.json"
 _EGGLOG_CONFIG = _ROOT / "src/d810/conf/mba_compiler_shape_egglog.json"
 _EGGLOG_DEGREE2_CONFIG = _ROOT / "src/d810/conf/mba_compiler_shape_egglog_degree2.json"
+_PORTFOLIO_SPIKE_CONFIG = _ROOT / "src/d810/conf/mba_portfolio_spike.json"
+_PORTFOLIO_DEEP_CONFIG = _ROOT / "src/d810/conf/mba_portfolio_deep.json"
 _NATIVE_BINARY = _ROOT / "samples/bins/mba_compiler_shapes.dylib"
 _PARITY_CERTIFICATE_TOOL = _ROOT / "tools/scripts/mba_structural_matcher_certificate.py"
 
@@ -300,6 +302,21 @@ def test_catalogue_corpus_keeps_legacy_dsl_matching_by_default() -> None:
     ] == ["mba-simplify"]
 
 
+@pytest.mark.parametrize(
+    "profile_path", (_PORTFOLIO_SPIKE_CONFIG, _PORTFOLIO_DEEP_CONFIG)
+)
+def test_checked_in_profiles_ship_no_structural_parity_certificate(
+    profile_path: Path,
+) -> None:
+    """Only temporary evidence may authorize the structural matcher."""
+
+    profile = json.loads(profile_path.read_text(encoding="utf-8"))
+    additional = profile["additional_configuration"]
+    assert "structural_matcher_parity_certificate" not in additional
+    assert "structural_matcher_parity_expectation" not in additional
+    assert "structural matching remains legacy-default" in profile["description"].lower()
+
+
 def test_corpus_projects_register_their_one_intended_provider(
     ida_database, d810_state, monkeypatch
 ) -> None:
@@ -491,6 +508,8 @@ class TestCompilerShapeCatalogueNative:
                     "legacy_binding_unknown",
                     "new_safe_coverage_pending",
                     "new_safe_coverage_proved",
+                    "unsafe_mutations",
+                    "unproved_structural_replacements",
                 )
             }
         )
@@ -524,6 +543,7 @@ class TestCompilerShapeCatalogueNative:
                     "snapshot": {
                         "fingerprint": snapshot.fingerprint,
                         "structural_authorizable": snapshot.structural_authorizable,
+                        "canonicalizer_schema_version": snapshot.canonicalizer_schema_version,
                     },
                     "ledger": {
                         field: getattr(combined, field)
@@ -535,6 +555,8 @@ class TestCompilerShapeCatalogueNative:
                             "legacy_binding_unknown",
                             "new_safe_coverage_pending",
                             "new_safe_coverage_proved",
+                            "unsafe_mutations",
+                            "unproved_structural_replacements",
                         )
                     },
                 },
@@ -574,6 +596,25 @@ class TestCompilerShapeCatalogueNative:
         certificate = json.loads(certificate_path.read_text(encoding="utf-8"))
         assert certificate["snapshot_fingerprint"] == snapshot.fingerprint
         assert certificate["runtime_mode"] == runtime_mode
+        assert certificate["observation_count"] == combined.observation_count
+        assert certificate["unsafe_mutations"] == 0
+        assert certificate["unproved_structural_replacements"] == 0
+
+        # Capture the exact legacy registration shape before the certificate
+        # request.  A stale certificate must restore this cache shape rather
+        # than merely expose a non-structural adapter.
+        monkeypatch.delenv("D810_SHADOW_DSL_MATCHING", raising=False)
+        monkeypatch.delenv("D810_STRUCTURAL_DSL_MATCHING", raising=False)
+        with d810_state() as legacy_state:
+            assert legacy_state.load_project(
+                legacy_state.project_manager.index("mba_compiler_shape_catalogue.json")
+            ) is not None
+            legacy_adapters = tuple(legacy_state.current_ins_rules)
+            assert legacy_adapters
+            assert legacy_state.current_certified_catalogue_snapshot is None
+            legacy_candidate_counts = tuple(
+                len(adapter.pattern_candidates) for adapter in legacy_adapters
+            )
 
         activation_config = json.loads(_CATALOGUE_CONFIG.read_text(encoding="utf-8"))
         activation_config["additional_configuration"].update(
@@ -583,6 +624,7 @@ class TestCompilerShapeCatalogueNative:
                     "corpus_digest": _sha256_file(_MANIFEST),
                     "toolchain_digest": _canonical_json_digest(toolchain),
                     "legacy_observation_count": combined.legacy_match_count,
+                    "observation_count": combined.observation_count,
                 },
             }
         )
@@ -606,6 +648,7 @@ class TestCompilerShapeCatalogueNative:
             adapters = tuple(state.current_ins_rules)
             assert adapters
             assert all(adapter.uses_structural_matching for adapter in adapters)
+            assert all(len(adapter.pattern_candidates) == 1 for adapter in adapters)
 
             function_ea = get_func_ea("mba_shape_catalogue_01")
             assert function_ea != idaapi.BADADDR
@@ -707,3 +750,6 @@ class TestCompilerShapeCatalogueNative:
             assert all(
                 not adapter.uses_structural_matching for adapter in state.current_ins_rules
             )
+            assert tuple(
+                len(adapter.pattern_candidates) for adapter in state.current_ins_rules
+            ) == legacy_candidate_counts

@@ -83,6 +83,8 @@ def _evidence_ledger(value: object) -> ShadowMatcherParityLedger:
         "legacy_binding_unknown",
         "new_safe_coverage_pending",
         "new_safe_coverage_proved",
+        "unsafe_mutations",
+        "unproved_structural_replacements",
     )
     if any(type(value.get(field)) is not int for field in fields):
         raise ValueError("parity evidence ledger is incomplete")

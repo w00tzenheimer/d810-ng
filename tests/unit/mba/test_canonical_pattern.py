@@ -164,6 +164,93 @@ def test_repeated_variable_requires_exact_candidate_term_and_alias_shape():
     ).matches
 
 
+def test_native_binding_resolution_prefers_earliest_raw_paths_for_catalogue_07():
+    """Canonical AC ties must retain the legacy source-order binding."""
+
+    from d810.mba.canonical_pattern import (
+        CanonicalFixedBindings,
+        CanonicalPatternMatch,
+        compile_canonical_pattern,
+        merge_canonical_bindings,
+        resolve_canonical_match_paths,
+    )
+
+    rule = compile_mba_rule_catalogue().receipt_for(
+        "add", "Add_HackersDelightRule_2"
+    ).compiled_rule
+    assert rule is not None
+    compiled = compile_canonical_pattern(rule, width=32, declaration_index=0)
+    terms = {
+        "x": _leaf("x", 32),
+        "y": _leaf("y", 32),
+    }
+    first = CanonicalPatternMatch(
+        compiled,
+        CanonicalFixedBindings(
+            terms,
+            {"x": (0, 1, 0), "y": (0, 1, 1)},
+            32,
+        ),
+    )
+    second = CanonicalPatternMatch(
+        compiled,
+        CanonicalFixedBindings(
+            terms,
+            {"x": (0, 1, 1), "y": (0, 1, 0)},
+            32,
+        ),
+    )
+    unresolved = CanonicalPatternMatch(
+        compiled,
+        CanonicalFixedBindings(
+            terms,
+            {"x": (9,), "y": (0, 1, 0)},
+            32,
+        ),
+    )
+    compatibility = CanonicalFixedBindings(
+        {"x": terms["x"], "y": terms["y"], "TWO": _constant(2, 32)},
+        {"x": (0, 1, 0), "y": (0, 1, 1), "TWO": (0, 0)},
+        32,
+    )
+
+    validated_matches = tuple(
+        CanonicalPatternMatch(
+            match.compiled_pattern,
+            merge_canonical_bindings(match.bindings, compatibility),
+        )
+        for match in (first, second)
+    )
+    assert len(validated_matches) == 2
+    assert all(
+        match.bindings.candidate_paths["TWO"] == (0, 0)
+        for match in validated_matches
+    )
+
+    resolved = resolve_canonical_match_paths(
+        (*validated_matches, unresolved),
+        canonical_to_raw_paths={
+            (0, 1, 0): (0, 1),
+            (0, 1, 1): (0, 0),
+            (0, 0): (1, 0),
+        },
+        placeholder_order=(name for _kind, name in compiled.terminal_kinds),
+        required_names=("TWO",),
+    )
+
+    assert len(resolved) == 2
+    assert resolved[0].bindings.candidate_paths == {
+        "x": (0, 0),
+        "y": (0, 1),
+        "TWO": (1, 0),
+    }
+    assert resolved[1].bindings.candidate_paths == {
+        "x": (0, 1),
+        "y": (0, 0),
+        "TWO": (1, 0),
+    }
+
+
 @pytest.mark.parametrize("width", [8, 16, 32, 64])
 def test_pattern_literals_are_masked_at_every_supported_width(width: int):
     from d810.mba.canonical_pattern import lower_symbolic_template

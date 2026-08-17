@@ -752,6 +752,8 @@ class IDAPatternAdapter:
                 CanonicalFixedBindings,
                 CanonicalPatternMatchReport,
                 evaluate_frozen_constraints,
+                merge_canonical_bindings,
+                resolve_canonical_match_paths,
             )
             from d810.mba.ac_matching import AcMatchStopReason
 
@@ -786,7 +788,14 @@ class IDAPatternAdapter:
             if report.matches:
                 valid_matches = []
                 for match in report.matches:
-                    terms = dict(match.bindings.terms)
+                    try:
+                        base_bindings = merge_canonical_bindings(
+                            match.bindings,
+                            report.compatibility_bindings,
+                        )
+                    except ValueError:
+                        continue
+                    terms = dict(base_bindings.terms)
                     if not evaluate_frozen_constraints(
                         match.compiled_pattern.constraints,
                         terms,
@@ -798,7 +807,7 @@ class IDAPatternAdapter:
                             match,
                             bindings=CanonicalFixedBindings(
                                 terms,
-                                match.bindings.candidate_paths,
+                                base_bindings.candidate_paths,
                                 lowering.term.width,
                             ),
                         )
@@ -811,56 +820,50 @@ class IDAPatternAdapter:
                         report.flattened_nodes,
                         AcMatchStopReason.MISS,
                     )
-                elif len(valid_matches) != len(report.matches):
+                else:
                     report = replace(
                         report,
                         matches=tuple(valid_matches),
-                        compatibility_bindings=(
-                            report.compatibility_bindings
-                            if valid_matches[0] is report.matches[0]
-                            else None
-                        ),
+                        compatibility_bindings=None,
                     )
             structural_native_paths: dict[str, tuple[int, ...]] | None = None
             native_path_unavailable = False
             if report.matches:
-                binding = report.bindings
-                if binding is None:
-                    self._shadow_lowering = lowering
-                    self._shadow_source_ast = test_ast
-                    self._shadow_match_report = report
-                    self._shadow_structural_native_paths = None
-                    self._shadow_native_path_unavailable = True
-                    return report
                 required_names = set(
                     getattr(template, "fixed_constant_values", {})
                 )
-                if not required_names.issubset(binding.candidate_paths):
-                    native_path_unavailable = True
-                    self._shadow_lowering = lowering
-                    self._shadow_source_ast = test_ast
-                    self._shadow_match_report = report
-                    self._shadow_structural_native_paths = None
-                    self._shadow_native_path_unavailable = True
-                    return report
                 raw_paths_by_identity: dict[int, list[tuple[int, ...]]] = {}
                 for raw_path, native in lowering.raw_native_nodes_by_path.items():
                     raw_paths_by_identity.setdefault(id(native), []).append(raw_path)
-                mapped_paths: dict[str, tuple[int, ...]] = {}
-                for name, canonical_path in binding.candidate_paths.items():
-                    native = lowering.native_nodes_by_path.get(canonical_path)
-                    if native is None:
-                        native_path_unavailable = True
-                        mapped_paths = {}
-                        break
+                canonical_to_raw_paths: dict[tuple[int, ...], tuple[int, ...]] = {}
+                for canonical_path, native in lowering.native_nodes_by_path.items():
                     raw_paths = raw_paths_by_identity.get(id(native), ())
-                    if len(raw_paths) != 1:
-                        native_path_unavailable = True
-                        mapped_paths = {}
-                        break
-                    mapped_paths[name] = raw_paths[0]
-                if mapped_paths or not binding.candidate_paths:
-                    structural_native_paths = mapped_paths
+                    if len(raw_paths) == 1:
+                        canonical_to_raw_paths[canonical_path] = raw_paths[0]
+                resolved_matches = resolve_canonical_match_paths(
+                    report.matches,
+                    canonical_to_raw_paths=canonical_to_raw_paths,
+                    placeholder_order=(
+                        name for _kind, name in template.terminal_kinds
+                    ),
+                    required_names=required_names,
+                )
+                if not resolved_matches:
+                    native_path_unavailable = True
+                    report = replace(
+                        report,
+                        matches=(),
+                        compatibility_bindings=None,
+                    )
+                else:
+                    report = replace(
+                        report,
+                        matches=resolved_matches,
+                        compatibility_bindings=None,
+                    )
+                    binding = report.bindings
+                    if binding is not None:
+                        structural_native_paths = dict(binding.candidate_paths)
             self._shadow_lowering = lowering
             self._shadow_source_ast = test_ast
             self._shadow_match_report = report

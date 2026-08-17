@@ -1,5 +1,5 @@
 {
-  "description": "Ordered MBA portfolio interactive profile: existing same-width chain algebra and certified catalogue run before residual Egglog. Egglog has a 250 ms candidate admission budget and a 1 s aggregate function admission budget; the 3 ms profile remains telemetry-only. Structural matcher opt-in remains disabled.",
+  "description": "Ordered MBA portfolio interactive profile: existing same-width chain algebra and certified catalogue run before residual Egglog. Egglog has a 250 ms candidate admission budget and a 1 s aggregate function admission budget; the 3 ms profile remains telemetry-only. Structural matching remains legacy-default; no production parity certificate is bundled.",
   "additional_configuration": {
     "pipeline_v2_mode": "config-v2",
     "pipeline_v2": [

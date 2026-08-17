@@ -453,6 +453,7 @@ class D810State(metaclass=SingletonMeta):
                         legacy_observation_count=expectation_setting[
                             "legacy_observation_count"
                         ],
+                        observation_count=expectation_setting["observation_count"],
                     )
                 except (KeyError, TypeError, ValueError) as exc:
                     logger.warning(

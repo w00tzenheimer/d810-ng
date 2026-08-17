@@ -1,5 +1,5 @@
 {
-  "description": "Batch/diagnostic MBA portfolio: fast chain and direct catalogue tiers run before residual Egglog. Fuzzy legacy permutations are disabled. Egglog admits at most 500 ms per candidate and 5 s per live function; admission is structurally capped but Rust run(1) calls are not hard-interruptible.",
+  "description": "Batch/diagnostic MBA portfolio: fast chain and direct catalogue tiers run before residual Egglog. Fuzzy legacy permutations are disabled. Structural matching remains legacy-default; no production parity certificate is bundled. Egglog admits at most 500 ms per candidate and 5 s per live function; admission is structurally capped but Rust run(1) calls are not hard-interruptible.",
   "additional_configuration": {
     "pipeline_v2_mode": "config-v2",
     "pipeline_v2": [

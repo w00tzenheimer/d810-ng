@@ -13,8 +13,8 @@ from __future__ import annotations
 import hashlib
 import dis
 import json
-from collections.abc import Mapping
-from dataclasses import dataclass, field
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 from d810.core.typing import TYPE_CHECKING
 
@@ -36,6 +36,17 @@ if TYPE_CHECKING:
 
 
 PatternLeafKey = tuple[str, str]
+
+# These fields are callback-local adapter state, not declared rule semantics.
+# Keep this policy shared with the certified snapshot encoder so a live match
+# cannot perturb either side of the certificate binding.
+TRANSIENT_RULE_STATE_FIELDS = frozenset(
+    {
+        "_current_blk",
+        "_current_ins",
+        "_runtime_constant_evaluator",
+    }
+)
 
 
 class CanonicalPatternUnsupported(ValueError):
@@ -183,6 +194,90 @@ class CanonicalPatternMatchReport:
 
 
 CanonicalPatternMatchResult = CanonicalPatternMatchReport
+
+
+def merge_canonical_bindings(
+    bindings: CanonicalFixedBindings,
+    compatibility_bindings: CanonicalFixedBindings | None,
+) -> CanonicalFixedBindings:
+    """Merge uniquely located compatibility-only bindings into one match."""
+
+    if compatibility_bindings is None:
+        return bindings
+    terms = dict(bindings.terms)
+    paths = dict(bindings.candidate_paths)
+    for name, term in compatibility_bindings.terms.items():
+        # The compatibility projection is derived from the first matcher
+        # alternative and may contain ordinary variable bindings that differ
+        # across symmetric alternatives.  Only import names absent from the
+        # alternative; fixed constants are the compatibility-only case.
+        if name in terms:
+            continue
+        terms[name] = term
+        compatibility_path = compatibility_bindings.candidate_paths.get(name)
+        if compatibility_path is None:
+            continue
+        paths[name] = compatibility_path
+    return CanonicalFixedBindings(terms, paths, bindings.width)
+
+
+def resolve_canonical_match_paths(
+    matches: Iterable[CanonicalPatternMatch],
+    *,
+    canonical_to_raw_paths: Mapping[tuple[int, ...], tuple[int, ...]],
+    placeholder_order: Iterable[str],
+    required_names: Iterable[str] = (),
+) -> tuple[CanonicalPatternMatch, ...]:
+    """Resolve canonical bindings to unique raw paths and order the results.
+
+    Canonical AC matching may produce several valid bindings after operand
+    normalization.  Native reconstruction must use the exact source-order
+    node for each binding; a canonical path without one unique raw provenance
+    is therefore discarded.  Surviving alternatives are ordered by their raw
+    paths in the declaration order captured by ``terminal_kinds`` so callers
+    can select one deterministically without changing canonical matching.
+    """
+
+    ordered_names = tuple(placeholder_order)
+    required = frozenset(required_names)
+    resolved: list[tuple[tuple[object, ...], CanonicalPatternMatch]] = []
+    for match in matches:
+        bindings = match.bindings
+        raw_paths: dict[str, tuple[int, ...]] = {}
+        used_paths: set[tuple[int, ...]] = set()
+        unresolved = False
+        for name, canonical_path in bindings.candidate_paths.items():
+            raw_path = canonical_to_raw_paths.get(tuple(canonical_path))
+            if raw_path is None:
+                unresolved = True
+                break
+            raw_path = tuple(raw_path)
+            if raw_path in used_paths:
+                unresolved = True
+                break
+            used_paths.add(raw_path)
+            raw_paths[name] = raw_path
+        if unresolved or not required.issubset(raw_paths):
+            continue
+        resolved_bindings = CanonicalFixedBindings(
+            bindings.terms,
+            raw_paths,
+            bindings.width,
+        )
+        resolved_match = replace(match, bindings=resolved_bindings)
+        score = tuple(
+            raw_paths[name]
+            for name in ordered_names
+            if name in raw_paths
+        )
+        score += tuple(
+            raw_paths[name]
+            for name in sorted(raw_paths)
+            if name not in ordered_names
+        )
+        resolved.append((score, resolved_match))
+    resolved.sort(key=lambda item: item[0])
+    return tuple(match for _score, match in resolved)
 
 
 def _expression_or_raise(expression: object) -> SymbolicExpressionProtocol:
@@ -367,6 +462,8 @@ def _jsonable_semantics(value: object, active: set[int] | None = None) -> object
         return value
     if isinstance(value, bytes):
         return {"bytes": value.hex()}
+    if _is_operational_d810_logger(value):
+        return {"operational_logger": "d810"}
     identity = id(value)
     if identity in active:
         return {"opaque": "cyclic"}
@@ -400,6 +497,7 @@ def _jsonable_semantics(value: object, active: set[int] | None = None) -> object
             entries = [
                 (_jsonable_semantics(key, active), _jsonable_semantics(item, active))
                 for key, item in value.items()
+                if not (type(key) is str and key in TRANSIENT_RULE_STATE_FIELDS)
             ]
             entries.sort(
                 key=lambda pair: json.dumps(
@@ -472,6 +570,16 @@ def _jsonable_semantics(value: object, active: set[int] | None = None) -> object
         }
     finally:
         active.discard(identity)
+
+
+def _is_operational_d810_logger(value: object) -> bool:
+    """Keep mutable diagnostic logger internals out of rule semantics."""
+
+    value_type = type(value)
+    return (
+        value_type.__module__ == "d810.core.logging"
+        and value_type.__qualname__ == "D810Logger"
+    )
 
 
 def disassemble(code):
@@ -567,6 +675,9 @@ def _rule_semantic_payload(
                 else getattr(rule_type, "UPDATE_DESTINATION", None)
             ),
             "bit_width": _rule_value(rule, "BIT_WIDTH", getattr(rule_type, "BIT_WIDTH", None)),
+            "configuration": _jsonable_semantics(
+                getattr(rule, "config", {})
+            ),
             "implementations": implementations,
         },
     }

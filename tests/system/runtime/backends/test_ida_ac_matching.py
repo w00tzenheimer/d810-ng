@@ -333,6 +333,7 @@ def test_structural_opt_in_requires_matching_persisted_parity_certificate(
         corpus_digest=_parity_digest("controlled-native-corpus"),
         toolchain_digest=_parity_digest(f"ida-9.4-{runtime_mode}"),
         legacy_observation_count=1,
+        observation_count=1,
     )
     warnings: list[tuple[object, ...]] = []
     monkeypatch.setattr(
@@ -354,9 +355,12 @@ def test_structural_opt_in_requires_matching_persisted_parity_certificate(
                 "corpus_digest": expectation.corpus_digest,
                 "toolchain_digest": expectation.toolchain_digest,
                 "legacy_observation_count": 1,
+                "observation_count": 1,
                 "legacy_rule_mismatches": 0,
                 "legacy_binding_mismatches": 0,
                 "legacy_binding_unknown": 0,
+                "unsafe_mutations": 0,
+                "unproved_structural_replacements": 0,
             }
         ),
         encoding="utf-8",
@@ -384,11 +388,14 @@ def test_structural_opt_in_requires_matching_persisted_parity_certificate(
                 "corpus_digest": expectation.corpus_digest,
                 "toolchain_digest": expectation.toolchain_digest,
                 "legacy_observation_count": 1,
+                "observation_count": 1,
                 "legacy_rule_mismatches": 0,
                 "legacy_binding_mismatches": 0,
                 "legacy_binding_unknown": 0,
                 "new_safe_coverage_pending": 0,
                 "new_safe_coverage_proved": 0,
+                "unsafe_mutations": 0,
+                "unproved_structural_replacements": 0,
             }
         ),
         encoding="utf-8",
@@ -412,11 +419,14 @@ def test_structural_opt_in_requires_matching_persisted_parity_certificate(
                 "corpus_digest": expectation.corpus_digest,
                 "toolchain_digest": expectation.toolchain_digest,
                 "legacy_observation_count": 1,
+                "observation_count": 1,
                 "legacy_rule_mismatches": 0,
                 "legacy_binding_mismatches": 0,
                 "legacy_binding_unknown": 0,
                 "new_safe_coverage_pending": 0,
                 "new_safe_coverage_proved": 0,
+                "unsafe_mutations": 0,
+                "unproved_structural_replacements": 0,
             }
         ),
         encoding="utf-8",

@@ -19,6 +19,7 @@ from types import (
 from d810.core.typing import Any, TypeAlias
 from d810.mba.canonical_pattern import (
     CanonicalPatternUnsupported,
+    TRANSIENT_RULE_STATE_FIELDS,
     canonical_template_payload,
     compile_canonical_pattern,
 )
@@ -30,7 +31,7 @@ RootShape: TypeAlias = tuple[str | None, int, int]
 CompiledRule: TypeAlias = Any
 
 
-_SNAPSHOT_FINGERPRINT_VERSION = 4
+_SNAPSHOT_FINGERPRINT_VERSION = 5
 _PARITY_CERTIFICATE_SCHEMA_VERSION = 3
 _DIGEST_LENGTH = 64
 
@@ -41,6 +42,12 @@ def _is_sha256_digest(value: object) -> bool:
         and len(value) == _DIGEST_LENGTH
         and all(character in "0123456789abcdef" for character in value)
     )
+
+
+def _is_exact_zero(value: object) -> bool:
+    """Accept only an integer zero for fail-closed evidence counters."""
+
+    return type(value) is int and value == 0
 
 
 @dataclass(frozen=True)
@@ -102,6 +109,7 @@ class StructuralMatcherParityExpectation:
     corpus_digest: str
     toolchain_digest: str
     legacy_observation_count: int
+    observation_count: int | None = None
 
     def __post_init__(self) -> None:
         if not _is_sha256_digest(self.corpus_digest):
@@ -113,6 +121,14 @@ class StructuralMatcherParityExpectation:
             or self.legacy_observation_count <= 0
         ):
             raise ValueError("legacy_observation_count must be positive")
+        if self.observation_count is not None and (
+            type(self.observation_count) is not int
+            or self.observation_count <= 0
+            or self.observation_count < self.legacy_observation_count
+        ):
+            raise ValueError(
+                "observation_count must be positive and include legacy observations"
+            )
 
 
 @dataclass(frozen=True)
@@ -125,6 +141,13 @@ class StructuralMatcherParityCertificate:
     toolchain_digest: str
     legacy_observation_count: int
     canonicalizer_schema_version: int = CANONICALIZER_SCHEMA_VERSION
+    observation_count: int | None = None
+    legacy_rule_mismatches: int | None = None
+    legacy_binding_mismatches: int | None = None
+    legacy_binding_unknown: int | None = None
+    new_safe_coverage_pending: int | None = None
+    unsafe_mutations: int | None = None
+    unproved_structural_replacements: int | None = None
 
     def authorizes(
         self,
@@ -134,15 +157,26 @@ class StructuralMatcherParityCertificate:
     ) -> bool:
         return (
             expectation is not None
-            and snapshot.structural_authorizable
+            and snapshot.structural_authorizable is True
+            and runtime_mode in {"python", "cython"}
             and self.snapshot_fingerprint == snapshot.fingerprint
             and self.runtime_mode == runtime_mode
             and self.corpus_digest == expectation.corpus_digest
             and self.toolchain_digest == expectation.toolchain_digest
             and self.legacy_observation_count == expectation.legacy_observation_count
+            and expectation.observation_count is not None
+            and self.observation_count == expectation.observation_count
+            and type(self.observation_count) is int
+            and self.observation_count >= self.legacy_observation_count
             and self.canonicalizer_schema_version
             == snapshot.canonicalizer_schema_version
             == CANONICALIZER_SCHEMA_VERSION
+            and _is_exact_zero(self.legacy_rule_mismatches)
+            and _is_exact_zero(self.legacy_binding_mismatches)
+            and _is_exact_zero(self.legacy_binding_unknown)
+            and _is_exact_zero(self.new_safe_coverage_pending)
+            and _is_exact_zero(self.unsafe_mutations)
+            and _is_exact_zero(self.unproved_structural_replacements)
         )
 
 
@@ -180,16 +214,27 @@ def load_structural_matcher_parity_certificate(
         raise ValueError(
             "structural parity certificate needs positive legacy_observation_count"
         )
+    total_observation_count = raw.get("observation_count")
+    if (
+        type(total_observation_count) is not int
+        or total_observation_count <= 0
+        or total_observation_count < observation_count
+    ):
+        raise ValueError(
+            "structural parity certificate needs a complete positive observation_count"
+        )
     for certificate_field in (
         "legacy_rule_mismatches",
         "legacy_binding_mismatches",
         "legacy_binding_unknown",
+        "unsafe_mutations",
+        "unproved_structural_replacements",
     ):
-        if raw.get(certificate_field) != 0:
+        if not _is_exact_zero(raw.get(certificate_field)):
             raise ValueError(
                 f"structural parity certificate requires {certificate_field}=0"
             )
-    if raw.get("new_safe_coverage_pending") != 0:
+    if not _is_exact_zero(raw.get("new_safe_coverage_pending")):
         raise ValueError(
             "structural parity certificate requires new_safe_coverage_pending=0"
         )
@@ -210,6 +255,13 @@ def load_structural_matcher_parity_certificate(
         toolchain_digest=toolchain_digest,
         legacy_observation_count=observation_count,
         canonicalizer_schema_version=canonicalizer_version,
+        observation_count=total_observation_count,
+        legacy_rule_mismatches=raw["legacy_rule_mismatches"],
+        legacy_binding_mismatches=raw["legacy_binding_mismatches"],
+        legacy_binding_unknown=raw["legacy_binding_unknown"],
+        new_safe_coverage_pending=raw["new_safe_coverage_pending"],
+        unsafe_mutations=raw["unsafe_mutations"],
+        unproved_structural_replacements=raw["unproved_structural_replacements"],
     )
 
 
@@ -225,6 +277,8 @@ class ShadowMatcherParityLedger:
     new_safe_coverage_pending: int = 0
     new_safe_coverage_proved: int = 0
     new_safe_coverage_refused: int = 0
+    unsafe_mutations: int = 0
+    unproved_structural_replacements: int = 0
 
     def record(
         self,
@@ -273,7 +327,7 @@ def make_structural_matcher_parity_certificate(
     corpus/toolchain expectations before structural selection can activate.
     """
 
-    if not snapshot.structural_authorizable:
+    if snapshot.structural_authorizable is not True:
         raise ValueError("structural parity certificate needs an authorizable snapshot")
     if runtime_mode not in {"python", "cython"}:
         raise ValueError("structural parity certificate has invalid runtime_mode")
@@ -281,20 +335,38 @@ def make_structural_matcher_parity_certificate(
         raise ValueError("structural parity certificate has invalid corpus_digest")
     if not _is_sha256_digest(toolchain_digest):
         raise ValueError("structural parity certificate has invalid toolchain_digest")
-    if ledger.legacy_match_count <= 0:
+    if type(ledger.legacy_match_count) is not int or ledger.legacy_match_count <= 0:
         raise ValueError(
             "structural parity certificate needs positive legacy_match_count"
+        )
+    if (
+        type(ledger.observation_count) is not int
+        or ledger.observation_count <= 0
+        or type(ledger.legacy_match_count) is not int
+        or ledger.observation_count < ledger.legacy_match_count
+    ):
+        raise ValueError(
+            "structural parity certificate needs complete positive observation_count"
         )
     for ledger_field in (
         "legacy_rule_mismatches",
         "legacy_binding_mismatches",
         "legacy_binding_unknown",
         "new_safe_coverage_pending",
+        "unsafe_mutations",
+        "unproved_structural_replacements",
     ):
-        if getattr(ledger, ledger_field) != 0:
+        if not _is_exact_zero(getattr(ledger, ledger_field)):
             raise ValueError(
                 f"structural parity certificate requires {ledger_field}=0"
             )
+    if (
+        type(ledger.new_safe_coverage_proved) is not int
+        or ledger.new_safe_coverage_proved < 0
+    ):
+        raise ValueError(
+            "structural parity certificate has invalid new_safe_coverage_proved"
+        )
     return {
         "schema_version": _PARITY_CERTIFICATE_SCHEMA_VERSION,
         "canonicalizer_schema_version": snapshot.canonicalizer_schema_version,
@@ -309,6 +381,8 @@ def make_structural_matcher_parity_certificate(
         "legacy_binding_unknown": ledger.legacy_binding_unknown,
         "new_safe_coverage_pending": ledger.new_safe_coverage_pending,
         "new_safe_coverage_proved": ledger.new_safe_coverage_proved,
+        "unsafe_mutations": ledger.unsafe_mutations,
+        "unproved_structural_replacements": ledger.unproved_structural_replacements,
     }
 
 
@@ -460,6 +534,7 @@ def _semantic_value_inner(value: object, state: _SemanticFingerprintState) -> ob
         entries = tuple(
             (_semantic_value(key, state), _semantic_value(item, state))
             for key, item in value.items()
+            if not (type(key) is str and key in TRANSIENT_RULE_STATE_FIELDS)
         )
         return {
             "mapping": tuple(
@@ -581,6 +656,7 @@ def _rule_identity(
             _rule_semantic_attribute(rule, "UPDATE_DESTINATION", None), state
         ),
         _semantic_value(_rule_semantic_attribute(rule, "BIT_WIDTH", None), state),
+        _semantic_value(getattr(rule, "config", {}), state),
         _implementation_identity(rule, state),
         _semantic_value(getattr(rule, "aliases", ()), state),
     )

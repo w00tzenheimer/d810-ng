@@ -30,6 +30,8 @@ def _evidence(*, mismatch: int = 0) -> dict[str, object]:
             "legacy_binding_unknown": 0,
             "new_safe_coverage_pending": 0,
             "new_safe_coverage_proved": 2,
+            "unsafe_mutations": 0,
+            "unproved_structural_replacements": 0,
         },
         "runtime_mode": "python",
     }
@@ -63,6 +65,24 @@ def test_build_certificate_rejects_nonzero_parity_mismatch(tmp_path: Path) -> No
 
     with pytest.raises(ValueError, match="legacy_rule_mismatches=0"):
         build_certificate(_evidence(mismatch=1), manifest=manifest, toolchain=toolchain)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ("unsafe_mutations", "unproved_structural_replacements"),
+)
+def test_build_certificate_rejects_unsafe_or_unproved_evidence(
+    tmp_path: Path, field: str
+) -> None:
+    manifest = tmp_path / "manifest.json"
+    toolchain = tmp_path / "toolchain.json"
+    manifest.write_text("{}", encoding="utf-8")
+    toolchain.write_text("{}", encoding="utf-8")
+    evidence = _evidence()
+    evidence["ledger"][field] = 1
+
+    with pytest.raises(ValueError, match=f"{field}=0"):
+        build_certificate(evidence, manifest=manifest, toolchain=toolchain)
 
 
 def test_build_certificate_rejects_missing_canonicalizer_version(tmp_path: Path) -> None:
