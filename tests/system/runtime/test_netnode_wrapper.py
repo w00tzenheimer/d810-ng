@@ -157,7 +157,11 @@ class TestNetnodeWrapperRuntime:
             EgglogIdbCompositeCache(node).store(rewrite)
             reopened = Netnode(node_name)
             cache = EgglogIdbCompositeCache(reopened)
-            assert cache.get(rewrite.bucket_key) == (rewrite,)
+            result = cache.get(rewrite.bucket_key)
+            assert len(result) == 1
+            assert result[0].template_id == rewrite.template_id
+            assert result[0].created_sequence == 1
+            assert result[0].last_used_sequence == 2
         finally:
             # The node name is unique to this test; no shared feature node is
             # killed or cleared during teardown.

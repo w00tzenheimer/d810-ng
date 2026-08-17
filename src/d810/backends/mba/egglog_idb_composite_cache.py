@@ -68,6 +68,10 @@ def _entry_key(template_id: str) -> str:
     return f"{ENTRY_PREFIX}{template_id}"
 
 
+def _rewrite_byte_size(rewrite: EgglogCompositeRewrite) -> int:
+    return len(rewrite.to_json().encode("utf-8"))
+
+
 def _entry_sort_key(metadata: Mapping[str, object]) -> tuple[int, int, str]:
     return (
         int(metadata["last_used_sequence"]),
@@ -103,8 +107,8 @@ class EgglogIdbCompositeCache:
 
         Corrupt or missing entry records are removed individually.  A valid
         lookup advances one cache sequence for every matching entry, making
-        the LRU ordering deterministic while preserving the immutable rewrite
-        payload (and therefore stable caller equality).
+        the LRU ordering deterministic.  The manifest metadata and serialized
+        rewrite sequence fields advance together transactionally.
         """
 
         try:
@@ -115,9 +119,8 @@ class EgglogIdbCompositeCache:
         state = self._load_manifest()
         entries: list[dict[str, object]] = list(state["entries"])
         matched: list[EgglogCompositeRewrite] = []
-        matched_metadata: list[dict[str, object]] = []
+        matched_by_id: dict[str, tuple[dict[str, object], EgglogCompositeRewrite]] = {}
         removed_ids: list[str] = []
-        changed = False
 
         for metadata in entries:
             if tuple(metadata["bucket_key"]) != requested_bucket:
@@ -126,7 +129,6 @@ class EgglogIdbCompositeCache:
             rewrite = self._decode_entry(template_id)
             if rewrite is None:
                 removed_ids.append(template_id)
-                changed = True
                 continue
             try:
                 encoded_size = len(rewrite.to_json().encode("utf-8"))
@@ -134,53 +136,75 @@ class EgglogIdbCompositeCache:
                     rewrite.template_id == template_id
                     and rewrite.bucket_key == requested_bucket
                     and encoded_size == metadata["byte_size"]
+                    and rewrite.created_sequence == metadata["created_sequence"]
+                    and rewrite.last_used_sequence == metadata["last_used_sequence"]
                 )
             except (CompositeRewriteMalformed, TypeError, ValueError):
                 valid = False
             if not valid:
                 removed_ids.append(template_id)
-                changed = True
                 continue
             matched.append(rewrite)
-            matched_metadata.append(metadata)
+            matched_by_id[template_id] = (metadata, rewrite)
 
-        if matched:
-            sequence = int(state["sequence"]) + 1
-            for metadata in matched_metadata:
-                metadata["last_used_sequence"] = sequence
-            state["sequence"] = sequence
-            changed = True
-
-        if not changed:
+        if not matched and not removed_ids:
             return tuple(matched)
 
-        if removed_ids:
-            removed_id_set = set(removed_ids)
-            entries = [
-                metadata
-                for metadata in entries
-                if str(metadata["template_id"]) not in removed_id_set
-            ]
+        removed_id_set = set(removed_ids)
+        entries = [
+            metadata
+            for metadata in entries
+            if str(metadata["template_id"]) not in removed_id_set
+        ]
+        state["total_bytes"] = sum(int(metadata["byte_size"]) for metadata in entries)
+        updated_payloads: dict[str, object] = {}
+        updated_rewrites: dict[str, EgglogCompositeRewrite] = {}
+        if matched:
+            sequence = int(state["sequence"]) + 1
+            state["sequence"] = sequence
+            for template_id, (metadata, rewrite) in matched_by_id.items():
+                updated = rewrite.with_sequences(last_used_sequence=sequence)
+                metadata["last_used_sequence"] = sequence
+                metadata["byte_size"] = _rewrite_byte_size(updated)
+                updated_payloads[template_id] = updated.to_dict()
+                updated_rewrites[template_id] = updated
             state["total_bytes"] = sum(
                 int(metadata["byte_size"]) for metadata in entries
             )
+
+        while len(entries) > self._max_entries or int(state["total_bytes"]) > self._max_bytes:
+            victim = min(entries, key=_entry_sort_key)
+            entries.remove(victim)
+            state["total_bytes"] = int(state["total_bytes"]) - int(
+                victim["byte_size"]
+            )
+            victim_id = str(victim["template_id"])
+            removed_ids.append(victim_id)
+            updated_payloads.pop(victim_id, None)
+            updated_rewrites.pop(victim_id, None)
+
         state["entries"] = sorted(entries, key=_entry_sort_key)
         try:
-            self._commit_manifest(state, removed_ids=removed_ids)
+            self._commit_manifest(
+                state,
+                payloads=updated_payloads,
+                removed_ids=tuple(dict.fromkeys(removed_ids)),
+            )
         except RuntimeError:
             # A cache maintenance write must never turn a valid replay into a
             # failure.  The commit helper restores its pre-write snapshot.
             return tuple(matched)
-        return tuple(matched)
+        return tuple(
+            updated_rewrites[str(metadata["template_id"])]
+            for metadata in state["entries"]
+            if str(metadata["template_id"]) in updated_rewrites
+        )
 
     def store(self, rewrite: EgglogCompositeRewrite) -> None:
         """Store one accepted rewrite, evicting deterministic LRU victims."""
 
         if not isinstance(rewrite, EgglogCompositeRewrite):
             raise TypeError("rewrite must be an EgglogCompositeRewrite")
-        encoded_size = len(rewrite.to_json().encode("utf-8"))
-        if encoded_size > self._max_bytes:
-            return
 
         state = self._load_manifest()
         previous_entries = list(state["entries"])
@@ -201,6 +225,13 @@ class EgglogIdbCompositeCache:
         created_sequence = (
             int(previous["created_sequence"]) if previous is not None else sequence
         )
+        stored_rewrite = rewrite.with_sequences(
+            created_sequence=created_sequence,
+            last_used_sequence=sequence,
+        )
+        encoded_size = _rewrite_byte_size(stored_rewrite)
+        if encoded_size > self._max_bytes:
+            return
         entries.append(
             {
                 "template_id": rewrite.template_id,
@@ -237,8 +268,8 @@ class EgglogIdbCompositeCache:
                     removed_ids.append(template_id)
                     removed_id_set.add(template_id)
         payloads = (
-            {rewrite.template_id: rewrite.to_dict()}
-            if rewrite.template_id in keep_ids
+            {stored_rewrite.template_id: stored_rewrite.to_dict()}
+            if stored_rewrite.template_id in keep_ids
             else {}
         )
         self._commit_manifest(
