@@ -148,7 +148,20 @@ class NativeZ3ProofTemplate:
         native-AST proof as the independent mutation gate.
         """
 
+        if not isinstance(validation, TemplateValidation):
+            return False
         if validation.width != self.width:
+            return False
+        if not isinstance(validation.original, TypedBvTerm) or not isinstance(
+            validation.replacement, TypedBvTerm
+        ):
+            return False
+        try:
+            original_width = validation.original.width
+            replacement_width = validation.replacement.width
+        except (AttributeError, TypeError):
+            return False
+        if original_width != self.width or replacement_width != self.width:
             return False
         try:
             import z3
@@ -169,7 +182,7 @@ class NativeZ3ProofTemplate:
             solver.set(timeout=50)
             solver.add(original != replacement)
             return solver.check() == z3.unsat
-        except (TypeError, ValueError, ImportError):
+        except (ImportError, ValueError):
             return False
 
 
@@ -178,19 +191,72 @@ def _lower_validated_term(
 ):
     """Lower one already template-validated fixed-width term to Z3."""
 
-    if term.operation is None:
-        if term.value is not None:
-            return z3.BitVecVal(term.value, term.width)
-        if term.leaf_key is None:
+    if not isinstance(term, TypedBvTerm):
+        raise ValueError("validated term must be a TypedBvTerm")
+    try:
+        operation = term.operation
+        width = term.width
+        value = term.value
+        leaf_key = term.leaf_key
+        children = term.children
+        shift_count = term.shift_count
+    except AttributeError as exc:
+        raise ValueError("validated term is missing required state") from exc
+    if type(width) is not int or width <= 0:
+        raise ValueError("validated term has an invalid width")
+    if type(children) is not tuple:
+        raise ValueError("validated operation has malformed children")
+    if operation is None:
+        if children:
+            raise ValueError("validated terminal cannot have children")
+        if (value is None) == (leaf_key is None):
+            raise ValueError("validated terminal must have one value or leaf key")
+        if value is not None:
+            if type(value) is not int:
+                raise ValueError("validated constant must be an integer")
+            return z3.BitVecVal(value, width)
+        if type(leaf_key) is not tuple or not leaf_key:
             raise ValueError("missing validated leaf key")
+        try:
+            hash(leaf_key)
+        except TypeError as exc:
+            raise ValueError("validated leaf key must be hashable") from exc
         return variables.setdefault(
-            term.leaf_key,
-            z3.BitVec(f"egglog_template_leaf_{len(variables)}", term.width),
+            leaf_key,
+            z3.BitVec(f"egglog_template_leaf_{len(variables)}", width),
         )
-    children = tuple(
-        _lower_validated_term(child, variables=variables, z3=z3)
-        for child in term.children
+    if type(operation) is not str or operation not in SUPPORTED_OPERATIONS:
+        raise ValueError("unsupported validated operation")
+    expected_arity = (
+        1
+        if operation in {"bnot", "neg"} | FIXED_SHIFT_OPERATIONS
+        else 2
     )
+    if len(children) != expected_arity:
+        raise ValueError("validated operation has malformed arity")
+    if any(
+        not isinstance(child, TypedBvTerm) or child.width != width
+        for child in children
+    ):
+        raise ValueError("validated operation has malformed children")
+    if operation in FIXED_SHIFT_OPERATIONS:
+        if type(shift_count) is not int or not 0 <= shift_count < width:
+            raise ValueError("validated fixed shift has malformed shift_count")
+        if operation in {"rol", "ror"} and width not in _TEMPLATE_WIDTHS:
+            raise ValueError("validated rotate has an unsupported width")
+    elif shift_count is not None:
+        raise ValueError("validated non-shift operation has shift_count metadata")
+    children = tuple(
+        _lower_validated_term(child, variables=variables, z3=z3) for child in children
+    )
+    if operation == "shl":
+        return children[0] << shift_count
+    if operation == "lshr":
+        return z3.LShR(children[0], shift_count)
+    if operation == "rol":
+        return z3.RotateLeft(children[0], shift_count)
+    if operation == "ror":
+        return z3.RotateRight(children[0], shift_count)
     operations = {
         "add": lambda: children[0] + children[1],
         "sub": lambda: children[0] - children[1],
@@ -200,16 +266,10 @@ def _lower_validated_term(
         "xor": lambda: children[0] ^ children[1],
         "neg": lambda: -children[0],
         "bnot": lambda: ~children[0],
-        "shl": lambda: children[0] << term.shift_count,
-        "lshr": lambda: z3.LShR(children[0], term.shift_count),
-        "rol": lambda: z3.RotateLeft(children[0], term.shift_count),
-        "ror": lambda: z3.RotateRight(children[0], term.shift_count),
     }
-    operation = operations.get(term.operation)
+    operation = operations.get(operation)
     if operation is None:
         raise ValueError("unsupported validated operation")
-    if term.operation in FIXED_SHIFT_OPERATIONS and term.shift_count is None:
-        raise ValueError("fixed shift is missing validated shift_count")
     return operation()
 
 

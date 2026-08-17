@@ -207,3 +207,44 @@ def test_native_z3_generic_proof_uses_exact_fixed_shift_semantics(
         width=width,
         assumptions={},
     ) is True
+
+
+def test_proof_template_rejects_root_width_mismatch_without_raising() -> None:
+    template = NativeZ3ProofTemplate.from_compiled_rule(
+        _rule("Add_HackersDelightRule_2"), width=32
+    )
+    assert template is not None
+    term = TypedBvTerm(None, 8, value=1)
+    validation = TemplateValidation(
+        width=32,
+        original=term,
+        replacement=term,
+        leaf_keys=(),
+    )
+
+    assert template.prove_validation(validation) is False
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    [
+        object(),
+        {"width": 32, "operation": "add", "children": ()},
+    ],
+)
+def test_proof_template_rejects_non_typed_validation_roots_without_raising(
+    malformed: object,
+) -> None:
+    template = NativeZ3ProofTemplate.from_compiled_rule(
+        _rule("Add_HackersDelightRule_2"), width=32
+    )
+    assert template is not None
+    validation = TemplateValidation(
+        width=32,
+        original=malformed,  # type: ignore[arg-type]
+        replacement=malformed,  # type: ignore[arg-type]
+        leaf_keys=(),
+    )
+
+    assert template.prove_validation(validation) is False
+    assert template.prove_validation(object()) is False  # type: ignore[arg-type]
