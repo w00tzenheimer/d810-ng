@@ -28,6 +28,63 @@ def session_scoped_rows(
     return tuple(selected_rows)
 
 
+def transaction_bound_dispatcher_removal_proofs(
+    proofs: Iterable[Mapping[str, object]],
+    *,
+    committed_attempts: Iterable[tuple[object, object]],
+    committed_batches: Iterable[object],
+) -> tuple[Mapping[str, object], ...]:
+    """Keep applied removal proofs owned by one committed plan/attempt/batch.
+
+    A diagnostic session may contain stale or superseded observations.  The
+    proof is authoritative only when its ``(plan_id, attempt_id)`` pair is a
+    clean committed CFG attempt and the same attempt id is the committed
+    mutation batch.  The caller supplies rows already constrained to the
+    selected diagnostic session.
+    """
+    committed_identities = {
+        (str(plan_id), str(attempt_id))
+        for plan_id, attempt_id in committed_attempts
+        if plan_id is not None and attempt_id is not None
+    }
+    committed_batch_ids = {
+        str(batch_id) for batch_id in committed_batches if batch_id is not None
+    }
+    selected: list[Mapping[str, object]] = []
+    for payload in proofs:
+        if not isinstance(payload, Mapping):
+            continue
+        if payload.get("application_status") != "applied":
+            continue
+        plan_id = payload.get("plan_id")
+        attempt_id = payload.get("attempt_id")
+        if plan_id is None or attempt_id is None:
+            continue
+        identity = (str(plan_id), str(attempt_id))
+        if identity not in committed_identities:
+            continue
+        if str(attempt_id) not in committed_batch_ids:
+            continue
+        selected.append(payload)
+    return tuple(selected)
+
+
+def require_distinct_native_eas(
+    call_eas: Iterable[int],
+    *,
+    expected_count: int | None = None,
+) -> tuple[int, ...]:
+    """Validate source-bound native marker EAs before exact CFG traversal."""
+    values = tuple(int(ea) for ea in call_eas)
+    if expected_count is not None and len(values) != int(expected_count):
+        raise ValueError(
+            f"expected {int(expected_count)} native EAs, found {len(values)}"
+        )
+    if len(set(values)) != len(values):
+        raise ValueError("native marker EAs must be distinct")
+    return values
+
+
 def reachable_call_eas(
     block_successors: Mapping[int, Iterable[int]],
     call_eas_by_block: Mapping[int, Iterable[int]],

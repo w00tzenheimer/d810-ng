@@ -7,6 +7,7 @@ import re
 
 import pytest
 
+import tests.system.e2e.unflattening_effect_safety_oracle as safety_oracle
 from tests.system.e2e.unflattening_effect_safety_oracle import (
     reachable_call_eas,
     session_scoped_rows,
@@ -224,3 +225,54 @@ def test_diagnostic_oracle_excludes_receipts_and_attempts_from_other_sessions() 
     assert session_scoped_rows(attempt_rows, "session-current") == (
         ("committed", 1, 0, "session-current"),
     )
+
+
+def test_dispatcher_removal_proof_requires_the_committed_attempt_and_batch() -> None:
+    matcher = getattr(
+        safety_oracle,
+        "transaction_bound_dispatcher_removal_proofs",
+        None,
+    )
+    assert callable(matcher), "transaction-bound proof matcher is missing"
+
+    proofs = (
+        {
+            "application_status": "applied",
+            "proof_status": "accepted",
+            "plan_id": "stale-plan",
+            "attempt_id": "stale-attempt",
+        },
+        {
+            "application_status": "applied",
+            "proof_status": "rejected",
+            "plan_id": "current-plan",
+            "attempt_id": "current-attempt",
+        },
+    )
+    assert matcher(
+        proofs,
+        committed_attempts={("current-plan", "current-attempt")},
+        committed_batches={"current-attempt"},
+    ) == (proofs[1],)
+    batch_mismatch = {
+        **proofs[1],
+        "proof_status": "accepted",
+    }
+    assert matcher(
+        (batch_mismatch,),
+        committed_attempts={("current-plan", "current-attempt")},
+        committed_batches={"different-batch"},
+    ) == ()
+
+
+def test_exact_call_oracle_rejects_duplicate_native_marker_eas() -> None:
+    validator = getattr(safety_oracle, "require_distinct_native_eas", None)
+    assert callable(validator), "native-EA uniqueness validator is missing"
+
+    assert validator((0x180044A5A, 0x180044A60, 0x180044AF7), expected_count=3) == (
+        0x180044A5A,
+        0x180044A60,
+        0x180044AF7,
+    )
+    with pytest.raises(ValueError, match="distinct"):
+        validator((0x180044A5A, 0x180044A5A, 0x180044AF7), expected_count=3)

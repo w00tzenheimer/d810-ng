@@ -9,13 +9,11 @@ Pre-task commit: `9aaf11e73`
 Profile: `eidolon_v3_const_solve.json` (the config-v2 profile selected by all
 three decompilation tests)
 
-Task 1 status: `BLOCKED` for evidence completion. The preserved Docker
-stdout runs predate the stricter applied-proof assertion and were not rerun
-because the parent prohibited another long run. Their SQLite proof rows are
-readable and show the assertion would fail, but that is derived evidence
-rather than a fresh final-test transcript. The preserved A/B/C reasons also do
-not exactly match all prose expectations in the brief; the discrepancies are
-listed below.
+Task 1 status: `RED CONFIRMED` for the strict current oracle. The A/B/C Docker
+cases were rerun individually after the applied-proof assertion was tightened;
+all three fail on fresh stdout artifacts. Their first fail-closed gates and
+actual proof reasons are recorded below. The reasons do not exactly match all
+older prose expectations in the brief, so the discrepancy remains explicit.
 
 ## Scope and oracle
 
@@ -26,11 +24,13 @@ CFG BFS oracle remain the only reachability oracle. No production
 unflattening source was changed.
 
 The test now also rejects an applied dispatcher-removal batch whose own
-`UnflattenDispatcherRemovalPreflightProof` is rejected. A clean mutation
-receipt alone is insufficient when unrelated cleanup edits commit in the same
-session. This stricter assertion was added after the first v2 runs showed
-that A, B, and C could otherwise report `PASSED` while their applied
-dispatcher-removal proofs were rejected.
+`UnflattenDispatcherRemovalPreflightProof` is rejected. The proof is bound to
+the same clean committed `(plan_id, attempt_id)` pair and to the committed
+mutation batch in the selected diagnostic session; a stale applied proof in
+the session window cannot satisfy the gate. A clean mutation receipt alone is
+insufficient when unrelated cleanup edits commit in the same session. The
+target-C marker resolver also requires exactly three distinct native EAs
+before the existing exact-call BFS runs.
 
 ## Fixture export and post-link identity
 
@@ -82,10 +82,13 @@ same exact-EA reachability requirement.
 - The transaction oracle selects the newest finished diagnostic session for
   the function after the test start, joins receipts and clean transaction
   attempts by that session ID, and requires planned-equals-applied commits.
+  Removal proofs are then filtered to the same committed plan/attempt pair
+  and committed mutation batch before proof status is evaluated.
 - The exact-call oracle selects the newest `post_d810` snapshot inside that
   session window, requires entry serial 0 at the function EA, and delegates
   fail-closed successor traversal to the existing `reachable_call_eas`
-  helper. Unknown successors and missing exact marker EAs fail.
+  helper. Unknown successors, missing exact marker EAs, and duplicate native
+  marker EAs fail closed.
 
 ## Hashes
 
@@ -119,6 +122,18 @@ focused unit GREEN command was the same command and produced:
 ```text
 8 passed in 0.11s
 ```
+
+The fix-round TDD RED command was:
+
+```bash
+PYTHONPATH=src pytest -q tests/unit/test_unflattening_effect_safety_masm_fixtures.py -vv
+```
+
+It collected 10 tests and failed exactly the two new focused checks because
+the transaction-bound proof matcher and native-EA uniqueness validator were
+not yet present. The captured output is `.tmp/task1_fix_round1_unit_red.txt`.
+After the two pure oracle helpers and their system wiring were added, the
+same command produced `10 passed in 0.09s`.
 
 ## Build evidence
 
@@ -215,10 +230,11 @@ old PASS summaries. The applied proof was rejected in every target:
 | B | `untyped_lost_block` | 102 | 102 | 110 |
 | C | `corridor_enumeration_incomplete` | 3 | 2 | 8 |
 
-The stricter `_assert_dispatcher_removal_proof_accepted` oracle would fail on
-these applied rejected proofs. It was added after the preserved Docker runs;
-the stricter version was syntax-checked and covered by the focused unit gate,
-but was not rerun in Docker after the parent requested no more long runs.
+The historical effect-only Docker runs above predate the stricter
+`_assert_dispatcher_removal_proof_accepted` assertion and therefore ended in
+PASS despite these applied rejected proofs. The fix-round strict Docker runs
+below rerun the current assertion and provide the authoritative RED transcript
+for each target.
 
 The preserved evidence does not exactly match every prose expectation in the
 brief: A reports `untyped_lost_block` rather than
@@ -227,6 +243,43 @@ than a terminal-specific proof reason; and C reports
 `corridor_enumeration_incomplete` without a literal `initial_state=None`
 line. These are blockers for claiming exact live-failure parity, not reasons
 to weaken the fixture oracle or production safety gates.
+
+### Fix-round strict Docker evidence
+
+The current strict oracle was run after the proof-binding and marker-
+uniqueness changes. Each target was run in a separate canonical Docker
+invocation from `/Users/mahmoud/src/idapro/d810`; `D810_TEST_BINARY` was
+provided because `.env` defaults to `libobfuscated.dll`:
+
+```bash
+D810_TEST_BINARY=unflattening_effect_safety.dll ./tools/scripts/run_system_tests_docker.sh test -w eidolon-v2-unflattening-completeness -l -o task1_fix_round1_target_a_strict_red.txt -- tests/system/e2e/test_unflattening_effect_safety_fixtures.py::TestUnflatteningEffectSafetyDecompilation::test_target_a_after_preserves_memcpy_effect_and_commits -vv -s
+D810_TEST_BINARY=unflattening_effect_safety.dll ./tools/scripts/run_system_tests_docker.sh test -w eidolon-v2-unflattening-completeness -l -o task1_fix_round1_target_b_strict_red.txt -- tests/system/e2e/test_unflattening_effect_safety_fixtures.py::TestUnflatteningEffectSafetyDecompilation::test_target_b_after_preserves_srw_lock_effect_and_commits -vv -s
+D810_TEST_BINARY=unflattening_effect_safety.dll ./tools/scripts/run_system_tests_docker.sh test -w eidolon-v2-unflattening-completeness -l -o task1_fix_round1_target_c_strict_red.txt -- tests/system/e2e/test_unflattening_effect_safety_fixtures.py::TestUnflatteningEffectSafetyDecompilation::test_target_c_after_preserves_termination_effects_and_commits -vv -s
+```
+
+Fresh results and actual first fail-closed gates:
+
+| Target | Elapsed | Fresh result | First gate | Proof reason / lost blocks |
+| --- | ---: | --- | --- | --- |
+| A `0x180014DE0` | 195.97 s | `1 failed, 123 warnings` | applied dispatcher-removal proof rejected | `untyped_lost_block`, 152 |
+| B `0x18002CC20` | 247.08 s | `1 failed, 123 warnings` | applied dispatcher-removal proof rejected | `untyped_lost_block`, 110 |
+| C `0x1800445C0` | 9.27 s | `1 failed, 123 warnings` | applied dispatcher-removal proof rejected | `corridor_enumeration_incomplete`, 8 |
+
+The exact strict stdout artifacts are:
+
+```text
+.tmp/task1_fix_round1_target_a_strict_red.txt
+.tmp/task1_fix_round1_target_b_strict_red.txt
+.tmp/task1_fix_round1_target_c_strict_red.txt
+```
+
+The strict runs prove the newly bound oracle is live: A and B fail at the
+same-session committed proof status with stable-EA `untyped_lost_block`
+inventories, while C fails at the same-session committed proof status with
+stable-EA `corridor_enumeration_incomplete` and 2/3 post-reachable handlers.
+The earlier `authoritative_handler_lost` and literal `initial_state=None`
+wording are not emitted by these current exact fixtures; this report retains
+the actual gates rather than falsifying them.
 
 ### Stable-EA lost-block inventory
 
@@ -253,11 +306,10 @@ blk2@0x180044617, blk3@0x18004464b, blk4@0x18004464e, blk5@0x180044658, blk6@0x1
 
 ## Concerns and handoff boundary
 
-The fixture/export/profile work is packaged separately from production repair,
-but the exact RED baseline remains blocked until the strict Docker cases are
-rerun or an authorized equivalent transcript is supplied. The retained
-effect-only assertions reported PASS while the applied proof rejected 152,
-110, and 8 blocks. The C failure is
+The fixture/export/profile work is packaged separately from production repair.
+The strict RED baseline is now evidence-complete; production repair remains
+out of scope for this task. The historical effect-only assertions reported
+PASS while the applied proof rejected 152, 110, and 8 blocks. The C failure is
 `corridor_enumeration_incomplete`, not the brief's more specific
 `initial_state=None` wording; the preserved log does show interval-interior
 handler recovery and only 2 of 3 handlers post-reachable. These discrepancies
@@ -271,6 +323,10 @@ Preserved Docker evidence:
 .tmp/task1_target_a_red_cython.txt
 .tmp/task1_target_b_red.txt
 .tmp/task1_target_c_red.txt
+.tmp/task1_fix_round1_unit_red.txt
+.tmp/task1_fix_round1_target_a_strict_red.txt
+.tmp/task1_fix_round1_target_b_strict_red.txt
+.tmp/task1_fix_round1_target_c_strict_red.txt
 .tmp/logs/d810_logs/0000000180014de0_1786992548_119.diag.sqlite3
 .tmp/logs/d810_logs/000000018002cc20_1786992948_11.diag.sqlite3
 .tmp/logs/d810_logs/00000001800445c0_1786992841_11.diag.sqlite3

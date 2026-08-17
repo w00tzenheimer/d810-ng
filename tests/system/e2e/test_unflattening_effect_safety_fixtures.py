@@ -4,7 +4,7 @@ These are deliberately separate from ``DeobfuscationCase``.  Target B cannot
 be decompiled by Hex-Rays in the D810-off baseline, so the generic runner's
 before/after contract is the wrong oracle for it.  The tests below use the
 committed MASM source as the raw-call oracle and exercise the production
-D810-enabled decompile directly.  Both targets additionally inspect the
+D810-enabled decompile directly.  All three targets additionally inspect the
 diagnostic receipt emitted by the transaction boundary; a pretty pseudocode
 rendering alone is not evidence that the CFG rewrite committed.
 """
@@ -28,7 +28,9 @@ import pytest
 
 from tests.system.e2e.unflattening_effect_safety_oracle import (
     reachable_call_eas,
+    require_distinct_native_eas,
     session_scoped_rows,
+    transaction_bound_dispatcher_removal_proofs,
 )
 
 
@@ -365,13 +367,44 @@ def _assert_dispatcher_removal_proof_accepted(
             "ORDER BY f.rowid",
             (int(function_ea), int(function_ea), started_at, finished_at),
         ).fetchall()
+        attempts = conn.execute(
+            "SELECT plan_id,attempt_id,current_phase,mutation_started,poisoned,"
+            "session_id FROM cfg_transaction_attempts WHERE func_ea_i64=? "
+            "AND session_id=?",
+            (int(function_ea), str(session_id)),
+        ).fetchall()
+        receipts = conn.execute(
+            "SELECT r.mutation_batch_id,r.outcome,e.session_id "
+            "FROM mutation_receipts r JOIN lifecycle_events e "
+            "ON e.event_id=r.event_id WHERE e.func_ea_i64=? "
+            "AND e.session_id=?",
+            (int(function_ea), str(session_id)),
+        ).fetchall()
     proofs = [json.loads(str(raw_payload)) for _kind, raw_payload in rows]
-    applied = [
-        payload for payload in proofs if payload.get("application_status") == "applied"
-    ]
+    attempts = session_scoped_rows(attempts, session_id)
+    receipts = session_scoped_rows(receipts, session_id)
+    committed_attempts = {
+        (str(plan_id), str(attempt_id))
+        for plan_id, attempt_id, phase, started, poisoned, _session_id in attempts
+        if str(phase) == "committed"
+        and int(started) == 1
+        and int(poisoned) == 0
+    }
+    committed_batches = {
+        str(batch_id)
+        for batch_id, outcome, _session_id in receipts
+        if str(outcome) == "committed"
+    }
+    applied = transaction_bound_dispatcher_removal_proofs(
+        proofs,
+        committed_attempts=committed_attempts,
+        committed_batches=committed_batches,
+    )
     assert applied, (
-        f"applied dispatcher-removal proof missing for 0x{function_ea:x}; "
-        f"session={session_id} proofs={proofs!r}"
+        f"transaction-bound applied dispatcher-removal proof missing for "
+        f"0x{function_ea:x}; session={session_id} "
+        f"committed_attempts={committed_attempts!r} "
+        f"committed_batches={committed_batches!r} proofs={proofs!r}"
     )
     rejected = [
         {
@@ -439,6 +472,7 @@ def _assert_exact_call_reachable(
     call_eas: tuple[int, ...],
 ) -> None:
     """Prove each source-bound call EA is in the latest post-D810 CFG."""
+    call_eas = require_distinct_native_eas(call_eas)
     assert call_eas, "exact-call oracle requires at least one bound call EA"
     with sqlite3.connect(path) as conn:
         started_at, finished_at = _session_window(
@@ -744,17 +778,20 @@ class TestUnflatteningEffectSafetyDecompilation:
         _enable_exact_diagnostics(request)
         source = _fixture_or_skip("sub_7FF855576B50")
         function_ea = _resolve_fixture_ea("sub_7FF855576B50")
-        exact_call_eas = tuple(
-            call_ea
-            for marker_name in (
-                "d810_callsite_sub_7FF855576B50_message_box",
-                "d810_callsite_sub_7FF855576B50_get_current_process",
-                "d810_callsite_sub_7FF855576B50_terminate_process",
-            )
-            for call_ea in _loaded_call_eas(
-                function_ea,
-                marker_name=marker_name,
-            )
+        exact_call_eas = require_distinct_native_eas(
+            (
+                call_ea
+                for marker_name in (
+                    "d810_callsite_sub_7FF855576B50_message_box",
+                    "d810_callsite_sub_7FF855576B50_get_current_process",
+                    "d810_callsite_sub_7FF855576B50_terminate_process",
+                )
+                for call_ea in _loaded_call_eas(
+                    function_ea,
+                    marker_name=marker_name,
+                )
+            ),
+            expected_count=3,
         )
         assert "EXTERN MessageBoxA:PROC" in source
         assert "EXTERN GetCurrentProcess:PROC" in source
