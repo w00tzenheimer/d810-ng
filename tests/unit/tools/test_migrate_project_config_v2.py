@@ -1141,3 +1141,249 @@ def test_cli_directory_child_swap_before_open_is_rejected(
     assert "attacker.json" not in captured.err
     assert child.is_symlink()
     assert original.exists()
+
+
+def test_cli_output_verifies_normal_link_identity_and_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source = _write_legacy(tmp_path / "project.json")
+    destination = tmp_path / "migrated.json"
+    migrated = migration_cli._migrate_path(source)
+    expected_bytes = migration_cli._canonical_json(migrated).encode("utf-8")
+    real_link = migration_cli.os.link
+    link_identities: list[tuple[int, int]] = []
+
+    def record_link(staged: Path, target: Path, **kwargs: object) -> None:
+        real_link(staged, target, **kwargs)
+        link_identities.append((staged.stat().st_ino, target.stat().st_ino))
+
+    monkeypatch.setattr(migration_cli.os, "link", record_link)
+
+    status = migration_cli.main([str(source), "--output", str(destination)])
+    captured = capsys.readouterr()
+
+    assert status == 0
+    assert captured.err == ""
+    assert link_identities and link_identities[0][0] == link_identities[0][1]
+    assert destination.read_bytes() == expected_bytes
+    assert not list(tmp_path.glob(f".{destination.name}.*.tmp"))
+
+
+@pytest.mark.parametrize(
+    "tamper_kind",
+    (
+        "invalid",
+        "same_size_valid",
+    ),
+)
+def test_cli_output_rejects_replaced_staged_bytes_after_link(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tamper_kind: str,
+) -> None:
+    source = _write_legacy(tmp_path / "project.json")
+    destination = tmp_path / "migrated.json"
+    migrated = migration_cli._migrate_path(source)
+    canonical_bytes = migration_cli._canonical_json(migrated).encode("utf-8")
+    if tamper_kind == "invalid":
+        tampered_bytes = b"tampered, not json\n"
+    else:
+        tampered_bytes = canonical_bytes.replace(
+            b"legacy fixture", b"legacy payload"
+        )
+        assert len(tampered_bytes) == len(canonical_bytes)
+        assert tampered_bytes != canonical_bytes
+    real_link = migration_cli.os.link
+
+    def replace_staged_then_link(
+        staged: Path, target: Path, **kwargs: object
+    ) -> None:
+        staged.unlink()
+        staged.write_bytes(tampered_bytes)
+        real_link(staged, target, **kwargs)
+
+    monkeypatch.setattr(migration_cli.os, "link", replace_staged_then_link)
+
+    status = migration_cli.main([str(source), "--output", str(destination)])
+    captured = capsys.readouterr()
+
+    assert status == 1
+    assert "destination committed but integrity verification failed" in captured.err
+    assert "staged path retained" in captured.err
+    assert "Traceback" not in captured.err
+    assert destination.read_bytes() == tampered_bytes
+    assert len(list(tmp_path.glob(f".{destination.name}.*.tmp"))) == 1
+
+
+def test_cli_single_file_open_verification_close_failure_is_controlled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source = _write_legacy(tmp_path / "project.json")
+    real_close = migration_cli.os.close
+    bad_descriptor: int | None = None
+
+    def fail_fstat(descriptor: int) -> os.stat_result:
+        nonlocal bad_descriptor
+        bad_descriptor = descriptor
+        raise OSError("injected input fstat failure")
+
+    def fail_close(descriptor: int) -> None:
+        if descriptor == bad_descriptor:
+            raise OSError("injected input close failure")
+        real_close(descriptor)
+
+    monkeypatch.setattr(migration_cli.os, "fstat", fail_fstat)
+    monkeypatch.setattr(migration_cli.os, "close", fail_close)
+
+    status = migration_cli.main([str(source)])
+    captured = capsys.readouterr()
+
+    assert status == 1
+    assert "could not verify input" in captured.err
+    assert "descriptor close failed" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_cli_child_open_verification_close_failure_is_controlled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    directory = tmp_path / "projects"
+    directory.mkdir()
+    _write_legacy(directory / "project.json")
+    real_fstat = migration_cli.os.fstat
+    real_close = migration_cli.os.close
+    calls = 0
+    bad_descriptor: int | None = None
+
+    def fail_child_fstat(descriptor: int) -> os.stat_result:
+        nonlocal calls, bad_descriptor
+        calls += 1
+        if calls == 3:
+            bad_descriptor = descriptor
+            raise OSError("injected child fstat failure")
+        return real_fstat(descriptor)
+
+    def fail_close(descriptor: int) -> None:
+        if descriptor == bad_descriptor:
+            raise OSError("injected child close failure")
+        real_close(descriptor)
+
+    monkeypatch.setattr(migration_cli.os, "fstat", fail_child_fstat)
+    monkeypatch.setattr(migration_cli.os, "close", fail_close)
+
+    status = migration_cli.main([str(directory), "--check"])
+    captured = capsys.readouterr()
+
+    assert status == 1
+    assert "could not verify during directory check" in captured.err
+    assert "descriptor close failed" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_cli_expected_stat_close_failure_is_controlled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source = _write_legacy(tmp_path / "project.json")
+    real_fstat = migration_cli.os.fstat
+    real_close = migration_cli.os.close
+    calls = 0
+    bad_descriptor: int | None = None
+
+    def fail_expected_fstat(descriptor: int) -> os.stat_result:
+        nonlocal calls, bad_descriptor
+        calls += 1
+        if calls == 2:
+            bad_descriptor = descriptor
+            raise OSError("injected expected-stat fstat failure")
+        return real_fstat(descriptor)
+
+    def fail_close(descriptor: int) -> None:
+        if descriptor == bad_descriptor:
+            raise OSError("injected expected-stat close failure")
+        real_close(descriptor)
+
+    monkeypatch.setattr(migration_cli.os, "fstat", fail_expected_fstat)
+    monkeypatch.setattr(migration_cli.os, "close", fail_close)
+
+    status = migration_cli.main([str(source)])
+    captured = capsys.readouterr()
+
+    assert status == 1
+    assert "could not verify input" in captured.err
+    assert "descriptor close failed" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_cli_directory_verification_close_failure_is_controlled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    directory = tmp_path / "projects"
+    directory.mkdir()
+    real_close = migration_cli.os.close
+    bad_descriptor: int | None = None
+
+    def fail_directory_fstat(descriptor: int) -> os.stat_result:
+        nonlocal bad_descriptor
+        bad_descriptor = descriptor
+        raise OSError("injected directory fstat failure")
+
+    def fail_close(descriptor: int) -> None:
+        if descriptor == bad_descriptor:
+            raise OSError("injected directory close failure")
+        real_close(descriptor)
+
+    monkeypatch.setattr(migration_cli.os, "fstat", fail_directory_fstat)
+    monkeypatch.setattr(migration_cli.os, "close", fail_close)
+
+    status = migration_cli.main([str(directory), "--check"])
+    captured = capsys.readouterr()
+
+    assert status == 1
+    assert "could not inspect directory" in captured.err
+    assert "descriptor close failed" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_cli_final_directory_close_failure_is_not_clean(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    directory = tmp_path / "projects"
+    directory.mkdir()
+    real_open = migration_cli._open_directory_handle
+    real_close = migration_cli.os.close
+    directory_descriptor: int | None = None
+
+    def capture_directory_descriptor(path: Path) -> int:
+        nonlocal directory_descriptor
+        directory_descriptor = real_open(path)
+        return directory_descriptor
+
+    def fail_final_close(descriptor: int) -> None:
+        if descriptor == directory_descriptor:
+            raise OSError("injected final directory close failure")
+        real_close(descriptor)
+
+    monkeypatch.setattr(
+        migration_cli, "_open_directory_handle", capture_directory_descriptor
+    )
+    monkeypatch.setattr(migration_cli.os, "close", fail_final_close)
+
+    status = migration_cli.main([str(directory), "--check"])
+    captured = capsys.readouterr()
+
+    assert status == 1
+    assert "descriptor close failed" in captured.err
+    assert "Traceback" not in captured.err
