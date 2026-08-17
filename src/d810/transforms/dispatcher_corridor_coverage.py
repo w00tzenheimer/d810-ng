@@ -612,6 +612,45 @@ def _upstream_corridor_paths(
         if path not in paths:
             paths.append(path)
 
+    def is_dispatcher_self_reentry_input(
+        *,
+        predecessor: int,
+        merge_input: int,
+        suffix: tuple[int, ...],
+        seen: frozenset[int],
+    ) -> bool:
+        """Accept only the feeder repeated by its exact dispatcher cycle.
+
+        A reverse walk can encounter a node already in ``seen`` when a
+        dispatcher routes through a shared merge and feeder back to itself.
+        That one bounded shape is safe to enumerate as a corridor; arbitrary
+        repeated merge/body nodes remain incomplete.  Keep the proof tied to
+        the current suffix and exact one-successor cycle so a repeated node
+        cannot be admitted merely because it happens to be reachable.
+        """
+        if predecessor != int(dispatcher_serial) or len(suffix) < 3:
+            return False
+        if int(suffix[-1]) != int(dispatcher_serial):
+            return False
+        merge_serial = int(suffix[0])
+        feeder_serial = int(suffix[-2])
+        if merge_serial in {int(dispatcher_serial), feeder_serial}:
+            return False
+        if merge_input != feeder_serial or feeder_serial not in seen:
+            return False
+        if successors.get(int(dispatcher_serial), ()) != (merge_serial,):
+            return False
+        if successors.get(feeder_serial, ()) != (int(dispatcher_serial),):
+            return False
+        if feeder_serial in {int(serial) for serial in suffix[:-2]}:
+            return False
+        if any(
+            int(target) not in successors.get(int(source), ())
+            for source, target in zip(suffix, suffix[1:])
+        ):
+            return False
+        return int(dispatcher_serial) in predecessors.get(merge_serial, ())
+
     def append_split_predecessor(
         predecessor: int,
         suffix: tuple[int, ...],
@@ -633,7 +672,12 @@ def _upstream_corridor_paths(
             for merge_input in incoming_to_predecessor:
                 merge_input = int(merge_input)
                 if merge_input in seen:
-                    if merge_input == int(dispatcher_serial):
+                    if merge_input == int(dispatcher_serial) or is_dispatcher_self_reentry_input(
+                        predecessor=int(predecessor),
+                        merge_input=merge_input,
+                        suffix=suffix,
+                        seen=seen,
+                    ):
                         append((merge_input, int(predecessor), *suffix))
                     else:
                         complete = False

@@ -627,6 +627,114 @@ def _nested_merge_corridor_graph() -> FlowGraph:
     )
 
 
+def _dispatcher_self_reentry_corridor_graph(
+    *,
+    reverse_cycle: bool = False,
+    merge_reverse_cycle: bool = False,
+) -> FlowGraph:
+    """Small C-shaped dispatcher graph with optional unrelated reverse cycles."""
+    if merge_reverse_cycle:
+        return FlowGraph(
+            blocks={
+                0: _block(0, (1, 8), (), 0x1000),
+                1: _block(1, (3,), (0,), 0x1010),
+                8: _block(8, (4,), (0,), 0x1080),
+                3: _block(3, (4,), (1, 2, 4), 0x1030),
+                4: _block(4, (5, 10, 3), (8, 3), 0x1040),
+                5: _block(5, (6,), (4,), 0x1050),
+                6: _block(6, (2,), (5,), 0x1060),
+                2: _block(2, (3,), (6,), 0x1020),
+                10: _block(10, (), (4,), 0x10A0, kind=BlockKind.STOP),
+                9: _block(9, (), (), 0x1090, kind=BlockKind.STOP),
+            },
+            entry_serial=0,
+            func_ea=0x1000,
+        )
+    blocks = {
+        0: _block(0, (1, 8), (), 0x1000),
+        1: _block(1, (3,), (0,), 0x1010),
+        8: _block(8, (0 if reverse_cycle else 4,), (0,), 0x1080),
+        3: _block(3, (4,), (1, 2), 0x1030),
+        4: _block(4, (5, 10), (8, 3), 0x1040),
+        5: _block(5, (6,), (4,), 0x1050),
+        6: _block(6, (2,), (5,), 0x1060),
+        2: _block(2, (3,), (6,), 0x1020),
+        10: _block(10, (), (4,), 0x10A0, kind=BlockKind.STOP),
+        9: _block(9, (), (), 0x1090, kind=BlockKind.STOP),
+    }
+    if reverse_cycle:
+        blocks[0] = _block(0, (1, 8), (8,), 0x1000)
+        blocks[8] = _block(8, (0,), (0,), 0x1080)
+    return FlowGraph(blocks=blocks, entry_serial=0, func_ea=0x1000)
+
+
+def test_dispatcher_self_reentry_corridor_is_enumerated_completely() -> None:
+    graph = _dispatcher_self_reentry_corridor_graph()
+    report = analyze_dispatcher_corridor_coverage(
+        graph,
+        modifications=(
+            RedirectGoto(from_serial=1, old_target=3, new_target=9),
+            RedirectGoto(from_serial=2, old_target=3, new_target=9),
+        ),
+        dispatcher_entry_serial=3,
+    )
+
+    assert report.enumeration_complete
+    assert not report.residual_corridors
+
+
+def test_unrelated_reverse_cycle_keeps_corridor_enumeration_incomplete() -> None:
+    graph = _dispatcher_self_reentry_corridor_graph(reverse_cycle=True)
+    report = analyze_dispatcher_corridor_coverage(
+        graph,
+        modifications=(
+            RedirectGoto(from_serial=1, old_target=3, new_target=9),
+            RedirectGoto(from_serial=2, old_target=3, new_target=9),
+        ),
+        dispatcher_entry_serial=3,
+    )
+
+    assert not report.enumeration_complete
+
+
+def test_repeated_merge_node_keeps_corridor_enumeration_incomplete() -> None:
+    graph = _dispatcher_self_reentry_corridor_graph(merge_reverse_cycle=True)
+    report = analyze_dispatcher_corridor_coverage(
+        graph,
+        modifications=(
+            RedirectGoto(from_serial=1, old_target=3, new_target=9),
+            RedirectGoto(from_serial=2, old_target=3, new_target=9),
+        ),
+        dispatcher_entry_serial=3,
+    )
+
+    assert not report.enumeration_complete
+
+
+@pytest.mark.parametrize(
+    ("cap_name", "cap_value"),
+    (("_MAX_CORRIDOR_DEPTH", 2), ("_MAX_CORRIDORS", 1)),
+)
+def test_dispatcher_self_reentry_respects_corridor_caps(
+    monkeypatch,
+    cap_name: str,
+    cap_value: int,
+) -> None:
+    monkeypatch.setattr(corridor_module, cap_name, cap_value)
+    graph = _dispatcher_self_reentry_corridor_graph()
+    report = analyze_dispatcher_corridor_coverage(
+        graph,
+        modifications=(
+            RedirectGoto(from_serial=1, old_target=3, new_target=9),
+            RedirectGoto(from_serial=2, old_target=3, new_target=9),
+        ),
+        dispatcher_entry_serial=3,
+    )
+
+    assert not report.enumeration_complete
+    assert not report.residual_corridors
+
+
 def _executed_fragment_safety() -> dict[str, bool]:
     """The only producer evidence eligible for the narrow retirement proof."""
     return {
