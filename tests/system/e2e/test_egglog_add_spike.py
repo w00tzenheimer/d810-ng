@@ -57,8 +57,11 @@ _ADD_CASE = DeobfuscationCase(
         "*a4 = a2 + a1",
         "a4[1] = a2 + a1",
         "a4[2] = a2 + a1 - 1",
-        "a4[3] = a1 + 0x55555555",
         "a4[4] = a1",
+    ],
+    deobfuscated_regexes=[
+        r"(?m)^[ \t]*a4\[3\][ \t]*=[ \t]*a1[ \t]*\+[ \t]*"
+        r"(?:0x55555555|1431655765)[ \t]*;?[ \t]*$",
     ],
     must_change=True,
     operator_complexity_mode="decrease",
