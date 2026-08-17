@@ -349,6 +349,31 @@ def _condition_chain_region_serials(
     return frozenset(serials)
 
 
+def _current_snapshot_dispatcher_region_serials(
+    *,
+    range_evidence: ConditionChainAnalysisResult | None,
+    dispatcher_entry_serial: int,
+    coarse_target: int | None = None,
+) -> frozenset[int]:
+    """Build current router topology from range/DAG evidence only.
+
+    State-dispatcher maps can retain serials from another maturity.  The live
+    range/DAG producer owns the current comparison nodes; a proven coarse
+    target is added as the router anchor, but interval leaves are never copied
+    from the stale map into this set.
+    """
+    serials = {int(dispatcher_entry_serial)}
+    serials.update(_condition_chain_region_serials(range_evidence))
+    dag_root = _maybe_int(
+        getattr(getattr(range_evidence, "decision_dag", None), "root", None)
+    )
+    if dag_root is not None:
+        serials.add(dag_root)
+    if coarse_target is not None:
+        serials.add(int(coarse_target))
+    return frozenset(serials)
+
+
 def _native_ea_block_serial(
     flow_graph: object,
     native_ea: int,
@@ -1491,6 +1516,12 @@ def collect_predecessor_dispatcher_target_facts(
     dispatcher_topology = set(_dispatcher_topology_serials(state_dispatcher_map))
     dispatcher_topology.add(int(dispatcher_entry_serial))
     dispatcher_topology.update(_condition_chain_region_serials(range_evidence))
+    current_dispatcher_topology = set(
+        _current_snapshot_dispatcher_region_serials(
+            range_evidence=range_evidence,
+            dispatcher_entry_serial=int(dispatcher_entry_serial),
+        )
+    )
     retained_interval_route_facts = (
         tuple(retained_interval_routes)
         if retained_interval_routes is not None
@@ -1539,6 +1570,7 @@ def collect_predecessor_dispatcher_target_facts(
         target_candidate_identity = _transition_identity(row)
         current_snapshot_target: int | None = None
         allow_handler_map_fallback_after_incomplete_route = False
+        current_topology = set(current_dispatcher_topology)
         if resolution_reason == "target_is_dispatcher_block":
             if (
                 supported_identity is None
@@ -1554,19 +1586,22 @@ def collect_predecessor_dispatcher_target_facts(
                 # A typed fact must not turn a prior register carrier into the
                 # current stack carrier.  The only bridge is a path-local
                 # current-snapshot proof anchored by this native source EA.
-                current_topology = set(dispatcher_topology)
-                current_topology.update(
-                    _condition_chain_region_serials(range_evidence)
-                )
                 coarse_target = _coarse_dispatcher_target_for_state(
                     state_const=source_state,
                     state_dispatcher_map=state_dispatcher_map,
                     range_evidence=range_evidence,
-                    dispatcher_topology_serials=frozenset(current_topology),
+                    dispatcher_topology_serials=frozenset(dispatcher_topology),
                 )
                 if coarse_target is None:
                     blocked_resolution_keys.add(resolution_key)
                     continue
+                current_topology = set(
+                    _current_snapshot_dispatcher_region_serials(
+                        range_evidence=range_evidence,
+                        dispatcher_entry_serial=int(dispatcher_entry_serial),
+                        coarse_target=coarse_target,
+                    )
+                )
                 current_snapshot_target = _current_snapshot_entry_route_proof(
                     flow_graph=flow_graph,
                     source_instruction_ea=_maybe_int(
@@ -1643,7 +1678,7 @@ def collect_predecessor_dispatcher_target_facts(
                     allow_handler_map_fallback_after_incomplete_route
                 ),
                 retained_interval_routes=retained_interval_route_facts,
-                current_dispatcher_region_serials=frozenset(dispatcher_topology),
+                current_dispatcher_region_serials=frozenset(current_topology),
             )
         except (TypeError, ValueError):
             blocked_resolution_keys.add(resolution_key)

@@ -1272,6 +1272,71 @@ def test_incomplete_replay_uses_retained_non_topology_interval_target() -> None:
     assert fact.resolver_kind == CONDITION_CHAIN_INTERVAL_ROUTE_FACT_TYPE
 
 
+def test_collector_uses_coherent_current_dag_topology_for_retained_target() -> None:
+    graph, dispatch_map, range_evidence, observations = (
+        _current_coarse_dispatcher_fixture()
+    )
+    # A stale map may classify the producer's retained leaf as dispatcher
+    # topology.  The current range/DAG route has coarse dispatcher target 8
+    # and comparison node 4; target 9 remains a non-topology handler.
+    dispatch_map = replace(
+        dispatch_map,
+        dispatcher_blocks=frozenset((*dispatch_map.dispatcher_blocks, 9)),
+    )
+    retained = project_condition_chain_interval_route_observations(observations)
+    support, candidate = _path_local_identity_resolutions()
+
+    facts = collect_predecessor_dispatcher_target_facts(
+        transition_result=None,
+        dispatcher_entry_serial=3,
+        state_dispatcher_map=dispatch_map,
+        range_evidence=range_evidence,
+        transition_resolutions=(support, candidate),
+        flow_graph=graph,
+        state_var_stkoff=52,
+        retained_interval_routes=retained,
+    )
+
+    entry_facts = [
+        fact for fact in facts if fact.source_instruction_ea == _NATIVE_ENTRY_EA
+    ]
+    assert len(entry_facts) == 1
+    assert entry_facts[0].target_block_serial == 9
+    assert entry_facts[0].target_native_ea == 0x180030009
+
+
+def test_collector_rejects_retained_target_in_current_dag_topology() -> None:
+    graph, dispatch_map, range_evidence, observations = (
+        _current_coarse_dispatcher_fixture()
+    )
+    current_dag = DecisionDag(
+        32,
+        {
+            4: RouteComparison(4, "jz", _NATIVE_ENTRY_STATE, 8, 30),
+            9: RouteComparison(9, "jz", 0, 8, 8),
+        },
+        root=4,
+    )
+    range_evidence = replace(range_evidence, decision_dag=current_dag)
+    retained = project_condition_chain_interval_route_observations(observations)
+    support, candidate = _path_local_identity_resolutions()
+
+    facts = collect_predecessor_dispatcher_target_facts(
+        transition_result=None,
+        dispatcher_entry_serial=3,
+        state_dispatcher_map=dispatch_map,
+        range_evidence=range_evidence,
+        transition_resolutions=(support, candidate),
+        flow_graph=graph,
+        state_var_stkoff=52,
+        retained_interval_routes=retained,
+    )
+
+    assert [
+        fact for fact in facts if fact.source_instruction_ea == _NATIVE_ENTRY_EA
+    ] == []
+
+
 def test_incomplete_replay_rejects_retained_target_that_is_current_topology() -> None:
     graph, dispatch_map, range_evidence, observations = (
         _current_coarse_dispatcher_fixture()
