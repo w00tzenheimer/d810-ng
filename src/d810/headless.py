@@ -141,6 +141,35 @@ def prepare_native_preanalysis(function_ea: int) -> int:
     return int(_state.manager.prepare_native_preanalysis(int(function_ea)))
 
 
+def prepare_idb_for_hexrays(function_ea: int):
+    """Apply configured reversible IDB preparation without decompiling."""
+
+    if not _configured or _state is None:
+        raise RuntimeError(
+            "d810 headless API is not configured. Call configure() first."
+        )
+    from d810.manager.pre_hexrays_preparation import PreparationMode
+
+    return _state.manager.prepare_idb_for_hexrays(
+        int(function_ea),
+        PreparationMode.PREPARE_ONLY,
+    )
+
+
+def restore_idb_preparation(transaction_id: str):
+    """Restore one preparation transaction by its durable identifier."""
+
+    if not _configured or _state is None:
+        raise RuntimeError(
+            "d810 headless API is not configured. Call configure() first."
+        )
+    from d810.capabilities.idb_preparation import PreparationTransactionId
+
+    return _state.manager.restore_idb_preparation(
+        PreparationTransactionId(str(transaction_id))
+    )
+
+
 def decompile(function_ea: int, *, failure: typing.Any | None = None) -> typing.Any:
     """Decompile through the manager-owned bounded PREOPT restart controller.
 
@@ -200,7 +229,9 @@ def status() -> dict[str, typing.Any]:
 __all__ = [
     "configure",
     "decompile",
+    "prepare_idb_for_hexrays",
     "prepare_native_preanalysis",
+    "restore_idb_preparation",
     "start",
     "status",
     "stop",

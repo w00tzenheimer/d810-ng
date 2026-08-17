@@ -623,6 +623,23 @@ class SQLitePreparationJournal:
         ).fetchall()
         return tuple(self._record_from_row(row) for row in rows)
 
+    def prepared(
+        self, database_identity: str
+    ) -> tuple[PreparationTransactionRecord, ...]:
+        """Return applied transactions eligible for exact-key reuse."""
+
+        if not isinstance(database_identity, str) or not database_identity.strip():
+            raise ValueError("database_identity must be a non-empty string")
+        rows = self._conn.execute(
+            """
+            SELECT * FROM preparation_transactions
+            WHERE database_identity = ? AND state = ?
+            ORDER BY created_at, transaction_id
+            """,
+            (database_identity, PreparationState.IDB_PREPARED.value),
+        ).fetchall()
+        return tuple(self._record_from_row(row) for row in rows)
+
     def active_byte_ranges(self, database_identity: str) -> tuple[tuple[int, int], ...]:
         terminal_placeholders = ", ".join("?" for _ in _TERMINAL_STATES)
         rows = self._conn.execute(

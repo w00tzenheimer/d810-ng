@@ -457,6 +457,15 @@ class SQLiteNativePatchJournal:
         ).fetchall()
         return [(row["start_ea"], row["end_ea"]) for row in rows]
 
+    def active_operation_ranges(
+        self, *, database_identity: str
+    ) -> tuple[tuple[int, int], ...]:
+        """Expose current byte ownership to peer mutation gateways."""
+
+        if not isinstance(database_identity, str) or not database_identity.strip():
+            raise ValueError("database_identity must be a non-empty string")
+        return tuple(self._active_operation_ranges(database_identity))
+
     def _active_metadata_scopes(self, database_identity: str) -> set[tuple[str, int]]:
         rows = self._conn.execute(
             """

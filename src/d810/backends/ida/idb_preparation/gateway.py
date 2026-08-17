@@ -558,6 +558,27 @@ class IdbPreparationGateway:
         self._journal.transition(transaction_id, PreparationState.RESTORING)
         return self._restore_in_current_lane(transaction_id)
 
+    def transaction_matches_after_image(
+        self,
+        transaction_id: PreparationTransactionId,
+    ) -> bool:
+        """Validate a reusable receipt against the current IDB without writes."""
+
+        record = self._journal.get(transaction_id)
+        if (
+            record is None
+            or record.database_identity != self._current_database_identity
+            or record.state is not PreparationState.IDB_PREPARED
+        ):
+            return False
+        return all(
+            position is PreparationBytePosition.AFTER
+            for position in self._positions(transaction_id).values()
+        ) and all(
+            position is PreparationBytePosition.AFTER
+            for position in self._type_positions(transaction_id).values()
+        )
+
     def _restore_in_current_lane(
         self,
         transaction_id: PreparationTransactionId,

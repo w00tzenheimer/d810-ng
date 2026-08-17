@@ -236,6 +236,24 @@ def test_script_exception_before_writes_is_terminal_failed(tmp_path: Path) -> No
         journal.close()
 
 
+def test_reusable_transaction_requires_exact_live_after_image(tmp_path: Path) -> None:
+    writer = _Writer({0x401000: 0x75})
+    gateway, journal, _ = _gateway(
+        tmp_path,
+        writer=writer,
+        action=lambda context: context.patch_bytes(0x401000, b"\xeb"),
+    )
+    try:
+        receipt = gateway.run(_request())
+        assert receipt.ok
+        assert gateway.transaction_matches_after_image(receipt.transaction_id)
+
+        writer.patches[0x401000] = 0x90
+        assert not gateway.transaction_matches_after_image(receipt.transaction_id)
+    finally:
+        journal.close()
+
+
 def test_script_exception_after_write_is_compensated(tmp_path: Path) -> None:
     writer = _Writer({0x401000: 0x75})
 

@@ -719,6 +719,18 @@ class D810Manager:
         init=False,
         repr=False,
     )
+    _preparation_scripts: tuple[typing.Any, ...] = dataclasses.field(
+        default=(), init=False, repr=False
+    )
+    _idb_preparation_journal: typing.Any = dataclasses.field(
+        default=None, init=False, repr=False
+    )
+    _idb_preparation_gateway: typing.Any = dataclasses.field(
+        default=None, init=False, repr=False
+    )
+    pre_hex_preparation: typing.Any = dataclasses.field(
+        default=None, init=False, repr=False
+    )
     _dead_edge_normalizer: typing.Any = dataclasses.field(
         default=None,
         init=False,
@@ -948,6 +960,31 @@ class D810Manager:
             )
             return 0
 
+    def prepare_idb_for_hexrays(self, function_ea: int, mode=None):
+        """Apply the exact preparation key before native analysis or Hex-Rays."""
+
+        from d810.manager.pre_hexrays_preparation import (
+            PreparationBatchReceipt,
+            PreparationMode,
+        )
+
+        selected_mode = PreparationMode.AUTOMATIC if mode is None else mode
+        controller = getattr(self, "pre_hex_preparation", None)
+        if controller is None:
+            return PreparationBatchReceipt(
+                function_ea=int(function_ea),
+                mode=selected_mode,
+            )
+        return controller.prepare(int(function_ea), selected_mode)
+
+    def restore_idb_preparation(self, transaction_id):
+        """Restore one preparation transaction through the destructive gateway."""
+
+        gateway = getattr(self, "_idb_preparation_gateway", None)
+        if gateway is None:
+            raise RuntimeError("IDB preparation gateway is unavailable")
+        return gateway.restore(transaction_id)
+
     def decompile_with_native_preanalysis(
         self,
         function_ea: int,
@@ -981,6 +1018,13 @@ class D810Manager:
         )
 
         lifecycle = self.decompilation_lifecycle
+
+        preparation = self.prepare_idb_for_hexrays(function_ea)
+        if not preparation.ok:
+            raise RuntimeError(
+                preparation.failure_reason
+                or f"IDB preparation failed for 0x{function_ea:X}"
+            )
 
         def pending_restart() -> GeneratedRestartReceipt | None:
             pending = getattr(lifecycle, "pending_generated_restart", None)
@@ -2084,6 +2128,7 @@ class D810Manager:
             execution_journal=self._native_patch_execution_journal,
         )
         self._install_native_writer_migration()
+        self._install_pre_hexrays_preparation()
 
         # The lifecycle coordinator owns top-level reset, capture, analysis,
         # and rule-scope delivery.  Adapters retain only the narrow fact-view
@@ -2182,6 +2227,116 @@ class D810Manager:
         return ExecutionJournalStore(
             self.log_dir / "native_patch_execution.sqlite",
             callback_detail=get_settings().execution_callback_detail,
+        )
+
+    def _install_pre_hexrays_preparation(self) -> None:
+        """Compose and recover the IDB-only preparation lane before hooks."""
+
+        import hashlib
+
+        from d810.backends.hexrays.global_const_annotation import (
+            acknowledge_global_const_proposals,
+            pending_global_const_proposals,
+        )
+        from d810.backends.hexrays.input_identity_attestation import (
+            NetnodeLocalDatabaseIdentityStore,
+        )
+        from d810.backends.hexrays.native_patch_lifecycle import (
+            IdaCallerDiscovery,
+            IdaCfuncCacheInvalidator,
+            IdaControlledRedoDecompiler,
+        )
+        from d810.backends.ida.idb_preparation.gateway import (
+            IdaPreparationByteWriter,
+            IdbPreparationGateway,
+        )
+        from d810.backends.ida.idb_preparation.journal import (
+            SQLitePreparationJournal,
+        )
+        from d810.backends.ida.idb_preparation.patch_ledger import IdaPatchLedger
+        from d810.backends.ida.idb_preparation.script_runner import (
+            TrustedPreparationScriptRunner,
+        )
+        from d810.backends.ida.idb_preparation.type_metadata import IdaTypeMetadata
+        from d810.backends.ida.native_patch.reanalysis import IdaFunctionReanalyzer
+        from d810.capabilities.idb_preparation import PreparationScriptDescriptor
+        from d810.manager.pre_hexrays_preparation import PreHexPreparationController
+
+        try:
+            database_identity = NetnodeLocalDatabaseIdentityStore().load_or_create()
+        except Exception:
+            logger.exception(
+                "pre-Hex-Rays preparation unavailable: durable IDB identity failed"
+            )
+            self.pre_hex_preparation = None
+            return
+
+        previous = self._idb_preparation_journal
+        if previous is not None:
+            previous.close()
+        journal = SQLitePreparationJournal(
+            self.log_dir / "idb_preparation_journal.sqlite"
+        )
+
+        def _native_ranges(identity: str) -> tuple[tuple[int, int], ...]:
+            native_journal = self._native_patch_journal
+            if native_journal is None:
+                return ()
+            return native_journal.active_operation_ranges(database_identity=identity)
+
+        def _function_owner(ea: int) -> int | None:
+            import ida_funcs
+
+            function = ida_funcs.get_func(int(ea))
+            return None if function is None else int(function.start_ea)
+
+        gateway = IdbPreparationGateway(
+            journal=journal,
+            patch_ledger=IdaPatchLedger(),
+            script_runner=TrustedPreparationScriptRunner(),
+            byte_writer=IdaPreparationByteWriter(),
+            current_database_identity=database_identity,
+            native_active_ranges=_native_ranges,
+            function_owner=_function_owner,
+            reanalyzer=IdaFunctionReanalyzer(),
+            cache_invalidator=IdaCfuncCacheInvalidator(),
+            caller_discovery=IdaCallerDiscovery(),
+            redo_decompiler=IdaControlledRedoDecompiler(),
+            type_metadata=IdaTypeMetadata(),
+        )
+        self._idb_preparation_journal = journal
+        self._idb_preparation_gateway = gateway
+        recovery = gateway.recover_startup()
+        for receipt in recovery:
+            if not receipt.ok:
+                logger.warning(
+                    "pre-Hex-Rays preparation recovery incomplete for %s: %s",
+                    receipt.transaction_id.value,
+                    receipt.failure_reason,
+                )
+
+        type_step_path = (
+            pathlib.Path(__file__).parents[1]
+            / "backends/ida/idb_preparation/type_proposal_step.py"
+        ).resolve()
+        type_step_hash = hashlib.sha256(type_step_path.read_bytes()).hexdigest()
+        type_step = PreparationScriptDescriptor(
+            script_id="d810-global-const-types",
+            display_name="D810 global const type proposals",
+            path=str(type_step_path),
+            source_sha256=type_step_hash,
+            enabled=True,
+            portable=True,
+        )
+        self.pre_hex_preparation = PreHexPreparationController(
+            database_identity=database_identity,
+            scripts=tuple(self._preparation_scripts),
+            gateway=gateway,
+            prepared_records=journal.prepared,
+            transaction_type_deltas=journal.type_deltas,
+            pending_type_proposals=pending_global_const_proposals,
+            acknowledge_type_proposals=acknowledge_global_const_proposals,
+            type_step_descriptor=type_step,
         )
 
     def reconfigure_execution_callback_detail(self, callback_detail: str) -> None:
@@ -3625,6 +3780,9 @@ class D810Manager:
         self.instruction_optimizer_rules = list(rules)
         self.instruction_optimizer_config = kwargs
 
+    def configure_preparation_scripts(self, scripts) -> None:
+        self._preparation_scripts = tuple(scripts)
+
     def configure_block_optimizer(self, rules, **kwargs):
         self.block_optimizer_rules = list(rules)
         self.block_optimizer_config = kwargs
@@ -3660,6 +3818,15 @@ class D810Manager:
             self._recon_bundle = None
             self._flowgraph_ready_subscriber = None
             self._stage_c_topology_consumer = None
+            preparation_journal = getattr(self, "_idb_preparation_journal", None)
+            if preparation_journal is not None:
+                self._safe_lifecycle_step(
+                    "idb.preparation.close",
+                    preparation_journal.close,
+                )
+                self._idb_preparation_journal = None
+            self._idb_preparation_gateway = None
+            self.pre_hex_preparation = None
             return
         self._started = False
         telemetry_active = self._discard_telemetry_lifecycle()
@@ -3717,6 +3884,15 @@ class D810Manager:
             self._native_patch_journal = None
         self._native_patch_gateway = None
         self._dead_edge_normalizer = None
+        preparation_journal = self._idb_preparation_journal
+        if preparation_journal is not None:
+            self._safe_lifecycle_step(
+                "idb.preparation.close",
+                preparation_journal.close,
+            )
+            self._idb_preparation_journal = None
+        self._idb_preparation_gateway = None
+        self.pre_hex_preparation = None
         native_patch_execution_journal = self._native_patch_execution_journal
         if native_patch_execution_journal is not None:
             self._safe_lifecycle_step(
