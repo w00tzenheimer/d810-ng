@@ -5,13 +5,14 @@ Replaces scattered ``os.environ.get("D810_*")`` calls with a single
 ``get_settings()`` call, seeded from environment variables, and can be
 overridden at runtime via ``configure_settings(**overrides)``.
 
-Phase 1 covers 6 diagnostic env vars.  Later phases will migrate the
-remaining ~25 env vars here.
+Phase 1 covers diagnostic env vars and the developer runtime controls. Later
+phases will migrate the remaining ~25 env vars here.
 """
 
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass, fields
 
 from d810.core.maturity_labels import MaturityNumbering, mmat_value
@@ -68,12 +69,75 @@ def _env_maturity(name: str, default: int | None = None) -> int | None:
     )
 
 
+_RUNTIME_SETTING_ENVIRONMENT = {
+    "debug_logging": "D810_DEBUG_LOGGING",
+    "verify_capture": "D810_VERIFY_CAPTURE",
+    "verify_capture_dir": "D810_VERIFY_CAPTURE_DIR",
+    "capture_post_maturity": "D810_CAPTURE_POST_MATURITY",
+    "capture_post_file": "D810_CAPTURE_POST_FILE",
+    "fact_lifecycle": "D810_FACT_LIFECYCLE",
+    "trace_decompile_callers": "D810_TRACE_DECOMPILE_CALLERS",
+    "native_perf": "D810_NATIVE_PERF",
+    "nomut_matching": "D810_NOMUT_MATCHING",
+}
+
+
+def apply_saved_runtime_settings(
+    config: object,
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> None:
+    """Apply saved runtime settings while preserving explicit env precedence.
+
+    ``D810State.reset()`` calls this narrow boundary after loading
+    ``options.json``.  Keeping the preference merge independent of manager
+    construction makes its precedence behavior directly testable.
+    """
+    config_get = getattr(config, "get", None)
+    if not callable(config_get):
+        raise TypeError("runtime settings config must provide get()")
+
+    environment = os.environ if environ is None else environ
+    missing = object()
+    overrides = {}
+    for setting_name, environment_name in _RUNTIME_SETTING_ENVIRONMENT.items():
+        if environment_name in environment:
+            continue
+        saved_value = config_get(setting_name, missing)
+        if saved_value is not missing:
+            overrides[setting_name] = saved_value
+    apply_runtime_settings(overrides, environ=environment)
+
+
+def apply_runtime_settings(
+    overrides: Mapping[str, object],
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> None:
+    """Apply runtime overrides without letting explicit env values be replaced.
+
+    The settings dialog uses this boundary for immediate checkbox changes;
+    startup preference loading uses it for the same precedence semantics.
+    Callers may still persist the requested values separately so they become
+    effective when the corresponding environment override is later removed.
+    """
+    environment = os.environ if environ is None else environ
+    effective_overrides = {}
+    for setting_name, setting_value in overrides.items():
+        environment_name = _RUNTIME_SETTING_ENVIRONMENT.get(setting_name)
+        if environment_name is not None and environment_name in environment:
+            continue
+        effective_overrides[setting_name] = setting_value
+    if effective_overrides:
+        configure_settings(**effective_overrides)
+
+
 @dataclass
 class D810Settings:
     """Flat bag of every D810 runtime toggle.
 
     Constructed from env vars by ``_from_env()``.  Fields are grouped by
-    phase — only Phase 1 (diagnostics) is wired up initially.
+    phase; diagnostic fields and developer runtime controls are wired up.
     """
 
     # -- Phase 1: Diagnostics --
@@ -117,6 +181,13 @@ class D810Settings:
     retaining exact mutations and failures. ``full`` persists every callback.
     """
 
+    # -- Developer runtime controls --
+    native_perf: bool = False
+    """Emit native performance receipts (D810_NATIVE_PERF)."""
+
+    nomut_matching: bool = False
+    """Use non-mutating pattern matching (D810_NOMUT_MATCHING)."""
+
     @classmethod
     def _from_env(cls) -> D810Settings:
         return cls(
@@ -137,6 +208,8 @@ class D810Settings:
                 _env_str("D810_EXECUTION_CALLBACK_DETAIL", "summary"),
                 source="D810_EXECUTION_CALLBACK_DETAIL",
             ),
+            native_perf=_env_bool("D810_NATIVE_PERF"),
+            nomut_matching=_env_bool("D810_NOMUT_MATCHING"),
         )
 
 

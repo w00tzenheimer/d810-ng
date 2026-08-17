@@ -40,7 +40,12 @@ from d810.core.project import (
 from d810.core.registry import SingletonMeta
 from d810.core.execution_scope import ExecutionScopeEvent
 from d810.core.stats import OptimizationStatistics
-from d810.core.settings import configure_settings, get_settings
+from d810.core.settings import (
+    apply_saved_runtime_settings,
+    configure_settings,
+    get_settings,
+)
+from d810.core.speedup_session import apply_session_cython_disabled
 from d810.core.typing import TYPE_CHECKING
 from d810.diagnostics.workbench_models import (
     DiagnosticCleanupPlan,
@@ -201,25 +206,11 @@ class D810State(metaclass=SingletonMeta):
 
     def _apply_runtime_settings_preferences(self) -> None:
         """Reapply every other saved runtime setting with env taking precedence."""
-        environment_by_setting = {
-            "debug_logging": "D810_DEBUG_LOGGING",
-            "verify_capture": "D810_VERIFY_CAPTURE",
-            "verify_capture_dir": "D810_VERIFY_CAPTURE_DIR",
-            "capture_post_maturity": "D810_CAPTURE_POST_MATURITY",
-            "capture_post_file": "D810_CAPTURE_POST_FILE",
-            "fact_lifecycle": "D810_FACT_LIFECYCLE",
-            "trace_decompile_callers": "D810_TRACE_DECOMPILE_CALLERS",
-        }
-        missing = object()
-        overrides = {}
-        for setting_name, environment_name in environment_by_setting.items():
-            if environment_name in os.environ:
-                continue
-            saved_value = self.d810_config.get(setting_name, missing)
-            if saved_value is not missing:
-                overrides[setting_name] = saved_value
-        if overrides:
-            configure_settings(**overrides)
+        apply_saved_runtime_settings(self.d810_config)
+
+    def set_session_cython_disabled(self, disabled: bool) -> bool:
+        """Apply the current-session Cython policy and report reload need."""
+        return apply_session_cython_disabled(disabled)
 
     def diagnostics_capture_enabled(self) -> bool:
         return bool(get_settings().diag_snapshots)

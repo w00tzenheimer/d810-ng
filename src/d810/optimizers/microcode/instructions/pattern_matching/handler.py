@@ -8,6 +8,7 @@ from d810.core import typing
 import ida_hexrays
 
 from d810.core import getLogger
+from d810.core.settings import get_settings
 from d810.hexrays.expr.ast import AstBase, AstNode, AstNodeProtocol
 from d810.hexrays.ir.minsn_utils import minsn_to_ast
 from d810.hexrays.utils.hexrays_formatters import format_minsn_t
@@ -348,14 +349,15 @@ class PatternOptimizer(InstructionOptimizer):
         self._compiled_view: CompiledRuleView | None = None
 
         # PR4: Non-mutating matching feature flag and reusable bindings
-        # Default is OFF (opt-in) pending parity validation; users can set
-        # D810_NOMUT_MATCHING=1 to enable experimental non-mutating matching.
-        self._use_nomut_matching = os.environ.get("D810_NOMUT_MATCHING", "0") == "1"
+        # Default is OFF (opt-in) pending parity validation; configure through
+        # D810Settings so saved preferences and environment precedence agree
+        # with the manager's runtime lifecycle.
+        self._use_nomut_matching = get_settings().nomut_matching
         self._match_bindings = MatchBindings()
 
         if self._use_nomut_matching:
             optimizer_logger.debug(
-                "PatternOptimizer: using non-mutating pattern matching (D810_NOMUT_MATCHING=1 opt-in)"
+                "PatternOptimizer: using non-mutating pattern matching (runtime setting enabled)"
             )
         else:
             optimizer_logger.debug(

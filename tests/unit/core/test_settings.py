@@ -30,6 +30,26 @@ class TestD810Settings:
         assert s.fact_lifecycle is True
         assert s.trace_decompile_callers is False
         assert s.execution_callback_detail == "summary"
+        assert s.native_perf is False
+        assert s.nomut_matching is False
+
+    def test_developer_runtime_settings_default_off(self, monkeypatch):
+        monkeypatch.delenv("D810_NATIVE_PERF", raising=False)
+        monkeypatch.delenv("D810_NOMUT_MATCHING", raising=False)
+
+        settings = reset_settings()
+
+        assert settings.native_perf is False
+        assert settings.nomut_matching is False
+
+    def test_from_env_reads_developer_runtime_settings(self, monkeypatch):
+        monkeypatch.setenv("D810_NATIVE_PERF", "1")
+        monkeypatch.setenv("D810_NOMUT_MATCHING", "yes")
+
+        settings = reset_settings()
+
+        assert settings.native_perf is True
+        assert settings.nomut_matching is True
 
     @pytest.mark.parametrize("mode", ["summary", "full"])
     def test_from_env_reads_execution_callback_detail(self, monkeypatch, mode):

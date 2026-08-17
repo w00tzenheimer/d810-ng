@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import ast
+import json
 from dataclasses import fields
 from pathlib import Path
 from types import SimpleNamespace
 
-from d810.core.settings import D810Settings
+from d810.core.config import D810Configuration
+from d810.core.settings import (
+    D810Settings,
+    apply_saved_runtime_settings,
+    get_settings,
+    reset_settings,
+)
 
 
 IDA_UI = Path(__file__).resolve().parents[3] / "src" / "d810" / "ui" / "ida_ui.py"
@@ -34,6 +41,19 @@ def _plugin_method(name: str) -> ast.FunctionDef:
     raise AssertionError(f"PluginConfigurationFileForm_t.{name} not found")
 
 
+def _state_method(name: str) -> ast.FunctionDef:
+    state_path = (
+        Path(__file__).resolve().parents[3] / "src" / "d810" / "manager" / "state.py"
+    )
+    tree = ast.parse(state_path.read_text(encoding="utf-8"), filename=str(state_path))
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and node.name == "D810State":
+            for item in node.body:
+                if isinstance(item, ast.FunctionDef) and item.name == name:
+                    return item
+    raise AssertionError(f"D810State.{name} not found")
+
+
 def _compiled_config_form_method(name: str):
     method = _method(name)
     class_node = ast.ClassDef(
@@ -52,6 +72,40 @@ def _compiled_config_form_method(name: str):
     }
     exec(compile(module, filename=str(IDA_UI), mode="exec"), namespace)
     return getattr(namespace["ConfigFormHarness"], name)
+
+
+def _compiled_plugin_form_method(name: str):
+    method = _plugin_method(name)
+    class_node = ast.ClassDef(
+        name="PluginFormHarness",
+        bases=[],
+        keywords=[],
+        body=[method],
+        decorator_list=[],
+    )
+    module = ast.fix_missing_locations(ast.Module(body=[class_node], type_ignores=[]))
+
+    class _MessageBox:
+        @staticmethod
+        def critical(*_args):
+            raise AssertionError("unexpected settings dialog error")
+
+    namespace = {
+        "FunctionStorageConfigurationError": RuntimeError,
+        "QtCore": SimpleNamespace(QTimer=SimpleNamespace(singleShot=lambda *_: None)),
+        "QtWidgets": SimpleNamespace(QMessageBox=_MessageBox),
+        "configure_settings": __import__(
+            "d810.core.settings", fromlist=["configure_settings"]
+        ).configure_settings,
+        "apply_runtime_settings": __import__(
+            "d810.core.settings", fromlist=["apply_runtime_settings"]
+        ).apply_runtime_settings,
+        "ida_kernwin": SimpleNamespace(),
+        "parse_function_recipe_storage": lambda payload, *, log_dir: payload,
+        "pathlib": __import__("pathlib"),
+    }
+    exec(compile(module, filename=str(IDA_UI), mode="exec"), namespace)
+    return getattr(namespace["PluginFormHarness"], name)
 
 
 class _Signal:
@@ -228,6 +282,65 @@ def test_plugin_settings_validate_and_apply_storage_without_restart() -> None:
     assert "FunctionStorageConfigurationError" in save_source
 
 
+def test_plugin_settings_have_general_and_developer_tabs() -> None:
+    source = ast.unparse(_plugin_method("__init__"))
+
+    assert "self.tabs = QtWidgets.QTabWidget" in source
+    assert "self.tabs.addTab(self.general_tab, 'General')" in source
+    assert "self.tabs.addTab(self.developer_tab, 'Developer')" in source
+
+
+def test_cython_disable_is_session_only_and_uses_exact_unavailable_copy() -> None:
+    init_source = ast.unparse(_plugin_method("__init__"))
+    save_source = ast.unparse(_plugin_method("save_config"))
+
+    assert "Do not use Cython speedups" in init_source
+    assert "Speedups not installed" in init_source
+    assert "set_session_cython_disabled" in save_source
+    assert "d810_config.set('disable_cython" not in save_source
+    assert "d810_config.set('no_cython" not in save_source
+
+
+def test_developer_runtime_settings_are_serialized_but_cython_is_not() -> None:
+    init_source = ast.unparse(_plugin_method("__init__"))
+    save_source = ast.unparse(_plugin_method("save_config"))
+
+    assert "self.checkbox_native_perf" in init_source
+    assert "self.checkbox_nomut_matching" in init_source
+    assert "native_perf=self.checkbox_native_perf.isChecked()" in save_source
+    assert "nomut_matching=self.checkbox_nomut_matching.isChecked()" in save_source
+    assert "apply_runtime_settings(runtime_overrides)" in save_source
+    assert "configure_settings(**runtime_overrides)" not in save_source
+    assert "for setting_name, setting_value in runtime_overrides.items()" in save_source
+    assert "d810_config.set('disable_cython" not in save_source
+    assert "d810_config.set('no_cython" not in save_source
+
+
+def test_cython_policy_change_schedules_registered_reload_after_accept() -> None:
+    source = ast.unparse(_plugin_method("save_config"))
+
+    assert "self.accept()" in source
+    assert "QtCore.QTimer.singleShot(0" in source
+    assert "ida_kernwin.process_ui_action('D810:reload_plugin')" in source
+
+
+def test_d810_state_exposes_session_cython_policy_without_ui_action_imports() -> None:
+    source = ast.unparse(_state_method("set_session_cython_disabled"))
+
+    assert "apply_session_cython_disabled" in source
+    assert "ida_kernwin" not in source
+
+
+def test_main_title_contains_only_the_three_state_speedup_suffix() -> None:
+    source = ast.unparse(_method("Show"))
+
+    assert "probe_speedup_availability" in source
+    assert "current_speedup_headline" in source
+    assert "speedup_title_suffix" in source
+    assert "DEGRADED" not in source
+    assert "PARTIAL" not in source
+
+
 def test_plugin_settings_expose_callback_evidence_detail() -> None:
     init_source = ast.unparse(_plugin_method("__init__"))
 
@@ -243,6 +356,92 @@ def test_plugin_settings_persist_and_apply_callback_evidence_without_restart() -
     assert "configure_settings(execution_callback_detail=" in save_source
     assert "self.state.manager.reconfigure_execution_callback_detail" in save_source
     assert "self.state.d810_config.set('execution_callback_detail'" in save_source
+
+
+def test_plugin_save_preserves_env_precedence_and_persists_checkbox_values(
+    monkeypatch, tmp_path
+) -> None:
+    """Saving conflicting checkboxes cannot change effective env-controlled settings."""
+    save_config = _compiled_plugin_form_method("save_config")
+    options_path = tmp_path / "options.json"
+    config = D810Configuration(options_path)
+    events: list[object] = []
+
+    class _Check:
+        def __init__(self, checked: bool):
+            self.checked = checked
+
+        def isChecked(self) -> bool:
+            return self.checked
+
+    class _Edit:
+        def __init__(self, value: str):
+            self.value = value
+
+        def text(self) -> str:
+            return self.value
+
+    class _Combo:
+        def __init__(self, value):
+            self.value = value
+
+        def currentData(self):
+            return self.value
+
+    class _Manager:
+        def reconfigure_execution_callback_detail(self, value):
+            events.append(("callback", value))
+
+        def reconfigure_function_storage(self, value):
+            events.append(("storage", value))
+
+    state = SimpleNamespace(
+        log_dir=str(tmp_path),
+        d810_config=config,
+        manager=_Manager(),
+        set_session_cython_disabled=lambda _disabled: False,
+    )
+    form = SimpleNamespace(
+        _function_storage_payload=lambda: {"backend": "netnode"},
+        combo_execution_callback_detail=_Combo("summary"),
+        log_dir_changed=False,
+        state=state,
+        checkbox_diag_snapshots=_Check(False),
+        checkbox_debug_logging=_Check(False),
+        checkbox_verify_capture=_Check(True),
+        edit_verify_capture_dir=_Edit(""),
+        combo_capture_post_maturity=_Combo(None),
+        edit_capture_post_file=_Edit("/tmp/d810_capture.txt"),
+        checkbox_fact_lifecycle=_Check(True),
+        checkbox_trace_decompile_callers=_Check(False),
+        checkbox_native_perf=_Check(False),
+        checkbox_nomut_matching=_Check(True),
+        checkbox_erase_logs_on_reload=_Check(False),
+        checkbox_generate_z3_code=_Check(False),
+        checkbox_dump_intermediate_microcode=_Check(False),
+        checkbox_disable_cython=_Check(False),
+        accept=lambda: events.append("accepted"),
+    )
+
+    monkeypatch.setenv("D810_NATIVE_PERF", "1")
+    monkeypatch.setenv("D810_NOMUT_MATCHING", "0")
+    reset_settings()
+
+    save_config(form)
+
+    assert get_settings().native_perf is True
+    assert get_settings().nomut_matching is False
+    saved = json.loads(options_path.read_text(encoding="utf-8"))
+    assert saved["native_perf"] is False
+    assert saved["nomut_matching"] is True
+
+    monkeypatch.delenv("D810_NATIVE_PERF")
+    monkeypatch.delenv("D810_NOMUT_MATCHING")
+    reset_settings()
+    apply_saved_runtime_settings(config)
+    assert get_settings().native_perf is False
+    assert get_settings().nomut_matching is True
+    assert "accepted" in events
 
 
 def test_every_runtime_setting_has_a_settings_dialog_control_and_save_path() -> None:

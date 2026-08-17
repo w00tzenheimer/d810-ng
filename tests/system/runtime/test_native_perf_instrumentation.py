@@ -10,6 +10,7 @@ import importlib
 import pytest
 
 from d810.core import MOP_TO_AST_CACHE, native_perf
+from d810.core.settings import reset_settings
 from d810.hexrays.ir.minsn_utils import minsn_to_ast
 
 try:
@@ -402,6 +403,7 @@ class TestNativePerfInstrumentation:
             lambda: types.SimpleNamespace(clear_caches=lambda: None),
         )
         monkeypatch.setenv("D810_NATIVE_PERF", "1")
+        reset_settings()
         native_perf.clear_providers_for_tests()
 
         outer = DecompilationSessionEvent(
@@ -503,6 +505,7 @@ class TestNativePerfInstrumentation:
             lambda: types.SimpleNamespace(clear_caches=lambda: None),
         )
         monkeypatch.setenv("D810_NATIVE_PERF", "1")
+        reset_settings()
         native_perf.clear_providers_for_tests()
         finish_calls = []
         original_end_session = native_perf.end_session
@@ -554,6 +557,118 @@ class TestNativePerfInstrumentation:
         assert finish_calls == ["outer", "next"]
         assert native_perf.snapshot()["lifecycle_depth"] == 0
         native_perf.configure(False)
+
+    @pytest.mark.ida_required
+    def test_manager_session_uses_runtime_native_perf_setting(
+        self, monkeypatch, caplog
+    ):
+        """A configured runtime setting enables receipts without an env var."""
+        import types
+
+        from d810.core.decompilation_session import DecompilationSessionEvent
+        from d810.core.settings import configure_settings, reset_settings
+        from d810.manager import manager as manager_module
+        from d810.manager.manager import D810Manager
+
+        monkeypatch.delenv("D810_NATIVE_PERF", raising=False)
+        reset_settings()
+        configure_settings(native_perf=True)
+        native_perf.clear_providers_for_tests()
+        monkeypatch.setattr(
+            D810Manager,
+            "_ensure_native_perf_providers",
+            staticmethod(lambda: None),
+        )
+
+        manager = object.__new__(D810Manager)
+        manager.start_profiling = lambda _event: None
+        manager.stop_profiling = lambda _event: None
+        manager._start_timer = lambda: None
+        manager._stop_timer = lambda: None
+        manager.stats = types.SimpleNamespace(
+            reset=lambda: None,
+            report=lambda: None,
+        )
+        manager.instruction_optimizer = types.SimpleNamespace(
+            reset_cycle_detection=lambda: None,
+            reset_run_later_state=lambda: None,
+        )
+        manager.block_optimizer = types.SimpleNamespace(
+            reset_pass_counter=lambda: None,
+            reset_pipeline_tracker=lambda: None,
+            reset_perf_counters=lambda: None,
+            report_perf_counters=lambda: None,
+        )
+        monkeypatch.setattr(
+            manager_module,
+            "Z3MopProver",
+            lambda: types.SimpleNamespace(clear_caches=lambda: None),
+        )
+
+        event = DecompilationSessionEvent(
+            function_ea=0x401000,
+            database_identity="idb",
+            top_level_epoch=1,
+            session_id="runtime-setting",
+        )
+        try:
+            manager._on_session_started(event)
+            assert native_perf.enabled() is True
+
+            with caplog.at_level("INFO", logger="d810"):
+                manager._on_session_finished(event)
+
+            receipts = [
+                record.getMessage()
+                for record in caplog.records
+                if record.getMessage().startswith(native_perf.RECEIPT_PREFIX)
+            ]
+            assert len(receipts) == 1
+            payload = json.loads(receipts[0].split("=", 1)[1])
+            assert payload["session"]["session_id"] == "runtime-setting"
+        finally:
+            native_perf.configure(False)
+            native_perf.clear_providers_for_tests()
+            reset_settings()
+
+    @pytest.mark.ida_required
+    def test_state_runtime_preferences_apply_saved_values_and_env_precedence(
+        self, monkeypatch, tmp_path
+    ):
+        """The real state seam merges saved values without starting a manager."""
+        import json
+
+        from d810.core.config import D810Configuration
+        from d810.core.settings import get_settings, reset_settings
+        from d810.manager.state import D810State
+
+        options_path = tmp_path / "options.json"
+        options_path.write_text(
+            json.dumps({"native_perf": True, "nomut_matching": True}),
+            encoding="utf-8",
+        )
+        state = object.__new__(D810State)
+        state.d810_config = D810Configuration(options_path)
+
+        monkeypatch.delenv("D810_NATIVE_PERF", raising=False)
+        monkeypatch.delenv("D810_NOMUT_MATCHING", raising=False)
+        reset_settings()
+        state._apply_runtime_settings_preferences()
+        assert get_settings().native_perf is True
+        assert get_settings().nomut_matching is True
+
+        options_path.write_text(
+            json.dumps({"native_perf": False, "nomut_matching": False}),
+            encoding="utf-8",
+        )
+        state.d810_config = D810Configuration(options_path)
+        monkeypatch.setenv("D810_NATIVE_PERF", "1")
+        monkeypatch.setenv("D810_NOMUT_MATCHING", "1")
+        reset_settings()
+        state._apply_runtime_settings_preferences()
+        assert get_settings().native_perf is True
+        assert get_settings().nomut_matching is True
+        reset_settings()
 
     @pytest.mark.ida_required
     @pytest.mark.skipif(

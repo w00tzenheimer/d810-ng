@@ -23,7 +23,14 @@ if typing.TYPE_CHECKING:
 
 from d810.core.logging import LoggerConfigurator, getLogger
 from d810.core.maturity_labels import IDA_MATURITY_NAMES
-from d810.core.settings import configure_settings, get_settings
+from d810.core.cymode import CythonMode
+from d810.core.settings import apply_runtime_settings, configure_settings, get_settings
+from d810.core.speedup_session import (
+    core_speedups_active,
+    current_speedup_headline,
+    probe_speedup_availability,
+    speedup_title_suffix,
+)
 from d810.core.function_storage_config import (
     FunctionStorageConfigurationError,
     parse_function_recipe_storage,
@@ -383,6 +390,9 @@ class PluginConfigurationFileForm_t(QtWidgets.QDialog):
                 "trace_decompile_callers", runtime_settings.trace_decompile_callers
             )
         )
+        self.runtime_native_perf = bool(runtime_settings.native_perf)
+        self.runtime_nomut_matching = bool(runtime_settings.nomut_matching)
+        self.speedup_availability = probe_speedup_availability()
         raw_storage = self.state.d810_config.get(
             "function_recipe_storage",
             {"backend": "netnode"},
@@ -399,6 +409,17 @@ class PluginConfigurationFileForm_t(QtWidgets.QDialog):
         self.config_layout.setContentsMargins(12, 12, 12, 12)
         self.config_layout.setSpacing(8)
         self.config_layout.setAlignment(QtCore.Qt.AlignTop)
+
+        self.tabs = QtWidgets.QTabWidget(self)
+        self.general_tab = QtWidgets.QWidget(self)
+        self.developer_tab = QtWidgets.QWidget(self)
+        self.tabs.addTab(self.general_tab, "General")
+        self.tabs.addTab(self.developer_tab, "Developer")
+        self.config_layout.addWidget(self.tabs)
+
+        general_layout = QtWidgets.QVBoxLayout(self.general_tab)
+        general_layout.setContentsMargins(0, 0, 0, 0)
+        general_layout.setSpacing(8)
 
         # Settings group box
         settings_group = QGroupBox("Settings")
@@ -550,10 +571,49 @@ class PluginConfigurationFileForm_t(QtWidgets.QDialog):
         diagnostics_layout.addRow(self.checkbox_trace_decompile_callers)
 
         diagnostics_group.setLayout(diagnostics_layout)
-        settings_layout.addWidget(diagnostics_group)
+
+        performance_group = QGroupBox("Performance", self.developer_tab)
+        performance_layout = QtWidgets.QFormLayout()
+
+        self.checkbox_native_perf = QtWidgets.QCheckBox(
+            "Emit native performance receipts", self
+        )
+        self.checkbox_native_perf.setChecked(self.runtime_native_perf)
+        performance_layout.addRow(self.checkbox_native_perf)
+
+        self.checkbox_nomut_matching = QtWidgets.QCheckBox(
+            "Use non-mutating pattern matcher", self
+        )
+        self.checkbox_nomut_matching.setChecked(self.runtime_nomut_matching)
+        performance_layout.addRow(self.checkbox_nomut_matching)
+
+        self.checkbox_disable_cython = QtWidgets.QCheckBox(
+            "Do not use Cython speedups", self
+        )
+        self.checkbox_disable_cython.setChecked(not CythonMode().is_enabled())
+        self.lbl_cython_availability = QtWidgets.QLabel(self)
+        if not self.speedup_availability.installed:
+            self.checkbox_disable_cython.setEnabled(False)
+            self.lbl_cython_availability.setText("Speedups not installed")
+        elif os.environ.get("D810_NO_CYTHON", "").lower() in {
+            "1",
+            "true",
+            "yes",
+        }:
+            self.checkbox_disable_cython.setEnabled(False)
+            self.lbl_cython_availability.setText("Disabled by D810_NO_CYTHON")
+        performance_layout.addRow(self.checkbox_disable_cython)
+        performance_layout.addRow(self.lbl_cython_availability)
+
+        performance_group.setLayout(performance_layout)
 
         settings_group.setLayout(settings_layout)
-        self.config_layout.addWidget(settings_group)
+        general_layout.addWidget(settings_group)
+        developer_layout = QtWidgets.QVBoxLayout(self.developer_tab)
+        developer_layout.setContentsMargins(0, 0, 0, 0)
+        developer_layout.setSpacing(8)
+        developer_layout.addWidget(diagnostics_group)
+        developer_layout.addWidget(performance_group)
 
         # Button row (right-aligned)
         self.layout_button = QtWidgets.QHBoxLayout()
@@ -657,7 +717,11 @@ class PluginConfigurationFileForm_t(QtWidgets.QDialog):
                 self.checkbox_trace_decompile_callers.isChecked()
             ),
         }
-        configure_settings(**runtime_overrides)
+        runtime_overrides.update(
+            native_perf=self.checkbox_native_perf.isChecked(),
+            nomut_matching=self.checkbox_nomut_matching.isChecked(),
+        )
+        apply_runtime_settings(runtime_overrides)
         if self.log_dir_changed:
             self.state.d810_config.set("log_dir", self.log_dir)
         self.state.d810_config.set(
@@ -676,9 +740,17 @@ class PluginConfigurationFileForm_t(QtWidgets.QDialog):
         )
         for setting_name, setting_value in runtime_overrides.items():
             self.state.d810_config.set(setting_name, setting_value)
+        reload_required = self.state.set_session_cython_disabled(
+            self.checkbox_disable_cython.isChecked()
+        )
         self.state.d810_config.save()
         self.state.manager.reconfigure_function_storage(storage_config)
         self.accept()
+        if reload_required:
+            QtCore.QTimer.singleShot(
+                0,
+                lambda: ida_kernwin.process_ui_action("D810:reload_plugin"),
+            )
 
 
 class _DensityHost(QtWidgets.QWidget):
@@ -823,9 +895,16 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         if self.shown:
             return
         self.shown = True
+        status = speedup_title_suffix(
+            current_speedup_headline(
+                probe_speedup_availability(),
+                cython_allowed=CythonMode().is_enabled(),
+                core_backends_active=core_speedups_active(),
+            )
+        )
         return ida_kernwin.PluginForm.Show(
             self,
-            f"D-810 Configuration - {package_version()}",
+            f"D-810 Configuration - {package_version()} ({status})",
             options=(
                 ida_kernwin.PluginForm.WOPN_PERSIST
                 | ida_kernwin.PluginForm.WCLS_SAVE
