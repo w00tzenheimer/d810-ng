@@ -1507,7 +1507,20 @@ def get_mop_key(mop: ida_hexrays.mop_t) -> tuple:
     sz = mop.size
     try:
         h = int(structural_mop_hash(mop, 0))
-        result = (t, sz, h)
+        if (
+            t == ida_hexrays.mop_d
+            and mop.d is not None
+            and mop.d.opcode == ida_hexrays.m_call
+            and mop.d.l is not None
+            and mop.d.l.t == ida_hexrays.mop_h
+        ):
+            # structural_mop_hash intentionally salts helper mops only by
+            # kind.  AST templates are helper-specific, however: __ROLn__
+            # and __RORn__ with identical operands must never share a cache
+            # entry or a stale dispatcher AST can change the operation.
+            result = (t, sz, h, mop.d.l.helper or "")
+        else:
+            result = (t, sz, h)
     except Exception:
         # Fallback: rely on cheap structural fields only; still avoid dstr().
         if t == ida_hexrays.mop_n:
@@ -1516,7 +1529,15 @@ def get_mop_key(mop: ida_hexrays.mop_t) -> tuple:
             result = (t, sz, mop.r)
         elif t == ida_hexrays.mop_d:
             # Use EA if available; do not call dstr()
-            result = (t, sz, mop.d.ea if mop.d else idaapi.BADADDR)
+            helper = ""
+            if (
+                mop.d is not None
+                and mop.d.opcode == ida_hexrays.m_call
+                and mop.d.l is not None
+                and mop.d.l.t == ida_hexrays.mop_h
+            ):
+                helper = mop.d.l.helper or ""
+            result = (t, sz, mop.d.ea if mop.d else idaapi.BADADDR, helper)
         elif t == ida_hexrays.mop_S:
             result = (t, sz, mop.s.off)
         elif t == ida_hexrays.mop_v:

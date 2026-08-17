@@ -24,10 +24,21 @@ from d810.mba.semantic_canonicalization import (
     canonicalize_mba_term,
 )
 from d810.mba.typed_term import TypedBvTerm, _leaf_key_fingerprint, term_fingerprint
+from d810.mba.typed_term import fixed_shift_term
 
 
 _VALID_DESTINATION_SIZES = frozenset({1, 2, 4, 8})
 _UNARY_OPERATIONS = frozenset({"bnot", "neg"})
+_ROTATE_HELPERS = {
+    "__ROL1__": ("rol", 1),
+    "__ROL2__": ("rol", 2),
+    "__ROL4__": ("rol", 4),
+    "__ROL8__": ("rol", 8),
+    "__ROR1__": ("ror", 1),
+    "__ROR2__": ("ror", 2),
+    "__ROR4__": ("ror", 4),
+    "__ROR8__": ("ror", 8),
+}
 
 
 @dataclass(frozen=True)
@@ -67,6 +78,8 @@ def _load_native_runtime() -> _NativeAstRuntime:
         "or": ida_hexrays.m_or,
         "sub": ida_hexrays.m_sub,
         "xor": ida_hexrays.m_xor,
+        "shl": ida_hexrays.m_shl,
+        "lshr": ida_hexrays.m_shr,
     }
     blockers: dict[int, IslandBlocker] = {}
     for name, blocker in (
@@ -74,8 +87,6 @@ def _load_native_runtime() -> _NativeAstRuntime:
         ("m_xds", IslandBlocker.CAST),
         ("m_low", IslandBlocker.CAST),
         ("m_high", IslandBlocker.CAST),
-        ("m_shl", IslandBlocker.AMBIGUOUS_SHIFT),
-        ("m_shr", IslandBlocker.AMBIGUOUS_SHIFT),
         ("m_sar", IslandBlocker.AMBIGUOUS_SHIFT),
         ("m_ldx", IslandBlocker.LOAD),
         ("m_call", IslandBlocker.CALL),
@@ -261,6 +272,37 @@ def _canonical_native_nodes_by_path(
     return MappingProxyType(matched)
 
 
+def _ast_shift_count(
+    node: Any,
+    *,
+    width: int,
+    runtime: _NativeAstRuntime,
+) -> tuple[int | None, IslandBlocker]:
+    """Read a one-byte literal count without making it a semantic child."""
+
+    if isinstance(node, runtime.AstConstant):
+        if not _native_width_matches(node, 1):
+            return None, IslandBlocker.AMBIGUOUS_SHIFT
+        value = getattr(node, "value", None)
+        if type(value) is not int or not 0 <= value < width:
+            return None, IslandBlocker.AMBIGUOUS_SHIFT
+        return value, IslandBlocker.AMBIGUOUS_SHIFT
+    if isinstance(node, runtime.AstNode):
+        blocker = runtime.blocker_by_opcode.get(
+            getattr(node, "opcode", None), IslandBlocker.AMBIGUOUS_SHIFT
+        )
+        if blocker is IslandBlocker.CAST:
+            return None, IslandBlocker.CAST
+    return None, IslandBlocker.AMBIGUOUS_SHIFT
+
+
+def _rotate_helper(node: Any, runtime: _NativeAstRuntime) -> tuple[str, int] | None:
+    helper = getattr(node, "func_name", None)
+    if type(helper) is not str:
+        return None
+    return _ROTATE_HELPERS.get(helper)
+
+
 def lower_hexrays_island(
     ast: Any,
     *,
@@ -338,6 +380,36 @@ def lower_hexrays_island(
                 return None
             opcode = getattr(node, "opcode", None)
             operation = runtime.operation_by_opcode.get(opcode)
+            if opcode == getattr(importlib.import_module("ida_hexrays"), "m_call"):
+                helper = _rotate_helper(node, runtime)
+                if helper is None:
+                    blockers.add(IslandBlocker.CALL)
+                    return None
+                helper_operation, helper_size = helper
+                if helper_size != destination_size:
+                    blockers.add(IslandBlocker.MIXED_WIDTH)
+                    return None
+                value = getattr(node, "left", None)
+                count = getattr(node, "right", None)
+                if value is None or count is None:
+                    blockers.add(IslandBlocker.CALL)
+                    return None
+                lowered_value = lower(value, path + (0,))
+                nodes[path + (1,)] = count
+                if lowered_value is None:
+                    return None
+                literal_count, blocker = _ast_shift_count(
+                    count, width=destination_size * 8, runtime=runtime
+                )
+                if literal_count is None:
+                    blockers.add(blocker)
+                    return None
+                return fixed_shift_term(
+                    helper_operation,
+                    destination_size * 8,
+                    lowered_value,
+                    literal_count,
+                )
             if operation is None:
                 blockers.add(
                     getattr(runtime, "blocker_by_opcode", {}).get(
@@ -352,6 +424,26 @@ def lower_hexrays_island(
             lowered_left = lower(left, path + (0,))
             if lowered_left is None:
                 return None
+            if operation in {"shl", "lshr"}:
+                right = getattr(node, "right", None)
+                if right is None:
+                    blockers.add(IslandBlocker.AMBIGUOUS_SHIFT)
+                    return None
+                nodes[path + (1,)] = right
+                literal_count, blocker = _ast_shift_count(
+                    right,
+                    width=destination_size * 8,
+                    runtime=runtime,
+                )
+                if literal_count is None:
+                    blockers.add(blocker)
+                    return None
+                return fixed_shift_term(
+                    operation,
+                    destination_size * 8,
+                    lowered_left,
+                    literal_count,
+                )
             right = getattr(node, "right", None)
             if operation in _UNARY_OPERATIONS:
                 if right is not None:
@@ -423,6 +515,8 @@ def rebuild_hexrays_island(
     *,
     lowering: HexRaysIslandLowering,
     destination_size: int,
+    block: Any | None = None,
+    destination: Any | None = None,
 ) -> Any | None:
     """Rebuild a native AST exclusively from the lowerer's preserved leafs."""
 
@@ -460,6 +554,37 @@ def rebuild_hexrays_island(
                 ) != _leaf_key_fingerprint(node.leaf_key):
                     return None
                 return leaf.clone()
+            if node.operation in {"rol", "ror"}:
+                if block is None or destination is None:
+                    return None
+                from d810.backends.mba.native_rotate_helper import (
+                    materialize_rotate_term,
+                )
+
+                return materialize_rotate_term(
+                    node,
+                    lowering=lowering,
+                    block=block,
+                    destination=destination,
+                )
+            if node.operation in {"shl", "lshr"}:
+                if (
+                    type(node.shift_count) is not int
+                    or not 0 <= node.shift_count < node.width
+                ):
+                    return None
+                child = rebuild(node.children[0])
+                if child is None:
+                    return None
+                count = runtime.AstConstant(
+                    str(node.shift_count), node.shift_count, 1
+                )
+                count.dest_size = 1
+                native = runtime.AstNode(
+                    runtime.opcode_by_operation[node.operation], child, count
+                )
+                native.dest_size = destination_size
+                return native
             opcode = runtime.opcode_by_operation.get(node.operation)
             if opcode is None:
                 return None
@@ -473,7 +598,15 @@ def rebuild_hexrays_island(
             return native
 
         rebuilt = rebuild(term)
-        return rebuilt if isinstance(rebuilt, runtime.AstNode) else None
+        if isinstance(rebuilt, runtime.AstNode):
+            return rebuilt
+        # Rotate helpers are instruction-level value producers.  The shared
+        # materializer intentionally returns a live minsn_t rather than a
+        # synthetic AstNode, so preserve that native seam for callers that
+        # supplied the active block/destination context.
+        if term.operation in {"rol", "ror"}:
+            return rebuilt
+        return None
     except Exception:
         return None
 

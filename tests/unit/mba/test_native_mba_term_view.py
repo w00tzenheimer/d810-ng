@@ -47,8 +47,14 @@ _RUNTIME = NativeMopRuntime(
     mop_n=1,
     mop_d=2,
     leaf_kinds=frozenset({3}),
-    operation_by_opcode={10: "add", 11: "and", 12: "bnot"},
-    blocker_by_opcode={13: IslandBlocker.CAST},
+    operation_by_opcode={
+        10: "add",
+        11: "and",
+        12: "bnot",
+        14: "shl",
+        15: "lshr",
+    },
+    blocker_by_opcode={13: IslandBlocker.CAST, 16: IslandBlocker.AMBIGUOUS_SHIFT},
     get_mop_key=lambda mop: (mop.key,),
 )
 
@@ -154,3 +160,44 @@ def test_direct_view_rejects_cast_and_unknown_mop_kinds() -> None:
     assert cast_result.profile.blockers == (IslandBlocker.CAST,)
     assert unknown_result.view is None
     assert unknown_result.profile.blockers == (IslandBlocker.UNSUPPORTED_OPCODE,)
+
+
+def test_direct_view_admits_literal_shifts_as_metadata() -> None:
+    instruction = _Insn(14, _leaf("x"), _constant(7, size=1), 4)
+
+    result = NativeMbaTermView.from_instruction(
+        instruction, destination_size=4, runtime=_RUNTIME
+    )
+
+    assert result.view is not None
+    assert result.view.operation == "shl"
+    assert len(result.view.children) == 1
+    assert result.view.shift_count == 7
+    assert result.view.to_typed_term().shift_count == 7
+
+
+def test_direct_view_admits_logical_right_shift_and_preserves_count_metadata() -> None:
+    instruction = _Insn(15, _leaf("x"), _constant(31, size=1), 4)
+
+    result = NativeMbaTermView.from_instruction(
+        instruction, destination_size=4, runtime=_RUNTIME
+    )
+
+    assert result.view is not None
+    assert result.view.operation == "lshr"
+    assert result.view.shift_count == 31
+    assert len(result.view.to_typed_term().children) == 1
+
+
+def test_direct_view_rejects_ambiguous_shift_counts() -> None:
+    variable = _Insn(14, _leaf("x"), _leaf("count", size=1), 4)
+    out_of_range = _Insn(14, _leaf("x"), _constant(32, size=1), 4)
+    wrong_count_width = _Insn(14, _leaf("x"), _constant(7, size=4), 4)
+    sar = _Insn(16, _leaf("x"), _constant(7, size=1), 4)
+
+    for instruction in (variable, out_of_range, wrong_count_width, sar):
+        result = NativeMbaTermView.from_instruction(
+            instruction, destination_size=4, runtime=_RUNTIME
+        )
+        assert result.view is None
+        assert IslandBlocker.AMBIGUOUS_SHIFT in result.profile.blockers

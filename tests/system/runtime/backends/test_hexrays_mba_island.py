@@ -13,7 +13,11 @@ from d810.backends.mba.hexrays_island import (  # noqa: E402
 from d810.hexrays.expr import ast as ast_dispatcher  # noqa: E402
 from d810.hexrays.ir.mop_snapshot import MopSnapshot  # noqa: E402
 from d810.mba.island_profile import IslandBlocker, MbaIslandClass  # noqa: E402
-from d810.mba.typed_term import TypedBvTerm, term_fingerprint  # noqa: E402
+from d810.mba.typed_term import (  # noqa: E402
+    TypedBvTerm,
+    fixed_shift_term,
+    term_fingerprint,
+)
 
 
 def _leaf(name: str, register: int, size: int = 4):
@@ -34,6 +38,21 @@ def _constant(value: int, size: int = 4):
 def _node(opcode: int, left, right=None, size: int = 4):
     node = ast_dispatcher.AstNode(opcode, left, right)
     node.dest_size = size
+    return node
+
+
+def _shift(opcode: int, value, count: int, size: int = 4):
+    return _node(opcode, value, _constant(count, size=1), size)
+
+
+def _rotate_helper(name: str, value, count: int, size: int = 4, *, count_size: int = 1):
+    node = _node(
+        ida_hexrays.m_call,
+        value,
+        _constant(count, size=count_size),
+        size,
+    )
+    node.func_name = name
     return node
 
 
@@ -244,6 +263,114 @@ def test_lowering_fail_closes_known_unsupported_native_operations(opcode_name, b
     assert lowering.term is None
     assert lowering.profile.island_class is MbaIslandClass.UNSUPPORTED
     assert lowering.profile.blockers == (blocker,)
+
+
+def _term_leafs(term):
+    if term.operation is None:
+        return (term,)
+    return tuple(leaf for child in term.children for leaf in _term_leafs(child))
+
+
+@pytest.mark.parametrize(
+    ("opcode_name", "operation"),
+    (("m_shl", "shl"), ("m_shr", "lshr")),
+)
+def test_lowerer_admits_exact_literal_logical_shift(opcode_name, operation):
+    source = _shift(getattr(ida_hexrays, opcode_name), _leaf("x", 1), 7)
+
+    lowering = lower_hexrays_island(source, destination_size=4)
+
+    assert lowering.term is not None
+    assert lowering.term == fixed_shift_term(
+        operation, 32, _term_leafs(lowering.term)[0], 7
+    )
+    assert lowering.profile.blockers == ()
+    rebuilt = rebuild_hexrays_island(
+        lowering.term, lowering=lowering, destination_size=4
+    )
+    assert isinstance(rebuilt, ast_dispatcher.AstNode)
+    assert rebuilt.opcode == getattr(ida_hexrays, opcode_name)
+    assert rebuilt.right.is_constant()
+    assert rebuilt.right.value == 7
+    assert rebuilt.right.dest_size == 1
+
+
+@pytest.mark.parametrize(
+    ("shape", "expected_blocker"),
+    (
+        ("sar_literal", IslandBlocker.AMBIGUOUS_SHIFT),
+        ("shl_variable", IslandBlocker.AMBIGUOUS_SHIFT),
+        ("shl_out_of_range", IslandBlocker.AMBIGUOUS_SHIFT),
+        ("shl_cast_count", IslandBlocker.CAST),
+        ("rotate_mixed_width", IslandBlocker.MIXED_WIDTH),
+        ("unknown_helper", IslandBlocker.CALL),
+    ),
+)
+def test_lowerer_rejects_ambiguous_shift_and_helper_shapes(shape, expected_blocker):
+    sources = {
+        "sar_literal": _shift(ida_hexrays.m_sar, _leaf("x", 1), 7),
+        "shl_variable": _node(
+            ida_hexrays.m_shl, _leaf("x", 1), _leaf("count", 2), 4
+        ),
+        "shl_out_of_range": _shift(ida_hexrays.m_shl, _leaf("x", 1), 32),
+        "shl_cast_count": _node(
+            ida_hexrays.m_shl,
+            _leaf("x", 1),
+            _node(ida_hexrays.m_xdu, _constant(7, 1), None, 4),
+            4,
+        ),
+        "rotate_mixed_width": _rotate_helper("__ROL8__", _leaf("x", 1), 7, 4),
+        "unknown_helper": _rotate_helper("__unknown__", _leaf("x", 1), 7, 4),
+    }
+    lowering = lower_hexrays_island(sources[shape], destination_size=4)
+
+    assert lowering.term is None
+    assert expected_blocker in lowering.profile.blockers
+
+
+@pytest.mark.parametrize(
+    ("helper", "operation", "width_bytes"),
+    (
+        ("__ROL1__", "rol", 1),
+        ("__ROR2__", "ror", 2),
+        ("__ROL4__", "rol", 4),
+        ("__ROR8__", "ror", 8),
+    ),
+)
+def test_lowerer_admits_exact_width_rotate_helpers(helper, operation, width_bytes):
+    source = _rotate_helper(helper, _leaf("x", 1, width_bytes), 1, width_bytes)
+
+    lowering = lower_hexrays_island(source, destination_size=width_bytes)
+
+    assert lowering.term is not None
+    assert lowering.term == fixed_shift_term(
+        operation, width_bytes * 8, _term_leafs(lowering.term)[0], 1
+    )
+    assert lowering.profile.blockers == ()
+
+
+@pytest.mark.parametrize(
+    "shape",
+    (
+        "out_of_range",
+        "wrong_count_width",
+        "variable_count",
+    ),
+)
+def test_lowerer_rejects_invalid_rotate_helper_counts(shape):
+    if shape == "out_of_range":
+        source = _rotate_helper("__ROL8__", _leaf("x", 1, 8), 64, 8)
+    elif shape == "wrong_count_width":
+        source = _rotate_helper(
+            "__ROL8__", _leaf("x", 1, 8), 1, 8, count_size=8
+        )
+    else:
+        source = _rotate_helper("__ROL8__", _leaf("x", 1, 8), 1, 8)
+        source.right = _leaf("count", 1, 1)
+    lowering = lower_hexrays_island(source, destination_size=8)
+
+    assert lowering.term is None
+    assert IslandBlocker.AMBIGUOUS_SHIFT in lowering.profile.blockers
 
 
 def test_lowering_rejects_mixed_width_and_missing_destination_size():

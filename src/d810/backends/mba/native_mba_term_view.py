@@ -20,7 +20,11 @@ from d810.mba.semantic_canonicalization import (
     CanonicalMbaTermView,
     canonicalize_mba_term,
 )
-from d810.mba.typed_term import TypedBvTerm, _leaf_key_fingerprint
+from d810.mba.typed_term import (
+    FIXED_SHIFT_OPERATIONS,
+    TypedBvTerm,
+    _leaf_key_fingerprint,
+)
 
 
 _VALID_DESTINATION_SIZES = frozenset({1, 2, 4, 8})
@@ -53,18 +57,33 @@ class NativeMbaTermView:
     leaf_key: tuple[object, ...] | None = None
     children: tuple[NativeMbaTermView, ...] = ()
     native_operand: Any | None = None
+    shift_count: int | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "children", tuple(self.children))
+        if self.operation not in FIXED_SHIFT_OPERATIONS and self.shift_count is not None:
+            raise ValueError("only fixed shifts and rotates accept shift_count")
         if self.operation is None:
-            if self.children or (self.constant_value is None) == (
+            if self.children or self.shift_count is not None or (
+                self.constant_value is None
+            ) == (
                 self.leaf_key is None
             ):
                 raise ValueError("native terminal must have one value or leaf key")
             return
         if self.constant_value is not None or self.leaf_key is not None:
             raise ValueError("native operation cannot carry terminal data")
-        expected_arity = 1 if self.operation in _UNARY_OPERATIONS else 2
+        if self.operation in FIXED_SHIFT_OPERATIONS:
+            if len(self.children) != 1:
+                raise ValueError(f"{self.operation} requires exactly one child")
+            if type(self.shift_count) is not int or not 0 <= self.shift_count < self.width:
+                raise ValueError("shift_count must be an integer in [0, width)")
+        expected_arity = (
+            1
+            if self.operation in _UNARY_OPERATIONS
+            or self.operation in FIXED_SHIFT_OPERATIONS
+            else 2
+        )
         if len(self.children) != expected_arity:
             raise ValueError(f"{self.operation} requires {expected_arity} children")
         if any(child.width != self.width for child in self.children):
@@ -110,6 +129,7 @@ class NativeMbaTermView:
             self.operation,
             self.width,
             children=tuple(child.to_typed_term() for child in self.children),
+            shift_count=self.shift_count,
         )
 
     def to_canonical_view(self) -> CanonicalMbaTermView:
@@ -189,16 +209,25 @@ def _load_live_mop_runtime() -> NativeMopRuntime:
     ida_hexrays = importlib.import_module("ida_hexrays")
     operations = {
         getattr(ida_hexrays, f"m_{name}"): name
-        for name in ("add", "and", "bnot", "mul", "neg", "or", "sub", "xor")
+        for name in (
+            "add",
+            "and",
+            "bnot",
+            "mul",
+            "neg",
+            "or",
+            "sub",
+            "xor",
+            "shl",
+        )
     }
+    operations[ida_hexrays.m_shr] = "lshr"
     blockers: dict[int, IslandBlocker] = {}
     for name, blocker in (
         ("m_xdu", IslandBlocker.CAST),
         ("m_xds", IslandBlocker.CAST),
         ("m_low", IslandBlocker.CAST),
         ("m_high", IslandBlocker.CAST),
-        ("m_shl", IslandBlocker.AMBIGUOUS_SHIFT),
-        ("m_shr", IslandBlocker.AMBIGUOUS_SHIFT),
         ("m_sar", IslandBlocker.AMBIGUOUS_SHIFT),
         ("m_ldx", IslandBlocker.LOAD),
         ("m_call", IslandBlocker.CALL),
@@ -254,6 +283,20 @@ def _read_instruction(
         )
         if left is None:
             return None, left_blockers
+        if operation in FIXED_SHIFT_OPERATIONS:
+            count, blocker = _read_shift_count(
+                getattr(instruction, "r", None),
+                destination_size=destination_size,
+                runtime=runtime,
+            )
+            if count is None:
+                return None, {blocker}
+            return NativeMbaTermView(
+                operation,
+                destination_size * 8,
+                children=(left,),
+                shift_count=count,
+            ), set()
         if operation in _UNARY_OPERATIONS:
             right = getattr(instruction, "r", None)
             if (
@@ -278,6 +321,33 @@ def _read_instruction(
         )
     finally:
         seen_instructions.discard(identity)
+
+
+def _read_shift_count(
+    operand: Any,
+    *,
+    destination_size: int,
+    runtime: NativeMopRuntime,
+) -> tuple[int | None, IslandBlocker]:
+    """Read the one-byte literal count without treating it as a BV child."""
+
+    if operand is None:
+        return None, IslandBlocker.AMBIGUOUS_SHIFT
+    if getattr(operand, "t", None) == runtime.mop_n:
+        if type(getattr(operand, "size", None)) is not int or operand.size != 1:
+            return None, IslandBlocker.AMBIGUOUS_SHIFT
+        number = getattr(getattr(operand, "nnn", None), "value", None)
+        if type(number) is not int or not 0 <= number < destination_size * 8:
+            return None, IslandBlocker.AMBIGUOUS_SHIFT
+        return number, IslandBlocker.AMBIGUOUS_SHIFT
+    if getattr(operand, "t", None) == runtime.mop_d:
+        nested = getattr(operand, "d", None)
+        blocker = runtime.blocker_by_opcode.get(
+            getattr(nested, "opcode", None), IslandBlocker.AMBIGUOUS_SHIFT
+        )
+        if blocker is IslandBlocker.CAST:
+            return None, IslandBlocker.CAST
+    return None, IslandBlocker.AMBIGUOUS_SHIFT
 
 
 def _read_operand(
@@ -394,7 +464,10 @@ def _profile_view(view: NativeMbaTermView) -> MbaIslandProfile:
             visit(child)
 
     visit(view)
-    has_boolean = any(operation in _BOOLEAN_OPERATIONS for operation in operations)
+    has_boolean = any(
+        operation in _BOOLEAN_OPERATIONS or operation in FIXED_SHIFT_OPERATIONS
+        for operation in operations
+    )
     has_arithmetic = any(
         operation in _ARITHMETIC_OPERATIONS for operation in operations
     )

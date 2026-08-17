@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import ida_hexrays
-import ida_typeinf
 
 from d810.core import typing
 from d810.hexrays.ir_maturity import ir_maturity_to_ida
 from d810.hexrays.utils.hexrays_helpers import dup_mop, structural_mop_hash
+from d810.backends.mba.native_rotate_helper import (
+    make_rol8_helper_call as _make_rol8_helper_call,
+)
 from d810.ir.maturity import IRMaturity
 from d810.optimizers.microcode.instructions.peephole.handler import (
     PeepholeSimplificationRule,
@@ -28,19 +30,6 @@ _BINARY_OPCODE_NAMES = {
     ida_hexrays.m_mul: "mul",
     ida_hexrays.m_shr: "shr",
 }
-
-
-def _fresh_uint_type(declaration: int) -> ida_typeinf.tinfo_t:
-    """Create a type handle owned by the currently open IDB.
-
-    IDA type handles do not survive disposable-database teardown.  Keeping one
-    at module scope makes later databases fail helper construction depending on
-    test or plugin load order.
-    """
-
-    type_info = ida_typeinf.tinfo_t()
-    type_info.create_simple_type(declaration)
-    return type_info
 
 
 def _width_of(mop: ida_hexrays.mop_t | None) -> int:
@@ -115,34 +104,19 @@ def make_rol8_helper_call(
 ) -> ida_hexrays.minsn_t | None:
     """Build Hex-Rays' value-producing ``mov __ROL8__(base, count), out``."""
 
-    if (
-        block is None
-        or not 1 <= int(rotation) < 64
-        or _width_of(base) != 64
-        or _width_of(output) != 64
-    ):
-        return None
     try:
-        uint64_type = _fresh_uint_type(ida_typeinf.BTF_UINT64)
-        uint8_type = _fresh_uint_type(ida_typeinf.BTF_UINT8)
-        value_arg = ida_hexrays.mcallarg_t()
-        value_arg.copy_mop(dup_mop(base))
-        value_arg.type = uint64_type
-        count_arg = ida_hexrays.mcallarg_t()
-        count_arg.make_number(int(rotation), 1, ea)
-        count_arg.type = uint8_type
-        args = ida_hexrays.mcallargs_t()
-        args.push_back(value_arg)
-        args.push_back(count_arg)
-        return block.mba.create_helper_call(
-            ea,
-            "__ROL8__",
-            uint64_type,
-            args,
-            dup_mop(output),
-        )
-    except Exception:
+        normalized_rotation = int(rotation)
+    except (TypeError, ValueError, OverflowError):
         return None
+    if not 1 <= normalized_rotation < 64:
+        return None
+    return _make_rol8_helper_call(
+        block,
+        ea=ea,
+        base=base,
+        rotation=normalized_rotation,
+        output=output,
+    )
 
 
 def _validated_native_match(
