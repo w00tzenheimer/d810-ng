@@ -699,7 +699,9 @@ def test_real_lower_contract_native_safety_reaches_backend():
     facts = AnalysisManager(_GRAPH)
     for name in (
         "plan_semantic_regions",
+        "predecessor_dispatcher_target_facts",
         "recover_dispatcher",
+        "recover_state_transitions",
         "transition_result",
     ):
         facts.put_analysis(name, object())
@@ -2298,7 +2300,9 @@ def test_real_lower_contract_preserves_only_declared_mutation_state():
         "dominators",
         "function_boundaries",
         "plan_semantic_regions",
+        "predecessor_dispatcher_target_facts",
         "recover_dispatcher",
+        "recover_state_transitions",
         "transition_result",
     ):
         facts.put_analysis(name, object())
