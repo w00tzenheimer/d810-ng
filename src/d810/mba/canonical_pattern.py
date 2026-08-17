@@ -13,8 +13,8 @@ from __future__ import annotations
 import hashlib
 import dis
 import json
-from collections.abc import Iterator, Mapping
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from types import MappingProxyType
 from d810.core.typing import TYPE_CHECKING
 
@@ -25,11 +25,9 @@ from d810.mba.semantic_canonicalization import (
     canonicalize_mba_term,
 )
 from d810.mba.typed_term import (
-    AC_OPERATIONS,
     SUPPORTED_OPERATIONS,
     TypedBvTerm,
     canonicalize_ac_term,
-    _term_sort_key,
     term_fingerprint,
 )
 
@@ -74,6 +72,7 @@ class CanonicalCompiledPattern:
     semantic_fingerprint: str
     declaration_index: int
     constraints: tuple[FrozenConstraint, ...] = ()
+    fixed_constant_values: Mapping[str, int] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if type(self.width) is not int or self.width <= 0:
@@ -90,6 +89,15 @@ class CanonicalCompiledPattern:
         if any(not isinstance(item, FrozenConstraint) for item in constraints):
             raise ValueError("constraints must be frozen portable constraints")
         object.__setattr__(self, "constraints", constraints)
+        fixed_constants = dict(self.fixed_constant_values)
+        if any(
+            type(name) is not str
+            or not name
+            or type(value) is not int
+            for name, value in fixed_constants.items()
+        ):
+            raise ValueError("fixed_constant_values must map names to integers")
+        object.__setattr__(self, "fixed_constant_values", MappingProxyType(fixed_constants))
         kinds = dict(self.terminal_kinds)
         for key, kind in kinds.items():
             if (
@@ -163,6 +171,15 @@ class CanonicalPatternMatchReport:
     commuted_branches: int
     flattened_nodes: int
     stop_reason: AcMatchStopReason
+    compatibility_bindings: CanonicalFixedBindings | None = None
+
+    @property
+    def bindings(self) -> CanonicalFixedBindings | None:
+        """Expose the first match for callers using the legacy report shape."""
+
+        if self.compatibility_bindings is not None:
+            return self.compatibility_bindings
+        return self.matches[0].bindings if self.matches else None
 
 
 CanonicalPatternMatchResult = CanonicalPatternMatchReport
@@ -227,6 +244,38 @@ def lower_symbolic_template(
             raise CanonicalPatternUnsupported("placeholder kind changed for one name")
         kinds[key] = kind
     return TypedBvTerm(operation, width, children=(left, right)), kinds
+
+
+def _fixed_constant_values(
+    expression: SymbolicExpressionProtocol,
+) -> Mapping[str, int]:
+    """Collect names for concrete pattern constants without changing lowering."""
+
+    values: dict[str, int] = {}
+
+    def visit(node: SymbolicExpressionProtocol) -> None:
+        if node.operation is None:
+            if (
+                bool(getattr(node, "is_pattern_constant", False))
+                and type(node.name) is str
+                and node.name
+                and type(node.value) is int
+            ):
+                previous = values.get(node.name)
+                if previous is not None and previous != node.value:
+                    raise CanonicalPatternUnsupported(
+                        "one pattern constant name has multiple fixed values"
+                    )
+                values[node.name] = node.value
+            return
+        if node.left is None:
+            raise CanonicalPatternUnsupported("malformed symbolic expression")
+        visit(node.left)
+        if node.right is not None:
+            visit(node.right)
+
+    visit(_expression_or_raise(expression))
+    return MappingProxyType(values)
 
 
 def _rule_value(rule: object, name: str, default: object = None) -> object:
@@ -569,6 +618,7 @@ def compile_canonical_pattern(
     pattern_raw, pattern_kinds = lower_symbolic_template(
         pattern_expression, width=width
     )
+    fixed_constant_values = _fixed_constant_values(pattern_expression)
     replacement_raw, replacement_kinds = lower_symbolic_template(
         replacement_expression, width=width
     )
@@ -596,6 +646,7 @@ def compile_canonical_pattern(
         semantic_fingerprint=_fingerprint_payload(payload),
         declaration_index=declaration_index,
         constraints=_freeze_constraints(rule),
+        fixed_constant_values=fixed_constant_values,
     )
 
 
@@ -703,23 +754,6 @@ def evaluate_frozen_constraints(
     return True
 
 
-@dataclass
-class _MatchState:
-    comparison_budget: int
-    comparisons: int = 0
-    commuted_branches: int = 0
-    flattened_nodes: int = 0
-    stop_reason: AcMatchStopReason | None = None
-    saw_cardinality_mismatch: bool = False
-
-    def compare(self) -> bool:
-        if self.comparisons >= self.comparison_budget:
-            self.stop_reason = AcMatchStopReason.COMPARISON_BUDGET
-            return False
-        self.comparisons += 1
-        return True
-
-
 def _placeholder(term: TypedBvTerm) -> PatternLeafKey | None:
     if term.operation is not None or term.leaf_key is None:
         return None
@@ -732,198 +766,20 @@ def _placeholder(term: TypedBvTerm) -> PatternLeafKey | None:
     return None
 
 
-def _flatten_typed_term(
-    term: TypedBvTerm,
-    path: tuple[int, ...],
-    operation: str,
-    state: _MatchState,
-) -> list[tuple[TypedBvTerm, tuple[int, ...]]]:
-    if term.operation != operation:
-        return [(term, path)]
-    result: list[tuple[TypedBvTerm, tuple[int, ...]]] = []
-    for index, child in enumerate(term.children):
-        if child.operation == operation and child.width == term.width:
-            state.flattened_nodes += 1
-            result.extend(_flatten_typed_term(child, path + (index,), operation, state))
-        else:
-            result.append((child, path + (index,)))
-    return result
-
-
-def _pattern_operands(term: TypedBvTerm, operation: str) -> list[TypedBvTerm]:
-    if term.operation != operation:
-        return [term]
-    result: list[TypedBvTerm] = []
-    for child in term.children:
-        result.extend(_pattern_operands(child, operation))
-    return result
-
-
-def _pattern_sort_key(term: TypedBvTerm) -> tuple[object, ...]:
-    # Rigid subtrees and concrete constants constrain the search before
-    # wildcard placeholders.  Stable term ordering is the final tie-break.
-    placeholder = _placeholder(term)
-    return (1 if placeholder is not None and placeholder[0] == "pattern_var" else 0, _term_sort_key(term))
-
-
-def _candidate_matches_shape(pattern: TypedBvTerm, candidate: TypedBvTerm) -> bool:
-    placeholder = _placeholder(pattern)
-    if placeholder is not None:
-        if placeholder[0] == "pattern_const":
-            return candidate.operation is None and candidate.value is not None
-        return True
-    if pattern.operation is None:
-        return candidate.operation is None and pattern.value == candidate.value
-    return pattern.operation == candidate.operation
-
-
-def _iter_matches(
-    pattern: TypedBvTerm,
-    candidate: TypedBvTerm,
-    path: tuple[int, ...],
-    terminal_kinds: Mapping[PatternLeafKey, str],
-    bindings: dict[str, tuple[str, TypedBvTerm, tuple[int, ...]]],
-    state: _MatchState,
-) -> Iterator[dict[str, tuple[str, TypedBvTerm, tuple[int, ...]]]]:
-    if not state.compare():
-        return
-    placeholder = _placeholder(pattern)
-    if placeholder is not None:
-        kind = terminal_kinds.get(placeholder, placeholder[0])
-        if kind == "pattern_const" and (
-            candidate.operation is not None or candidate.value is None
-        ):
-            return
-        name = placeholder[1]
-        fingerprint = term_fingerprint(candidate)
-        existing = bindings.get(name)
-        if existing is not None:
-            if existing[0] == fingerprint:
-                yield dict(bindings)
-            return
-        updated = dict(bindings)
-        updated[name] = (fingerprint, candidate, path)
-        yield updated
-        return
-    if pattern.operation is None:
-        if candidate.operation is None and pattern.value == candidate.value:
-            yield dict(bindings)
-        return
-    if candidate.operation != pattern.operation:
-        return
-    if pattern.operation in AC_OPERATIONS:
-        pattern_items = _pattern_operands(pattern, pattern.operation)
-        candidate_items = _flatten_typed_term(
-            candidate, path, pattern.operation, state
-        )
-        if len(pattern_items) != len(candidate_items):
-            state.saw_cardinality_mismatch = True
-            return
-
-        def match_items(
-            index: int,
-            remaining: tuple[tuple[TypedBvTerm, tuple[int, ...]], ...],
-            current: dict[str, tuple[str, TypedBvTerm, tuple[int, ...]]],
-        ) -> Iterator[dict[str, tuple[str, TypedBvTerm, tuple[int, ...]]]]:
-            if index == len(pattern_items):
-                if not remaining:
-                    yield dict(current)
-                return
-            pattern_item = pattern_items[index]
-            ordered = tuple(
-                item for item in remaining if _candidate_matches_shape(pattern_item, item[0])
-            )
-            for candidate_item in ordered:
-                remaining_list = list(remaining)
-                remaining_list.remove(candidate_item)
-                for matched in _iter_matches(
-                    pattern_item,
-                    candidate_item[0],
-                    candidate_item[1],
-                    terminal_kinds,
-                    current,
-                    state,
-                ):
-                    yield from match_items(index + 1, tuple(remaining_list), matched)
-                    if state.stop_reason is not None:
-                        return
-                if index > 0:
-                    state.commuted_branches += 1
-
-        yield from match_items(0, tuple(candidate_items), dict(bindings))
-        return
-    if len(pattern.children) != len(candidate.children):
-        return
-    if len(pattern.children) == 1:
-        yield from _iter_matches(
-            pattern.children[0], candidate.children[0], path + (0,), terminal_kinds, bindings, state
-        )
-        return
-    for left_bindings in _iter_matches(
-        pattern.children[0], candidate.children[0], path + (0,), terminal_kinds, bindings, state
-    ):
-        yield from _iter_matches(
-            pattern.children[1], candidate.children[1], path + (1,), terminal_kinds, left_bindings, state
-        )
-
-
 def match_canonical_term_pattern(
     compiled_pattern: CanonicalCompiledPattern,
     candidate: TypedBvTerm,
     *,
     comparison_budget: int,
 ) -> CanonicalPatternMatchReport:
-    """Match one canonical template with a finite, read-only budget."""
+    """Compatibility wrapper for the single matcher core in ``ac_matching``."""
 
-    if type(comparison_budget) is not int or comparison_budget < 0:
-        raise ValueError("comparison_budget must be a non-negative integer")
-    if not isinstance(candidate, TypedBvTerm):
-        raise TypeError("candidate must be a TypedBvTerm")
-    if candidate.width != compiled_pattern.width:
-        return CanonicalPatternMatchReport(
-            (), 0, 0, 0, AcMatchStopReason.UNSUPPORTED_WIDTH
-        )
-    state = _MatchState(comparison_budget)
-    raw_matches = _iter_matches(
-        compiled_pattern.pattern_term,
+    from d810.mba.ac_matching import match_canonical_term_pattern as match_shared
+
+    return match_shared(
+        compiled_pattern,
         candidate,
-        (),
-        compiled_pattern.terminal_kinds,
-        {},
-        state,
-    )
-    matches: list[CanonicalPatternMatch] = []
-    seen: set[tuple[tuple[str, str], ...]] = set()
-    for raw in raw_matches:
-        if state.stop_reason is not None:
-            break
-        terms = {name: value[1] for name, value in raw.items()}
-        paths = {name: value[2] for name, value in raw.items()}
-        identity = tuple(sorted((name, term_fingerprint(term)) for name, term in terms.items()))
-        if identity in seen:
-            continue
-        seen.add(identity)
-        matches.append(
-            CanonicalPatternMatch(
-                compiled_pattern=compiled_pattern,
-                bindings=CanonicalFixedBindings(terms, paths, compiled_pattern.width),
-            )
-        )
-    if state.stop_reason is not None:
-        reason = state.stop_reason
-        matches = []
-    elif matches:
-        reason = AcMatchStopReason.MATCHED
-    elif state.saw_cardinality_mismatch:
-        reason = AcMatchStopReason.CARDINALITY_MISMATCH
-    else:
-        reason = AcMatchStopReason.MISS
-    return CanonicalPatternMatchReport(
-        tuple(matches),
-        state.comparisons,
-        state.commuted_branches,
-        state.flattened_nodes,
-        reason,
+        comparison_budget=comparison_budget,
     )
 
 

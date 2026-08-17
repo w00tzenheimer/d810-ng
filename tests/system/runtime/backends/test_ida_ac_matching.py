@@ -311,8 +311,9 @@ def test_structural_opt_in_requires_matching_persisted_parity_certificate(
     certificate_path.write_text(
         json.dumps(
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "snapshot_fingerprint": "0" * 64,
+                "canonicalizer_schema_version": 1,
                 "runtime_mode": runtime_mode,
                 "corpus_digest": expectation.corpus_digest,
                 "toolchain_digest": expectation.toolchain_digest,
@@ -340,8 +341,9 @@ def test_structural_opt_in_requires_matching_persisted_parity_certificate(
     certificate_path.write_text(
         json.dumps(
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "snapshot_fingerprint": snapshot.fingerprint,
+                "canonicalizer_schema_version": 1,
                 "runtime_mode": other_runtime_mode,
                 "corpus_digest": expectation.corpus_digest,
                 "toolchain_digest": expectation.toolchain_digest,
@@ -367,8 +369,9 @@ def test_structural_opt_in_requires_matching_persisted_parity_certificate(
     certificate_path.write_text(
         json.dumps(
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "snapshot_fingerprint": snapshot.fingerprint,
+                "canonicalizer_schema_version": 1,
                 "runtime_mode": runtime_mode,
                 "corpus_digest": expectation.corpus_digest,
                 "toolchain_digest": expectation.toolchain_digest,

@@ -231,8 +231,8 @@ class CompiledPatternCatalogue:
         immutable width-specific templates and performs no backend work.
         """
 
-        if type(comparison_budget) is not int or comparison_budget < 0:
-            raise ValueError("comparison_budget must be a non-negative integer")
+        if type(comparison_budget) is not int or comparison_budget <= 0:
+            raise ValueError("comparison_budget must be a positive integer")
         if not isinstance(candidate, TypedBvTerm):
             raise TypeError("candidate must be a TypedBvTerm")
         canonical_candidate = canonicalize_mba_term(candidate).canonical_term

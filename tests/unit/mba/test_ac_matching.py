@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
+import pytest
+
 from d810.mba.ac_matching import AcMatchStopReason, match_ac_pattern
 from d810.mba.dsl import Const, Var
 from d810.mba.typed_term import TypedBvTerm
@@ -139,9 +143,32 @@ def test_noncommutative_width_and_budget_fail_closed() -> None:
         match_ac_pattern(x, unsupported, comparison_budget=8).stop_reason
         is AcMatchStopReason.UNSUPPORTED_WIDTH
     )
-    assert (
+    with pytest.raises(ValueError, match="positive integer"):
         match_ac_pattern(
             x + y, _node("add", _leaf("x"), _leaf("y")), comparison_budget=0
-        ).stop_reason
-        is AcMatchStopReason.COMPARISON_BUDGET
+        )
+
+
+def test_canonical_matcher_is_exposed_by_the_shared_ac_core() -> None:
+    from d810.mba.ac_matching import match_canonical_term_pattern
+    from d810.mba.canonical_pattern import compile_canonical_pattern
+
+    rule = SimpleNamespace(
+        pattern=Var("x") + Var("y"),
+        replacement=Var("x") ^ Var("y"),
+        source_name="SharedCoreRule",
+        aliases=(),
+        family="add",
+        proof_widths=(32,),
+        guarded=False,
+        constraints=(),
     )
+    compiled = compile_canonical_pattern(rule, width=32, declaration_index=0)
+    report = match_canonical_term_pattern(
+        compiled,
+        _node("add", _leaf("x"), _leaf("y")),
+        comparison_budget=8,
+    )
+
+    assert report.stop_reason is AcMatchStopReason.MATCHED
+    assert report.matches

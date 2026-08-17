@@ -17,6 +17,7 @@ import os
 import time
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from d810.core.typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import ida_hexrays
@@ -459,6 +460,7 @@ class IDAPatternAdapter:
         self._certified_catalogue_rule_id: int | None = None
         self._shadow_parity_ledger = None
         self._shadow_parity_recorded = False
+        self._shadow_canonical_templates: dict[int, Any] = {}
         self._structural_matching_enabled = False
         self._structural_parity_authorized = False
         self._structural_selection_active = False
@@ -498,6 +500,73 @@ class IDAPatternAdapter:
 
         return bool(getattr(self, "_provider_outcome_capture_depth", 0))
 
+    def _prepare_shadow_canonical_templates(self) -> None:
+        """Freeze width-specific templates before any candidate callback."""
+
+        if self._shadow_canonical_templates:
+            return
+        from d810.mba.canonical_pattern import (
+            CanonicalPatternUnsupported,
+            compile_canonical_pattern,
+        )
+
+        try:
+            pattern = getattr(self.rule, "pattern", None)
+            replacement = getattr(self.rule, "replacement", None)
+            if callable(pattern):
+                pattern = pattern()
+            if callable(replacement):
+                replacement = replacement()
+        except Exception:
+            return
+        if pattern is None:
+            return
+        try:
+            widths = tuple(getattr(self.rule, "proof_widths", (8, 16, 32, 64)))
+        except (TypeError, ValueError):
+            widths = (8, 16, 32, 64)
+        if not widths:
+            widths = (8, 16, 32, 64)
+        if replacement is None:
+            # Direct unit/runtime probes sometimes provide only a pattern.  A
+            # shadow matcher needs no replacement semantics, so use the
+            # pattern as an inert template while preserving frozen constraints.
+            template_rule = SimpleNamespace(
+                pattern=pattern,
+                replacement=pattern,
+                source_name=getattr(self.rule, "source_name", None)
+                or getattr(self.rule, "name", type(self.rule).__name__),
+                aliases=tuple(getattr(self.rule, "aliases", ())),
+                family=getattr(self.rule, "family", "shadow"),
+                proof_widths=widths,
+                guarded=bool(getattr(self.rule, "guarded", False)),
+                constraints=tuple(
+                    getattr(
+                        self.rule,
+                        "constraints",
+                        getattr(self.rule, "CONSTRAINTS", ()),
+                    )
+                    or ()
+                ),
+            )
+        else:
+            template_rule = self.rule
+        templates: dict[int, Any] = {}
+        for width in widths:
+            if type(width) is not int or width <= 0:
+                continue
+            try:
+                templates[width] = compile_canonical_pattern(
+                    template_rule,
+                    width=width,
+                    declaration_index=int(
+                        getattr(self, "_certified_catalogue_rule_id", 0) or 0
+                    ),
+                )
+            except (CanonicalPatternUnsupported, TypeError, ValueError):
+                continue
+        self._shadow_canonical_templates = templates
+
     @staticmethod
     def _shadow_observation_enabled() -> bool:
         """Keep expensive parity collection out of normal legacy execution."""
@@ -535,6 +604,7 @@ class IDAPatternAdapter:
         self._certified_catalogue_snapshot = snapshot
         self._certified_catalogue_rule_id = rule_id
         self._shadow_parity_ledger = ledger
+        self._prepare_shadow_canonical_templates()
         # The snapshot only contains already-admitted VerifiableRule DSL
         # objects. The environment flag requests the experimental path, but a
         # persisted zero-mismatch certificate must also bind this exact
@@ -668,17 +738,19 @@ class IDAPatternAdapter:
         """Record the bounded portable matcher result without changing selection.
 
         The legacy AstNode matcher stays authoritative during the Task 7 shadow
-        period. Matching and binding recovery use the raw source-order term;
-        profiling and certified bucketing retain the canonical term. Binding
-        paths must resolve to the lowerer's original native objects.
+        period. Canonical candidates and frozen rule templates are matched only
+        as a read-only observation. Binding paths must resolve to the
+        lowerer's original native objects through exact raw-path provenance.
         """
 
         try:
-            from d810.mba.ac_matching import (
-                AcMatchReport,
-                AcMatchStopReason,
-                match_ac_pattern,
+            from d810.mba.ac_matching import match_canonical_term_pattern
+            from d810.mba.canonical_pattern import (
+                CanonicalFixedBindings,
+                CanonicalPatternMatchReport,
+                evaluate_frozen_constraints,
             )
+            from d810.mba.ac_matching import AcMatchStopReason
 
             if not lowering_provided:
                 lowering = self.prepare_structural_candidate(test_ast)
@@ -687,57 +759,94 @@ class IDAPatternAdapter:
             if (
                 lowering.term is None
                 or lowering.raw_term is None
-                or self.rule.pattern is None
             ):
+                return None
+            self._prepare_shadow_canonical_templates()
+            template = self._shadow_canonical_templates.get(lowering.term.width)
+            if template is None:
                 return None
             snapshot = getattr(self, "_certified_catalogue_snapshot", None)
             if snapshot is not None:
                 from d810.mba.certified_catalogue import root_shape_for_term
 
-                bucket = snapshot.rule_ids_by_root_shape.get(
+                bucket = snapshot.canonical_rule_ids_by_root_shape.get(
                     root_shape_for_term(lowering.term),
                     (),
                 )
                 if getattr(self, "_certified_catalogue_rule_id", None) not in bucket:
                     return None
-            report = match_ac_pattern(
-                self.rule.pattern,
-                lowering.raw_term,
+            report = match_canonical_term_pattern(
+                template,
+                lowering.term,
                 comparison_budget=comparison_budget,
             )
-            if report.bindings is not None and not all(
-                path in lowering.raw_native_nodes_by_path
-                for path in report.bindings.candidate_path_by_name.values()
-            ):
-                report = AcMatchReport(
-                    bindings=None,
-                    comparisons=report.comparisons,
-                    commuted_branches=report.commuted_branches,
-                    flattened_nodes=report.flattened_nodes,
-                    stop_reason=AcMatchStopReason.MISS,
-                )
+            if report.matches:
+                valid_matches = []
+                for match in report.matches:
+                    terms = dict(match.bindings.terms)
+                    if not evaluate_frozen_constraints(
+                        match.compiled_pattern.constraints,
+                        terms,
+                        width=lowering.term.width,
+                    ):
+                        continue
+                    valid_matches.append(
+                        replace(
+                            match,
+                            bindings=CanonicalFixedBindings(
+                                terms,
+                                match.bindings.candidate_paths,
+                                lowering.term.width,
+                            ),
+                        )
+                    )
+                if not valid_matches:
+                    report = CanonicalPatternMatchReport(
+                        (),
+                        report.comparisons,
+                        report.commuted_branches,
+                        report.flattened_nodes,
+                        AcMatchStopReason.MISS,
+                    )
+                elif len(valid_matches) != len(report.matches):
+                    report = replace(
+                        report,
+                        matches=tuple(valid_matches),
+                        compatibility_bindings=(
+                            report.compatibility_bindings
+                            if valid_matches[0] is report.matches[0]
+                            else None
+                        ),
+                    )
             structural_native_paths: dict[str, tuple[int, ...]] | None = None
-            if report.bindings is not None:
-                source_paths_by_object: dict[int, list[tuple[int, ...]]] = {}
-
-                def index_source(node: Any, path: tuple[int, ...]) -> None:
-                    source_paths_by_object.setdefault(id(node), []).append(path)
-                    if bool(getattr(node, "is_node", lambda: False)()):
-                        for index, child_name in enumerate(("left", "right")):
-                            child = getattr(node, child_name, None)
-                            if child is not None:
-                                index_source(child, path + (index,))
-
-                index_source(test_ast, ())
+            if report.matches:
+                binding = report.bindings
+                if binding is None:
+                    return report
+                required_names = set(
+                    getattr(template, "fixed_constant_values", {})
+                )
+                if not required_names.issubset(binding.candidate_paths):
+                    self._shadow_lowering = lowering
+                    self._shadow_source_ast = test_ast
+                    self._shadow_match_report = report
+                    self._shadow_structural_native_paths = None
+                    return report
+                raw_paths_by_identity: dict[int, list[tuple[int, ...]]] = {}
+                for raw_path, native in lowering.raw_native_nodes_by_path.items():
+                    raw_paths_by_identity.setdefault(id(native), []).append(raw_path)
                 mapped_paths: dict[str, tuple[int, ...]] = {}
-                for name, raw_path in report.bindings.candidate_path_by_name.items():
-                    native = lowering.raw_native_nodes_by_path.get(raw_path)
-                    source_paths = source_paths_by_object.get(id(native), ())
-                    if len(source_paths) != 1:
+                for name, canonical_path in binding.candidate_paths.items():
+                    native = lowering.native_nodes_by_path.get(canonical_path)
+                    if native is None:
                         mapped_paths = {}
                         break
-                    mapped_paths[name] = source_paths[0]
-                if mapped_paths:
+                    raw_paths = raw_paths_by_identity.get(id(native), ())
+                    if len(raw_paths) != 1:
+                        mapped_paths = {}
+                        break
+                    mapped_paths[name] = raw_paths[0]
+                if mapped_paths or not binding.candidate_paths:
                     structural_native_paths = mapped_paths
             self._shadow_lowering = lowering
             self._shadow_source_ast = test_ast

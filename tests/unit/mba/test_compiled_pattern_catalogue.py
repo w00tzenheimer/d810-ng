@@ -205,9 +205,8 @@ def test_canonical_catalogue_match_keeps_fixed_portable_bindings_and_budget():
     assert matched.matches[0].bindings.terms["x_0"].leaf_key == x.leaf_key
     assert matched.matches[0].bindings.terms["x_1"].leaf_key == y.leaf_key
 
-    refused = catalogue.match_canonical_root(typed, comparison_budget=0)
-    assert refused.matches == ()
-    assert refused.stop_reason.value == "comparison_budget"
+    with pytest.raises(ValueError, match="positive integer"):
+        catalogue.match_canonical_root(typed, comparison_budget=0)
 
 
 def test_canonical_catalogue_preserves_earlier_match_at_declaration_budget_boundary():
