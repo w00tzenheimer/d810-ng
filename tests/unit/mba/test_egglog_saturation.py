@@ -17,6 +17,7 @@ from d810.backends.mba.egglog_add_rule_compiler import (
     apply_compiled_rule_to_term,
 )
 from d810.backends.mba.egglog_structural_rules import (
+    compile_all_fixed_rotate_rules,
     compile_fixed_rotate_rules,
     structural_catalogue_for_rules,
 )
@@ -29,6 +30,7 @@ from d810.backends.mba.egglog_saturation import (
     TypedBvTerm,
     canonicalize_ac_term,
     extract_bounded_candidate,
+    extract_bounded_term,
     lower_native_ast_to_term,
     lower_term_to_native_ast,
 )
@@ -94,6 +96,53 @@ def test_certified_structural_rotate_catalogue_matches_only_complementary_counts
         _fixed_shift("lshr", x, 26),
     )
     assert catalogue.canonical_applications(noncomplementary, comparison_budget=64) == ()
+
+
+def test_full_structural_inventory_registers_one_semantic_rotate_application():
+    rules = tuple(
+        receipt.compiled_rule
+        for receipt in compile_all_fixed_rotate_rules()
+        if receipt.compiled_rule is not None
+    )
+    assert len(rules) == 232
+    catalogue = structural_catalogue_for_rules(rules)
+    x = _leaf("x", width=64)
+    source = _node(
+        "or",
+        _fixed_shift("shl", x, 31),
+        _fixed_shift("lshr", x, 33),
+        width=64,
+    )
+
+    applications = catalogue.canonical_applications(
+        source,
+        comparison_budget=256,
+    )
+
+    assert len(applications) == 1
+    selected_rule, replacement, _declaration_index = applications[0]
+    assert selected_rule.source_name == "rol_64_31"
+    assert selected_rule.aliases == ("ror_64_33",)
+    assert replacement == _fixed_shift("rol", x, 31)
+
+    result = extract_bounded_term(
+        source,
+        rules,
+        EgglogExtractionBudget(
+            max_leaves=2,
+            max_operator_nodes=4,
+            max_eclasses=128,
+            max_enodes=256,
+            time_budget_ms=1000,
+        ),
+        destination_size=8,
+        catalogue=catalogue,
+    )
+    assert result.replacement_term == _fixed_shift("rol", x, 31)
+    assert result.receipt.rule_firings == 1
+    assert result.receipt.derivation_trace == (
+        ("fixed_rotate", "rol_64_31", ("ror_64_33",)),
+    )
 
 
 def test_structural_rotate_egglog_lowering_serializes_count_as_constructor(monkeypatch):

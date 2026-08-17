@@ -6,6 +6,7 @@ import builtins
 import dis
 import hashlib
 import json
+import weakref
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -35,11 +36,27 @@ _SNAPSHOT_FINGERPRINT_VERSION = 5
 _PARITY_CERTIFICATE_SCHEMA_VERSION = 3
 _DIGEST_LENGTH = 64
 
-# Backend structural rules carry this opaque enrollment marker after their
-# own universal proof gate succeeds. Keeping the token in the portable layer
-# lets snapshot construction validate admission without importing a backend
-# package upward through the architecture.
+# Retained only as a negative-test/compatibility sentinel. Possession of this
+# importable object is deliberately not authorization.
 _STRUCTURAL_RULE_ADMISSION_TOKEN = object()
+_ADMITTED_STRUCTURAL_RULES: weakref.WeakValueDictionary[int, Any] = (
+    weakref.WeakValueDictionary()
+)
+
+
+def _enroll_structural_rule(rule: object) -> None:
+    """Record exact live identity after a backend proof compiler admits it."""
+
+    try:
+        _ADMITTED_STRUCTURAL_RULES[id(rule)] = rule
+    except TypeError as exc:
+        raise TypeError("admitted structural rules must support weak references") from exc
+
+
+def _is_enrolled_structural_rule(rule: object) -> bool:
+    """Return whether this exact live object was enrolled by a proof compiler."""
+
+    return _ADMITTED_STRUCTURAL_RULES.get(id(rule)) is rule
 
 
 def _is_sha256_digest(value: object) -> bool:
@@ -759,8 +776,7 @@ def build_certified_catalogue_snapshot(
                 structural_rule, "semantic_fingerprint", None
             )
             admitted = (
-                getattr(structural_rule, "_admission_token", None)
-                is _STRUCTURAL_RULE_ADMISSION_TOKEN
+                _is_enrolled_structural_rule(structural_rule)
                 and type(source_name) is str
                 and bool(source_name)
                 and type(width) is int

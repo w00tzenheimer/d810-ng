@@ -17,7 +17,7 @@ from d810.backends.mba.egglog_add_rule_compiler import (  # noqa: E402
     compiled_rules_for_families,
 )
 from d810.backends.mba.egglog_structural_rules import (  # noqa: E402
-    compile_fixed_rotate_rules,
+    compile_all_fixed_rotate_rules,
     structural_catalogue_for_rules,
 )
 from d810.backends.mba.egglog_saturation import (  # noqa: E402
@@ -255,12 +255,15 @@ class TestCertifiedFixedRotateMaterialization:
         candidate = _node(ida_hexrays.m_or, left, right, size=8)
         lowering = lower_hexrays_island(candidate, destination_size=8)
         assert lowering.term is not None, lowering.profile
-        receipts = compile_fixed_rotate_rules(width=64, direction="rol")
-        rule = receipts[30].compiled_rule
-        assert rule is not None
+        rules = tuple(
+            receipt.compiled_rule
+            for receipt in compile_all_fixed_rotate_rules()
+            if receipt.compiled_rule is not None
+        )
+        assert len(rules) == 232
         result = extract_bounded_candidate(
             candidate,
-            (rule,),
+            rules,
             EgglogExtractionBudget(
                 max_leaves=2,
                 max_operator_nodes=4,
@@ -269,7 +272,7 @@ class TestCertifiedFixedRotateMaterialization:
                 time_budget_ms=1000,
             ),
             8,
-            catalogue=structural_catalogue_for_rules((rule,)),
+            catalogue=structural_catalogue_for_rules(rules),
             block=block,
             destination=output,
         )
@@ -280,7 +283,11 @@ class TestCertifiedFixedRotateMaterialization:
         assert result.replacement_ast.l.d.l.helper == "__ROL8__"
         assert result.receipt.rule_firings == 1
         assert result.receipt.degree == 1
-        assert result.selected_provenance == ("fixed_rotate", "rol_64_31", ())
+        assert result.selected_provenance == (
+            "fixed_rotate",
+            "rol_64_31",
+            ("ror_64_33",),
+        )
         instruction.swap(result.replacement_ast)
         block.mark_lists_dirty()
         _mba.verify(True)

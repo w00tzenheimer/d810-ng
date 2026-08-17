@@ -12,11 +12,13 @@ from __future__ import annotations
 
 import enum
 import functools
-import weakref
 from collections.abc import Collection, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 
-from d810.mba.certified_catalogue import _STRUCTURAL_RULE_ADMISSION_TOKEN
+from d810.mba.certified_catalogue import (
+    _enroll_structural_rule,
+    _is_enrolled_structural_rule,
+)
 from d810.mba.typed_term import (
     TypedBvTerm,
     fixed_shift_term,
@@ -49,7 +51,6 @@ class CompiledEgglogStructuralRule:
     proof_verdict: bool
     family: str = STRUCTURAL_RULE_FAMILY
     aliases: tuple[str, ...] = ()
-    _admission_token: object | None = None
 
     @property
     def proof_widths(self) -> tuple[int, ...]:
@@ -68,11 +69,6 @@ class CompiledEgglogStructuralRule:
                 term_fingerprint(self.replacement),
             )
         )
-
-
-_ADMITTED_STRUCTURAL_RULES: weakref.WeakValueDictionary[
-    int, CompiledEgglogStructuralRule
-] = weakref.WeakValueDictionary()
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,16 +173,14 @@ def prove_typed_term_equivalence(
 
 
 def _enroll(rule: CompiledEgglogStructuralRule) -> CompiledEgglogStructuralRule:
-    object.__setattr__(rule, "_admission_token", _STRUCTURAL_RULE_ADMISSION_TOKEN)
-    _ADMITTED_STRUCTURAL_RULES[id(rule)] = rule
+    _enroll_structural_rule(rule)
     return rule
 
 
 def is_admitted_structural_rule(rule: object) -> bool:
     return (
         type(rule) is CompiledEgglogStructuralRule
-        and _ADMITTED_STRUCTURAL_RULES.get(id(rule)) is rule
-        and rule._admission_token is _STRUCTURAL_RULE_ADMISSION_TOKEN
+        and _is_enrolled_structural_rule(rule)
         and rule.proof_verdict is True
     )
 
@@ -331,17 +325,76 @@ def _materialize(
         shift_count=term.shift_count,
     )
 
+
+def _canonical_rotation_key(
+    rule: CompiledEgglogStructuralRule,
+) -> tuple[int, int, str]:
+    """Return one direction-independent key for a rotate result."""
+
+    replacement = rule.replacement
+    if (
+        replacement.operation not in {"rol", "ror"}
+        or type(replacement.shift_count) is not int
+        or len(replacement.children) != 1
+    ):
+        raise ValueError("fixed-rotate rule has a malformed replacement")
+    canonical_left_count = (
+        replacement.shift_count
+        if replacement.operation == "rol"
+        else replacement.width - replacement.shift_count
+    ) % replacement.width
+    return (
+        replacement.width,
+        canonical_left_count,
+        term_fingerprint(replacement.children[0]),
+    )
+
+
+def _deduplicated_application_rules(
+    rules: tuple[CompiledEgglogStructuralRule, ...],
+) -> tuple[tuple[CompiledEgglogStructuralRule, int], ...]:
+    """Merge semantic rotate aliases without dropping proof receipts."""
+
+    applications: list[tuple[CompiledEgglogStructuralRule, int]] = []
+    application_index_by_key: dict[tuple[int, int, str], int] = {}
+    for declaration_index, rule in enumerate(rules):
+        key = _canonical_rotation_key(rule)
+        application_index = application_index_by_key.get(key)
+        if application_index is None:
+            application_index_by_key[key] = len(applications)
+            applications.append((rule, declaration_index))
+            continue
+        primary, primary_declaration_index = applications[application_index]
+        aliases = tuple(
+            dict.fromkeys((*primary.aliases, rule.source_name, *rule.aliases))
+        )
+        applications[application_index] = (
+            _enroll(replace(primary, aliases=aliases)),
+            primary_declaration_index,
+        )
+    return tuple(applications)
+
+
 @dataclass(frozen=True, slots=True)
 class StructuralRuleCatalogue:
     """Immutable declaration-ordered catalogue of admitted structural rules."""
 
     rules: tuple[CompiledEgglogStructuralRule, ...]
+    _application_rules: tuple[tuple[CompiledEgglogStructuralRule, int], ...] = field(
+        init=False,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         frozen = tuple(self.rules)
         if any(not is_admitted_structural_rule(rule) for rule in frozen):
             raise ValueError("structural catalogue requires admitted rules")
         object.__setattr__(self, "rules", frozen)
+        object.__setattr__(
+            self,
+            "_application_rules",
+            _deduplicated_application_rules(frozen),
+        )
 
     def canonical_applications(
         self,
@@ -356,7 +409,7 @@ class StructuralRuleCatalogue:
 
         canonical_candidate = canonicalize_ac_term(candidate)
         remaining_comparisons = [comparison_budget]
-        for declaration_index, rule in enumerate(self.rules):
+        for rule, declaration_index in self._application_rules:
             if rule.width != canonical_candidate.width:
                 continue
             bindings: dict[tuple[object, ...], TypedBvTerm] = {}

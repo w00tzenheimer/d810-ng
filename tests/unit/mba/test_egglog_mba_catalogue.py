@@ -198,6 +198,43 @@ def test_snapshot_fingerprint_binds_admitted_structural_rotate_inventory():
     assert complete.structural_rule_digest != incomplete.structural_rule_digest
 
 
+def test_snapshot_rejects_forged_structural_rule_with_imported_token():
+    from d810.mba.certified_catalogue import (
+        _STRUCTURAL_RULE_ADMISSION_TOKEN,
+        build_certified_catalogue_snapshot,
+    )
+
+    class ForgedStructuralRule:
+        source_name = "rol_32_5"
+        width = 32
+        direction = "rol"
+        count = 5
+        proof_verdict = True
+        family = "fixed_rotate"
+        semantic_fingerprint = "forged-rotate-fingerprint"
+
+    forged = ForgedStructuralRule()
+    forged._admission_token = _STRUCTURAL_RULE_ADMISSION_TOKEN
+    unmarked = ForgedStructuralRule()
+    forged_snapshot = build_certified_catalogue_snapshot(
+        (),
+        compiler_version="structural-v1",
+        structural_rules=(forged,),
+    )
+    unavailable_snapshot = build_certified_catalogue_snapshot(
+        (),
+        compiler_version="structural-v1",
+        structural_rules=(unmarked,),
+    )
+
+    assert forged_snapshot.structural_authorizable is False
+    assert forged_snapshot.structural_rule_fingerprints == ()
+    assert (
+        forged_snapshot.structural_rule_digest
+        == unavailable_snapshot.structural_rule_digest
+    )
+
+
 def test_fixed_rotate_inventory_reuses_certification_across_live_requests(monkeypatch):
     from d810.backends.mba import egglog_structural_rules
 
