@@ -37,6 +37,11 @@ class ConfigV2EditingAdapter:
     def catalog(self) -> tuple[object, ...]:
         return tuple(self._state.get_workbench_recipe_catalog())
 
+    def inspection_catalog(self, pass_ids: Sequence[str]) -> tuple[object, ...]:
+        return tuple(
+            self._state.get_workbench_recipe_inspection_catalog(tuple(pass_ids))
+        )
+
     def validate(self, draft: ConfigV2ProjectDraft) -> ConfigV2ProjectValidation:
         return self._state.validate_config_v2_project_draft(draft)
 

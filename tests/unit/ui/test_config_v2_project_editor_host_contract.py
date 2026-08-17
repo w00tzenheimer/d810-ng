@@ -27,6 +27,25 @@ PIPELINE_OVERVIEW_TREE = ast.parse(
 )
 
 
+def test_active_overview_uses_configured_pass_inspection_catalog() -> None:
+    method = ast.get_source_segment(
+        IDA_UI.read_text(encoding="utf-8"),
+        _form_method("_apply_project_config_view"),
+    )
+
+    assert method is not None
+    assert "adapter.inspection_catalog(validation.pass_ids)" in method
+
+
+def test_project_editor_keeps_private_inspection_separate_from_public_add_catalog() -> None:
+    source = PROJECT_EDITOR.read_text(encoding="utf-8")
+
+    assert "self._catalog = tuple(adapter.catalog())" in source
+    assert "self._inspection_catalog = tuple(" in source
+    assert "self._adapter.inspection_catalog(self._validation.pass_ids)" in source
+    assert "for entry in sorted(self._catalog" in source
+
+
 class _Logger:
     def debug(self, *args: object) -> None:
         del args

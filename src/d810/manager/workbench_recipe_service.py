@@ -94,36 +94,54 @@ class RecipeService:
     def __init__(self, registry: PassRegistry) -> None:
         self._registry = registry
 
-    def catalog(self) -> tuple[PassCatalogEntry, ...]:
-        entries: list[PassCatalogEntry] = []
-        for pass_id in self._registry.public_pass_ids():
-            config = self._registry.config_template_for(pass_id)
-            spec = self._registry.build_spec(config)
-            editor_spec = self._registry.editor_spec_for(pass_id)
-            if editor_spec is None:
-                raise RecipeEditError(
-                    f"public pass {pass_id!r} is missing a config-v2 editor spec"
-                )
-            entries.append(
-                PassCatalogEntry(
-                    pass_id=pass_id,
-                    display_name=_display_name(pass_id),
-                    contract_json=_canonical_json(pass_contract_manifest(spec)),
-                    option_template_json=_canonical_json(dict(config.options)),
-                    granularity=config.granularity.value,
-                    maturity=_maturity_label(config),
-                    backend_route=config.backend_route.value,
-                    safety_policy=config.safety_policy.name,
-                    transform_ids=self._registry.transform_ids_for(pass_id),
-                    stage_ids=tuple(
-                        stage.stage_id for stage in self._registry.stages_for(pass_id)
-                    ),
-                    configured=self._registry.is_configured(pass_id),
-                    editor_spec=editor_spec,
-                    workflow_stage=config.workflow_stage,
-                )
+    def _catalog_entry(self, pass_id: str) -> PassCatalogEntry:
+        config = self._registry.config_template_for(pass_id)
+        spec = self._registry.build_spec(config)
+        editor_spec = self._registry.editor_spec_for(pass_id)
+        if editor_spec is None:
+            raise RecipeEditError(
+                f"pass {pass_id!r} is missing a config-v2 editor spec "
+                "for inspection"
             )
-        return tuple(entries)
+        return PassCatalogEntry(
+            pass_id=pass_id,
+            display_name=_display_name(pass_id),
+            contract_json=_canonical_json(pass_contract_manifest(spec)),
+            option_template_json=_canonical_json(dict(config.options)),
+            granularity=config.granularity.value,
+            maturity=_maturity_label(config),
+            backend_route=config.backend_route.value,
+            safety_policy=config.safety_policy.name,
+            transform_ids=self._registry.transform_ids_for(pass_id),
+            stage_ids=tuple(
+                stage.stage_id for stage in self._registry.stages_for(pass_id)
+            ),
+            configured=self._registry.is_configured(pass_id),
+            editor_spec=editor_spec,
+            workflow_stage=config.workflow_stage,
+        )
+
+    def catalog(self) -> tuple[PassCatalogEntry, ...]:
+        """Return only passes an operator may add to a recipe."""
+
+        return tuple(
+            self._catalog_entry(pass_id)
+            for pass_id in self._registry.public_pass_ids()
+        )
+
+    def inspection_catalog(
+        self, pass_ids: Sequence[str]
+    ) -> tuple[PassCatalogEntry, ...]:
+        """Describe configured passes, including private profile-owned stages."""
+
+        seen: set[str] = set()
+        ordered_ids: list[str] = []
+        for pass_id in pass_ids:
+            if pass_id in seen:
+                continue
+            seen.add(pass_id)
+            ordered_ids.append(pass_id)
+        return tuple(self._catalog_entry(pass_id) for pass_id in ordered_ids)
 
     def create_draft(
         self,

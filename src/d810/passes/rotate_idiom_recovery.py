@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from d810.core.deobfuscation_case import StrategyWorkflowStage
+from d810.core.pass_editor_spec import PassEditorSpec
 from d810.core.pass_ids import PassId
 from d810.core.typing import Mapping
 from d810.ir.maturity import IRMaturity
@@ -95,6 +96,7 @@ def register_rotate_idiom_recovery_pass(registry: PassRegistry) -> PassRegistry:
                 implementation_name=ROTATE_IDIOM_RECOVERY_IMPLEMENTATION,
             ),
         ),
+        editor_spec=PassEditorSpec.summary(),
         public=False,
     )
     return registry

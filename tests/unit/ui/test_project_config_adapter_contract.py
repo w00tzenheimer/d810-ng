@@ -170,7 +170,7 @@ def test_project_view_loads_active_pipeline_through_adapter_and_projection() -> 
     assert "config_v2_user_destination" in calls
     assert "ConfigV2EditingAdapter" in calls
     assert "load_view" in calls
-    assert "catalog" in calls
+    assert "inspection_catalog" in calls
     assert "project_config_v2_editor_view" in calls
     assert "set_overview" in calls
     assert "read_text" not in calls
@@ -497,6 +497,13 @@ class _RouteAdapter:
                 editor_spec=PassEditorSpec.summary(),
             ),
         )
+
+    def inspection_catalog(
+        self,
+        pass_ids: tuple[str, ...],
+    ) -> tuple[PassCatalogEntry, ...]:
+        by_pass_id = {entry.pass_id: entry for entry in self.catalog()}
+        return tuple(by_pass_id[pass_id] for pass_id in pass_ids)
 
     def reset(self) -> tuple[ConfigV2ProjectDraft, ConfigV2ProjectValidation]:
         self.reset_count += 1

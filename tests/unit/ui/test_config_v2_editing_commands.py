@@ -9,6 +9,8 @@ from d810.core.pass_editor_spec import PassEditorSpec
 from d810.manager.config_v2_edit_models import ConfigV2ProjectDraft
 from d810.manager.config_v2_editing import ConfigV2EditingService
 from d810.manager.workbench_recipe_models import PassCatalogEntry
+from d810.manager.workbench_recipe_service import RecipeService
+from d810.passes.operational_config_v2 import operational_config_v2_pass_registry
 from d810.ui.config_v2_editing_commands import ConfigV2EditingAdapter
 from d810.ui.config_v2_editing_logic import (
     _routing_view,
@@ -63,6 +65,41 @@ def _task_1_catalog() -> tuple[PassCatalogEntry, ...]:
     )
 
 
+def test_eidolon_overview_inspects_private_rotate_stage_without_authoring_it(
+    tmp_path: Path,
+) -> None:
+    profile_path = (
+        Path(__file__).resolve().parents[3]
+        / "src"
+        / "d810"
+        / "conf"
+        / "eidolon_v3_const_solve.json"
+    )
+    profile = ProjectConfiguration(
+        path=profile_path,
+        **json.loads(profile_path.read_text(encoding="utf-8")),
+    )
+    registry = operational_config_v2_pass_registry()
+    editing = ConfigV2EditingService(registry)
+    draft = editing.create_draft(
+        profile,
+        destination=tmp_path / "eidolon_v3_const_solve.json",
+    )
+    validation = editing.validate(draft)
+    recipes = RecipeService(registry)
+
+    view = project_config_v2_editor_view(
+        draft,
+        validation,
+        recipes.inspection_catalog(validation.pass_ids),
+    )
+
+    assert "rotate-idiom-recovery" not in {
+        entry.pass_id for entry in recipes.catalog()
+    }
+    assert "rotate-idiom-recovery" in {row.pass_id for row in view.overview.rows}
+
+
 def test_adapter_delegates_every_edit_to_state_and_revalidates() -> None:
     draft = SimpleNamespace(revision=0)
     edited = SimpleNamespace(revision=1)
@@ -72,6 +109,10 @@ def test_adapter_delegates_every_edit_to_state_and_revalidates() -> None:
     state = SimpleNamespace(
         get_config_v2_serializer_manifest=lambda: ("manifest",),
         get_workbench_recipe_catalog=lambda: ("catalog",),
+        get_workbench_recipe_inspection_catalog=lambda pass_ids: (
+            events.append(("inspection-catalog", tuple(pass_ids)))
+            or ("inspection-catalog",)
+        ),
         create_config_v2_project_draft=lambda destination: (
             events.append(("create", destination)) or draft
         ),
@@ -117,6 +158,11 @@ def test_adapter_delegates_every_edit_to_state_and_revalidates() -> None:
 
     assert adapter.manifest() == ("manifest",)
     assert adapter.catalog() == ("catalog",)
+    assert adapter.inspection_catalog(("private-pass",)) == (
+        "inspection-catalog",
+    )
+    assert events == [("inspection-catalog", ("private-pass",))]
+    events.clear()
     assert adapter.reset() == (edited, validation)
     assert adapter.set_description(draft, "new") == (edited, validation)
     assert adapter.add_pass(draft, "jump-fixer", index=1) == (edited, validation)

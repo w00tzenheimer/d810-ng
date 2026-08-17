@@ -1460,7 +1460,7 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
                     destination=destination,
                 )
                 draft, validation = adapter.load_view()
-                catalog = adapter.catalog()
+                catalog = adapter.inspection_catalog(validation.pass_ids)
                 overview = project_config_v2_editor_view(
                     draft,
                     validation,

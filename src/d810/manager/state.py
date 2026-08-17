@@ -772,6 +772,11 @@ class D810State(metaclass=SingletonMeta):
     def get_workbench_recipe_catalog(self) -> tuple[PassCatalogEntry, ...]:
         return self.manager.get_workbench_recipe_catalog()
 
+    def get_workbench_recipe_inspection_catalog(
+        self, pass_ids: tuple[str, ...]
+    ) -> tuple[PassCatalogEntry, ...]:
+        return self.manager.get_workbench_recipe_inspection_catalog(pass_ids)
+
     def create_workbench_recipe_draft(
         self,
         snapshot: DeobfuscationWorkbenchSnapshot,

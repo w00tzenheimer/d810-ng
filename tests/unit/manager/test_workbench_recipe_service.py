@@ -118,6 +118,21 @@ def test_catalog_exposes_only_the_consolidated_constant_operation():
         registry.config_template_for("global-constant-inliner")
 
 
+def test_inspection_catalog_includes_configured_private_pass_without_authoring_it():
+    service = _service()
+
+    assert "rotate-idiom-recovery" not in {
+        entry.pass_id for entry in service.catalog()
+    }
+
+    inspection = service.inspection_catalog(("rotate-idiom-recovery",))
+
+    assert tuple(entry.pass_id for entry in inspection) == (
+        "rotate-idiom-recovery",
+    )
+    assert inspection[0].editor_spec.kind.value == "summary"
+
+
 def test_public_recipe_catalog_rejects_missing_editor_spec() -> None:
     registry = PassRegistry()
     registry.register("public-pass", _PassWithoutEditorSpec, public=True)
