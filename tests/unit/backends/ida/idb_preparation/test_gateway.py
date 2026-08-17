@@ -11,6 +11,8 @@ from d810.capabilities.idb_preparation import (
     PreparationRunRequest,
     PreparationScriptDescriptor,
     PreparationState,
+    PreparationTypeDelta,
+    SerializedTypeSnapshot,
 )
 from d810.core.execution_journal import DecompilationSessionId, ExecutionAttemptId
 
@@ -118,6 +120,24 @@ class _Decompiler:
         return object()
 
 
+class _TypeMetadata:
+    def __init__(self, snapshots: dict[int, SerializedTypeSnapshot]) -> None:
+        self.snapshots = dict(snapshots)
+
+    def capture(self, item_ea: int) -> SerializedTypeSnapshot:
+        return self.snapshots.get(item_ea, SerializedTypeSnapshot.absent())
+
+    def apply(self, item_ea, expected_before, replacement) -> None:
+        if self.capture(item_ea) != expected_before:
+            raise RuntimeError("type before-image mismatch")
+        self.snapshots[item_ea] = replacement
+
+    def restore(self, item_ea, expected_after, original) -> None:
+        if self.capture(item_ea) != expected_after:
+            raise RuntimeError("type after-image mismatch")
+        self.snapshots[item_ea] = original
+
+
 class _PostDeltaCommitFailureJournal(SQLitePreparationJournal):
     def __init__(self, path: Path) -> None:
         super().__init__(path)
@@ -160,6 +180,7 @@ def _gateway(
     reanalyzer: _Reanalyzer | None = None,
     invalidator: _Invalidator | None = None,
     decompiler: _Decompiler | None = None,
+    type_metadata: _TypeMetadata | None = None,
 ) -> tuple[IdbPreparationGateway, SQLitePreparationJournal, _Decompiler]:
     durable_journal = journal or SQLitePreparationJournal(tmp_path / "journal.sqlite3")
     redo = decompiler or _Decompiler()
@@ -175,6 +196,7 @@ def _gateway(
         cache_invalidator=invalidator or _Invalidator(),
         caller_discovery=_Callers(),
         redo_decompiler=redo,
+        type_metadata=type_metadata,
     )
     return gateway, durable_journal, redo
 
@@ -422,5 +444,57 @@ def test_restore_does_not_redo_when_no_cfunc_was_invalidated(tmp_path: Path) -> 
         assert restored.ok
         assert restored.controlled_redo_function_eas == ()
         assert decompiler.calls == []
+    finally:
+        journal.close()
+
+
+def test_type_proposal_applies_and_restores_exact_snapshot(tmp_path: Path) -> None:
+    writer = _Writer({0x401000: 0x75})
+    before = SerializedTypeSnapshot.absent()
+    after = SerializedTypeSnapshot.from_parts(b"const-array", b"fields", b"comments")
+    types = _TypeMetadata({0x500000: before})
+    gateway, journal, _ = _gateway(
+        tmp_path,
+        writer=writer,
+        action=lambda context: None,
+        type_metadata=types,
+    )
+    proposal = PreparationTypeDelta(0x500000, before, after)
+    try:
+        applied = gateway.run(_request(), type_proposals=(proposal,))
+        assert applied.ok
+        assert types.capture(0x500000) == after
+
+        restored = gateway.restore(applied.transaction_id)
+        assert restored.ok
+        assert types.capture(0x500000) == before
+    finally:
+        journal.close()
+
+
+def test_restore_refuses_user_type_edit_after_apply(tmp_path: Path) -> None:
+    writer = _Writer({0x401000: 0x75})
+    before = SerializedTypeSnapshot.from_parts(b"before", None, None)
+    after = SerializedTypeSnapshot.from_parts(b"const", None, None)
+    user_edit = SerializedTypeSnapshot.from_parts(b"user", None, None)
+    types = _TypeMetadata({0x500000: before})
+    gateway, journal, _ = _gateway(
+        tmp_path,
+        writer=writer,
+        action=lambda context: None,
+        type_metadata=types,
+    )
+    try:
+        applied = gateway.run(
+            _request(),
+            type_proposals=(PreparationTypeDelta(0x500000, before, after),),
+        )
+        types.snapshots[0x500000] = user_edit
+
+        restored = gateway.restore(applied.transaction_id)
+
+        assert not restored.ok
+        assert restored.interference_type_eas == (0x500000,)
+        assert types.capture(0x500000) == user_edit
     finally:
         journal.close()

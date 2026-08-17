@@ -15,11 +15,14 @@ import idaapi
 
 from d810.backends.hexrays.global_const_annotation import (
     GlobalConstAnnotationStatus,
+    acknowledge_global_const_proposals,
     annotate_function_global_consts,
     annotate_global_table_access,
     discover_dynamic_global_table_access,
+    pending_global_const_proposals,
     referenced_global_items,
 )
+from d810.backends.ida.type_serialization import capture_serialized_tinfo
 from d810.core.persistence import Netnode
 
 
@@ -112,7 +115,7 @@ class TestGlobalConstAnnotation:
         assert eligible
 
         originals: dict[int, ida_typeinf.tinfo_t | None] = {}
-        receipts: dict[int, object] = {}
+        proposals: dict[int, object] = {}
         try:
             for item in eligible:
                 item_ea = item.evidence.item_head
@@ -132,14 +135,15 @@ class TestGlobalConstAnnotation:
 
             report = annotate_function_global_consts(
                 function_ea,
-                receipt_store=receipts,
+                proposal_store=proposals,
             )
 
-            assert report.applied_count == len(eligible)
+            assert report.queued_count == len(eligible)
             for item in eligible:
-                applied = ida_typeinf.tinfo_t()
-                assert ida_nalt.get_tinfo(applied, item.evidence.item_head)
-                assert applied.is_const()
+                live = ida_typeinf.tinfo_t()
+                if ida_nalt.get_tinfo(live, item.evidence.item_head):
+                    assert not live.is_const()
+                assert item.evidence.item_head in proposals
         finally:
             for item_ea, original in originals.items():
                 if original is None:
@@ -176,10 +180,11 @@ class TestGlobalConstAnnotation:
             )
         else:
             ida_nalt.del_tinfo(item_ea)
-        receipts = Netnode("$ d810.global_const_annotations.v1")
+        proposals = Netnode("$ d810.global_const_proposals.v1")
+        before_snapshot = capture_serialized_tinfo(item_ea)
         try:
             try:
-                del receipts[item_ea]
+                del proposals[item_ea]
             except KeyError:
                 pass
             with d810_state() as state:
@@ -196,12 +201,12 @@ class TestGlobalConstAnnotation:
                     flags=idaapi.DECOMP_NO_CACHE,
                 )
 
-            applied = ida_typeinf.tinfo_t()
-            assert ida_nalt.get_tinfo(applied, item_ea)
-            assert applied.is_const()
+            assert capture_serialized_tinfo(item_ea) == before_snapshot
+            pending = pending_global_const_proposals(proposal_store=proposals)
+            assert any(proposal.item_head == item_ea for proposal in pending)
         finally:
             try:
-                del receipts[item_ea]
+                del proposals[item_ea]
             except KeyError:
                 pass
             if had_original:
@@ -234,24 +239,33 @@ class TestGlobalConstAnnotation:
         else:
             ida_nalt.del_tinfo(item_ea)
 
-        receipts: dict[int, object] = {}
+        proposals: dict[int, object] = {}
+        before_snapshot = capture_serialized_tinfo(item_ea)
         try:
             first = annotate_global_table_access(
                 access,
-                receipt_store=receipts,
+                proposal_store=proposals,
             )
-            applied = ida_typeinf.tinfo_t()
-            assert ida_nalt.get_tinfo(applied, item_ea)
 
             second = annotate_global_table_access(
                 access,
-                receipt_store=receipts,
+                proposal_store=proposals,
             )
 
-            assert first.applied_count == 1
+            assert first.queued_count == 1
             assert first.changed_count == 1
-            assert applied.is_const()
+            assert capture_serialized_tinfo(item_ea) == before_snapshot
             assert second.changed_count == 0
+            assert (
+                second.outcomes[0].status is GlobalConstAnnotationStatus.ALREADY_QUEUED
+            )
+            pending = pending_global_const_proposals(proposal_store=proposals)
+            assert len(pending) == 1
+            acknowledge_global_const_proposals(
+                pending,
+                proposal_store=proposals,
+            )
+            assert not pending_global_const_proposals(proposal_store=proposals)
         finally:
             if had_original:
                 ida_typeinf.apply_tinfo(
@@ -280,7 +294,7 @@ class TestGlobalConstAnnotation:
             ida_typeinf.TINFO_DEFINITE,
         )
         try:
-            report = annotate_global_table_access(access, receipt_store={})
+            report = annotate_global_table_access(access, proposal_store={})
             current = ida_typeinf.tinfo_t()
             assert ida_nalt.get_tinfo(current, item_ea)
 
@@ -313,24 +327,25 @@ class TestGlobalConstAnnotation:
             ida_nalt.get_tinfo(original, item_ea) and not original.empty()
         )
         ida_nalt.del_tinfo(item_ea)
-        receipts: dict[int, object] = {}
+        proposals: dict[int, object] = {}
         write_added = False
         try:
-            first = annotate_global_table_access(access, receipt_store=receipts)
-            assert first.applied_count == 1
+            first = annotate_global_table_access(access, proposal_store=proposals)
+            assert first.queued_count == 1
             write_added = bool(ida_xref.add_dref(source_ea, item_ea, ida_xref.dr_W))
             assert write_added
 
-            removed = annotate_global_table_access(
+            cancelled = annotate_global_table_access(
                 access,
-                receipt_store=receipts,
+                proposal_store=proposals,
             )
             current = ida_typeinf.tinfo_t()
-            assert ida_nalt.get_tinfo(current, item_ea)
-            assert removed.removed_count == 1
-            assert not current.is_const()
+            assert not ida_nalt.get_tinfo(current, item_ea)
+            assert cancelled.cancelled_count == 1
+            assert item_ea not in proposals
 
-            user_const = current.copy()
+            user_const = ida_typeinf.tinfo_t()
+            user_const.create_simple_type(ida_typeinf.BTF_UINT32)
             user_const.set_const()
             assert ida_typeinf.apply_tinfo(
                 item_ea,
@@ -339,7 +354,7 @@ class TestGlobalConstAnnotation:
             )
             preserved = annotate_global_table_access(
                 access,
-                receipt_store={},
+                proposal_store={},
             )
             current = ida_typeinf.tinfo_t()
             assert ida_nalt.get_tinfo(current, item_ea)
@@ -382,10 +397,17 @@ class TestGlobalConstAnnotation:
         )
         assert before_decompiled is not None
         ida_nalt.del_tinfo(item_ea)
-        receipts = Netnode("$ d810.global_const_annotations.v1")
+        hexrays_only = idaapi.decompile(
+            function_ea,
+            flags=idaapi.DECOMP_NO_CACHE,
+        )
+        assert hexrays_only is not None
+        hexrays_only_type = capture_serialized_tinfo(item_ea)
+        ida_nalt.del_tinfo(item_ea)
+        proposals = Netnode("$ d810.global_const_proposals.v1")
         try:
             try:
-                del receipts[item_ea]
+                del proposals[item_ea]
             except KeyError:
                 pass
             with d810_state() as state:
@@ -403,23 +425,27 @@ class TestGlobalConstAnnotation:
                 )
                 assert decompiled is not None
 
-            applied = ida_typeinf.tinfo_t()
-            assert ida_nalt.get_tinfo(applied, item_ea)
-            assert applied.is_const()
-            assert "[8]" in applied.dstr()
+            assert capture_serialized_tinfo(item_ea) == hexrays_only_type
+            pending = pending_global_const_proposals(proposal_store=proposals)
+            proposal = next(
+                proposal for proposal in pending if proposal.item_head == item_ea
+            )
+            assert not proposal.before.present
+            assert proposal.after.present
             print(
                 f"[GLOBAL-CONST BEFORE] ea=0x{item_ea:X} "
                 f"type={before_type!r} const={before_const}"
             )
             print(
-                f"[GLOBAL-CONST AFTER] ea=0x{item_ea:X} "
-                f"type={applied.dstr()!r} const={applied.is_const()}"
+                f"[GLOBAL-CONST PROPOSAL] ea=0x{item_ea:X} "
+                f"before_present={proposal.before.present} "
+                f"after_present={proposal.after.present}"
             )
             print(f"[PSEUDOCODE BEFORE]\n{before_decompiled}")
             print(f"[PSEUDOCODE AFTER]\n{decompiled}")
         finally:
             try:
-                del receipts[item_ea]
+                del proposals[item_ea]
             except KeyError:
                 pass
             if had_original:

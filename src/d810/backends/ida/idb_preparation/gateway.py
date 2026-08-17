@@ -30,6 +30,8 @@ from d810.capabilities.idb_preparation import (
     PreparationState,
     PreparationTransactionId,
     PreparationTransactionStore,
+    PreparationTypeDelta,
+    SerializedTypeSnapshot,
 )
 from d810.core.typing import Callable, Protocol
 
@@ -61,6 +63,24 @@ class PreparationByteWriter(Protocol):
     def revert_byte(self, ea: int) -> None: ...
 
 
+class PreparationTypeMetadata(Protocol):
+    def capture(self, item_ea: int) -> SerializedTypeSnapshot: ...
+
+    def apply(
+        self,
+        item_ea: int,
+        expected_before: SerializedTypeSnapshot,
+        replacement: SerializedTypeSnapshot,
+    ) -> None: ...
+
+    def restore(
+        self,
+        item_ea: int,
+        expected_after: SerializedTypeSnapshot,
+        original: SerializedTypeSnapshot,
+    ) -> None: ...
+
+
 NativeActiveRangeProvider = Callable[[str], tuple[tuple[int, int], ...]]
 FunctionOwnerResolver = Callable[[int], int | None]
 
@@ -79,6 +99,7 @@ class PreparationRunReceipt:
     transaction_id: PreparationTransactionId
     state: PreparationState
     byte_deltas: tuple[PreparationByteDelta, ...] = ()
+    type_deltas: tuple[PreparationTypeDelta, ...] = ()
     affected_function_eas: tuple[int, ...] = ()
     reanalysis_receipts: tuple[ReanalysisReceipt, ...] = ()
     refresh_receipts: tuple[PreparationCfuncRefreshReceipt, ...] = ()
@@ -95,6 +116,7 @@ class PreparationRestoreReceipt:
     state: PreparationState
     restored_eas: tuple[int, ...] = ()
     interference_eas: tuple[int, ...] = ()
+    interference_type_eas: tuple[int, ...] = ()
     controlled_redo_function_eas: tuple[int, ...] = ()
     failure_reason: str | None = None
 
@@ -120,6 +142,7 @@ class IdbPreparationGateway:
         cache_invalidator: CfuncCacheInvalidator,
         caller_discovery: CallerDiscovery,
         redo_decompiler: ControlledRedoDecompiler,
+        type_metadata: PreparationTypeMetadata | None = None,
     ) -> None:
         if (
             not isinstance(current_database_identity, str)
@@ -137,6 +160,7 @@ class IdbPreparationGateway:
         self._cache_invalidator = cache_invalidator
         self._caller_discovery = caller_discovery
         self._redo_decompiler = redo_decompiler
+        self._type_metadata = type_metadata
 
     @staticmethod
     def _overlaps(ea: int, ranges: tuple[tuple[int, int], ...]) -> bool:
@@ -201,7 +225,12 @@ class IdbPreparationGateway:
             )
         return tuple(reanalysis), tuple(refresh), tuple(sorted(set(redone)))
 
-    def run(self, request: PreparationRunRequest) -> PreparationRunReceipt:
+    def run(
+        self,
+        request: PreparationRunRequest,
+        *,
+        type_proposals: tuple[PreparationTypeDelta, ...] = (),
+    ) -> PreparationRunReceipt:
         if request.database_identity != self._current_database_identity:
             raise ValueError("preparation request targets a foreign database")
 
@@ -215,7 +244,55 @@ class IdbPreparationGateway:
         prior_preparation_ranges = self._journal.active_byte_ranges(
             self._current_database_identity
         )
+        prior_type_items = frozenset(
+            self._journal.active_type_items(self._current_database_identity)
+        )
         native_ranges = self._native_active_ranges(self._current_database_identity)
+        ordered_type_proposals = tuple(
+            sorted(type_proposals, key=lambda proposal: proposal.item_ea)
+        )
+        if len({proposal.item_ea for proposal in ordered_type_proposals}) != len(
+            ordered_type_proposals
+        ):
+            record = self._journal.transition(
+                transaction_id,
+                PreparationState.REJECTED,
+                note="duplicate type proposal item",
+            )
+            return PreparationRunReceipt(
+                transaction_id=transaction_id,
+                state=record.state,
+                failure_reason="duplicate type proposal item",
+            )
+        conflicting_type_eas = tuple(
+            proposal.item_ea
+            for proposal in ordered_type_proposals
+            if proposal.item_ea in prior_type_items
+        )
+        if conflicting_type_eas:
+            record = self._journal.transition(
+                transaction_id,
+                PreparationState.REJECTED,
+                note="type item owned by an active preparation transaction",
+            )
+            return PreparationRunReceipt(
+                transaction_id=transaction_id,
+                state=record.state,
+                type_deltas=ordered_type_proposals,
+                failure_reason="type item owned by an active preparation transaction",
+            )
+        if ordered_type_proposals and self._type_metadata is None:
+            record = self._journal.transition(
+                transaction_id,
+                PreparationState.REJECTED,
+                note="type metadata adapter unavailable",
+            )
+            return PreparationRunReceipt(
+                transaction_id=transaction_id,
+                state=record.state,
+                type_deltas=ordered_type_proposals,
+                failure_reason="type metadata adapter unavailable",
+            )
         noted_ranges: set[tuple[int, int]] = set()
         noted_functions: set[int] = set()
 
@@ -243,10 +320,24 @@ class IdbPreparationGateway:
 
         self._journal.transition(transaction_id, PreparationState.SCRIPT_RUNNING)
         script_error: BaseException | None = None
-        try:
-            self._script_runner.run(request.script, context)
-        except BaseException as error:
-            script_error = error
+        if ordered_type_proposals:
+            self._journal.record_type_deltas(transaction_id, ordered_type_proposals)
+            _note_function(request.anchor_function_ea)
+            try:
+                assert self._type_metadata is not None
+                for proposal in ordered_type_proposals:
+                    self._type_metadata.apply(
+                        proposal.item_ea,
+                        proposal.before,
+                        proposal.after,
+                    )
+            except BaseException as error:
+                script_error = error
+        if script_error is None:
+            try:
+                self._script_runner.run(request.script, context)
+            except BaseException as error:
+                script_error = error
 
         self._journal.transition(transaction_id, PreparationState.CAPTURE_PENDING)
         try:
@@ -261,6 +352,7 @@ class IdbPreparationGateway:
                 transaction_id=transaction_id,
                 state=record.state,
                 failure_reason=f"post-script patch capture failed: {error}",
+                type_deltas=ordered_type_proposals,
             )
 
         deltas = derive_patch_delta(baseline, after)
@@ -278,6 +370,7 @@ class IdbPreparationGateway:
                     transaction_id=transaction_id,
                     state=record.state,
                     byte_deltas=deltas,
+                    type_deltas=ordered_type_proposals,
                     failure_reason=f"delta persistence failed: {error}",
                 )
             affected_functions = self._affected_functions(
@@ -296,11 +389,12 @@ class IdbPreparationGateway:
                 transaction_id=transaction_id,
                 state=restored.state,
                 byte_deltas=durable_deltas,
+                type_deltas=ordered_type_proposals,
                 affected_function_eas=affected_functions,
                 failure_reason=str(error),
             )
 
-        if script_error is not None and not deltas:
+        if script_error is not None and not deltas and not ordered_type_proposals:
             record = self._journal.transition(
                 transaction_id,
                 PreparationState.FAILED,
@@ -337,6 +431,7 @@ class IdbPreparationGateway:
                 transaction_id=transaction_id,
                 state=restored.state,
                 byte_deltas=deltas,
+                type_deltas=ordered_type_proposals,
                 failure_reason=reason,
             )
 
@@ -364,6 +459,7 @@ class IdbPreparationGateway:
                 transaction_id=transaction_id,
                 state=restored.state,
                 byte_deltas=deltas,
+                type_deltas=ordered_type_proposals,
                 affected_function_eas=affected_functions,
                 failure_reason=f"analysis failed: {error}",
             )
@@ -373,6 +469,7 @@ class IdbPreparationGateway:
             transaction_id=transaction_id,
             state=record.state,
             byte_deltas=deltas,
+            type_deltas=ordered_type_proposals,
             affected_function_eas=affected_functions,
             reanalysis_receipts=reanalysis,
             refresh_receipts=refresh,
@@ -388,6 +485,26 @@ class IdbPreparationGateway:
             )
             for delta in self._journal.byte_deltas(transaction_id)
         }
+
+    def _type_positions(
+        self, transaction_id: PreparationTransactionId
+    ) -> dict[int, PreparationBytePosition]:
+        deltas = self._journal.type_deltas(transaction_id)
+        if not deltas:
+            return {}
+        if self._type_metadata is None:
+            return {delta.item_ea: PreparationBytePosition.NEITHER for delta in deltas}
+        positions: dict[int, PreparationBytePosition] = {}
+        for delta in deltas:
+            live = self._type_metadata.capture(delta.item_ea)
+            if live == delta.before:
+                position = PreparationBytePosition.BEFORE
+            elif live == delta.after:
+                position = PreparationBytePosition.AFTER
+            else:
+                position = PreparationBytePosition.NEITHER
+            positions[delta.item_ea] = position
+        return positions
 
     def restore(
         self, transaction_id: PreparationTransactionId
@@ -409,6 +526,7 @@ class IdbPreparationGateway:
             )
 
         positions = self._positions(transaction_id)
+        type_positions = self._type_positions(transaction_id)
         interference = tuple(
             sorted(
                 ea
@@ -423,6 +541,20 @@ class IdbPreparationGateway:
                 interference_eas=interference,
                 failure_reason="live patch state diverged from transaction after-image",
             )
+        type_interference = tuple(
+            sorted(
+                ea
+                for ea, position in type_positions.items()
+                if position is not PreparationBytePosition.AFTER
+            )
+        )
+        if type_interference:
+            return PreparationRestoreReceipt(
+                transaction_id=transaction_id,
+                state=record.state,
+                interference_type_eas=type_interference,
+                failure_reason="live type state diverged from transaction after-image",
+            )
         self._journal.transition(transaction_id, PreparationState.RESTORING)
         return self._restore_in_current_lane(transaction_id)
 
@@ -433,6 +565,7 @@ class IdbPreparationGateway:
         failure_reason: str | None = None,
     ) -> PreparationRestoreReceipt:
         positions = self._positions(transaction_id)
+        type_positions = self._type_positions(transaction_id)
         interference = tuple(
             sorted(
                 ea
@@ -452,6 +585,25 @@ class IdbPreparationGateway:
                 interference_eas=interference,
                 failure_reason="live patch state matches neither before nor after",
             )
+        type_interference = tuple(
+            sorted(
+                ea
+                for ea, position in type_positions.items()
+                if position is PreparationBytePosition.NEITHER
+            )
+        )
+        if type_interference:
+            record = self._journal.transition(
+                transaction_id,
+                PreparationState.RESTORE_FAILED,
+                note="live type state matches neither before nor after",
+            )
+            return PreparationRestoreReceipt(
+                transaction_id=transaction_id,
+                state=record.state,
+                interference_type_eas=type_interference,
+                failure_reason="live type state matches neither before nor after",
+            )
 
         deltas = self._journal.byte_deltas(transaction_id)
         restored_eas: list[int] = []
@@ -465,6 +617,18 @@ class IdbPreparationGateway:
                     self._byte_writer.patch_byte(delta.ea, delta.restore_value)
                 restored_eas.append(delta.ea)
 
+            type_deltas = self._journal.type_deltas(transaction_id)
+            if type_deltas:
+                assert self._type_metadata is not None
+                for delta in type_deltas:
+                    if type_positions[delta.item_ea] is PreparationBytePosition.BEFORE:
+                        continue
+                    self._type_metadata.restore(
+                        delta.item_ea,
+                        delta.after,
+                        delta.before,
+                    )
+
             after_positions = self._positions(transaction_id)
             unrestored = tuple(
                 sorted(
@@ -477,6 +641,18 @@ class IdbPreparationGateway:
                 raise RuntimeError(
                     "restore readback did not reproduce the exact before-image at "
                     + ", ".join(f"{ea:#x}" for ea in unrestored)
+                )
+            unrestored_types = tuple(
+                sorted(
+                    ea
+                    for ea, position in self._type_positions(transaction_id).items()
+                    if position is not PreparationBytePosition.BEFORE
+                )
+            )
+            if unrestored_types:
+                raise RuntimeError(
+                    "type restore did not reproduce exact before-image at "
+                    + ", ".join(f"{ea:#x}" for ea in unrestored_types)
                 )
 
             function_eas = self._journal.affected_functions(transaction_id)

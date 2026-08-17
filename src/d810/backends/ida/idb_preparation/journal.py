@@ -516,8 +516,15 @@ class SQLitePreparationJournal:
         deltas: tuple[PreparationTypeDelta, ...],
     ) -> None:
         record = self._require_record(transaction_id)
-        if record.state is not PreparationState.CAPTURE_PENDING:
-            raise ValueError("type deltas may only be recorded in capture_pending")
+        if record.state not in {
+            PreparationState.SCRIPT_RUNNING,
+            PreparationState.CAPTURE_PENDING,
+            PreparationState.RECOVERY_REQUIRED,
+        }:
+            raise ValueError(
+                "type deltas may only be recorded in script_running, "
+                "capture_pending, or recovery_required"
+            )
         ordered = tuple(sorted(deltas, key=lambda delta: delta.item_ea))
         with self._conn:
             self._conn.executemany(

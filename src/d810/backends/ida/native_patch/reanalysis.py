@@ -27,6 +27,11 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 
+from d810.backends.ida.type_serialization import (
+    SerializedTinfoParts,
+    apply_serialized_tinfo,
+    capture_serialized_tinfo,
+)
 from d810.core.typing import Protocol, runtime_checkable
 from d810.transforms.native_patch_plan import NativeFunctionOwnership
 
@@ -222,21 +227,18 @@ class IdaFunctionExtentRestorer:
 
     @staticmethod
     def _serialized_type(entry_ea: int):
-        import ida_nalt
-        import ida_typeinf
-
-        tif = ida_typeinf.tinfo_t()
-        if not ida_nalt.get_tinfo(tif, entry_ea):
+        parts = capture_serialized_tinfo(entry_ea)
+        if parts is None:
             return None
-        return tuple(
-            bytes(part) if part is not None else None for part in tif.serialize()
+        return (
+            parts.type_bytes,
+            parts.field_bytes,
+            parts.field_comment_bytes,
         )
 
     def restore_function_ownership(self, ownership: NativeFunctionOwnership) -> bool:
         import ida_auto
         import ida_funcs
-        import ida_nalt
-        import ida_typeinf
 
         entry_ea = int(ownership.owning_function_entry_ea)
         expected_chunks = tuple(
@@ -284,23 +286,15 @@ class IdaFunctionExtentRestorer:
 
         if not ida_funcs.set_func_flags(entry_ea, ownership.function_flags):
             return False
-        if ownership.type_info is None:
-            ida_nalt.del_tinfo(entry_ea)
-        else:
-            tif = ida_typeinf.tinfo_t()
-            if not tif.deserialize(
-                None,
+        type_parts = None
+        if ownership.type_info is not None:
+            type_parts = SerializedTinfoParts(
                 ownership.type_info.type_bytes,
                 ownership.type_info.field_bytes,
                 ownership.type_info.field_comment_bytes,
-            ):
-                return False
-            if not ida_typeinf.apply_tinfo(
-                entry_ea,
-                tif,
-                ida_typeinf.TINFO_DEFINITE,
-            ):
-                return False
+            )
+        if not apply_serialized_tinfo(entry_ea, type_parts):
+            return False
 
         restored = ida_funcs.get_func(entry_ea)
         if restored is None:
