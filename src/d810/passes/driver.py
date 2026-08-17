@@ -138,12 +138,75 @@ def _graph_changed(old_graph, new_graph) -> bool:
     return new_graph != old_graph
 
 
+def _backend_mutation_receipt(backend: object) -> object | None:
+    """Return the backend's receipt for the most recent committed apply."""
+    receipt = getattr(backend, "last_mutation_receipt", None)
+    if receipt is not None:
+        return receipt
+    execution = getattr(backend, "last_patch_execution", None)
+    return getattr(execution, "receipt", None)
+
+
+def _validated_route_operation_key(
+    value: object,
+) -> tuple[str, int, int | None, int | None] | None:
+    if not isinstance(value, tuple) or len(value) != 4:
+        return None
+    mutation_kind, source_serial, old_target_serial, target_serial = value
+    if not isinstance(mutation_kind, str) or not mutation_kind.strip():
+        return None
+    if any(separator in mutation_kind for separator in ("\x00", "\n", "\r")):
+        return None
+
+    def _serial(candidate: object) -> int | None:
+        if candidate is None:
+            return None
+        if (
+            not isinstance(candidate, int)
+            or isinstance(candidate, bool)
+            or candidate < 0
+        ):
+            return None
+        return int(candidate)
+
+    source = _serial(source_serial)
+    if source is None:
+        return None
+    old_target = _serial(old_target_serial)
+    if old_target_serial is not None and old_target is None:
+        return None
+    target = _serial(target_serial)
+    if target_serial is not None and target is None:
+        return None
+    return (mutation_kind.strip(), source, old_target, target)
+
+
+def _committed_operation_keys(
+    mutation_receipt: object | None,
+) -> tuple[tuple[str, int, int | None, int | None], ...] | None:
+    if mutation_receipt is None:
+        return None
+    inventory = getattr(mutation_receipt, "committed_operation_inventory", None)
+    if not isinstance(inventory, tuple):
+        return None
+    keys: list[tuple[str, int, int | None, int | None]] = []
+    for item in inventory:
+        raw_key = getattr(item, "operation_key", None)
+        key = _validated_route_operation_key(raw_key)
+        if raw_key is not None and key is None:
+            return None
+        if key is not None:
+            keys.append(key)
+    return tuple(keys)
+
+
 def _log_applied_native_bound_route_receipts(
     plan: PatchPlan | object,
     *,
     pre_graph: object,
     new_graph: object,
     mutation_status: ExecutionAttemptStatus,
+    mutation_receipt: object | None,
 ) -> None:
     """Log route receipts only after a changed graph was committed by apply."""
     if (
@@ -164,6 +227,10 @@ def _log_applied_native_bound_route_receipts(
     receipts = metadata.get(NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA)
     if not isinstance(receipts, tuple):
         return
+    committed_operation_keys = _committed_operation_keys(mutation_receipt)
+    if committed_operation_keys is None:
+        return
+    logged_operation_keys: set[tuple[str, int, int | None, int | None]] = set()
     for receipt in receipts:
         if not isinstance(receipt, dict):
             continue
@@ -174,6 +241,7 @@ def _log_applied_native_bound_route_receipts(
         state = receipt.get("state")
         target = receipt.get("target")
         target_block = receipt.get("target_block")
+        operation_key = _validated_route_operation_key(receipt.get("operation_key"))
         if (
             not isinstance(fact_id, str)
             or not fact_id
@@ -191,8 +259,12 @@ def _log_applied_native_bound_route_receipts(
             or target < 0
             or not isinstance(target_block, str)
             or not target_block
+            or operation_key is None
+            or committed_operation_keys.count(operation_key) != 1
+            or operation_key in logged_operation_keys
         ):
             continue
+        logged_operation_keys.add(operation_key)
         logger.info(
             "native-bound transition route receipt: fact_id=%s native_ea=%s "
             "current=%s state=0x%08X target=%s",
@@ -687,10 +759,7 @@ def _plan_effect_ref(plan: PatchPlan | object, *, kind: str) -> ExecutionEffectR
 
 def _backend_receipt_effect(backend: object) -> ExecutionEffectRef | None:
     """Extract a stable receipt summary without retaining a live backend object."""
-    receipt = getattr(backend, "last_mutation_receipt", None)
-    if receipt is None:
-        execution = getattr(backend, "last_patch_execution", None)
-        receipt = getattr(execution, "receipt", None)
+    receipt = _backend_mutation_receipt(backend)
     if receipt is None:
         return None
     receipt_id = str(
@@ -1008,6 +1077,7 @@ def _run_pass_spec(
                 pre_graph=pre_mutation_graph,
                 new_graph=new_graph,
                 mutation_status=mutation_status,
+                mutation_receipt=_backend_mutation_receipt(backend),
             )
             _observe_native_cfg_mutation(
                 state=native_cfg_observer_state,
@@ -1056,6 +1126,7 @@ def _run_pass_spec(
                 pre_graph=ctx.graph,
                 new_graph=new_graph,
                 mutation_status=mutation_status,
+                mutation_receipt=_backend_mutation_receipt(backend),
             )
             if mutation_status is not ExecutionAttemptStatus.COMPLETED:
                 terminal_status = mutation_status

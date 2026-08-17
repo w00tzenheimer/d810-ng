@@ -67,6 +67,62 @@ from d810.transforms.cfg_transaction import (
 logger = getLogger(__name__)
 
 
+MbaMutationOperationKey = tuple[str, int, int | None, int | None]
+
+
+def make_mba_mutation_operation_key(
+    mutation_kind: str,
+    *,
+    source_serial: int,
+    old_target_serial: int | None = None,
+    target_serial: int | None = None,
+) -> MbaMutationOperationKey:
+    """Build the canonical identity for one concrete mutation operation."""
+    return validate_mba_mutation_operation_key(
+        (
+            mutation_kind,
+            source_serial,
+            old_target_serial,
+            target_serial,
+        )
+    )
+
+
+def validate_mba_mutation_operation_key(
+    value: object,
+) -> MbaMutationOperationKey:
+    """Validate and normalize one receipt operation identity."""
+    if not isinstance(value, tuple) or len(value) != 4:
+        raise TypeError(
+            "mutation operation key must be a 4-tuple "
+            "(kind, source, old_target, target)"
+        )
+    mutation_kind, source_serial, old_target_serial, target_serial = value
+    if not isinstance(mutation_kind, str) or not mutation_kind.strip():
+        raise TypeError("mutation operation key requires a non-empty kind")
+    if any(separator in mutation_kind for separator in ("\x00", "\n", "\r")):
+        raise ValueError("mutation operation key kind contains a control character")
+
+    def _serial(value: object, field_name: str) -> int | None:
+        if value is None:
+            return None
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise TypeError(
+                f"mutation operation key {field_name} must be a non-negative integer"
+            )
+        return int(value)
+
+    source = _serial(source_serial, "source")
+    if source is None:
+        raise TypeError("mutation operation key source is required")
+    return (
+        mutation_kind.strip(),
+        source,
+        _serial(old_target_serial, "old target"),
+        _serial(target_serial, "target"),
+    )
+
+
 class StructuralMutationKind(Enum):
     """Structural mutation families that can invalidate current bindings."""
 
@@ -185,6 +241,7 @@ class MbaMutationReceipt:
     root_publication_confirmed: bool = False
     current_mba_identity_binding: CurrentMbaIdentityBindingSnapshot | None = None
     detached_route_oracle: DetachedRouteOracleResult | None = None
+    committed_operation_inventory: tuple[MbaMutationPlanItem, ...] = ()
 
     def __post_init__(self) -> None:
         pre_generation = int(self.pre_generation)
@@ -221,6 +278,16 @@ class MbaMutationReceipt:
         root_publication_groups = tuple(self.root_publication_groups)
         current_mba_identity_binding = self.current_mba_identity_binding
         detached_route_oracle = self.detached_route_oracle
+        committed_operation_inventory = tuple(self.committed_operation_inventory)
+        if any(
+            not isinstance(item, MbaMutationPlanItem)
+            for item in committed_operation_inventory
+        ):
+            raise TypeError("committed operation inventory contains an invalid item")
+        if len(
+            {item.item_index for item in committed_operation_inventory}
+        ) != len(committed_operation_inventory):
+            raise ValueError("committed operation inventory has duplicate item indexes")
         if any(
             not isinstance(group, MbaMutationRootPublicationGroup)
             for group in root_publication_groups
@@ -306,6 +373,11 @@ class MbaMutationReceipt:
             "current_mba_identity_binding",
             current_mba_identity_binding,
         )
+        object.__setattr__(
+            self,
+            "committed_operation_inventory",
+            committed_operation_inventory,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -333,6 +405,28 @@ class MbaMutationPlanItem:
     target_identity: StableBlockIdentity | None = None
     disposition: str = "planned"
     reason: str = ""
+    old_target_serial: int | None = None
+    operation_key: MbaMutationOperationKey | None = None
+
+    def __post_init__(self) -> None:
+        if self.operation_key is None:
+            return
+        operation_key = validate_mba_mutation_operation_key(self.operation_key)
+        mutation_kind = str(self.mutation_kind)
+        if operation_key[0] != mutation_kind:
+            raise ValueError("mutation operation key kind differs from plan item")
+        if self.source_serial is not None and int(self.source_serial) != operation_key[1]:
+            raise ValueError("mutation operation key source differs from plan item")
+        if self.target_serial is not None and int(self.target_serial) != operation_key[3]:
+            raise ValueError("mutation operation key target differs from plan item")
+        if (
+            self.old_target_serial is not None
+            and int(self.old_target_serial) != operation_key[2]
+        ):
+            raise ValueError(
+                "mutation operation key old target differs from plan item"
+            )
+        object.__setattr__(self, "operation_key", operation_key)
 
 
 @dataclass(frozen=True, slots=True)
@@ -594,6 +688,11 @@ class MbaMutationGateway:
     # applied. Reconciling the realization inventory needs these back:
     # applied + superseded == planned.
     _superseded_operation_count: int = field(default=0, init=False)
+    _active_plan_items: tuple[MbaMutationPlanItem, ...] = field(
+        default=(),
+        init=False,
+        repr=False,
+    )
     _active_fragment_plan: FragmentPlan | None = field(
         default=None,
         init=False,
@@ -1214,6 +1313,7 @@ class MbaMutationGateway:
         self._active_description = str(description)
         self._active_batch_id = batch_id
         self._planned_operation_count = planned_operation_count
+        self._active_plan_items = plan_items
         self._active_root_publication_groups.update(
             (group.group_id, group) for group in fragment_root_publication_groups
         )
@@ -1330,6 +1430,23 @@ class MbaMutationGateway:
         if superseded < 0:
             raise ValueError("superseded operation count must be non-negative")
         self._superseded_operation_count = superseded
+
+    def register_post_filter_plan_items(
+        self,
+        plan_items: Iterable[MbaMutationPlanItem],
+    ) -> None:
+        """Retain the post-filter/post-coalescing inventory for this batch.
+
+        Patch-plan lowering opens the gateway before the deferred modifier has
+        coalesced and filtered its queue.  The modifier calls this method when
+        it re-enters the already-active gateway, making the eventual receipt
+        describe the concrete work that could actually commit.
+        """
+        self._require_active()
+        items = tuple(plan_items)
+        if any(not isinstance(item, MbaMutationPlanItem) for item in items):
+            raise TypeError("post-filter operation inventory contains an invalid item")
+        self._active_plan_items = items
 
     def observe_patch_realization(
         self,
@@ -2826,6 +2943,7 @@ class MbaMutationGateway:
             root_publication_confirmed=self._active_root_publication_confirmed,
             current_mba_identity_binding=self._active_current_mba_identity_binding,
             detached_route_oracle=self._active_detached_route_oracle,
+            committed_operation_inventory=self._active_plan_items,
         )
         self.generation = post_generation
         self._receipts.append(receipt)
@@ -2836,6 +2954,7 @@ class MbaMutationGateway:
         self._active_description = ""
         self._active_batch_id = None
         self._planned_operation_count = 0
+        self._active_plan_items = ()
         self._affected_identities.clear()
         self._operation_count = 0
         self._reset_fragment_context()
@@ -2919,6 +3038,7 @@ class MbaMutationGateway:
         self._active_description = ""
         self._active_batch_id = None
         self._planned_operation_count = 0
+        self._active_plan_items = ()
         self._affected_identities.clear()
         self._operation_count = 0
         self._reset_fragment_context()
@@ -2948,10 +3068,13 @@ __all__ = [
     "MbaMutationAborted",
     "MbaMutationGateway",
     "MbaMutationObservationFailure",
+    "MbaMutationOperationKey",
     "MbaMutationPlanItem",
     "MbaMutationPlanned",
     "MbaMutationReceipt",
     "MbaMutationRootPublicationGroup",
     "MbaSemanticFragmentRouteOracleCompared",
     "StructuralMutationKind",
+    "make_mba_mutation_operation_key",
+    "validate_mba_mutation_operation_key",
 ]

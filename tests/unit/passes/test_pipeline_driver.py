@@ -135,11 +135,22 @@ class _Facts:
 
 
 class _Backend:
-    def __init__(self, caps=("live_mba",)):
+    def __init__(
+        self,
+        caps=("live_mba",),
+        *,
+        receipt_operation_key=("block_goto_change", 10, 2, 20),
+    ):
         self._caps = frozenset(caps)
         self.applied = 0
         self.published_fragments = []
         self.safety_policies = []
+        if "last_mutation_receipt" not in type(self).__dict__:
+            self.last_mutation_receipt = SimpleNamespace(
+                committed_operation_inventory=(
+                    SimpleNamespace(operation_key=receipt_operation_key),
+                )
+            )
 
     def capabilities(self):
         return self._caps
@@ -244,6 +255,7 @@ class _ReceiptPass:
                             "state": 0x20,
                             "target": 20,
                             "target_block": "blk[20]@0x1500",
+                            "operation_key": ("block_goto_change", 10, 2, 20),
                         },
                     )
                 }
@@ -503,6 +515,40 @@ def test_native_bound_route_receipt_logs_only_after_completed_mutation(caplog):
         "native_ea=0x7FF855576BAA current=blk[10]@0x1280 "
         "state=0x00000020 target=blk[20]@0x1500"
     ]
+
+
+def test_native_bound_route_receipt_is_silent_for_an_unrelated_committed_operation(
+    caplog,
+):
+    backend = _Backend(receipt_operation_key=("block_goto_change", 10, 2, 21))
+
+    with caplog.at_level(logging.INFO, logger="d810.passes.driver"):
+        _run_specs(
+            (PassSpec("receipt", _ReceiptPass, no_caps, default),),
+            backend=backend,
+        )
+
+    assert not any(
+        "native-bound transition route receipt:" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_native_bound_route_receipt_is_silent_when_route_operation_was_replaced(
+    caplog,
+):
+    backend = _Backend(receipt_operation_key=("block_convert_to_goto", 10, None, 20))
+
+    with caplog.at_level(logging.INFO, logger="d810.passes.driver"):
+        _run_specs(
+            (PassSpec("receipt", _ReceiptPass, no_caps, default),),
+            backend=backend,
+        )
+
+    assert not any(
+        "native-bound transition route receipt:" in record.getMessage()
+        for record in caplog.records
+    )
 
 
 def test_native_bound_route_receipt_is_silent_when_mutation_does_not_change_graph(

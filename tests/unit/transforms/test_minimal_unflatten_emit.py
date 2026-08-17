@@ -95,6 +95,7 @@ from d810.transforms.minimal_unflatten_emit import (
     build_materialized_conditional_handler_bridges,
     build_materialized_state_entry_bridges,
     build_materialized_state_route_redirects,
+    build_native_bound_state_entry_bridges,
     build_resolver_proven_indirect_call_neutralizations,
     build_stack_carried_state_selector_lowerings,
     _normalize_degenerate_branch_redirects,
@@ -634,11 +635,64 @@ def test_native_bound_route_receipt_identifies_accepted_current_route(
             "state": 0x20,
             "target": 20,
             "target_block": "blk[20]@0x1500",
+            "operation_key": ("block_goto_change", 10, 2, 20),
         },
     )
     assert not any(
         "native-bound transition route receipt:" in record.getMessage()
         for record in caplog.records
+    )
+
+
+def test_native_bound_entry_route_receipt_identifies_exact_redirect(monkeypatch):
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (1,), ()),
+            1: _b(1, (2,), (0,)),
+            2: _b(2, (10,), (1, 10)),
+            10: _b(10, (2,), (2,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    state = 0x16AA65E9
+    disp = _disp({state: 10}, exit_block=99)
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "recover_state_write_transitions_via_partitioned_fixpoint",
+        lambda *_args, **_kwargs: (),
+    )
+    route = _native_bound_route(
+        source=1,
+        state=state,
+        target=10,
+        fact_id="entry:receipt",
+    )
+
+    plan = emit_minimal_unflatten(
+        fg,
+        disp,
+        state_var_stkoff=_STATE,
+        dispatcher_entry_serial=2,
+        native_bound_transition_routes=(route,),
+    )
+
+    assert (1, 2, 10) in {
+        (mod.from_serial, mod.old_target, mod.new_target)
+        for mod in graph_modifications(plan)
+        if isinstance(mod, RedirectGoto)
+    }
+    assert plan.metadata_dict()[NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA] == (
+        {
+            "fact_id": "entry:receipt",
+            "native_ea": 0x7FF855576BA0 + 1,
+            "native_ea_hex": "0x7FF855576BA1",
+            "current_block": "blk[1]@0x1040",
+            "state": state,
+            "target": 10,
+            "target_block": "blk[10]@0x1280",
+            "operation_key": ("block_goto_change", 1, 2, 10),
+        },
     )
 
 
@@ -5210,6 +5264,119 @@ def test_materialized_state_entry_bridge_abstains_on_conflicting_routes() -> Non
         )
         == []
     )
+
+
+def test_native_bound_state_entry_bridge_emits_exact_redirect() -> None:
+    flow_graph = FlowGraph(
+        blocks={
+            0: _b(0, (1,), ()),
+            1: _b(1, (2,), (0,)),
+            2: _b(2, (10,), (1, 10)),
+            10: _b(10, (2,), (2,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+
+    assert build_native_bound_state_entry_bridges(
+        flow_graph,
+        (_native_bound_route(source=1, state=0x10, target=10),),
+        dispatcher_region_serials=frozenset({2}),
+        authoritative_handler_serials=frozenset({10}),
+    ) == [
+        RedirectGoto(from_serial=1, old_target=2, new_target=10),
+    ]
+
+
+@pytest.mark.parametrize(
+    "routes, blocks, routers, handlers",
+    [
+        (
+            (_native_bound_route(source=1, state=0x10, target=11),),
+            {
+                0: _b(0, (1,), ()),
+                1: _b(1, (2,), (0,)),
+                2: _b(2, (10,), (1, 10)),
+                10: _b(10, (2,), (2,)),
+            },
+            {2},
+            {10},
+        ),
+        (
+            (_native_bound_route(source=1, state=0x10, target=10),),
+            {
+                0: _b(0, (1,), ()),
+                1: _b(1, (2, 3), (0,)),
+                2: _b(2, (10,), (1,)),
+                3: _b(3, (10,), (1,)),
+                10: _b(10, (2,), (2,)),
+            },
+            {2},
+            {10},
+        ),
+        (
+            (
+                _native_bound_route(source=1, state=0x10, target=10, fact_id="a"),
+                _native_bound_route(source=1, state=0x20, target=20, fact_id="b"),
+            ),
+            {
+                0: _b(0, (1,), ()),
+                1: _b(1, (2,), (0,)),
+                2: _b(2, (10, 20), (1,)),
+                10: _b(10, (2,), (2,)),
+                20: _b(20, (2,), (2,)),
+            },
+            {2},
+            {10, 20},
+        ),
+        (
+            (_native_bound_route(source=1, state=0x10, target=2),),
+            {
+                0: _b(0, (1,), ()),
+                1: _b(1, (2,), (0,)),
+                2: _b(2, (10,), (1,)),
+                10: _b(10, (2,), (2,)),
+            },
+            {2},
+            {2},
+        ),
+    ],
+    ids=("mismatch", "fork", "conflict", "handler-in-topology"),
+)
+def test_native_bound_state_entry_bridge_abstains_on_ambiguous_or_topology_routes(
+    routes, blocks, routers, handlers
+) -> None:
+    flow_graph = FlowGraph(blocks=blocks, entry_serial=0, func_ea=0x1000)
+
+    assert (
+        build_native_bound_state_entry_bridges(
+            flow_graph,
+            routes,
+            dispatcher_region_serials=frozenset(routers),
+            authoritative_handler_serials=frozenset(handlers),
+        )
+        == []
+    )
+
+
+def test_native_bound_state_entry_bridge_preserves_existing_backedge() -> None:
+    flow_graph = FlowGraph(
+        blocks={
+            0: _b(0, (2,), ()),
+            2: _b(2, (10,), (0, 10)),
+            10: _b(10, (2,), (2,)),
+            20: _b(20, (), ()),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+
+    assert build_native_bound_state_entry_bridges(
+        flow_graph,
+        (_native_bound_route(source=10, state=0x10, target=20),),
+        dispatcher_region_serials=frozenset({2}),
+        authoritative_handler_serials=frozenset({20}),
+    ) == []
 
 
 def test_emit_accepts_applied_preopt_conditional_port_when_one_router_row_was_pruned(

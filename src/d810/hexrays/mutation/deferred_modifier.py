@@ -212,6 +212,7 @@ from d810.hexrays.mutation.mba_mutation_events import (
     MbaMutationGateway,
     MbaMutationPlanItem,
     StructuralMutationKind,
+    make_mba_mutation_operation_key,
 )
 from d810.hexrays.mutation.semantic_fragment_backend import (
     SemanticFragmentBackendRejected,
@@ -10731,7 +10732,10 @@ class DeferredGraphModifier:
         plan_items: Iterable[MbaMutationPlanItem] = (),
     ) -> None:
         """Create the sole serial-binding authority for this apply batch."""
+        plan_items = tuple(plan_items)
         if self._mutation_gateway is not None and self._mutation_gateway.active:
+            if plan_items:
+                self._mutation_gateway.register_post_filter_plan_items(plan_items)
             return
         gateway = self._mutation_gateway
         if gateway is None:
@@ -10745,7 +10749,7 @@ class DeferredGraphModifier:
             ),
             description=description,
             planned_operation_count=int(planned_operation_count),
-            plan_items=tuple(plan_items),
+            plan_items=plan_items,
         )
 
     def _build_mutation_plan_items(
@@ -10786,6 +10790,32 @@ class DeferredGraphModifier:
             )
             source_identity, source_anchor = _identity_and_anchor(source_serial)
             target_identity, target_anchor = _identity_and_anchor(target_serial)
+            old_target_serial = modification.old_target
+            if old_target_serial is None and modification.mod_type in (
+                ModificationType.BLOCK_GOTO_CHANGE,
+                ModificationType.BLOCK_TARGET_CHANGE,
+            ):
+                block = self.mba.get_mblock(source_serial)
+                if block is not None:
+                    if modification.mod_type == ModificationType.BLOCK_GOTO_CHANGE:
+                        nsucc = block.nsucc() if callable(block.nsucc) else block.nsucc
+                        if int(nsucc) == 1:
+                            old_target_serial = int(block.succ(0))
+                    else:
+                        tail = getattr(block, "tail", None)
+                        destination = getattr(getattr(tail, "d", None), "b", None)
+                        if destination is not None:
+                            old_target_serial = int(destination)
+            operation_key = make_mba_mutation_operation_key(
+                modification.mod_type.name.lower(),
+                source_serial=source_serial,
+                old_target_serial=(
+                    None
+                    if old_target_serial is None
+                    else int(old_target_serial)
+                ),
+                target_serial=target_serial,
+            )
             items.append(
                 MbaMutationPlanItem(
                     item_index=item_index,
@@ -10802,6 +10832,12 @@ class DeferredGraphModifier:
                     target_identity=target_identity,
                     disposition="planned",
                     reason="post-filter deferred plan",
+                    old_target_serial=(
+                        None
+                        if old_target_serial is None
+                        else int(old_target_serial)
+                    ),
+                    operation_key=operation_key,
                 )
             )
         return tuple(items)

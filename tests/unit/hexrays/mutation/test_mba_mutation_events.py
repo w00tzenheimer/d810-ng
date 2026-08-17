@@ -14,6 +14,7 @@ from d810.hexrays.mutation.mba_mutation_events import (
     MbaMutationAborted,
     MbaMutationCommitted,
     MbaMutationGateway,
+    MbaMutationPlanItem,
     MbaMutationPlanned,
     StructuralMutationKind,
 )
@@ -185,6 +186,48 @@ def test_gateway_correlates_plan_commit_and_abort_with_batch_ids() -> None:
     assert aborted[-1].mutation_batch_id == second_batch
     assert aborted[-1].reason == "preflight rejected"
     assert index.generation == 3
+
+
+def test_gateway_receipt_carries_post_filter_operation_inventory() -> None:
+    index = MbaBlockIdentityIndex.from_bindings(
+        session_id="mutation-session",
+        generation=2,
+        bindings=(),
+        native_key=NATIVE_KEY,
+    )
+    gateway = MbaMutationGateway(
+        generation=2,
+        session_id="mutation-session",
+        identity_index=index,
+        native_key=NATIVE_KEY,
+    )
+    operation = MbaMutationPlanItem(
+        item_index=0,
+        mutation_kind="block_goto_change",
+        source_serial=10,
+        target_serial=20,
+        operation_key=("block_goto_change", 10, 2, 20),
+    )
+    planned_operation = MbaMutationPlanItem(
+        item_index=0,
+        mutation_kind="block_goto_change",
+        source_serial=10,
+        target_serial=21,
+        operation_key=("block_goto_change", 10, 2, 21),
+    )
+
+    gateway.begin_batch(
+        StructuralMutationKind.EDGE_REDIRECT,
+        planned_operation_count=2,
+        plan_items=(planned_operation,),
+    )
+    gateway.register_post_filter_plan_items((operation,))
+    gateway.record_coalesced_supersessions(1)
+    gateway.record_edge_redirect()
+
+    receipt = gateway.commit()
+
+    assert receipt.committed_operation_inventory == (operation,)
 
 
 def test_gateway_observer_failure_cannot_change_transaction_authority() -> None:

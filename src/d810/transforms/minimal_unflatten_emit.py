@@ -123,7 +123,13 @@ from d810.transforms.graph_modification import (
     SyntheticStackValueEqualsCondition,
     ZeroStateWrite,
 )
-from d810.transforms.plan import PatchPlan, compile_patch_plan
+from d810.transforms.plan import (
+    PatchConvertToGoto,
+    PatchPlan,
+    PatchRedirectBranch,
+    PatchRedirectGoto,
+    compile_patch_plan,
+)
 from d810.transforms.cfg_transaction import LogicalBlockRef, NativeBlockRef
 from d810.transforms.edit_simulator import project_patch_plan
 from d810.transforms.exit_path_effect_emission import (
@@ -2351,22 +2357,22 @@ def _unique_materialized_state_target(
     return next(iter(candidates)) if len(candidates) == 1 else None
 
 
-def build_materialized_state_entry_bridges(
+def _build_source_keyed_state_entry_bridges(
     flow_graph,
-    routes: tuple[MaterializedStateRoute, ...],
+    routes: tuple[object, ...],
     *,
     dispatcher_region_serials: frozenset[int],
     authoritative_handler_serials: frozenset[int],
 ) -> list[object]:
-    """Bypass a proven router edge from the live function-entry prefix.
+    """Bypass one proven router edge from the live function-entry prefix.
 
-    A materialized computed-goto resolver can prove the state written by a
-    prologue block and the exact handler that owns that state even when the
-    comparison-tree adapter cannot recover a scalar ``initial_state``.  Accept
-    that source-keyed evidence only when the source is reachable from the
-    function entry without crossing either the dispatcher region or a handler,
-    and its sole successor is a proven router block.  Conflicting targets for
-    the same edge abstain.
+    The route evidence is intentionally source-keyed: accept it only when the
+    source is reachable from the function entry without crossing either the
+    dispatcher region or a handler, its sole successor is a router block, and
+    the target is a non-topology handler. Conflicting targets for one edge
+    abstain. This is shared by materialized state routes and native-bound
+    transition routes; neither path is promoted into a synthetic back-edge
+    transition.
     """
     routers = frozenset(int(serial) for serial in dispatcher_region_serials)
     handlers = frozenset(int(serial) for serial in authoritative_handler_serials)
@@ -2393,7 +2399,11 @@ def build_materialized_state_entry_bridges(
     for route in routes:
         source = int(route.source_block_serial)
         target = int(route.target_handler_serial)
-        if source not in entry_prefix or target not in handlers:
+        if (
+            source not in entry_prefix
+            or target not in handlers
+            or target in routers
+        ):
             continue
         block = flow_graph.get_block(source)
         if block is None or block.nsucc != 1:
@@ -2412,6 +2422,38 @@ def build_materialized_state_entry_bridges(
         for (source, old_target), targets in sorted(candidates.items())
         if len(targets) == 1
     ]
+
+
+def build_materialized_state_entry_bridges(
+    flow_graph,
+    routes: tuple[MaterializedStateRoute, ...],
+    *,
+    dispatcher_region_serials: frozenset[int],
+    authoritative_handler_serials: frozenset[int],
+) -> list[object]:
+    """Bypass a proven materialized route from the function-entry prefix."""
+    return _build_source_keyed_state_entry_bridges(
+        flow_graph,
+        routes,
+        dispatcher_region_serials=dispatcher_region_serials,
+        authoritative_handler_serials=authoritative_handler_serials,
+    )
+
+
+def build_native_bound_state_entry_bridges(
+    flow_graph,
+    routes: tuple[NativeBoundTransitionRoute, ...],
+    *,
+    dispatcher_region_serials: frozenset[int],
+    authoritative_handler_serials: frozenset[int],
+) -> list[object]:
+    """Bypass a native-bound route from the function-entry prefix."""
+    return _build_source_keyed_state_entry_bridges(
+        flow_graph,
+        routes,
+        dispatcher_region_serials=dispatcher_region_serials,
+        authoritative_handler_serials=authoritative_handler_serials,
+    )
 
 
 def build_materialized_state_route_redirects(
@@ -7522,10 +7564,92 @@ def emit_minimal_unflatten(
             or (not plan.steps and not plan.new_blocks)
         ):
             return plan
+        source_coordinates = dict(plan.source_coordinates)
+
+        def _step_operation_key(step: object):
+            if isinstance(step, PatchRedirectBranch):
+                mutation_kind = "block_target_change"
+                source_ref = step.from_serial
+                old_target_ref = step.old_target
+                target_ref = step.new_target
+            elif isinstance(step, PatchRedirectGoto):
+                mutation_kind = "block_goto_change"
+                source_ref = step.from_serial
+                old_target_ref = step.old_target
+                target_ref = step.new_target
+            elif isinstance(step, PatchConvertToGoto):
+                mutation_kind = "block_convert_to_goto"
+                source_ref = step.block_serial
+                old_target_ref = None
+                target_ref = step.goto_target
+            else:
+                return None
+            source_serial = source_coordinates.get(source_ref)
+            target_serial = source_coordinates.get(target_ref)
+            old_target_serial = (
+                None
+                if old_target_ref is None
+                else source_coordinates.get(old_target_ref)
+            )
+            if source_serial is None or target_serial is None:
+                return None
+            if old_target_ref is not None and old_target_serial is None:
+                return None
+            return (
+                mutation_kind,
+                int(source_serial),
+                None if old_target_serial is None else int(old_target_serial),
+                int(target_serial),
+            )
+
+        keyed_receipts: list[dict[str, object]] = []
+        step_keys = tuple(_step_operation_key(step) for step in plan.steps)
+        for route_receipt, route in zip(
+            native_bound_route_receipts,
+            accepted_native_bound_routes,
+        ):
+            target_serial = route_receipt.get("target")
+            if not isinstance(target_serial, int):
+                continue
+            source_serials = {int(route.source_block_serial)}
+            route_reason = (
+                f"fact_id={route.fact_id};"
+                f"native_ea=0x{int(route.source_instruction_ea):X}"
+            )
+            for transition in transitions:
+                proof = getattr(transition, "proof", None)
+                if (
+                    transition.next_state == (int(route.state_constant) & 0xFFFFFFFF)
+                    and transition.target_handler == int(route.target_handler_serial)
+                    and proof is not None
+                    and proof.oracle_kind == "native_bound_transition_route"
+                    and proof.kind == "native_bound_route"
+                    and proof.reason == route_reason
+                ):
+                    source_serials.add(int(transition.write_block))
+                    if transition.via_block is not None:
+                        source_serials.add(int(transition.via_block))
+            candidates = tuple(
+                key
+                for key in step_keys
+                if key is not None
+                and key[1] in source_serials
+                and key[3] == int(target_serial)
+            )
+            if len(candidates) != 1:
+                continue
+            keyed_receipts.append(
+                {
+                    **route_receipt,
+                    "operation_key": candidates[0],
+                }
+            )
+        if not keyed_receipts:
+            return plan
         return plan.with_metadata(
             **{
                 NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA: (
-                    native_bound_route_receipts
+                    tuple(keyed_receipts)
                 )
             }
         )
@@ -7694,7 +7818,7 @@ def emit_minimal_unflatten(
             int(serial) for serial in dispatcher_region_serials
         ),
     )
-    accepted_native_bound_routes = tuple(
+    accepted_native_bound_backedge_routes = tuple(
         route
         for route in native_bound_transition_routes
         if any(
@@ -7719,9 +7843,6 @@ def emit_minimal_unflatten(
             )
             for transition in transitions
         )
-    )
-    native_bound_route_receipts = tuple(
-        _native_bound_route_receipt(route) for route in accepted_native_bound_routes
     )
     dispatcher_state_plumbing_serials = frozenset(
         int(transition.write_block)
@@ -7774,6 +7895,25 @@ def emit_minimal_unflatten(
         if materialized_computed_goto_profile
         else []
     )
+    native_bound_entry_route_mods = build_native_bound_state_entry_bridges(
+        flow_graph,
+        tuple(native_bound_transition_routes),
+        dispatcher_region_serials=frozenset(
+            {
+                int(dispatcher_entry_serial),
+                *(int(serial) for serial in dispatcher_region_serials),
+            }
+        ),
+        authoritative_handler_serials=frozenset(
+            {
+                *route_handler_serials,
+                *(
+                    int(route.target_handler_serial)
+                    for route in native_bound_transition_routes
+                ),
+            }
+        ),
+    )
     materialized_state_route_mods = (
         build_materialized_state_route_redirects(
             flow_graph,
@@ -7818,6 +7958,7 @@ def emit_minimal_unflatten(
         # The live resolver port already enters a router that reloads the
         # dynamic state. A scalar source-keyed bridge would bypass that reload.
         materialized_entry_route_mods = []
+        native_bound_entry_route_mods = []
         materialized_state_route_mods = [
             modification
             for modification in materialized_state_route_mods
@@ -7830,6 +7971,27 @@ def emit_minimal_unflatten(
                 in dynamic_entry_bridge_edges
             )
         ]
+    accepted_native_bound_entry_routes = tuple(
+        route
+        for route in native_bound_transition_routes
+        if any(
+            isinstance(modification, RedirectGoto)
+            and int(modification.from_serial) == int(route.source_block_serial)
+            and int(modification.new_target) == int(route.target_handler_serial)
+            for modification in native_bound_entry_route_mods
+        )
+    )
+    accepted_native_bound_routes = tuple(
+        dict.fromkeys(
+            (
+                *accepted_native_bound_backedge_routes,
+                *accepted_native_bound_entry_routes,
+            )
+        )
+    )
+    native_bound_route_receipts = tuple(
+        _native_bound_route_receipt(route) for route in accepted_native_bound_routes
+    )
     conditional_bridge_mods = build_materialized_conditional_handler_bridges(
         flow_graph,
         materialized_indirect_transfers,
@@ -8168,6 +8330,21 @@ def emit_minimal_unflatten(
                             for mod in materialized_entry_route_mods
                         ),
                     )
+            if not bridged and native_bound_entry_route_mods:
+                bridged = True
+                if logger.info_on:
+                    logger.info(
+                        "unflat entry bridge: EXACT_NATIVE_BOUND_STATE_ROUTE "
+                        "edges=%s",
+                        ",".join(
+                            "%s->%s"
+                            % (
+                                _format_block_label(flow_graph, mod.from_serial),
+                                _format_block_label(flow_graph, mod.new_target),
+                            )
+                            for mod in native_bound_entry_route_mods
+                        ),
+                    )
             if not bridged and bootstrap_entry_routes:
                 bridged = True
                 if logger.info_on:
@@ -8234,7 +8411,9 @@ def emit_minimal_unflatten(
         entry_bridge_evidence=entry_bridge_evidence,
         conditional_entry_bridge=conditional_entry_bridge,
         exact_entry_bridge_present=bool(
-            bootstrap_entry_routes or materialized_entry_route_mods
+            bootstrap_entry_routes
+            or materialized_entry_route_mods
+            or native_bound_entry_route_mods
         ),
         protected_edges=frozenset(
             {
@@ -8245,7 +8424,11 @@ def emit_minimal_unflatten(
         ),
         dynamic_entry_bridge_edges=dynamic_entry_bridge_edges,
     )
-    if materialized_entry_route_mods:
+    entry_route_mods = [
+        *materialized_entry_route_mods,
+        *native_bound_entry_route_mods,
+    ]
+    if entry_route_mods:
         existing_entry_redirects = {
             (
                 int(mod.from_serial),
@@ -8257,7 +8440,7 @@ def emit_minimal_unflatten(
         }
         mods = list(mods) + [
             mod
-            for mod in materialized_entry_route_mods
+            for mod in entry_route_mods
             if (
                 int(mod.from_serial),
                 int(mod.old_target),
