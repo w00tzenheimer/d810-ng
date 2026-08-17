@@ -15,9 +15,11 @@ inheriting a bundled projection.
 from __future__ import annotations
 
 import copy
+import base64
 import hashlib
 import json
-from collections.abc import Callable, Mapping, Sequence
+import zlib
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from d810.passes.mba_transform_options import (
@@ -61,15 +63,6 @@ class KnownPortfolio:
     fingerprint: str
     donor_name: str
     pass_ids: tuple[str, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class LegacyRuleProjection:
-    """Table-driven ownership projection for a legacy rule family."""
-
-    rule_name: str
-    pass_ids: tuple[str, ...]
-    project: Callable[[Mapping[str, object]], tuple[dict[str, object], ...]]
 
 
 _STATE_MACHINE_PASS_IDS = tuple(str(item) for item in STATE_MACHINE_NATIVE_PASS_IDS)
@@ -328,6 +321,83 @@ _KNOWN_BY_IDENTITY = {
     (item.source_name, item.fingerprint): item for item in _KNOWN_PORTFOLIOS
 }
 
+# Full checked-in donor ``PipelineConfig.to_dict()`` entries and owned
+# additional metadata. This compressed JSON blob is the offline fallback once
+# donor canaries are deleted; it is intentionally not read from the repository
+# at runtime.
+_KNOWN_DONOR_TEMPLATE_BLOB = (
+    "c-rk<OLOD8(fu!4oBkwHlI__|d}pe@RArM?Hc3sfAQF_3;VUHNk!R}u_cXvKD8QCIl5JUMC7?m#(LjS#pVQ#4$tqiKN<YrByuAER"
+    "nWd9Yza~MJMq=&XyMDk@Ry;^qu}LeDaKFqpMZhPYCb`IYEK*LFO)e(2*st%T(w%DmywL9W^zUC2sylutc`2*Ui|k&6Jfwne7n6ej"
+    "cO!~AM>nom@SUfjUu2s~Hl1uLR*5Y2n*wT|8m<Z!RI)CS-m_SQtg5T-n~_yVbWz#Vo3LtAh)RtwVOy$M6qoBbTe0{u%W1gcCzq8c"
+    "BCX3v9a$;@7Lzb9c*G0U$#fIPR2}s$-&CqiE(eoJJ&oI>+e%*CKh?EH1BR;tma~<JMJ1GEa+hV_eHwdOMp=>gEM$4biwRw6?8L8$"
+    "99c$H8dOaUmn`D7M)E8c0i`A(kJu)zCVj8`jC37S#Sx23F7FDmT+YlY&Vui9uGiF|P0VWTPNGd3$VMl<&i!>gKe7*Xk7Vbhf>>Gl"
+    "g8DNlMY@i;Qxzh2<VtdK&Ku236{;nm^b^N^t5&+NDmMIL@}1|EuFHg{wE{+~s~)l64)@n&oyDX#zrRe4@?w&*gb&oAhJDAwP0Wk#"
+    "?#Yj=_#TT=YD*@gIQ!w36<f<YyXE7zra+az4qyj6b|9z0Z&gp*s9ZBN>uE@ZGtEen6?15PRoo$s((H#q)<FY@oxn~$zMX`dB=<#1"
+    "BS?5C=n_8>L6HSn$h-B(Q?`mZEeBeGN(HxBlCy%}QXLgbtG|<cMok&Su37An_^*t&H~w|irP80Hq}wOGJ~{7`i$1yRlUIH6S|*cR"
+    "CjaHBUQE7eTfl!v2TmlmAJ6E&X)ld_qGq*uJ$2|Ul3HmRJmkBpRwdqBu@61-y;aadn4ZOzv!cp^JBJ$1;(I)jVG8GK3Z(G(!y3Z="
+    "k14-Zh_7_9k;6a2qs!h59%ry&JkIbqgDK!~c96$eNn=x*^s_X6IL@=o)W%6X$fOxI##$%eiHW|ADRwsZ8~z?LELy#M%LAITRm{mG"
+    "SSVLTXA%idvZA-030tqJQ>D1)ewz8sYtavCf@;@{J7^p{PAQT+77<xR(<eOU@R-|u%++4`;qFv$wXUd-KRv&BHoT3g@olaa{qGrD"
+    "{|p}p`IeD+aA&=d4W#Q9tw>j7Tv0@qO6MzGy1Z!R_pF$F^3-(hUe?RiWfI-^>3B|Ojm>)KjIX)4Egx1;*E#t#mkR7UuO^Fyp|i~j"
+    "M|x)4wA-Zb<YF#LCnO75-&Nf;W4Y~m&mx~&<cmh0#qoX8wN~d`E$3;uw!Sjwfnag3qM5D0wH2s})6khY5<i+XxmB7~j$EIuqDC^;"
+    "AoC2e`A}xmuC1_bVa+RNljpo}R-!7$eWK(@vfUM#vuy*mUfDWiob%K&=czWgsW!LiaBh_j<OH>|Pz&_lk7cew<{4!3R;KGliMAG5"
+    "&g35C$gC!JhncRiaSh`RjypH*Sd(A0dDEm=mx(IS^rrPVl&=A6mMUpbj-TpQ@zf%>UGG}to<%;l$QKs*(jvdI$geH(8?)Tfeb=G}"
+    "*P;g3QjbLo7A078U{QfZ0~Q6y@ylIBK8ow5(&t<)C;Oai;^FEZWZfp)uDmuqlzW4;9BRtfj_pBXD|4GNYSMPw_L*gEm9~3K*HblP"
+    "Qy+;8S9!alc`eeb(QD9eHg(c6CX?8qmkH568|i{}x|*chC!6;A4ZH7Ob5(Q2yngo#ovA8sl5U^$`sCo+MVpMG{ys{(gS0nDceiG="
+    "DrUn>cZclZpolu!=Sp6!v|RdgoOSiAr)TGScA;mNdiHvd)!WgVsaq*G)HSOmG^N^GNiVbCF__(2Fj!=oz-<J!s!VIkB=;<Gskt9q"
+    "6!o;#DYr{`U8=us(WRtb)%$5T7MWvll9g4L9Sm%%o6lCaAKT7g+Z9Z5TRn4&e9_2<{clZeJFqpGPI+0$g;8yys2zCo+g{#YYJAx>"
+    "7PPNd!5tIw&yD=QbC>W+1f7U(Ym?hS+Wvo|E-RBvzLKWA5J4k~<=&=?YKz#B4MjWuoxbgIx$4K(1KbX9JDdT33*4+TKnXT!6tk-0"
+    "DQ$T^%gOe$`(q#l_I3b!!wCu}D4d{hg2D+3Cn%htaDu`K3MVL>pm2i12?{4DoS<-m!U>9C?-Q_-Nhr#kRn$bGT#m7tpdh=ad|%WH"
+    "dFUrBxRbTM4-->&?O0eGU#ih4`3sC}Qe-i|94O#8&OS+^r8PJ?UH-6ik|_%s_|BG#g}2n~%($Y?#lqUb*J@Imtf=)@zsmA}p4-__"
+    "Iex_o`s?V|tDx~ZipCpU*0W2dL(+BQwJ#Dy-VSJ&t44-tQvOFX)^=~Y9P9W1c5Bq%-nJ}9SjTxalS)G*QQc4VcT&z<?cv|c?hQNB"
+    "32p=yTR4mTAdeZTiYKHZ5m0y5YWz<dt!W?lu!dZ#<w)jh)Z`(8dLG+}E>7EW&8zl&td?%=_O0d(*jGA9ctwAgDmJ!Yo5CJ@yFTbU"
+    "!a?_jNtn?(VO3Vh#^mX7zDT1?b}uU{t#GiTb%rgshiL7WcP!`9G-xfq`4%HP#KSdzbd%}q$Y05SkYrt4A6dbEXmC9XLkW`ea`>M~"
+    "Z_Bn*z5R+g@E+J~;unY67VDkBv@6O@=1n$5!=?Zi8+Mz$e08t5vm7;G`5l@iwNBONa$6JOhL-a=`W@f_2MzdiX~1Cp?#24`%Nctu"
+    "=5OB?*uP-^g8d8jFWA3e|APGs_Al7KVE=;s3-&MAzhM7@{R{Rle4p@rg8d8jFWA3l$o{>#_NMbG=)a)<g8qBn^xsEz0`Pyq{{{c|"
+    "q)ZnCU=V;o00sg0j0wPoT@egmFo3}Tet&ie3NYN@pa6pc{DCRJie7MZ^6#J(d?FB^2*f7>KhhI=^nMF&Jh<`T#)BIVZald0;KqX+"
+    "4{rR&;KqXu4>mm5@L<EA3LActmSUY!{}Z;R%BgS@XR5>C$pat&KyVO%KwJJIt-W-P^awfBZ0${fA;1t2FoJ*)1dJeH<Y?@T+4Ab@"
+    "%AMiFc!Z1~WaP|4MjqV@5Hy0I5d@8#nDHWP1Ysix8$sB}8HbG+_eBJbAaDeMBk$2N5jp~g_;X!z?V5>LBI1XSgbXQAlskPyfYXfC"
+    ">B0nH7qAP2RGmUdRhRr*7XH6v-$@O0!hg^U%Re@&-GYBo!RIhE7mV&ma#`?qu3l-^YOKBZa}<$%efe)M`IlE;@~vNd{!dRnasyV7"
+    "$@%mQ=01-i8A8%NxRvgw+b`F*UvF-`FI3xfJG=6xOYe53GPi#$yyeYusxqGY`Sxac^HpWs#m(*4#p26;4TiK|-6_iZlh>BrOABJw"
+    "8e&?#HHeainMESzz9RB8Z|T>w>1DG+mX~*YTd;@nvfUIe6<N?HEz_&5+AjLPw{n|pOq~8Wr6S^Gy&#O2l>f&T%c+0wd45D2p|3`!"
+    "E-34uwr{rZx=N@ZCZDHk8s*XB>`cw=A8-d;7Pu^MS>Uq3Wr52Amjx~hTo$-2a9QB8z-58U0+$6Y3tSesEO6Nme<YahL>z3(^+V#7"
+    "otT#Paf}#_5!>q+G1@0ZP~pTd0MIx!?3t&A9pOl?Cu8`Zior*~J#aeUbinC=(*dUgP6wP0I2~|0;B>(0fYSk|15O8=4mcffI^cA`"
+    ">COnJYmZ%gHDFF}kh&N1H47fvZ?v?<w4+v>{wc?u*SMaS_mA6sER5o#;SxKbLbEO%kp{Jm%lD&3CJzw47fc;LEz(UXPpKXh%Tump"
+    "vAirR4EM<sq_qNhZZM6V#g05)Sbpl_(L!fAACxDgJdwu_sw8JcHSl%;)BvafP~*irMIAIxxAeO~{TQm}1Aqqr4*(tjJPx~001N>b"
+    "0x;wQ88(0t03`rQ0F;~wP;!tx6Cese6o4qFX0<q=5*Pyx;yd+&_(td7;o!IyG36r6;w(KRCaP8WCvZ&Qn7<icwevO6<}-5XiXO&M"
+    ")WlKIrOS&}e$R?wq?LYIFISh%cEhhE+}VD{wN1NC+Vmw_+efZVa?c{4TjYyI-ha}$&$(L8({gQn#!t=~3tU@)*L;h%|D3PPjlZ2e"
+    "mbnI*XOPW@GNX2Fg>4J^$AqP1yDKth+bV4B+L|=ZYHFF)RGYn2o4s^6duo(&3R*qa0=@TRnQM@F2HCuo>AF#(twokIxkD(tUX#1S"
+    "OxM`BhH(eSof~(o$uHWxX;Q2UK^16v(|R1rc;_`sl{6^FG0j%-)FQWC?^)z?i+o{`FD>#bi~QOmzcI^Q%eY+2xLnsPw+z=ZTFYQ9"
+    "W3>#`GEzCvHLo1`<g4et&$(Jo_Bq+a!{s{2x=prSN^M#WDdlVH2j6XFZc}FYh`B7<KC`T?(sqyOda7n@qa%^wDsNXbuSI$_dJX!`"
+    "rcPSMWD+|HR8714+G!blkA3htc1cg_cG|vw%~j16^TsLaOjUW4bo->&CkNLq+GG^<_fgs%q`g79yEUU#F&k#OJ7f<BMbyzgSMqA5"
+    "<<g(ytgB}|Jv-O43q8Bkv)6;H-j3c(-HK#;&8(Ktlxi;wz07{cV0LT4V3BD8w-MN?GOaC>+_T7~=6-Nd)YDd{+%DyHss6e}my&u_"
+    "ua4bVWRAs2R#shhFtDv|K3m;>Y&(N(S1`$K^~^2uMI#^fzcsb(z}93s<z*!oMzx8ecHqr#dwF}Q@jcX7(7qQ1cTC9t4DxTpUBW97"
+    "bRxQ~O>PJ2oqr0=2(xfAcrEF(T3MHI&xmNakBgvIs;`uDP)EUT#W=1A#}(nYBDm>sT+s=;(=Lv2B2tk_w9dKXan1`zq;U<OcdbbL"
+    ")v1{aPDJLYl$^&b;7+@lI1MQ3WRdfOUMU=rBs>&MO*mYBC*|^!|K>NjTnZ~umE%6aAqa=ydvOT5C+;YO|L`#W!=c=JreD$K?10bl"
+    "EqsnMdQ2wtCavCZ;fI7D5`IYdAvHhblgGCvSvWeqHJ1C`&VjCvAMz@{)JQj}zuit7d{#PD=KSPE=7@-NS@A$>M*atKlt;zjB}H5{"
+    ";;Io>jl*IQJB`?B#7^U|Sj0yoJ{pI`A_f{U(1?LX3^Zb(aab(koDt`Y!(w5fh-F4BGh&(FIZ-(lt85i*%7B(Ycnrd_p#j;vT3f!F"
+    "jIQ4&bCxqm&2LX?W@~j$iS(YPS$j;l@`sjSI^!V@rZbq%U^;{845l-f&R{x&=?tbbn9g82gXs*WGnmd`I)mv9-w6PaC$U1d^;^~Z"
+    "wOgo=NUQX2?AnHMMC1}zO+!UaI4iO;A_5Q*a9~(|xmbA1ZpA!Mc|jMf9~2ij+ywOeq7_Jq(a|Od8bHthf(FhmXyA9Z3&a&5t^jcb"
+    "AJ4uKdVtUagdQOD;EY2LUb=N6IswrMh)y_B<3#`i{Pzf8Kmfxz1u*z*6&yW?p>G5yup?LjC$Qt$jJSm3#U;Ftpn*g3=bxbPo5BrV"
+    "MCf@|pu>=-G-Njo#k)i&1NX>AQ8F=^cKJ>=deoc6TRemF{}OJ$XAU!Xc?87o#A56fA7TBjq!z32NDt=57!rHr#vv&FmWTsuM1d*J"
+    ";fe4H?}@MpEwEs(u!rXdRy+~yF}H?}JTKVcBuM)R(s)@k#*4lIHoVRKO?vY4qAi{iPw{wk#&g3MUJ`-v2GJR>9pLa-IELFtIP4t+"
+    "VhP&NBRfn{72e)KB=0bU!4PBd!f=pj-;t@>Mqd^rq6L490z*szB*zYb*e?WQpD2)LM11J4E$==0;aOoE^B2WI?1qxq;wwfWCZouV"
+    "_OD8k-8*+QP}xeww-sU#z^w+i8mFy;I1S=7h|@T29js`uqQQ#BY3raogYpc@GbqnEZ5@1O@R@PiIxG}qWssFYRz5AVa+>+15P4(_"
+    "y#mS?z~fVwElq;R3?eg#%y@2t$P6Mgh|C}|gUAdbGl<L}GK0trA~T50AToo<3?eg#%pfwuPx6X>k`@z-SR&$w6UR5S<*$}LccPe8"
+    "6;DOFcABv|o3s%E_k&#k_XF;C+PI(G%%tP>kiec^Cy+ZJclcg19>;+5&Jxah1!(MdKQ;GZJPU8*Q8)wt(`mRZ?cd3Ktq*mYU6)7y"
+    "u<7$$<4^muU0`(QhQ%Eb`hM|O!=H~zzW_`>#7EbSAh#Kge?On7H*hE31vSJ(;Mj{UGGKYU6@};Zs9S@1>~ix*XkD*Fp8|-2f2a5&"
+    "t@(?zGklR2b^<#AsDfkAa10ubLBla<I0g;Jpy3!a9D{~q&~OYIjzPmQXgCH9$DrXDG#rD5W6*F68jeB3F=+3fJ*~oU{U~N@_mBkY"
+    "ooXdfyIs}w`V%E7R!CE&>dVc_zxw+156|<iZ>RHVt$M*4gP3k-*VE~2{+BP)`hAL)Lh45aZ5e_T#EMFE%Ty$^6O^JR?5gY9Vr30w"
+    "&EIZCwHy4CdtGlpBHc9mQX{{iMHYwcGqRE1xN@OnSwt&J^^dxL6-A+M>zLfC*aK|}pK3+9S6z{N?GGDvZ{z?Qb+(<jk~8@|&3>f*"
+    "?&#X(-YDvJ@%1m>{PXOOo6pNH-fSVCoBI>k;Q)pM7!F`KfZ+g!0~iiqIDp{*h65N5U^sx`0EPn?4q!Nd;Q)pM7!F`qD5%?@ZiBl0"
+    "-Vq(YoUtRJI(^ju7XU5*TmZNLZ~@=~zy*K{02cr*09*jL0AC-#1%L|x7XU5*TmZNLZ~@=~zy*K{9|&BKXCM1fkRJ<S(Ca^mL-=vF"
+    "_^F&NzH>16V;_`#-cheOK@m_Npgur-fcgOS0qO(P2dEEFAD})!eSrD^^#SSw)CZ^!P#>T^Kz*=KKz)Gv0QJG3@d@j9^9gHu7Z5>p"
+    "mS3yh8~$F$E7Gy+OGO?Y{NAk{5q5yx0J{Np1MCLa4X_(vH^6Ry-2l4*c7qojup3}Ez;1xu0J{NpJJ0X8$eFIBR@IU|pfl1?F+y;F"
+    "3hs>x`h1)7LP*1s{j3d-W{BQ|SP|R}_dmMJo7RP-ghY0lR#-?zdPgO$X8rB5bmX#hXdHET(zzM_pZ^2qd*-J"
+)
+_KNOWN_DONOR_TEMPLATES = json.loads(
+    zlib.decompress(base64.b85decode(_KNOWN_DONOR_TEMPLATE_BLOB)).decode("utf-8")
+)
+
 
 def _source_basename(source_name: str) -> str:
     """Normalize POSIX and Windows path spellings to a basename."""
@@ -456,11 +526,36 @@ def _error_for_rule(rule: LegacyRule, message: str, *, field: str | None = None)
     path = f"{rule.section}[{rule.index}]"
     if field:
         path = f"{path}.{field}"
-    return LegacyMigrationError(f"{path}: {message}")
+    return LegacyMigrationError(f"{path} ({rule.name}): {message}")
+
+
+def _typed_error_for_rules(
+    rules: Sequence[LegacyRule], message: str
+) -> LegacyMigrationError:
+    """Attach typed registry failures to their originating legacy rule."""
+
+    if not rules:
+        return LegacyMigrationError(message)
+    owner = rules[0]
+    if len(rules) > 1:
+        transform_map = _mba_transform_map()
+        for candidate in rules:
+            transform_id = transform_map.get(candidate.name)
+            if transform_id is not None and transform_id in message:
+                owner = candidate
+                break
+            if any(str(key) in message for key in candidate.options):
+                owner = candidate
+                break
+    field = next(
+        (f"config.{key}" for key in owner.options if str(key) in message),
+        "config",
+    )
+    return _error_for_rule(owner, f"typed config-v2 validation failed: {message}", field=field)
 
 
 def _validate_v2_entries(
-    payload: object, *, path_prefix: str
+    payload: object, *, path_prefix: str, normalize: bool = True
 ) -> tuple[dict[str, object], ...]:
     if isinstance(payload, (str, bytes)) or not isinstance(payload, Sequence):
         raise LegacyMigrationError(f"{path_prefix} must be a sequence of pass configs")
@@ -491,11 +586,14 @@ def _validate_v2_entries(
         except (PipelineConfigError, ValueError, RuntimeError) as exc:
             raise LegacyMigrationError(f"{path}: {exc}") from exc
         seen_pass_ids[config.pass_id] = index
-        # Retain the input's complete durable shape when normalizing an already
-        # v2 document; typed validation above proves it is safe to keep.
-        copied = _deep_json_copy(raw_entry, path)
-        assert isinstance(copied, dict)
-        entries.append(copied)
+        if normalize:
+            # Emit the typed serializer's stable shape rather than preserving
+            # enum aliases, omitted defaults, or ``options: null`` from input.
+            entries.append(config.to_dict())
+        else:
+            copied = _deep_json_copy(raw_entry, path)
+            assert isinstance(copied, dict)
+            entries.append(copied)
     return tuple(entries)
 
 
@@ -728,34 +826,63 @@ _BLOCK_RULE_TO_PASS = {
 }
 
 
-def _project_instruction_portfolio(
-    rules: Sequence[LegacyRule], *, known: bool = False
-) -> list[dict[str, object]]:
-    constant_rules = [rule for rule in rules if rule.name in _CONSTANT_RULE_NAMES]
-    entries: list[dict[str, object]] = []
-    # A known portfolio may intentionally contain a partial historical bundle;
-    # its donor/fallback handles that normalization.  Generic documents must
-    # prove complete ownership before a public pass is emitted.
-    if constant_rules and not known:
-        if not _find_rule(rules, "FoldReadonlyDataRule") or not _find_rule(rules, "ConstantSubtreeFoldRule"):
-            owner = constant_rules[0]
-            raise _error_for_rule(owner, "partial constant-simplification bundle", field="name")
-        # FCP is normally in blk_rules; complete cross-section validation is
-        # performed by the caller before this helper is used for custom input.
-    mba = _project_mba_rules(rules, allow_duplicate_transforms=known)
-    if constant_rules:
-        # The caller supplies all sections when generic migration is used; this
-        # branch is only reached for the complete instruction-only portion.
-        pass
-    if mba is not None:
-        entries.append({"pass_id": "mba-simplify", "options": mba})
-    return entries
+def _validate_cross_section_ownership(
+    rules: Sequence[LegacyRule],
+) -> None:
+    """Reject wrong-section rules and every duplicate typed owner up front."""
+
+    transform_map = _mba_transform_map()
+    block_owned_names = frozenset(
+        {_STATE_RULE_NAME, _JUMP_RULE_NAME, *_BLOCK_RULE_TO_PASS}
+    )
+    owners: dict[tuple[str, str], LegacyRule] = {}
+    for rule in rules:
+        name = rule.name
+        if rule.section == "ins_rules":
+            if name in block_owned_names:
+                raise _error_for_rule(rule, "block-owned rule must be in blk_rules", field="name")
+            transform_id = transform_map.get(name)
+            if transform_id is not None:
+                owner_key = ("mba-transform", transform_id)
+            elif name in _CONSTANT_RULE_NAMES:
+                owner_key = ("constant-rule", name)
+            else:
+                # Unknown instruction names retain their precise unknown-rule
+                # diagnostic in ``_project_mba_rules``.
+                continue
+        else:
+            if name in transform_map:
+                raise _error_for_rule(rule, "instruction rule must be in ins_rules", field="name")
+            if name in _CONSTANT_INSTRUCTION_RULE_NAMES:
+                raise _error_for_rule(rule, "instruction rule must be in ins_rules", field="name")
+            if name in _CONSTANT_RULE_NAMES:
+                owner_key = ("constant-rule", name)
+            elif name == _STATE_RULE_NAME:
+                owner_key = ("pass", "state-machine")
+            elif name == _JUMP_RULE_NAME:
+                owner_key = ("pass", "jump-fixer")
+            else:
+                pass_id = _BLOCK_RULE_TO_PASS.get(name)
+                if pass_id is None:
+                    # Unknown block names retain their precise unknown-rule
+                    # diagnostic in ``_project_block_rules``.
+                    continue
+                owner_key = ("pass", pass_id)
+        previous = owners.get(owner_key)
+        if previous is not None:
+            raise _error_for_rule(
+                rule,
+                f"conflicting duplicate ownership with "
+                f"{previous.section}[{previous.index}]",
+                field="name",
+            )
+        owners[owner_key] = rule
 
 
 def _project_block_rules(
     rules: Sequence[LegacyRule], *, known: bool = False, bundled_constant: bool = False
-) -> list[dict[str, object]]:
-    entries: list[dict[str, object]] = []
+) -> list[tuple[dict[str, object], LegacyRule]]:
+    entries: list[tuple[dict[str, object], LegacyRule]] = []
     owners: dict[str, LegacyRule] = {}
     for rule in rules:
         name = rule.name
@@ -785,213 +912,52 @@ def _project_block_rules(
             if pass_id in owners and not known:
                 raise _error_for_rule(rule, "conflicting duplicate ownership", field="name")
             owners[pass_id] = rule
-            entries.append({"pass_id": pass_id, "options": copy.deepcopy(options)})
+            entries.append(
+                ({"pass_id": pass_id, "options": copy.deepcopy(options)}, rule)
+            )
     return entries
 
 
-def _config_entry(pass_id: str, options: Mapping[str, object]) -> dict[str, object]:
+def _config_entry(
+    pass_id: str,
+    options: Mapping[str, object],
+    *,
+    owners: Sequence[LegacyRule] = (),
+) -> dict[str, object]:
     config = PipelineConfig(pass_id=pass_id, options=dict(options))
     # Typed validation is intentionally performed before serialization.  This
     # catches unknown pass IDs, malformed fields, and editor-invisible values.
-    _validate_v2_entries((config.to_dict(),), path_prefix="pipeline_v2")
-    return config.to_dict()
+    try:
+        validated = _validate_v2_entries((config.to_dict(),), path_prefix="pipeline_v2")
+    except LegacyMigrationError as exc:
+        if owners:
+            raise _typed_error_for_rules(owners, str(exc)) from exc
+        raise
+    return validated[0]
 
 
 def _validate_project_pipeline(entries: Sequence[Mapping[str, object]]) -> tuple[dict[str, object], ...]:
     return _validate_v2_entries(entries, path_prefix="additional_configuration.pipeline_v2")
 
 
-def _fallback_transform_options(legacy: LegacyProject) -> dict[str, object] | None:
-    transforms: list[str] = []
-    transform_options: dict[str, object] = {}
-    transform_map = _mba_transform_map()
-    for rule in legacy.active_rules:
-        transform_id = transform_map.get(rule.name)
-        if transform_id is None:
-            continue
-        if transform_id in transforms:
-            continue
-        transforms.append(transform_id)
-        fields = MBA_TRANSFORM_OPTION_FIELDS.get(transform_id, ())
-        fields_by_name = {field.path[-1]: field for field in fields if field.path}
-        typed: dict[str, object] = {}
-        for key, value in rule.options.items():
-            field = fields_by_name.get(key)
-            if field is None or value is None:
-                continue
-            _copy_option_path(typed, field.path, value)
-        if typed:
-            transform_options[transform_id] = typed
-    if not transforms:
-        return None
-    options: dict[str, object] = {"transforms": transforms}
-    # Historical canaries serialize this container even when no transform has
-    # a typed option (for example the Tigress portfolio).
-    options["transform_options"] = transform_options
-    return options
-
-
-def _fallback_constant_options(legacy: LegacyProject) -> dict[str, object]:
-    fold = _find_rule(legacy.active_rules, "FoldReadonlyDataRule")
-    fold_writable = False
-    if fold is not None:
-        def has_true(value: object) -> bool:
-            if value is True:
-                return True
-            if isinstance(value, Mapping):
-                return any(has_true(child) for child in value.values())
-            if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
-                return any(has_true(child) for child in value)
-            return False
-
-        def find_true_option(value: object) -> bool:
-            if isinstance(value, Mapping):
-                for key, child in value.items():
-                    if key == "fold_writable_constants" and has_true(child):
-                        return True
-                    if find_true_option(child):
-                        return True
-            elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
-                return any(find_true_option(child) for child in value)
-            return False
-
-        fold_writable = find_true_option(fold.options)
-    return {
-        "memory_policy": "aggressive_no_direct_writes" if fold_writable else "strict",
-        "allow_executable_readonly": False,
-    }
-
-
-def _fallback_state_options(legacy: LegacyProject) -> dict[str, object]:
-    state = _find_rule(legacy.active_rules, _STATE_RULE_NAME)
-    options: dict[str, object] = {"min_state_constant": 16777216}
-    if state is None:
-        return options
-    raw_min = state.options.get("min_state_constant")
-    if isinstance(raw_min, int) and not isinstance(raw_min, bool):
-        options["min_state_constant"] = raw_min
-    profile = state.options.get("profile")
-    if profile == "tigress_indirect":
-        options["family"] = "tigress-indirect"
-    strategy = state.options.get("recovery_engine")
-    if strategy == "reduced_product":
-        options["recovery_strategy"] = "reduced-product"
-    return options
-
-
-def _fallback_jump_options(legacy: LegacyProject) -> dict[str, object]:
-    jump = _find_rule(legacy.active_rules, _JUMP_RULE_NAME)
-    options: dict[str, object] = {}
-    if jump is not None and isinstance(jump.options.get("enabled_rules"), Sequence):
-        options["enabled_rules"] = list(jump.options["enabled_rules"])
-    if legacy.source_name == "default_unflattening_ollvm.json" and jump is not None:
-        for key in (
-            "preserve_z3_discarded_side_effects",
-            "preserve_z3_discarded_side_effect_depth",
-            "preserve_z3_discarded_side_effect_constants",
-        ):
-            if key in jump.options:
-                options[key] = copy.deepcopy(jump.options[key])
-    if legacy.source_name == "bogus_loops.json" and jump is not None:
-        options["dump_intermediate_microcode"] = False
-    return options
-
-
-def _fallback_direct_options(legacy: LegacyProject, pass_id: str) -> dict[str, object]:
-    names = {
-        "identity-call-resolver": "IdentityCallResolver",
-        "indirect-branch-resolver": "IndirectBranchResolver",
-        "indirect-call-resolver": "IndirectCallResolver",
-        "mba-state-preconditioner": "MbaStatePreconditioner",
-        "simple-flattening-cleanup-unflattener": "SimpleFlatteningCleanupUnflattener",
-    }
-    rule_name = names.get(pass_id)
-    if rule_name is None:
-        return {}
-    rule = _find_rule(legacy.active_rules, rule_name)
-    if rule is None:
-        return {}
-    options = dict(rule.options)
-    # Legacy cleanup configs only carried an inert dump flag; current cleanup
-    # has no equivalent and the historical canary intentionally dropped it.
-    if pass_id == "simple-flattening-cleanup-unflattener":
-        return {key: value for key, value in options.items() if key == "enable_dead_store_elimination"}
-    return options
-
-
-_HODUR_FLAG2_PRIORS = {
-    "sub_7FFD3338C040": {
-        "aliases": ["0x180014BE0"],
-        "return_frontier_artifacts": {
-            "known_impossible_return_constants": ["0xC5FB34A1D9A6E315"],
-            "impossible_return_artifact_edges": [
-                {
-                    "source_block": 27,
-                    "artifact_block": 28,
-                    "old_target_block": 92,
-                    "continuation_block": 29,
-                    "proof_ids": [
-                        "sub7ffd_return_frontier_artifact",
-                        "layout:source27_artifact28_continuation29",
-                    ],
-                }
-            ],
-        },
-    }
-}
-
-
-def _fallback_known_entries(
-    legacy: LegacyProject, portfolio: KnownPortfolio
-) -> tuple[dict[str, object], ...]:
-    mba = _fallback_transform_options(legacy)
-    state_options = _fallback_state_options(legacy)
-    direct = {
-        "constant-simplification": _fallback_constant_options(legacy),
-        "mba-simplify": mba or {},
-        "mba-state-preconditioner": _fallback_direct_options(legacy, "mba-state-preconditioner"),
-        "jump-fixer": _fallback_jump_options(legacy),
-        "identity-call-resolver": _fallback_direct_options(legacy, "identity-call-resolver"),
-        "indirect-branch-resolver": _fallback_direct_options(legacy, "indirect-branch-resolver"),
-        "indirect-call-resolver": _fallback_direct_options(legacy, "indirect-call-resolver"),
-        "simple-flattening-cleanup-unflattener": _fallback_direct_options(legacy, "simple-flattening-cleanup-unflattener"),
-        "single-trip-loop-peel": {},
-        "forward-constant-propagation": {},
-    }
-    entries: list[dict[str, object]] = []
-    for pass_id in portfolio.pass_ids:
-        options = state_options if pass_id in _STATE_MACHINE_PASS_IDS else direct.get(pass_id, {})
-        entries.append(_config_entry(pass_id, options))
-    return tuple(entries)
-
-
-def _known_additional_fallback(legacy: LegacyProject) -> dict[str, object]:
-    result: dict[str, object] = {}
-    for key, value in legacy.additional_configuration.items():
-        if key in _ADDITIONAL_TRANSIENT_KEYS:
-            continue
-        if key in _OWNED_ADDITIONAL_KEYS:
-            result[key] = copy.deepcopy(value)
-    if legacy.source_name == "default_unflattening_ollvm.json":
-        result.setdefault(
-            "semantic_route_oracle_manifests",
-            ["semantic_route_oracles/a560_v33_full_flow_routes.json"],
-        )
-    if legacy.source_name == "hodur_flag2.json":
-        result.setdefault("function_analysis_priors", copy.deepcopy(_HODUR_FLAG2_PRIORS))
-    return result
-
-
 def _known_projection(
     legacy: LegacyProject, portfolio: KnownPortfolio
 ) -> dict[str, object]:
-    # The donor name is retained in ``KnownPortfolio`` as historical evidence,
-    # but migration does not read donor files at runtime.  The compact typed
-    # templates below are what keep the tool usable after Task 5 deletes the
-    # canary files.
-    entries = _fallback_known_entries(legacy, portfolio)
-    additional = _known_additional_fallback(legacy)
-    additional["pipeline_v2"] = [copy.deepcopy(entry) for entry in entries]
+    # The donor name is retained in ``KnownPortfolio`` as historical evidence;
+    # migration uses the checked-in full template even after donor files are
+    # deleted by the cutover.
+    try:
+        template = _KNOWN_DONOR_TEMPLATES[legacy.source_name]
+    except KeyError as exc:
+        raise LegacyMigrationError(
+            f"missing checked-in donor template for {legacy.source_name}"
+        ) from exc
+    entries = _validate_v2_entries(
+        template["pipeline_v2"],
+        path_prefix="known donor pipeline_v2",
+        normalize=False,
+    )
+    additional = _owned_additional(template, pipeline=entries)
     return {
         "description": _normalize_description(legacy.description, legacy.source_name),
         "additional_configuration": additional,
@@ -999,6 +965,10 @@ def _known_projection(
 
 
 def _generic_projection(legacy: LegacyProject) -> dict[str, object]:
+    # Keep the bundle/section conditionals explicit: constant ownership spans
+    # both legacy sections, while every other adapter has one source section.
+    # A flat rule table would obscure those fail-closed ownership boundaries.
+    _validate_cross_section_ownership(legacy.active_rules)
     ins_rules = tuple(rule for rule in legacy.active_rules if rule.section == "ins_rules")
     blk_rules = tuple(rule for rule in legacy.active_rules if rule.section == "blk_rules")
     all_names = {rule.name for rule in legacy.active_rules}
@@ -1011,14 +981,24 @@ def _generic_projection(legacy: LegacyProject) -> dict[str, object]:
     entries: list[dict[str, object]] = []
     if complete_bundle:
         constant_rules = tuple(rule for rule in legacy.active_rules if rule.name in _CONSTANT_RULE_NAMES)
-        entries.append(_config_entry("constant-simplification", _constant_options(constant_rules)))
+        entries.append(
+            _config_entry(
+                "constant-simplification",
+                _constant_options(constant_rules),
+                owners=constant_rules,
+            )
+        )
     instruction_rules = tuple(rule for rule in ins_rules if rule.name not in _CONSTANT_INSTRUCTION_RULE_NAMES)
     mba_options = _project_mba_rules(instruction_rules)
     if mba_options is not None:
-        entries.append(_config_entry("mba-simplify", mba_options))
+        entries.append(_config_entry("mba-simplify", mba_options, owners=instruction_rules))
     block_rules = tuple(rule for rule in blk_rules if not (rule.name == "ForwardConstantPropagationRule" and complete_bundle))
-    for entry in _project_block_rules(block_rules, bundled_constant=complete_bundle):
-        entries.append(_config_entry(str(entry["pass_id"]), entry.get("options", {})))
+    for entry, owner in _project_block_rules(block_rules, bundled_constant=complete_bundle):
+        entries.append(
+            _config_entry(
+                str(entry["pass_id"]), entry.get("options", {}), owners=(owner,)
+            )
+        )
     if not entries:
         raise LegacyMigrationError("migration produced an empty pipeline_v2")
     return _canonical_document(legacy, _validate_project_pipeline(entries))
@@ -1088,7 +1068,6 @@ __all__ = [
     "LegacyMigrationError",
     "LegacyProject",
     "LegacyRule",
-    "LegacyRuleProjection",
     "is_canonical_v2_document",
     "migrate_legacy_document",
 ]

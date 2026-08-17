@@ -104,6 +104,11 @@ def _pipeline(document: dict[str, typing.Any]) -> list[tuple[str, dict[str, typi
     ]
 
 
+def _pipeline_entries(document: dict[str, typing.Any]) -> list[dict[str, typing.Any]]:
+    additional = document.get("additional_configuration", {})
+    return list(additional.get("pipeline_v2", []))
+
+
 @pytest.mark.parametrize("source_name", tuple(KNOWN_LEGACY_FINGERPRINTS))
 def test_historical_legacy_fingerprint_is_frozen(source_name: str) -> None:
     encoded = json.dumps(
@@ -122,6 +127,13 @@ def test_mapped_bundled_portfolio_migrates_to_current_canary_semantics(
     migrated = migrate_legacy_document(_load(source_name), source_name=source_name)
     expected = _load(canary_name)
 
+    assert _pipeline_entries(migrated) == _pipeline_entries(expected)
+    expected_owned = {
+        key: value
+        for key, value in expected.get("additional_configuration", {}).items()
+        if key not in {"pipeline_v2_mode", "config_v2_canary"}
+    }
+    assert migrated["additional_configuration"] == expected_owned
     assert _pipeline(migrated) == _pipeline(expected)
     assert migrated.get("ins_rules", []) == []
     assert migrated.get("blk_rules", []) == []
@@ -171,12 +183,109 @@ def test_mapped_bundled_portfolio_migrates_to_current_canary_semantics(
         ),
         (
             {
+                "ins_rules": [
+                    {"name": "AddXor_Rule_1", "is_activated": True, "config": {}},
+                    {
+                        "name": "IdentityCallResolver",
+                        "is_activated": True,
+                        "config": {},
+                    },
+                ]
+            },
+            "ins_rules[1].name",
+        ),
+        (
+            {
+                "ins_rules": [
+                    {
+                        "name": "FoldReadonlyDataRule",
+                        "is_activated": True,
+                        "config": {},
+                    },
+                    {
+                        "name": "ConstantSubtreeFoldRule",
+                        "is_activated": True,
+                        "config": {},
+                    },
+                    {
+                        "name": "FoldReadonlyDataRule",
+                        "is_activated": True,
+                        "config": {},
+                    },
+                ],
+                "blk_rules": [
+                    {
+                        "name": "ForwardConstantPropagationRule",
+                        "is_activated": True,
+                        "config": {},
+                    }
+                ],
+            },
+            "ins_rules[2].name",
+        ),
+        (
+            {
                 "blk_rules": [
                     {"name": "JumpFixer", "is_activated": True, "config": {}},
                     {"name": "JumpFixer", "is_activated": True, "config": {}},
                 ]
             },
             "blk_rules[1].name",
+        ),
+        (
+            {
+                "blk_rules": [
+                    {
+                        "name": "IdentityCallResolver",
+                        "is_activated": True,
+                        "config": {},
+                    },
+                    {
+                        "name": "IdentityCallResolver",
+                        "is_activated": True,
+                        "config": {},
+                    },
+                ]
+            },
+            "blk_rules[1].name",
+        ),
+        (
+            {
+                "ins_rules": [
+                    {"name": "JumpFixer", "is_activated": True, "config": {}},
+                ],
+                "blk_rules": [
+                    {"name": "JumpFixer", "is_activated": True, "config": {}},
+                ],
+            },
+            "ins_rules[0].name",
+        ),
+        (
+            {
+                "ins_rules": [
+                    {"name": "AddXor_Rule_1", "is_activated": True, "config": {}},
+                ],
+                "blk_rules": [
+                    {
+                        "name": "AddXor_Rule_1",
+                        "is_activated": True,
+                        "config": {},
+                    },
+                ],
+            },
+            "blk_rules[0].name",
+        ),
+        (
+            {
+                "blk_rules": [
+                    {
+                        "name": "IdentityCallResolver",
+                        "is_activated": True,
+                        "config": {"max_search_instructions": "bad"},
+                    },
+                ]
+            },
+            "blk_rules[0].config.max_search_instructions",
         ),
         (
             {"ins_rules": [{"name": "AddXor_Rule_1", "is_activated": True}]},
@@ -222,6 +331,39 @@ def test_canonical_v2_documents_are_normalized_and_idempotent() -> None:
         )
 
     assert encoded(normalized_again) == encoded(migrated)
+
+
+def test_canonical_v2_input_uses_normalized_typed_shapes() -> None:
+    migrated = migrate_legacy_document(
+        {
+            "description": "custom",
+            "additional_configuration": {
+                "pipeline_v2": [
+                    {
+                        "pass_id": "jump-fixer",
+                        "scheduler_policy": "WORKLIST",
+                        "options": None,
+                    }
+                ]
+            },
+        },
+        source_name="custom.json",
+    )
+
+    entry = _pipeline_entries(migrated)[0]
+    assert entry["scheduler_policy"] == "worklist"
+    assert entry["options"] == {}
+    assert entry["target"] == {
+        "include_eas": [],
+        "exclude_eas": [],
+        "tags_any": [],
+        "tags_all": [],
+    }
+    assert entry["contract"]["maturity"] == {
+        "min": None,
+        "max": None,
+        "preferred": None,
+    }
 
 
 def test_custom_typed_projection_preserves_order_and_rejects_unknown_mba_options() -> None:
