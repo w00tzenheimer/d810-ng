@@ -433,6 +433,83 @@ def test_recover_dispatcher_retains_native_interval_route_observation(monkeypatc
     assert projected[0].target_native_ea == target_ea
 
 
+def test_recover_dispatcher_uses_range_snapshot_topology_for_interval_leaf(
+    monkeypatch,
+):
+    """A stale dispatcher map must not classify the range producer's leaf as topology."""
+    state = 0x16AA65E9
+    entry_ea = 0x180014E20
+    target_ea = 0x180030009
+    graph = FlowGraph(
+        blocks={
+            3: replace(_blk(3, (), ()), native_start_ea=entry_ea),
+            9: replace(_blk(9, (), ()), native_start_ea=target_ea),
+        },
+        entry_serial=3,
+        func_ea=0x1000,
+    )
+    # This map is from a different maturity and incorrectly labels the interval
+    # leaf as a dispatcher block.  The range/DAG producer has only comparison
+    # node 4; target 9 is a handler because it is absent from that node set.
+    dispatch_map = StateDispatcherMap(
+        rows=(
+            StateDispatcherRow(
+                state_const=state,
+                target_block=9,
+                dispatcher_block=3,
+                compare_block=9,
+                branch_kind="dispatcher_self_loop",
+                router_kind=RouterKind.CONDITION_CHAIN,
+            ),
+        ),
+        dispatcher_entry_block=3,
+        dispatcher_blocks=frozenset({3, 9, 12}),
+        state_var_stkoff=52,
+        state_var_lvar_idx=None,
+        router_kind=RouterKind.CONDITION_CHAIN,
+    )
+    range_evidence = ConditionChainAnalysisResult(
+        condition_chain_blocks={4},
+        decision_dag=SimpleNamespace(root=4, nodes={4: object()}),
+        dispatcher=IntervalDispatcher(
+            [IntervalRow(lo=state, hi=state + 1, target=9)]
+        ),
+    )
+    recovery = DispatcherRecovery(
+        dispatcher_block_serial=3,
+        state_var_stkoff=52,
+        state_var_reg=None,
+        dispatch_map=dispatch_map,
+    )
+    monkeypatch.setattr(
+        state_machine_module,
+        "recover_dispatcher",
+        lambda *args, **kwargs: recovery,
+    )
+    monkeypatch.setattr(
+        state_machine_module,
+        "observe_state_dispatcher_rows",
+        lambda **kwargs: None,
+    )
+    monkeypatch.setattr(
+        state_machine_module, "_build_comparison_model", lambda *args: None
+    )
+    am = AnalysisManager(graph)
+    am.put_analysis("range_evidence", range_evidence)
+
+    RecoverDispatcher().run(_ctx(graph, am))
+
+    retained = tuple(
+        observation
+        for observation in am.retained_observations
+        if observation.kind == CONDITION_CHAIN_INTERVAL_ROUTE_FACT_TYPE
+    )
+    projected = project_condition_chain_interval_route_observations(retained)
+    assert len(projected) == 1
+    assert projected[0].target_block_serial == 9
+    assert projected[0].target_native_ea == target_ea
+
+
 def test_recover_state_transitions_publishes_dispatcher_predicate_evidence():
     am = AnalysisManager(_chain_graph(), input_facts=_input_facts())
     ctx = _ctx(am.graph, am.view())

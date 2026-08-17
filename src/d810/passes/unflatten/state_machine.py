@@ -868,22 +868,11 @@ class RecoverDispatcher(PipelinePass):
             # to this snapshot's dispatcher topology before it enters the
             # manager session stream.
             range_evidence = _analysis(context, "range_evidence")
-            interval_region_serials = {
-                int(dispatch_map.dispatcher_entry_block),
-                *(
-                    int(block)
-                    for block in (
-                        getattr(dispatch_map, "dispatcher_blocks", ()) or ()
-                    )
-                ),
-            }
-            for row in getattr(dispatch_map, "rows", ()) or ():
-                for serial in (
-                    getattr(row, "dispatcher_block", None),
-                    getattr(row, "compare_block", None),
-                ):
-                    if serial is not None:
-                        interval_region_serials.add(int(serial))
+            # The interval/DAG producer owns this topology.  The recovered
+            # StateDispatcherMap may come from a different maturity and can
+            # classify a leaf as a dispatcher block; carrying its blocks or
+            # row anchors here would reject a valid producer-local handler.
+            interval_region_serials = {int(dispatch_map.dispatcher_entry_block)}
             if range_evidence is not None:
                 interval_region_serials.update(
                     int(block)
@@ -893,6 +882,9 @@ class RecoverDispatcher(PipelinePass):
                     or ()
                 )
                 decision_dag = getattr(range_evidence, "decision_dag", None)
+                dag_root = getattr(decision_dag, "root", None)
+                if dag_root is not None:
+                    interval_region_serials.add(int(dag_root))
                 interval_region_serials.update(
                     int(block)
                     for block in getattr(decision_dag, "nodes", {}) or ()
