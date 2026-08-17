@@ -52,6 +52,7 @@ from d810.analyses.control_flow.dispatcher_discovery_facts import (
 from d810.analyses.control_flow.predecessor_dispatcher_target import (
     PREDECESSOR_DISPATCHER_TARGET_FACTS_ANALYSIS,
     collect_predecessor_dispatcher_target_facts,
+    project_predecessor_dispatcher_target_observations,
     resolve_current_snapshot_dispatcher_route,
 )
 from d810.analyses.control_flow.router_resolver import (
@@ -386,12 +387,15 @@ def bind_native_bound_transition_routes_for_current_mba(
     route_lookup = getattr(dispatcher, "lookup", None)
     if not callable(route_lookup):
         route_lookup = getattr(dispatcher, "route", None)
-    if not callable(rebind_native_ea) or not callable(route_lookup):
+    if not callable(rebind_native_ea):
         return ()
 
     def route_target_for_state(state: int):
         """Read the selected current router without serial fallbacks."""
-        result = route_lookup(int(state))
+        if route_lookup is None:
+            return None
+        normalized_state = int(state) & 0xFFFFFFFF
+        result = route_lookup(normalized_state)
         for attribute in ("target", "target_block_serial", "handler_serial"):
             candidate = getattr(result, attribute, None)
             if candidate is not None:
@@ -411,7 +415,7 @@ def bind_native_bound_transition_routes_for_current_mba(
         return resolve_current_snapshot_dispatcher_route(
             flow_graph=graph,
             coarse_target=target_serial,
-            exit_state=int(state),
+            exit_state=normalized_state,
             dispatcher_entry_serial=int(dispatcher_entry_serial),
             range_evidence=range_evidence,
             dispatcher_region_serials=dispatcher_region,
@@ -426,9 +430,10 @@ def bind_native_bound_transition_routes_for_current_mba(
         if block is None:
             return None
         try:
-            return int(block.serial)
+            serial = int(block.serial)
         except (AttributeError, TypeError, ValueError):
             return None
+        return serial
 
     dispatcher_region = frozenset(
         int(serial) for serial in (dispatcher_region_serials or ())
@@ -440,7 +445,9 @@ def bind_native_bound_transition_routes_for_current_mba(
         block_serial_for_instruction_ea=block_serial_for_instruction_ea,
         current_block_serials=current_block_serials,
         dispatcher_block_serials=dispatcher_region,
-        route_target_for_state=route_target_for_state,
+        route_target_for_state=(
+            route_target_for_state if route_lookup is not None else None
+        ),
         state_var_stkoff=state_var_stkoff,
         state_var_reg=state_var_reg,
     )
@@ -513,6 +520,24 @@ def _publish_observation_evidence(ctx: FunctionPipelineContext, observations) ->
         return
     for observation in observations:
         put_observation_evidence(observation)
+
+
+def _retained_predecessor_dispatcher_target_facts(
+    ctx: FunctionPipelineContext,
+) -> tuple[object, ...]:
+    """Project active and manager-retained predecessor observations in memory."""
+    facts = ctx.facts
+    observations = getattr(facts, "retained_observations", None)
+    if observations is None:
+        observations = tuple(getattr(facts, "active_observations", ()) or ()) + tuple(
+            getattr(facts, "session_observations", ()) or ()
+        )
+    try:
+        return tuple(project_predecessor_dispatcher_target_observations(observations))
+    except (AttributeError, OverflowError, TypeError, ValueError):
+        # Projection is evidence-only.  A malformed legacy/fake fact surface
+        # must not turn into a route or block the rest of lowering.
+        return ()
 
 
 def _maturity_label(ctx: FunctionPipelineContext) -> str:
@@ -2692,11 +2717,15 @@ class LowerStateMachine(PipelinePass):
                     )
             native_bound_transition_routes = (
                 bind_native_bound_transition_routes_for_current_mba(
-                    _analysis(
-                        context,
-                        PREDECESSOR_DISPATCHER_TARGET_FACTS_ANALYSIS,
-                        (),
-                    ),
+                    tuple(
+                        _analysis(
+                            context,
+                            PREDECESSOR_DISPATCHER_TARGET_FACTS_ANALYSIS,
+                            (),
+                        )
+                        or ()
+                    )
+                    + _retained_predecessor_dispatcher_target_facts(context),
                     current_block_identity_index=current_block_identity_index,
                     graph=context.graph,
                     dispatcher=dispatcher,

@@ -43,6 +43,11 @@ class AnalysisManager:
         self._live_fact_blocklist: set[str] = set()
         self._evidence: dict[str, list[object]] = {}
         self._live_evidence_visible = True
+        # Observations published by passes belong to this manager/function
+        # lifetime.  Unlike graph-keyed analyses and contract evidence, they
+        # survive graph invalidation so a later pass can consume the earlier
+        # in-memory observation without reopening the durable fact store.
+        self._session_observations: list[object] = []
         self._providers: dict[str, Callable[[object], object]] = dict(providers or {})
 
     @property
@@ -57,6 +62,42 @@ class AnalysisManager:
             if self._input_facts
             else ()
         )
+
+    @staticmethod
+    def _observation_retention_key(observation: object) -> tuple[object, ...]:
+        """Return a local identity that suppresses duplicate publication only."""
+        fact_id = getattr(observation, "fact_id", None)
+        if isinstance(fact_id, str) and fact_id:
+            payload_json = getattr(observation, "payload_json", None)
+            if not isinstance(payload_json, str):
+                payload_json = repr(getattr(observation, "payload", None))
+            return (
+                "fact",
+                fact_id,
+                str(getattr(observation, "kind", "")),
+                str(getattr(observation, "maturity", "")),
+                str(getattr(observation, "phase", "")),
+                payload_json,
+            )
+        return ("object", id(observation))
+
+    @property
+    def session_observations(self) -> tuple[object, ...]:
+        """Return observations retained from earlier passes in this manager."""
+        return tuple(self._session_observations)
+
+    @property
+    def retained_observations(self) -> tuple[object, ...]:
+        """Return active input plus manager-retained observations without duplicates."""
+        observations: list[object] = []
+        seen: set[tuple[object, ...]] = set()
+        for observation in (*self.active_observations, *self._session_observations):
+            key = self._observation_retention_key(observation)
+            if key in seen:
+                continue
+            seen.add(key)
+            observations.append(observation)
+        return tuple(observations)
 
     def set_input_facts(self, input_facts: object | None) -> None:
         """Replace the live fact view for the next pipeline pass run."""
@@ -124,7 +165,15 @@ class AnalysisManager:
 
         Raw ``observation.evidence`` remains diagnostic provenance. Only
         producer-side ``contract_evidence`` payload tokens are indexed here.
+        The observation itself is also retained in this manager's session
+        surface for later in-memory consumers.
         """
+        key = self._observation_retention_key(observation)
+        if all(
+            self._observation_retention_key(existing) != key
+            for existing in self._session_observations
+        ):
+            self._session_observations.append(observation)
         for name in contract_evidence_tokens(observation):
             self.put_evidence(name, observation)
 

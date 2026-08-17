@@ -233,27 +233,33 @@ def _bounded_state_constant(value: object | None) -> int | None:
     return int(value) if 0 <= int(value) <= 0xFFFFFFFF else None
 
 
+def _native_instruction_ea(value: object | None) -> int | None:
+    """Parse one optional native instruction EA without accepting booleans."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        value = int(value)
+    except (OverflowError, TypeError, ValueError):
+        return None
+    return value if 0 <= value < 0xFFFFFFFFFFFFFFFF else None
+
+
 def _native_route_observation(
     observation: object,
-) -> tuple[str, int, int, int, bool] | None:
+) -> tuple[str, int, int, int, bool, int | None] | None:
     """Project either a raw resolution or a typed predecessor fact.
 
-    The final boolean marks a typed predecessor fact.  Typed facts intentionally
-    do not carry cross-maturity carrier authority: their native EA and current
-    router target are the only runtime identity checks.
+    The final boolean marks a typed predecessor fact.  Typed facts carry a
+    source and target native identity; their recorded serials remain
+    cross-maturity provenance only.
     """
     fact_id = getattr(observation, "fact_id", None)
     source_ea = getattr(observation, "source_instruction_ea", None)
     if not isinstance(fact_id, str) or not fact_id.strip() or source_ea is None:
         return None
     fact_id = fact_id.strip()
-    if isinstance(source_ea, bool):
-        return None
-    try:
-        source_ea = int(source_ea)
-    except (OverflowError, TypeError, ValueError):
-        return None
-    if not 0 <= source_ea < 0xFFFFFFFFFFFFFFFF:
+    source_ea = _native_instruction_ea(source_ea)
+    if source_ea is None:
         return None
 
     if hasattr(observation, "target_block_serial"):
@@ -268,7 +274,15 @@ def _native_route_observation(
             target = int(target)
         except (OverflowError, TypeError, ValueError):
             return None
-        return str(fact_id), source_ea, state, target, True
+        target_ea_value = getattr(observation, "target_native_ea", None)
+        target_ea = (
+            None
+            if target_ea_value is None
+            else _native_instruction_ea(target_ea_value)
+        )
+        if target_ea_value is None or target_ea is None:
+            return None
+        return str(fact_id), source_ea, state, target, True, target_ea
 
     if (
         str(getattr(observation, "resolution_reason", ""))
@@ -280,7 +294,7 @@ def _native_route_observation(
     if state is None or target is None or isinstance(target, bool):
         return None
     try:
-        return str(fact_id), source_ea, state, int(target), False
+        return str(fact_id), source_ea, state, int(target), False, None
     except (OverflowError, TypeError, ValueError):
         return None
 
@@ -344,10 +358,12 @@ def bind_native_bound_transition_routes(
         None if state_var_reg is None else int(state_var_reg),
     )
     # Bind every observation by native EA before selecting a route.  A
-    # predecessor fact's source/target serials are snapshot-local provenance;
-    # only the current source binding and current router target are authority.
+    # A predecessor fact's source/target serials are snapshot-local provenance;
+    # native-EA bindings are current authority.  A concrete current router
+    # answer must agree with a dual-bound target, while an incomplete router
+    # may defer to that current native target binding.
     grouped_observations: dict[
-        int, list[tuple[str, int, int, int, bool, int]]
+        int, list[tuple[str, int, int, int, bool, int, int | None]]
     ] = {}
     invalid_source_eas: set[int] = set()
     for resolution in resolutions:
@@ -397,7 +413,14 @@ def bind_native_bound_transition_routes(
             invalid_source_eas.add(source_hint)
         if projected is None:
             continue
-        fact_id, source_ea, state_constant, target_serial, typed_fact = projected
+        (
+            fact_id,
+            source_ea,
+            state_constant,
+            target_serial,
+            typed_fact,
+            target_native_ea,
+        ) = projected
         try:
             bound_serials = _serial_candidates(
                 block_serial_for_instruction_ea(source_ea)
@@ -449,6 +472,7 @@ def bind_native_bound_transition_routes(
                 target_serial,
                 typed_fact,
                 source_serial,
+                target_native_ea,
             )
         )
 
@@ -463,20 +487,54 @@ def bind_native_bound_transition_routes(
         if source_ea in invalid_source_eas:
             continue
         source_serials = {item[5] for item in observations}
-        if len(source_serials) != 1 or route_target_for_state is None:
+        if len(source_serials) != 1:
             continue
         typed_prior_targets: dict[int, set[int]] = {}
+        typed_target_native_eas: set[int] = set()
         for item in observations:
-            _fact_id, _ea, state_constant, prior_target, typed_fact, _serial = item
+            (
+                _fact_id,
+                _ea,
+                state_constant,
+                prior_target,
+                typed_fact,
+                _serial,
+                target_native_ea,
+            ) = item
             if typed_fact:
                 typed_prior_targets.setdefault(state_constant, set()).add(
                     prior_target
                 )
+                if target_native_ea is not None:
+                    typed_target_native_eas.add(target_native_ea)
         if any(len(targets) != 1 for targets in typed_prior_targets.values()):
             # Contradictory predecessor provenance is itself a failed
             # corroboration.  Do not silently select one typed fact merely
             # because the current router happens to agree for both.
             continue
+        if len(typed_target_native_eas) > 1:
+            # Two native target identities for one source group cannot be
+            # reconciled by a stale serial or by whichever route happens to
+            # win in the current dispatcher.
+            continue
+        bound_target_serial: int | None = None
+        if typed_target_native_eas:
+            target_native_ea = next(iter(typed_target_native_eas))
+            try:
+                bound_target_serials = _serial_candidates(
+                    block_serial_for_instruction_ea(target_native_ea)
+                )
+            except (AttributeError, OverflowError, TypeError, ValueError):
+                continue
+            if len(bound_target_serials) != 1:
+                continue
+            bound_target_serial = bound_target_serials[0]
+            if (
+                bound_target_serial < 0
+                or bound_target_serial not in current_serials
+                or bound_target_serial in dispatcher_serials
+            ):
+                continue
         candidates: list[tuple[str, int, int, int, int, bool]] = []
         invalid_group = False
         for (
@@ -486,22 +544,41 @@ def bind_native_bound_transition_routes(
             prior_target_serial,
             typed_fact,
             source_serial,
+            _target_native_ea,
         ) in observations:
-            try:
-                routed_targets = _serial_candidates(
-                    route_target_for_state(state_constant)
-                )
-            except (TypeError, ValueError, AttributeError):
-                invalid_group = True
-                break
-            if len(routed_targets) != 1:
-                invalid_group = True
-                break
-            current_target_serial = routed_targets[0]
-            if (
-                current_target_serial not in current_serials
-                or current_target_serial in dispatcher_serials
-            ):
+            routed_targets: tuple[int, ...] = ()
+            if route_target_for_state is not None:
+                try:
+                    routed_targets = _serial_candidates(
+                        route_target_for_state(state_constant)
+                    )
+                except (TypeError, ValueError, AttributeError):
+                    invalid_group = True
+                    break
+            if len(routed_targets) == 1:
+                routed_target_serial = routed_targets[0]
+                if routed_target_serial not in current_serials:
+                    invalid_group = True
+                    break
+                if routed_target_serial in dispatcher_serials:
+                    if bound_target_serial is None:
+                        invalid_group = True
+                        break
+                    current_target_serial = bound_target_serial
+                else:
+                    if (
+                        bound_target_serial is not None
+                        and routed_target_serial != bound_target_serial
+                    ):
+                        invalid_group = True
+                        break
+                    current_target_serial = routed_target_serial
+            elif bound_target_serial is not None:
+                # A dual-bound native target is sufficient when the current
+                # router has no concrete non-dispatcher answer (for example,
+                # it returns None, an ambiguous result, or a topology block).
+                current_target_serial = bound_target_serial
+            else:
                 invalid_group = True
                 break
             if not typed_fact and prior_target_serial != current_target_serial:

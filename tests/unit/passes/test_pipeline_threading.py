@@ -56,6 +56,9 @@ from d810.analyses.control_flow.predecessor_dispatcher_target import (
     PREDECESSOR_DISPATCHER_TARGET_FACTS_ANALYSIS,
     PredecessorDispatcherTargetFact,
 )
+from d810.analyses.control_flow.dispatcher_discovery_facts import (
+    predecessor_dispatcher_target_observation,
+)
 from d810.capabilities.dispatcher import RouterKind
 from d810.passes.unflatten import state_machine as state_machine_module
 from tests.native_preanalysis import make_native_key
@@ -383,6 +386,58 @@ def test_full_five_pass_chain_threads_and_completes():
     assert results[4].rewrite_plan.steps == ()  # cleanup_residual_dispatcher
 
 
+def test_lower_state_machine_merges_manager_retained_predecessor_observations(
+    monkeypatch,
+):
+    fact = PredecessorDispatcherTargetFact(
+        fact_id=(
+            "predecessor_dispatcher_target:dispatcher=0:pred=0:"
+            "state=0x0000000010000001:target=1:"
+            "resolver=state_dispatcher_map_exact_row"
+        ),
+        predecessor_block_serial=0,
+        dispatcher_entry_serial=0,
+        state_const=C1,
+        target_block_serial=1,
+        resolver_kind="state_dispatcher_map_exact_row",
+        row_kind="exact",
+        source_instruction_ea=0x1000,
+        target_native_ea=0x1010,
+        state_var_stkoff=STATE_OFF,
+    )
+    observation = predecessor_dispatcher_target_observation(
+        fact,
+        maturity="GLBOPT1",
+        phase="retained-test",
+    )
+    captured = []
+
+    def capture(resolutions, **_kwargs):
+        captured.extend(resolutions)
+        return ()
+
+    monkeypatch.setattr(
+        state_machine_module,
+        "bind_native_bound_transition_routes_for_current_mba",
+        capture,
+    )
+    am = AnalysisManager(_chain_graph(), input_facts=_input_facts())
+    am.put_observation_evidence(observation)
+    _install_current_identity_index(am)
+    ctx = _ctx(am.graph, am.view())
+
+    RecoverDispatcher().run(ctx)
+    RecoverStateTransitions().run(ctx)
+    am.put_analysis(PREDECESSOR_DISPATCHER_TARGET_FACTS_ANALYSIS, ())
+    PlanSemanticRegions().run(ctx)
+    LowerStateMachine().run(ctx)
+
+    assert any(
+        getattr(item, "fact_id", None) == fact.fact_id
+        for item in captured
+    )
+
+
 def test_lower_state_machine_requires_recovered_transition_analysis():
     assert "recover_state_transitions" in LOWER_ANALYSES.required
     assert PREDECESSOR_DISPATCHER_TARGET_FACTS_ANALYSIS in LOWER_ANALYSES.required
@@ -441,8 +496,12 @@ def test_native_bound_adapter_uses_current_native_ea_rebind_only():
 
 def test_native_bound_adapter_accepts_carrier_drift_with_typed_predecessor_route():
     class _Index:
-        def rebind_native_ea(self, _ea):
-            return SimpleNamespace(block=SimpleNamespace(serial=42))
+        def rebind_native_ea(self, ea):
+            serial = {
+                0x7FF855576BA0: 42,
+                0x7FF855576BB1: 7,
+            }[int(ea)]
+            return SimpleNamespace(block=SimpleNamespace(serial=serial))
 
     fact = PredecessorDispatcherTargetFact(
         fact_id="predecessor:interval-route",
@@ -455,6 +514,7 @@ def test_native_bound_adapter_accepts_carrier_drift_with_typed_predecessor_route
         resolver_kind="interval_dispatcher_row",
         row_kind="interval_range",
         source_instruction_ea=0x7FF855576BA0,
+        target_native_ea=0x7FF855576BB1,
         state_var_stkoff=52,
         state_var_reg=8,
     )
@@ -477,7 +537,12 @@ def test_native_bound_adapter_accepts_carrier_drift_with_typed_predecessor_route
 def test_native_bound_pipeline_keeps_entry_and_later_routes_with_carrier_drift():
     class _Index:
         def rebind_native_ea(self, ea):
-            serial = {0x180014E30: 42, 0x180015115: 43}[int(ea)]
+            serial = {
+                0x180014E30: 42,
+                0x180014E31: 7,
+                0x180015115: 43,
+                0x180015116: 8,
+            }[int(ea)]
             return SimpleNamespace(block=SimpleNamespace(serial=serial))
 
     entry = PredecessorDispatcherTargetFact(
@@ -489,6 +554,7 @@ def test_native_bound_pipeline_keeps_entry_and_later_routes_with_carrier_drift()
         resolver_kind="interval_dispatcher_row",
         row_kind="interval_exact",
         source_instruction_ea=0x180014E30,
+        target_native_ea=0x180014E31,
         state_var_stkoff=8,
         state_var_reg=8,
     )
@@ -501,6 +567,7 @@ def test_native_bound_pipeline_keeps_entry_and_later_routes_with_carrier_drift()
         resolver_kind="interval_dispatcher_row",
         row_kind="interval_exact",
         source_instruction_ea=0x180015115,
+        target_native_ea=0x180015116,
         state_var_stkoff=8,
         state_var_reg=8,
     )
@@ -532,8 +599,12 @@ def test_native_bound_pipeline_keeps_entry_and_later_routes_with_carrier_drift()
 
 def test_native_bound_adapter_rejects_conflicting_typed_prior_targets():
     class _Index:
-        def rebind_native_ea(self, _ea):
-            return SimpleNamespace(block=SimpleNamespace(serial=42))
+        def rebind_native_ea(self, ea):
+            serial = {
+                0x7FF855576BA0: 42,
+                0x7FF855576BB1: 7,
+            }[int(ea)]
+            return SimpleNamespace(block=SimpleNamespace(serial=serial))
 
     fact = PredecessorDispatcherTargetFact(
         fact_id="predecessor:route-a",
@@ -544,6 +615,7 @@ def test_native_bound_adapter_rejects_conflicting_typed_prior_targets():
         resolver_kind="interval_dispatcher_row",
         row_kind="interval_range",
         source_instruction_ea=0x7FF855576BA0,
+        target_native_ea=0x7FF855576BB1,
         state_var_stkoff=52,
     )
     conflicting = replace(
@@ -558,6 +630,185 @@ def test_native_bound_adapter_rejects_conflicting_typed_prior_targets():
         graph=SimpleNamespace(blocks={7: object(), 42: object()}),
         dispatcher=SimpleNamespace(lookup=lambda state: 7),
         dispatcher_region_serials=frozenset({2, 3}),
+        state_var_stkoff=52,
+        state_var_reg=None,
+    )
+
+    assert routes == ()
+
+
+def _dual_bound_predecessor_fact(
+    *, fact_id="predecessor:dual-bound", target_ea=0x7FF855576BB1
+):
+    return SimpleNamespace(
+        fact_id=fact_id,
+        predecessor_block_serial=15,
+        dispatcher_entry_serial=2,
+        state_const=0x16AA65E9,
+        target_block_serial=999,
+        target_native_ea=target_ea,
+        resolver_kind="interval_dispatcher_row",
+        row_kind="interval_range",
+        source_instruction_ea=0x7FF855576BA0,
+        state_var_stkoff=52,
+        state_var_reg=None,
+    )
+
+
+def test_native_bound_adapter_rebinds_unique_target_native_ea():
+    source_ea = 0x7FF855576BA0
+    target_ea = 0x7FF855576BB1
+    calls = []
+
+    class _Index:
+        def rebind_native_ea(self, ea):
+            calls.append(int(ea))
+            serial = {source_ea: 42, target_ea: 77}[int(ea)]
+            return SimpleNamespace(block=SimpleNamespace(serial=serial))
+
+    routes = state_machine_module.bind_native_bound_transition_routes_for_current_mba(
+        (_dual_bound_predecessor_fact(target_ea=target_ea),),
+        current_block_identity_index=_Index(),
+        graph=SimpleNamespace(blocks={42: object(), 77: object()}),
+        dispatcher=SimpleNamespace(lookup=lambda _state: 77),
+        dispatcher_region_serials=frozenset({2}),
+        state_var_stkoff=52,
+        state_var_reg=None,
+    )
+
+    assert calls == [source_ea, target_ea]
+    assert len(routes) == 1
+    assert routes[0].source_block_serial == 42
+    assert routes[0].target_handler_serial == 77
+
+
+def test_native_bound_adapter_rejects_missing_target_native_ea():
+    source_ea = 0x7FF855576BA0
+
+    class _Index:
+        def rebind_native_ea(self, ea):
+            assert int(ea) == source_ea
+            return SimpleNamespace(block=SimpleNamespace(serial=42))
+
+    routes = state_machine_module.bind_native_bound_transition_routes_for_current_mba(
+        (_dual_bound_predecessor_fact(target_ea=None),),
+        current_block_identity_index=_Index(),
+        graph=SimpleNamespace(blocks={42: object(), 77: object()}),
+        dispatcher=SimpleNamespace(lookup=lambda _state: 77),
+        dispatcher_region_serials=frozenset({2}),
+        state_var_stkoff=52,
+        state_var_reg=None,
+    )
+
+    assert routes == ()
+
+
+@pytest.mark.parametrize("target_rebind", ["missing", "ambiguous"])
+def test_native_bound_adapter_rejects_missing_or_ambiguous_target_native_ea(
+    target_rebind,
+):
+    source_ea = 0x7FF855576BA0
+    target_ea = 0x7FF855576BB1
+
+    class _Index:
+        def rebind_native_ea(self, ea):
+            if int(ea) == source_ea:
+                return SimpleNamespace(block=SimpleNamespace(serial=42))
+            assert int(ea) == target_ea
+            return SimpleNamespace(block=None)
+
+    routes = state_machine_module.bind_native_bound_transition_routes_for_current_mba(
+        (_dual_bound_predecessor_fact(target_ea=target_ea),),
+        current_block_identity_index=_Index(),
+        graph=SimpleNamespace(blocks={42: object(), 77: object()}),
+        dispatcher=SimpleNamespace(lookup=lambda _state: 77),
+        dispatcher_region_serials=frozenset({2}),
+        state_var_stkoff=52,
+        state_var_reg=None,
+    )
+
+    assert routes == ()
+
+
+def test_native_bound_adapter_rejects_router_conflict_with_dual_target_binding():
+    source_ea = 0x7FF855576BA0
+    target_ea = 0x7FF855576BB1
+
+    class _Index:
+        def rebind_native_ea(self, ea):
+            serial = {source_ea: 42, target_ea: 77}[int(ea)]
+            return SimpleNamespace(block=SimpleNamespace(serial=serial))
+
+    routes = state_machine_module.bind_native_bound_transition_routes_for_current_mba(
+        (_dual_bound_predecessor_fact(target_ea=target_ea),),
+        current_block_identity_index=_Index(),
+        graph=SimpleNamespace(blocks={42: object(), 77: object(), 78: object()}),
+        dispatcher=SimpleNamespace(lookup=lambda _state: 78),
+        dispatcher_region_serials=frozenset({2}),
+        state_var_stkoff=52,
+        state_var_reg=None,
+    )
+
+    assert routes == ()
+
+
+@pytest.mark.parametrize("router_result", [None, 2])
+def test_native_bound_adapter_uses_dual_target_when_router_is_incomplete(
+    router_result,
+):
+    source_ea = 0x7FF855576BA0
+    target_ea = 0x7FF855576BB1
+
+    class _Index:
+        def rebind_native_ea(self, ea):
+            serial = {source_ea: 42, target_ea: 77}[int(ea)]
+            return SimpleNamespace(block=SimpleNamespace(serial=serial))
+
+    routes = state_machine_module.bind_native_bound_transition_routes_for_current_mba(
+        (_dual_bound_predecessor_fact(target_ea=target_ea),),
+        current_block_identity_index=_Index(),
+        graph=SimpleNamespace(blocks={2: object(), 42: object(), 77: object()}),
+        dispatcher=SimpleNamespace(lookup=lambda _state: router_result),
+        dispatcher_region_serials=frozenset({2}),
+        state_var_stkoff=52,
+        state_var_reg=None,
+    )
+
+    assert len(routes) == 1
+    assert routes[0].target_handler_serial == 77
+
+
+def test_native_bound_adapter_rejects_conflicting_target_native_identities():
+    source_ea = 0x7FF855576BA0
+    first_target_ea = 0x7FF855576BB1
+    second_target_ea = 0x7FF855576BB2
+
+    class _Index:
+        def rebind_native_ea(self, ea):
+            serial = {
+                source_ea: 42,
+                first_target_ea: 77,
+                second_target_ea: 78,
+            }[int(ea)]
+            return SimpleNamespace(block=SimpleNamespace(serial=serial))
+
+    routes = state_machine_module.bind_native_bound_transition_routes_for_current_mba(
+        (
+            _dual_bound_predecessor_fact(
+                fact_id="predecessor:dual-bound-a",
+                target_ea=first_target_ea,
+            ),
+            _dual_bound_predecessor_fact(
+                fact_id="predecessor:dual-bound-b",
+                target_ea=second_target_ea,
+            ),
+        ),
+        current_block_identity_index=_Index(),
+        graph=SimpleNamespace(
+            blocks={42: object(), 77: object(), 78: object()}
+        ),
+        dispatcher=SimpleNamespace(lookup=lambda _state: 77),
+        dispatcher_region_serials=frozenset({2}),
         state_var_stkoff=52,
         state_var_reg=None,
     )

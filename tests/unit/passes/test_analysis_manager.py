@@ -15,6 +15,7 @@ from d810.analyses.control_flow.predecessor_dispatcher_target import (
 from d810.analyses.value_flow.contract_evidence import contract_evidence_payload
 from d810.capabilities.dispatcher import RouterKind
 from d810.passes.analysis_manager import AnalysisManager
+from d810.passes.function_pass_manager import FunctionPassManager
 from d810.passes.pass_pipeline import (
     PassContract,
     PassInvalidates,
@@ -362,6 +363,51 @@ def test_put_observation_evidence_ignores_raw_diagnostic_evidence():
     assert not am.has_evidence("branch_targets")
     assert not am.has_evidence("ir.memory_def.candidate")
     assert not am.has_evidence("carrier_store_candidates")
+
+
+def test_observation_evidence_retains_session_rows_across_graph_invalidation():
+    observation = object()
+    am = AnalysisManager(graph="G0")
+
+    am.put_observation_evidence(observation)
+    am.put_observation_evidence(observation)
+
+    assert am.session_observations == (observation,)
+    assert am.retained_observations == (observation,)
+
+    am.invalidate_to("G1", PreservedAnalyses.none())
+
+    assert am.session_observations == (observation,)
+    assert am.retained_observations == (observation,)
+
+
+def test_session_observations_are_scoped_to_the_manager_instance():
+    observation = object()
+    first = AnalysisManager(graph="G0")
+    first.put_observation_evidence(observation)
+
+    second = AnalysisManager(graph="G0")
+
+    assert first.session_observations == (observation,)
+    assert second.session_observations == ()
+
+
+def test_function_manager_reset_drops_session_observations():
+    graph = object()
+
+    class _Source:
+        func_ea = 0x1000
+        flow_graph = graph
+
+    manager = FunctionPassManager()
+    first = manager.facts_for(_Source())
+    first.put_observation_evidence(object())
+
+    manager.reset_func(0x1000)
+    second = manager.facts_for(_Source())
+
+    assert second is not first
+    assert second.session_observations == ()
 
 
 def test_evidence_store_reads_dispatcher_projection_contract_tokens():
