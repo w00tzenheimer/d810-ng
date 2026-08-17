@@ -185,3 +185,63 @@ def test_unmanaged_put_bytes_in_declared_range_is_rejected_and_restored(
 
     assert int(ida_bytes.get_byte(ea)) & 0xFF == original
     assert IdaPatchLedger().capture() == before
+
+
+def test_unmanaged_put_bytes_restores_preexisting_live_raw_byte(
+    copy_of_idb, tmp_path
+) -> None:
+    ea = copy_of_idb.min_ea
+    original = int(ida_bytes.get_original_byte(ea)) & 0xFF
+    preexisting = original ^ 0x01
+    replacement = original ^ 0x02
+    ida_bytes.put_byte(ea, preexisting)
+    before = IdaPatchLedger().capture()
+    assert before == ()
+
+    try:
+        with SQLitePreparationJournal(tmp_path / "journal.sqlite3") as journal:
+            receipt = _gateway(journal).run(
+                _request(ea, _unmanaged_descriptor(tmp_path, replacement=replacement))
+            )
+
+            assert receipt.state is PreparationState.RESTORED
+            assert receipt.failure_reason == f"UNMANAGED_WRITE_DETECTED at {ea:#x}"
+            baselines = journal.declared_byte_baselines(receipt.transaction_id)
+            assert len(baselines) == 1
+            assert baselines[0].ea == ea
+            assert not baselines[0].before_is_patched
+            assert baselines[0].before_value == preexisting
+
+        assert int(ida_bytes.get_byte(ea)) & 0xFF == preexisting
+        assert IdaPatchLedger().capture() == before
+    finally:
+        ida_bytes.put_byte(ea, original)
+
+
+def test_managed_patch_restores_preexisting_live_raw_byte(
+    copy_of_idb, tmp_path
+) -> None:
+    ea = copy_of_idb.min_ea
+    original = int(ida_bytes.get_original_byte(ea)) & 0xFF
+    preexisting = original ^ 0x01
+    replacement = original ^ 0x02
+    ida_bytes.put_byte(ea, preexisting)
+    before = IdaPatchLedger().capture()
+    assert before == ()
+
+    try:
+        with SQLitePreparationJournal(tmp_path / "journal.sqlite3") as journal:
+            gateway = _gateway(journal)
+            applied = gateway.run(
+                _request(ea, _descriptor(tmp_path, replacement=replacement))
+            )
+            assert applied.ok
+            assert applied.byte_deltas[0].before_value == preexisting
+
+            restored = gateway.restore(applied.transaction_id)
+            assert restored.ok
+
+        assert int(ida_bytes.get_byte(ea)) & 0xFF == preexisting
+        assert IdaPatchLedger().capture() == before
+    finally:
+        ida_bytes.put_byte(ea, original)

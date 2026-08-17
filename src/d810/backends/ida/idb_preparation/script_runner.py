@@ -61,6 +61,12 @@ class PreparationScriptContext:
         self.patch_bytes_callback(ea, data)
 
     def note_range(self, start_ea: int, end_ea: int) -> None:
+        """Declare a byte range before performing any direct raw IDB write.
+
+        Declaration captures the exact live before-image.  Calling this only
+        after a raw write cannot provide lossless rollback for that write.
+        ``patch_bytes()`` performs this declaration automatically.
+        """
         _require_ea(start_ea, "start_ea")
         _require_ea(end_ea, "end_ea")
         if end_ea <= start_ea:

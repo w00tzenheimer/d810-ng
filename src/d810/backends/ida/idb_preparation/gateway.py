@@ -185,6 +185,42 @@ class IdbPreparationGateway:
                 functions.add(int(owner))
         return tuple(sorted(functions))
 
+    def _attach_declared_before_images(
+        self,
+        transaction_id: PreparationTransactionId,
+        deltas: tuple[PreparationByteDelta, ...],
+    ) -> tuple[PreparationByteDelta, ...]:
+        """Replace ledger-derived pristine values with declared live values."""
+
+        baselines = {
+            baseline.ea: baseline
+            for baseline in self._journal.declared_byte_baselines(transaction_id)
+        }
+        attached: list[PreparationByteDelta] = []
+        for delta in deltas:
+            baseline = baselines.get(delta.ea)
+            if baseline is None:
+                attached.append(delta)
+                continue
+            if (
+                baseline.ida_original != delta.ida_original
+                or baseline.before_is_patched != delta.before_is_patched
+            ):
+                raise RuntimeError(
+                    f"declared before-image disagrees with patch ledger at {delta.ea:#x}"
+                )
+            attached.append(
+                PreparationByteDelta(
+                    ea=delta.ea,
+                    ida_original=delta.ida_original,
+                    before_is_patched=delta.before_is_patched,
+                    before_value=baseline.before_value,
+                    after_is_patched=delta.after_is_patched,
+                    after_value=delta.after_value,
+                )
+            )
+        return tuple(attached)
+
     def _unmanaged_declared_eas(
         self,
         transaction_id: PreparationTransactionId,
@@ -195,7 +231,12 @@ class IdbPreparationGateway:
         unmanaged: list[int] = []
         for baseline in self._journal.declared_byte_baselines(transaction_id):
             row = patch_rows.get(baseline.ea)
-            expected = baseline.ida_original if row is None else row.current_value
+            if row is not None:
+                expected = row.current_value
+            elif baseline.before_is_patched:
+                expected = baseline.ida_original
+            else:
+                expected = baseline.before_value
             live = self._byte_writer.read_byte(baseline.ea)
             if (
                 live is None
@@ -216,7 +257,12 @@ class IdbPreparationGateway:
         restored: list[int] = []
         for ea in self._unmanaged_declared_eas(transaction_id):
             baseline = baselines[ea]
-            self._byte_writer.put_byte(ea, baseline.ida_original)
+            underlying_before = (
+                baseline.ida_original
+                if baseline.before_is_patched
+                else baseline.before_value
+            )
+            self._byte_writer.put_byte(ea, underlying_before)
             if baseline.before_is_patched:
                 self._byte_writer.patch_byte(ea, baseline.before_value)
             restored.append(ea)
@@ -360,12 +406,17 @@ class IdbPreparationGateway:
                     raise RuntimeError(
                         f"cannot capture original byte for declared range at {ea:#x}"
                     )
+                live_before = self._byte_writer.read_byte(ea)
+                if live_before is None:
+                    raise RuntimeError(
+                        f"cannot capture live byte for declared range at {ea:#x}"
+                    )
                 declared_baselines.append(
                     PreparationDeclaredByteBaseline(
                         ea=ea,
                         ida_original=original,
                         before_is_patched=False,
-                        before_value=original,
+                        before_value=live_before,
                     )
                 )
             self._journal.record_declared_byte_baselines(
@@ -425,7 +476,9 @@ class IdbPreparationGateway:
                 type_deltas=ordered_type_proposals,
             )
 
-        deltas = derive_patch_delta(baseline, after)
+        deltas = self._attach_declared_before_images(
+            transaction_id, derive_patch_delta(baseline, after)
+        )
         unmanaged_eas = self._unmanaged_declared_eas(transaction_id)
         try:
             self._journal.record_byte_deltas(transaction_id, deltas)
@@ -726,6 +779,8 @@ class IdbPreparationGateway:
                     continue
                 if delta.restore_with_revert:
                     self._byte_writer.revert_byte(delta.ea)
+                    if delta.restore_value != delta.ida_original:
+                        self._byte_writer.put_byte(delta.ea, delta.restore_value)
                 else:
                     self._byte_writer.patch_byte(delta.ea, delta.restore_value)
                 restored_eas.append(delta.ea)
@@ -806,7 +861,10 @@ class IdbPreparationGateway:
         self, transaction_id: PreparationTransactionId
     ) -> tuple[PreparationByteDelta, ...]:
         baseline = self._journal.baseline_rows(transaction_id)
-        observed = derive_patch_delta(baseline, self._patch_ledger.capture())
+        observed = self._attach_declared_before_images(
+            transaction_id,
+            derive_patch_delta(baseline, self._patch_ledger.capture()),
+        )
         durable = self._journal.byte_deltas(transaction_id)
         if durable and durable != observed:
             raise RuntimeError(

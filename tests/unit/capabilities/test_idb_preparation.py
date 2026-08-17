@@ -46,16 +46,18 @@ def test_byte_delta_reverts_byte_that_was_pristine_before() -> None:
     assert delta.restore_value == 0x75
 
 
-def test_byte_delta_rejects_inconsistent_pristine_before_value() -> None:
-    with pytest.raises(ValueError, match="pristine before_value"):
-        PreparationByteDelta(
-            ea=0x401000,
-            ida_original=0x75,
-            before_is_patched=False,
-            before_value=0x74,
-            after_is_patched=True,
-            after_value=0xEB,
-        )
+def test_byte_delta_preserves_unpatched_live_before_value() -> None:
+    delta = PreparationByteDelta(
+        ea=0x401000,
+        ida_original=0x75,
+        before_is_patched=False,
+        before_value=0x74,
+        after_is_patched=True,
+        after_value=0xEB,
+    )
+
+    assert delta.restore_with_revert is True
+    assert delta.restore_value == 0x74
 
 
 @pytest.mark.parametrize("field", ("ida_original", "before_value", "after_value"))

@@ -32,8 +32,6 @@ def classify_preparation_byte(
     if row is not None:
         if row.ida_original != delta.ida_original or row.current_value != current:
             return PreparationBytePosition.NEITHER
-    elif current != delta.ida_original:
-        return PreparationBytePosition.NEITHER
 
     if is_patched == delta.before_is_patched and current == delta.before_value:
         return PreparationBytePosition.BEFORE

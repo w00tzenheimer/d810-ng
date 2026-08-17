@@ -275,10 +275,60 @@ def test_unmanaged_write_in_declared_range_is_restored_and_rejected(
         journal.close()
 
 
+def test_unmanaged_write_restores_preexisting_live_raw_byte(tmp_path: Path) -> None:
+    writer = _Writer({0x401000: 0x75})
+    writer.put_bytes(0x401000, b"\x66")
+
+    def _put_unmanaged(context) -> None:
+        context.note_range(0x401000, 0x401001)
+        writer.put_bytes(0x401000, b"\x90")
+
+    gateway, journal, _ = _gateway(
+        tmp_path,
+        writer=writer,
+        action=_put_unmanaged,
+    )
+    try:
+        receipt = gateway.run(_request())
+
+        assert receipt.state is PreparationState.RESTORED
+        assert receipt.failure_reason == "UNMANAGED_WRITE_DETECTED at 0x401000"
+        assert writer.read_byte(0x401000) == 0x66
+        assert journal.byte_deltas(receipt.transaction_id) == ()
+    finally:
+        journal.close()
+
+
+def test_managed_patch_restore_preserves_preexisting_live_raw_byte(
+    tmp_path: Path,
+) -> None:
+    writer = _Writer({0x401000: 0x75})
+    writer.put_bytes(0x401000, b"\x66")
+
+    gateway, journal, _ = _gateway(
+        tmp_path,
+        writer=writer,
+        action=lambda context: context.patch_bytes(0x401000, b"\x90"),
+    )
+    try:
+        applied = gateway.run(_request())
+        assert applied.ok
+        assert applied.byte_deltas[0].before_value == 0x66
+
+        restored = gateway.restore(applied.transaction_id)
+
+        assert restored.ok
+        assert writer.read_byte(0x401000) == 0x66
+        assert writer.patches == {}
+    finally:
+        journal.close()
+
+
 def test_startup_recovers_unmanaged_write_after_capture_pending_cut(
     tmp_path: Path,
 ) -> None:
     writer = _Writer({0x401000: 0x75})
+    writer.put_bytes(0x401000, b"\x66")
     path = tmp_path / "journal.sqlite3"
     journal = _CapturePendingCommitCutJournal(path)
 
@@ -307,7 +357,7 @@ def test_startup_recovers_unmanaged_write_after_capture_pending_cut(
 
         assert len(recovered) == 1
         assert recovered[0].ok
-        assert writer.read_byte(0x401000) == 0x75
+        assert writer.read_byte(0x401000) == 0x66
 
 
 def test_script_exception_before_writes_is_terminal_failed(tmp_path: Path) -> None:

@@ -108,6 +108,9 @@ def _write(case_dir: Path, cut: str) -> None:
         inherited_original = int(ida_bytes.get_original_byte(inherited_ea)) & 0xFF
         inherited_before = inherited_original ^ 0x01
         ida_bytes.patch_byte(inherited_ea, inherited_before)
+        pristine_before = pristine_original ^ 0x01
+        ida_bytes.put_byte(pristine_ea, pristine_before)
+        pristine_ledger_original = int(ida_bytes.get_original_byte(pristine_ea)) & 0xFF
 
         ledger = IdaPatchLedger()
         baseline = ledger.capture()
@@ -131,25 +134,25 @@ def _write(case_dir: Path, cut: str) -> None:
             transaction = journal.transition(
                 transaction.transaction_id, PreparationState.SCRIPT_RUNNING
             )
+            journal.record_declared_byte_baselines(
+                transaction.transaction_id,
+                (
+                    PreparationDeclaredByteBaseline(
+                        ea=pristine_ea,
+                        ida_original=pristine_ledger_original,
+                        before_is_patched=False,
+                        before_value=pristine_before,
+                    ),
+                    PreparationDeclaredByteBaseline(
+                        ea=inherited_ea,
+                        ida_original=inherited_original,
+                        before_is_patched=True,
+                        before_value=inherited_before,
+                    ),
+                ),
+            )
 
             if cut == UNMANAGED_CAPTURE_PENDING:
-                journal.record_declared_byte_baselines(
-                    transaction.transaction_id,
-                    (
-                        PreparationDeclaredByteBaseline(
-                            ea=pristine_ea,
-                            ida_original=pristine_original,
-                            before_is_patched=False,
-                            before_value=pristine_original,
-                        ),
-                        PreparationDeclaredByteBaseline(
-                            ea=inherited_ea,
-                            ida_original=inherited_original,
-                            before_is_patched=True,
-                            before_value=inherited_before,
-                        ),
-                    ),
-                )
                 ida_bytes.put_byte(pristine_ea, pristine_original ^ 0x02)
                 ida_bytes.put_byte(inherited_ea, inherited_original ^ 0x03)
                 journal.transition(
@@ -170,6 +173,7 @@ def _write(case_dir: Path, cut: str) -> None:
             metadata = {
                 "pristine_ea": pristine_ea,
                 "pristine_original": pristine_original,
+                "pristine_before": pristine_before,
                 "inherited_ea": inherited_ea,
                 "inherited_original": inherited_original,
                 "inherited_before": inherited_before,
@@ -221,9 +225,9 @@ def _recover(case_dir: Path) -> None:
             pristine_ea = int(metadata["pristine_ea"])
             inherited_ea = int(metadata["inherited_ea"])
             if int(ida_bytes.get_byte(pristine_ea)) & 0xFF != int(
-                metadata["pristine_original"]
+                metadata["pristine_before"]
             ):
-                raise AssertionError("pristine byte was not reverted")
+                raise AssertionError("pristine live before-value was not restored")
             if int(ida_bytes.get_byte(inherited_ea)) & 0xFF != int(
                 metadata["inherited_before"]
             ):

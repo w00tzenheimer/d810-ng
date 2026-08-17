@@ -196,8 +196,8 @@ def test_capture_data_and_ownership_round_trip(tmp_path: Path) -> None:
         declared_baseline = PreparationDeclaredByteBaseline(
             ea=0x1000,
             ida_original=0x75,
-            before_is_patched=True,
-            before_value=0x74,
+            before_is_patched=False,
+            before_value=0x66,
         )
         journal.record_declared_byte_baselines(
             transaction.transaction_id, (declared_baseline,)

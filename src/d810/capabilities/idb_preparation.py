@@ -252,8 +252,6 @@ class PreparationByteDelta:
             raise TypeError("before_is_patched must be a bool")
         if not isinstance(self.after_is_patched, bool):
             raise TypeError("after_is_patched must be a bool")
-        if not self.before_is_patched and self.before_value != self.ida_original:
-            raise ValueError("pristine before_value must equal ida_original")
         if not self.after_is_patched and self.after_value != self.ida_original:
             raise ValueError("pristine after_value must equal ida_original")
         if (
@@ -273,7 +271,13 @@ class PreparationByteDelta:
 
 @dataclass(frozen=True, slots=True)
 class PreparationDeclaredByteBaseline:
-    """Durable before-image for one byte in a script-declared range."""
+    """Durable live before-image for one byte in a script-declared range.
+
+    ``ida_original`` identifies IDA's patch-ledger baseline at declaration,
+    while ``before_value`` is the byte that was live when the script declared
+    the range.  They may differ in portable adapters and after inherited raw
+    edits whose original-byte provenance remains available.
+    """
 
     ea: int
     ida_original: int
@@ -286,8 +290,6 @@ class PreparationDeclaredByteBaseline:
         _require_byte(self.before_value, "before_value")
         if not isinstance(self.before_is_patched, bool):
             raise TypeError("before_is_patched must be a bool")
-        if not self.before_is_patched and self.before_value != self.ida_original:
-            raise ValueError("pristine before_value must equal ida_original")
 
 
 @dataclass(frozen=True, slots=True)
