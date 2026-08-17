@@ -317,11 +317,14 @@ def _persist_task13_native_capture(
         )
 
     expected_case_ids = {case.case_id for case in manifest_cases}
-    assert len(captured) == len(expected_case_ids) == 76
+    assert len(captured) == len(expected_case_ids)
     assert {case.case_id for case in captured} == expected_case_ids
     assert all(len(case.outcomes) == len(_EXPECTED_NATIVE_PROVIDERS) for case in captured)
     capture.set_capture_metadata(
-        {"whole_function_elapsed_ms_by_case": whole_function_elapsed_ms}
+        {
+            "corpus_digest": _sha256_file(_MANIFEST),
+            "whole_function_elapsed_ms_by_case": whole_function_elapsed_ms,
+        }
     )
     capture_path.parent.mkdir(parents=True, exist_ok=True)
     capture.write_json(capture_path)
@@ -712,7 +715,8 @@ class TestCompilerShapeCatalogueNative:
         )
         capture_cases = capture_document["cases"]
         assert isinstance(capture_cases, list)
-        assert len(capture_cases) == 76
+        expected_capture_case_count = len(capture_cases)
+        assert expected_capture_case_count == len(json.loads(_MANIFEST.read_text(encoding="utf-8"))["cases"])
         capture_case_ids = {
             case["case_id"] for case in capture_cases if isinstance(case, Mapping)
         }
@@ -724,7 +728,9 @@ class TestCompilerShapeCatalogueNative:
             for case in capture_cases
             if isinstance(case, Mapping) and isinstance(case.get("outcomes"), list)
         )
-        assert capture_provider_row_count == 76 * len(_EXPECTED_NATIVE_PROVIDERS)
+        assert capture_provider_row_count == expected_capture_case_count * len(
+            _EXPECTED_NATIVE_PROVIDERS
+        )
         toolchain_identity = capture_document["toolchain_identity"]
         assert isinstance(toolchain_identity, Mapping)
         toolchain_digest = _canonical_json_digest(toolchain_identity)

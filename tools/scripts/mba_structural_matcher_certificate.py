@@ -17,16 +17,24 @@ from d810.mba.certified_catalogue import (
     make_structural_matcher_parity_certificate,
 )
 from d810.mba.differential_report import report_from_dict
+from d810.mba.native_corpus_capture import native_profile_from_outcome
 from d810.mba.provider_outcome import MbaProviderKind
 from d810.mba.semantic_canonicalization import CANONICALIZER_SCHEMA_VERSION
 
 
 _DIGEST_LENGTH = 64
 _RUNTIME_MODES = frozenset(("python", "cython"))
+_TOOLCHAIN_IDENTITY_FIELDS = (
+    "compiler_executable",
+    "compiler_version",
+    "compiler_flags",
+    "ida_sdk",
+    "matcher_backend",
+    "profile",
+)
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _MANIFEST = _REPO_ROOT / "tests/fixtures/mba_portfolio/compiler_shapes.json"
 _EXPECTED_CAPTURE_SCHEMA_VERSION = 1
-_EXPECTED_CASE_COUNT = 76
 _EXPECTED_CORPUS_IDENTITY = "mba-compiler-shapes-native"
 _EXPECTED_PROVIDERS = tuple(MbaProviderKind)
 
@@ -96,11 +104,6 @@ def _manifest_contract() -> tuple[dict[str, str], str]:
         if case_id in case_strata:
             raise ValueError(f"compiler-shape manifest has duplicate case_id {case_id}")
         case_strata[case_id] = stratum
-    if len(case_strata) != _EXPECTED_CASE_COUNT:
-        raise ValueError(
-            "compiler-shape manifest must contain exactly "
-            f"{_EXPECTED_CASE_COUNT} unique cases"
-        )
     return case_strata, _file_digest(_MANIFEST)
 
 
@@ -256,6 +259,31 @@ def _capture_runtime(value: Mapping[str, object], *, runtime_mode: str) -> str:
     return claims[0]
 
 
+def _validate_capture_profiles(value: Mapping[str, object]) -> None:
+    try:
+        report = report_from_dict(value)
+    except ValueError:
+        raise
+    for case in report.cases:
+        if case.profile is None:
+            if any("native_profile" in (outcome.metadata or {}) for outcome in case.outcomes):
+                raise ValueError(
+                    f"capture artifact case {case.case_id} has native_profile without a case profile"
+                )
+            continue
+        for outcome in case.outcomes:
+            try:
+                recorded = native_profile_from_outcome(outcome)
+            except ValueError as exc:
+                raise ValueError(
+                    f"capture artifact case {case.case_id} has invalid native_profile"
+                ) from exc
+            if recorded != case.profile or recorded.fingerprint != outcome.fingerprint:
+                raise ValueError(
+                    f"capture artifact case {case.case_id} native_profile does not match outcome"
+                )
+
+
 def _capture_bindings(
     value: object, *, runtime_mode: str
 ) -> tuple[str, str, int, int, frozenset[str]]:
@@ -266,7 +294,6 @@ def _capture_bindings(
     schema_version = value.get("schema_version")
     if type(schema_version) is not int or schema_version != _EXPECTED_CAPTURE_SCHEMA_VERSION:
         raise ValueError("capture artifact schema_version must be 1")
-    _capture_runtime(value, runtime_mode=runtime_mode)
     corpus_identity = value.get("corpus_identity")
     if corpus_identity != _EXPECTED_CORPUS_IDENTITY:
         raise ValueError("capture artifact has invalid corpus_identity")
@@ -281,6 +308,15 @@ def _capture_bindings(
         for key, item in toolchain_identity.items()
     ):
         raise ValueError("capture artifact toolchain_identity must map non-empty strings")
+    missing_toolchain_fields = tuple(
+        field for field in _TOOLCHAIN_IDENTITY_FIELDS if field not in toolchain_identity
+    )
+    if missing_toolchain_fields:
+        raise ValueError(
+            "capture artifact toolchain_identity is missing "
+            + ", ".join(missing_toolchain_fields)
+        )
+    _capture_runtime(value, runtime_mode=runtime_mode)
     cases = value.get("cases")
     if not isinstance(cases, Sequence) or isinstance(cases, (str, bytes)):
         raise ValueError("capture artifact cases must be a sequence")
@@ -321,7 +357,7 @@ def _capture_bindings(
         if frozenset(providers) != expected_provider_values:
             raise ValueError(f"capture artifact case {case_id} has incomplete provider matrix")
         provider_row_count += len(outcomes)
-    if set(seen_case_ids) != set(case_strata) or len(seen_case_ids) != _EXPECTED_CASE_COUNT:
+    if set(seen_case_ids) != set(case_strata):
         raise ValueError("capture artifact case IDs must match manifest case IDs")
     metadata = value.get("capture_metadata")
     if not isinstance(metadata, Mapping):
@@ -331,9 +367,11 @@ def _capture_bindings(
         raise ValueError("capture artifact capture_metadata case coverage is incomplete")
     if any(type(item) not in (int, float) or not math.isfinite(item) or item < 0 for item in elapsed.values()):
         raise ValueError("capture artifact capture_metadata has invalid case timing")
-    report_from_dict(value)
+    _validate_capture_profiles(value)
     corpus_claims = _capture_digest_claims(value, "corpus_digest")
-    if corpus_claims and corpus_claims[0] != derived_corpus_digest:
+    if len(corpus_claims) != 1:
+        raise ValueError("capture artifact requires exactly one corpus_digest claim")
+    if corpus_claims[0] != derived_corpus_digest:
         raise ValueError("capture artifact corpus_digest conflicts with manifest content")
     derived_toolchain_digest = _canonical_json_digest(toolchain_identity)
     toolchain_claims = _capture_digest_claims(value, "toolchain_digest")
@@ -363,7 +401,7 @@ def build_certificate_from_artifacts(
     ledger_document = _load_json(ledger_path)
     if not isinstance(ledger_document, Mapping):
         raise ValueError("parity ledger artifact must be an object")
-    if ledger_document.get("schema_version") != 1:
+    if type(ledger_document.get("schema_version")) is not int or ledger_document["schema_version"] != 1:
         raise ValueError("parity ledger artifact schema_version must be 1")
     recorded_runtime = ledger_document.get("runtime_mode")
     if recorded_runtime not in _RUNTIME_MODES:

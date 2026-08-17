@@ -11,8 +11,10 @@ import pytest
 
 from tools.scripts import mba_structural_matcher_certificate as certificate_tool
 from tools.scripts.mba_structural_matcher_certificate import build_certificate
+from d810.mba.island_profile import profile_to_dict, profile_typed_term
 from d810.mba.semantic_canonicalization import CANONICALIZER_SCHEMA_VERSION
 from d810.mba.provider_outcome import MbaProviderKind
+from d810.mba.typed_term import TypedBvTerm
 
 
 _MANIFEST = Path(__file__).resolve().parents[2] / "fixtures/mba_portfolio/compiler_shapes.json"
@@ -20,6 +22,28 @@ _MANIFEST = Path(__file__).resolve().parents[2] / "fixtures/mba_portfolio/compil
 
 def _digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _capture_toolchain_identity(runtime_mode: str) -> dict[str, str]:
+    return {
+        "compiler_executable": "clang",
+        "compiler_version": "clang version test",
+        "compiler_flags": "-O0 -fno-inline",
+        "ida_sdk": "940",
+        "matcher_backend": runtime_mode,
+        "profile": "portfolio-interactive",
+    }
+
+
+def _toolchain_digest(runtime_mode: str) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            _capture_toolchain_identity(runtime_mode),
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
 
 
 def _evidence(*, mismatch: int = 0) -> dict[str, object]:
@@ -70,11 +94,7 @@ def _capture_artifact(
     *, runtime_mode: str = "python", direct_digests: bool = False
 ) -> dict[str, object]:
     manifest = json.loads(_MANIFEST.read_text(encoding="utf-8"))
-    toolchain_identity = {
-        "ida_sdk": "940",
-        "matcher_backend": runtime_mode,
-        "profile": "portfolio-interactive",
-    }
+    toolchain_identity = _capture_toolchain_identity(runtime_mode)
     cases = []
     for manifest_case in manifest["cases"]:
         case_id = manifest_case["case_id"]
@@ -108,6 +128,7 @@ def _capture_artifact(
         "corpus_identity": "mba-compiler-shapes-native",
         "toolchain_identity": toolchain_identity,
         "capture_metadata": {
+            "corpus_digest": _digest(_MANIFEST),
             "whole_function_elapsed_ms_by_case": {
                 case["case_id"]: 0.0 for case in cases
             }
@@ -115,7 +136,6 @@ def _capture_artifact(
         "cases": cases,
     }
     if direct_digests:
-        capture["corpus_digest"] = _digest(_MANIFEST)
         capture["toolchain_digest"] = hashlib.sha256(
             json.dumps(
                 toolchain_identity,
@@ -125,6 +145,29 @@ def _capture_artifact(
             ).encode("utf-8")
         ).hexdigest()
     return capture
+
+
+def _add_profile_to_case(capture: dict[str, object]) -> dict[str, object]:
+    profile = profile_to_dict(
+        profile_typed_term(
+            TypedBvTerm("add", 8, children=(
+                TypedBvTerm(None, 8, leaf_key=("register", "x")),
+                TypedBvTerm(None, 8, value=1),
+            ))
+        )
+    )
+    cases = capture["cases"]
+    assert isinstance(cases, list)
+    case = cases[0]
+    assert isinstance(case, dict)
+    case["profile"] = profile
+    outcomes = case["outcomes"]
+    assert isinstance(outcomes, list)
+    for outcome in outcomes:
+        assert isinstance(outcome, dict)
+        outcome["fingerprint"] = profile["fingerprint"]
+        outcome["metadata"] = {"native_profile": deepcopy(profile)}
+    return profile
 
 
 def test_build_certificate_binds_exact_manifest_and_canonical_toolchain(
@@ -262,9 +305,7 @@ def test_artifact_certificate_binds_persisted_ledger_capture_and_runtime(
     assert certificate["runtime_mode"] == "python"
     assert certificate["snapshot_fingerprint"] == "a" * 64
     assert certificate["corpus_digest"] == _digest(_MANIFEST)
-    assert certificate["toolchain_digest"] == hashlib.sha256(
-        b'{"ida_sdk":"940","matcher_backend":"python","profile":"portfolio-interactive"}'
-    ).hexdigest()
+    assert certificate["toolchain_digest"] == _toolchain_digest("python")
     assert certificate["observation_count"] == 11
 
 
@@ -311,9 +352,7 @@ def test_artifact_certificate_accepts_task13_capture_identity_shape(
     )
 
     assert certificate["corpus_digest"] == _digest(_MANIFEST)
-    assert certificate["toolchain_digest"] == hashlib.sha256(
-        b'{"ida_sdk":"940","matcher_backend":"python","profile":"portfolio-interactive"}'
-    ).hexdigest()
+    assert certificate["toolchain_digest"] == _toolchain_digest("python")
 
 
 @pytest.mark.parametrize(
@@ -373,6 +412,130 @@ def test_artifact_certificate_rejects_missing_or_conflicting_runtime_bindings(
     capture_path.write_text(json.dumps(capture), encoding="utf-8")
 
     with pytest.raises(ValueError, match="runtime_mode"):
+        certificate_tool.build_certificate_from_artifacts(
+            ledger_path=ledger_path,
+            capture_path=capture_path,
+            runtime_mode="python",
+        )
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "compiler_executable",
+        "compiler_version",
+        "compiler_flags",
+        "ida_sdk",
+        "matcher_backend",
+        "profile",
+    ),
+)
+@pytest.mark.parametrize("replacement", (None, "", 7))
+def test_artifact_certificate_rejects_incomplete_toolchain_identity(
+    tmp_path: Path, field: str, replacement: object
+) -> None:
+    ledger_path = tmp_path / "parity-ledger.json"
+    capture_path = tmp_path / "native-capture.json"
+    ledger_path.write_text(json.dumps(_ledger_artifact()), encoding="utf-8")
+    capture = _capture_artifact()
+    if replacement is None:
+        del capture["toolchain_identity"][field]
+    else:
+        capture["toolchain_identity"][field] = replacement
+    capture_path.write_text(json.dumps(capture), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="toolchain_identity"):
+        certificate_tool.build_certificate_from_artifacts(
+            ledger_path=ledger_path,
+            capture_path=capture_path,
+            runtime_mode="python",
+        )
+
+
+def test_artifact_certificate_rejects_missing_or_duplicate_corpus_digest_claim(
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "parity-ledger.json"
+    capture_path = tmp_path / "native-capture.json"
+    ledger_path.write_text(json.dumps(_ledger_artifact()), encoding="utf-8")
+
+    capture = _capture_artifact()
+    del capture["capture_metadata"]["corpus_digest"]
+    capture_path.write_text(json.dumps(capture), encoding="utf-8")
+    with pytest.raises(ValueError, match="exactly one corpus_digest"):
+        certificate_tool.build_certificate_from_artifacts(
+            ledger_path=ledger_path,
+            capture_path=capture_path,
+            runtime_mode="python",
+        )
+
+    capture = _capture_artifact()
+    capture["corpus_digest"] = capture["capture_metadata"]["corpus_digest"]
+    capture_path.write_text(json.dumps(capture), encoding="utf-8")
+    with pytest.raises(ValueError, match="exactly one corpus_digest"):
+        certificate_tool.build_certificate_from_artifacts(
+            ledger_path=ledger_path,
+            capture_path=capture_path,
+            runtime_mode="python",
+        )
+
+
+def test_artifact_certificate_rejects_stale_digest_after_manifest_semantic_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mutated_manifest = tmp_path / "compiler_shapes.json"
+    document = json.loads(_MANIFEST.read_text(encoding="utf-8"))
+    document["authorship"] = "changed_without_case_id_change"
+    mutated_manifest.write_text(json.dumps(document), encoding="utf-8")
+    monkeypatch.setattr(certificate_tool, "_MANIFEST", mutated_manifest)
+
+    ledger_path = tmp_path / "parity-ledger.json"
+    capture_path = tmp_path / "native-capture.json"
+    ledger_path.write_text(json.dumps(_ledger_artifact()), encoding="utf-8")
+    capture_path.write_text(json.dumps(_capture_artifact()), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="corpus_digest"):
+        certificate_tool.build_certificate_from_artifacts(
+            ledger_path=ledger_path,
+            capture_path=capture_path,
+            runtime_mode="python",
+        )
+
+
+def test_artifact_certificate_rejects_profile_outcome_without_native_metadata(
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "parity-ledger.json"
+    capture_path = tmp_path / "native-capture.json"
+    ledger_path.write_text(json.dumps(_ledger_artifact()), encoding="utf-8")
+    capture = _capture_artifact()
+    _add_profile_to_case(capture)
+    del capture["cases"][0]["outcomes"][0]["metadata"]["native_profile"]
+    capture_path.write_text(json.dumps(capture), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="native_profile"):
+        certificate_tool.build_certificate_from_artifacts(
+            ledger_path=ledger_path,
+            capture_path=capture_path,
+            runtime_mode="python",
+        )
+
+
+def test_artifact_certificate_rejects_forged_profile_with_matching_fingerprint(
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "parity-ledger.json"
+    capture_path = tmp_path / "native-capture.json"
+    ledger_path.write_text(json.dumps(_ledger_artifact()), encoding="utf-8")
+    capture = _capture_artifact()
+    profile = _add_profile_to_case(capture)
+    forged = deepcopy(profile)
+    forged["operator_count"] += 1
+    for outcome in capture["cases"][0]["outcomes"]:
+        outcome["metadata"]["native_profile"] = deepcopy(forged)
+    capture_path.write_text(json.dumps(capture), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="profile"):
         certificate_tool.build_certificate_from_artifacts(
             ledger_path=ledger_path,
             capture_path=capture_path,
@@ -439,6 +602,24 @@ def test_artifact_certificate_rejects_boolean_capture_schema_version(
     capture = _capture_artifact()
     capture["schema_version"] = True
     capture_path.write_text(json.dumps(capture), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="schema_version"):
+        certificate_tool.build_certificate_from_artifacts(
+            ledger_path=ledger_path,
+            capture_path=capture_path,
+            runtime_mode="python",
+        )
+
+
+def test_artifact_certificate_rejects_boolean_ledger_schema_version(
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "parity-ledger.json"
+    capture_path = tmp_path / "native-capture.json"
+    ledger = _ledger_artifact()
+    ledger["schema_version"] = True
+    ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+    capture_path.write_text(json.dumps(_capture_artifact()), encoding="utf-8")
 
     with pytest.raises(ValueError, match="schema_version"):
         certificate_tool.build_certificate_from_artifacts(
