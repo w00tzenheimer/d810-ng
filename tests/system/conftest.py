@@ -739,7 +739,12 @@ def skip_if_no_ida():
 def ida_database(request):
     """Class-scoped fixture for IDA database management.
 
-    Opens the database specified by the test class's `binary_name` attribute.
+    Opens the database specified by the test class's ``binary_name`` attribute.
+
+    Classes that generate their input at runtime may expose a
+    ``generated_binary_factory(destination)`` callable.  The fixture gives that
+    factory a destination in a fixture-owned temporary directory so interrupted
+    Docker runs cannot leave generated binaries in the source tree.
     """
     binary_name = getattr(request.cls, "binary_name", None)
     if binary_name is None:
@@ -764,23 +769,35 @@ def ida_database(request):
     except Exception:
         pass
 
-    # Find the binary
+    # Find or generate the binary.
     tests_dir = pathlib.Path(__file__).parent
     project_root = tests_dir.parent.parent
 
-    possible_paths = [
-        project_root / "samples" / "bins" / binary_name,
-        project_root / "tests" / "_resources" / "bin" / binary_name,
-        tests_dir / "bins" / binary_name,
-    ]
+    generated_binary_factory = getattr(request.cls, "generated_binary_factory", None)
+    if generated_binary_factory is not None:
+        generated_tempdir = pathlib.Path(
+            tempfile.mkdtemp(prefix="d810-generated-binary-")
+        )
+        request.addfinalizer(
+            lambda: shutil.rmtree(generated_tempdir, ignore_errors=True)
+        )
+        binary_path = generated_tempdir / pathlib.Path(binary_name).name
+        generated_binary_factory(binary_path)
+        if not binary_path.is_file():
+            pytest.fail(
+                "generated_binary_factory did not create its assigned destination: "
+                f"{binary_path}"
+            )
+    else:
+        possible_paths = [
+            project_root / "samples" / "bins" / binary_name,
+            project_root / "tests" / "_resources" / "bin" / binary_name,
+            tests_dir / "bins" / binary_name,
+        ]
 
-    binary_path = None
-    for path in possible_paths:
-        if path.exists():
-            binary_path = path
-            break
+        binary_path = next((path for path in possible_paths if path.exists()), None)
 
-    if binary_path is None:
+    if binary_path is None or not binary_path.is_file():
         pytest.skip(f"Test binary '{binary_name}' not found")
 
     logger.info(f"Found binary at: {binary_path}")

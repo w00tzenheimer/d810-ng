@@ -71,7 +71,7 @@ def _preferred_manifest_providers(case_id: str) -> tuple[MbaProviderKind, ...]:
     return tuple(MbaProviderKind(provider) for provider in raw_case["expected_route"])
 
 
-def _build_native_corpus_binary() -> None:
+def _build_native_corpus_binary(output_path: Path) -> None:
     compiler = next(
         (candidate for candidate in ("clang", "gcc", "cc") if shutil.which(candidate)),
         None,
@@ -89,9 +89,16 @@ def _build_native_corpus_binary() -> None:
     ]
     if Path(compiler).name.startswith("clang"):
         command.extend(("-fno-vectorize", "-fno-slp-vectorize"))
-    _BINARY.parent.mkdir(parents=True, exist_ok=True)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
-        [*command, "-I", str(_ROOT / "samples/include"), "-o", str(_BINARY), str(_SOURCE)],
+        [
+            *command,
+            "-I",
+            str(_ROOT / "samples/include"),
+            "-o",
+            str(output_path),
+            str(_SOURCE),
+        ],
         check=True,
         capture_output=True,
         text=True,
@@ -101,10 +108,13 @@ def _build_native_corpus_binary() -> None:
 @pytest.mark.usefixtures("configure_hexrays")
 class TestNativeMbaCorpusCapture:
     binary_name = "mba_compiler_shapes.dylib"
+    generated_binary_factory = staticmethod(_build_native_corpus_binary)
 
-    @classmethod
-    def setup_class(cls) -> None:
-        _build_native_corpus_binary()
+    def test_generated_native_input_does_not_pollute_source_tree(
+        self,
+        ida_database,
+    ) -> None:
+        assert not _BINARY.exists()
 
     def test_elided_native_root_emits_complete_unavailable_provider_matrix(
         self,

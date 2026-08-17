@@ -17,6 +17,7 @@ from tests.system.e2e.egglog_native_corpus import (
 )
 from tests.system.e2e.test_mba_compiler_shape_corpus import (
     _CATALOGUE_CASES,
+    _NATIVE_BINARY,
     _build_native_corpus_binary,
     _catalogue_reaches_provider,
 )
@@ -67,10 +68,13 @@ class TestEgglogCompilerShapeProfile:
     """Thirty distinct real-IDB roots: direct matches and structural misses."""
 
     binary_name = "mba_compiler_shapes.dylib"
+    generated_binary_factory = staticmethod(_build_native_corpus_binary)
 
-    @classmethod
-    def setup_class(cls) -> None:
-        _build_native_corpus_binary()
+    def test_generated_native_input_does_not_pollute_source_tree(
+        self,
+        ida_database,
+    ) -> None:
+        assert not _NATIVE_BINARY.exists()
 
     @pytest.fixture(scope="class", autouse=True)
     @classmethod

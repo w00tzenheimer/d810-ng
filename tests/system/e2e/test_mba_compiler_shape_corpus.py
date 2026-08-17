@@ -188,9 +188,9 @@ def _parity_artifact_dir(tmp_path: Path) -> Path:
     return destination
 
 
-def _build_native_corpus_binary() -> None:
+def _build_native_corpus_binary(output_path: Path) -> None:
     compiler = _find_c_compiler()
-    _NATIVE_BINARY.parent.mkdir(parents=True, exist_ok=True)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
         [
             compiler,
@@ -198,7 +198,7 @@ def _build_native_corpus_binary() -> None:
             "-I",
             str(_ROOT / "samples/include"),
             "-o",
-            str(_NATIVE_BINARY),
+            str(output_path),
             str(_SOURCE),
         ],
         check=True,
@@ -340,19 +340,21 @@ def test_corpus_projects_register_their_one_intended_provider(
 class TestCompilerShapeCatalogueNative:
     """Native receipt for the root-shaped, currently routed catalogue cases.
 
-    The binary is built from this task's source before the Docker invocation;
-    it is intentionally not checked in.  This compiler corpus makes no
-    single-root degree-two claim: GCC/Hex-Rays may canonicalize a source form
-    or schedule independent nested roots.  The direct-AST runtime suite owns
-    the degree-two derivation proof.
+    The binary is built from this task's source in a fixture-owned temporary
+    directory; it is intentionally not checked in.  This compiler corpus makes
+    no single-root degree-two claim: GCC/Hex-Rays may canonicalize a source form
+    or schedule independent nested roots.  The direct-AST runtime suite owns the
+    degree-two derivation proof.
     """
 
     binary_name = "mba_compiler_shapes.dylib"
+    generated_binary_factory = staticmethod(_build_native_corpus_binary)
 
-    @classmethod
-    def setup_class(cls) -> None:
-        """Build before the shared IDA database fixture resolves ``binary_name``."""
-        _build_native_corpus_binary()
+    def test_generated_native_input_does_not_pollute_source_tree(
+        self,
+        ida_database,
+    ) -> None:
+        assert not _NATIVE_BINARY.exists()
 
     @pytest.mark.parametrize(
         ("function", "rule_name"),
