@@ -16,6 +16,10 @@ from d810.backends.mba.egglog_add_rule_compiler import (
     _compile_rule_families,
     apply_compiled_rule_to_term,
 )
+from d810.backends.mba.egglog_structural_rules import (
+    compile_fixed_rotate_rules,
+    structural_catalogue_for_rules,
+)
 from d810.backends.mba.egglog_saturation import (
     EgglogFunctionBudget,
     EgglogExtractionBudget,
@@ -54,6 +58,97 @@ def _node(
 ) -> TypedBvTerm:
     children = (left,) if right is None else (left, right)
     return TypedBvTerm(operation=operation, width=width, children=children)
+
+
+def _fixed_shift(operation: str, value: TypedBvTerm, count: int) -> TypedBvTerm:
+    return TypedBvTerm(
+        operation=operation,
+        width=value.width,
+        children=(value,),
+        shift_count=count,
+    )
+
+
+def test_certified_structural_rotate_catalogue_matches_only_complementary_counts():
+    x = _leaf("x")
+    source = _node(
+        "or",
+        _fixed_shift("shl", x, 5),
+        _fixed_shift("lshr", x, 27),
+    )
+    rule = compile_fixed_rotate_rules(width=32, direction="rol")[4].compiled_rule
+    assert rule is not None
+    catalogue = structural_catalogue_for_rules((rule,))
+
+    applications = catalogue.canonical_applications(source, comparison_budget=64)
+
+    assert len(applications) == 1
+    selected_rule, replacement, declaration_index = applications[0]
+    assert selected_rule is rule
+    assert declaration_index == 0
+    assert replacement == _fixed_shift("rol", x, 5)
+
+    noncomplementary = _node(
+        "or",
+        _fixed_shift("shl", x, 5),
+        _fixed_shift("lshr", x, 26),
+    )
+    assert catalogue.canonical_applications(noncomplementary, comparison_budget=64) == ()
+
+
+def test_structural_rotate_egglog_lowering_serializes_count_as_constructor(monkeypatch):
+    rule = compile_fixed_rotate_rules(width=32, direction="rol")[4].compiled_rule
+    assert rule is not None
+    x = _leaf("x")
+    term = _fixed_shift("rol", x, 5)
+    calls = []
+
+    class _BvExpr:
+        @classmethod
+        def leaf(cls, width, key):
+            return ("leaf", width, key)
+
+        @classmethod
+        def constant(cls, width, value):
+            return ("constant", width, value)
+
+        @classmethod
+        def unary(cls, operation, width, operand):
+            return ("unary", operation, width, operand)
+
+        @classmethod
+        def binary(cls, operation, width, left, right):
+            return ("binary", operation, width, left, right)
+
+        @classmethod
+        def fixed_shift(cls, operation, width, count, operand):
+            calls.append((operation, width, count, operand))
+            return ("fixed_shift", operation, width, count, operand)
+
+    monkeypatch.setattr(egglog_saturation, "BvExpr", _BvExpr)
+    lowered = egglog_saturation._term_to_egglog(term)
+    assert len(calls) == 1
+    assert calls[0][:3] == ("rol", 32, 5)
+    assert calls[0][3][0:2] == ("leaf", 32)
+    assert lowered[0:4] == ("fixed_shift", "rol", 32, 5)
+
+
+def test_structural_rotate_matcher_charges_every_term_node_and_fails_closed():
+    from d810.backends.mba.compiled_pattern_catalogue import (
+        CanonicalPatternComparisonBudgetExceeded,
+    )
+
+    rule = compile_fixed_rotate_rules(width=32, direction="rol")[4].compiled_rule
+    assert rule is not None
+    source = _node(
+        "or",
+        _fixed_shift("shl", _leaf("x"), 5),
+        _fixed_shift("lshr", _leaf("x"), 27),
+    )
+    catalogue = structural_catalogue_for_rules((rule,))
+
+    with pytest.raises(CanonicalPatternComparisonBudgetExceeded):
+        catalogue.canonical_applications(source, comparison_budget=1)
 
 
 def _term_from_symbolic(expression, bindings=None, *, width: int = 32):
@@ -491,6 +586,7 @@ def fake_native_runtime(monkeypatch: pytest.MonkeyPatch):
         },
         opcode_by_operation=_OPCODE_BY_OPERATION,
         get_mop_key=lambda mop: mop.to_cache_key(),
+        call_opcode=99,
     )
     monkeypatch.setattr(
         hexrays_island,
@@ -535,6 +631,25 @@ def test_native_lowering_preserves_live_leaf_keys_and_masks_constants(
         type(child) is _FakeAstLeaf and child is not leaf for child in rebuilt_leafs
     )
     assert any(isinstance(child, _FakeAstConstant) for child in rebuilt_leafs)
+
+
+def test_hexrays_island_pure_runtime_lowers_rotate_helper_without_ida_import(
+    fake_native_runtime,
+):
+    leaf = _FakeAstLeaf("x", _FakeMop("register", 7, 4))
+    leaf.dest_size = 4
+    count = _FakeAstConstant("one", 1, 1)
+    rotate = _FakeAstNode(99, leaf, count)
+    rotate.size = 4
+    rotate.dest_size = 4
+    rotate.func_name = "__ROL4__"
+
+    lowering = hexrays_island.lower_hexrays_island(rotate, destination_size=4)
+
+    assert lowering.term is not None
+    assert lowering.term.operation == "rol"
+    assert lowering.term.shift_count == 1
+    assert lowering.profile.blockers == ()
 
 
 @pytest.mark.parametrize("size", (1, 2, 4, 8))

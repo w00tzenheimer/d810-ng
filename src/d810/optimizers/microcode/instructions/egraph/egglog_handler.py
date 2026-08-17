@@ -17,6 +17,7 @@ import ida_hexrays
 from d810.backends.mba.egglog_add_rule_compiler import (
     CompiledEgglogRule,
     EgglogAddSpecialization,
+    canonical_pattern_catalogue_for_rules,
     compiled_rules_for_families,
     specialize,
 )
@@ -39,7 +40,10 @@ from d810.backends.mba.hexrays_island import (
     lower_hexrays_island,
     rebuild_hexrays_island,
 )
-from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
+from d810.backends.mba.compiled_pattern_catalogue import (
+    CanonicalPatternComparisonBudgetExceeded,
+    CompiledPatternCatalogue,
+)
 from d810.backends.mba.native_mba_term_view import (
     NativeMbaTermView,
     semantic_native_leaf_key,
@@ -48,6 +52,10 @@ from d810.backends.mba.native_z3 import prove_native_ast_equivalence
 from d810.backends.mba.native_z3_proof_template import (
     NativeZ3ProofTemplate,
     native_z3_proof_templates_for_rules,
+    prove_typed_term_equivalence,
+)
+from d810.backends.mba.egglog_structural_rules import (
+    compile_all_fixed_rotate_rules,
 )
 from d810.core import getLogger
 from d810.hexrays.expr.ast import AstNode
@@ -67,6 +75,19 @@ from d810.optimizers.microcode.instructions.peephole.handler import (
 )
 
 logger = getLogger(__name__)
+
+
+def _is_native_instruction(value) -> bool:
+    """Return whether *value* is an IDA native instruction object.
+
+    Portable/runtime tests may replace ``ida_hexrays.minsn_t`` with a
+    factory function to observe reconstruction ordering.  Calling
+    ``isinstance`` with that replacement raises ``TypeError``; keep the
+    native-helper fast path type-safe without weakening the portable seam.
+    """
+
+    native_type = getattr(ida_hexrays, "minsn_t", None)
+    return isinstance(native_type, type) and isinstance(value, native_type)
 
 _ROOT_OPCODE_BY_OPERATION = MappingProxyType(
     {
@@ -264,9 +285,18 @@ class EgglogOptimizer(PeepholeSimplificationRule):
                 raise ValueError("EgglogOptimizer native proof is mandatory") from exc
             raise ValueError(f"EgglogOptimizer {exc}") from exc
 
-        selected_catalogue = _SelectedRuleCatalogue(
-            compiled_rules_for_families(families)
-        )
+        if families == ("fixed_rotate",):
+            selected_catalogue = _SelectedRuleCatalogue(
+                tuple(
+                    receipt.compiled_rule
+                    for receipt in compile_all_fixed_rotate_rules()
+                    if receipt.compiled_rule is not None
+                )
+            )
+        else:
+            selected_catalogue = _SelectedRuleCatalogue(
+                compiled_rules_for_families(families)
+            )
         self.extraction_budget = budget
         self._publish_budget_attributes(budget)
         self.collect_stage_timings = collect_stage_timings
@@ -310,7 +340,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         self._rules_by_root_opcode = self._build_root_opcode_buckets(
             self._compiled_rules
         )
-        self._native_pattern_catalogue = CompiledPatternCatalogue.from_rules(
+        self._native_pattern_catalogue = canonical_pattern_catalogue_for_rules(
             self._compiled_rules
         )
         self._proof_templates = native_z3_proof_templates_for_rules(
@@ -321,9 +351,18 @@ class EgglogOptimizer(PeepholeSimplificationRule):
     def _ensure_catalogue_configured(self) -> None:
         """Compile the default selection only when a direct handler is used."""
         if not self._catalogue_configured:
-            self._catalogue = _SelectedRuleCatalogue(
-                compiled_rules_for_families(self.families)
-            )
+            if self.families == ("fixed_rotate",):
+                self._catalogue = _SelectedRuleCatalogue(
+                    tuple(
+                        receipt.compiled_rule
+                        for receipt in compile_all_fixed_rotate_rules()
+                        if receipt.compiled_rule is not None
+                    )
+                )
+            else:
+                self._catalogue = _SelectedRuleCatalogue(
+                    compiled_rules_for_families(self.families)
+                )
 
     def check_and_replace(self, blk, ins):
         """Return a replacement only after extraction, shrink, and proof."""
@@ -421,18 +460,38 @@ class EgglogOptimizer(PeepholeSimplificationRule):
                 )
                 return None
             self._ensure_catalogue_configured()
+            structural_route = self.families == ("fixed_rotate",)
             matcher_started = (
                 time.perf_counter() if self.collect_stage_timings else None
             )
-            match_result = self._native_pattern_catalogue.match_root(
-                view, comparison_budget=_MAX_PATTERN_COMPARISONS
-            )
+            if structural_route:
+                try:
+                    structural_matches = (
+                        self._native_pattern_catalogue.canonical_applications(
+                            view.to_typed_term(),
+                            comparison_budget=_MAX_PATTERN_COMPARISONS,
+                        )
+                    )
+                except CanonicalPatternComparisonBudgetExceeded:
+                    self._record_extraction_receipt(
+                        extraction_receipt_for_profile(
+                            native_result.profile,
+                            ExtractionSkipReason.CANDIDATE_BUDGET,
+                        )
+                    )
+                    return None
+                match_result = None
+            else:
+                structural_matches = ()
+                match_result = self._native_pattern_catalogue.match_root(
+                    view, comparison_budget=_MAX_PATTERN_COMPARISONS
+                )
             matcher_elapsed_ms = (
                 None
                 if matcher_started is None
                 else (time.perf_counter() - matcher_started) * 1000.0
             )
-            if match_result.comparison_budget_exceeded:
+            if match_result is not None and match_result.comparison_budget_exceeded:
                 self._record_extraction_receipt(
                     self._with_native_match_telemetry(
                         extraction_receipt_for_profile(
@@ -444,9 +503,17 @@ class EgglogOptimizer(PeepholeSimplificationRule):
                     )
                 )
                 return None
-            matches = match_result.matches
+            matches = () if match_result is None else match_result.matches
             canonical_match_result = None
-            if not matches:
+            if structural_route and not structural_matches:
+                self._record_extraction_receipt(
+                    extraction_receipt_for_profile(
+                        native_result.profile,
+                        ExtractionSkipReason.NO_DEGREE_ELIGIBLE_IMPROVEMENT,
+                    )
+                )
+                return None
+            if not structural_route and not matches:
                 canonical_term = canonicalize_mba_term(view.to_typed_term()).canonical_term
                 canonical_match_result = self._native_pattern_catalogue.match_canonical_root(
                     canonical_term,
@@ -481,22 +548,27 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             self._finish_stage("native_preflight")
         extraction_budget = self._candidate_extraction_budget(blk)
         telemetry_match_result = (
-            match_result if canonical_match_result is None else canonical_match_result
+            match_result
+            if canonical_match_result is None
+            else canonical_match_result
         )
         if extraction_budget is None:
-            self._record_extraction_receipt(
-                self._with_native_match_telemetry(
-                    extraction_receipt_for_profile(
-                        native_result.profile,
-                        ExtractionSkipReason.TIME_BUDGET,
-                    ),
+            receipt = extraction_receipt_for_profile(
+                native_result.profile,
+                ExtractionSkipReason.TIME_BUDGET,
+            )
+            if telemetry_match_result is not None:
+                receipt = self._with_native_match_telemetry(
+                    receipt,
                     telemetry_match_result,
                     elapsed_ms=matcher_elapsed_ms,
                 )
-            )
+            self._record_extraction_receipt(receipt)
             return None
         candidate_term = view.to_typed_term()
-        if canonical_match_result is None:
+        if structural_route:
+            initial_replacements = {}
+        elif canonical_match_result is None:
             initial_replacements = {
                 id(match.rule): match.bindings.materialize_replacement(match.rule)
                 for match in matches
@@ -519,18 +591,22 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             if extraction_budget != self.extraction_budget:
                 extraction_kwargs["budget"] = extraction_budget
             extraction = self._select_native_extraction(
-                candidate_term, **extraction_kwargs
+                candidate_term,
+                block=blk,
+                destination=ins.d,
+                **extraction_kwargs,
             )
         finally:
             self._finish_stage("egglog_extraction")
-        extraction = replace(
-            extraction,
-            receipt=self._with_native_match_telemetry(
-                extraction.receipt,
-                telemetry_match_result,
-                elapsed_ms=matcher_elapsed_ms,
-            ),
-        )
+        if telemetry_match_result is not None:
+            extraction = replace(
+                extraction,
+                receipt=self._with_native_match_telemetry(
+                    extraction.receipt,
+                    telemetry_match_result,
+                    elapsed_ms=matcher_elapsed_ms,
+                ),
+            )
         self._record_extraction_receipt(extraction.receipt)
         replacement_term = extraction.replacement_term
         if replacement_term is None:
@@ -566,6 +642,8 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             replacement_term,
             lowering=lowering,
             destination_size=destination_size,
+            block=blk,
+            destination=ins.d,
         )
         if replacement is None:
             self._record_extraction_receipt(
@@ -576,7 +654,9 @@ class EgglogOptimizer(PeepholeSimplificationRule):
                 )
             )
             return None
-        if self._node_count(replacement) >= self._node_count(ast):
+        if replacement_term.operation not in {"rol", "ror"} and self._node_count(
+            replacement
+        ) >= self._node_count(ast):
             self._record_extraction_receipt(
                 replace(
                     extraction.receipt,
@@ -1110,6 +1190,8 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         destination_size: int,
         profile,
         initial_replacements,
+        block=None,
+        destination=None,
         budget: EgglogExtractionBudget | None = None,
     ) -> EgglogExtractionResult:
         """Run bounded extraction after a direct ``minsn_t``/``mop_t`` match."""
@@ -1122,6 +1204,8 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             profile=profile,
             initial_replacements=initial_replacements,
             catalogue=self._native_pattern_catalogue,
+            block=block,
+            destination=destination,
         )
 
     @staticmethod
@@ -1188,8 +1272,14 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         resolved = tuple(families)
         if len(set(resolved)) != len(resolved):
             raise ValueError("EgglogOptimizer families must be unique")
+        if "fixed_rotate" in resolved and len(resolved) != 1:
+            raise ValueError(
+                "EgglogOptimizer families fixed_rotate must be selected alone"
+            )
         unsupported = tuple(
-            family for family in resolved if family not in _ROOT_OPCODE_BY_OPERATION
+            family
+            for family in resolved
+            if family not in _ROOT_OPCODE_BY_OPERATION and family != "fixed_rotate"
         )
         if unsupported:
             raise ValueError(
@@ -1294,6 +1384,8 @@ class EgglogOptimizer(PeepholeSimplificationRule):
     def _node_count(node) -> int:
         if node is None:
             return 0
+        if _is_native_instruction(node):
+            return 1
         if node.is_leaf():
             return 1
         return (
@@ -1321,6 +1413,18 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         float | None,
     ]:
         """Run the configured template mode without weakening native proof."""
+
+        if selected[0] == "fixed_rotate":
+            proved = prove_typed_term_equivalence(original_term, replacement_term)
+            return (
+                proved,
+                selected[1],
+                None,
+                proved,
+                proved,
+                None,
+                None,
+            )
 
         certificate = self._native_proof_certificate(selected[1])
 
@@ -1488,6 +1592,8 @@ class EgglogOptimizer(PeepholeSimplificationRule):
 
     @staticmethod
     def _create_instruction(replacement: AstNode, original_ins):
+        if _is_native_instruction(replacement):
+            return replacement
         new_mop = replacement.create_mop(original_ins.ea)
         if new_mop is None:
             return None

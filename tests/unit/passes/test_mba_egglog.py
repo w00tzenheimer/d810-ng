@@ -192,6 +192,15 @@ class TestMbaEgglogOptions(unittest.TestCase):
         with self.assertRaisesRegex(PipelineConfigError, "unique"):
             parse_mba_egglog_options(_config({"families": ["add", "add"]}))
 
+    def test_fixed_rotate_family_is_explicitly_supported(self):
+        options = parse_mba_egglog_options(_config({"families": ["fixed_rotate"]}))
+
+        self.assertEqual(options.families, ("fixed_rotate",))
+
+    def test_rejects_mixed_fixed_rotate_family(self):
+        with self.assertRaisesRegex(PipelineConfigError, "fixed_rotate.*alone"):
+            parse_mba_egglog_options(_config({"families": ["add", "fixed_rotate"]}))
+
     def test_rejects_unknown_or_unsupported_families(self):
         for family in ("predicates", "imaginary"):
             with self.subTest(family=family):

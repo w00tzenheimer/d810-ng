@@ -15,6 +15,214 @@ from d810.backends.mba.egglog_add_rule_compiler import (
 from d810.mba.dsl import Var
 from d810.mba.rules._base import VerifiableRule
 from d810.mba.rules.catalogue import MBA_RULE_FAMILIES
+from d810.mba.typed_term import TypedBvTerm, fixed_shift_term
+
+
+def test_fixed_rotate_structural_catalogue_certifies_every_nonzero_count():
+    from d810.backends.mba.egglog_structural_rules import (
+        StructuralRuleStatus,
+        compile_fixed_rotate_rules,
+    )
+
+    for width in (8, 16, 32, 64):
+        for direction in ("rol", "ror"):
+            receipts = compile_fixed_rotate_rules(width=width, direction=direction)
+            assert len(receipts) == width - 1
+            assert all(
+                receipt.status is StructuralRuleStatus.COMPILED
+                for receipt in receipts
+            )
+            assert all(receipt.proof_verdict is True for receipt in receipts)
+            assert tuple(receipt.count for receipt in receipts) == tuple(
+                range(1, width)
+            )
+
+
+def test_fixed_rotate_structural_receipts_are_frozen_and_wire_stable():
+    from dataclasses import FrozenInstanceError
+
+    from d810.backends.mba.egglog_structural_rules import (
+        StructuralRuleCompilationReceipt,
+        StructuralRuleStatus,
+        compile_fixed_rotate_rules,
+    )
+
+    receipt = compile_fixed_rotate_rules(width=8, direction="rol")[0]
+    assert isinstance(receipt, StructuralRuleCompilationReceipt)
+    assert receipt.to_dict() == {
+        "source_name": "rol_8_1",
+        "status": StructuralRuleStatus.COMPILED.value,
+        "width": 8,
+        "direction": "rol",
+        "count": 1,
+        "proof_verdict": True,
+        "refusal_reason": None,
+    }
+    with pytest.raises(FrozenInstanceError):
+        receipt.count = 2  # type: ignore[misc]
+
+
+def test_failed_fixed_rotate_certification_omits_only_that_rule(monkeypatch):
+    from d810.backends.mba import egglog_structural_rules
+    from d810.backends.mba.egglog_structural_rules import StructuralRuleStatus
+
+    original = egglog_structural_rules.prove_typed_term_equivalence
+
+    def reject_count_three(pattern, replacement):
+        return not (
+            replacement.operation == "rol" and replacement.shift_count == 3
+        )
+
+    monkeypatch.setattr(
+        egglog_structural_rules,
+        "prove_typed_term_equivalence",
+        reject_count_three,
+    )
+    try:
+        receipts = egglog_structural_rules.compile_fixed_rotate_rules(
+            width=8, direction="rol"
+        )
+    finally:
+        monkeypatch.setattr(
+            egglog_structural_rules,
+            "prove_typed_term_equivalence",
+            original,
+        )
+
+    rejected = receipts[2]
+    assert rejected.count == 3
+    assert rejected.status is StructuralRuleStatus.REJECTED
+    assert rejected.compiled_rule is None
+    assert rejected.refusal_reason == "typed_z3_proof_failed"
+    assert sum(item.compiled_rule is not None for item in receipts) == 6
+
+
+@pytest.mark.parametrize("direction", ["rol", "ror"])
+def test_fixed_rotate_rejects_invalid_width_direction_and_count(direction):
+    from d810.backends.mba.egglog_structural_rules import (
+        build_rotate_identity,
+        compile_fixed_rotate_rules,
+    )
+
+    with pytest.raises(ValueError, match="width"):
+        compile_fixed_rotate_rules(width=24, direction=direction)
+    with pytest.raises(ValueError, match="direction"):
+        compile_fixed_rotate_rules(width=8, direction="bad")
+    with pytest.raises(ValueError, match="count"):
+        build_rotate_identity(8, direction, 0)
+    with pytest.raises(ValueError, match="count"):
+        build_rotate_identity(8, direction, 8)
+
+
+def test_fixed_rotate_rejects_signed_mixed_width_and_extra_operand_shapes():
+    from d810.backends.mba.egglog_structural_rules import (
+        compile_fixed_rotate_rules,
+        structural_catalogue_for_rules,
+    )
+
+    rule = compile_fixed_rotate_rules(width=32, direction="rol")[4].compiled_rule
+    assert rule is not None
+    catalogue = structural_catalogue_for_rules((rule,))
+    x32 = TypedBvTerm(None, 32, leaf_key=("register", "x"))
+
+    # Arithmetic shifts are deliberately outside the typed fixed-shift
+    # vocabulary, so they cannot enter the structural catalogue at all.
+    with pytest.raises(ValueError, match="shift_count"):
+        fixed_shift_term("sar", 32, x32, 5)
+
+    # A source at another width cannot match a 32-bit certified rule.
+    x16 = TypedBvTerm(None, 16, leaf_key=("register", "x"))
+    mixed_width_candidate = TypedBvTerm(
+        "or",
+        16,
+        children=(
+            fixed_shift_term("shl", 16, x16, 5),
+            fixed_shift_term("lshr", 16, x16, 11),
+        ),
+    )
+    assert catalogue.canonical_applications(mixed_width_candidate) == ()
+    with pytest.raises(ValueError, match="same width"):
+        TypedBvTerm(
+            "or",
+            32,
+            children=(
+                fixed_shift_term("shl", 32, x32, 5),
+                fixed_shift_term("lshr", 16, x16, 11),
+            ),
+        )
+
+    # An enclosing operand changes the root shape and must not be searched
+    # through by the candidate-root-only structural route.
+    source = TypedBvTerm(
+        "or",
+        32,
+        children=(
+            fixed_shift_term("shl", 32, x32, 5),
+            fixed_shift_term("lshr", 32, x32, 27),
+        ),
+    )
+    extra_operand = TypedBvTerm(
+        "add",
+        32,
+        children=(TypedBvTerm(None, 32, value=0), source),
+    )
+    assert catalogue.canonical_applications(extra_operand) == ()
+
+
+def test_snapshot_fingerprint_binds_admitted_structural_rotate_inventory():
+    from d810.backends.mba.egglog_structural_rules import compile_fixed_rotate_rules
+    from d810.mba.certified_catalogue import build_certified_catalogue_snapshot
+
+    receipts = compile_fixed_rotate_rules(width=8, direction="rol")
+    structural_rules = tuple(
+        receipt.compiled_rule
+        for receipt in receipts
+        if receipt.compiled_rule is not None
+    )
+    complete = build_certified_catalogue_snapshot(
+        (),
+        compiler_version="structural-v1",
+        widths=(8,),
+        structural_rules=structural_rules,
+    )
+    incomplete = build_certified_catalogue_snapshot(
+        (),
+        compiler_version="structural-v1",
+        widths=(8,),
+        structural_rules=structural_rules[:-1],
+    )
+
+    assert complete.structural_rule_fingerprints
+    assert complete.structural_rule_digest
+    assert complete.fingerprint != incomplete.fingerprint
+    assert complete.structural_rule_digest != incomplete.structural_rule_digest
+
+
+def test_fixed_rotate_inventory_reuses_certification_across_live_requests(monkeypatch):
+    from d810.backends.mba import egglog_structural_rules
+
+    compile_all = egglog_structural_rules.compile_all_fixed_rotate_rules
+    compile_all.cache_clear()
+    first = compile_all()
+    calls = 0
+
+    def unexpected_reproof(pattern, replacement):
+        nonlocal calls
+        calls += 1
+        raise AssertionError("cached fixed-rotate inventory re-entered proof gate")
+
+    monkeypatch.setattr(
+        egglog_structural_rules,
+        "prove_typed_term_equivalence",
+        unexpected_reproof,
+    )
+    try:
+        second = compile_all()
+    finally:
+        compile_all.cache_clear()
+
+    assert second is first
+    assert calls == 0
 
 
 _RULE_MODULE_BY_FAMILY = {
@@ -33,6 +241,13 @@ _RULE_MODULE_BY_FAMILY = {
     "sub": "sub",
     "tigress": "tigress",
     "xor": "xor",
+}
+_RULE_MODULES_BY_FAMILY = {
+    **_RULE_MODULE_BY_FAMILY,
+    # These two certified Eidolon identities are intentionally interleaved in
+    # the explicit XOR declaration order, so the manifest is not a one-module
+    # inventory for this family.
+    "xor": ("xor", "eidolon"),
 }
 _CLOSED_FAMILIES = frozenset({"add", "xor", "sub", "and", "or", "bnot", "neg", "mul"})
 
@@ -60,21 +275,30 @@ def test_family_manifest_covers_every_module_owned_rule_in_source_order():
     discovered_keys: list[tuple[str, str]] = []
     manifest_keys: list[tuple[str, str]] = []
 
-    assert tuple(MBA_RULE_FAMILIES) == tuple(_RULE_MODULE_BY_FAMILY)
-    for family, module_name in _RULE_MODULE_BY_FAMILY.items():
-        discovered_rule_types = _module_owned_rule_types(module_name)
+    assert tuple(MBA_RULE_FAMILIES) == tuple(_RULE_MODULES_BY_FAMILY)
+    for family, module_names in _RULE_MODULES_BY_FAMILY.items():
+        if isinstance(module_names, str):
+            module_names = (module_names,)
         manifest_rule_types = MBA_RULE_FAMILIES[family]
-        assert manifest_rule_types == discovered_rule_types
-        discovered_keys.extend(
-            (family, rule_type.__name__) for rule_type in discovered_rule_types
-        )
+        manifest_modules = {rule_type.__module__.rsplit(".", 1)[-1] for rule_type in manifest_rule_types}
+        assert manifest_modules == set(module_names)
+        for module_name in module_names:
+            discovered_rule_types = _module_owned_rule_types(module_name)
+            assert tuple(
+                rule_type
+                for rule_type in manifest_rule_types
+                if rule_type.__module__.rsplit(".", 1)[-1] == module_name
+            ) == discovered_rule_types
+            discovered_keys.extend(
+                (family, rule_type.__name__) for rule_type in discovered_rule_types
+            )
         manifest_keys.extend(
             (family, rule_type.__name__) for rule_type in manifest_rule_types
         )
 
-    assert manifest_keys == discovered_keys
-    assert len(discovered_keys) == 189
-    assert sum(len(MBA_RULE_FAMILIES[family]) for family in _CLOSED_FAMILIES) == 119
+    assert set(manifest_keys) == set(discovered_keys)
+    assert len(manifest_keys) == 191
+    assert sum(len(MBA_RULE_FAMILIES[family]) for family in _CLOSED_FAMILIES) == 121
 
 
 def test_whole_corpus_has_one_family_qualified_receipt_per_declaration(
@@ -87,7 +311,7 @@ def test_whole_corpus_has_one_family_qualified_receipt_per_declaration(
         for rule_type in rule_types
     }
 
-    assert len(catalogue.receipts) == 189
+    assert len(catalogue.receipts) == 191
     assert set(catalogue.receipts_by_key) == expected_keys
     assert len(catalogue.receipts_by_key) == len(catalogue.receipts)
     assert (

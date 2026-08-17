@@ -829,9 +829,23 @@ def canonical_pattern_catalogue_for_rules(rules: Collection[object]) -> Any:
     Keeping the import local avoids a compiler/catalogue cycle at module load.
     """
 
+    from d810.backends.mba.egglog_structural_rules import (
+        CompiledEgglogStructuralRule,
+        structural_catalogue_for_rules,
+    )
     from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
 
-    return CompiledPatternCatalogue.from_rules(require_admitted_compiled_rules(rules))
+    frozen_rules = tuple(rules)
+    if frozen_rules and all(
+        type(rule) is CompiledEgglogStructuralRule for rule in frozen_rules
+    ):
+        return structural_catalogue_for_rules(frozen_rules)
+    if any(type(rule) is CompiledEgglogStructuralRule for rule in frozen_rules):
+        raise ValueError("canonical catalogue cannot mix structural and DSL rules")
+
+    return CompiledPatternCatalogue.from_rules(
+        require_admitted_compiled_rules(frozen_rules)
+    )
 
 
 _OPCODE_BY_OPERATION: dict[str, int] = {}

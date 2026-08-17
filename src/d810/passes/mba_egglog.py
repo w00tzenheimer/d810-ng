@@ -29,7 +29,17 @@ MBA_EGGLOG_STAGE_ID = "mba-egglog"
 MBA_EGGLOG_IMPLEMENTATION = "EgglogOptimizer"
 DEFAULT_MATURITIES = ("GLOBAL_OPTIMIZED",)
 DEFAULT_FAMILIES = ("add",)
-MBA_EGGLOG_FAMILIES = ("add", "and", "bnot", "mul", "neg", "or", "sub", "xor")
+MBA_EGGLOG_FAMILIES = (
+    "add",
+    "and",
+    "bnot",
+    "fixed_rotate",
+    "mul",
+    "neg",
+    "or",
+    "sub",
+    "xor",
+)
 
 
 @dataclass(frozen=True)
@@ -223,6 +233,10 @@ def parse_mba_egglog_options(
     resolved_families = tuple(families)
     if len(set(resolved_families)) != len(resolved_families):
         raise PipelineConfigError("mba-egglog options.families must be unique")
+    if "fixed_rotate" in resolved_families and len(resolved_families) != 1:
+        raise PipelineConfigError(
+            "mba-egglog options.families fixed_rotate must be selected alone"
+        )
     unsupported_families = tuple(
         family for family in resolved_families if family not in MBA_EGGLOG_FAMILIES
     )

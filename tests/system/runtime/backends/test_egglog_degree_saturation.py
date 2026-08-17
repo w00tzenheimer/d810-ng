@@ -8,10 +8,17 @@ import pytest
 
 egglog = pytest.importorskip("egglog")
 ida_hexrays = pytest.importorskip("ida_hexrays")
+idaapi = pytest.importorskip("idaapi")
+import idautils  # noqa: E402
+import idc  # noqa: E402
 
 from d810.backends.mba.egglog_add_rule_compiler import (  # noqa: E402
     CERTIFICATE_WIDTHS,
     compiled_rules_for_families,
+)
+from d810.backends.mba.egglog_structural_rules import (  # noqa: E402
+    compile_fixed_rotate_rules,
+    structural_catalogue_for_rules,
 )
 from d810.backends.mba.egglog_saturation import (  # noqa: E402
     EgglogExtractionBudget,
@@ -23,6 +30,7 @@ from d810.backends.mba.egglog_saturation import (  # noqa: E402
     extract_bounded_candidate,
 )
 from d810.backends.mba.hexrays_island import lower_hexrays_island  # noqa: E402
+from d810.hexrays.utils.hexrays_helpers import dup_mop  # noqa: E402
 from d810.backends.mba.native_mba_term_view import (  # noqa: E402
     NativeMbaTermView,
     NativeMbaViewResult,
@@ -35,6 +43,30 @@ from d810.optimizers.microcode.instructions.egraph.egglog_handler import (  # no
 )
 from d810.mba.semantic_canonicalization import canonicalize_mba_term  # noqa: E402
 from d810.mba.typed_term import term_cost  # noqa: E402
+from tests.system.runtime.conftest import gen_microcode_at_maturity  # noqa: E402
+
+
+def _fixture_64_bit_value_and_destination():
+    for function_ea in idautils.Functions():
+        mba = gen_microcode_at_maturity(function_ea, ida_hexrays.MMAT_GLBOPT2)
+        if mba is None:
+            continue
+        for block_serial in range(mba.qty):
+            block = mba.get_mblock(block_serial)
+            if block is None:
+                continue
+            instruction = block.head
+            while instruction is not None:
+                if (
+                    instruction.l is not None
+                    and instruction.d is not None
+                    and instruction.l.size == 8
+                    and instruction.d.size == 8
+                    and instruction.d.t != ida_hexrays.mop_z
+                ):
+                    return mba, block, instruction, dup_mop(instruction.d)
+                instruction = instruction.next
+    pytest.fail("fixture database has no usable 64-bit microcode destination")
 
 
 def _view_from_typed_term(term):
@@ -54,6 +86,31 @@ def _first_typed_operator_child(term):
         if child.operation is not None:
             return child
     raise AssertionError("expected an operator child")
+
+
+def _mop_contains_helper(mop, helper: str) -> bool:
+    if mop is None:
+        return False
+    if mop.t == ida_hexrays.mop_d and mop.d is not None:
+        instruction = mop.d
+        if (
+            instruction.opcode == ida_hexrays.m_call
+            and instruction.l is not None
+            and instruction.l.t == ida_hexrays.mop_h
+            and instruction.l.helper == helper
+        ):
+            return True
+        return _mop_contains_helper(instruction.l, helper) or _mop_contains_helper(
+            instruction.r, helper
+        )
+    return False
+
+
+def _block_instructions(block):
+    instruction = block.head
+    while instruction is not None:
+        yield instruction
+        instruction = instruction.next
 
 
 @pytest.fixture(autouse=True)
@@ -169,6 +226,145 @@ def _degree_two_candidate(size: int = 4) -> ast_dispatcher.AstNode:
         _node(ida_hexrays.m_bnot, _leaf("y", 2, size), size=size),
         size=size,
     )
+
+
+class TestCertifiedFixedRotateMaterialization:
+    binary_name = "libobfuscated.dll"
+
+    def test_certified_fixed_rotate_extracts_and_materializes_native_helper(
+        self,
+        libobfuscated_setup,
+    ):
+        """Exercise structural proof, Egglog firing, and live helper construction."""
+
+        _mba, block, instruction, output = _fixture_64_bit_value_and_destination()
+        base = _leaf("rotate_base", 1, 8)
+        base.mop = MopSnapshot.from_mop(output)
+        left = _node(
+            ida_hexrays.m_shl,
+            base,
+            _constant(31, size=1),
+            size=8,
+        )
+        right = _node(
+            ida_hexrays.m_shr,
+            base.clone(),
+            _constant(33, size=1),
+            size=8,
+        )
+        candidate = _node(ida_hexrays.m_or, left, right, size=8)
+        lowering = lower_hexrays_island(candidate, destination_size=8)
+        assert lowering.term is not None, lowering.profile
+        receipts = compile_fixed_rotate_rules(width=64, direction="rol")
+        rule = receipts[30].compiled_rule
+        assert rule is not None
+        result = extract_bounded_candidate(
+            candidate,
+            (rule,),
+            EgglogExtractionBudget(
+                max_leaves=2,
+                max_operator_nodes=4,
+                max_eclasses=128,
+                max_enodes=256,
+                time_budget_ms=1000,
+            ),
+            8,
+            catalogue=structural_catalogue_for_rules((rule,)),
+            block=block,
+            destination=output,
+        )
+
+        assert result.replacement_ast is not None, result.receipt
+        assert result.replacement_ast.opcode == ida_hexrays.m_mov
+        assert result.replacement_ast.l.d.opcode == ida_hexrays.m_call
+        assert result.replacement_ast.l.d.l.helper == "__ROL8__"
+        assert result.receipt.rule_firings == 1
+        assert result.receipt.degree == 1
+        assert result.selected_provenance == ("fixed_rotate", "rol_64_31", ())
+        instruction.swap(result.replacement_ast)
+        block.mark_lists_dirty()
+        _mba.verify(True)
+
+
+class TestCertifiedFixedRotateNative:
+    binary_name = "libobfuscated.dll"
+
+    def test_direct_rotate_fast_path_finishes_site_before_fixed_rotate_egglog(
+        self,
+        libobfuscated_setup,
+        d810_state,
+    ):
+        """The configured direct block rule wins before structural Egglog sees it."""
+
+        from d810.optimizers.microcode.instructions.egraph.egglog_handler import (
+            EgglogOptimizer,
+        )
+        from d810.optimizers.microcode.instructions.peephole.rotate_idiom_recovery_native import (
+            RotateIdiomRecoveryBlockRule,
+        )
+
+        with d810_state() as state:
+            project_index = state.project_manager.index("eidolon_v3_const_solve.json")
+            state.load_project(project_index)
+            assert any(
+                rule.name == "RotateIdiomRecoveryBlockRule"
+                for rule in state.current_blk_rules
+            )
+            state.stop_d810()
+
+            function_ea = idc.get_name_ea_simple("Eidolon_ComputeTwoQwordBufferHash")
+            assert function_ea != idaapi.BADADDR
+            mba = gen_microcode_at_maturity(function_ea, ida_hexrays.MMAT_GLBOPT2)
+            assert mba is not None
+
+            direct_rule = RotateIdiomRecoveryBlockRule()
+            direct_sites = []
+            for block_serial in range(mba.qty):
+                block = mba.get_mblock(block_serial)
+                if block is None:
+                    continue
+                if direct_rule.optimize(block):
+                    direct_sites.extend(
+                        (block, instruction)
+                        for instruction in _block_instructions(block)
+                        if _mop_contains_helper(instruction.l, "__ROL8__")
+                        or _mop_contains_helper(instruction.r, "__ROL8__")
+                    )
+                    if direct_sites:
+                        break
+
+            assert direct_sites, "direct rotate fast path did not produce a helper site"
+
+            egglog_handler = EgglogOptimizer()
+            egglog_handler.configure(
+                {
+                    "families": ["fixed_rotate"],
+                    "maturities": ["GLOBAL_OPTIMIZED"],
+                    "max_leaves": 2,
+                    "max_operator_nodes": 16,
+                    "max_degree": 1,
+                    "saturation_rounds": 2,
+                    "max_eclasses": 128,
+                    "max_enodes": 256,
+                    "max_rule_firings": 32,
+                    "time_budget_ms": 250,
+                    "require_proof": True,
+                }
+            )
+            egglog_handler.begin_provider_outcome_capture()
+            try:
+                for block, instruction in direct_sites:
+                    assert egglog_handler.check_and_replace(block, instruction) is None
+                    assert egglog_handler.last_rule_family is None
+                    assert egglog_handler.last_derivation_trace is None
+            finally:
+                egglog_handler.end_provider_outcome_capture()
+
+            assert egglog_handler.provider_outcomes()
+            assert all(
+                outcome.status.name != "APPLIED"
+                for outcome in egglog_handler.provider_outcomes()
+            )
 
 
 def _typed_leaf(name: str, width: int = 32) -> TypedBvTerm:
@@ -674,6 +870,34 @@ def test_live_handler_receipts_candidate_budget_before_extraction(monkeypatch):
     assert receipt.island_fingerprint is not None
 
 
+def test_live_structural_handler_maps_match_budget_to_candidate_budget(monkeypatch):
+    """Structural matching exhaustion is a bounded refusal, not an error."""
+
+    import d810.optimizers.microcode.instructions.egraph.egglog_handler as handler_module
+    from d810.backends.mba.compiled_pattern_catalogue import (
+        CanonicalPatternComparisonBudgetExceeded,
+    )
+
+    candidate = _direct_add_candidate()
+    handler = _configured_live_handler(
+        families=["fixed_rotate"],
+        max_operator_nodes=10,
+    )
+    monkeypatch.setattr(handler_module, "minsn_to_ast", lambda _ins: candidate)
+
+    class _BudgetExhaustedCatalogue:
+        def canonical_applications(self, _term, *, comparison_budget):
+            del comparison_budget
+            raise CanonicalPatternComparisonBudgetExceeded("exhausted")
+
+    handler._native_pattern_catalogue = _BudgetExhaustedCatalogue()
+
+    assert handler._check_and_replace(_Instruction()) is None
+    receipt = handler.last_extraction_receipt
+    assert receipt is not None
+    assert receipt.skip_reason is ExtractionSkipReason.CANDIDATE_BUDGET
+
+
 def test_live_handler_receipts_non_mba_candidate_before_extraction(monkeypatch):
     import d810.optimizers.microcode.instructions.egraph.egglog_handler as handler_module
 
@@ -1169,8 +1393,16 @@ def test_live_handler_default_time_budget_overrun_is_clean_noop(monkeypatch):
     )
     observed_budgets = []
 
-    def time_budget_result(_term, *, destination_size, profile, initial_replacements):
-        del destination_size, profile, initial_replacements
+    def time_budget_result(
+        _term,
+        *,
+        destination_size,
+        profile,
+        initial_replacements,
+        block,
+        destination,
+    ):
+        del destination_size, profile, initial_replacements, block, destination
         observed_budgets.append(handler.extraction_budget)
         return EgglogExtractionResult(replacement_ast=None, receipt=receipt)
 

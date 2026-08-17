@@ -87,6 +87,10 @@ class BvExpr:  # pragma: no cover - replaced when the optional extra is loaded.
     def binary(cls, operation, width, left, right):
         return ("binary", operation, width, left, right)
 
+    @classmethod
+    def fixed_shift(cls, operation, width, count, operand):
+        return ("fixed_shift", operation, width, count, operand)
+
 
 class DegreeExpr:  # pragma: no cover - replaced when the optional extra is loaded.
     @classmethod
@@ -142,6 +146,15 @@ def _load_egglog_module() -> Any | None:
             width: egglog.i64Like,
             left: _BvExpr,
             right: _BvExpr,
+        ) -> _BvExpr: ...
+
+        @classmethod
+        def fixed_shift(
+            cls,
+            operation: egglog.StringLike,
+            width: egglog.i64Like,
+            count: egglog.i64Like,
+            operand: _BvExpr,
         ) -> _BvExpr: ...
 
     class _DegreeExpr(egglog.Expr):
@@ -464,6 +477,15 @@ def _term_to_egglog(term: TypedBvTerm) -> Any:
         assert term.leaf_key is not None
         return BvExpr.leaf(term.width, _leaf_key_string(term.leaf_key))
     children = tuple(_term_to_egglog(child) for child in term.children)
+    if term.operation in {"shl", "lshr", "rol", "ror"}:
+        if type(term.shift_count) is not int:
+            raise ValueError("fixed shift term is missing its count")
+        return BvExpr.fixed_shift(
+            term.operation,
+            term.width,
+            term.shift_count,
+            children[0],
+        )
     if len(children) == 1:
         return BvExpr.unary(term.operation, term.width, children[0])
     return BvExpr.binary(
@@ -691,6 +713,8 @@ def _extract_bounded_term(
     profile: Any | None = None,
     initial_replacements: Mapping[int, TypedBvTerm] | None = None,
     catalogue: Any | None = None,
+    block: Any | None = None,
+    destination: Any | None = None,
 ) -> EgglogExtractionResult:
     """Extract one strictly cheaper candidate through exact catalogue layers.
 
@@ -1053,6 +1077,8 @@ def _extract_bounded_term(
                     candidate.term,
                     lowering=lowering,
                     destination_size=destination_size,
+                    block=block,
+                    destination=destination,
                 )
             )
             if rebuilt is None:
@@ -1114,6 +1140,8 @@ def extract_bounded_term(
     profile: Any | None = None,
     initial_replacements: Mapping[int, TypedBvTerm] | None = None,
     catalogue: Any | None = None,
+    block: Any | None = None,
+    destination: Any | None = None,
 ) -> EgglogExtractionResult:
     """Discover a bounded replacement for an already matched native term.
 
@@ -1129,6 +1157,8 @@ def extract_bounded_term(
         profile=profile,
         initial_replacements=initial_replacements,
         catalogue=catalogue,
+        block=block,
+        destination=destination,
     )
 
 
@@ -1139,6 +1169,8 @@ def extract_bounded_candidate(
     destination_size: int,
     *,
     catalogue: Any | None = None,
+    block: Any | None = None,
+    destination: Any | None = None,
 ) -> EgglogExtractionResult:
     """Compatibility AST entry point for callers not using native preflight."""
 
@@ -1153,6 +1185,8 @@ def extract_bounded_candidate(
         destination_size,
         lowering=lowering,
         catalogue=catalogue,
+        block=block,
+        destination=destination,
     )
 
 

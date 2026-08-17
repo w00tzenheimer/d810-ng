@@ -35,6 +35,12 @@ _SNAPSHOT_FINGERPRINT_VERSION = 5
 _PARITY_CERTIFICATE_SCHEMA_VERSION = 3
 _DIGEST_LENGTH = 64
 
+# Backend structural rules carry this opaque enrollment marker after their
+# own universal proof gate succeeds. Keeping the token in the portable layer
+# lets snapshot construction validate admission without importing a backend
+# package upward through the architecture.
+_STRUCTURAL_RULE_ADMISSION_TOKEN = object()
+
 
 def _is_sha256_digest(value: object) -> bool:
     return (
@@ -72,6 +78,8 @@ class CertifiedCatalogueSnapshot:
     canonical_rule_ids_by_root_shape: Mapping[RootShape, tuple[int, ...]] = field(
         default_factory=dict
     )
+    structural_rule_fingerprints: tuple[str, ...] = ()
+    structural_rule_digest: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -101,6 +109,12 @@ class CertifiedCatalogueSnapshot:
             "canonical_rule_ids_by_root_shape",
             MappingProxyType(dict(self.canonical_rule_ids_by_root_shape)),
         )
+        fingerprints = tuple(self.structural_rule_fingerprints)
+        if any(type(item) is not str or not item for item in fingerprints):
+            raise ValueError("structural_rule_fingerprints must contain strings")
+        object.__setattr__(self, "structural_rule_fingerprints", fingerprints)
+        if type(self.structural_rule_digest) is not str:
+            raise ValueError("structural_rule_digest must be a string")
 
 
 @dataclass(frozen=True)
@@ -711,6 +725,7 @@ def build_certified_catalogue_snapshot(
     compiler_version: str,
     widths: tuple[int, ...] = (8, 16, 32, 64),
     enabled_families: tuple[str, ...] | None = None,
+    structural_rules: Iterable[object] = (),
 ) -> CertifiedCatalogueSnapshot:
     """Freeze already-admitted rules; never compile or verify inside this API."""
 
@@ -722,6 +737,74 @@ def build_certified_catalogue_snapshot(
     frozen_rules = tuple(
         rule for rule in all_rules if enabled is None or _rule_family(rule) in enabled
     )
+    structural_rule_list = tuple(structural_rules)
+    structural_rule_payload: list[object] = []
+    structural_rule_fingerprints: list[str] = []
+    structural_authorizable = True
+    if structural_rule_list:
+        for structural_rule in structural_rule_list:
+            # Keep the portable catalogue independent of the backend that
+            # supplies structural rules.  The production builder passes only
+            # the immutable, proof-gated inventory; the structural artifact's
+            # stable fields are the authorization boundary here.  Backend
+            # identity/enrollment remains enforced by its own matcher before
+            # a rule can be applied.
+            source_name = getattr(structural_rule, "source_name", None)
+            width = getattr(structural_rule, "width", None)
+            direction = getattr(structural_rule, "direction", None)
+            count = getattr(structural_rule, "count", None)
+            proof_verdict = getattr(structural_rule, "proof_verdict", None)
+            family = getattr(structural_rule, "family", None)
+            semantic_fingerprint = getattr(
+                structural_rule, "semantic_fingerprint", None
+            )
+            admitted = (
+                getattr(structural_rule, "_admission_token", None)
+                is _STRUCTURAL_RULE_ADMISSION_TOKEN
+                and type(source_name) is str
+                and bool(source_name)
+                and type(width) is int
+                and type(direction) is str
+                and type(count) is int
+                and proof_verdict is True
+                and type(family) is str
+                and type(semantic_fingerprint) is str
+                and bool(semantic_fingerprint)
+            )
+            if not admitted:
+                structural_authorizable = False
+                structural_rule_payload.append(
+                    {
+                        "status": "unavailable",
+                        "reason": "structural_rule_not_admitted",
+                        "type": (
+                            f"{type(structural_rule).__module__}."
+                            f"{type(structural_rule).__qualname__}"
+                        ),
+                    }
+                )
+                continue
+            structural_rule_payload.append(
+                {
+                    "source_name": source_name,
+                    "width": width,
+                    "direction": direction,
+                    "count": count,
+                    "proof_verdict": proof_verdict,
+                    "family": family,
+                    "semantic_fingerprint": semantic_fingerprint,
+                }
+            )
+            structural_rule_fingerprints.append(semantic_fingerprint)
+    structural_rule_fingerprints_tuple = tuple(structural_rule_fingerprints)
+    structural_rule_digest = hashlib.sha256(
+        json.dumps(
+            tuple(structural_rule_payload),
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("ascii")
+    ).hexdigest()
     semantic_state = _SemanticFingerprintState(active_ids=set())
     canonical_templates: dict[tuple[int, int], Mapping[str, object]] = {}
     canonical_statuses: dict[tuple[int, int], str] = {}
@@ -780,7 +863,11 @@ def build_certified_catalogue_snapshot(
         "widths": tuple(widths),
         "enabled_families": families,
         "rules": tuple(canonical_rule_payloads),
-        "structural_authorizable": semantic_state.structural_authorizable,
+        "structural_authorizable": (
+            semantic_state.structural_authorizable and structural_authorizable
+        ),
+        "structural_rules": tuple(structural_rule_payload),
+        "structural_rule_digest": structural_rule_digest,
     }
     encoded = json.dumps(
         payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True
@@ -797,13 +884,17 @@ def build_certified_catalogue_snapshot(
         fingerprint=fingerprint,
         rules_in_declaration_order=frozen_rules,
         rule_ids_by_root_shape={key: tuple(value) for key, value in buckets.items()},
-        structural_authorizable=semantic_state.structural_authorizable,
+        structural_authorizable=(
+            semantic_state.structural_authorizable and structural_authorizable
+        ),
         canonicalizer_schema_version=CANONICALIZER_SCHEMA_VERSION,
         canonical_templates_by_rule_width=canonical_templates,
         canonical_status_by_rule_width=canonical_statuses,
         canonical_rule_ids_by_root_shape={
             key: tuple(value) for key, value in canonical_root_buckets.items()
         },
+        structural_rule_fingerprints=structural_rule_fingerprints_tuple,
+        structural_rule_digest=structural_rule_digest,
     )
     _SNAPSHOTS[fingerprint] = snapshot
     return snapshot

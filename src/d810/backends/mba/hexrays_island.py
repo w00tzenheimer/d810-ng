@@ -64,6 +64,7 @@ class _NativeAstRuntime:
     opcode_by_operation: Mapping[str, int]
     blocker_by_opcode: Mapping[int, IslandBlocker]
     get_mop_key: Any
+    call_opcode: int | None = None
 
 
 def _load_native_runtime() -> _NativeAstRuntime:
@@ -138,6 +139,7 @@ def _load_native_runtime() -> _NativeAstRuntime:
         opcode_by_operation=opcode_by_operation,
         blocker_by_opcode=MappingProxyType(blockers),
         get_mop_key=ast_module.get_mop_key,
+        call_opcode=getattr(ida_hexrays, "m_call", None),
     )
 
 
@@ -380,7 +382,7 @@ def lower_hexrays_island(
                 return None
             opcode = getattr(node, "opcode", None)
             operation = runtime.operation_by_opcode.get(opcode)
-            if opcode == getattr(importlib.import_module("ida_hexrays"), "m_call"):
+            if opcode == getattr(runtime, "call_opcode", None):
                 helper = _rotate_helper(node, runtime)
                 if helper is None:
                     blockers.add(IslandBlocker.CALL)
