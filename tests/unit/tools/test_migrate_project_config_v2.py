@@ -1,0 +1,258 @@
+"""Characterization and safety tests for the offline legacy migrator."""
+
+from __future__ import annotations
+
+import json
+import hashlib
+import re
+from pathlib import Path
+
+import pytest
+
+from d810.core import typing
+from tools.migrations.legacy_project_config import (
+    LegacyMigrationError,
+    is_canonical_v2_document,
+    migrate_legacy_document,
+)
+
+
+CONF_DIR = Path(__file__).resolve().parents[3] / "src" / "d810" / "conf"
+
+# Keep this historical data local to the test.  The routing module is removed
+# later in the cutover, but these source/donor pairs remain the migration
+# acceptance contract.
+LEGACY_CANARY_PAIRS = (
+    ("default_instruction_only.json", "default_instruction_only_config_v2_canary.json"),
+    (
+        "default_unflattening_tigress_engine.json",
+        "default_unflattening_tigress_engine_config_v2_canary.json",
+    ),
+    ("hodur_flag2.json", "hodur_flag2_config_v2_canary.json"),
+    ("hodur_glbopt2_only.json", "hodur_glbopt2_only_config_v2_canary.json"),
+    ("eidolon.json", "eidolon_config_v2_canary.json"),
+    (
+        "default_unflattening_approov.json",
+        "default_unflattening_approov_config_v2_canary.json",
+    ),
+    (
+        "default_unflattening_approov_s1a.json",
+        "default_unflattening_approov_s1a_config_v2_canary.json",
+    ),
+    ("hodur_flag2_s1a.json", "hodur_flag2_s1a_config_v2_canary.json"),
+    ("hodur_flag2_with_fcp.json", "hodur_flag2_with_fcp_config_v2_canary.json"),
+    ("identity_call.json", "identity_call_config_v2_canary.json"),
+    (
+        "default_unflattening_tigress_engine_transition_facts.json",
+        "default_unflattening_tigress_engine_transition_facts_config_v2_canary.json",
+    ),
+    ("example_libobfuscated_abc.json", "example_libobfuscated_abc_config_v2_canary.json"),
+    ("flatfold.json", "flatfold_config_v2_canary.json"),
+    ("example_hodur.json", "example_hodur_config_v2_canary.json"),
+    ("default_unflattening_ollvm.json", "default_unflattening_ollvm_config_v2_canary.json"),
+    (
+        "default_indirect_resolution.json",
+        "default_indirect_resolution_config_v2_canary.json",
+    ),
+    (
+        "default_unflattening_tigress_indirect.json",
+        "default_unflattening_tigress_indirect_config_v2_canary.json",
+    ),
+    ("default.json", "default_config_v2_canary.json"),
+    (
+        "example_libobfuscated_no_fixprecedessor.json",
+        "example_libobfuscated_no_fixprecedessor_config_v2_canary.json",
+    ),
+    ("bogus_loops.json", "bogus_loops_config_v2_canary.json"),
+    ("example_libobfuscated.json", "example_libobfuscated_config_v2_canary.json"),
+)
+
+KNOWN_LEGACY_FINGERPRINTS = {
+    "default_instruction_only.json": "b3f0944b2119e880d2976821953ebf2c50f2646a18a1898ee7ffc0d636c02ab2",
+    "default_unflattening_tigress_engine.json": "1d343499a5cb0dec68b2a7efedf3237703dce6fc39b2aae61186feb1a0471db2",
+    "hodur_flag2.json": "2c57256b924f15329eb0166edbfc693f19f56d57a4e317b2c1d03d5458fbc9eb",
+    "hodur_glbopt2_only.json": "c6a288756aed1880a54981c5cf596bbb5abddc09e74cefd2c6af60406445c986",
+    "eidolon.json": "bc241830174e4e5433a0b7d3aaac3f042d56978e9e77c6ed46d000c76cbbcd6c",
+    "default_unflattening_approov.json": "83f454590e43ae04800cff57670a33e06185cd66ff7daf2141e1f84f62d1c9ac",
+    "default_unflattening_approov_s1a.json": "1ca9be3289dd1ef4ec4893434612dbafaed5058bc12b2422ca86218ed51eda05",
+    "hodur_flag2_s1a.json": "11d0f3aa77a291c12715550156585afe577010e865faaf55bdf04b4f2aef2e63",
+    "hodur_flag2_with_fcp.json": "8bbdc05360b7d3f5fe9c345c19a70d8d5269fc0f6d64c5b49bef42ac8e52ae10",
+    "identity_call.json": "cd035f21e1ba345d0a6108616344375f1e93866a8cfdee23c6f6770224525339",
+    "default_unflattening_tigress_engine_transition_facts.json": "33a35478e5adcf6b952ec30f30727524a31f721c1d502c89f80165c9b01c4750",
+    "example_libobfuscated_abc.json": "dcf343cfb6ce6f701e5954c64607d8cd8a3512345d1f3057f2be7cf7a006fa5e",
+    "flatfold.json": "fb2f480fcc9088f637a83c9ed5fc9354ed9c40ae61f0fe134ae7f237160d56dd",
+    "example_hodur.json": "859f94847f7796fb4166b2a7feb70d927a0c54fb50c3f750c7209cddb8c8e6c0",
+    "default_unflattening_ollvm.json": "176a9441b7c866ca37d174c9bf3bcd494521acd94c4ec29c55d115cd951451cb",
+    "default_indirect_resolution.json": "3ad2011d8a652b62a1d7c33a4c42f43a9c66f95d8bd4ce42a48f0514baa2a3ee",
+    "default_unflattening_tigress_indirect.json": "2101314f6b7a8213922818e88b4c8aa54d57048aa83dc2c414e6640b74ea9ec9",
+    "default.json": "3ad2011d8a652b62a1d7c33a4c42f43a9c66f95d8bd4ce42a48f0514baa2a3ee",
+    "example_libobfuscated_no_fixprecedessor.json": "9bf4606216bfe471d526b1f12d19cb6da17fdd7a542c51f8283ab350da98c457",
+    "bogus_loops.json": "a1c7a9b5ce95589848c0444413af458e33c599093f722dc89617bbf081a16945",
+    "example_libobfuscated.json": "0e24934ca11872a24d65384967a9830fb567caf2d9b64ae4e15b88ec2d49f546",
+}
+
+
+def _load(name: str) -> dict[str, typing.Any]:
+    return json.loads((CONF_DIR / name).read_text(encoding="utf-8"))
+
+
+def _pipeline(document: dict[str, typing.Any]) -> list[tuple[str, dict[str, typing.Any]]]:
+    additional = document.get("additional_configuration", {})
+    return [
+        (entry["pass_id"], entry.get("options", {}))
+        for entry in additional.get("pipeline_v2", [])
+    ]
+
+
+@pytest.mark.parametrize("source_name", tuple(KNOWN_LEGACY_FINGERPRINTS))
+def test_historical_legacy_fingerprint_is_frozen(source_name: str) -> None:
+    encoded = json.dumps(
+        _load(source_name),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    assert hashlib.sha256(encoded).hexdigest() == KNOWN_LEGACY_FINGERPRINTS[source_name]
+
+
+@pytest.mark.parametrize("source_name,canary_name", LEGACY_CANARY_PAIRS)
+def test_mapped_bundled_portfolio_migrates_to_current_canary_semantics(
+    source_name: str, canary_name: str
+) -> None:
+    migrated = migrate_legacy_document(_load(source_name), source_name=source_name)
+    expected = _load(canary_name)
+
+    assert _pipeline(migrated) == _pipeline(expected)
+    assert migrated.get("ins_rules", []) == []
+    assert migrated.get("blk_rules", []) == []
+
+
+@pytest.mark.parametrize(
+    ("document", "needle"),
+    (
+        (
+            {
+                "ins_rules": [
+                    {"name": "UnknownInstructionRule", "is_activated": True, "config": {}}
+                ]
+            },
+            "ins_rules[0].name",
+        ),
+        (
+            {
+                "blk_rules": [
+                    {"name": "UnknownBlockRule", "is_activated": True, "config": {}}
+                ]
+            },
+            "blk_rules[0].name",
+        ),
+        (
+            {
+                "blk_rules": [
+                    {
+                        "name": "JumpFixer",
+                        "is_activated": True,
+                        "config": {"unsupported_option": True},
+                    }
+                ]
+            },
+            "blk_rules[0].config.unsupported_option",
+        ),
+        (
+            {
+                "ins_rules": [
+                    {"name": "AddXor_Rule_1", "is_activated": True, "config": {}},
+                ],
+                "additional_configuration": {
+                    "pipeline_v2": [{"pass_id": "jump-fixer", "options": {}}]
+                },
+            },
+            "mixed v2 and active legacy configuration",
+        ),
+        (
+            {
+                "blk_rules": [
+                    {"name": "JumpFixer", "is_activated": True, "config": {}},
+                    {"name": "JumpFixer", "is_activated": True, "config": {}},
+                ]
+            },
+            "blk_rules[1].name",
+        ),
+        (
+            {"ins_rules": [{"name": "AddXor_Rule_1", "is_activated": True}]},
+            "ins_rules[0].config",
+        ),
+        (
+            {
+                "ins_rules": [
+                    {"name": "AddXor_Rule_1", "is_activated": False, "config": {}}
+                ]
+            },
+            "empty pipeline_v2",
+        ),
+    ),
+)
+def test_legacy_migration_rejects_unsupported_input(
+    document: dict[str, typing.Any], needle: str
+) -> None:
+    with pytest.raises(LegacyMigrationError, match=re.escape(needle)):
+        migrate_legacy_document(document, source_name="custom.json")
+
+
+def test_canonical_v2_documents_are_normalized_and_idempotent() -> None:
+    canary = _load("hodur_flag2_config_v2_canary.json")
+    assert not is_canonical_v2_document(canary)
+
+    migrated = migrate_legacy_document(canary, source_name="hodur_flag2.json")
+    assert is_canonical_v2_document(migrated)
+    assert migrated.get("ins_rules", []) == []
+    assert migrated.get("blk_rules", []) == []
+    assert "pipeline_v2_mode" not in migrated["additional_configuration"]
+    assert "config_v2_canary" not in migrated["additional_configuration"]
+
+    normalized_again = migrate_legacy_document(migrated, source_name="hodur_flag2.json")
+    assert normalized_again == migrated
+
+    def encoded(value: object) -> str:
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    assert encoded(normalized_again) == encoded(migrated)
+
+
+def test_custom_typed_projection_preserves_order_and_rejects_unknown_mba_options() -> None:
+    document = {
+        "description": "custom",
+        "ins_rules": [
+            {"name": "AddXor_Rule_1", "is_activated": True, "config": {}},
+            {
+                "name": "Z3ConstantOptimization",
+                "is_activated": True,
+                "config": {"min_nb_opcode": 4, "min_nb_constant": 3},
+            },
+        ],
+        "blk_rules": [],
+    }
+    migrated = migrate_legacy_document(document, source_name="custom.json")
+    assert [item[0] for item in _pipeline(migrated)] == ["mba-simplify"]
+    options = _pipeline(migrated)[0][1]
+    assert options["transforms"] == ["add-xor-1", "z-3-constant-optimization"]
+    assert options["transform_options"] == {
+        "z-3-constant-optimization": {"min_nb_opcode": 4, "min_nb_constant": 3}
+    }
+
+    unsupported = {
+        **document,
+        "ins_rules": [
+            {"name": "AddXor_Rule_1", "is_activated": True, "config": {"limit": 2}}
+        ],
+    }
+    with pytest.raises(
+        LegacyMigrationError,
+        match=re.escape("ins_rules[0].config.limit"),
+    ):
+        migrate_legacy_document(unsupported, source_name="custom.json")
