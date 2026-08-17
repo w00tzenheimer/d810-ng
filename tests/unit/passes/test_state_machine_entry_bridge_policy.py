@@ -4,6 +4,7 @@ from d810.capabilities.dispatcher import RouterKind
 from d810.passes.unflatten.state_machine import (
     _entry_bridge_requires_witness,
     _has_emulated_endpoint_rows,
+    _resolve_initial_state,
 )
 
 
@@ -71,3 +72,11 @@ def test_entry_bridge_legacy_allowed_without_comparison_evidence() -> None:
     dmap = SimpleNamespace(router_kind=RouterKind.TABLE)
 
     assert _entry_bridge_requires_witness(dmap) is False
+
+
+def test_same_block_map_initial_state_wins_over_stale_range_evidence() -> None:
+    dmap = SimpleNamespace(initial_state=0x16AA65E9)
+    recovery = SimpleNamespace(dispatch_map=dmap, state_var_reg=None)
+    stale_range = SimpleNamespace(initial_state=0x1888937E)
+
+    assert _resolve_initial_state(stale_range, recovery) == 0x16AA65E9

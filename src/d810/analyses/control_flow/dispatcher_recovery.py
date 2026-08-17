@@ -621,8 +621,47 @@ def _augment_residual_equality_rows(
     )
 
 
+def _state_write_constant(
+    insn,
+    *,
+    state_var_stkoff: int | None,
+    state_var_reg: int | None,
+) -> tuple[bool, int | None]:
+    """Classify one exact state-cell write and its constant source.
+
+    The destination checks intentionally live at this lift boundary so the
+    predecessor-path reader and the same-block prefix reader cannot drift.  A
+    ``True`` first element means the instruction writes the recovered state
+    identity; ``None`` as the second element then means the write is not a
+    proven constant write and must be treated as a conflict by the strict
+    prefix scanner.
+    """
+    src_view, _r_view, dst_view = operand_storages(insn)
+    if insn.kind is InsnKind.MOV:
+        destination_matches = (
+            state_var_stkoff is not None
+            and _stkoff_of(dst_view) == int(state_var_stkoff)
+        ) or (
+            state_var_reg is not None and _reg_of(dst_view) == int(state_var_reg)
+        )
+        if destination_matches:
+            return True, _const_of(src_view)
+        return False, None
+
+    if insn.kind is InsnKind.STORE:
+        # m_stx <value>, <addr>: the address operand is the right slot.  A
+        # register-resident state variable cannot be identified by an indirect
+        # store, so only the recovered stack identity admits this form.
+        _l_off, addr_off, _d_off = operand_stack_offsets(insn)
+        if state_var_stkoff is not None and addr_off == int(state_var_stkoff):
+            return True, _const_of(src_view)
+    return False, None
+
+
 def _read_state_init_const(
-    blk: BlockSnapshot | None, state_var_stkoff: int
+    blk: BlockSnapshot | None,
+    state_var_stkoff: int | None,
+    state_var_reg: int | None = None,
 ) -> int | None:
     """Read the constant a block initializes the state variable to, portably.
 
@@ -633,33 +672,92 @@ def _read_state_init_const(
     form where the value being stored is the *left* operand and the destination
     address resolves to the state slot's stkoff). Returns the constant or None.
     """
-    if blk is None:
+    if blk is None or (state_var_stkoff is None and state_var_reg is None):
         return None
-    target_off = int(state_var_stkoff)
     for insn in blk.insn_snapshots:
-        src_view, _r_view, dst_view = operand_storages(insn)
-        if insn.kind is InsnKind.MOV:
-            # mov #const -> state_slot: dest is the (direct) stack slot, value is
-            # the source constant.
-            dst_stkoff = _stkoff_of(dst_view)
-            src_value = _const_of(src_view)
-            if dst_stkoff == target_off and src_value is not None:
-                return src_value
-        elif insn.kind is InsnKind.STORE:
-            # m_stx <value>, <addr>: value = left, destination address = right.
-            # The written cell lives on the slot-aligned address operand
-            # (``operand_stack_offsets`` resolves a direct stkoff OR an
-            # ``&state_slot`` / sole stack_ref), NEVER ``Instruction.result``
-            # (which a STORE drops) -- the deffai m_stx d-slot precedent.
-            _l_off, addr_off, _d_off = operand_stack_offsets(insn)
-            src_value = _const_of(src_view)
-            if (
-                addr_off is not None
-                and int(addr_off) == target_off
-                and src_value is not None
-            ):
-                return src_value
+        wrote_state, src_value = _state_write_constant(
+            insn,
+            state_var_stkoff=state_var_stkoff,
+            state_var_reg=state_var_reg,
+        )
+        if wrote_state and src_value is not None:
+            return src_value
     return None
+
+
+_DISPATCH_ROUTING_TAIL_KINDS = frozenset(
+    {
+        InsnKind.EQUALITY_JUMP,
+        InsnKind.COND_JUMP,
+        InsnKind.TABLE_JUMP,
+        InsnKind.INDIRECT_JUMP,
+    }
+)
+_PREFIX_PURE_KINDS = frozenset(
+    {
+        InsnKind.NOP,
+        InsnKind.MOV,
+        InsnKind.XDU,
+        InsnKind.XDS,
+        InsnKind.ADD,
+        InsnKind.SUB,
+        InsnKind.AND,
+        InsnKind.MUL,
+    }
+)
+
+
+def _recover_same_block_prefix_initial_state(
+    blk: BlockSnapshot | None,
+    *,
+    state_var_stkoff: int | None,
+    state_var_reg: int | None,
+) -> int | None:
+    """Recover one exact constant write before an entry block's route tail.
+
+    The scan is deliberately bounded by the first portable dispatcher-routing
+    instruction.  It never interprets rendered text and never assumes that a
+    later write is initialization: conflicting/nonconstant state writes,
+    calls, stores to other cells, unknown instructions, and unsupported effects
+    all make the result unprovable.
+    """
+    if blk is None or (state_var_stkoff is None and state_var_reg is None):
+        return None
+    boundary = next(
+        (
+            index
+            for index, insn in enumerate(blk.insn_snapshots)
+            if insn.kind in _DISPATCH_ROUTING_TAIL_KINDS
+        ),
+        None,
+    )
+    if boundary is None:
+        return None
+
+    constants: list[int] = []
+    for insn in blk.insn_snapshots[:boundary]:
+        wrote_state, src_value = _state_write_constant(
+            insn,
+            state_var_stkoff=state_var_stkoff,
+            state_var_reg=state_var_reg,
+        )
+        if wrote_state:
+            if src_value is None:
+                return None
+            constants.append(int(src_value))
+            continue
+
+        # Calls and stores are observable effects.  A STORE that did not match
+        # the exact state identity reached the branch above and is therefore a
+        # hard barrier; an explicit/unknown CALL marker is equally unsafe.
+        if insn.kind is InsnKind.CALL or insn.is_call or insn.kind is InsnKind.STORE:
+            return None
+        if insn.kind not in _PREFIX_PURE_KINDS:
+            return None
+
+    if len(constants) != 1:
+        return None
+    return constants[0]
 
 
 def recover_entry_dominated_initial_state(
@@ -683,11 +781,23 @@ def recover_entry_dominated_initial_state(
     """
     entry_block = dmap.dispatcher_entry_block
     state_var_stkoff = dmap.state_var_stkoff
-    if entry_block is None or state_var_stkoff is None:
+    state_var_reg = getattr(dmap, "state_var_reg", None)
+    if entry_block is None or (state_var_stkoff is None and state_var_reg is None):
         return None
     dispatcher_blk = graph.blocks.get(int(entry_block))
     if dispatcher_blk is None:
         return None
+
+    # Some optimized functions enter directly at the dispatcher block.  There
+    # is then no predecessor from which the old entry-dominance walk can read a
+    # prologue write; recover only the bounded prefix before the first routing
+    # tail and only when it contains one exact constant state write.
+    if int(graph.entry_serial) == int(entry_block):
+        return _recover_same_block_prefix_initial_state(
+            dispatcher_blk,
+            state_var_stkoff=state_var_stkoff,
+            state_var_reg=state_var_reg,
+        )
 
     # Forward reachability from entry with the dispatcher entry as a cut: visit
     # it but never expand its successors, so anything reachable only via the
@@ -711,7 +821,9 @@ def recover_entry_dominated_initial_state(
     if len(qualifying) != 1:
         return None
     return _read_state_init_const(
-        graph.blocks.get(qualifying[0]), int(state_var_stkoff)
+        graph.blocks.get(qualifying[0]),
+        state_var_stkoff,
+        state_var_reg,
     )
 
 
