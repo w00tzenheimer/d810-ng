@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from d810._vendor.ida_reloader import reload_package
 from d810.core.cymode import CythonMode
 from d810.hexrays.expr import ast as ast_dispatcher
@@ -21,6 +23,7 @@ def _reload_through_production_package_ordering() -> None:
     )
 
 
+@pytest.mark.forked
 def test_session_cython_policy_rebinds_core_dispatchers_after_reload() -> None:
     mode = CythonMode()
     original_enabled = mode.is_enabled()
