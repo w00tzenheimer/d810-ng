@@ -50,6 +50,7 @@ from d810.analyses.control_flow.dispatcher_discovery_facts import (
     collect_state_dispatcher_discovery_fact_observations,
 )
 from d810.analyses.control_flow.predecessor_dispatcher_target import (
+    PREDECESSOR_DISPATCHER_TARGET_FACTS_ANALYSIS,
     collect_predecessor_dispatcher_target_facts,
 )
 from d810.analyses.control_flow.router_resolver import (
@@ -379,9 +380,20 @@ def bind_native_bound_transition_routes_for_current_mba(
         "rebind_native_ea",
         None,
     )
-    route_target_for_state = getattr(dispatcher, "lookup", None)
-    if not callable(rebind_native_ea) or not callable(route_target_for_state):
+    route_lookup = getattr(dispatcher, "lookup", None)
+    if not callable(route_lookup):
+        route_lookup = getattr(dispatcher, "route", None)
+    if not callable(rebind_native_ea) or not callable(route_lookup):
         return ()
+
+    def route_target_for_state(state: int):
+        """Read the selected current router without serial fallbacks."""
+        result = route_lookup(int(state))
+        for attribute in ("target", "target_block_serial", "handler_serial"):
+            candidate = getattr(result, attribute, None)
+            if candidate is not None:
+                return candidate
+        return result
 
     def block_serial_for_instruction_ea(native_ea: int) -> int | None:
         try:
@@ -832,6 +844,7 @@ class RecoverStateTransitions(PipelinePass):
             resolutions, dispatch_map=dispatch_map
         )
         range_evidence = _analysis(context, "range_evidence")
+        predecessor_target_facts = ()
         if dispatch_map is not None:
             predecessor_target_facts = collect_predecessor_dispatcher_target_facts(
                 transition_result=transition_result,
@@ -840,6 +853,7 @@ class RecoverStateTransitions(PipelinePass):
                 range_evidence=range_evidence,
                 transition_resolutions=resolutions,
                 state_var_stkoff=getattr(recovery, "state_var_stkoff", None),
+                state_var_reg=getattr(recovery, "state_var_reg", None),
             )
             if predecessor_target_facts:
                 _publish_observation_evidence(
@@ -863,7 +877,15 @@ class RecoverStateTransitions(PipelinePass):
         analysis_outputs = {
             self.name: resolutions,
             "transition_result": transition_result,
+            PREDECESSOR_DISPATCHER_TARGET_FACTS_ANALYSIS: (
+                predecessor_target_facts
+            ),
         }
+        _publish(
+            context,
+            PREDECESSOR_DISPATCHER_TARGET_FACTS_ANALYSIS,
+            predecessor_target_facts,
+        )
         semantic_provider = context.capabilities.optional(
             CanonicalSemanticEvidenceCapability
         )
@@ -2633,6 +2655,8 @@ class LowerStateMachine(PipelinePass):
                 if dmap is not None
                 else frozenset()
             )
+            if dispatcher_entry is not None:
+                dispatcher_region_serials |= frozenset({int(dispatcher_entry)})
             dispatcher_region_serials |= materialized_dispatcher_router_serials
             if range_evidence is not None:
                 dispatcher_region_serials |= frozenset(
@@ -2644,7 +2668,11 @@ class LowerStateMachine(PipelinePass):
                     )
             native_bound_transition_routes = (
                 bind_native_bound_transition_routes_for_current_mba(
-                    _analysis(context, "recover_state_transitions", ()),
+                    _analysis(
+                        context,
+                        PREDECESSOR_DISPATCHER_TARGET_FACTS_ANALYSIS,
+                        (),
+                    ),
                     current_block_identity_index=current_block_identity_index,
                     graph=context.graph,
                     dispatcher=dispatcher,

@@ -13,6 +13,11 @@ from d810.analyses.control_flow.semantic_transition import (
 )
 
 
+PREDECESSOR_DISPATCHER_TARGET_FACTS_ANALYSIS = (
+    "predecessor_dispatcher_target_facts"
+)
+
+
 @dataclass(frozen=True, slots=True)
 class PredecessorDispatcherTargetFact:
     """One proof that a predecessor state value routes to a dispatcher target.
@@ -40,6 +45,8 @@ class PredecessorDispatcherTargetFact:
     condition_block_serial: int | None = None
     state_var_stkoff: int | None = None
     confidence: float = 1.0
+    source_instruction_ea: int | None = None
+    state_var_reg: int | None = None
 
     @property
     def state_const_hex(self) -> str:
@@ -71,6 +78,8 @@ class PredecessorDispatcherTargetFact:
             "transition_provenance_kind": self.transition_provenance_kind,
             "condition_block_serial": self.condition_block_serial,
             "state_var_stkoff": self.state_var_stkoff,
+            "state_var_reg": self.state_var_reg,
+            "source_instruction_ea": self.source_instruction_ea,
             "confidence": self.confidence,
         }
 
@@ -115,6 +124,8 @@ def _build_fact(
     condition_block_serial: int | None,
     state_var_stkoff: int | None,
     confidence: float = 1.0,
+    source_instruction_ea: int | None = None,
+    state_var_reg: int | None = None,
 ) -> PredecessorDispatcherTargetFact:
     return PredecessorDispatcherTargetFact(
         fact_id=_fact_id(
@@ -140,7 +151,30 @@ def _build_fact(
         condition_block_serial=condition_block_serial,
         state_var_stkoff=state_var_stkoff,
         confidence=confidence,
+        source_instruction_ea=(
+            None
+            if source_instruction_ea is None
+            else int(source_instruction_ea)
+        ),
+        state_var_reg=(None if state_var_reg is None else int(state_var_reg)),
     )
+
+
+def _dispatcher_topology_serials(
+    state_dispatcher_map: StateDispatcherMap | None,
+) -> frozenset[int]:
+    """Return every serial that belongs to the current dispatcher topology."""
+    if state_dispatcher_map is None:
+        return frozenset()
+    serials = {
+        int(state_dispatcher_map.dispatcher_entry_block),
+        *(int(serial) for serial in state_dispatcher_map.dispatcher_blocks),
+    }
+    for row in state_dispatcher_map.rows:
+        serials.add(int(row.dispatcher_block))
+        if row.compare_block is not None:
+            serials.add(int(row.compare_block))
+    return frozenset(serials)
 
 
 def resolve_predecessor_dispatcher_target(
@@ -154,13 +188,20 @@ def resolve_predecessor_dispatcher_target(
     transition_provenance_kind: str | None = None,
     condition_block_serial: int | None = None,
     state_var_stkoff: int | None = None,
+    state_var_reg: int | None = None,
+    source_instruction_ea: int | None = None,
 ) -> PredecessorDispatcherTargetFact | None:
     """Resolve one predecessor-carried state through exact or interval rows."""
 
     normalized_state = int(state_const) & 0xFFFFFFFFFFFFFFFF
+    dispatcher_topology = _dispatcher_topology_serials(state_dispatcher_map)
     if state_dispatcher_map is not None:
         for row in state_dispatcher_map.rows:
             if (int(row.state_const) & 0xFFFFFFFFFFFFFFFF) != normalized_state:
+                continue
+            if int(row.target_block) in dispatcher_topology:
+                # A dispatcher self-loop is not a handler route.  Keep looking
+                # for stronger condition-chain interval/handler evidence below.
                 continue
             return _build_fact(
                 predecessor_block_serial=predecessor_block_serial,
@@ -181,6 +222,8 @@ def resolve_predecessor_dispatcher_target(
                 condition_block_serial=condition_block_serial,
                 state_var_stkoff=state_var_stkoff,
                 confidence=float(row.confidence),
+                source_instruction_ea=source_instruction_ea,
+                state_var_reg=state_var_reg,
             )
 
     if range_evidence is None:
@@ -189,7 +232,11 @@ def resolve_predecessor_dispatcher_target(
     dispatcher = getattr(range_evidence, "dispatcher", None)
     if dispatcher is not None:
         row = dispatcher.lookup_row(normalized_state)
-        if row is not None and row.target is not None:
+        if (
+            row is not None
+            and row.target is not None
+            and int(row.target) not in dispatcher_topology
+        ):
             return _build_fact(
                 predecessor_block_serial=predecessor_block_serial,
                 dispatcher_entry_serial=dispatcher_entry_serial,
@@ -210,12 +257,16 @@ def resolve_predecessor_dispatcher_target(
                 transition_provenance_kind=transition_provenance_kind,
                 condition_block_serial=condition_block_serial,
                 state_var_stkoff=state_var_stkoff,
+                source_instruction_ea=source_instruction_ea,
+                state_var_reg=state_var_reg,
             )
 
     for handler_serial, handler_state in getattr(
         range_evidence, "handler_state_map", {}
     ).items():
         if (int(handler_state) & 0xFFFFFFFFFFFFFFFF) != normalized_state:
+            continue
+        if int(handler_serial) in dispatcher_topology:
             continue
         return _build_fact(
             predecessor_block_serial=predecessor_block_serial,
@@ -233,6 +284,8 @@ def resolve_predecessor_dispatcher_target(
             transition_provenance_kind=transition_provenance_kind,
             condition_block_serial=condition_block_serial,
             state_var_stkoff=state_var_stkoff,
+            source_instruction_ea=source_instruction_ea,
+            state_var_reg=state_var_reg,
         )
 
     exact_handler_serials = set(getattr(range_evidence, "handler_state_map", {}).keys())
@@ -240,6 +293,8 @@ def resolve_predecessor_dispatcher_target(
         range_evidence, "handler_range_map", {}
     ).items():
         if handler_serial in exact_handler_serials:
+            continue
+        if int(handler_serial) in dispatcher_topology:
             continue
         if lo is None or hi is None:
             continue
@@ -264,6 +319,8 @@ def resolve_predecessor_dispatcher_target(
                 transition_provenance_kind=transition_provenance_kind,
                 condition_block_serial=condition_block_serial,
                 state_var_stkoff=state_var_stkoff,
+                source_instruction_ea=source_instruction_ea,
+                state_var_reg=state_var_reg,
             )
 
     return None
@@ -279,24 +336,47 @@ def collect_predecessor_dispatcher_target_facts(
     transition_report: object | None = None,
     dag: object | None = None,
     state_var_stkoff: int | None = None,
+    state_var_reg: int | None = None,
 ) -> tuple[PredecessorDispatcherTargetFact, ...]:
     """Resolve transition target states into predecessor-target facts."""
 
     facts: list[PredecessorDispatcherTargetFact] = []
     seen: set[str] = set()
+    blocked_resolution_keys: set[tuple[int, int]] = set()
     for row in transition_resolutions or ():
         predecessor = getattr(row, "source_block_serial", None)
         source_state_hex = getattr(row, "source_state_const_hex", None)
         resolution_reason = getattr(row, "resolution_reason", None)
-        if (
-            predecessor is None
-            or source_state_hex is None
-            or getattr(row, "resolved_next_block_serial", None) is None
-            or resolution_reason not in _SUCCESSFUL_TRANSITION_RESOLUTION_REASONS
-        ):
+        if predecessor is None or source_state_hex is None:
             continue
         try:
             source_state = int(source_state_hex, 16)
+            resolution_key = (int(predecessor), source_state)
+        except (TypeError, ValueError):
+            continue
+        prior_target = getattr(row, "resolved_next_block_serial", None)
+        if resolution_reason not in _SUCCESSFUL_TRANSITION_RESOLUTION_REASONS and (
+            resolution_reason != "target_is_dispatcher_block"
+        ):
+            blocked_resolution_keys.add(resolution_key)
+            continue
+        if (
+            resolution_reason in _SUCCESSFUL_TRANSITION_RESOLUTION_REASONS
+            and prior_target is None
+        ):
+            blocked_resolution_keys.add(resolution_key)
+            continue
+        # A target-is-dispatcher resolution deliberately carries no target
+        # serial.  Its source state is still useful when the condition-chain
+        # interval evidence can identify the real handler, but only when the
+        # native anchor is retained for the later current-MBA binding.
+        if (
+            resolution_reason == "target_is_dispatcher_block"
+            and getattr(row, "source_instruction_ea", None) is None
+        ):
+            blocked_resolution_keys.add(resolution_key)
+            continue
+        try:
             fact = resolve_predecessor_dispatcher_target(
                 predecessor_block_serial=int(predecessor),
                 dispatcher_entry_serial=int(dispatcher_entry_serial),
@@ -308,12 +388,35 @@ def collect_predecessor_dispatcher_target_facts(
                     getattr(row, "resolution_kind", None)
                 ),
                 condition_block_serial=None,
-                state_var_stkoff=state_var_stkoff,
+                state_var_stkoff=(
+                    state_var_stkoff
+                    if getattr(row, "state_var_stkoff", None) is None
+                    else _maybe_int(getattr(row, "state_var_stkoff"))
+                ),
+                state_var_reg=(
+                    state_var_reg
+                    if getattr(row, "state_var_reg", None) is None
+                    else _maybe_int(getattr(row, "state_var_reg"))
+                ),
+                source_instruction_ea=_maybe_int(
+                    getattr(row, "source_instruction_ea", None)
+                ),
             )
         except (TypeError, ValueError):
+            blocked_resolution_keys.add(resolution_key)
             continue
         if fact is None or fact.fact_id in seen:
+            if fact is None:
+                blocked_resolution_keys.add(resolution_key)
             continue
+        if resolution_reason in _SUCCESSFUL_TRANSITION_RESOLUTION_REASONS:
+            try:
+                if int(prior_target) != int(fact.target_block_serial):
+                    blocked_resolution_keys.add(resolution_key)
+                    continue
+            except (TypeError, ValueError):
+                blocked_resolution_keys.add(resolution_key)
+                continue
         seen.add(fact.fact_id)
         facts.append(fact)
 
@@ -321,6 +424,11 @@ def collect_predecessor_dispatcher_target_facts(
         to_state = getattr(transition, "to_state", None)
         predecessor = getattr(transition, "from_block", None)
         if to_state is None or predecessor is None:
+            continue
+        try:
+            if (int(predecessor), int(to_state)) in blocked_resolution_keys:
+                continue
+        except (TypeError, ValueError):
             continue
         try:
             fact = resolve_predecessor_dispatcher_target(
@@ -337,6 +445,14 @@ def collect_predecessor_dispatcher_target_facts(
                     getattr(transition, "condition_block", None)
                 ),
                 state_var_stkoff=state_var_stkoff,
+                state_var_reg=(
+                    state_var_reg
+                    if getattr(transition, "state_var_reg", None) is None
+                    else _maybe_int(getattr(transition, "state_var_reg"))
+                ),
+                source_instruction_ea=_maybe_int(
+                    getattr(transition, "source_instruction_ea", None)
+                ),
             )
         except (TypeError, ValueError):
             continue
@@ -352,6 +468,11 @@ def collect_predecessor_dispatcher_target_facts(
             continue
         if next_state is not None:
             try:
+                if (int(predecessor), int(next_state)) in blocked_resolution_keys:
+                    continue
+            except (TypeError, ValueError):
+                continue
+            try:
                 fact = resolve_predecessor_dispatcher_target(
                     predecessor_block_serial=int(predecessor),
                     dispatcher_entry_serial=int(dispatcher_entry_serial),
@@ -362,6 +483,14 @@ def collect_predecessor_dispatcher_target_facts(
                     transition_provenance_kind="transition_report",
                     condition_block_serial=None,
                     state_var_stkoff=state_var_stkoff,
+                    state_var_reg=(
+                        state_var_reg
+                        if getattr(row, "state_var_reg", None) is None
+                        else _maybe_int(getattr(row, "state_var_reg"))
+                    ),
+                    source_instruction_ea=_maybe_int(
+                        getattr(row, "source_instruction_ea", None)
+                    ),
                 )
             except (TypeError, ValueError):
                 fact = None
@@ -370,6 +499,13 @@ def collect_predecessor_dispatcher_target_facts(
                 facts.append(fact)
 
         for conditional_state in getattr(row, "conditional_states", ()) or ():
+            try:
+                if (
+                    int(predecessor), int(conditional_state)
+                ) in blocked_resolution_keys:
+                    continue
+            except (TypeError, ValueError):
+                continue
             try:
                 conditional_fact = resolve_predecessor_dispatcher_target(
                     predecessor_block_serial=int(predecessor),
@@ -381,6 +517,14 @@ def collect_predecessor_dispatcher_target_facts(
                     transition_provenance_kind="transition_report_conditional",
                     condition_block_serial=None,
                     state_var_stkoff=state_var_stkoff,
+                    state_var_reg=(
+                        state_var_reg
+                        if getattr(row, "state_var_reg", None) is None
+                        else _maybe_int(getattr(row, "state_var_reg"))
+                    ),
+                    source_instruction_ea=_maybe_int(
+                        getattr(row, "source_instruction_ea", None)
+                    ),
                 )
             except (TypeError, ValueError):
                 continue
@@ -404,6 +548,11 @@ def collect_predecessor_dispatcher_target_facts(
         if predecessor is None:
             continue
         try:
+            if (int(predecessor), int(next_state)) in blocked_resolution_keys:
+                continue
+        except (TypeError, ValueError):
+            continue
+        try:
             fact = resolve_predecessor_dispatcher_target(
                 predecessor_block_serial=int(predecessor),
                 dispatcher_entry_serial=int(dispatcher_entry_serial),
@@ -414,6 +563,14 @@ def collect_predecessor_dispatcher_target_facts(
                 transition_provenance_kind=f"state_dag_{kind_name.lower()}",
                 condition_block_serial=None,
                 state_var_stkoff=state_var_stkoff,
+                state_var_reg=(
+                    state_var_reg
+                    if getattr(edge, "state_var_reg", None) is None
+                    else _maybe_int(getattr(edge, "state_var_reg"))
+                ),
+                source_instruction_ea=_maybe_int(
+                    getattr(edge, "source_instruction_ea", None)
+                ),
             )
         except (TypeError, ValueError):
             continue
@@ -426,6 +583,8 @@ def collect_predecessor_dispatcher_target_facts(
 
 def _maybe_int(value: object | None) -> int | None:
     if value is None:
+        return None
+    if isinstance(value, bool):
         return None
     try:
         return int(value)
@@ -440,6 +599,7 @@ def _maybe_str(value: object | None) -> str | None:
 
 
 __all__ = [
+    "PREDECESSOR_DISPATCHER_TARGET_FACTS_ANALYSIS",
     "PredecessorDispatcherTargetFact",
     "collect_predecessor_dispatcher_target_facts",
     "resolve_predecessor_dispatcher_target",

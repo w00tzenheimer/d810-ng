@@ -15,6 +15,10 @@ from pathlib import Path
 
 import pytest
 
+from d810.analyses.control_flow.predecessor_dispatcher_target import (
+    PREDECESSOR_DISPATCHER_TARGET_FACTS_ANALYSIS,
+)
+
 
 class MockIdaDiskio:
     """Mock for ida_diskio module."""
@@ -303,6 +307,19 @@ def test_every_bundled_config_v2_lowering_declares_recovered_transitions(
     assert recover_index < pass_ids.index("lower_state_machine")
     assert "recover_state_transitions" in lower["analyses"]["required"]
     assert "recover_state_transitions" in lower["contract"]["requires"]["analyses"]
+    assert (
+        PREDECESSOR_DISPATCHER_TARGET_FACTS_ANALYSIS
+        in lower["analyses"]["required"]
+    )
+    assert (
+        PREDECESSOR_DISPATCHER_TARGET_FACTS_ANALYSIS
+        in lower["contract"]["requires"]["analyses"]
+    )
+    recover = pipeline[recover_index]
+    assert (
+        PREDECESSOR_DISPATCHER_TARGET_FACTS_ANALYSIS
+        in recover["analyses"]["provided"]
+    )
 
 
 if __name__ == "__main__":

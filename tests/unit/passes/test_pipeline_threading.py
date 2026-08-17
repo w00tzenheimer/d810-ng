@@ -6,6 +6,7 @@ pulls it and resolves transitions through it. Without the manager edge, #2 has n
 
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -51,6 +52,10 @@ from d810.passes.state_machine_spine import LOWER_ANALYSES
 from d810.analyses.control_flow.dispatcher_recovery import DispatcherRecovery
 from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap
 from d810.analyses.control_flow.semantic_transition import StateTransitionResolution
+from d810.analyses.control_flow.predecessor_dispatcher_target import (
+    PREDECESSOR_DISPATCHER_TARGET_FACTS_ANALYSIS,
+    PredecessorDispatcherTargetFact,
+)
 from d810.capabilities.dispatcher import RouterKind
 from d810.passes.unflatten import state_machine as state_machine_module
 from tests.native_preanalysis import make_native_key
@@ -369,6 +374,9 @@ def test_full_five_pass_chain_threads_and_completes():
     # every analysis dependency was published into the manager (the getResult edges)
     assert am.get_analysis("recover_dispatcher").dispatch_map is not None
     assert am.get_analysis("transition_result") is not None
+    assert isinstance(
+        am.get_analysis(PREDECESSOR_DISPATCHER_TARGET_FACTS_ANALYSIS), tuple
+    )
     assert am.get_analysis("plan_semantic_regions") is not None
     # synthetic obs carries no next-state write -> empty transitions -> heavy DAG/lower guarded off
     assert results[3].rewrite_plan.steps == ()  # lower_state_machine
@@ -377,6 +385,7 @@ def test_full_five_pass_chain_threads_and_completes():
 
 def test_lower_state_machine_requires_recovered_transition_analysis():
     assert "recover_state_transitions" in LOWER_ANALYSES.required
+    assert PREDECESSOR_DISPATCHER_TARGET_FACTS_ANALYSIS in LOWER_ANALYSES.required
 
 
 def test_native_bound_adapter_uses_current_native_ea_rebind_only():
@@ -428,6 +437,76 @@ def test_native_bound_adapter_uses_current_native_ea_rebind_only():
         )
         == ()
     )
+
+
+def test_native_bound_adapter_accepts_carrier_drift_with_typed_predecessor_route():
+    class _Index:
+        def rebind_native_ea(self, _ea):
+            return SimpleNamespace(block=SimpleNamespace(serial=42))
+
+    fact = PredecessorDispatcherTargetFact(
+        fact_id="predecessor:interval-route",
+        predecessor_block_serial=15,
+        dispatcher_entry_serial=2,
+        state_const=0x16AA65E9,
+        # The old target serial is provenance only; the current router is
+        # allowed to assign a different serial after the MBA is regenerated.
+        target_block_serial=99,
+        resolver_kind="interval_dispatcher_row",
+        row_kind="interval_range",
+        source_instruction_ea=0x7FF855576BA0,
+        state_var_stkoff=52,
+        state_var_reg=8,
+    )
+    routes = state_machine_module.bind_native_bound_transition_routes_for_current_mba(
+        (fact,),
+        current_block_identity_index=_Index(),
+        graph=SimpleNamespace(blocks={7: object(), 42: object()}),
+        dispatcher=SimpleNamespace(lookup=lambda state: 7),
+        dispatcher_region_serials=frozenset({2, 3}),
+        state_var_stkoff=52,
+        state_var_reg=None,
+    )
+
+    assert len(routes) == 1
+    assert routes[0].source_block_serial == 42
+    assert routes[0].state_constant == 0x16AA65E9
+    assert routes[0].target_handler_serial == 7
+
+
+def test_native_bound_adapter_rejects_conflicting_typed_prior_targets():
+    class _Index:
+        def rebind_native_ea(self, _ea):
+            return SimpleNamespace(block=SimpleNamespace(serial=42))
+
+    fact = PredecessorDispatcherTargetFact(
+        fact_id="predecessor:route-a",
+        predecessor_block_serial=15,
+        dispatcher_entry_serial=2,
+        state_const=0x16AA65E9,
+        target_block_serial=99,
+        resolver_kind="interval_dispatcher_row",
+        row_kind="interval_range",
+        source_instruction_ea=0x7FF855576BA0,
+        state_var_stkoff=52,
+    )
+    conflicting = replace(
+        fact,
+        fact_id="predecessor:route-b",
+        target_block_serial=100,
+    )
+
+    routes = state_machine_module.bind_native_bound_transition_routes_for_current_mba(
+        (fact, conflicting),
+        current_block_identity_index=_Index(),
+        graph=SimpleNamespace(blocks={7: object(), 42: object()}),
+        dispatcher=SimpleNamespace(lookup=lambda state: 7),
+        dispatcher_region_serials=frozenset({2, 3}),
+        state_var_stkoff=52,
+        state_var_reg=None,
+    )
+
+    assert routes == ()
 
 
 def test_run_pipeline_publishes_state_machine_contract_facts():

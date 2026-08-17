@@ -113,6 +113,7 @@
           ],
           "provided": [
             "recover_state_transitions",
+            "predecessor_dispatcher_target_facts",
             "transition_result",
             "valrange_confirmable_count"
           ]
@@ -260,6 +261,7 @@
             "plan_semantic_regions",
             "recover_dispatcher",
             "recover_state_transitions",
+            "predecessor_dispatcher_target_facts",
             "transition_result"
           ],
           "provided": [
@@ -289,6 +291,7 @@
               "plan_semantic_regions",
               "recover_dispatcher",
               "recover_state_transitions",
+              "predecessor_dispatcher_target_facts",
               "transition_result"
             ],
             "evidence": [],

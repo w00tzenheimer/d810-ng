@@ -138,6 +138,63 @@ def test_collects_transition_target_facts_with_transition_provenance() -> None:
     assert fact.state_var_stkoff == 0x28
 
 
+def test_resolution_native_ea_is_preserved_and_interval_handler_beats_dispatcher_exact_row() -> None:
+    state = 0x16AA65E9
+    dispatch_map = StateDispatcherMap(
+        rows=(
+            StateDispatcherRow(
+                state_const=state,
+                target_block=2,
+                dispatcher_block=2,
+                compare_block=3,
+                branch_kind="dispatcher_self_loop",
+                router_kind=RouterKind.CONDITION_CHAIN,
+                row_kind="dispatcher_self_loop",
+            ),
+        ),
+        dispatcher_entry_block=2,
+        dispatcher_blocks=frozenset({2, 3}),
+        state_var_stkoff=52,
+        state_var_lvar_idx=None,
+        router_kind=RouterKind.CONDITION_CHAIN,
+    )
+    range_evidence = ConditionChainAnalysisResult(
+        dispatcher=IntervalDispatcher(
+            [IntervalRow(lo=state, hi=state + 1, target=7)]
+        )
+    )
+    resolution = SimpleNamespace(
+        source_block_serial=1,
+        source_state_const_hex=f"0x{state:016X}",
+        resolved_next_block_serial=None,
+        resolution_kind="state_dispatcher_map",
+        resolution_reason="target_is_dispatcher_block",
+        source_instruction_ea=0x7FF855576BA0,
+        state_var_stkoff=8,
+        state_var_reg=8,
+    )
+
+    (fact,) = collect_predecessor_dispatcher_target_facts(
+        transition_result=None,
+        dispatcher_entry_serial=2,
+        state_dispatcher_map=dispatch_map,
+        range_evidence=range_evidence,
+        transition_resolutions=(resolution,),
+        state_var_stkoff=52,
+    )
+
+    assert fact.target_block_serial == 7
+    assert fact.resolver_kind == "interval_dispatcher_row"
+    assert fact.source_instruction_ea == 0x7FF855576BA0
+    # The prior maturity's carrier identity is diagnostic only.  The typed
+    # route remains valid when the current lowering observes a different
+    # carrier, because native EA plus current-router corroboration is the
+    # stable authority.
+    assert fact.state_var_stkoff == 8
+    assert fact.state_var_reg == 8
+    assert fact.to_dict()["source_instruction_ea"] == 0x7FF855576BA0
+
+
 def test_collects_report_target_facts_for_resolved_handler_edges() -> None:
     dispatch_map = StateDispatcherMap(
         rows=(

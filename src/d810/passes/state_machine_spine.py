@@ -50,6 +50,9 @@ from d810.passes.unflatten.state_machine import (
     RecoverDispatcher,
     RecoverStateTransitions,
 )
+from d810.analyses.control_flow.predecessor_dispatcher_target import (
+    PREDECESSOR_DISPATCHER_TARGET_FACTS_ANALYSIS,
+)
 
 __all__ = [
     "CLEANUP_ANALYSES",
@@ -79,6 +82,7 @@ TRANSITION_ANALYSES = AnalysisContract(
     provided=frozenset(
         {
             "recover_state_transitions",
+            PREDECESSOR_DISPATCHER_TARGET_FACTS_ANALYSIS,
             "transition_result",
             "valrange_confirmable_count",
             CANONICAL_SEMANTIC_EVIDENCE,
@@ -96,6 +100,7 @@ LOWER_ANALYSES = AnalysisContract(
             "plan_semantic_regions",
             "recover_dispatcher",
             "recover_state_transitions",
+            PREDECESSOR_DISPATCHER_TARGET_FACTS_ANALYSIS,
             "transition_result",
         }
     ),

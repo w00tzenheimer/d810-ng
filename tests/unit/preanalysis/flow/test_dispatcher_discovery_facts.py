@@ -14,9 +14,17 @@ from d810.analyses.control_flow.dispatcher_resolution import (
     StateDispatcherMap,
     StateDispatcherRow,
 )
+from d810.analyses.control_flow.condition_chain_model import (
+    ConditionChainAnalysisResult,
+)
+from d810.analyses.control_flow.interval_map import IntervalDispatcher, IntervalRow
 from d810.analyses.control_flow.predecessor_dispatcher_target import (
     collect_predecessor_dispatcher_target_facts,
     resolve_predecessor_dispatcher_target,
+)
+from d810.analyses.control_flow.transition_builder import (
+    StateTransition,
+    TransitionResult,
 )
 from d810.analyses.value_flow.contract_evidence import contract_evidence_tokens
 
@@ -210,6 +218,181 @@ def test_collects_predecessor_target_facts_from_transition_resolutions() -> None
     assert fact.target_block_serial == 5
     assert fact.compare_block_serial == 2
     assert fact.branch_kind == "switch_case"
+
+
+def test_predecessor_observation_preserves_native_source_ea() -> None:
+    facts = collect_predecessor_dispatcher_target_facts(
+        transition_result=None,
+        dispatcher_entry_serial=2,
+        state_dispatcher_map=_dispatch_map(),
+        transition_resolutions=(
+            SimpleNamespace(
+                source_block_serial=9,
+                source_state_const_hex="0x0000000000000010",
+                resolved_next_block_serial=5,
+                resolution_kind="state_dispatcher_map",
+                resolution_reason="resolved_exact_state",
+                source_instruction_ea=0x401234,
+            ),
+        ),
+        state_var_stkoff=0x3C,
+    )
+
+    assert len(facts) == 1
+    assert facts[0].source_instruction_ea == 0x401234
+    observation = next(
+        observation
+        for observation in collect_state_dispatcher_discovery_fact_observations(
+            state_dispatcher_map=_dispatch_map(),
+            maturity="MMAT_GLBOPT1",
+            phase="pre_d810",
+            predecessor_target_facts=facts,
+        )
+        if observation.kind == PREDECESSOR_DISPATCHER_TARGET_FACT_TYPE
+    )
+    assert observation.payload["source_instruction_ea"] == 0x401234
+
+
+def test_native_anchored_dispatcher_target_resolution_falls_through_to_interval_handler() -> None:
+    state = 0x16AA65E9
+    dispatch_map = StateDispatcherMap(
+        rows=(
+            StateDispatcherRow(
+                state_const=state,
+                target_block=2,
+                dispatcher_block=2,
+                compare_block=3,
+                branch_kind="dispatcher_self_loop",
+                router_kind=RouterKind.CONDITION_CHAIN,
+                row_kind="dispatcher_self_loop",
+            ),
+        ),
+        dispatcher_entry_block=2,
+        dispatcher_blocks=frozenset({2, 3}),
+        state_var_stkoff=52,
+        state_var_lvar_idx=None,
+        router_kind=RouterKind.CONDITION_CHAIN,
+    )
+    range_evidence = ConditionChainAnalysisResult(
+        dispatcher=IntervalDispatcher(
+            [IntervalRow(lo=state, hi=state + 1, target=7)]
+        )
+    )
+    (fact,) = collect_predecessor_dispatcher_target_facts(
+        transition_result=None,
+        dispatcher_entry_serial=2,
+        state_dispatcher_map=dispatch_map,
+        range_evidence=range_evidence,
+        transition_resolutions=(
+            SimpleNamespace(
+                source_block_serial=1,
+                source_state_const_hex=f"0x{state:016X}",
+                resolved_next_block_serial=None,
+                resolution_kind="state_dispatcher_map",
+                resolution_reason="target_is_dispatcher_block",
+                source_instruction_ea=0x7FF855576BA0,
+            ),
+        ),
+        state_var_stkoff=52,
+    )
+
+    assert fact.target_block_serial == 7
+    assert fact.source_instruction_ea == 0x7FF855576BA0
+    assert fact.resolver_kind == "interval_dispatcher_row"
+
+
+def test_dispatcher_target_resolution_without_native_ea_is_rejected() -> None:
+    state = 0x16AA65E9
+    dispatch_map = StateDispatcherMap(
+        rows=(
+            StateDispatcherRow(
+                state_const=state,
+                target_block=2,
+                dispatcher_block=2,
+                compare_block=3,
+                branch_kind="dispatcher_self_loop",
+                router_kind=RouterKind.CONDITION_CHAIN,
+                row_kind="dispatcher_self_loop",
+            ),
+        ),
+        dispatcher_entry_block=2,
+        dispatcher_blocks=frozenset({2, 3}),
+        state_var_stkoff=52,
+        state_var_lvar_idx=None,
+        router_kind=RouterKind.CONDITION_CHAIN,
+    )
+    range_evidence = ConditionChainAnalysisResult(
+        dispatcher=IntervalDispatcher(
+            [IntervalRow(lo=state, hi=state + 1, target=7)]
+        )
+    )
+
+    facts = collect_predecessor_dispatcher_target_facts(
+        transition_result=None,
+        dispatcher_entry_serial=2,
+        state_dispatcher_map=dispatch_map,
+        range_evidence=range_evidence,
+        transition_resolutions=(
+            SimpleNamespace(
+                source_block_serial=1,
+                source_state_const_hex=f"0x{state:016X}",
+                resolved_next_block_serial=None,
+                resolution_kind="state_dispatcher_map",
+                resolution_reason="target_is_dispatcher_block",
+            ),
+        ),
+        state_var_stkoff=52,
+    )
+
+    assert facts == ()
+
+
+def test_successful_resolution_requires_target_and_agrees_with_router_target() -> None:
+    missing_target = SimpleNamespace(
+        source_block_serial=9,
+        source_state_const_hex="0x0000000000000010",
+        resolved_next_block_serial=None,
+        resolution_kind="state_dispatcher_map",
+        resolution_reason="resolved_exact_state",
+        source_instruction_ea=0x401234,
+    )
+    conflicting_target = SimpleNamespace(
+        source_block_serial=9,
+        source_state_const_hex="0x0000000000000010",
+        resolved_next_block_serial=6,
+        resolution_kind="state_dispatcher_map",
+        resolution_reason="resolved_exact_state",
+        source_instruction_ea=0x401234,
+    )
+
+    for resolution in (missing_target, conflicting_target):
+        facts = collect_predecessor_dispatcher_target_facts(
+            transition_result=None,
+            dispatcher_entry_serial=2,
+            state_dispatcher_map=_dispatch_map(),
+            transition_resolutions=(resolution,),
+            state_var_stkoff=0x3C,
+        )
+        assert facts == ()
+
+    # A weaker transition-result view must not resurrect a row that the typed
+    # resolution rejected for target disagreement.
+    facts = collect_predecessor_dispatcher_target_facts(
+        transition_result=TransitionResult(
+            transitions=(
+                StateTransition(
+                    from_state=0x10,
+                    to_state=0x10,
+                    from_block=9,
+                ),
+            )
+        ),
+        dispatcher_entry_serial=2,
+        state_dispatcher_map=_dispatch_map(),
+        transition_resolutions=(conflicting_target,),
+        state_var_stkoff=0x3C,
+    )
+    assert facts == ()
 
 
 def test_rejected_transition_resolutions_do_not_resurrect_dispatcher_evidence() -> None:
