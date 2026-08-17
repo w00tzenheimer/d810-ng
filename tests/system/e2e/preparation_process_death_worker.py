@@ -26,6 +26,7 @@ from d810.backends.ida.idb_preparation.patch_ledger import (
     derive_patch_delta,
 )
 from d810.capabilities.idb_preparation import (
+    PreparationDeclaredByteBaseline,
     PreparationRunRequest,
     PreparationScriptDescriptor,
     PreparationState,
@@ -33,6 +34,7 @@ from d810.capabilities.idb_preparation import (
 from d810.core.execution_journal import DecompilationSessionId, ExecutionAttemptId
 
 DATABASE_IDENTITY = "preparation-process-death-idb"
+UNMANAGED_CAPTURE_PENDING = "UNMANAGED_CAPTURE_PENDING"
 
 
 class _UnusedRunner:
@@ -130,8 +132,32 @@ def _write(case_dir: Path, cut: str) -> None:
                 transaction.transaction_id, PreparationState.SCRIPT_RUNNING
             )
 
-            ida_bytes.patch_byte(pristine_ea, pristine_original ^ 0x02)
-            ida_bytes.patch_byte(inherited_ea, inherited_original ^ 0x03)
+            if cut == UNMANAGED_CAPTURE_PENDING:
+                journal.record_declared_byte_baselines(
+                    transaction.transaction_id,
+                    (
+                        PreparationDeclaredByteBaseline(
+                            ea=pristine_ea,
+                            ida_original=pristine_original,
+                            before_is_patched=False,
+                            before_value=pristine_original,
+                        ),
+                        PreparationDeclaredByteBaseline(
+                            ea=inherited_ea,
+                            ida_original=inherited_original,
+                            before_is_patched=True,
+                            before_value=inherited_before,
+                        ),
+                    ),
+                )
+                ida_bytes.put_byte(pristine_ea, pristine_original ^ 0x02)
+                ida_bytes.put_byte(inherited_ea, inherited_original ^ 0x03)
+                journal.transition(
+                    transaction.transaction_id, PreparationState.CAPTURE_PENDING
+                )
+            else:
+                ida_bytes.patch_byte(pristine_ea, pristine_original ^ 0x02)
+                ida_bytes.patch_byte(inherited_ea, inherited_original ^ 0x03)
             if cut == PreparationState.CAPTURE_PENDING.name:
                 transaction = journal.transition(
                     transaction.transaction_id, PreparationState.CAPTURE_PENDING
@@ -218,6 +244,7 @@ def main() -> int:
         choices=(
             PreparationState.SCRIPT_RUNNING.name,
             PreparationState.CAPTURE_PENDING.name,
+            UNMANAGED_CAPTURE_PENDING,
         ),
         required=True,
     )

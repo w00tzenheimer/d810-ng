@@ -9,6 +9,7 @@ from pathlib import Path
 from d810.capabilities.idb_preparation import (
     IllegalPreparationTransition,
     PreparationByteDelta,
+    PreparationDeclaredByteBaseline,
     PreparationPatchRow,
     PreparationRunRequest,
     PreparationState,
@@ -151,6 +152,20 @@ class SQLitePreparationJournal:
                     before_value INTEGER NOT NULL,
                     after_is_patched INTEGER NOT NULL,
                     after_value INTEGER NOT NULL,
+                    PRIMARY KEY (transaction_id, ea),
+                    FOREIGN KEY (transaction_id)
+                        REFERENCES preparation_transactions(transaction_id)
+                )
+                """
+            )
+            self._conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS preparation_declared_byte_baselines (
+                    transaction_id TEXT NOT NULL,
+                    ea INTEGER NOT NULL,
+                    ida_original INTEGER NOT NULL,
+                    before_is_patched INTEGER NOT NULL,
+                    before_value INTEGER NOT NULL,
                     PRIMARY KEY (transaction_id, ea),
                     FOREIGN KEY (transaction_id)
                         REFERENCES preparation_transactions(transaction_id)
@@ -494,6 +509,59 @@ class SQLitePreparationJournal:
                 before_value=int(row["before_value"]),
                 after_is_patched=bool(row["after_is_patched"]),
                 after_value=int(row["after_value"]),
+            )
+            for row in rows
+        )
+
+    def record_declared_byte_baselines(
+        self,
+        transaction_id: PreparationTransactionId,
+        baselines: tuple[PreparationDeclaredByteBaseline, ...],
+    ) -> None:
+        record = self._require_record(transaction_id)
+        if record.state is not PreparationState.SCRIPT_RUNNING:
+            raise ValueError(
+                "declared byte baselines may only be recorded in script_running"
+            )
+        ordered = tuple(sorted(baselines, key=lambda baseline: baseline.ea))
+        with self._conn:
+            self._conn.executemany(
+                """
+                INSERT OR IGNORE INTO preparation_declared_byte_baselines (
+                    transaction_id, ea, ida_original, before_is_patched,
+                    before_value
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    (
+                        transaction_id.value,
+                        baseline.ea,
+                        baseline.ida_original,
+                        int(baseline.before_is_patched),
+                        baseline.before_value,
+                    )
+                    for baseline in ordered
+                ),
+            )
+
+    def declared_byte_baselines(
+        self, transaction_id: PreparationTransactionId
+    ) -> tuple[PreparationDeclaredByteBaseline, ...]:
+        self._require_record(transaction_id)
+        rows = self._conn.execute(
+            """
+            SELECT ea, ida_original, before_is_patched, before_value
+            FROM preparation_declared_byte_baselines
+            WHERE transaction_id = ? ORDER BY ea
+            """,
+            (transaction_id.value,),
+        ).fetchall()
+        return tuple(
+            PreparationDeclaredByteBaseline(
+                ea=int(row["ea"]),
+                ida_original=int(row["ida_original"]),
+                before_is_patched=bool(row["before_is_patched"]),
+                before_value=int(row["before_value"]),
             )
             for row in rows
         )

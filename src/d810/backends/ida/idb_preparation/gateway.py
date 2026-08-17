@@ -24,6 +24,7 @@ from d810.backends.ida.native_patch.reanalysis import (
 )
 from d810.capabilities.idb_preparation import (
     PreparationByteDelta,
+    PreparationDeclaredByteBaseline,
     PreparationPatchRow,
     PreparationRunRequest,
     PreparationScriptDescriptor,
@@ -58,6 +59,8 @@ class PreparationScriptRunner(Protocol):
 
 class PreparationByteWriter(Protocol):
     def read_byte(self, ea: int) -> int | None: ...
+    def read_original_byte(self, ea: int) -> int | None: ...
+    def put_byte(self, ea: int, value: int) -> None: ...
     def patch_bytes(self, ea: int, data: bytes) -> None: ...
     def patch_byte(self, ea: int, value: int) -> None: ...
     def revert_byte(self, ea: int) -> None: ...
@@ -182,6 +185,43 @@ class IdbPreparationGateway:
                 functions.add(int(owner))
         return tuple(sorted(functions))
 
+    def _unmanaged_declared_eas(
+        self,
+        transaction_id: PreparationTransactionId,
+    ) -> tuple[int, ...]:
+        """Return declared bytes whose live value bypassed IDA's patch ledger."""
+
+        patch_rows = {row.ea: row for row in self._patch_ledger.capture()}
+        unmanaged: list[int] = []
+        for baseline in self._journal.declared_byte_baselines(transaction_id):
+            row = patch_rows.get(baseline.ea)
+            expected = baseline.ida_original if row is None else row.current_value
+            live = self._byte_writer.read_byte(baseline.ea)
+            if (
+                live is None
+                or (row is not None and row.ida_original != baseline.ida_original)
+                or live != expected
+            ):
+                unmanaged.append(baseline.ea)
+        return tuple(unmanaged)
+
+    def _restore_unmanaged_declared_bytes(
+        self,
+        transaction_id: PreparationTransactionId,
+    ) -> tuple[int, ...]:
+        baselines = {
+            baseline.ea: baseline
+            for baseline in self._journal.declared_byte_baselines(transaction_id)
+        }
+        restored: list[int] = []
+        for ea in self._unmanaged_declared_eas(transaction_id):
+            baseline = baselines[ea]
+            self._byte_writer.put_byte(ea, baseline.ida_original)
+            if baseline.before_is_patched:
+                self._byte_writer.patch_byte(ea, baseline.before_value)
+            restored.append(ea)
+        return tuple(restored)
+
     def _reanalyze_and_invalidate(
         self,
         function_eas: tuple[int, ...],
@@ -295,12 +335,42 @@ class IdbPreparationGateway:
             )
         noted_ranges: set[tuple[int, int]] = set()
         noted_functions: set[int] = set()
+        baseline_rows_by_ea = {row.ea: row for row in baseline}
 
         def _note_function(function_ea: int) -> None:
             noted_functions.add(function_ea)
             self._journal.record_affected_functions(transaction_id, (function_ea,))
 
         def _note_range(start_ea: int, end_ea: int) -> None:
+            declared_baselines: list[PreparationDeclaredByteBaseline] = []
+            for ea in range(start_ea, end_ea):
+                row = baseline_rows_by_ea.get(ea)
+                if row is not None:
+                    declared_baselines.append(
+                        PreparationDeclaredByteBaseline(
+                            ea=ea,
+                            ida_original=row.ida_original,
+                            before_is_patched=True,
+                            before_value=row.current_value,
+                        )
+                    )
+                    continue
+                original = self._byte_writer.read_original_byte(ea)
+                if original is None:
+                    raise RuntimeError(
+                        f"cannot capture original byte for declared range at {ea:#x}"
+                    )
+                declared_baselines.append(
+                    PreparationDeclaredByteBaseline(
+                        ea=ea,
+                        ida_original=original,
+                        before_is_patched=False,
+                        before_value=original,
+                    )
+                )
+            self._journal.record_declared_byte_baselines(
+                transaction_id, tuple(declared_baselines)
+            )
             noted_ranges.add((start_ea, end_ea))
             for ea in (start_ea, end_ea - 1):
                 owner = self._function_owner(ea)
@@ -356,6 +426,7 @@ class IdbPreparationGateway:
             )
 
         deltas = derive_patch_delta(baseline, after)
+        unmanaged_eas = self._unmanaged_declared_eas(transaction_id)
         try:
             self._journal.record_byte_deltas(transaction_id, deltas)
         except BaseException as error:
@@ -394,7 +465,12 @@ class IdbPreparationGateway:
                 failure_reason=str(error),
             )
 
-        if script_error is not None and not deltas and not ordered_type_proposals:
+        if (
+            script_error is not None
+            and not deltas
+            and not ordered_type_proposals
+            and not unmanaged_eas
+        ):
             record = self._journal.transition(
                 transaction_id,
                 PreparationState.FAILED,
@@ -406,8 +482,13 @@ class IdbPreparationGateway:
                 failure_reason=str(script_error),
             )
 
-        conflict_reason = None
-        for delta in deltas:
+        conflict_reason = (
+            "UNMANAGED_WRITE_DETECTED at "
+            + ", ".join(f"{ea:#x}" for ea in unmanaged_eas)
+            if unmanaged_eas
+            else None
+        )
+        for delta in deltas if conflict_reason is None else ():
             if self._overlaps(delta.ea, native_ranges):
                 conflict_reason = (
                     f"byte {delta.ea:#x} overlaps an active native-patch range"
@@ -585,6 +666,17 @@ class IdbPreparationGateway:
         *,
         failure_reason: str | None = None,
     ) -> PreparationRestoreReceipt:
+        current = self._journal.get(transaction_id)
+        assert current is not None
+        unmanaged_restored = (
+            self._restore_unmanaged_declared_bytes(transaction_id)
+            if current.state
+            in {
+                PreparationState.ROLLING_BACK,
+                PreparationState.RECOVERY_REQUIRED,
+            }
+            else ()
+        )
         positions = self._positions(transaction_id)
         type_positions = self._type_positions(transaction_id)
         interference = tuple(
@@ -627,7 +719,7 @@ class IdbPreparationGateway:
             )
 
         deltas = self._journal.byte_deltas(transaction_id)
-        restored_eas: list[int] = []
+        restored_eas: list[int] = list(unmanaged_restored)
         try:
             for delta in deltas:
                 if positions[delta.ea] is PreparationBytePosition.BEFORE:
@@ -814,6 +906,20 @@ class IdaPreparationByteWriter:
         if not ida_bytes.is_loaded(ea):
             return None
         return int(ida_bytes.get_byte(ea)) & 0xFF
+
+    def read_original_byte(self, ea: int) -> int | None:
+        import ida_bytes
+
+        if not ida_bytes.is_loaded(ea):
+            return None
+        return int(ida_bytes.get_original_byte(ea)) & 0xFF
+
+    def put_byte(self, ea: int, value: int) -> None:
+        import ida_bytes
+
+        ida_bytes.put_byte(ea, value)
+        if self.read_byte(ea) != value:
+            raise RuntimeError(f"IDA database-byte readback failed at {ea:#x}")
 
     def patch_bytes(self, ea: int, data: bytes) -> None:
         import ida_bytes

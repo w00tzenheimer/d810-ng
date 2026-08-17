@@ -16,6 +16,7 @@ from d810.core.typing import Protocol
 
 __all__ = [
     "IllegalPreparationTransition",
+    "PreparationDeclaredByteBaseline",
     "PreparationByteDelta",
     "PreparationPatchRow",
     "PreparationRunRequest",
@@ -271,6 +272,25 @@ class PreparationByteDelta:
 
 
 @dataclass(frozen=True, slots=True)
+class PreparationDeclaredByteBaseline:
+    """Durable before-image for one byte in a script-declared range."""
+
+    ea: int
+    ida_original: int
+    before_is_patched: bool
+    before_value: int
+
+    def __post_init__(self) -> None:
+        _require_non_negative_int(self.ea, "ea")
+        _require_byte(self.ida_original, "ida_original")
+        _require_byte(self.before_value, "before_value")
+        if not isinstance(self.before_is_patched, bool):
+            raise TypeError("before_is_patched must be a bool")
+        if not self.before_is_patched and self.before_value != self.ida_original:
+            raise ValueError("pristine before_value must equal ida_original")
+
+
+@dataclass(frozen=True, slots=True)
 class SerializedTypeSnapshot:
     """Lossless portable form of IDA's three-component serialized type."""
 
@@ -428,6 +448,16 @@ class PreparationTransactionStore(Protocol):
     def byte_deltas(
         self, transaction_id: PreparationTransactionId
     ) -> tuple[PreparationByteDelta, ...]: ...
+
+    def record_declared_byte_baselines(
+        self,
+        transaction_id: PreparationTransactionId,
+        baselines: tuple[PreparationDeclaredByteBaseline, ...],
+    ) -> None: ...
+
+    def declared_byte_baselines(
+        self, transaction_id: PreparationTransactionId
+    ) -> tuple[PreparationDeclaredByteBaseline, ...]: ...
 
     def record_type_deltas(
         self,

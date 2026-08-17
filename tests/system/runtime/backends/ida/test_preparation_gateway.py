@@ -81,6 +81,24 @@ def _request(function_ea: int, descriptor: PreparationScriptDescriptor):
     )
 
 
+def _unmanaged_descriptor(tmp_path, *, replacement: int) -> PreparationScriptDescriptor:
+    script = tmp_path / "put-unmanaged.py"
+    script.write_text(
+        "import ida_bytes\n"
+        "preparation.note_range(function_ea, function_ea + 1)\n"
+        f"ida_bytes.put_bytes(function_ea, bytes([{replacement}]))\n",
+        encoding="utf-8",
+    )
+    return PreparationScriptDescriptor(
+        script_id="put-unmanaged",
+        display_name="Put unmanaged byte",
+        path=str(script),
+        source_sha256=hashlib.sha256(script.read_bytes()).hexdigest(),
+        enabled=True,
+        portable=True,
+    )
+
+
 def _gateway(journal: SQLitePreparationJournal) -> IdbPreparationGateway:
     return IdbPreparationGateway(
         journal=journal,
@@ -146,3 +164,24 @@ def test_inherited_patch_apply_and_restore_preserves_user_patch_status(
         assert IdaPatchLedger().capture() == before
     finally:
         ida_bytes.revert_byte(ea)
+
+
+def test_unmanaged_put_bytes_in_declared_range_is_rejected_and_restored(
+    copy_of_idb, tmp_path
+) -> None:
+    ea = copy_of_idb.min_ea
+    original = int(ida_bytes.get_original_byte(ea)) & 0xFF
+    replacement = original ^ 0x01
+    before = IdaPatchLedger().capture()
+    assert before == ()
+
+    with SQLitePreparationJournal(tmp_path / "journal.sqlite3") as journal:
+        receipt = _gateway(journal).run(
+            _request(ea, _unmanaged_descriptor(tmp_path, replacement=replacement))
+        )
+
+        assert receipt.state is PreparationState.RESTORED
+        assert receipt.failure_reason == f"UNMANAGED_WRITE_DETECTED at {ea:#x}"
+
+    assert int(ida_bytes.get_byte(ea)) & 0xFF == original
+    assert IdaPatchLedger().capture() == before

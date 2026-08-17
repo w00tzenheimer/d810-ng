@@ -80,6 +80,37 @@ def test_source_hash_mismatch_rejects_before_script_execution(tmp_path: Path) ->
     assert functions == []
 
 
+def test_runner_executes_the_exact_bytes_that_passed_source_attestation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    script = tmp_path / "normalize.py"
+    script.write_text("preparation.note_function(0x1111)\n", encoding="utf-8")
+    descriptor = _descriptor(script)
+    original_read_bytes = Path.read_bytes
+    replaced = False
+
+    def _read_then_replace(path: Path) -> bytes:
+        nonlocal replaced
+        source = original_read_bytes(path)
+        if path == script and not replaced:
+            script.write_text(
+                "preparation.note_function(0x2222)\n",
+                encoding="utf-8",
+            )
+            replaced = True
+        return source
+
+    monkeypatch.setattr(Path, "read_bytes", _read_then_replace)
+    functions: list[int] = []
+    context = _context(patched=[], ranges=[], functions=functions)
+
+    TrustedPreparationScriptRunner().run(descriptor, context)
+
+    assert replaced
+    assert functions == [0x1111]
+
+
 def test_runner_rejects_execution_off_its_owner_thread(tmp_path: Path) -> None:
     script = tmp_path / "normalize.py"
     script.write_text("preparation.note_function(function_ea)\n", encoding="utf-8")

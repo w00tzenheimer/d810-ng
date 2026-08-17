@@ -33,7 +33,7 @@ esac
 rm -rf "$CASE_ROOT"
 mkdir -p "$CASE_ROOT"
 
-for CUT in SCRIPT_RUNNING CAPTURE_PENDING; do
+for CUT in SCRIPT_RUNNING CAPTURE_PENDING UNMANAGED_CAPTURE_PENDING; do
   CASE_DIR="/work/.tmp/preparation-process-death/$CUT"
   HOST_CASE_DIR="$CASE_ROOT/$CUT"
   mkdir -p "$HOST_CASE_DIR"

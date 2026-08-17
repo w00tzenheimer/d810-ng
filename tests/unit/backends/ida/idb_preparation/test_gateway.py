@@ -27,6 +27,7 @@ class _Writer:
     ) -> None:
         self.originals = dict(originals)
         self.patches = dict(patches or {})
+        self.unmanaged: dict[int, int] = {}
         self.calls: list[tuple] = []
         self.reads = 0
 
@@ -34,7 +35,21 @@ class _Writer:
         self.reads += 1
         if ea not in self.originals:
             return None
-        return self.patches.get(ea, self.originals[ea])
+        return self.unmanaged.get(ea, self.patches.get(ea, self.originals[ea]))
+
+    def read_original_byte(self, ea: int) -> int | None:
+        return self.originals.get(ea)
+
+    def put_bytes(self, ea: int, data: bytes) -> None:
+        for offset, value in enumerate(data):
+            self.unmanaged[ea + offset] = value
+
+    def put_byte(self, ea: int, value: int) -> None:
+        self.calls.append(("put_byte", ea, value))
+        if value == self.originals[ea]:
+            self.unmanaged.pop(ea, None)
+        else:
+            self.unmanaged[ea] = value
 
     def patch_bytes(self, ea: int, data: bytes) -> None:
         for offset, value in enumerate(data):
@@ -43,10 +58,12 @@ class _Writer:
     def patch_byte(self, ea: int, value: int) -> None:
         self.calls.append(("patch_byte", ea, value))
         self.patches[ea] = value
+        self.unmanaged.pop(ea, None)
 
     def revert_byte(self, ea: int) -> None:
         self.calls.append(("revert_byte", ea))
         self.patches.pop(ea, None)
+        self.unmanaged.pop(ea, None)
 
 
 class _Ledger:
@@ -150,6 +167,19 @@ class _PostDeltaCommitFailureJournal(SQLitePreparationJournal):
             raise KeyboardInterrupt("process cut after delta commit")
 
 
+class _CapturePendingCommitCutJournal(SQLitePreparationJournal):
+    def __init__(self, path: Path) -> None:
+        super().__init__(path)
+        self._cut_once = True
+
+    def transition(self, transaction_id, target, *, note=None):
+        record = super().transition(transaction_id, target, note=note)
+        if target is PreparationState.CAPTURE_PENDING and self._cut_once:
+            self._cut_once = False
+            raise KeyboardInterrupt("process cut after capture-pending commit")
+        return record
+
+
 def _request(database_identity: str = "idb-a") -> PreparationRunRequest:
     return PreparationRunRequest(
         database_identity=database_identity,
@@ -218,6 +248,66 @@ def test_noop_script_reaches_idb_prepared_without_hexrays(tmp_path: Path) -> Non
         assert decompiler.calls == []
     finally:
         journal.close()
+
+
+def test_unmanaged_write_in_declared_range_is_restored_and_rejected(
+    tmp_path: Path,
+) -> None:
+    writer = _Writer({0x401000: 0x75})
+
+    def _put_unmanaged(context) -> None:
+        context.note_range(0x401000, 0x401001)
+        writer.put_bytes(0x401000, b"\x90")
+
+    gateway, journal, _ = _gateway(
+        tmp_path,
+        writer=writer,
+        action=_put_unmanaged,
+    )
+    try:
+        receipt = gateway.run(_request())
+
+        assert receipt.state is PreparationState.RESTORED
+        assert receipt.failure_reason == "UNMANAGED_WRITE_DETECTED at 0x401000"
+        assert writer.read_byte(0x401000) == 0x75
+        assert journal.byte_deltas(receipt.transaction_id) == ()
+    finally:
+        journal.close()
+
+
+def test_startup_recovers_unmanaged_write_after_capture_pending_cut(
+    tmp_path: Path,
+) -> None:
+    writer = _Writer({0x401000: 0x75})
+    path = tmp_path / "journal.sqlite3"
+    journal = _CapturePendingCommitCutJournal(path)
+
+    def _put_unmanaged(context) -> None:
+        context.note_range(0x401000, 0x401001)
+        writer.put_bytes(0x401000, b"\x90")
+
+    gateway, _, _ = _gateway(
+        tmp_path,
+        writer=writer,
+        action=_put_unmanaged,
+        journal=journal,
+    )
+    with pytest.raises(KeyboardInterrupt, match="capture-pending commit"):
+        gateway.run(_request())
+    journal.close()
+
+    with SQLitePreparationJournal(path) as reopened:
+        recovery_gateway, _, _ = _gateway(
+            tmp_path,
+            writer=writer,
+            action=lambda context: None,
+            journal=reopened,
+        )
+        recovered = recovery_gateway.recover_startup()
+
+        assert len(recovered) == 1
+        assert recovered[0].ok
+        assert writer.read_byte(0x401000) == 0x75
 
 
 def test_script_exception_before_writes_is_terminal_failed(tmp_path: Path) -> None:

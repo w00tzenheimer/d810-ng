@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import runpy
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -105,11 +104,17 @@ class TrustedPreparationScriptRunner:
                 "refresh the project before execution"
             )
 
-        runpy.run_path(
-            descriptor.path,
-            init_globals={
-                "function_ea": context.function_ea,
-                "preparation": context,
-            },
-            run_name=f"d810_preparation_{descriptor.script_id}",
-        )
+        run_name = f"d810_preparation_{descriptor.script_id}"
+        script_globals = {
+            "__name__": run_name,
+            "__file__": descriptor.path,
+            "__cached__": None,
+            "__doc__": None,
+            "__loader__": None,
+            "__package__": "",
+            "__spec__": None,
+            "function_ea": context.function_ea,
+            "preparation": context,
+        }
+        code = compile(current_source, descriptor.path, "exec", dont_inherit=True)
+        exec(code, script_globals)  # noqa: S102 - this is the trusted-script boundary

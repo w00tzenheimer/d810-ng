@@ -14,6 +14,7 @@ from d810.backends.ida.idb_preparation.journal import (
 from d810.capabilities.idb_preparation import (
     IllegalPreparationTransition,
     PreparationByteDelta,
+    PreparationDeclaredByteBaseline,
     PreparationPatchRow,
     PreparationRunRequest,
     PreparationScriptDescriptor,
@@ -192,6 +193,15 @@ def test_capture_data_and_ownership_round_trip(tmp_path: Path) -> None:
         transaction = _create_running(
             journal, database_identity="idb-a", script_id="script-a"
         )
+        declared_baseline = PreparationDeclaredByteBaseline(
+            ea=0x1000,
+            ida_original=0x75,
+            before_is_patched=True,
+            before_value=0x74,
+        )
+        journal.record_declared_byte_baselines(
+            transaction.transaction_id, (declared_baseline,)
+        )
         transaction = journal.transition(
             transaction.transaction_id, PreparationState.CAPTURE_PENDING
         )
@@ -206,6 +216,9 @@ def test_capture_data_and_ownership_round_trip(tmp_path: Path) -> None:
         journal.record_affected_functions(transaction.transaction_id, (0x401000,))
 
         assert journal.byte_deltas(transaction.transaction_id) == (byte_delta,)
+        assert journal.declared_byte_baselines(transaction.transaction_id) == (
+            declared_baseline,
+        )
         assert journal.type_deltas(transaction.transaction_id) == (type_delta,)
         assert journal.affected_functions(transaction.transaction_id) == (0x401000,)
         assert journal.active_byte_ranges("idb-a") == ((0x1000, 0x1001),)
