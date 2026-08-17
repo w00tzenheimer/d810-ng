@@ -414,6 +414,25 @@ def test_native_route_binder_rejects_conflicting_duplicate_source_evidence() -> 
     ) == ()
 
 
+@pytest.mark.parametrize(
+    "resolution_reason",
+    ("resolved_exact_state", "resolved_folded_state_write"),
+)
+def test_native_route_binder_accepts_only_authoritative_resolution_reasons(
+    resolution_reason,
+) -> None:
+    routes = _bind_native_route(
+        (_native_route_resolution(resolution_reason=resolution_reason),)
+    )
+    assert len(routes) == 1
+
+
+def test_native_route_binder_rejects_fabricated_resolution_reason() -> None:
+    assert _bind_native_route(
+        (_native_route_resolution(resolution_reason="resolved_not_a_real_reason"),)
+    ) == ()
+
+
 def test_residual_state_key_upgrades_default_terminal_without_source_anchor() -> None:
     state = 0xEC71CA67
     graph = FlowGraph(

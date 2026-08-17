@@ -18,6 +18,13 @@ from d810.ir import ValueRef
 # keeps the walk finite for malformed graphs.
 _MAX_CORRIDOR_HOPS = 8
 
+SUCCESSFUL_TRANSITION_RESOLUTION_REASONS = frozenset(
+    {
+        "resolved_exact_state",
+        "resolved_folded_state_write",
+    }
+)
+
 
 @dataclass(frozen=True, slots=True)
 class StateTransitionFact:
@@ -270,9 +277,8 @@ def bind_native_bound_transition_routes(
         if (
             state_constant is None
             or target_serial is None
-            or not str(getattr(resolution, "resolution_reason", "")).startswith(
-                "resolved_"
-            )
+            or str(getattr(resolution, "resolution_reason", ""))
+            not in SUCCESSFUL_TRANSITION_RESOLUTION_REASONS
         ):
             continue
         try:
@@ -758,6 +764,7 @@ __all__ = [
     "SemanticTransition",
     "SemanticTransitionKind",
     "NativeBoundTransitionRoute",
+    "SUCCESSFUL_TRANSITION_RESOLUTION_REASONS",
     "bind_native_bound_transition_routes",
     "facts_from_validated_view",
     "rebind_state_write_anchors",

@@ -8,12 +8,8 @@ from d810.analyses.control_flow.condition_chain_model import (
     ConditionChainAnalysisResult,
 )
 from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap
-
-_SUCCESSFUL_TRANSITION_RESOLUTION_REASONS = frozenset(
-    {
-        "resolved_exact_state",
-        "resolved_folded_state_write",
-    }
+from d810.analyses.control_flow.semantic_transition import (
+    SUCCESSFUL_TRANSITION_RESOLUTION_REASONS as _SUCCESSFUL_TRANSITION_RESOLUTION_REASONS,
 )
 
 
