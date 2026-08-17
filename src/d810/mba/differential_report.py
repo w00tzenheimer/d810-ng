@@ -68,6 +68,14 @@ def egglog_receipt_to_outcome(receipt: object) -> MbaProviderOutcome:
     input_cost = getattr(receipt, "input_cost", None)
     extracted_cost = getattr(receipt, "extracted_cost", None)
     metadata = {
+        "canonicalizer_version": getattr(receipt, "canonicalizer_version", None),
+        "canonical_input_cost": getattr(receipt, "canonical_input_cost", None),
+        "normalization_steps": tuple(
+            str(item) for item in getattr(receipt, "normalization_steps", ())
+        ),
+        "execution_path": getattr(receipt, "execution_path", None),
+        "cache_status": getattr(receipt, "cache_status", None),
+        "cache_key": getattr(receipt, "cache_key", None),
         "degree": getattr(receipt, "degree", None),
         "eclass_count": getattr(receipt, "eclass_count", None),
         "enode_count": getattr(receipt, "enode_count", None),

@@ -28,6 +28,11 @@ from d810.backends.mba.hexrays_island import (
 )
 from d810.mba.island_profile import profile_typed_term
 from d810.mba.native_corpus_capture import native_profile_metadata
+from d810.mba.semantic_canonicalization import (
+    CANONICALIZER_SCHEMA_VERSION,
+    CanonicalMbaTermView,
+    canonicalize_mba_term,
+)
 from d810.mba import typed_term as _typed_term
 from d810.mba.typed_term import (
     TypedBvTerm,
@@ -57,16 +62,52 @@ _MINIMUM_EGGLOG_RUN_BUDGET_MS = 50
 _RUN_WORK_UNIT_BUDGET_MS = 1
 
 
-try:
-    _EGGLOG_MODULE = importlib.import_module("egglog")
-except (ImportError, ModuleNotFoundError):
-    _EGGLOG_MODULE = None
-egglog = _EGGLOG_MODULE
+_EGGLOG_MODULE: Any | None = None
+_EGGLOG_IMPORT_ATTEMPTED = False
+egglog: Any | None = None
 
 
-if _EGGLOG_MODULE is not None:
+class BvExpr:  # pragma: no cover - replaced when the optional extra is loaded.
+    @classmethod
+    def leaf(cls, width, key):
+        return ("leaf", width, key)
 
-    class BvExpr(egglog.Expr):
+    @classmethod
+    def constant(cls, width, value):
+        return ("constant", width, value)
+
+    @classmethod
+    def unary(cls, operation, width, operand):
+        return ("unary", operation, width, operand)
+
+    @classmethod
+    def binary(cls, operation, width, left, right):
+        return ("binary", operation, width, left, right)
+
+
+class DegreeExpr:  # pragma: no cover - replaced when the optional extra is loaded.
+    @classmethod
+    def at(cls, degree, expression):
+        return (degree, expression)
+
+
+def _load_egglog_module() -> Any | None:
+    """Load Egglog only after an admitted non-telemetry extraction path."""
+
+    global _EGGLOG_MODULE, _EGGLOG_IMPORT_ATTEMPTED, egglog, BvExpr, DegreeExpr
+    if _EGGLOG_IMPORT_ATTEMPTED:
+        return _EGGLOG_MODULE
+    _EGGLOG_IMPORT_ATTEMPTED = True
+    try:
+        _EGGLOG_MODULE = importlib.import_module("egglog")
+    except (ImportError, ModuleNotFoundError):
+        _EGGLOG_MODULE = None
+        egglog = None
+        return None
+
+    egglog = _EGGLOG_MODULE
+
+    class _BvExpr(egglog.Expr):
         """Width-carrying Egglog term for the bounded MBA adapter only."""
 
         @classmethod
@@ -74,52 +115,44 @@ if _EGGLOG_MODULE is not None:
             cls,
             width: egglog.i64Like,
             key: egglog.StringLike,
-        ) -> BvExpr: ...
+        ) -> _BvExpr: ...
 
         @classmethod
         def constant(
             cls,
             width: egglog.i64Like,
             value: egglog.i64Like,
-        ) -> BvExpr: ...
+        ) -> _BvExpr: ...
 
         @classmethod
         def unary(
             cls,
             operation: egglog.StringLike,
             width: egglog.i64Like,
-            operand: BvExpr,
-        ) -> BvExpr: ...
+            operand: _BvExpr,
+        ) -> _BvExpr: ...
 
         @classmethod
         def binary(
             cls,
             operation: egglog.StringLike,
             width: egglog.i64Like,
-            left: BvExpr,
-            right: BvExpr,
-        ) -> BvExpr: ...
+            left: _BvExpr,
+            right: _BvExpr,
+        ) -> _BvExpr: ...
 
-    class DegreeExpr(egglog.Expr):
+    class _DegreeExpr(egglog.Expr):
         """Reachability wrapper whose integer tag is an exact rule degree."""
 
         @classmethod
         def at(
             cls,
             degree: egglog.i64Like,
-            expression: BvExpr,
-        ) -> DegreeExpr: ...
+            expression: _BvExpr,
+        ) -> _DegreeExpr: ...
 
-else:
-
-    class BvExpr:  # pragma: no cover - exercised only without the optional extra.
-        pass
-
-    class DegreeExpr:  # pragma: no cover - exercised only without the optional extra.
-        pass
-
-
-def _load_egglog_module() -> Any | None:
+    BvExpr = _BvExpr
+    DegreeExpr = _DegreeExpr
     return _EGGLOG_MODULE
 
 
@@ -225,6 +258,12 @@ class EgglogExtractionReceipt:
     """Immutable telemetry for either an extraction or a fail-closed skip."""
 
     input_cost: tuple[int, int] | None = None
+    canonicalizer_version: int | None = None
+    canonical_input_cost: tuple[int, int] | None = None
+    normalization_steps: tuple[str, ...] = ()
+    execution_path: str | None = None
+    cache_status: str | None = None
+    cache_key: str | None = None
     extracted_cost: tuple[int, int] | None = None
     degree: int | None = None
     eclass_count: int | None = None
@@ -258,6 +297,11 @@ class EgglogExtractionReceipt:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "selected_aliases", tuple(self.selected_aliases))
+        if self.canonicalizer_version is not None and (
+            type(self.canonicalizer_version) is not int
+            or self.canonicalizer_version <= 0
+        ):
+            raise ValueError("canonicalizer_version must be a positive integer or null")
         if self.proof_mode not in {"legacy", "shadow"}:
             raise ValueError("unknown native proof mode")
         object.__setattr__(self, "blockers", tuple(sorted(map(str, self.blockers))))
@@ -271,8 +315,36 @@ class EgglogExtractionReceipt:
         )
         if self.input_cost is not None:
             object.__setattr__(self, "input_cost", tuple(self.input_cost))
+        if self.canonical_input_cost is not None:
+            object.__setattr__(
+                self, "canonical_input_cost", tuple(self.canonical_input_cost)
+            )
         if self.extracted_cost is not None:
             object.__setattr__(self, "extracted_cost", tuple(self.extracted_cost))
+        object.__setattr__(
+            self,
+            "normalization_steps",
+            tuple(str(step) for step in self.normalization_steps),
+        )
+        if self.execution_path not in {
+            None,
+            "telemetry_only",
+            "fresh_saturation",
+            "learned_replay",
+        }:
+            raise ValueError("unknown Egglog execution path")
+        if self.cache_status not in {
+            None,
+            "disabled",
+            "miss",
+            "hit",
+            "stale",
+            "malformed",
+            "evicted",
+        }:
+            raise ValueError("unknown Egglog cache status")
+        if self.cache_key is not None and type(self.cache_key) is not str:
+            raise ValueError("cache_key must be a string or null")
         if (
             self.native_matcher_backend is not None
             and self.native_matcher_backend
@@ -455,6 +527,12 @@ def _extraction_result(
     *,
     started: float,
     input_cost: tuple[int, int] | None,
+    canonicalizer_version: int | None = None,
+    canonical_input_cost: tuple[int, int] | None = None,
+    normalization_steps: tuple[str, ...] = (),
+    execution_path: str | None = None,
+    cache_status: str | None = None,
+    cache_key: str | None = None,
     extracted_cost: tuple[int, int] | None = None,
     degree: int | None = None,
     eclass_count: int | None = None,
@@ -483,6 +561,12 @@ def _extraction_result(
         replacement_term=replacement_term,
         receipt=EgglogExtractionReceipt(
             input_cost=input_cost,
+            canonicalizer_version=canonicalizer_version,
+            canonical_input_cost=canonical_input_cost,
+            normalization_steps=normalization_steps,
+            execution_path=execution_path,
+            cache_status=cache_status,
+            cache_key=cache_key,
             extracted_cost=extracted_cost,
             degree=degree,
             eclass_count=eclass_count,
@@ -580,6 +664,20 @@ def _extraction_selection_key(
     return (*candidate_cost, candidate.degree, candidate.catalogue_index)
 
 
+def _canonical_rule_applications(
+    catalogue: Any,
+    term: TypedBvTerm,
+) -> tuple[tuple[Any, TypedBvTerm, int], ...]:
+    """Materialize certified canonical templates for one canonical term.
+
+    The catalogue is built once per extraction session (or supplied by the
+    native handler).  Matching consumes its frozen templates and never walks
+    the symbolic rule inventory or registers AC identities in Egglog.
+    """
+
+    return tuple(catalogue.canonical_applications(term, comparison_budget=256))
+
+
 def _extract_bounded_term(
     term: TypedBvTerm | None,
     rules: Any,
@@ -589,6 +687,7 @@ def _extract_bounded_term(
     lowering: HexRaysIslandLowering | None = None,
     profile: Any | None = None,
     initial_replacements: Mapping[int, TypedBvTerm] | None = None,
+    catalogue: Any | None = None,
 ) -> EgglogExtractionResult:
     """Extract one strictly cheaper candidate through exact catalogue layers.
 
@@ -609,6 +708,7 @@ def _extract_bounded_term(
     except Exception:
         started = 0.0
     input_cost: tuple[int, int] | None = None
+    canonical_view: CanonicalMbaTermView | None = None
     _extraction_result = partial(
         _build_extraction_result,
         lowering=lowering,
@@ -621,9 +721,29 @@ def _extract_bounded_term(
             return _extraction_result(
                 started=started,
                 input_cost=None,
+                execution_path="telemetry_only",
+                cache_status="disabled",
                 skip_reason=ExtractionSkipReason.UNSUPPORTED_WIDTH_SEMANTICS,
             )
-        input_cost = _term_cost(term)
+        canonical_view = canonicalize_mba_term(term)
+        term = canonical_view.canonical_term
+        input_cost = canonical_view.raw_cost
+        _extraction_result = partial(
+            _build_extraction_result,
+            lowering=lowering,
+            profile=profile,
+            canonicalizer_version=CANONICALIZER_SCHEMA_VERSION,
+            canonical_input_cost=canonical_view.canonical_cost,
+            normalization_steps=tuple(
+                step.kind.value for step in canonical_view.steps
+            ),
+            execution_path=(
+                "telemetry_only"
+                if budget.time_budget_ms < _MINIMUM_EGGLOG_RUN_BUDGET_MS
+                else "fresh_saturation"
+            ),
+            cache_status="disabled",
+        )
         if input_cost[0] > budget.max_operator_nodes:
             return _extraction_result(
                 started=started,
@@ -652,7 +772,7 @@ def _extract_bounded_term(
             )
 
         egglog = _load_egglog_module()
-        if egglog is None or _EGGLOG_MODULE is None:
+        if egglog is None:
             return _extraction_result(
                 started=started,
                 input_cost=input_cost,
@@ -661,11 +781,20 @@ def _extract_bounded_term(
             )
         egraph = egglog.EGraph()
 
-        from d810.backends.mba.egglog_add_rule_compiler import (
-            apply_compiled_rule_to_term,
-        )
-
         ordered_rules = tuple(rules)
+        if catalogue is None:
+            try:
+                from d810.backends.mba.egglog_add_rule_compiler import (
+                    canonical_pattern_catalogue_for_rules,
+                )
+
+                catalogue = canonical_pattern_catalogue_for_rules(ordered_rules)
+            except ValueError:
+                # Test doubles and legacy callers may provide unadmitted rule
+                # shapes. They stay on the compatibility matcher only when
+                # no canonical catalogue can be constructed.
+                catalogue = None
+        rule_indices = {id(rule): index for index, rule in enumerate(ordered_rules)}
         frontier: dict[
             int,
             dict[TypedBvTerm, tuple[tuple[str, str, tuple[str, ...]], ...]],
@@ -679,7 +808,32 @@ def _extract_bounded_term(
                 tuple[tuple[str, str, tuple[str, ...]], ...],
             ] = {}
             for source_term, source_trace in frontier.get(degree, {}).items():
-                for catalogue_index, rule in enumerate(ordered_rules):
+                if catalogue is not None:
+                    applications = _canonical_rule_applications(catalogue, source_term)
+                else:
+                    from d810.backends.mba.egglog_add_rule_compiler import (
+                        apply_compiled_rule_to_term,
+                    )
+
+                    applications = []
+                    for catalogue_index, rule in enumerate(ordered_rules):
+                        elapsed = _elapsed_ms(started)
+                        if elapsed > budget.time_budget_ms:
+                            return _extraction_result(
+                                started=started,
+                                input_cost=input_cost,
+                                skip_reason=ExtractionSkipReason.TIME_BUDGET,
+                                elapsed_ms=elapsed,
+                            )
+                        replacement = (
+                            initial_replacements.get(id(rule))
+                            if degree == 0 and initial_replacements is not None
+                            else apply_compiled_rule_to_term(rule, source_term)
+                        )
+                        if replacement is not None:
+                            applications.append((rule, replacement, catalogue_index))
+
+                for rule, application, catalogue_index in applications:
                     elapsed = _elapsed_ms(started)
                     if elapsed > budget.time_budget_ms:
                         return _extraction_result(
@@ -688,14 +842,7 @@ def _extract_bounded_term(
                             skip_reason=ExtractionSkipReason.TIME_BUDGET,
                             elapsed_ms=elapsed,
                         )
-                    replacement = (
-                        initial_replacements.get(id(rule))
-                        if degree == 0 and initial_replacements is not None
-                        else apply_compiled_rule_to_term(rule, source_term)
-                    )
-                    if replacement is None:
-                        continue
-                    replacement = canonicalize_ac_term(replacement)
+                    replacement = application
                     elapsed = _elapsed_ms(started)
                     if elapsed > budget.time_budget_ms:
                         return _extraction_result(
@@ -751,7 +898,9 @@ def _extract_bounded_term(
                             aliases=tuple(rule.aliases),
                             expression=target_expression,
                             rule_decl=executable_rewrite.decl,
-                            catalogue_index=catalogue_index,
+                            catalogue_index=rule_indices.get(
+                                id(rule), catalogue_index
+                            ),
                             derivation_trace=source_trace
                             + (
                                 (
@@ -910,6 +1059,11 @@ def _extract_bounded_term(
             except egglog.EggSmolError:
                 continue
             candidate_cost = _term_cost(candidate.term)
+            # Canonicalization can remove administrative wrappers before the
+            # e-graph sees the candidate. That normalization is telemetry only;
+            # it is not itself an eligible rewrite.
+            if term_fingerprint(candidate.term) == term_fingerprint(term):
+                continue
             if candidate_cost >= input_cost:
                 continue
             rebuilt = (
@@ -979,6 +1133,7 @@ def extract_bounded_term(
     destination_size: int,
     profile: Any | None = None,
     initial_replacements: Mapping[int, TypedBvTerm] | None = None,
+    catalogue: Any | None = None,
 ) -> EgglogExtractionResult:
     """Discover a bounded replacement for an already matched native term.
 
@@ -993,6 +1148,7 @@ def extract_bounded_term(
         destination_size,
         profile=profile,
         initial_replacements=initial_replacements,
+        catalogue=catalogue,
     )
 
 
@@ -1001,6 +1157,8 @@ def extract_bounded_candidate(
     rules: Any,
     budget: EgglogExtractionBudget,
     destination_size: int,
+    *,
+    catalogue: Any | None = None,
 ) -> EgglogExtractionResult:
     """Compatibility AST entry point for callers not using native preflight."""
 
@@ -1009,11 +1167,12 @@ def extract_bounded_candidate(
         destination_size=destination_size,
     )
     return _extract_bounded_term(
-        lowering.term,
+        lowering.raw_term,
         rules,
         budget,
         destination_size,
         lowering=lowering,
+        catalogue=catalogue,
     )
 
 

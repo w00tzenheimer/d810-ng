@@ -14,6 +14,7 @@ from d810.mba.differential_report import (
     compare_provider_outcomes,
     egglog_receipt_to_outcome,
     normalize_outcome_rows,
+    outcome_from_dict,
     report_from_dict,
     summary_markdown,
 )
@@ -425,6 +426,49 @@ def test_egglog_receipt_conversion_preserves_skip_semantics_without_invoking_egg
     assert (
         egglog_receipt_to_outcome(Receipt()).status is ProviderOutcomeStatus.INELIGIBLE
     )
+
+
+def test_egglog_receipt_metadata_is_additive_and_legacy_rows_remain_readable() -> None:
+    class Receipt:
+        input_cost = (5, 8)
+        extracted_cost = (2, 3)
+        canonicalizer_version = 1
+        canonical_input_cost = (3, 5)
+        normalization_steps = ("negative_coefficient", "add_neg_to_sub")
+        execution_path = "fresh_saturation"
+        cache_status = "disabled"
+        cache_key = None
+        skip_reason = None
+
+    outcome = egglog_receipt_to_outcome(Receipt())
+    assert outcome.input_cost == (5, 8)
+    assert outcome.metadata["canonicalizer_version"] == 1
+    assert outcome.metadata["canonical_input_cost"] == (3, 5)
+    assert outcome.metadata["normalization_steps"] == (
+        "negative_coefficient",
+        "add_neg_to_sub",
+    )
+    assert outcome.metadata["execution_path"] == "fresh_saturation"
+    assert outcome.metadata["cache_status"] == "disabled"
+    encoded = json.loads(outcome.to_json())
+    assert encoded["metadata"]["canonical_input_cost"] == [3, 5]
+
+    legacy = outcome_from_dict(
+        {
+            "provider": "egglog",
+            "status": "unchanged",
+            "fingerprint": "legacy-row",
+            "input_cost": [5, 8],
+            "output_cost": [5, 8],
+            "proof_verdict": True,
+            "elapsed_ms": 1.0,
+            "source_provenance": [],
+            "refusal_reason": None,
+        }
+    )
+    assert legacy.input_cost == (5, 8)
+    assert legacy.output_cost == (5, 8)
+    assert legacy.metadata == {}
 
 
 def test_offline_cli_builds_normalized_report_and_requires_explicit_provider_rows(

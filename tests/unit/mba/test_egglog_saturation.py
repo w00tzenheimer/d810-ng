@@ -31,6 +31,7 @@ from d810.mba import typed_term
 from d810.mba.rules._base import VerifiableRule
 from d810.mba.rules.sub import Sub_ComplementMaskHodurRule_1
 from d810.mba.rules.xor import Xor_NestedStuff
+from d810.mba.semantic_canonicalization import canonicalize_mba_term
 
 
 def _leaf(name: str, *, width: int = 32) -> TypedBvTerm:
@@ -1387,6 +1388,66 @@ def test_default_three_ms_guard_rejects_estimated_run_before_egglog_execution(
 
     assert calls == []
     assert result.receipt.skip_reason is ExtractionSkipReason.TIME_BUDGET
+
+
+def test_canonicalization_only_shrinkage_is_not_an_eligible_rewrite(monkeypatch):
+    raw = _node("neg", _node("neg", _leaf("x")))
+    canonical = canonicalize_mba_term(raw).canonical_term
+    assert canonical == _leaf("x")
+    assert typed_term.term_cost(raw) > typed_term.term_cost(canonical)
+
+    rule = SimpleNamespace(family="test", source_name="identity", aliases=())
+    rewrite_decl = object()
+
+    class _EGraph:
+        def register(self, *_commands):
+            return None
+
+        def run(self, _rounds):
+            return SimpleNamespace(
+                num_matches_per_rule={rewrite_decl: 1},
+                updated=False,
+            )
+
+        def extract(self, _expression):
+            return (0, 1)
+
+    monkeypatch.setattr(
+        egglog_saturation,
+        "_load_egglog_module",
+        lambda: SimpleNamespace(
+            EGraph=_EGraph,
+            EggSmolError=RuntimeError,
+            rewrite=lambda _source: SimpleNamespace(
+                to=lambda _target: SimpleNamespace(decl=rewrite_decl)
+            ),
+        ),
+    )
+    monkeypatch.setattr(egglog_saturation, "read_egraph_statistics", lambda _egraph: (1, 1))
+    monkeypatch.setattr(
+        egglog_saturation,
+        "release_egraph_on_owner_thread",
+        lambda _egraph: True,
+    )
+    catalogue = SimpleNamespace(
+        canonical_applications=lambda _term, comparison_budget: ((rule, canonical, 0),)
+    )
+
+    result = egglog_saturation.extract_bounded_term(
+        raw,
+        (rule,),
+        EgglogExtractionBudget(time_budget_ms=1000),
+        destination_size=4,
+        catalogue=catalogue,
+    )
+
+    assert result.replacement_term is None
+    assert result.receipt.input_cost == typed_term.term_cost(raw)
+    assert result.receipt.canonical_input_cost == typed_term.term_cost(canonical)
+    assert (
+        result.receipt.skip_reason
+        is ExtractionSkipReason.NO_DEGREE_ELIGIBLE_IMPROVEMENT
+    )
 
 
 def test_exploration_contract_is_candidate_root_only(

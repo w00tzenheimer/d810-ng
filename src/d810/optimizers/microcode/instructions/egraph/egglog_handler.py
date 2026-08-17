@@ -59,7 +59,7 @@ from d810.mba.performance_timing import (
     EMPTY_MBA_STAGE_TIMINGS,
     MbaStageTimer,
 )
-from d810.mba.typed_term import canonicalize_ac_term
+from d810.mba.semantic_canonicalization import canonicalize_mba_term
 from d810.mba.provider_outcome import MbaProviderOutcome, ProviderOutcomeStatus
 from d810.mba.provider_history import ProviderOutcomeHistory
 from d810.optimizers.microcode.instructions.peephole.handler import (
@@ -445,21 +445,44 @@ class EgglogOptimizer(PeepholeSimplificationRule):
                 )
                 return None
             matches = match_result.matches
+            canonical_match_result = None
             if not matches:
-                self._record_extraction_receipt(
-                    self._with_native_match_telemetry(
-                        extraction_receipt_for_profile(
-                            native_result.profile,
-                            ExtractionSkipReason.NO_DEGREE_ELIGIBLE_IMPROVEMENT,
-                        ),
-                        match_result,
-                        elapsed_ms=matcher_elapsed_ms,
-                    )
+                canonical_term = canonicalize_mba_term(view.to_typed_term()).canonical_term
+                canonical_match_result = self._native_pattern_catalogue.match_canonical_root(
+                    canonical_term,
+                    comparison_budget=_MAX_PATTERN_COMPARISONS,
                 )
-                return None
+                if canonical_match_result.stop_reason.value == "comparison_budget":
+                    self._record_extraction_receipt(
+                        self._with_native_match_telemetry(
+                            extraction_receipt_for_profile(
+                                native_result.profile,
+                                ExtractionSkipReason.CANDIDATE_BUDGET,
+                            ),
+                            canonical_match_result,
+                            elapsed_ms=matcher_elapsed_ms,
+                        )
+                    )
+                    return None
+                matches = canonical_match_result.matches
+                if not matches:
+                    self._record_extraction_receipt(
+                        self._with_native_match_telemetry(
+                            extraction_receipt_for_profile(
+                                native_result.profile,
+                                ExtractionSkipReason.NO_DEGREE_ELIGIBLE_IMPROVEMENT,
+                            ),
+                            canonical_match_result,
+                            elapsed_ms=matcher_elapsed_ms,
+                        )
+                    )
+                    return None
         finally:
             self._finish_stage("native_preflight")
         extraction_budget = self._candidate_extraction_budget(blk)
+        telemetry_match_result = (
+            match_result if canonical_match_result is None else canonical_match_result
+        )
         if extraction_budget is None:
             self._record_extraction_receipt(
                 self._with_native_match_telemetry(
@@ -467,22 +490,24 @@ class EgglogOptimizer(PeepholeSimplificationRule):
                         native_result.profile,
                         ExtractionSkipReason.TIME_BUDGET,
                     ),
-                    match_result,
+                    telemetry_match_result,
                     elapsed_ms=matcher_elapsed_ms,
                 )
             )
             return None
-        candidate_term = canonicalize_ac_term(
-            (
-                view.to_typed_term()
-                if match_result.candidate_term is None
-                else match_result.candidate_term
-            )
-        )
-        initial_replacements = {
-            id(match.rule): match.bindings.materialize_replacement(match.rule)
-            for match in matches
-        }
+        candidate_term = view.to_typed_term()
+        if canonical_match_result is None:
+            initial_replacements = {
+                id(match.rule): match.bindings.materialize_replacement(match.rule)
+                for match in matches
+            }
+        else:
+            initial_replacements = {
+                id(match.compiled_pattern.rule): match.compiled_pattern.materialize_replacement(
+                    match.bindings
+                )
+                for match in matches
+            }
 
         self._begin_stage("egglog_extraction")
         try:
@@ -502,7 +527,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             extraction,
             receipt=self._with_native_match_telemetry(
                 extraction.receipt,
-                match_result,
+                telemetry_match_result,
                 elapsed_ms=matcher_elapsed_ms,
             ),
         )
@@ -527,7 +552,8 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             )
             return None
         lowering = lower_hexrays_island(ast, destination_size=destination_size)
-        if lowering.term is None or lowering.term != candidate_term:
+        canonical_candidate_term = canonicalize_mba_term(candidate_term).canonical_term
+        if lowering.term is None or lowering.term != canonical_candidate_term:
             self._record_extraction_receipt(
                 replace(
                     extraction.receipt,
@@ -805,11 +831,22 @@ class EgglogOptimizer(PeepholeSimplificationRule):
 
         return replace(
             receipt,
-            native_matcher_backend=match_result.matcher_backend,
+            native_matcher_backend=getattr(match_result, "matcher_backend", "python"),
             native_matcher_comparisons=match_result.comparisons,
-            native_matcher_lazy_swaps=match_result.lazy_swaps,
+            native_matcher_lazy_swaps=getattr(
+                match_result,
+                "lazy_swaps",
+                getattr(match_result, "commuted_branches", 0),
+            ),
             native_fixed_binding_count=sum(
-                len(match.bindings.native) for match in match_result.matches
+                len(
+                    getattr(
+                        match.bindings,
+                        "native",
+                        getattr(match.bindings, "terms", {}),
+                    )
+                )
+                for match in match_result.matches
             ),
             native_matcher_elapsed_ms=elapsed_ms,
         )
@@ -955,6 +992,12 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             return {}
         metadata: dict[str, object] = {
             "input_cost": receipt.input_cost,
+            "canonicalizer_version": receipt.canonicalizer_version,
+            "canonical_input_cost": receipt.canonical_input_cost,
+            "normalization_steps": receipt.normalization_steps,
+            "execution_path": receipt.execution_path,
+            "cache_status": receipt.cache_status,
+            "cache_key": receipt.cache_key,
             "extracted_cost": receipt.extracted_cost,
             "degree": receipt.degree,
             "eclass_count": receipt.eclass_count,
@@ -1057,6 +1100,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             self._compiled_rules,
             self.extraction_budget if budget is None else budget,
             int(destination_size),
+            catalogue=self._native_pattern_catalogue,
         )
 
     def _select_native_extraction(
@@ -1077,6 +1121,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             destination_size=destination_size,
             profile=profile,
             initial_replacements=initial_replacements,
+            catalogue=self._native_pattern_catalogue,
         )
 
     @staticmethod

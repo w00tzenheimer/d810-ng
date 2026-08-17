@@ -308,6 +308,40 @@ class CompiledPatternCatalogue:
             reason,
         )
 
+    def canonical_applications(
+        self,
+        candidate: TypedBvTerm,
+        *,
+        comparison_budget: int = 256,
+    ) -> tuple[tuple[CompiledEgglogRule, TypedBvTerm, int], ...]:
+        """Return deduplicated replacements from frozen canonical templates.
+
+        This is the only saturation-facing rule application projection.  It
+        consumes the canonical matcher report and materializes each replacement
+        from its fixed bindings; no symbolic rule walk or AC rewrite is needed
+        after the catalogue has been frozen.
+        """
+
+        report = self.match_canonical_root(
+            candidate,
+            comparison_budget=comparison_budget,
+        )
+        applications: list[tuple[CompiledEgglogRule, TypedBvTerm, int]] = []
+        seen: set[tuple[int, str]] = set()
+        for match in report.matches:
+            compiled = match.compiled_pattern
+            replacement = canonicalize_mba_term(
+                compiled.materialize_replacement(match.bindings)
+            ).canonical_term
+            key = (id(compiled.rule), term_fingerprint(replacement))
+            if key in seen:
+                continue
+            seen.add(key)
+            applications.append(
+                (compiled.rule, replacement, compiled.declaration_index)
+            )
+        return tuple(applications)
+
     def feasible_root_patterns(
         self, candidate: NativeMbaTermView
     ) -> tuple[_CompiledPattern, ...]:

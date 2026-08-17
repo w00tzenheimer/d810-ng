@@ -18,6 +18,8 @@ from d810.backends.mba.egglog_saturation import (  # noqa: E402
     EgglogExtractionReceipt,
     EgglogExtractionResult,
     ExtractionSkipReason,
+    TypedBvTerm,
+    extract_bounded_term,
     extract_bounded_candidate,
 )
 from d810.backends.mba.hexrays_island import lower_hexrays_island  # noqa: E402
@@ -31,6 +33,8 @@ from d810.hexrays.ir.mop_snapshot import MopSnapshot  # noqa: E402
 from d810.optimizers.microcode.instructions.egraph.egglog_handler import (  # noqa: E402
     EgglogOptimizer,
 )
+from d810.mba.semantic_canonicalization import canonicalize_mba_term  # noqa: E402
+from d810.mba.typed_term import term_cost  # noqa: E402
 
 
 def _view_from_typed_term(term):
@@ -165,6 +169,79 @@ def _degree_two_candidate(size: int = 4) -> ast_dispatcher.AstNode:
         _node(ida_hexrays.m_bnot, _leaf("y", 2, size), size=size),
         size=size,
     )
+
+
+def _typed_leaf(name: str, width: int = 32) -> TypedBvTerm:
+    return TypedBvTerm(None, width, leaf_key=("register", name))
+
+
+def _typed_constant(value: int, width: int = 32) -> TypedBvTerm:
+    return TypedBvTerm(None, width, value=value)
+
+
+def _typed_node(
+    operation: str,
+    left: TypedBvTerm,
+    right: TypedBvTerm | None = None,
+) -> TypedBvTerm:
+    return TypedBvTerm(
+        operation,
+        left.width,
+        children=(left,) if right is None else (left, right),
+    )
+
+
+def _historical_xor_forms() -> tuple[TypedBvTerm, TypedBvTerm]:
+    x, y = _typed_leaf("x"), _typed_leaf("y")
+    common_sum = _typed_node("add", x, y)
+    common_and = _typed_node("and", x, y)
+    subtraction = _typed_node(
+        "sub",
+        common_sum,
+        _typed_node("mul", _typed_constant(2), common_and),
+    )
+    negative_coefficient = _typed_node(
+        "add",
+        common_sum,
+        _typed_node("mul", _typed_constant(-2), common_and),
+    )
+    return subtraction, negative_coefficient
+
+
+@pytest.mark.parametrize("source", _historical_xor_forms(), ids=("subtraction", "negative-coefficient"))
+def test_degree_one_extracts_xor_from_both_historical_forms(source: TypedBvTerm):
+    rule = _rule("xor", "Xor_HackersDelightRule_3")
+    result = extract_bounded_term(
+        source,
+        (rule,),
+        EgglogExtractionBudget(time_budget_ms=1000),
+        destination_size=4,
+    )
+
+    expected = _typed_node("xor", _typed_leaf("x"), _typed_leaf("y"))
+    canonical = canonicalize_mba_term(source)
+    assert result.replacement_term == expected
+    assert result.receipt.input_cost == term_cost(source)
+    assert result.receipt.canonical_input_cost == term_cost(canonical.canonical_term)
+    assert result.receipt.canonicalizer_version == 1
+
+
+def test_three_ms_telemetry_path_records_path_without_loading_egglog(monkeypatch):
+    source, _negative_coefficient = _historical_xor_forms()
+
+    def forbidden_load():
+        raise AssertionError("telemetry-only extraction must not load Egglog")
+
+    monkeypatch.setattr("d810.backends.mba.egglog_saturation._load_egglog_module", forbidden_load)
+    result = extract_bounded_term(
+        source,
+        (),
+        EgglogExtractionBudget(),
+        destination_size=4,
+    )
+
+    assert result.receipt.execution_path == "telemetry_only"
+    assert result.receipt.cache_status == "disabled"
 
 
 @pytest.mark.parametrize("size", (1, 2, 4, 8))

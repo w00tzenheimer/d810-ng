@@ -821,6 +821,19 @@ def apply_compiled_rule_to_term(
     return None
 
 
+def canonical_pattern_catalogue_for_rules(rules: Collection[object]) -> Any:
+    """Freeze one canonical template catalogue for admitted rules.
+
+    The bounded saturation backend uses this bridge instead of rebuilding a
+    symbolic rule inventory or registering algebraic identities in Egglog.
+    Keeping the import local avoids a compiler/catalogue cycle at module load.
+    """
+
+    from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
+
+    return CompiledPatternCatalogue.from_rules(require_admitted_compiled_rules(rules))
+
+
 _OPCODE_BY_OPERATION: dict[str, int] = {}
 _OPERATION_BY_OPCODE: dict[int, str] = {}
 _VALID_DESTINATION_SIZES = frozenset({1, 2, 4, 8})
