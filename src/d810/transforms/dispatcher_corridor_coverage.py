@@ -3193,6 +3193,15 @@ def _comparison_corridor_retirement_allowance(
         state_plumbing_serials=frozenset(),
         lost_blocks=lost,
     )
+    derived_retired_serials = frozenset(
+        int(item.anchor.serial) for item in derived_retired
+    )
+    # The comparison-corridor exception is only an alternative *proof* for
+    # the exact infrastructure the immutable source CFG classified.  It must
+    # not turn a mixed loss (a valid corridor plus an unrelated semantic,
+    # unknown, or effectful block) into an accepted retirement.
+    if not lost.issubset(derived_retired_serials):
+        return None
     expected_roles = {
         (item.role, int(item.anchor.serial), int(item.anchor.ea))
         for item in derived_retired

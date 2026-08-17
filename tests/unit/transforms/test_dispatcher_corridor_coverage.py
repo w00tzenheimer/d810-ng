@@ -1637,6 +1637,93 @@ def test_dispatcher_removal_proof_types_control_only_upstream_corridors_from_cov
     assert validation.reason == "comparison_corridor_retirement"
 
 
+def test_dispatcher_removal_validation_rejects_mixed_comparison_and_semantic_loss() -> None:
+    """The retirement exception cannot hide an unrelated lost block.
+
+    The producer proof is intentionally rejected when a semantic block is lost
+    alongside the covered comparison corridors.  The validator must retain
+    that same boundary when it independently rebuilds the proof from the
+    projected CFG; a forged ``accepted`` producer payload must not turn the
+    mixed loss into a valid corridor retirement.
+    """
+    base = _nested_merge_corridor_graph()
+    semantic = InsnSnapshot(
+        opcode=4,
+        ea=0x7FF859C09000,
+        operands=(),
+        kind=InsnKind.MOV,
+    )
+    pre_blocks = dict(base.blocks)
+    pre_blocks[0] = _block(
+        0,
+        (45, 122, 200),
+        (),
+        0x7FF859C06F60,
+    )
+    pre_blocks[200] = _block(
+        200,
+        (34,),
+        (0,),
+        0x7FF859C09000,
+        kind=BlockKind.ONE_WAY,
+        insns=(semantic,),
+        tail_kind=InsnKind.GOTO,
+    )
+    pre_graph = FlowGraph(
+        blocks=pre_blocks,
+        entry_serial=0,
+        func_ea=base.func_ea,
+    )
+    coverage = analyze_dispatcher_corridor_coverage(
+        pre_graph,
+        modifications=(
+            RedirectGoto(from_serial=45, old_target=123, new_target=121),
+            RedirectGoto(from_serial=122, old_target=123, new_target=34),
+        ),
+        dispatcher_entry_serial=4,
+    )
+    post_blocks = dict(pre_blocks)
+    post_blocks[0] = _block(0, (121, 34), (), 0x7FF859C06F60)
+    post_blocks[45] = _block(45, (121,), (0,), 0x7FF859C07656)
+    post_blocks[122] = _block(122, (34,), (0,), 0x7FF859C08BFE)
+    post_blocks.pop(200)
+    post_graph = FlowGraph(
+        blocks=post_blocks,
+        entry_serial=0,
+        func_ea=base.func_ea,
+    )
+
+    proof = build_dispatcher_removal_preflight_proof(
+        pre_graph,
+        post_graph=post_graph,
+        coverage=coverage,
+        dispatcher_entry_serial=4,
+        authoritative_handler_serials=frozenset({34, 121}),
+        dispatcher_region_serials=frozenset({4}),
+        producer_safety=_executed_fragment_safety(),
+    )
+
+    assert not proof.passed
+    assert proof.reason == "untyped_lost_block"
+    assert 200 in proof.lost_blocks
+
+    forged = proof.to_metadata()
+    forged["proof_status"] = "accepted"
+    forged["reason"] = "typed_dispatcher_infrastructure_removed"
+    forged["producer_safety"] = _executed_fragment_safety()
+    validation = validate_dispatcher_removal_preflight_proof(
+        pre_graph,
+        post_graph=post_graph,
+        plan_metadata={
+            "dispatcher_corridor_coverage": coverage.to_metadata(),
+            "dispatcher_removal_preflight_proof": forged,
+        },
+    )
+
+    assert not validation.passed
+    assert validation.reason == "dispatcher_removal_proof_drift"
+
+
 def test_dispatcher_removal_proof_rejects_semantic_upstream_corridor_fragment() -> None:
     """One value/effect instruction vetoes retirement of every sibling path."""
     graph = _nested_merge_corridor_graph()

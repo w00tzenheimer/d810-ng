@@ -540,6 +540,52 @@ class TransactionalExecutor:
             execution_policy = ExecutionPolicy.STRICT
 
         pre_cfg = self.translator.lift(self.mba)
+        # Idempotence is only a safe shortcut for a usable source generation.
+        # Obtain the coordinator-owned gateway before discarding satisfied
+        # edits so a previously poisoned MBA cannot be reported as a clean
+        # convergence merely because its requested edges happen to be present.
+        mutation_gateway = (
+            None
+            if self._mutation_gateway_factory is None
+            else self._mutation_gateway_factory()
+        )
+        if mutation_gateway is None:
+            result = StageResult(
+                strategy_name=fragment.strategy_name,
+                success=False,
+                error="coordinator-owned mutation gateway unavailable",
+                failure_phase="mutation_gateway",
+            )
+            result.metadata["gate_accounting"] = gate_accounting
+            return result
+        source_index = mutation_gateway.identity_index
+        generation_poisoned = bool(
+            getattr(source_index, "generation_poisoned", False)
+        )
+        if generation_poisoned:
+            poisoned_failure = getattr(source_index, "poisoned_failure", None)
+            reason = (
+                "CFG generation already poisoned; controller-owned regeneration "
+                "is required"
+            )
+            if poisoned_failure is not None:
+                reason = f"{reason}: {poisoned_failure}"
+            result = StageResult(
+                strategy_name=fragment.strategy_name,
+                success=False,
+                quarantine=True,
+                error=reason,
+                failure_phase="mutation_gateway",
+            )
+            result.metadata["generation_poisoned"] = True
+            result.metadata["gate_accounting"] = gate_accounting.add(
+                GateDecision(
+                    gate_name="cfg_generation_poison",
+                    verdict=GateVerdict.FAILED,
+                    reason=reason,
+                )
+            )
+            return result
         modifications, idempotent_discarded = _discard_satisfied_modifications(
             pre_cfg,
             modifications,
@@ -759,21 +805,6 @@ class TransactionalExecutor:
             result.metadata["gate_accounting"] = gate_accounting
             return result
 
-        mutation_gateway = (
-            None
-            if self._mutation_gateway_factory is None
-            else self._mutation_gateway_factory()
-        )
-        if mutation_gateway is None:
-            result = StageResult(
-                strategy_name=fragment.strategy_name,
-                success=False,
-                error="coordinator-owned mutation gateway unavailable",
-                failure_phase="mutation_gateway",
-            )
-            result.metadata["gate_accounting"] = gate_accounting
-            return result
-        source_index = mutation_gateway.identity_index
         source_generation = int(source_index.generation)
         source_evidence_generation = getattr(source_index, "evidence_generation", None)
         logical_batch_key = logical_modification_batch_key(
@@ -788,9 +819,6 @@ class TransactionalExecutor:
         # A poisoned generation must continue through the normal transaction
         # gates so it is rejected/quarantined; convergence is only a shortcut
         # for a known-good immutable source generation.
-        generation_poisoned = bool(
-            getattr(source_index, "generation_poisoned", False)
-        )
         lifecycle_authority = getattr(mutation_gateway, "lifecycle_authority", None)
         shared_receipt_lookup = getattr(
             lifecycle_authority,

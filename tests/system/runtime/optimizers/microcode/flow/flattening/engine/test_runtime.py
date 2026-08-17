@@ -423,10 +423,10 @@ def test_fake_jump_effectful_preflight_allows_dead_control_only_block(
     assert compile_calls
 
 
-def test_idempotent_redirect_is_discarded_before_mutation_gateway(
+def test_idempotent_redirect_is_discarded_before_mutation_backend(
     monkeypatch,
 ) -> None:
-    """A desired edge already present in the live CFG needs no transaction."""
+    """A desired edge needs no backend transaction after poison validation."""
     original = _effectful_fake_jump_graph()
     pre_cfg = FlowGraph(
         blocks={
@@ -469,9 +469,18 @@ def test_idempotent_redirect_is_discarded_before_mutation_gateway(
 
     monkeypatch.setattr(executor_module, "HexRaysMutationBackend", _Backend)
     executor = TransactionalExecutor(_MBA(), translator=_Translator())
-    executor.set_mutation_gateway_factory(
-        lambda: (_ for _ in ()).throw(AssertionError("gateway must not be opened"))
+    gateway = SimpleNamespace(
+        identity_index=SimpleNamespace(
+            maturity=0,
+            snapshot_id="snapshot",
+            generation=1,
+            evidence_generation=1,
+            generation_poisoned=False,
+            plan_refs_by_serial=lambda: {},
+        ),
+        lifecycle_authority=None,
     )
+    executor.set_mutation_gateway_factory(lambda: gateway)
 
     result = executor.execute_stage(fragment, total_handlers=1)
 
@@ -479,6 +488,54 @@ def test_idempotent_redirect_is_discarded_before_mutation_gateway(
     assert result.edits_applied == 0
     assert result.metadata["idempotence"]["status"] == "already_satisfied"
     assert backend_calls == 0
+
+
+def test_poisoned_generation_cannot_take_idempotence_shortcut(monkeypatch) -> None:
+    """A satisfied edit is still unsafe when its source MBA is poisoned."""
+    original = _effectful_fake_jump_graph()
+    pre_cfg = FlowGraph(
+        blocks={
+            **original.blocks,
+            0: replace(original.blocks[0], succs=(2,)),
+        },
+        entry_serial=original.entry_serial,
+        func_ea=original.func_ea,
+    )
+    fragment = _fake_jump_fragment(
+        RedirectGoto(from_serial=0, old_target=1, new_target=2)
+    )
+
+    class _Translator:
+        contract = None
+        last_lowering_phase = None
+        last_lowering_subphase = None
+
+        def lift(self, _mba):
+            return pre_cfg
+
+    class _MBA:
+        qty = 0
+        entry_ea = pre_cfg.func_ea
+
+    gateway = SimpleNamespace(
+        identity_index=SimpleNamespace(
+            maturity=0,
+            snapshot_id="snapshot",
+            generation=1,
+            evidence_generation=1,
+            generation_poisoned=True,
+            plan_refs_by_serial=lambda: {},
+        ),
+        lifecycle_authority=None,
+    )
+    executor = TransactionalExecutor(_MBA(), translator=_Translator())
+    executor.set_mutation_gateway_factory(lambda: gateway)
+
+    result = executor.execute_stage(fragment, total_handlers=1)
+
+    assert result.success is False
+    assert result.quarantine is True
+    assert result.metadata["generation_poisoned"] is True
 
 
 def test_equivalent_fake_jump_batch_converges_without_replaying_backend(

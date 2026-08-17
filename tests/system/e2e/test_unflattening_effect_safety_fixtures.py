@@ -24,6 +24,8 @@ import idaapi
 import ida_hexrays
 import pytest
 
+from tests.system.e2e.unflattening_effect_safety_oracle import reachable_call_eas
+
 
 ROOT = Path(__file__).parents[3]
 MASM_DIR = ROOT / "samples" / "src" / "masm"
@@ -251,6 +253,160 @@ def _assert_corridor_acceptance(function_ea: int, path: Path) -> None:
     )
 
 
+def _loaded_call_eas(
+    function_ea: int,
+    *,
+    symbol: str,
+    anchor_value: int,
+) -> tuple[int, ...]:
+    """Resolve the exact loaded call in the source-proven mandatory arm.
+
+    The fixture contains several calls through imported slots.  A pseudocode
+    substring or any ``MEMORY[...]`` expression cannot identify which arm
+    survived.  Bind the call to the loaded native instruction by finding the
+    source-proven state comparison block and its direct successor in IDA's
+    raw function flowchart, then matching the imported symbol in disassembly.
+    """
+    function = ida_funcs.get_func(int(function_ea))
+    assert function is not None, f"IDA function missing at 0x{function_ea:x}"
+    normalized_symbol = str(symbol).lower().replace("_", "")
+    flowchart = idaapi.FlowChart(function)
+
+    def block_items(block):
+        return tuple(idautils.Heads(int(block.start_ea), int(block.end_ea)))
+
+    def has_anchor(block) -> bool:
+        for item_ea in block_items(block):
+            for operand_index in range(8):
+                try:
+                    if int(idc.get_operand_value(item_ea, operand_index)) == int(
+                        anchor_value
+                    ):
+                        return True
+                except (TypeError, ValueError):
+                    continue
+        return False
+
+    def matching_calls(block) -> tuple[int, ...]:
+        return tuple(
+            item_ea
+            for item_ea, line in all_calls(block)
+            if normalized_symbol in line.lower().replace("_", "")
+        )
+
+    def all_calls(block) -> tuple[tuple[int, str], ...]:
+        matches: list[int] = []
+        for item_ea in block_items(block):
+            mnemonic = str(idc.print_insn_mnem(item_ea) or "").lower()
+            if mnemonic != "call":
+                continue
+            line = str(
+                idc.generate_disasm_line(
+                    item_ea,
+                    int(getattr(idc, "GENDSM_FORCE_CODE", 0)),
+                    )
+                    or ""
+                )
+            matches.append((int(item_ea), line))
+        return tuple(matches)
+
+    anchor_blocks = tuple(block for block in flowchart if has_anchor(block))
+    assert anchor_blocks, (
+        f"source anchor 0x{anchor_value:x} not found in loaded function "
+        f"0x{function_ea:x}"
+    )
+    candidates: set[int] = set()
+    for anchor_block in anchor_blocks:
+        candidate_blocks = (anchor_block, *tuple(anchor_block.succs()))
+        for candidate_block in candidate_blocks:
+            candidates.update(matching_calls(candidate_block))
+    if not candidates:
+        # The standalone PE's unresolved import slots are rendered by IDA as
+        # ``200000000h`` rather than retaining the EXTERN spelling.  The raw
+        # MASM source still binds the import, and the exact loaded call is the
+        # sole CALL in the source-proven direct successor of the anchor block.
+        # This is source-to-loaded corridor evidence, not a generic call-count
+        # or pseudocode substring fallback.
+        anchored_successor_calls = {
+            int(item_ea)
+            for anchor_block in anchor_blocks
+            for successor in anchor_block.succs()
+            for item_ea, _line in all_calls(successor)
+        }
+        if len(anchored_successor_calls) == 1:
+            candidates.update(anchored_successor_calls)
+    assert len(candidates) == 1, (
+        f"expected one exact {symbol} call in arm anchored by "
+        f"0x{anchor_value:x}, found {tuple(hex(ea) for ea in sorted(candidates))}; "
+        f"anchor_blocks={tuple((int(block.start_ea), int(block.end_ea), tuple(int(succ.start_ea) for succ in block.succs())) for block in anchor_blocks)}"
+    )
+    return tuple(sorted(candidates))
+
+
+def _assert_exact_call_reachable(
+    function_ea: int,
+    path: Path,
+    *,
+    call_eas: tuple[int, ...],
+) -> None:
+    """Prove each source-bound call EA is in the latest post-D810 CFG."""
+    assert call_eas, "exact-call oracle requires at least one bound call EA"
+    with sqlite3.connect(path) as conn:
+        snapshot = conn.execute(
+            "SELECT id,label FROM snapshots "
+            "WHERE func_ea_i64=? AND phase='post_d810' "
+            "ORDER BY id DESC LIMIT 1",
+            (int(function_ea),),
+        ).fetchone()
+        assert snapshot is not None, (
+            f"post-D810 snapshot missing for exact-call oracle at "
+            f"0x{function_ea:x}"
+        )
+        snapshot_id, label = int(snapshot[0]), str(snapshot[1])
+        block_rows = conn.execute(
+            "SELECT serial,succs,start_ea_i64 FROM blocks "
+            "WHERE snapshot_id=? ORDER BY serial",
+            (snapshot_id,),
+        ).fetchall()
+        assert any(
+            int(serial) == 0 and int(start_ea or 0) == int(function_ea)
+            for serial, _succs, start_ea in block_rows
+        ), (
+            f"post-D810 snapshot entry anchor drifted for 0x{function_ea:x}: "
+            f"snapshot={snapshot_id} label={label}"
+        )
+        call_rows = conn.execute(
+            "SELECT block_serial,ea_i64 FROM instructions "
+            "WHERE snapshot_id=? AND ea_i64 IN (" + ",".join("?" for _ in call_eas) + ")",
+            (snapshot_id, *[int(ea) for ea in call_eas]),
+        ).fetchall()
+
+    successors: dict[int, tuple[int, ...]] = {}
+    for serial, raw_successors, _start_ea in block_rows:
+        decoded = json.loads(str(raw_successors))
+        assert isinstance(decoded, list), (
+            f"malformed successor list in snapshot {snapshot_id}: {raw_successors!r}"
+        )
+        successors[int(serial)] = tuple(int(target) for target in decoded)
+    call_blocks: dict[int, tuple[int, ...]] = {}
+    for block_serial, call_ea in call_rows:
+        call_blocks.setdefault(int(block_serial), tuple())
+        call_blocks[int(block_serial)] = (
+            *call_blocks[int(block_serial)],
+            int(call_ea),
+        )
+    try:
+        reachable = reachable_call_eas(successors, call_blocks, entry_serial=0)
+    except ValueError as error:
+        pytest.fail(f"invalid post-D810 reachability evidence: {error}")
+    assert reachable == frozenset(int(ea) for ea in call_eas), (
+        f"exact native call was lost from post-D810 reachability for "
+        f"0x{function_ea:x}: snapshot={snapshot_id} label={label} "
+        f"expected={tuple(hex(ea) for ea in call_eas)} "
+        f"reachable={tuple(hex(ea) for ea in sorted(reachable))}"
+    )
+
+
 def _fixture_or_skip(function: str) -> str:
     binary = os.environ.get("D810_TEST_BINARY", "")
     if binary != "unflattening_effect_safety.dll":
@@ -378,6 +534,11 @@ class TestUnflatteningEffectSafetyDecompilation:
         _enable_exact_diagnostics(request)
         source = _fixture_or_skip("sub_7FF8569F0540")
         function_ea = _resolve_fixture_ea("sub_7FF8569F0540")
+        exact_call_eas = _loaded_call_eas(
+            function_ea,
+            symbol="memcpy",
+            anchor_value=0x0EE1BCAD,
+        )
         assert "EXTERN memcpy:PROC" in source
         assert "call memcpy" in source
 
@@ -402,6 +563,7 @@ class TestUnflatteningEffectSafetyDecompilation:
             started_after=started_after,
         )
         _assert_corridor_acceptance(function_ea, path)
+        _assert_exact_call_reachable(function_ea, path, call_eas=exact_call_eas)
         print(
             f"[EFFECT-SAFETY A] ea=0x{function_ea:x} "
             f"committed={committed} pseudocode_bytes={len(code_after)}"
@@ -417,6 +579,11 @@ class TestUnflatteningEffectSafetyDecompilation:
         _enable_exact_diagnostics(request)
         source = _fixture_or_skip("sub_7FF8568132D0")
         function_ea = _resolve_fixture_ea("sub_7FF8568132D0")
+        exact_call_eas = _loaded_call_eas(
+            function_ea,
+            symbol="RtlAcquireSRWLockExclusive",
+            anchor_value=0x4595D682,
+        )
         assert "EXTERN __imp_RtlAcquireSRWLockExclusive:PROC" in source
         assert "call qword ptr [__imp_RtlAcquireSRWLockExclusive]" in source
         assert "int 3" in source
@@ -456,6 +623,7 @@ class TestUnflatteningEffectSafetyDecompilation:
             started_after=started_after,
         )
         _assert_corridor_acceptance(function_ea, path)
+        _assert_exact_call_reachable(function_ea, path, call_eas=exact_call_eas)
         assert "__debugbreak()" in code_after
         print(
             f"[EFFECT-SAFETY B] ea=0x{function_ea:x} "
