@@ -5,13 +5,18 @@ from __future__ import annotations
 import copy
 import json
 import hashlib
+import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 from d810.core import typing
+import d810.core.project_config_persistence as project_persistence
 from d810.passes.pass_pipeline import PipelineConfig
+import tools.migrations.migrate_project_config_v2 as migration_cli
 import tools.migrations.legacy_project_config as legacy_migrator
 from tools.migrations.legacy_project_config import (
     LegacyMigrationError,
@@ -22,6 +27,8 @@ from tools.migrations.legacy_project_config import (
 
 
 CONF_DIR = Path(__file__).resolve().parents[3] / "src" / "d810" / "conf"
+REPO_ROOT = Path(__file__).resolve().parents[3]
+CLI_PATH = REPO_ROOT / "tools" / "migrations" / "migrate_project_config_v2.py"
 KNOWN_RESOURCE_PATH = (
     Path(__file__).resolve().parents[3]
     / "tools"
@@ -29,6 +36,45 @@ KNOWN_RESOURCE_PATH = (
     / "data"
     / "known_config_v2_templates.json"
 )
+
+
+def _write_legacy(path: Path) -> Path:
+    """Write a small generic legacy project for subprocess CLI coverage."""
+
+    path.write_text(
+        json.dumps(
+            {
+                "description": "legacy fixture",
+                "ins_rules": [],
+                "blk_rules": [
+                    {
+                        "name": "IdentityCallResolver",
+                        "is_activated": True,
+                        "config": {},
+                    }
+                ],
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def _run_cli(*arguments: str) -> subprocess.CompletedProcess[str]:
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = os.pathsep.join(
+        (str(REPO_ROOT / "src"), str(REPO_ROOT), environment.get("PYTHONPATH", ""))
+    )
+    return subprocess.run(
+        [sys.executable, str(CLI_PATH), *arguments],
+        cwd=REPO_ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
 
 # Keep this historical data local to the test.  The routing module is removed
 # later in the cutover, but these source/donor pairs remain the migration
@@ -469,3 +515,194 @@ def test_custom_typed_projection_preserves_order_and_rejects_unknown_mba_options
         match=re.escape("ins_rules[0].config.limit"),
     ):
         migrate_legacy_document(unsupported, source_name="custom.json")
+
+
+def test_cli_defaults_to_stdout_without_writing(tmp_path: Path) -> None:
+    source = _write_legacy(tmp_path / "project.json")
+    original = source.read_bytes()
+
+    result = _run_cli(str(source))
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+    migrated = json.loads(result.stdout)
+    assert migrated["additional_configuration"]["pipeline_v2"]
+    assert source.read_bytes() == original
+    assert not list(tmp_path.glob(".*.tmp"))
+
+
+def test_cli_explicit_output_creates_destination_without_changing_source(
+    tmp_path: Path,
+) -> None:
+    source = _write_legacy(tmp_path / "project.json")
+    destination = tmp_path / "migrated.json"
+    original = source.read_bytes()
+    stdout_result = _run_cli(str(source))
+    assert stdout_result.returncode == 0
+
+    result = _run_cli(str(source), "--output", str(destination))
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+    assert destination.exists()
+    assert destination.read_bytes().endswith(b"\n")
+    assert destination.read_text(encoding="utf-8") == stdout_result.stdout
+    assert source.read_bytes() == original
+    assert json.loads(destination.read_text(encoding="utf-8"))["additional_configuration"][
+        "pipeline_v2"
+    ]
+    assert not list(tmp_path.glob(".*.tmp"))
+
+
+def test_cli_output_refuses_to_overwrite_existing_destination(tmp_path: Path) -> None:
+    source = _write_legacy(tmp_path / "project.json")
+    destination = tmp_path / "migrated.json"
+    destination.write_text("keep me\n", encoding="utf-8")
+
+    result = _run_cli(str(source), "--output", str(destination))
+
+    assert result.returncode == 1
+    assert "already exists" in result.stderr
+    assert destination.read_text(encoding="utf-8") == "keep me\n"
+    assert not list(tmp_path.glob(".*.tmp"))
+
+
+def test_cli_in_place_replacement_is_canonical_and_atomic(tmp_path: Path) -> None:
+    source = _write_legacy(tmp_path / "project.json")
+
+    result = _run_cli(str(source), "--in-place")
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+    migrated = json.loads(source.read_text(encoding="utf-8"))
+    assert migrated["additional_configuration"]["pipeline_v2"]
+    assert "blk_rules" not in migrated
+    assert not list(tmp_path.glob(f".{source.name}.*.tmp"))
+
+
+def test_cli_validation_failure_keeps_source_and_cleans_temporary_files(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "bad.json"
+    source.write_text(
+        json.dumps(
+            {
+                "ins_rules": [
+                    {
+                        "name": "UnknownInstructionRule",
+                        "is_activated": True,
+                        "config": {},
+                    }
+                ]
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    original = source.read_bytes()
+
+    result = _run_cli(str(source), "--in-place")
+
+    assert result.returncode == 1
+    assert "ins_rules[0].name" in result.stderr
+    assert source.read_bytes() == original
+    assert not list(tmp_path.glob(f".{source.name}.*.tmp"))
+
+
+def test_cli_replace_failure_cleans_staged_file_and_preserves_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = _write_legacy(tmp_path / "project.json")
+    original = source.read_bytes()
+    migrated = migration_cli._migrate_path(source)
+
+    def fail_replace(_temporary: str | os.PathLike[str], _destination: Path) -> None:
+        raise OSError("injected replace failure")
+
+    monkeypatch.setattr(project_persistence.os, "replace", fail_replace)
+
+    with pytest.raises(migration_cli.MigrationCliError, match="atomically write"):
+        migration_cli._write_atomically(source, migrated, refuse_existing=False)
+
+    assert source.read_bytes() == original
+    assert not list(tmp_path.glob(f".{source.name}.*.tmp"))
+
+
+def test_cli_check_reports_every_legacy_file_in_stable_order(tmp_path: Path) -> None:
+    _write_legacy(tmp_path / "b.json")
+    _write_legacy(tmp_path / "a.json")
+
+    result = _run_cli(str(tmp_path), "--check")
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    lines = [line for line in result.stderr.splitlines() if line]
+    assert [line.split(":", 1)[0] for line in lines] == [
+        str(tmp_path / "a.json"),
+        str(tmp_path / "b.json"),
+    ]
+    for name in ("a.json", "b.json"):
+        assert (
+            f"python tools/migrations/migrate_project_config_v2.py "
+            f"{tmp_path / name} --in-place"
+        ) in result.stderr
+    assert not list(tmp_path.glob(".*.tmp"))
+
+
+def test_cli_check_reports_malformed_json_and_other_legacy_files(tmp_path: Path) -> None:
+    _write_legacy(tmp_path / "legacy.json")
+    (tmp_path / "invalid.json").write_text("{not-json", encoding="utf-8")
+
+    result = _run_cli(str(tmp_path), "--check")
+
+    assert result.returncode == 1
+    assert "invalid.json" in result.stderr
+    assert "invalid JSON" in result.stderr
+    assert "legacy.json" in result.stderr
+
+
+def test_cli_check_accepts_clean_v2_directory(tmp_path: Path) -> None:
+    source = _write_legacy(tmp_path / "project.json")
+    migrated = json.loads(_run_cli(str(source)).stdout)
+    source.write_text(json.dumps(migrated, indent=2) + "\n", encoding="utf-8")
+
+    result = _run_cli(str(tmp_path), "--check")
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+    assert result.stderr == ""
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    (
+        ("--output", "destination.json", "--in-place"),
+        ("--output", "destination.json", "--check"),
+        ("--check", "--in-place"),
+    ),
+)
+def test_cli_rejects_ambiguous_argument_combinations(
+    tmp_path: Path, arguments: tuple[str, ...]
+) -> None:
+    source = _write_legacy(tmp_path / "project.json")
+
+    result = _run_cli(str(source), *arguments)
+
+    assert result.returncode == 2
+    assert "error:" in result.stderr
+    assert "usage:" in result.stderr
+
+
+def test_cli_rejects_directory_without_check_and_output_for_directory(
+    tmp_path: Path,
+) -> None:
+    _write_legacy(tmp_path / "project.json")
+
+    no_check = _run_cli(str(tmp_path))
+    with_output = _run_cli(str(tmp_path), "--output", str(tmp_path / "out.json"))
+
+    assert no_check.returncode == 2
+    assert "directory input requires --check" in no_check.stderr
+    assert with_output.returncode == 2
+    assert "--output cannot be used with directory input" in with_output.stderr
