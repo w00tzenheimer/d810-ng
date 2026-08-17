@@ -968,6 +968,39 @@ DAC_MASM_CASES = [
         skip_if_function_absent=True,
     ),
     DeobfuscationCase(
+        function="Eidolon_ShowErrorAndTerminateProcess",
+        description=(
+            "Live Eidolon native-bound transition fixture. The entry state "
+            "write at 0x7FF855576BA0 and loop-back state write at "
+            "0x7FF855576E95 must bypass the dispatcher while preserving the "
+            "MessageBoxA/GetCurrentProcess/TerminateProcess effect corridor "
+            "and its literal 0x1010/0x1200 arguments."
+        ),
+        project="eidolon_v3_const_solve.json",
+        obfuscated_contains=["while ( 2 )"],
+        deobfuscated_contains=[
+            # The target API imports are deliberately unresolved in the
+            # target-only PE fixture, so Hex-Rays renders the three calls
+            # through its common MEMORY thunk.  The argument corridors remain
+            # exact and are checked below.
+            "MEMORY[0x200000000]",
+            "4112",
+            "4608",
+        ],
+        deobfuscated_not_contains=[
+            "while ( 2 )",
+            "0x16AA65E9",
+            "0x79323F9",
+        ],
+        deobfuscated_regexes=[
+            r"MEMORY\[0x200000000\]\(a1: 0, a2: .*a3: .*a4: 4112\)",
+            r"return MEMORY\[0x200000000\]\(a1: .*a2: 4608,",
+        ],
+        must_change=True,
+        required_rules=[],
+        skip_if_function_absent=True,
+    ),
+    DeobfuscationCase(
         function="Java_dimension_DimensionAPI_getHuzpsbPY",
         description="dac.dll DimensionAPI (issue #48, MASM-extracted): the function "
         "whose flattening crashed old d810-ng with INTERR 50860/51920. "
