@@ -107,11 +107,24 @@ def _exact_stack_address_offset(
 
     kind = operand.kind
     if kind is OperandKind.STACK:
-        offset = operand.stkoff
-        if offset is None:
+        if any(
+            value is not None
+            for value in (
+                operand.sub_kind,
+                operand.sub_value_op_kind,
+                operand.sub_raw_opcode,
+                operand.sub_predicate_kind,
+            )
+        ):
             return None
-        refs = tuple(int(ref) for ref in operand.stack_refs)
-        if refs and refs != (int(offset),):
+        if operand.stkoff is None:
+            return None
+        try:
+            offset = int(operand.stkoff)
+            refs = tuple(int(ref) for ref in operand.stack_refs)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if refs and refs != (offset,):
             return None
         if (
             operand.sub_l is not None
@@ -123,12 +136,25 @@ def _exact_stack_address_offset(
 
     if kind is not OperandKind.ADDRESS:
         return None
+    if any(
+        value is not None
+        for value in (
+            operand.sub_kind,
+            operand.sub_value_op_kind,
+            operand.sub_raw_opcode,
+            operand.sub_predicate_kind,
+        )
+    ):
+        return None
     if (
         operand.sub_r is not None
         or operand.args
     ):
         return None
-    refs = tuple(int(ref) for ref in operand.stack_refs)
+    try:
+        refs = tuple(int(ref) for ref in operand.stack_refs)
+    except (TypeError, ValueError, OverflowError):
+        return None
     if len(refs) > 1:
         return None
     child = operand.sub_l

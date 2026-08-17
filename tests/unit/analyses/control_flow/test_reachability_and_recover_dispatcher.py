@@ -12,6 +12,7 @@ import pytest
 
 from d810.analyses.control_flow.reachability import reachable_from
 from d810.capabilities.dispatcher import RouterKind
+from d810.ir.expressions import ValueOpKind
 from d810.analyses.control_flow.dispatcher_recovery import (
     DispatcherRecovery,
     build_state_dispatcher_map_from_flow_graph,
@@ -539,6 +540,69 @@ def test_entry_dominated_initial_state_rejects_register_store_for_register_state
 def test_entry_dominated_initial_state_rejects_non_exact_stack_store_address(
     address: MopSnapshot,
 ):
+    graph = _prefix_graph(
+        (_prefix_store_const(_PREFIX_INITIAL_STATE, address), _prefix_tail())
+    )
+
+    assert recover_entry_dominated_initial_state(graph, _prefix_dmap(graph)) is None
+
+
+@pytest.mark.parametrize(
+    "address",
+    (
+        MopSnapshot(
+            kind=OperandKind.ADDRESS,
+            size=8,
+            sub_l=MopSnapshot(kind=OperandKind.STACK, stkoff="bad", size=8),
+        ),
+        MopSnapshot(
+            kind=OperandKind.ADDRESS,
+            size=8,
+            stack_refs=("bad",),
+        ),
+    ),
+)
+def test_entry_dominated_initial_state_rejects_malformed_stack_address(
+    address: MopSnapshot,
+):
+    graph = _prefix_graph(
+        (_prefix_store_const(_PREFIX_INITIAL_STATE, address), _prefix_tail())
+    )
+
+    assert recover_entry_dominated_initial_state(graph, _prefix_dmap(graph)) is None
+
+
+@pytest.mark.parametrize(
+    "metadata_name, metadata_value",
+    (
+        ("sub_kind", InsnKind.NOP),
+        ("sub_value_op_kind", ValueOpKind.ADD),
+        ("sub_raw_opcode", 1),
+        ("sub_predicate_kind", PredicateKind.EQ),
+    ),
+)
+@pytest.mark.parametrize("metadata_target", ("address", "stack"))
+def test_entry_dominated_initial_state_rejects_nested_metadata_on_stack_address(
+    metadata_name: str,
+    metadata_value: object,
+    metadata_target: str,
+):
+    stack_kwargs = {
+        "kind": OperandKind.STACK,
+        "stkoff": _PREFIX_STATE_OFF,
+        "size": 8,
+    }
+    address_kwargs = {
+        "kind": OperandKind.ADDRESS,
+        "size": 8,
+        "stack_refs": (_PREFIX_STATE_OFF,),
+    }
+    if metadata_target == "stack":
+        stack_kwargs[metadata_name] = metadata_value
+    else:
+        address_kwargs[metadata_name] = metadata_value
+    address_kwargs["sub_l"] = MopSnapshot(**stack_kwargs)
+    address = MopSnapshot(**address_kwargs)
     graph = _prefix_graph(
         (_prefix_store_const(_PREFIX_INITIAL_STATE, address), _prefix_tail())
     )
