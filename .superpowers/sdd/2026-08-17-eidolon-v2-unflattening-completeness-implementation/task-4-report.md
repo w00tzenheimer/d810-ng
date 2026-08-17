@@ -177,3 +177,81 @@ run.
 ### Code commit
 
 Code/tests commit: `2243ebd07892f67019245a52a3ac2f6f906ab4b3`
+
+## Fix round 3
+
+Review of round 2 found that scalar entry preflight could disagree with a
+native-bound route for the same original entry edge and state. It also allowed
+empty handler discovery to bless broad interval-only entry and back-edge
+targets. This round unifies those candidates in one typed entry consensus and
+keeps the consensus result shared by preflight, provenance, and mutation.
+
+### RED
+
+Seven regression tests were added before the production edits. The initial
+focused transform run was:
+
+```text
+PYTHONPATH=src pytest -q tests/unit/transforms/test_minimal_unflatten_emit.py
+```
+
+Result: **5 failed, 200 passed**. The failures were the native/interval
+conflict mutation, missing agreeing-native provenance, unrelated native state
+overwriting scalar entry, broad interval acceptance with an empty handler set,
+and the dead materialized-route adapter. The singleton interval and exact
+`StateDispatcherMap` evidence tests pinned the required positive cases.
+
+### Implementation
+
+- Scalar entry consensus now includes only native-bound routes matching the
+  normalized state and an entry-prefix source edge whose sole successor is the
+  dispatcher. Conflicting targets reject the whole entry bridge and suppress
+  provenance.
+- Agreeing native-bound evidence produces one operation and a stable
+  `native_bound` provenance source kind; source-keyed entry builders are
+  restricted to an explicit scalar state before mutation.
+- Exact/materialized/native candidates participate before partial handler-set
+  filtering. Broad interval-only targets still abstain without handler
+  membership, while singleton/equality and exact `StateDispatcherMap` rows
+  remain independent evidence.
+- Removed the unused `_MaterializedStateRouteProvider` adapter.
+
+### GREEN
+
+Required focused suite:
+
+```text
+PYTHONPATH=src pytest -q \
+  tests/unit/analyses/control_flow/test_concrete_state_route.py \
+  tests/unit/preanalysis/flow/test_minimal_state_recovery.py \
+  tests/unit/transforms/test_minimal_unflatten_emit.py
+```
+
+Result: **280 passed**. The seven new round-3 tests pass. Ruff, diff check,
+ast-grep, and import-linter also passed (14 contracts kept, 0 broken).
+
+### Target C boundary
+
+The fixture was rebuilt from this worktree with:
+
+```text
+./samples/scripts/build_masm.sh unflattening_effect_safety
+```
+
+The exact canonical Docker invocation was run from the main repository root;
+the artifact is `.tmp/task4_target_c_fix_round3.txt`. It ran for **9.67s** and
+failed only at the expected downstream Task 5 gate:
+
+```text
+reason=corridor_enumeration_incomplete
+lost=blk2@0x180044617, blk3@0x18004464B, blk4@0x18004464E,
+     blk5@0x180044658, blk6@0x180044663, blk7@0x18004466A,
+     blk12@0x1800447F5, blk17@0x1800448FC
+```
+
+No Task4-specific failure preceded the unchanged Task5 corridor gate. The
+generated `samples/bins/unflattening_effect_safety.dll` was removed.
+
+### Code commit
+
+Code/tests commit: `64fbca1ab`
