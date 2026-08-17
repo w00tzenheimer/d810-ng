@@ -21,6 +21,9 @@ from d810.backends.mba.egglog_statistics import (
     read_rule_firing_count,
     release_egraph_on_owner_thread,
 )
+from d810.backends.mba.compiled_pattern_catalogue import (
+    CanonicalPatternComparisonBudgetExceeded,
+)
 from d810.backends.mba.hexrays_island import (
     HexRaysIslandLowering,
     lower_hexrays_island,
@@ -258,12 +261,6 @@ class EgglogExtractionReceipt:
     """Immutable telemetry for either an extraction or a fail-closed skip."""
 
     input_cost: tuple[int, int] | None = None
-    canonicalizer_version: int | None = None
-    canonical_input_cost: tuple[int, int] | None = None
-    normalization_steps: tuple[str, ...] = ()
-    execution_path: str | None = None
-    cache_status: str | None = None
-    cache_key: str | None = None
     extracted_cost: tuple[int, int] | None = None
     degree: int | None = None
     eclass_count: int | None = None
@@ -294,6 +291,12 @@ class EgglogExtractionReceipt:
     native_fixed_binding_count: int | None = None
     native_matcher_elapsed_ms: float | None = None
     skip_reason: ExtractionSkipReason | None = None
+    canonicalizer_version: int | None = None
+    canonical_input_cost: tuple[int, int] | None = None
+    normalization_steps: tuple[str, ...] = ()
+    execution_path: str | None = None
+    cache_status: str | None = None
+    cache_key: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "selected_aliases", tuple(self.selected_aliases))
@@ -779,21 +782,13 @@ def _extract_bounded_term(
                 skip_reason=ExtractionSkipReason.EGGLOG_UNAVAILABLE,
                 elapsed_ms=elapsed,
             )
-        egraph = egglog.EGraph()
-
         ordered_rules = tuple(rules)
         if catalogue is None:
-            try:
-                from d810.backends.mba.egglog_add_rule_compiler import (
-                    canonical_pattern_catalogue_for_rules,
-                )
+            from d810.backends.mba.egglog_add_rule_compiler import (
+                canonical_pattern_catalogue_for_rules,
+            )
 
-                catalogue = canonical_pattern_catalogue_for_rules(ordered_rules)
-            except ValueError:
-                # Test doubles and legacy callers may provide unadmitted rule
-                # shapes. They stay on the compatibility matcher only when
-                # no canonical catalogue can be constructed.
-                catalogue = None
+            catalogue = canonical_pattern_catalogue_for_rules(ordered_rules)
         rule_indices = {id(rule): index for index, rule in enumerate(ordered_rules)}
         frontier: dict[
             int,
@@ -808,30 +803,14 @@ def _extract_bounded_term(
                 tuple[tuple[str, str, tuple[str, ...]], ...],
             ] = {}
             for source_term, source_trace in frontier.get(degree, {}).items():
-                if catalogue is not None:
+                try:
                     applications = _canonical_rule_applications(catalogue, source_term)
-                else:
-                    from d810.backends.mba.egglog_add_rule_compiler import (
-                        apply_compiled_rule_to_term,
+                except CanonicalPatternComparisonBudgetExceeded:
+                    return _extraction_result(
+                        started=started,
+                        input_cost=input_cost,
+                        skip_reason=ExtractionSkipReason.CANDIDATE_BUDGET,
                     )
-
-                    applications = []
-                    for catalogue_index, rule in enumerate(ordered_rules):
-                        elapsed = _elapsed_ms(started)
-                        if elapsed > budget.time_budget_ms:
-                            return _extraction_result(
-                                started=started,
-                                input_cost=input_cost,
-                                skip_reason=ExtractionSkipReason.TIME_BUDGET,
-                                elapsed_ms=elapsed,
-                            )
-                        replacement = (
-                            initial_replacements.get(id(rule))
-                            if degree == 0 and initial_replacements is not None
-                            else apply_compiled_rule_to_term(rule, source_term)
-                        )
-                        if replacement is not None:
-                            applications.append((rule, replacement, catalogue_index))
 
                 for rule, application, catalogue_index in applications:
                     elapsed = _elapsed_ms(started)
@@ -941,6 +920,7 @@ def _extract_bounded_term(
                 skip_reason=ExtractionSkipReason.TIME_BUDGET,
                 elapsed_ms=elapsed,
             )
+        egraph = egglog.EGraph()
         seed = DegreeExpr.at(0, _term_to_egglog(term))
         egraph.register(seed, *rewrites)
         matches_per_rule: dict[Any, int] = {}

@@ -40,6 +40,14 @@ _AC_OPERATIONS = frozenset({"add", "and", "mul", "or", "xor"})
 _PodPattern = tuple[tuple[tuple[int, ...], ...], tuple[str, ...]]
 
 
+class CanonicalPatternComparisonBudgetExceeded(RuntimeError):
+    """Canonical matching exhausted its comparison budget.
+
+    Earlier matches may still be present for diagnostic/shadow telemetry, but
+    saturation must never consume them as executable rewrite applications.
+    """
+
+
 @dataclass(frozen=True)
 class FixedBindings:
     """One verified, candidate-local binding environment.
@@ -326,6 +334,10 @@ class CompiledPatternCatalogue:
             candidate,
             comparison_budget=comparison_budget,
         )
+        if report.stop_reason is AcMatchStopReason.COMPARISON_BUDGET:
+            raise CanonicalPatternComparisonBudgetExceeded(
+                "canonical matcher comparison budget exhausted"
+            )
         applications: list[tuple[CompiledEgglogRule, TypedBvTerm, int]] = []
         seen: set[tuple[int, str]] = set()
         for match in report.matches:
@@ -571,6 +583,7 @@ def _view_key(candidate: NativeMbaTermView) -> tuple[Any, ...]:
 
 
 __all__ = [
+    "CanonicalPatternComparisonBudgetExceeded",
     "CompiledPatternCatalogue",
     "FixedBindings",
     "NativePatternMatch",

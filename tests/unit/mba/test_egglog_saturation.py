@@ -9,6 +9,7 @@ from d810.backends.mba import egglog_add_rule_compiler, egglog_saturation
 from d810.backends.mba import hexrays_island
 from d810.backends.mba import egglog_statistics
 from d810.backends.mba import native_z3
+from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
 from d810.backends.mba.egglog_add_rule_compiler import (
     CERTIFICATE_WIDTHS,
     CompiledEgglogRule,
@@ -28,6 +29,8 @@ from d810.backends.mba.egglog_saturation import (
     lower_term_to_native_ast,
 )
 from d810.mba import typed_term
+from d810.mba.ac_matching import AcMatchStopReason
+from d810.mba.canonical_pattern import CanonicalPatternMatchReport
 from d810.mba.rules._base import VerifiableRule
 from d810.mba.rules.sub import Sub_ComplementMaskHodurRule_1
 from d810.mba.rules.xor import Xor_NestedStuff
@@ -67,6 +70,23 @@ def _term_from_symbolic(expression, bindings=None, *, width: int = 32):
         else None
     )
     return canonicalize_ac_term(_node(expression.operation, left, right, width=width))
+
+
+def _explicit_legacy_test_catalogue(rules):
+    """Inject the legacy matcher only for compatibility seam tests."""
+
+    def canonical_applications(term, *, comparison_budget):
+        del comparison_budget
+        applications = []
+        for declaration_index, rule in enumerate(rules):
+            replacement = egglog_add_rule_compiler.apply_compiled_rule_to_term(
+                rule, term
+            )
+            if replacement is not None:
+                applications.append((rule, replacement, declaration_index))
+        return tuple(applications)
+
+    return SimpleNamespace(canonical_applications=canonical_applications)
 
 
 def test_ac_canonicalization_matches_swapped_operands_without_rewrite_rules():
@@ -215,6 +235,123 @@ def test_budget_and_receipt_are_immutable_and_have_stable_contracts():
         budget.max_degree = 2  # type: ignore[misc]
     with pytest.raises(FrozenInstanceError):
         receipt.degree = 1  # type: ignore[misc]
+
+
+def test_receipt_positional_prefix_keeps_legacy_field_order():
+    receipt = EgglogExtractionReceipt(
+        (1, 2),
+        (3, 4),
+        5,
+        6,
+        7,
+        8,
+        9.0,
+        "add",
+    )
+
+    assert receipt.input_cost == (1, 2)
+    assert receipt.extracted_cost == (3, 4)
+    assert receipt.degree == 5
+    assert receipt.eclass_count == 6
+    assert receipt.enode_count == 7
+    assert receipt.rule_firings == 8
+    assert receipt.elapsed_ms == 9.0
+    assert receipt.selected_family == "add"
+    assert receipt.canonicalizer_version is None
+
+
+def test_canonical_match_budget_never_registers_partial_catalogue_application(
+    monkeypatch,
+    admitted_xor_nested_stuff,
+):
+    rule = admitted_xor_nested_stuff
+    candidate = _term_from_symbolic(rule.pattern)
+    catalogue = CompiledPatternCatalogue.from_rules((rule,))
+    matched = catalogue.match_canonical_root(candidate, comparison_budget=256)
+    assert matched.matches
+    exhausted = CanonicalPatternMatchReport(
+        matched.matches[:1],
+        matched.comparisons,
+        matched.commuted_branches,
+        matched.flattened_nodes,
+        AcMatchStopReason.COMPARISON_BUDGET,
+    )
+    monkeypatch.setattr(
+        CompiledPatternCatalogue,
+        "match_canonical_root",
+        lambda *_args, **_kwargs: exhausted,
+    )
+    events = []
+
+    class _FreshEGraph:
+        def __init__(self):
+            events.append("construct")
+
+        def register(self, *_commands):
+            events.append("register")
+
+        def run(self, _rounds):
+            events.append("run")
+
+    monkeypatch.setattr(
+        egglog_saturation,
+        "_load_egglog_module",
+        lambda: SimpleNamespace(
+            EGraph=_FreshEGraph,
+            rewrite=lambda source: SimpleNamespace(
+                to=lambda target: SimpleNamespace(decl=(source, target))
+            ),
+        ),
+    )
+
+    result = egglog_saturation.extract_bounded_term(
+        candidate,
+        (rule,),
+        EgglogExtractionBudget(max_leaves=8, max_operator_nodes=100, time_budget_ms=1000),
+        destination_size=4,
+        catalogue=catalogue,
+    )
+
+    assert events == []
+    assert result.receipt.skip_reason is ExtractionSkipReason.CANDIDATE_BUDGET
+
+
+def test_invalid_automatic_catalogue_fails_closed_before_egglog_construct(
+    monkeypatch,
+):
+    events = []
+
+    class _FreshEGraph:
+        def __init__(self):
+            events.append("construct")
+
+        def register(self, *_commands):
+            events.append("register")
+
+        def run(self, _rounds):
+            events.append("run")
+
+    monkeypatch.setattr(
+        egglog_saturation,
+        "_load_egglog_module",
+        lambda: SimpleNamespace(EGraph=_FreshEGraph),
+    )
+    invalid_rule = SimpleNamespace(
+        family="xor",
+        source_name="unadmitted",
+        aliases=(),
+        pattern=object(),
+    )
+
+    result = egglog_saturation.extract_bounded_term(
+        _leaf("x"),
+        (invalid_rule,),
+        EgglogExtractionBudget(time_budget_ms=1000),
+        destination_size=4,
+    )
+
+    assert events == []
+    assert result.receipt.skip_reason is ExtractionSkipReason.INTERNAL_ERROR
 
 
 def test_budget_accepts_only_supported_semantic_degrees():
@@ -1269,6 +1406,11 @@ def test_frontier_time_exhaustion_stops_before_run(
         (rule, rule),
         EgglogExtractionBudget(time_budget_ms=1000),
         4,
+        catalogue=SimpleNamespace(
+            canonical_applications=lambda term, comparison_budget: (
+                (rule, applications.append(term) or term, 0),
+            )
+        ),
     )
 
     assert len(applications) == 1
@@ -1336,6 +1478,7 @@ def test_pre_run_frontier_firing_cap_avoids_registration_and_execution(
         rules,
         EgglogExtractionBudget(max_rule_firings=1, time_budget_ms=1000),
         4,
+        catalogue=_explicit_legacy_test_catalogue(rules),
     )
 
     assert result.receipt.skip_reason is ExtractionSkipReason.RULE_FIRING_BUDGET
@@ -1496,6 +1639,7 @@ def test_exploration_contract_is_candidate_root_only(
         (rule,),
         EgglogExtractionBudget(max_leaves=3, time_budget_ms=1000),
         4,
+        catalogue=_explicit_legacy_test_catalogue((rule,)),
     )
 
     assert egglog_saturation.EGGLOG_EXPLORATION_SCOPE == "candidate-root-only"

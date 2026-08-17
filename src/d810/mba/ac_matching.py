@@ -559,10 +559,10 @@ def match_canonical_term_pattern(
                 bindings=CanonicalFixedBindings(terms, paths, width),
             )
         )
-    if matches:
-        reason = AcMatchStopReason.MATCHED
-    elif state.stopped is not None:
+    if state.stopped is not None:
         reason = state.stopped
+    elif matches:
+        reason = AcMatchStopReason.MATCHED
     elif state.saw_cardinality_mismatch:
         reason = AcMatchStopReason.CARDINALITY_MISMATCH
     else:

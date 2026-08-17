@@ -222,4 +222,4 @@ def test_canonical_match_keeps_first_branch_when_budget_closes_after_match() -> 
 
     assert report.comparisons == 4
     assert report.matches
-    assert report.stop_reason is AcMatchStopReason.MATCHED
+    assert report.stop_reason is AcMatchStopReason.COMPARISON_BUDGET
