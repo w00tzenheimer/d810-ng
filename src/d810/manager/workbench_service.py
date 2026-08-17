@@ -9,6 +9,9 @@ from collections.abc import Callable, Mapping
 
 from d810.core.deobfuscation_case import DeobfuscationCaseSnapshot
 from d810.manager.deobfuscation_case_service import DeobfuscationCaseCollectionError
+from d810.manager.effective_pipeline_schedule import (
+    build_effective_maturity_schedule,
+)
 from d810.manager.project_runtime import ProjectRuntimeSnapshot
 from d810.manager.workbench_models import (
     ArtifactRef,
@@ -53,6 +56,8 @@ from d810.passes.contract_manifest import (
 from d810.passes.contract_preflight import preflight_pipeline_contract
 from d810.passes.operational_config_v2 import operational_config_v2_pass_registry
 from d810.passes.pipeline_config_parser import pass_specs_from_project_config
+from d810.passes.pipeline_config_parser import pipeline_configs_from_project_config
+from d810.core.execution_scope import ExecutionPipeline
 
 
 def _canonical_json(value: object) -> str:
@@ -115,7 +120,7 @@ def _maturity_label(manifest: Mapping[str, object]) -> str:
         return f">={minimum}"
     if maximum:
         return f"<={maximum}"
-    return "any"
+    return "rule-defined"
 
 
 def _diagnostic_snapshot(diagnostic: object) -> WorkbenchDiagnostic:
@@ -172,12 +177,19 @@ def _consumer_status(report: object) -> OutcomeStatus:
 class WorkbenchService:
     """Collect immutable workbench truth from an existing manager runtime."""
 
-    def __init__(self, manager: object, *, registry: object | None = None) -> None:
+    def __init__(
+        self,
+        manager: object,
+        *,
+        registry: object | None = None,
+        maturity_name_provider: Callable[[int], str] = lambda value: f"MMAT_{value}",
+    ) -> None:
         self._manager = manager
         self._registry = registry or operational_config_v2_pass_registry()
         self._generation = 0
         self._latest_function_ea: int | None = None
         self._latest_function_fingerprint: str | None = None
+        self._maturity_name_provider = maturity_name_provider
 
     def collect(
         self,
@@ -282,6 +294,14 @@ class WorkbenchService:
             preparation = PreparationWorkbenchSummary(None)
             errors.append(f"preparation: {exc}")
 
+        try:
+            effective_schedule = self._effective_schedule(runtime_project)
+        except (KeyError, RuntimeError, TypeError, ValueError) as exc:
+            from d810.manager.workbench_models import EffectiveMaturitySchedule
+
+            effective_schedule = EffectiveMaturitySchedule()
+            errors.append(f"effective-schedule: {exc}")
+
         if baseline is None or latest_output is None:
             comparison_service = getattr(self._manager, "comparison_service", None)
             if comparison_service is not None:
@@ -314,9 +334,29 @@ class WorkbenchService:
             engine_started=bool(getattr(self._manager, "started", False)),
             collection_errors=tuple(errors),
             preparation=preparation,
+            effective_schedule=effective_schedule,
             execution_ledger=execution_ledger,
             execution_profile=execution_profile,
             case=case,
+        )
+
+    def _effective_schedule(self, runtime_project: object):
+        configs = pipeline_configs_from_project_config(runtime_project)
+        return build_effective_maturity_schedule(
+            configs,
+            registry=self._registry,
+            implementations={
+                ExecutionPipeline.INSTRUCTION: tuple(
+                    getattr(self._manager, "instruction_optimizer_rules", ())
+                ),
+                ExecutionPipeline.FLOW: tuple(
+                    getattr(self._manager, "block_optimizer_rules", ())
+                ),
+                ExecutionPipeline.CTREE: tuple(
+                    getattr(self._manager, "ctree_optimizer_rules", ())
+                ),
+            },
+            maturity_name_provider=self._maturity_name_provider,
         )
 
     @staticmethod

@@ -291,6 +291,48 @@ class PreparationWorkbenchSummary:
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
+class EffectiveScheduleStage:
+    configured_index: int
+    runtime_order: int
+    pass_id: str
+    stage_id: str
+    pipeline: str
+    implementation_name: str
+    requirements: tuple[str, ...]
+    provider_maturities: tuple[str, ...]
+    maturity_source: str
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class EffectiveMaturityScheduleRow:
+    ordinal: int
+    ir_maturity: str
+    provider_maturity: str
+    stages: tuple[EffectiveScheduleStage, ...]
+
+    def contains(self, stage_id: str) -> bool:
+        return any(stage.stage_id == stage_id for stage in self.stages)
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class EffectiveMaturitySchedule:
+    rows: tuple[EffectiveMaturityScheduleRow, ...] = ()
+    stages: tuple[EffectiveScheduleStage, ...] = ()
+
+    def at(self, provider_maturity: str) -> EffectiveMaturityScheduleRow:
+        for row in self.rows:
+            if row.provider_maturity == provider_maturity:
+                return row
+        return EffectiveMaturityScheduleRow(-1, "unknown", provider_maturity, ())
+
+    def stage(self, stage_id: str) -> EffectiveScheduleStage:
+        for stage in self.stages:
+            if stage.stage_id == stage_id:
+                return stage
+        raise KeyError(stage_id)
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
 class DeobfuscationWorkbenchSnapshot:
     generation: int
     function: FunctionRef
@@ -308,6 +350,9 @@ class DeobfuscationWorkbenchSnapshot:
     collection_errors: tuple[str, ...]
     preparation: PreparationWorkbenchSummary = dataclasses.field(
         default_factory=lambda: PreparationWorkbenchSummary(None)
+    )
+    effective_schedule: EffectiveMaturitySchedule = dataclasses.field(
+        default_factory=EffectiveMaturitySchedule
     )
     execution_ledger: ExecutionLedgerSummary = dataclasses.field(
         default_factory=lambda: ExecutionLedgerSummary(None, 0, (), 0, 0)
@@ -353,6 +398,9 @@ __all__ = [
     "D810OutputRef",
     "DeobfuscationWorkbenchSnapshot",
     "EffectiveStageDecisionSummary",
+    "EffectiveMaturitySchedule",
+    "EffectiveMaturityScheduleRow",
+    "EffectiveScheduleStage",
     "ExecutionAttemptSummary",
     "ExecutionLedgerSummary",
     "ExecutionProfileCandidateSummary",

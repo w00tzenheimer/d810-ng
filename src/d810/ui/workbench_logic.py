@@ -427,6 +427,44 @@ def project_workbench_rows(
             )
         )
 
+    for schedule_row in snapshot.effective_schedule.rows:
+        if not schedule_row.stages:
+            continue
+        stage_labels = tuple(
+            f"{stage.pass_id} (configured {stage.configured_index + 1})"
+            for stage in schedule_row.stages
+        )
+        schedule_details: list[str] = []
+        for stage in schedule_row.stages:
+            callback_order = (
+                f"runtime callback order {stage.runtime_order}"
+                if stage.runtime_order >= 0
+                else "runtime callback order unavailable"
+            )
+            schedule_details.append(
+                f"{stage.pipeline} {stage.pass_id}/{stage.stage_id}: "
+                f"{callback_order}; maturity authority {stage.maturity_source}; "
+                f"requires {', '.join(stage.requirements) or 'none'}"
+            )
+        schedule_detail = "\n".join(schedule_details)
+        rows.append(
+            _row(
+                key=f"pipeline:maturity:{schedule_row.provider_maturity}",
+                section=WorkbenchSection.PIPELINE,
+                ordinal=schedule_row.ordinal,
+                label=(
+                    f"{schedule_row.provider_maturity} / {schedule_row.ir_maturity}"
+                ),
+                summary="; ".join(stage_labels),
+                detail=(
+                    "Configured position is descriptive, not global execution order.\n"
+                    + schedule_detail
+                ),
+                status=OutcomeStatus.READY,
+            )
+        )
+
+    configured_ordinal_offset = len(snapshot.effective_schedule.rows)
     for stage in snapshot.pipeline:
         diagnostic_text = "\n".join(item.message for item in stage.diagnostics)
         detail = (
@@ -439,7 +477,7 @@ def project_workbench_rows(
             _row(
                 key=f"pipeline:{stage.ordinal}:{stage.pass_id}",
                 section=WorkbenchSection.PIPELINE,
-                ordinal=stage.ordinal,
+                ordinal=configured_ordinal_offset + stage.ordinal,
                 label=f"{stage.ordinal + 1}. {stage.pass_id}",
                 summary=stage.summary,
                 detail=detail,

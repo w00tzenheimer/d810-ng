@@ -763,7 +763,11 @@ class D810Manager:
                 self._database_identity or str(self.config.get("idb_key", ""))
             ),
         )
-        self.workbench_service = WorkbenchService(self, registry=workbench_registry)
+        self.workbench_service = WorkbenchService(
+            self,
+            registry=workbench_registry,
+            maturity_name_provider=_maturity_name,
+        )
         self.recipe_command_service = WorkbenchRecipeCommandService(
             identity_is_current=self.workbench_service.recipe_request_is_current,
         )

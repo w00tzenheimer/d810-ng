@@ -513,6 +513,10 @@ def test_evidence_export_is_canonical_deterministic_json() -> None:
             }
         ],
         "engine_started": True,
+        "effective_schedule": {
+            "rows": [],
+            "stages": [],
+        },
         "execution_ledger": {
             "attempts": [],
             "function_ea": 0,

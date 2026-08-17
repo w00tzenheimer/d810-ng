@@ -96,31 +96,39 @@ def _started_manager_without_init() -> D810Manager:
     return manager
 
 
-def test_started_manager_composes_preparation_gateway_before_decompile(
-    d810_state,
-    configure_hexrays,
-    ida_database,
-    setup_libobfuscated_funcs,
-) -> None:
-    import idaapi
+class TestPreparationStartupIntegration:
+    binary_name = "libobfuscated.dll"
 
-    assert idaapi.init_hexrays_plugin()
-    with d810_state() as state:
-        project_index = next(
-            index
-            for index, project in enumerate(state.project_manager.projects())
-            if project.path.name == "default_instruction_only_config_v2_canary.json"
-        )
-        state.load_project(project_index)
-        state.start_d810()
+    def test_started_manager_composes_preparation_gateway_before_decompile(
+        self,
+        d810_state,
+        configure_hexrays,
+        ida_database,
+        setup_libobfuscated_funcs,
+    ) -> None:
+        import idaapi
 
-        manager = state.manager
-        assert manager.pre_hex_preparation is not None
-        assert manager._idb_preparation_gateway is not None
-        assert manager._idb_preparation_journal is not None
-        receipt = manager.prepare_idb_for_hexrays(0x401000)
-        assert receipt.ok
-        assert receipt.run_receipts == ()
+        assert idaapi.init_hexrays_plugin()
+        with d810_state() as state:
+            project_index = next(
+                index
+                for index, project in enumerate(state.project_manager.projects())
+                if project.path.name == "default_instruction_only_config_v2_canary.json"
+            )
+            state.load_project(project_index)
+            state.start_d810()
+
+            manager = state.manager
+            assert manager.pre_hex_preparation is not None
+            assert manager._idb_preparation_gateway is not None
+            assert manager._idb_preparation_journal is not None
+            receipt = manager.prepare_idb_for_hexrays(0x401000)
+            assert receipt.ok
+            assert receipt.run_receipts == ()
+            snapshot = state.get_workbench_snapshot(0x401000, "schedule_target")
+            fold_readonly = snapshot.effective_schedule.stage("fold-readonly-data")
+            assert fold_readonly.maturity_source == "private-rule"
+            assert "MMAT_PREOPTIMIZED" in fold_readonly.provider_maturities
 
 
 def test_manager_installs_and_uninstalls_generated_restart_consumer() -> None:

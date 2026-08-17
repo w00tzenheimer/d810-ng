@@ -20,14 +20,15 @@ class ConfigV2PipelineOverviewWidget(QtWidgets.QWidget):
         self._unavailable.setWordWrap(True)
 
         self._tree = QtWidgets.QTreeWidget(self)
-        self._tree.setColumnCount(2)
-        self._tree.setHeaderLabels(("Order", "Active pass"))
+        self._tree.setColumnCount(3)
+        self._tree.setHeaderLabels(("Configured", "Active pass", "Runs during"))
         self._tree.setRootIsDecorated(False)
         self._tree.setUniformRowHeights(True)
         self._tree.setAlternatingRowColors(True)
         header = self._tree.header()
         header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
 
         self._edit_pipeline = QtWidgets.QPushButton("Edit pipeline...", self)
 
@@ -64,14 +65,23 @@ class ConfigV2PipelineOverviewWidget(QtWidgets.QWidget):
             )
             item = QtWidgets.QTreeWidgetItem(
                 (
-                    f"{row.index + 1}.",
+                    f"{row.configured_order}.",
                     f"{row.display_name}{selection_suffix}",
+                    row.runs_during,
                 )
             )
             item.setData(0, QtCore.Qt.UserRole, row.index)
             tooltip = f"{row.purpose}\nRuns during: {row.runs_during}"
             item.setToolTip(0, tooltip)
             item.setToolTip(1, tooltip)
+            item.setToolTip(
+                2,
+                getattr(
+                    row,
+                    "schedule_summary",
+                    "Configured position is not global execution order.",
+                ),
+            )
             self._tree.addTopLevelItem(item)
 
         has_rows = bool(overview.rows)
