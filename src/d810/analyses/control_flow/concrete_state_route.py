@@ -35,10 +35,10 @@ def _integer(value: object) -> int | None:
 
 
 def _exact_target(exact_dispatcher_map: object, state: int) -> int | None:
-    resolver = getattr(exact_dispatcher_map, "resolve_target", None)
-    if not callable(resolver):
-        return None
     try:
+        resolver = getattr(exact_dispatcher_map, "resolve_target", None)
+        if not callable(resolver):
+            return None
         target = resolver(state)
     except (AttributeError, IndexError, KeyError, TypeError, ValueError, OverflowError):
         return None
@@ -48,10 +48,10 @@ def _exact_target(exact_dispatcher_map: object, state: int) -> int | None:
 
 
 def _interval_target(interval_dispatcher: object, state: int) -> int | None:
-    lookup_row = getattr(interval_dispatcher, "lookup_row", None)
-    if not callable(lookup_row):
-        return None
     try:
+        lookup_row = getattr(interval_dispatcher, "lookup_row", None)
+        if not callable(lookup_row):
+            return None
         row = lookup_row(state)
     except (AttributeError, IndexError, KeyError, TypeError, ValueError, OverflowError):
         return None

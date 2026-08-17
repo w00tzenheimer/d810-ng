@@ -14,6 +14,44 @@ from d810.analyses.control_flow.interval_map import IntervalDispatcher, Interval
 from d810.capabilities.dispatcher import RouterKind
 
 
+class _MissingProviderMethod:
+    pass
+
+
+class _ExactShapeFailure:
+    @property
+    def resolve_target(self):
+        raise TypeError("malformed exact provider")
+
+
+class _IntervalShapeFailure:
+    @property
+    def lookup_row(self):
+        raise ValueError("malformed interval provider")
+
+
+class _ExactRuntimeDescriptorFailure:
+    @property
+    def resolve_target(self):
+        raise RuntimeError("exact descriptor failure")
+
+
+class _IntervalRuntimeDescriptorFailure:
+    @property
+    def lookup_row(self):
+        raise RuntimeError("interval descriptor failure")
+
+
+class _ExactRuntimeCallableFailure:
+    def resolve_target(self, _state):
+        raise RuntimeError("exact callable failure")
+
+
+class _IntervalRuntimeCallableFailure:
+    def lookup_row(self, _state):
+        raise RuntimeError("interval callable failure")
+
+
 def _exact(state: int, target: int) -> StateDispatcherMap:
     return StateDispatcherMap(
         rows=(
@@ -100,3 +138,41 @@ def test_bool_or_out_of_range_state_is_normalized_or_rejected_by_contract() -> N
     )
     assert route is not None
     assert route.normalized_state == 0x1234
+
+
+def test_malformed_provider_descriptors_abstain() -> None:
+    assert resolve_concrete_state_route(1, exact_dispatcher_map=_ExactShapeFailure()) is None
+    assert resolve_concrete_state_route(1, interval_dispatcher=_IntervalShapeFailure()) is None
+
+
+def test_provider_without_route_method_abstains() -> None:
+    assert (
+        resolve_concrete_state_route(1, exact_dispatcher_map=_MissingProviderMethod())
+        is None
+    )
+    assert (
+        resolve_concrete_state_route(1, interval_dispatcher=_MissingProviderMethod())
+        is None
+    )
+
+
+def test_runtime_error_from_provider_descriptor_propagates() -> None:
+    import pytest
+
+    with pytest.raises(RuntimeError, match="exact descriptor"):
+        resolve_concrete_state_route(1, exact_dispatcher_map=_ExactRuntimeDescriptorFailure())
+    with pytest.raises(RuntimeError, match="interval descriptor"):
+        resolve_concrete_state_route(
+            1, interval_dispatcher=_IntervalRuntimeDescriptorFailure()
+        )
+
+
+def test_runtime_error_from_provider_callable_propagates() -> None:
+    import pytest
+
+    with pytest.raises(RuntimeError, match="exact callable"):
+        resolve_concrete_state_route(1, exact_dispatcher_map=_ExactRuntimeCallableFailure())
+    with pytest.raises(RuntimeError, match="interval callable"):
+        resolve_concrete_state_route(
+            1, interval_dispatcher=_IntervalRuntimeCallableFailure()
+        )
