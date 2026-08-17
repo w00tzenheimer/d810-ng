@@ -17,6 +17,7 @@ from d810.mba.semantic_canonicalization import (
 from d810.mba.typed_term import (
     TypedBvTerm,
     canonicalize_ac_term,
+    fixed_shift_term,
     term_cost,
     term_fingerprint,
 )
@@ -275,3 +276,22 @@ def test_deterministic_generated_terms_preserve_fixed_width_semantics(width: int
 def test_rejects_non_typed_terms():
     with pytest.raises(TypeError, match="TypedBvTerm"):
         canonicalize_mba_term(object())
+
+
+@pytest.mark.parametrize("operation", ["shl", "lshr", "rol", "ror"])
+@pytest.mark.parametrize("width", [8, 16, 32, 64])
+def test_canonicalizer_preserves_fixed_shift_metadata_without_rotate_rewrite(
+    operation: str, width: int
+):
+    source = fixed_shift_term(operation, width, leaf("x", width), width - 1)
+
+    result = canonicalize_mba_term(source)
+
+    assert result.canonical_term.operation == operation
+    assert result.canonical_term.shift_count == width - 1
+    assert result.canonical_term.children == source.children
+    assert result.canonical_term == canonicalize_ac_term(source)
+    assert all(
+        step.kind is not CanonicalizationKind.NEGATIVE_COEFFICIENT
+        for step in result.steps
+    )

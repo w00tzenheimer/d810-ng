@@ -6,7 +6,11 @@ from collections.abc import Mapping
 
 from d810.backends.mba.hexrays_island import lower_hexrays_island
 from d810.core.typing import Any
-from d810.mba.typed_term import TypedBvTerm, canonicalize_ac_term
+from d810.mba.typed_term import (
+    FIXED_SHIFT_OPERATIONS,
+    TypedBvTerm,
+    canonicalize_ac_term,
+)
 
 
 _COMPLEMENT_MASK_HODUR_CERTIFICATE = "complement-mask-hodur-v1"
@@ -133,10 +137,16 @@ def _prove_generic_native_terms(
             "xor": lambda: left ^ right,
             "neg": lambda: -left,
             "bnot": lambda: ~left,
+            "shl": lambda: left << node.shift_count,
+            "lshr": lambda: z3.LShR(left, node.shift_count),
+            "rol": lambda: z3.RotateLeft(left, node.shift_count),
+            "ror": lambda: z3.RotateRight(left, node.shift_count),
         }
         operation = operations.get(node.operation)
         if operation is None:
             raise ValueError("unsupported typed operation")
+        if node.operation in FIXED_SHIFT_OPERATIONS and node.shift_count is None:
+            raise ValueError("fixed shift is missing validated shift_count")
         return operation()
 
     original_term = visit(original)

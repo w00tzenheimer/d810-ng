@@ -142,6 +142,7 @@ def _canonicalize_children(
         children=tuple(
             _canonicalize_children(child, steps) for child in term.children
         ),
+        shift_count=term.shift_count,
     )
 
 
@@ -263,6 +264,7 @@ def _rewrite_once(
         operation=term.operation,
         width=term.width,
         children=tuple(_rewrite_once(child, steps) for child in term.children),
+        shift_count=term.shift_count,
     )
     return _rewrite_local(normalized, steps)
 
@@ -279,6 +281,7 @@ def _canonicalize_ac_with_trace(
         operation=term.operation,
         width=term.width,
         children=normalized_children,
+        shift_count=term.shift_count,
     )
     if normalized.operation not in AC_OPERATIONS:
         return normalized

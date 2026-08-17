@@ -10,7 +10,7 @@ from d810.mba.island_profile import (
     profile_typed_term,
 )
 from d810.mba.semantic_canonicalization import canonicalize_mba_term
-from d810.mba.typed_term import TypedBvTerm, term_fingerprint
+from d810.mba.typed_term import TypedBvTerm, fixed_shift_term, term_fingerprint
 
 
 def _leaf(name: str) -> TypedBvTerm:
@@ -91,3 +91,17 @@ def test_profile_costs_describe_the_exact_raw_or_canonical_term_passed():
     assert canonical_profile.operator_count == 2
     assert canonical_profile.total_node_count == 4
     assert canonical_profile.fingerprint == term_fingerprint(canonical)
+
+
+@pytest.mark.parametrize("operation", ["shl", "lshr", "rol", "ror"])
+def test_profile_recognizes_fixed_shift_operations(operation: str):
+    term = fixed_shift_term(operation, 32, _leaf("x"), 7)
+
+    profile = profile_typed_term(term)
+
+    assert profile.operations == ((operation, 1),)
+    assert profile.operator_count == 1
+    assert profile.total_node_count == 2
+    assert profile.distinct_leaf_count == 1
+    assert profile.blockers == ()
+    assert profile.fingerprint == term_fingerprint(term)

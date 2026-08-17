@@ -7,7 +7,13 @@ from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from d810.mba.typed_term import TypedBvTerm, canonicalize_ac_term, term_cost, term_fingerprint
+from d810.mba.typed_term import (
+    FIXED_SHIFT_OPERATIONS,
+    TypedBvTerm,
+    canonicalize_ac_term,
+    term_cost,
+    term_fingerprint,
+)
 
 
 class MbaIslandClass(enum.StrEnum):
@@ -43,7 +49,7 @@ class MbaIslandProfile:
     fingerprint: str
 
 
-_BOOLEAN_OPERATIONS = frozenset({"and", "bnot", "or", "xor"})
+_BOOLEAN_OPERATIONS = frozenset({"and", "bnot", "or", "xor"}) | FIXED_SHIFT_OPERATIONS
 _ARITHMETIC_OPERATIONS = frozenset({"add", "mul", "neg", "sub"})
 
 

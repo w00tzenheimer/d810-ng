@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+from dataclasses import fields
+
 import pytest
 
 from d810.mba.semantic_canonicalization import canonicalize_mba_term
 from d810.mba.typed_term import (
+    FIXED_SHIFT_OPERATIONS,
     TypedBvTerm,
     canonicalize_ac_term,
+    fixed_shift_term,
     term_cost,
     term_fingerprint,
 )
@@ -82,3 +86,65 @@ def test_typed_term_cost_and_fingerprint_are_suitable_for_canonical_views():
     assert view.canonical_term == canonicalize_ac_term(term)
     assert view.canonical_cost == term_cost(view.canonical_term)
     assert term_fingerprint(view.canonical_term)
+
+
+def test_fixed_shift_metadata_is_last_and_requires_one_same_width_child():
+    assert fields(TypedBvTerm)[-1].name == "shift_count"
+    x = _leaf("x", width=32)
+    term = fixed_shift_term("shl", 32, x, 7)
+
+    assert FIXED_SHIFT_OPERATIONS == frozenset({"shl", "lshr", "rol", "ror"})
+    assert term.children == (x,)
+    assert term.shift_count == 7
+    assert term_cost(term) == (1, 2)
+
+    with pytest.raises(ValueError, match="same width"):
+        fixed_shift_term("shl", 32, _leaf("narrow", width=16), 7)
+    with pytest.raises(ValueError, match="exactly one child"):
+        TypedBvTerm(
+            "shl",
+            32,
+            children=(x, _leaf("y", width=32)),
+            shift_count=7,
+        )
+
+
+@pytest.mark.parametrize("count", [-1, 32, True])
+def test_fixed_shift_rejects_invalid_literal_count(count):
+    x = _leaf("x", width=32)
+
+    with pytest.raises(ValueError, match="shift_count"):
+        fixed_shift_term("shl", 32, x, count)
+
+
+def test_non_shift_operator_rejects_shift_metadata():
+    x = _leaf("x", width=32)
+    y = _leaf("y", width=32)
+
+    with pytest.raises(ValueError, match="shift_count"):
+        TypedBvTerm("add", 32, children=(x, y), shift_count=1)
+
+
+@pytest.mark.parametrize("operation", sorted(FIXED_SHIFT_OPERATIONS))
+def test_fixed_shift_fingerprint_includes_direction_and_count(operation):
+    x = _leaf("x", width=32)
+    first = fixed_shift_term(operation, 32, x, 1)
+    second = fixed_shift_term(operation, 32, x, 2)
+
+    assert term_fingerprint(first) != term_fingerprint(second)
+    assert term_cost(first) == term_cost(second) == (1, 2)
+
+
+def test_fixed_shift_terms_are_not_ac_reassociated_or_flattened():
+    x = _leaf("x", width=32)
+    nested = fixed_shift_term("shl", 32, fixed_shift_term("shl", 32, x, 1), 2)
+
+    assert canonicalize_ac_term(nested) == nested
+
+
+@pytest.mark.parametrize("operation", ["rol", "ror"])
+def test_rotate_rejects_unsupported_width(operation):
+    x = _leaf("x", width=24)
+
+    with pytest.raises(ValueError, match="rotate"):
+        fixed_shift_term(operation, 24, x, 1)

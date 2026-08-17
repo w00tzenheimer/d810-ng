@@ -21,7 +21,11 @@ from d810.backends.mba.egglog_add_rule_compiler import (
     is_admitted_compiled_rule,
 )
 from d810.mba.dsl import SymbolicExpressionProtocol
-from d810.mba.typed_term import SUPPORTED_OPERATIONS, TypedBvTerm
+from d810.mba.typed_term import (
+    FIXED_SHIFT_OPERATIONS,
+    SUPPORTED_OPERATIONS,
+    TypedBvTerm,
+)
 
 
 _TEMPLATE_WIDTHS = frozenset({8, 16, 32, 64})
@@ -196,10 +200,16 @@ def _lower_validated_term(
         "xor": lambda: children[0] ^ children[1],
         "neg": lambda: -children[0],
         "bnot": lambda: ~children[0],
+        "shl": lambda: children[0] << term.shift_count,
+        "lshr": lambda: z3.LShR(children[0], term.shift_count),
+        "rol": lambda: z3.RotateLeft(children[0], term.shift_count),
+        "ror": lambda: z3.RotateRight(children[0], term.shift_count),
     }
     operation = operations.get(term.operation)
     if operation is None:
         raise ValueError("unsupported validated operation")
+    if term.operation in FIXED_SHIFT_OPERATIONS and term.shift_count is None:
+        raise ValueError("fixed shift is missing validated shift_count")
     return operation()
 
 
@@ -220,6 +230,8 @@ def _shape_from_expression(expression: object) -> NativeProofShape:
             constant=expression.value,
             requires_constant=bool(getattr(expression, "is_pattern_constant", False)),
         )
+    if operation in FIXED_SHIFT_OPERATIONS:
+        raise ValueError("fixed shifts require literal shift_count metadata")
     if operation not in SUPPORTED_OPERATIONS or expression.left is None:
         raise ValueError("unsupported template operation")
     children = [_shape_from_expression(expression.left)]

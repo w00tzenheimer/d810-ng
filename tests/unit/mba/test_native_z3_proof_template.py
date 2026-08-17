@@ -4,12 +4,17 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+import pytest
+
 from d810.backends.mba.egglog_add_rule_compiler import compile_add_rule_catalogue
+from d810.backends.mba.native_z3 import _prove_generic_native_terms
 from d810.backends.mba.native_z3_proof_template import (
     NativeZ3ProofTemplate,
+    TemplateValidation,
+    _lower_validated_term,
     native_z3_proof_templates_for_rules,
 )
-from d810.mba.typed_term import TypedBvTerm, canonicalize_ac_term
+from d810.mba.typed_term import TypedBvTerm, canonicalize_ac_term, fixed_shift_term
 
 
 def _rule(name: str):
@@ -107,3 +112,98 @@ def test_templates_are_immutable_and_keyed_by_exact_admitted_rule_identity() -> 
         pass
     else:  # pragma: no cover - documents the immutable cache contract.
         raise AssertionError("template catalogue must be immutable")
+
+
+@pytest.mark.parametrize("operation", ["shl", "lshr", "rol", "ror"])
+@pytest.mark.parametrize("width", [8, 16, 32, 64])
+@pytest.mark.parametrize("count_selector", [0, 1, -1])
+def test_fixed_shift_z3_lowering_matches_concrete_bitvector_semantics(
+    operation: str, width: int, count_selector: int
+) -> None:
+    import z3
+
+    count = (width - 1) if count_selector == -1 else count_selector
+    key = ("mop", "x")
+    term = fixed_shift_term(
+        operation,
+        width,
+        TypedBvTerm(None, width, leaf_key=key),
+        count,
+    )
+    variable = z3.BitVec("fixed_shift_x", width)
+    expression = _lower_validated_term(
+        term,
+        variables={key: variable},
+        z3=z3,
+    )
+
+    expected = {
+        "shl": variable << count,
+        "lshr": z3.LShR(variable, count),
+        "rol": z3.RotateLeft(variable, count),
+        "ror": z3.RotateRight(variable, count),
+    }[operation]
+    solver = z3.Solver()
+    solver.add(expression != expected)
+    assert solver.check() == z3.unsat
+
+    for value in (0, 1, (1 << (width - 1)), (1 << width) - 1):
+        concrete = z3.Solver()
+        concrete.add(variable == value)
+        assert concrete.check() == z3.sat
+        model = concrete.model()
+        assert model.eval(expression).as_long() == model.eval(expected).as_long()
+
+
+@pytest.mark.parametrize("operation", ["shl", "lshr", "rol", "ror"])
+@pytest.mark.parametrize("width", [8, 16, 32, 64])
+def test_native_z3_proof_template_proves_fixed_shift_terms(
+    operation: str, width: int
+) -> None:
+    template = NativeZ3ProofTemplate.from_compiled_rule(
+        _rule("Add_HackersDelightRule_2"), width=width
+    )
+    assert template is not None
+    term = fixed_shift_term(
+        operation,
+        width,
+        TypedBvTerm(None, width, leaf_key=("mop", "x")),
+        width - 1,
+    )
+    validation = TemplateValidation(
+        width=width,
+        original=term,
+        replacement=term,
+        leaf_keys=(("mop", "x"),),
+    )
+
+    assert template.prove_validation(validation)
+
+
+@pytest.mark.parametrize("operation", ["shl", "lshr", "rol", "ror"])
+@pytest.mark.parametrize("width", [8, 16, 32, 64])
+def test_native_z3_generic_proof_uses_exact_fixed_shift_semantics(
+    operation: str, width: int
+) -> None:
+    count = 1
+    source_value = (1 << (width - 1)) | 1
+    expected_value = {
+        "shl": 1 << count,
+        "lshr": 1 << (width - 2),
+        "rol": (1 << count) | 1,
+        "ror": (1 << (width - 1)) | (1 << (width - 2)),
+    }[operation]
+    source = fixed_shift_term(
+        operation,
+        width,
+        TypedBvTerm(None, width, value=source_value),
+        count,
+    )
+    expected = TypedBvTerm(None, width, value=expected_value)
+
+    assert _prove_generic_native_terms(
+        source,
+        expected,
+        width=width,
+        assumptions={},
+    ) is True

@@ -9,7 +9,9 @@ from dataclasses import dataclass
 AC_OPERATIONS = frozenset({"add", "and", "mul", "or", "xor"})
 UNARY_OPERATIONS = frozenset({"bnot", "neg"})
 BINARY_OPERATIONS = frozenset({"add", "and", "mul", "or", "sub", "xor"})
-SUPPORTED_OPERATIONS = UNARY_OPERATIONS | BINARY_OPERATIONS
+FIXED_SHIFT_OPERATIONS = frozenset({"shl", "lshr", "rol", "ror"})
+SUPPORTED_OPERATIONS = UNARY_OPERATIONS | BINARY_OPERATIONS | FIXED_SHIFT_OPERATIONS
+_ROTATE_WIDTHS = frozenset({8, 16, 32, 64})
 
 
 @dataclass(frozen=True)
@@ -21,6 +23,7 @@ class TypedBvTerm:
     value: int | None = None
     leaf_key: tuple[object, ...] | None = None
     children: tuple[TypedBvTerm, ...] = ()
+    shift_count: int | None = None
 
     def __post_init__(self) -> None:
         if type(self.width) is not int or self.width <= 0:
@@ -28,6 +31,9 @@ class TypedBvTerm:
         object.__setattr__(self, "children", tuple(self.children))
         if self.leaf_key is not None:
             object.__setattr__(self, "leaf_key", tuple(self.leaf_key))
+
+        if self.operation not in FIXED_SHIFT_OPERATIONS and self.shift_count is not None:
+            raise ValueError("only fixed shifts and rotates accept shift_count")
 
         if self.operation is None:
             if self.children:
@@ -59,13 +65,42 @@ class TypedBvTerm:
             raise ValueError(f"unsupported operation: {self.operation}")
         if self.value is not None or self.leaf_key is not None:
             raise ValueError("operator terms cannot carry a value or leaf_key")
-        expected_arity = 1 if self.operation in UNARY_OPERATIONS else 2
+        if self.operation in FIXED_SHIFT_OPERATIONS:
+            if len(self.children) != 1:
+                raise ValueError(f"{self.operation} requires exactly one child")
+            if type(self.shift_count) is not int or not 0 <= self.shift_count < self.width:
+                raise ValueError("shift_count must be an integer in [0, width)")
+            if self.operation in {"rol", "ror"} and self.width not in _ROTATE_WIDTHS:
+                raise ValueError("rotate operations require a supported rotate width")
+        expected_arity = (
+            1
+            if self.operation in UNARY_OPERATIONS or self.operation in FIXED_SHIFT_OPERATIONS
+            else 2
+        )
         if len(self.children) != expected_arity:
             raise ValueError(
                 f"{self.operation} requires exactly {expected_arity} children"
             )
         if any(child.width != self.width for child in self.children):
             raise ValueError("operator children must have the same width")
+
+
+def fixed_shift_term(
+    operation: str,
+    width: int,
+    operand: TypedBvTerm,
+    count: int,
+) -> TypedBvTerm:
+    """Construct one validated literal-count shift or rotate term."""
+
+    if not isinstance(operand, TypedBvTerm):
+        raise TypeError("operand must be a TypedBvTerm")
+    return TypedBvTerm(
+        operation=operation,
+        width=width,
+        children=(operand,),
+        shift_count=count,
+    )
 
 
 def _leaf_key_part_fingerprint(value: object) -> tuple[object, ...]:
@@ -101,12 +136,14 @@ def _term_sort_key(term: TypedBvTerm) -> tuple[object, ...]:
     if term.operation is None:
         assert term.leaf_key is not None
         return ("leaf", term.width, _leaf_key_fingerprint(term.leaf_key))
-    return (
+    key: tuple[object, ...] = (
         "node",
         term.operation,
         term.width,
-        tuple(_term_sort_key(child) for child in term.children),
     )
+    if term.operation in FIXED_SHIFT_OPERATIONS:
+        key += ("shift_count", term.shift_count)
+    return key + (tuple(_term_sort_key(child) for child in term.children),)
 
 
 def term_fingerprint(term: TypedBvTerm) -> str:
@@ -131,6 +168,7 @@ def canonicalize_ac_term(term: TypedBvTerm) -> TypedBvTerm:
             operation=term.operation,
             width=term.width,
             children=normalized_children,
+            shift_count=term.shift_count,
         )
 
     flattened: list[TypedBvTerm] = []
@@ -152,6 +190,7 @@ def canonicalize_ac_term(term: TypedBvTerm) -> TypedBvTerm:
             operation=term.operation,
             width=term.width,
             children=(rebuilt, child),
+            shift_count=term.shift_count,
         )
     return rebuilt
 
@@ -171,10 +210,12 @@ def term_cost(term: TypedBvTerm) -> tuple[int, int]:
 __all__ = [
     "AC_OPERATIONS",
     "BINARY_OPERATIONS",
+    "FIXED_SHIFT_OPERATIONS",
     "SUPPORTED_OPERATIONS",
     "UNARY_OPERATIONS",
     "TypedBvTerm",
     "canonicalize_ac_term",
+    "fixed_shift_term",
     "term_cost",
     "term_fingerprint",
 ]
