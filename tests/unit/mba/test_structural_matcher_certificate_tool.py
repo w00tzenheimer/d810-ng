@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from tools.scripts.mba_structural_matcher_certificate import build_certificate
+from d810.mba.semantic_canonicalization import CANONICALIZER_SCHEMA_VERSION
 
 
 def _digest(path: Path) -> str:
@@ -19,6 +20,7 @@ def _evidence(*, mismatch: int = 0) -> dict[str, object]:
         "snapshot": {
             "fingerprint": "a" * 64,
             "structural_authorizable": True,
+            "canonicalizer_schema_version": CANONICALIZER_SCHEMA_VERSION,
         },
         "ledger": {
             "observation_count": 11,
@@ -45,7 +47,7 @@ def test_build_certificate_binds_exact_manifest_and_canonical_toolchain(
         _evidence(), manifest=manifest, toolchain=toolchain
     )
 
-    assert certificate["schema_version"] == 2
+    assert certificate["schema_version"] == 3
     assert certificate["corpus_digest"] == _digest(manifest)
     assert certificate["toolchain_digest"] == hashlib.sha256(
         b'{"backend":"python","ida":"9.4"}'

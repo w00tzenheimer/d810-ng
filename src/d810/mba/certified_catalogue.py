@@ -7,7 +7,7 @@ import dis
 import hashlib
 import json
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import (
     BuiltinFunctionType,
@@ -17,6 +17,12 @@ from types import (
     ModuleType,
 )
 from d810.core.typing import Any, TypeAlias
+from d810.mba.canonical_pattern import (
+    CanonicalPatternUnsupported,
+    canonical_template_payload,
+    compile_canonical_pattern,
+)
+from d810.mba.semantic_canonicalization import CANONICALIZER_SCHEMA_VERSION
 from d810.mba.typed_term import TypedBvTerm
 
 
@@ -24,8 +30,8 @@ RootShape: TypeAlias = tuple[str | None, int, int]
 CompiledRule: TypeAlias = Any
 
 
-_SNAPSHOT_FINGERPRINT_VERSION = 3
-_PARITY_CERTIFICATE_SCHEMA_VERSION = 2
+_SNAPSHOT_FINGERPRINT_VERSION = 4
+_PARITY_CERTIFICATE_SCHEMA_VERSION = 3
 _DIGEST_LENGTH = 64
 
 
@@ -43,12 +49,36 @@ class CertifiedCatalogueSnapshot:
     rules_in_declaration_order: tuple[CompiledRule, ...]
     rule_ids_by_root_shape: Mapping[RootShape, tuple[int, ...]]
     structural_authorizable: bool
+    canonicalizer_schema_version: int = CANONICALIZER_SCHEMA_VERSION
+    canonical_templates_by_rule_width: Mapping[
+        tuple[int, int], Mapping[str, object]
+    ] = field(default_factory=dict)
+    canonical_rule_ids_by_root_shape: Mapping[RootShape, tuple[int, ...]] = field(
+        default_factory=dict
+    )
 
     def __post_init__(self) -> None:
         object.__setattr__(
             self,
             "rule_ids_by_root_shape",
             MappingProxyType(dict(self.rule_ids_by_root_shape)),
+        )
+        if self.canonicalizer_schema_version != CANONICALIZER_SCHEMA_VERSION:
+            raise ValueError("unsupported canonicalizer schema version")
+        object.__setattr__(
+            self,
+            "canonical_templates_by_rule_width",
+            MappingProxyType(
+                {
+                    key: MappingProxyType(dict(value))
+                    for key, value in self.canonical_templates_by_rule_width.items()
+                }
+            ),
+        )
+        object.__setattr__(
+            self,
+            "canonical_rule_ids_by_root_shape",
+            MappingProxyType(dict(self.canonical_rule_ids_by_root_shape)),
         )
 
 
@@ -86,6 +116,7 @@ class StructuralMatcherParityCertificate:
     corpus_digest: str
     toolchain_digest: str
     legacy_observation_count: int
+    canonicalizer_schema_version: int = CANONICALIZER_SCHEMA_VERSION
 
     def authorizes(
         self,
@@ -101,6 +132,9 @@ class StructuralMatcherParityCertificate:
             and self.corpus_digest == expectation.corpus_digest
             and self.toolchain_digest == expectation.toolchain_digest
             and self.legacy_observation_count == expectation.legacy_observation_count
+            and self.canonicalizer_schema_version
+            == snapshot.canonicalizer_schema_version
+            == CANONICALIZER_SCHEMA_VERSION
         )
 
 
@@ -118,7 +152,7 @@ def load_structural_matcher_parity_certificate(
     if not isinstance(raw, dict):
         raise ValueError("structural parity certificate must be an object")
     if raw.get("schema_version") != _PARITY_CERTIFICATE_SCHEMA_VERSION:
-        raise ValueError("structural parity certificate schema_version must be 2")
+        raise ValueError("structural parity certificate schema_version must be 3")
     fingerprint = raw.get("snapshot_fingerprint")
     if not _is_sha256_digest(fingerprint):
         raise ValueError(
@@ -138,13 +172,15 @@ def load_structural_matcher_parity_certificate(
         raise ValueError(
             "structural parity certificate needs positive legacy_observation_count"
         )
-    for field in (
+    for certificate_field in (
         "legacy_rule_mismatches",
         "legacy_binding_mismatches",
         "legacy_binding_unknown",
     ):
-        if raw.get(field) != 0:
-            raise ValueError(f"structural parity certificate requires {field}=0")
+        if raw.get(certificate_field) != 0:
+            raise ValueError(
+                f"structural parity certificate requires {certificate_field}=0"
+            )
     if raw.get("new_safe_coverage_pending") != 0:
         raise ValueError(
             "structural parity certificate requires new_safe_coverage_pending=0"
@@ -154,12 +190,18 @@ def load_structural_matcher_parity_certificate(
         raise ValueError(
             "structural parity certificate has invalid new_safe_coverage_proved"
         )
+    canonicalizer_version = raw.get("canonicalizer_schema_version")
+    if canonicalizer_version != CANONICALIZER_SCHEMA_VERSION:
+        raise ValueError(
+            "structural parity certificate canonicalizer_schema_version must be 1"
+        )
     return StructuralMatcherParityCertificate(
         snapshot_fingerprint=fingerprint,
         runtime_mode=runtime_mode,
         corpus_digest=corpus_digest,
         toolchain_digest=toolchain_digest,
         legacy_observation_count=observation_count,
+        canonicalizer_schema_version=canonicalizer_version,
     )
 
 
@@ -235,16 +277,19 @@ def make_structural_matcher_parity_certificate(
         raise ValueError(
             "structural parity certificate needs positive legacy_match_count"
         )
-    for field in (
+    for ledger_field in (
         "legacy_rule_mismatches",
         "legacy_binding_mismatches",
         "legacy_binding_unknown",
         "new_safe_coverage_pending",
     ):
-        if getattr(ledger, field) != 0:
-            raise ValueError(f"structural parity certificate requires {field}=0")
+        if getattr(ledger, ledger_field) != 0:
+            raise ValueError(
+                f"structural parity certificate requires {ledger_field}=0"
+            )
     return {
         "schema_version": _PARITY_CERTIFICATE_SCHEMA_VERSION,
+        "canonicalizer_schema_version": snapshot.canonicalizer_schema_version,
         "snapshot_fingerprint": snapshot.fingerprint,
         "runtime_mode": runtime_mode,
         "corpus_digest": corpus_digest,
@@ -470,6 +515,7 @@ def _implementation_identity(
 ) -> tuple[object, ...]:
     """Fingerprint runtime hooks that can change match/materialization semantics."""
 
+    implementation_owner = getattr(rule, "rule_type", type(rule))
     names = (
         "pattern",
         "replacement",
@@ -480,27 +526,52 @@ def _implementation_identity(
     )
     identities: list[object] = []
     for name in names:
-        implementation = getattr(type(rule), name, None)
+        implementation = getattr(implementation_owner, name, None)
         identities.append((name, _semantic_value(implementation, state)))
     return tuple(identities)
+
+
+def _rule_semantic_attribute(
+    rule: CompiledRule,
+    name: str,
+    default: object,
+) -> object:
+    """Read an admitted rule field from its wrapper or rule implementation."""
+
+    value = getattr(rule, name, None)
+    if value is None and name == "constraints":
+        value = getattr(rule, "CONSTRAINTS", None)
+    if value is not None:
+        return value
+    owner = getattr(rule, "rule_type", type(rule))
+    if name == "constraints":
+        value = getattr(owner, "CONSTRAINTS", None)
+        if value is not None:
+            return value
+    return getattr(owner, name, default)
 
 
 def _rule_identity(
     rule: CompiledRule, state: _SemanticFingerprintState
 ) -> tuple[object, ...]:
     pattern = _rule_pattern(rule)
+    rule_type = getattr(rule, "rule_type", type(rule))
     return (
         _rule_family(rule),
         str(
             getattr(rule, "source_name", getattr(rule, "name", type(rule).__qualname__))
         ),
+        f"{getattr(rule_type, '__module__', type(rule_type).__module__)}."
+        f"{getattr(rule_type, '__qualname__', type(rule_type).__qualname__)}",
         _semantic_value(pattern, state),
         _semantic_value(getattr(rule, "replacement", None), state),
-        _semantic_value(getattr(rule, "CONSTRAINTS", ()), state),
-        _semantic_value(getattr(rule, "DYNAMIC_CONSTS", {}), state),
-        _semantic_value(getattr(rule, "CONTEXT_VARS", {}), state),
-        _semantic_value(getattr(rule, "UPDATE_DESTINATION", None), state),
-        _semantic_value(getattr(rule, "BIT_WIDTH", None), state),
+        _semantic_value(_rule_semantic_attribute(rule, "constraints", ()), state),
+        _semantic_value(_rule_semantic_attribute(rule, "DYNAMIC_CONSTS", {}), state),
+        _semantic_value(_rule_semantic_attribute(rule, "CONTEXT_VARS", {}), state),
+        _semantic_value(
+            _rule_semantic_attribute(rule, "UPDATE_DESTINATION", None), state
+        ),
+        _semantic_value(_rule_semantic_attribute(rule, "BIT_WIDTH", None), state),
         _implementation_identity(rule, state),
         _semantic_value(getattr(rule, "aliases", ()), state),
     )
@@ -548,12 +619,52 @@ def build_certified_catalogue_snapshot(
         rule for rule in all_rules if enabled is None or _rule_family(rule) in enabled
     )
     semantic_state = _SemanticFingerprintState(active_ids=set())
+    canonical_templates: dict[tuple[int, int], Mapping[str, object]] = {}
+    canonical_root_buckets: dict[RootShape, list[int]] = {}
+    canonical_rule_payloads: list[tuple[object, tuple[object, ...]]] = []
+    for rule_id, rule in enumerate(frozen_rules):
+        width_templates: list[object] = []
+        for width in widths:
+            try:
+                compiled_pattern = compile_canonical_pattern(
+                    rule,
+                    width=width,
+                    declaration_index=rule_id,
+                )
+            except CanonicalPatternUnsupported:
+                # Unsupported DSL operations are intentionally legacy-eligible;
+                # they do not make the supported canonical snapshot opaque.
+                continue
+            except (TypeError, ValueError):
+                # A malformed or opaque rule semantic cannot authorize a
+                # canonical structural snapshot.  Keep its legacy identity in
+                # the payload so the resulting digest still changes.
+                semantic_state.structural_authorizable = False
+                continue
+            fragment = canonical_template_payload(compiled_pattern)
+            canonical_templates[(rule_id, width)] = fragment
+            width_templates.append(fragment)
+            canonical_root_buckets.setdefault(
+                (
+                    compiled_pattern.pattern_term.operation,
+                    width,
+                    len(compiled_pattern.pattern_term.children),
+                ),
+                [],
+            ).append(rule_id)
+        canonical_rule_payloads.append(
+            (
+                _rule_identity(rule, semantic_state),
+                tuple(width_templates),
+            )
+        )
     payload = {
         "snapshot_fingerprint_version": _SNAPSHOT_FINGERPRINT_VERSION,
+        "canonicalizer_schema_version": CANONICALIZER_SCHEMA_VERSION,
         "compiler_version": compiler_version,
         "widths": tuple(widths),
         "enabled_families": families,
-        "rules": tuple(_rule_identity(rule, semantic_state) for rule in frozen_rules),
+        "rules": tuple(canonical_rule_payloads),
         "structural_authorizable": semantic_state.structural_authorizable,
     }
     encoded = json.dumps(
@@ -572,6 +683,11 @@ def build_certified_catalogue_snapshot(
         rules_in_declaration_order=frozen_rules,
         rule_ids_by_root_shape={key: tuple(value) for key, value in buckets.items()},
         structural_authorizable=semantic_state.structural_authorizable,
+        canonicalizer_schema_version=CANONICALIZER_SCHEMA_VERSION,
+        canonical_templates_by_rule_width=canonical_templates,
+        canonical_rule_ids_by_root_shape={
+            key: tuple(value) for key, value in canonical_root_buckets.items()
+        },
     )
     _SNAPSHOTS[fingerprint] = snapshot
     return snapshot

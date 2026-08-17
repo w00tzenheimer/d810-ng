@@ -15,6 +15,7 @@ from d810.mba.certified_catalogue import (
     ShadowMatcherParityLedger,
     make_structural_matcher_parity_certificate,
 )
+from d810.mba.semantic_canonicalization import CANONICALIZER_SCHEMA_VERSION
 
 
 def _load_json(path: Path) -> object:
@@ -55,11 +56,17 @@ def _evidence_snapshot(value: object) -> CertifiedCatalogueSnapshot:
     authorizable = value.get("structural_authorizable")
     if type(fingerprint) is not str or type(authorizable) is not bool:
         raise ValueError("parity evidence snapshot is incomplete")
+    canonicalizer_version = value.get(
+        "canonicalizer_schema_version", CANONICALIZER_SCHEMA_VERSION
+    )
+    if canonicalizer_version != CANONICALIZER_SCHEMA_VERSION:
+        raise ValueError("parity evidence snapshot has invalid canonicalizer schema")
     return CertifiedCatalogueSnapshot(
         fingerprint=fingerprint,
         rules_in_declaration_order=(),
         rule_ids_by_root_shape={},
         structural_authorizable=authorizable,
+        canonicalizer_schema_version=canonicalizer_version,
     )
 
 

@@ -6,6 +6,7 @@ import json
 import pytest
 
 from d810.core.logging import getLogger
+from d810.backends.mba.egglog_add_rule_compiler import compile_mba_rule_catalogue
 from d810.mba.certified_catalogue import (
     ShadowMatcherParityLedger,
     StructuralMatcherParityCertificate,
@@ -15,6 +16,7 @@ from d810.mba.certified_catalogue import (
     make_structural_matcher_parity_certificate,
 )
 from d810.mba.dsl import Var
+from d810.mba.semantic_canonicalization import CANONICALIZER_SCHEMA_VERSION
 
 
 class _Rule:
@@ -164,6 +166,22 @@ def test_snapshot_fingerprint_binds_referenced_hook_global_values(monkeypatch) -
     assert baseline.fingerprint != changed.fingerprint
 
 
+def test_snapshot_records_width_specific_canonical_templates_and_version() -> None:
+    rule = compile_mba_rule_catalogue().receipt_for(
+        "add", "Add_HackersDelightRule_2"
+    ).compiled_rule
+    assert rule is not None
+    snapshot = build_certified_catalogue_snapshot(
+        (rule,), compiler_version="canonical-v1", widths=(32,)
+    )
+
+    assert snapshot.canonicalizer_schema_version == CANONICALIZER_SCHEMA_VERSION
+    template = snapshot.canonical_templates_by_rule_width[(0, 32)]
+    assert template["width"] == 32
+    assert template["semantic_fingerprint"]
+    assert template["pattern"] != template["replacement"]
+
+
 def test_snapshot_with_unfingerprintable_hook_global_cannot_authorize() -> None:
     x, y = Var("x"), Var("y")
     snapshot = build_certified_catalogue_snapshot(
@@ -213,9 +231,10 @@ def test_parity_certificate_requires_exact_expected_corpus_toolchain_and_coverag
     certificate_path = tmp_path / "parity.json"
     certificate_path.write_text(
         json.dumps(
-            {
-                "schema_version": 2,
-                "snapshot_fingerprint": snapshot.fingerprint,
+                {
+                    "schema_version": 3,
+                    "canonicalizer_schema_version": CANONICALIZER_SCHEMA_VERSION,
+                    "snapshot_fingerprint": snapshot.fingerprint,
                 "runtime_mode": "cython",
                 "corpus_digest": expectation.corpus_digest,
                 "toolchain_digest": expectation.toolchain_digest,
@@ -263,7 +282,7 @@ def test_parity_certificate_requires_exact_expected_corpus_toolchain_and_coverag
     certificate_path.write_text(
         json.dumps({"schema_version": 1}), encoding="utf-8"
     )
-    with pytest.raises(ValueError, match="schema_version must be 2"):
+    with pytest.raises(ValueError, match="schema_version must be 3"):
         load_structural_matcher_parity_certificate(certificate_path)
 
 
@@ -282,7 +301,7 @@ def test_parity_certificate_generator_refuses_nonzero_or_incomplete_ledger() -> 
         toolchain_digest=_digest("ida-python"),
     )
 
-    assert certificate["schema_version"] == 2
+    assert certificate["schema_version"] == 3
     assert certificate["snapshot_fingerprint"] == snapshot.fingerprint
     assert certificate["legacy_observation_count"] == 7
     with pytest.raises(ValueError, match="legacy_rule_mismatches=0"):

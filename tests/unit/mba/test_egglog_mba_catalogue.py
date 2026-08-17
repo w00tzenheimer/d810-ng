@@ -183,6 +183,25 @@ def test_compiled_rules_are_family_qualified_and_cross_width_certified(
     )
 
 
+def test_canonical_template_projection_consumes_existing_admitted_rules_only(
+    monkeypatch,
+):
+    from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
+
+    rule = compile_add_rule_catalogue().receipt_for(
+        "Add_HackersDelightRule_2"
+    ).compiled_rule
+    assert rule is not None
+    monkeypatch.setattr(
+        egglog_add_rule_compiler,
+        "verify_rule",
+        lambda *_args, **_kwargs: pytest.fail("canonical projection recompiled proof"),
+    )
+
+    catalogue = CompiledPatternCatalogue.from_rules((rule,))
+    assert catalogue.rules[0].canonical_by_width[32].semantic_fingerprint
+
+
 def test_add_catalogue_remains_a_source_name_compatible_view(mba_catalogue):
     add_catalogue = compile_add_rule_catalogue()
     whole_catalogue = mba_catalogue

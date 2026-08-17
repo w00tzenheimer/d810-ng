@@ -1,4 +1,8 @@
-"""Pure certificate catalogue for ADD rules that can be lowered to Egglog."""
+"""Pure certificate catalogue for ADD rules that can be lowered to Egglog.
+
+Canonical structural templates consume the admitted objects produced here;
+they never reconstruct a second rule inventory or re-run proof compilation.
+"""
 
 from __future__ import annotations
 
@@ -255,6 +259,21 @@ def is_admitted_compiled_rule(rule: object) -> bool:
         return False
     enrolled = _ADMITTED_RULES_BY_ID.get(id(rule))
     return enrolled is not None and enrolled() is rule
+
+
+def require_admitted_compiled_rules(
+    rules: Collection[object],
+) -> tuple[CompiledEgglogRule, ...]:
+    """Freeze an existing admitted rule sequence for downstream projections.
+
+    This is deliberately only an identity/admission check.  It does not
+    instantiate rule classes, verify Z3 schemas, or create another inventory.
+    """
+
+    frozen = tuple(rules)
+    if any(not is_admitted_compiled_rule(rule) for rule in frozen):
+        raise ValueError("compiled pattern catalogue requires admitted rules")
+    return tuple(frozen)  # type: ignore[return-value]
 
 
 def _expression_symbolic_names(expression: Any) -> set[str]:

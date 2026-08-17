@@ -17,11 +17,21 @@ from d810.backends.mba.egglog_add_rule_compiler import (
     CompiledEgglogRule,
     _constraints_match_term,
     _materialize_symbolic_term,
-    is_admitted_compiled_rule,
+    require_admitted_compiled_rules,
 )
 from d810.backends.mba.native_mba_term_view import NativeMbaTermView
 from d810.core.typing import Any
+from d810.mba.canonical_pattern import (
+    CanonicalCompiledPattern,
+    CanonicalFixedBindings,
+    CanonicalPatternMatchReport,
+    CanonicalPatternUnsupported,
+    compile_canonical_pattern,
+    match_canonical_term_pattern,
+)
+from d810.mba.ac_matching import AcMatchStopReason
 from d810.mba.dsl import SymbolicExpressionProtocol
+from d810.mba.semantic_canonicalization import canonicalize_mba_term
 from d810.mba.typed_term import TypedBvTerm, term_fingerprint
 
 
@@ -89,6 +99,7 @@ class _CompiledPattern:
     catalogue_index: int
     pod_pattern: _PodPattern | None
     structural_node_count: int
+    canonical_by_width: Mapping[int, CanonicalCompiledPattern]
 
 
 class _ComparisonBudgetExceeded(RuntimeError):
@@ -120,6 +131,9 @@ class CompiledPatternCatalogue:
     pod_records_by_root_width: Mapping[
         tuple[str, int], tuple[tuple[tuple[tuple[int, ...], ...], int], ...] | None
     ]
+    canonical_root_width_buckets: Mapping[
+        tuple[str, int], tuple[_CompiledPattern, ...]
+    ]
 
     @classmethod
     def from_rules(
@@ -130,16 +144,29 @@ class CompiledPatternCatalogue:
         # symbolic rule tree again.
         from d810.backends.mba.native_pod_matcher import encode_symbolic_pattern
 
+        admitted_rules = require_admitted_compiled_rules(rules)
         compiled: list[_CompiledPattern] = []
         buckets: dict[tuple[str, int], list[_CompiledPattern]] = {}
-        for index, rule in enumerate(rules):
-            if not is_admitted_compiled_rule(rule):
-                raise ValueError("compiled pattern catalogue requires admitted rules")
+        canonical_buckets: dict[tuple[str, int], list[_CompiledPattern]] = {}
+        for index, rule in enumerate(admitted_rules):
+            canonical_by_width: dict[int, CanonicalCompiledPattern] = {}
+            for width in rule.proof_widths:
+                try:
+                    canonical_by_width[width] = compile_canonical_pattern(
+                        rule,
+                        width=width,
+                        declaration_index=index,
+                    )
+                except CanonicalPatternUnsupported:
+                    # Unsupported DSL semantics remain available to the POD
+                    # matcher and therefore stay legacy-eligible.
+                    continue
             pattern = _CompiledPattern(
                 rule,
                 index,
                 encode_symbolic_pattern(rule.pattern),
                 _symbolic_node_count(rule.pattern),
+                MappingProxyType(canonical_by_width),
             )
             compiled.append(pattern)
             operation = rule.pattern.operation
@@ -147,7 +174,14 @@ class CompiledPatternCatalogue:
                 continue
             for width in rule.proof_widths:
                 buckets.setdefault((operation, width), []).append(pattern)
+            for width, canonical in canonical_by_width.items():
+                canonical_buckets.setdefault(
+                    (canonical.pattern_term.operation or "", width), []
+                ).append(pattern)
         frozen_buckets = {key: tuple(value) for key, value in buckets.items()}
+        frozen_canonical_buckets = {
+            key: tuple(value) for key, value in canonical_buckets.items()
+        }
         pod_records = {
             key: (
                 None
@@ -164,6 +198,7 @@ class CompiledPatternCatalogue:
             tuple(compiled),
             MappingProxyType(frozen_buckets),
             MappingProxyType(pod_records),
+            MappingProxyType(frozen_canonical_buckets),
         )
 
     def match_root(
@@ -180,6 +215,94 @@ class CompiledPatternCatalogue:
         from d810.backends.mba.native_pod_matcher import match_root_pod
 
         return match_root_pod(self, candidate, comparison_budget=comparison_budget)
+
+    def match_canonical_root(
+        self,
+        candidate: TypedBvTerm,
+        *,
+        comparison_budget: int = 64,
+    ) -> CanonicalPatternMatchReport:
+        """Match one candidate against the precompiled canonical root bucket.
+
+        The candidate is lowered through the shared canonicalizer exactly once
+        for this callback.  Rule proof compilation and catalogue inventory
+        construction happen only in :meth:`from_rules`; this method consumes
+        immutable width-specific templates and performs no backend work.
+        """
+
+        if type(comparison_budget) is not int or comparison_budget < 0:
+            raise ValueError("comparison_budget must be a non-negative integer")
+        if not isinstance(candidate, TypedBvTerm):
+            raise TypeError("candidate must be a TypedBvTerm")
+        canonical_candidate = canonicalize_mba_term(candidate).canonical_term
+        operation = canonical_candidate.operation
+        if operation is None:
+            return CanonicalPatternMatchReport((), 0, 0, 0, AcMatchStopReason.MISS)
+        bucket = self.canonical_root_width_buckets.get(
+            (operation, canonical_candidate.width), ()
+        )
+        if not bucket:
+            return CanonicalPatternMatchReport((), 0, 0, 0, AcMatchStopReason.MISS)
+
+        matches = []
+        comparisons = 0
+        commuted_branches = 0
+        flattened_nodes = 0
+        saw_cardinality = False
+        for compiled in bucket:
+            pattern = compiled.canonical_by_width.get(canonical_candidate.width)
+            if pattern is None:
+                continue
+            remaining = max(0, comparison_budget - comparisons)
+            report = match_canonical_term_pattern(
+                pattern,
+                canonical_candidate,
+                comparison_budget=remaining,
+            )
+            comparisons += report.comparisons
+            commuted_branches += report.commuted_branches
+            flattened_nodes += report.flattened_nodes
+            if report.stop_reason is AcMatchStopReason.COMPARISON_BUDGET:
+                return CanonicalPatternMatchReport(
+                    (),
+                    comparisons,
+                    commuted_branches,
+                    flattened_nodes,
+                    report.stop_reason,
+                )
+            if report.stop_reason is AcMatchStopReason.CARDINALITY_MISMATCH:
+                saw_cardinality = True
+            for match in report.matches:
+                terms = dict(match.bindings.terms)
+                if not _constraints_match_term(
+                    compiled.rule,
+                    terms,
+                    width=canonical_candidate.width,
+                ):
+                    continue
+                matches.append(
+                    type(match)(
+                        compiled_pattern=match.compiled_pattern,
+                        bindings=CanonicalFixedBindings(
+                            terms,
+                            match.bindings.candidate_paths,
+                            canonical_candidate.width,
+                        ),
+                    )
+                )
+        if matches:
+            reason = AcMatchStopReason.MATCHED
+        elif saw_cardinality:
+            reason = AcMatchStopReason.CARDINALITY_MISMATCH
+        else:
+            reason = AcMatchStopReason.MISS
+        return CanonicalPatternMatchReport(
+            tuple(matches),
+            comparisons,
+            commuted_branches,
+            flattened_nodes,
+            reason,
+        )
 
     def feasible_root_patterns(
         self, candidate: NativeMbaTermView

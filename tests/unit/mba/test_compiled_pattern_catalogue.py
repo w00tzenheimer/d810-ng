@@ -6,6 +6,7 @@ import pytest
 
 from d810.backends.mba.egglog_add_rule_compiler import compile_add_rule_catalogue
 from d810.backends.mba.native_mba_term_view import NativeMbaTermView
+from d810.mba.semantic_canonicalization import canonicalize_mba_term
 from d810.mba.typed_term import canonicalize_ac_term
 
 
@@ -23,6 +24,12 @@ def _node(name: str, *children: NativeMbaTermView) -> NativeMbaTermView:
 
 def _rule(name: str):
     return compile_add_rule_catalogue().receipt_for(name).compiled_rule
+
+
+def _xor_rule(name: str):
+    from d810.backends.mba.egglog_add_rule_compiler import compile_mba_rule_catalogue
+
+    return compile_mba_rule_catalogue().receipt_for("xor", name).compiled_rule
 
 
 def test_compiled_catalogue_matches_ac_operands_without_variant_rules() -> None:
@@ -165,3 +172,69 @@ def test_compiled_catalogue_uses_root_width_buckets_and_refuses_comparison_overr
     assert refused.matches == ()
     assert refused.comparison_budget_exceeded is True
     assert refused.comparisons == 2
+
+
+def test_compiled_catalogue_freezes_canonical_templates_from_admitted_rules():
+    from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
+
+    rule = _xor_rule("Xor_HackersDelightRule_3")
+    assert rule is not None
+    catalogue = CompiledPatternCatalogue.from_rules((rule,))
+    compiled = catalogue.rules[0].canonical_by_width[32]
+
+    assert compiled.pattern_term.operation == "sub"
+    assert catalogue.canonical_root_width_buckets[("sub", 32)] == (catalogue.rules[0],)
+
+
+def test_canonical_catalogue_match_keeps_fixed_portable_bindings_and_budget():
+    from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
+
+    rule = _xor_rule("Xor_HackersDelightRule_3")
+    assert rule is not None
+    x, y = _leaf("x"), _leaf("y")
+    candidate = _node(
+        "add",
+        _node("add", x, y),
+        _node("mul", _constant(-2), _node("and", x, y)),
+    )
+    typed = canonicalize_mba_term(candidate.to_typed_term()).canonical_term
+    catalogue = CompiledPatternCatalogue.from_rules((rule,))
+
+    matched = catalogue.match_canonical_root(typed, comparison_budget=64)
+    assert matched.stop_reason.value == "matched"
+    assert matched.matches[0].bindings.terms["x_0"].leaf_key == x.leaf_key
+    assert matched.matches[0].bindings.terms["x_1"].leaf_key == y.leaf_key
+
+    refused = catalogue.match_canonical_root(typed, comparison_budget=0)
+    assert refused.matches == ()
+    assert refused.stop_reason.value == "comparison_budget"
+
+
+def test_canonical_catalogue_keeps_constraint_derived_bindings_without_paths():
+    from d810.backends.mba.egglog_add_rule_compiler import compile_mba_rule_catalogue
+    from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
+
+    rule = compile_mba_rule_catalogue().receipt_for(
+        "add", "Add_SpecialConstantRule_3"
+    ).compiled_rule
+    assert rule is not None
+    x = _leaf("x")
+    candidate = _node(
+        "add",
+        _node("xor", x, _constant(-2)),
+        _node(
+            "mul",
+            _constant(2),
+            _node("or", x, _constant(1)),
+        ),
+    )
+    typed = canonicalize_mba_term(candidate.to_typed_term()).canonical_term
+
+    matched = CompiledPatternCatalogue.from_rules((rule,)).match_canonical_root(
+        typed, comparison_budget=64
+    )
+
+    assert matched.matches
+    binding = matched.matches[0].bindings
+    assert binding.terms["val_res"].value == 0
+    assert "val_res" not in binding.candidate_paths
