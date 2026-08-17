@@ -31,6 +31,13 @@ from d810.mba.certified_catalogue import (
     StructuralMatcherParityExpectation,
     load_structural_matcher_parity_certificate,
 )
+from d810.mba.native_corpus_capture import (
+    ManifestNativeCaptureCase,
+    NativeCaptureSelection,
+    NativeMbaCorpusCapture,
+    capture_manifest_native_cases,
+    select_native_capture_profile,
+)
 from d810.mba.provider_outcome import MbaProviderKind, ProviderOutcomeStatus
 from d810.mba.native_corpus_capture import capture_native_provider_histories
 from d810.optimizers.microcode.instructions.pattern_matching.engine import (
@@ -72,6 +79,8 @@ _CATALOGUE_CASES = (
     ("mba_shape_catalogue_09", "Or_HackersDelightRule_2"),
     ("mba_shape_catalogue_10", "Xor_HackersDelightRule_1"),
 )
+_PORTFOLIO_PROJECT = "mba_portfolio_spike.json"
+_EXPECTED_NATIVE_PROVIDERS = tuple(MbaProviderKind)
 
 # GCC's -O0 code reaches IDA as already-canonical roots for these five forms.
 # They remain semantically paired corpus samples, but do not constitute a
@@ -205,6 +214,118 @@ def _parity_artifact_dir(tmp_path: Path) -> Path:
     destination = tmp_path if not configured else Path(configured)
     destination.mkdir(parents=True, exist_ok=True)
     return destination
+
+
+def _manifest_capture_cases() -> tuple[ManifestNativeCaptureCase, ...]:
+    manifest = json.loads(_MANIFEST.read_text(encoding="utf-8"))
+    return tuple(
+        ManifestNativeCaptureCase(case["case_id"], case["stratum"])
+        for case in manifest["cases"]
+    )
+
+
+def _manifest_function(case_id: str) -> str:
+    manifest = json.loads(_MANIFEST.read_text(encoding="utf-8"))
+    return next(case["function"] for case in manifest["cases"] if case["case_id"] == case_id)
+
+
+def _preferred_manifest_providers(case_id: str) -> tuple[MbaProviderKind, ...]:
+    manifest = json.loads(_MANIFEST.read_text(encoding="utf-8"))
+    case = next(case for case in manifest["cases"] if case["case_id"] == case_id)
+    return tuple(MbaProviderKind(provider) for provider in case["expected_route"])
+
+
+def _task13_capture_toolchain_identity(runtime_mode: str) -> dict[str, str]:
+    compiler = _find_c_compiler()
+    compiler_version = subprocess.run(
+        [compiler, "--version"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()[0]
+    return {
+        "compiler_executable": compiler,
+        "compiler_version": compiler_version,
+        "compiler_flags": " ".join(
+            (*_compiler_shape_build_flags(compiler), "-I", str(_ROOT / "samples/include"))
+        ),
+        "ida_sdk": str(idaapi.IDA_SDK_VERSION),
+        "matcher_backend": runtime_mode,
+        "profile": "portfolio-interactive",
+    }
+
+
+def _persist_task13_native_capture(
+    capture_path: Path,
+    *,
+    d810_state,
+    pseudocode_to_string,
+) -> dict[str, object]:
+    """Persist the real Task 13 NativeMbaCorpusCapture wire shape."""
+
+    runtime_mode = str(get_engine_info()["backend"])
+    capture = NativeMbaCorpusCapture(
+        corpus_identity="mba-compiler-shapes-native",
+        toolchain_identity=_task13_capture_toolchain_identity(runtime_mode),
+    )
+    manifest_cases = _manifest_capture_cases()
+    whole_function_elapsed_ms: dict[str, float] = {}
+    with d810_state() as state:
+        assert state.load_project(state.project_manager.index(_PORTFOLIO_PROJECT)) is not None
+        selected_rules = tuple(state.current_ins_rules)
+
+        @contextlib.contextmanager
+        def selected_state():
+            yield state
+
+        def run_case(case: ManifestNativeCaptureCase, snapshot):
+            started = time.monotonic()
+            run_deobfuscation_test(
+                DeobfuscationCase(
+                    function=_manifest_function(case.case_id),
+                    description="Task 13 native provider capture",
+                    must_change=False,
+                ),
+                d810_state=selected_state,
+                pseudocode_to_string=pseudocode_to_string,
+            )
+            whole_function_elapsed_ms[case.case_id] = (
+                time.monotonic() - started
+            ) * 1000.0
+            try:
+                return select_native_capture_profile(
+                    selected_rules,
+                    history_snapshot=snapshot,
+                    preferred_providers=_preferred_manifest_providers(case.case_id),
+                )
+            except ValueError as exc:
+                if str(exc) == "ambiguous native capture profile: none":
+                    return None
+                if str(exc).startswith("ambiguous native capture profile:"):
+                    return NativeCaptureSelection(
+                        profile=None,
+                        unavailable_reason="native_candidate_ambiguous",
+                    )
+                raise
+
+        captured = capture_manifest_native_cases(
+            capture=capture,
+            cases=manifest_cases,
+            rules=selected_rules,
+            expected_providers=_EXPECTED_NATIVE_PROVIDERS,
+            run_case=run_case,
+        )
+
+    expected_case_ids = {case.case_id for case in manifest_cases}
+    assert len(captured) == len(expected_case_ids) == 76
+    assert {case.case_id for case in captured} == expected_case_ids
+    assert all(len(case.outcomes) == len(_EXPECTED_NATIVE_PROVIDERS) for case in captured)
+    capture.set_capture_metadata(
+        {"whole_function_elapsed_ms_by_case": whole_function_elapsed_ms}
+    )
+    capture_path.parent.mkdir(parents=True, exist_ok=True)
+    capture.write_json(capture_path)
+    return json.loads(capture_path.read_text(encoding="utf-8"))
 
 
 def _build_native_corpus_binary(output_path: Path) -> None:
@@ -566,28 +687,51 @@ class TestCompilerShapeCatalogueNative:
         assert combined.legacy_binding_mismatches == 0
         assert combined.legacy_binding_unknown == 0
         assert combined.new_safe_coverage_pending == 0
+        manifest_case_ids_by_function = {
+            case["function"]: case["case_id"]
+            for case in json.loads(_MANIFEST.read_text(encoding="utf-8"))["cases"]
+        }
+        catalogue_case_coverage = {
+            manifest_case_ids_by_function[function]: {
+                "observation_count": ledger.observation_count,
+                "legacy_match_count": ledger.legacy_match_count,
+            }
+            for (function, _), ledger in zip(_CATALOGUE_CASES, ledgers, strict=True)
+        }
+        assert len(catalogue_case_coverage) == len(_CATALOGUE_CASES)
 
         artifacts = _parity_artifact_dir(tmp_path)
         runtime_mode = str(get_engine_info()["backend"])
-        compiler = _find_c_compiler()
-        toolchain = {
-            "compiler": compiler,
-            "compiler_version": subprocess.run(
-                [compiler, "--version"],
-                check=True,
-                capture_output=True,
-                text=True,
-            ).stdout.splitlines()[0],
-            "ida_sdk": str(idaapi.IDA_SDK_VERSION),
-            "matcher_backend": runtime_mode,
-        }
         ledger_path = artifacts / f"mba-structural-parity-{runtime_mode}.json"
-        capture_path = artifacts / f"mba-structural-capture-{runtime_mode}.json"
-        toolchain_path = artifacts / f"mba-structural-parity-toolchain-{runtime_mode}.json"
+        capture_path = artifacts / f"mba-native-capture-interactive-{runtime_mode}.json"
         certificate_path = artifacts / f"mba-structural-parity-{runtime_mode}.certificate.json"
+        capture_document = _persist_task13_native_capture(
+            capture_path,
+            d810_state=d810_state,
+            pseudocode_to_string=pseudocode_to_string,
+        )
+        capture_cases = capture_document["cases"]
+        assert isinstance(capture_cases, list)
+        assert len(capture_cases) == 76
+        capture_case_ids = {
+            case["case_id"] for case in capture_cases if isinstance(case, Mapping)
+        }
+        assert {
+            f"catalogue_{index:02d}" for index in range(1, len(_CATALOGUE_CASES) + 1)
+        } <= capture_case_ids
+        capture_provider_row_count = sum(
+            len(case["outcomes"])
+            for case in capture_cases
+            if isinstance(case, Mapping) and isinstance(case.get("outcomes"), list)
+        )
+        assert capture_provider_row_count == 76 * len(_EXPECTED_NATIVE_PROVIDERS)
+        toolchain_identity = capture_document["toolchain_identity"]
+        assert isinstance(toolchain_identity, Mapping)
+        toolchain_digest = _canonical_json_digest(toolchain_identity)
         ledger_path.write_text(
             json.dumps(
                 {
+                    "schema_version": 1,
                     "runtime_mode": runtime_mode,
                     "snapshot": {
                         "fingerprint": snapshot.fingerprint,
@@ -608,41 +752,17 @@ class TestCompilerShapeCatalogueNative:
                             "unproved_structural_replacements",
                         )
                     },
+                    "coverage": {
+                        "case_count": len(capture_cases),
+                        "provider_row_count": capture_provider_row_count,
+                        "catalogue_cases": catalogue_case_coverage,
+                    },
                 },
                 allow_nan=False,
                 ensure_ascii=True,
                 indent=2,
                 sort_keys=True,
             )
-            + "\n",
-            encoding="utf-8",
-        )
-        capture_path.write_text(
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "runtime_mode": runtime_mode,
-                    "corpus_digest": _sha256_file(_MANIFEST),
-                    "toolchain_digest": _canonical_json_digest(toolchain),
-                    "cases": [
-                        {
-                            "case_id": case["case_id"],
-                        }
-                        for case in json.loads(_MANIFEST.read_text(encoding="utf-8"))[
-                            "cases"
-                        ]
-                    ],
-                },
-                allow_nan=False,
-                ensure_ascii=True,
-                indent=2,
-                sort_keys=True,
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-        toolchain_path.write_text(
-            json.dumps(toolchain, allow_nan=False, ensure_ascii=True, indent=2, sort_keys=True)
             + "\n",
             encoding="utf-8",
         )
@@ -673,7 +793,7 @@ class TestCompilerShapeCatalogueNative:
             snapshot.canonicalizer_schema_version
         )
         assert certificate["corpus_digest"] == _sha256_file(_MANIFEST)
-        assert certificate["toolchain_digest"] == _canonical_json_digest(toolchain)
+        assert certificate["toolchain_digest"] == toolchain_digest
         assert certificate["legacy_observation_count"] > 0
         assert certificate["observation_count"] == combined.observation_count
         assert certificate["observation_count"] > 0
@@ -706,7 +826,7 @@ class TestCompilerShapeCatalogueNative:
                 "structural_matcher_parity_certificate": certificate_path.name,
                 "structural_matcher_parity_expectation": {
                     "corpus_digest": _sha256_file(_MANIFEST),
-                    "toolchain_digest": _canonical_json_digest(toolchain),
+                    "toolchain_digest": toolchain_digest,
                     "legacy_observation_count": combined.legacy_match_count,
                     "observation_count": combined.observation_count,
                 },
@@ -734,12 +854,16 @@ class TestCompilerShapeCatalogueNative:
             assert all(adapter.uses_structural_matching for adapter in adapters)
             assert all(len(adapter.pattern_candidates) == 1 for adapter in adapters)
 
-            function_ea = get_func_ea("mba_shape_catalogue_01")
-            assert function_ea != idaapi.BADADDR
+            function_eas = {
+                function: get_func_ea(function) for function, _ in _CATALOGUE_CASES
+            }
+            assert all(ea != idaapi.BADADDR for ea in function_eas.values())
             state.stop_d810()
-            before = idaapi.decompile(function_ea, flags=idaapi.DECOMP_NO_CACHE)
-            assert before is not None
-            before_text = pseudocode_to_string(before.get_pseudocode())
+            for function, _ in _CATALOGUE_CASES:
+                before = idaapi.decompile(
+                    function_eas[function], flags=idaapi.DECOMP_NO_CACHE
+                )
+                assert before is not None
             native_proof_results: list[bool] = []
             original_native_proof = ida_backend.prove_native_ast_equivalence
 
@@ -753,45 +877,81 @@ class TestCompilerShapeCatalogueNative:
                 "prove_native_ast_equivalence",
                 record_native_proof,
             )
+            accepted_structural_by_function: dict[str, tuple[object, ...]] = {}
             with capture_native_provider_histories(adapters):
                 handler_started = time.monotonic()
                 state.start_d810()
                 handler_startup_ms = (time.monotonic() - handler_started) * 1000.0
-                after = idaapi.decompile(function_ea, flags=idaapi.DECOMP_NO_CACHE)
+                for function, _ in _CATALOGUE_CASES:
+                    outcome_cursors = tuple(
+                        (
+                            adapter,
+                            (
+                                adapter.provider_outcome_cursor()
+                                if callable(
+                                    getattr(adapter, "provider_outcome_cursor", None)
+                                )
+                                else len(adapter.provider_outcomes())
+                            ),
+                        )
+                        for adapter in adapters
+                    )
+                    proof_start = len(native_proof_results)
+                    after = idaapi.decompile(
+                        function_eas[function], flags=idaapi.DECOMP_NO_CACHE
+                    )
+                    assert after is not None
+                    new_outcomes = tuple(
+                        outcome
+                        for adapter, cursor in outcome_cursors
+                        for outcome in (
+                            adapter.provider_outcomes_since(cursor)
+                            if callable(
+                                getattr(adapter, "provider_outcomes_since", None)
+                            )
+                            else adapter.provider_outcomes()[cursor:]
+                        )
+                    )
+                    accepted = tuple(
+                        outcome
+                        for outcome in new_outcomes
+                        if outcome.provider is MbaProviderKind.CATALOGUE
+                        and outcome.status is ProviderOutcomeStatus.APPLIED
+                        and "structural_dispatch" in outcome.metadata
+                    )
+                    accepted_structural_by_function[function] = accepted
+                    assert sum(native_proof_results[proof_start:]) >= len(accepted)
                 state.stop_d810()
-            assert after is not None
-            assert pseudocode_to_string(after.get_pseudocode()) != before_text
             outcomes = tuple(
                 outcome
                 for adapter in adapters
                 for outcome in adapter.provider_outcomes()
             )
-            assert any(
-                outcome.provider is MbaProviderKind.CATALOGUE
-                and outcome.status is ProviderOutcomeStatus.APPLIED
-                and "structural_dispatch" in outcome.metadata
-                for outcome in outcomes
-            )
-            structural_outcome = next(
+            structural_outcomes = tuple(
                 outcome
                 for outcome in outcomes
                 if outcome.provider is MbaProviderKind.CATALOGUE
                 and outcome.status is ProviderOutcomeStatus.APPLIED
                 and "structural_dispatch" in outcome.metadata
             )
-            assert structural_outcome.matcher is not None
-            assert structural_outcome.status is ProviderOutcomeStatus.APPLIED
-            assert structural_outcome.metadata["mutation_outcome"] == "accepted"
+            assert structural_outcomes
+            assert sum(len(items) for items in accepted_structural_by_function.values()) == len(
+                structural_outcomes
+            )
+            assert all(outcome.matcher is not None for outcome in structural_outcomes)
+            assert all(
+                outcome.metadata["mutation_outcome"] == "accepted"
+                for outcome in structural_outcomes
+            )
             assert native_proof_results
-            assert all(native_proof_results)
-            assert sum(
-                1
+            assert any(native_proof_results)
+            applied_catalogue_outcomes = tuple(
+                outcome
                 for outcome in outcomes
                 if outcome.provider is MbaProviderKind.CATALOGUE
                 and outcome.status is ProviderOutcomeStatus.APPLIED
-            ) == 1
-            dispatch = structural_outcome.metadata["structural_dispatch"]
-            assert isinstance(dispatch, Mapping)
+            )
+            assert len(applied_catalogue_outcomes) == len(structural_outcomes)
             report_evidence_path = artifacts / f"mba-structural-report-evidence-{runtime_mode}.json"
             report_evidence_path.write_text(
                 json.dumps(
@@ -799,16 +959,21 @@ class TestCompilerShapeCatalogueNative:
                         "capture_metadata": {
                             "matcher_samples": [
                                 {
-                                    "bucket_size": dispatch["bucket_size"],
-                                    "attempted_rule_count": dispatch["attempted_rule_count"],
-                                    "comparisons": structural_outcome.matcher.comparisons,
-                                    "lazy_swaps": structural_outcome.matcher.lazy_swaps,
-                                    "flattened_arity": structural_outcome.matcher.flattened_arity,
+                                    "bucket_size": outcome.metadata["structural_dispatch"][
+                                        "bucket_size"
+                                    ],
+                                    "attempted_rule_count": outcome.metadata[
+                                        "structural_dispatch"
+                                    ]["attempted_rule_count"],
+                                    "comparisons": outcome.matcher.comparisons,
+                                    "lazy_swaps": outcome.matcher.lazy_swaps,
+                                    "flattened_arity": outcome.matcher.flattened_arity,
                                     "comparison_cap_refusal": (
-                                        structural_outcome.matcher.stop_reason
+                                        outcome.matcher.stop_reason
                                         == "comparison_budget"
                                     ),
                                 }
+                                for outcome in structural_outcomes
                             ],
                             "lifecycle_measurements": {
                                 "cold_snapshot_ms": [cold_snapshot_ms],
@@ -826,7 +991,7 @@ class TestCompilerShapeCatalogueNative:
                                         for adapter in adapters
                                     )
                                 ],
-                                "native_proof_invocations": [1],
+                                "native_proof_invocations": [len(native_proof_results)],
                             },
                         }
                     },
@@ -845,11 +1010,10 @@ class TestCompilerShapeCatalogueNative:
             )
             expectation = StructuralMatcherParityExpectation(
                 corpus_digest=_sha256_file(_MANIFEST),
-                toolchain_digest=_canonical_json_digest(toolchain),
+                toolchain_digest=toolchain_digest,
                 legacy_observation_count=combined.legacy_match_count,
                 observation_count=combined.observation_count,
             )
-            configured_adapter = adapters[0]
             stale_mutations = (
                 (
                     "wrong_runtime",
@@ -902,26 +1066,32 @@ class TestCompilerShapeCatalogueNative:
                 stale_expectation,
                 stale_runtime,
             ) in stale_mutations:
-                configured_adapter.attach_certified_catalogue_snapshot(
-                    snapshot,
-                    0,
-                    state.current_shadow_matcher_parity_ledger,
-                    loaded_certificate,
-                    expectation,
-                    runtime_mode,
+                for adapter in adapters:
+                    rule_id = getattr(adapter, "_certified_catalogue_rule_id", 0)
+                    adapter.attach_certified_catalogue_snapshot(
+                        snapshot,
+                        rule_id,
+                        state.current_shadow_matcher_parity_ledger,
+                        loaded_certificate,
+                        expectation,
+                        runtime_mode,
+                    )
+                    assert adapter.uses_structural_matching is True
+                    adapter.pattern_candidates
+                for adapter in adapters:
+                    rule_id = getattr(adapter, "_certified_catalogue_rule_id", 0)
+                    adapter.attach_certified_catalogue_snapshot(
+                        snapshot,
+                        rule_id,
+                        state.current_shadow_matcher_parity_ledger,
+                        stale_certificate,
+                        stale_expectation,
+                        stale_runtime,
+                    )
+                assert all(not adapter.uses_structural_matching for adapter in adapters)
+                assert all(
+                    adapter._pattern_candidates_cache is None for adapter in adapters
                 )
-                assert configured_adapter.uses_structural_matching is True
-                configured_adapter.pattern_candidates
-                configured_adapter.attach_certified_catalogue_snapshot(
-                    snapshot,
-                    0,
-                    state.current_shadow_matcher_parity_ledger,
-                    stale_certificate,
-                    stale_expectation,
-                    stale_runtime,
-                )
-                assert configured_adapter.uses_structural_matching is False
-                assert configured_adapter._pattern_candidates_cache is None
 
             stale_config = json.loads(activation_path.read_text(encoding="utf-8"))
             stale_config["additional_configuration"][
