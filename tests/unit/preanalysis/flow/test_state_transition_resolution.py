@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from d810.capabilities.dispatcher import RouterKind
@@ -331,6 +333,121 @@ def test_native_bound_route_uses_rebound_serial_not_recorded_serial() -> None:
             target_handler_serial=7,
         ),
     )
+
+
+def test_native_bound_route_rejects_valid_sibling_when_target_observation_is_malformed() -> None:
+    binder = getattr(semantic_transition, "bind_native_bound_transition_routes", None)
+    assert callable(binder)
+    valid = StateTransitionResolution(
+        fact_id="transition:valid",
+        source_block_serial=15,
+        source_state_const_hex="0x0000000016aa65e9",
+        source_instruction_ea=0x7FF855576BA0,
+        resolved_next_block_serial=7,
+        resolved_next_state_const_hex="0x00000000079323f9",
+        resolved_next_state_const_u64=0x079323F9,
+        resolution_kind="state_dispatcher_map",
+        resolution_reason="resolved_exact_state",
+        state_var_stkoff=0x3C,
+    )
+    malformed = SimpleNamespace(
+        fact_id="transition:malformed",
+        source_instruction_ea=valid.source_instruction_ea,
+        source_state_const_hex=valid.source_state_const_hex,
+        resolved_next_block_serial="not-a-serial",
+        resolution_reason="resolved_exact_state",
+        state_var_stkoff=0x3C,
+    )
+
+    assert binder(
+        (valid, malformed),
+        block_serial_for_instruction_ea=lambda _ea: 42,
+        current_block_serials=frozenset({7, 42}),
+        dispatcher_block_serials=frozenset({2}),
+        route_target_for_state=lambda _state: 7,
+        state_var_stkoff=0x3C,
+    ) == ()
+
+
+@pytest.mark.parametrize("fact_id", ("", "   ", None))
+def test_native_bound_route_abstains_for_blank_or_invalid_fact_id(fact_id) -> None:
+    binder = getattr(semantic_transition, "bind_native_bound_transition_routes", None)
+    assert callable(binder)
+    resolution = StateTransitionResolution(
+        fact_id=fact_id,
+        source_block_serial=15,
+        source_state_const_hex="0x0000000016aa65e9",
+        source_instruction_ea=0x7FF855576BA0,
+        resolved_next_block_serial=7,
+        resolved_next_state_const_hex="0x00000000079323f9",
+        resolved_next_state_const_u64=0x079323F9,
+        resolution_kind="state_dispatcher_map",
+        resolution_reason="resolved_exact_state",
+        state_var_stkoff=0x3C,
+    )
+
+    assert binder(
+        (resolution,),
+        block_serial_for_instruction_ea=lambda _ea: 42,
+        current_block_serials=frozenset({7, 42}),
+        dispatcher_block_serials=frozenset({2}),
+        route_target_for_state=lambda _state: 7,
+        state_var_stkoff=0x3C,
+    ) == ()
+
+
+@pytest.mark.parametrize("topology_target", (3, 4))
+def test_native_bound_route_excludes_row_dispatcher_and_compare_serials(
+    topology_target,
+) -> None:
+    binder = getattr(semantic_transition, "bind_native_bound_transition_routes", None)
+    route_type = getattr(semantic_transition, "NativeBoundTransitionRoute", None)
+    assert callable(binder)
+    assert route_type is not None
+    dispatch_map = StateDispatcherMap(
+        rows=(
+            StateDispatcherRow(
+                state_const=0x10,
+                target_block=7,
+                dispatcher_block=3,
+                compare_block=4,
+                branch_kind="switch_case",
+                router_kind=RouterKind.TABLE,
+            ),
+        ),
+        dispatcher_entry_block=2,
+        # The row topology is intentionally omitted here: the binder must
+        # recover it from each row rather than trusting this incomplete set.
+        dispatcher_blocks=frozenset({2}),
+        state_var_stkoff=0x3C,
+        state_var_lvar_idx=None,
+        router_kind=RouterKind.TABLE,
+    )
+    resolution = StateTransitionResolution(
+        fact_id="transition:row-dispatcher",
+        source_block_serial=15,
+        source_state_const_hex="0x0000000000000010",
+        source_instruction_ea=0x7FF855576BA0,
+        resolved_next_block_serial=7,
+        resolved_next_state_const_hex="0x0000000000000007",
+        resolved_next_state_const_u64=7,
+        resolution_kind="state_dispatcher_map",
+        resolution_reason="resolved_exact_state",
+        state_var_stkoff=0x3C,
+    )
+
+    assert binder(
+        (resolution,),
+        block_serial_for_instruction_ea=lambda _ea: 42,
+        current_block_serials=frozenset({3, 4, 7, 42}),
+        # Explicitly incomplete caller topology must not erase row topology.
+        dispatcher_block_serials=frozenset({2}),
+        route_target_for_state=lambda _state: topology_target,
+        dispatcher_map=dispatch_map,
+        state_var_stkoff=0x3C,
+    ) == ()
+
+
 # --- Surface-1 binop-over-register next-state folding (ticket d81-7zf7) -------
 #
 # A handler whose next-state is COMPUTED (``xor eax,ecx -> state_var``) rather
@@ -417,13 +534,15 @@ def _mov(ea: int, src: MopSnapshot, dst: MopSnapshot) -> InsnSnapshot:
     )
 
 
-def _xor(ea: int, l: MopSnapshot, r: MopSnapshot, dst: MopSnapshot) -> InsnSnapshot:
+def _xor(
+    ea: int, lhs: MopSnapshot, rhs: MopSnapshot, dst: MopSnapshot
+) -> InsnSnapshot:
     return InsnSnapshot(
         opcode=_OP_XOR,
         ea=ea,
         operands=(),
-        l=l,
-        r=r,
+        l=lhs,
+        r=rhs,
         d=dst,
         kind=InsnKind.UNKNOWN,
         value_op_kind=ValueOpKind.XOR,

@@ -209,7 +209,7 @@ def _resolution_state_constant(resolution: object) -> int | None:
                 value = int(raw, 16)
         else:
             value = int(raw)
-    except (TypeError, ValueError):
+    except (OverflowError, TypeError, ValueError):
         return None
     if not 0 <= value <= 0xFFFFFFFF:
         return None
@@ -228,7 +228,7 @@ def _bounded_state_constant(value: object | None) -> int | None:
                 value = int(value, 16)
         else:
             value = int(value)
-    except (TypeError, ValueError):
+    except (OverflowError, TypeError, ValueError):
         return None
     return int(value) if 0 <= int(value) <= 0xFFFFFFFF else None
 
@@ -244,13 +244,14 @@ def _native_route_observation(
     """
     fact_id = getattr(observation, "fact_id", None)
     source_ea = getattr(observation, "source_instruction_ea", None)
-    if fact_id is None or source_ea is None:
+    if not isinstance(fact_id, str) or not fact_id.strip() or source_ea is None:
         return None
+    fact_id = fact_id.strip()
     if isinstance(source_ea, bool):
         return None
     try:
         source_ea = int(source_ea)
-    except (TypeError, ValueError):
+    except (OverflowError, TypeError, ValueError):
         return None
     if not 0 <= source_ea < 0xFFFFFFFFFFFFFFFF:
         return None
@@ -265,7 +266,7 @@ def _native_route_observation(
             return None
         try:
             target = int(target)
-        except (TypeError, ValueError):
+        except (OverflowError, TypeError, ValueError):
             return None
         return str(fact_id), source_ea, state, target, True
 
@@ -280,7 +281,7 @@ def _native_route_observation(
         return None
     try:
         return str(fact_id), source_ea, state, int(target), False
-    except (TypeError, ValueError):
+    except (OverflowError, TypeError, ValueError):
         return None
 
 
@@ -317,6 +318,17 @@ def bind_native_bound_transition_routes(
     }
     if dispatcher_map is not None:
         dispatcher_serials.add(int(dispatcher_map.dispatcher_entry_block))
+        for row in dispatcher_map.rows:
+            try:
+                dispatcher_serials.add(int(row.dispatcher_block))
+            except (AttributeError, OverflowError, TypeError, ValueError):
+                pass
+            compare_block = getattr(row, "compare_block", None)
+            if compare_block is not None:
+                try:
+                    dispatcher_serials.add(int(compare_block))
+                except (OverflowError, TypeError, ValueError):
+                    pass
     if current_block_serials is None:
         if dispatcher_map is None:
             current_serials: set[int] = set()
@@ -346,7 +358,7 @@ def bind_native_bound_transition_routes(
                 if source_hint is None or isinstance(source_hint, bool)
                 else int(source_hint)
             )
-        except (TypeError, ValueError):
+        except (OverflowError, TypeError, ValueError):
             source_hint = None
         if source_hint is not None and not (
             0 <= source_hint < 0xFFFFFFFFFFFFFFFF
@@ -378,6 +390,11 @@ def bind_native_bound_transition_routes(
                 ):
                     invalid_source_eas.add(source_hint)
         projected = _native_route_observation(resolution)
+        if projected is None and source_hint is not None:
+            # A malformed observation sharing a native EA poisons the complete
+            # group.  Silently dropping it would let a valid sibling win over
+            # contradictory or corrupted evidence.
+            invalid_source_eas.add(source_hint)
         if projected is None:
             continue
         fact_id, source_ea, state_constant, target_serial, typed_fact = projected
@@ -385,12 +402,15 @@ def bind_native_bound_transition_routes(
             bound_serials = _serial_candidates(
                 block_serial_for_instruction_ea(source_ea)
             )
-        except (TypeError, ValueError, AttributeError):
+        except (AttributeError, OverflowError, TypeError, ValueError):
+            invalid_source_eas.add(source_ea)
             continue
         if not 0 <= source_ea < 0xFFFFFFFFFFFFFFFF or len(bound_serials) != 1:
+            invalid_source_eas.add(source_ea)
             continue
         source_serial = bound_serials[0]
         if source_serial < 0:
+            invalid_source_eas.add(source_ea)
             continue
 
         if not typed_fact:
@@ -407,16 +427,19 @@ def bind_native_bound_transition_routes(
                     if resolution_identity[1] is None
                     else int(resolution_identity[1]),
                 )
-            except (TypeError, ValueError):
+            except (OverflowError, TypeError, ValueError):
+                invalid_source_eas.add(source_ea)
                 continue
             if expected_identity == (None, None) or (
                 resolution_identity != expected_identity
             ):
+                invalid_source_eas.add(source_ea)
                 continue
         # A malformed prior target is not useful provenance.  It must not be
         # coerced into a current target by an adapter, even though typed facts
         # do not compare this old serial to the current route numerically.
         if target_serial < 0:
+            invalid_source_eas.add(source_ea)
             continue
         grouped_observations.setdefault(source_ea, []).append(
             (
