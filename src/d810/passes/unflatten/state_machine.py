@@ -52,6 +52,7 @@ from d810.analyses.control_flow.dispatcher_discovery_facts import (
 from d810.analyses.control_flow.predecessor_dispatcher_target import (
     PREDECESSOR_DISPATCHER_TARGET_FACTS_ANALYSIS,
     collect_predecessor_dispatcher_target_facts,
+    resolve_current_snapshot_dispatcher_route,
 )
 from d810.analyses.control_flow.router_resolver import (
     RouterResolutionContext,
@@ -371,6 +372,8 @@ def bind_native_bound_transition_routes_for_current_mba(
     dispatcher_region_serials,
     state_var_stkoff: int | None,
     state_var_reg: int | None,
+    dispatcher_entry_serial: int | None = None,
+    range_evidence: object | None = None,
 ):
     """Bind recovered routes to the current MBA without serial fallbacks."""
     if current_block_identity_index is None:
@@ -392,8 +395,27 @@ def bind_native_bound_transition_routes_for_current_mba(
         for attribute in ("target", "target_block_serial", "handler_serial"):
             candidate = getattr(result, attribute, None)
             if candidate is not None:
-                return candidate
-        return result
+                result = candidate
+                break
+        if result is None:
+            return None
+        try:
+            target_serial = int(result)
+        except (TypeError, ValueError):
+            return None
+        if target_serial not in dispatcher_region:
+            return target_serial
+
+        if dispatcher_entry_serial is None or range_evidence is None:
+            return None
+        return resolve_current_snapshot_dispatcher_route(
+            flow_graph=graph,
+            coarse_target=target_serial,
+            exit_state=int(state),
+            dispatcher_entry_serial=int(dispatcher_entry_serial),
+            range_evidence=range_evidence,
+            dispatcher_region_serials=dispatcher_region,
+        )
 
     def block_serial_for_instruction_ea(native_ea: int) -> int | None:
         try:
@@ -408,15 +430,16 @@ def bind_native_bound_transition_routes_for_current_mba(
         except (AttributeError, TypeError, ValueError):
             return None
 
+    dispatcher_region = frozenset(
+        int(serial) for serial in (dispatcher_region_serials or ())
+    )
     current_blocks = getattr(graph, "blocks", {})
     current_block_serials = tuple(int(serial) for serial in current_blocks)
     return bind_native_bound_transition_routes(
         tuple(resolutions or ()),
         block_serial_for_instruction_ea=block_serial_for_instruction_ea,
         current_block_serials=current_block_serials,
-        dispatcher_block_serials=frozenset(
-            int(serial) for serial in (dispatcher_region_serials or ())
-        ),
+        dispatcher_block_serials=dispatcher_region,
         route_target_for_state=route_target_for_state,
         state_var_stkoff=state_var_stkoff,
         state_var_reg=state_var_reg,
@@ -854,6 +877,7 @@ class RecoverStateTransitions(PipelinePass):
                 transition_resolutions=resolutions,
                 state_var_stkoff=getattr(recovery, "state_var_stkoff", None),
                 state_var_reg=getattr(recovery, "state_var_reg", None),
+                flow_graph=context.graph,
             )
             if predecessor_target_facts:
                 _publish_observation_evidence(
@@ -2679,6 +2703,8 @@ class LowerStateMachine(PipelinePass):
                     dispatcher_region_serials=dispatcher_region_serials,
                     state_var_stkoff=state_var_stkoff,
                     state_var_reg=state_var_reg,
+                    dispatcher_entry_serial=dispatcher_entry,
+                    range_evidence=range_evidence,
                 )
             )
             plan = emit_minimal_unflatten(

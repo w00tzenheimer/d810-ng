@@ -8,14 +8,21 @@ from d810.analyses.control_flow.condition_chain_model import (
     ConditionChainAnalysisResult,
 )
 from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap
+from d810.analyses.control_flow.state_machine_analysis import (
+    find_last_state_write_site_on_path_snapshot,
+    resolve_exit_via_condition_chain_default_snapshot,
+)
 from d810.analyses.control_flow.semantic_transition import (
     SUCCESSFUL_TRANSITION_RESOLUTION_REASONS as _SUCCESSFUL_TRANSITION_RESOLUTION_REASONS,
 )
+from d810.ir.flowgraph import OperandKind
 
 
 PREDECESSOR_DISPATCHER_TARGET_FACTS_ANALYSIS = (
     "predecessor_dispatcher_target_facts"
 )
+
+_STATE_MASK_32 = 0xFFFFFFFF
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +95,52 @@ def _hex_u64(value: int) -> str:
     return f"0x{int(value) & 0xFFFFFFFFFFFFFFFF:016x}"
 
 
+def _parse_state_value(value: object | None) -> int | None:
+    """Parse one state value without widening malformed/boolean inputs."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        if isinstance(value, str):
+            try:
+                return int(value, 0)
+            except ValueError:
+                return int(value, 16)
+        return int(value)
+    except (OverflowError, TypeError, ValueError):
+        return None
+
+
+def _normalize_state32(value: object | None) -> int | None:
+    """Return a state only when it is an explicit unsigned 32-bit value."""
+    parsed = _parse_state_value(value)
+    if parsed is None or not 0 <= parsed <= _STATE_MASK_32:
+        return None
+    return parsed
+
+
+def _normalize_low32(value: object | None) -> int | None:
+    """Normalize a source operand's low 32 bits for a canonical state write."""
+    parsed = _parse_state_value(value)
+    if parsed is None:
+        return None
+    return parsed & _STATE_MASK_32
+
+
+def _state_block_key(predecessor: object, state: object) -> tuple[int, int] | None:
+    """Build a blocked-resolution key using the state's low 32-bit identity.
+
+    A rejected wide alias must still poison a same-predecessor fallback whose
+    state is presented in its valid 32-bit form.  The key therefore normalizes
+    the parsed value once, while route construction separately requires the
+    strict 32-bit validator above.
+    """
+    predecessor_value = _maybe_int(predecessor)
+    state_value = _parse_state_value(state)
+    if predecessor_value is None or state_value is None:
+        return None
+    return (int(predecessor_value), int(state_value) & _STATE_MASK_32)
+
+
 def _fact_id(
     *,
     dispatcher_entry_serial: int,
@@ -127,17 +180,21 @@ def _build_fact(
     source_instruction_ea: int | None = None,
     state_var_reg: int | None = None,
 ) -> PredecessorDispatcherTargetFact:
+    normalized_state = _normalize_state32(state_const)
+    if normalized_state is None:
+        raise ValueError("predecessor route state must be an unsigned 32-bit value")
+    normalized_source_state = _normalize_state32(source_state_const)
     return PredecessorDispatcherTargetFact(
         fact_id=_fact_id(
             dispatcher_entry_serial=dispatcher_entry_serial,
             predecessor_block_serial=predecessor_block_serial,
-            state_const=state_const,
+            state_const=normalized_state,
             target_block_serial=target_block_serial,
             resolver_kind=resolver_kind,
         ),
         predecessor_block_serial=int(predecessor_block_serial),
         dispatcher_entry_serial=int(dispatcher_entry_serial),
-        state_const=int(state_const) & 0xFFFFFFFFFFFFFFFF,
+        state_const=normalized_state,
         target_block_serial=int(target_block_serial),
         resolver_kind=resolver_kind,
         row_kind=row_kind,
@@ -146,7 +203,7 @@ def _build_fact(
         branch_kind=branch_kind,
         row_lo_inclusive=row_lo_inclusive,
         row_hi_exclusive=row_hi_exclusive,
-        source_state_const=source_state_const,
+        source_state_const=normalized_source_state,
         transition_provenance_kind=transition_provenance_kind,
         condition_block_serial=condition_block_serial,
         state_var_stkoff=state_var_stkoff,
@@ -177,6 +234,301 @@ def _dispatcher_topology_serials(
     return frozenset(serials)
 
 
+def _dispatcher_state_identity(
+    state_dispatcher_map: StateDispatcherMap | None,
+) -> StateIdentity | None:
+    """Return the dispatcher map's current state-cell identity, if explicit."""
+    if state_dispatcher_map is None:
+        return None
+    stkoff = _maybe_int(getattr(state_dispatcher_map, "state_var_stkoff", None))
+    reg = _maybe_int(getattr(state_dispatcher_map, "state_var_reg", None))
+    if stkoff is None and reg is None:
+        return None
+    return (stkoff, reg)
+
+
+def _condition_chain_region_serials(
+    range_evidence: ConditionChainAnalysisResult | None,
+) -> frozenset[int]:
+    """Collect only structured condition-chain comparison serials.
+
+    ``condition_chain_blocks`` is intentionally accepted only through its
+    structured node-map interface.  Plain tuples are broad compatibility
+    metadata and may contain handler leaves; treating them as a complete
+    dispatcher region would reject valid handler routes.
+    """
+    if range_evidence is None:
+        return frozenset()
+    serials: set[int] = set()
+    node_map = getattr(range_evidence, "condition_chain_blocks", None)
+    if node_map is not None and not isinstance(
+        node_map, (tuple, list, set, frozenset)
+    ):
+        for serial in node_map:
+            try:
+                serials.add(int(serial))
+            except (TypeError, ValueError):
+                continue
+    dag = getattr(range_evidence, "decision_dag", None)
+    for serial in getattr(dag, "nodes", {}) or {}:
+        try:
+            serials.add(int(serial))
+        except (TypeError, ValueError):
+            continue
+    return frozenset(serials)
+
+
+def _native_ea_block_serial(
+    flow_graph: object,
+    native_ea: int,
+    *,
+    state_const: int,
+    state_var_reg: int | None,
+) -> int | None:
+    """Find exactly one current instruction writing ``state_const`` to ``state_var_reg``."""
+    blocks = getattr(flow_graph, "blocks", {})
+    matches: list[tuple[int, object]] = []
+    for serial, block in getattr(blocks, "items", lambda: ())():
+        for instruction in getattr(block, "insn_snapshots", ()) or ():
+            if _maybe_int(getattr(instruction, "native_ea", None)) == int(native_ea):
+                matches.append((int(serial), instruction))
+    if len(matches) != 1:
+        return None
+    serial, instruction = matches[0]
+    destination = getattr(instruction, "d", None)
+    source = getattr(instruction, "l", None)
+    if (
+        state_var_reg is None
+        or getattr(destination, "kind", None) is not OperandKind.REGISTER
+        or _maybe_int(getattr(destination, "reg", None)) != int(state_var_reg)
+        or _maybe_int(getattr(destination, "size", None)) not in (4, 8)
+        or getattr(source, "kind", None) is not OperandKind.NUMBER
+        or _maybe_int(getattr(source, "size", None)) not in (4, 8)
+        or _normalize_low32(getattr(source, "value", None))
+        != _normalize_low32(state_const)
+    ):
+        return None
+    return serial
+
+
+def _unique_snapshot_path(
+    flow_graph: object,
+    start_serial: int,
+    target_serial: int,
+) -> tuple[int, ...] | None:
+    """Return a bounded one-successor path, rejecting forks and cycles."""
+    get_block = getattr(flow_graph, "get_block", None)
+    if not callable(get_block) or get_block(int(start_serial)) is None:
+        return None
+    current = int(start_serial)
+    target = int(target_serial)
+    path = [current]
+    visited: set[int] = set()
+    while current != target:
+        if current in visited:
+            return None
+        visited.add(current)
+        block = get_block(current)
+        if block is None:
+            return None
+        try:
+            successors = tuple(int(serial) for serial in block.succs)
+        except (AttributeError, TypeError, ValueError):
+            return None
+        if len(successors) != 1:
+            return None
+        current = successors[0]
+        if get_block(current) is None:
+            return None
+        path.append(current)
+        if len(path) > len(getattr(flow_graph, "blocks", ())) + 1:
+            return None
+    return tuple(path)
+
+
+def _dag_path_for_state(dag: object | None, state: int):
+    """Return the unique decision-DAG path for one state, if available."""
+    resolve_paths = getattr(dag, "resolve_paths", None)
+    if not callable(resolve_paths):
+        return None
+    matches = []
+    try:
+        for path in resolve_paths():
+            domain = getattr(path, "domain", None)
+            contains = getattr(domain, "contains", None)
+            if callable(contains) and contains(int(state)):
+                matches.append(path)
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return matches[0] if len(matches) == 1 else None
+
+
+def resolve_current_snapshot_dispatcher_route(
+    *,
+    flow_graph: object | None,
+    coarse_target: int,
+    exit_state: int,
+    dispatcher_entry_serial: int,
+    range_evidence: ConditionChainAnalysisResult | None,
+    dispatcher_region_serials: frozenset[int],
+) -> int | None:
+    """Replay one coarse route from the proven decision-DAG root.
+
+    Interval/exact rows identify a dispatcher-region anchor, not necessarily
+    the first comparison block in the current snapshot.  A route is accepted
+    only when the entry has a unique one-successor connector to the DAG root,
+    the coarse target belongs to the state's unique DAG subchain, and the
+    canonical condition-chain evaluator reaches one existing block outside the
+    complete dispatcher region.
+    """
+    get_block = getattr(flow_graph, "get_block", None)
+    if not callable(get_block):
+        return None
+    coarse_target_serial = _maybe_int(coarse_target)
+    if (
+        coarse_target_serial is None
+        or get_block(coarse_target_serial) is None
+    ):
+        return None
+    dag = getattr(range_evidence, "decision_dag", None)
+    dag_root = _maybe_int(getattr(dag, "root", None))
+    if dag_root is None:
+        return None
+    entry_to_root = _unique_snapshot_path(
+        flow_graph,
+        int(dispatcher_entry_serial),
+        int(dag_root),
+    )
+    if entry_to_root is None:
+        return None
+    dag_path = _dag_path_for_state(dag, int(exit_state))
+    if dag_path is None:
+        return None
+    path_serials = {int(serial) for serial in getattr(dag_path, "path", ())}
+    path_serials.add(int(getattr(dag_path, "target", -1)))
+    if coarse_target_serial not in path_serials:
+        return None
+    if get_block(int(dag_root)) is None:
+        return None
+    try:
+        resolved = resolve_exit_via_condition_chain_default_snapshot(
+            flow_graph,
+            int(dag_root),
+            int(exit_state),
+        )
+    except (
+        AttributeError,
+        LookupError,
+        TypeError,
+        ValueError,
+        KeyError,
+        IndexError,
+    ):
+        return None
+    resolved_serial = _maybe_int(resolved)
+    if resolved_serial is None or resolved_serial in dispatcher_region_serials:
+        return None
+    if get_block(resolved_serial) is None:
+        return None
+    dag_target = _maybe_int(getattr(dag_path, "target", None))
+    if dag_target is not None and dag_target not in dispatcher_region_serials:
+        if resolved_serial != dag_target:
+            return None
+    return resolved_serial
+
+
+def _current_snapshot_entry_route_proof(
+    *,
+    flow_graph: object | None,
+    source_instruction_ea: int | None,
+    predecessor_block_serial: int,
+    dispatcher_entry_serial: int,
+    coarse_target: int,
+    state_const: int,
+    state_var_stkoff: int | None,
+    source_state_var_reg: int | None,
+    range_evidence: ConditionChainAnalysisResult | None,
+    dispatcher_region_serials: frozenset[int],
+) -> int | None:
+    """Prove a current dispatcher-input path without claiming an alias.
+
+    The native anchor must own the predecessor's current entry-prefix block.  A
+    unique one-successor path then carries that block to the dispatcher entry
+    and its decision-DAG root.  The canonical path-local state-write evaluator
+    must find the candidate value in the selected stack cell at that entry.  No
+    register-to-stack alias is inferred; ``None`` means the route abstains.
+    """
+    if (
+        flow_graph is None
+        or source_instruction_ea is None
+        or state_var_stkoff is None
+    ):
+        return None
+    source_serial = _native_ea_block_serial(
+        flow_graph,
+        int(source_instruction_ea),
+        state_const=int(state_const),
+        state_var_reg=source_state_var_reg,
+    )
+    if source_serial is None or int(source_serial) != int(predecessor_block_serial):
+        return None
+    source_to_entry = _unique_snapshot_path(
+        flow_graph,
+        int(source_serial),
+        int(dispatcher_entry_serial),
+    )
+    if source_to_entry is None:
+        return None
+    dag = getattr(range_evidence, "decision_dag", None)
+    dag_root = _maybe_int(getattr(dag, "root", None))
+    get_block = getattr(flow_graph, "get_block", None)
+    if dag_root is None or not callable(get_block):
+        return None
+    entry_to_root = _unique_snapshot_path(
+        flow_graph,
+        int(dispatcher_entry_serial),
+        int(dag_root),
+    )
+    if entry_to_root is None:
+        return None
+    path = (*source_to_entry, *entry_to_root[1:])
+    if len(set(path)) != len(path):
+        return None
+    try:
+        state_write = find_last_state_write_site_on_path_snapshot(
+            flow_graph,
+            path,
+            int(state_var_stkoff),
+        )
+    except (
+        AttributeError,
+        LookupError,
+        TypeError,
+        ValueError,
+        KeyError,
+        IndexError,
+    ):
+        return None
+    if state_write is None:
+        return None
+    write_block_serial, write_site = state_write
+    if (
+        int(write_block_serial) != int(dispatcher_entry_serial)
+        or int(write_site.state_value) != (int(state_const) & _STATE_MASK_32)
+        or bool(getattr(write_site, "unsafe_trailing_insn_eas", ()))
+        or bool(getattr(write_site, "unsafe_trailing_reasons", ()))
+    ):
+        return None
+    return resolve_current_snapshot_dispatcher_route(
+        flow_graph=flow_graph,
+        coarse_target=int(coarse_target),
+        exit_state=int(state_const),
+        dispatcher_entry_serial=int(dispatcher_entry_serial),
+        dispatcher_region_serials=dispatcher_region_serials,
+        range_evidence=range_evidence,
+    )
+
+
 StateIdentity = tuple[int | None, int | None]
 
 
@@ -187,6 +539,36 @@ def _transition_identity(row: object) -> StateIdentity | None:
     if stkoff is None and reg is None:
         return None
     return (stkoff, reg)
+
+
+def _coarse_dispatcher_target_for_state(
+    *,
+    state_const: int,
+    state_dispatcher_map: StateDispatcherMap | None,
+    range_evidence: ConditionChainAnalysisResult | None,
+    dispatcher_topology_serials: frozenset[int],
+) -> int | None:
+    """Return one dispatcher-topology target from exact/interval evidence."""
+    candidates: set[int] = set()
+    normalized_state = _normalize_state32(state_const)
+    if normalized_state is None:
+        return None
+    for row in getattr(state_dispatcher_map, "rows", ()) or ():
+        row_state = _normalize_state32(getattr(row, "state_const", None))
+        target = _maybe_int(getattr(row, "target_block", None))
+        if row_state == normalized_state and target in dispatcher_topology_serials:
+            candidates.add(int(target))
+    dispatcher = getattr(range_evidence, "dispatcher", None)
+    lookup_row = getattr(dispatcher, "lookup_row", None)
+    if callable(lookup_row):
+        try:
+            row = lookup_row(normalized_state)
+        except (AttributeError, TypeError, ValueError, KeyError, IndexError):
+            row = None
+        target = _maybe_int(getattr(row, "target", None))
+        if target is not None and target in dispatcher_topology_serials:
+            candidates.add(target)
+    return next(iter(candidates)) if len(candidates) == 1 else None
 
 
 def select_supported_transition_identity(
@@ -253,24 +635,49 @@ def resolve_predecessor_dispatcher_target(
     state_var_stkoff: int | None = None,
     state_var_reg: int | None = None,
     source_instruction_ea: int | None = None,
+    flow_graph: object | None = None,
 ) -> PredecessorDispatcherTargetFact | None:
     """Resolve one predecessor-carried state through exact or interval rows."""
 
-    normalized_state = int(state_const) & 0xFFFFFFFFFFFFFFFF
-    dispatcher_topology = _dispatcher_topology_serials(state_dispatcher_map)
+    normalized_state = _normalize_state32(state_const)
+    if normalized_state is None:
+        return None
+    dispatcher_topology = set(_dispatcher_topology_serials(state_dispatcher_map))
+    dispatcher_topology.update(_condition_chain_region_serials(range_evidence))
+    coarse_target: int | None = None
+    coarse_fact_kwargs: dict[str, object] | None = None
     if state_dispatcher_map is not None:
         for row in state_dispatcher_map.rows:
-            if (int(row.state_const) & 0xFFFFFFFFFFFFFFFF) != normalized_state:
+            row_state = _normalize_state32(getattr(row, "state_const", None))
+            if row_state != normalized_state:
                 continue
-            if int(row.target_block) in dispatcher_topology:
+            target_block = _maybe_int(getattr(row, "target_block", None))
+            if target_block is None:
+                continue
+            if target_block in dispatcher_topology:
                 # A dispatcher self-loop is not a handler route.  Keep looking
                 # for stronger condition-chain interval/handler evidence below.
+                coarse_target = target_block
+                coarse_fact_kwargs = {
+                    "resolver_kind": "state_dispatcher_map_exact_row",
+                    "row_kind": str(row.row_kind),
+                    "dispatcher_block_serial": int(row.dispatcher_block),
+                    "compare_block_serial": (
+                        None
+                        if row.compare_block is None
+                        else int(row.compare_block)
+                    ),
+                    "branch_kind": str(row.branch_kind),
+                    "row_lo_inclusive": normalized_state,
+                    "row_hi_exclusive": normalized_state + 1,
+                    "confidence": float(row.confidence),
+                }
                 continue
             return _build_fact(
                 predecessor_block_serial=predecessor_block_serial,
                 dispatcher_entry_serial=dispatcher_entry_serial,
                 state_const=normalized_state,
-                target_block_serial=int(row.target_block),
+                target_block_serial=target_block,
                 resolver_kind="state_dispatcher_map_exact_row",
                 row_kind=str(row.row_kind),
                 dispatcher_block_serial=int(row.dispatcher_block),
@@ -290,52 +697,101 @@ def resolve_predecessor_dispatcher_target(
             )
 
     if range_evidence is None:
+        # Exact-row metadata without a current decision DAG has no principled
+        # root identity.  Do not resurrect the old coarse-target walker.
         return None
 
     dispatcher = getattr(range_evidence, "dispatcher", None)
     if dispatcher is not None:
         row = dispatcher.lookup_row(normalized_state)
-        if (
-            row is not None
-            and row.target is not None
-            and int(row.target) not in dispatcher_topology
-        ):
-            return _build_fact(
-                predecessor_block_serial=predecessor_block_serial,
-                dispatcher_entry_serial=dispatcher_entry_serial,
-                state_const=normalized_state,
-                target_block_serial=int(row.target),
-                resolver_kind="interval_dispatcher_row",
-                row_kind=(
+        if row is not None and row.target is not None:
+            interval_target = _maybe_int(row.target)
+            if interval_target is None:
+                return None
+            interval_kwargs = {
+                "resolver_kind": "interval_dispatcher_row",
+                "row_kind": (
                     "interval_exact"
                     if int(row.hi) - int(row.lo) == 1
                     else "interval_range"
                 ),
-                dispatcher_block_serial=None,
-                compare_block_serial=None,
-                branch_kind=None,
-                row_lo_inclusive=int(row.lo),
-                row_hi_exclusive=int(row.hi),
-                source_state_const=source_state_const,
-                transition_provenance_kind=transition_provenance_kind,
-                condition_block_serial=condition_block_serial,
-                state_var_stkoff=state_var_stkoff,
-                source_instruction_ea=source_instruction_ea,
-                state_var_reg=state_var_reg,
-            )
+                "dispatcher_block_serial": None,
+                "compare_block_serial": None,
+                "branch_kind": None,
+                "row_lo_inclusive": int(row.lo),
+                "row_hi_exclusive": int(row.hi),
+                "confidence": 1.0,
+            }
+            if interval_target in dispatcher_topology:
+                coarse_target = interval_target
+                coarse_fact_kwargs = interval_kwargs
+            else:
+                return _build_fact(
+                    predecessor_block_serial=predecessor_block_serial,
+                    dispatcher_entry_serial=dispatcher_entry_serial,
+                    state_const=normalized_state,
+                    target_block_serial=interval_target,
+                    resolver_kind=str(interval_kwargs["resolver_kind"]),
+                    row_kind=str(interval_kwargs["row_kind"]),
+                    dispatcher_block_serial=None,
+                    compare_block_serial=None,
+                    branch_kind=None,
+                    row_lo_inclusive=int(row.lo),
+                    row_hi_exclusive=int(row.hi),
+                    source_state_const=source_state_const,
+                    transition_provenance_kind=transition_provenance_kind,
+                    condition_block_serial=condition_block_serial,
+                    state_var_stkoff=state_var_stkoff,
+                    source_instruction_ea=source_instruction_ea,
+                    state_var_reg=state_var_reg,
+                )
+
+    if coarse_target is not None and coarse_fact_kwargs is not None:
+        fallback_target = resolve_current_snapshot_dispatcher_route(
+            flow_graph=flow_graph,
+            coarse_target=coarse_target,
+            exit_state=normalized_state,
+            dispatcher_entry_serial=int(dispatcher_entry_serial),
+            dispatcher_region_serials=frozenset(dispatcher_topology),
+            range_evidence=range_evidence,
+        )
+        if fallback_target is None:
+            return None
+        return _build_fact(
+            predecessor_block_serial=predecessor_block_serial,
+            dispatcher_entry_serial=dispatcher_entry_serial,
+            state_const=normalized_state,
+            target_block_serial=fallback_target,
+            resolver_kind=str(coarse_fact_kwargs["resolver_kind"]),
+            row_kind=str(coarse_fact_kwargs["row_kind"]),
+            dispatcher_block_serial=coarse_fact_kwargs["dispatcher_block_serial"],
+            compare_block_serial=coarse_fact_kwargs["compare_block_serial"],
+            branch_kind=coarse_fact_kwargs["branch_kind"],
+            row_lo_inclusive=coarse_fact_kwargs["row_lo_inclusive"],
+            row_hi_exclusive=coarse_fact_kwargs["row_hi_exclusive"],
+            source_state_const=source_state_const,
+            transition_provenance_kind=transition_provenance_kind,
+            condition_block_serial=condition_block_serial,
+            state_var_stkoff=state_var_stkoff,
+            confidence=float(coarse_fact_kwargs["confidence"]),
+            source_instruction_ea=source_instruction_ea,
+            state_var_reg=state_var_reg,
+        )
 
     for handler_serial, handler_state in getattr(
         range_evidence, "handler_state_map", {}
     ).items():
-        if (int(handler_state) & 0xFFFFFFFFFFFFFFFF) != normalized_state:
+        normalized_handler_state = _normalize_state32(handler_state)
+        if normalized_handler_state != normalized_state:
             continue
-        if int(handler_serial) in dispatcher_topology:
+        handler_serial_int = _maybe_int(handler_serial)
+        if handler_serial_int is None or handler_serial_int in dispatcher_topology:
             continue
         return _build_fact(
             predecessor_block_serial=predecessor_block_serial,
             dispatcher_entry_serial=dispatcher_entry_serial,
             state_const=normalized_state,
-            target_block_serial=int(handler_serial),
+            target_block_serial=handler_serial_int,
             resolver_kind="condition_chain_handler_state_map_exact_row",
             row_kind="exact",
             dispatcher_block_serial=None,
@@ -357,7 +813,8 @@ def resolve_predecessor_dispatcher_target(
     ).items():
         if handler_serial in exact_handler_serials:
             continue
-        if int(handler_serial) in dispatcher_topology:
+        handler_serial_int = _maybe_int(handler_serial)
+        if handler_serial_int is None or handler_serial_int in dispatcher_topology:
             continue
         if lo is None or hi is None:
             continue
@@ -370,7 +827,7 @@ def resolve_predecessor_dispatcher_target(
                 predecessor_block_serial=predecessor_block_serial,
                 dispatcher_entry_serial=dispatcher_entry_serial,
                 state_const=normalized_state,
-                target_block_serial=int(handler_serial),
+                target_block_serial=handler_serial_int,
                 resolver_kind="condition_chain_handler_range_map_row",
                 row_kind="range",
                 dispatcher_block_serial=None,
@@ -400,6 +857,7 @@ def collect_predecessor_dispatcher_target_facts(
     dag: object | None = None,
     state_var_stkoff: int | None = None,
     state_var_reg: int | None = None,
+    flow_graph: object | None = None,
 ) -> tuple[PredecessorDispatcherTargetFact, ...]:
     """Resolve transition target states into predecessor-target facts."""
 
@@ -411,6 +869,7 @@ def collect_predecessor_dispatcher_target_facts(
     # for route resolution below rather than treated as dispatcher serials.
     dispatcher_topology = set(_dispatcher_topology_serials(state_dispatcher_map))
     dispatcher_topology.add(int(dispatcher_entry_serial))
+    dispatcher_identity = _dispatcher_state_identity(state_dispatcher_map)
     supported_identity = select_supported_transition_identity(
         transition_resolutions,
         dispatcher_topology_serials=frozenset(dispatcher_topology),
@@ -421,12 +880,14 @@ def collect_predecessor_dispatcher_target_facts(
         resolution_reason = getattr(row, "resolution_reason", None)
         if predecessor is None or source_state_hex is None:
             continue
-        try:
-            source_state = int(source_state_hex, 16)
-            resolution_key = (int(predecessor), source_state)
-        except (TypeError, ValueError):
+        resolution_key = _state_block_key(predecessor, source_state_hex)
+        if resolution_key is None:
             continue
+        source_state = _normalize_state32(source_state_hex)
         prior_target = getattr(row, "resolved_next_block_serial", None)
+        if source_state is None:
+            blocked_resolution_keys.add(resolution_key)
+            continue
         if resolution_reason not in _SUCCESSFUL_TRANSITION_RESOLUTION_REASONS and (
             resolution_reason != "target_is_dispatcher_block"
         ):
@@ -449,6 +910,7 @@ def collect_predecessor_dispatcher_target_facts(
             blocked_resolution_keys.add(resolution_key)
             continue
         target_candidate_identity = _transition_identity(row)
+        current_snapshot_target: int | None = None
         if resolution_reason == "target_is_dispatcher_block":
             if (
                 supported_identity is None
@@ -457,8 +919,48 @@ def collect_predecessor_dispatcher_target_facts(
             ):
                 blocked_resolution_keys.add(resolution_key)
                 continue
-            candidate_state_var_stkoff = target_candidate_identity[0]
-            candidate_state_var_reg = target_candidate_identity[1]
+            if (
+                dispatcher_identity is not None
+                and target_candidate_identity != dispatcher_identity
+            ):
+                # A typed fact must not turn a prior register carrier into the
+                # current stack carrier.  The only bridge is a path-local
+                # current-snapshot proof anchored by this native source EA.
+                current_topology = set(dispatcher_topology)
+                current_topology.update(
+                    _condition_chain_region_serials(range_evidence)
+                )
+                coarse_target = _coarse_dispatcher_target_for_state(
+                    state_const=source_state,
+                    state_dispatcher_map=state_dispatcher_map,
+                    range_evidence=range_evidence,
+                    dispatcher_topology_serials=frozenset(current_topology),
+                )
+                if coarse_target is None:
+                    blocked_resolution_keys.add(resolution_key)
+                    continue
+                current_snapshot_target = _current_snapshot_entry_route_proof(
+                    flow_graph=flow_graph,
+                    source_instruction_ea=_maybe_int(
+                        getattr(row, "source_instruction_ea", None)
+                    ),
+                    predecessor_block_serial=int(predecessor),
+                    dispatcher_entry_serial=int(dispatcher_entry_serial),
+                    coarse_target=coarse_target,
+                    state_const=source_state,
+                    state_var_stkoff=dispatcher_identity[0],
+                    source_state_var_reg=target_candidate_identity[1],
+                    range_evidence=range_evidence,
+                    dispatcher_region_serials=frozenset(current_topology),
+                )
+                if current_snapshot_target is None:
+                    blocked_resolution_keys.add(resolution_key)
+                    continue
+                candidate_state_var_stkoff = dispatcher_identity[0]
+                candidate_state_var_reg = dispatcher_identity[1]
+            else:
+                candidate_state_var_stkoff = target_candidate_identity[0]
+                candidate_state_var_reg = target_candidate_identity[1]
         else:
             candidate_state_var_stkoff = (
                 state_var_stkoff
@@ -487,6 +989,7 @@ def collect_predecessor_dispatcher_target_facts(
                 source_instruction_ea=_maybe_int(
                     getattr(row, "source_instruction_ea", None)
                 ),
+                flow_graph=flow_graph,
             )
         except (TypeError, ValueError):
             blocked_resolution_keys.add(resolution_key)
@@ -503,6 +1006,12 @@ def collect_predecessor_dispatcher_target_facts(
             except (TypeError, ValueError):
                 blocked_resolution_keys.add(resolution_key)
                 continue
+        if (
+            current_snapshot_target is not None
+            and int(fact.target_block_serial) != int(current_snapshot_target)
+        ):
+            blocked_resolution_keys.add(resolution_key)
+            continue
         seen.add(fact.fact_id)
         facts.append(fact)
 
@@ -511,16 +1020,24 @@ def collect_predecessor_dispatcher_target_facts(
         predecessor = getattr(transition, "from_block", None)
         if to_state is None or predecessor is None:
             continue
-        try:
-            if (int(predecessor), int(to_state)) in blocked_resolution_keys:
-                continue
-        except (TypeError, ValueError):
+        transition_key = _state_block_key(predecessor, to_state)
+        normalized_to_state = _normalize_state32(to_state)
+        if transition_key is None or normalized_to_state is None:
             continue
+        if transition_key in blocked_resolution_keys:
+            continue
+        source_instruction_ea = _maybe_int(
+            getattr(transition, "source_instruction_ea", None)
+        )
+        if source_instruction_ea is None:
+            source_instruction_ea = _maybe_int(
+                getattr(transition, "provenance_ea", None)
+            )
         try:
             fact = resolve_predecessor_dispatcher_target(
                 predecessor_block_serial=int(predecessor),
                 dispatcher_entry_serial=int(dispatcher_entry_serial),
-                state_const=int(to_state),
+                state_const=normalized_to_state,
                 state_dispatcher_map=state_dispatcher_map,
                 range_evidence=range_evidence,
                 source_state_const=_maybe_int(getattr(transition, "from_state", None)),
@@ -536,9 +1053,8 @@ def collect_predecessor_dispatcher_target_facts(
                     if getattr(transition, "state_var_reg", None) is None
                     else _maybe_int(getattr(transition, "state_var_reg"))
                 ),
-                source_instruction_ea=_maybe_int(
-                    getattr(transition, "source_instruction_ea", None)
-                ),
+                source_instruction_ea=source_instruction_ea,
+                flow_graph=flow_graph,
             )
         except (TypeError, ValueError):
             continue
@@ -553,16 +1069,19 @@ def collect_predecessor_dispatcher_target_facts(
         if predecessor is None:
             continue
         if next_state is not None:
-            try:
-                if (int(predecessor), int(next_state)) in blocked_resolution_keys:
-                    continue
-            except (TypeError, ValueError):
+            next_state_normalized = _normalize_state32(next_state)
+            next_state_key = _state_block_key(predecessor, next_state)
+            if (
+                next_state_normalized is None
+                or next_state_key is None
+                or next_state_key in blocked_resolution_keys
+            ):
                 continue
             try:
                 fact = resolve_predecessor_dispatcher_target(
                     predecessor_block_serial=int(predecessor),
                     dispatcher_entry_serial=int(dispatcher_entry_serial),
-                    state_const=int(next_state),
+                    state_const=next_state_normalized,
                     state_dispatcher_map=state_dispatcher_map,
                     range_evidence=range_evidence,
                     source_state_const=_maybe_int(getattr(row, "state_const", None)),
@@ -577,6 +1096,7 @@ def collect_predecessor_dispatcher_target_facts(
                     source_instruction_ea=_maybe_int(
                         getattr(row, "source_instruction_ea", None)
                     ),
+                    flow_graph=flow_graph,
                 )
             except (TypeError, ValueError):
                 fact = None
@@ -585,18 +1105,19 @@ def collect_predecessor_dispatcher_target_facts(
                 facts.append(fact)
 
         for conditional_state in getattr(row, "conditional_states", ()) or ():
-            try:
-                if (
-                    int(predecessor), int(conditional_state)
-                ) in blocked_resolution_keys:
-                    continue
-            except (TypeError, ValueError):
+            conditional_state_normalized = _normalize_state32(conditional_state)
+            conditional_state_key = _state_block_key(predecessor, conditional_state)
+            if (
+                conditional_state_normalized is None
+                or conditional_state_key is None
+                or conditional_state_key in blocked_resolution_keys
+            ):
                 continue
             try:
                 conditional_fact = resolve_predecessor_dispatcher_target(
                     predecessor_block_serial=int(predecessor),
                     dispatcher_entry_serial=int(dispatcher_entry_serial),
-                    state_const=int(conditional_state),
+                    state_const=conditional_state_normalized,
                     state_dispatcher_map=state_dispatcher_map,
                     range_evidence=range_evidence,
                     source_state_const=_maybe_int(getattr(row, "state_const", None)),
@@ -611,6 +1132,7 @@ def collect_predecessor_dispatcher_target_facts(
                     source_instruction_ea=_maybe_int(
                         getattr(row, "source_instruction_ea", None)
                     ),
+                    flow_graph=flow_graph,
                 )
             except (TypeError, ValueError):
                 continue
@@ -633,16 +1155,19 @@ def collect_predecessor_dispatcher_target_facts(
             predecessor = _maybe_int(getattr(source_key, "handler_serial", None))
         if predecessor is None:
             continue
-        try:
-            if (int(predecessor), int(next_state)) in blocked_resolution_keys:
-                continue
-        except (TypeError, ValueError):
+        next_state_normalized = _normalize_state32(next_state)
+        next_state_key = _state_block_key(predecessor, next_state)
+        if (
+            next_state_normalized is None
+            or next_state_key is None
+            or next_state_key in blocked_resolution_keys
+        ):
             continue
         try:
             fact = resolve_predecessor_dispatcher_target(
                 predecessor_block_serial=int(predecessor),
                 dispatcher_entry_serial=int(dispatcher_entry_serial),
-                state_const=int(next_state),
+                state_const=next_state_normalized,
                 state_dispatcher_map=state_dispatcher_map,
                 range_evidence=range_evidence,
                 source_state_const=_maybe_int(getattr(source_key, "state_const", None)),
@@ -657,6 +1182,7 @@ def collect_predecessor_dispatcher_target_facts(
                 source_instruction_ea=_maybe_int(
                     getattr(edge, "source_instruction_ea", None)
                 ),
+                flow_graph=flow_graph,
             )
         except (TypeError, ValueError):
             continue
@@ -689,6 +1215,7 @@ __all__ = [
     "PredecessorDispatcherTargetFact",
     "StateIdentity",
     "collect_predecessor_dispatcher_target_facts",
+    "resolve_current_snapshot_dispatcher_route",
     "resolve_predecessor_dispatcher_target",
     "select_supported_transition_identity",
 ]

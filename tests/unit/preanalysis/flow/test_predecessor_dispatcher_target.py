@@ -1,3 +1,4 @@
+from dataclasses import replace
 from types import SimpleNamespace
 
 from d810.analyses.control_flow.condition_chain_model import (
@@ -9,6 +10,7 @@ from d810.analyses.control_flow.dispatcher_resolution import (
     StateDispatcherRow,
 )
 from d810.analyses.control_flow.interval_map import IntervalDispatcher, IntervalRow
+from d810.analyses.control_flow.route_predicate import DecisionDag, RouteComparison
 from d810.analyses.control_flow.predecessor_dispatcher_target import (
     collect_predecessor_dispatcher_target_facts,
     resolve_predecessor_dispatcher_target,
@@ -19,6 +21,15 @@ from d810.analyses.control_flow import (
 from d810.analyses.control_flow.transition_builder import (
     StateTransition,
     TransitionResult,
+)
+from d810.ir.flowgraph import (
+    BlockSnapshot,
+    FlowGraph,
+    InsnKind,
+    InsnSnapshot,
+    MopSnapshot,
+    OperandKind,
+    PredicateKind,
 )
 
 
@@ -107,6 +118,196 @@ def _native_resolution(
         state_var_stkoff=state_var_stkoff,
         state_var_reg=state_var_reg,
     )
+
+
+def _path_local_entry_fixture(
+    *,
+    write_value: int = _NATIVE_ENTRY_STATE,
+    source_succs: tuple[int, ...] = (3,),
+    entry_succs: tuple[int, ...] = (4,),
+    conflicting_write: int | None = None,
+    unsafe_trailing: bool = False,
+    source_register: int = 8,
+    source_value: int = _NATIVE_ENTRY_STATE,
+    source_size: int = 4,
+    duplicate_source_instruction: bool = False,
+):
+    """Build the exact source -> entry -> DAG-root snapshot corridor."""
+
+    def block(
+        serial: int,
+        succs: tuple[int, ...],
+        insns: tuple[InsnSnapshot, ...] = (),
+    ) -> BlockSnapshot:
+        return BlockSnapshot(
+            serial=serial,
+            block_type=0,
+            succs=succs,
+            preds=(),
+            flags=0,
+            start_ea=serial,
+            insn_snapshots=insns,
+        )
+
+    state_write = InsnSnapshot(
+        opcode=0,
+        ea=0x180014E6B,
+        operands=(),
+        l=MopSnapshot(size=4, value=write_value, kind=OperandKind.NUMBER),
+        d=MopSnapshot(size=4, stkoff=52, kind=OperandKind.STACK),
+        kind=InsnKind.MOV,
+    )
+    if conflicting_write is not None:
+        entry_insns = (
+            state_write,
+            replace(
+                state_write,
+                ea=0x180014E6C,
+                l=MopSnapshot(
+                    size=4,
+                    value=conflicting_write,
+                    kind=OperandKind.NUMBER,
+                ),
+            ),
+        )
+    else:
+        entry_insns = (state_write,)
+    if unsafe_trailing:
+        entry_insns += (
+            InsnSnapshot(
+                opcode=0,
+                ea=0x180014E6C,
+                operands=(),
+                l=MopSnapshot(size=4, value=1, kind=OperandKind.NUMBER),
+                d=MopSnapshot(size=4, reg=9, kind=OperandKind.REGISTER),
+                kind=InsnKind.MOV,
+            ),
+        )
+    source_insn = InsnSnapshot(
+        opcode=0,
+        ea=_NATIVE_ENTRY_EA,
+        native_ea=_NATIVE_ENTRY_EA,
+        operands=(),
+        l=MopSnapshot(
+            size=source_size,
+            value=source_value,
+            kind=OperandKind.NUMBER,
+        ),
+        d=MopSnapshot(
+            size=source_size,
+            reg=source_register,
+            kind=OperandKind.REGISTER,
+        ),
+        kind=InsnKind.MOV,
+    )
+    source_insns = (source_insn,)
+    if duplicate_source_instruction:
+        source_insns += (replace(source_insn, ea=_NATIVE_ENTRY_EA),)
+
+    graph = FlowGraph(
+        blocks={
+            1: block(
+                1,
+                source_succs,
+                source_insns,
+            ),
+            3: block(3, entry_succs, entry_insns),
+            4: block(
+                4,
+                (30, 20),
+                (
+                    InsnSnapshot(
+                        opcode=0,
+                        ea=4,
+                        operands=(),
+                        kind=InsnKind.EQUALITY_JUMP,
+                        branch_predicate=PredicateKind.NE,
+                        l=MopSnapshot(
+                            size=4,
+                            stkoff=52,
+                            kind=OperandKind.STACK,
+                        ),
+                        r=MopSnapshot(
+                            size=4,
+                            value=0,
+                            kind=OperandKind.NUMBER,
+                        ),
+                    ),
+                ),
+            ),
+            20: block(20, (22,)),
+            22: block(
+                22,
+                (122, 23),
+                (
+                    InsnSnapshot(
+                        opcode=0,
+                        ea=22,
+                        operands=(),
+                        kind=InsnKind.EQUALITY_JUMP,
+                        branch_predicate=PredicateKind.NE,
+                        l=MopSnapshot(
+                            size=4,
+                            stkoff=52,
+                            kind=OperandKind.STACK,
+                        ),
+                        r=MopSnapshot(
+                            size=4,
+                            value=_NATIVE_ENTRY_STATE,
+                            kind=OperandKind.NUMBER,
+                        ),
+                    ),
+                ),
+            ),
+            23: block(23, ()),
+            30: block(30, ()),
+            # The interval row's coarse target is a dispatcher-region anchor,
+            # not the walk start.  The canonical replay must begin at DAG root
+            # 4 and never use this block's unrelated branch shape.
+            9: block(9, (30, 23)),
+            122: block(122, ()),
+        },
+        entry_serial=1,
+        func_ea=0,
+    )
+    dispatch_map = StateDispatcherMap(
+        rows=(
+            StateDispatcherRow(
+                state_const=_NATIVE_ENTRY_STATE,
+                target_block=9,
+                dispatcher_block=4,
+                compare_block=22,
+                branch_kind="dispatcher_self_loop",
+                router_kind=RouterKind.CONDITION_CHAIN,
+                row_kind="dispatcher_self_loop",
+            ),
+        ),
+        dispatcher_entry_block=3,
+        dispatcher_blocks=frozenset({3, 4, 9, 20, 22}),
+        state_var_stkoff=52,
+        state_var_lvar_idx=None,
+        router_kind=RouterKind.CONDITION_CHAIN,
+    )
+    range_evidence = ConditionChainAnalysisResult(
+        dispatcher=IntervalDispatcher(
+            [
+                IntervalRow(
+                    lo=_NATIVE_ENTRY_STATE,
+                    hi=_NATIVE_ENTRY_STATE + 1,
+                    target=9,
+                )
+            ]
+        ),
+        decision_dag=DecisionDag(
+            32,
+            {
+                4: RouteComparison(4, "jnz", 0, 9, 30),
+            },
+            root=4,
+        ),
+        state_var_stkoff=52,
+    )
+    return graph, dispatch_map, range_evidence
 
 
 def test_resolves_predecessor_target_from_exact_dispatcher_row() -> None:
@@ -263,8 +464,8 @@ def test_resolution_native_ea_is_preserved_and_interval_handler_beats_dispatcher
         resolution_kind="state_dispatcher_map",
         resolution_reason="resolved_exact_state",
         source_instruction_ea=None,
-        state_var_stkoff=8,
-        state_var_reg=8,
+        state_var_stkoff=52,
+        state_var_reg=None,
     )
     resolution = SimpleNamespace(
         source_block_serial=1,
@@ -273,8 +474,8 @@ def test_resolution_native_ea_is_preserved_and_interval_handler_beats_dispatcher
         resolution_kind="state_dispatcher_map",
         resolution_reason="target_is_dispatcher_block",
         source_instruction_ea=0x7FF855576BA0,
-        state_var_stkoff=8,
-        state_var_reg=8,
+        state_var_stkoff=52,
+        state_var_reg=None,
     )
 
     facts = collect_predecessor_dispatcher_target_facts(
@@ -292,12 +493,8 @@ def test_resolution_native_ea_is_preserved_and_interval_handler_beats_dispatcher
     assert fact.target_block_serial == 7
     assert fact.resolver_kind == "interval_dispatcher_row"
     assert fact.source_instruction_ea == 0x7FF855576BA0
-    # The prior maturity's carrier identity is diagnostic only.  The typed
-    # route remains valid when the current lowering observes a different
-    # carrier, because native EA plus current-router corroboration is the
-    # stable authority.
-    assert fact.state_var_stkoff == 8
-    assert fact.state_var_reg == 8
+    assert fact.state_var_stkoff == 52
+    assert fact.state_var_reg is None
     assert fact.to_dict()["source_instruction_ea"] == 0x7FF855576BA0
 
 
@@ -473,12 +670,13 @@ def test_handler_serials_in_range_metadata_do_not_block_identity_support() -> No
         state_var_stkoff=52,
     )
 
+    # The selected dispatcher identity is (stkoff=52, reg=None).  A raw
+    # candidate carrying only (reg=8) is not enough to bridge that identity;
+    # the current-snapshot alias proof is intentionally absent here.
     entry_facts = [
         fact for fact in facts if fact.source_instruction_ea == _NATIVE_ENTRY_EA
     ]
-    assert len(entry_facts) == 1
-    assert entry_facts[0].state_const == _NATIVE_ENTRY_STATE
-    assert entry_facts[0].target_block_serial == 7
+    assert entry_facts == []
 
 
 def test_native_entry_fallback_selects_only_unique_supported_identity_family() -> None:
@@ -545,17 +743,12 @@ def test_native_entry_fallback_selects_only_unique_supported_identity_family() -
         for fact in facts
         if fact.source_instruction_ea == _NATIVE_ENTRY_EA
     }
-    assert native_entry_facts == {_NATIVE_ENTRY_STATE}
+    assert native_entry_facts == set()
     assert {
         fact.state_const
         for fact in facts
         if fact.source_instruction_ea == _NATIVE_LATER_EA
-    } == {_NATIVE_LATER_STATE}
-    assert all(
-        fact.state_var_reg == 8
-        for fact in facts
-        if fact.source_instruction_ea
-    )
+    } == set()
 
 
 def test_identity_selector_abstains_for_multiple_supported_families() -> None:
@@ -687,3 +880,260 @@ def test_ordinary_successful_resolution_without_identity_is_unchanged() -> None:
     assert len(facts) == 1
     assert facts[0].target_block_serial == 7
     assert facts[0].state_var_stkoff == 52
+
+
+def _path_local_identity_resolutions():
+    support = _native_resolution(
+        state=0x1000,
+        target=122,
+        reason="resolved_exact_state",
+        state_var_stkoff=None,
+        state_var_reg=8,
+        source_instruction_ea=None,
+        source_block_serial=9,
+    )
+    candidate = _native_resolution(
+        state=_NATIVE_ENTRY_STATE,
+        target=None,
+        reason="target_is_dispatcher_block",
+        state_var_stkoff=None,
+        state_var_reg=8,
+        source_instruction_ea=_NATIVE_ENTRY_EA,
+        source_block_serial=1,
+    )
+    return support, candidate
+
+
+def test_native_entry_snapshot_fallback_accepts_exact_current_entry_path_proof() -> None:
+    graph, dispatch_map, range_evidence = _path_local_entry_fixture()
+    support, candidate = _path_local_identity_resolutions()
+
+    facts = collect_predecessor_dispatcher_target_facts(
+        transition_result=None,
+        dispatcher_entry_serial=3,
+        state_dispatcher_map=dispatch_map,
+        range_evidence=range_evidence,
+        transition_resolutions=(support, candidate),
+        flow_graph=graph,
+        state_var_stkoff=52,
+    )
+
+    entry_facts = [
+        fact for fact in facts if fact.source_instruction_ea == _NATIVE_ENTRY_EA
+    ]
+    assert len(entry_facts) == 1
+    assert entry_facts[0].target_block_serial == 122
+    assert entry_facts[0].state_var_stkoff == 52
+    assert entry_facts[0].state_var_reg is None
+
+
+def test_native_entry_snapshot_fallback_accepts_wide_low32_source_write() -> None:
+    graph, dispatch_map, range_evidence = _path_local_entry_fixture(
+        source_size=8,
+        source_value=(1 << 32) | _NATIVE_ENTRY_STATE,
+    )
+    support, candidate = _path_local_identity_resolutions()
+
+    facts = collect_predecessor_dispatcher_target_facts(
+        transition_result=None,
+        dispatcher_entry_serial=3,
+        state_dispatcher_map=dispatch_map,
+        range_evidence=range_evidence,
+        transition_resolutions=(support, candidate),
+        flow_graph=graph,
+        state_var_stkoff=52,
+    )
+
+    entry_facts = [
+        fact for fact in facts if fact.source_instruction_ea == _NATIVE_ENTRY_EA
+    ]
+    assert len(entry_facts) == 1
+    assert entry_facts[0].target_block_serial == 122
+
+
+def test_native_entry_snapshot_fallback_rejects_ambiguous_native_ea() -> None:
+    graph, dispatch_map, range_evidence = _path_local_entry_fixture(
+        duplicate_source_instruction=True
+    )
+    support, candidate = _path_local_identity_resolutions()
+
+    facts = collect_predecessor_dispatcher_target_facts(
+        transition_result=None,
+        dispatcher_entry_serial=3,
+        state_dispatcher_map=dispatch_map,
+        range_evidence=range_evidence,
+        transition_resolutions=(support, candidate),
+        flow_graph=graph,
+        state_var_stkoff=52,
+    )
+
+    assert [
+        fact for fact in facts if fact.source_instruction_ea == _NATIVE_ENTRY_EA
+    ] == []
+
+
+def test_native_entry_snapshot_fallback_rejects_source_register_state_mismatch() -> None:
+    graph, dispatch_map, range_evidence = _path_local_entry_fixture(
+        source_register=7
+    )
+    support, candidate = _path_local_identity_resolutions()
+
+    facts = collect_predecessor_dispatcher_target_facts(
+        transition_result=None,
+        dispatcher_entry_serial=3,
+        state_dispatcher_map=dispatch_map,
+        range_evidence=range_evidence,
+        transition_resolutions=(support, candidate),
+        flow_graph=graph,
+        state_var_stkoff=52,
+    )
+
+    assert [
+        fact for fact in facts if fact.source_instruction_ea == _NATIVE_ENTRY_EA
+    ] == []
+
+
+def test_native_entry_snapshot_fallback_rejects_unsafe_trailing_write() -> None:
+    graph, dispatch_map, range_evidence = _path_local_entry_fixture(
+        unsafe_trailing=True
+    )
+    support, candidate = _path_local_identity_resolutions()
+
+    facts = collect_predecessor_dispatcher_target_facts(
+        transition_result=None,
+        dispatcher_entry_serial=3,
+        state_dispatcher_map=dispatch_map,
+        range_evidence=range_evidence,
+        transition_resolutions=(support, candidate),
+        flow_graph=graph,
+        state_var_stkoff=52,
+    )
+
+    assert [
+        fact for fact in facts if fact.source_instruction_ea == _NATIVE_ENTRY_EA
+    ] == []
+
+
+def test_native_entry_snapshot_fallback_rejects_current_entry_state_mismatch() -> None:
+    graph, dispatch_map, range_evidence = _path_local_entry_fixture(write_value=0x1234)
+    support, candidate = _path_local_identity_resolutions()
+
+    facts = collect_predecessor_dispatcher_target_facts(
+        transition_result=None,
+        dispatcher_entry_serial=3,
+        state_dispatcher_map=dispatch_map,
+        range_evidence=range_evidence,
+        transition_resolutions=(support, candidate),
+        flow_graph=graph,
+        state_var_stkoff=52,
+    )
+
+    assert [
+        fact for fact in facts if fact.source_instruction_ea == _NATIVE_ENTRY_EA
+    ] == []
+
+
+def test_native_entry_snapshot_fallback_rejects_conflicting_entry_writes() -> None:
+    graph, dispatch_map, range_evidence = _path_local_entry_fixture(
+        conflicting_write=0x1234
+    )
+    support, candidate = _path_local_identity_resolutions()
+
+    facts = collect_predecessor_dispatcher_target_facts(
+        transition_result=None,
+        dispatcher_entry_serial=3,
+        state_dispatcher_map=dispatch_map,
+        range_evidence=range_evidence,
+        transition_resolutions=(support, candidate),
+        flow_graph=graph,
+        state_var_stkoff=52,
+    )
+
+    assert [
+        fact for fact in facts if fact.source_instruction_ea == _NATIVE_ENTRY_EA
+    ] == []
+
+
+def test_native_entry_snapshot_fallback_rejects_fork_before_dispatcher_entry() -> None:
+    graph, dispatch_map, range_evidence = _path_local_entry_fixture(
+        source_succs=(3, 30)
+    )
+    support, candidate = _path_local_identity_resolutions()
+
+    facts = collect_predecessor_dispatcher_target_facts(
+        transition_result=None,
+        dispatcher_entry_serial=3,
+        state_dispatcher_map=dispatch_map,
+        range_evidence=range_evidence,
+        transition_resolutions=(support, candidate),
+        flow_graph=graph,
+        state_var_stkoff=52,
+    )
+
+    assert [
+        fact for fact in facts if fact.source_instruction_ea == _NATIVE_ENTRY_EA
+    ] == []
+
+
+def test_wide_alias_resolution_cannot_resurrect_through_transition_result() -> None:
+    dispatch_map, range_evidence = _native_identity_dispatcher_fixture()
+    wide_alias = SimpleNamespace(
+        source_block_serial=7,
+        source_state_const_hex="0x0000000100000001",
+        resolved_next_block_serial=None,
+        resolution_kind="state_dispatcher_map",
+        resolution_reason="target_is_dispatcher_block",
+        source_instruction_ea=_NATIVE_ENTRY_EA,
+        state_var_stkoff=52,
+        state_var_reg=8,
+    )
+    transition_result = TransitionResult(
+        transitions=[
+            StateTransition(
+                from_state=0x10,
+                to_state=1,
+                from_block=7,
+                provenance_ea=_NATIVE_ENTRY_EA,
+            )
+        ]
+    )
+
+    facts = collect_predecessor_dispatcher_target_facts(
+        transition_result=transition_result,
+        dispatcher_entry_serial=2,
+        state_dispatcher_map=dispatch_map,
+        range_evidence=range_evidence,
+        transition_resolutions=(wide_alias,),
+        state_var_stkoff=52,
+    )
+
+    assert facts == ()
+    # The fallback EA comes from ``provenance_ea`` when the transition has no
+    # dedicated source-instruction field; no unanchored route may be emitted.
+
+
+def test_transition_result_uses_provenance_ea_when_source_instruction_is_absent() -> None:
+    dispatch_map, range_evidence = _native_identity_dispatcher_fixture()
+    transition_result = TransitionResult(
+        transitions=[
+            StateTransition(
+                from_state=0x10,
+                to_state=0x1000,
+                from_block=7,
+                provenance_kind="global_or_state_write",
+                provenance_ea=_NATIVE_ENTRY_EA,
+            )
+        ]
+    )
+
+    facts = collect_predecessor_dispatcher_target_facts(
+        transition_result=transition_result,
+        dispatcher_entry_serial=2,
+        state_dispatcher_map=dispatch_map,
+        range_evidence=range_evidence,
+        state_var_stkoff=52,
+    )
+
+    assert len(facts) == 1
+    assert facts[0].target_block_serial == 7
+    assert facts[0].source_instruction_ea == _NATIVE_ENTRY_EA
