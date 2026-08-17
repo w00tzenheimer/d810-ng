@@ -228,9 +228,13 @@ def _final_provider_outcome(
         for outcome in outcomes
         if outcome.status is ProviderOutcomeStatus.APPLIED
     )
+    if len(applied) > 1:
+        raise ValueError(
+            "at most one applied outcome is allowed for one provider capture"
+        )
     # An accepted mutation must not be hidden by later non-mutating probes in
     # the same function.  Within an equal status, preserve history order.
-    return applied[-1] if applied else outcomes[-1]
+    return applied[0] if applied else outcomes[-1]
 
 
 def capture_native_provider_case(

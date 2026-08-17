@@ -482,6 +482,68 @@ def test_report_does_not_infer_egglog_runs_from_a_replay_path() -> None:
     assert "egglog_run_count" not in outcome.metadata
 
 
+def test_report_requires_explicit_replay_saved_runs_measurement() -> None:
+    profile = _profile("replay-measurement")
+    replay = MbaProviderOutcome(
+        provider=MbaProviderKind.EGGLOG,
+        status=ProviderOutcomeStatus.APPLIED,
+        fingerprint=profile.fingerprint,
+        input_cost=(4, 6),
+        output_cost=(2, 3),
+        metadata={
+            "execution_path": "learned_replay",
+            "egglog_run_count": 0,
+        },
+    )
+    report = MbaDifferentialReport(
+        schema_version=1,
+        corpus_identity="replay-measurement",
+        toolchain_identity={},
+        cases=(
+            MbaCorpusCaseReport(
+                case_id="replay-without-template-measurement",
+                profile=profile,
+                outcomes=(replay,),
+            ),
+        ),
+    )
+
+    assert compare_provider_outcomes(report).rollout_evidence.replay_saved_egglog_runs is None
+
+
+def test_report_sums_explicit_replay_saved_runs_measurements() -> None:
+    profile = _profile("replay-sum")
+    cases = tuple(
+        MbaCorpusCaseReport(
+            case_id=f"replay-{saved}",
+            profile=profile,
+            outcomes=(
+                MbaProviderOutcome(
+                    provider=MbaProviderKind.EGGLOG,
+                    status=ProviderOutcomeStatus.APPLIED,
+                    fingerprint=profile.fingerprint,
+                    input_cost=(4, 6),
+                    output_cost=(2, 3),
+                    metadata={
+                        "execution_path": "learned_replay",
+                        "egglog_run_count": 0,
+                        "replay_saved_egglog_runs": saved,
+                    },
+                ),
+            ),
+        )
+        for saved in (2, 3)
+    )
+    report = MbaDifferentialReport(
+        schema_version=1,
+        corpus_identity="replay-sum",
+        toolchain_identity={},
+        cases=cases,
+    )
+
+    assert compare_provider_outcomes(report).rollout_evidence.replay_saved_egglog_runs == 5
+
+
 def test_offline_cli_builds_normalized_report_and_requires_explicit_provider_rows(
     tmp_path,
 ) -> None:
@@ -537,6 +599,50 @@ def test_offline_cli_builds_normalized_report_and_requires_explicit_provider_row
             (first_path,),
             expected_providers=(MbaProviderKind.CATALOGUE, MbaProviderKind.EGGLOG),
         )
+
+
+def test_offline_cli_preserves_input_toolchain_identity(tmp_path) -> None:
+    from tools.scripts.mba_differential_report import build_report
+
+    profile = _profile("toolchain")
+    report = MbaDifferentialReport(
+        schema_version=1,
+        corpus_identity="native-toolchain",
+        toolchain_identity={
+            "compiler_executable": "/usr/bin/clang",
+            "compiler_version": "Apple clang version 17.0.0",
+            "compiler_flags": "-shared -fPIC -O0 -fno-inline",
+            "ida_sdk": "94",
+            "matcher_backend": "python",
+            "profile": "portfolio-python",
+        },
+        cases=(
+            MbaCorpusCaseReport(
+                case_id="toolchain-case",
+                profile=profile,
+                outcomes=(
+                    _outcome(
+                        MbaProviderKind.CATALOGUE,
+                        ProviderOutcomeStatus.APPLIED,
+                        profile.fingerprint,
+                    ),
+                ),
+            ),
+        ),
+    )
+    input_path = tmp_path / "native-report.json"
+    input_path.write_text(report.to_json(), encoding="utf-8")
+
+    payload, _markdown = build_report((input_path,))
+
+    identity = payload["toolchain_identity"]
+    assert identity["compiler_executable"] == "/usr/bin/clang"
+    assert identity["compiler_version"] == "Apple clang version 17.0.0"
+    assert identity["compiler_flags"] == "-shared -fPIC -O0 -fno-inline"
+    assert identity["ida_sdk"] == "94"
+    assert identity["matcher_backend"] == "python"
+    assert identity["profile"] == "portfolio-python"
+    assert identity["reporter"] == "mba_differential_report"
 
 
 def test_offline_cli_uses_manifest_provider_matrix_when_no_override_is_given(
@@ -881,7 +987,9 @@ def test_rollout_evidence_extends_domain_lifted_measurements_additively() -> Non
         "fresh_saturation": 1,
         "learned_replay": 1,
     }
-    assert evidence.replay_saved_egglog_runs == 1
+    # The legacy capture-only aggregate is intentionally ignored.  A saved-run
+    # claim now requires the accepted template's explicit producer measurement.
+    assert evidence.replay_saved_egglog_runs is None
     assert evidence.cache_status_counts == {"hit": 1, "miss": 1}
     assert evidence.cache_peak_entries == 2
     assert evidence.cache_peak_bytes == 1024

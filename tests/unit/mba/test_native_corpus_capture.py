@@ -148,6 +148,26 @@ def test_capture_rejects_missing_or_conflicting_actual_profile_evidence() -> Non
                 ),
             ),
         )
+    with pytest.raises(ValueError, match="at most one applied"):
+        capture_native_provider_case(
+            case_id="duplicate-applied-within-provider",
+            stratum="catalogue",
+            profile=profile,
+            rules=(
+                _Provider(
+                    _outcome(
+                        MbaProviderKind.CATALOGUE,
+                        ProviderOutcomeStatus.APPLIED,
+                        profile,
+                    ),
+                    _outcome(
+                        MbaProviderKind.CATALOGUE,
+                        ProviderOutcomeStatus.APPLIED,
+                        profile,
+                    ),
+                ),
+            ),
+        )
 
 
 def test_capture_snapshot_excludes_prior_decompilation_history() -> None:

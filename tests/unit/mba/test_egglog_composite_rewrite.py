@@ -160,10 +160,36 @@ def test_serialized_schema_is_exact_and_json_safe(
         "raw_input_cost",
         "output_cost",
         "derivation_trace",
+        "egglog_run_count",
         "created_sequence",
         "last_used_sequence",
     }
     assert json.loads(valid_rewrite.to_json()) == valid_rewrite.to_dict()
+
+
+def test_fresh_egglog_run_count_is_immutable_and_round_trips(
+    semantics: ActiveSemantics,
+) -> None:
+    x = leaf("x")
+    rewrite = EgglogCompositeRewrite.from_extraction(
+        input_term=binary("add", binary("add", x, x), x),
+        output_term=binary("mul", const(3), x),
+        derivation_trace=(("add", "R", ()),),
+        semantics=semantics,
+        egglog_run_count=3,
+    )
+
+    assert rewrite.egglog_run_count == 3
+    assert EgglogCompositeRewrite.from_json(rewrite.to_json()) == rewrite
+
+    with pytest.raises((CompositeRewriteMalformed, ValueError)):
+        EgglogCompositeRewrite.from_extraction(
+            input_term=binary("add", binary("add", x, x), x),
+            output_term=binary("mul", const(3), x),
+            derivation_trace=(("add", "R", ()),),
+            semantics=semantics,
+            egglog_run_count=-1,
+        )
 
 
 def _payload_mutation(

@@ -92,6 +92,9 @@ def egglog_receipt_to_outcome(receipt: object) -> MbaProviderOutcome:
         ),
         "replay_proof_elapsed_ms": getattr(receipt, "replay_proof_elapsed_ms", None),
         "egglog_work_units": getattr(receipt, "egglog_work_units", 0),
+        "replay_saved_egglog_runs": getattr(
+            receipt, "replay_saved_egglog_runs", None
+        ),
         "replay_fallback_reason": getattr(receipt, "replay_fallback_reason", None),
         "degree": getattr(receipt, "degree", None),
         "eclass_count": getattr(receipt, "eclass_count", None),
@@ -810,8 +813,8 @@ def _rollout_evidence(report: MbaDifferentialReport) -> RolloutEvidence:
     execution_path_counts: dict[str, int] = defaultdict(int)
     execution_path_latencies: dict[str, list[float]] = defaultdict(list)
     replay_saved_egglog_runs: int | None = None
-    measured_replay_saved_egglog_runs = 0
-    measured_replay_observations = 0
+    row_replay_saved_egglog_runs = 0
+    row_replay_savings_observed = False
     cache_status_counts: dict[str, int] = defaultdict(int)
     cache_peak_entries: int | None = None
     cache_peak_bytes: int | None = None
@@ -883,9 +886,6 @@ def _rollout_evidence(report: MbaDifferentialReport) -> RolloutEvidence:
 
     cache_measurements = capture_metadata.get("cache_measurements")
     if isinstance(cache_measurements, Mapping):
-        saved = cache_measurements.get("saved_egglog_runs")
-        if type(saved) is int and saved >= 0:
-            replay_saved_egglog_runs = saved
         entries = cache_measurements.get("peak_entries")
         if type(entries) is int and entries >= 0:
             cache_peak_entries = entries
@@ -1114,12 +1114,8 @@ def _rollout_evidence(report: MbaDifferentialReport) -> RolloutEvidence:
                     )
             explicit_replay_savings = _metadata_int(metadata, "replay_saved_egglog_runs")
             if explicit_replay_savings is not None:
-                replay_saved_egglog_runs = explicit_replay_savings
-            measured_run_count = _metadata_int(metadata, "egglog_run_count")
-            if execution_path == "learned_replay" and measured_run_count is not None:
-                measured_replay_observations += 1
-                if measured_run_count == 0:
-                    measured_replay_saved_egglog_runs += 1
+                row_replay_savings_observed = True
+                row_replay_saved_egglog_runs += explicit_replay_savings
 
             cache_status = metadata.get("cache_status")
             if type(cache_status) is str and cache_status:
@@ -1203,11 +1199,11 @@ def _rollout_evidence(report: MbaDifferentialReport) -> RolloutEvidence:
         raw_vs_canonical.extend(capture_raw_vs_canonical)
     if not cache_status_counts and capture_cache_status_counts:
         cache_status_counts.update(capture_cache_status_counts)
-    if measured_replay_observations:
-        # A replay saves one engine run only when the producer measured zero
-        # runs.  The path label alone is not evidence, and capture-level
-        # aggregates remain a fallback for reports without provider rows.
-        replay_saved_egglog_runs = measured_replay_saved_egglog_runs
+    if row_replay_savings_observed:
+        # Only the producer's explicit template measurement is additive
+        # evidence.  A zero ``egglog_run_count`` on a replay is not itself a
+        # measurement of the fresh work that the template replaced.
+        replay_saved_egglog_runs = row_replay_saved_egglog_runs
     # A degree with captured observations but no unique win must be visible as
     # a real measured zero.  Degree-one/two are the rollout comparison lanes.
     for degree in (1, 2):

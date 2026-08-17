@@ -29,7 +29,7 @@ MAX_INPUT_LEAF_SLOTS = 8
 # This leaves room for Task 11 to enforce its 2 MiB aggregate bound without
 # allowing one malformed shape to consume it.
 MAX_SERIALIZED_ENTRY_BYTES = 64 * 1024
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 ACTIVE_SEMANTICS_SCHEMA_VERSION = 1
 
 _DIGEST_LENGTH = 64
@@ -54,6 +54,7 @@ _REWRITE_FIELDS = frozenset(
         "raw_input_cost",
         "output_cost",
         "derivation_trace",
+        "egglog_run_count",
         "created_sequence",
         "last_used_sequence",
     }
@@ -459,6 +460,7 @@ def _template_id(
     raw_input_cost: tuple[int, int],
     output_cost: tuple[int, int],
     derivation_trace: tuple[tuple[str, str, tuple[str, ...]], ...],
+    egglog_run_count: int | None,
 ) -> str:
     identity = {
         "schema_version": schema_version,
@@ -478,6 +480,7 @@ def _template_id(
             [family, source_name, list(aliases)]
             for family, source_name, aliases in derivation_trace
         ],
+        "egglog_run_count": egglog_run_count,
     }
     return hashlib.sha256(_canonical_json(identity).encode("utf-8")).hexdigest()
 
@@ -501,6 +504,10 @@ class EgglogCompositeRewrite:
     raw_input_cost: tuple[int, int]
     output_cost: tuple[int, int]
     derivation_trace: tuple[tuple[str, str, tuple[str, ...]], ...]
+    # Producer-side measurement of the fresh EGraph.run calls which admitted
+    # this template.  ``None`` is preserved when the producer could not
+    # measure it; replay savings must never be inferred from an execution path.
+    egglog_run_count: int | None = None
     created_sequence: int = 0
     last_used_sequence: int = 0
 
@@ -544,6 +551,8 @@ class EgglogCompositeRewrite:
             if not self.output_cost < self.raw_input_cost:
                 raise ValueError("output cost must be strictly lower than raw input cost")
             object.__setattr__(self, "derivation_trace", _normalize_trace(self.derivation_trace))
+            if self.egglog_run_count is not None:
+                _require_nonnegative_int(self.egglog_run_count, "egglog_run_count")
             _require_nonnegative_int(self.created_sequence, "created_sequence")
             _require_nonnegative_int(self.last_used_sequence, "last_used_sequence")
             if self.last_used_sequence < self.created_sequence:
@@ -563,6 +572,7 @@ class EgglogCompositeRewrite:
                 raw_input_cost=self.raw_input_cost,
                 output_cost=self.output_cost,
                 derivation_trace=self.derivation_trace,
+                egglog_run_count=self.egglog_run_count,
             )
             if self.template_id != expected_id:
                 raise ValueError("template_id does not match canonical payload")
@@ -600,6 +610,7 @@ class EgglogCompositeRewrite:
         output_term: TypedBvTerm,
         derivation_trace: object,
         semantics: CompositeRewriteSemantics,
+        egglog_run_count: int | None = None,
         created_sequence: int = 0,
         last_used_sequence: int = 0,
     ) -> "EgglogCompositeRewrite":
@@ -632,6 +643,7 @@ class EgglogCompositeRewrite:
                 raw_input_cost=raw_input_cost,
                 output_cost=output_cost,
                 derivation_trace=normalized_trace,
+                egglog_run_count=egglog_run_count,
             )
             rewrite = cls(
                 schema_version=SCHEMA_VERSION,
@@ -649,6 +661,7 @@ class EgglogCompositeRewrite:
                 raw_input_cost=raw_input_cost,
                 output_cost=output_cost,
                 derivation_trace=normalized_trace,
+                egglog_run_count=egglog_run_count,
                 created_sequence=created_sequence,
                 last_used_sequence=last_used_sequence,
             )
@@ -680,6 +693,7 @@ class EgglogCompositeRewrite:
                 [family, source_name, list(aliases)]
                 for family, source_name, aliases in self.derivation_trace
             ],
+            "egglog_run_count": self.egglog_run_count,
             "created_sequence": self.created_sequence,
             "last_used_sequence": self.last_used_sequence,
         }
@@ -720,6 +734,7 @@ class EgglogCompositeRewrite:
                 raw_input_cost=raw_cost,
                 output_cost=output_cost,
                 derivation_trace=trace,
+                egglog_run_count=payload["egglog_run_count"],
                 created_sequence=payload["created_sequence"],
                 last_used_sequence=payload["last_used_sequence"],
             )

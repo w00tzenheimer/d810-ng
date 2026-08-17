@@ -320,6 +320,9 @@ class EgglogExtractionReceipt:
     # concrete value is emitted only by the saturation seam after it enters
     # ``EGraph.run`` (or by the handler's explicit no-run paths).
     egglog_run_count: int | None = None
+    # Explicit producer-side savings carried by a learned template.  A
+    # replay's zero runs do not establish how many fresh runs it replaced.
+    replay_saved_egglog_runs: int | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "selected_aliases", tuple(self.selected_aliases))
@@ -386,6 +389,13 @@ class EgglogExtractionReceipt:
             type(self.egglog_run_count) is not int or self.egglog_run_count < 0
         ):
             raise ValueError("egglog_run_count must be a non-negative integer or null")
+        if self.replay_saved_egglog_runs is not None and (
+            type(self.replay_saved_egglog_runs) is not int
+            or self.replay_saved_egglog_runs < 0
+        ):
+            raise ValueError(
+                "replay_saved_egglog_runs must be a non-negative integer or null"
+            )
         if self.replay_fallback_reason is not None and (
             type(self.replay_fallback_reason) is not str
             or not self.replay_fallback_reason
@@ -605,6 +615,7 @@ def _extraction_result(
     egglog_work_units: int = 0,
     replay_fallback_reason: str | None = None,
     egglog_run_count: int | None = None,
+    replay_saved_egglog_runs: int | None = None,
     extracted_cost: tuple[int, int] | None = None,
     degree: int | None = None,
     eclass_count: int | None = None,
@@ -646,6 +657,7 @@ def _extraction_result(
             egglog_work_units=egglog_work_units,
             replay_fallback_reason=replay_fallback_reason,
             egglog_run_count=egglog_run_count,
+            replay_saved_egglog_runs=replay_saved_egglog_runs,
             extracted_cost=extracted_cost,
             degree=degree,
             eclass_count=eclass_count,

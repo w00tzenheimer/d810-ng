@@ -133,6 +133,27 @@ def _merge_capture_metadata(documents: Sequence[object]) -> Mapping[str, object]
     return merged  # type: ignore[return-value]
 
 
+def _merge_toolchain_identity(documents: Sequence[object]) -> dict[str, str]:
+    """Preserve producer toolchain facts while adding reporter provenance."""
+
+    identity: dict[str, str] = {}
+    for document in documents:
+        if not isinstance(document, Mapping) or "toolchain_identity" not in document:
+            continue
+        value = document["toolchain_identity"]
+        if not isinstance(value, Mapping):
+            raise ValueError("toolchain_identity must be an object")
+        for key, item in value.items():
+            if type(key) is not str or type(item) is not str:
+                raise ValueError("toolchain_identity must map strings to strings")
+            previous = identity.get(key)
+            if previous is not None and previous != item:
+                raise ValueError(f"conflicting toolchain_identity at {key}")
+            identity[key] = item
+    identity.setdefault("reporter", "mba_differential_report")
+    return identity
+
+
 def build_report(
     paths: Sequence[Path],
     *,
@@ -179,7 +200,9 @@ def build_report(
     report = normalize_outcome_rows(
         rows,
         corpus_identity=corpus_identity or (manifest.stem if manifest else "ad-hoc"),
-        toolchain_identity={"reporter": "mba_differential_report"},
+        toolchain_identity=_merge_toolchain_identity(
+            tuple(raw for _path, raw in documents)
+        ),
         expected_providers=providers,
         capture_metadata=capture_metadata,
     )

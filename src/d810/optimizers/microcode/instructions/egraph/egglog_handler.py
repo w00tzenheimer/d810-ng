@@ -642,6 +642,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         cache_status: str,
         cache_key: str | None,
         cache_lookup_elapsed_ms: float | None = None,
+        replay_saved_egglog_runs: int | None = None,
     ) -> EgglogExtractionResult:
         input_cost = term_cost(candidate_term)
         extracted_cost = term_cost(replacement_term)
@@ -672,6 +673,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             # Direct catalogue and learned replay are explicit no-run paths;
             # the saturation producer records actual ``EGraph.run`` calls.
             egglog_run_count=0,
+            replay_saved_egglog_runs=replay_saved_egglog_runs,
         )
         return EgglogExtractionResult(
             replacement_ast=None,
@@ -754,6 +756,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
                     cache_status="hit",
                     cache_key=cache_key,
                     cache_lookup_elapsed_ms=lookup_elapsed_ms,
+                    replay_saved_egglog_runs=rewrite.egglog_run_count,
                 )
             except Exception:
                 continue
@@ -1003,6 +1006,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
                     output_term=replacement_term,
                     derivation_trace=extraction.derivation_trace,
                     semantics=self._current_replay_semantics(),
+                    egglog_run_count=extraction.receipt.egglog_run_count,
                 )
             except (CompositeRewriteMalformed, TypeError, ValueError):
                 self._pending_composite_rewrite = None
@@ -1726,6 +1730,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             "replay_proof_elapsed_ms": receipt.replay_proof_elapsed_ms,
             "egglog_work_units": receipt.egglog_work_units,
             "egglog_run_count": receipt.egglog_run_count,
+            "replay_saved_egglog_runs": receipt.replay_saved_egglog_runs,
             "replay_fallback_reason": receipt.replay_fallback_reason,
             "extracted_cost": receipt.extracted_cost,
             "degree": receipt.degree,

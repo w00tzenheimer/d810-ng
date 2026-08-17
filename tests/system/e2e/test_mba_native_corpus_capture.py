@@ -180,15 +180,15 @@ def _assert_task13_capture_rows(
     return manifest_cases
 
 
-def _build_native_corpus_binary(output_path: Path) -> None:
+def _native_compiler_details() -> tuple[str, tuple[str, ...], str, str]:
     compiler = next(
         (candidate for candidate in ("clang", "gcc", "cc") if shutil.which(candidate)),
         None,
     )
     if compiler is None:
         raise RuntimeError("native MBA corpus capture needs a C compiler")
-    command = [
-        compiler,
+    compiler_path = str(Path(shutil.which(compiler) or compiler).resolve())
+    flags = [
         "-shared",
         "-fPIC",
         "-O0",
@@ -197,21 +197,40 @@ def _build_native_corpus_binary(output_path: Path) -> None:
         "-fno-omit-frame-pointer",
     ]
     if Path(compiler).name.startswith("clang"):
-        command.extend(("-fno-vectorize", "-fno-slp-vectorize"))
+        flags.extend(("-fno-vectorize", "-fno-slp-vectorize"))
+    include_path = str(_ROOT / "samples/include")
+    version = subprocess.run(
+        [compiler_path, "--version"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()[0].strip()
+    return compiler_path, tuple(flags), include_path, version
+
+
+def _compiler_toolchain_identity() -> dict[str, str]:
+    compiler_path, flags, include_path, version = _native_compiler_details()
+    return {
+        "compiler_executable": compiler_path,
+        "compiler_version": version,
+        "compiler_flags": " ".join((*flags, "-I", include_path)),
+    }
+
+
+def _build_native_corpus_binary(output_path: Path) -> dict[str, str]:
+    compiler_path, flags, include_path, _version = _native_compiler_details()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(
-        [
-            *command,
-            "-I",
-            str(_ROOT / "samples/include"),
-            "-o",
-            str(output_path),
-            str(_SOURCE),
-        ],
+        [compiler_path, *flags, "-I", include_path, "-o", str(output_path), str(_SOURCE)],
         check=True,
         capture_output=True,
         text=True,
     )
+    return {
+        "compiler_executable": compiler_path,
+        "compiler_version": _version,
+        "compiler_flags": " ".join((*flags, "-I", include_path)),
+    }
 
 
 @pytest.mark.usefixtures("configure_hexrays")
@@ -224,6 +243,10 @@ class TestNativeMbaCorpusCapture:
         ida_database,
     ) -> None:
         assert not _BINARY.exists()
+
+    @classmethod
+    def setup_class(cls) -> None:
+        cls._compiler_toolchain_identity = _compiler_toolchain_identity()
 
     def test_elided_native_root_emits_complete_unavailable_provider_matrix(
         self,
@@ -308,6 +331,7 @@ class TestNativeMbaCorpusCapture:
         capture = NativeMbaCorpusCapture(
             corpus_identity="mba-compiler-shapes-native",
             toolchain_identity={
+                **self._compiler_toolchain_identity,
                 "ida_sdk": str(idaapi.IDA_SDK_VERSION),
                 "matcher_backend": str(get_engine_info()["backend"]),
                 "profile": f"portfolio-{egglog_mode}",
@@ -514,6 +538,20 @@ class TestNativeMbaCorpusCapture:
         )
         assert completed.returncode == 0, completed.stderr
         report = json.loads(report_path.read_text(encoding="utf-8"))
+        toolchain = report["toolchain_identity"]
+        assert toolchain["compiler_executable"] == self._compiler_toolchain_identity[
+            "compiler_executable"
+        ]
+        assert toolchain["compiler_version"] == self._compiler_toolchain_identity[
+            "compiler_version"
+        ]
+        assert toolchain["compiler_flags"] == self._compiler_toolchain_identity[
+            "compiler_flags"
+        ]
+        assert toolchain["ida_sdk"] == str(idaapi.IDA_SDK_VERSION)
+        assert toolchain["matcher_backend"] == runtime_mode
+        assert toolchain["profile"] == f"portfolio-{egglog_mode}"
+        assert toolchain["reporter"] == "mba_differential_report"
         assert len(report["cases"]) == len(expected_case_ids)
         assert all(len(case["outcomes"]) == len(_PROVIDER_MATRIX) for case in report["cases"])
         assert report["capture_metadata"] == capture.report().to_dict()["capture_metadata"]
