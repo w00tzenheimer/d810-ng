@@ -28,6 +28,7 @@ from d810.mba.typed_term import (
     AC_OPERATIONS,
     SUPPORTED_OPERATIONS,
     TypedBvTerm,
+    canonicalize_ac_term,
     _term_sort_key,
     term_fingerprint,
 )
@@ -44,6 +45,24 @@ class CanonicalPatternUnsupported(ValueError):
 
 
 @dataclass(frozen=True, slots=True)
+class FrozenConstraintExpression:
+    """A portable constraint expression captured during catalogue freezing."""
+
+    operation: str | None = None
+    value: int | None = None
+    name: str | None = None
+    children: tuple[FrozenConstraintExpression, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class FrozenConstraint:
+    """One equality constraint with no live DSL object references."""
+
+    left: FrozenConstraintExpression
+    right: FrozenConstraintExpression
+
+
+@dataclass(frozen=True, slots=True)
 class CanonicalCompiledPattern:
     """One width-specific canonical pattern and replacement template."""
 
@@ -54,6 +73,7 @@ class CanonicalCompiledPattern:
     terminal_kinds: Mapping[PatternLeafKey, str]
     semantic_fingerprint: str
     declaration_index: int
+    constraints: tuple[FrozenConstraint, ...] = ()
 
     def __post_init__(self) -> None:
         if type(self.width) is not int or self.width <= 0:
@@ -66,6 +86,10 @@ class CanonicalCompiledPattern:
             raise ValueError("semantic_fingerprint must be a non-empty string")
         if type(self.declaration_index) is not int or self.declaration_index < 0:
             raise ValueError("declaration_index must be non-negative")
+        constraints = tuple(self.constraints)
+        if any(not isinstance(item, FrozenConstraint) for item in constraints):
+            raise ValueError("constraints must be frozen portable constraints")
+        object.__setattr__(self, "constraints", constraints)
         kinds = dict(self.terminal_kinds)
         for key, kind in kinds.items():
             if (
@@ -227,6 +251,65 @@ def _rule_constraint_values(rule: object) -> object:
     return value if value is not None else ()
 
 
+def _freeze_constraint_expression(expression: object) -> FrozenConstraintExpression:
+    if type(expression) is int:
+        return FrozenConstraintExpression(value=expression)
+    node = _expression_or_raise(expression)
+    operation = node.operation
+    if operation is None:
+        if node.left is not None or node.right is not None:
+            raise CanonicalPatternUnsupported("malformed symbolic constraint leaf")
+        if node.value is not None:
+            if type(node.value) is not int:
+                raise CanonicalPatternUnsupported(
+                    "symbolic constraint literal is not an integer"
+                )
+            return FrozenConstraintExpression(value=node.value)
+        if type(node.name) is not str or not node.name:
+            raise CanonicalPatternUnsupported("symbolic constraint placeholder has no name")
+        return FrozenConstraintExpression(name=node.name)
+    if operation not in SUPPORTED_OPERATIONS:
+        raise CanonicalPatternUnsupported(
+            f"unsupported canonical constraint operation: {operation}"
+        )
+    if node.left is None:
+        raise CanonicalPatternUnsupported(f"malformed constraint {operation} expression")
+    left = _freeze_constraint_expression(node.left)
+    if operation in {"bnot", "neg"}:
+        if node.right is not None:
+            raise CanonicalPatternUnsupported(
+                f"malformed unary constraint {operation} expression"
+            )
+        return FrozenConstraintExpression(operation=operation, children=(left,))
+    if node.right is None:
+        raise CanonicalPatternUnsupported(f"malformed binary constraint {operation} expression")
+    right = _freeze_constraint_expression(node.right)
+    return FrozenConstraintExpression(operation=operation, children=(left, right))
+
+
+def _freeze_constraints(rule: object) -> tuple[FrozenConstraint, ...]:
+    constraints = _rule_constraint_values(rule)
+    try:
+        values = tuple(constraints)
+    except TypeError as exc:
+        raise CanonicalPatternUnsupported("rule constraints are not iterable") from exc
+    frozen: list[FrozenConstraint] = []
+    for constraint in values:
+        left = getattr(constraint, "left", None)
+        right = getattr(constraint, "right", None)
+        if left is None or right is None:
+            raise CanonicalPatternUnsupported(
+                "rule constraint is not a declarative equality"
+            )
+        frozen.append(
+            FrozenConstraint(
+                _freeze_constraint_expression(left),
+                _freeze_constraint_expression(right),
+            )
+        )
+    return tuple(frozen)
+
+
 def _jsonable_semantics(value: object, active: set[int] | None = None) -> object:
     """Encode rule semantics without object-address-based ``repr`` values."""
 
@@ -254,6 +337,14 @@ def _jsonable_semantics(value: object, active: set[int] | None = None) -> object
                     "constraint": _jsonable_semantics(
                         getattr(value, "constraint", None), active
                     ),
+                }
+            }
+        if isinstance(value, property):
+            return {
+                "property": {
+                    "fget": _jsonable_property_accessor(value.fget, active),
+                    "fset": _jsonable_property_accessor(value.fset, active),
+                    "fdel": _jsonable_property_accessor(value.fdel, active),
                 }
             }
         if isinstance(value, Mapping):
@@ -338,6 +429,35 @@ def disassemble(code):
     """Small indirection that keeps callable fingerprinting testable."""
 
     return dis.get_instructions(code)
+
+
+def _jsonable_property_accessor(
+    accessor: object, active: set[int]
+) -> object:
+    """Serialize property implementation code without walking module globals."""
+
+    if accessor is None:
+        return None
+    function = getattr(accessor, "__func__", accessor)
+    code = getattr(function, "__code__", None)
+    if code is None:
+        return {
+            "callable": f"{getattr(function, '__module__', '')}."
+            f"{getattr(function, '__qualname__', type(function).__qualname__)}",
+            "opaque": "callable_without_code",
+        }
+    return {
+        "callable": f"{getattr(function, '__module__', '')}."
+        f"{getattr(function, '__qualname__', type(function).__qualname__)}",
+        "code": {
+            "bytecode": code.co_code.hex(),
+            "consts": _jsonable_semantics(code.co_consts, active),
+            "names": code.co_names,
+            "varnames": code.co_varnames,
+            "freevars": code.co_freevars,
+            "cellvars": code.co_cellvars,
+        },
+    }
 
 
 def _rule_semantic_payload(
@@ -475,7 +595,112 @@ def compile_canonical_pattern(
         terminal_kinds=terminal_kinds,
         semantic_fingerprint=_fingerprint_payload(payload),
         declaration_index=declaration_index,
+        constraints=_freeze_constraints(rule),
     )
+
+
+@dataclass(frozen=True, slots=True)
+class _UnboundFrozenConstraintTerm:
+    name: str
+
+
+def _constant_fold_constraint(
+    operation: str, values: tuple[int, ...], width: int
+) -> int:
+    mask = (1 << width) - 1
+    if operation == "add":
+        result = values[0] + values[1]
+    elif operation == "sub":
+        result = values[0] - values[1]
+    elif operation == "mul":
+        result = values[0] * values[1]
+    elif operation == "and":
+        result = values[0] & values[1]
+    elif operation == "or":
+        result = values[0] | values[1]
+    elif operation == "xor":
+        result = values[0] ^ values[1]
+    elif operation == "neg":
+        result = -values[0]
+    elif operation == "bnot":
+        result = ~values[0]
+    else:
+        raise ValueError(f"unsupported frozen constraint operation: {operation}")
+    return result & mask
+
+
+def _evaluate_frozen_constraint_expression(
+    expression: FrozenConstraintExpression,
+    bindings: dict[str, TypedBvTerm],
+    *,
+    width: int,
+) -> TypedBvTerm | _UnboundFrozenConstraintTerm:
+    if expression.operation is None:
+        if expression.name is not None:
+            return bindings.get(
+                expression.name,
+                _UnboundFrozenConstraintTerm(expression.name),
+            )
+        if expression.value is not None:
+            return TypedBvTerm(None, width, value=expression.value)
+        raise ValueError("frozen constraint terminal has no value or name")
+    children = tuple(
+        _evaluate_frozen_constraint_expression(child, bindings, width=width)
+        for child in expression.children
+    )
+    if any(isinstance(child, _UnboundFrozenConstraintTerm) for child in children):
+        raise ValueError("nested unbound frozen constraint expression")
+    typed_children = tuple(child for child in children if isinstance(child, TypedBvTerm))
+    if len(typed_children) != len(children):
+        raise ValueError("frozen constraint expression has an invalid child")
+    if all(child.operation is None and child.value is not None for child in typed_children):
+        return TypedBvTerm(
+            None,
+            width,
+            value=_constant_fold_constraint(
+                expression.operation,
+                tuple(int(child.value) for child in typed_children),
+                width,
+            ),
+        )
+    return canonicalize_ac_term(
+        TypedBvTerm(expression.operation, width, children=typed_children)
+    )
+
+
+def evaluate_frozen_constraints(
+    constraints: tuple[FrozenConstraint, ...],
+    bindings: dict[str, TypedBvTerm],
+    *,
+    width: int,
+) -> bool:
+    """Evaluate pre-frozen constraints without touching symbolic DSL nodes."""
+
+    for constraint in constraints:
+        try:
+            left = _evaluate_frozen_constraint_expression(
+                constraint.left,
+                bindings,
+                width=width,
+            )
+            right = _evaluate_frozen_constraint_expression(
+                constraint.right,
+                bindings,
+                width=width,
+            )
+        except (TypeError, ValueError):
+            return False
+        if isinstance(left, _UnboundFrozenConstraintTerm):
+            if isinstance(right, _UnboundFrozenConstraintTerm):
+                return False
+            bindings[left.name] = right
+            continue
+        if isinstance(right, _UnboundFrozenConstraintTerm):
+            bindings[right.name] = left
+            continue
+        if left != right:
+            return False
+    return True
 
 
 @dataclass
@@ -744,10 +969,13 @@ __all__ = [
     "CanonicalPatternMatchReport",
     "CanonicalPatternMatchResult",
     "CanonicalPatternUnsupported",
+    "FrozenConstraint",
+    "FrozenConstraintExpression",
     "PatternLeafKey",
     "canonical_rule_fingerprint",
     "canonical_template_payload",
     "compile_canonical_pattern",
+    "evaluate_frozen_constraints",
     "lower_symbolic_template",
     "match_canonical_term_pattern",
 ]

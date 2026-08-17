@@ -131,3 +131,56 @@ The required five-file command is not numerically all-green because of the two
 unrelated current catalogue-manifest assertions described above. Graphify is
 blocked by the local operation-permission failure. No Task 3-scoped concern
 remains.
+
+## Fix round 1: frozen canonical match semantics
+
+The fix round added regressions before production changes for declaration-budget
+preservation, callback-local frozen constraints, canonical-ineligible proof
+widths, property getter semantics, and missing certificate canonicalizer
+version. The explicit RED command was:
+
+```text
+PYTHONPATH=src pyenv exec python -m pytest -q tests/unit/mba/test_compiled_pattern_catalogue.py::test_canonical_catalogue_preserves_earlier_match_at_declaration_budget_boundary tests/unit/mba/test_compiled_pattern_catalogue.py::test_canonical_catalogue_uses_frozen_constraints_at_match_time tests/unit/mba/test_certified_catalogue.py::test_snapshot_fingerprint_binds_proof_widths_for_canonical_ineligible_rule tests/unit/mba/test_canonical_pattern.py::test_semantic_fingerprint_changes_when_property_getter_changes tests/unit/mba/test_structural_matcher_certificate_tool.py::test_build_certificate_rejects_missing_canonicalizer_version
+5 failed in 35.07s
+```
+
+The first narrower catalogue rerun was `3 passed, 1 failed, 7 deselected in
+41.45s`; it exposed that the XOR fixture has two symmetric valid bindings, so
+the boundary regression was corrected to assert non-empty declaration-zero
+matches rather than assume one binding. The corrected boundary node passed in
+`1 passed in 38.93s`.
+
+The final fix-round focused evidence is:
+
+```text
+PYTHONPATH=src pyenv exec python -m pytest -q tests/unit/mba/test_compiled_pattern_catalogue.py -k 'canonical and (budget or constraint)'
+4 passed, 7 deselected in 35.23s
+
+PYTHONPATH=src pyenv exec python -m pytest -q tests/unit/mba/test_canonical_pattern.py::test_semantic_fingerprint_changes_when_property_getter_changes
+1 passed in 0.14s
+
+PYTHONPATH=src pyenv exec python -m pytest -q tests/unit/mba/test_certified_catalogue.py::test_snapshot_fingerprint_binds_proof_widths_for_canonical_ineligible_rule
+1 passed in 0.13s
+
+PYTHONPATH=src pyenv exec python -m pytest -q tests/unit/mba/test_structural_matcher_certificate_tool.py::test_build_certificate_rejects_missing_canonicalizer_version
+1 passed in 0.09s
+
+PYTHONPATH=src pyenv exec python -m pytest -q tests/unit/mba/test_canonical_pattern.py tests/unit/mba/test_compiled_pattern_catalogue.py tests/unit/mba/test_certified_catalogue.py tests/unit/mba/test_structural_matcher_certificate_tool.py
+47 passed in 59.86s
+
+PYTHONPATH=src pyenv exec python -m pytest -q tests/unit/mba/test_egglog_mba_catalogue.py -k canonical_template_projection_consumes_existing_admitted_rules_only
+1 passed, 18 deselected in 1.53s
+```
+
+The implementation now stops before invoking a next canonical matcher when no
+budget remains, preserving earlier matches and reporting
+`COMPARISON_BUDGET`; evaluates constraints from frozen portable data while
+retaining derived bindings without native paths; fingerprints proof widths and
+per-width canonical eligibility; fingerprints property accessor code without
+walking rewritten-test module globals; and rejects missing canonicalizer
+evidence instead of defaulting it to the current version.
+
+Fix-round static gates remained clean: Ruff passed, `git diff --check` emitted
+no diagnostics, ast-grep reported no findings, and import-linter kept all 14
+contracts. A post-edit `graphify update .` again failed with
+`[Errno 1] Operation not permitted`; no graph artifacts were staged.

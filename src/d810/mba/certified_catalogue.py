@@ -53,6 +53,9 @@ class CertifiedCatalogueSnapshot:
     canonical_templates_by_rule_width: Mapping[
         tuple[int, int], Mapping[str, object]
     ] = field(default_factory=dict)
+    canonical_status_by_rule_width: Mapping[tuple[int, int], str] = field(
+        default_factory=dict
+    )
     canonical_rule_ids_by_root_shape: Mapping[RootShape, tuple[int, ...]] = field(
         default_factory=dict
     )
@@ -74,6 +77,11 @@ class CertifiedCatalogueSnapshot:
                     for key, value in self.canonical_templates_by_rule_width.items()
                 }
             ),
+        )
+        object.__setattr__(
+            self,
+            "canonical_status_by_rule_width",
+            MappingProxyType(dict(self.canonical_status_by_rule_width)),
         )
         object.__setattr__(
             self,
@@ -563,6 +571,7 @@ def _rule_identity(
         ),
         f"{getattr(rule_type, '__module__', type(rule_type).__module__)}."
         f"{getattr(rule_type, '__qualname__', type(rule_type).__qualname__)}",
+        _semantic_value(_rule_semantic_attribute(rule, "proof_widths", ()), state),
         _semantic_value(pattern, state),
         _semantic_value(getattr(rule, "replacement", None), state),
         _semantic_value(_rule_semantic_attribute(rule, "constraints", ()), state),
@@ -620,10 +629,14 @@ def build_certified_catalogue_snapshot(
     )
     semantic_state = _SemanticFingerprintState(active_ids=set())
     canonical_templates: dict[tuple[int, int], Mapping[str, object]] = {}
+    canonical_statuses: dict[tuple[int, int], str] = {}
     canonical_root_buckets: dict[RootShape, list[int]] = {}
-    canonical_rule_payloads: list[tuple[object, tuple[object, ...]]] = []
+    canonical_rule_payloads: list[
+        tuple[object, tuple[object, ...], tuple[Mapping[str, object], ...]]
+    ] = []
     for rule_id, rule in enumerate(frozen_rules):
         width_templates: list[object] = []
+        width_statuses: list[Mapping[str, object]] = []
         for width in widths:
             try:
                 compiled_pattern = compile_canonical_pattern(
@@ -634,16 +647,22 @@ def build_certified_catalogue_snapshot(
             except CanonicalPatternUnsupported:
                 # Unsupported DSL operations are intentionally legacy-eligible;
                 # they do not make the supported canonical snapshot opaque.
+                canonical_statuses[(rule_id, width)] = "unsupported"
+                width_statuses.append({"width": width, "status": "unsupported"})
                 continue
             except (TypeError, ValueError):
                 # A malformed or opaque rule semantic cannot authorize a
                 # canonical structural snapshot.  Keep its legacy identity in
                 # the payload so the resulting digest still changes.
                 semantic_state.structural_authorizable = False
+                canonical_statuses[(rule_id, width)] = "opaque"
+                width_statuses.append({"width": width, "status": "opaque"})
                 continue
             fragment = canonical_template_payload(compiled_pattern)
             canonical_templates[(rule_id, width)] = fragment
+            canonical_statuses[(rule_id, width)] = "eligible"
             width_templates.append(fragment)
+            width_statuses.append({"width": width, "status": "eligible"})
             canonical_root_buckets.setdefault(
                 (
                     compiled_pattern.pattern_term.operation,
@@ -656,6 +675,7 @@ def build_certified_catalogue_snapshot(
             (
                 _rule_identity(rule, semantic_state),
                 tuple(width_templates),
+                tuple(width_statuses),
             )
         )
     payload = {
@@ -685,6 +705,7 @@ def build_certified_catalogue_snapshot(
         structural_authorizable=semantic_state.structural_authorizable,
         canonicalizer_schema_version=CANONICALIZER_SCHEMA_VERSION,
         canonical_templates_by_rule_width=canonical_templates,
+        canonical_status_by_rule_width=canonical_statuses,
         canonical_rule_ids_by_root_shape={
             key: tuple(value) for key, value in canonical_root_buckets.items()
         },

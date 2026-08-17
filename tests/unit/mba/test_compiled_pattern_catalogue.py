@@ -210,6 +210,36 @@ def test_canonical_catalogue_match_keeps_fixed_portable_bindings_and_budget():
     assert refused.stop_reason.value == "comparison_budget"
 
 
+def test_canonical_catalogue_preserves_earlier_match_at_declaration_budget_boundary():
+    from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
+    from d810.mba.ac_matching import AcMatchStopReason
+
+    rule = _xor_rule("Xor_HackersDelightRule_3")
+    assert rule is not None
+    x, y = _leaf("x"), _leaf("y")
+    candidate = _node(
+        "add",
+        _node("add", x, y),
+        _node("mul", _constant(-2), _node("and", x, y)),
+    )
+    typed = canonicalize_mba_term(candidate.to_typed_term()).canonical_term
+    single = CompiledPatternCatalogue.from_rules((rule,))
+    first_report = single.match_canonical_root(typed, comparison_budget=64)
+    assert first_report.matches
+
+    ordered = CompiledPatternCatalogue.from_rules((rule, rule))
+    boundary = ordered.match_canonical_root(
+        typed, comparison_budget=first_report.comparisons
+    )
+
+    assert boundary.matches
+    assert all(
+        match.compiled_pattern.declaration_index == 0 for match in boundary.matches
+    )
+    assert boundary.comparisons == first_report.comparisons
+    assert boundary.stop_reason is AcMatchStopReason.COMPARISON_BUDGET
+
+
 def test_canonical_catalogue_keeps_constraint_derived_bindings_without_paths():
     from d810.backends.mba.egglog_add_rule_compiler import compile_mba_rule_catalogue
     from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
@@ -238,3 +268,40 @@ def test_canonical_catalogue_keeps_constraint_derived_bindings_without_paths():
     binding = matched.matches[0].bindings
     assert binding.terms["val_res"].value == 0
     assert "val_res" not in binding.candidate_paths
+
+
+def test_canonical_catalogue_uses_frozen_constraints_at_match_time(monkeypatch):
+    import d810.backends.mba.compiled_pattern_catalogue as catalogue_module
+    from d810.backends.mba.egglog_add_rule_compiler import compile_mba_rule_catalogue
+    from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
+
+    rule = compile_mba_rule_catalogue().receipt_for(
+        "add", "Add_SpecialConstantRule_3"
+    ).compiled_rule
+    assert rule is not None
+    x = _leaf("x")
+    candidate = _node(
+        "add",
+        _node("xor", x, _constant(-2)),
+        _node("mul", _constant(2), _node("or", x, _constant(1))),
+    )
+    typed = canonicalize_mba_term(candidate.to_typed_term()).canonical_term
+    catalogue = CompiledPatternCatalogue.from_rules((rule,))
+
+    calls = 0
+
+    def forbidden_symbolic_constraint_walk(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        raise AssertionError("canonical callback walked symbolic constraints")
+
+    monkeypatch.setattr(
+        catalogue_module,
+        "_constraints_match_term",
+        forbidden_symbolic_constraint_walk,
+    )
+
+    report = catalogue.match_canonical_root(typed, comparison_budget=64)
+
+    assert report.matches
+    assert calls == 0

@@ -15,7 +15,7 @@ from d810.mba.certified_catalogue import (
     load_structural_matcher_parity_certificate,
     make_structural_matcher_parity_certificate,
 )
-from d810.mba.dsl import Var
+from d810.mba.dsl import Var, Zext
 from d810.mba.semantic_canonicalization import CANONICALIZER_SCHEMA_VERSION
 
 
@@ -41,6 +41,13 @@ class _SemanticRule(_Rule):
 
     def check_candidate(self, candidate) -> bool:
         return bool(candidate)
+
+
+class _CanonicalIneligibleRule(_Rule):
+    def __init__(self, proof_widths: tuple[int, ...]) -> None:
+        super().__init__("canonical-ineligible", Zext(Var("x"), 64))
+        self.replacement = Var("x")
+        self.proof_widths = proof_widths
 
 
 class _DifferentImplementationRule(_SemanticRule):
@@ -180,6 +187,23 @@ def test_snapshot_records_width_specific_canonical_templates_and_version() -> No
     assert template["width"] == 32
     assert template["semantic_fingerprint"]
     assert template["pattern"] != template["replacement"]
+
+
+def test_snapshot_fingerprint_binds_proof_widths_for_canonical_ineligible_rule() -> None:
+    baseline = build_certified_catalogue_snapshot(
+        (_CanonicalIneligibleRule((32,)),),
+        compiler_version="canonical-ineligible-v1",
+        widths=(32,),
+    )
+    changed = build_certified_catalogue_snapshot(
+        (_CanonicalIneligibleRule((64,)),),
+        compiler_version="canonical-ineligible-v1",
+        widths=(32,),
+    )
+
+    assert baseline.fingerprint != changed.fingerprint
+    assert baseline.canonical_templates_by_rule_width == {}
+    assert baseline.canonical_status_by_rule_width[(0, 32)] == "unsupported"
 
 
 def test_snapshot_with_unfingerprintable_hook_global_cannot_authorize() -> None:

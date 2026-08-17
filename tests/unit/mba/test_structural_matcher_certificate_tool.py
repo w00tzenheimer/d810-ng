@@ -65,6 +65,21 @@ def test_build_certificate_rejects_nonzero_parity_mismatch(tmp_path: Path) -> No
         build_certificate(_evidence(mismatch=1), manifest=manifest, toolchain=toolchain)
 
 
+def test_build_certificate_rejects_missing_canonicalizer_version(tmp_path: Path) -> None:
+    manifest = tmp_path / "manifest.json"
+    toolchain = tmp_path / "toolchain.json"
+    manifest.write_text("{}", encoding="utf-8")
+    toolchain.write_text("{}", encoding="utf-8")
+    evidence = _evidence()
+    del evidence["snapshot"]["canonicalizer_schema_version"]
+
+    with pytest.raises(
+        ValueError,
+        match="parity evidence snapshot requires canonicalizer_schema_version",
+    ):
+        build_certificate(evidence, manifest=manifest, toolchain=toolchain)
+
+
 def test_build_certificate_rejects_non_object_toolchain(tmp_path: Path) -> None:
     manifest = tmp_path / "manifest.json"
     toolchain = tmp_path / "toolchain.json"

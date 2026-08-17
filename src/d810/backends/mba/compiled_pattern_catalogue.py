@@ -27,6 +27,7 @@ from d810.mba.canonical_pattern import (
     CanonicalPatternMatchReport,
     CanonicalPatternUnsupported,
     compile_canonical_pattern,
+    evaluate_frozen_constraints,
     match_canonical_term_pattern,
 )
 from d810.mba.ac_matching import AcMatchStopReason
@@ -249,11 +250,15 @@ class CompiledPatternCatalogue:
         commuted_branches = 0
         flattened_nodes = 0
         saw_cardinality = False
+        stop_reason = AcMatchStopReason.MISS
         for compiled in bucket:
+            remaining = comparison_budget - comparisons
+            if remaining <= 0:
+                stop_reason = AcMatchStopReason.COMPARISON_BUDGET
+                break
             pattern = compiled.canonical_by_width.get(canonical_candidate.width)
             if pattern is None:
                 continue
-            remaining = max(0, comparison_budget - comparisons)
             report = match_canonical_term_pattern(
                 pattern,
                 canonical_candidate,
@@ -263,19 +268,14 @@ class CompiledPatternCatalogue:
             commuted_branches += report.commuted_branches
             flattened_nodes += report.flattened_nodes
             if report.stop_reason is AcMatchStopReason.COMPARISON_BUDGET:
-                return CanonicalPatternMatchReport(
-                    (),
-                    comparisons,
-                    commuted_branches,
-                    flattened_nodes,
-                    report.stop_reason,
-                )
+                stop_reason = report.stop_reason
+                break
             if report.stop_reason is AcMatchStopReason.CARDINALITY_MISMATCH:
                 saw_cardinality = True
             for match in report.matches:
                 terms = dict(match.bindings.terms)
-                if not _constraints_match_term(
-                    compiled.rule,
+                if not evaluate_frozen_constraints(
+                    pattern.constraints,
                     terms,
                     width=canonical_candidate.width,
                 ):
@@ -290,8 +290,12 @@ class CompiledPatternCatalogue:
                         ),
                     )
                 )
-        if matches:
+        if matches and stop_reason is not AcMatchStopReason.COMPARISON_BUDGET:
             reason = AcMatchStopReason.MATCHED
+        elif matches:
+            reason = AcMatchStopReason.COMPARISON_BUDGET
+        elif stop_reason is AcMatchStopReason.COMPARISON_BUDGET:
+            reason = stop_reason
         elif saw_cardinality:
             reason = AcMatchStopReason.CARDINALITY_MISMATCH
         else:

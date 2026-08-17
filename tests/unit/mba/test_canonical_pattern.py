@@ -45,6 +45,22 @@ class _ChangedHookRule(_TestRule):
         return not bool(candidate)
 
 
+class _PropertyRule:
+    source_name = "PropertyRule"
+    aliases = ()
+    family = "add"
+    proof_widths = (32,)
+    guarded = False
+    _PATTERN = Var("x") + Var("y")
+    replacement = Var("x") ^ Var("y")
+
+    @property
+    def pattern(self):
+        marker = 1
+        assert marker == 1
+        return self._PATTERN
+
+
 def _leaf(name: str, width: int) -> TypedBvTerm:
     return TypedBvTerm(None, width, leaf_key=("candidate", name))
 
@@ -192,7 +208,7 @@ def test_declaration_order_survives_canonical_alias_collapse():
         lambda rule: _TestRule(
             rule.pattern,
             rule.replacement,
-            constraints=("changed",),
+            constraints=(Var("x") == Var("y"),),
         ),
         lambda rule: _TestRule(
             rule.pattern,
@@ -243,6 +259,28 @@ def test_semantic_fingerprint_changes_when_canonicalizer_version_changes(monkeyp
     baseline = canonical_pattern.canonical_rule_fingerprint(base, width=32)
     monkeypatch.setattr(canonical_pattern, "CANONICALIZER_SCHEMA_VERSION", 99)
     changed = canonical_pattern.canonical_rule_fingerprint(base, width=32)
+    assert baseline != changed
+
+
+def test_semantic_fingerprint_changes_when_property_getter_changes():
+    from d810.mba.canonical_pattern import canonical_rule_fingerprint
+
+    rule = _PropertyRule()
+    baseline = canonical_rule_fingerprint(rule, width=32)
+    original_property = type(rule).pattern
+
+    @property
+    def changed_pattern(self):
+        marker = 2
+        assert marker == 2
+        return self._PATTERN
+
+    type(rule).pattern = changed_pattern
+    try:
+        changed = canonical_rule_fingerprint(rule, width=32)
+    finally:
+        type(rule).pattern = original_property
+
     assert baseline != changed
 
 

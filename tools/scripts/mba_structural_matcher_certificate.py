@@ -56,9 +56,11 @@ def _evidence_snapshot(value: object) -> CertifiedCatalogueSnapshot:
     authorizable = value.get("structural_authorizable")
     if type(fingerprint) is not str or type(authorizable) is not bool:
         raise ValueError("parity evidence snapshot is incomplete")
-    canonicalizer_version = value.get(
-        "canonicalizer_schema_version", CANONICALIZER_SCHEMA_VERSION
-    )
+    if "canonicalizer_schema_version" not in value:
+        raise ValueError(
+            "parity evidence snapshot requires canonicalizer_schema_version"
+        )
+    canonicalizer_version = value["canonicalizer_schema_version"]
     if canonicalizer_version != CANONICALIZER_SCHEMA_VERSION:
         raise ValueError("parity evidence snapshot has invalid canonicalizer schema")
     return CertifiedCatalogueSnapshot(
