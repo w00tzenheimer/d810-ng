@@ -11,6 +11,7 @@ import pytest
 
 from tools.scripts import mba_structural_matcher_certificate as certificate_tool
 from tools.scripts.mba_structural_matcher_certificate import build_certificate
+from d810.mba.differential_report import outcome_from_dict
 from d810.mba.island_profile import profile_to_dict, profile_typed_term
 from d810.mba.semantic_canonicalization import CANONICALIZER_SCHEMA_VERSION
 from d810.mba.provider_outcome import MbaProviderKind
@@ -418,6 +419,18 @@ def test_artifact_certificate_rejects_missing_or_conflicting_runtime_bindings(
             runtime_mode="python",
         )
 
+    ledger = _ledger_artifact()
+    capture = _capture_artifact()
+    capture["runtime_mode"] = "cython"
+    ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+    capture_path.write_text(json.dumps(capture), encoding="utf-8")
+    with pytest.raises(ValueError, match="runtime_mode"):
+        certificate_tool.build_certificate_from_artifacts(
+            ledger_path=ledger_path,
+            capture_path=capture_path,
+            runtime_mode="python",
+        )
+
 
 @pytest.mark.parametrize(
     "field",
@@ -584,17 +597,79 @@ def test_artifact_certificate_rejects_noncanonical_profile_wire_values(
             runtime_mode="python",
         )
 
-    ledger = _ledger_artifact()
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "source_provenance_integer",
+        "input_cost_numeric",
+        "output_cost_string",
+        "input_cost_boolean",
+        "elapsed_string",
+        "matcher_counter_string",
+        "missing_field",
+        "extra_field",
+    ),
+)
+def test_artifact_certificate_rejects_noncanonical_outcome_wire_values(
+    tmp_path: Path, mutation: str
+) -> None:
+    ledger_path = tmp_path / "parity-ledger.json"
+    capture_path = tmp_path / "native-capture.json"
+    ledger_path.write_text(json.dumps(_ledger_artifact()), encoding="utf-8")
     capture = _capture_artifact()
-    capture["runtime_mode"] = "cython"
-    ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+    outcome = capture["cases"][0]["outcomes"][0]
+    if mutation == "source_provenance_integer":
+        outcome["source_provenance"] = [7]
+    elif mutation == "input_cost_numeric":
+        outcome["input_cost"] = [1.0, 0]
+    elif mutation == "output_cost_string":
+        outcome["output_cost"] = ["1", 0]
+    elif mutation == "input_cost_boolean":
+        outcome["input_cost"] = [True, 0]
+    elif mutation == "elapsed_string":
+        outcome["elapsed_ms"] = "0.0"
+    elif mutation == "matcher_counter_string":
+        outcome["matcher"] = {
+            "comparisons": "1",
+            "lazy_swaps": 0,
+            "flattened_arity": 1,
+            "stop_reason": "none",
+        }
+    elif mutation == "missing_field":
+        del outcome["status"]
+    elif mutation == "extra_field":
+        outcome["unexpected"] = "wire drift"
+    else:  # pragma: no cover - parameterized contract
+        raise AssertionError(mutation)
     capture_path.write_text(json.dumps(capture), encoding="utf-8")
-    with pytest.raises(ValueError, match="runtime_mode"):
+
+    with pytest.raises(ValueError, match="outcome"):
         certificate_tool.build_certificate_from_artifacts(
             ledger_path=ledger_path,
             capture_path=capture_path,
             runtime_mode="python",
         )
+
+
+def test_artifact_certificate_accepts_canonical_outcome_roundtrip(
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "parity-ledger.json"
+    capture_path = tmp_path / "native-capture.json"
+    ledger_path.write_text(json.dumps(_ledger_artifact()), encoding="utf-8")
+    capture = _capture_artifact()
+    _add_profile_to_case(capture)
+    for case in capture["cases"]:
+        for outcome in case["outcomes"]:
+            assert outcome_from_dict(outcome).to_dict() == outcome
+    capture_path.write_text(json.dumps(capture), encoding="utf-8")
+
+    certificate_tool.build_certificate_from_artifacts(
+        ledger_path=ledger_path,
+        capture_path=capture_path,
+        runtime_mode="python",
+    )
 
 
 @pytest.mark.parametrize("field", ("corpus_digest", "toolchain_digest"))

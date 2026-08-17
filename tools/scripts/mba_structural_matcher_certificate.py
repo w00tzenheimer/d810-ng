@@ -16,7 +16,7 @@ from d810.mba.certified_catalogue import (
     ShadowMatcherParityLedger,
     make_structural_matcher_parity_certificate,
 )
-from d810.mba.differential_report import report_from_dict
+from d810.mba.differential_report import outcome_from_dict, report_from_dict
 from d810.mba.island_profile import profile_from_dict, profile_to_dict
 from d810.mba.native_corpus_capture import native_profile_from_outcome
 from d810.mba.provider_outcome import MbaProviderKind
@@ -288,12 +288,26 @@ def _strict_profile_mapping(value: object, *, description: str):
     return profile
 
 
+def _strict_outcome_mapping(value: object, *, description: str):
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{description} must be a mapping")
+    try:
+        outcome = outcome_from_dict(value)
+    except ValueError as exc:
+        raise ValueError(f"{description} is invalid") from exc
+    canonical = outcome.to_dict()
+    if not _strict_json_equal(value, canonical):
+        raise ValueError(f"{description} is not canonical")
+    return outcome
+
+
 def _validate_capture_profiles(value: Mapping[str, object]) -> None:
     raw_cases = value.get("cases")
     if not isinstance(raw_cases, Sequence) or isinstance(raw_cases, (str, bytes)):
         raise ValueError("capture artifact cases must be a sequence")
     strict_case_profiles = {}
-    strict_outcome_profiles = {}
+    strict_outcomes = {}
+    strict_native_profiles = {}
     for raw_case in raw_cases:
         if not isinstance(raw_case, Mapping):
             raise ValueError("capture artifact cases must be objects")
@@ -301,50 +315,52 @@ def _validate_capture_profiles(value: Mapping[str, object]) -> None:
         if type(case_id) is not str:
             raise ValueError("capture artifact case profile requires a string case_id")
         raw_profile = raw_case.get("profile")
-        if raw_profile is None:
-            raw_outcomes = raw_case.get("outcomes")
-            if isinstance(raw_outcomes, Sequence) and not isinstance(
-                raw_outcomes, (str, bytes)
-            ):
-                for raw_outcome in raw_outcomes:
-                    if isinstance(raw_outcome, Mapping):
-                        metadata = raw_outcome.get("metadata")
-                        if isinstance(metadata, Mapping) and "native_profile" in metadata:
-                            raise ValueError(
-                                f"capture artifact case {case_id} has native_profile without a case profile"
-                            )
-            continue
-        case_profile = _strict_profile_mapping(
-            raw_profile, description=f"capture artifact case {case_id} profile"
-        )
-        strict_case_profiles[case_id] = case_profile
         raw_outcomes = raw_case.get("outcomes")
         if not isinstance(raw_outcomes, Sequence) or isinstance(raw_outcomes, (str, bytes)):
             raise ValueError(f"capture artifact case {case_id} has incomplete provider matrix")
         for raw_outcome in raw_outcomes:
-            if not isinstance(raw_outcome, Mapping):
-                raise ValueError(f"capture artifact case {case_id} has incomplete provider matrix")
-            provider = raw_outcome.get("provider")
-            if type(provider) is not str:
-                raise ValueError(f"capture artifact case {case_id} has invalid provider")
+            decoded_outcome = _strict_outcome_mapping(
+                raw_outcome,
+                description=f"capture artifact case {case_id} outcome",
+            )
+            provider = decoded_outcome.provider.value
+            strict_outcomes[(case_id, provider)] = decoded_outcome
             metadata = raw_outcome.get("metadata")
-            if not isinstance(metadata, Mapping) or "native_profile" not in metadata:
-                raise ValueError(
-                    f"capture artifact case {case_id} outcome {provider} is missing native_profile"
+            if raw_profile is None:
+                if isinstance(metadata, Mapping) and "native_profile" in metadata:
+                    raise ValueError(
+                        f"capture artifact case {case_id} has native_profile without a case profile"
+                    )
+            else:
+                if not isinstance(metadata, Mapping) or "native_profile" not in metadata:
+                    raise ValueError(
+                        f"capture artifact case {case_id} outcome {provider} is missing native_profile"
+                    )
+                strict_native_profiles[(case_id, provider)] = _strict_profile_mapping(
+                    metadata["native_profile"],
+                    description=f"capture artifact case {case_id} outcome {provider} native_profile",
                 )
-            strict_outcome_profiles[(case_id, provider)] = _strict_profile_mapping(
-                metadata["native_profile"],
-                description=f"capture artifact case {case_id} outcome {provider} native_profile",
+        if raw_profile is not None:
+            strict_case_profiles[case_id] = _strict_profile_mapping(
+                raw_profile, description=f"capture artifact case {case_id} profile"
             )
     report = report_from_dict(value)
     for case in report.cases:
+        for outcome in case.outcomes:
+            recorded_outcome = strict_outcomes.get(
+                (case.case_id, outcome.provider.value)
+            )
+            if recorded_outcome is None or recorded_outcome != outcome:
+                raise ValueError(
+                    f"capture artifact case {case.case_id} outcome is not canonical"
+                )
         if case.profile is None:
             continue
         strict_case_profile = strict_case_profiles.get(case.case_id)
         if strict_case_profile != case.profile:
             raise ValueError(f"capture artifact case {case.case_id} profile does not match report")
         for outcome in case.outcomes:
-            recorded = strict_outcome_profiles.get((case.case_id, outcome.provider.value))
+            recorded = strict_native_profiles.get((case.case_id, outcome.provider.value))
             if recorded is None:
                 raise ValueError(
                     f"capture artifact case {case.case_id} outcome {outcome.provider.value} is missing native_profile"
