@@ -282,6 +282,8 @@ dword_7FF857242B28 dd 0B303AA30h
 dword_7FF857242B2C dd 47723229h
 qword_7FF8572A3878 dq -1
 qword_7FF8572A5980 dq -1
+PUBLIC d810_callsite_sub_7FF8569F0540_memcpy
+d810_callsite_sub_7FF8569F0540_memcpy dq d810_callsite_sub_7FF8569F0540_memcpy_target
 CONST ENDS
 
 _TEXT SEGMENT ALIGN(16) 'CODE'
@@ -49347,6 +49349,7 @@ sub_7FF8569F0540:
     mov rdx, qword ptr [rbp+550h]
     mov rcx, qword ptr [rbp+420h]
     mov r8, qword ptr [rbp-18h]
+d810_callsite_sub_7FF8569F0540_memcpy_target:
     call memcpy
     loc_7FF856A01EC5:
     mov rcx, qword ptr [qword_7FF8571CF910]

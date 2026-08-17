@@ -50,7 +50,7 @@ from d810.analyses.control_flow.graph_checks import (
     prove_terminal_sink,
     reachable_from_adjacency,
 )
-from d810.ir.flowgraph import FlowGraph
+from d810.ir.flowgraph import BlockKind, FlowGraph, InsnKind
 from d810.ir.maturity import MaturityEnvelope
 from d810.transforms.loop_bound_writer_guard import (
     detect_loop_counter_writeback_tail,
@@ -121,9 +121,19 @@ def _modification_already_satisfied(
     modification: GraphModification,
 ) -> bool:
     """Prove one requested edge operation is already true in the live CFG."""
-    if isinstance(modification, (RedirectGoto, RedirectBranch)):
+    if isinstance(modification, RedirectGoto):
         block = flow_graph.get_block(int(modification.from_serial))
-        if block is None:
+        if block is None or not _is_exact_one_way_goto_block(block):
+            return False
+        successors = {int(target) for target in block.succs}
+        old_target = int(modification.old_target)
+        new_target = int(modification.new_target)
+        return old_target == new_target or (
+            new_target in successors and old_target not in successors
+        )
+    if isinstance(modification, RedirectBranch):
+        block = flow_graph.get_block(int(modification.from_serial))
+        if block is None or not _is_exact_two_way_branch_block(block):
             return False
         successors = {int(target) for target in block.succs}
         old_target = int(modification.old_target)
@@ -133,12 +143,44 @@ def _modification_already_satisfied(
         )
     if isinstance(modification, ConvertToGoto):
         block = flow_graph.get_block(int(modification.block_serial))
-        if block is None:
+        if block is None or not _is_exact_one_way_goto_block(block):
             return False
         return tuple(int(target) for target in block.succs) == (
             int(modification.goto_target),
         )
     return False
+
+
+def _is_exact_one_way_goto_block(block: object) -> bool:
+    """Require the complete portable shape of an unconditional goto block."""
+    if getattr(block, "kind", None) is not BlockKind.ONE_WAY:
+        return False
+    successors = tuple(int(target) for target in (getattr(block, "succs", ()) or ()))
+    if len(successors) != 1:
+        return False
+    if getattr(block, "tail_kind", None) is not InsnKind.GOTO:
+        return False
+    insns = tuple(getattr(block, "insn_snapshots", ()) or ())
+    return not insns or getattr(insns[-1], "kind", None) is InsnKind.GOTO
+
+
+def _is_exact_two_way_branch_block(block: object) -> bool:
+    """Require the complete portable shape of a conditional branch block."""
+    if getattr(block, "kind", None) is not BlockKind.TWO_WAY:
+        return False
+    successors = tuple(int(target) for target in (getattr(block, "succs", ()) or ()))
+    if len(successors) != 2:
+        return False
+    if getattr(block, "tail_kind", None) not in {
+        InsnKind.COND_JUMP,
+        InsnKind.EQUALITY_JUMP,
+    }:
+        return False
+    insns = tuple(getattr(block, "insn_snapshots", ()) or ())
+    return not insns or getattr(insns[-1], "kind", None) in {
+        InsnKind.COND_JUMP,
+        InsnKind.EQUALITY_JUMP,
+    }
 
 
 def _discard_satisfied_modifications(

@@ -20,11 +20,15 @@ from pathlib import Path
 import idc
 import idautils
 import ida_funcs
+import ida_bytes
 import idaapi
 import ida_hexrays
 import pytest
 
-from tests.system.e2e.unflattening_effect_safety_oracle import reachable_call_eas
+from tests.system.e2e.unflattening_effect_safety_oracle import (
+    reachable_call_eas,
+    session_scoped_rows,
+)
 
 
 ROOT = Path(__file__).parents[3]
@@ -39,6 +43,27 @@ TARGET_SIZES = {
     "sub_7FF8569F0540": 0x17E3C,
     "sub_7FF8568132D0": 0x1799B,
 }
+
+
+def _session_window(
+    conn: sqlite3.Connection,
+    function_ea: int,
+    session_id: str,
+) -> tuple[float, float]:
+    """Return the selected session's closed diagnostic timestamp interval."""
+    row = conn.execute(
+        "SELECT started_at,finished_at,status FROM diagnostic_sessions "
+        "WHERE session_id=? AND func_ea_i64=?",
+        (str(session_id), int(function_ea)),
+    ).fetchone()
+    assert row is not None, (
+        f"diagnostic session {session_id!r} missing for 0x{function_ea:x}"
+    )
+    started_at, finished_at, status = row
+    assert status == "finished", (session_id, row)
+    assert started_at is not None and finished_at is not None, (session_id, row)
+    assert float(finished_at) >= float(started_at), (session_id, row)
+    return float(started_at), float(finished_at)
 
 
 def _resolve_fixture_ea(function: str) -> int:
@@ -61,10 +86,11 @@ def _resolve_fixture_ea(function: str) -> int:
     # inbound xref and is therefore left as an exported address only.  Create
     # the function explicitly for this fixture before asking Hex-Rays for its
     # boundary; this is equivalent to the source IDB's existing function mark.
-    if ida_funcs.get_func(int(ea)) is None:
-        end_ea = int(ea) + TARGET_SIZES[function]
+    end_ea = int(ea) + TARGET_SIZES[function]
+    materialized = ida_funcs.get_func(int(ea))
+    if materialized is None:
         assert ida_funcs.add_func(int(ea), end_ea), (
-            f"could not materialize function 0x{ea:x}-0x{end_ea:x}"
+            f"could not materialize fixture function 0x{ea:x}-0x{end_ea:x}"
         )
         idaapi.auto_wait()
     materialized = ida_funcs.get_func(int(ea))
@@ -82,6 +108,7 @@ def _diagnostic_rows(
     function_ea: int,
     *,
     path: Path | None = None,
+    session_id: str | None = None,
 ) -> tuple[Path, list[tuple[str, dict]]]:
     """Return the latest typed D810 diagnostic payloads for *function_ea*."""
     from d810.core.diag import find_latest_diag_db_path
@@ -93,13 +120,29 @@ def _diagnostic_rows(
             "--enable-diag-snapshot"
         )
     with sqlite3.connect(path) as conn:
+        if session_id is None:
+            session = conn.execute(
+                "SELECT session_id,started_at,finished_at FROM diagnostic_sessions "
+                "WHERE func_ea_i64=? ORDER BY started_at DESC LIMIT 1",
+                (int(function_ea),),
+            ).fetchone()
+            assert session is not None, (
+                f"diagnostic session missing for 0x{function_ea:x}"
+            )
+            session_id = str(session[0])
+        started_at, finished_at = _session_window(
+            conn, function_ea, str(session_id)
+        )
         rows = conn.execute(
-            "SELECT kind,payload FROM fact_observations "
-            "WHERE func_ea_i64=? AND kind IN ("
+            "SELECT f.kind,f.payload FROM fact_observations f "
+            "JOIN snapshots s ON s.id=f.snapshot_id "
+            "WHERE f.func_ea_i64=? AND s.func_ea_i64=? "
+            "AND s.timestamp>=? AND s.timestamp<=? "
+            "AND f.kind IN ("
             "'UnflattenDispatcherCorridorCoverageSummary',"
             "'UnflattenDispatcherRemovalPreflightProof') "
-            "ORDER BY rowid",
-            (int(function_ea),),
+            "ORDER BY f.rowid",
+            (int(function_ea), int(function_ea), started_at, finished_at),
         ).fetchall()
     decoded: list[tuple[str, dict]] = []
     for kind, raw_payload in rows:
@@ -113,7 +156,7 @@ def _assert_committed_transaction(
     function_ea: int,
     *,
     started_after: float | None = None,
-) -> tuple[Path, list[dict]]:
+) -> tuple[Path, list[dict], str]:
     """Require one non-poisoned committed mutation and accepted coverage proof."""
     from d810.core.diag import find_latest_diag_db_path
 
@@ -124,23 +167,37 @@ def _assert_committed_transaction(
             "--enable-diag-snapshot"
         )
     with sqlite3.connect(path) as conn:
+        session_query = (
+            "SELECT session_id,started_at,finished_at,status "
+            "FROM diagnostic_sessions WHERE func_ea_i64=?"
+        )
+        session_params: tuple[object, ...] = (int(function_ea),)
+        if started_after is not None:
+            session_query += " AND started_at>=?"
+            session_params += (float(started_after),)
+        session_query += " ORDER BY started_at DESC LIMIT 1"
+        session = conn.execute(session_query, session_params).fetchone()
+        assert session is not None, (
+            f"diagnostic session missing for 0x{function_ea:x}; "
+            f"started_after={started_after!r}"
+        )
+        session_id = str(session[0])
         receipts = conn.execute(
             "SELECT r.mutation_batch_id,r.planned_operation_count,"
-            "r.applied_operation_count,r.outcome,r.reason "
+            "r.applied_operation_count,r.outcome,r.reason,e.session_id "
             "FROM mutation_receipts r JOIN lifecycle_events e "
-            "ON e.event_id=r.event_id WHERE e.func_ea_i64=?",
-            (int(function_ea),),
+            "ON e.event_id=r.event_id WHERE e.func_ea_i64=? "
+            "AND e.session_id=?",
+            (int(function_ea), session_id),
         ).fetchall()
         attempts = conn.execute(
-            "SELECT current_phase,mutation_started,poisoned "
-            "FROM cfg_transaction_attempts WHERE func_ea_i64=?",
-            (int(function_ea),),
+            "SELECT current_phase,mutation_started,poisoned,session_id "
+            "FROM cfg_transaction_attempts WHERE func_ea_i64=? "
+            "AND session_id=?",
+            (int(function_ea), session_id),
         ).fetchall()
-        session = conn.execute(
-            "SELECT started_at,finished_at,status FROM diagnostic_sessions "
-            "WHERE func_ea_i64=? ORDER BY started_at DESC LIMIT 1",
-            (int(function_ea),),
-        ).fetchone()
+    receipts = session_scoped_rows(receipts, session_id)
+    attempts = session_scoped_rows(attempts, session_id)
     committed = [
         {
             "batch_id": str(batch_id),
@@ -149,27 +206,31 @@ def _assert_committed_transaction(
             "outcome": str(outcome),
             "reason": str(reason),
         }
-        for batch_id, planned, applied, outcome, reason in receipts
+        for batch_id, planned, applied, outcome, reason, _session_id in receipts
         if str(outcome) == "committed"
     ]
     assert committed, f"no committed mutation receipt for 0x{function_ea:x}: {receipts!r}"
     assert any(
         phase == "committed" and int(started) == 1 and int(poisoned) == 0
-        for phase, started, poisoned in attempts
+        for phase, started, poisoned, _session_id in attempts
     ), f"transaction did not reach clean commit for 0x{function_ea:x}: {attempts!r}"
     assert all(item["planned"] == item["applied"] for item in committed)
     assert session is not None, f"diagnostic session missing for 0x{function_ea:x}"
-    assert session[2] == "finished", session
-    assert session[1] is not None, session
+    assert session[3] == "finished", session
+    assert session[2] is not None, session
     if started_after is not None:
-        assert float(session[0]) >= float(started_after), (
+        assert float(session[1]) >= float(started_after), (
             f"selected stale diagnostic session for 0x{function_ea:x}: "
-            f"started_at={session[0]} test_started_after={started_after}"
+            f"started_at={session[1]} test_started_after={started_after}"
         )
-    return path, committed
+    return path, committed, session_id
 
 
-def _assert_corridor_acceptance(function_ea: int, path: Path) -> None:
+def _assert_corridor_acceptance(
+    function_ea: int,
+    path: Path,
+    session_id: str,
+) -> None:
     """Require accepted, transaction-owned corridor coverage after commit.
 
     The removal preflight can conservatively reject a *projected* comparison
@@ -182,22 +243,30 @@ def _assert_corridor_acceptance(function_ea: int, path: Path) -> None:
     last_rows: list[tuple[str, str]] = []
     while True:
         with sqlite3.connect(path) as conn:
+            started_at, finished_at = _session_window(
+                conn, function_ea, str(session_id)
+            )
             rows = conn.execute(
-                "SELECT kind,payload FROM fact_observations "
-                "WHERE func_ea_i64=? AND kind='UnflattenDispatcherCorridorCoverageSummary' "
-                "ORDER BY rowid",
-                (int(function_ea),),
+                "SELECT f.kind,f.payload FROM fact_observations f "
+                "JOIN snapshots s ON s.id=f.snapshot_id "
+                "WHERE f.func_ea_i64=? AND s.func_ea_i64=? "
+                "AND s.timestamp>=? AND s.timestamp<=? "
+                "AND f.kind='UnflattenDispatcherCorridorCoverageSummary' "
+                "ORDER BY f.rowid",
+                (int(function_ea), int(function_ea), started_at, finished_at),
             ).fetchall()
             attempts = conn.execute(
                 "SELECT plan_id,attempt_id,current_phase,mutation_started,poisoned "
-                "FROM cfg_transaction_attempts WHERE func_ea_i64=?",
-                (int(function_ea),),
+                "FROM cfg_transaction_attempts WHERE func_ea_i64=? "
+                "AND session_id=?",
+                (int(function_ea), str(session_id)),
             ).fetchall()
             receipts = conn.execute(
                 "SELECT r.mutation_batch_id,r.outcome,e.session_id "
                 "FROM mutation_receipts r JOIN lifecycle_events e "
-                "ON e.event_id=r.event_id WHERE e.func_ea_i64=?",
-                (int(function_ea),),
+                "ON e.event_id=r.event_id WHERE e.func_ea_i64=? "
+                "AND e.session_id=?",
+                (int(function_ea), str(session_id)),
             ).fetchall()
         last_rows = rows
         committed_attempts = {
@@ -256,107 +325,64 @@ def _assert_corridor_acceptance(function_ea: int, path: Path) -> None:
 def _loaded_call_eas(
     function_ea: int,
     *,
-    symbol: str,
-    anchor_value: int,
+    marker_name: str,
 ) -> tuple[int, ...]:
-    """Resolve the exact loaded call in the source-proven mandatory arm.
+    """Resolve an exported source marker to its exact native CALL EA.
 
-    The fixture contains several calls through imported slots.  A pseudocode
-    substring or any ``MEMORY[...]`` expression cannot identify which arm
-    survived.  Bind the call to the loaded native instruction by finding the
-    source-proven state comparison block and its direct successor in IDA's
-    raw function flowchart, then matching the imported symbol in disassembly.
+    The marker is a PUBLIC MASM data label whose relocated qword points at a
+    private label immediately before the mandatory call. Exporting data rather
+    than code avoids making IDA split the opaque function at the marker. The
+    relocation is source-to-native binding; imported targets may be unresolved
+    and rendered as a generic slot, so symbol matching or a sole-call fallback
+    is not binding evidence.
     """
     function = ida_funcs.get_func(int(function_ea))
     assert function is not None, f"IDA function missing at 0x{function_ea:x}"
-    normalized_symbol = str(symbol).lower().replace("_", "")
-    flowchart = idaapi.FlowChart(function)
-
-    def block_items(block):
-        return tuple(idautils.Heads(int(block.start_ea), int(block.end_ea)))
-
-    def has_anchor(block) -> bool:
-        for item_ea in block_items(block):
-            for operand_index in range(8):
-                try:
-                    if int(idc.get_operand_value(item_ea, operand_index)) == int(
-                        anchor_value
-                    ):
-                        return True
-                except (TypeError, ValueError):
-                    continue
-        return False
-
-    def matching_calls(block) -> tuple[int, ...]:
-        return tuple(
-            item_ea
-            for item_ea, line in all_calls(block)
-            if normalized_symbol in line.lower().replace("_", "")
-        )
-
-    def all_calls(block) -> tuple[tuple[int, str], ...]:
-        matches: list[int] = []
-        for item_ea in block_items(block):
-            mnemonic = str(idc.print_insn_mnem(item_ea) or "").lower()
-            if mnemonic != "call":
-                continue
-            line = str(
-                idc.generate_disasm_line(
-                    item_ea,
-                    int(getattr(idc, "GENDSM_FORCE_CODE", 0)),
-                    )
-                    or ""
-                )
-            matches.append((int(item_ea), line))
-        return tuple(matches)
-
-    anchor_blocks = tuple(block for block in flowchart if has_anchor(block))
-    assert anchor_blocks, (
-        f"source anchor 0x{anchor_value:x} not found in loaded function "
-        f"0x{function_ea:x}"
-    )
+    requested = str(marker_name)
     candidates: set[int] = set()
-    for anchor_block in anchor_blocks:
-        candidate_blocks = (anchor_block, *tuple(anchor_block.succs()))
-        for candidate_block in candidate_blocks:
-            candidates.update(matching_calls(candidate_block))
-    if not candidates:
-        # The standalone PE's unresolved import slots are rendered by IDA as
-        # ``200000000h`` rather than retaining the EXTERN spelling.  The raw
-        # MASM source still binds the import, and the exact loaded call is the
-        # sole CALL in the source-proven direct successor of the anchor block.
-        # This is source-to-loaded corridor evidence, not a generic call-count
-        # or pseudocode substring fallback.
-        anchored_successor_calls = {
-            int(item_ea)
-            for anchor_block in anchor_blocks
-            for successor in anchor_block.succs()
-            for item_ea, _line in all_calls(successor)
-        }
-        if len(anchored_successor_calls) == 1:
-            candidates.update(anchored_successor_calls)
+    for alias in (requested, f"_{requested}"):
+        ea = idc.get_name_ea_simple(alias)
+        if ea != idc.BADADDR:
+            candidates.add(int(ea))
+    for named_ea, name in idautils.Names():
+        if str(name).lstrip("_") == requested:
+            candidates.add(int(named_ea))
     assert len(candidates) == 1, (
-        f"expected one exact {symbol} call in arm anchored by "
-        f"0x{anchor_value:x}, found {tuple(hex(ea) for ea in sorted(candidates))}; "
-        f"anchor_blocks={tuple((int(block.start_ea), int(block.end_ea), tuple(int(succ.start_ea) for succ in block.succs())) for block in anchor_blocks)}"
+        f"expected one exported callsite marker {requested!r}, found "
+        f"{tuple(hex(ea) for ea in sorted(candidates))}"
     )
-    return tuple(sorted(candidates))
+    marker_ea = next(iter(candidates))
+    call_ea = int(ida_bytes.get_qword(marker_ea))
+    assert int(function.start_ea) <= call_ea < int(function.end_ea), (
+        f"callsite marker {requested!r} points to 0x{call_ea:x}, outside "
+        f"fixture function 0x{int(function.start_ea):x}-0x{int(function.end_ea):x}"
+    )
+    assert str(idc.print_insn_mnem(call_ea) or "").lower() == "call", (
+        f"callsite marker {requested!r} does not point to a CALL: "
+        f"storage=0x{marker_ea:x} target=0x{call_ea:x}"
+    )
+    return (call_ea,)
 
 
 def _assert_exact_call_reachable(
     function_ea: int,
     path: Path,
     *,
+    session_id: str,
     call_eas: tuple[int, ...],
 ) -> None:
     """Prove each source-bound call EA is in the latest post-D810 CFG."""
     assert call_eas, "exact-call oracle requires at least one bound call EA"
     with sqlite3.connect(path) as conn:
+        started_at, finished_at = _session_window(
+            conn, function_ea, str(session_id)
+        )
         snapshot = conn.execute(
-            "SELECT id,label FROM snapshots "
-            "WHERE func_ea_i64=? AND phase='post_d810' "
-            "ORDER BY id DESC LIMIT 1",
-            (int(function_ea),),
+            "SELECT s.id,s.label FROM snapshots s "
+            "WHERE s.func_ea_i64=? AND s.phase='post_d810' "
+            "AND s.timestamp>=? AND s.timestamp<=? "
+            "ORDER BY s.id DESC LIMIT 1",
+            (int(function_ea), started_at, finished_at),
         ).fetchone()
         assert snapshot is not None, (
             f"post-D810 snapshot missing for exact-call oracle at "
@@ -536,8 +562,7 @@ class TestUnflatteningEffectSafetyDecompilation:
         function_ea = _resolve_fixture_ea("sub_7FF8569F0540")
         exact_call_eas = _loaded_call_eas(
             function_ea,
-            symbol="memcpy",
-            anchor_value=0x0EE1BCAD,
+            marker_name="d810_callsite_sub_7FF8569F0540_memcpy",
         )
         assert "EXTERN memcpy:PROC" in source
         assert "call memcpy" in source
@@ -558,12 +583,17 @@ class TestUnflatteningEffectSafetyDecompilation:
         # memcpy; the state anchor binds the rendered call to its corridor.
         assert "MEMORY[0x200000000]" in code_after
 
-        path, committed = _assert_committed_transaction(
+        path, committed, session_id = _assert_committed_transaction(
             function_ea,
             started_after=started_after,
         )
-        _assert_corridor_acceptance(function_ea, path)
-        _assert_exact_call_reachable(function_ea, path, call_eas=exact_call_eas)
+        _assert_corridor_acceptance(function_ea, path, session_id)
+        _assert_exact_call_reachable(
+            function_ea,
+            path,
+            session_id=session_id,
+            call_eas=exact_call_eas,
+        )
         print(
             f"[EFFECT-SAFETY A] ea=0x{function_ea:x} "
             f"committed={committed} pseudocode_bytes={len(code_after)}"
@@ -581,8 +611,7 @@ class TestUnflatteningEffectSafetyDecompilation:
         function_ea = _resolve_fixture_ea("sub_7FF8568132D0")
         exact_call_eas = _loaded_call_eas(
             function_ea,
-            symbol="RtlAcquireSRWLockExclusive",
-            anchor_value=0x4595D682,
+            marker_name="d810_callsite_sub_7FF8568132D0_srw_lock",
         )
         assert "EXTERN __imp_RtlAcquireSRWLockExclusive:PROC" in source
         assert "call qword ptr [__imp_RtlAcquireSRWLockExclusive]" in source
@@ -618,12 +647,17 @@ class TestUnflatteningEffectSafetyDecompilation:
         assert code_after.count("goto LABEL_") < 32
         assert "MEMORY[0x200000000]" in code_after
 
-        path, committed = _assert_committed_transaction(
+        path, committed, session_id = _assert_committed_transaction(
             function_ea,
             started_after=started_after,
         )
-        _assert_corridor_acceptance(function_ea, path)
-        _assert_exact_call_reachable(function_ea, path, call_eas=exact_call_eas)
+        _assert_corridor_acceptance(function_ea, path, session_id)
+        _assert_exact_call_reachable(
+            function_ea,
+            path,
+            session_id=session_id,
+            call_eas=exact_call_eas,
+        )
         assert "__debugbreak()" in code_after
         print(
             f"[EFFECT-SAFETY B] ea=0x{function_ea:x} "

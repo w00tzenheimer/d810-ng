@@ -4705,6 +4705,17 @@ def _shared_write_arm_cuts(
         source_block = flow_graph.get_block(cut_source)
         if source_block is None or source_block.nsucc != 1:
             return ()
+        represented_predecessor = int(path[write_idx - 2])
+        source_predecessors = {
+            int(predecessor) for predecessor in (source_block.preds or ())
+        }
+        # Redirecting this edge changes every predecessor entering the cut
+        # source.  The source is arm-owned only when the current CFG proves
+        # that the ordered path's immediate predecessor is its sole owner;
+        # an unrelated incoming edge would otherwise bypass the shared write
+        # for a path that this arm evidence does not describe.
+        if source_predecessors != {represented_predecessor}:
+            return ()
         successors = tuple(int(successor) for successor in source_block.succs)
         if successors != (int(shared_write_block),):
             return ()

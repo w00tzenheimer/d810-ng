@@ -2914,6 +2914,53 @@ def test_conditional_handler_shared_write_preserves_effectful_arm_corridors(
     }
 
 
+def test_conditional_handler_shared_write_abstains_on_unowned_cut_predecessor(
+    _seam,
+) -> None:
+    """A cut source with an unrelated predecessor is not arm-owned."""
+    fg = FlowGraph(
+        blocks={
+            8: _b(8, (20, 30), (200,)),
+            20: _b(20, (), (8,)),
+            30: _b(30, (), (8,)),
+            99: _b(99, (), ()),
+            100: _b(100, (101, 103), ()),
+            101: _b(101, (102,), (100,)),
+            # 300 is not represented by either arm's ordered_path.  A
+            # redirect of 102 -> 20 would also bypass the shared write for
+            # 300 -> 102 unless ownership is proved explicitly.
+            102: _b(102, (200,), (101, 300), (_call_reg(0x2702, 7),)),
+            103: _b(103, (104,), (100,)),
+            104: _b(104, (200,), (103,)),
+            200: _b(200, (8,), (102, 104), (_mov_state(0x2700, 0x20),)),
+            300: _b(300, (102,), (), ()),
+        },
+        entry_serial=100,
+        func_ea=0x2400,
+    )
+    handler = HandlerTransition(
+        handler=100,
+        states=(0xA0,),
+        arms=(
+            TransitionArm(0x10, 20, False, 100, 200, 200, (100, 101, 102, 200)),
+            TransitionArm(0x20, 30, False, 100, 200, 200, (100, 103, 104, 200)),
+        ),
+    )
+
+    mods = build_conditional_arm_redirects(
+        fg,
+        _disp({0x10: 20, 0x20: 30}, exit_block=99),
+        (handler,),
+        dispatcher_entry_serial=8,
+        existing=set(),
+        state_var_stkoff=_STATE,
+    )
+
+    assert not any(
+        isinstance(mod, (RedirectGoto, RedirectBranch)) for mod in mods
+    )
+
+
 @pytest.mark.parametrize("near_miss", ("other_successor", "stale_path"))
 def test_conditional_handler_abstains_on_near_miss_shared_boundary(
     _seam,

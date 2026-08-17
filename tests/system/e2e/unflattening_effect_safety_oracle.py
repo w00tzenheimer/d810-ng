@@ -6,6 +6,28 @@ from collections import deque
 from collections.abc import Iterable, Mapping
 
 
+def session_scoped_rows(
+    rows: Iterable[tuple[object, ...]],
+    session_id: str,
+    *,
+    session_index: int = -1,
+) -> tuple[tuple[object, ...], ...]:
+    """Keep only rows owned by the selected diagnostic session.
+
+    SQLite queries in the exact fixture already constrain their joins by
+    ``session_id``.  This small pure postcondition keeps the test oracle
+    fail-closed if a query is later broadened or a view starts returning
+    cross-session rows, and gives unit tests a direct stale-row regression.
+    """
+    selected = str(session_id)
+    selected_rows: list[tuple[object, ...]] = []
+    for row in rows:
+        index = session_index if session_index >= 0 else len(row) + session_index
+        if 0 <= index < len(row) and str(row[index]) == selected:
+            selected_rows.append(row)
+    return tuple(selected_rows)
+
+
 def reachable_call_eas(
     block_successors: Mapping[int, Iterable[int]],
     call_eas_by_block: Mapping[int, Iterable[int]],

@@ -16653,6 +16653,8 @@ dword_7FF85723AB28 dd 9A33E796h
 dword_7FF85723AB2C dd 43CFC4F1h
 dword_7FF85723AB30 dd 5F3FB497h
 dword_7FF85723AB34 dd 0B85686B5h
+PUBLIC d810_callsite_sub_7FF8568132D0_srw_lock
+d810_callsite_sub_7FF8568132D0_srw_lock dq d810_callsite_sub_7FF8568132D0_srw_lock_target
 CONST ENDS
 
 _TEXT SEGMENT ALIGN(16) 'CODE'
@@ -28715,6 +28717,7 @@ sub_7FF8568132D0:
     jnz loc_7FF85681BD95
     lea rcx, [r12+10h]
     mov qword ptr [rsp+500h], rcx
+d810_callsite_sub_7FF8568132D0_srw_lock_target:
     call qword ptr [__imp_RtlAcquireSRWLockExclusive]
     mov eax, dword ptr [rsp+424h]
     mov byte ptr [rsp+41h], al

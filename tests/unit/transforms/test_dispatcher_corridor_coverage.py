@@ -19,6 +19,7 @@ from d810.ir.flowgraph import (
     OperandKind,
     PredicateKind,
 )
+from d810.transforms import dispatcher_corridor_coverage as corridor_module
 from d810.transforms import minimal_unflatten_emit as emit_module
 from d810.transforms.dispatcher_corridor_coverage import (
     USE_DEF_SEVERANCE_AUDIT_METADATA,
@@ -1722,6 +1723,53 @@ def test_dispatcher_removal_validation_rejects_mixed_comparison_and_semantic_los
 
     assert not validation.passed
     assert validation.reason == "dispatcher_removal_proof_drift"
+
+
+def _populated_router_block(*operands: MopSnapshot) -> BlockSnapshot:
+    predicate = InsnSnapshot(
+        opcode=0x71,
+        ea=0x7FF859C0A000,
+        operands=(),
+        l=operands[0] if operands else None,
+        r=operands[1] if len(operands) > 1 else None,
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=1),
+        kind=InsnKind.COND_JUMP,
+        predicate_kind=PredicateKind.NE,
+    )
+    return _block(
+        10,
+        (1, 2),
+        (),
+        0x7FF859C0A000,
+        kind=BlockKind.TWO_WAY,
+        insns=(predicate,),
+        tail_kind=InsnKind.COND_JUMP,
+    )
+
+
+@pytest.mark.parametrize(
+    "operand",
+    (
+        MopSnapshot(kind=OperandKind.GLOBAL, gaddr=0x7FF859C0B000),
+        MopSnapshot(
+            kind=OperandKind.ADDRESS,
+            sub_l=MopSnapshot(kind=OperandKind.STACK, stkoff=0x20),
+        ),
+        MopSnapshot(
+            kind=OperandKind.SUBINSN,
+            sub_kind=InsnKind.CALL,
+            sub_l=MopSnapshot(kind=OperandKind.REGISTER, reg=1),
+        ),
+        MopSnapshot(kind=OperandKind.UNKNOWN),
+    ),
+)
+def test_effect_free_dispatcher_router_rejects_effectful_or_unresolved_operands(
+    operand: MopSnapshot,
+) -> None:
+    """Router kind alone cannot prove a predicate is effect-free."""
+    assert not corridor_module._is_effect_free_dispatcher_router(
+        _populated_router_block(operand, MopSnapshot(kind=OperandKind.NUMBER, value=0))
+    )
 
 
 def test_dispatcher_removal_proof_rejects_semantic_upstream_corridor_fragment() -> None:

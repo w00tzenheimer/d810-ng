@@ -36,6 +36,7 @@ from d810.optimizers.microcode.flow.flattening.engine.executor import (
     TransactionalExecutor,
     _committed_receipt_for_execution,
     _committed_semantic_ownership_gate,
+    _modification_already_satisfied,
 )
 from d810.optimizers.microcode.flow.flattening.engine.runtime import (
     ExecutedPipeline,
@@ -64,7 +65,7 @@ from d810.transforms.cfg_transaction import (
     TransactionAttemptId,
 )
 from d810.transforms.plan import PatchBlockSpec, PatchConvertToGoto, PatchPlan
-from d810.transforms.graph_modification import RedirectGoto
+from d810.transforms.graph_modification import ConvertToGoto, RedirectGoto
 from d810.transforms.plan_fragment import (
     BenefitMetrics,
     OwnershipScope,
@@ -488,6 +489,69 @@ def test_idempotent_redirect_is_discarded_before_mutation_backend(
     assert result.edits_applied == 0
     assert result.metadata["idempotence"]["status"] == "already_satisfied"
     assert backend_calls == 0
+
+
+def test_idempotence_rejects_redirect_satisfied_only_by_stale_two_way_shape() -> None:
+    """A matching successor is not enough when the source is still conditional."""
+    original = _effectful_fake_jump_graph()
+    stale_branch = replace(
+        original.blocks[0],
+        kind=BlockKind.TWO_WAY,
+        succs=(2, 3),
+        tail_kind=InsnKind.COND_JUMP,
+    )
+    cfg = FlowGraph(
+        blocks={**original.blocks, 0: stale_branch},
+        entry_serial=original.entry_serial,
+        func_ea=original.func_ea,
+    )
+
+    assert not _modification_already_satisfied(
+        cfg,
+        RedirectGoto(from_serial=0, old_target=1, new_target=2),
+    )
+
+
+def test_idempotence_rejects_redirect_with_conditional_tail_on_one_way_shape() -> None:
+    """A one-successor block with a conditional tail is not a valid goto."""
+    original = _effectful_fake_jump_graph()
+    stale_branch = replace(
+        original.blocks[0],
+        kind=BlockKind.ONE_WAY,
+        succs=(2,),
+        tail_kind=InsnKind.COND_JUMP,
+    )
+    cfg = FlowGraph(
+        blocks={**original.blocks, 0: stale_branch},
+        entry_serial=original.entry_serial,
+        func_ea=original.func_ea,
+    )
+
+    assert not _modification_already_satisfied(
+        cfg,
+        RedirectGoto(from_serial=0, old_target=1, new_target=2),
+    )
+
+
+def test_idempotence_rejects_convert_satisfied_only_by_stale_two_way_shape() -> None:
+    """ConvertToGoto must prove the current block is an actual goto."""
+    original = _effectful_fake_jump_graph()
+    stale_branch = replace(
+        original.blocks[0],
+        kind=BlockKind.TWO_WAY,
+        succs=(2,),
+        tail_kind=InsnKind.COND_JUMP,
+    )
+    cfg = FlowGraph(
+        blocks={**original.blocks, 0: stale_branch},
+        entry_serial=original.entry_serial,
+        func_ea=original.func_ea,
+    )
+
+    assert not _modification_already_satisfied(
+        cfg,
+        ConvertToGoto(block_serial=0, goto_target=2),
+    )
 
 
 def test_poisoned_generation_cannot_take_idempotence_shortcut(monkeypatch) -> None:

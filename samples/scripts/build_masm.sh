@@ -71,6 +71,7 @@ echo "C objects: compiled=$compiled skipped=$skipped"
 
 # --- assemble the MASM functions -------------------------------------------
 export_flags=()
+callsite_markers=()
 for f in $MASM_FUNCS; do
     # src/masm/<f>.asm must be compilable MASM from the in-IDA "Export disassembly
     # -> MASM" action (materialized data + relocatable symbols).
@@ -81,6 +82,15 @@ for f in $MASM_FUNCS; do
         || { echo "error: assembling $f.asm failed:" >&2; cat "$BUILD_DIR/$f.asm.log" >&2; exit 1; }
     objs+=("$obj")
     export_flags+=("/EXPORT:$f")
+    # Explicit call-site markers are source-to-native oracle anchors.  Export
+    # only the opt-in PUBLIC labels rather than guessing from imported call
+    # targets, which may be linked as generic unresolved slots in the fixture.
+    marker_names="$(sed -nE 's/^[[:space:]]*PUBLIC[[:space:]]+(d810_callsite_[A-Za-z0-9_]+)[[:space:]]*$/\1/p' "$src")"
+    for marker in $marker_names; do
+        export_flags+=("/EXPORT:$marker")
+        callsite_markers+=("$marker")
+        echo "  exported callsite marker $marker"
+    done
     echo "  assembled $f.asm"
 done
 
@@ -99,4 +109,9 @@ echo "exported MASM funcs:"
 for f in $MASM_FUNCS; do
     "${LLVM_BIN}/llvm-objdump" -p "$out" 2>/dev/null | grep -A500 "Export Table" | grep -qw "$f" \
         && echo "  ok: $f" || echo "  MISSING export: $f"
+done
+for marker in "${callsite_markers[@]}"; do
+    "${LLVM_BIN}/llvm-objdump" -p "$out" 2>/dev/null | grep -A500 "Export Table" | grep -qw "$marker" \
+        || { echo "error: MISSING callsite marker export: $marker" >&2; exit 1; }
+    echo "  ok: $marker"
 done
