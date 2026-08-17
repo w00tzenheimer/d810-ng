@@ -53,6 +53,7 @@ from d810.analyses.control_flow.minimal_state_recovery import (
     _source_local_constant_register_write,
     block_has_live_carrier_write,
     recover_handler_transitions,
+    enrich_native_bound_transition_routes,
     resolve_materialized_handler_exit_states,
     resolve_materialized_handler_transition_targets,
     recover_state_write_transitions_via_partitioned_fixpoint,
@@ -60,6 +61,7 @@ from d810.analyses.control_flow.minimal_state_recovery import (
     transitions_use_terminal_stack_alias_guard,
     resolve_materialized_indirect_transfer_targets,
 )
+from d810.analyses.control_flow.semantic_transition import NativeBoundTransitionRoute
 from d810.analyses.control_flow.materialized_indirect_transfer import (
     MaterializedIndirectTransfer,
     MaterializedStateRoute,
@@ -145,6 +147,9 @@ logger = logging.getLogger("d810.transforms.minimal_unflatten_emit")
 
 TERMINAL_CARRIER_CONVERGENCE_METADATA = "terminal_carrier_convergence"
 TERMINAL_CARRIER_CONVERGENCE_REASON_METADATA = "terminal_carrier_convergence_reason"
+NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA = (
+    "native_bound_transition_route_receipts"
+)
 
 __all__ = [
     "ConditionalStateTransitionCandidate",
@@ -169,6 +174,7 @@ __all__ = [
     "lower_conditional_transition_candidates",
     "TERMINAL_CARRIER_CONVERGENCE_METADATA",
     "TERMINAL_CARRIER_CONVERGENCE_REASON_METADATA",
+    "NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA",
 ]
 
 
@@ -2858,22 +2864,30 @@ def build_state_write_redirects(
                 transition.proof is not None
                 and transition.proof.kind == "computed_goto_exact_terminal_delivery"
             )
-            new = (
-                _exact_native_terminal_redirect_target(
+            native_bound_route = bool(
+                transition.proof is not None
+                and transition.proof.oracle_kind
+                == "native_bound_transition_route"
+                and transition.proof.kind == "native_bound_route"
+            )
+            if native_bound_route:
+                # Keep the transition's original return classification as
+                # metadata, while the accepted native route supplies the exact
+                # handler edge.
+                new = transition.target_handler
+            elif transition.is_return and exact_terminal_delivery:
+                new = _exact_native_terminal_redirect_target(
                     flow_graph,
                     transition.target_handler,
                 )
-                if transition.is_return and exact_terminal_delivery
-                else (
-                    _return_redirect_target(
-                        flow_graph,
-                        transition.target_handler,
-                        default_target=default_target,
-                    )
-                    if transition.is_return
-                    else transition.target_handler
+            elif transition.is_return:
+                new = _return_redirect_target(
+                    flow_graph,
+                    transition.target_handler,
+                    default_target=default_target,
                 )
-            )
+            else:
+                new = transition.target_handler
             # Terminal stack-alias split: ``src -> vb`` reaches a shared block that
             # writes the non-state result carrier, writes the terminal dispatcher
             # state, then conditionally returns or re-enters the dispatcher. Keep
@@ -7445,6 +7459,7 @@ def emit_minimal_unflatten(
     dispatcher_region_serials: frozenset[int] = frozenset(),
     entry_bridge_evidence: EntryBridgeEvidence | None = None,
     bound_bootstrap_routes: tuple[BootstrapRouteBindingEvidence, ...] = (),
+    native_bound_transition_routes: tuple[NativeBoundTransitionRoute, ...] = (),
     block_serial_for_native_identity: (
         Callable[[StableBlockIdentity], int | None] | None
     ) = None,
@@ -7482,6 +7497,36 @@ def emit_minimal_unflatten(
         "non_state_use_def_severances_zero": False,
     }
     dispatcher_state_plumbing_serials: frozenset[int] = frozenset()
+
+    native_bound_route_receipts: tuple[dict[str, object], ...] = ()
+
+    def _native_bound_route_receipt(
+        route: NativeBoundTransitionRoute,
+    ) -> dict[str, object]:
+        return {
+            "fact_id": str(route.fact_id),
+            "native_ea": int(route.source_instruction_ea),
+            "native_ea_hex": f"0x{int(route.source_instruction_ea):X}",
+            "current_block": _format_block_label(
+                flow_graph, int(route.source_block_serial)
+            ),
+            "state": int(route.state_constant) & 0xFFFFFFFF,
+            "target": int(route.target_handler_serial),
+            "target_block": _format_block_label(
+                flow_graph, int(route.target_handler_serial)
+            ),
+        }
+
+    def attach_native_bound_route_receipts(plan: PatchPlan) -> PatchPlan:
+        if not native_bound_route_receipts:
+            return plan
+        return plan.with_metadata(
+            **{
+                NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA: (
+                    native_bound_route_receipts
+                )
+            }
+        )
 
     def compile_modifications(modifications) -> PatchPlan:
         return compile_patch_plan(
@@ -7575,6 +7620,7 @@ def emit_minimal_unflatten(
             dispatcher_entry_serial=dispatcher_entry_serial,
         )
         plan = compile_modifications(modifications)
+        plan = attach_native_bound_route_receipts(plan)
         plan = plan.with_metadata(
             **{
                 DISPATCHER_CORRIDOR_COVERAGE_METADATA: coverage.to_metadata(),
@@ -7639,6 +7685,53 @@ def emit_minimal_unflatten(
             else frozenset()
         ),
     )
+    transitions = enrich_native_bound_transition_routes(
+        transitions,
+        tuple(native_bound_transition_routes),
+        dispatcher_region_serials=frozenset(
+            int(serial) for serial in dispatcher_region_serials
+        ),
+    )
+    accepted_native_bound_routes = tuple(
+        route
+        for route in native_bound_transition_routes
+        if any(
+            transition.next_state == (int(route.state_constant) & 0xFFFFFFFF)
+            and transition.target_handler == int(route.target_handler_serial)
+            and int(route.source_block_serial)
+            in {
+                int(transition.write_block),
+                *(
+                    {int(transition.via_block)}
+                    if transition.via_block is not None
+                    else set()
+                ),
+            }
+            and transition.proof is not None
+            and transition.proof.oracle_kind == "native_bound_transition_route"
+            and transition.proof.kind == "native_bound_route"
+            and transition.proof.reason
+            == (
+                f"fact_id={route.fact_id};"
+                f"native_ea=0x{int(route.source_instruction_ea):X}"
+            )
+            for transition in transitions
+        )
+    )
+    native_bound_route_receipts = tuple(
+        _native_bound_route_receipt(route) for route in accepted_native_bound_routes
+    )
+    if native_bound_route_receipts and logger.info_on:
+        for receipt in native_bound_route_receipts:
+            logger.info(
+                "native-bound transition route receipt: fact_id=%s native_ea=%s "
+                "current=%s state=0x%08X target=%s",
+                receipt["fact_id"],
+                receipt["native_ea_hex"],
+                receipt["current_block"],
+                int(receipt["state"]),
+                receipt["target_block"],
+            )
     dispatcher_state_plumbing_serials = frozenset(
         int(transition.write_block)
         for transition in transitions
@@ -8703,7 +8796,9 @@ def emit_minimal_unflatten(
             use_def_audit.severance_count,
             use_def_audit.failure_reason or "none",
         )
-    plan = compile_modifications(list(mods)).with_metadata(
+    plan = attach_native_bound_route_receipts(
+        compile_modifications(list(mods))
+    ).with_metadata(
         **{
             DISPATCHER_CORRIDOR_COVERAGE_METADATA: coverage.to_metadata(),
             UNFLATTEN_COMPLETION_STATUS_METADATA: coverage.completion_status,

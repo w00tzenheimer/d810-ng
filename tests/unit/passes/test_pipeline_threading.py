@@ -47,8 +47,10 @@ from d810.passes.unflatten.state_machine import (
     _adopt_range_evidence_stack_identity,
     _effective_state_identity,
 )
+from d810.passes.state_machine_spine import LOWER_ANALYSES
 from d810.analyses.control_flow.dispatcher_recovery import DispatcherRecovery
 from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap
+from d810.analyses.control_flow.semantic_transition import StateTransitionResolution
 from d810.capabilities.dispatcher import RouterKind
 from d810.passes.unflatten import state_machine as state_machine_module
 from tests.native_preanalysis import make_native_key
@@ -371,6 +373,61 @@ def test_full_five_pass_chain_threads_and_completes():
     # synthetic obs carries no next-state write -> empty transitions -> heavy DAG/lower guarded off
     assert results[3].rewrite_plan.steps == ()  # lower_state_machine
     assert results[4].rewrite_plan.steps == ()  # cleanup_residual_dispatcher
+
+
+def test_lower_state_machine_requires_recovered_transition_analysis():
+    assert "recover_state_transitions" in LOWER_ANALYSES.required
+
+
+def test_native_bound_adapter_uses_current_native_ea_rebind_only():
+    calls = []
+
+    class _Index:
+        def rebind_native_ea(self, ea):
+            calls.append(int(ea))
+            return SimpleNamespace(block=SimpleNamespace(serial=42))
+
+        def rebind_identity(self, _identity):
+            raise AssertionError("recorded identity/serial fallback is forbidden")
+
+    resolution = StateTransitionResolution(
+        fact_id="transition:native-bound",
+        source_block_serial=15,
+        source_state_const_hex="0x0000000016AA65E9",
+        resolved_next_block_serial=7,
+        resolved_next_state_const_hex="0x00000000079323F9",
+        resolved_next_state_const_u64=0x079323F9,
+        resolution_kind="state_dispatcher_map",
+        resolution_reason="resolved_exact_state",
+        source_instruction_ea=0x7FF855576BA0,
+        state_var_stkoff=STATE_OFF,
+    )
+    routes = state_machine_module.bind_native_bound_transition_routes_for_current_mba(
+        (resolution,),
+        current_block_identity_index=_Index(),
+        graph=SimpleNamespace(blocks={7: object(), 42: object()}),
+        dispatcher=SimpleNamespace(lookup=lambda state: 7),
+        dispatcher_region_serials=frozenset({2}),
+        state_var_stkoff=STATE_OFF,
+        state_var_reg=None,
+    )
+
+    assert calls == [0x7FF855576BA0]
+    assert len(routes) == 1
+    assert routes[0].source_block_serial == 42
+    assert routes[0].target_handler_serial == 7
+    assert (
+        state_machine_module.bind_native_bound_transition_routes_for_current_mba(
+            (resolution,),
+            current_block_identity_index=None,
+            graph=SimpleNamespace(blocks={7: object()}),
+            dispatcher=SimpleNamespace(lookup=lambda state: 7),
+            dispatcher_region_serials=frozenset({2}),
+            state_var_stkoff=STATE_OFF,
+            state_var_reg=None,
+        )
+        == ()
+    )
 
 
 def test_run_pipeline_publishes_state_machine_contract_facts():

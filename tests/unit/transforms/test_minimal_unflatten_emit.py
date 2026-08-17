@@ -35,6 +35,7 @@ from d810.analyses.control_flow.minimal_state_recovery import (
     recover_state_write_transitions,
     resolve_materialized_indirect_transfer_targets,
 )
+from d810.analyses.control_flow.semantic_transition import NativeBoundTransitionRoute
 from d810.analyses.control_flow.materialized_indirect_transfer import (
     MaterializedIndirectTransfer,
     MaterializedStateRoute,
@@ -99,6 +100,8 @@ from d810.transforms.minimal_unflatten_emit import (
     _rebind_materialized_state_route_sources,
     build_source_keyed_handler_redirects,
     build_state_write_redirects,
+    enrich_native_bound_transition_routes,
+    NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA,
 )
 from d810.transforms.dispatcher_corridor_coverage import (
     DISPATCHER_CORRIDOR_COVERAGE_METADATA,
@@ -493,6 +496,135 @@ def test_emits_back_edge_redirect_and_entry_bridge(_seam) -> None:
     assert (10, 2, 20) in gotos
     # entry bridge: blk0 -> route(initial 0x10) = blk10
     assert (0, 2, 10) in gotos
+
+
+def _native_bound_route(*, source: int, state: int, target: int, fact_id: str = "fact"):
+    return NativeBoundTransitionRoute(
+        fact_id=fact_id,
+        source_instruction_ea=0x7FF855576BA0 + source,
+        source_block_serial=source,
+        state_constant=state,
+        target_handler_serial=target,
+    )
+
+
+def test_native_bound_route_enriches_unresolved_entry_transition() -> None:
+    transition = StateWriteTransition(10, None, None, True, 1, via_block=11)
+
+    (enriched,) = enrich_native_bound_transition_routes(
+        (transition,),
+        (_native_bound_route(source=11, state=0x16AA65E9, target=20),),
+    )
+
+    assert enriched.write_block == transition.write_block
+    assert enriched.next_state == 0x16AA65E9
+    assert enriched.target_handler == 20
+    assert enriched.branch_arm == transition.branch_arm
+    assert enriched.via_block == transition.via_block
+    assert enriched.is_return is transition.is_return
+    assert enriched.proof is not None
+    assert enriched.proof.oracle_kind == "native_bound_transition_route"
+    assert enriched.proof.kind == "native_bound_route"
+    assert enriched.proof.trusted is True
+
+
+def test_native_bound_route_enriches_unresolved_backedge_transition() -> None:
+    transition = StateWriteTransition(15, None, None, True, None)
+
+    (enriched,) = enrich_native_bound_transition_routes(
+        (transition,),
+        (_native_bound_route(source=15, state=0x079323F9, target=30),),
+    )
+
+    assert (enriched.next_state, enriched.target_handler) == (0x079323F9, 30)
+    assert enriched.branch_arm is None
+    assert enriched.via_block is None
+
+
+def test_native_bound_route_never_overwrites_resolved_transition() -> None:
+    proof = TransitionProof("existing", "resolved", True)
+    transition = StateWriteTransition(10, 0x10, 20, False, 0, proof=proof)
+
+    assert enrich_native_bound_transition_routes(
+        (transition,),
+        (_native_bound_route(source=10, state=0x16AA65E9, target=30),),
+    ) == (transition,)
+
+
+def test_native_bound_route_mismatch_and_conflict_are_inert() -> None:
+    mismatch = StateWriteTransition(10, None, None, True, 0, via_block=11)
+    conflict = StateWriteTransition(15, None, None, True, 1)
+
+    assert enrich_native_bound_transition_routes(
+        (mismatch,),
+        (_native_bound_route(source=99, state=0x10, target=20),),
+    ) == (mismatch,)
+    assert enrich_native_bound_transition_routes(
+        (conflict,),
+        (
+            _native_bound_route(source=15, state=0x10, target=20, fact_id="a"),
+            _native_bound_route(source=15, state=0x20, target=30, fact_id="b"),
+        ),
+    ) == (conflict,)
+
+
+def test_native_bound_route_target_in_dispatcher_region_is_inert() -> None:
+    transition = StateWriteTransition(15, None, None, True, 1)
+
+    assert enrich_native_bound_transition_routes(
+        (transition,),
+        (_native_bound_route(source=15, state=0x10, target=2),),
+        dispatcher_region_serials=frozenset({2}),
+    ) == (transition,)
+
+
+def test_native_bound_route_receipt_identifies_accepted_current_route(monkeypatch):
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (2,), ()),
+            2: _b(2, (10, 20), (0, 10, 20)),
+            10: _b(10, (2,), (2,)),
+            20: _b(20, (2,), (2,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    disp = _disp({0x10: 10, 0x20: 20}, exit_block=99)
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "recover_state_write_transitions_via_partitioned_fixpoint",
+        lambda *_args, **_kwargs: (
+            StateWriteTransition(10, None, None, True, None),
+        ),
+    )
+    route = _native_bound_route(
+        source=10,
+        state=0x20,
+        target=20,
+        fact_id="transition:receipt",
+    )
+
+    plan = emit_minimal_unflatten(
+        fg,
+        disp,
+        state_var_stkoff=_STATE,
+        dispatcher_entry_serial=2,
+        initial_state=0x10,
+        native_bound_transition_routes=(route,),
+    )
+
+    receipt = plan.metadata_dict()[NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA]
+    assert receipt == (
+        {
+            "fact_id": "transition:receipt",
+            "native_ea": 0x7FF855576BA0 + 10,
+            "native_ea_hex": "0x7FF855576BAA",
+            "current_block": "blk[10]@0x1280",
+            "state": 0x20,
+            "target": 20,
+            "target_block": "blk[20]@0x1500",
+        },
+    )
 
 
 def test_materialized_state_route_rebinds_to_exact_imported_handler_owner() -> None:

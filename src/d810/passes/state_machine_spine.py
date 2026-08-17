@@ -95,6 +95,7 @@ LOWER_ANALYSES = AnalysisContract(
         {
             "plan_semantic_regions",
             "recover_dispatcher",
+            "recover_state_transitions",
             "transition_result",
         }
     ),

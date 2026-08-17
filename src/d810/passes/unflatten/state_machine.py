@@ -57,7 +57,10 @@ from d810.analyses.control_flow.router_resolver import (
     default_resolvers,
     select_router,
 )
-from d810.analyses.control_flow.semantic_transition import resolve_state_transitions
+from d810.analyses.control_flow.semantic_transition import (
+    bind_native_bound_transition_routes,
+    resolve_state_transitions,
+)
 from d810.analyses.control_flow.semantic_route_evidence import (
     CanonicalSemanticEvidence,
     SemanticRouteShape,
@@ -356,6 +359,56 @@ def _analysis(ctx: FunctionPipelineContext, name: str, default=None):
 def _publish(ctx: FunctionPipelineContext, name: str, value) -> None:
     if hasattr(ctx.facts, "put_analysis"):
         ctx.facts.put_analysis(name, value)
+
+
+def bind_native_bound_transition_routes_for_current_mba(
+    resolutions,
+    *,
+    current_block_identity_index,
+    graph,
+    dispatcher,
+    dispatcher_region_serials,
+    state_var_stkoff: int | None,
+    state_var_reg: int | None,
+):
+    """Bind recovered routes to the current MBA without serial fallbacks."""
+    if current_block_identity_index is None:
+        return ()
+    rebind_native_ea = getattr(
+        current_block_identity_index,
+        "rebind_native_ea",
+        None,
+    )
+    route_target_for_state = getattr(dispatcher, "lookup", None)
+    if not callable(rebind_native_ea) or not callable(route_target_for_state):
+        return ()
+
+    def block_serial_for_instruction_ea(native_ea: int) -> int | None:
+        try:
+            rebound = rebind_native_ea(int(native_ea))
+        except Exception:  # noqa: BLE001 - missing/ambiguous identity abstains
+            return None
+        block = getattr(rebound, "block", None)
+        if block is None:
+            return None
+        try:
+            return int(block.serial)
+        except (AttributeError, TypeError, ValueError):
+            return None
+
+    current_blocks = getattr(graph, "blocks", {})
+    current_block_serials = tuple(int(serial) for serial in current_blocks)
+    return bind_native_bound_transition_routes(
+        tuple(resolutions or ()),
+        block_serial_for_instruction_ea=block_serial_for_instruction_ea,
+        current_block_serials=current_block_serials,
+        dispatcher_block_serials=frozenset(
+            int(serial) for serial in (dispatcher_region_serials or ())
+        ),
+        route_target_for_state=route_target_for_state,
+        state_var_stkoff=state_var_stkoff,
+        state_var_reg=state_var_reg,
+    )
 
 
 def _effective_state_identity(
@@ -2589,6 +2642,17 @@ class LowerStateMachine(PipelinePass):
                     dispatcher_region_serials |= frozenset(
                         int(block) for block in range_evidence.decision_dag.nodes
                     )
+            native_bound_transition_routes = (
+                bind_native_bound_transition_routes_for_current_mba(
+                    _analysis(context, "recover_state_transitions", ()),
+                    current_block_identity_index=current_block_identity_index,
+                    graph=context.graph,
+                    dispatcher=dispatcher,
+                    dispatcher_region_serials=dispatcher_region_serials,
+                    state_var_stkoff=state_var_stkoff,
+                    state_var_reg=state_var_reg,
+                )
+            )
             plan = emit_minimal_unflatten(
                 context.graph,
                 dispatcher,
@@ -2623,6 +2687,7 @@ class LowerStateMachine(PipelinePass):
                 dispatcher_entry_serial=int(dispatcher_entry),
                 pre_header_serial=getattr(range_evidence, "pre_header_serial", None),
                 initial_state=initial_state,
+                native_bound_transition_routes=native_bound_transition_routes,
                 is_indirect=is_indirect,
                 fact_view=getattr(context, "facts", None),
                 emu=emu,

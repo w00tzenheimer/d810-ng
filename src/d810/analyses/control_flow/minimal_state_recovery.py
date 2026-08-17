@@ -70,6 +70,7 @@ from d810.analyses.control_flow.materialized_indirect_transfer import (
     route_materialized_transfer_chain,
     route_transfer_target_through_condition_chain,
 )
+from d810.analyses.control_flow.semantic_transition import NativeBoundTransitionRoute
 from d810.analyses.control_flow.route_predicate import DecisionDag
 from d810.capabilities.providers import get_condition_chain_walkers
 from d810.ir.flowgraph import (
@@ -152,6 +153,7 @@ __all__ = [
     "resolve_materialized_handler_transition_targets",
     "StateWriteTransition",
     "TransitionProof",
+    "enrich_native_bound_transition_routes",
     "transition_uses_terminal_stack_alias_guard",
     "transitions_use_terminal_stack_alias_guard",
     "block_has_live_carrier_write",
@@ -361,6 +363,90 @@ class StateWriteTransition:
     # it, None = unattributed (legacy fold)
 
 
+def enrich_native_bound_transition_routes(
+    transitions: tuple[StateWriteTransition, ...],
+    routes: tuple[NativeBoundTransitionRoute, ...],
+    *,
+    dispatcher_region_serials: frozenset[int] = frozenset(),
+) -> tuple[StateWriteTransition, ...]:
+    """Fill unresolved state-write rows from exact native-bound route evidence.
+
+    This is intentionally a pure, additive join performed after all normal
+    fixpoint/emulator providers have run.  Native-bound evidence may only fill a
+    row that has no state or target yet, and the source EA has already been
+    rebound to the current ``write_block``/``via_block`` by the Hex-Rays
+    adapter.  Multiple disagreeing routes for one source abstain as a group.
+    """
+    if not transitions or not routes:
+        return transitions
+
+    candidates_by_source: dict[
+        int, dict[tuple[int, int], list[NativeBoundTransitionRoute]]
+    ] = {}
+    dispatcher_serials = {int(serial) for serial in dispatcher_region_serials}
+    for route in routes:
+        try:
+            source = int(route.source_block_serial)
+            state = int(route.state_constant)
+            target = int(route.target_handler_serial)
+            native_ea = int(route.source_instruction_ea)
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if not 0 <= state <= 0xFFFFFFFF:
+            continue
+        if source < 0 or target < 0 or target in dispatcher_serials:
+            continue
+        if not 0 <= native_ea < 0xFFFFFFFFFFFFFFFF:
+            continue
+        candidates_by_source.setdefault(source, {}).setdefault(
+            (state, target), []
+        ).append(route)
+
+    enriched: list[StateWriteTransition] = []
+    for transition in transitions:
+        # A fixpoint/emulator result, including a partial result, is stronger
+        # than this corroborating route and must never be overwritten.
+        if transition.next_state is not None or transition.target_handler is not None:
+            enriched.append(transition)
+            continue
+        source_serials = {int(transition.write_block)}
+        if transition.via_block is not None:
+            source_serials.add(int(transition.via_block))
+        matches: dict[tuple[int, int], list[NativeBoundTransitionRoute]] = {}
+        for source in source_serials:
+            for route_key, source_routes in candidates_by_source.get(source, {}).items():
+                matches.setdefault(route_key, []).extend(source_routes)
+        if len(matches) != 1:
+            enriched.append(transition)
+            continue
+        route_key, source_routes = next(iter(matches.items()))
+        route = min(
+            source_routes,
+            key=lambda candidate: (
+                str(candidate.fact_id),
+                int(candidate.source_instruction_ea),
+            ),
+        )
+        state, target = route_key
+        enriched.append(
+            replace(
+                transition,
+                next_state=state,
+                target_handler=target,
+                proof=TransitionProof(
+                    "native_bound_transition_route",
+                    "native_bound_route",
+                    True,
+                    reason=(
+                        f"fact_id={route.fact_id};"
+                        f"native_ea=0x{int(route.source_instruction_ea):X}"
+                    ),
+                ),
+            )
+        )
+    return tuple(enriched)
+
+
 def _source_local_constant_register_write(
     flow_graph: FlowGraph,
     source_serial: int,
@@ -436,6 +522,16 @@ def resolve_materialized_indirect_transfer_targets(
     comparison_evidence_active = bool(condition_chain_handlers)
     resolved: list[StateWriteTransition] = []
     for transition in transitions:
+        # Native-bound routes are a distinct current-MBA authority.  Once the
+        # enrichment helper has attached one, a computed-goto/materialization
+        # refinement must not replace that proof or target.
+        if (
+            transition.proof is not None
+            and transition.proof.oracle_kind == "native_bound_transition_route"
+            and transition.proof.kind == "native_bound_route"
+        ):
+            resolved.append(transition)
+            continue
         route_sources = (
             (int(transition.via_block), int(transition.write_block))
             if transition.via_block is not None
