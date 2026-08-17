@@ -25,6 +25,20 @@ from d810.backends.mba.ida import IDAPatternAdapter
 from d810.mba.provider_outcome import ProviderOutcomeStatus
 
 
+@pytest.fixture(autouse=True)
+def _reset_runtime_settings_after_test(monkeypatch):
+    """Undo env overrides before rebuilding the settings singleton.
+
+    ``monkeypatch`` normally tears down after this fixture.  Undoing it here
+    first ensures ``reset_settings()`` observes the restored environment and
+    no opt-in setting leaks into the next IDA test.
+    """
+
+    yield
+    monkeypatch.undo()
+    reset_settings()
+
+
 class TestNomutMatchingHotPath:
     """Test suite for nomut matching hot-path switching."""
 

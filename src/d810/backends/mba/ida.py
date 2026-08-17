@@ -211,6 +211,15 @@ class _ShadowBindingCandidate:
         self.is_candidate_ok = True
 
 
+class _BindingMopCarrier:
+    """Expose a direct matcher mop through the AST leaf binding protocol."""
+
+    __slots__ = ("mop",)
+
+    def __init__(self, mop: Any) -> None:
+        self.mop = mop
+
+
 class IDANodeVisitor:
     """Converts SymbolicExpression trees to IDA AstNode trees.
 
@@ -1114,21 +1123,32 @@ class IDAPatternAdapter:
             return None
 
     @staticmethod
-    def _shadow_binding_context(candidate: _ShadowBindingCandidate) -> AstNode:
+    def _shadow_binding_context(candidate: Any) -> AstNode:
         """Materialize structural bindings as the active AST runtime's node type.
 
         The Cython ``update_leafs_mop`` entry point has an exact ``AstNode``
         signature, unlike the portable implementation's duck-typed path.  The
-        proof-only shadow candidate must therefore be copied into an otherwise
-        empty active AST node before it crosses that boundary.  The mapped
-        leaves retain their original native identities; only the binding
-        container is new.
+        proof-only shadow candidate and non-mutating binding proxy must
+        therefore be copied into an otherwise empty active AST node before they
+        cross that boundary.  Cython bindings expose direct ``MopSnapshot``
+        values, so those values are wrapped in the leaf carrier expected by
+        ``AstLeaf.update_leafs_mop``; native AstLeaf/MatchBinding values retain
+        their original identities.
         """
 
+        leafs_by_name = getattr(candidate, "leafs_by_name", None)
+        if not isinstance(leafs_by_name, Mapping):
+            raise TypeError("binding candidate must expose a leafs_by_name mapping")
+
         bindings = AstNode()
-        bindings.leafs_by_name = dict(candidate.leafs_by_name)
-        bindings.ea = candidate.ea
-        bindings.dst_mop = candidate.dst_mop
+        bindings.leafs_by_name = {
+            name: value
+            if hasattr(value, "mop")
+            else _BindingMopCarrier(value)
+            for name, value in leafs_by_name.items()
+        }
+        bindings.ea = getattr(candidate, "ea", None)
+        bindings.dst_mop = getattr(candidate, "dst_mop", None)
         bindings.is_candidate_ok = True
         return bindings
 
@@ -1601,22 +1621,35 @@ class IDAPatternAdapter:
             logger.debug(f"No replacement pattern for rule {self.name}")
             return None
 
+        candidate_for_update = candidate
+
         # Handle AstLeaf candidates specially - they don't have leafs_by_name
         if isinstance(candidate, AstLeafProtocol):
             candidate_for_update = _LeafWrapper(candidate)
-            is_ok = repl_pat.update_leafs_mop(candidate_for_update)
-        else:
-            is_ok = repl_pat.update_leafs_mop(candidate)
+        elif not isinstance(candidate, AstNode):
+            try:
+                candidate_for_update = self._shadow_binding_context(candidate)
+            except (AttributeError, TypeError, ValueError) as exc:
+                logger.debug(
+                    "Failed to materialize replacement bindings for rule %s: %s",
+                    self.name,
+                    exc,
+                )
+                return None
+
+        is_ok = repl_pat.update_leafs_mop(candidate_for_update)
 
         if not is_ok:
             logger.debug(f"Failed to update leaf mops for rule {self.name}")
             return None
 
-        if not candidate.ea:
+        if not candidate_for_update.ea:
             logger.debug(f"No EA for candidate in rule {self.name}")
             return None
 
-        if not self._materialize_replacement_constants(repl_pat, candidate):
+        if not self._materialize_replacement_constants(
+            repl_pat, candidate_for_update
+        ):
             logger.debug(
                 "Failed to materialize replacement constants for rule %s",
                 self.name,
@@ -1624,7 +1657,9 @@ class IDAPatternAdapter:
             return None
 
         try:
-            new_ins = repl_pat.create_minsn(candidate.ea, candidate.dst_mop)
+            new_ins = repl_pat.create_minsn(
+                candidate_for_update.ea, candidate_for_update.dst_mop
+            )
         except AstEvaluationException as exc:
             logger.debug(
                 "Replacement creation failed for rule %s at 0x%x: %s",

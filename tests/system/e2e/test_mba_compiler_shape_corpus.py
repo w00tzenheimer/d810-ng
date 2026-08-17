@@ -614,6 +614,57 @@ class TestCompilerShapeCatalogueNative:
             ledger.new_safe_coverage_pending + ledger.new_safe_coverage_proved
         ) >= 0
 
+    def test_nomut_catalogue_route_matches_the_native_lowered_shape(
+        self,
+        ida_database,
+        d810_state,
+        pseudocode_to_string,
+        monkeypatch,
+    ) -> None:
+        """The explicit nomut opt-in must still apply the catalogue rule."""
+
+        monkeypatch.setenv("D810_NOMUT_MATCHING", "1")
+        monkeypatch.delenv("D810_LEGACY_STORAGE", raising=False)
+        monkeypatch.setenv("D810_LEGACY_DSL_PERMUTATIONS", "1")
+        monkeypatch.setenv("D810_SHADOW_DSL_MATCHING", "1")
+        from d810.core.settings import reset_settings
+
+        reset_settings()
+
+        @contextlib.contextmanager
+        def nomut_state():
+            with d810_state() as state:
+                state.load_project(
+                    state.project_manager.index("mba_compiler_shape_catalogue.json")
+                )
+                assert state.current_ins_rules
+                instruction_optimizers = state.manager.instruction_optimizer
+                pattern_optimizers = tuple(
+                    optimizer
+                    for optimizer in instruction_optimizers.instruction_optimizers
+                    if hasattr(optimizer, "_use_nomut_matching")
+                )
+                assert pattern_optimizers
+                assert all(
+                    optimizer._use_nomut_matching
+                    and not optimizer._use_legacy_storage
+                    for optimizer in pattern_optimizers
+                )
+                yield state
+
+        run_deobfuscation_test(
+            DeobfuscationCase(
+                function="mba_shape_catalogue_01",
+                description="catalogue rule fires through explicit nomut matching",
+                project="mba_compiler_shape_catalogue.json",
+                must_change=True,
+                required_rules=["Add_HackersDelightRule_2"],
+                forbidden_rules=[],
+            ),
+            d810_state=nomut_state,
+            pseudocode_to_string=pseudocode_to_string,
+        )
+
     def test_native_shadow_evidence_certificate_and_activation(
         self,
         tmp_path: Path,

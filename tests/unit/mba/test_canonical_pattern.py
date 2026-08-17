@@ -272,6 +272,18 @@ def test_unsupported_dsl_pattern_fails_closed_and_is_not_canonical_eligible():
         )
 
 
+def test_symbolic_fixed_shift_form_is_explicitly_unsupported():
+    """A symbolic shift count stays on the legacy path, not an opaque term."""
+
+    from d810.mba.canonical_pattern import (
+        CanonicalPatternUnsupported,
+        lower_symbolic_template,
+    )
+
+    with pytest.raises(CanonicalPatternUnsupported, match="fixed-count"):
+        lower_symbolic_template(Var("x") << Const("shift", 1), width=32)
+
+
 def test_declaration_order_survives_canonical_alias_collapse():
     from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
 

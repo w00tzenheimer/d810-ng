@@ -25,6 +25,7 @@ from d810.mba.semantic_canonicalization import (
     canonicalize_mba_term,
 )
 from d810.mba.typed_term import (
+    FIXED_SHIFT_OPERATIONS,
     SUPPORTED_OPERATIONS,
     TypedBvTerm,
     canonicalize_ac_term,
@@ -323,6 +324,10 @@ def lower_symbolic_template(
         raise CanonicalPatternUnsupported(f"unsupported canonical DSL operation: {operation}")
     if node.left is None:
         raise CanonicalPatternUnsupported(f"malformed {operation} expression")
+    if operation in FIXED_SHIFT_OPERATIONS:
+        raise CanonicalPatternUnsupported(
+            f"symbolic {operation} requires a fixed-count term"
+        )
     if operation in {"bnot", "neg"}:
         if node.right is not None:
             raise CanonicalPatternUnsupported(f"malformed unary {operation} expression")

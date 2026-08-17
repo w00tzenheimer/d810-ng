@@ -229,3 +229,48 @@ class TestBindingsProxyRealIntegration:
 
         assert tested > 0, "Expected to test at least one successful match with proxy"
         print(f"\n  Tested {tested} BindingsProxy instances with real AST matches")
+
+    @pytest.mark.ida_required
+    def test_proxy_get_replacement_uses_active_ast_binding_carrier(self, ida_database):
+        """The Cython matcher proxy must cross the native emitter boundary safely."""
+
+        ida_hexrays = pytest.importorskip("ida_hexrays")
+        import idautils
+
+        from d810.backends.mba.ida import IDAPatternAdapter
+        from d810.hexrays.expr import ast as ast_dispatcher
+        from d810.mba.dsl import Const, Var
+        from d810.optimizers.microcode.instructions.pattern_matching.engine import (
+            MatchBindings,
+            match_pattern_nomut,
+        )
+
+        x = Var("x")
+
+        class Rule:
+            name = "BindingsProxyReplacement"
+            pattern = x + Const("zero", 0)
+            replacement = x + Const("zero", 0)
+
+        adapter = IDAPatternAdapter(Rule())
+        source = ast_dispatcher.AstNode(
+            ida_hexrays.m_add,
+            ast_dispatcher.AstLeaf("x"),
+            ast_dispatcher.AstConstant("zero", 0, 4),
+        )
+        source.left.mop = MopSnapshot(
+            t=ida_hexrays.mop_r, size=4, reg=1
+        )
+        source.right.mop = MopSnapshot(
+            t=ida_hexrays.mop_n, size=4, value=0
+        )
+        source.dest_size = 4
+        source.ea = next(iter(idautils.Functions()))
+
+        bindings = MatchBindings()
+        assert match_pattern_nomut(adapter.pattern_candidates[0], source, bindings)
+        proxy = BindingsProxy(bindings)
+
+        replacement = adapter.get_replacement(proxy)
+
+        assert replacement is not None

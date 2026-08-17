@@ -17,7 +17,7 @@ from d810.mba.certified_catalogue import (
     load_structural_matcher_parity_certificate,
     make_structural_matcher_parity_certificate,
 )
-from d810.mba.dsl import Var, Zext
+from d810.mba.dsl import Const, Var, Zext
 from d810.mba.semantic_canonicalization import CANONICALIZER_SCHEMA_VERSION
 
 
@@ -556,6 +556,24 @@ def test_snapshot_records_width_specific_canonical_templates_and_version() -> No
     assert template["width"] == 32
     assert template["semantic_fingerprint"]
     assert template["pattern"] != template["replacement"]
+
+
+def test_snapshot_authorizes_supported_pattern_with_unsupported_replacement() -> None:
+    """An unsupported replacement must not make its supported pattern opaque."""
+
+    x = Var("x")
+    rule = _SemanticRule(
+        "supported-pattern-unsupported-shift-replacement",
+        x + Const("one", 1),
+        x << Const("shift", 1),
+    )
+
+    snapshot = build_certified_catalogue_snapshot(
+        (rule,), compiler_version="unsupported-shift-replacement-v1", widths=(32,)
+    )
+
+    assert snapshot.canonical_status_by_rule_width[(0, 32)] == "unsupported"
+    assert snapshot.structural_authorizable is True
 
 
 def test_snapshot_fingerprint_binds_proof_widths_for_canonical_ineligible_rule() -> None:
