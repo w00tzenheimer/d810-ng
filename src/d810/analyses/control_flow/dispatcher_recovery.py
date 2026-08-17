@@ -17,7 +17,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
-from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnKind
+from d810.ir.flowgraph import (
+    BlockSnapshot,
+    FlowGraph,
+    InsnKind,
+    MopSnapshot,
+    OperandKind,
+)
 from d810.ir.insn_projection import (
     is_effect_free_operand_tree,
     operand_stack_offsets,
@@ -77,6 +83,65 @@ def _reg_of(view: StorageView) -> int | None:
     if isinstance(view, Varnode) and view.space is Space.REGISTER:
         return int(view.offset)
     return None
+
+
+def _exact_stack_address_offset(
+    operand: MopSnapshot | None,
+    *,
+    _seen: set[int] | None = None,
+) -> int | None:
+    """Resolve only an exact ``ADDRESS -> STACK`` state-store target.
+
+    A STORE's ``d`` operand is a memory address, not a register destination.
+    This deliberately admits only a direct stack leaf (optionally accompanied
+    by one matching lifted ``stack_ref``); arithmetic, nested calls/stores,
+    ambiguous references, and every other address shape remain unknown.
+    """
+    if operand is None:
+        return None
+    seen = set() if _seen is None else _seen
+    identity = id(operand)
+    if identity in seen:
+        return None
+    seen.add(identity)
+
+    kind = operand.kind
+    if kind is OperandKind.STACK:
+        offset = operand.stkoff
+        if offset is None:
+            return None
+        refs = tuple(int(ref) for ref in operand.stack_refs)
+        if refs and refs != (int(offset),):
+            return None
+        if (
+            operand.sub_l is not None
+            or operand.sub_r is not None
+            or operand.args
+        ):
+            return None
+        return int(offset)
+
+    if kind is not OperandKind.ADDRESS:
+        return None
+    if (
+        operand.sub_r is not None
+        or operand.args
+    ):
+        return None
+    refs = tuple(int(ref) for ref in operand.stack_refs)
+    if len(refs) > 1:
+        return None
+    child = operand.sub_l
+    if child is None:
+        return refs[0] if len(refs) == 1 else None
+    if child.kind is not OperandKind.STACK:
+        return None
+    child_offset = _exact_stack_address_offset(child, _seen=seen)
+    if child_offset is None:
+        return None
+    if refs and refs != (child_offset,):
+        return None
+    return child_offset
 
 
 def _stkoff_of(view: StorageView) -> int | None:
@@ -641,12 +706,12 @@ def _state_write_constant(
     prefix scanner.
     """
     src_view, _r_view, dst_view = operand_storages(insn)
-    destination_matches = (
-        state_var_stkoff is not None
-        and _stkoff_of(dst_view) == int(state_var_stkoff)
-    ) or (state_var_reg is not None and _reg_of(dst_view) == int(state_var_reg))
 
     if insn.kind is InsnKind.MOV:
+        destination_matches = (
+            state_var_stkoff is not None
+            and _stkoff_of(dst_view) == int(state_var_stkoff)
+        ) or (state_var_reg is not None and _reg_of(dst_view) == int(state_var_reg))
         if not destination_matches:
             return False, None
         if require_32bit:
@@ -666,22 +731,24 @@ def _state_write_constant(
         return True, (src_value & 0xFFFFFFFF) if require_32bit else src_value
 
     if insn.kind is InsnKind.STORE:
-        # m_stx <value>, <addr>: the address operand is the right slot.  A
-        # register-resident state variable cannot be identified by an indirect
-        # store, so only the recovered stack identity admits this form.
-        _l_off, addr_off, _d_off = operand_stack_offsets(insn)
+        # m_stx <value>, <segment>, <address>: only an exact stack address in
+        # the d operand can initialize a stack-resident state.  In particular,
+        # d=r20 is not a register-state write; it is an invalid STORE target.
+        operands = operand_snapshots(insn)
         address_matches = (
-            state_var_stkoff is not None and addr_off == int(state_var_stkoff)
+            state_var_stkoff is not None
+            and _exact_stack_address_offset(operands[2]) == int(state_var_stkoff)
         )
-        if not address_matches and not destination_matches:
+        if not address_matches:
             return False, None
         if require_32bit:
-            operands = operand_snapshots(insn)
             sizes = operand_sizes(insn)
             if (
                 operands[0] is None
                 or sizes[0] != 4
-                or not all(is_effect_free_operand_tree(operand) for operand in operands)
+                or not all(
+                    is_effect_free_operand_tree(operand) for operand in operands[:2]
+                )
             ):
                 return True, None
         src_value = _const_of(src_view)
@@ -692,6 +759,10 @@ def _state_write_constant(
     # Any other instruction with the recovered destination is a state write,
     # but it is not the one exact constant-init form admitted above.  The
     # caller must reject it even when the operation is otherwise pure.
+    destination_matches = (
+        state_var_stkoff is not None
+        and _stkoff_of(dst_view) == int(state_var_stkoff)
+    ) or (state_var_reg is not None and _reg_of(dst_view) == int(state_var_reg))
     if destination_matches:
         return True, None
     return False, None
@@ -812,6 +883,8 @@ def _recover_same_block_prefix_initial_state(
 
     constants: list[int] = []
     for insn in blk.insn_snapshots[:boundary]:
+        if insn.call_kind is not None:
+            return None
         wrote_state, src_value = _state_write_constant(
             insn,
             state_var_stkoff=state_var_stkoff,

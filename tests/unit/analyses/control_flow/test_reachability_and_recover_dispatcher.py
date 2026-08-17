@@ -6,6 +6,8 @@ shared primitive, and proves ``recover_dispatcher`` computes reachability over a
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from d810.analyses.control_flow.reachability import reachable_from
@@ -24,7 +26,7 @@ from d810.ir.flowgraph import (
     MopSnapshot,
     OperandKind,
 )
-from d810.ir.semantics import PredicateKind
+from d810.ir.semantics import CallKind, PredicateKind
 
 
 def _blk(serial: int, succs: tuple[int, ...], preds: tuple[int, ...]) -> BlockSnapshot:
@@ -209,6 +211,39 @@ def _prefix_mov_nonconstant() -> InsnSnapshot:
         l=source,
         d=dest,
         kind=InsnKind.MOV,
+    )
+
+
+def _prefix_store_address(
+    offset: int,
+    *,
+    stack_refs: tuple[int, ...] = (),
+    nested: MopSnapshot | None = None,
+) -> MopSnapshot:
+    return MopSnapshot(
+        kind=OperandKind.ADDRESS,
+        size=8,
+        stack_refs=stack_refs,
+        sub_l=nested
+        if nested is not None
+        else MopSnapshot(kind=OperandKind.STACK, stkoff=offset, size=8),
+    )
+
+
+def _prefix_store_const(
+    value: int,
+    address: MopSnapshot,
+) -> InsnSnapshot:
+    source = MopSnapshot(kind=OperandKind.NUMBER, value=value, size=4)
+    segment = MopSnapshot(kind=OperandKind.EMPTY, size=2)
+    return InsnSnapshot(
+        opcode=3,
+        ea=0x2008,
+        operands=(source, segment, address),
+        l=source,
+        r=segment,
+        d=address,
+        kind=InsnKind.STORE,
     )
 
 
@@ -441,6 +476,80 @@ def test_entry_dominated_initial_state_rejects_wrong_state_identity():
 def test_entry_dominated_initial_state_rejects_effect_barrier_after_write():
     graph = _prefix_graph(
         (_prefix_mov_const(_PREFIX_INITIAL_STATE), _prefix_call(), _prefix_tail())
+    )
+
+    assert recover_entry_dominated_initial_state(graph, _prefix_dmap(graph)) is None
+
+
+def test_entry_dominated_initial_state_accepts_exact_stack_store():
+    graph = _prefix_graph(
+        (
+            _prefix_store_const(
+                _PREFIX_INITIAL_STATE,
+                _prefix_store_address(
+                    _PREFIX_STATE_OFF,
+                    stack_refs=(_PREFIX_STATE_OFF,),
+                ),
+            ),
+            _prefix_tail(),
+        )
+    )
+
+    assert recover_entry_dominated_initial_state(graph, _prefix_dmap(graph)) == (
+        _PREFIX_INITIAL_STATE
+    )
+
+
+def test_entry_dominated_initial_state_rejects_register_store_for_register_state():
+    register_address = MopSnapshot(
+        kind=OperandKind.REGISTER,
+        reg=20,
+        size=8,
+    )
+    graph = _prefix_reg_graph(
+        (_prefix_store_const(_PREFIX_INITIAL_STATE, register_address), _prefix_reg_tail())
+    )
+    dmap = build_state_dispatcher_map_from_flow_graph(graph)
+    assert dmap is not None
+    assert dmap.state_var_stkoff is None
+    assert dmap.state_var_reg == 20
+
+    assert recover_entry_dominated_initial_state(graph, dmap) is None
+
+
+@pytest.mark.parametrize(
+    "address",
+    (
+        _prefix_store_address(_PREFIX_STATE_OFF + 4, stack_refs=(_PREFIX_STATE_OFF + 4,)),
+        _prefix_store_address(
+            _PREFIX_STATE_OFF,
+            stack_refs=(_PREFIX_STATE_OFF, _PREFIX_STATE_OFF + 4),
+        ),
+        _prefix_store_address(
+            _PREFIX_STATE_OFF,
+            stack_refs=(_PREFIX_STATE_OFF,),
+            nested=MopSnapshot(
+                kind=OperandKind.SUBINSN,
+                sub_kind=InsnKind.CALL,
+                size=8,
+            ),
+        ),
+    ),
+)
+def test_entry_dominated_initial_state_rejects_non_exact_stack_store_address(
+    address: MopSnapshot,
+):
+    graph = _prefix_graph(
+        (_prefix_store_const(_PREFIX_INITIAL_STATE, address), _prefix_tail())
+    )
+
+    assert recover_entry_dominated_initial_state(graph, _prefix_dmap(graph)) is None
+
+
+def test_entry_dominated_initial_state_rejects_call_kind_on_pure_instruction():
+    inconsistent = replace(_prefix_add(), call_kind=CallKind.DIRECT)
+    graph = _prefix_graph(
+        (_prefix_mov_const(_PREFIX_INITIAL_STATE), inconsistent, _prefix_tail())
     )
 
     assert recover_entry_dominated_initial_state(graph, _prefix_dmap(graph)) is None
