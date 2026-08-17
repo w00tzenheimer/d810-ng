@@ -2387,18 +2387,6 @@ def _unique_materialized_state_target(
 
 
 @dataclass(frozen=True, slots=True)
-class _MaterializedStateRouteProvider:
-    """Exact-state adapter for the shared entry-route resolver."""
-
-    routes: tuple[MaterializedStateRoute, ...]
-    handlers: frozenset[int]
-
-    def resolve_target(self, state: int) -> int | None:
-        targets = _materialized_route_targets(self.routes, state, self.handlers)
-        return next(iter(targets)) if len(targets) == 1 else None
-
-
-@dataclass(frozen=True, slots=True)
 class _FilteredIntervalStateRouteProvider:
     """Expose only interval rows that are known semantic handlers.
 
@@ -2560,13 +2548,89 @@ def _explicit_singleton_route_evidence(
     return False
 
 
-def _resolve_concrete_route_target(
+NATIVE_BOUND_ENTRY_ROUTE_SOURCE_KIND = "native_bound"
+
+
+@dataclass(frozen=True, slots=True)
+class _ConcreteStateRouteResolution:
+    route: ConcreteStateRoute | None
+    conflict: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class _EntryStateRouteResolution:
+    route: ConcreteStateRoute | None
+    conflict: bool = False
+
+
+def _native_bound_entry_targets(
+    flow_graph,
+    dispatcher_entry_serial: int | None,
+    state: int,
+    routes: tuple[NativeBoundTransitionRoute, ...],
+) -> set[int]:
+    """Collect native routes that describe this concrete entry edge/state."""
+    if flow_graph is None or dispatcher_entry_serial is None:
+        return set()
+    try:
+        normalized = int(state) & 0xFFFFFFFF
+    except _PROVIDER_SHAPE_ERRORS:
+        return set()
+    dispatcher_entry_serial = int(dispatcher_entry_serial)
+    entry_prefix = _entry_prefix_blocks(flow_graph, dispatcher_entry_serial)
+    targets: set[int] = set()
+    for route in routes:
+        try:
+            if int(route.state_constant) & 0xFFFFFFFF != normalized:
+                continue
+            source = int(route.source_block_serial)
+            target = int(route.target_handler_serial)
+        except _PROVIDER_SHAPE_ERRORS:
+            continue
+        if source not in entry_prefix:
+            continue
+        source_block = flow_graph.get_block(source)
+        if (
+            source_block is None
+            or source_block.nsucc != 1
+            or int(source_block.succs[0]) != dispatcher_entry_serial
+        ):
+            continue
+        targets.add(target)
+    return targets
+
+
+def _native_bound_routes_for_entry_state(
+    state: int | None,
+    routes: tuple[NativeBoundTransitionRoute, ...],
+) -> tuple[NativeBoundTransitionRoute, ...]:
+    """Restrict source-keyed entry builders to an explicit scalar state."""
+    if state is None:
+        return tuple(routes)
+    try:
+        normalized = int(state) & 0xFFFFFFFF
+    except _PROVIDER_SHAPE_ERRORS:
+        return ()
+    matching: list[NativeBoundTransitionRoute] = []
+    for route in routes:
+        try:
+            if int(route.state_constant) & 0xFFFFFFFF == normalized:
+                matching.append(route)
+        except _PROVIDER_SHAPE_ERRORS:
+            continue
+    return tuple(matching)
+
+
+def _resolve_concrete_route_resolution(
     dispatcher: object,
     state: int,
     *,
     materialized_state_routes: tuple[MaterializedStateRoute, ...],
     condition_chain_handlers: frozenset[int],
-) -> ConcreteStateRoute | None:
+    flow_graph=None,
+    dispatcher_entry_serial: int | None = None,
+    native_bound_transition_routes: tuple[NativeBoundTransitionRoute, ...] = (),
+) -> _ConcreteStateRouteResolution:
     """Resolve one transition/entry state without provider precedence.
 
     Exact providers are checked independently because a wrapper that returns
@@ -2590,12 +2654,14 @@ def _resolve_concrete_route_target(
     materialized_targets = _materialized_route_targets(
         tuple(materialized_state_routes),
         state,
-        frozenset(int(serial) for serial in condition_chain_handlers),
+        # Materialized routes are exact evidence.  Partial handler discovery
+        # must not hide a candidate before provider consensus/conflict checks.
+        frozenset(),
     )
     if len(materialized_targets) > 1:
         # Do not turn a provider conflict into "absent" and then accept an
         # unrelated interval row.  The ambiguity is itself negative evidence.
-        return None
+        return _ConcreteStateRouteResolution(None, conflict=True)
     if materialized_targets:
         exact_targets.update(materialized_targets)
         source_kinds.add("materialized")
@@ -2603,10 +2669,27 @@ def _resolve_concrete_route_target(
             try:
                 normalized_state = int(state) & 0xFFFFFFFF
             except _PROVIDER_SHAPE_ERRORS:
-                return None
+                return _ConcreteStateRouteResolution(None)
+
+    native_targets = _native_bound_entry_targets(
+        flow_graph,
+        dispatcher_entry_serial,
+        state,
+        tuple(native_bound_transition_routes),
+    )
+    if len(native_targets) > 1:
+        return _ConcreteStateRouteResolution(None, conflict=True)
+    if native_targets:
+        exact_targets.update(native_targets)
+        source_kinds.add(NATIVE_BOUND_ENTRY_ROUTE_SOURCE_KIND)
+        if normalized_state is None:
+            try:
+                normalized_state = int(state) & 0xFFFFFFFF
+            except _PROVIDER_SHAPE_ERRORS:
+                return _ConcreteStateRouteResolution(None)
 
     if len(exact_targets) > 1:
-        return None
+        return _ConcreteStateRouteResolution(None, conflict=True)
 
     exact_provider = (
         _FixedExactStateRouteProvider(next(iter(exact_targets)))
@@ -2616,7 +2699,10 @@ def _resolve_concrete_route_target(
     interval_provider = (
         _FilteredIntervalStateRouteProvider(
             dispatcher,
-            frozenset(condition_chain_handlers),
+            # Apply handler membership after all providers have participated;
+            # singleton/equality rows may independently prove a target omitted
+            # from a partial condition-chain set.
+            frozenset(),
             _dispatcher_default_target(dispatcher),
         )
         if _provider_method(dispatcher, "lookup_row") is not None
@@ -2628,55 +2714,93 @@ def _resolve_concrete_route_target(
         interval_dispatcher=interval_provider,
     )
     if route is None:
-        return None
+        # An exact/native candidate that disagrees with an interval row is a
+        # conflict, not permission to fall back to the other provider.
+        return _ConcreteStateRouteResolution(None, conflict=bool(exact_targets))
     target = int(route.target_block)
-    if condition_chain_handlers and target not in condition_chain_handlers:
-        return None
-    source_kinds.update(route.source_kinds)
+    # ``route`` may have been resolved through the synthetic fixed provider
+    # assembled above.  Preserve only labels belonging to real evidence
+    # providers; the fixed provider's ``exact`` label is an implementation
+    # detail, not provenance.
+    if interval_provider is not None and "interval" in route.source_kinds:
+        source_kinds.add("interval")
+    if target not in condition_chain_handlers and not (
+        set(source_kinds)
+        & {"exact", "materialized", NATIVE_BOUND_ENTRY_ROUTE_SOURCE_KIND}
+    ) and not _explicit_singleton_route_evidence(
+        dispatcher, route.normalized_state, target
+    ):
+        return _ConcreteStateRouteResolution(None)
     if normalized_state is None:
         normalized_state = route.normalized_state
-    return ConcreteStateRoute(
-        normalized_state=int(normalized_state),
-        target_block=target,
-        source_kinds=tuple(sorted(source_kinds)),
+    return _ConcreteStateRouteResolution(
+        ConcreteStateRoute(
+            normalized_state=int(normalized_state),
+            target_block=target,
+            source_kinds=tuple(sorted(source_kinds)),
+        )
     )
 
 
-def _resolve_entry_state_route(
+def _resolve_concrete_route_target(
+    dispatcher: object,
+    state: int,
+    *,
+    materialized_state_routes: tuple[MaterializedStateRoute, ...],
+    condition_chain_handlers: frozenset[int],
+    flow_graph=None,
+    dispatcher_entry_serial: int | None = None,
+    native_bound_transition_routes: tuple[NativeBoundTransitionRoute, ...] = (),
+) -> ConcreteStateRoute | None:
+    return _resolve_concrete_route_resolution(
+        dispatcher,
+        state,
+        materialized_state_routes=materialized_state_routes,
+        condition_chain_handlers=condition_chain_handlers,
+        flow_graph=flow_graph,
+        dispatcher_entry_serial=dispatcher_entry_serial,
+        native_bound_transition_routes=native_bound_transition_routes,
+    ).route
+
+
+def _resolve_entry_state_route_resolution(
     dispatcher: object,
     state: int,
     *,
     materialized_state_routes: tuple[MaterializedStateRoute, ...],
     condition_chain_handlers: frozenset[int],
     dispatcher_entry_serial: int,
-) -> ConcreteStateRoute | None:
-    """Resolve one scalar entry state through every active route provider.
-
-    Exact materialized evidence and the selected interval router are peers.  A
-    disagreement is an abstention, as is a default or dispatcher-self target;
-    neither may be promoted into a semantic handler bridge.
-    """
-    route = _resolve_concrete_route_target(
+    flow_graph=None,
+    native_bound_transition_routes: tuple[NativeBoundTransitionRoute, ...] = (),
+) -> _EntryStateRouteResolution:
+    """Resolve scalar entry evidence once for preflight and mutation."""
+    resolution = _resolve_concrete_route_resolution(
         dispatcher,
         state,
         materialized_state_routes=materialized_state_routes,
-        # The condition-chain set can be a partial mid-tree view: an exact
-        # dispatcher leaf may be the entry target without appearing in it.
-        # Interval-only entry evidence is checked against the authoritative set
-        # below, while exact/materialized evidence retains that compatibility.
-        condition_chain_handlers=frozenset(),
+        # Partial condition-chain discovery must not veto exact/native evidence;
+        # interval evidence still requires membership when the set is present.
+        condition_chain_handlers=condition_chain_handlers,
+        flow_graph=flow_graph,
+        dispatcher_entry_serial=dispatcher_entry_serial,
+        native_bound_transition_routes=native_bound_transition_routes,
     )
+    route = resolution.route
     if route is None:
-        return None
+        return _EntryStateRouteResolution(None, conflict=resolution.conflict)
     target = int(route.target_block)
     if (
         condition_chain_handlers
         and target not in condition_chain_handlers
+        and not (
+            set(route.source_kinds)
+            & {"exact", "materialized", NATIVE_BOUND_ENTRY_ROUTE_SOURCE_KIND}
+        )
         and not _explicit_singleton_route_evidence(
             dispatcher, route.normalized_state, target
         )
     ):
-        return None
+        return _EntryStateRouteResolution(None)
     default_target = _dispatcher_default_target(dispatcher)
     if (
         target == int(dispatcher_entry_serial)
@@ -2688,8 +2812,35 @@ def _resolve_entry_state_route(
             )
         )
     ):
-        return None
-    return route
+        return _EntryStateRouteResolution(None)
+    return _EntryStateRouteResolution(route, conflict=resolution.conflict)
+
+
+def _resolve_entry_state_route(
+    dispatcher: object,
+    state: int,
+    *,
+    materialized_state_routes: tuple[MaterializedStateRoute, ...],
+    condition_chain_handlers: frozenset[int],
+    dispatcher_entry_serial: int,
+    flow_graph=None,
+    native_bound_transition_routes: tuple[NativeBoundTransitionRoute, ...] = (),
+) -> ConcreteStateRoute | None:
+    """Resolve one scalar entry state through every active route provider.
+
+    Exact materialized evidence and the selected interval router are peers.  A
+    disagreement is an abstention, as is a default or dispatcher-self target;
+    neither may be promoted into a semantic handler bridge.
+    """
+    return _resolve_entry_state_route_resolution(
+        dispatcher,
+        state,
+        materialized_state_routes=materialized_state_routes,
+        condition_chain_handlers=condition_chain_handlers,
+        dispatcher_entry_serial=dispatcher_entry_serial,
+        flow_graph=flow_graph,
+        native_bound_transition_routes=native_bound_transition_routes,
+    ).route
 
 
 def _build_source_keyed_state_entry_bridges(
@@ -3080,6 +3231,7 @@ def build_state_write_redirects(
     entry_bridge_evidence: EntryBridgeEvidence | None = None,
     conditional_entry_bridge: ConditionalEntryBridgePlan | None = None,
     exact_entry_bridge_present: bool = False,
+    entry_route_resolution: _EntryStateRouteResolution | None = None,
     protected_edges: frozenset[tuple[int, int]] = frozenset(),
     dynamic_entry_bridge_edges: frozenset[tuple[int, int]] = frozenset(),
 ) -> list[object]:
@@ -3465,12 +3617,17 @@ def build_state_write_redirects(
         and not exact_entry_bridge_present
         and not dynamic_entry_bridge_edges
     ):
-        first = _resolve_entry_state_route(
-            dispatcher,
-            int(initial_state),
-            materialized_state_routes=materialized_state_routes,
-            condition_chain_handlers=condition_chain_handlers,
-            dispatcher_entry_serial=int(disp),
+        first = (
+            entry_route_resolution.route
+            if entry_route_resolution is not None
+            else _resolve_entry_state_route(
+                dispatcher,
+                int(initial_state),
+                materialized_state_routes=materialized_state_routes,
+                condition_chain_handlers=condition_chain_handlers,
+                dispatcher_entry_serial=int(disp),
+                flow_graph=flow_graph,
+            )
         )
         if first is not None:
             multi_entry_entry_bridge_safe = (
@@ -8117,6 +8274,7 @@ def emit_minimal_unflatten(
     dispatcher_state_plumbing_serials: frozenset[int] = frozenset()
     native_bound_route_receipts: tuple[dict[str, object], ...] = ()
     concrete_state_entry_route_proofs: tuple[ConcreteStateEntryRouteProof, ...] = ()
+    entry_route_resolution: _EntryStateRouteResolution | None = None
 
     def _native_bound_route_receipt(
         route: NativeBoundTransitionRoute,
@@ -8466,6 +8624,9 @@ def emit_minimal_unflatten(
                 ),
             }
         )
+    entry_native_bound_routes = _native_bound_routes_for_entry_state(
+        initial_state, tuple(native_bound_transition_routes)
+    )
     materialized_entry_route_mods = (
         build_materialized_state_entry_bridges(
             flow_graph,
@@ -8477,14 +8638,14 @@ def emit_minimal_unflatten(
                 }
             ),
             authoritative_handler_serials=route_handler_serials,
-            peer_routes=tuple(native_bound_transition_routes),
+            peer_routes=entry_native_bound_routes,
         )
         if materialized_computed_goto_profile
         else []
     )
     native_bound_entry_route_mods = build_native_bound_state_entry_bridges(
         flow_graph,
-        tuple(native_bound_transition_routes),
+        entry_native_bound_routes,
         dispatcher_region_serials=frozenset(
             {
                 int(dispatcher_entry_serial),
@@ -8496,7 +8657,7 @@ def emit_minimal_unflatten(
                 *route_handler_serials,
                 *(
                     int(route.target_handler_serial)
-                    for route in native_bound_transition_routes
+                    for route in entry_native_bound_routes
                 ),
             }
         ),
@@ -8860,17 +9021,42 @@ def emit_minimal_unflatten(
             flow_graph, int(dispatcher_entry_serial), pre_header_hint=pre_header_serial
         )
         if prologue_preds:
-            entry_route = (
-                _resolve_entry_state_route(
+            entry_route_resolution = (
+                _resolve_entry_state_route_resolution(
                     dispatcher,
                     int(initial_state),
                     materialized_state_routes=materialized_state_routes,
                     condition_chain_handlers=route_handler_serials,
                     dispatcher_entry_serial=int(dispatcher_entry_serial),
+                    flow_graph=flow_graph,
+                    native_bound_transition_routes=tuple(
+                        native_bound_transition_routes
+                    ),
                 )
                 if initial_state is not None
-                else None
+                else _EntryStateRouteResolution(None)
             )
+            entry_route = entry_route_resolution.route
+            if entry_route_resolution.conflict:
+                # Conflicting providers for one original entry edge invalidate
+                # the whole bridge, including its provenance.
+                materialized_entry_route_mods = []
+                native_bound_entry_route_mods = []
+            elif entry_route is not None:
+                # Source-keyed builders intentionally do not infer scalar state
+                # ownership.  Once the shared consensus is known, retain only
+                # operations that implement that same target.
+                target = int(entry_route.target_block)
+                materialized_entry_route_mods = [
+                    modification
+                    for modification in materialized_entry_route_mods
+                    if int(getattr(modification, "new_target", target)) == target
+                ]
+                native_bound_entry_route_mods = [
+                    modification
+                    for modification in native_bound_entry_route_mods
+                    if int(getattr(modification, "new_target", target)) == target
+                ]
             if entry_route is not None:
                 concrete_state_entry_route_proofs = (
                     ConcreteStateEntryRouteProof(
@@ -9008,6 +9194,7 @@ def emit_minimal_unflatten(
         infer_unmatched_returns=not materialized_computed_goto_profile,
         entry_bridge_evidence=entry_bridge_evidence,
         conditional_entry_bridge=conditional_entry_bridge,
+        entry_route_resolution=entry_route_resolution,
         exact_entry_bridge_present=bool(
             bootstrap_entry_routes
             or materialized_entry_route_mods

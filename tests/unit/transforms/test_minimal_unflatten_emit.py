@@ -427,6 +427,21 @@ class _DualRouteDispatcher:
         return self._interval.all_targets()
 
 
+class _StateMapDispatcher:
+    """Expose exact StateDispatcherMap rows through the route-provider shape."""
+
+    def __init__(self, dispatch_map: StateDispatcherMap) -> None:
+        self._dispatch_map = dispatch_map
+        self.rows = dispatch_map.rows
+        self.default_target = None
+
+    def resolve_target(self, state: int) -> int | None:
+        return self._dispatch_map.resolve_target(state)
+
+    def all_targets(self) -> set[int]:
+        return {int(row.target_block) for row in self.rows}
+
+
 class _MalformedIntervalRow:
     def __init__(self, error: type[BaseException]) -> None:
         self._error = error
@@ -10394,6 +10409,218 @@ def test_native_and_materialized_entry_route_conflict_abstains_atomically(
     )
 
     assert graph_modifications(plan) == []
+
+
+def test_scalar_entry_route_conflict_with_native_bound_evidence_abstains_atomically(
+    monkeypatch,
+) -> None:
+    """Interval and native evidence for one entry edge must agree before mutation."""
+    state = 0x16AA65E9
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (1,), ()),
+            1: _b(1, (2,), (0,)),
+            2: _b(2, (10, 13), (1, 10, 13)),
+            10: _b(10, (2,), (2,)),
+            13: _b(13, (2,), (2,)),
+        },
+        entry_serial=0,
+        func_ea=0x3000,
+    )
+    dispatcher = _DualRouteDispatcher(
+        exact_targets={},
+        interval_rows=(IntervalRow(state, state + 2, 10),),
+        default_target=99,
+    )
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "recover_state_write_transitions_via_partitioned_fixpoint",
+        lambda *_args, **_kwargs: (),
+    )
+
+    plan = emit_minimal_unflatten(
+        fg,
+        dispatcher,
+        state_var_stkoff=_STATE,
+        dispatcher_entry_serial=2,
+        initial_state=state,
+        materialized_computed_goto_profile=True,
+        native_bound_transition_routes=(
+            _native_bound_route(source=1, state=state, target=13),
+        ),
+        condition_chain_handlers=frozenset({10, 13}),
+        authoritative_handler_serials=frozenset({10, 13}),
+    )
+
+    assert graph_modifications(plan) == []
+    assert "concrete_state_route_provenance" not in plan.metadata_dict()
+
+
+def test_scalar_entry_route_agrees_with_native_bound_evidence_and_provenance(
+    monkeypatch,
+) -> None:
+    """Agreeing native evidence is deduplicated and retained in provenance."""
+    state = 0x16AA65E9
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (1,), ()),
+            1: _b(1, (2,), (0,)),
+            2: _b(2, (10, 13), (1, 10, 13)),
+            10: _b(10, (2,), (2,)),
+            13: _b(13, (2,), (2,)),
+        },
+        entry_serial=0,
+        func_ea=0x3000,
+    )
+    dispatcher = _DualRouteDispatcher(
+        exact_targets={},
+        interval_rows=(IntervalRow(state, state + 2, 10),),
+        default_target=99,
+    )
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "recover_state_write_transitions_via_partitioned_fixpoint",
+        lambda *_args, **_kwargs: (),
+    )
+
+    plan = emit_minimal_unflatten(
+        fg,
+        dispatcher,
+        state_var_stkoff=_STATE,
+        dispatcher_entry_serial=2,
+        initial_state=state,
+        materialized_computed_goto_profile=True,
+        native_bound_transition_routes=(
+            _native_bound_route(source=1, state=state, target=10),
+        ),
+        condition_chain_handlers=frozenset({10, 13}),
+        authoritative_handler_serials=frozenset({10, 13}),
+    )
+
+    assert [
+        modification
+        for modification in graph_modifications(plan)
+        if isinstance(modification, RedirectGoto)
+        and (modification.from_serial, modification.old_target) == (1, 2)
+    ] == [RedirectGoto(from_serial=1, old_target=2, new_target=10)]
+    (provenance,) = plan.metadata_dict()["concrete_state_route_provenance"]
+    assert provenance["target_handler"] == 10
+    assert {"interval", "native_bound"}.issubset(
+        set(provenance["source_kinds"])
+    )
+
+
+def test_unrelated_native_bound_entry_route_does_not_veto_scalar_entry(
+    monkeypatch,
+) -> None:
+    """A native transition for another state must not replace the scalar route."""
+    state = 0x16AA65E9
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (1,), ()),
+            1: _b(1, (2,), (0,)),
+            2: _b(2, (10, 13), (1, 10, 13)),
+            10: _b(10, (2,), (2,)),
+            13: _b(13, (2,), (2,)),
+        },
+        entry_serial=0,
+        func_ea=0x3000,
+    )
+    dispatcher = _DualRouteDispatcher(
+        exact_targets={},
+        interval_rows=(IntervalRow(state, state + 2, 10),),
+        default_target=99,
+    )
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "recover_state_write_transitions_via_partitioned_fixpoint",
+        lambda *_args, **_kwargs: (),
+    )
+
+    plan = emit_minimal_unflatten(
+        fg,
+        dispatcher,
+        state_var_stkoff=_STATE,
+        dispatcher_entry_serial=2,
+        initial_state=state,
+        materialized_computed_goto_profile=True,
+        native_bound_transition_routes=(
+            _native_bound_route(source=1, state=state + 0x100, target=13),
+        ),
+        condition_chain_handlers=frozenset({10, 13}),
+        authoritative_handler_serials=frozenset({10, 13}),
+    )
+    assert [
+        modification
+        for modification in graph_modifications(plan)
+        if isinstance(modification, RedirectGoto)
+        and (modification.from_serial, modification.old_target) == (1, 2)
+    ] == [RedirectGoto(from_serial=1, old_target=2, new_target=10)]
+    (provenance,) = plan.metadata_dict()["concrete_state_route_provenance"]
+    assert provenance["target_handler"] == 10
+
+
+def test_empty_handler_set_rejects_broad_interval_entry_and_back_edge() -> None:
+    """Empty handler discovery does not authorize a broad interval target."""
+    state = 0x16AA65E9
+    dispatcher = _DualRouteDispatcher(
+        exact_targets={},
+        interval_rows=(IntervalRow(state - 1, state + 2, 10),),
+        default_target=99,
+    )
+    transition = StateWriteTransition(10, state, None, False, None)
+
+    assert build_state_write_redirects(
+        _interval_entry_flow_graph(),
+        dispatcher,
+        (transition,),
+        dispatcher_entry_serial=2,
+        pre_header_serial=0,
+        initial_state=state,
+        condition_chain_handlers=frozenset(),
+    ) == []
+
+
+def test_empty_handler_set_accepts_matching_singleton_interval_entry() -> None:
+    """A width-one interval is independent exact evidence for its target."""
+    state = 0x16AA65E9
+    dispatcher = IntervalDispatcher(
+        [IntervalRow(state, state + 1, 10)], compute_default=False
+    )
+
+    assert build_state_write_redirects(
+        _interval_entry_flow_graph(),
+        dispatcher,
+        (),
+        dispatcher_entry_serial=2,
+        pre_header_serial=0,
+        initial_state=state,
+        condition_chain_handlers=frozenset(),
+    ) == [RedirectGoto(from_serial=0, old_target=2, new_target=10)]
+
+
+def test_exact_state_dispatcher_map_handler_row_accepts_empty_handler_set() -> None:
+    """An exact StateDispatcherMap row independently proves the handler."""
+    state = 0x16AA65E9
+    _interval_dispatcher, dispatch_map = _equality_dispatcher(
+        {state: 10}, entry_block=2, compare_blocks=(20,)
+    )
+
+    assert build_state_write_redirects(
+        _interval_entry_flow_graph(),
+        _StateMapDispatcher(dispatch_map),
+        (),
+        dispatcher_entry_serial=2,
+        pre_header_serial=0,
+        initial_state=state,
+        condition_chain_handlers=frozenset(),
+    ) == [RedirectGoto(from_serial=0, old_target=2, new_target=10)]
+
+
+def test_materialized_state_route_provider_adapter_is_removed() -> None:
+    assert not hasattr(
+        minimal_unflatten_emit_module, "_MaterializedStateRouteProvider"
+    )
 
 
 def test_interval_route_source_kinds_are_retained_in_transition_proof(_seam) -> None:
