@@ -474,6 +474,62 @@ def test_native_bound_adapter_accepts_carrier_drift_with_typed_predecessor_route
     assert routes[0].target_handler_serial == 7
 
 
+def test_native_bound_pipeline_keeps_entry_and_later_routes_with_carrier_drift():
+    class _Index:
+        def rebind_native_ea(self, ea):
+            serial = {0x180014E30: 42, 0x180015115: 43}[int(ea)]
+            return SimpleNamespace(block=SimpleNamespace(serial=serial))
+
+    entry = PredecessorDispatcherTargetFact(
+        fact_id="predecessor:entry-route",
+        predecessor_block_serial=15,
+        dispatcher_entry_serial=2,
+        state_const=0x16AA65E9,
+        target_block_serial=99,
+        resolver_kind="interval_dispatcher_row",
+        row_kind="interval_exact",
+        source_instruction_ea=0x180014E30,
+        state_var_stkoff=8,
+        state_var_reg=8,
+    )
+    later = PredecessorDispatcherTargetFact(
+        fact_id="predecessor:later-route",
+        predecessor_block_serial=16,
+        dispatcher_entry_serial=2,
+        state_const=0x079323F9,
+        target_block_serial=100,
+        resolver_kind="interval_dispatcher_row",
+        row_kind="interval_exact",
+        source_instruction_ea=0x180015115,
+        state_var_stkoff=8,
+        state_var_reg=8,
+    )
+
+    routes = state_machine_module.bind_native_bound_transition_routes_for_current_mba(
+        (entry, later),
+        current_block_identity_index=_Index(),
+        graph=SimpleNamespace(
+            blocks={7: object(), 8: object(), 42: object(), 43: object()}
+        ),
+        dispatcher=SimpleNamespace(
+            lookup=lambda state: {0x16AA65E9: 7, 0x079323F9: 8}[int(state)]
+        ),
+        dispatcher_region_serials=frozenset({2, 3}),
+        # The current snapshot carrier moved to stack 52; typed predecessor
+        # facts remain valid because native EA + current router are authoritative.
+        state_var_stkoff=52,
+        state_var_reg=None,
+    )
+
+    assert [
+        (route.source_block_serial, route.state_constant, route.target_handler_serial)
+        for route in routes
+    ] == [
+        (42, 0x16AA65E9, 7),
+        (43, 0x079323F9, 8),
+    ]
+
+
 def test_native_bound_adapter_rejects_conflicting_typed_prior_targets():
     class _Index:
         def rebind_native_ea(self, _ea):

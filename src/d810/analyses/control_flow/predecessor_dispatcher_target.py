@@ -177,6 +177,69 @@ def _dispatcher_topology_serials(
     return frozenset(serials)
 
 
+StateIdentity = tuple[int | None, int | None]
+
+
+def _transition_identity(row: object) -> StateIdentity | None:
+    """Return one transition row's exact state-cell identity, if present."""
+    stkoff = _maybe_int(getattr(row, "state_var_stkoff", None))
+    reg = _maybe_int(getattr(row, "state_var_reg", None))
+    if stkoff is None and reg is None:
+        return None
+    return (stkoff, reg)
+
+
+def select_supported_transition_identity(
+    transition_resolutions: object | None,
+    *,
+    dispatcher_topology_serials: frozenset[int] = frozenset(),
+) -> StateIdentity | None:
+    """Select one state identity supported by successful handler resolutions.
+
+    Support is deliberately derived only from the active in-memory resolution
+    tuple.  A successful resolution contributes a vote when it has a concrete
+    non-dispatcher target and an explicit state-cell identity.  Repeated rows
+    are deduplicated before selecting; any zero-or-many supported identities is
+    an abstention rather than an insertion-order tie break.
+    """
+    supported: set[StateIdentity] = set()
+    seen_observations: set[tuple[str, str, int, StateIdentity]] = set()
+    dispatcher_topology = {
+        int(serial) for serial in (dispatcher_topology_serials or ())
+    }
+    for row in transition_resolutions or ():
+        if (
+            getattr(row, "resolution_reason", None)
+            not in _SUCCESSFUL_TRANSITION_RESOLUTION_REASONS
+        ):
+            continue
+        target = getattr(row, "resolved_next_block_serial", None)
+        if target is None or isinstance(target, bool):
+            continue
+        try:
+            target = int(target)
+        except (TypeError, ValueError):
+            continue
+        if target < 0 or target in dispatcher_topology:
+            continue
+        identity = _transition_identity(row)
+        if identity is None:
+            continue
+        observation_key = (
+            str(getattr(row, "source_block_serial", "")),
+            str(getattr(row, "source_state_const_hex", "")),
+            target,
+            identity,
+        )
+        if observation_key in seen_observations:
+            continue
+        seen_observations.add(observation_key)
+        supported.add(identity)
+    if len(supported) != 1:
+        return None
+    return next(iter(supported))
+
+
 def resolve_predecessor_dispatcher_target(
     *,
     predecessor_block_serial: int,
@@ -343,6 +406,22 @@ def collect_predecessor_dispatcher_target_facts(
     facts: list[PredecessorDispatcherTargetFact] = []
     seen: set[str] = set()
     blocked_resolution_keys: set[tuple[int, int]] = set()
+    dispatcher_topology = set(_dispatcher_topology_serials(state_dispatcher_map))
+    dispatcher_topology.add(int(dispatcher_entry_serial))
+    if range_evidence is not None:
+        dispatcher_topology.update(
+            int(serial)
+            for serial in getattr(range_evidence, "condition_chain_blocks", ()) or ()
+        )
+        decision_dag = getattr(range_evidence, "decision_dag", None)
+        if decision_dag is not None:
+            dispatcher_topology.update(
+                int(serial) for serial in getattr(decision_dag, "nodes", ()) or ()
+            )
+    supported_identity = select_supported_transition_identity(
+        transition_resolutions,
+        dispatcher_topology_serials=frozenset(dispatcher_topology),
+    )
     for row in transition_resolutions or ():
         predecessor = getattr(row, "source_block_serial", None)
         source_state_hex = getattr(row, "source_state_const_hex", None)
@@ -376,6 +455,28 @@ def collect_predecessor_dispatcher_target_facts(
         ):
             blocked_resolution_keys.add(resolution_key)
             continue
+        target_candidate_identity = _transition_identity(row)
+        if resolution_reason == "target_is_dispatcher_block":
+            if (
+                supported_identity is None
+                or target_candidate_identity is None
+                or target_candidate_identity != supported_identity
+            ):
+                blocked_resolution_keys.add(resolution_key)
+                continue
+            candidate_state_var_stkoff = target_candidate_identity[0]
+            candidate_state_var_reg = target_candidate_identity[1]
+        else:
+            candidate_state_var_stkoff = (
+                state_var_stkoff
+                if getattr(row, "state_var_stkoff", None) is None
+                else _maybe_int(getattr(row, "state_var_stkoff"))
+            )
+            candidate_state_var_reg = (
+                state_var_reg
+                if getattr(row, "state_var_reg", None) is None
+                else _maybe_int(getattr(row, "state_var_reg"))
+            )
         try:
             fact = resolve_predecessor_dispatcher_target(
                 predecessor_block_serial=int(predecessor),
@@ -388,16 +489,8 @@ def collect_predecessor_dispatcher_target_facts(
                     getattr(row, "resolution_kind", None)
                 ),
                 condition_block_serial=None,
-                state_var_stkoff=(
-                    state_var_stkoff
-                    if getattr(row, "state_var_stkoff", None) is None
-                    else _maybe_int(getattr(row, "state_var_stkoff"))
-                ),
-                state_var_reg=(
-                    state_var_reg
-                    if getattr(row, "state_var_reg", None) is None
-                    else _maybe_int(getattr(row, "state_var_reg"))
-                ),
+                state_var_stkoff=candidate_state_var_stkoff,
+                state_var_reg=candidate_state_var_reg,
                 source_instruction_ea=_maybe_int(
                     getattr(row, "source_instruction_ea", None)
                 ),
@@ -601,6 +694,8 @@ def _maybe_str(value: object | None) -> str | None:
 __all__ = [
     "PREDECESSOR_DISPATCHER_TARGET_FACTS_ANALYSIS",
     "PredecessorDispatcherTargetFact",
+    "StateIdentity",
     "collect_predecessor_dispatcher_target_facts",
     "resolve_predecessor_dispatcher_target",
+    "select_supported_transition_identity",
 ]

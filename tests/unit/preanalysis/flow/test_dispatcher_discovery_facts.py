@@ -275,25 +275,42 @@ def test_native_anchored_dispatcher_target_resolution_falls_through_to_interval_
     )
     range_evidence = ConditionChainAnalysisResult(
         dispatcher=IntervalDispatcher(
-            [IntervalRow(lo=state, hi=state + 1, target=7)]
+            [
+                IntervalRow(lo=state, hi=state + 1, target=7),
+                IntervalRow(lo=0x1000, hi=0x1001, target=7),
+            ]
         )
     )
-    (fact,) = collect_predecessor_dispatcher_target_facts(
+    support = SimpleNamespace(
+        source_block_serial=9,
+        source_state_const_hex="0x0000000000001000",
+        resolved_next_block_serial=7,
+        resolution_kind="state_dispatcher_map",
+        resolution_reason="resolved_exact_state",
+        source_instruction_ea=None,
+        state_var_stkoff=52,
+        state_var_reg=None,
+    )
+    candidate = SimpleNamespace(
+        source_block_serial=1,
+        source_state_const_hex=f"0x{state:016X}",
+        resolved_next_block_serial=None,
+        resolution_kind="state_dispatcher_map",
+        resolution_reason="target_is_dispatcher_block",
+        source_instruction_ea=0x7FF855576BA0,
+        state_var_stkoff=52,
+        state_var_reg=None,
+    )
+    facts = collect_predecessor_dispatcher_target_facts(
         transition_result=None,
         dispatcher_entry_serial=2,
         state_dispatcher_map=dispatch_map,
         range_evidence=range_evidence,
-        transition_resolutions=(
-            SimpleNamespace(
-                source_block_serial=1,
-                source_state_const_hex=f"0x{state:016X}",
-                resolved_next_block_serial=None,
-                resolution_kind="state_dispatcher_map",
-                resolution_reason="target_is_dispatcher_block",
-                source_instruction_ea=0x7FF855576BA0,
-            ),
-        ),
+        transition_resolutions=(support, candidate),
         state_var_stkoff=52,
+    )
+    fact = next(
+        fact for fact in facts if fact.source_instruction_ea == 0x7FF855576BA0
     )
 
     assert fact.target_block_serial == 7
