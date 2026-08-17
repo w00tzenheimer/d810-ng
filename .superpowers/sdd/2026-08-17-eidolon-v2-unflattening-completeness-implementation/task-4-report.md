@@ -85,3 +85,95 @@ removed before commit.
 ## Commit
 
 Final commit SHA: `8ace4a0ce99971bae1e8a4835464aa5ea68eb388`
+
+## Fix round 2
+
+The cumulative review of `8ace4a0ce` identified three fail-closed gaps:
+scalar entry routing could accept an interval target outside the live handler
+set, agreeing materialized/native entry providers could append the same
+operation twice, and a malformed interval-row target descriptor could escape
+the provider shape-error boundary.
+
+### RED
+
+The new portable tests were added before the production edits and run from the
+worktree with `PYTHONPATH=src`. The initial selected run exposed the two
+behavioral regressions directly:
+
+- scalar entry routing emitted the unauthorized
+  `RedirectGoto(from_serial=0, old_target=2, new_target=20)`;
+- agreeing materialized/native providers emitted two identical
+  `RedirectGoto(from_serial=1, old_target=2, new_target=10)` operations.
+
+That first six-item run had **5 failures / 1 pass**: the three malformed-row
+cases first stopped at a missing `all_targets()` method on the test-only
+dispatcher seam. After that seam was corrected, the final six narrow-shape
+cases and the separate `RuntimeError` pin exercised the intended provider
+boundary.
+
+The malformed-row fixture initially lacked the dispatcher `all_targets()`
+test seam, so that harness defect was corrected before the production change.
+The final malformed-row pins cover all six `_PROVIDER_SHAPE_ERRORS`
+(`AttributeError`, `IndexError`, `KeyError`, `TypeError`, `ValueError`, and
+`OverflowError`) and separately require `RuntimeError` propagation.
+
+### Implementation
+
+- Scalar entry consensus now accepts a target from the authoritative handler
+  set or from an independently proven matching singleton/equality row; a broad
+  interval-only target outside that set abstains. Structural default and
+  dispatcher-self routes remain rejected.
+- Entry-route operations are deduplicated by explicit graph-operation identity
+  across materialized and native-bound providers, including operation kind and
+  source/old/new coordinates.
+- Interval-row descriptor access is inside the narrow `_PROVIDER_SHAPE_ERRORS`
+  boundary; arbitrary exceptions remain visible.
+
+### GREEN
+
+Required focused suite:
+
+```text
+PYTHONPATH=src pytest -q \
+  tests/unit/analyses/control_flow/test_concrete_state_route.py \
+  tests/unit/preanalysis/flow/test_minimal_state_recovery.py \
+  tests/unit/transforms/test_minimal_unflatten_emit.py
+```
+
+Result: **273 passed**.
+
+Additional gates all passed after the final code edits:
+
+- `ruff check src/d810/transforms/minimal_unflatten_emit.py tests/unit/transforms/test_minimal_unflatten_emit.py`;
+- `git diff --check`;
+- `sg scan --config sgconfig.yml --report-style short` (0 broken rules);
+- `PYTHONPATH=src lint-imports --config .importlinter` (14 contracts kept,
+  0 broken).
+
+### Target C boundary
+
+The fixture was rebuilt from this worktree with:
+
+```text
+./samples/scripts/build_masm.sh unflattening_effect_safety
+```
+
+The exact canonical Docker invocation was run from the main repository root
+in **14.09s**, with output at `.tmp/task4_target_c_fix_round2.txt`. It reached the expected
+downstream Task 5 gate:
+
+```text
+reason=corridor_enumeration_incomplete
+lost=blk2@0x180044617, blk3@0x18004464B, blk4@0x18004464E,
+     blk5@0x180044658, blk6@0x180044663, blk7@0x18004466A,
+     blk12@0x1800447F5, blk17@0x1800448FC
+```
+
+The route/entry proof reached the post-routing stage; no Task4-specific
+failure preceded the unchanged Task5 corridor-enumeration rejection. The
+generated `samples/bins/unflattening_effect_safety.dll` was removed after the
+run.
+
+### Code commit
+
+Code/tests commit: `2243ebd07892f67019245a52a3ac2f6f906ab4b3`
