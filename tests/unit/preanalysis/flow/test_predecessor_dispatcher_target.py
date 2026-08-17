@@ -426,6 +426,61 @@ def test_identity_selector_deduplicates_successful_handler_support() -> None:
     assert selected == (None, 8)
 
 
+def test_handler_serials_in_range_metadata_do_not_block_identity_support() -> None:
+    dispatch_map, _range_evidence = _native_identity_dispatcher_fixture()
+    # These metadata containers are intentionally shaped like the broad
+    # duck-typed evidence accepted by the collector, but serial 7 is a handler
+    # leaf, not a dispatcher comparison block.  It must remain eligible as a
+    # successful support target for identity selection.
+    range_evidence = SimpleNamespace(
+        dispatcher=IntervalDispatcher(
+            [
+                IntervalRow(lo=0x1000, hi=0x1001, target=7),
+                IntervalRow(
+                    lo=_NATIVE_ENTRY_STATE,
+                    hi=_NATIVE_ENTRY_STATE + 1,
+                    target=7,
+                ),
+            ]
+        ),
+        condition_chain_blocks=(7,),
+        decision_dag=SimpleNamespace(nodes=(7,)),
+    )
+    support = _native_resolution(
+        state=0x1000,
+        target=7,
+        reason="resolved_exact_state",
+        state_var_stkoff=None,
+        state_var_reg=8,
+        source_instruction_ea=None,
+        source_block_serial=9,
+    )
+    candidate = _native_resolution(
+        state=_NATIVE_ENTRY_STATE,
+        target=None,
+        reason="target_is_dispatcher_block",
+        state_var_stkoff=None,
+        state_var_reg=8,
+        source_instruction_ea=_NATIVE_ENTRY_EA,
+    )
+
+    facts = collect_predecessor_dispatcher_target_facts(
+        transition_result=None,
+        dispatcher_entry_serial=2,
+        state_dispatcher_map=dispatch_map,
+        range_evidence=range_evidence,
+        transition_resolutions=(support, candidate),
+        state_var_stkoff=52,
+    )
+
+    entry_facts = [
+        fact for fact in facts if fact.source_instruction_ea == _NATIVE_ENTRY_EA
+    ]
+    assert len(entry_facts) == 1
+    assert entry_facts[0].state_const == _NATIVE_ENTRY_STATE
+    assert entry_facts[0].target_block_serial == 7
+
+
 def test_native_entry_fallback_selects_only_unique_supported_identity_family() -> None:
     dispatch_map, range_evidence = _native_identity_dispatcher_fixture()
     resolutions = (

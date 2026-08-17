@@ -406,18 +406,11 @@ def collect_predecessor_dispatcher_target_facts(
     facts: list[PredecessorDispatcherTargetFact] = []
     seen: set[str] = set()
     blocked_resolution_keys: set[tuple[int, int]] = set()
+    # Identity support must use only the proven dispatcher topology.  Range
+    # and decision-DAG metadata also describes handler leaves, so it is kept
+    # for route resolution below rather than treated as dispatcher serials.
     dispatcher_topology = set(_dispatcher_topology_serials(state_dispatcher_map))
     dispatcher_topology.add(int(dispatcher_entry_serial))
-    if range_evidence is not None:
-        dispatcher_topology.update(
-            int(serial)
-            for serial in getattr(range_evidence, "condition_chain_blocks", ()) or ()
-        )
-        decision_dag = getattr(range_evidence, "decision_dag", None)
-        if decision_dag is not None:
-            dispatcher_topology.update(
-                int(serial) for serial in getattr(decision_dag, "nodes", ()) or ()
-            )
     supported_identity = select_supported_transition_identity(
         transition_resolutions,
         dispatcher_topology_serials=frozenset(dispatcher_topology),
