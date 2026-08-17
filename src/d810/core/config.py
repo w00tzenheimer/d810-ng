@@ -84,6 +84,16 @@ class ProjectConfiguration:
         default_factory=dict
     )
 
+    @property
+    def pre_hexrays_payload(self) -> dict[str, typing.Any]:
+        """Return the registry payload from the project's extension section.
+
+        Keeping this under ``additional_configuration`` preserves existing
+        project JSON compatibility while giving manager composition one
+        explicit access path.
+        """
+        return {"pre_hexrays": self.additional_configuration.get("pre_hexrays", {})}
+
     def __repr__(self) -> str:
         return f"ProjectConfiguration(path={self.path}, description={self.description}, ins_rules={len(self.ins_rules)}, blk_rules={len(self.blk_rules)}, additional_configuration={len(self.additional_configuration)})"
 
