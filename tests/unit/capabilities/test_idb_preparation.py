@@ -175,6 +175,13 @@ def test_script_running_can_enter_capture_or_rollback_lanes() -> None:
     )
 
 
+def test_capture_pending_can_fail_cleanly_when_script_made_no_changes() -> None:
+    assert allowed_preparation_transition(
+        PreparationState.CAPTURE_PENDING,
+        PreparationState.FAILED,
+    )
+
+
 def test_illegal_transition_names_both_states() -> None:
     error = IllegalPreparationTransition(
         PreparationState.IDB_PREPARED,

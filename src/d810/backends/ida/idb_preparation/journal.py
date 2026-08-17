@@ -444,8 +444,14 @@ class SQLitePreparationJournal:
         deltas: tuple[PreparationByteDelta, ...],
     ) -> None:
         record = self._require_record(transaction_id)
-        if record.state is not PreparationState.CAPTURE_PENDING:
-            raise ValueError("byte deltas may only be recorded in capture_pending")
+        if record.state not in {
+            PreparationState.CAPTURE_PENDING,
+            PreparationState.RECOVERY_REQUIRED,
+        }:
+            raise ValueError(
+                "byte deltas may only be recorded in capture_pending or "
+                "recovery_required"
+            )
         ordered = tuple(sorted(deltas, key=lambda delta: delta.ea))
         with self._conn:
             self._conn.executemany(
@@ -574,7 +580,7 @@ class SQLitePreparationJournal:
         with self._conn:
             self._conn.executemany(
                 """
-                INSERT INTO preparation_affected_functions (
+                INSERT OR IGNORE INTO preparation_affected_functions (
                     transaction_id, function_ea
                 ) VALUES (?, ?)
                 """,

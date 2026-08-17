@@ -102,6 +102,7 @@ _LEGAL_TRANSITIONS: dict[PreparationState, frozenset[PreparationState]] = {
     PreparationState.CAPTURE_PENDING: frozenset(
         {
             PreparationState.CAPTURED,
+            PreparationState.FAILED,
             PreparationState.ROLLING_BACK,
             PreparationState.RECOVERY_REQUIRED,
         }
