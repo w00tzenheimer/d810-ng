@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Callable
+from dataclasses import fields, is_dataclass
 
 import ida_hexrays
 
@@ -113,6 +114,159 @@ from d810.analyses.control_flow.safeguards import (
 from d810.analyses.control_flow.terminal_return_audit import build_terminal_return_audit
 
 executor_logger = logging.getLogger("d810.unflat.hodur.executor")
+
+
+def _modification_already_satisfied(
+    flow_graph: FlowGraph,
+    modification: GraphModification,
+) -> bool:
+    """Prove one requested edge operation is already true in the live CFG."""
+    if isinstance(modification, (RedirectGoto, RedirectBranch)):
+        block = flow_graph.get_block(int(modification.from_serial))
+        if block is None:
+            return False
+        successors = {int(target) for target in block.succs}
+        old_target = int(modification.old_target)
+        new_target = int(modification.new_target)
+        return old_target == new_target or (
+            new_target in successors and old_target not in successors
+        )
+    if isinstance(modification, ConvertToGoto):
+        block = flow_graph.get_block(int(modification.block_serial))
+        if block is None:
+            return False
+        return tuple(int(target) for target in block.succs) == (
+            int(modification.goto_target),
+        )
+    return False
+
+
+def _discard_satisfied_modifications(
+    flow_graph: FlowGraph,
+    modifications: list[GraphModification],
+) -> tuple[list[GraphModification], int]:
+    """Filter only operations whose requested post-edge is already present."""
+    remaining: list[GraphModification] = []
+    discarded = 0
+    for modification in modifications:
+        if _modification_already_satisfied(flow_graph, modification):
+            discarded += 1
+        else:
+            remaining.append(modification)
+    return remaining, discarded
+
+
+def _stable_batch_value(value: object) -> object:
+    """Lower a portable modification value to deterministic key material."""
+    if value is None or isinstance(value, (bool, int, float, str, bytes)):
+        return value
+    if isinstance(value, dict):
+        return tuple(
+            sorted(
+                (
+                    _stable_batch_value(key),
+                    _stable_batch_value(item),
+                )
+                for key, item in value.items()
+            )
+        )
+    if isinstance(value, (tuple, list)):
+        return tuple(_stable_batch_value(item) for item in value)
+    if isinstance(value, (set, frozenset)):
+        values = tuple(_stable_batch_value(item) for item in value)
+        return tuple(sorted(values, key=repr))
+    if is_dataclass(value) and not isinstance(value, type):
+        return (
+            type(value).__module__,
+            type(value).__qualname__,
+            tuple(
+                (field.name, _stable_batch_value(getattr(value, field.name)))
+                for field in fields(value)
+            ),
+        )
+    # Unknown values are not trusted as logical identity.  Their type is stable
+    # and the repr is retained only as a diagnostic fallback; GraphModification
+    # batches use the typed dataclass branch above.
+    return (type(value).__module__, type(value).__qualname__, repr(value))
+
+
+def logical_modification_batch_key(
+    function_ea: int,
+    strategy_name: str,
+    modifications: object,
+    *,
+    source_snapshot_id: object = None,
+    source_generation: object = None,
+    source_evidence_generation: object = None,
+    source_maturity: object = None,
+) -> tuple[object, ...]:
+    """Return a source-generation-bound identity for one logical edit batch."""
+    try:
+        normalized_generation = (
+            None if source_generation is None else int(source_generation)
+        )
+    except (TypeError, ValueError):
+        normalized_generation = repr(source_generation)
+    try:
+        normalized_evidence_generation = (
+            None
+            if source_evidence_generation is None
+            else int(source_evidence_generation)
+        )
+    except (TypeError, ValueError):
+        normalized_evidence_generation = repr(source_evidence_generation)
+    try:
+        normalized_maturity = None if source_maturity is None else int(source_maturity)
+    except (TypeError, ValueError):
+        normalized_maturity = repr(source_maturity)
+    values = tuple(
+        _stable_batch_value(modification) for modification in (modifications or ())
+    )
+    return (
+        int(function_ea),
+        str(strategy_name),
+        (
+            None if source_snapshot_id is None else str(source_snapshot_id),
+            normalized_generation,
+            normalized_evidence_generation,
+            normalized_maturity,
+        ),
+        tuple(sorted(values, key=repr)),
+    )
+
+
+def _committed_receipt_for_execution(
+    execution: object,
+    *,
+    source_generation: int,
+) -> object | None:
+    """Return commit authority only for a positive, generation-matched result."""
+    if execution is None:
+        return None
+    try:
+        if int(getattr(execution, "applied_count")) <= 0:
+            return None
+    except (AttributeError, TypeError, ValueError):
+        return None
+    receipt = getattr(execution, "receipt", None)
+    if receipt is None:
+        return None
+    try:
+        pre_generation = int(getattr(receipt, "pre_generation"))
+        post_generation = int(getattr(receipt, "post_generation"))
+        operation_count = int(getattr(receipt, "operation_count"))
+        mutation_batch_id = str(getattr(receipt, "mutation_batch_id"))
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if (
+        pre_generation != int(source_generation)
+        or post_generation != pre_generation + 1
+        or operation_count <= 0
+        or not mutation_batch_id
+    ):
+        return None
+    return receipt
+
 
 def _optional_int(value: object) -> int | None:
     try:
@@ -270,6 +424,7 @@ class TransactionalExecutor:
         self._mutation_gateway_factory: Callable[[], object | None] | None = None
         self.validated_fact_view: object | None = None
         self.dispatcher_serial: int = -1
+        self._committed_logical_batches: dict[tuple[object, ...], object] = {}
 
     def set_analysis_snapshot(self, snapshot: object) -> None:
         """Attach per-round analysis context for fact-backed executor guards."""
@@ -385,6 +540,33 @@ class TransactionalExecutor:
             execution_policy = ExecutionPolicy.STRICT
 
         pre_cfg = self.translator.lift(self.mba)
+        modifications, idempotent_discarded = _discard_satisfied_modifications(
+            pre_cfg,
+            modifications,
+        )
+        if not modifications:
+            result = StageResult(strategy_name=fragment.strategy_name)
+            result.metadata["idempotence"] = {
+                "status": "already_satisfied",
+                "discarded_modifications": int(idempotent_discarded),
+                "pending_semantic_edits": False,
+            }
+            result.metadata["gate_accounting"] = GateAccounting().add(
+                GateDecision(
+                    gate_name="current_cfg_idempotence",
+                    verdict=GateVerdict.PASSED,
+                    reason=(
+                        "all requested edge effects are already present in the "
+                        "current CFG"
+                    ),
+                )
+            )
+            executor_logger.info(
+                "Stage %s converged from current CFG: discarded=%d",
+                fragment.strategy_name,
+                idempotent_discarded,
+            )
+            return result
         live_mba_pre_reachable_count: int | None = None
         if fragment.strategy_name == "fake_jump":
             try:
@@ -592,6 +774,69 @@ class TransactionalExecutor:
             result.metadata["gate_accounting"] = gate_accounting
             return result
         source_index = mutation_gateway.identity_index
+        source_generation = int(source_index.generation)
+        source_evidence_generation = getattr(source_index, "evidence_generation", None)
+        logical_batch_key = logical_modification_batch_key(
+            int(pre_cfg.func_ea),
+            fragment.strategy_name,
+            modifications,
+            source_snapshot_id=source_index.snapshot_id,
+            source_generation=source_generation,
+            source_evidence_generation=source_evidence_generation,
+            source_maturity=source_index.maturity,
+        )
+        # A poisoned generation must continue through the normal transaction
+        # gates so it is rejected/quarantined; convergence is only a shortcut
+        # for a known-good immutable source generation.
+        generation_poisoned = bool(
+            getattr(source_index, "generation_poisoned", False)
+        )
+        lifecycle_authority = getattr(mutation_gateway, "lifecycle_authority", None)
+        shared_receipt_lookup = getattr(
+            lifecycle_authority,
+            "committed_logical_batch_receipt",
+            None,
+        )
+        if callable(shared_receipt_lookup):
+            try:
+                committed_receipt = shared_receipt_lookup(logical_batch_key)
+            except Exception:
+                executor_logger.debug(
+                    "logical batch receipt lookup failed; abstaining from convergence",
+                    exc_info=True,
+                )
+                committed_receipt = None
+        elif lifecycle_authority is None:
+            # Test/dry-run gateways without a lifecycle port retain the narrow
+            # executor-local behavior. A real gateway must expose the shared
+            # lifecycle receipt authority or it cannot claim cross-pass reuse.
+            committed_receipt = self._committed_logical_batches.get(logical_batch_key)
+        else:
+            committed_receipt = None
+        if not generation_poisoned and committed_receipt is not None:
+            result = StageResult(strategy_name=fragment.strategy_name)
+            result.metadata["transaction_convergence"] = {
+                "status": "equivalent_batch_already_committed",
+                "logical_batch_key": logical_batch_key,
+                "receipt": committed_receipt,
+            }
+            result.metadata["gate_accounting"] = GateAccounting().add(
+                GateDecision(
+                    gate_name="transaction_convergence",
+                    verdict=GateVerdict.PASSED,
+                    reason=(
+                        "equivalent logical batch already committed for "
+                        "this source generation"
+                    ),
+                )
+            )
+            executor_logger.info(
+                "Stage %s converged: equivalent logical batch already committed "
+                "for source generation %s",
+                fragment.strategy_name,
+                source_index.generation,
+            )
+            return result
         source_maturity = MaturityEnvelope(
             ir=None,
             provider="hexrays",
@@ -605,7 +850,7 @@ class TransactionalExecutor:
             execution_policy,
             snapshot_id=source_index.snapshot_id,
             source_maturity=source_maturity,
-            source_generation=source_index.generation,
+            source_generation=source_generation,
             block_refs_by_serial=source_index.plan_refs_by_serial(),
             live_mba_pre_reachable_count=live_mba_pre_reachable_count,
         )
@@ -969,6 +1214,28 @@ class TransactionalExecutor:
             )
             # Combine both results: both must pass (fixes overwrite bug)
             gate_ok = gate_ok and flow_ok
+
+        committed_receipt = _committed_receipt_for_execution(
+            execution,
+            source_generation=source_generation,
+        )
+        if gate_ok and committed_receipt is not None:
+            record_shared_receipt = getattr(
+                lifecycle_authority,
+                "record_logical_batch_commit",
+                None,
+            )
+            if callable(record_shared_receipt):
+                try:
+                    record_shared_receipt(logical_batch_key, committed_receipt)
+                except Exception:
+                    executor_logger.debug(
+                        "logical batch receipt publication failed; "
+                        "leaving convergence unavailable",
+                        exc_info=True,
+                    )
+            elif lifecycle_authority is None:
+                self._committed_logical_batches[logical_batch_key] = committed_receipt
 
         result.metadata["gate_accounting"] = gate_accounting
         executor_logger.info("Gate accounting: %s", gate_accounting.summary())

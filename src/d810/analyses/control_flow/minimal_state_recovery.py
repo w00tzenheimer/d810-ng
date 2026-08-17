@@ -982,7 +982,12 @@ def _compute_foldable_global_reads(
     )
 
 
-def block_has_live_carrier_write(block: BlockSnapshot, state_var_stkoff: int) -> bool:
+def block_has_live_carrier_write(
+    block: BlockSnapshot,
+    state_var_stkoff: int | None = None,
+    *,
+    state_var_reg: int | None = None,
+) -> bool:
     """``True`` if *block* writes a non-state value (a "carrier") besides the
     state-var write / control flow.
 
@@ -1002,7 +1007,13 @@ def block_has_live_carrier_write(block: BlockSnapshot, state_var_stkoff: int) ->
     the state write + goto, or only a widen of the state slot) return ``False`` and
     keep the existing bypass behaviour byte-identical.
     """
-    soff = int(state_var_stkoff)
+    if state_var_stkoff is None and state_var_reg is None:
+        # Without either state identity there is no sound way to distinguish
+        # the state-plumbing write from a live carrier.  Treat the block as
+        # effectful so callers fail closed rather than bypassing unknown work.
+        return True
+    soff = int(state_var_stkoff) if state_var_stkoff is not None else None
+    sreg = int(state_var_reg) if state_var_reg is not None else None
     for insn in block.insn_snapshots:
         if _is_goto_insn(insn) or _is_nop_insn(insn):
             continue
@@ -1014,7 +1025,9 @@ def block_has_live_carrier_write(block: BlockSnapshot, state_var_stkoff: int) ->
         if dloc is None:
             continue  # no resolvable data destination (control flow / unknown)
         kind, ident = dloc
-        if kind == "stk" and int(ident) == soff:
+        if kind == "stk" and soff is not None and int(ident) == soff:
+            continue  # the state-var write itself -- folded/bypassed as glue
+        if kind == "reg" and sreg is not None and int(ident) == sreg:
             continue  # the state-var write itself -- folded/bypassed as glue
         return True  # a write to some other slot -> a live carrier
     return False
@@ -3183,6 +3196,53 @@ def _handler_entries(dispatcher) -> set[int]:
     }
 
 
+def _default_corridor_has_state_transition(
+    flow_graph,
+    dispatcher,
+    default_target: int | None,
+    *,
+    state_var_stkoff: int | None,
+    state_var_reg: int | None,
+    dispatcher_entry_serial: int | None,
+    dispatcher_region_serials: frozenset[int],
+    handler_entries: set[int],
+    max_depth: int,
+) -> bool:
+    """Return whether the dispatcher's fall-through is a live handler corridor.
+
+    ``IntervalDispatcher.default_target`` identifies the no-match edge, not its
+    semantic role.  Equality-chain fall-through blocks can still write a valid
+    next state before re-entering the dispatcher; treating every default target
+    as an exit drops that handler and strands its effects.  This probe is kept
+    deliberately narrow: a non-STOP default block must have a bounded scan with
+    a concrete state write that resolves through the dispatcher table.  A trap or
+    an unresolved/open corridor therefore remains excluded.
+    """
+    if default_target is None:
+        return False
+    target = int(default_target)
+    block = flow_graph.get_block(target)
+    if block is None or _is_stop_block(block):
+        return False
+    paths = _scan_handler(
+        flow_graph,
+        target,
+        state_var_stkoff=state_var_stkoff,
+        state_var_reg=state_var_reg,
+        dispatcher_entry_serial=dispatcher_entry_serial,
+        dispatcher_region_serials=dispatcher_region_serials,
+        handler_entries=set(handler_entries) | {target},
+        max_depth=max_depth,
+    )
+    for next_state, _branch_block, _ordered_path in paths:
+        if next_state is None:
+            continue
+        routed = dispatcher.lookup(int(next_state) & 0xFFFFFFFF)
+        if routed is not None:
+            return True
+    return False
+
+
 def _states_by_handler(dispatcher) -> dict[int, list[int]]:
     """Map handler block -> representative state values routed to it (one per row lo)."""
     out: dict[int, list[int]] = {}
@@ -3385,6 +3445,19 @@ def recover_handler_transitions(
         if authoritative_handler_serials
         else _handler_entries(dispatcher)
     )
+    default_target = getattr(dispatcher, "default_target", None)
+    if _default_corridor_has_state_transition(
+        flow_graph,
+        dispatcher,
+        int(default_target) if default_target is not None else None,
+        state_var_stkoff=state_var_stkoff,
+        state_var_reg=state_var_reg,
+        dispatcher_entry_serial=dispatcher_entry_serial,
+        dispatcher_region_serials=dispatcher_region_serials,
+        handler_entries=handler_entries,
+        max_depth=max_depth,
+    ):
+        handler_entries.add(int(default_target))
     states_by_handler = _states_by_handler(dispatcher)
     seed_stk: dict[int, int] = {}
     seed_reg: dict[int, int] = {}

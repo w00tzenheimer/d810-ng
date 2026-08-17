@@ -70,6 +70,7 @@ __all__ = [
     "DispatcherCorridor",
     "DispatcherCorridorCoverage",
     "DispatcherCorridorCoverageValidation",
+    "ComparisonCorridorRetirementProof",
     "DispatcherRemovalPreflightProof",
     "DispatcherRemovalPreflightValidation",
     "IntervalStateNormalizerRetirementProof",
@@ -327,6 +328,36 @@ class StateTransitionPlumbingRetirementProof:
 
 
 @dataclass(frozen=True, slots=True)
+class ComparisonCorridorRetirementProof:
+    """Immutable authority for retiring exact covered control-only corridors."""
+
+    dispatcher: DispatcherBlockAnchor
+    covered_corridors: tuple[DispatcherCorridor, ...]
+    retired_corridor: tuple[RetiredDispatcherInfrastructure, ...]
+    semantic_handlers: tuple[DispatcherBlockAnchor, ...]
+    post_reachable_handlers: tuple[DispatcherBlockAnchor, ...]
+    lost_blocks: tuple[DispatcherBlockAnchor, ...]
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "dispatcher": self.dispatcher.to_payload(),
+            "covered_corridors": [
+                corridor.to_payload() for corridor in self.covered_corridors
+            ],
+            "retired_corridor": [
+                item.to_payload() for item in self.retired_corridor
+            ],
+            "semantic_handlers": [
+                anchor.to_payload() for anchor in self.semantic_handlers
+            ],
+            "post_reachable_handlers": [
+                anchor.to_payload() for anchor in self.post_reachable_handlers
+            ],
+            "lost_blocks": [anchor.to_payload() for anchor in self.lost_blocks],
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class DispatcherRemovalPreflightValidation:
     """Result of recomputing a plan's narrow removal proof at preflight."""
 
@@ -340,6 +371,7 @@ class DispatcherRemovalPreflightValidation:
     state_transition_plumbing_retirement: (
         StateTransitionPlumbingRetirementProof | None
     ) = None
+    comparison_corridor_retirement: ComparisonCorridorRetirementProof | None = None
 
     def to_payload(self) -> dict[str, object]:
         """Return compact typed evidence for a projected or observed verdict."""
@@ -359,6 +391,10 @@ class DispatcherRemovalPreflightValidation:
         if self.state_transition_plumbing_retirement is not None:
             payload["state_transition_plumbing_retirement"] = (
                 self.state_transition_plumbing_retirement.to_payload()
+            )
+        if self.comparison_corridor_retirement is not None:
+            payload["comparison_corridor_retirement"] = (
+                self.comparison_corridor_retirement.to_payload()
             )
         return payload
 
@@ -1465,6 +1501,7 @@ def _retired_dispatcher_infrastructure(
     dispatcher_entry_serial: int,
     dispatcher_region_serials: frozenset[int],
     state_plumbing_serials: frozenset[int],
+    lost_blocks: frozenset[int],
 ) -> tuple[RetiredDispatcherInfrastructure, ...]:
     """Return only roles that are explicit in router or corridor evidence.
 
@@ -1498,6 +1535,16 @@ def _retired_dispatcher_infrastructure(
             flow_graph.get_block(int(state_merge.serial))
         ):
             roles_by_serial.setdefault(int(state_merge.serial), "state_merge")
+    corridor_safe, corridor_serials = (
+        _covered_control_only_comparison_corridor_region(
+            flow_graph,
+            coverage,
+            dispatcher_entry_serial=int(dispatcher_entry_serial),
+        )
+    )
+    if corridor_safe:
+        for serial in corridor_serials & set(lost_blocks):
+            roles_by_serial.setdefault(int(serial), "comparison_corridor")
     return tuple(
         RetiredDispatcherInfrastructure(
             role=role,
@@ -1505,6 +1552,88 @@ def _retired_dispatcher_infrastructure(
         )
         for serial, role in sorted(roles_by_serial.items())
     )
+
+
+def _covered_control_only_comparison_corridor_region(
+    flow_graph: FlowGraph,
+    coverage: DispatcherCorridorCoverage,
+    *,
+    dispatcher_entry_serial: int,
+) -> tuple[bool, frozenset[int]]:
+    """Revalidate exact covered multi-forest paths as control-only infrastructure.
+
+    Corridor metadata is not authority.  Each path is checked against the
+    immutable source graph, including its EAs, edges, and structural merge
+    anchor.  A path is eligible only when it carries merge evidence for a
+    comparison forest and every block is an effect-free control router.  One
+    semantic instruction, memory operation, call, or unknown node vetoes the
+    complete extension rather than allowing a sibling forest to be retired.
+    """
+    dispatcher_serial = int(dispatcher_entry_serial)
+    if coverage.dispatcher is None or int(coverage.dispatcher.serial) != dispatcher_serial:
+        return False, frozenset()
+    candidates: set[int] = set()
+    saw_comparison_corridor = False
+    for corridor in coverage.covered_corridors:
+        path = tuple(int(anchor.serial) for anchor in corridor.path)
+        if len(path) < 2 or path[-1] != dispatcher_serial:
+            return False, frozenset()
+        if any(
+            flow_graph.get_block(serial) is None
+            or int(corridor.path[index].ea)
+            != int(getattr(flow_graph.get_block(serial), "start_ea", 0) or 0)
+            for index, serial in enumerate(path)
+        ):
+            return False, frozenset()
+        for source, target in zip(path, path[1:]):
+            block = flow_graph.get_block(source)
+            if block is None or int(target) not in {
+                int(successor) for successor in getattr(block, "succs", ()) or ()
+            }:
+                return False, frozenset()
+        state_merge = corridor.state_merge
+        if state_merge is None:
+            # A direct corridor is eligible only when one of its source-path
+            # nodes independently carries a comparison branch.  A purely
+            # linear body remains semantic by default, even if its snapshot
+            # happens to omit instructions.
+            if not any(
+                len(tuple(getattr(flow_graph.get_block(serial), "succs", ()) or ()))
+                >= 2
+                for serial in path[:-1]
+            ):
+                continue
+        else:
+            if len(path) < 4:
+                return False, frozenset()
+            merge_serial = int(state_merge.serial)
+            if merge_serial != path[-3] or int(state_merge.ea) != int(
+                getattr(flow_graph.get_block(merge_serial), "start_ea", 0) or 0
+            ):
+                return False, frozenset()
+            merge = flow_graph.get_block(merge_serial)
+            feeder_serial = path[-2]
+            if (
+                merge is None
+                or len(
+                    {
+                        int(predecessor)
+                        for predecessor in getattr(merge, "preds", ()) or ()
+                    }
+                )
+                < 2
+                or tuple(int(target) for target in getattr(merge, "succs", ()) or ())
+                != (feeder_serial,)
+            ):
+                return False, frozenset()
+        saw_comparison_corridor = True
+        for serial in path[:-1]:
+            if not _is_effect_free_dispatcher_router(flow_graph.get_block(serial)):
+                return False, frozenset()
+            candidates.add(int(serial))
+    if not saw_comparison_corridor:
+        return True, frozenset()
+    return True, frozenset(candidates)
 
 
 def _is_effect_free_dispatcher_router(block: object) -> bool:
@@ -1646,6 +1775,7 @@ def build_dispatcher_removal_preflight_proof(
                 int(serial) for serial in dispatcher_region_serials
             ),
             state_plumbing_serials=plumbing,
+            lost_blocks=lost_blocks,
         )
     )
     allowed_lost = {item.anchor.serial for item in retired}
@@ -3006,6 +3136,114 @@ def _state_transition_plumbing_retirement_allowance(
     )
 
 
+def _comparison_corridor_retirement_allowance(
+    pre_graph: FlowGraph,
+    *,
+    post_graph: FlowGraph,
+    raw_proof: Mapping[str, object],
+    proof: DispatcherRemovalPreflightProof,
+    coverage: DispatcherCorridorCoverage,
+) -> ComparisonCorridorRetirementProof | None:
+    """Recompute the control-only corridor exception at transaction preflight."""
+    dispatcher = proof.dispatcher
+    if (
+        dispatcher is None
+        or not coverage.enumeration_complete
+        or coverage.residual_corridors
+        or not proof.authoritative_handlers
+    ):
+        return None
+    pre_reachable = _reachable_from_entry(
+        pre_graph.as_adjacency_dict(), int(pre_graph.entry_serial)
+    )
+    post_reachable = _reachable_from_entry(
+        post_graph.as_adjacency_dict(), int(post_graph.entry_serial)
+    )
+    lost = frozenset(pre_reachable - post_reachable)
+    if lost != proof.lost_blocks:
+        return None
+    raw_lost = _payload_anchor_set(raw_proof.get("lost_blocks"))
+    if raw_lost != frozenset(proof.lost_block_anchors):
+        return None
+    raw_pre_terminals = _payload_anchor_set(raw_proof.get("pre_reachable_terminals"))
+    if raw_pre_terminals != frozenset(proof.pre_reachable_terminals):
+        return None
+    raw_post_handlers = _payload_anchor_set(raw_proof.get("post_reachable_handlers"))
+    if raw_post_handlers != frozenset(proof.post_reachable_handlers):
+        return None
+    if (
+        raw_proof.get("coverage_enumeration_complete") is not True
+        or raw_proof.get("residual_corridor_count") != 0
+    ):
+        return None
+    corridor_safe, corridor_serials = (
+        _covered_control_only_comparison_corridor_region(
+            pre_graph,
+            coverage,
+            dispatcher_entry_serial=int(dispatcher.serial),
+        )
+    )
+    if not corridor_safe or not corridor_serials:
+        return None
+    derived_retired = _retired_dispatcher_infrastructure(
+        pre_graph,
+        coverage,
+        dispatcher_entry_serial=int(dispatcher.serial),
+        dispatcher_region_serials=frozenset(),
+        state_plumbing_serials=frozenset(),
+        lost_blocks=lost,
+    )
+    expected_roles = {
+        (item.role, int(item.anchor.serial), int(item.anchor.ea))
+        for item in derived_retired
+    }
+    raw_infrastructure = raw_proof.get("retired_infrastructure")
+    if not isinstance(raw_infrastructure, (tuple, list)):
+        return None
+    raw_roles: set[tuple[str, int, int]] = set()
+    for item in raw_infrastructure:
+        if not isinstance(item, Mapping):
+            return None
+        anchor = _anchor_from_payload(item.get("anchor"))
+        role = item.get("role")
+        if anchor is None or not isinstance(role, str):
+            return None
+        raw_roles.add((role, int(anchor.serial), int(anchor.ea)))
+    if raw_roles != expected_roles:
+        return None
+    raw_state_plumbing = _payload_anchor_set(raw_proof.get("state_plumbing", ()))
+    if raw_state_plumbing is None or any(
+        int(anchor.serial) in lost for anchor in raw_state_plumbing
+    ):
+        return None
+    retired_corridor = tuple(
+        item for item in derived_retired if item.role == "comparison_corridor"
+    )
+    if not retired_corridor:
+        return None
+    semantic_handlers = proof.authoritative_handlers
+    post_handlers = _anchors_for_serials(
+        post_graph,
+        frozenset(int(anchor.serial) for anchor in semantic_handlers),
+    )
+    if set(post_handlers) != set(semantic_handlers):
+        return None
+    if set(proof.pre_reachable_terminals) != set(proof.post_reachable_terminals):
+        return None
+    return ComparisonCorridorRetirementProof(
+        dispatcher=dispatcher,
+        covered_corridors=tuple(
+            corridor
+            for corridor in coverage.covered_corridors
+            if corridor.state_merge is not None
+        ),
+        retired_corridor=retired_corridor,
+        semantic_handlers=semantic_handlers,
+        post_reachable_handlers=post_handlers,
+        lost_blocks=_anchors_for_serials(pre_graph, lost),
+    )
+
+
 def validate_dispatcher_removal_preflight_proof(
     pre_graph: FlowGraph,
     *,
@@ -3119,6 +3357,7 @@ def validate_dispatcher_removal_preflight_proof(
             role
             not in {
                 "comparison_dispatcher",
+                "comparison_corridor",
                 "dispatcher_feeder",
                 "state_merge",
             }
@@ -3207,6 +3446,20 @@ def validate_dispatcher_removal_preflight_proof(
             reason="state_transition_plumbing_retirement",
             proof=proof,
             state_transition_plumbing_retirement=state_transition_plumbing,
+        )
+    comparison_corridor = _comparison_corridor_retirement_allowance(
+        pre_graph,
+        post_graph=post_graph,
+        raw_proof=raw_proof,
+        proof=proof,
+        coverage=projected_coverage,
+    )
+    if comparison_corridor is not None:
+        return DispatcherRemovalPreflightValidation(
+            passed=True,
+            reason="comparison_corridor_retirement",
+            proof=proof,
+            comparison_corridor_retirement=comparison_corridor,
         )
     if dict(raw_proof) != proof.to_metadata():
         return DispatcherRemovalPreflightValidation(

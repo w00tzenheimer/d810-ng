@@ -51,6 +51,8 @@ from d810.analyses.control_flow.minimal_state_recovery import (
     HandlerTransition,
     StateWriteTransition,
     _source_local_constant_register_write,
+    _is_goto_insn,
+    _is_nop_insn,
     block_has_live_carrier_write,
     recover_handler_transitions,
     enrich_native_bound_transition_routes,
@@ -60,6 +62,7 @@ from d810.analyses.control_flow.minimal_state_recovery import (
     transition_uses_terminal_stack_alias_guard,
     transitions_use_terminal_stack_alias_guard,
     resolve_materialized_indirect_transfer_targets,
+    _storage_dest_locator,
 )
 from d810.analyses.control_flow.semantic_transition import NativeBoundTransitionRoute
 from d810.analyses.control_flow.materialized_indirect_transfer import (
@@ -75,7 +78,9 @@ from d810.analyses.control_flow.materialized_indirect_transfer import (
 from d810.analyses.control_flow.native_preanalysis_session import (
     BootstrapRouteBindingEvidence,
 )
-from d810.analyses.control_flow.route_predicate import DecisionDag
+from d810.analyses.control_flow.route_predicate import (
+    DecisionDag,
+)
 from d810.analyses.control_flow.residual_entry_bridge import EntryBridgeEvidence
 from d810.analyses.control_flow.state_machine_analysis import (
     _is_stop_block,
@@ -103,6 +108,7 @@ from d810.ir.block_identity import (
 )
 from d810.ir.flowgraph import BlockKind, InsnKind, OperandKind
 from d810.ir.maturity import MaturityEnvelope
+from d810.ir.insn_projection import operand_kinds, operand_storages
 from d810.ir.semantics import PredicateKind
 from d810.transforms.exit_path_liveness_policy import (
     exit_path_blocks_live_violations,
@@ -4560,6 +4566,157 @@ def _arm_branch_successor(arm) -> int | None:
     return int(path[idx + 1])
 
 
+def _shared_write_block_is_pure_state_plumbing(
+    block,
+    *,
+    state_var_stkoff: int | None,
+    state_var_reg: int | None,
+) -> bool:
+    """Prove that a shared exit contains only an exact state-cell write.
+
+    This is intentionally stricter than :func:`block_has_live_carrier_write`.
+    The latter is a useful carrier detector, but unresolved destinations are
+    ignored there; that is insufficient when the planned redirect will bypass
+    the block altogether.  Unknown, memory, call, store, and nested operands
+    therefore all fail closed here.
+    """
+    if state_var_stkoff is None and state_var_reg is None:
+        return False
+    allowed_writes = {
+        InsnKind.MOV,
+        InsnKind.XDU,
+        InsnKind.XDS,
+        InsnKind.ADD,
+        InsnKind.SUB,
+        InsnKind.AND,
+        InsnKind.MUL,
+    }
+    pure_sources = {
+        OperandKind.REGISTER,
+        OperandKind.STACK,
+        OperandKind.NUMBER,
+    }
+    allowed_locators: set[tuple[str, int]] = set()
+    if state_var_stkoff is not None:
+        allowed_locators.add(("stk", int(state_var_stkoff)))
+    if state_var_reg is not None:
+        allowed_locators.add(("reg", int(state_var_reg)))
+    saw_state_write = False
+    for insn in getattr(block, "insn_snapshots", ()) or ():
+        if _is_goto_insn(insn) or _is_nop_insn(insn):
+            continue
+        if insn.kind not in allowed_writes:
+            return False
+        left, right, destination = operand_storages(insn)
+        left_kind, right_kind, destination_kind = operand_kinds(insn)
+        destination_locator = _storage_dest_locator(
+            destination,
+            destination_kind,
+        )
+        if destination_locator not in allowed_locators:
+            return False
+        saw_state_write = True
+        # A state write sourced from memory/global/address/sub-instruction is
+        # not pure plumbing: the redirect would skip an observable read or a
+        # nested effect even if its destination happens to be the state slot.
+        if left_kind is not None and left_kind not in pure_sources:
+            return False
+        if right_kind is not None and right_kind not in pure_sources:
+            return False
+    return saw_state_write
+
+
+def _shared_write_arm_cuts(
+    flow_graph,
+    arms: tuple[object, ...],
+    *,
+    shared_write_block: int,
+    dispatcher_entry_serial: int,
+    state_var_stkoff: int | None,
+    state_var_reg: int | None,
+) -> tuple[tuple[int, int], ...]:
+    """Return exact arm-local edges for a safe shared-write cut.
+
+    An empty tuple is a deliberate fail-closed result: neither state identity
+    was provided, the shared exit is not independently proven to be state
+    plumbing, or the arm paths do not have unique one-way
+    cuts.  In that case *no* sibling arm is eligible for a redirect.
+
+    The branch-anchored form skips everything between the selecting branch and
+    the routed handler.  For a shared write block that is only safe when that
+    skipped suffix is pure state glue.  Even then, the edge we own is the last
+    arm-local predecessor into the shared write, not the branch edge.  This
+    preserves calls/carrier writes in the arm corridor and lets the ordinary
+    use-def/effect checks retain ownership of the shared state write.
+    """
+    shared = flow_graph.get_block(int(shared_write_block))
+    if shared is None or not _shared_write_block_is_pure_state_plumbing(
+        shared,
+        state_var_stkoff=state_var_stkoff,
+        state_var_reg=state_var_reg,
+    ):
+        return ()
+    if tuple(int(successor) for successor in shared.succs) != (
+        int(dispatcher_entry_serial),
+    ):
+        return ()
+
+    cuts: list[tuple[int, int]] = []
+    arm_interior: set[int] = set()
+    for arm in arms:
+        branch = arm.branch_block
+        path = tuple(int(serial) for serial in (arm.ordered_path or ()))
+        if branch is None or not path:
+            return ()
+        branch_block = flow_graph.get_block(int(branch))
+        if branch_block is None or branch_block.nsucc != 2:
+            return ()
+        try:
+            branch_idx = path.index(int(branch))
+            # The ordered path normally terminates at write_block.  Use the
+            # last occurrence defensively because a materialized path can carry
+            # a repeated boundary after a backend helper insertion.
+            write_idx = max(
+                idx
+                for idx, serial in enumerate(path)
+                if int(serial) == int(shared_write_block)
+            )
+        except (ValueError, KeyError):
+            return ()
+        if write_idx <= branch_idx:
+            return ()
+        for source, target in zip(
+            path[branch_idx:write_idx],
+            path[branch_idx + 1 : write_idx + 1],
+        ):
+            source_block = flow_graph.get_block(int(source))
+            if source_block is None or int(target) not in {
+                int(successor) for successor in source_block.succs
+            }:
+                return ()
+        interior = set(path[branch_idx + 1 : write_idx])
+        # A convergence before the shared write means that the edge no longer
+        # belongs to one arm; cutting it would make the sibling's semantics
+        # depend on which redirect happened to be emitted first.
+        if arm_interior.intersection(interior):
+            return ()
+        arm_interior.update(interior)
+        cut_source = int(path[write_idx - 1])
+        source_block = flow_graph.get_block(cut_source)
+        if source_block is None or source_block.nsucc != 1:
+            return ()
+        successors = tuple(int(successor) for successor in source_block.succs)
+        if successors != (int(shared_write_block),):
+            return ()
+        cuts.append((cut_source, int(shared_write_block)))
+
+    if len({source for source, _target in cuts}) != len(cuts):
+        return ()
+    if len(cuts) != len(arms):
+        return ()
+    return tuple(cuts)
+
+
 def _unique_planned_redirect_targets(
     modifications: tuple[object, ...],
 ) -> dict[int, int]:
@@ -6582,6 +6739,8 @@ def build_conditional_arm_redirects(
     is_indirect: bool = False,
     carrier_via_blocks: set[int] | None = None,
     infer_unmatched_returns: bool = True,
+    state_var_stkoff: int | None = None,
+    state_var_reg: int | None = None,
 ) -> list[object]:
     """Emit per-arm redirects for conditional handlers, anchored on the branch.
 
@@ -6707,11 +6866,44 @@ def build_conditional_arm_redirects(
             int(a.write_block) for a in handler.arms if a.write_block is not None
         }
         shared_write_block = len(write_blocks) == 1
-        for arm in handler.arms:
+        shared_arm_cuts: tuple[tuple[int, int], ...] | None = None
+        if shared_write_block:
+            shared_arm_cuts = _shared_write_arm_cuts(
+                flow_graph,
+                tuple(handler.arms),
+                shared_write_block=next(iter(write_blocks)),
+                dispatcher_entry_serial=disp,
+                state_var_stkoff=state_var_stkoff,
+                state_var_reg=state_var_reg,
+            )
+            if not shared_arm_cuts:
+                # The arm group is fragment-atomic: a shared suffix with an
+                # unclassified effect, a converged pre-write path, or no unique
+                # one-way cut means no sibling arm may be redirected.
+                if logger.info_on:
+                    logger.info(
+                        "unflat conditional-arm: abstain shared handler=%s "
+                        "write_block=%s reason=shared_suffix_or_cut_unproven",
+                        _format_block_label(flow_graph, handler.handler),
+                        _format_block_label(flow_graph, next(iter(write_blocks))),
+                    )
+                continue
+        for arm_index, arm in enumerate(handler.arms):
             if not infer_unmatched_returns and arm.next_state is None:
                 continue
             new = default_target if arm.is_return else arm.target_handler
             if shared_write_block and arm.branch_block is not None:
+                if shared_arm_cuts is not None:
+                    try:
+                        cut_source, cut_target = shared_arm_cuts[arm_index]
+                    except (ValueError, IndexError):
+                        # This should be unreachable because the helper returns
+                        # one cut per arm, but fail closed if a duck-typed caller
+                        # supplies a non-stable arm sequence.
+                        continue
+                    new = default_target if arm.is_return else arm.target_handler
+                    _add(cut_source, cut_target, new)
+                    continue
                 # Both arms reach the dispatcher through one *shared exit* block
                 # (``arm.write_block`` is the scan boundary, not the state-write
                 # site).  When each arm flows through its OWN per-arm glue block
@@ -7538,7 +7730,6 @@ def emit_minimal_unflatten(
         "non_state_use_def_severances_zero": False,
     }
     dispatcher_state_plumbing_serials: frozenset[int] = frozenset()
-
     native_bound_route_receipts: tuple[dict[str, object], ...] = ()
 
     def _native_bound_route_receipt(
@@ -8678,6 +8869,8 @@ def emit_minimal_unflatten(
             )
         ),
         infer_unmatched_returns=not materialized_computed_goto_profile,
+        state_var_stkoff=_soff,
+        state_var_reg=state_var_reg,
     )
     guard_candidates = build_loop_carrier_guard_transitions(
         flow_graph,

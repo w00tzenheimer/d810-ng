@@ -1329,6 +1329,10 @@ class NativePreanalysisSessionState:
     semantic_fragment_published_postvalidated_generation: int | None = None
     receipt_committed_generation: int | None = None
     committed_semantic_publications: tuple[CommittedSemanticFragmentOwnership, ...] = ()
+    committed_logical_batch_receipts: dict[tuple[object, ...], object] = field(
+        default_factory=dict,
+        repr=False,
+    )
     facts: NativePreanalysisFacts | None = None
     resolver_evidence: ResolverPortableEvidence | None = None
     bootstrap_routes: dict[tuple[StableBlockIdentity, int], BootstrapRouteEvidence] = (
@@ -1890,6 +1894,30 @@ class NativePreanalysisSessionState:
     ) -> tuple[CommittedSemanticFragmentOwnership, ...]:
         """Return current receipt-backed canonical ownership authority."""
         return tuple(self.committed_semantic_publications)
+
+    def committed_logical_batch_receipt(
+        self,
+        logical_batch_key: tuple[object, ...],
+    ) -> object | None:
+        """Return a receipt only for this immutable source-generation key."""
+        if not isinstance(logical_batch_key, tuple):
+            raise TypeError("logical batch receipt lookup requires a tuple key")
+        return self.committed_logical_batch_receipts.get(logical_batch_key)
+
+    def record_logical_batch_commit(
+        self,
+        logical_batch_key: tuple[object, ...],
+        receipt: object,
+    ) -> None:
+        """Persist one successful logical batch behind lifecycle authority."""
+        if not isinstance(logical_batch_key, tuple):
+            raise TypeError("logical batch receipt key requires a tuple")
+        if receipt is None:
+            raise ValueError("logical batch receipt cannot be empty")
+        existing = self.committed_logical_batch_receipts.get(logical_batch_key)
+        if existing is not None and existing != receipt:
+            raise ValueError("logical batch receipt changed after commit")
+        self.committed_logical_batch_receipts[logical_batch_key] = receipt
 
     def _fragment_publication_abort_semantic_fragment(self, *, reason: str) -> bool:
         """Discard current transient semantic state without moving authority."""
@@ -2946,6 +2974,7 @@ class NativePreanalysisSessionState:
         )
         self.exhausted_poison_restart_generation = None
         self.committed_semantic_publications = ()
+        self.committed_logical_batch_receipts.clear()
         self._observe_transition(
             operation="evidence_changed",
             previous_generation=previous_generation,

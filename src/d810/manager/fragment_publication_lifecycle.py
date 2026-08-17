@@ -80,6 +80,21 @@ class SessionFragmentPublicationLifecycleAuthority:
         """Expose shared receipt-backed ownership to every gateway instance."""
         return self.state.committed_semantic_ownership()
 
+    def committed_logical_batch_receipt(
+        self,
+        logical_batch_key: tuple[object, ...],
+    ) -> object | None:
+        """Expose source-generation-bound convergence receipts to each pass."""
+        return self.state.committed_logical_batch_receipt(logical_batch_key)
+
+    def record_logical_batch_commit(
+        self,
+        logical_batch_key: tuple[object, ...],
+        receipt: object,
+    ) -> None:
+        """Persist convergence only after the executor owns a commit receipt."""
+        self.state.record_logical_batch_commit(logical_batch_key, receipt)
+
     def _semantic_ownership_for(
         self,
         plan: FragmentPlan,

@@ -54,6 +54,17 @@ class FragmentPublicationLifecycleAuthority(Protocol):
         self,
     ) -> tuple[CommittedSemanticFragmentOwnership, ...]: ...
 
+    def committed_logical_batch_receipt(
+        self,
+        logical_batch_key: tuple[object, ...],
+    ) -> object | None: ...
+
+    def record_logical_batch_commit(
+        self,
+        logical_batch_key: tuple[object, ...],
+        receipt: object,
+    ) -> None: ...
+
     def request_poisoned_generation_restart(
         self,
         plan: FragmentPlan,
