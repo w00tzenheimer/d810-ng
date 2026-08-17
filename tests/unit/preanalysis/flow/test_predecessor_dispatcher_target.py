@@ -135,6 +135,7 @@ def _path_local_entry_fixture(
     source_value: int = _NATIVE_ENTRY_STATE,
     source_size: int = 4,
     duplicate_source_instruction: bool = False,
+    root_predicate: PredicateKind = PredicateKind.NE,
 ):
     """Build the exact source -> entry -> DAG-root snapshot corridor."""
 
@@ -225,7 +226,7 @@ def _path_local_entry_fixture(
                         ea=4,
                         operands=(),
                         kind=InsnKind.EQUALITY_JUMP,
-                        branch_predicate=PredicateKind.NE,
+                        branch_predicate=root_predicate,
                         l=MopSnapshot(
                             size=4,
                             stkoff=52,
@@ -269,6 +270,7 @@ def _path_local_entry_fixture(
             # not the walk start.  The canonical replay must begin at DAG root
             # 4 and never use this block's unrelated branch shape.
             9: block(9, (30, 23)),
+            10: block(10, ()),
             122: block(122, ()),
         },
         entry_serial=1,
@@ -929,6 +931,136 @@ def test_native_entry_snapshot_fallback_accepts_exact_current_entry_path_proof()
     assert entry_facts[0].target_block_serial == 122
     assert entry_facts[0].state_var_stkoff == 52
     assert entry_facts[0].state_var_reg is None
+
+
+def test_native_entry_snapshot_fallback_selects_handler_map_when_replay_is_incomplete() -> None:
+    graph, dispatch_map, range_evidence = _path_local_entry_fixture(
+        root_predicate=PredicateKind.SLE
+    )
+    range_evidence = replace(
+        range_evidence,
+        handler_state_map={10: _NATIVE_ENTRY_STATE},
+    )
+    graph = replace(
+        graph,
+        blocks={
+            **graph.blocks,
+            10: replace(graph.get_block(10), native_start_ea=0x180030000),
+        },
+    )
+    support, candidate = _path_local_identity_resolutions()
+
+    facts = collect_predecessor_dispatcher_target_facts(
+        transition_result=None,
+        dispatcher_entry_serial=3,
+        state_dispatcher_map=dispatch_map,
+        range_evidence=range_evidence,
+        transition_resolutions=(support, candidate),
+        flow_graph=graph,
+        state_var_stkoff=52,
+    )
+
+    entry_facts = [
+        fact for fact in facts if fact.source_instruction_ea == _NATIVE_ENTRY_EA
+    ]
+    assert len(entry_facts) == 1
+    assert entry_facts[0].target_block_serial == 10
+    assert entry_facts[0].target_native_ea == 0x180030000
+    assert entry_facts[0].target_block_serial != 9
+
+
+def test_incomplete_replay_does_not_bypass_current_entry_path_proof() -> None:
+    graph, dispatch_map, range_evidence = _path_local_entry_fixture(
+        root_predicate=PredicateKind.SLE,
+        source_succs=(3, 30),
+    )
+    range_evidence = replace(
+        range_evidence,
+        handler_state_map={10: _NATIVE_ENTRY_STATE},
+    )
+    graph = replace(
+        graph,
+        blocks={
+            **graph.blocks,
+            10: replace(graph.get_block(10), native_start_ea=0x180030000),
+        },
+    )
+    support, candidate = _path_local_identity_resolutions()
+
+    facts = collect_predecessor_dispatcher_target_facts(
+        transition_result=None,
+        dispatcher_entry_serial=3,
+        state_dispatcher_map=dispatch_map,
+        range_evidence=range_evidence,
+        transition_resolutions=(support, candidate),
+        flow_graph=graph,
+        state_var_stkoff=52,
+    )
+
+    assert [
+        fact for fact in facts if fact.source_instruction_ea == _NATIVE_ENTRY_EA
+    ] == []
+
+
+def test_incomplete_replay_rejects_ambiguous_handler_map_targets() -> None:
+    graph, dispatch_map, range_evidence = _path_local_entry_fixture(
+        root_predicate=PredicateKind.SLE
+    )
+    range_evidence = replace(
+        range_evidence,
+        handler_state_map={
+            10: _NATIVE_ENTRY_STATE,
+            122: _NATIVE_ENTRY_STATE,
+        },
+    )
+    graph = replace(
+        graph,
+        blocks={
+            **graph.blocks,
+            10: replace(graph.get_block(10), native_start_ea=0x180030000),
+            122: replace(graph.get_block(122), native_start_ea=0x180030001),
+        },
+    )
+    support, candidate = _path_local_identity_resolutions()
+
+    facts = collect_predecessor_dispatcher_target_facts(
+        transition_result=None,
+        dispatcher_entry_serial=3,
+        state_dispatcher_map=dispatch_map,
+        range_evidence=range_evidence,
+        transition_resolutions=(support, candidate),
+        flow_graph=graph,
+        state_var_stkoff=52,
+    )
+
+    assert [
+        fact for fact in facts if fact.source_instruction_ea == _NATIVE_ENTRY_EA
+    ] == []
+
+
+def test_incomplete_replay_rejects_handler_without_current_native_identity() -> None:
+    graph, dispatch_map, range_evidence = _path_local_entry_fixture(
+        root_predicate=PredicateKind.SLE
+    )
+    range_evidence = replace(
+        range_evidence,
+        handler_state_map={10: _NATIVE_ENTRY_STATE},
+    )
+    support, candidate = _path_local_identity_resolutions()
+
+    facts = collect_predecessor_dispatcher_target_facts(
+        transition_result=None,
+        dispatcher_entry_serial=3,
+        state_dispatcher_map=dispatch_map,
+        range_evidence=range_evidence,
+        transition_resolutions=(support, candidate),
+        flow_graph=graph,
+        state_var_stkoff=52,
+    )
+
+    assert [
+        fact for fact in facts if fact.source_instruction_ea == _NATIVE_ENTRY_EA
+    ] == []
 
 
 def _path_local_entry_observation():
