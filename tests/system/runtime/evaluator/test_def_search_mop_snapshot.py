@@ -112,6 +112,39 @@ def test_resolve_mop_to_ast_forwards_explicit_cross_block_tracker_budget(monkeyp
     assert RecordingTracker.received_budget == (2, 3)
 
 
+def test_recursive_cache_distinguishes_same_ea_microinstructions(monkeypatch):
+    class Leaf:
+        def __init__(self):
+            self.mop = SimpleNamespace(t=ida_hexrays.mop_r, size=4, r=0)
+
+        @staticmethod
+        def is_leaf():
+            return True
+
+    calls = []
+
+    def unresolved(_mop, _blk, ins, **_kwargs):
+        calls.append(ins)
+        return None
+
+    monkeypatch.setattr(def_search, "get_mop_key", lambda _mop: ("reg", 0))
+    monkeypatch.setattr(def_search, "resolve_mop_to_ast", unresolved)
+    block = SimpleNamespace(serial=7)
+    first = SimpleNamespace(ea=0x401000, this=object())
+    second = SimpleNamespace(ea=0x401000, this=object())
+    cache = {}
+
+    for resolver in (
+        def_search._py_slow_recursively_resolve_ast,
+        def_search.recursively_resolve_ast,
+    ):
+        calls.clear()
+        cache.clear()
+        resolver(Leaf(), block, first, cache=cache)
+        resolver(Leaf(), block, second, cache=cache)
+        assert calls == [first, second]
+
+
 def test_resolve_mop_to_ast_fails_closed_for_unowned_stack_snapshot(monkeypatch):
     class ExplodingTracker:
         @staticmethod

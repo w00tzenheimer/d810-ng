@@ -10,6 +10,7 @@ import ida_hexrays
 
 import d810.core.typing as typing
 from d810.core import getLogger
+from d810.core.cymode import CythonMode
 from d810.hexrays.ir.mop_utils import mop_to_ast
 from d810.hexrays.utils.hexrays_formatters import format_minsn_t, opcode_to_string
 from d810.hexrays.utils.hexrays_helpers import (
@@ -20,6 +21,19 @@ from d810.hexrays.utils.hexrays_helpers import (
 )
 
 logger = getLogger(__name__)
+
+
+if CythonMode().is_enabled():
+    try:
+        from d810.speedups.expr.c_ast import minsn_to_ast as _minsn_to_ast_impl
+
+        _MINSN_TO_AST_BACKEND = "cython"
+    except (ImportError, ModuleNotFoundError):
+        _minsn_to_ast_impl = None
+        _MINSN_TO_AST_BACKEND = "python"
+else:
+    _minsn_to_ast_impl = None
+    _MINSN_TO_AST_BACKEND = "python"
 
 
 def _py_slow_minsn_to_ast(instruction: ida_hexrays.minsn_t) -> typing.Any | None:
@@ -109,7 +123,14 @@ def minsn_to_ast(ins: ida_hexrays.minsn_t) -> typing.Any | None:
     Public, unified entrypoint that callers can use instead of reaching into
     the Cython module directly.
     """
+    if _minsn_to_ast_impl is not None:
+        return _minsn_to_ast_impl(ins)
     return _py_slow_minsn_to_ast(ins)
+
+
+def get_minsn_to_ast_backend() -> str:
+    """Return the selected production AST builder for diagnostics/tests."""
+    return _MINSN_TO_AST_BACKEND
 
 
 def _rename_leafs(leaf_list: list) -> list[str]:

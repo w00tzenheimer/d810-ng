@@ -187,6 +187,15 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         self._execution_scope_idb_key = ""
         self._execution_scope_func_ea = -1
         self._active_instruction_rule_names_by_maturity: dict[int, frozenset[str]] = {}
+        self._residual_admission_cache_key: (
+            tuple[
+                int,
+                frozenset[str] | None,
+                frozenset[str],
+            ]
+            | None
+        ) = None
+        self._residual_admission_cache_value = False
         self._run_later_scheduler = None
         self._scheduled_stage_identities: frozenset[ExecutionStageIdentity] = (
             frozenset()
@@ -286,12 +295,20 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         if callable(set_run_later_callback):
             set_run_later_callback(self._record_run_later_requests)
         self.instruction_optimizers.append(optimizer)
+        self._invalidate_residual_admission_cache()
 
     def add_rule(self, rule: InstructionOptimizationRule):
         # optimizer_log.info("Trying to add rule {0}".format(rule))
         for ins_optimizer in self.instruction_optimizers:
             ins_optimizer.add_rule(rule)
         self.analyzer.add_rule(rule)
+        self._invalidate_residual_admission_cache()
+
+    def _invalidate_residual_admission_cache(self) -> None:
+        """Discard the maturity-local fast-tier admission decision."""
+
+        self._residual_admission_cache_key = None
+        self._residual_admission_cache_value = False
 
     def reset_cycle_detection(self) -> None:
         """Clear the rewrite-cycle seen set.
@@ -307,6 +324,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
     def reset_run_later_state(self) -> None:
         self._scheduled_stage_identities = frozenset()
         self._scheduled_implementation_names = frozenset()
+        self._invalidate_residual_admission_cache()
         scheduler = self._run_later_scheduler
         if scheduler is not None:
             reset_all = getattr(scheduler, "reset_all", None)
@@ -331,6 +349,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
     def _drain_run_later_for_maturity(self, mba: ida_hexrays.mbl_array_t) -> None:
         self._scheduled_stage_identities = frozenset()
         self._scheduled_implementation_names = frozenset()
+        self._invalidate_residual_admission_cache()
         scheduler = self._run_later_scheduler
         if scheduler is None or self.current_maturity is None:
             return
@@ -1081,6 +1100,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         if new_scope != old_scope:
             self._execution_scope_func_ea = -1
             self._active_instruction_rule_names_by_maturity.clear()
+            self._invalidate_residual_admission_cache()
             # Invalidate compiled rule views on scope change (PR3)
             for optimizer in self.instruction_optimizers:
                 if hasattr(optimizer, "invalidate"):
@@ -1153,6 +1173,14 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         when a profile forgot to configure its fast tier.
         """
 
+        cache_key = (
+            -1 if self.current_maturity is None else int(self.current_maturity),
+            allowed_rule_names,
+            scheduled_rule_names,
+        )
+        if cache_key == self._residual_admission_cache_key:
+            return self._residual_admission_cache_value
+
         for optimizer in self._active_optimizers:
             for rule in getattr(optimizer, "rules", ()) or ():
                 if getattr(rule, "PORTFOLIO_TIER", None) != "fast":
@@ -1166,7 +1194,11 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                     and name not in scheduled_rule_names
                 ):
                     continue
+                self._residual_admission_cache_key = cache_key
+                self._residual_admission_cache_value = True
                 return True
+        self._residual_admission_cache_key = cache_key
+        self._residual_admission_cache_value = False
         return False
 
     @staticmethod

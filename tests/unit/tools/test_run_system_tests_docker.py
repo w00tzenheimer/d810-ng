@@ -197,6 +197,49 @@ def test_cython_profile_rejects_pure_python_mode(tmp_path: Path) -> None:
     assert "D810_CYTHON_PROFILE=1 requires D810_NO_CYTHON=0" in result.stderr
 
 
+def test_native_profile_mode_adds_only_required_capabilities_and_tools(
+    tmp_path: Path,
+) -> None:
+    result, calls = _run(
+        tmp_path,
+        "exec",
+        "--",
+        "true",
+        label=RUNTIME_LABEL,
+        extra_env={"D810_NATIVE_PROFILE": "1"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    command = _container_run(calls)
+    assert "--cap-add=PERFMON" in command
+    assert "--cap-add=SYS_PTRACE" in command
+    assert "--security-opt=seccomp=unconfined" in command
+    assert "--privileged" not in command
+    assert "apt-get install -y --no-install-recommends linux-perf" in command
+    assert "/app/ida/.venv/bin/pip install -q py-spy" in command
+    assert "D810_NATIVE_PROFILE=1" in command
+
+
+def test_native_profile_mode_is_opt_in_and_validated(tmp_path: Path) -> None:
+    normal, normal_calls = _run(tmp_path / "normal", "exec", "--", "true")
+    assert normal.returncode == 0, normal.stderr
+    normal_command = _container_run(normal_calls)
+    assert "--cap-add=PERFMON" not in normal_command
+    assert "linux-perf" not in normal_command
+    assert "py-spy" not in normal_command
+
+    invalid, invalid_calls = _run(
+        tmp_path / "invalid",
+        "exec",
+        "--",
+        "true",
+        extra_env={"D810_NATIVE_PROFILE": "yes"},
+    )
+    assert invalid.returncode != 0
+    assert invalid_calls == []
+    assert "D810_NATIVE_PROFILE must be 0 or 1" in invalid.stderr
+
+
 def test_baked_runtime_preserves_llvm_provisioning(tmp_path: Path) -> None:
     result, calls = _run(
         tmp_path,

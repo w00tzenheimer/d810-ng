@@ -10,6 +10,7 @@ and adversarial verification without importing IDA objects.
 from __future__ import annotations
 
 from dataclasses import asdict
+import ctypes
 import hashlib
 import importlib
 import json
@@ -20,6 +21,7 @@ import platform
 import statistics
 import subprocess
 import sys
+import threading
 import time
 from types import SimpleNamespace
 from d810.core.typing import Any
@@ -320,9 +322,7 @@ def _metadata_base(
             "BLOCKED: mounted fixture does not match attested fixture size",
             pytrace=False,
         )
-    workload_fingerprint = _canonical_hash(
-        {"blocks": blocks, "operations": operations}
-    )
+    workload_fingerprint = _canonical_hash({"blocks": blocks, "operations": operations})
     workload_hash = _canonical_hash(
         {"blocks": blocks, "operations": operations, "counts": counts}
     )
@@ -463,7 +463,9 @@ def _instruction_descriptor(
         "opcode": int(getattr(instruction, "opcode", -1)),
         "ea": int(getattr(instruction, "ea", 0)),
         "size": int(getattr(instruction, "size", 0)),
-        "text": str(instruction._print()) if hasattr(instruction, "_print") else str(instruction),
+        "text": str(instruction._print())
+        if hasattr(instruction, "_print")
+        else str(instruction),
         "operands": {
             attribute: _mop_descriptor(getattr(instruction, attribute, None))
             for attribute in ("l", "r", "d")
@@ -1383,11 +1385,16 @@ def _cache_phase() -> dict[str, Any]:
                     "fresh MBA block/instruction descriptors differ from capture"
                 )
             expected_workload = capture["metadata"]["workload_fingerprint"]
-            if _canonical_hash(
-                {"blocks": fresh_blocks, "operations": operations}
-            ) != expected_workload:
-                raise RuntimeError("fresh MBA workload fingerprint differs from capture")
-            if captured_blocks != fresh_blocks and _canonical_hash(captured_blocks) != _canonical_hash(fresh_blocks):
+            if (
+                _canonical_hash({"blocks": fresh_blocks, "operations": operations})
+                != expected_workload
+            ):
+                raise RuntimeError(
+                    "fresh MBA workload fingerprint differs from capture"
+                )
+            if captured_blocks != fresh_blocks and _canonical_hash(
+                captured_blocks
+            ) != _canonical_hash(fresh_blocks):
                 raise RuntimeError("captured and fresh block descriptors are not equal")
             rss_before = _current_rss_bytes()
             rss_peak = rss_before
@@ -1602,6 +1609,135 @@ class TestSccpCachePerformance:
                     else "auto",
                 ),
             )
+
+    @pytest.mark.ida_required
+    @pytest.mark.profile
+    def test_bounded_post_preopt_profile(
+        self,
+        perf_gate_prerequisite,
+        libobfuscated_setup,
+        d810_state_all_rules,
+    ) -> None:
+        """Capture a bounded compiled profile without running receipt phases."""
+
+        import idaapi
+        from d810.core import CythonMode, temporary_mop_cache_policy
+        from d810.optimizers.microcode.instructions.pattern_matching.engine import (
+            get_engine_info,
+        )
+
+        overlay = os.environ.get("D810_PROFILE_SCCP_OVERLAY", "on")
+        if overlay not in {"on", "off"}:
+            pytest.fail("D810_PROFILE_SCCP_OVERLAY must be on or off", pytrace=False)
+        duration = float(os.environ.get("D810_PROFILE_SECONDS", "180"))
+        if not (1.0 <= duration <= 300.0):
+            pytest.fail("D810_PROFILE_SECONDS must be between 1 and 300", pytrace=False)
+        label = os.environ.get("D810_PROFILE_LABEL", f"compiled-overlay-{overlay}")
+        if not label or Path(label).name != label:
+            pytest.fail("D810_PROFILE_LABEL must be a basename", pytrace=False)
+        output_dir = Path(".tmp/profiles") / label
+        output_dir.mkdir(parents=True, exist_ok=True)
+        controller_mode = os.environ.get("D810_PROFILE_CONTROLLER", "on")
+        if controller_mode not in {"on", "off"}:
+            pytest.fail("D810_PROFILE_CONTROLLER must be on or off", pytrace=False)
+
+        class ProfileWindowExpired(BaseException):
+            pass
+
+        timed_out = False
+        interrupted = threading.Event()
+        main_thread_id = threading.get_ident()
+
+        def expire_profile_window() -> None:
+            if interrupted.wait(duration):
+                return
+            result = ctypes.pythonapi.PyThreadState_SetAsyncExc(
+                ctypes.c_ulong(main_thread_id), ctypes.py_object(ProfileWindowExpired)
+            )
+            if result != 1:
+                (output_dir / "watchdog-error.txt").write_text(
+                    f"PyThreadState_SetAsyncExc returned {result}\n", encoding="utf-8"
+                )
+
+        with d810_state_all_rules() as state:
+            CythonMode().enable()
+            pattern_engine = get_engine_info()
+            if pattern_engine.get("backend") != "cython":
+                pytest.fail(
+                    "BLOCKED: bounded compiled profile requires the Cython pattern "
+                    f"engine, observed {pattern_engine}",
+                    pytrace=False,
+                )
+            _configure_policy(state, "cython", overlay)
+            _reset_runtime_state()
+            state.stats.reset()
+            controller = state.manager.profiling
+            controller.log_dir = output_dir
+            if controller.profiler is None or controller.cprofiler is None:
+                pytest.fail(
+                    "BLOCKED: ProfilingController lacks pyinstrument or cProfile",
+                    pytrace=False,
+                )
+            if controller_mode == "on":
+                controller.enable()
+            watchdog = threading.Thread(
+                target=expire_profile_window,
+                name="d810-bounded-profile-watchdog",
+                daemon=True,
+            )
+            watchdog.start()
+            started = time.perf_counter()
+            try:
+                with temporary_mop_cache_policy(4096, 40960):
+                    idaapi.decompile(_function_ea(), flags=idaapi.DECOMP_NO_CACHE)
+            except ProfileWindowExpired:
+                timed_out = True
+            finally:
+                elapsed = time.perf_counter() - started
+                interrupted.set()
+                watchdog.join(timeout=1.0)
+                if controller_mode == "on" and controller.cprofiler.is_running:
+                    controller.cprofiler.disable()
+                    controller.cprofiler.profiler.dump_stats(
+                        str(output_dir / "d810_cprofile.prof")
+                    )
+                if controller_mode == "on" and getattr(
+                    controller.profiler, "is_running", False
+                ):
+                    controller.profiler.stop()
+                    (output_dir / "d810_profile.html").write_text(
+                        controller.profiler.output_html(), encoding="utf-8"
+                    )
+                    (output_dir / "d810_profile.txt").write_text(
+                        controller.profiler.output_text(
+                            unicode=False, color=False, show_all=True
+                        ),
+                        encoding="utf-8",
+                    )
+                metadata = {
+                    "duration_limit_seconds": duration,
+                    "elapsed_seconds": elapsed,
+                    "timed_out": timed_out,
+                    "function_ea": _function_ea(),
+                    "backend": "cython",
+                    "pattern_engine": pattern_engine,
+                    "sccp_overlay": overlay,
+                    "constant_cache_capacity": 4096,
+                    "ast_cache_capacity": 40960,
+                    "cython_profile": os.environ.get("D810_CYTHON_PROFILE", "0"),
+                    "native_profile": os.environ.get("D810_NATIVE_PROFILE", "0"),
+                    "profiling_controller": controller_mode,
+                    "runtime_image": os.environ.get("D810_TEST_RUNTIME_IMAGE", ""),
+                    "runtime_image_id": os.environ.get(
+                        "D810_TEST_RUNTIME_IMAGE_ID", ""
+                    ),
+                    "pid": os.getpid(),
+                }
+                (output_dir / "metadata.json").write_text(
+                    json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8"
+                )
+
+        assert timed_out or (output_dir / "d810_cprofile.prof").stat().st_size > 0
 
 
 def _sample_cache_stat(
@@ -1827,12 +1963,12 @@ def _sample_row(
             "ast": 20480 if label == "winner" else 40960,
         },
     }
-    row["cache_stats"]["MOP_CONSTANT_CACHE"]["configured_max_size"] = row[
-        "capacity"
-    ]["constant"]
-    row["cache_stats"]["MOP_TO_AST_CACHE"]["configured_max_size"] = row[
-        "capacity"
-    ]["ast"]
+    row["cache_stats"]["MOP_CONSTANT_CACHE"]["configured_max_size"] = row["capacity"][
+        "constant"
+    ]
+    row["cache_stats"]["MOP_TO_AST_CACHE"]["configured_max_size"] = row["capacity"][
+        "ast"
+    ]
     return row
 
 
@@ -2149,7 +2285,11 @@ def test_merge_assembles_exact_order_and_verifies_rows(tmp_path: Path) -> None:
         {"blocks": capture_blocks, "operations": capture_operations}
     )
     capture_metadata["workload_hash"] = _canonical_hash(
-        {"blocks": capture_blocks, "operations": capture_operations, "counts": capture_counts}
+        {
+            "blocks": capture_blocks,
+            "operations": capture_operations,
+            "counts": capture_counts,
+        }
     )
     capture_metadata["capture_operation_counts"] = capture_counts
     for row in sample["runs"]:
@@ -2165,9 +2305,7 @@ def test_merge_assembles_exact_order_and_verifies_rows(tmp_path: Path) -> None:
         row["operation_counts"] = dict(capture_counts)
     for row, phase_index in zip(sample["runs"][:5], range(1, 6), strict=True):
         row["process_id"] = f"pid-{phase_index}"
-        row["process_identity"] = _sample_process_identity(
-            f"phase-{phase_index}"
-        )
+        row["process_identity"] = _sample_process_identity(f"phase-{phase_index}")
     for row in sample["cache_matrix"]:
         row["process_id"] = "pid-6"
         row["process_identity"] = _sample_process_identity("phase-6")
@@ -2373,9 +2511,9 @@ def test_verifier_rejects_full_program_identity_drift_even_with_projection_updat
 
 def test_verifier_rejects_reused_process_start_identity(tmp_path: Path) -> None:
     payload = _sample_receipt()
-    payload["phase_fragments"][1]["process_identity"] = payload[
-        "phase_fragments"
-    ][0]["process_identity"]
+    payload["phase_fragments"][1]["process_identity"] = payload["phase_fragments"][0][
+        "process_identity"
+    ]
     receipt = tmp_path / "process-start-reuse.json"
     receipt.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(ValueError, match="process|identity|fresh"):
@@ -2479,10 +2617,10 @@ def test_verifier_rejects_full_zero_sccp_and_rss_mismatch(tmp_path: Path) -> Non
         verify(receipt)
 
 
-@pytest.mark.parametrize("field", ("requests", "executions", "converged", "python_runs"))
-def test_verifier_rejects_solver_zero_telemetry(
-    tmp_path: Path, field: str
-) -> None:
+@pytest.mark.parametrize(
+    "field", ("requests", "executions", "converged", "python_runs")
+)
+def test_verifier_rejects_solver_zero_telemetry(tmp_path: Path, field: str) -> None:
     payload = _sample_receipt()
     payload["runs"][0]["sccp_summary"][field] = 0
     payload["sccp_summary"][field] = sum(

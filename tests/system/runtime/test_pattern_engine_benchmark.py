@@ -17,8 +17,12 @@ import ida_hexrays
 import idaapi
 import idc
 
+from d810.core import MOP_CONSTANT_CACHE, MOP_TO_AST_CACHE
+from d810.core.cymode import CythonMode
 from d810.hexrays.expr.p_ast import AstLeaf, AstNode
+from d810.hexrays.ir import minsn_utils
 from d810.hexrays.ir.minsn_utils import minsn_to_ast
+from d810.hexrays.ir.mop_snapshot import MopSnapshot
 from d810.optimizers.microcode.instructions.pattern_matching.handler import (
     PatternStorage,
 )
@@ -90,6 +94,80 @@ def collect_real_asts_from_mba(mba) -> list:
     return results
 
 
+def _mop_projection(mop) -> tuple[object, ...] | None:
+    if mop is None:
+        return None
+    return (
+        int(getattr(mop, "t", -1)),
+        int(getattr(mop, "size", 0)),
+        str(mop.dstr()) if hasattr(mop, "dstr") else repr(mop),
+    )
+
+
+def _ast_projection(ast) -> tuple[object, ...] | None:
+    """Project the behavior-bearing AST shape without object identity."""
+    if ast is None:
+        return None
+    if ast.is_node():
+        return (
+            "node",
+            int(ast.opcode),
+            int(getattr(ast, "dest_size", 0) or 0),
+            _ast_projection(getattr(ast, "left", None)),
+            _ast_projection(getattr(ast, "right", None)),
+            _mop_projection(getattr(ast, "dst_mop", None)),
+        )
+    if ast.is_constant():
+        return (
+            "constant",
+            int(getattr(ast, "dest_size", 0) or 0),
+            getattr(ast, "value", None),
+            getattr(ast, "expected_value", None),
+            _mop_projection(getattr(ast, "mop", None)),
+        )
+    return (
+        "leaf",
+        int(getattr(ast, "dest_size", 0) or 0),
+        _mop_projection(getattr(ast, "mop", None)),
+    )
+
+
+def _resolver_projection(ast) -> tuple[object, ...] | None:
+    """Project resolver semantics without relying on mutable AST indexes."""
+    if ast is None:
+        return None
+    if ast.is_node():
+        return (
+            "node",
+            int(ast.opcode),
+            int(getattr(ast, "dest_size", 0) or 0),
+            _resolver_projection(getattr(ast, "left", None)),
+            _resolver_projection(getattr(ast, "right", None)),
+        )
+    mop = getattr(ast, "mop", None)
+    return (
+        "constant" if ast.is_constant() else "leaf",
+        int(getattr(ast, "dest_size", 0) or 0),
+        getattr(ast, "value", None),
+        int(getattr(mop, "t", -1)) if mop is not None else -1,
+        int(getattr(mop, "size", 0)) if mop is not None else 0,
+        getattr(mop, "reg", getattr(mop, "r", None)) if mop is not None else None,
+        getattr(mop, "stkoff", None) if mop is not None else None,
+    )
+
+
+def _assert_ast_owns_operand_snapshots(ast) -> None:
+    if ast is None:
+        return
+    mop = getattr(ast, "mop", None)
+    if mop is not None and not ast.is_constant():
+        assert isinstance(mop, MopSnapshot), type(mop)
+    if ast.is_node():
+        _assert_ast_owns_operand_snapshots(getattr(ast, "left", None))
+        _assert_ast_owns_operand_snapshots(getattr(ast, "right", None))
+        _assert_ast_owns_operand_snapshots(getattr(ast, "dst", None))
+
+
 @pytest.fixture(scope="class")
 def libobfuscated_setup(ida_database, configure_hexrays, setup_libobfuscated_funcs):
     """Setup fixture for libobfuscated tests -- runs once per class."""
@@ -144,6 +222,36 @@ class TestStorageParity:
     """Verify PatternStorage and OpcodeIndexedStorage return identical candidates."""
 
     binary_name = _get_default_binary()
+
+    @pytest.mark.ida_required
+    def test_legacy_lookup_reuses_candidate_set_for_same_frozen_shape(
+        self,
+        real_asts,
+        monkeypatch,
+    ):
+        candidate = next(ast for ast, _ in real_asts if ast.is_node())
+        storage = PatternStorage(depth=1)
+
+        class MockRule:
+            name = "shape_cache_rule"
+
+        storage.add_pattern_for_rule(candidate, MockRule())
+        original_explore = storage.explore_one_level
+        traversals = 0
+
+        def counted_explore(searched_pattern, cur_level):
+            nonlocal traversals
+            traversals += 1
+            return original_explore(searched_pattern, cur_level)
+
+        monkeypatch.setattr(storage, "explore_one_level", counted_explore)
+
+        first = storage.get_matching_rule_pattern_info(candidate)
+        second = storage.get_matching_rule_pattern_info(candidate.clone())
+
+        assert [entry.rule.name for entry in first] == ["shape_cache_rule"]
+        assert [entry.rule.name for entry in second] == ["shape_cache_rule"]
+        assert traversals == 1
 
     @pytest.fixture(scope="class")
     def populated_storages(self, real_asts):
@@ -255,6 +363,103 @@ class TestCythonPythonParity:
     """Verify Cython implementations match pure-Python outputs exactly."""
 
     binary_name = _get_default_binary()
+
+    @pytest.mark.ida_required
+    def test_unified_minsn_gateway_selects_compiled_builder(self, real_asts):
+        """Production Cython mode must not route the hot AST gateway to Python."""
+        assert CythonMode().is_enabled()
+        assert minsn_utils.get_minsn_to_ast_backend() == "cython"
+
+    @pytest.mark.ida_required
+    def test_recursive_def_resolver_gateway_selects_compiled_backend(self):
+        """Production mode must not recurse over every AST node in Python."""
+        from d810.evaluator.hexrays_microcode import def_search
+
+        assert CythonMode().is_enabled()
+        assert def_search.get_recursive_resolver_backend() == "cython"
+
+    @pytest.mark.ida_required
+    def test_recursive_def_resolver_matches_python_on_live_microcode(
+        self,
+        libobfuscated_setup,
+    ):
+        """The compiled tree walk must preserve Python resolver behavior."""
+        from d810.evaluator.hexrays_microcode import def_search
+
+        function_ea = get_func_ea("test_cst_simplification")
+        assert function_ea != idaapi.BADADDR
+        mba = gen_microcode_at_maturity(function_ea, ida_hexrays.MMAT_PREOPTIMIZED)
+        assert mba is not None
+
+        compared = 0
+        for block_index in range(mba.qty):
+            block = mba.get_mblock(block_index)
+            instruction = block.head
+            while instruction is not None and compared < 16:
+                if instruction.opcode not in {ida_hexrays.m_add, ida_hexrays.m_sub}:
+                    instruction = instruction.next
+                    continue
+                MOP_TO_AST_CACHE.clear()
+                python_source = minsn_to_ast(instruction)
+                MOP_TO_AST_CACHE.clear()
+                compiled_source = minsn_to_ast(instruction)
+                if python_source is None or compiled_source is None:
+                    instruction = instruction.next
+                    continue
+
+                python_result = def_search._py_slow_recursively_resolve_ast(
+                    python_source, block, instruction, max_depth=6, cache={}
+                )
+                compiled_result = def_search.recursively_resolve_ast(
+                    compiled_source, block, instruction, max_depth=6, cache={}
+                )
+
+                assert _resolver_projection(compiled_result) == _resolver_projection(
+                    python_result
+                )
+                assert compiled_result.get_pattern() == python_result.get_pattern()
+                compared += 1
+                instruction = instruction.next
+
+        assert compared >= 4
+
+    @pytest.mark.ida_required
+    def test_minsn_builder_parity_on_live_microcode(self, libobfuscated_setup):
+        """The compiled builder must preserve the Python builder's live ASTs."""
+        from d810.speedups.expr import c_ast
+
+        function_ea = get_func_ea("test_cst_simplification")
+        assert function_ea != idaapi.BADADDR
+        mba = gen_microcode_at_maturity(function_ea, ida_hexrays.MMAT_PREOPTIMIZED)
+        assert mba is not None
+
+        compared = 0
+        for block_index in range(mba.qty):
+            instruction = mba.get_mblock(block_index).head
+            while instruction is not None and compared < 50:
+                MOP_CONSTANT_CACHE.clear()
+                MOP_TO_AST_CACHE.clear()
+                python_ast = minsn_utils._py_slow_minsn_to_ast(instruction)
+                python_projection = _ast_projection(python_ast)
+
+                MOP_CONSTANT_CACHE.clear()
+                MOP_TO_AST_CACHE.clear()
+                cython_ast = c_ast.minsn_to_ast(instruction)
+                cython_projection = _ast_projection(cython_ast)
+
+                assert cython_projection == python_projection, instruction.dstr()
+                _assert_ast_owns_operand_snapshots(cython_ast)
+                if python_ast is not None and cython_ast is not None:
+                    assert cython_ast.get_pattern() == python_ast.get_pattern()
+                    py_leafs, py_constants, py_opcodes = python_ast.get_information()
+                    cy_leafs, cy_constants, cy_opcodes = cython_ast.get_information()
+                    assert len(cy_leafs) == len(py_leafs)
+                    assert cy_constants == py_constants
+                    assert cy_opcodes == py_opcodes
+                compared += 1
+                instruction = instruction.next
+
+        assert compared >= 10
 
     @pytest.mark.ida_required
     def test_fingerprint_parity(self, real_asts):
@@ -645,7 +850,7 @@ class TestHotPathBenchmark:
         elapsed = timed_run(run_optimization_pass, iterations=10, warmup=2)
         per_instruction = (elapsed / 10 / len(instructions)) * 1_000_000
 
-        print(f"\n  Hot path (no rules):")
+        print("\n  Hot path (no rules):")
         print(f"    Total instructions: {len(instructions)}")
         print(f"    Time per instruction: {per_instruction:.2f} us")
         print(f"    Throughput: {len(instructions) / (elapsed / 10):.0f} insns/sec")

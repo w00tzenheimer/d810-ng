@@ -69,6 +69,7 @@
 #   D810_WORKTREE_ROOT     Dir under repo root for worktrees (default: .worktrees)
 #   D810_NO_CYTHON         Passed into container (default: 1)
 #   D810_CYTHON_PROFILE    Test-only Cython trace/profile build (requires D810_NO_CYTHON=0)
+#   D810_NATIVE_PROFILE    Opt-in perf/py-spy tooling plus PERFMON/SYS_PTRACE (default: 0)
 #   D810_TEST_BINARY       Passed into container (default: libobfuscated.dll)
 #   D810_DOCKER_MEMORY      Memory limit for container (default: 4g). OOM-kills if exceeded.
 #
@@ -207,6 +208,7 @@ _trace_default_override D810_DOCKER_IMAGE idapro-9.4
 _trace_default_override D810_DOCKER_MEMORY 4g
 _trace_default_override D810_NO_CYTHON 1
 _trace_default_override D810_CYTHON_PROFILE 0
+_trace_default_override D810_NATIVE_PROFILE 0
 _trace_default_override D810_TEST_BINARY libobfuscated.dll
 _trace_default_override D810_WORKTREE_ROOT .worktrees
 
@@ -214,12 +216,17 @@ DOCKER_IMAGE="${D810_DOCKER_IMAGE-idapro-9.4}"
 DOCKER_MEMORY="${D810_DOCKER_MEMORY-4g}"
 NO_CYTHON="${D810_NO_CYTHON-1}"
 CYTHON_PROFILE="${D810_CYTHON_PROFILE-0}"
+NATIVE_PROFILE="${D810_NATIVE_PROFILE-0}"
 TEST_BINARY="${D810_TEST_BINARY-libobfuscated.dll}"
 [ -n "$DOCKER_IMAGE" ] || { echo "ERROR: D810_DOCKER_IMAGE is set but empty" >&2; exit 1; }
 [ -n "$DOCKER_MEMORY" ] || { echo "ERROR: D810_DOCKER_MEMORY is set but empty" >&2; exit 1; }
 case "$CYTHON_PROFILE" in
   0|1) ;;
   *) echo "ERROR: D810_CYTHON_PROFILE must be 0 or 1" >&2; exit 1 ;;
+esac
+case "$NATIVE_PROFILE" in
+  0|1) ;;
+  *) echo "ERROR: D810_NATIVE_PROFILE must be 0 or 1" >&2; exit 1 ;;
 esac
 if [ "$CYTHON_PROFILE" = "1" ] && [ "$NO_CYTHON" != "0" ]; then
   echo "ERROR: D810_CYTHON_PROFILE=1 requires D810_NO_CYTHON=0" >&2
@@ -464,6 +471,16 @@ _d810_extra_env_flags() {
 
 IDA_VENV_PIP="/app/ida/.venv/bin/pip"
 IDA_VENV_PYTHON="/app/ida/.venv/bin/python"
+IDA_VENV_PYSPY="/app/ida/.venv/bin/py-spy"
+
+PROFILE_DOCKER_FLAGS=""
+PROFILE_SETUP=""
+if [ "$NATIVE_PROFILE" = "1" ]; then
+  # PERFMON admits perf_event_open without granting the container full
+  # privilege. SYS_PTRACE + the narrow seccomp relaxation admit py-spy attach.
+  PROFILE_DOCKER_FLAGS="--cap-add=PERFMON --cap-add=SYS_PTRACE --security-opt=seccomp=unconfined"
+  PROFILE_SETUP="if ! command -v perf >/dev/null 2>&1; then apt-get update -qq && apt-get install -y --no-install-recommends linux-perf; fi; if [ ! -x $IDA_VENV_PYSPY ]; then $IDA_VENV_PIP install -q py-spy; fi; perf --version; $IDA_VENV_PYSPY --version"
+fi
 
 # Per-container setup exports the runtime environment and installs dependencies
 # when using an unlabelled base image. A d810 runtime label is only a hint: local
@@ -496,7 +513,7 @@ if _image_has_baked_runtime; then
 else
   DEPENDENCY_SETUP="$IDA_VENV_PIP install -e '.[dev,emulation,egraph]' -q && $IDA_VENV_PYTHON -m d810.speedups.install && $IDA_VENV_PYTHON -c '$RUNTIME_PROBE'"
 fi
-SETUP_CMD="$LLVM_OPT_SETUP${LLVM_OPT_SETUP:+ && }export $ENV_IDA $ENV_PYTHON $ENV_GIT && $DEPENDENCY_SETUP && { $SPEEDUPS_BUILD_CMD; }"
+SETUP_CMD="$LLVM_OPT_SETUP${LLVM_OPT_SETUP:+ && }export $ENV_IDA $ENV_PYTHON $ENV_GIT && $PROFILE_SETUP${PROFILE_SETUP:+ && }$DEPENDENCY_SETUP && { $SPEEDUPS_BUILD_CMD; }"
 
 # Safely reassemble an array of args into a string suitable for embedding in
 # a bash -c command that gets re-parsed by another shell (e.g. inside the
@@ -529,6 +546,7 @@ run_bash() {
   local inner="$1"
   local extra_env="$(_d810_extra_env_flags)"
   _run_docker_container run --rm \
+    $PROFILE_DOCKER_FLAGS \
     --add-host files.pythonhosted.org:151.101.0.223 \
     --memory "$DOCKER_MEMORY" \
     -e "D810_MEMORY_LIMIT_BYTES=$MEMORY_BYTES" \
@@ -544,6 +562,7 @@ run_bash_it() {
   local inner="$1"
   local extra_env="$(_d810_extra_env_flags)"
   _run_docker_container run -it --rm \
+    $PROFILE_DOCKER_FLAGS \
     --memory "$DOCKER_MEMORY" \
     -e "D810_MEMORY_LIMIT_BYTES=$MEMORY_BYTES" \
     $extra_env \
@@ -563,6 +582,7 @@ run_bash_exec() {
   local inner="export $ENV_TEST && $SETUP_CMD && exec \"\$@\""
   local extra_env="$(_d810_extra_env_flags)"
   _run_docker_container run --rm \
+    $PROFILE_DOCKER_FLAGS \
     --add-host files.pythonhosted.org:151.101.0.223 \
     --memory "$DOCKER_MEMORY" \
     -e "D810_MEMORY_LIMIT_BYTES=$MEMORY_BYTES" \

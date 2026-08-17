@@ -75,9 +75,7 @@ class _FakeExecutionScopeService:
         del func_ea, pipeline
         resolved = tuple(identities)
         self.scheduled_calls.append(resolved)
-        if resolved == (
-            ExecutionStageIdentity("request-later", "request-later"),
-        ):
+        if resolved == (ExecutionStageIdentity("request-later", "request-later"),):
             return (
                 SimpleNamespace(
                     implementation=_NamedImplementation("Rule.RequestLater")
@@ -105,6 +103,18 @@ class _CaptureOptimizer:
         self.allowed.append(allowed_rule_names)
         self.scheduled.append(scheduled_rule_names)
         return None
+
+
+class _FastPortfolioRule:
+    name = "Rule.Fast"
+    PORTFOLIO_TIER = "fast"
+    maturities = (1,)
+
+    def __init__(self):
+        self.admission_decisions: list[bool] = []
+
+    def set_residual_admission(self, admitted: bool) -> None:
+        self.admission_decisions.append(admitted)
 
 
 class _PatternRule:
@@ -214,6 +224,51 @@ class TestInstructionScopeCaching:
         assert capture.allowed[-1] == frozenset({"Rule.D"})
         assert capture.scheduled[-1] == frozenset()
         assert len(scope_service.calls) == 3
+
+    def test_residual_admission_scans_fast_rules_once_per_scope(
+        self, libobfuscated_setup
+    ):
+        manager = InstructionOptimizerManager(
+            OptimizationStatistics(), Path("."), optimizer_cls=InstructionOptimizer
+        )
+        manager.analyzer = SimpleNamespace(analyze=lambda *_args, **_kwargs: None)
+        capture = _CaptureOptimizer()
+        fast_rule = _FastPortfolioRule()
+        capture.rules = (fast_rule,)
+        manager.instruction_optimizers = [capture]
+        manager._active_optimizers = [capture]
+        manager.current_maturity = 1
+        manager.configure(
+            execution_scope_service=_FakeExecutionScopeService(
+                {(0x401000, 1): (_NamedImplementation("Rule.Fast"),)}
+            ),
+            execution_scope_project_name="proj",
+            execution_scope_idb_key="idb",
+        )
+
+        rule_name = manager._rule_name
+        fast_rule_name_lookups = 0
+
+        def count_fast_rule_name(candidate):
+            nonlocal fast_rule_name_lookups
+            if candidate is fast_rule:
+                fast_rule_name_lookups += 1
+            return rule_name(candidate)
+
+        manager._rule_name = count_fast_rule_name
+        block = _make_block(0x401000)
+        instruction = SimpleNamespace(opcode=ida_hexrays.m_add)
+
+        assert manager.optimize(block, instruction) is False
+        assert manager.optimize(block, instruction) is False
+
+        assert fast_rule_name_lookups == 1
+        assert fast_rule.admission_decisions == [True, True]
+
+        assert manager.optimize(_make_block(0x402000), instruction) is False
+
+        assert fast_rule_name_lookups == 2
+        assert fast_rule.admission_decisions == [True, True, False]
 
     def test_instruction_run_later_request_joins_execution_scope_names(
         self, libobfuscated_setup

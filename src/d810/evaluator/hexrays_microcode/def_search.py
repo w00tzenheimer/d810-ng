@@ -19,8 +19,8 @@ import sys
 
 import ida_hexrays
 
-from d810.core import typing
-from d810.core import getLogger
+from d810.core import getLogger, typing
+from d810.core.cymode import CythonMode
 from d810.hexrays.expr.ast import AstLeaf, AstNode, get_mop_key
 from d810.hexrays.ir.mop_snapshot import MopSnapshot
 from d810.hexrays.ir.minsn_utils import minsn_to_ast
@@ -57,6 +57,31 @@ _SNAPSHOT_TYPES_REQUIRING_OWNED_MOP = {
     ida_hexrays.mop_l,
     ida_hexrays.mop_str,
 }
+
+
+def _microcode_instruction_identity(
+    blk: ida_hexrays.mblock_t,
+    ins: ida_hexrays.minsn_t,
+) -> tuple[int, int]:
+    """Return an exact, callback-local identity for a live microinstruction.
+
+    An EA is only an origin anchor: multiple microinstructions in the same
+    block (and even at the same maturity) can legitimately share it.  Prefer
+    the underlying SWIG pointer so distinct Python wrappers for the same live
+    instruction still compare equal, and fall back to Python object identity
+    for test doubles or unusual bindings.  Callers must not retain this key
+    beyond the current Hex-Rays callback.
+    """
+
+    try:
+        block_serial = int(blk.serial)
+    except (AttributeError, TypeError, ValueError):
+        block_serial = -1
+    try:
+        instruction_pointer = int(ins.this)
+    except (AttributeError, TypeError, ValueError):
+        instruction_pointer = id(ins)
+    return block_serial, instruction_pointer
 
 
 def _materialize_mop_for_tracking(
@@ -569,7 +594,7 @@ def resolve_mop_to_ast(
     return None
 
 
-def recursively_resolve_ast(
+def _py_slow_recursively_resolve_ast(
     ast: AstNode | AstLeaf | None,
     blk: ida_hexrays.mblock_t,
     ins: ida_hexrays.minsn_t,
@@ -637,7 +662,10 @@ def recursively_resolve_ast(
 
             if is_resolvable and ins is not None:
                 mop_key = get_mop_key(ast_leaf.mop)
-                cache_key = (mop_key, ins.ea)
+                cache_key = (
+                    mop_key,
+                    _microcode_instruction_identity(blk, ins),
+                )
                 if cache_key in cache:
                     return cache[cache_key]
 
@@ -652,7 +680,7 @@ def recursively_resolve_ast(
                         new_ins = resolved.ins
 
                     # Recursively resolve the new AST
-                    res = recursively_resolve_ast(
+                    res = _py_slow_recursively_resolve_ast(
                         resolved, blk, new_ins, depth + 1, max_depth, cache
                     )
                     cache[cache_key] = res
@@ -664,12 +692,16 @@ def recursively_resolve_ast(
     ast_node = typing.cast(AstNode, ast)
 
     new_left = (
-        recursively_resolve_ast(ast_node.left, blk, ins, depth, max_depth, cache)
+        _py_slow_recursively_resolve_ast(
+            ast_node.left, blk, ins, depth, max_depth, cache
+        )
         if ast_node.left
         else None
     )
     new_right = (
-        recursively_resolve_ast(ast_node.right, blk, ins, depth, max_depth, cache)
+        _py_slow_recursively_resolve_ast(
+            ast_node.right, blk, ins, depth, max_depth, cache
+        )
         if ast_node.right
         else None
     )
@@ -692,3 +724,56 @@ def recursively_resolve_ast(
         return new_ast
 
     return ast
+
+
+if CythonMode().is_enabled():
+    try:
+        from d810.speedups.evaluator.c_def_search import (
+            recursively_resolve_ast as _compiled_recursively_resolve_ast,
+        )
+
+        _RECURSIVE_RESOLVER_BACKEND = "cython"
+    except (ImportError, ModuleNotFoundError):
+        _compiled_recursively_resolve_ast = None
+        _RECURSIVE_RESOLVER_BACKEND = "python"
+else:
+    _compiled_recursively_resolve_ast = None
+    _RECURSIVE_RESOLVER_BACKEND = "python"
+
+
+def recursively_resolve_ast(
+    ast: AstNode | AstLeaf | None,
+    blk: ida_hexrays.mblock_t,
+    ins: ida_hexrays.minsn_t,
+    depth: int = 0,
+    max_depth: int = 10,
+    cache: dict | None = None,
+) -> AstNode | AstLeaf | None:
+    """Resolve AST definitions through the selected production backend."""
+
+    if _compiled_recursively_resolve_ast is not None:
+        return _compiled_recursively_resolve_ast(
+            ast,
+            blk,
+            ins,
+            depth,
+            max_depth,
+            cache,
+            resolve_mop_to_ast,
+            _microcode_instruction_identity,
+            _RESOLVE_NODE_BUDGET,
+        )
+    return _py_slow_recursively_resolve_ast(
+        ast,
+        blk,
+        ins,
+        depth=depth,
+        max_depth=max_depth,
+        cache=cache,
+    )
+
+
+def get_recursive_resolver_backend() -> str:
+    """Return the selected recursive definition resolver for diagnostics."""
+
+    return _RECURSIVE_RESOLVER_BACKEND

@@ -7,7 +7,7 @@ from d810.core import typing
 
 import ida_hexrays
 
-from d810.core import getLogger
+from d810.core import CacheImpl, getLogger
 from d810.core.settings import get_settings
 from d810.hexrays.expr.ast import AstBase, AstNode, AstNodeProtocol
 from d810.hexrays.ir.minsn_utils import minsn_to_ast
@@ -167,8 +167,16 @@ class PatternStorage(object):
         # Use tuple keys directly for O(1) lookup without string operations
         self.next_layer_patterns: dict[tuple[str, ...], PatternStorage] = {}
         self.rule_resolved: list[RulePatternInfo] = []
+        # Legacy exploration is a pure function of the candidate AST shape and
+        # the registered rule tree. Hex-Rays presents the same shapes many
+        # thousands of times, so retain the immutable candidate tuple while
+        # bounding memory and invalidate it whenever registration changes.
+        self._match_cache: CacheImpl[str, tuple[RulePatternInfo, ...]] = CacheImpl(
+            max_size=4096
+        )
 
     def add_pattern_for_rule(self, pattern: AstBase, rule: InstructionOptimizationRule):
+        self._match_cache.clear()
         sig_list = pattern.get_depth_signature(self.depth)
         sig_tuple = tuple(sig_list)
         # Check if signature is all "N" (terminal case)
@@ -213,7 +221,13 @@ class PatternStorage(object):
     def get_matching_rule_pattern_info(self, pattern: AstBase) -> list[RulePatternInfo]:
         if pattern_search_logger.debug_on:
             pattern_search_logger.debug("Searching for %s", pattern)
-        return self.explore_one_level(pattern, 1)
+        cache_key = pattern.get_pattern()
+        found, cached = self._match_cache.lookup(cache_key)
+        if found:
+            return list(cached)
+        matches = self.explore_one_level(pattern, 1)
+        self._match_cache[cache_key] = tuple(matches)
+        return matches
 
     def explore_one_level(
         self, searched_pattern: AstBase, cur_level: int
@@ -761,9 +775,14 @@ class PatternOptimizer(InstructionOptimizer):
                     "match_structural_and_replace",
                     None,
                 )
-                if bool(
-                    getattr(rule_pattern_info.rule, "uses_structural_matching", False)
-                ) and match_structural_and_replace is not None:
+                if (
+                    bool(
+                        getattr(
+                            rule_pattern_info.rule, "uses_structural_matching", False
+                        )
+                    )
+                    and match_structural_and_replace is not None
+                ):
                     structural_attempt_count += 1
                     if structural_lowering_prepared:
                         new_ins = match_structural_and_replace(
