@@ -20,6 +20,86 @@ def _fixture(name: str) -> str:
     return (MASM_DIR / f"{name}.asm").read_text()
 
 
+def _parse_callsite_markers(source: str) -> dict[str, tuple[str, str]]:
+    """Resolve CONST marker pointers to the following in-function instruction.
+
+    The committed MASM exporter represents exact native callsites as a public
+    qword in ``CONST`` that points at a private code label immediately before
+    the instruction.  Parse the section metadata rather than treating marker
+    names or imported API spellings as sufficient fixture evidence.
+    """
+    lines = source.splitlines()
+    const_start = next(
+        index for index, line in enumerate(lines) if line.strip() == "CONST SEGMENT"
+    )
+    const_end = next(
+        index
+        for index, line in enumerate(lines[const_start + 1 :], const_start + 1)
+        if line.strip() == "CONST ENDS"
+    )
+    text_start = next(
+        index
+        for index, line in enumerate(lines)
+        if re.match(r"^_TEXT SEGMENT\b", line.strip())
+    )
+    text_end = next(
+        index
+        for index, line in enumerate(lines[text_start + 1 :], text_start + 1)
+        if line.strip() == "_TEXT ENDS"
+    )
+    const_lines = lines[const_start + 1 : const_end]
+    text_lines = lines[text_start + 1 : text_end]
+    marker_names = {
+        match.group(1)
+        for line in const_lines
+        if (match := re.match(
+            r"^\s*PUBLIC\s+(d810_callsite_[A-Za-z0-9_]+)\s*$", line
+        ))
+    }
+    bindings: dict[str, tuple[str, str]] = {}
+    for marker in marker_names:
+        definition = next(
+            (
+                line
+                for line in const_lines
+                if re.match(
+                    rf"^\s*{re.escape(marker)}\s+dq\s+([A-Za-z0-9_]+)\s*$",
+                    line,
+                )
+            ),
+            None,
+        )
+        assert definition is not None, f"marker {marker} has no CONST qword"
+        target = re.fullmatch(
+            rf"\s*{re.escape(marker)}\s+dq\s+([A-Za-z0-9_]+)\s*",
+            definition,
+        )
+        assert target is not None, definition
+        target_label = target.group(1)
+        label_index = next(
+            (
+                index
+                for index, line in enumerate(text_lines)
+                if line.strip() == f"{target_label}:"
+            ),
+            None,
+        )
+        assert label_index is not None, (
+            f"marker {marker} points at missing code label {target_label}"
+        )
+        instruction = next(
+            (
+                line.strip()
+                for line in text_lines[label_index + 1 :]
+                if line.strip() and not line.lstrip().startswith(";")
+            ),
+            None,
+        )
+        assert instruction is not None, f"marker {marker} has no instruction"
+        bindings[marker] = (target_label, instruction)
+    return bindings
+
+
 def test_exact_target_a_fixture_preserves_materialized_effectful_corridor():
     source = _fixture("sub_7FF8569F0540")
 
@@ -30,6 +110,10 @@ def test_exact_target_a_fixture_preserves_materialized_effectful_corridor():
     assert "PUBLIC d810_callsite_sub_7FF8569F0540_memcpy" in source
     assert "CONST SEGMENT" in source
     assert "jmp loc_7FF8569F0600" in source
+    marker_bindings = _parse_callsite_markers(source)
+    assert marker_bindings[
+        "d810_callsite_sub_7FF8569F0540_memcpy"
+    ][1].lower().startswith("call ")
 
 
 def test_exact_target_b_fixture_preserves_dispatcher_trap_and_lock_effect():
@@ -44,12 +128,47 @@ def test_exact_target_b_fixture_preserves_dispatcher_trap_and_lock_effect():
     assert "PUBLIC d810_callsite_sub_7FF8568132D0_srw_lock" in source
     assert "int 3" in source
     assert "CONST SEGMENT" in source
+    marker_bindings = _parse_callsite_markers(source)
+    assert marker_bindings[
+        "d810_callsite_sub_7FF8568132D0_srw_lock"
+    ][1].lower().startswith("call ")
+
+
+def test_exact_target_c_fixture_preserves_termination_effects_and_markers():
+    source_path = MASM_DIR / "sub_7FF855576B50.asm"
+    assert source_path.is_file(), f"missing committed MASM fixture: {source_path}"
+    source = source_path.read_text()
+
+    assert "; Function: sub_7FF855576B50  @ 0x7ff855576b50" in source
+    assert "PUBLIC sub_7FF855576B50" in source
+    assert "EXTERN MessageBoxA:PROC" in source
+    assert "EXTERN GetCurrentProcess:PROC" in source
+    assert "EXTERN TerminateProcess:PROC" in source
+    assert "CONST SEGMENT" in source
+
+    expected = {
+        "d810_callsite_sub_7FF855576B50_message_box",
+        "d810_callsite_sub_7FF855576B50_get_current_process",
+        "d810_callsite_sub_7FF855576B50_terminate_process",
+    }
+    marker_bindings = _parse_callsite_markers(source)
+    assert set(marker_bindings) == expected
+    function_start = source.index("sub_7FF855576B50:")
+    function_end = source.index("_TEXT ENDS")
+    for marker, (target_label, instruction) in marker_bindings.items():
+        target_offset = source.index(f"{target_label}:")
+        assert function_start < target_offset < function_end, marker
+        assert instruction.lower().startswith(("call ", "jmp ")), (
+            marker,
+            instruction,
+        )
 
 
 def test_masm_build_exports_only_explicit_d810_callsite_markers() -> None:
     sources = {
         "a": _fixture("sub_7FF8569F0540"),
         "b": _fixture("sub_7FF8568132D0"),
+        "c": _fixture("sub_7FF855576B50"),
     }
     markers = {
         marker
@@ -62,6 +181,9 @@ def test_masm_build_exports_only_explicit_d810_callsite_markers() -> None:
     assert markers == {
         "d810_callsite_sub_7FF8569F0540_memcpy",
         "d810_callsite_sub_7FF8568132D0_srw_lock",
+        "d810_callsite_sub_7FF855576B50_message_box",
+        "d810_callsite_sub_7FF855576B50_get_current_process",
+        "d810_callsite_sub_7FF855576B50_terminate_process",
     }
 
 

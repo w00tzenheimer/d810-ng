@@ -1,4 +1,4 @@
-"""Exact IDA regressions for the two OLLVM unflattening safety fixtures.
+"""Exact IDA regressions for the three OLLVM unflattening safety fixtures.
 
 These are deliberately separate from ``DeobfuscationCase``.  Target B cannot
 be decompiled by Hex-Rays in the D810-off baseline, so the generic runner's
@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import json
+import re
 import sqlite3
 import time
 from pathlib import Path
@@ -42,6 +43,10 @@ TARGET_SIZES = {
     # terminal blocks and make Hex-Rays report a lost reachable terminal.
     "sub_7FF8569F0540": 0x17E3C,
     "sub_7FF8568132D0": 0x1799B,
+    # C's source-image extent is 0x54b.  The post-link range is 0x53d after
+    # standalone LLVM linking; it includes the terminal tail jump so Hex-Rays
+    # retains the semantic termination effect.
+    "sub_7FF855576B50": 0x53D,
 }
 
 
@@ -96,6 +101,17 @@ def _resolve_fixture_ea(function: str) -> int:
     materialized = ida_funcs.get_func(int(ea))
     assert materialized is not None, f"IDA function missing at 0x{ea:x}"
     assert int(materialized.start_ea) == int(ea)
+    if int(materialized.end_ea) != end_ea:
+        # Adding a later exported fixture can make IDA's automatic boundary
+        # absorb alignment bytes up to that next entry.  Restore the measured
+        # standalone function extent before asking Hex-Rays for the CFG.
+        assert ida_funcs.set_func_end(int(ea), end_ea), (
+            f"could not restore fixture function end 0x{end_ea:x} for "
+            f"{function}; observed 0x{int(materialized.end_ea):x}"
+        )
+        idaapi.auto_wait()
+        materialized = ida_funcs.get_func(int(ea))
+        assert materialized is not None, f"IDA function missing at 0x{ea:x}"
     assert int(materialized.end_ea) == int(ea) + TARGET_SIZES[function], (
         f"fixture function extent drifted for {function}: "
         f"0x{int(materialized.start_ea):x}-0x{int(materialized.end_ea):x}, "
@@ -322,6 +338,56 @@ def _assert_corridor_acceptance(
     )
 
 
+def _assert_dispatcher_removal_proof_accepted(
+    function_ea: int,
+    path: Path,
+    session_id: str,
+) -> None:
+    """Require the applied dispatcher-removal proof to be accepted.
+
+    A clean mutation receipt can coexist with a rejected projected proof when
+    unrelated cleanup edits commit in the same D810 session.  That is not a
+    complete unflattening result: the proof must certify the applied removal
+    itself, with stable EA anchors for any loss it reports.
+    """
+    with sqlite3.connect(path) as conn:
+        started_at, finished_at = _session_window(
+            conn,
+            function_ea,
+            session_id,
+        )
+        rows = conn.execute(
+            "SELECT f.kind,f.payload FROM fact_observations f "
+            "JOIN snapshots s ON s.id=f.snapshot_id "
+            "WHERE f.func_ea_i64=? AND s.func_ea_i64=? "
+            "AND s.timestamp>=? AND s.timestamp<=? "
+            "AND f.kind='UnflattenDispatcherRemovalPreflightProof' "
+            "ORDER BY f.rowid",
+            (int(function_ea), int(function_ea), started_at, finished_at),
+        ).fetchall()
+    proofs = [json.loads(str(raw_payload)) for _kind, raw_payload in rows]
+    applied = [
+        payload for payload in proofs if payload.get("application_status") == "applied"
+    ]
+    assert applied, (
+        f"applied dispatcher-removal proof missing for 0x{function_ea:x}; "
+        f"session={session_id} proofs={proofs!r}"
+    )
+    rejected = [
+        {
+            "proof_status": payload.get("proof_status"),
+            "reason": payload.get("reason"),
+            "lost": payload.get("lost_blocks"),
+        }
+        for payload in applied
+        if payload.get("proof_status") != "accepted"
+    ]
+    assert not rejected, (
+        f"applied dispatcher-removal proof rejected for 0x{function_ea:x}; "
+        f"session={session_id} rejected={rejected!r}"
+    )
+
+
 def _loaded_call_eas(
     function_ea: int,
     *,
@@ -357,9 +423,10 @@ def _loaded_call_eas(
         f"callsite marker {requested!r} points to 0x{call_ea:x}, outside "
         f"fixture function 0x{int(function.start_ea):x}-0x{int(function.end_ea):x}"
     )
-    assert str(idc.print_insn_mnem(call_ea) or "").lower() == "call", (
-        f"callsite marker {requested!r} does not point to a CALL: "
-        f"storage=0x{marker_ea:x} target=0x{call_ea:x}"
+    mnemonic = str(idc.print_insn_mnem(call_ea) or "").lower()
+    assert mnemonic in {"call", "jmp"}, (
+        f"callsite marker {requested!r} does not point to a CALL or tail JMP: "
+        f"storage=0x{marker_ea:x} target=0x{call_ea:x} mnemonic={mnemonic!r}"
     )
     return (call_ea,)
 
@@ -545,7 +612,7 @@ class TestUnflatteningEffectSafetyFixtures:
 
 
 class TestUnflatteningEffectSafetyDecompilation:
-    """Exact after-only IDA oracles for the two effectful OLLVM dispatchers."""
+    """Exact after-only IDA oracles for the three effectful OLLVM dispatchers."""
 
     binary_name = "unflattening_effect_safety.dll"
 
@@ -568,7 +635,7 @@ class TestUnflatteningEffectSafetyDecompilation:
         assert "call memcpy" in source
 
         with d810_state() as state:
-            with state.for_project("default_unflattening_ollvm.json"):
+            with state.for_project("eidolon_v3_const_solve.json"):
                 state.stats.reset()
                 state.start_d810()
                 started_after = time.time()
@@ -588,6 +655,7 @@ class TestUnflatteningEffectSafetyDecompilation:
             started_after=started_after,
         )
         _assert_corridor_acceptance(function_ea, path, session_id)
+        _assert_dispatcher_removal_proof_accepted(function_ea, path, session_id)
         _assert_exact_call_reachable(
             function_ea,
             path,
@@ -622,7 +690,7 @@ class TestUnflatteningEffectSafetyDecompilation:
         # D810-off baseline for this exact fixture, but the D810-enabled
         # transaction must still produce a safe, useful decompilation.
         with d810_state() as state:
-            with state.for_project("default_unflattening_ollvm.json"):
+            with state.for_project("eidolon_v3_const_solve.json"):
                 state.stats.reset()
                 state.start_d810()
                 started_after = time.time()
@@ -652,6 +720,7 @@ class TestUnflatteningEffectSafetyDecompilation:
             started_after=started_after,
         )
         _assert_corridor_acceptance(function_ea, path, session_id)
+        _assert_dispatcher_removal_proof_accepted(function_ea, path, session_id)
         _assert_exact_call_reachable(
             function_ea,
             path,
@@ -662,4 +731,75 @@ class TestUnflatteningEffectSafetyDecompilation:
         print(
             f"[EFFECT-SAFETY B] ea=0x{function_ea:x} "
             f"committed={committed} pseudocode_bytes={len(code_after)}"
+        )
+
+    def test_target_c_after_preserves_termination_effects_and_commits(
+        self,
+        ida_database,
+        configure_hexrays,
+        d810_state,
+        pseudocode_to_string,
+        request,
+    ):
+        _enable_exact_diagnostics(request)
+        source = _fixture_or_skip("sub_7FF855576B50")
+        function_ea = _resolve_fixture_ea("sub_7FF855576B50")
+        exact_call_eas = tuple(
+            call_ea
+            for marker_name in (
+                "d810_callsite_sub_7FF855576B50_message_box",
+                "d810_callsite_sub_7FF855576B50_get_current_process",
+                "d810_callsite_sub_7FF855576B50_terminate_process",
+            )
+            for call_ea in _loaded_call_eas(
+                function_ea,
+                marker_name=marker_name,
+            )
+        )
+        assert "EXTERN MessageBoxA:PROC" in source
+        assert "EXTERN GetCurrentProcess:PROC" in source
+        assert "EXTERN TerminateProcess:PROC" in source
+
+        with d810_state() as state:
+            with state.for_project("eidolon_v3_const_solve.json"):
+                state.stats.reset()
+                state.start_d810()
+                started_after = time.time()
+                decompiled = _decompile_with_d810(state, function_ea)
+        assert decompiled is not None, "D810-enabled target C decompilation failed"
+        code_after = pseudocode_to_string(decompiled.get_pseudocode())
+        normalized = code_after.lower()
+        hex_constants = {
+            int(token, 16)
+            for token in re.findall(r"0x[0-9a-f]+", normalized)
+        }
+        for dispatcher_state in (
+            "0x16aa65e9",
+            "0x079323f9",
+            "0x1888937e",
+            "0x1babc1dc",
+        ):
+            assert int(dispatcher_state, 16) not in hex_constants
+        assert not re.search(
+            r"while\s*\(\s*2\s*\).*?for\s*\(\s*i\s*=",
+            normalized,
+            flags=re.DOTALL,
+        ), "nested dispatcher-loop form remains in target C pseudocode"
+
+        path, committed, session_id = _assert_committed_transaction(
+            function_ea,
+            started_after=started_after,
+        )
+        _assert_dispatcher_removal_proof_accepted(function_ea, path, session_id)
+        _assert_exact_call_reachable(
+            function_ea,
+            path,
+            session_id=session_id,
+            call_eas=exact_call_eas,
+        )
+        committed_modifications = sum(item["applied"] for item in committed)
+        print(
+            f"[EFFECT-SAFETY C] ea=0x{function_ea:x} "
+            f"committed_modifications={committed_modifications} "
+            f"pseudocode_bytes={len(code_after)}"
         )

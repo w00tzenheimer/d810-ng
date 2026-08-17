@@ -10,7 +10,8 @@
 # cleanly link MSVC-COFF). Run from the samples/ directory or via `make masm`.
 #
 # Env knobs:
-#   MASM_FUNCS   space-separated function base names (required)
+#   selector     optional positional selector: unflattening_effect_safety
+#   MASM_FUNCS   space-separated function base names (auto-discovered by default)
 #   BINARY_NAME  output stem (default: libobfuscated)
 #   CC / ML64 / LINKER  toolchain overrides
 set -euo pipefail
@@ -19,9 +20,29 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SAMPLES_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$SAMPLES_DIR"
 
+SELECTOR="${1:-}"
+if [ "$#" -gt 1 ]; then
+    echo "error: expected at most one build target selector" >&2
+    exit 2
+fi
 MASM_FUNCS="${MASM_FUNCS:-}"
-BINARY_NAME="${BINARY_NAME:-libobfuscated}"
-LLVM_BIN="$(brew --prefix llvm 2>/dev/null)/bin"
+BINARY_NAME="${BINARY_NAME:-}"
+
+case "$SELECTOR" in
+    "")
+        BINARY_NAME="${BINARY_NAME:-libobfuscated}"
+        ;;
+    unflattening_effect_safety)
+        MASM_FUNCS="${MASM_FUNCS:-sub_7FF8569F0540 sub_7FF8568132D0 sub_7FF855576B50}"
+        BINARY_NAME="${BINARY_NAME:-unflattening_effect_safety}"
+        ;;
+    *)
+        echo "error: unsupported build target selector: $SELECTOR" >&2
+        exit 2
+        ;;
+esac
+LLVM_PREFIX="$(brew --prefix llvm 2>/dev/null || true)"
+LLVM_BIN="${LLVM_PREFIX:+$LLVM_PREFIX/bin}"
 
 # Resolve a tool: honor an executable path / on-PATH name, else look in LLVM_BIN.
 resolve_tool() {
@@ -34,6 +55,10 @@ resolve_tool() {
 CC="$(resolve_tool "${CC:-clang}")"          || { echo "error: clang not found" >&2; exit 1; }
 ML64="$(resolve_tool "${ML64:-llvm-ml64}")"  || { echo "error: llvm-ml64/ml64 not found" >&2; exit 1; }
 LINKER="$(resolve_tool "${LINKER:-lld-link}")" || { echo "error: lld-link not found" >&2; exit 1; }
+OBJDUMP="$(resolve_tool "${LLVM_OBJDUMP:-llvm-objdump}")" || {
+    echo "error: llvm-objdump/objdump not found" >&2
+    exit 1
+}
 
 # Default to every src/masm/*.asm (auto-discovery); MASM_FUNCS may override a subset.
 if [ -z "$MASM_FUNCS" ]; then
@@ -111,11 +136,31 @@ echo "linked $out and $pdb  (${undef} unresolved externs tolerated; log: $linklo
 file "$out" 2>/dev/null || true
 echo "exported MASM funcs:"
 for f in $MASM_FUNCS; do
-    "${LLVM_BIN}/llvm-objdump" -p "$out" 2>/dev/null | grep -A500 "Export Table" | grep -qw "$f" \
-        && echo "  ok: $f" || echo "  MISSING export: $f"
+    "$OBJDUMP" -p "$out" 2>/dev/null | grep -A500 "Export Table" | grep -qw "$f" \
+        && echo "  ok: $f" \
+        || { echo "error: MISSING export: $f" >&2; exit 1; }
+done
+expected_markers=()
+if [ "$SELECTOR" = "unflattening_effect_safety" ]; then
+    expected_markers=(
+        d810_callsite_sub_7FF8569F0540_memcpy
+        d810_callsite_sub_7FF8568132D0_srw_lock
+        d810_callsite_sub_7FF855576B50_message_box
+        d810_callsite_sub_7FF855576B50_get_current_process
+        d810_callsite_sub_7FF855576B50_terminate_process
+    )
+fi
+for expected in "${expected_markers[@]}"; do
+    case " ${callsite_markers[*]} " in
+        *" $expected "*) ;;
+        *)
+            echo "error: missing required callsite marker in source: $expected" >&2
+            exit 1
+            ;;
+    esac
 done
 for marker in "${callsite_markers[@]}"; do
-    "${LLVM_BIN}/llvm-objdump" -p "$out" 2>/dev/null | grep -A500 "Export Table" | grep -qw "$marker" \
+    "$OBJDUMP" -p "$out" 2>/dev/null | grep -A500 "Export Table" | grep -qw "$marker" \
         || { echo "error: MISSING callsite marker export: $marker" >&2; exit 1; }
     echo "  ok: $marker"
 done
