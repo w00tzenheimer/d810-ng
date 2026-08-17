@@ -1510,7 +1510,7 @@ class PreanalysisFactRuntime:
             self._attach_to_snapshot(dedupe_key, func_ea, snapshot)
 
         view = self.validated_view(func_ea, provider_level_text)
-        logger.info(
+        logger.debug(
             "FACT_VIEW func=0x%x maturity=%s phase=%s observations=%d "
             "active=%d mappings=%d stale=%d",
             func_ea,
@@ -1533,7 +1533,7 @@ class PreanalysisFactRuntime:
             mapping_count=len(mappings),
             conflict_count=len(conflicts),
         )
-        logger.info(
+        logger.debug(
             "FACT_LIFECYCLE_CAPTURE func=0x%x maturity=%s phase=%s "
             "collectors=%d observations=%d mappings=%d conflicts=%d",
             func_ea,

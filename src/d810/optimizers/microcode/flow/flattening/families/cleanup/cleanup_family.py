@@ -245,7 +245,7 @@ class SimpleFlatteningCleanupFamily(CFFStrategyFamily):
 
     def detect(self, mba: object) -> SimpleFlatteningCleanupDetection:
         detection = self._backend.collect(mba, logger=self._logger)
-        self._logger.info("Simple cleanup detect: %s", detection.description)
+        self._logger.debug("Simple cleanup detect: %s", detection.description)
         return detection
 
     def build_snapshot(

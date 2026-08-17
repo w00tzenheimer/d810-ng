@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import contextlib
-
 import ida_hexrays
 import ida_nalt
 import ida_typeinf
@@ -114,7 +112,9 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
         function_type = ida_typeinf.tinfo_t()
         recovered = bool(ida_nalt.get_tinfo(function_type, int(function_ea)))
         if not recovered:
-            recovered = int(ida_typeinf.guess_tinfo(function_type, int(function_ea))) > 0
+            recovered = (
+                int(ida_typeinf.guess_tinfo(function_type, int(function_ea))) > 0
+            )
         if not recovered or not function_type.is_func():
             return False
         mba.idb_type = function_type
@@ -440,11 +440,6 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
         self, mba: ida_hexrays.mbl_array_t, fc, reachable_blocks, decomp_flags
     ) -> "int":
         function_ea = HexraysDecompilationHook._function_owner_ea(mba)
-        fn_name = ""
-        with contextlib.suppress(BaseException):
-            fn_name = idaapi.get_func_name(function_ea)
-        prologue = f"{fn_name} @ {hex(function_ea)}"
-        main_logger.info("Starting decompilation of function %s", prologue)
         _log_decompile_requester(function_ea)
         session = HexraysDecompilationHook._ensure_lifecycle_session(
             self,
@@ -460,9 +455,7 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
         )
         try:
             if get_settings().diag_snapshots:
-                idaapi.msg(
-                    "D810 diagnostics capture is on for this decompilation.\n"
-                )
+                idaapi.msg("D810 diagnostics capture is on for this decompilation.\n")
             from d810.core.observability import open_observability_session
 
             # open_observability_session opens the diag session
@@ -530,7 +523,7 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
             canonicalize_explicit_return_to_stop_edge(block, stop)
             for block, stop in imported_terminal_return_edges(mba, return_widths)
         )
-        main_logger.info("glbopt finished for function at %s", hex(function_ea))
+        main_logger.debug("glbopt finished for function at %s", hex(function_ea))
         main_logger.reset_maturity()
         # PruneUnreachable: diagnostic-only; logs unreachable condition-chain blocks
         # but does NOT remove them (see helper for rationale).
@@ -628,7 +621,7 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
         """Structural analysis has been finished.
 
         @param ct: (control_graph_t *)"""
-        main_logger.info("Structural analysis has been finished")
+        main_logger.debug("Structural analysis has been finished")
         lifecycle = self._decompilation_lifecycle
         if lifecycle is not None:
             lifecycle.finish_hexrays_session()
@@ -648,5 +641,5 @@ class HexraysDecompilationHook(ida_hexrays.Hexrays_Hooks):
         """Function text has been generated. Plugins may modify the text in cfunc_t::sv. However, it is too late to modify the ctree or microcode. The text uses regular color codes (see lines.hpp) COLOR_ADDR is used to store pointers to ctree items.
 
         @param cfunc: (cfunc_t *)"""
-        main_logger.info("Function text has been generated")
+        main_logger.debug("Function text has been generated")
         return 0

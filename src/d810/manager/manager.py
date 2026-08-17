@@ -106,6 +106,10 @@ from d810.manager.function_recipe_runtime import (
     FunctionRecipePersistenceError,
     FunctionRecipeRuntime,
 )
+from d810.manager.function_outcome import (
+    build_function_outcome,
+    render_function_outcome,
+)
 from d810.manager.function_recipe_activation import (
     select_workbench_recipe_projection,
 )
@@ -2950,7 +2954,7 @@ class D810Manager:
         except BaseException:
             aggregate = {"error": "unavailable"}
         try:
-            logger.info("Decompilation session aggregate: %s", aggregate)
+            logger.debug("Decompilation session aggregate: %s", aggregate)
         except BaseException:
             # Telemetry must never prevent the lifecycle owner from releasing
             # the session or running its ordinary cleanup callbacks.
@@ -2983,6 +2987,12 @@ class D810Manager:
         was_active = bool(stack)
         stack.append(key)
         depth[key] = depth.get(key, 0) + 1
+        if depth[key] == 1:
+            logger.info(
+                "[D810] Decompiling %s @ 0x%X",
+                self._function_display_name(int(event.function_ea)),
+                int(event.function_ea),
+            )
         native_perf.begin_session(
             {
                 "function_ea": int(event.function_ea),
@@ -3028,6 +3038,7 @@ class D810Manager:
             depth[key] = remaining
         else:
             depth.pop(key, None)
+            self._emit_function_outcome(event)
         primary_error: BaseException | None = None
         receipt = None
         try:
@@ -3051,6 +3062,50 @@ class D810Manager:
                             raise receipt_error
         if primary_error is not None:
             raise primary_error.with_traceback(primary_error.__traceback__)
+
+    @staticmethod
+    def _function_display_name(function_ea: int) -> str:
+        try:
+            import ida_name
+
+            name = str(ida_name.get_name(int(function_ea)) or "").strip()
+        except Exception:
+            name = ""
+        return name or f"sub_{int(function_ea):X}"
+
+    def _emit_function_outcome(self, event: DecompilationSessionEvent) -> None:
+        """Emit the sole terminal INFO story from structured session evidence."""
+        function_ea = int(event.function_ea)
+        try:
+            hints = self.load_recon_hints(function_ea)
+            reports = self.get_recon_outcome_reports(function_ea)
+            journal = getattr(self, "_native_patch_execution_journal", None)
+            attempts_for_session = getattr(journal, "attempts_for_session", None)
+            attempts = (
+                attempts_for_session(event.session_id)
+                if callable(attempts_for_session)
+                else ()
+            )
+            summary = build_function_outcome(
+                function_ea=function_ea,
+                function_name=self._function_display_name(function_ea),
+                classification=(
+                    None if hints is None else getattr(hints, "obfuscation_type", None)
+                ),
+                confidence=(
+                    None if hints is None else getattr(hints, "confidence", None)
+                ),
+                reports=reports,
+                attempts=attempts,
+            )
+            logger.info("%s", render_function_outcome(summary))
+        except BaseException:
+            # This observer must never interfere with Hex-Rays completion.
+            logger.debug(
+                "function outcome projection failed for func=0x%x",
+                function_ea,
+                exc_info=True,
+            )
 
     @staticmethod
     def _ensure_native_perf_providers() -> None:

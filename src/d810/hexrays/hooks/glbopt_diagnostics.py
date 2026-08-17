@@ -68,7 +68,7 @@ def apply_return_const_corruption_cleanup(
     if not sites:
         return 0
 
-    main_logger.info(
+    main_logger.debug(
         "ReturnCarrierCorruption[glbopt]: %d proven droppable site(s) for %s",
         len(sites),
         hex(int(getattr(mba, "entry_ea", 0) or 0)),
@@ -76,7 +76,7 @@ def apply_return_const_corruption_cleanup(
 
     applied = 0
     for site in sites:
-        main_logger.info("ReturnCarrierCorruption[glbopt]: %s", site.proof.reason)
+        main_logger.debug("ReturnCarrierCorruption[glbopt]: %s", site.proof.reason)
         if not _RCCC_APPLY:
             continue
         insn = _find_site_insn(mba, site)
@@ -93,7 +93,7 @@ def apply_return_const_corruption_cleanup(
 
     if applied:
         mba.mark_chains_dirty()
-        main_logger.info(
+        main_logger.debug(
             "ReturnCarrierCorruption[glbopt]: NOPed %d site(s); requesting loop",
             applied,
         )
@@ -125,7 +125,7 @@ def prune_unreachable_condition_chain(
     for rule in block_optimizer.cfg_rules:
         has_attr = hasattr(rule, "_last_condition_chain_block_eas")
         if has_attr:
-            main_logger.info(
+            main_logger.debug(
                 "PruneUnreachable: found rule %s, _last_condition_chain_block_eas=%d, "
                 "_last_func_ea=%s, mba.entry_ea=%s",
                 type(rule).__name__,
@@ -150,14 +150,14 @@ def prune_unreachable_condition_chain(
             break
 
     if not condition_chain_block_eas:
-        main_logger.info(
+        main_logger.debug(
             "PruneUnreachable: no pending condition-chain block EAs for %s",
             hex(mba.entry_ea),
         )
         return 0
 
     if identity_index is None:
-        main_logger.info("PruneUnreachable: no lifecycle-owned identity index")
+        main_logger.debug("PruneUnreachable: no lifecycle-owned identity index")
         return 0
 
     def rebind_native_ea(ea: int):
@@ -189,14 +189,14 @@ def prune_unreachable_condition_chain(
     )
 
     if not current_condition_chain_serials:
-        main_logger.info(
+        main_logger.debug(
             "PruneUnreachable: identity rebinding found 0 condition-chain "
             "blocks for %s (missing-or-ambiguous)",
             hex(mba.entry_ea),
         )
         return 0
 
-    main_logger.info(
+    main_logger.debug(
         "PruneUnreachable[glbopt]: rebound %d/%d condition-chain block "
         "identities, dispatcher=%s",
         len(current_condition_chain_serials),
@@ -230,14 +230,14 @@ def prune_unreachable_condition_chain(
     ) & current_condition_chain_serials
 
     if not unreachable_condition_chain:
-        main_logger.info(
+        main_logger.debug(
             "PruneUnreachable[glbopt]: no unreachable condition-chain blocks for %s (dispatcher=%s)",
             hex(mba.entry_ea),
             current_dispatcher_label,
         )
         return 0
 
-    main_logger.info(
+    main_logger.debug(
         "PruneUnreachable[glbopt]: %d/%d blocks reachable, "
         "%d unreachable condition-chain blocks to prune for %s",
         len(visited),

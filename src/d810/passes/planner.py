@@ -704,7 +704,7 @@ class UnflatteningPlanner:
                     nsv = frag.metadata.get("nop_state_values")
                     if nsv and not snapshot.nop_state_values:
                         snapshot = replace(snapshot, nop_state_values=nsv)
-                        logger.info(
+                        logger.debug(
                             "Planner: injected %d NOP'd state values from "
                             "strategy '%s' into snapshot",
                             len(nsv),
@@ -728,7 +728,7 @@ class UnflatteningPlanner:
                                 | frozenset(lfg_src)
                             ),
                         )
-                        logger.info(
+                        logger.debug(
                             "Planner: injected %d redirected blocks "
                             "from strategy '%s' into snapshot",
                             len(lfg_src),
@@ -753,7 +753,7 @@ class UnflatteningPlanner:
                 nsv = fragment.metadata.get("nop_state_values")
                 if nsv and not snapshot.nop_state_values:
                     snapshot = replace(snapshot, nop_state_values=nsv)
-                    logger.info(
+                    logger.debug(
                         "Planner: injected %d NOP'd state values from "
                         "strategy '%s' into snapshot",
                         len(nsv),
@@ -776,7 +776,7 @@ class UnflatteningPlanner:
                                 | frozenset(lfg_src)
                             ),
                         )
-                        logger.info(
+                        logger.debug(
                             "Planner: injected %d redirected blocks "
                             "from strategy '%s' into snapshot",
                             len(lfg_src),
@@ -811,7 +811,7 @@ class UnflatteningPlanner:
         if dag_audit_records:
             summary = _format_dag_audit_summary(dag_audit_records)
             if summary:
-                logger.info("%s", summary)
+                logger.debug("%s", summary)
 
         # Prepend strategy-level INAPPLICABLE/CRASHED records to planner provenance
         if pre_planner_records:
@@ -955,7 +955,7 @@ class UnflatteningPlanner:
             rows=tuple(rows),
             input_summary=input_summary,
         )
-        logger.info("Pipeline provenance: %s", provenance.summary())
+        logger.debug("Pipeline provenance: %s", provenance.summary())
         return ordered, provenance
 
     def order_fragments(
