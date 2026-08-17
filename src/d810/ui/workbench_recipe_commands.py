@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Callable
 from types import SimpleNamespace
 
 from d810.core.provider_phase import provider_phase_snapshot_from_level
@@ -62,6 +63,19 @@ class WorkbenchRecipeAdapter:
     def case(self) -> object | None:
         """Return the immutable case captured with this Recipe Composer session."""
         return getattr(self._snapshot, "case", None)
+
+    def diagnostics_capture_enabled(self) -> bool:
+        """Expose the one global capture preference to the build footer."""
+        return bool(self._state.diagnostics_capture_enabled())
+
+    def subscribe_diagnostics_capture(
+        self,
+        observer: Callable[[bool], None],
+    ) -> Callable[[], None]:
+        subscribe = getattr(self._state, "subscribe_diagnostics_capture", None)
+        if not callable(subscribe):
+            return lambda: None
+        return subscribe(observer)
 
     def validate(self, draft: PipelineRecipeDraft) -> RecipeValidation:
         return self._state.validate_workbench_recipe(draft, facts=self._facts)

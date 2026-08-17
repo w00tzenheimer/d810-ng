@@ -128,6 +128,8 @@ def _deobfuscate_state(snapshot: typing.Any) -> tuple[bool, str]:
 def build_workspace_projection(
     snapshot: typing.Any,
     canvas: MaturityCanvasProjection,
+    *,
+    diagnostics_capture_enabled: bool = False,
 ) -> BuildWorkspaceProjection:
     """Project existing snapshot data without taking ownership of execution."""
 
@@ -139,7 +141,11 @@ def build_workspace_projection(
     runtime = getattr(snapshot, "runtime", None)
     runtime_name = str(getattr(runtime, "runtime_name", "No runtime project") or "No runtime project")
     engine_started = bool(getattr(snapshot, "engine_started", False))
-    diagnostics_capture = "Diagnostics capture ON" if getattr(snapshot, "case", None) is not None else "Diagnostics capture unavailable"
+    diagnostics_capture = (
+        "Diagnostics capture ON"
+        if diagnostics_capture_enabled
+        else "Diagnostics capture OFF"
+    )
     return BuildWorkspaceProjection(
         header=BuildWorkspaceHeader(
             function_label=function_label,

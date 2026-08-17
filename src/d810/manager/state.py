@@ -28,7 +28,7 @@ from d810.core.config_v2_defaults import (
 from d810.core.deobfuscation_case import DeobfuscationCaseEvidence
 from d810.core.diagnostics_capture_preferences import (
     diagnostics_capture_enabled,
-    enable_diagnostics_capture,
+    set_diagnostics_capture_enabled as persist_diagnostics_capture_enabled,
 )
 from d810.core.logging import clear_logs, configure_loggers, getLogger
 from d810.core.platform import resolve_arch_config
@@ -142,6 +142,7 @@ class D810State(metaclass=SingletonMeta):
 
     def reset(self, d810_config: D810Configuration | None = None) -> None:
         self._initialized: bool = False
+        self._diagnostics_capture_observers: set[typing.Callable[[bool], None]] = set()
         self.d810_config: D810Configuration = d810_config or D810Configuration()
         self._apply_diagnostics_capture_preference()
         self._apply_execution_callback_detail_preference()
@@ -216,16 +217,33 @@ class D810State(metaclass=SingletonMeta):
         return bool(get_settings().diag_snapshots)
 
     def enable_diagnostics_capture(self) -> bool:
-        enabled = enable_diagnostics_capture(self.d810_config)
+        return self.set_diagnostics_capture_enabled(True)
+
+    def set_diagnostics_capture_enabled(self, enabled: bool) -> bool:
+        """Persist, apply, and publish the one global capture choice."""
+        enabled = persist_diagnostics_capture_enabled(self.d810_config, enabled)
         configure_settings(diag_snapshots=enabled)
-        refresh = getattr(
-            getattr(getattr(self, "gui", None), "d810_config_form", None),
-            "_update_diagnostics_capture_indicator",
-            None,
-        )
-        if callable(refresh):
-            refresh()
+        self._notify_diagnostics_capture_changed(enabled)
         return enabled
+
+    def subscribe_diagnostics_capture(
+        self,
+        observer: typing.Callable[[bool], None],
+    ) -> typing.Callable[[], None]:
+        """Observe capture state changes without coupling state to any dock."""
+        self._diagnostics_capture_observers.add(observer)
+
+        def unsubscribe() -> None:
+            self._diagnostics_capture_observers.discard(observer)
+
+        return unsubscribe
+
+    def _notify_diagnostics_capture_changed(self, enabled: bool) -> None:
+        for observer in tuple(self._diagnostics_capture_observers):
+            try:
+                observer(enabled)
+            except Exception:  # noqa: BLE001 - one dock must not break capture
+                logger.exception("Diagnostics capture observer failed")
 
     def add_project(self, config: ProjectConfiguration):
         self.project_manager.add(config)

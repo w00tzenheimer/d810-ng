@@ -211,6 +211,9 @@ if IDA_AVAILABLE:
             self._inventory_generation = 0
             self._inventory_workers: dict[int, typing.Any] = {}
             self._pending_inventory_path: dict[int, str | None] = {}
+            self._unsubscribe_capture = self._adapter.subscribe_capture(
+                self._capture_state_changed
+            )
             self.parent: typing.Any = None
 
             self.context_label = QtWidgets.QLabel()
@@ -370,7 +373,7 @@ if IDA_AVAILABLE:
             self.open_graph_button.clicked.connect(self._open_graph)
             self.compare_case_button.clicked.connect(self._compare_selected_case_run)
             self.refresh_button.clicked.connect(self.refresh)
-            self.enable_capture_button.clicked.connect(self._enable_capture)
+            self.enable_capture_button.clicked.connect(self._toggle_capture)
             self.cleanup_action_combo.currentIndexChanged.connect(
                 self._cleanup_action_changed
             )
@@ -527,6 +530,7 @@ if IDA_AVAILABLE:
         def OnClose(self, form: typing.Any) -> None:
             del form
             self._closed = True
+            self._unsubscribe_capture()
             if self._graph_controller is not None:
                 self._graph_controller.close()
             self._inventory_generation += 1
@@ -636,28 +640,38 @@ if IDA_AVAILABLE:
             self.capture_status_icon.setToolTip(view.tooltip)
             self.capture_status_label.setText(view.status_label)
             self.capture_status_label.setToolTip(view.tooltip)
-            self.enable_capture_button.setVisible(view.action_label is not None)
-            self.enable_capture_button.setText(view.action_label or "")
+            self.enable_capture_button.setVisible(True)
+            self.enable_capture_button.setText(view.action_label or "Toggle capture")
             self.enable_capture_button.setToolTip(view.tooltip)
 
-        def _enable_capture(self, checked: bool = False) -> None:
+        def _capture_state_changed(self, _enabled: bool) -> None:
+            if not self._closed:
+                self._render_capture_state()
+
+        def _toggle_capture(self, checked: bool = False) -> None:
             del checked
+            enabled = not self._adapter.capture_enabled()
             try:
-                self._adapter.enable_capture()
+                self._adapter.set_capture_enabled(enabled)
             except Exception as exc:
-                logger.warning("Could not enable diagnostics capture: %s", exc)
+                logger.warning("Could not update diagnostics capture: %s", exc)
                 QtWidgets.QMessageBox.warning(
                     self.parent,
                     "Diagnostics capture",
-                    f"Could not enable diagnostics capture: {exc}",
+                    f"Could not update diagnostics capture: {exc}",
                 )
                 return
             self._render_capture_state()
             QtWidgets.QMessageBox.information(
                 self.parent,
-                "Diagnostics capture enabled",
-                "Diagnostics capture is enabled. Decompile this function again "
-                "to collect diagnostics.",
+                "Diagnostics capture enabled" if enabled else "Diagnostics capture disabled",
+                (
+                    "Diagnostics capture is enabled. Decompile this function again "
+                    "to collect diagnostics."
+                    if enabled
+                    else "Diagnostics capture is disabled. Future decompilations will not "
+                    "write diagnostic snapshots."
+                ),
             )
 
         def _inventory_ready(

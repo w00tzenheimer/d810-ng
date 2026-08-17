@@ -15,7 +15,6 @@ from d810.qt_shim import (
     QtCore,
     QToolButton,
     QtWidgets,
-    qt_flag_or,
 )
 
 if typing.TYPE_CHECKING:
@@ -38,6 +37,8 @@ from d810.core.function_storage_config import (
 from d810.ui.about_dialog import show_about_dialog
 from d810.ui.about_logic import PRODUCT_NAME, package_version
 from d810.ui.icon_assets import bundled_icon
+from d810.ui.diagnostics_capture_logic import diagnostics_capture_presentation
+from d810.ui.path_controls import CopyPathButton, DirectoryPathField, FilePathField
 from d810.ui.panel_density_logic import plan_panel_density
 from d810.ui.config_v2_editing_logic import (
     ConfigV2EditorScreen,
@@ -339,6 +340,7 @@ class PluginConfigurationFileForm_t(QtWidgets.QDialog):
         logger.debug("Initializing PluginConfigurationFileForm_t")
         super().__init__(parent)
         self.state = state
+        self._unsubscribe_diagnostics_capture = lambda: None
         self.log_dir_changed = False
 
         self.log_dir = self.state.d810_config.get("log_dir")
@@ -420,25 +422,25 @@ class PluginConfigurationFileForm_t(QtWidgets.QDialog):
         general_layout = QtWidgets.QVBoxLayout(self.general_tab)
         general_layout.setContentsMargins(0, 0, 0, 0)
         general_layout.setSpacing(8)
+        general_layout.setAlignment(QtCore.Qt.AlignTop)
 
         # Settings group box
         settings_group = QGroupBox("Settings")
         settings_layout = QtWidgets.QVBoxLayout()
+        settings_layout.setContentsMargins(8, 8, 8, 8)
         settings_layout.setSpacing(8)
+        settings_layout.setAlignment(QtCore.Qt.AlignTop)
 
         # Log directory row
         self.layout_log_dir = QtWidgets.QHBoxLayout()
-        self.lbl_log_dir_info = QtWidgets.QLabel(self)
-        self.lbl_log_dir_info.setText("Log directory:")
+        self.lbl_log_dir_info = QtWidgets.QLabel("Log directory:", self)
         self.layout_log_dir.addWidget(self.lbl_log_dir_info)
-        self.lbl_log_dir = QtWidgets.QLabel(self)
-        self.lbl_log_dir.setText(self.log_dir)
-        self.lbl_log_dir.setWordWrap(True)
-        self.layout_log_dir.addWidget(self.lbl_log_dir, 1)
-        self.button_change_log_dir = QtWidgets.QPushButton(self)
-        self.button_change_log_dir.setText("Change")
-        self.button_change_log_dir.clicked.connect(self.choose_log_dir)
-        self.layout_log_dir.addWidget(self.button_change_log_dir)
+        self.log_dir_field = DirectoryPathField(
+            path=self.log_dir,
+            dialog_title="Choose log directory",
+            parent=self,
+        )
+        self.layout_log_dir.addWidget(self.log_dir_field, 1)
 
         settings_layout.addLayout(self.layout_log_dir)
 
@@ -455,17 +457,19 @@ class PluginConfigurationFileForm_t(QtWidgets.QDialog):
             self._update_function_storage_controls
         )
         storage_layout.addWidget(self.combo_function_storage_backend)
-        self.edit_function_storage_path = QtWidgets.QLineEdit(self)
-        self.edit_function_storage_path.setText(self.function_storage_path)
-        self.edit_function_storage_path.setPlaceholderText(
-            "Absolute path to recipes.sqlite3"
+        self.function_storage_path_field = FilePathField(
+            path=self.function_storage_path,
+            dialog_title="Select function recipe database",
+            file_filter="SQLite database (*.sqlite3 *.db);;All files (*)",
+            suggested_filename="d810-recipes.sqlite3",
+            parent=self,
         )
-        storage_layout.addWidget(self.edit_function_storage_path, 1)
-        self.button_choose_function_storage_path = QtWidgets.QPushButton("Choose", self)
-        self.button_choose_function_storage_path.clicked.connect(
-            self.choose_function_storage_path
+        self.edit_function_storage_path = self.function_storage_path_field.line_edit
+        self.edit_function_storage_path.setPlaceholderText("Absolute path to recipes.sqlite3")
+        self.button_choose_function_storage_path = (
+            self.function_storage_path_field.choose_button
         )
-        storage_layout.addWidget(self.button_choose_function_storage_path)
+        storage_layout.addWidget(self.function_storage_path_field, 1)
         settings_layout.addLayout(storage_layout)
         self._update_function_storage_controls()
 
@@ -515,11 +519,26 @@ class PluginConfigurationFileForm_t(QtWidgets.QDialog):
 
         diagnostics_group = QGroupBox("Runtime diagnostics")
         diagnostics_layout = QtWidgets.QFormLayout()
+        diagnostics_layout.setContentsMargins(8, 8, 8, 8)
+        diagnostics_layout.setSpacing(6)
+        configure_left_aligned_form(diagnostics_layout)
 
         self.checkbox_diag_snapshots = QtWidgets.QCheckBox(
-            "Persist SQLite diagnostic snapshots", self
+            "Capture SQLite diagnostic snapshots", self
         )
         self.checkbox_diag_snapshots.setChecked(self.runtime_diag_snapshots)
+        self.checkbox_diag_snapshots.setToolTip(
+            "Global diagnostics capture. Changes apply immediately and persist across reloads."
+        )
+        self.checkbox_diag_snapshots.toggled.connect(
+            self._set_diagnostics_capture_enabled
+        )
+        subscribe_capture = getattr(self.state, "subscribe_diagnostics_capture", None)
+        if callable(subscribe_capture):
+            self._unsubscribe_diagnostics_capture = subscribe_capture(
+                self._sync_diagnostics_capture_checkbox
+            )
+        self.finished.connect(lambda _result: self._unsubscribe_diagnostics_capture())
         diagnostics_layout.addRow(self.checkbox_diag_snapshots)
 
         self.checkbox_debug_logging = QtWidgets.QCheckBox("Enable debug logging", self)
@@ -532,10 +551,14 @@ class PluginConfigurationFileForm_t(QtWidgets.QDialog):
         self.checkbox_verify_capture.setChecked(self.runtime_verify_capture)
         diagnostics_layout.addRow(self.checkbox_verify_capture)
 
-        self.edit_verify_capture_dir = QtWidgets.QLineEdit(self)
-        self.edit_verify_capture_dir.setText(self.runtime_verify_capture_dir)
+        self.verify_capture_dir_field = DirectoryPathField(
+            path=self.runtime_verify_capture_dir,
+            dialog_title="Choose verification capture directory",
+            parent=self,
+        )
+        self.edit_verify_capture_dir = self.verify_capture_dir_field.line_edit
         diagnostics_layout.addRow(
-            "Verification capture directory:", self.edit_verify_capture_dir
+            "Verification capture directory:", self.verify_capture_dir_field
         )
 
         self.combo_capture_post_maturity = QtWidgets.QComboBox(self)
@@ -546,15 +569,28 @@ class PluginConfigurationFileForm_t(QtWidgets.QDialog):
             self.runtime_capture_post_maturity
         )
         self.combo_capture_post_maturity.setCurrentIndex(max(0, maturity_index))
+        self.combo_capture_post_maturity.currentIndexChanged.connect(
+            self._update_post_maturity_capture_controls
+        )
         diagnostics_layout.addRow(
             "Post-maturity capture:", self.combo_capture_post_maturity
         )
 
-        self.edit_capture_post_file = QtWidgets.QLineEdit(self)
-        self.edit_capture_post_file.setText(self.runtime_capture_post_file)
-        diagnostics_layout.addRow(
-            "Post-maturity output file:", self.edit_capture_post_file
+        self.capture_post_file_field = FilePathField(
+            path=self.runtime_capture_post_file,
+            dialog_title="Choose post-maturity output file",
+            file_filter="JSON files (*.json);;Text files (*.txt);;All files (*)",
+            suggested_filename="d810_capture.json",
+            parent=self,
         )
+        self.edit_capture_post_file = self.capture_post_file_field.line_edit
+        self.edit_capture_post_file.setPlaceholderText(
+            "Output file written when this capture point runs"
+        )
+        diagnostics_layout.addRow(
+            "Post-maturity JSON output:", self.capture_post_file_field
+        )
+        self._update_post_maturity_capture_controls()
 
         self.checkbox_fact_lifecycle = QtWidgets.QCheckBox(
             "Capture maturity fact lifecycle", self
@@ -574,6 +610,9 @@ class PluginConfigurationFileForm_t(QtWidgets.QDialog):
 
         performance_group = QGroupBox("Performance", self.developer_tab)
         performance_layout = QtWidgets.QFormLayout()
+        performance_layout.setContentsMargins(8, 8, 8, 8)
+        performance_layout.setSpacing(6)
+        configure_left_aligned_form(performance_layout)
 
         self.checkbox_native_perf = QtWidgets.QCheckBox(
             "Emit native performance receipts", self
@@ -609,11 +648,14 @@ class PluginConfigurationFileForm_t(QtWidgets.QDialog):
 
         settings_group.setLayout(settings_layout)
         general_layout.addWidget(settings_group)
+        general_layout.addStretch(1)
         developer_layout = QtWidgets.QVBoxLayout(self.developer_tab)
         developer_layout.setContentsMargins(0, 0, 0, 0)
         developer_layout.setSpacing(8)
+        developer_layout.setAlignment(QtCore.Qt.AlignTop)
         developer_layout.addWidget(diagnostics_group)
         developer_layout.addWidget(performance_group)
+        developer_layout.addStretch(1)
 
         # Button row (right-aligned)
         self.layout_button = QtWidgets.QHBoxLayout()
@@ -635,38 +677,35 @@ class PluginConfigurationFileForm_t(QtWidgets.QDialog):
         self.setMinimumWidth(600)
 
     def choose_log_dir(self):
-        logger.debug("Calling save_rule_configuration")
-        log_dir = QtWidgets.QFileDialog.getExistingDirectory(
-            self,
-            "Open Directory",
-            os.path.expanduser("~"),
-            qt_flag_or(
-                QtWidgets.QFileDialog.ShowDirsOnly,
-                QtWidgets.QFileDialog.DontResolveSymlinks,
-            ),
-        )
-        if log_dir != "":
-            self.log_dir = log_dir
-            self.log_dir_changed = True
-            self.lbl_log_dir.setText(self.log_dir)
+        self.log_dir_field.choose_directory()
+
+    def _set_diagnostics_capture_enabled(self, enabled: bool) -> None:
+        setter = getattr(self.state, "set_diagnostics_capture_enabled", None)
+        if callable(setter):
+            setter(bool(enabled))
+
+    def _sync_diagnostics_capture_checkbox(self, enabled: bool) -> None:
+        self.checkbox_diag_snapshots.blockSignals(True)
+        self.checkbox_diag_snapshots.setChecked(bool(enabled))
+        self.checkbox_diag_snapshots.blockSignals(False)
 
     def _update_function_storage_controls(self, _index: int = -1) -> None:
         sqlite_selected = self.combo_function_storage_backend.currentData() == "sqlite"
         self.edit_function_storage_path.setEnabled(sqlite_selected)
         self.button_choose_function_storage_path.setEnabled(sqlite_selected)
 
-    def choose_function_storage_path(self) -> None:
-        current = self.edit_function_storage_path.text().strip()
-        initial = current or str(pathlib.Path.home() / "d810-recipes.sqlite3")
-        selected, _ = QtWidgets.QFileDialog.getSaveFileName(
-            self,
-            "Select function recipe database",
-            initial,
-            "SQLite database (*.sqlite3 *.db);;All files (*)",
+    def _update_post_maturity_capture_controls(self, _index: int = -1) -> None:
+        """Keep an inactive post-maturity file destination visibly inactive."""
+        capture_enabled = self.combo_capture_post_maturity.currentData() is not None
+        self.capture_post_file_field.setEnabled(capture_enabled)
+        self.capture_post_file_field.setToolTip(
+            "Written after the selected Hex-Rays maturity"
+            if capture_enabled
+            else "Select a post-maturity capture point before choosing an output file"
         )
-        if selected:
-            self.function_storage_path = selected
-            self.edit_function_storage_path.setText(selected)
+
+    def choose_function_storage_path(self) -> None:
+        self.function_storage_path_field.choose_file()
 
     def _function_storage_payload(self) -> dict[str, str]:
         backend = str(self.combo_function_storage_backend.currentData())
@@ -678,6 +717,14 @@ class PluginConfigurationFileForm_t(QtWidgets.QDialog):
         }
 
     def save_config(self):
+        requested_log_dir = (
+            self.log_dir_field.path()
+            if hasattr(self, "log_dir_field")
+            else str(self.state.log_dir)
+        )
+        if requested_log_dir != getattr(self, "log_dir", requested_log_dir):
+            self.log_dir = requested_log_dir
+            self.log_dir_changed = True
         storage_payload = self._function_storage_payload()
         execution_callback_detail = str(
             self.combo_execution_callback_detail.currentData()
@@ -706,7 +753,6 @@ class PluginConfigurationFileForm_t(QtWidgets.QDialog):
             return
         configure_settings(execution_callback_detail=execution_callback_detail)
         runtime_overrides = {
-            "diag_snapshots": self.checkbox_diag_snapshots.isChecked(),
             "debug_logging": self.checkbox_debug_logging.isChecked(),
             "verify_capture": self.checkbox_verify_capture.isChecked(),
             "verify_capture_dir": self.edit_verify_capture_dir.text().strip(),
@@ -722,6 +768,9 @@ class PluginConfigurationFileForm_t(QtWidgets.QDialog):
             nomut_matching=self.checkbox_nomut_matching.isChecked(),
         )
         apply_runtime_settings(runtime_overrides)
+        set_capture = getattr(self.state, "set_diagnostics_capture_enabled", None)
+        if callable(set_capture):
+            set_capture(self.checkbox_diag_snapshots.isChecked())
         if self.log_dir_changed:
             self.state.d810_config.set("log_dir", self.log_dir)
         self.state.d810_config.set(
@@ -801,6 +850,7 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         self._density_host = None
         self._status_indicator = None
         self._diagnostics_capture_indicator = None
+        self._unsubscribe_diagnostics_capture = lambda: None
         self.curlabel = None
         self.cfg_select = None
         self.btn_new_cfg = None
@@ -810,6 +860,8 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         self._config_mode_value = None
         self._config_source_value = None
         self._config_runtime_value = None
+        self._copy_source_path_button = None
+        self._copy_runtime_path_button = None
         self._config_passes_value = None
         self.cfg_description = None
         self._pipeline_overview = None
@@ -839,6 +891,10 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
 
             if self._details_toggle is not None:
                 self._details_toggle.toggled.disconnect()
+
+            unsubscribe_capture = getattr(self, "_unsubscribe_diagnostics_capture", None)
+            if callable(unsubscribe_capture):
+                unsubscribe_capture()
 
             # Overflow-menu actions hold the same kind of Python-side
             # connection as the buttons and need the same teardown.
@@ -952,8 +1008,16 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         self._status_indicator.setToolTip("D810 is stopped")
         config_row.addWidget(self._status_indicator)
 
-        self._diagnostics_capture_indicator = QtWidgets.QLabel()
+        self._diagnostics_capture_indicator = QToolButton()
+        self._diagnostics_capture_indicator.setAutoRaise(True)
         self._diagnostics_capture_indicator.setFixedSize(20, 20)
+        self._diagnostics_capture_indicator.setIconSize(QtCore.QSize(16, 16))
+        self._diagnostics_capture_indicator.clicked.connect(
+            self._toggle_diagnostics_capture
+        )
+        self._unsubscribe_diagnostics_capture = self.state.subscribe_diagnostics_capture(
+            self._on_diagnostics_capture_changed
+        )
         config_row.addWidget(self._diagnostics_capture_indicator)
 
         # Config selector
@@ -1041,6 +1105,8 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         self._config_mode_value = QtWidgets.QLabel()
         self._config_source_value = QtWidgets.QLabel()
         self._config_runtime_value = QtWidgets.QLabel()
+        self._copy_source_path_button = CopyPathButton("Source", parent=self._details_panel)
+        self._copy_runtime_path_button = CopyPathButton("Runtime", parent=self._details_panel)
         self._config_passes_value = QtWidgets.QLabel()
         for value_label in (
             self._config_mode_value,
@@ -1051,8 +1117,27 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
             value_label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
         self._config_passes_value.setWordWrap(True)
         identity_layout.addRow("Mode:", self._config_mode_value)
-        identity_layout.addRow("Source:", self._config_source_value)
-        identity_layout.addRow("Runtime:", self._config_runtime_value)
+        source_row = QtWidgets.QWidget(self._details_panel)
+        source_layout = QtWidgets.QHBoxLayout(source_row)
+        source_layout.setContentsMargins(0, 0, 0, 0)
+        source_layout.addWidget(self._config_source_value, 1)
+        source_layout.addWidget(self._copy_source_path_button)
+        runtime_row = QtWidgets.QWidget(self._details_panel)
+        runtime_layout = QtWidgets.QHBoxLayout(runtime_row)
+        runtime_layout.setContentsMargins(0, 0, 0, 0)
+        runtime_layout.addWidget(self._config_runtime_value, 1)
+        runtime_layout.addWidget(self._copy_runtime_path_button)
+        source_label = QtWidgets.QLabel("Source config:")
+        source_label.setToolTip(
+            "The project configuration you selected. Copy copies its absolute path."
+        )
+        runtime_label = QtWidgets.QLabel("Runtime config:")
+        runtime_label.setToolTip(
+            "The effective configuration D810 executes after config-v2 routing. "
+            "It can differ from the selected source project."
+        )
+        identity_layout.addRow(source_label, source_row)
+        identity_layout.addRow(runtime_label, runtime_row)
         identity_layout.addRow("Effective passes:", self._config_passes_value)
         details_layout.addLayout(identity_layout)
 
@@ -1221,20 +1306,18 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         """Show capture independently from the D810 running/stopped state."""
         if self._diagnostics_capture_indicator is None:
             return
-        enabled = self.state.diagnostics_capture_enabled()
-        icon_name = (
-            "diagnostics-capture-enabled" if enabled else "diagnostics-capture-disabled"
-        )
-        tooltip = (
-            "Diagnostics capture enabled - the next decompilation will record "
-            "snapshots and structured evidence."
-            if enabled
-            else "Diagnostics capture disabled"
-        )
-        self._diagnostics_capture_indicator.setPixmap(
-            _config_action_icon(icon_name).pixmap(QtCore.QSize(16, 16))
-        )
-        self._diagnostics_capture_indicator.setToolTip(tooltip)
+        view = diagnostics_capture_presentation(self.state.diagnostics_capture_enabled())
+        self._diagnostics_capture_indicator.setIcon(_config_action_icon(view.icon_name))
+        self._diagnostics_capture_indicator.setToolTip(view.tooltip)
+
+    def _on_diagnostics_capture_changed(self, _enabled: bool) -> None:
+        self._update_diagnostics_capture_indicator()
+
+    def _toggle_diagnostics_capture(self, checked: bool = False) -> None:
+        del checked
+        enabled = not self.state.diagnostics_capture_enabled()
+        self.state.set_diagnostics_capture_enabled(enabled)
+        self._update_diagnostics_capture_indicator()
 
     def update_cfg_select(self):
         """Synchronize the current-project button without loading a project."""
@@ -1432,6 +1515,7 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         self._config_mode_value.setText(view.mode_text)
         self._config_source_value.setText(view.source_text)
         self._config_source_value.setToolTip(view.source_tooltip)
+        self._copy_source_path_button.set_path(view.source_tooltip)
         # Name the divergence in the row itself: a routed runtime must never
         # look like the project the user picked.
         self._config_runtime_value.setText(
@@ -1440,6 +1524,7 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
             else view.runtime_text
         )
         self._config_runtime_value.setToolTip(view.runtime_tooltip)
+        self._copy_runtime_path_button.set_path(view.runtime_tooltip)
         self._config_passes_value.setText(view.effective_passes_text)
         self._config_summary_value.setText(view.header_summary_text)
         self.btn_edit_cfg.setEnabled(view.edit_enabled)

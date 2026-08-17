@@ -254,7 +254,7 @@ def test_panel_exposes_a_persisted_diagnostics_capture_action_and_state() -> Non
     assert "self.capture_status_icon" in init_source
     assert "self.enable_capture_button" in init_source
     assert "self._render_capture_state" in source
-    assert "self._enable_capture" in source
+    assert "self._toggle_capture" in source
     assert "Enable capture" not in create_source
 
 

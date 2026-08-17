@@ -15,5 +15,5 @@ def test_enabled_capture_presentation_explains_the_next_decompilation() -> None:
     view = diagnostics_capture_presentation(True)
 
     assert view.icon_name == "diagnostics-capture-enabled"
-    assert view.action_label is None
+    assert view.action_label == "Disable capture"
     assert "next decompilation" in view.tooltip.lower()

@@ -19,13 +19,28 @@ def diagnostics_capture_enabled(
 
 def enable_diagnostics_capture(configuration: typing.Any) -> bool:
     """Persist diagnostics capture without creating a diagnostic database."""
-    configuration.set(DIAGNOSTICS_CAPTURE_OPTION, True)
+    return set_diagnostics_capture_enabled(configuration, True)
+
+
+def set_diagnostics_capture_enabled(
+    configuration: typing.Any,
+    enabled: bool,
+) -> bool:
+    """Persist the one global diagnostics-capture preference.
+
+    This is deliberately independent of database discovery and of individual
+    UI surfaces.  Every capture control writes this same option, so a reload
+    re-applies the exact state the analyst chose.
+    """
+    enabled = bool(enabled)
+    configuration.set(DIAGNOSTICS_CAPTURE_OPTION, enabled)
     configuration.save()
-    return True
+    return enabled
 
 
 __all__ = [
     "DIAGNOSTICS_CAPTURE_OPTION",
     "diagnostics_capture_enabled",
     "enable_diagnostics_capture",
+    "set_diagnostics_capture_enabled",
 ]

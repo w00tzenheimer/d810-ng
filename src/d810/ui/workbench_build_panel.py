@@ -65,6 +65,7 @@ if IDA_AVAILABLE and QT_GRAPHICS_AVAILABLE:
             self._deobfuscate_function = deobfuscate_function
             self._open_diagnostics = open_diagnostics
             self._workspace_chrome_ready = False
+            self._unsubscribe_capture: typing.Callable[[], None] = lambda: None
             self._applying_rail_sizes = False
             self._workspace_settings = QtCore.QSettings(
                 "D810",
@@ -77,6 +78,9 @@ if IDA_AVAILABLE and QT_GRAPHICS_AVAILABLE:
                 refresh_workbench=refresh_workbench,
                 open_diagnostic_record=open_diagnostic_record,
             )
+            subscribe_capture = getattr(adapter, "subscribe_diagnostics_capture", None)
+            if callable(subscribe_capture):
+                self._unsubscribe_capture = subscribe_capture(self._capture_state_changed)
 
             self.function_header_label = QtWidgets.QLabel()
             self.protection_header_label = QtWidgets.QLabel()
@@ -370,6 +374,9 @@ if IDA_AVAILABLE and QT_GRAPHICS_AVAILABLE:
             projection = build_workspace_projection(
                 self._snapshot,
                 self._projection,
+                diagnostics_capture_enabled=bool(
+                    getattr(self._adapter, "diagnostics_capture_enabled", lambda: False)()
+                ),
             )
             header = projection.header
             dossier = projection.dossier
@@ -383,6 +390,14 @@ if IDA_AVAILABLE and QT_GRAPHICS_AVAILABLE:
             self.footer_maturity_label.setText(footer.maturity_summary)
             self.footer_runtime_label.setText(footer.runtime_summary)
             self.footer_engine_label.setText(footer.engine_summary)
+
+        def _capture_state_changed(self, _enabled: bool) -> None:
+            if self._workspace_chrome_ready:
+                self._render_workspace_chrome()
+
+        def OnClose(self, form: typing.Any) -> None:
+            self._unsubscribe_capture()
+            super().OnClose(form)
 
         def _on_left_rail_expanded_changed(
             self,

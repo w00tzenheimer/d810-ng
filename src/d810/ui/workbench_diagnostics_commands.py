@@ -29,8 +29,17 @@ class WorkbenchDiagnosticsAdapter:
     def capture_enabled(self) -> bool:
         return bool(self._state.diagnostics_capture_enabled())
 
-    def enable_capture(self) -> bool:
-        return bool(self._state.enable_diagnostics_capture())
+    def set_capture_enabled(self, enabled: bool) -> bool:
+        return bool(self._state.set_diagnostics_capture_enabled(bool(enabled)))
+
+    def subscribe_capture(
+        self,
+        observer: Callable[[bool], None],
+    ) -> Callable[[], None]:
+        subscribe = getattr(self._state, "subscribe_diagnostics_capture", None)
+        if not callable(subscribe):
+            return lambda: None
+        return subscribe(observer)
 
     def snapshots(self, path: str) -> tuple[object, ...]:
         return tuple(self._state.get_diagnostic_snapshots(path))

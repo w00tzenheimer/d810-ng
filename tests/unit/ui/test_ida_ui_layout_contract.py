@@ -253,8 +253,38 @@ def test_project_row_has_a_distinct_diagnostics_capture_indicator() -> None:
 
     assert "self._diagnostics_capture_indicator" in source
     assert "config_row.addWidget(self._diagnostics_capture_indicator)" in source
-    assert "diagnostics-capture-enabled" in update_source
-    assert "diagnostics-capture-disabled" in update_source
+    assert "diagnostics_capture_presentation" in update_source
+    toggle_source = ast.unparse(_method("_toggle_diagnostics_capture"))
+    assert "set_diagnostics_capture_enabled" in toggle_source
+
+
+def test_plugin_settings_use_shared_path_controls_for_directories() -> None:
+    source = ast.unparse(_plugin_method("__init__"))
+    choose_source = ast.unparse(_plugin_method("choose_log_dir"))
+
+    assert "DirectoryPathField" in source
+    assert "DirectoryPathField" not in choose_source
+    assert "QFileDialog.getExistingDirectory" not in choose_source
+
+
+def test_plugin_settings_use_shared_file_controls_for_file_destinations() -> None:
+    source = ast.unparse(_plugin_method("__init__"))
+    choose_source = ast.unparse(_plugin_method("choose_function_storage_path"))
+
+    assert "FilePathField" in source
+    assert "self.capture_post_file_field = FilePathField(" in source
+    assert "self.function_storage_path_field = FilePathField(" in source
+    assert "self._update_post_maturity_capture_controls" in source
+    assert "QFileDialog.getSaveFileName" not in choose_source
+
+
+def test_plugin_settings_keep_general_and_developer_controls_compact_at_top() -> None:
+    source = ast.unparse(_plugin_method("__init__"))
+
+    assert "general_layout.setAlignment(QtCore.Qt.AlignTop)" in source
+    assert "settings_layout.setAlignment(QtCore.Qt.AlignTop)" in source
+    assert "general_layout.addStretch(1)" in source
+    assert "developer_layout.addStretch(1)" in source
 
 
 def test_project_selector_and_identity_form_use_left_aligned_layout_policy() -> None:

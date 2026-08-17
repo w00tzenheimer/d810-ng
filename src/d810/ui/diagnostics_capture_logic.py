@@ -23,7 +23,7 @@ def diagnostics_capture_presentation(enabled: bool) -> DiagnosticsCapturePresent
                 "Diagnostics capture enabled - the next decompilation will "
                 "record snapshots and structured evidence."
             ),
-            action_label=None,
+            action_label="Disable capture",
         )
     return DiagnosticsCapturePresentation(
         icon_name="diagnostics-capture-disabled",
