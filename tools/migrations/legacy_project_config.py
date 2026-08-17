@@ -15,12 +15,11 @@ inheriting a bundled projection.
 from __future__ import annotations
 
 import copy
-import base64
 import hashlib
 import json
-import zlib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 
 from d810.passes.mba_transform_options import (
     MBA_TRANSFORM_OPTION_FIELDS,
@@ -321,83 +320,10 @@ _KNOWN_BY_IDENTITY = {
     (item.source_name, item.fingerprint): item for item in _KNOWN_PORTFOLIOS
 }
 
-# Full checked-in donor ``PipelineConfig.to_dict()`` entries and owned
-# additional metadata. This compressed JSON blob is the offline fallback once
-# donor canaries are deleted; it is intentionally not read from the repository
-# at runtime.
-_KNOWN_DONOR_TEMPLATE_BLOB = (
-    "c-rk<OLOD8(fu!4oBkwHlI__|d}pe@RArM?Hc3sfAQF_3;VUHNk!R}u_cXvKD8QCIl5JUMC7?m#(LjS#pVQ#4$tqiKN<YrByuAER"
-    "nWd9Yza~MJMq=&XyMDk@Ry;^qu}LeDaKFqpMZhPYCb`IYEK*LFO)e(2*st%T(w%DmywL9W^zUC2sylutc`2*Ui|k&6Jfwne7n6ej"
-    "cO!~AM>nom@SUfjUu2s~Hl1uLR*5Y2n*wT|8m<Z!RI)CS-m_SQtg5T-n~_yVbWz#Vo3LtAh)RtwVOy$M6qoBbTe0{u%W1gcCzq8c"
-    "BCX3v9a$;@7Lzb9c*G0U$#fIPR2}s$-&CqiE(eoJJ&oI>+e%*CKh?EH1BR;tma~<JMJ1GEa+hV_eHwdOMp=>gEM$4biwRw6?8L8$"
-    "99c$H8dOaUmn`D7M)E8c0i`A(kJu)zCVj8`jC37S#Sx23F7FDmT+YlY&Vui9uGiF|P0VWTPNGd3$VMl<&i!>gKe7*Xk7Vbhf>>Gl"
-    "g8DNlMY@i;Qxzh2<VtdK&Ku236{;nm^b^N^t5&+NDmMIL@}1|EuFHg{wE{+~s~)l64)@n&oyDX#zrRe4@?w&*gb&oAhJDAwP0Wk#"
-    "?#Yj=_#TT=YD*@gIQ!w36<f<YyXE7zra+az4qyj6b|9z0Z&gp*s9ZBN>uE@ZGtEen6?15PRoo$s((H#q)<FY@oxn~$zMX`dB=<#1"
-    "BS?5C=n_8>L6HSn$h-B(Q?`mZEeBeGN(HxBlCy%}QXLgbtG|<cMok&Su37An_^*t&H~w|irP80Hq}wOGJ~{7`i$1yRlUIH6S|*cR"
-    "CjaHBUQE7eTfl!v2TmlmAJ6E&X)ld_qGq*uJ$2|Ul3HmRJmkBpRwdqBu@61-y;aadn4ZOzv!cp^JBJ$1;(I)jVG8GK3Z(G(!y3Z="
-    "k14-Zh_7_9k;6a2qs!h59%ry&JkIbqgDK!~c96$eNn=x*^s_X6IL@=o)W%6X$fOxI##$%eiHW|ADRwsZ8~z?LELy#M%LAITRm{mG"
-    "SSVLTXA%idvZA-030tqJQ>D1)ewz8sYtavCf@;@{J7^p{PAQT+77<xR(<eOU@R-|u%++4`;qFv$wXUd-KRv&BHoT3g@olaa{qGrD"
-    "{|p}p`IeD+aA&=d4W#Q9tw>j7Tv0@qO6MzGy1Z!R_pF$F^3-(hUe?RiWfI-^>3B|Ojm>)KjIX)4Egx1;*E#t#mkR7UuO^Fyp|i~j"
-    "M|x)4wA-Zb<YF#LCnO75-&Nf;W4Y~m&mx~&<cmh0#qoX8wN~d`E$3;uw!Sjwfnag3qM5D0wH2s})6khY5<i+XxmB7~j$EIuqDC^;"
-    "AoC2e`A}xmuC1_bVa+RNljpo}R-!7$eWK(@vfUM#vuy*mUfDWiob%K&=czWgsW!LiaBh_j<OH>|Pz&_lk7cew<{4!3R;KGliMAG5"
-    "&g35C$gC!JhncRiaSh`RjypH*Sd(A0dDEm=mx(IS^rrPVl&=A6mMUpbj-TpQ@zf%>UGG}to<%;l$QKs*(jvdI$geH(8?)Tfeb=G}"
-    "*P;g3QjbLo7A078U{QfZ0~Q6y@ylIBK8ow5(&t<)C;Oai;^FEZWZfp)uDmuqlzW4;9BRtfj_pBXD|4GNYSMPw_L*gEm9~3K*HblP"
-    "Qy+;8S9!alc`eeb(QD9eHg(c6CX?8qmkH568|i{}x|*chC!6;A4ZH7Ob5(Q2yngo#ovA8sl5U^$`sCo+MVpMG{ys{(gS0nDceiG="
-    "DrUn>cZclZpolu!=Sp6!v|RdgoOSiAr)TGScA;mNdiHvd)!WgVsaq*G)HSOmG^N^GNiVbCF__(2Fj!=oz-<J!s!VIkB=;<Gskt9q"
-    "6!o;#DYr{`U8=us(WRtb)%$5T7MWvll9g4L9Sm%%o6lCaAKT7g+Z9Z5TRn4&e9_2<{clZeJFqpGPI+0$g;8yys2zCo+g{#YYJAx>"
-    "7PPNd!5tIw&yD=QbC>W+1f7U(Ym?hS+Wvo|E-RBvzLKWA5J4k~<=&=?YKz#B4MjWuoxbgIx$4K(1KbX9JDdT33*4+TKnXT!6tk-0"
-    "DQ$T^%gOe$`(q#l_I3b!!wCu}D4d{hg2D+3Cn%htaDu`K3MVL>pm2i12?{4DoS<-m!U>9C?-Q_-Nhr#kRn$bGT#m7tpdh=ad|%WH"
-    "dFUrBxRbTM4-->&?O0eGU#ih4`3sC}Qe-i|94O#8&OS+^r8PJ?UH-6ik|_%s_|BG#g}2n~%($Y?#lqUb*J@Imtf=)@zsmA}p4-__"
-    "Iex_o`s?V|tDx~ZipCpU*0W2dL(+BQwJ#Dy-VSJ&t44-tQvOFX)^=~Y9P9W1c5Bq%-nJ}9SjTxalS)G*QQc4VcT&z<?cv|c?hQNB"
-    "32p=yTR4mTAdeZTiYKHZ5m0y5YWz<dt!W?lu!dZ#<w)jh)Z`(8dLG+}E>7EW&8zl&td?%=_O0d(*jGA9ctwAgDmJ!Yo5CJ@yFTbU"
-    "!a?_jNtn?(VO3Vh#^mX7zDT1?b}uU{t#GiTb%rgshiL7WcP!`9G-xfq`4%HP#KSdzbd%}q$Y05SkYrt4A6dbEXmC9XLkW`ea`>M~"
-    "Z_Bn*z5R+g@E+J~;unY67VDkBv@6O@=1n$5!=?Zi8+Mz$e08t5vm7;G`5l@iwNBONa$6JOhL-a=`W@f_2MzdiX~1Cp?#24`%Nctu"
-    "=5OB?*uP-^g8d8jFWA3e|APGs_Al7KVE=;s3-&MAzhM7@{R{Rle4p@rg8d8jFWA3l$o{>#_NMbG=)a)<g8qBn^xsEz0`Pyq{{{c|"
-    "q)ZnCU=V;o00sg0j0wPoT@egmFo3}Tet&ie3NYN@pa6pc{DCRJie7MZ^6#J(d?FB^2*f7>KhhI=^nMF&Jh<`T#)BIVZald0;KqX+"
-    "4{rR&;KqXu4>mm5@L<EA3LActmSUY!{}Z;R%BgS@XR5>C$pat&KyVO%KwJJIt-W-P^awfBZ0${fA;1t2FoJ*)1dJeH<Y?@T+4Ab@"
-    "%AMiFc!Z1~WaP|4MjqV@5Hy0I5d@8#nDHWP1Ysix8$sB}8HbG+_eBJbAaDeMBk$2N5jp~g_;X!z?V5>LBI1XSgbXQAlskPyfYXfC"
-    ">B0nH7qAP2RGmUdRhRr*7XH6v-$@O0!hg^U%Re@&-GYBo!RIhE7mV&ma#`?qu3l-^YOKBZa}<$%efe)M`IlE;@~vNd{!dRnasyV7"
-    "$@%mQ=01-i8A8%NxRvgw+b`F*UvF-`FI3xfJG=6xOYe53GPi#$yyeYusxqGY`Sxac^HpWs#m(*4#p26;4TiK|-6_iZlh>BrOABJw"
-    "8e&?#HHeainMESzz9RB8Z|T>w>1DG+mX~*YTd;@nvfUIe6<N?HEz_&5+AjLPw{n|pOq~8Wr6S^Gy&#O2l>f&T%c+0wd45D2p|3`!"
-    "E-34uwr{rZx=N@ZCZDHk8s*XB>`cw=A8-d;7Pu^MS>Uq3Wr52Amjx~hTo$-2a9QB8z-58U0+$6Y3tSesEO6Nme<YahL>z3(^+V#7"
-    "otT#Paf}#_5!>q+G1@0ZP~pTd0MIx!?3t&A9pOl?Cu8`Zior*~J#aeUbinC=(*dUgP6wP0I2~|0;B>(0fYSk|15O8=4mcffI^cA`"
-    ">COnJYmZ%gHDFF}kh&N1H47fvZ?v?<w4+v>{wc?u*SMaS_mA6sER5o#;SxKbLbEO%kp{Jm%lD&3CJzw47fc;LEz(UXPpKXh%Tump"
-    "vAirR4EM<sq_qNhZZM6V#g05)Sbpl_(L!fAACxDgJdwu_sw8JcHSl%;)BvafP~*irMIAIxxAeO~{TQm}1Aqqr4*(tjJPx~001N>b"
-    "0x;wQ88(0t03`rQ0F;~wP;!tx6Cese6o4qFX0<q=5*Pyx;yd+&_(td7;o!IyG36r6;w(KRCaP8WCvZ&Qn7<icwevO6<}-5XiXO&M"
-    ")WlKIrOS&}e$R?wq?LYIFISh%cEhhE+}VD{wN1NC+Vmw_+efZVa?c{4TjYyI-ha}$&$(L8({gQn#!t=~3tU@)*L;h%|D3PPjlZ2e"
-    "mbnI*XOPW@GNX2Fg>4J^$AqP1yDKth+bV4B+L|=ZYHFF)RGYn2o4s^6duo(&3R*qa0=@TRnQM@F2HCuo>AF#(twokIxkD(tUX#1S"
-    "OxM`BhH(eSof~(o$uHWxX;Q2UK^16v(|R1rc;_`sl{6^FG0j%-)FQWC?^)z?i+o{`FD>#bi~QOmzcI^Q%eY+2xLnsPw+z=ZTFYQ9"
-    "W3>#`GEzCvHLo1`<g4et&$(Jo_Bq+a!{s{2x=prSN^M#WDdlVH2j6XFZc}FYh`B7<KC`T?(sqyOda7n@qa%^wDsNXbuSI$_dJX!`"
-    "rcPSMWD+|HR8714+G!blkA3htc1cg_cG|vw%~j16^TsLaOjUW4bo->&CkNLq+GG^<_fgs%q`g79yEUU#F&k#OJ7f<BMbyzgSMqA5"
-    "<<g(ytgB}|Jv-O43q8Bkv)6;H-j3c(-HK#;&8(Ktlxi;wz07{cV0LT4V3BD8w-MN?GOaC>+_T7~=6-Nd)YDd{+%DyHss6e}my&u_"
-    "ua4bVWRAs2R#shhFtDv|K3m;>Y&(N(S1`$K^~^2uMI#^fzcsb(z}93s<z*!oMzx8ecHqr#dwF}Q@jcX7(7qQ1cTC9t4DxTpUBW97"
-    "bRxQ~O>PJ2oqr0=2(xfAcrEF(T3MHI&xmNakBgvIs;`uDP)EUT#W=1A#}(nYBDm>sT+s=;(=Lv2B2tk_w9dKXan1`zq;U<OcdbbL"
-    ")v1{aPDJLYl$^&b;7+@lI1MQ3WRdfOUMU=rBs>&MO*mYBC*|^!|K>NjTnZ~umE%6aAqa=ydvOT5C+;YO|L`#W!=c=JreD$K?10bl"
-    "EqsnMdQ2wtCavCZ;fI7D5`IYdAvHhblgGCvSvWeqHJ1C`&VjCvAMz@{)JQj}zuit7d{#PD=KSPE=7@-NS@A$>M*atKlt;zjB}H5{"
-    ";;Io>jl*IQJB`?B#7^U|Sj0yoJ{pI`A_f{U(1?LX3^Zb(aab(koDt`Y!(w5fh-F4BGh&(FIZ-(lt85i*%7B(Ycnrd_p#j;vT3f!F"
-    "jIQ4&bCxqm&2LX?W@~j$iS(YPS$j;l@`sjSI^!V@rZbq%U^;{845l-f&R{x&=?tbbn9g82gXs*WGnmd`I)mv9-w6PaC$U1d^;^~Z"
-    "wOgo=NUQX2?AnHMMC1}zO+!UaI4iO;A_5Q*a9~(|xmbA1ZpA!Mc|jMf9~2ij+ywOeq7_Jq(a|Od8bHthf(FhmXyA9Z3&a&5t^jcb"
-    "AJ4uKdVtUagdQOD;EY2LUb=N6IswrMh)y_B<3#`i{Pzf8Kmfxz1u*z*6&yW?p>G5yup?LjC$Qt$jJSm3#U;Ftpn*g3=bxbPo5BrV"
-    "MCf@|pu>=-G-Njo#k)i&1NX>AQ8F=^cKJ>=deoc6TRemF{}OJ$XAU!Xc?87o#A56fA7TBjq!z32NDt=57!rHr#vv&FmWTsuM1d*J"
-    ";fe4H?}@MpEwEs(u!rXdRy+~yF}H?}JTKVcBuM)R(s)@k#*4lIHoVRKO?vY4qAi{iPw{wk#&g3MUJ`-v2GJR>9pLa-IELFtIP4t+"
-    "VhP&NBRfn{72e)KB=0bU!4PBd!f=pj-;t@>Mqd^rq6L490z*szB*zYb*e?WQpD2)LM11J4E$==0;aOoE^B2WI?1qxq;wwfWCZouV"
-    "_OD8k-8*+QP}xeww-sU#z^w+i8mFy;I1S=7h|@T29js`uqQQ#BY3raogYpc@GbqnEZ5@1O@R@PiIxG}qWssFYRz5AVa+>+15P4(_"
-    "y#mS?z~fVwElq;R3?eg#%y@2t$P6Mgh|C}|gUAdbGl<L}GK0trA~T50AToo<3?eg#%pfwuPx6X>k`@z-SR&$w6UR5S<*$}LccPe8"
-    "6;DOFcABv|o3s%E_k&#k_XF;C+PI(G%%tP>kiec^Cy+ZJclcg19>;+5&Jxah1!(MdKQ;GZJPU8*Q8)wt(`mRZ?cd3Ktq*mYU6)7y"
-    "u<7$$<4^muU0`(QhQ%Eb`hM|O!=H~zzW_`>#7EbSAh#Kge?On7H*hE31vSJ(;Mj{UGGKYU6@};Zs9S@1>~ix*XkD*Fp8|-2f2a5&"
-    "t@(?zGklR2b^<#AsDfkAa10ubLBla<I0g;Jpy3!a9D{~q&~OYIjzPmQXgCH9$DrXDG#rD5W6*F68jeB3F=+3fJ*~oU{U~N@_mBkY"
-    "ooXdfyIs}w`V%E7R!CE&>dVc_zxw+156|<iZ>RHVt$M*4gP3k-*VE~2{+BP)`hAL)Lh45aZ5e_T#EMFE%Ty$^6O^JR?5gY9Vr30w"
-    "&EIZCwHy4CdtGlpBHc9mQX{{iMHYwcGqRE1xN@OnSwt&J^^dxL6-A+M>zLfC*aK|}pK3+9S6z{N?GGDvZ{z?Qb+(<jk~8@|&3>f*"
-    "?&#X(-YDvJ@%1m>{PXOOo6pNH-fSVCoBI>k;Q)pM7!F`KfZ+g!0~iiqIDp{*h65N5U^sx`0EPn?4q!Nd;Q)pM7!F`qD5%?@ZiBl0"
-    "-Vq(YoUtRJI(^ju7XU5*TmZNLZ~@=~zy*K{02cr*09*jL0AC-#1%L|x7XU5*TmZNLZ~@=~zy*K{9|&BKXCM1fkRJ<S(Ca^mL-=vF"
-    "_^F&NzH>16V;_`#-cheOK@m_Npgur-fcgOS0qO(P2dEEFAD})!eSrD^^#SSw)CZ^!P#>T^Kz*=KKz)Gv0QJG3@d@j9^9gHu7Z5>p"
-    "mS3yh8~$F$E7Gy+OGO?Y{NAk{5q5yx0J{Np1MCLa4X_(vH^6Ry-2l4*c7qojup3}Ez;1xu0J{NpJJ0X8$eFIBR@IU|pfl1?F+y;F"
-    "3hs>x`h1)7LP*1s{j3d-W{BQ|SP|R}_dmMJo7RP-ghY0lR#-?zdPgO$X8rB5bmX#hXdHET(zzM_pZ^2qd*-J"
+_KNOWN_TEMPLATE_RESOURCE_PATH = (
+    Path(__file__).resolve().parent / "data" / "known_config_v2_templates.json"
 )
-_KNOWN_DONOR_TEMPLATES = json.loads(
-    zlib.decompress(base64.b85decode(_KNOWN_DONOR_TEMPLATE_BLOB)).decode("utf-8")
-)
-
+_KNOWN_DONOR_TEMPLATES: Mapping[str, object] | None = None
 
 def _source_basename(source_name: str) -> str:
     """Normalize POSIX and Windows path spellings to a basename."""
@@ -595,6 +521,178 @@ def _validate_v2_entries(
             assert isinstance(copied, dict)
             entries.append(copied)
     return tuple(entries)
+
+
+def _known_resource_error(path: str, message: str) -> LegacyMigrationError:
+    return LegacyMigrationError(
+        f"{_KNOWN_TEMPLATE_RESOURCE_PATH.name}.{path}: {message}"
+    )
+
+
+def _validate_known_template_resource(
+    resource: object,
+) -> dict[str, dict[str, object]]:
+    """Validate the checked-in donor replacement and return a safe copy."""
+
+    if not isinstance(resource, Mapping):
+        raise _known_resource_error("", "resource root must be a mapping")
+    expected_sources = {portfolio.source_name for portfolio in _KNOWN_PORTFOLIOS}
+    actual_sources = set(resource)
+    if actual_sources != expected_sources:
+        missing = sorted(expected_sources - actual_sources)
+        extra = sorted(actual_sources - expected_sources)
+        raise _known_resource_error(
+            "sources",
+            f"source key set mismatch; missing={missing}, extra={extra}",
+        )
+    if list(resource) != sorted(expected_sources):
+        raise _known_resource_error("sources", "source keys must be sorted")
+
+    expected_fields = frozenset(
+        {
+            "source_name",
+            "fingerprint",
+            "donor_name",
+            "description",
+            "owned_additional_configuration",
+            "pipeline_v2",
+        }
+    )
+    validated: dict[str, dict[str, object]] = {}
+    for source_name in sorted(expected_sources):
+        path = source_name
+        raw_entry = resource[source_name]
+        if not isinstance(raw_entry, Mapping):
+            raise _known_resource_error(path, "entry must be a mapping")
+        fields = set(raw_entry)
+        if fields != expected_fields:
+            raise _known_resource_error(
+                path,
+                f"entry fields mismatch; missing={sorted(expected_fields - fields)}, "
+                f"extra={sorted(fields - expected_fields)}",
+            )
+        portfolio = next(
+            item for item in _KNOWN_PORTFOLIOS if item.source_name == source_name
+        )
+        if raw_entry["source_name"] != portfolio.source_name:
+            raise _known_resource_error(
+                f"{path}.source_name",
+                f"must equal {portfolio.source_name!r}",
+            )
+        if raw_entry["fingerprint"] != portfolio.fingerprint:
+            raise _known_resource_error(
+                f"{path}.fingerprint",
+                f"must equal frozen fingerprint {portfolio.fingerprint}",
+            )
+        if raw_entry["donor_name"] != portfolio.donor_name:
+            raise _known_resource_error(
+                f"{path}.donor_name",
+                f"must equal {portfolio.donor_name!r}",
+            )
+        expected_description = f"Canonical config-v2 project for {source_name}."
+        if raw_entry["description"] != expected_description:
+            raise _known_resource_error(
+                f"{path}.description",
+                f"must equal {expected_description!r}",
+            )
+
+        owned = raw_entry["owned_additional_configuration"]
+        if not isinstance(owned, Mapping):
+            raise _known_resource_error(
+                f"{path}.owned_additional_configuration",
+                "must be a mapping",
+            )
+        transient = sorted(set(owned).intersection(_ADDITIONAL_TRANSIENT_KEYS))
+        if transient:
+            raise _known_resource_error(
+                f"{path}.owned_additional_configuration",
+                f"contains transient keys: {transient}",
+            )
+        try:
+            owned_copy = _deep_json_copy(
+                owned, f"{_KNOWN_TEMPLATE_RESOURCE_PATH.name}.{path}.owned_additional_configuration"
+            )
+            assert isinstance(owned_copy, dict)
+            normalized_owned = _owned_additional(owned_copy, pipeline=())
+        except (LegacyMigrationError, AssertionError) as exc:
+            if isinstance(exc, LegacyMigrationError) and str(exc).startswith(
+                _KNOWN_TEMPLATE_RESOURCE_PATH.name
+            ):
+                raise
+            raise _known_resource_error(
+                f"{path}.owned_additional_configuration",
+                str(exc),
+            ) from exc
+        normalized_owned.pop("pipeline_v2", None)
+
+        pipeline = raw_entry["pipeline_v2"]
+        try:
+            normalized_pipeline = _validate_v2_entries(
+                pipeline,
+                path_prefix=f"{_KNOWN_TEMPLATE_RESOURCE_PATH.name}.{path}.pipeline_v2",
+            )
+        except LegacyMigrationError:
+            raise
+        if not isinstance(pipeline, Sequence) or isinstance(pipeline, (str, bytes)):
+            raise _known_resource_error(
+                f"{path}.pipeline_v2", "must be an ordered sequence"
+            )
+        if list(pipeline) != list(normalized_pipeline):
+            raise _known_resource_error(
+                f"{path}.pipeline_v2",
+                "must equal the normalized PipelineConfig.to_dict() entries",
+            )
+        actual_pass_ids = tuple(
+            entry.get("pass_id")
+            for entry in normalized_pipeline
+            if isinstance(entry, Mapping)
+        )
+        if actual_pass_ids != portfolio.pass_ids:
+            raise _known_resource_error(
+                f"{path}.pipeline_v2",
+                f"pass-id order mismatch; expected {portfolio.pass_ids}, "
+                f"got {actual_pass_ids}",
+            )
+
+        projected_legacy = LegacyProject(
+            source_name=source_name,
+            description=expected_description,
+            active_rules=(),
+            additional_configuration=normalized_owned,
+            canonical_fingerprint=portfolio.fingerprint,
+        )
+        projected = _canonical_document(projected_legacy, normalized_pipeline)
+        expected_additional = dict(normalized_owned)
+        expected_additional["pipeline_v2"] = list(normalized_pipeline)
+        if projected != {
+            "description": expected_description,
+            "additional_configuration": expected_additional,
+        }:
+            raise _known_resource_error(
+                path,
+                "complete projected document does not round-trip through v2 schema",
+            )
+        safe_entry = _deep_json_copy(raw_entry, f"{_KNOWN_TEMPLATE_RESOURCE_PATH.name}.{path}")
+        assert isinstance(safe_entry, dict)
+        validated[source_name] = safe_entry
+    return validated
+
+
+def _load_known_template_resource() -> dict[str, dict[str, object]]:
+    try:
+        raw_resource = json.loads(_KNOWN_TEMPLATE_RESOURCE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise LegacyMigrationError(
+            f"{_KNOWN_TEMPLATE_RESOURCE_PATH.name}: unable to read valid JSON resource"
+        ) from exc
+    return _validate_known_template_resource(raw_resource)
+
+
+def _known_donor_templates() -> Mapping[str, object]:
+    global _KNOWN_DONOR_TEMPLATES
+    if _KNOWN_DONOR_TEMPLATES is None:
+        _KNOWN_DONOR_TEMPLATES = _load_known_template_resource()
+    return _KNOWN_DONOR_TEMPLATES
 
 
 def _normalize_description(description: str, source_name: str) -> str:
@@ -946,20 +1044,32 @@ def _known_projection(
     # The donor name is retained in ``KnownPortfolio`` as historical evidence;
     # migration uses the checked-in full template even after donor files are
     # deleted by the cutover.
+    templates = _known_donor_templates()
     try:
-        template = _KNOWN_DONOR_TEMPLATES[legacy.source_name]
+        template = templates[legacy.source_name]
     except KeyError as exc:
         raise LegacyMigrationError(
-            f"missing checked-in donor template for {legacy.source_name}"
+            f"{_KNOWN_TEMPLATE_RESOURCE_PATH.name}.{legacy.source_name}: "
+            "missing checked-in donor template"
         ) from exc
+    if not isinstance(template, Mapping):
+        raise LegacyMigrationError(
+            f"{_KNOWN_TEMPLATE_RESOURCE_PATH.name}.{legacy.source_name}: "
+            "template entry must be a mapping"
+        )
     entries = _validate_v2_entries(
         template["pipeline_v2"],
-        path_prefix="known donor pipeline_v2",
-        normalize=False,
+        path_prefix=f"{_KNOWN_TEMPLATE_RESOURCE_PATH.name}.{legacy.source_name}.pipeline_v2",
     )
-    additional = _owned_additional(template, pipeline=entries)
+    owned = template["owned_additional_configuration"]
+    if not isinstance(owned, Mapping):
+        raise LegacyMigrationError(
+            f"{_KNOWN_TEMPLATE_RESOURCE_PATH.name}.{legacy.source_name}."
+            "owned_additional_configuration: must be a mapping"
+        )
+    additional = _owned_additional(owned, pipeline=entries)
     return {
-        "description": _normalize_description(legacy.description, legacy.source_name),
+        "description": str(template["description"]),
         "additional_configuration": additional,
     }
 

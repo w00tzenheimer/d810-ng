@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import hashlib
 import re
@@ -10,14 +11,24 @@ from pathlib import Path
 import pytest
 
 from d810.core import typing
+from d810.passes.pass_pipeline import PipelineConfig
+import tools.migrations.legacy_project_config as legacy_migrator
 from tools.migrations.legacy_project_config import (
     LegacyMigrationError,
+    _validate_known_template_resource,
     is_canonical_v2_document,
     migrate_legacy_document,
 )
 
 
 CONF_DIR = Path(__file__).resolve().parents[3] / "src" / "d810" / "conf"
+KNOWN_RESOURCE_PATH = (
+    Path(__file__).resolve().parents[3]
+    / "tools"
+    / "migrations"
+    / "data"
+    / "known_config_v2_templates.json"
+)
 
 # Keep this historical data local to the test.  The routing module is removed
 # later in the cutover, but these source/donor pairs remain the migration
@@ -109,6 +120,12 @@ def _pipeline_entries(document: dict[str, typing.Any]) -> list[dict[str, typing.
     return list(additional.get("pipeline_v2", []))
 
 
+def _normalized_pipeline_entries(
+    document: dict[str, typing.Any],
+) -> list[dict[str, typing.Any]]:
+    return [PipelineConfig.from_dict(entry).to_dict() for entry in _pipeline_entries(document)]
+
+
 @pytest.mark.parametrize("source_name", tuple(KNOWN_LEGACY_FINGERPRINTS))
 def test_historical_legacy_fingerprint_is_frozen(source_name: str) -> None:
     encoded = json.dumps(
@@ -120,6 +137,32 @@ def test_historical_legacy_fingerprint_is_frozen(source_name: str) -> None:
     assert hashlib.sha256(encoded).hexdigest() == KNOWN_LEGACY_FINGERPRINTS[source_name]
 
 
+def test_known_template_resource_is_readable_and_self_consistent() -> None:
+    resource = json.loads(KNOWN_RESOURCE_PATH.read_text(encoding="utf-8"))
+    assert list(resource) == sorted(KNOWN_LEGACY_FINGERPRINTS)
+    validated = _validate_known_template_resource(resource)
+    assert list(validated) == sorted(KNOWN_LEGACY_FINGERPRINTS)
+
+
+def test_known_template_resource_rejects_corruption_with_context() -> None:
+    resource = json.loads(KNOWN_RESOURCE_PATH.read_text(encoding="utf-8"))
+
+    fingerprint_corrupt = copy.deepcopy(resource)
+    fingerprint_corrupt["default.json"]["fingerprint"] = "0" * 64
+    with pytest.raises(LegacyMigrationError, match=re.escape("default.json.fingerprint")):
+        _validate_known_template_resource(fingerprint_corrupt)
+
+    pipeline_corrupt = copy.deepcopy(resource)
+    pipeline_corrupt["default.json"]["pipeline_v2"][0]["pass_id"] = "unknown-pass"
+    with pytest.raises(LegacyMigrationError, match=re.escape("default.json.pipeline_v2[0]")):
+        _validate_known_template_resource(pipeline_corrupt)
+
+    key_corrupt = copy.deepcopy(resource)
+    key_corrupt["not-a-known-project.json"] = key_corrupt.pop("default.json")
+    with pytest.raises(LegacyMigrationError, match=re.escape("known_config_v2_templates.json")):
+        _validate_known_template_resource(key_corrupt)
+
+
 @pytest.mark.parametrize("source_name,canary_name", LEGACY_CANARY_PAIRS)
 def test_mapped_bundled_portfolio_migrates_to_current_canary_semantics(
     source_name: str, canary_name: str
@@ -127,16 +170,44 @@ def test_mapped_bundled_portfolio_migrates_to_current_canary_semantics(
     migrated = migrate_legacy_document(_load(source_name), source_name=source_name)
     expected = _load(canary_name)
 
-    assert _pipeline_entries(migrated) == _pipeline_entries(expected)
+    expected_pipeline = _normalized_pipeline_entries(expected)
+    assert _pipeline_entries(migrated) == expected_pipeline
     expected_owned = {
         key: value
         for key, value in expected.get("additional_configuration", {}).items()
         if key not in {"pipeline_v2_mode", "config_v2_canary"}
     }
+    expected_owned["pipeline_v2"] = expected_pipeline
     assert migrated["additional_configuration"] == expected_owned
     assert _pipeline(migrated) == _pipeline(expected)
     assert migrated.get("ins_rules", []) == []
     assert migrated.get("blk_rules", []) == []
+
+
+@pytest.mark.parametrize("source_name", tuple(KNOWN_LEGACY_FINGERPRINTS))
+def test_known_migration_descriptions_are_canonical(source_name: str) -> None:
+    migrated = migrate_legacy_document(_load(source_name), source_name=source_name)
+    description = migrated["description"]
+    assert description == f"Canonical config-v2 project for {source_name}."
+    lowered = description.lower()
+    for forbidden in ("legacy", "statemachinecffunflattener", "canary", "shadow", "alternate runtime"):
+        assert forbidden not in lowered
+
+
+def test_known_migration_does_not_read_donor_canary_files(monkeypatch: pytest.MonkeyPatch) -> None:
+    source_name = "default.json"
+    source = _load(source_name)
+    original_read_text = Path.read_text
+
+    def guarded_read_text(path: Path, *args: typing.Any, **kwargs: typing.Any) -> str:
+        if "config_v2_canary" in path.name:
+            raise AssertionError(f"donor canary read: {path}")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", guarded_read_text)
+    monkeypatch.setattr(legacy_migrator, "_KNOWN_DONOR_TEMPLATES", None)
+    migrated = migrate_legacy_document(source, source_name=source_name)
+    assert _pipeline_entries(migrated)
 
 
 @pytest.mark.parametrize(
