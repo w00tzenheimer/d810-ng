@@ -530,7 +530,7 @@ def rebuild_hexrays_island(
     try:
         runtime = _load_native_runtime()
 
-        def rebuild(node: TypedBvTerm) -> Any | None:
+        def rebuild(node: TypedBvTerm, *, top_level: bool = False) -> Any | None:
             if node.width != destination_size * 8:
                 return None
             if node.operation is None and node.value is not None:
@@ -555,7 +555,7 @@ def rebuild_hexrays_island(
                     return None
                 return leaf.clone()
             if node.operation in {"rol", "ror"}:
-                if block is None or destination is None:
+                if not top_level or block is None or destination is None:
                     return None
                 from d810.backends.mba.native_rotate_helper import (
                     materialize_rotate_term,
@@ -597,7 +597,7 @@ def rebuild_hexrays_island(
             native.dest_size = destination_size
             return native
 
-        rebuilt = rebuild(term)
+        rebuilt = rebuild(term, top_level=True)
         if isinstance(rebuilt, runtime.AstNode):
             return rebuilt
         # Rotate helpers are instruction-level value producers.  The shared

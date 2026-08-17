@@ -14,6 +14,7 @@ import idautils
 import idaapi
 import idc
 
+from d810.core import MOP_TO_AST_CACHE
 from d810.hexrays.utils.hexrays_helpers import dup_mop
 from d810.hexrays.utils.hexrays_formatters import format_minsn_t
 from d810.backends.mba.hexrays_island import (
@@ -127,6 +128,28 @@ class TestRotateIdiomRecoveryNative:
         block.mark_lists_dirty()
         mba.verify(True)
 
+    def test_make_rol8_wrapper_preserves_legacy_integer_coercion(
+        self, libobfuscated_setup
+    ):
+        from d810.optimizers.microcode.instructions.peephole.rotate_idiom_recovery_native import (
+            make_rol8_helper_call,
+        )
+
+        mba, (block, instruction, base, output) = _find_fixture_mba_with_64_bit_value()
+        replacement = make_rol8_helper_call(
+            block,
+            ea=instruction.ea,
+            base=base,
+            rotation=31.9,
+            output=output,
+        )
+
+        assert replacement is not None
+        assert replacement.l.d.l.helper == "__ROL8__"
+        native_args = _helper_call_args(replacement.l.d)
+        assert len(native_args) == 2
+        assert native_args[1].nnn.value == 31
+
     def test_shared_helper_builder_accepts_exact_width_helper_and_zero_count(
         self, libobfuscated_setup
     ):
@@ -187,6 +210,96 @@ class TestRotateIdiomRecoveryNative:
         instruction.swap(replacement)
         block.mark_lists_dirty()
         mba.verify(True)
+
+    @pytest.mark.parametrize("parent_opcode", [ida_hexrays.m_add, ida_hexrays.m_shl])
+    def test_rebuild_rejects_nested_instruction_level_rotate(
+        self, libobfuscated_setup, parent_opcode
+    ):
+        """A minsn helper result cannot be embedded in a parent AstNode."""
+
+        mba, (block, instruction, base, output) = _find_fixture_mba_with_64_bit_value()
+        rotate_leaf = ast_dispatcher.AstLeaf("x")
+        rotate_leaf.mop = MopSnapshot.from_mop(base)
+        rotate_leaf.dest_size = 8
+        rotate = ast_dispatcher.AstNode(ida_hexrays.m_call, rotate_leaf, None)
+        rotate.right = ast_dispatcher.AstConstant("7", 7, 1)
+        rotate.right.mop = MopSnapshot(t=ida_hexrays.mop_n, size=1, value=7)
+        rotate.right.dest_size = 1
+        rotate.func_name = "__ROL8__"
+        rotate.dest_size = 8
+
+        if parent_opcode == ida_hexrays.m_add:
+            sibling = ast_dispatcher.AstLeaf("y")
+            sibling.mop = MopSnapshot.from_mop(base)
+            sibling.dest_size = 8
+        else:
+            sibling = ast_dispatcher.AstConstant("1", 1, 1)
+            sibling.mop = MopSnapshot(t=ida_hexrays.mop_n, size=1, value=1)
+            sibling.dest_size = 1
+        parent = ast_dispatcher.AstNode(parent_opcode, rotate, sibling)
+        parent.dest_size = 8
+
+        lowering = lower_hexrays_island(parent, destination_size=8)
+        assert lowering.term is not None
+        assert lowering.term.operation == (
+            "add" if parent_opcode == ida_hexrays.m_add else "shl"
+        )
+        assert any(child.operation == "rol" for child in lowering.term.children)
+
+        rebuilt = rebuild_hexrays_island(
+            lowering.term,
+            lowering=lowering,
+            destination_size=8,
+            block=block,
+            destination=output,
+        )
+
+        assert rebuilt is None
+
+    def test_cython_cache_keeps_sequential_same_shape_rol_and_ror_distinct(
+        self, libobfuscated_setup
+    ):
+        """Identical operands must not reuse a prior opposite-direction AST."""
+
+        mba, (block, instruction, _, _) = _find_fixture_mba_with_64_bit_value()
+        base = _fresh_register_operand(block, 8)
+        output = _fresh_register_operand(block, 8)
+        rol = make_rotate_helper_call(
+            block,
+            ea=instruction.ea,
+            helper="__ROL8__",
+            base=base,
+            rotation=7,
+            output=output,
+        )
+        ror = make_rotate_helper_call(
+            block,
+            ea=instruction.ea,
+            helper="__ROR8__",
+            base=base,
+            rotation=7,
+            output=output,
+        )
+        assert rol is not None
+        assert ror is not None
+
+        def helper_name(instruction):
+            ast = minsn_to_ast(instruction)
+            assert ast is not None
+            names = [
+                node.func_name
+                for node in _walk_ast(ast)
+                if getattr(node, "opcode", None) == ida_hexrays.m_call
+            ]
+            assert len(names) == 1
+            return names[0]
+
+        MOP_TO_AST_CACHE.clear()
+        try:
+            assert helper_name(rol) == "__ROL8__"
+            assert helper_name(ror) == "__ROR8__"
+        finally:
+            MOP_TO_AST_CACHE.clear()
 
     @pytest.mark.parametrize(
         ("helper", "size", "count"),
