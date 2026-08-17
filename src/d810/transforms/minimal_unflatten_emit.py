@@ -8624,45 +8624,11 @@ def emit_minimal_unflatten(
                 ),
             }
         )
-    entry_native_bound_routes = _native_bound_routes_for_entry_state(
-        initial_state, tuple(native_bound_transition_routes)
-    )
-    materialized_entry_route_mods = (
-        build_materialized_state_entry_bridges(
-            flow_graph,
-            materialized_state_routes,
-            dispatcher_region_serials=frozenset(
-                {
-                    int(dispatcher_entry_serial),
-                    *(int(serial) for serial in dispatcher_region_serials),
-                }
-            ),
-            authoritative_handler_serials=route_handler_serials,
-            peer_routes=entry_native_bound_routes,
-        )
-        if materialized_computed_goto_profile
-        else []
-    )
-    native_bound_entry_route_mods = build_native_bound_state_entry_bridges(
-        flow_graph,
-        entry_native_bound_routes,
-        dispatcher_region_serials=frozenset(
-            {
-                int(dispatcher_entry_serial),
-                *(int(serial) for serial in dispatcher_region_serials),
-            }
-        ),
-        authoritative_handler_serials=frozenset(
-            {
-                *route_handler_serials,
-                *(
-                    int(route.target_handler_serial)
-                    for route in entry_native_bound_routes
-                ),
-            }
-        ),
-        peer_routes=tuple(materialized_state_routes),
-    )
+    # Entry source-keyed routes are built only after authoritative initial-state
+    # recovery below.  Back-edge/native evidence may be collected earlier, but
+    # an entry hint must never select stale-state operations or receipts.
+    materialized_entry_route_mods: list[object] = []
+    native_bound_entry_route_mods: list[object] = []
     materialized_state_route_mods = (
         build_materialized_state_route_redirects(
             flow_graph,
@@ -8720,27 +8686,6 @@ def emit_minimal_unflatten(
                 in dynamic_entry_bridge_edges
             )
         ]
-    accepted_native_bound_entry_routes = tuple(
-        route
-        for route in native_bound_transition_routes
-        if any(
-            isinstance(modification, RedirectGoto)
-            and int(modification.from_serial) == int(route.source_block_serial)
-            and int(modification.new_target) == int(route.target_handler_serial)
-            for modification in native_bound_entry_route_mods
-        )
-    )
-    accepted_native_bound_routes = tuple(
-        dict.fromkeys(
-            (
-                *accepted_native_bound_backedge_routes,
-                *accepted_native_bound_entry_routes,
-            )
-        )
-    )
-    native_bound_route_receipts = tuple(
-        _native_bound_route_receipt(route) for route in accepted_native_bound_routes
-    )
     conditional_bridge_mods = build_materialized_conditional_handler_bridges(
         flow_graph,
         materialized_indirect_transfers,
@@ -9006,6 +8951,46 @@ def emit_minimal_unflatten(
         # comparison tree, while the former is cut at the dispatcher and proves
         # the state actually carried by the first dispatch.
         initial_state = recovered_initial_state
+    entry_native_bound_routes = _native_bound_routes_for_entry_state(
+        initial_state, tuple(native_bound_transition_routes)
+    )
+    if not dynamic_entry_bridge_edges:
+        materialized_entry_route_mods = (
+            build_materialized_state_entry_bridges(
+                flow_graph,
+                materialized_state_routes,
+                dispatcher_region_serials=frozenset(
+                    {
+                        int(dispatcher_entry_serial),
+                        *(int(serial) for serial in dispatcher_region_serials),
+                    }
+                ),
+                authoritative_handler_serials=route_handler_serials,
+                peer_routes=entry_native_bound_routes,
+            )
+            if materialized_computed_goto_profile
+            else []
+        )
+        native_bound_entry_route_mods = build_native_bound_state_entry_bridges(
+            flow_graph,
+            entry_native_bound_routes,
+            dispatcher_region_serials=frozenset(
+                {
+                    int(dispatcher_entry_serial),
+                    *(int(serial) for serial in dispatcher_region_serials),
+                }
+            ),
+            authoritative_handler_serials=frozenset(
+                {
+                    *route_handler_serials,
+                    *(
+                        int(route.target_handler_serial)
+                        for route in entry_native_bound_routes
+                    ),
+                }
+            ),
+            peer_routes=tuple(materialized_state_routes),
+        )
     # Safety: the entry bridge is REQUIRED for correctness. Removing the
     # dispatcher orphans every handler unless the function-entry path is bridged
     # to ``route(initial_state)``. When a prologue exists but that bridge cannot
@@ -9169,6 +9154,27 @@ def emit_minimal_unflatten(
                         initial_state,
                     )
                 return compile_with_dispatcher_coverage(())
+    accepted_native_bound_entry_routes = tuple(
+        route
+        for route in entry_native_bound_routes
+        if any(
+            isinstance(modification, RedirectGoto)
+            and int(modification.from_serial) == int(route.source_block_serial)
+            and int(modification.new_target) == int(route.target_handler_serial)
+            for modification in native_bound_entry_route_mods
+        )
+    )
+    accepted_native_bound_routes = tuple(
+        dict.fromkeys(
+            (
+                *accepted_native_bound_backedge_routes,
+                *accepted_native_bound_entry_routes,
+            )
+        )
+    )
+    native_bound_route_receipts = tuple(
+        _native_bound_route_receipt(route) for route in accepted_native_bound_routes
+    )
     mods = build_state_write_redirects(
         flow_graph,
         dispatcher,

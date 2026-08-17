@@ -10454,6 +10454,67 @@ def test_scalar_entry_route_conflict_with_native_bound_evidence_abstains_atomica
 
     assert graph_modifications(plan) == []
     assert "concrete_state_route_provenance" not in plan.metadata_dict()
+    assert plan.metadata_dict().get(
+        "native_bound_transition_route_receipts", ()
+    ) == ()
+
+
+def test_entry_native_receipts_follow_recovered_initial_state(
+    monkeypatch,
+) -> None:
+    """Entry candidates and receipts use recovered state over a stale hint."""
+    hint_state = 0x16AA65E9
+    recovered_state = hint_state + 0x100
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (1,), ()),
+            1: _b(1, (2,), (0,)),
+            2: _b(2, (10, 13), (1, 10, 13)),
+            10: _b(10, (2,), (2,)),
+            13: _b(13, (2,), (2,)),
+        },
+        entry_serial=0,
+        func_ea=0x3000,
+    )
+    dispatcher = _DualRouteDispatcher(
+        exact_targets={},
+        interval_rows=(IntervalRow(recovered_state, recovered_state + 2, 10),),
+        default_target=99,
+    )
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "recover_state_write_transitions_via_partitioned_fixpoint",
+        lambda *_args, **_kwargs: (
+            StateWriteTransition(1, recovered_state, None, False, None),
+        ),
+    )
+
+    plan = emit_minimal_unflatten(
+        fg,
+        dispatcher,
+        state_var_stkoff=_STATE,
+        dispatcher_entry_serial=2,
+        initial_state=hint_state,
+        materialized_computed_goto_profile=True,
+        native_bound_transition_routes=(
+            _native_bound_route(
+                source=1, state=hint_state, target=13, fact_id="hint"
+            ),
+            _native_bound_route(
+                source=1, state=recovered_state, target=10, fact_id="recovered"
+            ),
+        ),
+        condition_chain_handlers=frozenset({10, 13}),
+        authoritative_handler_serials=frozenset({10, 13}),
+    )
+
+    assert RedirectGoto(from_serial=1, old_target=2, new_target=10) in (
+        graph_modifications(plan)
+    )
+    receipts = plan.metadata_dict().get(
+        "native_bound_transition_route_receipts", ()
+    )
+    assert {receipt["fact_id"] for receipt in receipts} == {"recovered"}
 
 
 def test_scalar_entry_route_agrees_with_native_bound_evidence_and_provenance(
