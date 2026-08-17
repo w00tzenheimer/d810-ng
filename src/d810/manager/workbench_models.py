@@ -253,6 +253,44 @@ class WorkbenchComparisonSnapshot:
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
+class PreparationScriptSummary:
+    script_id: str
+    display_name: str
+    path: str
+    configured_source_sha256: str
+    current_source_sha256: str | None
+    source_hash_matches: bool
+    enabled: bool
+    portable: bool
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class PreparationTransactionSummary:
+    transaction_id: str
+    database_identity: str
+    anchor_function_ea: int
+    script_id: str
+    script_path: str
+    script_source_sha256: str
+    state: str
+    bytes_changed: int
+    byte_ranges: tuple[tuple[int, int], ...]
+    type_annotations: int
+    affected_function_eas: tuple[int, ...]
+    live_after_image: bool
+    restore_allowed: bool
+    restore_blocker: str
+    recovery_required: bool
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class PreparationWorkbenchSummary:
+    database_identity: str | None
+    scripts: tuple[PreparationScriptSummary, ...] = ()
+    transactions: tuple[PreparationTransactionSummary, ...] = ()
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
 class DeobfuscationWorkbenchSnapshot:
     generation: int
     function: FunctionRef
@@ -268,6 +306,9 @@ class DeobfuscationWorkbenchSnapshot:
     freshness: SnapshotFreshness
     engine_started: bool
     collection_errors: tuple[str, ...]
+    preparation: PreparationWorkbenchSummary = dataclasses.field(
+        default_factory=lambda: PreparationWorkbenchSummary(None)
+    )
     execution_ledger: ExecutionLedgerSummary = dataclasses.field(
         default_factory=lambda: ExecutionLedgerSummary(None, 0, (), 0, 0)
     )
@@ -283,6 +324,9 @@ class WorkbenchCommandRequest:
     function_ea: int
     expected_generation: int
     function_fingerprint: str | None
+    database_identity: str | None = None
+    script_source_hashes: tuple[tuple[str, str], ...] = ()
+    transaction_id: str | None = None
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -316,6 +360,9 @@ __all__ = [
     "FunctionRef",
     "OutcomeStatus",
     "PatchCountEntry",
+    "PreparationScriptSummary",
+    "PreparationTransactionSummary",
+    "PreparationWorkbenchSummary",
     "PipelineStageSnapshot",
     "ExecutionScopeSummary",
     "RuntimeConfigRef",

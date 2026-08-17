@@ -91,13 +91,21 @@ class PreHexPreparationController:
         if not isinstance(database_identity, str) or not database_identity.strip():
             raise ValueError("database_identity must be non-empty")
         self._database_identity = database_identity
-        self._scripts = tuple(script for script in scripts if script.enabled)
+        self._scripts = tuple(scripts)
         self._gateway = gateway
         self._prepared_records = prepared_records
         self._transaction_type_deltas = transaction_type_deltas
         self._pending_type_proposals = pending_type_proposals
         self._acknowledge_type_proposals = acknowledge_type_proposals
         self._type_step_descriptor = type_step_descriptor
+
+    @property
+    def database_identity(self) -> str:
+        return self._database_identity
+
+    @property
+    def scripts(self) -> tuple[PreparationScriptDescriptor, ...]:
+        return self._scripts
 
     @staticmethod
     def _record_matches_script(
@@ -237,6 +245,8 @@ class PreHexPreparationController:
                 self._acknowledge_type_proposals(proposals)
 
         for descriptor in self._scripts:
+            if not descriptor.enabled:
+                continue
             exact = self._exact_records(
                 records,
                 function_ea=function_ea,

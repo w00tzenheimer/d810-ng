@@ -20,6 +20,40 @@ def test_workbench_commands_module_exists() -> None:
     assert importlib.util.find_spec("d810.ui.workbench_commands") is not None
 
 
+def test_preparation_commands_remain_thin_manager_adapters() -> None:
+    calls: list[tuple[str, object]] = []
+
+    def record(name):
+        return lambda request, **kwargs: (
+            calls.append((name, kwargs.get("lifecycle"))) or _result(request)
+        )
+
+    state = SimpleNamespace(
+        execute_workbench_preview_preparation=record("preview"),
+        execute_workbench_prepare_only=record("prepare_only"),
+        execute_workbench_prepare_and_decompile=record("prepare_and_decompile"),
+        execute_workbench_restore_preparation=record("restore"),
+    )
+    adapter = command_module.WorkbenchCommandAdapter(
+        state,
+        SimpleNamespace(get_widget_vdui=lambda widget: None),
+        SimpleNamespace(widget=object()),
+    )
+
+    adapter.preview_preparation(_request("preview_preparation"))
+    adapter.prepare_only(_request("prepare_only"))
+    adapter.prepare_and_decompile(_request("prepare_and_decompile"))
+    adapter.restore_preparation(_request("restore_preparation"))
+
+    assert [name for name, _ in calls] == [
+        "preview",
+        "prepare_only",
+        "prepare_and_decompile",
+        "restore",
+    ]
+    assert callable(calls[2][1])
+
+
 def _request(command: str) -> WorkbenchCommandRequest:
     return WorkbenchCommandRequest(
         command=command,

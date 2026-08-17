@@ -640,6 +640,23 @@ class SQLitePreparationJournal:
         ).fetchall()
         return tuple(self._record_from_row(row) for row in rows)
 
+    def transactions(
+        self, database_identity: str
+    ) -> tuple[PreparationTransactionRecord, ...]:
+        """Return durable history for one database, newest first."""
+
+        if not isinstance(database_identity, str) or not database_identity.strip():
+            raise ValueError("database_identity must be a non-empty string")
+        rows = self._conn.execute(
+            """
+            SELECT * FROM preparation_transactions
+            WHERE database_identity = ?
+            ORDER BY created_at DESC, transaction_id DESC
+            """,
+            (database_identity,),
+        ).fetchall()
+        return tuple(self._record_from_row(row) for row in rows)
+
     def active_byte_ranges(self, database_identity: str) -> tuple[tuple[int, int], ...]:
         terminal_placeholders = ", ".join("?" for _ in _TERMINAL_STATES)
         rows = self._conn.execute(

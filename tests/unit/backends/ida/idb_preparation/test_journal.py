@@ -235,7 +235,9 @@ def test_idb_prepared_releases_execution_lease_but_retains_ownership(
 
         assert journal.recoverable("idb-a") == ()
         assert journal.prepared("idb-a") == (transaction,)
+        assert journal.transactions("idb-a") == (transaction,)
         assert journal.prepared("idb-b") == ()
+        assert journal.transactions("idb-b") == ()
         assert journal.active_byte_ranges("idb-a") == ((0x1000, 0x1001),)
         next_transaction = journal.prepare(_request("idb-a", "script-b"), ())
         assert next_transaction.state is PreparationState.PREPARED

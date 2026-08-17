@@ -457,6 +457,10 @@ class PreparationTransactionStore(Protocol):
         self, database_identity: str
     ) -> tuple[PreparationTransactionRecord, ...]: ...
 
+    def transactions(
+        self, database_identity: str
+    ) -> tuple[PreparationTransactionRecord, ...]: ...
+
     def active_byte_ranges(
         self, database_identity: str
     ) -> tuple[tuple[int, int], ...]: ...

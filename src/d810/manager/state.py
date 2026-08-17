@@ -1040,6 +1040,35 @@ class D810State(metaclass=SingletonMeta):
             provider_phase=provider_phase,
         )
 
+    def execute_workbench_preview_preparation(
+        self,
+        request: WorkbenchCommandRequest,
+    ) -> WorkbenchCommandResult:
+        return self.manager.workbench_service.execute_preview_preparation(request)
+
+    def execute_workbench_prepare_only(
+        self,
+        request: WorkbenchCommandRequest,
+    ) -> WorkbenchCommandResult:
+        return self.manager.workbench_service.execute_prepare_only(request)
+
+    def execute_workbench_prepare_and_decompile(
+        self,
+        request: WorkbenchCommandRequest,
+        *,
+        lifecycle: typing.Callable[[], object],
+    ) -> WorkbenchCommandResult:
+        return self.manager.workbench_service.execute_prepare_and_decompile(
+            request,
+            lifecycle=lifecycle,
+        )
+
+    def execute_workbench_restore_preparation(
+        self,
+        request: WorkbenchCommandRequest,
+    ) -> WorkbenchCommandResult:
+        return self.manager.workbench_service.execute_restore_preparation(request)
+
     def clone_current_runtime_project(
         self,
         destination: pathlib.Path,

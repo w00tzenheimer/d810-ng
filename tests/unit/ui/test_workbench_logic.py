@@ -577,6 +577,11 @@ def test_evidence_export_is_canonical_deterministic_json() -> None:
                 "summary": "missing state_transition",
             },
         ],
+        "preparation": {
+            "database_identity": None,
+            "scripts": [],
+            "transactions": [],
+        },
         "execution_scope": {
             "decisions": [
                 {

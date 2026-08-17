@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import pathlib
 from collections.abc import Callable, Mapping
 
@@ -26,6 +27,9 @@ from d810.manager.workbench_models import (
     OutcomeStatus,
     PatchCountEntry,
     PipelineStageSnapshot,
+    PreparationScriptSummary,
+    PreparationTransactionSummary,
+    PreparationWorkbenchSummary,
     ExecutionScopeSummary,
     RuntimeConfigRef,
     SnapshotFreshness,
@@ -272,6 +276,12 @@ class WorkbenchService:
             statistics = StatisticsSummary((), 0, ())
             errors.append(f"statistics: {exc}")
 
+        try:
+            preparation = self._preparation(function_ea)
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            preparation = PreparationWorkbenchSummary(None)
+            errors.append(f"preparation: {exc}")
+
         if baseline is None or latest_output is None:
             comparison_service = getattr(self._manager, "comparison_service", None)
             if comparison_service is not None:
@@ -303,9 +313,119 @@ class WorkbenchService:
             freshness=SnapshotFreshness.CURRENT,
             engine_started=bool(getattr(self._manager, "started", False)),
             collection_errors=tuple(errors),
+            preparation=preparation,
             execution_ledger=execution_ledger,
             execution_profile=execution_profile,
             case=case,
+        )
+
+    @staticmethod
+    def _coalesce_byte_ranges(eas: tuple[int, ...]) -> tuple[tuple[int, int], ...]:
+        ordered = tuple(sorted(set(eas)))
+        if not ordered:
+            return ()
+        ranges: list[tuple[int, int]] = []
+        start = previous = ordered[0]
+        for ea in ordered[1:]:
+            if ea != previous + 1:
+                ranges.append((start, previous + 1))
+                start = ea
+            previous = ea
+        ranges.append((start, previous + 1))
+        return tuple(ranges)
+
+    @staticmethod
+    def _current_source_sha256(path: str) -> str | None:
+        try:
+            return hashlib.sha256(pathlib.Path(path).read_bytes()).hexdigest()
+        except OSError:
+            return None
+
+    def _preparation(self, function_ea: int) -> PreparationWorkbenchSummary:
+        """Project durable preparation truth without exposing gateway objects."""
+
+        controller = getattr(self._manager, "pre_hex_preparation", None)
+        journal = getattr(self._manager, "_idb_preparation_journal", None)
+        gateway = getattr(self._manager, "_idb_preparation_gateway", None)
+        if controller is None or journal is None or gateway is None:
+            return PreparationWorkbenchSummary(None)
+
+        database_identity = str(controller.database_identity)
+        scripts: list[PreparationScriptSummary] = []
+        for descriptor in controller.scripts:
+            current_hash = self._current_source_sha256(descriptor.path)
+            scripts.append(
+                PreparationScriptSummary(
+                    script_id=descriptor.script_id,
+                    display_name=descriptor.display_name,
+                    path=descriptor.path,
+                    configured_source_sha256=descriptor.source_sha256,
+                    current_source_sha256=current_hash,
+                    source_hash_matches=current_hash == descriptor.source_sha256,
+                    enabled=descriptor.enabled,
+                    portable=descriptor.portable,
+                )
+            )
+
+        transactions: list[PreparationTransactionSummary] = []
+        for record in journal.transactions(database_identity):
+            byte_deltas = tuple(journal.byte_deltas(record.transaction_id))
+            type_deltas = tuple(journal.type_deltas(record.transaction_id))
+            affected = tuple(journal.affected_functions(record.transaction_id))
+            live_after_image = bool(
+                gateway.transaction_matches_after_image(record.transaction_id)
+            )
+            if record.database_identity != database_identity:
+                restore_blocker = "Foreign database transaction."
+            elif record.state.value in {
+                "prepared",
+                "script_running",
+                "capture_pending",
+                "captured",
+                "analysis_pending",
+                "restoring",
+                "rolling_back",
+            }:
+                restore_blocker = (
+                    f"Transaction is still running ({record.state.value})."
+                )
+            elif record.state.value != "idb_prepared":
+                restore_blocker = (
+                    f"Transaction state {record.state.value} is not restorable."
+                )
+            elif not live_after_image:
+                restore_blocker = (
+                    "Exact after-image is absent; IDB interference must be "
+                    "reconciled first."
+                )
+            else:
+                restore_blocker = ""
+            transactions.append(
+                PreparationTransactionSummary(
+                    transaction_id=record.transaction_id.value,
+                    database_identity=record.database_identity,
+                    anchor_function_ea=record.anchor_function_ea,
+                    script_id=record.script_id,
+                    script_path=record.script_path,
+                    script_source_sha256=record.script_source_sha256,
+                    state=record.state.value,
+                    bytes_changed=len(byte_deltas),
+                    byte_ranges=self._coalesce_byte_ranges(
+                        tuple(delta.ea for delta in byte_deltas)
+                    ),
+                    type_annotations=len(type_deltas),
+                    affected_function_eas=affected,
+                    live_after_image=live_after_image,
+                    restore_allowed=not restore_blocker,
+                    restore_blocker=restore_blocker,
+                    recovery_required=record.state.value
+                    in {"recovery_required", "restore_failed"},
+                )
+            )
+        return PreparationWorkbenchSummary(
+            database_identity=database_identity,
+            scripts=tuple(scripts),
+            transactions=tuple(transactions),
         )
 
     def execute_analyze(
@@ -378,6 +498,144 @@ class WorkbenchService:
             expected_command="build_deobfuscator",
             label="Build Deobfuscator",
             lifecycle=lifecycle,
+        )
+
+    def execute_preview_preparation(
+        self,
+        request: WorkbenchCommandRequest,
+    ) -> WorkbenchCommandResult:
+        """Refresh source attestations without executing a script."""
+
+        invalid = self._validate_request(
+            request,
+            expected_command="preview_preparation",
+        )
+        if invalid is not None:
+            return invalid
+        return self._result(
+            request,
+            status=OutcomeStatus.READY,
+            succeeded=True,
+            accepted=True,
+            refresh_requested=True,
+            message="Preparation preview refreshed; no IDB writes were performed",
+        )
+
+    def execute_prepare_only(
+        self,
+        request: WorkbenchCommandRequest,
+    ) -> WorkbenchCommandResult:
+        """Run preparation without requesting a Hex-Rays decompilation."""
+
+        invalid = self._validate_preparation_request(
+            request,
+            expected_command="prepare_only",
+        )
+        if invalid is not None:
+            return invalid
+        try:
+            from d810.manager.pre_hexrays_preparation import PreparationMode
+
+            receipt = self._manager.prepare_idb_for_hexrays(
+                request.function_ea,
+                PreparationMode.PREPARE_ONLY,
+            )
+        except Exception as exc:
+            return self._failure(request, f"Preparation failed: {exc}")
+        if not receipt.ok:
+            return self._failure(
+                request,
+                receipt.failure_reason or "Preparation did not complete",
+            )
+        return self._result(
+            request,
+            status=OutcomeStatus.CHANGED,
+            succeeded=True,
+            accepted=True,
+            refresh_requested=True,
+            message="IDB preparation completed without decompiling",
+        )
+
+    def execute_prepare_and_decompile(
+        self,
+        request: WorkbenchCommandRequest,
+        *,
+        lifecycle: Callable[[], object],
+    ) -> WorkbenchCommandResult:
+        """Run the manager-owned preparation plus decompilation lifecycle."""
+
+        invalid = self._validate_preparation_request(
+            request,
+            expected_command="prepare_and_decompile",
+        )
+        if invalid is not None:
+            return invalid
+        try:
+            result = lifecycle()
+        except Exception as exc:
+            return self._failure(request, f"Prepare & Decompile failed: {exc}")
+        if result is None:
+            return self._failure(request, "Prepare & Decompile returned no cfunc")
+        return self._result(
+            request,
+            status=OutcomeStatus.CHANGED,
+            succeeded=True,
+            accepted=True,
+            refresh_requested=True,
+            message="IDB preparation and decompilation completed",
+        )
+
+    def execute_restore_preparation(
+        self,
+        request: WorkbenchCommandRequest,
+    ) -> WorkbenchCommandResult:
+        """Restore one exact transaction selected from the immutable history."""
+
+        invalid = self._validate_preparation_request(
+            request,
+            expected_command="restore_preparation",
+            require_transaction=True,
+            validate_sources=False,
+        )
+        if invalid is not None:
+            return invalid
+        assert request.transaction_id is not None
+        summary = self._preparation(request.function_ea)
+        selected = next(
+            (
+                transaction
+                for transaction in summary.transactions
+                if transaction.transaction_id == request.transaction_id
+            ),
+            None,
+        )
+        if selected is None:
+            return self._failure(request, "Preparation transaction is unavailable")
+        if not selected.restore_allowed:
+            return self._failure(
+                request,
+                selected.restore_blocker or "Preparation transaction is not restorable",
+            )
+        try:
+            from d810.capabilities.idb_preparation import PreparationTransactionId
+
+            receipt = self._manager.restore_idb_preparation(
+                PreparationTransactionId(request.transaction_id)
+            )
+        except Exception as exc:
+            return self._failure(request, f"Restore failed: {exc}")
+        if not receipt.ok:
+            return self._failure(
+                request,
+                receipt.failure_reason or "Restore did not complete",
+            )
+        return self._result(
+            request,
+            status=OutcomeStatus.CHANGED,
+            succeeded=True,
+            accepted=True,
+            refresh_requested=True,
+            message="Preparation transaction restored",
         )
 
     def _execute_lifecycle(
@@ -463,6 +721,53 @@ class WorkbenchService:
                 succeeded=False,
                 message="Command belongs to an older workbench generation",
             )
+        return None
+
+    def _validate_preparation_request(
+        self,
+        request: WorkbenchCommandRequest,
+        *,
+        expected_command: str,
+        require_transaction: bool = False,
+        validate_sources: bool = True,
+    ) -> WorkbenchCommandResult | None:
+        invalid = self._validate_request(request, expected_command=expected_command)
+        if invalid is not None:
+            return invalid
+        summary = self._preparation(request.function_ea)
+        if (
+            summary.database_identity is None
+            or request.database_identity != summary.database_identity
+        ):
+            return self._stale_result(
+                request,
+                succeeded=False,
+                message="Preparation command belongs to another database identity",
+            )
+        if validate_sources:
+            current_hashes = tuple(
+                (script.script_id, script.current_source_sha256 or "")
+                for script in summary.scripts
+                if script.enabled
+            )
+            if request.script_source_hashes != current_hashes:
+                return self._stale_result(
+                    request,
+                    succeeded=False,
+                    message="Preparation script sources changed; preview again",
+                )
+            drifted = tuple(
+                script.script_id
+                for script in summary.scripts
+                if script.enabled and not script.source_hash_matches
+            )
+            if drifted:
+                return self._failure(
+                    request,
+                    "Preparation source attestation changed for: " + ", ".join(drifted),
+                )
+        if require_transaction and not request.transaction_id:
+            return self._failure(request, "Select a preparation transaction first")
         return None
 
     def _request_is_current(self, request: WorkbenchCommandRequest) -> bool:

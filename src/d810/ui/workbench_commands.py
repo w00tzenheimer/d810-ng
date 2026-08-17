@@ -224,4 +224,32 @@ class WorkbenchCommandAdapter:
             provider_phase=provider_phase,
         )
 
+    def preview_preparation(
+        self,
+        request: WorkbenchCommandRequest,
+    ) -> WorkbenchCommandResult:
+        return self._state.execute_workbench_preview_preparation(request)
+
+    def prepare_only(
+        self,
+        request: WorkbenchCommandRequest,
+    ) -> WorkbenchCommandResult:
+        return self._state.execute_workbench_prepare_only(request)
+
+    def prepare_and_decompile(
+        self,
+        request: WorkbenchCommandRequest,
+    ) -> WorkbenchCommandResult:
+        return self._state.execute_workbench_prepare_and_decompile(
+            request,
+            lifecycle=lambda: self._decompile_for_build(request.function_ea),
+        )
+
+    def restore_preparation(
+        self,
+        request: WorkbenchCommandRequest,
+    ) -> WorkbenchCommandResult:
+        return self._state.execute_workbench_restore_preparation(request)
+
+
 __all__ = ["WorkbenchCommandAdapter"]
