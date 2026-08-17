@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 
 import pytest
 
@@ -13,6 +14,10 @@ from tests.system.cases.libobfuscated_comprehensive import DAC_MASM_CASES
 
 _FUNCTION = "Eidolon_ShowErrorAndTerminateProcess"
 _CASE = next(case for case in DAC_MASM_CASES if case.function == _FUNCTION)
+_RECEIPT_IDENTITY = re.compile(
+    r"fact_id=.*:state=0x(?P<state>[0-9A-Fa-f]+):target=.*"
+    r":resolver=(?P<resolver>[A-Za-z0-9_]+)\b"
+)
 
 
 @pytest.mark.usefixtures("configure_hexrays")
@@ -48,13 +53,29 @@ class TestNativeBoundTransitionRoutes:
             pseudocode_to_string=pseudocode_to_string,
         )
 
-        assert len(receipt_messages) >= 2, (
-            "expected one native-bound receipt per route, got: "
+        # The driver invokes this logger only after the backend reports a
+        # committed graph and the route operation key is correlated exactly
+        # once; the unit receipt tests cover those inventory gates.
+        assert len(receipt_messages) == 2, (
+            "expected exactly two native-bound receipt calls, got: "
             f"{receipt_messages}"
         )
-        receipt_text = "\n".join(receipt_messages)
-        # The rebuilt PE has a different image base/section layout from the
-        # source IDB.  Route-state constants are the stable fixture identity;
-        # source EAs remain in each receipt as current-MBA provenance.
-        assert "state=0x16AA65E9" in receipt_text
-        assert "state=0x079323F9" in receipt_text
+        assert len(set(receipt_messages)) == 2, (
+            "duplicate native-bound receipt call: "
+            f"{receipt_messages}"
+        )
+        identities = set()
+        for message in receipt_messages:
+            match = _RECEIPT_IDENTITY.search(message)
+            assert match is not None, f"unexpected receipt format: {message}"
+            identities.add(
+                (
+                    int(match.group("state"), 16),
+                    match.group("resolver"),
+                )
+            )
+
+        assert identities == {
+            (0x16AA65E9, "condition_chain_interval_route"),
+            (0x079323F9, "state_dispatcher_map_exact_row"),
+        }
