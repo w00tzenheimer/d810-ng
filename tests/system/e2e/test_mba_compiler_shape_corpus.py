@@ -18,13 +18,19 @@ import subprocess
 import sys
 import time
 from collections.abc import Mapping
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 import idaapi
 
 from d810.core.config import ProjectConfiguration
-from d810.mba.certified_catalogue import ShadowMatcherParityLedger
+from d810.backends.mba import ida as ida_backend
+from d810.mba.certified_catalogue import (
+    ShadowMatcherParityLedger,
+    StructuralMatcherParityExpectation,
+    load_structural_matcher_parity_certificate,
+)
 from d810.mba.provider_outcome import MbaProviderKind, ProviderOutcomeStatus
 from d810.mba.native_corpus_capture import capture_native_provider_histories
 from d810.optimizers.microcode.instructions.pattern_matching.engine import (
@@ -484,7 +490,7 @@ class TestCompilerShapeCatalogueNative:
             ledger.new_safe_coverage_pending + ledger.new_safe_coverage_proved
         ) >= 0
 
-    def test_native_shadow_evidence_generates_and_activates_runtime_bound_certificate(
+    def test_native_shadow_evidence_certificate_and_activation(
         self,
         tmp_path: Path,
         ida_database,
@@ -575,10 +581,11 @@ class TestCompilerShapeCatalogueNative:
             "ida_sdk": str(idaapi.IDA_SDK_VERSION),
             "matcher_backend": runtime_mode,
         }
-        evidence_path = artifacts / f"mba-structural-parity-{runtime_mode}.json"
+        ledger_path = artifacts / f"mba-structural-parity-{runtime_mode}.json"
+        capture_path = artifacts / f"mba-structural-capture-{runtime_mode}.json"
         toolchain_path = artifacts / f"mba-structural-parity-toolchain-{runtime_mode}.json"
         certificate_path = artifacts / f"mba-structural-parity-{runtime_mode}.certificate.json"
-        evidence_path.write_text(
+        ledger_path.write_text(
             json.dumps(
                 {
                     "runtime_mode": runtime_mode,
@@ -610,6 +617,30 @@ class TestCompilerShapeCatalogueNative:
             + "\n",
             encoding="utf-8",
         )
+        capture_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "runtime_mode": runtime_mode,
+                    "corpus_digest": _sha256_file(_MANIFEST),
+                    "toolchain_digest": _canonical_json_digest(toolchain),
+                    "cases": [
+                        {
+                            "case_id": case["case_id"],
+                        }
+                        for case in json.loads(_MANIFEST.read_text(encoding="utf-8"))[
+                            "cases"
+                        ]
+                    ],
+                },
+                allow_nan=False,
+                ensure_ascii=True,
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
         toolchain_path.write_text(
             json.dumps(toolchain, allow_nan=False, ensure_ascii=True, indent=2, sort_keys=True)
             + "\n",
@@ -619,13 +650,13 @@ class TestCompilerShapeCatalogueNative:
             [
                 sys.executable,
                 str(_PARITY_CERTIFICATE_TOOL),
-                "--evidence",
-                str(evidence_path),
-                "--manifest",
-                str(_MANIFEST),
-                "--toolchain",
-                str(toolchain_path),
-                "--out",
+                "--ledger",
+                str(ledger_path),
+                "--capture",
+                str(capture_path),
+                "--runtime",
+                runtime_mode,
+                "--output",
                 str(certificate_path),
             ],
             cwd=_ROOT,
@@ -638,7 +669,18 @@ class TestCompilerShapeCatalogueNative:
         certificate = json.loads(certificate_path.read_text(encoding="utf-8"))
         assert certificate["snapshot_fingerprint"] == snapshot.fingerprint
         assert certificate["runtime_mode"] == runtime_mode
+        assert certificate["canonicalizer_schema_version"] == (
+            snapshot.canonicalizer_schema_version
+        )
+        assert certificate["corpus_digest"] == _sha256_file(_MANIFEST)
+        assert certificate["toolchain_digest"] == _canonical_json_digest(toolchain)
+        assert certificate["legacy_observation_count"] > 0
         assert certificate["observation_count"] == combined.observation_count
+        assert certificate["observation_count"] > 0
+        assert certificate["legacy_rule_mismatches"] == 0
+        assert certificate["legacy_binding_mismatches"] == 0
+        assert certificate["legacy_binding_unknown"] == 0
+        assert certificate["new_safe_coverage_pending"] == 0
         assert certificate["unsafe_mutations"] == 0
         assert certificate["unproved_structural_replacements"] == 0
 
@@ -698,6 +740,19 @@ class TestCompilerShapeCatalogueNative:
             before = idaapi.decompile(function_ea, flags=idaapi.DECOMP_NO_CACHE)
             assert before is not None
             before_text = pseudocode_to_string(before.get_pseudocode())
+            native_proof_results: list[bool] = []
+            original_native_proof = ida_backend.prove_native_ast_equivalence
+
+            def record_native_proof(*args, **kwargs):
+                result = original_native_proof(*args, **kwargs)
+                native_proof_results.append(result)
+                return result
+
+            monkeypatch.setattr(
+                ida_backend,
+                "prove_native_ast_equivalence",
+                record_native_proof,
+            )
             with capture_native_provider_histories(adapters):
                 handler_started = time.monotonic()
                 state.start_d810()
@@ -725,6 +780,16 @@ class TestCompilerShapeCatalogueNative:
                 and "structural_dispatch" in outcome.metadata
             )
             assert structural_outcome.matcher is not None
+            assert structural_outcome.status is ProviderOutcomeStatus.APPLIED
+            assert structural_outcome.metadata["mutation_outcome"] == "accepted"
+            assert native_proof_results
+            assert all(native_proof_results)
+            assert sum(
+                1
+                for outcome in outcomes
+                if outcome.provider is MbaProviderKind.CATALOGUE
+                and outcome.status is ProviderOutcomeStatus.APPLIED
+            ) == 1
             dispatch = structural_outcome.metadata["structural_dispatch"]
             assert isinstance(dispatch, Mapping)
             report_evidence_path = artifacts / f"mba-structural-report-evidence-{runtime_mode}.json"
@@ -774,6 +839,89 @@ class TestCompilerShapeCatalogueNative:
                 encoding="utf-8",
             )
             assert report_evidence_path.is_file()
+
+            loaded_certificate = load_structural_matcher_parity_certificate(
+                certificate_path
+            )
+            expectation = StructuralMatcherParityExpectation(
+                corpus_digest=_sha256_file(_MANIFEST),
+                toolchain_digest=_canonical_json_digest(toolchain),
+                legacy_observation_count=combined.legacy_match_count,
+                observation_count=combined.observation_count,
+            )
+            configured_adapter = adapters[0]
+            stale_mutations = (
+                (
+                    "wrong_runtime",
+                    loaded_certificate,
+                    expectation,
+                    "cython" if runtime_mode == "python" else "python",
+                ),
+                (
+                    "wrong_canonicalizer_version",
+                    replace(
+                        loaded_certificate,
+                        canonicalizer_schema_version=(
+                            loaded_certificate.canonicalizer_schema_version + 1
+                        ),
+                    ),
+                    expectation,
+                    runtime_mode,
+                ),
+                (
+                    "wrong_catalogue_digest",
+                    replace(loaded_certificate, snapshot_fingerprint="0" * 64),
+                    expectation,
+                    runtime_mode,
+                ),
+                (
+                    "wrong_corpus_digest",
+                    loaded_certificate,
+                    replace(expectation, corpus_digest="0" * 64),
+                    runtime_mode,
+                ),
+                (
+                    "wrong_toolchain_digest",
+                    loaded_certificate,
+                    replace(expectation, toolchain_digest="0" * 64),
+                    runtime_mode,
+                ),
+                (
+                    "wrong_observation_count",
+                    loaded_certificate,
+                    replace(
+                        expectation,
+                        observation_count=expectation.observation_count + 1,
+                    ),
+                    runtime_mode,
+                ),
+            )
+            for (
+                _mutation_name,
+                stale_certificate,
+                stale_expectation,
+                stale_runtime,
+            ) in stale_mutations:
+                configured_adapter.attach_certified_catalogue_snapshot(
+                    snapshot,
+                    0,
+                    state.current_shadow_matcher_parity_ledger,
+                    loaded_certificate,
+                    expectation,
+                    runtime_mode,
+                )
+                assert configured_adapter.uses_structural_matching is True
+                configured_adapter.pattern_candidates
+                configured_adapter.attach_certified_catalogue_snapshot(
+                    snapshot,
+                    0,
+                    state.current_shadow_matcher_parity_ledger,
+                    stale_certificate,
+                    stale_expectation,
+                    stale_runtime,
+                )
+                assert configured_adapter.uses_structural_matching is False
+                assert configured_adapter._pattern_candidates_cache is None
 
             stale_config = json.loads(activation_path.read_text(encoding="utf-8"))
             stale_config["additional_configuration"][
