@@ -20,6 +20,8 @@
 - No new ast-grep ignores or import-linter exceptions.
 - Run local/worktree commands with `PYTHONPATH=src`.
 - Run Docker tests from `/Users/mahmoud/src/idapro/d810`, never from the worktree.
+- The implementation worktree name is exactly `config-v2-final-cutover-impl`;
+  every Docker invocation must pass `-w config-v2-final-cutover-impl`.
 - Do not claim completion from unit tests alone; representative unflattening system oracles and the full system suite are required.
 
 ---
@@ -59,6 +61,311 @@
 - `src/d810/ui/workbench_*.py`
 - `src/d810/optimizers/microcode/flow/flattening/state_machine_cff_unflattener.py`
 - bundled configuration JSON, tests, fixtures, documentation, and scripts returned by the final inventory query.
+
+## Fixed Implementation Decisions
+
+These are rulings, not choices left to the implementer:
+
+1. **Known bundled legacy documents use fingerprinted projections.** The prior
+   cutover intentionally changed some option shapes, so blindly translating
+   every legacy key would either reject shipped presets or silently lose
+   behavior. The migrator computes SHA-256 over canonical JSON
+   (`sort_keys=True`, separators `(',', ':')`, UTF-8, `ensure_ascii=False`). An
+   exact known fingerprint selects a named current-v2 projection. A custom file
+   that differs by one semantic field does not inherit that projection.
+2. **Custom user documents use only lossless rule projections.** Instruction
+   implementation names are reverse-mapped through `mba_transform_stages()`;
+   block rules are mapped through current registered hook-transform and cleanup
+   adapters. Any active rule, option, or ordering constraint without an exact
+   typed representation raises `LegacyMigrationError`.
+3. **The migration tool remains after runtime legacy deletion.** It is the only
+   allowed production location for legacy rule names and fingerprints. It must
+   not be imported by `src/d810/**`.
+4. **Canonicalization copies semantic documents, not raw prose.** The donor
+   canary's `pipeline_v2` and owned non-rule metadata are authoritative. Remove
+   `pipeline_v2_mode`, `config_v2_canary`, `ins_rules`, and `blk_rules`; rewrite
+   the description to describe the canonical preset. Preserve keys such as
+   `function_analysis_priors` exactly.
+5. **Do not rename the algorithm module in this cutover.** Remove public JSON
+   and manager registration by `StateMachineCffUnflattener`, but leave the class
+   and module in place as the private Hex-Rays host. A later native callback
+   extraction can rename it without mixing algorithm movement into this
+   configuration migration.
+6. **No automatic runtime rewrite.** Loading an unmigrated project produces an
+   error containing this exact command shape:
+   `python tools/migrations/migrate_project_config_v2.py INPUT --in-place`.
+7. **No compatibility aliases.** Deleted canary basenames are not recreated as
+   forwarding JSON, symlinks, lookup aliases, or deprecated constants.
+8. **No test command improvisation.** Docker commands run from the main root
+   and use `-w config-v2-final-cutover-impl`; local commands run inside the
+   implementation worktree with `PYTHONPATH=src`.
+
+## Exact Historical Canonicalization Matrix
+
+The following table is copied from the current routing policy and donor files.
+Task 1 freezes it as test fixture data before Task 8 deletes the routing module.
+The pass sequence is ordered and must compare exactly.
+
+| Canonical destination | Current donor to delete | Ordered pass IDs after canonicalization |
+|---|---|---|
+| `default_instruction_only.json` | `default_instruction_only_config_v2_canary.json` | `constant-simplification`, `mba-simplify`, `jump-fixer` |
+| `default_unflattening_tigress_engine.json` | `default_unflattening_tigress_engine_config_v2_canary.json` | native spine |
+| `hodur_flag2.json` | `hodur_flag2_config_v2_canary.json` | native spine, `jump-fixer` |
+| `hodur_glbopt2_only.json` | `hodur_glbopt2_only_config_v2_canary.json` | native spine |
+| `eidolon.json` | `eidolon_config_v2_canary.json` | `mba-simplify` |
+| `default_unflattening_approov.json` | `default_unflattening_approov_config_v2_canary.json` | `mba-simplify`, `mba-state-preconditioner`, native spine, `jump-fixer` |
+| `default_unflattening_approov_s1a.json` | `default_unflattening_approov_s1a_config_v2_canary.json` | `mba-simplify`, `mba-state-preconditioner`, native spine, `jump-fixer` |
+| `hodur_flag2_s1a.json` | `hodur_flag2_s1a_config_v2_canary.json` | native spine, `jump-fixer` |
+| `hodur_flag2_with_fcp.json` | `hodur_flag2_with_fcp_config_v2_canary.json` | `mba-simplify`, native spine, `jump-fixer`, `constant-simplification` |
+| `identity_call.json` | `identity_call_config_v2_canary.json` | `identity-call-resolver` |
+| `default_unflattening_tigress_engine_transition_facts.json` | `default_unflattening_tigress_engine_transition_facts_config_v2_canary.json` | `constant-simplification`, `mba-simplify`, native spine |
+| `example_libobfuscated_abc.json` | `example_libobfuscated_abc_config_v2_canary.json` | `constant-simplification`, `mba-simplify`, native spine, `jump-fixer` |
+| `flatfold.json` | `flatfold_config_v2_canary.json` | `constant-simplification`, `mba-simplify`, `mba-state-preconditioner`, `jump-fixer`, native spine |
+| `example_hodur.json` | `example_hodur_config_v2_canary.json` | `constant-simplification`, `mba-simplify`, native spine, `jump-fixer` |
+| `default_unflattening_ollvm.json` | `default_unflattening_ollvm_config_v2_canary.json` | `constant-simplification`, `mba-simplify`, `indirect-call-resolver`, `mba-state-preconditioner`, native spine, `simple-flattening-cleanup-unflattener`, `jump-fixer` |
+| `default_indirect_resolution.json` | `default_indirect_resolution_config_v2_canary.json` | `indirect-branch-resolver`, `indirect-call-resolver` |
+| `default_unflattening_tigress_indirect.json` | `default_unflattening_tigress_indirect_config_v2_canary.json` | `mba-simplify`, native spine, `jump-fixer` |
+| `default.json` | `default_config_v2_canary.json` | `indirect-branch-resolver`, `indirect-call-resolver` |
+| `example_libobfuscated_no_fixprecedessor.json` | `example_libobfuscated_no_fixprecedessor_config_v2_canary.json` | `constant-simplification`, `mba-simplify`, `simple-flattening-cleanup-unflattener`, `jump-fixer` |
+| `bogus_loops.json` | `bogus_loops_config_v2_canary.json` | `single-trip-loop-peel`, `mba-state-preconditioner`, `jump-fixer` |
+| `example_libobfuscated.json` | `example_libobfuscated_config_v2_canary.json` | `constant-simplification`, `mba-simplify`, `mba-state-preconditioner`, native spine, `jump-fixer` |
+
+`native spine` always expands, in this exact order, to:
+
+```python
+(
+    "recover_dispatcher",
+    "recover_state_transitions",
+    "plan_semantic_regions",
+    "lower_state_machine",
+    "cleanup_residual_dispatcher",
+)
+```
+
+Two non-routed canaries are fixture variants rather than source/runtime pairs:
+
+| Current file | Stable destination |
+|---|---|
+| `dead_store_elimination_fixture_config_v2_canary.json` | `dead_store_elimination_fixture.json` |
+| `hodur_flag2_s1a_config_v2_canary_constant_simplification.json` | `hodur_flag2_s1a_constant_simplification.json` |
+
+## Exact Known Legacy Fingerprints
+
+Task 1 must hard-code these canonical-document fingerprints in the offline
+migration catalogue and assert them in tests. They deliberately remain outside
+runtime code.
+
+```text
+default_instruction_only.json b3f0944b2119e880d2976821953ebf2c50f2646a18a1898ee7ffc0d636c02ab2
+default_unflattening_tigress_engine.json 1d343499a5cb0dec68b2a7efedf3237703dce6fc39b2aae61186feb1a0471db2
+hodur_flag2.json 2c57256b924f15329eb0166edbfc693f19f56d57a4e317b2c1d03d5458fbc9eb
+hodur_glbopt2_only.json c6a288756aed1880a54981c5cf596bbb5abddc09e74cefd2c6af60406445c986
+eidolon.json bc241830174e4e5433a0b7d3aaac3f042d56978e9e77c6ed46d000c76cbbcd6c
+default_unflattening_approov.json 83f454590e43ae04800cff57670a33e06185cd66ff7daf2141e1f84f62d1c9ac
+default_unflattening_approov_s1a.json 1ca9be3289dd1ef4ec4893434612dbafaed5058bc12b2422ca86218ed51eda05
+hodur_flag2_s1a.json 11d0f3aa77a291c12715550156585afe577010e865faaf55bdf04b4f2aef2e63
+hodur_flag2_with_fcp.json 8bbdc05360b7d3f5fe9c345c19a70d8d5269fc0f6d64c5b49bef42ac8e52ae10
+identity_call.json cd035f21e1ba345d0a6108616344375f1e93866a8cfdee23c6f6770224525339
+default_unflattening_tigress_engine_transition_facts.json 33a35478e5adcf6b952ec30f30727524a31f721c1d502c89f80165c9b01c4750
+example_libobfuscated_abc.json dcf343cfb6ce6f701e5954c64607d8cd8a3512345d1f3057f2be7cf7a006fa5e
+flatfold.json fb2f480fcc9088f637a83c9ed5fc9354ed9c40ae61f0fe134ae7f237160d56dd
+example_hodur.json 859f94847f7796fb4166b2a7feb70d927a0c54fb50c3f750c7209cddb8c8e6c0
+default_unflattening_ollvm.json 176a9441b7c866ca37d174c9bf3bcd494521acd94c4ec29c55d115cd951451cb
+default_indirect_resolution.json 3ad2011d8a652b62a1d7c33a4c42f43a9c66f95d8bd4ce42a48f0514baa2a3ee
+default_unflattening_tigress_indirect.json 2101314f6b7a8213922818e88b4c8aa54d57048aa83dc2c414e6640b74ea9ec9
+default.json 3ad2011d8a652b62a1d7c33a4c42f43a9c66f95d8bd4ce42a48f0514baa2a3ee
+example_libobfuscated_no_fixprecedessor.json 9bf4606216bfe471d526b1f12d19cb6da17fdd7a542c51f8283ab350da98c457
+bogus_loops.json a1c7a9b5ce95589848c0444413af458e33c599093f722dc89617bbf081a16945
+example_libobfuscated.json 0e24934ca11872a24d65384967a9830fb567caf2d9b64ae4e15b88ec2d49f546
+```
+
+`default.json` and `default_indirect_resolution.json` intentionally share a
+fingerprint. Lookup therefore keys on `(source basename, fingerprint)`, never
+fingerprint alone.
+
+## Migration Data Model and Projection Rules
+
+Use these exact internal shapes so parsing, projection, and serialization stay
+separate and testable:
+
+```python
+@dataclass(frozen=True, slots=True)
+class LegacyRule:
+    section: Literal["ins_rules", "blk_rules"]
+    index: int
+    name: str
+    options: Mapping[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class LegacyProject:
+    source_name: str
+    description: str
+    active_rules: tuple[LegacyRule, ...]
+    additional_configuration: Mapping[str, object]
+    canonical_fingerprint: str
+
+
+@dataclass(frozen=True, slots=True)
+class KnownPortfolio:
+    source_name: str
+    fingerprint: str
+    donor_name: str
+```
+
+Projection is ordered as follows:
+
+1. Parse and validate the whole JSON object. `is_activated=False` rules are
+   ignored; malformed inactive entries are still rejected because they are not
+   valid project data.
+2. If `pipeline_v2` is present and there are active legacy rules, reject mixed
+   ownership. If it is present without active legacy rules, validate and return
+   canonical v2.
+3. Match `(source_name, canonical_fingerprint)` against `KnownPortfolio`. Load
+   the donor document from the repository only while building/testing; the
+   installed migration tool must instead use checked-in compact
+   `PipelineConfig.to_dict()` templates plus owned metadata, so it continues to
+   work after canaries are deleted.
+4. Otherwise perform generic exact projection:
+   - `FoldReadonlyDataRule`, `ConstantSubtreeFoldRule`, and
+     `ForwardConstantPropagationRule` are one owner bundle. Partial selection is
+     rejected rather than silently adding missing behavior. The complete bundle
+     maps to `constant-simplification`; `fold_writable_constants=True` maps to
+     `memory_policy="aggressive_no_direct_writes"`, false/missing maps to
+     `"strict"`; only `allow_executable_readonly` and `rva_guard` map directly.
+   - Every other instruction rule must match exactly one
+     `ExecutionStageDescriptor.implementation_name` from
+     `mba_transform_stages()`. Preserve source order as `options.transforms`.
+     Rule configs become `options.transform_options[transform_id]` only if the
+     transform declares those fields in `MBA_TRANSFORM_OPTION_FIELDS`; otherwise
+     non-empty config is rejected.
+   - `StateMachineCffUnflattener` maps to the complete native spine only when
+     its options reduce exactly to public fields `min_state_constant`, `family`,
+     `recovery_strategy`, and `native_cfg_persistence`. Former validator/limit
+     flags are not guessed for custom input.
+   - `JumpFixer` maps to `jump-fixer`; every `enabled_rules` value must be in
+     `JUMP_FIXER_RULE_NAMES`, order is preserved, and all other fields reject.
+   - The direct block-rule map is:
+     `ForwardConstantPropagationRule -> forward-constant-propagation`,
+     `IdentityCallResolver -> identity-call-resolver`,
+     `IndirectBranchResolver -> indirect-branch-resolver`,
+     `IndirectCallResolver -> indirect-call-resolver`,
+     `MbaStatePreconditioner -> mba-state-preconditioner`,
+     `SingleTripLoopPeel -> single-trip-loop-peel`, and
+     `SimpleFlatteningCleanupUnflattener -> simple-flattening-cleanup-unflattener`.
+     Validate every projected option by building the result with
+     `operational_config_v2_pass_registry()`.
+5. Validate the final ordered pipeline through the operational registry before
+   returning a document. The first validation error is wrapped with source
+   rule section/index/name so users can fix the input.
+
+## Per-task Review Contract
+
+Every implementation task report must contain:
+
+- status: `DONE`, `DONE_WITH_CONCERNS`, `NEEDS_CONTEXT`, or `BLOCKED`;
+- commit SHA(s);
+- files changed and why;
+- the exact RED command and expected failing assertion/error;
+- the exact GREEN command, exit code, and pass/fail count;
+- `git diff --check` result;
+- deviations from the task brief, even if judged harmless;
+- generated `.tmp` evidence filenames;
+- no claim based on a test that was not run.
+
+Reviewers must separately issue `SPEC: PASS|FAIL` and `QUALITY: PASS|FAIL`.
+Any missing verdict is a failed review. Critical and important findings block
+the next task; minor findings receive an explicit coordinator ruling.
+
+## Exact Docker Command Matrix
+
+Workers must copy these commands verbatim and run them from
+`/Users/mahmoud/src/idapro/d810`. A worker whose shell is inside the worktree
+must first `cd /Users/mahmoud/src/idapro/d810`; running the script from the
+worktree breaks `D810_REPO_ROOT` and is not accepted evidence. Each `-o` value is
+a bare filename and is written to
+`.worktrees/config-v2-final-cutover-impl/.tmp/`.
+
+```bash
+# Task 1 RED/GREEN
+./tools/scripts/run_system_tests_docker.sh test \
+  -w config-v2-final-cutover-impl \
+  -o task1_legacy_migrator.txt -- \
+  tests/unit/tools/test_migrate_project_config_v2.py -q
+
+# Task 2 RED/GREEN (same file, CLI cases included)
+./tools/scripts/run_system_tests_docker.sh test \
+  -w config-v2-final-cutover-impl \
+  -o task2_migration_cli.txt -- \
+  tests/unit/tools/test_migrate_project_config_v2.py -q
+
+# Task 3 RED/GREEN
+./tools/scripts/run_system_tests_docker.sh test \
+  -w config-v2-final-cutover-impl \
+  -o task3_hook_runtime.txt -- \
+  tests/unit/passes/test_config_v2_hook_runtime.py \
+  tests/unit/passes/test_mba_portfolio_order.py \
+  tests/unit/passes/test_rotate_idiom_recovery_pass.py \
+  tests/unit/passes/test_finite_zero_set_predicate_pass.py \
+  tests/unit/passes/test_modular_product_nonzero_pass.py \
+  tests/unit/passes/test_mba_egglog.py -q
+
+# Task 4 RED/GREEN
+./tools/scripts/run_system_tests_docker.sh test \
+  -w config-v2-final-cutover-impl \
+  -o task4_v2_schema.txt -- \
+  tests/unit/core/test_project_configuration_v2.py \
+  tests/unit/passes/test_pipeline_config_parser.py \
+  tests/unit/manager/test_config_v2_editing.py \
+  tests/unit/manager/test_config_v2_editing_facade.py \
+  tests/unit/ui/test_config_v2_editing_commands.py -q
+
+# Task 5 RED/GREEN
+./tools/scripts/run_system_tests_docker.sh test \
+  -w config-v2-final-cutover-impl \
+  -o task5_single_project_runtime.txt -- \
+  tests/unit/manager/test_project_runtime.py \
+  tests/unit/manager/test_function_recipe_activation.py \
+  tests/unit/manager/test_workbench_models.py \
+  tests/unit/manager/test_workbench_service.py \
+  tests/unit/ui/test_project_config_logic.py \
+  tests/unit/ui/test_project_config_ollvm_regression.py \
+  tests/unit/ui/test_workbench_logic.py \
+  tests/system/runtime/test_state_project_loading.py -q
+
+# Task 6 RED/GREEN
+./tools/scripts/run_system_tests_docker.sh test \
+  -w config-v2-final-cutover-impl -l \
+  -o task6_private_state_machine_host.txt -- \
+  tests/unit/passes/test_pass_pipeline.py \
+  tests/system/runtime/optimizers/microcode/flow/flattening/test_unflatten_bounded_rerun.py \
+  tests/system/runtime/optimizers/microcode/flow/flattening/test_canonical_semantic_evidence_capability.py -q
+
+# Task 7 RED/GREEN
+./tools/scripts/run_system_tests_docker.sh test \
+  -w config-v2-final-cutover-impl \
+  -o task7_canonical_presets.txt -- \
+  tests/unit/passes/test_operational_config_v2.py \
+  tests/unit/passes/test_pipeline_config_parser.py \
+  tests/unit/ui/test_project_picker_logic.py \
+  tests/unit/tools/test_d810cli.py \
+  tests/unit/test_fixture_builder.py \
+  tests/unit/test_fixture_cli.py \
+  tests/system/runtime/test_state_project_loading.py -q
+
+# Task 8 RED/GREEN
+./tools/scripts/run_system_tests_docker.sh test \
+  -w config-v2-final-cutover-impl \
+  -o task8_no_legacy_inventory.txt -- \
+  tests/unit/architecture/test_config_v2_only_inventory.py \
+  tests/unit/architecture tests/unit/core tests/unit/manager tests/unit/passes \
+  tests/unit/tools tests/unit/ui -q
+```
+
+The worker records the initial RED output before implementation. A RED run is
+valid only when it fails for the missing behavior named by the task; collection
+failure from a typo, wrong test path, wrong worktree, missing dependency, or
+runner misuse must be corrected and rerun.
 
 ---
 
@@ -107,7 +414,7 @@ contains the exact rule/field path.
 From the main repository root:
 
 ```bash
-./tools/scripts/run_system_tests_docker.sh test -w config-v2-final-cutover \
+./tools/scripts/run_system_tests_docker.sh test -w config-v2-final-cutover-impl \
   -o config_v2_migrator_red.txt -- \
   tests/unit/tools/test_migrate_project_config_v2.py -q
 ```
@@ -731,7 +1038,7 @@ git commit -m "refactor(config-v2): delete legacy project execution path"
 From the main repository root:
 
 ```bash
-./tools/scripts/run_system_tests_docker.sh test -w config-v2-final-cutover \
+./tools/scripts/run_system_tests_docker.sh test -w config-v2-final-cutover-impl \
   -o config_v2_final_cutover_units.txt -- \
   tests/unit/core tests/unit/manager tests/unit/passes tests/unit/tools \
   tests/unit/ui tests/unit/architecture -q
@@ -742,7 +1049,7 @@ Expected: exit 0. Retain the output under the worktree `.tmp`.
 - [ ] **Step 2: Run project-loading and state-machine runtime tests**
 
 ```bash
-./tools/scripts/run_system_tests_docker.sh test -w config-v2-final-cutover \
+./tools/scripts/run_system_tests_docker.sh test -w config-v2-final-cutover-impl \
   -l -o config_v2_final_cutover_runtime.txt -- \
   tests/system/runtime/test_state_project_loading.py \
   tests/system/runtime/optimizers/microcode/flow/flattening/\
@@ -795,7 +1102,7 @@ tests/system/e2e/test_unflattening_effect_safety_fixtures.py
 Use:
 
 ```bash
-./tools/scripts/run_system_tests_docker.sh test -w config-v2-final-cutover \
+./tools/scripts/run_system_tests_docker.sh test -w config-v2-final-cutover-impl \
   -l -o config_v2_final_cutover_profiles.txt -- <paths-above> -q
 ```
 
@@ -804,7 +1111,7 @@ Expected: exit 0 with the same semantic/golden assertions as the baseline.
 - [ ] **Step 2: Run the complete system suite**
 
 ```bash
-./tools/scripts/run_system_tests_docker.sh system -w config-v2-final-cutover \
+./tools/scripts/run_system_tests_docker.sh system -w config-v2-final-cutover-impl \
   -l -o config_v2_final_cutover_system_full.txt
 ```
 
