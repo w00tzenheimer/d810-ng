@@ -391,6 +391,42 @@ def _disp(point_targets, exit_block, hi=0x100000000):
     return IntervalDispatcher(rows)
 
 
+class _DualRouteDispatcher:
+    """Expose exact and interval route evidence independently for RED tests."""
+
+    def __init__(
+        self,
+        *,
+        exact_targets: dict[int, int],
+        interval_rows: tuple[IntervalRow, ...],
+        default_target: int | None = None,
+        legacy_lookup_interval: bool = False,
+    ) -> None:
+        self._exact_targets = {
+            int(state) & 0xFFFFFFFF: int(target)
+            for state, target in exact_targets.items()
+        }
+        self._interval = IntervalDispatcher(list(interval_rows), compute_default=False)
+        self.default_target = default_target
+        self._legacy_lookup_interval = bool(legacy_lookup_interval)
+
+    def resolve_target(self, state: int) -> int | None:
+        return self._exact_targets.get(int(state) & 0xFFFFFFFF)
+
+    def lookup_row(self, state: int) -> IntervalRow | None:
+        return self._interval.lookup_row(int(state) & 0xFFFFFFFF)
+
+    def lookup(self, state: int) -> int | None:
+        # Preserve the old exact-before-range behavior as the RED baseline.
+        exact = self.resolve_target(state)
+        if exact is not None or not self._legacy_lookup_interval:
+            return exact
+        return self._interval.lookup(state)
+
+    def all_targets(self) -> set[int]:
+        return self._interval.all_targets()
+
+
 def _eq_block(serial, const, taken, fallthrough, preds=(), insns=()):
     """Equality-chain compare block: ``jz state == const -> taken; fallthrough``."""
     tail = InsnSnapshot(
@@ -9968,3 +10004,350 @@ def test_switch_emitter_breaks_terminal_dispatcher_cycle_before_compiling_plan(
         "planned_dispatcher_corridors_covered"
     )
     assert coverage["full_unflattening_claim"] is False
+
+
+def _interval_entry_flow_graph() -> FlowGraph:
+    return FlowGraph(
+        blocks={
+            0: _b(0, (2,), ()),
+            2: _b(2, (10, 13, 99), (0, 10, 13)),
+            10: _b(10, (2,), (2,), ()),
+            13: _b(13, (2,), (2,), ()),
+            99: replace(_b(99, (), (2,)), kind=BlockKind.STOP),
+        },
+        entry_serial=0,
+        func_ea=0x180055760,
+    )
+
+
+def _interval_rows() -> tuple[IntervalRow, ...]:
+    return (
+        IntervalRow(0x079323FA, 0x1888937E, 10),
+        IntervalRow(0x1888937E, 0x1888937F, 13),
+        IntervalRow(0x1BABC1DC, 0x1BABC1DD, 2),
+    )
+
+
+def test_initial_state_inside_interval_builds_entry_bridge() -> None:
+    """The target-C initial state routes through the first interval row."""
+    state = 0x16AA65E9
+    dispatcher = _DualRouteDispatcher(
+        exact_targets={}, interval_rows=_interval_rows(), default_target=99
+    )
+    modifications = build_state_write_redirects(
+        _interval_entry_flow_graph(),
+        dispatcher,
+        (),
+        dispatcher_entry_serial=2,
+        pre_header_serial=0,
+        initial_state=state,
+        condition_chain_handlers=frozenset({10, 13}),
+    )
+
+    assert RedirectGoto(from_serial=0, old_target=2, new_target=10) in modifications
+
+
+def test_back_edge_state_inside_interval_emits_interval_route() -> None:
+    """A back-edge state inside an interval is redirected to its handler."""
+    state = 0x079323FA
+    dispatcher = _DualRouteDispatcher(
+        exact_targets={}, interval_rows=_interval_rows(), default_target=99
+    )
+    transition = StateWriteTransition(
+        10,
+        state,
+        None,
+        False,
+        None,
+        proof=TransitionProof("region_partitioned_fixpoint", "global_fold", True),
+    )
+    modifications = build_state_write_redirects(
+        _interval_entry_flow_graph(),
+        dispatcher,
+        (transition,),
+        dispatcher_entry_serial=2,
+        pre_header_serial=None,
+        initial_state=None,
+        condition_chain_handlers=frozenset({10, 13}),
+    )
+
+    assert RedirectGoto(from_serial=10, old_target=2, new_target=10) in modifications
+
+
+def test_uncovered_interval_state_remains_unresolved() -> None:
+    """An uncovered state cannot manufacture a handler edge."""
+    state = 0x19000000
+    dispatcher = _DualRouteDispatcher(
+        exact_targets={}, interval_rows=_interval_rows(), default_target=99
+    )
+    transition = StateWriteTransition(10, state, None, False, None)
+    modifications = build_state_write_redirects(
+        _interval_entry_flow_graph(),
+        dispatcher,
+        (transition,),
+        dispatcher_entry_serial=2,
+        pre_header_serial=None,
+        initial_state=None,
+        condition_chain_handlers=frozenset({10, 13}),
+    )
+
+    assert modifications == []
+
+
+def test_conflicting_exact_and_interval_target_remains_unresolved() -> None:
+    """Disagreeing route providers must not silently use exact precedence."""
+    state = 0x16AA65E9
+    dispatcher = _DualRouteDispatcher(
+        exact_targets={state: 13},
+        interval_rows=_interval_rows(),
+        default_target=99,
+        legacy_lookup_interval=True,
+    )
+    modifications = build_state_write_redirects(
+        _interval_entry_flow_graph(),
+        dispatcher,
+        (),
+        dispatcher_entry_serial=2,
+        pre_header_serial=0,
+        initial_state=state,
+        condition_chain_handlers=frozenset({10, 13}),
+    )
+
+    assert modifications == []
+
+
+@pytest.mark.parametrize("route_target", [99, 2])
+def test_interval_default_or_dispatcher_self_route_does_not_become_handler(
+    route_target: int,
+) -> None:
+    """Default and dispatcher-self rows are not semantic handler routes."""
+    state = 0x20000000
+    dispatcher = _DualRouteDispatcher(
+        exact_targets={},
+        interval_rows=(IntervalRow(state, state + 1, route_target),),
+        default_target=99,
+        legacy_lookup_interval=True,
+    )
+    modifications = build_state_write_redirects(
+        _interval_entry_flow_graph(),
+        dispatcher,
+        (),
+        dispatcher_entry_serial=2,
+        pre_header_serial=0,
+        initial_state=state,
+        condition_chain_handlers=frozenset({10, 13}),
+    )
+
+    assert modifications == []
+
+
+def test_ambiguous_materialized_route_abstains_even_when_interval_agrees() -> None:
+    """A materialized provider conflict cannot be erased by an interval match."""
+    state = 0x16AA65E9
+    dispatcher = _DualRouteDispatcher(
+        exact_targets={}, interval_rows=(IntervalRow(state, state + 1, 10),),
+        default_target=99,
+    )
+    routes = (
+        MaterializedStateRoute(0, state, 10),
+        MaterializedStateRoute(0, state, 13),
+    )
+
+    modifications = build_state_write_redirects(
+        _interval_entry_flow_graph(),
+        dispatcher,
+        (),
+        dispatcher_entry_serial=2,
+        pre_header_serial=0,
+        initial_state=state,
+        materialized_state_routes=routes,
+        condition_chain_handlers=frozenset({10, 13}),
+    )
+
+    assert modifications == []
+
+
+def test_outer_entry_preflight_rejects_legacy_lookup_when_consensus_abstains(
+    monkeypatch,
+) -> None:
+    """A legacy lookup target cannot authorize unrelated back-edge mutation."""
+    state = 0x16AA65E9
+    next_state = 0x20
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (2,), ()),
+            2: _b(2, (10, 13, 20), (0, 10, 13, 20)),
+            10: _b(10, (2,), (2,), (_mov_state(0x2050, next_state),)),
+            13: _b(13, (2,), (2,)),
+            20: _b(20, (2,), (2,)),
+        },
+        entry_serial=0,
+        func_ea=0x2000,
+    )
+    dispatcher = _DualRouteDispatcher(
+        exact_targets={state: 13},
+        interval_rows=(
+            IntervalRow(state, state + 1, 10),
+            IntervalRow(next_state, next_state + 1, 20),
+        ),
+        default_target=99,
+        legacy_lookup_interval=True,
+    )
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "recover_state_write_transitions_via_partitioned_fixpoint",
+        lambda *_args, **_kwargs: (
+            StateWriteTransition(10, next_state, None, False, None),
+        ),
+    )
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "recover_handler_transitions",
+        lambda *_args, **_kwargs: (),
+    )
+
+    plan = emit_minimal_unflatten(
+        fg,
+        dispatcher,
+        state_var_stkoff=_STATE,
+        dispatcher_entry_serial=2,
+        initial_state=state,
+        condition_chain_handlers=frozenset({10, 13, 20}),
+    )
+
+    assert graph_modifications(plan) == []
+
+
+@pytest.mark.parametrize("route_target", [99, 2])
+def test_empty_handler_set_rejects_default_and_dispatcher_self_routes(
+    route_target: int,
+) -> None:
+    """No handler membership evidence must not bless default/self routes."""
+    state = 0x20000000
+    dispatcher = _DualRouteDispatcher(
+        exact_targets={},
+        interval_rows=(IntervalRow(state, state + 1, route_target),),
+        default_target=99,
+        legacy_lookup_interval=True,
+    )
+    transition = StateWriteTransition(10, state, None, False, None)
+
+    modifications = build_state_write_redirects(
+        _interval_entry_flow_graph(),
+        dispatcher,
+        (transition,),
+        dispatcher_entry_serial=2,
+        pre_header_serial=0,
+        initial_state=state,
+        condition_chain_handlers=frozenset(),
+    )
+
+    assert modifications == []
+
+
+def test_native_and_materialized_entry_route_conflict_abstains_atomically(
+    monkeypatch,
+) -> None:
+    """Contradictory entry providers must not emit two redirects for one edge."""
+    state = 0x16AA65E9
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (1,), ()),
+            1: _b(1, (2,), (0,)),
+            2: _b(2, (10, 13), (1, 10, 13)),
+            10: _b(10, (2,), (2,)),
+            13: _b(13, (2,), (2,)),
+        },
+        entry_serial=0,
+        func_ea=0x3000,
+    )
+    dispatcher = _disp({state: 10}, exit_block=99)
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "recover_state_write_transitions_via_partitioned_fixpoint",
+        lambda *_args, **_kwargs: (),
+    )
+    plan = emit_minimal_unflatten(
+        fg,
+        dispatcher,
+        state_var_stkoff=_STATE,
+        dispatcher_entry_serial=2,
+        materialized_computed_goto_profile=True,
+        materialized_state_routes=(
+            MaterializedStateRoute(1, state, 10),
+        ),
+        native_bound_transition_routes=(
+            _native_bound_route(source=1, state=state, target=13),
+        ),
+        condition_chain_handlers=frozenset({10, 13}),
+        authoritative_handler_serials=frozenset({10, 13}),
+    )
+
+    assert graph_modifications(plan) == []
+
+
+def test_interval_route_source_kinds_are_retained_in_transition_proof(_seam) -> None:
+    """Accepted interval routing remains visible on the typed transition proof."""
+    state = 0x16AA65E9
+    fg = FlowGraph(
+        blocks={
+            2: _b(2, (10, 13, 99), (10,)),
+            10: _b(
+                10,
+                (2,),
+                (2,),
+                (_mov_state(0x2010, state),),
+            ),
+            13: _b(13, (2,), (2,)),
+            99: replace(_b(99, (), (2,)), kind=BlockKind.STOP),
+        },
+        entry_serial=2,
+        func_ea=0x2000,
+    )
+    dispatcher = _DualRouteDispatcher(
+        exact_targets={},
+        interval_rows=(
+            IntervalRow(0x079323FA, 0x1888937E, 10),
+            IntervalRow(0x1888937E, 0x1888937F, 13),
+            IntervalRow(0x1BABC1DC, 0x1BABC1DD, 2),
+        ),
+        default_target=99,
+    )
+
+    transitions = minimal_unflatten_emit_module.recover_state_write_transitions_via_partitioned_fixpoint(
+        fg,
+        dispatcher,
+        _STATE,
+        dispatcher_entry_serial=2,
+    )
+    transition = next(t for t in transitions if t.write_block == 10)
+
+    assert transition.target_handler == 10
+    assert transition.proof is not None
+    assert transition.proof.route_source_kinds == ("interval",)
+
+
+def test_interval_route_source_kinds_are_retained_in_accepted_entry_proof(_seam) -> None:
+    """Accepted scalar entry routing exposes typed interval provenance."""
+    state = 0x16AA65E9
+    dispatcher = _DualRouteDispatcher(
+        exact_targets={}, interval_rows=_interval_rows(), default_target=99
+    )
+
+    plan = emit_minimal_unflatten(
+        _interval_entry_flow_graph(),
+        dispatcher,
+        state_var_stkoff=_STATE,
+        dispatcher_entry_serial=2,
+        initial_state=state,
+        condition_chain_handlers=frozenset({10, 13}),
+    )
+
+    assert plan.metadata_dict()["concrete_state_route_provenance"] == (
+        {
+            "site": "entry",
+            "normalized_state": state,
+            "target_handler": 10,
+            "source_kinds": ("interval",),
+        },
+    )

@@ -37,6 +37,10 @@ from d810.analyses.control_flow.branch_witness import (
     ExactBranchWitness,
     resolve_exact_branch_witness,
 )
+from d810.analyses.control_flow.concrete_state_route import (
+    ConcreteStateRoute,
+    resolve_concrete_state_route,
+)
 from d810.analyses.control_flow.branch_witness_provider import (
     block_has_unresolved_indirect_state_store,
     indirect_state_store_branch_witness,
@@ -162,6 +166,7 @@ TERMINAL_CARRIER_CONVERGENCE_REASON_METADATA = "terminal_carrier_convergence_rea
 NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA = (
     "native_bound_transition_route_receipts"
 )
+CONCRETE_STATE_ROUTE_PROVENANCE_METADATA = "concrete_state_route_provenance"
 
 __all__ = [
     "ConditionalStateTransitionCandidate",
@@ -187,7 +192,25 @@ __all__ = [
     "TERMINAL_CARRIER_CONVERGENCE_METADATA",
     "TERMINAL_CARRIER_CONVERGENCE_REASON_METADATA",
     "NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA",
+    "CONCRETE_STATE_ROUTE_PROVENANCE_METADATA",
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class ConcreteStateEntryRouteProof:
+    """Typed provenance for one accepted scalar entry route."""
+
+    normalized_state: int
+    target_handler: int
+    source_kinds: tuple[str, ...]
+
+    def to_metadata(self) -> dict[str, object]:
+        return {
+            "site": "entry",
+            "normalized_state": int(self.normalized_state),
+            "target_handler": int(self.target_handler),
+            "source_kinds": tuple(self.source_kinds),
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -2363,12 +2386,278 @@ def _unique_materialized_state_target(
     return next(iter(candidates)) if len(candidates) == 1 else None
 
 
+@dataclass(frozen=True, slots=True)
+class _MaterializedStateRouteProvider:
+    """Exact-state adapter for the shared entry-route resolver."""
+
+    routes: tuple[MaterializedStateRoute, ...]
+    handlers: frozenset[int]
+
+    def resolve_target(self, state: int) -> int | None:
+        targets = _materialized_route_targets(self.routes, state, self.handlers)
+        return next(iter(targets)) if len(targets) == 1 else None
+
+
+@dataclass(frozen=True, slots=True)
+class _FilteredIntervalStateRouteProvider:
+    """Expose only interval rows that are known semantic handlers.
+
+    ``IntervalDispatcher.default_target`` is a useful legacy fallback, but it
+    is not itself handler evidence: for a total-cover table it is commonly a
+    catch-all row, while for a table containing only singleton equality rows it
+    can be computed to one of the real handlers.  The caller therefore filters
+    rows against the authoritative handler set when one is available instead
+    of treating the dispatcher's derived default as a competing exact route.
+    """
+
+    dispatcher: object
+    handlers: frozenset[int]
+    default_target: int | None = None
+
+    def lookup_row(self, state: int):
+        lookup_row = _provider_method(self.dispatcher, "lookup_row")
+        if not callable(lookup_row):
+            return None
+        row = lookup_row(int(state) & 0xFFFFFFFF)
+        if row is None:
+            return None
+        target = getattr(row, "target", None)
+        try:
+            target_i = int(target)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if (
+            self.default_target is not None
+            and target_i == int(self.default_target)
+            and not _explicit_singleton_route_is_not_default(
+                self.dispatcher, int(state), target_i
+            )
+        ):
+            return None
+        if self.handlers and target_i not in self.handlers:
+            return None
+        return row
+
+
+@dataclass(frozen=True, slots=True)
+class _FixedExactStateRouteProvider:
+    """Single exact route selected after provider consensus."""
+
+    target: int
+
+    def resolve_target(self, _state: int) -> int:
+        return int(self.target)
+
+
+_PROVIDER_SHAPE_ERRORS = (
+    AttributeError,
+    IndexError,
+    KeyError,
+    TypeError,
+    ValueError,
+    OverflowError,
+)
+
+
+def _provider_method(provider: object, name: str):
+    """Read a provider method, treating malformed descriptors as absent."""
+    try:
+        candidate = getattr(provider, name, None)
+    except _PROVIDER_SHAPE_ERRORS:
+        return None
+    return candidate if callable(candidate) else None
+
+
+def _materialized_route_targets(
+    routes: tuple[MaterializedStateRoute, ...],
+    state: int,
+    handlers: frozenset[int],
+) -> set[int]:
+    """Collect materialized targets without collapsing conflicts into absence."""
+    try:
+        normalized = int(state) & 0xFFFFFFFF
+    except _PROVIDER_SHAPE_ERRORS:
+        return set()
+    targets: set[int] = set()
+    for route in routes:
+        try:
+            route_state = int(route.state_constant) & 0xFFFFFFFF
+            target = int(route.target_handler_serial)
+        except _PROVIDER_SHAPE_ERRORS:
+            continue
+        if route_state != normalized:
+            continue
+        if handlers and target not in handlers:
+            continue
+        targets.add(target)
+    return targets
+
+
+def _dispatcher_default_target(dispatcher: object) -> int | None:
+    try:
+        value = getattr(dispatcher, "default_target", None)
+    except _PROVIDER_SHAPE_ERRORS:
+        return None
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except _PROVIDER_SHAPE_ERRORS:
+        return None
+
+
+def _explicit_singleton_route_is_not_default(
+    dispatcher: object,
+    state: int,
+    target: int,
+) -> bool:
+    """Recognize a one-row exact table whose sole target is not a catch-all."""
+    lookup_row = _provider_method(dispatcher, "lookup_row")
+    if lookup_row is None or not hasattr(dispatcher, "_rows"):
+        return False
+    try:
+        rows = getattr(dispatcher, "_rows")
+        row = lookup_row(int(state) & 0xFFFFFFFF)
+        return (
+            len(rows) == 1
+            and row is not None
+            and int(getattr(row, "target")) == int(target)
+            and int(getattr(row, "hi")) == int(getattr(row, "lo")) + 1
+        )
+    except _PROVIDER_SHAPE_ERRORS:
+        return False
+
+
+def _resolve_concrete_route_target(
+    dispatcher: object,
+    state: int,
+    *,
+    materialized_state_routes: tuple[MaterializedStateRoute, ...],
+    condition_chain_handlers: frozenset[int],
+) -> ConcreteStateRoute | None:
+    """Resolve one transition/entry state without provider precedence.
+
+    Exact providers are checked independently because a wrapper that returns
+    ``None`` for an exact-provider conflict would otherwise make the shared
+    resolver believe that no exact evidence existed and silently accept an
+    interval-only route.  A conflict therefore abstains before interval
+    resolution; otherwise the one exact target and the filtered interval row
+    must agree through :func:`resolve_concrete_state_route`.
+    """
+    exact_targets: set[int] = set()
+    source_kinds: set[str] = set()
+    normalized_state: int | None = None
+    exact_method = _provider_method(dispatcher, "resolve_target")
+    if exact_method is not None:
+        route = resolve_concrete_state_route(state, exact_dispatcher_map=dispatcher)
+        if route is not None:
+            exact_targets.add(int(route.target_block))
+            source_kinds.add("exact")
+            normalized_state = route.normalized_state
+
+    materialized_targets = _materialized_route_targets(
+        tuple(materialized_state_routes),
+        state,
+        frozenset(int(serial) for serial in condition_chain_handlers),
+    )
+    if len(materialized_targets) > 1:
+        # Do not turn a provider conflict into "absent" and then accept an
+        # unrelated interval row.  The ambiguity is itself negative evidence.
+        return None
+    if materialized_targets:
+        exact_targets.update(materialized_targets)
+        source_kinds.add("materialized")
+        if normalized_state is None:
+            try:
+                normalized_state = int(state) & 0xFFFFFFFF
+            except _PROVIDER_SHAPE_ERRORS:
+                return None
+
+    if len(exact_targets) > 1:
+        return None
+
+    exact_provider = (
+        _FixedExactStateRouteProvider(next(iter(exact_targets)))
+        if exact_targets
+        else None
+    )
+    interval_provider = (
+        _FilteredIntervalStateRouteProvider(
+            dispatcher,
+            frozenset(condition_chain_handlers),
+            _dispatcher_default_target(dispatcher),
+        )
+        if _provider_method(dispatcher, "lookup_row") is not None
+        else None
+    )
+    route = resolve_concrete_state_route(
+        state,
+        exact_dispatcher_map=exact_provider,
+        interval_dispatcher=interval_provider,
+    )
+    if route is None:
+        return None
+    target = int(route.target_block)
+    if condition_chain_handlers and target not in condition_chain_handlers:
+        return None
+    source_kinds.update(route.source_kinds)
+    if normalized_state is None:
+        normalized_state = route.normalized_state
+    return ConcreteStateRoute(
+        normalized_state=int(normalized_state),
+        target_block=target,
+        source_kinds=tuple(sorted(source_kinds)),
+    )
+
+
+def _resolve_entry_state_route(
+    dispatcher: object,
+    state: int,
+    *,
+    materialized_state_routes: tuple[MaterializedStateRoute, ...],
+    condition_chain_handlers: frozenset[int],
+    dispatcher_entry_serial: int,
+) -> ConcreteStateRoute | None:
+    """Resolve one scalar entry state through every active route provider.
+
+    Exact materialized evidence and the selected interval router are peers.  A
+    disagreement is an abstention, as is a default or dispatcher-self target;
+    neither may be promoted into a semantic handler bridge.
+    """
+    route = _resolve_concrete_route_target(
+        dispatcher,
+        state,
+        materialized_state_routes=materialized_state_routes,
+        # Entry preflight uses explicit singleton/interval evidence and filters
+        # only structural catch-all defaults inside the resolver.  A caller's
+        # handler set can be partial when the initial state names a mid-tree leaf.
+        condition_chain_handlers=frozenset(),
+    )
+    if route is None:
+        return None
+    target = int(route.target_block)
+    default_target = _dispatcher_default_target(dispatcher)
+    if (
+        target == int(dispatcher_entry_serial)
+        or (
+            default_target is not None
+            and target == default_target
+            and not _explicit_singleton_route_is_not_default(
+                dispatcher, route.normalized_state, target
+            )
+        )
+    ):
+        return None
+    return route
+
+
 def _build_source_keyed_state_entry_bridges(
     flow_graph,
     routes: tuple[object, ...],
     *,
     dispatcher_region_serials: frozenset[int],
     authoritative_handler_serials: frozenset[int],
+    peer_routes: tuple[object, ...] = (),
 ) -> list[object]:
     """Bypass one proven router edge from the live function-entry prefix.
 
@@ -2382,7 +2671,8 @@ def _build_source_keyed_state_entry_bridges(
     """
     routers = frozenset(int(serial) for serial in dispatcher_region_serials)
     handlers = frozenset(int(serial) for serial in authoritative_handler_serials)
-    if not routes or not routers or not handlers:
+    all_routes = tuple(routes) + tuple(peer_routes)
+    if not all_routes or not routers or not handlers:
         return []
 
     entry_prefix: set[int] = set()
@@ -2402,7 +2692,7 @@ def _build_source_keyed_state_entry_bridges(
         )
 
     candidates: dict[tuple[int, int], set[int]] = {}
-    for route in routes:
+    for route in all_routes:
         source = int(route.source_block_serial)
         target = int(route.target_handler_serial)
         if (
@@ -2436,6 +2726,7 @@ def build_materialized_state_entry_bridges(
     *,
     dispatcher_region_serials: frozenset[int],
     authoritative_handler_serials: frozenset[int],
+    peer_routes: tuple[object, ...] = (),
 ) -> list[object]:
     """Bypass a proven materialized route from the function-entry prefix."""
     return _build_source_keyed_state_entry_bridges(
@@ -2443,6 +2734,7 @@ def build_materialized_state_entry_bridges(
         routes,
         dispatcher_region_serials=dispatcher_region_serials,
         authoritative_handler_serials=authoritative_handler_serials,
+        peer_routes=peer_routes,
     )
 
 
@@ -2452,6 +2744,7 @@ def build_native_bound_state_entry_bridges(
     *,
     dispatcher_region_serials: frozenset[int],
     authoritative_handler_serials: frozenset[int],
+    peer_routes: tuple[object, ...] = (),
 ) -> list[object]:
     """Bypass a native-bound route from the function-entry prefix."""
     return _build_source_keyed_state_entry_bridges(
@@ -2459,6 +2752,7 @@ def build_native_bound_state_entry_bridges(
         routes,
         dispatcher_region_serials=dispatcher_region_serials,
         authoritative_handler_serials=authoritative_handler_serials,
+        peer_routes=peer_routes,
     )
 
 
@@ -2810,16 +3104,20 @@ def build_state_write_redirects(
         mods.append(ConvertToGoto(block_serial=int(src), goto_target=int(target)))
 
     def _resolve_state_target(state: int) -> int | None:
-        exact_target = _unique_materialized_state_target(
-            materialized_state_routes,
+        route = _resolve_concrete_route_target(
+            dispatcher,
             state,
-            condition_chain_handlers,
+            materialized_state_routes=materialized_state_routes,
+            condition_chain_handlers=condition_chain_handlers,
         )
-        return (
-            exact_target
-            if exact_target is not None
-            else dispatcher.lookup(int(state) & 0xFFFFFFFF)
-        )
+        if route is None:
+            return None
+        default_target = _dispatcher_default_target(dispatcher)
+        if default_target is not None and int(route.target_block) == default_target:
+            return None
+        if disp is not None and int(route.target_block) == int(disp):
+            return None
+        return int(route.target_block)
 
     # Prologue dispatcher edges are bridged to route(initial_state); their own
     # state write (the initial state) would route there anyway, but routing them
@@ -2935,6 +3233,12 @@ def build_state_write_redirects(
                 )
             else:
                 new = transition.target_handler
+                if new is None and transition.next_state is not None:
+                    # Region/fixpoint recovery can prove the concrete next
+                    # state while deliberately leaving the handler unset.
+                    # Resolve that state through the same exact/interval
+                    # consensus boundary used by the scalar entry bridge.
+                    new = _resolve_state_target(int(transition.next_state))
             # Terminal stack-alias split: ``src -> vb`` reaches a shared block that
             # writes the non-state result carrier, writes the terminal dispatcher
             # state, then conditionally returns or re-enters the dispatcher. Keep
@@ -3120,17 +3424,25 @@ def build_state_write_redirects(
         and not exact_entry_bridge_present
         and not dynamic_entry_bridge_edges
     ):
-        first = _resolve_state_target(int(initial_state))
+        first = _resolve_entry_state_route(
+            dispatcher,
+            int(initial_state),
+            materialized_state_routes=materialized_state_routes,
+            condition_chain_handlers=condition_chain_handlers,
+            dispatcher_entry_serial=int(disp),
+        )
         if first is not None:
             multi_entry_entry_bridge_safe = (
                 allow_multi_entry_entry_bridge
-                and _has_multi_entry_forward_chain(transitions, int(first))
+                and _has_multi_entry_forward_chain(
+                    transitions, int(first.target_block)
+                )
             )
             _apply_entry_bridge(
                 flow_graph,
                 dispatcher,
                 disp,
-                first,
+                int(first.target_block),
                 int(initial_state) & 0xFFFFFFFF,
                 prologue_preds,
                 state_var_stkoff,
@@ -7742,6 +8054,7 @@ def emit_minimal_unflatten(
     }
     dispatcher_state_plumbing_serials: frozenset[int] = frozenset()
     native_bound_route_receipts: tuple[dict[str, object], ...] = ()
+    concrete_state_entry_route_proofs: tuple[ConcreteStateEntryRouteProof, ...] = ()
 
     def _native_bound_route_receipt(
         route: NativeBoundTransitionRoute,
@@ -7949,6 +8262,15 @@ def emit_minimal_unflatten(
         )
         plan = compile_modifications(modifications)
         plan = attach_native_bound_route_receipts(plan)
+        if concrete_state_entry_route_proofs:
+            plan = plan.with_metadata(
+                **{
+                    CONCRETE_STATE_ROUTE_PROVENANCE_METADATA: tuple(
+                        proof.to_metadata()
+                        for proof in concrete_state_entry_route_proofs
+                    )
+                }
+            )
         plan = plan.with_metadata(
             **{
                 DISPATCHER_CORRIDOR_COVERAGE_METADATA: coverage.to_metadata(),
@@ -8093,6 +8415,7 @@ def emit_minimal_unflatten(
                 }
             ),
             authoritative_handler_serials=route_handler_serials,
+            peer_routes=tuple(native_bound_transition_routes),
         )
         if materialized_computed_goto_profile
         else []
@@ -8115,6 +8438,7 @@ def emit_minimal_unflatten(
                 ),
             }
         ),
+        peer_routes=tuple(materialized_state_routes),
     )
     materialized_state_route_mods = (
         build_materialized_state_route_redirects(
@@ -8474,17 +8798,27 @@ def emit_minimal_unflatten(
             flow_graph, int(dispatcher_entry_serial), pre_header_hint=pre_header_serial
         )
         if prologue_preds:
-            bridged = bool(dynamic_entry_bridge_edges) or (
-                initial_state is not None
-                and (
-                    _unique_materialized_state_target(
-                        materialized_state_routes,
-                        int(initial_state),
-                        route_handler_serials,
-                    )
-                    is not None
-                    or dispatcher.lookup(int(initial_state) & 0xFFFFFFFF) is not None
+            entry_route = (
+                _resolve_entry_state_route(
+                    dispatcher,
+                    int(initial_state),
+                    materialized_state_routes=materialized_state_routes,
+                    condition_chain_handlers=route_handler_serials,
+                    dispatcher_entry_serial=int(dispatcher_entry_serial),
                 )
+                if initial_state is not None
+                else None
+            )
+            if entry_route is not None:
+                concrete_state_entry_route_proofs = (
+                    ConcreteStateEntryRouteProof(
+                        normalized_state=entry_route.normalized_state,
+                        target_handler=entry_route.target_block,
+                        source_kinds=entry_route.source_kinds,
+                    ),
+                )
+            bridged = bool(dynamic_entry_bridge_edges) or (
+                entry_route is not None
             )
             if dynamic_entry_bridge_edges and logger.info_on:
                 logger.info(
@@ -9184,6 +9518,15 @@ def emit_minimal_unflatten(
             USE_DEF_SEVERANCE_AUDIT_METADATA: use_def_audit_metadata,
         }
     )
+    if concrete_state_entry_route_proofs:
+        plan = plan.with_metadata(
+            **{
+                CONCRETE_STATE_ROUTE_PROVENANCE_METADATA: tuple(
+                    proof.to_metadata()
+                    for proof in concrete_state_entry_route_proofs
+                )
+            }
+        )
     plan = attach_dispatcher_removal_preflight_proof(plan, coverage)
     log_dispatcher_coverage(coverage)
     if terminal_carrier_convergence:

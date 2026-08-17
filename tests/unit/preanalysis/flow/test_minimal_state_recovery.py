@@ -320,6 +320,44 @@ def _dispatcher(
     return IntervalDispatcher(rows)
 
 
+class _DualRouteDispatcher:
+    """Test router carrying independently recoverable exact/range evidence.
+
+    The production router is normally one provider at a time.  The C-shaped
+    interval transition tests deliberately expose both providers so the shared
+    concrete-state resolver can prove agreement (or fail closed on conflict)
+    instead of silently applying the old exact-precedence behavior.
+    """
+
+    def __init__(
+        self,
+        *,
+        exact_targets: dict[int, int],
+        interval_rows: tuple[IntervalRow, ...],
+        default_target: int | None = None,
+    ) -> None:
+        self._exact_targets = {
+            int(state) & 0xFFFFFFFF: int(target)
+            for state, target in exact_targets.items()
+        }
+        self._interval = IntervalDispatcher(list(interval_rows), compute_default=False)
+        self.default_target = default_target
+
+    def resolve_target(self, state: int) -> int | None:
+        return self._exact_targets.get(int(state) & 0xFFFFFFFF)
+
+    def lookup_row(self, state: int) -> IntervalRow | None:
+        return self._interval.lookup_row(int(state) & 0xFFFFFFFF)
+
+    def lookup(self, state: int) -> int | None:
+        # This is the legacy precedence behavior the shared resolver must not
+        # trust when the exact and interval providers disagree.
+        return self.resolve_target(state)
+
+    def all_targets(self) -> set[int]:
+        return self._interval.all_targets()
+
+
 # --- tests ----------------------------------------------------------------
 
 
@@ -2707,3 +2745,38 @@ def test_glue_partition_rejects_a_merge_whose_inputs_are_unknown(_seam) -> None:
     by_write_block = {int(t.write_block): t for t in transitions}
     # the stale incoming ecx must NOT be mistaken for the glue block's output
     assert 10 not in by_write_block and 20 not in by_write_block
+
+
+def test_back_edge_state_inside_interval_resolves_handler(_seam) -> None:
+    """A concrete interval state is a normal handler transition."""
+    state = 0x16AA65E9
+    fg = FlowGraph(
+        blocks={
+            2: _blk(2, (10, 13, 99), (10,), (), ea=0x2000),
+            10: _blk(10, (2,), (2,), (_mov(0x2010, _num(state), _stk(_STATE_OFF)),)),
+            13: _blk(13, (2,), (2,), ()),
+            99: _blk(99, (), (2,), (), kind=BlockKind.STOP),
+        },
+        entry_serial=2,
+        func_ea=0x2000,
+    )
+    dispatcher = _DualRouteDispatcher(
+        exact_targets={},
+        interval_rows=(
+            IntervalRow(0x079323FA, 0x1888937E, 10),
+            IntervalRow(0x1888937E, 0x1888937F, 13),
+            IntervalRow(0x1BABC1DC, 0x1BABC1DD, 2),
+        ),
+        default_target=99,
+    )
+
+    transitions = recover_state_write_transitions_via_partitioned_fixpoint(
+        fg, dispatcher, _STATE_OFF, dispatcher_entry_serial=2
+    )
+
+    transition = next(t for t in transitions if t.write_block == 10)
+    assert transition.next_state == state
+    assert transition.target_handler == 10
+    assert transition.is_return is False
+    assert transition.proof is not None
+    assert transition.proof.trusted is True

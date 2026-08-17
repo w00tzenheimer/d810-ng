@@ -48,6 +48,10 @@ from d810.analyses.control_flow.state_machine_analysis import (
     _transfer_snapshot_constant_block,
     run_snapshot_constant_fixpoint,
 )
+from d810.analyses.control_flow.concrete_state_route import (
+    ConcreteStateRoute,
+    resolve_concrete_state_route,
+)
 from d810.analyses.value_flow.global_init_fold import (
     compute_initializer_stable_global_reads,
 )
@@ -210,6 +214,39 @@ _KIND_CONCRETE_FOLD_PARTITIONED = "concrete_fold_partitioned"
 _KIND_CONDITIONAL_ARM_CONCRETE_FOLD = "conditional_arm_concrete_fold"
 
 
+def _resolve_dispatcher_route(
+    dispatcher: object,
+    state: int,
+) -> ConcreteStateRoute | None:
+    """Resolve one state through every route provider on *dispatcher*.
+
+    The normal config-v2 router is an :class:`IntervalDispatcher`, while some
+    native/materialized adapters expose an exact ``resolve_target`` alongside
+    their interval ``lookup_row``.  Do not impose precedence between those
+    providers: when both are present, the shared resolver requires agreement.
+    A missing or malformed route therefore remains unresolved.
+    """
+    def _method(name: str):
+        try:
+            candidate = getattr(dispatcher, name, None)
+        except (AttributeError, IndexError, KeyError, TypeError, ValueError, OverflowError):
+            return None
+        return candidate if callable(candidate) else None
+
+    exact = dispatcher if _method("resolve_target") is not None else None
+    interval = dispatcher if _method("lookup_row") is not None else None
+    return resolve_concrete_state_route(
+        state,
+        exact_dispatcher_map=exact,
+        interval_dispatcher=interval,
+    )
+
+
+def _resolved_dispatcher_target(dispatcher: object, state: int) -> int | None:
+    route = _resolve_dispatcher_route(dispatcher, state)
+    return None if route is None else int(route.target_block)
+
+
 def _seed_concrete_store(
     out_stk: dict[int, int], out_reg: dict[int, int]
 ) -> ConcreteStore:
@@ -331,6 +368,7 @@ class TransitionProof:
     kind: str
     trusted: bool
     reason: str = ""
+    route_source_kinds: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -361,6 +399,36 @@ class StateWriteTransition:
     proof: "TransitionProof | None" = None  # typed provenance (d81-t9ok); the
     # authoritative fixpoint emitter attaches
     # it, None = unattributed (legacy fold)
+
+
+def _attach_route_source_kinds(
+    transitions: tuple[StateWriteTransition, ...],
+    dispatcher: object,
+) -> tuple[StateWriteTransition, ...]:
+    """Carry concrete-route provenance onto accepted typed transition proofs."""
+    enriched: list[StateWriteTransition] = []
+    for transition in transitions:
+        state = transition.next_state
+        target = transition.target_handler
+        if state is None or target is None:
+            enriched.append(transition)
+            continue
+        route = _resolve_dispatcher_route(dispatcher, int(state))
+        if route is None or int(route.target_block) != int(target):
+            enriched.append(transition)
+            continue
+        proof = transition.proof
+        if proof is None:
+            proof = TransitionProof(
+                _FIXPOINT_ORACLE,
+                "routed",
+                not transition.is_return,
+                route_source_kinds=route.source_kinds,
+            )
+        elif proof.route_source_kinds != route.source_kinds:
+            proof = replace(proof, route_source_kinds=route.source_kinds)
+        enriched.append(replace(transition, proof=proof))
+    return tuple(enriched)
 
 
 def enrich_native_bound_transition_routes(
@@ -610,7 +678,9 @@ def resolve_materialized_indirect_transfer_targets(
             continue
         default = dispatcher.default_target
         routed = (
-            dispatcher.lookup(int(state) & 0xFFFFFFFF) if state is not None else None
+            _resolved_dispatcher_target(dispatcher, int(state))
+            if state is not None
+            else None
         )
         exact_equality_target = None
         dispatcher_has_exact_point = False
@@ -1188,7 +1258,7 @@ def recover_state_write_transitions(
     default = dispatcher.default_target
 
     def _classify(state: int) -> tuple[int | None, bool]:
-        routed = dispatcher.lookup(state)
+        routed = _resolved_dispatcher_target(dispatcher, state)
         if routed is None:
             return None, True
         if default is not None and int(routed) == int(default):
@@ -1247,7 +1317,7 @@ def recover_state_write_transitions(
         # the back-edge to the shared return.
         out.append(StateWriteTransition(pred, None, None, True, arm))
 
-    return tuple(out)
+    return _attach_route_source_kinds(tuple(out), dispatcher)
 
 
 def recover_state_write_transitions_via_fixpoint(
@@ -1279,7 +1349,7 @@ def recover_state_write_transitions_via_fixpoint(
     default = dispatcher.default_target
 
     def _classify(state: int) -> tuple[int | None, bool]:
-        routed = dispatcher.lookup(state)
+        routed = _resolved_dispatcher_target(dispatcher, state)
         if routed is None:
             return None, True
         if default is not None and int(routed) == int(default):
@@ -1310,7 +1380,7 @@ def recover_state_write_transitions_via_fixpoint(
             out.append(StateWriteTransition(pred, state, target, is_ret, arm))
         else:
             out.append(StateWriteTransition(pred, None, None, True, arm))
-    return tuple(out)
+    return _attach_route_source_kinds(tuple(out), dispatcher)
 
 
 def recover_state_write_transitions_via_multicell_fixpoint(
@@ -1348,7 +1418,7 @@ def recover_state_write_transitions_via_multicell_fixpoint(
     fp = run_snapshot_constant_fixpoint(flow_graph, effective_stkoff)
 
     def _classify(state: int) -> tuple[int | None, bool]:
-        routed = dispatcher.lookup(state)
+        routed = _resolved_dispatcher_target(dispatcher, state)
         if routed is None:
             return None, True
         if default is not None and int(routed) == int(default):
@@ -1373,7 +1443,7 @@ def recover_state_write_transitions_via_multicell_fixpoint(
             out.append(StateWriteTransition(pred, state, target, is_ret, arm))
         else:
             out.append(StateWriteTransition(pred, None, None, True, arm))
-    return tuple(out)
+    return _attach_route_source_kinds(tuple(out), dispatcher)
 
 
 @dataclass(frozen=True, slots=True)
@@ -2583,7 +2653,7 @@ def recover_state_write_transitions_via_partitioned_fixpoint(
     # data-dependent next-state resolves.  None/empty -> unchanged behaviour.
     state_var_gaddr = _detect_global_state_var(flow_graph, disp)
     initial_handler = (
-        dispatcher.lookup(int(initial_state) & 0xFFFFFFFF)
+        _resolved_dispatcher_target(dispatcher, int(initial_state))
         if initial_state is not None
         else None
     )
@@ -2623,7 +2693,7 @@ def recover_state_write_transitions_via_partitioned_fixpoint(
     )
 
     def _classify(state: int) -> tuple[int | None, bool]:
-        routed = dispatcher.lookup(state)
+        routed = _resolved_dispatcher_target(dispatcher, state)
         if routed is None:
             return None, True
         if default is not None and int(routed) == int(default):
@@ -2718,7 +2788,7 @@ def recover_state_write_transitions_via_partitioned_fixpoint(
                 arm_of=_arm,
             )
         )
-    return tuple(out)
+    return _attach_route_source_kinds(tuple(out), dispatcher)
 
 
 def _reaches_dispatcher_entry(
@@ -3237,7 +3307,7 @@ def _default_corridor_has_state_transition(
     for next_state, _branch_block, _ordered_path in paths:
         if next_state is None:
             continue
-        routed = dispatcher.lookup(int(next_state) & 0xFFFFFFFF)
+        routed = _resolved_dispatcher_target(dispatcher, int(next_state))
         if routed is not None:
             return True
     return False
@@ -3375,7 +3445,7 @@ def _classify_arm(
     if next_state is None:
         is_return = True
     else:
-        routed = dispatcher.lookup(int(next_state) & 0xFFFFFFFF)
+        routed = _resolved_dispatcher_target(dispatcher, int(next_state))
         if routed is None:
             is_return = True
         elif default is not None and int(routed) == int(default):
