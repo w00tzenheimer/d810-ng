@@ -10505,9 +10505,7 @@ def test_scalar_entry_route_agrees_with_native_bound_evidence_and_provenance(
     ] == [RedirectGoto(from_serial=1, old_target=2, new_target=10)]
     (provenance,) = plan.metadata_dict()["concrete_state_route_provenance"]
     assert provenance["target_handler"] == 10
-    assert {"interval", "native_bound"}.issubset(
-        set(provenance["source_kinds"])
-    )
+    assert set(provenance["source_kinds"]) == {"interval", "native_bound"}
 
 
 def test_unrelated_native_bound_entry_route_does_not_veto_scalar_entry(
