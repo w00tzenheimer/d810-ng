@@ -64,6 +64,13 @@ from d810.transforms.plan import PatchPlan
 
 logger = getLogger("d810.passes.driver")
 
+# Keep this key aligned with the transform-owned plan metadata.  The driver
+# consumes it only after the backend reports a changed graph; plan membership
+# alone is never an applied-route receipt.
+NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA = (
+    "native_bound_transition_route_receipts"
+)
+
 
 class CapabilityError(RuntimeError):
     """A pass requires a backend capability the backend does not advertise."""
@@ -129,6 +136,72 @@ def _plan_has_work(plan: PatchPlan) -> bool:
 def _graph_changed(old_graph, new_graph) -> bool:
     """Return whether backend apply produced a meaningfully new graph snapshot."""
     return new_graph != old_graph
+
+
+def _log_applied_native_bound_route_receipts(
+    plan: PatchPlan | object,
+    *,
+    pre_graph: object,
+    new_graph: object,
+    mutation_status: ExecutionAttemptStatus,
+) -> None:
+    """Log route receipts only after a changed graph was committed by apply."""
+    if (
+        mutation_status is not ExecutionAttemptStatus.COMPLETED
+        or not _graph_changed(pre_graph, new_graph)
+        or not logger.info_on
+    ):
+        return
+    metadata_dict = getattr(plan, "metadata_dict", None)
+    if not callable(metadata_dict):
+        return
+    try:
+        metadata = metadata_dict()
+    except Exception:
+        return
+    if not isinstance(metadata, dict):
+        return
+    receipts = metadata.get(NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA)
+    if not isinstance(receipts, tuple):
+        return
+    for receipt in receipts:
+        if not isinstance(receipt, dict):
+            continue
+        fact_id = receipt.get("fact_id")
+        native_ea = receipt.get("native_ea")
+        native_ea_hex = receipt.get("native_ea_hex")
+        current_block = receipt.get("current_block")
+        state = receipt.get("state")
+        target = receipt.get("target")
+        target_block = receipt.get("target_block")
+        if (
+            not isinstance(fact_id, str)
+            or not fact_id
+            or not isinstance(native_ea, int)
+            or isinstance(native_ea, bool)
+            or not 0 <= native_ea < 0xFFFFFFFFFFFFFFFF
+            or native_ea_hex != f"0x{native_ea:X}"
+            or not isinstance(current_block, str)
+            or not current_block
+            or not isinstance(state, int)
+            or isinstance(state, bool)
+            or not 0 <= state <= 0xFFFFFFFF
+            or not isinstance(target, int)
+            or isinstance(target, bool)
+            or target < 0
+            or not isinstance(target_block, str)
+            or not target_block
+        ):
+            continue
+        logger.info(
+            "native-bound transition route receipt: fact_id=%s native_ea=%s "
+            "current=%s state=0x%08X target=%s",
+            fact_id,
+            native_ea_hex,
+            current_block,
+            state,
+            target_block,
+        )
 
 
 def validate_capabilities(backend, requirements: CapabilityPolicy) -> None:
@@ -930,6 +1003,12 @@ def _run_pass_spec(
                 )
             )
             effect_refs = effect_refs + mutation_effects
+            _log_applied_native_bound_route_receipts(
+                result.rewrite_plan,
+                pre_graph=pre_mutation_graph,
+                new_graph=new_graph,
+                mutation_status=mutation_status,
+            )
             _observe_native_cfg_mutation(
                 state=native_cfg_observer_state,
                 spec=spec,
@@ -972,6 +1051,12 @@ def _run_pass_spec(
                 )
             )
             effect_refs = effect_refs + mutation_effects
+            _log_applied_native_bound_route_receipts(
+                fragment_plan,
+                pre_graph=ctx.graph,
+                new_graph=new_graph,
+                mutation_status=mutation_status,
+            )
             if mutation_status is not ExecutionAttemptStatus.COMPLETED:
                 terminal_status = mutation_status
                 terminal_reason = mutation_reason

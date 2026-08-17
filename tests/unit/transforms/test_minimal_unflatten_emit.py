@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -578,7 +579,9 @@ def test_native_bound_route_target_in_dispatcher_region_is_inert() -> None:
     ) == (transition,)
 
 
-def test_native_bound_route_receipt_identifies_accepted_current_route(monkeypatch):
+def test_native_bound_route_receipt_identifies_accepted_current_route(
+    monkeypatch, caplog
+):
     fg = FlowGraph(
         blocks={
             0: _b(0, (2,), ()),
@@ -604,16 +607,24 @@ def test_native_bound_route_receipt_identifies_accepted_current_route(monkeypatc
         fact_id="transition:receipt",
     )
 
-    plan = emit_minimal_unflatten(
-        fg,
-        disp,
-        state_var_stkoff=_STATE,
-        dispatcher_entry_serial=2,
-        initial_state=0x10,
-        native_bound_transition_routes=(route,),
-    )
+    with caplog.at_level(
+        logging.INFO, logger="d810.transforms.minimal_unflatten_emit"
+    ):
+        plan = emit_minimal_unflatten(
+            fg,
+            disp,
+            state_var_stkoff=_STATE,
+            dispatcher_entry_serial=2,
+            initial_state=0x10,
+            native_bound_transition_routes=(route,),
+        )
 
     receipt = plan.metadata_dict()[NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA]
+    assert (10, 2, 20) in {
+        (mod.from_serial, mod.old_target, mod.new_target)
+        for mod in graph_modifications(plan)
+        if isinstance(mod, RedirectGoto)
+    }
     assert receipt == (
         {
             "fact_id": "transition:receipt",
@@ -625,6 +636,57 @@ def test_native_bound_route_receipt_identifies_accepted_current_route(monkeypatc
             "target_block": "blk[20]@0x1500",
         },
     )
+    assert not any(
+        "native-bound transition route receipt:" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_native_bound_route_receipt_is_not_logged_before_entry_bridge_bail(
+    monkeypatch, caplog
+):
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (2,), ()),
+            2: _b(2, (10, 20), (0, 10, 20)),
+            10: _b(10, (2,), (2,)),
+            20: _b(20, (2,), (2,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    disp = _disp({0x10: 10, 0x20: 20}, exit_block=99)
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "recover_state_write_transitions_via_partitioned_fixpoint",
+        lambda *_args, **_kwargs: (
+            StateWriteTransition(10, None, None, True, None),
+        ),
+    )
+    route = _native_bound_route(
+        source=10,
+        state=0x20,
+        target=20,
+        fact_id="transition:bail",
+    )
+
+    with caplog.at_level(
+        logging.INFO, logger="d810.transforms.minimal_unflatten_emit"
+    ):
+        plan = emit_minimal_unflatten(
+            fg,
+            disp,
+            state_var_stkoff=_STATE,
+            dispatcher_entry_serial=2,
+            native_bound_transition_routes=(route,),
+        )
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("BAILED (no entry bridge" in message for message in messages)
+    assert not any(
+        "native-bound transition route receipt:" in message for message in messages
+    )
+    assert NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA not in plan.metadata_dict()
 
 
 def test_native_bound_route_recovers_initial_state_and_entry_bridge(monkeypatch):

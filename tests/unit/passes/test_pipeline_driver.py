@@ -6,6 +6,7 @@ detect -> pipeline_for -> validate_capabilities -> pass.run -> (apply on non-emp
 
 from __future__ import annotations
 
+import logging
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -56,6 +57,7 @@ from d810.passes.driver import (
     AnalysisContractError,
     BackendRouteError,
     CapabilityError,
+    NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA,
     NOT_SCHEDULED_AT_MATURITY_REASON,
     PassContractDiagnostic,
     PassContractError,
@@ -223,6 +225,30 @@ def _nonempty_patch_plan() -> PatchPlan:
         steps=(PatchNopInstructions(block_ref, (0x1000,)),),
         source_coordinates=((block_ref, 0),),
     )
+
+
+class _ReceiptPass:
+    name = "receipt"
+
+    def run(self, ctx) -> PassResult:
+        del ctx
+        return PassResult(
+            rewrite_plan=_nonempty_patch_plan().with_metadata(
+                **{
+                    NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA: (
+                        {
+                            "fact_id": "transition:driver",
+                            "native_ea": 0x7FF855576BAA,
+                            "native_ea_hex": "0x7FF855576BAA",
+                            "current_block": "blk[10]@0x1280",
+                            "state": 0x20,
+                            "target": 20,
+                            "target_block": "blk[20]@0x1500",
+                        },
+                    )
+                }
+            )
+        )
 
 
 def _fragment_identity(start_ea: int) -> StableBlockIdentity:
@@ -462,6 +488,57 @@ def test_default_safety_policy_still_reaches_backend_for_specs_without_native_sa
     )
 
     assert backend.safety_policies == [SafetyPolicy()]
+
+
+def test_native_bound_route_receipt_logs_only_after_completed_mutation(caplog):
+    with caplog.at_level(logging.INFO, logger="d810.passes.driver"):
+        _run_specs((PassSpec("receipt", _ReceiptPass, no_caps, default),))
+
+    assert [
+        record.getMessage()
+        for record in caplog.records
+        if "native-bound transition route receipt:" in record.getMessage()
+    ] == [
+        "native-bound transition route receipt: fact_id=transition:driver "
+        "native_ea=0x7FF855576BAA current=blk[10]@0x1280 "
+        "state=0x00000020 target=blk[20]@0x1500"
+    ]
+
+
+def test_native_bound_route_receipt_is_silent_when_mutation_does_not_change_graph(
+    caplog,
+):
+    class _NoChangeBackend(_Backend):
+        def apply(self, plan, live_source, safety_policy):
+            del plan, live_source, safety_policy
+            return _GRAPH
+
+    with caplog.at_level(logging.INFO, logger="d810.passes.driver"):
+        _run_specs(
+            (PassSpec("receipt", _ReceiptPass, no_caps, default),),
+            backend=_NoChangeBackend(),
+        )
+
+    assert not any(
+        "native-bound transition route receipt:" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_native_bound_route_receipt_is_silent_when_backend_rejects_mutation(caplog):
+    class _RejectedBackend(_Backend):
+        last_patch_failure = RuntimeError("preflight rejected")
+
+    with caplog.at_level(logging.INFO, logger="d810.passes.driver"):
+        _run_specs(
+            (PassSpec("receipt", _ReceiptPass, no_caps, default),),
+            backend=_RejectedBackend(),
+        )
+
+    assert not any(
+        "native-bound transition route receipt:" in record.getMessage()
+        for record in caplog.records
+    )
 
 
 def test_native_contract_safety_policy_reaches_backend_when_legacy_default():

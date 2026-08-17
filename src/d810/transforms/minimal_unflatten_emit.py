@@ -7723,17 +7723,6 @@ def emit_minimal_unflatten(
     native_bound_route_receipts = tuple(
         _native_bound_route_receipt(route) for route in accepted_native_bound_routes
     )
-    if native_bound_route_receipts and logger.info_on:
-        for receipt in native_bound_route_receipts:
-            logger.info(
-                "native-bound transition route receipt: fact_id=%s native_ea=%s "
-                "current=%s state=0x%08X target=%s",
-                receipt["fact_id"],
-                receipt["native_ea_hex"],
-                receipt["current_block"],
-                int(receipt["state"]),
-                receipt["target_block"],
-            )
     dispatcher_state_plumbing_serials = frozenset(
         int(transition.write_block)
         for transition in transitions
