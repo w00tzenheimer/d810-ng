@@ -43,6 +43,14 @@ _MANIFEST = _ROOT / "tests/fixtures/mba_portfolio/compiler_shapes.json"
 _PORTFOLIO_PROJECT = "mba_portfolio_spike.json"
 _TELEMETRY_PROJECT = "mba_portfolio_telemetry_3ms.json"
 _PROVIDER_MATRIX = tuple(MbaProviderKind)
+_TASK13_CASE_IDS = (
+    "canonical_xor_negative_coefficient_32",
+    "equivalent_xor_replay_32",
+    "fixed_rotate_complementary_32",
+    "fixed_shift_noncomplementary_32",
+    "fixed_shift_arithmetic_right_32",
+    "fixed_shift_variable_count_32",
+)
 
 
 def _manifest_capture_case(case_id: str) -> ManifestNativeCaptureCase:
@@ -69,6 +77,107 @@ def _preferred_manifest_providers(case_id: str) -> tuple[MbaProviderKind, ...]:
     data = json.loads(_MANIFEST.read_text(encoding="utf-8"))
     raw_case = next(item for item in data["cases"] if item["case_id"] == case_id)
     return tuple(MbaProviderKind(provider) for provider in raw_case["expected_route"])
+
+
+def _task13_manifest_cases() -> dict[str, dict[str, object]]:
+    data = json.loads(_MANIFEST.read_text(encoding="utf-8"))
+    return {
+        raw_case["case_id"]: raw_case
+        for raw_case in data["cases"]
+        if raw_case["case_id"] in _TASK13_CASE_IDS
+    }
+
+
+def _assert_task13_capture_rows(
+    captured: tuple,
+    report_cases: tuple[dict[str, object], ...] | None = None,
+) -> dict[str, dict[str, object]]:
+    """Check exact Task 13 rows without converting elision into provider yield."""
+
+    manifest_cases = _task13_manifest_cases()
+    captured_by_id = {case.case_id: case for case in captured}
+    assert tuple(captured_by_id) == _TASK13_CASE_IDS
+    assert set(captured_by_id) == set(manifest_cases)
+    assert all(
+        len(case.outcomes) == len(_PROVIDER_MATRIX) for case in captured_by_id.values()
+    )
+
+    for case_id in _TASK13_CASE_IDS:
+        manifest_case = manifest_cases[case_id]
+        case = captured_by_id[case_id]
+        assert case.stratum == manifest_case["stratum"]
+        assert tuple(outcome.provider for outcome in case.outcomes) == tuple(
+            sorted(_PROVIDER_MATRIX, key=lambda provider: provider.value)
+        )
+        assert sum(
+            outcome.status is ProviderOutcomeStatus.APPLIED
+            for outcome in case.outcomes
+        ) <= 1
+        if case.profile is None:
+            reasons = {
+                outcome.refusal_reason
+                for outcome in case.outcomes
+            }
+            assert reasons <= {
+                "native_candidate_not_observed",
+                "native_candidate_ambiguous",
+            }
+            assert reasons
+            for outcome in case.outcomes:
+                assert outcome.status is ProviderOutcomeStatus.UNAVAILABLE
+                assert outcome.metadata == {
+                    "native_capture": outcome.refusal_reason
+                }
+                assert not outcome.source_provenance
+        else:
+            assert all(
+                outcome.fingerprint == case.profile.fingerprint
+                for outcome in case.outcomes
+            )
+            for outcome in case.outcomes:
+                if outcome.status is not ProviderOutcomeStatus.APPLIED:
+                    continue
+                assert outcome.source_provenance
+                if outcome.provider is MbaProviderKind.EGGLOG:
+                    metadata = outcome.metadata or {}
+                    assert metadata["execution_path"] in {
+                        "direct_catalogue",
+                        "fresh_saturation",
+                        "learned_replay",
+                        "telemetry_only",
+                    }
+                    assert metadata["selected_family"] is not None
+                    assert metadata["selected_source"] == outcome.source_provenance[0]
+                    assert metadata["degree"] >= manifest_case["expected_minimum_degree"]
+                    if case_id == "fixed_rotate_complementary_32":
+                        assert metadata["selected_family"] == "fixed_rotate"
+                        assert metadata["selected_source"] == "rol_32_7"
+
+    if report_cases is None:
+        return manifest_cases
+    report_by_id = {case["case_id"]: case for case in report_cases}
+    assert set(report_by_id) == set(manifest_cases)
+    for case_id in _TASK13_CASE_IDS:
+        report_case = report_by_id[case_id]
+        captured_case = captured_by_id[case_id]
+        assert report_case["stratum"] == captured_case.stratum
+        assert len(report_case["outcomes"]) == len(_PROVIDER_MATRIX)
+        assert sum(
+            outcome["status"] == ProviderOutcomeStatus.APPLIED.value
+            for outcome in report_case["outcomes"]
+        ) <= 1
+        if captured_case.profile is None:
+            assert report_case["profile"] is None
+            for outcome in report_case["outcomes"]:
+                assert outcome["status"] == ProviderOutcomeStatus.UNAVAILABLE.value
+                assert outcome["metadata"] == {
+                    "native_capture": outcome["refusal_reason"]
+                }
+        else:
+            assert report_case["profile"]["fingerprint"] == (
+                captured_case.profile.fingerprint
+            )
+    return manifest_cases
 
 
 def _build_native_corpus_binary(output_path: Path) -> None:
@@ -261,6 +370,38 @@ class TestNativeMbaCorpusCapture:
                 run_case=run_case,
             )
 
+        task13_captured = tuple(
+            case for case in captured if case.case_id in _TASK13_CASE_IDS
+        )
+        task13_manifest_cases = _assert_task13_capture_rows(task13_captured)
+        task13_native_case_evidence: dict[str, dict[str, object]] = {}
+        for case_id in _TASK13_CASE_IDS:
+            case = next(item for item in task13_captured if item.case_id == case_id)
+            if case.profile is None:
+                evidence: dict[str, object] = {
+                    "capture_status": "unavailable",
+                    "unavailable_reasons": sorted(
+                        {
+                            str(outcome.refusal_reason)
+                            for outcome in case.outcomes
+                        }
+                    ),
+                }
+            else:
+                evidence = {
+                    "capture_status": "observed",
+                    "profile_fingerprint": case.profile.fingerprint,
+                    "applied_providers": [
+                        outcome.provider.value
+                        for outcome in case.outcomes
+                        if outcome.status is ProviderOutcomeStatus.APPLIED
+                    ],
+                }
+            expected_blocker = task13_manifest_cases[case_id].get("expected_blocker")
+            if expected_blocker is not None:
+                evidence["expected_blocker"] = expected_blocker
+            task13_native_case_evidence[case_id] = evidence
+
         capture.set_capture_metadata(
             {
                 "provider_execution_modes": {
@@ -281,14 +422,34 @@ class TestNativeMbaCorpusCapture:
                         catalogue_cache_after.hits - catalogue_cache_before.hits
                     ],
                 },
+                "task13_native_case_evidence": task13_native_case_evidence,
             }
         )
 
-        assert len(captured) == 70
-        assert {case.case_id for case in captured} == {
-            case.case_id for case in manifest_cases
-        }
+        expected_case_ids = {case.case_id for case in manifest_cases}
+        assert len(captured) == len(expected_case_ids)
+        assert {case.case_id for case in captured} == expected_case_ids
         assert all(len(case.outcomes) == len(_PROVIDER_MATRIX) for case in captured)
+        # Refusal rows are safety evidence, not provider yield.  If the
+        # compiler/IDA preserves one of these roots, every provider must still
+        # abstain; if it elides the root, capture_native_provider_case has
+        # already emitted the complete explicit unavailable matrix.
+        refusal_case_ids = {
+            case.case_id
+            for case in manifest_cases
+            if case.case_id
+            in {
+                "fixed_shift_noncomplementary_32",
+                "fixed_shift_arithmetic_right_32",
+                "fixed_shift_variable_count_32",
+            }
+        }
+        for case in captured:
+            if case.case_id in refusal_case_ids:
+                assert not any(
+                    outcome.status is ProviderOutcomeStatus.APPLIED
+                    for outcome in case.outcomes
+                )
 
         configured_artifacts = os.environ.get(
             "D810_MBA_NATIVE_CAPTURE_ARTIFACT_DIR"
@@ -353,9 +514,16 @@ class TestNativeMbaCorpusCapture:
         )
         assert completed.returncode == 0, completed.stderr
         report = json.loads(report_path.read_text(encoding="utf-8"))
-        assert len(report["cases"]) == 70
+        assert len(report["cases"]) == len(expected_case_ids)
         assert all(len(case["outcomes"]) == len(_PROVIDER_MATRIX) for case in report["cases"])
         assert report["capture_metadata"] == capture.report().to_dict()["capture_metadata"]
+        _assert_task13_capture_rows(
+            task13_captured,
+            tuple(case for case in report["cases"] if case["case_id"] in _TASK13_CASE_IDS),
+        )
+        assert report["capture_metadata"]["task13_native_case_evidence"] == (
+            task13_native_case_evidence
+        )
         evidence = report["summary"]["rollout_evidence"]
         assert egglog_mode in evidence["whole_function_latency_by_mode"], evidence
         assert evidence["lifecycle_measurements"]["project_configuration_ms"]["count"] == 1
@@ -631,7 +799,7 @@ class TestNativeMbaCorpusCapture:
         d810_state,
         pseudocode_to_string,
     ) -> None:
-        """Run the mutating 70-case corpus capture after pristine-state tests.
+        """Run the mutating manifest-wide corpus capture after pristine-state tests.
 
         The IDA fixture retains decompiler state for this class.  This must run
         after the single-function history-delta witnesses so their baseline is

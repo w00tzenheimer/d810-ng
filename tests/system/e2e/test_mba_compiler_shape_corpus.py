@@ -81,6 +81,17 @@ _GCC_PRE_SIMPLIFIED_CATALOGUE_FUNCTIONS = frozenset(
     }
 )
 
+_DOMAIN_LIFTED_CASE_IDS = frozenset(
+    {
+        "canonical_xor_negative_coefficient_32",
+        "equivalent_xor_replay_32",
+        "fixed_rotate_complementary_32",
+        "fixed_shift_noncomplementary_32",
+        "fixed_shift_arithmetic_right_32",
+        "fixed_shift_variable_count_32",
+    }
+)
+
 
 def _ctype_for_width(width: int) -> type[ctypes._SimpleCData]:
     return {
@@ -238,6 +249,11 @@ def _emit_compiler_shape_build_evidence(compiler: str, *, artifact: str) -> None
 def test_all_compiler_shape_pairs_are_semantically_equivalent(tmp_path: Path) -> None:
     library = _load_compiler_shape_library(tmp_path)
     cases = json.loads(_MANIFEST.read_text(encoding="utf-8"))["cases"]
+    assert {
+        case["case_id"]
+        for case in cases
+        if case["stratum"] in {"semantic_canonicalization", "fixed_shift"}
+    } == _DOMAIN_LIFTED_CASE_IDS
 
     for case in cases:
         scalar = _ctype_for_width(case["width"])
@@ -254,6 +270,32 @@ def test_all_compiler_shape_pairs_are_semantically_equivalent(tmp_path: Path) ->
                 shape(*arguments),
                 truth(*arguments),
             )
+
+
+def test_domain_lifted_provider_routes_are_evidence_bounded() -> None:
+    """Routes describe admissible evidence, never a guaranteed native yield."""
+
+    cases = {
+        case["case_id"]: case
+        for case in json.loads(_MANIFEST.read_text(encoding="utf-8"))["cases"]
+        if case["case_id"] in _DOMAIN_LIFTED_CASE_IDS
+    }
+    assert cases["canonical_xor_negative_coefficient_32"]["expected_route"] == [
+        "catalogue",
+        "egglog",
+    ]
+    assert cases["equivalent_xor_replay_32"]["expected_route"] == [
+        "catalogue",
+        "egglog",
+    ]
+    assert cases["fixed_rotate_complementary_32"]["expected_route"] == ["egglog"]
+    for case_id in (
+        "fixed_shift_noncomplementary_32",
+        "fixed_shift_arithmetic_right_32",
+        "fixed_shift_variable_count_32",
+    ):
+        assert cases[case_id]["expected_route"] == []
+        assert isinstance(cases[case_id]["expected_blocker"], str)
 
 
 def test_corpus_configs_are_provider_isolated_and_egglog_is_explicitly_interactive() -> (

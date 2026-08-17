@@ -188,8 +188,21 @@ def build_report(
         actual_case_ids = tuple(case.case_id for case in report.cases)
         missing = tuple(case_id for case_id in manifest_case_ids if case_id not in actual_case_ids)
         unexpected = tuple(case_id for case_id in actual_case_ids if case_id not in manifest_case_ids)
-        if missing or unexpected:
+        # Keep the corpus-wide completeness assertion derived from the
+        # manifest itself.  ``normalize_outcome_rows`` already rejects
+        # duplicate case/provider rows; this check makes a dropped or extra
+        # case impossible to mistake for a complete report.
+        if (
+            len(report.cases) != len(manifest_case_ids)
+            or missing
+            or unexpected
+        ):
             details = []
+            if len(report.cases) != len(manifest_case_ids):
+                details.append(
+                    "manifest case count: "
+                    f"expected {len(manifest_case_ids)}, observed {len(report.cases)}"
+                )
             if missing:
                 details.append("missing manifest cases: " + ", ".join(missing))
             if unexpected:

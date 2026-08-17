@@ -26,7 +26,9 @@
       "catalogue",
       "reassociation",
       "degree2",
-      "coefficient"
+      "coefficient",
+      "semantic_canonicalization",
+      "fixed_shift"
     ],
     "forbidden_ir_instructions": [
       "zext",
@@ -946,6 +948,95 @@
       "authorship": "independently_authored",
       "expected_shadow_stop_reason": "comparison_budget",
       "coverage_status": "pending_shadow_matcher"
+    },
+    {
+      "case_id": "canonical_xor_negative_coefficient_32",
+      "function": "mba_shape_canonical_xor_negative_coefficient_32",
+      "ground_truth_function": "mba_truth_canonical_xor_32",
+      "width": 32,
+      "stratum": "semantic_canonicalization",
+      "expected_route": [
+        "catalogue",
+        "egglog"
+      ],
+      "expected_minimum_degree": 1,
+      "expected_canonical_root": "sub",
+      "expected_truth_operation": "xor",
+      "semantic_form": "modular_negative_coefficient",
+      "semantic_seed": 880,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "equivalent_xor_replay_32",
+      "function": "mba_shape_equivalent_xor_replay_32",
+      "ground_truth_function": "mba_truth_equivalent_xor_32",
+      "width": 32,
+      "stratum": "semantic_canonicalization",
+      "expected_route": [
+        "catalogue",
+        "egglog"
+      ],
+      "expected_minimum_degree": 1,
+      "expected_canonical_root": "sub",
+      "expected_truth_operation": "xor",
+      "semantic_form": "historical_subtraction",
+      "semantic_seed": 881,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "fixed_rotate_complementary_32",
+      "function": "mba_shape_fixed_rotate_complementary_32",
+      "ground_truth_function": "mba_truth_fixed_rotate_complementary_32",
+      "width": 32,
+      "stratum": "fixed_shift",
+      "expected_route": [
+        "egglog"
+      ],
+      "expected_minimum_degree": 1,
+      "expected_canonical_root": "or",
+      "expected_truth_operation": "rol",
+      "semantic_form": "complementary_fixed_shift_rotate",
+      "semantic_seed": 882,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "fixed_shift_noncomplementary_32",
+      "function": "mba_shape_fixed_shift_noncomplementary_32",
+      "ground_truth_function": "mba_truth_fixed_shift_noncomplementary_32",
+      "width": 32,
+      "stratum": "fixed_shift",
+      "expected_route": [],
+      "expected_minimum_degree": 0,
+      "expected_blocker": "no_degree_eligible_improvement",
+      "semantic_form": "noncomplementary_fixed_shift",
+      "semantic_seed": 883,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "fixed_shift_arithmetic_right_32",
+      "function": "mba_shape_fixed_shift_arithmetic_right_32",
+      "ground_truth_function": "mba_truth_fixed_shift_arithmetic_right_32",
+      "width": 32,
+      "stratum": "fixed_shift",
+      "expected_route": [],
+      "expected_minimum_degree": 0,
+      "expected_blocker": "ambiguous_shift",
+      "semantic_form": "arithmetic_right_shift",
+      "semantic_seed": 884,
+      "authorship": "independently_authored"
+    },
+    {
+      "case_id": "fixed_shift_variable_count_32",
+      "function": "mba_shape_fixed_shift_variable_count_32",
+      "ground_truth_function": "mba_truth_fixed_shift_variable_count_32",
+      "width": 32,
+      "stratum": "fixed_shift",
+      "expected_route": [],
+      "expected_minimum_degree": 0,
+      "expected_blocker": "ambiguous_shift",
+      "semantic_form": "variable_shift_count",
+      "semantic_seed": 885,
+      "authorship": "independently_authored"
     }
   ]
 }

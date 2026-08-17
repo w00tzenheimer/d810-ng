@@ -450,6 +450,7 @@ def test_egglog_receipt_metadata_is_additive_and_legacy_rows_remain_readable() -
     )
     assert outcome.metadata["execution_path"] == "fresh_saturation"
     assert outcome.metadata["cache_status"] == "disabled"
+    assert "egglog_run_count" not in outcome.metadata
     encoded = json.loads(outcome.to_json())
     assert encoded["metadata"]["canonical_input_cost"] == [3, 5]
 
@@ -469,6 +470,16 @@ def test_egglog_receipt_metadata_is_additive_and_legacy_rows_remain_readable() -
     assert legacy.input_cost == (5, 8)
     assert legacy.output_cost == (5, 8)
     assert legacy.metadata == {}
+
+
+def test_report_does_not_infer_egglog_runs_from_a_replay_path() -> None:
+    class Receipt:
+        execution_path = "learned_replay"
+        skip_reason = None
+
+    outcome = egglog_receipt_to_outcome(Receipt())
+
+    assert "egglog_run_count" not in outcome.metadata
 
 
 def test_offline_cli_builds_normalized_report_and_requires_explicit_provider_rows(
@@ -723,6 +734,164 @@ def test_rollout_evidence_marks_unmeasured_questions_as_unavailable() -> None:
     assert evidence.candidate_latency_by_mode == {}
     assert evidence.whole_function_latency_by_mode == {}
     assert evidence.lifecycle_measurements == {}
+
+
+def test_rollout_evidence_extends_domain_lifted_measurements_additively() -> None:
+    """Task 13 fields preserve legacy evidence and keep missing data absent."""
+
+    profile = _profile("domain-lifted")
+    report = MbaDifferentialReport(
+        schema_version=1,
+        corpus_identity="domain-lifted",
+        toolchain_identity={"runtime": "python"},
+        cases=(
+            MbaCorpusCaseReport(
+                case_id="fresh",
+                profile=profile,
+                stratum="semantic_canonicalization",
+                outcomes=(
+                    MbaProviderOutcome(
+                        provider=MbaProviderKind.EGGLOG,
+                        status=ProviderOutcomeStatus.APPLIED,
+                        fingerprint=profile.fingerprint,
+                        input_cost=(5, 8),
+                        output_cost=(2, 3),
+                        elapsed_ms=4.0,
+                        metadata={
+                            "canonical_input_cost": (3, 5),
+                            "normalization_steps": (
+                                "negative_coefficient",
+                                "add_neg_to_sub",
+                            ),
+                            "execution_path": "fresh_saturation",
+                            "cache_status": "miss",
+                            "egglog_work_units": 7,
+                            "egglog_run_count": 1,
+                        },
+                    ),
+                ),
+            ),
+            MbaCorpusCaseReport(
+                case_id="replay",
+                profile=profile,
+                stratum="semantic_canonicalization",
+                outcomes=(
+                    MbaProviderOutcome(
+                        provider=MbaProviderKind.EGGLOG,
+                        status=ProviderOutcomeStatus.APPLIED,
+                        fingerprint=profile.fingerprint,
+                        input_cost=(5, 8),
+                        output_cost=(2, 3),
+                        elapsed_ms=1.0,
+                        metadata={
+                            "canonical_input_cost": (3, 5),
+                            "execution_path": "learned_replay",
+                            "cache_status": "hit",
+                            "egglog_work_units": 0,
+                            "egglog_run_count": 0,
+                            "cache_lookup_elapsed_ms": 0.25,
+                            "replay_rebuild_elapsed_ms": 0.5,
+                            "replay_proof_elapsed_ms": 0.75,
+                        },
+                    ),
+                ),
+            ),
+            MbaCorpusCaseReport(
+                case_id="rotate",
+                profile=profile,
+                stratum="fixed_shift",
+                outcomes=(
+                    MbaProviderOutcome(
+                        provider=MbaProviderKind.EGGLOG,
+                        status=ProviderOutcomeStatus.APPLIED,
+                        fingerprint=profile.fingerprint,
+                        elapsed_ms=2.0,
+                        metadata={
+                            "selected_family": "fixed_rotate",
+                            "rotate_width": 32,
+                            "rotate_direction": "rol",
+                            "fixed_shift_admitted": True,
+                        },
+                    ),
+                ),
+            ),
+            MbaCorpusCaseReport(
+                case_id="refused-shift",
+                profile=profile,
+                stratum="fixed_shift",
+                outcomes=(
+                    MbaProviderOutcome(
+                        provider=MbaProviderKind.EGGLOG,
+                        status=ProviderOutcomeStatus.INELIGIBLE,
+                        fingerprint=profile.fingerprint,
+                        refusal_reason="noncomplementary_shift",
+                        metadata={"fixed_shift_refusal_reason": "noncomplementary_shift"},
+                    ),
+                ),
+            ),
+        ),
+        capture_metadata={
+            "eligible_rule_measurements": {
+                "base_pattern_count": 9,
+                "legacy_permutation_count": 36,
+            },
+            "cache_measurements": {
+                # Provider receipts below are authoritative when measured;
+                # this deliberately differs to guard against capture-only
+                # replay-savings claims.
+                "saved_egglog_runs": 9,
+                "peak_entries": 2,
+                "peak_bytes": 1024,
+            },
+            "runtime_parity": {"python": "matched", "cython": "matched"},
+            "certificate_activation": {"python": True, "cython": False},
+        },
+    )
+
+    evidence = compare_provider_outcomes(report).rollout_evidence
+
+    assert evidence.normalization_counts_by_kind == {
+        "add_neg_to_sub": 1,
+        "negative_coefficient": 1,
+    }
+    assert evidence.raw_vs_canonical_input_costs == (
+        {
+            "case_id": "fresh",
+            "provider": "egglog",
+            "raw_input_cost": [5, 8],
+            "canonical_input_cost": [3, 5],
+            "non_yield": True,
+        },
+        {
+            "case_id": "replay",
+            "provider": "egglog",
+            "raw_input_cost": [5, 8],
+            "canonical_input_cost": [3, 5],
+            "non_yield": True,
+        },
+    )
+    assert evidence.eligible_rule_measurements == {
+        "base_pattern_count": 9,
+        "legacy_permutation_count": 36,
+    }
+    assert evidence.fixed_shift_admissions == 1
+    assert evidence.fixed_shift_refusals_by_reason == {"noncomplementary_shift": 1}
+    assert evidence.rotate_extractions_by_width_direction == {"32:rol": 1}
+    assert evidence.execution_path_counts == {
+        "fresh_saturation": 1,
+        "learned_replay": 1,
+    }
+    assert evidence.replay_saved_egglog_runs == 1
+    assert evidence.cache_status_counts == {"hit": 1, "miss": 1}
+    assert evidence.cache_peak_entries == 2
+    assert evidence.cache_peak_bytes == 1024
+    assert evidence.runtime_parity == {"python": "matched", "cython": "matched"}
+    assert evidence.certificate_activation == {"python": True, "cython": False}
+    encoded = compare_provider_outcomes(report).to_dict()
+    assert encoded["rollout_evidence"]["raw_vs_canonical_input_costs"][0]["non_yield"]
+    markdown = summary_markdown(compare_provider_outcomes(report))
+    assert "Fresh saturation=1" in markdown
+    assert "Learned replay=1" in markdown
 
 
 def test_rollout_evidence_counts_declared_nonlinear_residual_without_profile() -> None:

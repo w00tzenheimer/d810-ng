@@ -669,6 +669,9 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             ),
             cache_lookup_elapsed_ms=cache_lookup_elapsed_ms,
             egglog_work_units=0,
+            # Direct catalogue and learned replay are explicit no-run paths;
+            # the saturation producer records actual ``EGraph.run`` calls.
+            egglog_run_count=0,
         )
         return EgglogExtractionResult(
             replacement_ast=None,
@@ -1211,6 +1214,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
                 receipt,
                 execution_path="telemetry_only",
                 cache_status="disabled",
+                egglog_run_count=0,
             )
             if telemetry_match_result is not None:
                 receipt = self._with_native_match_telemetry(
@@ -1435,6 +1439,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
                     ),
                     execution_path="telemetry_only",
                     cache_status="disabled",
+                    egglog_run_count=0,
                     native_matcher_comparisons=canonical_match_result.comparisons,
                     native_matcher_lazy_swaps=canonical_match_result.commuted_branches,
                     native_matcher_elapsed_ms=matcher_elapsed_ms,
@@ -1720,6 +1725,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             "replay_rebuild_elapsed_ms": receipt.replay_rebuild_elapsed_ms,
             "replay_proof_elapsed_ms": receipt.replay_proof_elapsed_ms,
             "egglog_work_units": receipt.egglog_work_units,
+            "egglog_run_count": receipt.egglog_run_count,
             "replay_fallback_reason": receipt.replay_fallback_reason,
             "extracted_cost": receipt.extracted_cost,
             "degree": receipt.degree,

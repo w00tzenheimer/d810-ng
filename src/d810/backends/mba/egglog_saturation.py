@@ -316,6 +316,10 @@ class EgglogExtractionReceipt:
     replay_proof_elapsed_ms: float | None = None
     egglog_work_units: int = 0
     replay_fallback_reason: str | None = None
+    # ``None`` means the producer did not measure an Egglog invocation.  A
+    # concrete value is emitted only by the saturation seam after it enters
+    # ``EGraph.run`` (or by the handler's explicit no-run paths).
+    egglog_run_count: int | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "selected_aliases", tuple(self.selected_aliases))
@@ -378,6 +382,10 @@ class EgglogExtractionReceipt:
             raise ValueError("cache_key must be a string or null")
         if type(self.egglog_work_units) is not int or self.egglog_work_units < 0:
             raise ValueError("egglog_work_units must be a non-negative integer")
+        if self.egglog_run_count is not None and (
+            type(self.egglog_run_count) is not int or self.egglog_run_count < 0
+        ):
+            raise ValueError("egglog_run_count must be a non-negative integer or null")
         if self.replay_fallback_reason is not None and (
             type(self.replay_fallback_reason) is not str
             or not self.replay_fallback_reason
@@ -596,6 +604,7 @@ def _extraction_result(
     replay_proof_elapsed_ms: float | None = None,
     egglog_work_units: int = 0,
     replay_fallback_reason: str | None = None,
+    egglog_run_count: int | None = None,
     extracted_cost: tuple[int, int] | None = None,
     degree: int | None = None,
     eclass_count: int | None = None,
@@ -636,6 +645,7 @@ def _extraction_result(
             replay_proof_elapsed_ms=replay_proof_elapsed_ms,
             egglog_work_units=egglog_work_units,
             replay_fallback_reason=replay_fallback_reason,
+            egglog_run_count=egglog_run_count,
             extracted_cost=extracted_cost,
             degree=degree,
             eclass_count=eclass_count,
@@ -782,11 +792,17 @@ def _extract_bounded_term(
         started = 0.0
     input_cost: tuple[int, int] | None = None
     canonical_view: CanonicalMbaTermView | None = None
-    _extraction_result = partial(
+    egglog_run_count: int | None = None
+    _base_extraction_result = partial(
         _build_extraction_result,
         lowering=lowering,
         profile=profile,
     )
+
+    def _extraction_result(**kwargs):
+        kwargs["egglog_run_count"] = egglog_run_count
+        return _base_extraction_result(**kwargs)
+
     egraph: Any | None = None
 
     try:
@@ -801,7 +817,7 @@ def _extract_bounded_term(
         canonical_view = canonicalize_mba_term(term)
         term = canonical_view.canonical_term
         input_cost = canonical_view.raw_cost
-        _extraction_result = partial(
+        _base_extraction_result = partial(
             _build_extraction_result,
             lowering=lowering,
             profile=profile,
@@ -1014,6 +1030,7 @@ def _extract_bounded_term(
                     skip_reason=ExtractionSkipReason.TIME_BUDGET,
                     elapsed_ms=elapsed,
                 )
+            egglog_run_count = (egglog_run_count or 0) + 1
             round_report = egraph.run(1)
             round_firings = read_rule_firing_count(round_report)
             statistics = read_egraph_statistics(egraph)

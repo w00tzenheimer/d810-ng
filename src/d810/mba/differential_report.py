@@ -98,6 +98,10 @@ def egglog_receipt_to_outcome(receipt: object) -> MbaProviderOutcome:
         "enode_count": getattr(receipt, "enode_count", None),
         "rule_firings": getattr(receipt, "rule_firings", 0),
         "selected_family": getattr(receipt, "selected_family", None),
+        "selected_source": getattr(receipt, "selected_source", None),
+        "selected_aliases": tuple(
+            str(item) for item in getattr(receipt, "selected_aliases", ())
+        ),
         "island_class": getattr(receipt, "island_class", None),
         "operator_count": getattr(receipt, "operator_count", None),
         "distinct_leaf_count": getattr(receipt, "distinct_leaf_count", None),
@@ -126,6 +130,12 @@ def egglog_receipt_to_outcome(receipt: object) -> MbaProviderOutcome:
             receipt, "native_matcher_elapsed_ms", None
         ),
     }
+    # Run counts are producer evidence, not report inference.  Missing
+    # measurements remain absent so a path label cannot masquerade as proof of
+    # a runtime call.
+    raw_run_count = getattr(receipt, "egglog_run_count", None)
+    if type(raw_run_count) is int and raw_run_count >= 0:
+        metadata["egglog_run_count"] = raw_run_count
     native_profile = getattr(receipt, "native_profile", None)
     if isinstance(native_profile, Mapping):
         metadata["native_profile"] = dict(native_profile)
@@ -413,6 +423,26 @@ class RolloutEvidence:
     candidate_latency_by_mode: Mapping[str, Mapping[str, LatencyStats]]
     whole_function_latency_by_mode: Mapping[str, Mapping[str, LatencyStats]]
     root_only_strict_subisland_misses: int
+    # Task 13 domain-lifted measurements are additive to the original
+    # rollout questions above.  Empty mappings and ``None`` mean that the
+    # producer did not record the measurement; they are never synthetic zero
+    # evidence.
+    normalization_counts_by_kind: Mapping[str, int] = field(default_factory=dict)
+    raw_vs_canonical_input_costs: tuple[Mapping[str, object], ...] = ()
+    eligible_rule_measurements: Mapping[str, int] = field(default_factory=dict)
+    fixed_shift_admissions: int | None = None
+    fixed_shift_refusals_by_reason: Mapping[str, int] = field(default_factory=dict)
+    rotate_extractions_by_width_direction: Mapping[str, int] = field(
+        default_factory=dict
+    )
+    execution_path_counts: Mapping[str, int] = field(default_factory=dict)
+    execution_path_latency: Mapping[str, LatencyStats] = field(default_factory=dict)
+    replay_saved_egglog_runs: int | None = None
+    cache_status_counts: Mapping[str, int] = field(default_factory=dict)
+    cache_peak_entries: int | None = None
+    cache_peak_bytes: int | None = None
+    runtime_parity: Mapping[str, object] = field(default_factory=dict)
+    certificate_activation: Mapping[str, object] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -444,6 +474,33 @@ class RolloutEvidence:
                 self.whole_function_latency_by_mode
             ),
             "root_only_strict_subisland_misses": self.root_only_strict_subisland_misses,
+            "normalization_counts_by_kind": dict(
+                sorted(self.normalization_counts_by_kind.items())
+            ),
+            "raw_vs_canonical_input_costs": [
+                dict(sample) for sample in self.raw_vs_canonical_input_costs
+            ],
+            "eligible_rule_measurements": dict(
+                sorted(self.eligible_rule_measurements.items())
+            ),
+            "fixed_shift_admissions": self.fixed_shift_admissions,
+            "fixed_shift_refusals_by_reason": dict(
+                sorted(self.fixed_shift_refusals_by_reason.items())
+            ),
+            "rotate_extractions_by_width_direction": dict(
+                sorted(self.rotate_extractions_by_width_direction.items())
+            ),
+            "execution_path_counts": dict(sorted(self.execution_path_counts.items())),
+            "execution_path_latency": {
+                path: stats.to_dict()
+                for path, stats in sorted(self.execution_path_latency.items())
+            },
+            "replay_saved_egglog_runs": self.replay_saved_egglog_runs,
+            "cache_status_counts": dict(sorted(self.cache_status_counts.items())),
+            "cache_peak_entries": self.cache_peak_entries,
+            "cache_peak_bytes": self.cache_peak_bytes,
+            "runtime_parity": dict(self.runtime_parity),
+            "certificate_activation": dict(self.certificate_activation),
         }
 
 
@@ -685,6 +742,39 @@ def _metadata_int(metadata: Mapping[str, object], name: str) -> int | None:
     return value if type(value) is int and value >= 0 else None
 
 
+def _metadata_cost(metadata: Mapping[str, object], name: str) -> tuple[int, int] | None:
+    """Read one finite two-dimensional cost without coercing telemetry."""
+
+    value = metadata.get(name)
+    if not isinstance(value, (tuple, list)) or len(value) != 2:
+        return None
+    if any(type(item) is not int or item < 0 for item in value):
+        return None
+    return (value[0], value[1])
+
+
+def _nonnegative_int_mapping(value: object) -> dict[str, int]:
+    """Copy only explicit integer measurements from a JSON mapping."""
+
+    if not isinstance(value, Mapping):
+        return {}
+    return {
+        key: item
+        for key, item in value.items()
+        if type(key) is str and type(item) is int and item >= 0
+    }
+
+
+def _rotate_key(metadata: Mapping[str, object]) -> str | None:
+    """Read the producer's explicit rotate width/direction evidence."""
+
+    width = metadata.get("rotate_width")
+    direction = metadata.get("rotate_direction")
+    if type(width) is int and width > 0 and type(direction) is str and direction:
+        return f"{width}:{direction}"
+    return None
+
+
 def _rollout_evidence(report: MbaDifferentialReport) -> RolloutEvidence:
     """Aggregate explicit rollout instrumentation from captured provider rows."""
 
@@ -708,12 +798,111 @@ def _rollout_evidence(report: MbaDifferentialReport) -> RolloutEvidence:
         lambda: defaultdict(list)
     )
     root_only_misses = 0
+    normalization_counts: dict[str, int] = defaultdict(int)
+    capture_normalization_counts: dict[str, int] = defaultdict(int)
+    raw_vs_canonical: list[dict[str, object]] = []
+    capture_raw_vs_canonical: list[dict[str, object]] = []
+    eligible_rule_measurements: dict[str, int] = {}
+    fixed_shift_admissions = 0
+    fixed_shift_seen = False
+    fixed_shift_refusals: dict[str, int] = defaultdict(int)
+    rotate_extractions: dict[str, int] = defaultdict(int)
+    execution_path_counts: dict[str, int] = defaultdict(int)
+    execution_path_latencies: dict[str, list[float]] = defaultdict(list)
+    replay_saved_egglog_runs: int | None = None
+    measured_replay_saved_egglog_runs = 0
+    measured_replay_observations = 0
+    cache_status_counts: dict[str, int] = defaultdict(int)
+    cache_peak_entries: int | None = None
+    cache_peak_bytes: int | None = None
+    capture_cache_status_counts: dict[str, int] = defaultdict(int)
+    runtime_parity: dict[str, object] = {}
+    certificate_activation: dict[str, object] = {}
 
     capture_metadata = report.capture_metadata
     raw_modes = capture_metadata.get("provider_execution_modes", {})
     provider_modes = raw_modes if isinstance(raw_modes, Mapping) else {}
     raw_whole = capture_metadata.get("whole_function_elapsed_ms_by_case", {})
     whole_by_case = raw_whole if isinstance(raw_whole, Mapping) else {}
+
+    def record_int_measurement(target: dict[str, int], name: str, value: object) -> None:
+        if type(name) is str and type(value) is int and value >= 0:
+            target.setdefault(name, value)
+
+    # Capture-level domain-lifted measurements are emitted once by the native
+    # runner. Missing keys remain absent; the report never infers a value from
+    # an execution-path label or a source name.
+    for name, value in _nonnegative_int_mapping(
+        capture_metadata.get("eligible_rule_measurements")
+    ).items():
+        record_int_measurement(eligible_rule_measurements, name, value)
+    for kind, count in _nonnegative_int_mapping(
+        capture_metadata.get("normalization_counts_by_kind")
+    ).items():
+        capture_normalization_counts[kind] += count
+    raw_cost_rows = capture_metadata.get("raw_vs_canonical_input_costs", ())
+    if isinstance(raw_cost_rows, list):
+        for row in raw_cost_rows:
+            if not isinstance(row, Mapping) or row.get("non_yield") is not True:
+                continue
+            raw = _metadata_cost(row, "raw_input_cost")
+            canonical = _metadata_cost(row, "canonical_input_cost")
+            case_id = row.get("case_id")
+            provider = row.get("provider")
+            if (
+                raw is None
+                or canonical is None
+                or type(case_id) is not str
+                or type(provider) is not str
+            ):
+                continue
+            capture_raw_vs_canonical.append(
+                {
+                    "case_id": case_id,
+                    "provider": provider,
+                    "raw_input_cost": list(raw),
+                    "canonical_input_cost": list(canonical),
+                    "non_yield": True,
+                }
+            )
+    fixed_measurements = capture_metadata.get("fixed_shift_measurements")
+    if isinstance(fixed_measurements, Mapping):
+        admissions = fixed_measurements.get("admissions")
+        if type(admissions) is int and admissions >= 0:
+            fixed_shift_seen = True
+            fixed_shift_admissions += admissions
+        for reason, count in _nonnegative_int_mapping(
+            fixed_measurements.get("refusal_reasons")
+        ).items():
+            fixed_shift_seen = True
+            fixed_shift_refusals[reason] += count
+    for name in ("base_pattern_count", "legacy_permutation_count"):
+        value = capture_metadata.get(name)
+        if type(value) is int and value >= 0:
+            record_int_measurement(eligible_rule_measurements, name, value)
+
+    cache_measurements = capture_metadata.get("cache_measurements")
+    if isinstance(cache_measurements, Mapping):
+        saved = cache_measurements.get("saved_egglog_runs")
+        if type(saved) is int and saved >= 0:
+            replay_saved_egglog_runs = saved
+        entries = cache_measurements.get("peak_entries")
+        if type(entries) is int and entries >= 0:
+            cache_peak_entries = entries
+        bytes_used = cache_measurements.get("peak_bytes")
+        if type(bytes_used) is int and bytes_used >= 0:
+            cache_peak_bytes = bytes_used
+        for status, count in _nonnegative_int_mapping(
+            cache_measurements.get("status_counts")
+        ).items():
+            capture_cache_status_counts[status] += count
+    for field_name, target in (
+        ("runtime_parity", runtime_parity),
+        ("certificate_activation", certificate_activation),
+    ):
+        value = capture_metadata.get(field_name)
+        if isinstance(value, Mapping):
+            target.update(value)
 
     # Keep an explicit zero-sample lane for every configured provider.  An
     # unavailable extension or a telemetry-only Egglog admission must be
@@ -840,6 +1029,110 @@ def _rollout_evidence(report: MbaDifferentialReport) -> RolloutEvidence:
             if outcome.refusal_reason is not None:
                 refusals[outcome.refusal_reason] += 1
 
+            # Domain-lifted normalization is an input characterization, not a
+            # yield claim.  Keep every raw/canonical cost pair explicitly
+            # marked non-yield, including unchanged or refused provider rows.
+            raw_steps = metadata.get("normalization_steps")
+            if isinstance(raw_steps, (tuple, list)):
+                for step in raw_steps:
+                    if type(step) is str and step:
+                        normalization_counts[step] += 1
+            canonical_cost = _metadata_cost(metadata, "canonical_input_cost")
+            raw_cost = outcome.input_cost
+            if (
+                raw_cost is not None
+                and canonical_cost is not None
+                and len(raw_cost) == 2
+                and all(type(item) is int and item >= 0 for item in raw_cost)
+            ):
+                raw_vs_canonical.append(
+                    {
+                        "case_id": case.case_id,
+                        "provider": outcome.provider.value,
+                        "raw_input_cost": list(raw_cost),
+                        "canonical_input_cost": list(canonical_cost),
+                        "non_yield": True,
+                    }
+                )
+
+            for name in ("base_pattern_count", "legacy_permutation_count"):
+                value = metadata.get(name)
+                if type(value) is int and value >= 0:
+                    record_int_measurement(eligible_rule_measurements, name, value)
+            eligible_mapping = metadata.get("eligible_rule_measurements")
+            for name, value in _nonnegative_int_mapping(eligible_mapping).items():
+                record_int_measurement(eligible_rule_measurements, name, value)
+
+            selected_family = metadata.get("selected_family")
+            fixed_row = case.stratum == "fixed_shift" or selected_family in {
+                "fixed_rotate",
+                "fixed_shift",
+            }
+            fixed_admitted = metadata.get("fixed_shift_admitted")
+            if type(fixed_admitted) is bool or selected_family in {
+                "fixed_rotate",
+                "fixed_shift",
+            }:
+                fixed_shift_seen = True
+            if fixed_admitted is True:
+                fixed_shift_admissions += 1
+            elif (
+                selected_family == "fixed_rotate"
+                and outcome.status in _WIN_STATUSES
+            ):
+                # Receipt provenance is sufficient native/provider evidence
+                # for an admitted complementary rotate when an older adapter
+                # did not yet emit the explicit boolean field.
+                fixed_shift_admissions += 1
+            refusal_reason = metadata.get("fixed_shift_refusal_reason")
+            if type(refusal_reason) is str and refusal_reason:
+                fixed_shift_seen = True
+                fixed_shift_refusals[refusal_reason] += 1
+            elif fixed_row and outcome.refusal_reason in {
+                "noncomplementary_shift",
+                "arithmetic_shift",
+                "variable_shift_count",
+            }:
+                fixed_shift_seen = True
+                fixed_shift_refusals[outcome.refusal_reason] += 1  # type: ignore[index]
+            if (
+                selected_family == "fixed_rotate"
+                and outcome.status in _WIN_STATUSES
+            ):
+                rotate_key = _rotate_key(metadata)
+                if rotate_key is not None:
+                    rotate_extractions[rotate_key] += 1
+
+            execution_path = metadata.get("execution_path")
+            if type(execution_path) is str and execution_path:
+                execution_path_counts[execution_path] += 1
+                if type(outcome.elapsed_ms) in (int, float) and math.isfinite(
+                    float(outcome.elapsed_ms)
+                ) and outcome.elapsed_ms >= 0:
+                    execution_path_latencies[execution_path].append(
+                        float(outcome.elapsed_ms)
+                    )
+            explicit_replay_savings = _metadata_int(metadata, "replay_saved_egglog_runs")
+            if explicit_replay_savings is not None:
+                replay_saved_egglog_runs = explicit_replay_savings
+            measured_run_count = _metadata_int(metadata, "egglog_run_count")
+            if execution_path == "learned_replay" and measured_run_count is not None:
+                measured_replay_observations += 1
+                if measured_run_count == 0:
+                    measured_replay_saved_egglog_runs += 1
+
+            cache_status = metadata.get("cache_status")
+            if type(cache_status) is str and cache_status:
+                cache_status_counts[cache_status] += 1
+
+            for field_name, target in (
+                ("runtime_parity", runtime_parity),
+                ("certificate_activation", certificate_activation),
+            ):
+                value = metadata.get(field_name)
+                if isinstance(value, Mapping):
+                    target.update(value)
+
             dispatch = metadata.get("structural_dispatch")
             dispatch_metadata = dispatch if isinstance(dispatch, Mapping) else metadata
             bucket_size = _metadata_number(dispatch_metadata, "bucket_size")
@@ -904,6 +1197,17 @@ def _rollout_evidence(report: MbaDifferentialReport) -> RolloutEvidence:
             if metadata.get("root_only_strict_subisland_miss") is True:
                 root_only_misses += 1
 
+    if not normalization_counts and capture_normalization_counts:
+        normalization_counts.update(capture_normalization_counts)
+    if not raw_vs_canonical and capture_raw_vs_canonical:
+        raw_vs_canonical.extend(capture_raw_vs_canonical)
+    if not cache_status_counts and capture_cache_status_counts:
+        cache_status_counts.update(capture_cache_status_counts)
+    if measured_replay_observations:
+        # A replay saves one engine run only when the producer measured zero
+        # runs.  The path label alone is not evidence, and capture-level
+        # aggregates remain a fallback for reports without provider rows.
+        replay_saved_egglog_runs = measured_replay_saved_egglog_runs
     # A degree with captured observations but no unique win must be visible as
     # a real measured zero.  Degree-one/two are the rollout comparison lanes.
     for degree in (1, 2):
@@ -931,6 +1235,17 @@ def _rollout_evidence(report: MbaDifferentialReport) -> RolloutEvidence:
                 for mode, by_provider in sorted(values.items())
             }
         )
+
+    execution_latency = MappingProxyType(
+        {
+            path: LatencyStats(
+                count=len(samples),
+                p50_ms=_percentile(samples, 0.50) if samples else None,
+                p95_ms=_percentile(samples, 0.95) if samples else None,
+            )
+            for path, samples in sorted(execution_path_latencies.items())
+        }
+    )
 
     duration_measurements = {
         "cold_snapshot_ms",
@@ -981,6 +1296,37 @@ def _rollout_evidence(report: MbaDifferentialReport) -> RolloutEvidence:
         candidate_latency_by_mode=latency_stats(candidate_latencies),
         whole_function_latency_by_mode=latency_stats(whole_function_latencies),
         root_only_strict_subisland_misses=root_only_misses,
+        normalization_counts_by_kind=MappingProxyType(
+            dict(sorted(normalization_counts.items()))
+        ),
+        raw_vs_canonical_input_costs=tuple(
+            sorted(
+                raw_vs_canonical,
+                key=lambda sample: (str(sample["case_id"]), str(sample["provider"])),
+            )
+        ),
+        eligible_rule_measurements=MappingProxyType(
+            dict(sorted(eligible_rule_measurements.items()))
+        ),
+        fixed_shift_admissions=(
+            fixed_shift_admissions if fixed_shift_seen else None
+        ),
+        fixed_shift_refusals_by_reason=MappingProxyType(
+            dict(sorted(fixed_shift_refusals.items()))
+        ),
+        rotate_extractions_by_width_direction=MappingProxyType(
+            dict(sorted(rotate_extractions.items()))
+        ),
+        execution_path_counts=MappingProxyType(
+            dict(sorted(execution_path_counts.items()))
+        ),
+        execution_path_latency=execution_latency,
+        replay_saved_egglog_runs=replay_saved_egglog_runs,
+        cache_status_counts=MappingProxyType(dict(sorted(cache_status_counts.items()))),
+        cache_peak_entries=cache_peak_entries,
+        cache_peak_bytes=cache_peak_bytes,
+        runtime_parity=MappingProxyType(dict(runtime_parity)),
+        certificate_activation=MappingProxyType(dict(certificate_activation)),
     )
 
 
@@ -1192,6 +1538,105 @@ def summary_markdown(summary: DifferentialSummary) -> str:
             + _format_latency_modes(evidence.whole_function_latency_by_mode),
             "Root-only strict-sub-island misses: "
             f"{evidence.root_only_strict_subisland_misses}",
+            "Normalization counts by kind: "
+            + (
+                ", ".join(
+                    f"{kind}={count}"
+                    for kind, count in sorted(
+                        evidence.normalization_counts_by_kind.items()
+                    )
+                )
+                or "not measured"
+            ),
+            "Raw versus canonical input costs (non-yield): "
+            f"{len(evidence.raw_vs_canonical_input_costs)} samples",
+            "Eligible rules: "
+            + (
+                ", ".join(
+                    f"{name}={count}"
+                    for name, count in sorted(
+                        evidence.eligible_rule_measurements.items()
+                    )
+                )
+                or "not measured"
+            ),
+            "Fixed-shift admissions: "
+            + (
+                "not measured"
+                if evidence.fixed_shift_admissions is None
+                else str(evidence.fixed_shift_admissions)
+            )
+            + "; refusals: "
+            + (
+                ", ".join(
+                    f"{reason}={count}"
+                    for reason, count in sorted(
+                        evidence.fixed_shift_refusals_by_reason.items()
+                    )
+                )
+                or "not measured"
+            ),
+            "Rotate extractions by width/direction: "
+            + (
+                ", ".join(
+                    f"{key}={count}"
+                    for key, count in sorted(
+                        evidence.rotate_extractions_by_width_direction.items()
+                    )
+                )
+                or "not measured"
+            ),
+            "Execution paths: "
+            + (
+                ", ".join(
+                    f"{path.replace('_', ' ').capitalize()}={count}"
+                    for path, count in sorted(evidence.execution_path_counts.items())
+                )
+                or "not measured"
+            ),
+            "Execution-path latency: "
+            + (
+                "; ".join(
+                    f"{path}(n={stats.count},p50={_format_measurement(stats.p50_ms)},"
+                    f"p95={_format_measurement(stats.p95_ms)})"
+                    for path, stats in sorted(evidence.execution_path_latency.items())
+                )
+                or "not measured"
+            ),
+            "Replay saved Egglog runs: "
+            + (
+                "not measured"
+                if evidence.replay_saved_egglog_runs is None
+                else str(evidence.replay_saved_egglog_runs)
+            ),
+            "Cache status counts: "
+            + (
+                ", ".join(
+                    f"{status}={count}"
+                    for status, count in sorted(evidence.cache_status_counts.items())
+                )
+                or "not measured"
+            )
+            + "; peak entries="
+            + (
+                "not measured"
+                if evidence.cache_peak_entries is None
+                else str(evidence.cache_peak_entries)
+            )
+            + "; peak bytes="
+            + (
+                "not measured"
+                if evidence.cache_peak_bytes is None
+                else str(evidence.cache_peak_bytes)
+            ),
+            "Python/Cython parity: "
+            + (json.dumps(dict(evidence.runtime_parity), sort_keys=True)
+               if evidence.runtime_parity
+               else "not measured"),
+            "Certificate activation: "
+            + (json.dumps(dict(evidence.certificate_activation), sort_keys=True)
+               if evidence.certificate_activation
+               else "not measured"),
         )
     )
     return "\n".join(lines) + "\n"

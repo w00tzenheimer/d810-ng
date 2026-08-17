@@ -479,6 +479,7 @@ def test_replay_receipt_and_provider_outcome_keep_path_latency_and_work_telemetr
         replay_rebuild_elapsed_ms=0.75,
         replay_proof_elapsed_ms=1.25,
         egglog_work_units=0,
+        egglog_run_count=0,
         derivation_trace=trace,
     )
 
@@ -490,6 +491,71 @@ def test_replay_receipt_and_provider_outcome_keep_path_latency_and_work_telemetr
     assert outcome.metadata["replay_rebuild_elapsed_ms"] == 0.75
     assert outcome.metadata["replay_proof_elapsed_ms"] == 1.25
     assert outcome.metadata["egglog_work_units"] == 0
+    assert outcome.metadata["egglog_run_count"] == 0
+
+
+def test_run_count_is_present_only_after_an_actual_egglog_invocation(monkeypatch):
+    raw = _node("neg", _node("neg", _leaf("x")))
+    rewrite_decl = object()
+    run_calls = []
+
+    class _EGraph:
+        def register(self, *_commands):
+            return None
+
+        def run(self, _rounds):
+            run_calls.append(1)
+            return SimpleNamespace(
+                num_matches_per_rule={rewrite_decl: 1},
+                updated=False,
+            )
+
+        def extract(self, _expression):
+            return (0, 1)
+
+    monkeypatch.setattr(
+        egglog_saturation,
+        "_load_egglog_module",
+        lambda: SimpleNamespace(
+            EGraph=_EGraph,
+            EggSmolError=RuntimeError,
+            rewrite=lambda _source: SimpleNamespace(
+                to=lambda _target: SimpleNamespace(decl=rewrite_decl)
+            ),
+        ),
+    )
+    monkeypatch.setattr(egglog_saturation, "read_egraph_statistics", lambda _egraph: (1, 1))
+    monkeypatch.setattr(
+        egglog_saturation,
+        "release_egraph_on_owner_thread",
+        lambda _egraph: True,
+    )
+    rule = SimpleNamespace(family="test", source_name="identity", aliases=())
+    catalogue = SimpleNamespace(
+        canonical_applications=lambda _term, comparison_budget: (
+            (rule, _leaf("x"), 0),
+        )
+    )
+
+    result = egglog_saturation.extract_bounded_term(
+        raw,
+        (rule,),
+        EgglogExtractionBudget(time_budget_ms=1000),
+        destination_size=4,
+        catalogue=catalogue,
+    )
+
+    assert run_calls == [1]
+    assert result.receipt.egglog_run_count == 1
+
+    telemetry = egglog_saturation.extract_bounded_term(
+        raw,
+        (rule,),
+        EgglogExtractionBudget(),
+        destination_size=4,
+        catalogue=catalogue,
+    )
+    assert telemetry.receipt.egglog_run_count is None
 
 
 def test_profile_receipt_preserves_portable_native_capture_metadata():

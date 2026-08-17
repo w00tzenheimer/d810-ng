@@ -28,6 +28,18 @@ static uint32_t mba_shape_pure_call(uint32_t value)
     return value ^ UINT32_C(0x5A5A5A5A);
 }
 
+/* Keep the truth sibling portable across the pinned Clang and older GCC
+ * images. The shape still presents complementary shifts to IDA. */
+#if defined(__has_builtin)
+#if __has_builtin(__builtin_rotateleft32)
+#define MBA_TRUTH_ROL32(value, count) __builtin_rotateleft32((value), (count))
+#endif
+#endif
+#ifndef MBA_TRUTH_ROL32
+#define MBA_TRUTH_ROL32(value, count) \
+    ((uint32_t)(((value) << (count)) | ((value) >> (32u - (count)))))
+#endif
+
 /* Existing same-width chain algebra: folding, duplicate, complement, cancel. */
 DEFINE_PAIR(uint8_t, mba_shape_chain_01, mba_truth_chain_01, a + (b - b), a)
 DEFINE_PAIR(uint16_t, mba_shape_chain_02, mba_truth_chain_02, a ^ a, 0)
@@ -118,4 +130,19 @@ DEFINE_PAIR(uint64_t, mba_shape_matcher_refusal_04, mba_truth_matcher_refusal_04
 DEFINE_PAIR(uint32_t, mba_shape_matcher_refusal_05, mba_truth_matcher_refusal_05, (a ^ b) ^ c, (a ^ b) ^ c)
 DEFINE_PAIR(uint64_t, mba_shape_matcher_refusal_06, mba_truth_matcher_refusal_06, ((a & b) | (c & d)) ^ ((e & f) | (g & h)), ((a & b) | (c & d)) ^ ((e & f) | (g & h)))
 
+/*
+ * Domain-lifted semantic evidence.  The first two rows are intentionally
+ * equivalent historical spellings of XOR: the negative modular coefficient
+ * should canonicalize to the subtraction root without changing raw cost.
+ * The fixed-shift rows cover one exact complementary rotate and three
+ * fail-closed shapes that must not be treated as rotate identities.
+ */
+DEFINE_PAIR(uint32_t, mba_shape_canonical_xor_negative_coefficient_32, mba_truth_canonical_xor_32, (a + b) + ((UINT32_C(0) - UINT32_C(2)) * (a & b)), a ^ b)
+DEFINE_PAIR(uint32_t, mba_shape_equivalent_xor_replay_32, mba_truth_equivalent_xor_32, (a + b) - (UINT32_C(2) * (a & b)), a ^ b)
+DEFINE_PAIR(uint32_t, mba_shape_fixed_rotate_complementary_32, mba_truth_fixed_rotate_complementary_32, (a << 7) | (a >> 25), MBA_TRUTH_ROL32(a, 7))
+DEFINE_PAIR(uint32_t, mba_shape_fixed_shift_noncomplementary_32, mba_truth_fixed_shift_noncomplementary_32, (a << 5) | (a >> 26), (a << 5) | (a >> 26))
+DEFINE_PAIR(uint32_t, mba_shape_fixed_shift_arithmetic_right_32, mba_truth_fixed_shift_arithmetic_right_32, (a << 7) | ((int32_t)a >> 25), (a << 7) | ((int32_t)a >> 25))
+DEFINE_PAIR(uint32_t, mba_shape_fixed_shift_variable_count_32, mba_truth_fixed_shift_variable_count_32, (a << (b & 31)) | (a >> ((32 - (b & 31)) & 31)), (a << (b & 31)) | (a >> ((32 - (b & 31)) & 31)))
+
 #undef DEFINE_PAIR
+#undef MBA_TRUTH_ROL32

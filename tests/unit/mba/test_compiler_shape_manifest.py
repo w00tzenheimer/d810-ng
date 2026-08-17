@@ -25,6 +25,8 @@ _EXPECTED_STRATA = {
     "nonlinear": 8,
     "unsafe": 10,
     "matcher_refusal": 6,
+    "semantic_canonicalization": 2,
+    "fixed_shift": 4,
 }
 
 
@@ -53,10 +55,43 @@ def _payload() -> dict[str, object]:
 def test_manifest_has_the_planned_independently_authored_strata() -> None:
     cases = _cases()
 
-    assert len(cases) == 70
+    assert len(cases) == sum(_EXPECTED_STRATA.values())
     assert Counter(case["stratum"] for case in cases) == _EXPECTED_STRATA
     assert {case["width"] for case in cases} == {8, 16, 32, 64}
     assert all(case["authorship"] == "independently_authored" for case in cases)
+
+
+def test_domain_lifted_rows_declare_source_truth_and_native_evidence() -> None:
+    cases = {
+        case["case_id"]: case
+        for case in _cases()
+        if case["stratum"] in {"semantic_canonicalization", "fixed_shift"}
+    }
+
+    assert set(cases) == {
+        "canonical_xor_negative_coefficient_32",
+        "equivalent_xor_replay_32",
+        "fixed_rotate_complementary_32",
+        "fixed_shift_noncomplementary_32",
+        "fixed_shift_arithmetic_right_32",
+        "fixed_shift_variable_count_32",
+    }
+    for case in cases.values():
+        assert case["function"].startswith("mba_shape_")
+        assert case["ground_truth_function"].startswith("mba_truth_")
+        assert isinstance(case["semantic_form"], str)
+        assert isinstance(case["semantic_seed"], int)
+        if case["stratum"] == "semantic_canonicalization":
+            assert case["expected_route"] == ["catalogue", "egglog"]
+            assert case["expected_canonical_root"] == "sub"
+            assert case["expected_truth_operation"] == "xor"
+        elif case["case_id"] == "fixed_rotate_complementary_32":
+            assert case["expected_route"] == ["egglog"]
+            assert case["expected_canonical_root"] == "or"
+            assert case["expected_truth_operation"] == "rol"
+        else:
+            assert case["expected_route"] == []
+            assert isinstance(case["expected_blocker"], str)
 
 
 def test_manifest_declares_the_complete_native_provider_matrix() -> None:
@@ -87,6 +122,8 @@ def test_manifest_declares_a_pinned_lowering_shape_contract() -> None:
         "reassociation",
         "degree2",
         "coefficient",
+        "semantic_canonicalization",
+        "fixed_shift",
     ]
     assert contract["forbidden_ir_instructions"] == ["zext", "sext", "trunc"]
 
