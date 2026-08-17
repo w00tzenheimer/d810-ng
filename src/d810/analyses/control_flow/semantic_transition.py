@@ -29,6 +29,7 @@ SUPPORTED_PREDECESSOR_ROUTE_RESOLVERS = frozenset(
     {
         "state_dispatcher_map_exact_row",
         "interval_dispatcher_row",
+        "condition_chain_interval_route",
         "condition_chain_handler_state_map_exact_row",
         "condition_chain_handler_range_map_row",
     }

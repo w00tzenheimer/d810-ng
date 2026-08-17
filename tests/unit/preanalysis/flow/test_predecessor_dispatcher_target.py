@@ -12,9 +12,15 @@ from d810.analyses.control_flow.dispatcher_resolution import (
 from d810.analyses.control_flow.interval_map import IntervalDispatcher, IntervalRow
 from d810.analyses.control_flow.route_predicate import DecisionDag, RouteComparison
 from d810.analyses.control_flow.predecessor_dispatcher_target import (
+    CONDITION_CHAIN_INTERVAL_ROUTE_FACT_TYPE,
+    collect_condition_chain_interval_route_observations,
     collect_predecessor_dispatcher_target_facts,
+    project_condition_chain_interval_route_observations,
     project_predecessor_dispatcher_target_observations,
     resolve_predecessor_dispatcher_target,
+)
+from d810.analyses.control_flow.semantic_transition import (
+    bind_native_bound_transition_routes,
 )
 from d810.analyses.control_flow.dispatcher_discovery_facts import (
     predecessor_dispatcher_target_observation,
@@ -42,6 +48,7 @@ _NATIVE_LATER_STATE = 0x079323F9
 _NATIVE_DECOY_STATE = 0x1
 _NATIVE_ENTRY_EA = 0x180014E30
 _NATIVE_LATER_EA = 0x180015115
+_DISPATCHER_ENTRY_EA = 0x180014E20
 
 
 def _native_identity_dispatcher_fixture():
@@ -152,6 +159,9 @@ def _path_local_entry_fixture(
             flags=0,
             start_ea=serial,
             insn_snapshots=insns,
+            native_start_ea=(
+                _DISPATCHER_ENTRY_EA if serial == 3 else None
+            ),
         )
 
     state_write = InsnSnapshot(
@@ -1061,6 +1071,346 @@ def test_incomplete_replay_rejects_handler_without_current_native_identity() -> 
     assert [
         fact for fact in facts if fact.source_instruction_ea == _NATIVE_ENTRY_EA
     ] == []
+
+
+def _retained_interval_route_observation(
+    *, topology=(3, 4, 6, 8, 11), root_predicate=PredicateKind.NE
+):
+    graph, _dispatch_map, range_evidence = _path_local_entry_fixture(
+        root_predicate=root_predicate
+    )
+    graph = replace(
+        graph,
+        blocks={
+            **graph.blocks,
+            9: replace(graph.get_block(9), native_start_ea=0x180030009),
+        },
+    )
+    observations = collect_condition_chain_interval_route_observations(
+        range_evidence=range_evidence,
+        flow_graph=graph,
+        dispatcher_entry_serial=3,
+        dispatcher_region_serials=frozenset(topology),
+        maturity="locopt",
+        phase="recover_dispatcher",
+    )
+    return graph, range_evidence, observations
+
+
+def test_interval_event_retains_non_topology_target_native_identity() -> None:
+    _graph, _range_evidence, observations = _retained_interval_route_observation()
+
+    assert len(observations) == 1
+    observation = observations[0]
+    assert observation.kind == CONDITION_CHAIN_INTERVAL_ROUTE_FACT_TYPE
+    assert observation.payload["target_block_serial"] == 9
+    assert observation.payload["target_native_ea"] == 0x180030009
+    assert observation.payload["dispatcher_entry_native_ea"] == _DISPATCHER_ENTRY_EA
+    assert observation.source_ea == _DISPATCHER_ENTRY_EA
+    assert 9 not in observation.payload["source_dispatcher_region_serials"]
+
+    projected = project_condition_chain_interval_route_observations(observations)
+    assert len(projected) == 1
+    assert projected[0].target_block_serial == 9
+    assert projected[0].target_native_ea == 0x180030009
+    assert projected[0].dispatcher_entry_native_ea == _DISPATCHER_ENTRY_EA
+
+
+def test_interval_event_projection_merges_snapshot_serial_drift() -> None:
+    _graph, _range_evidence, observations = _retained_interval_route_observation()
+    observation = observations[0]
+    drifted = replace(
+        observation,
+        payload={
+            **observation.payload,
+            "dispatcher_entry_serial": 303,
+            "target_block_serial": 309,
+        },
+    )
+
+    projected = project_condition_chain_interval_route_observations(
+        (observation, drifted)
+    )
+
+    assert len(projected) == 1
+    assert projected[0].target_native_ea == observation.payload["target_native_ea"]
+
+
+def test_interval_event_projection_rejects_conflicting_native_targets() -> None:
+    _graph, _range_evidence, observations = _retained_interval_route_observation()
+    observation = observations[0]
+    conflicting_fact_id = observation.fact_id.replace(
+        "target_ea=0x180030009", "target_ea=0x18003000a"
+    )
+    conflicting = replace(
+        observation,
+        fact_id=conflicting_fact_id,
+        payload={
+            **observation.payload,
+            "fact_id": conflicting_fact_id,
+            "target_native_ea": 0x18003000A,
+        },
+    )
+
+    assert project_condition_chain_interval_route_observations(
+        (observation, conflicting)
+    ) == ()
+
+
+def test_interval_event_projection_rejects_overlapping_ranges() -> None:
+    graph, range_evidence, _observations = _retained_interval_route_observation()
+    range_evidence = replace(
+        range_evidence,
+        dispatcher=SimpleNamespace(
+            _rows=(
+                IntervalRow(
+                    lo=0,
+                    hi=_NATIVE_ENTRY_STATE + 1,
+                    target=9,
+                ),
+                IntervalRow(
+                    lo=_NATIVE_ENTRY_STATE,
+                    hi=(1 << 32),
+                    target=9,
+                ),
+            )
+        ),
+    )
+    observations = collect_condition_chain_interval_route_observations(
+        range_evidence=range_evidence,
+        flow_graph=graph,
+        dispatcher_entry_serial=3,
+        dispatcher_region_serials=frozenset({3, 4, 6, 8, 11}),
+        maturity="locopt",
+        phase="recover_dispatcher",
+    )
+
+    assert len(observations) == 2
+    assert project_condition_chain_interval_route_observations(observations) == ()
+
+
+def _current_coarse_dispatcher_fixture():
+    graph, _producer_range, observations = _retained_interval_route_observation(
+        root_predicate=PredicateKind.SLE
+    )
+    graph = replace(
+        graph,
+        blocks={
+            **graph.blocks,
+            8: BlockSnapshot(
+                serial=8,
+                block_type=0,
+                succs=(),
+                preds=(),
+                flags=0,
+                start_ea=8,
+                insn_snapshots=(),
+            ),
+        },
+    )
+    dispatch_map = StateDispatcherMap(
+        rows=(
+            StateDispatcherRow(
+                state_const=_NATIVE_ENTRY_STATE,
+                target_block=8,
+                dispatcher_block=4,
+                compare_block=4,
+                branch_kind="dispatcher_self_loop",
+                router_kind=RouterKind.CONDITION_CHAIN,
+                row_kind="dispatcher_self_loop",
+            ),
+        ),
+        dispatcher_entry_block=3,
+        dispatcher_blocks=frozenset({3, 4, 6, 8, 11}),
+        state_var_stkoff=52,
+        state_var_lvar_idx=None,
+        router_kind=RouterKind.CONDITION_CHAIN,
+    )
+    range_evidence = ConditionChainAnalysisResult(
+        dispatcher=IntervalDispatcher(
+            [
+                IntervalRow(
+                    lo=_NATIVE_ENTRY_STATE,
+                    hi=_NATIVE_ENTRY_STATE + 1,
+                    target=8,
+                )
+            ]
+        ),
+        decision_dag=DecisionDag(
+            32,
+            {4: RouteComparison(4, "jz", _NATIVE_ENTRY_STATE, 8, 30)},
+            root=4,
+        ),
+        state_var_stkoff=52,
+    )
+    return graph, dispatch_map, range_evidence, observations
+
+
+def test_incomplete_replay_uses_retained_non_topology_interval_target() -> None:
+    graph, dispatch_map, range_evidence, observations = (
+        _current_coarse_dispatcher_fixture()
+    )
+    retained = project_condition_chain_interval_route_observations(observations)
+
+    fact = resolve_predecessor_dispatcher_target(
+        predecessor_block_serial=1,
+        dispatcher_entry_serial=3,
+        state_const=_NATIVE_ENTRY_STATE,
+        state_dispatcher_map=dispatch_map,
+        range_evidence=range_evidence,
+        state_var_stkoff=52,
+        source_instruction_ea=_NATIVE_ENTRY_EA,
+        flow_graph=graph,
+        allow_handler_map_fallback_after_incomplete_route=True,
+        retained_interval_routes=retained,
+        current_dispatcher_region_serials=frozenset({3, 4, 6, 8, 11}),
+    )
+
+    assert fact is not None
+    assert fact.target_block_serial == 9
+    assert fact.target_native_ea == 0x180030009
+    assert fact.resolver_kind == CONDITION_CHAIN_INTERVAL_ROUTE_FACT_TYPE
+
+
+def test_incomplete_replay_rejects_retained_target_that_is_current_topology() -> None:
+    graph, dispatch_map, range_evidence, observations = (
+        _current_coarse_dispatcher_fixture()
+    )
+    retained = project_condition_chain_interval_route_observations(observations)
+
+    assert (
+        resolve_predecessor_dispatcher_target(
+            predecessor_block_serial=1,
+            dispatcher_entry_serial=3,
+            state_const=_NATIVE_ENTRY_STATE,
+            state_dispatcher_map=dispatch_map,
+            range_evidence=range_evidence,
+            state_var_stkoff=52,
+            source_instruction_ea=_NATIVE_ENTRY_EA,
+            flow_graph=graph,
+            allow_handler_map_fallback_after_incomplete_route=True,
+            retained_interval_routes=retained,
+            current_dispatcher_region_serials=frozenset(
+                {3, 4, 6, 8, 9, 11}
+            ),
+        )
+        is None
+    )
+
+
+def test_native_bound_binder_accepts_retained_route_resolver_and_rejects_router_conflict() -> None:
+    graph, dispatch_map, range_evidence, observations = (
+        _current_coarse_dispatcher_fixture()
+    )
+    retained = project_condition_chain_interval_route_observations(observations)
+    fact = resolve_predecessor_dispatcher_target(
+        predecessor_block_serial=1,
+        dispatcher_entry_serial=3,
+        state_const=_NATIVE_ENTRY_STATE,
+        state_dispatcher_map=dispatch_map,
+        range_evidence=range_evidence,
+        state_var_stkoff=52,
+        source_instruction_ea=_NATIVE_ENTRY_EA,
+        flow_graph=graph,
+        allow_handler_map_fallback_after_incomplete_route=True,
+        retained_interval_routes=retained,
+        current_dispatcher_region_serials=frozenset({3, 4, 6, 8, 11}),
+    )
+    assert fact is not None
+
+    def bind(ea: int):
+        return {1: 1, _NATIVE_ENTRY_EA: 1, 0x180030009: 9}.get(ea)
+
+    accepted = bind_native_bound_transition_routes(
+        (fact,),
+        block_serial_for_instruction_ea=bind,
+        current_block_serials={1, 8, 9},
+        dispatcher_block_serials={3, 4, 6, 8, 11},
+        route_target_for_state=lambda _state: 8,
+    )
+    rejected = bind_native_bound_transition_routes(
+        (fact,),
+        block_serial_for_instruction_ea=bind,
+        current_block_serials={1, 9, 10},
+        dispatcher_block_serials={3, 4, 6, 8, 11},
+        route_target_for_state=lambda _state: 10,
+    )
+
+    assert len(accepted) == 1
+    assert rejected == ()
+
+
+def test_interval_event_rejects_target_in_same_source_topology() -> None:
+    _graph, _range_evidence, observations = _retained_interval_route_observation(
+        topology=(3, 4, 6, 8, 9, 11)
+    )
+
+    assert observations == ()
+
+
+def test_interval_event_rejects_missing_or_ambiguous_target_native_identity() -> None:
+    graph, range_evidence, _observations = _retained_interval_route_observation()
+    no_anchor_graph = replace(
+        graph,
+        blocks={
+            **graph.blocks,
+            9: replace(graph.get_block(9), native_start_ea=None),
+        },
+    )
+    assert (
+        collect_condition_chain_interval_route_observations(
+            range_evidence=range_evidence,
+            flow_graph=no_anchor_graph,
+            dispatcher_entry_serial=3,
+            dispatcher_region_serials=frozenset({3, 4, 6, 8, 11}),
+            maturity="locopt",
+            phase="recover_dispatcher",
+        )
+        == ()
+    )
+    no_entry_anchor_graph = replace(
+        graph,
+        blocks={
+            **graph.blocks,
+            3: replace(graph.get_block(3), native_start_ea=None),
+        },
+    )
+    assert (
+        collect_condition_chain_interval_route_observations(
+            range_evidence=range_evidence,
+            flow_graph=no_entry_anchor_graph,
+            dispatcher_entry_serial=3,
+            dispatcher_region_serials=frozenset({3, 4, 6, 8, 11}),
+            maturity="locopt",
+            phase="recover_dispatcher",
+        )
+        == ()
+    )
+    ambiguous_graph = replace(
+        graph,
+        blocks={
+            **graph.blocks,
+            9: replace(
+                graph.get_block(9),
+                native_start_ea=None,
+                insn_snapshots=(
+                    InsnSnapshot(opcode=0, ea=1, operands=(), native_ea=0x180030009),
+                    InsnSnapshot(opcode=0, ea=2, operands=(), native_ea=0x18003000A),
+                ),
+            )
+        },
+    )
+    assert (
+        collect_condition_chain_interval_route_observations(
+            range_evidence=range_evidence,
+            flow_graph=ambiguous_graph,
+            dispatcher_entry_serial=3,
+            dispatcher_region_serials=frozenset({3, 4, 6, 8, 11}),
+            maturity="locopt",
+            phase="recover_dispatcher",
+        )
+        == ()
+    )
 
 
 def _path_local_entry_observation():

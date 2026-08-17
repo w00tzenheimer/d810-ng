@@ -51,7 +51,9 @@ from d810.analyses.control_flow.dispatcher_discovery_facts import (
 )
 from d810.analyses.control_flow.predecessor_dispatcher_target import (
     PREDECESSOR_DISPATCHER_TARGET_FACTS_ANALYSIS,
+    collect_condition_chain_interval_route_observations,
     collect_predecessor_dispatcher_target_facts,
+    project_condition_chain_interval_route_observations,
     project_predecessor_dispatcher_target_observations,
     resolve_current_snapshot_dispatcher_route,
 )
@@ -860,6 +862,52 @@ class RecoverDispatcher(PipelinePass):
                     phase=self.name,
                 ),
             )
+            # Retain interval targets while this producer graph is live.  The
+            # interval row's serial is snapshot-local; the typed observation
+            # carries a unique producer native EA and rejects rows that belong
+            # to this snapshot's dispatcher topology before it enters the
+            # manager session stream.
+            range_evidence = _analysis(context, "range_evidence")
+            interval_region_serials = {
+                int(dispatch_map.dispatcher_entry_block),
+                *(
+                    int(block)
+                    for block in (
+                        getattr(dispatch_map, "dispatcher_blocks", ()) or ()
+                    )
+                ),
+            }
+            for row in getattr(dispatch_map, "rows", ()) or ():
+                for serial in (
+                    getattr(row, "dispatcher_block", None),
+                    getattr(row, "compare_block", None),
+                ):
+                    if serial is not None:
+                        interval_region_serials.add(int(serial))
+            if range_evidence is not None:
+                interval_region_serials.update(
+                    int(block)
+                    for block in getattr(
+                        range_evidence, "condition_chain_blocks", ()
+                    )
+                    or ()
+                )
+                decision_dag = getattr(range_evidence, "decision_dag", None)
+                interval_region_serials.update(
+                    int(block)
+                    for block in getattr(decision_dag, "nodes", {}) or ()
+                )
+            _publish_observation_evidence(
+                context,
+                collect_condition_chain_interval_route_observations(
+                    range_evidence=range_evidence,
+                    flow_graph=context.graph,
+                    dispatcher_entry_serial=int(dispatch_map.dispatcher_entry_block),
+                    dispatcher_region_serials=frozenset(interval_region_serials),
+                    maturity=_maturity_label(context),
+                    phase=self.name,
+                ),
+            )
         # S2: build the consolidated ComparisonDispatcherModel for comparison
         # router kinds, folding in the pristine range/interval evidence so
         # interval-routed next-states resolve via WrappedInterval.contains. The
@@ -892,6 +940,9 @@ class RecoverStateTransitions(PipelinePass):
             resolutions, dispatch_map=dispatch_map
         )
         range_evidence = _analysis(context, "range_evidence")
+        retained_interval_routes = project_condition_chain_interval_route_observations(
+            getattr(context.facts, "retained_observations", ())
+        )
         predecessor_target_facts = ()
         if dispatch_map is not None:
             predecessor_target_facts = collect_predecessor_dispatcher_target_facts(
@@ -903,6 +954,7 @@ class RecoverStateTransitions(PipelinePass):
                 state_var_stkoff=getattr(recovery, "state_var_stkoff", None),
                 state_var_reg=getattr(recovery, "state_var_reg", None),
                 flow_graph=context.graph,
+                retained_interval_routes=retained_interval_routes,
             )
             if predecessor_target_facts:
                 _publish_observation_evidence(

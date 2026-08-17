@@ -50,7 +50,18 @@ from d810.passes.unflatten.state_machine import (
 )
 from d810.passes.state_machine_spine import LOWER_ANALYSES
 from d810.analyses.control_flow.dispatcher_recovery import DispatcherRecovery
-from d810.analyses.control_flow.dispatcher_resolution import StateDispatcherMap
+from d810.analyses.control_flow.dispatcher_resolution import (
+    StateDispatcherMap,
+    StateDispatcherRow,
+)
+from d810.analyses.control_flow.condition_chain_model import (
+    ConditionChainAnalysisResult,
+)
+from d810.analyses.control_flow.interval_map import IntervalDispatcher, IntervalRow
+from d810.analyses.control_flow.predecessor_dispatcher_target import (
+    CONDITION_CHAIN_INTERVAL_ROUTE_FACT_TYPE,
+    project_condition_chain_interval_route_observations,
+)
 from d810.analyses.control_flow.semantic_transition import StateTransitionResolution
 from d810.analyses.control_flow.predecessor_dispatcher_target import (
     PREDECESSOR_DISPATCHER_TARGET_FACTS_ANALYSIS,
@@ -348,6 +359,78 @@ def test_recover_dispatcher_publishes_exact_rows_for_snapshot_diagnostics(monkey
 
     assert am.has_evidence("branch_targets")
     assert not am.has_evidence("dispatcher_predicates")
+
+
+def test_recover_dispatcher_retains_native_interval_route_observation(monkeypatch):
+    state = 0x16AA65E9
+    entry_ea = 0x180014E20
+    target_ea = 0x180030009
+    graph = FlowGraph(
+        blocks={
+            3: replace(
+                _blk(3, (), ()),
+                native_start_ea=entry_ea,
+            ),
+            9: replace(
+                _blk(9, (), ()),
+                native_start_ea=target_ea,
+            ),
+        },
+        entry_serial=3,
+        func_ea=0x1000,
+    )
+    dispatch_map = StateDispatcherMap(
+        rows=(
+            StateDispatcherRow(
+                state_const=state,
+                target_block=9,
+                dispatcher_block=3,
+                compare_block=3,
+                branch_kind="dispatcher_self_loop",
+                router_kind=RouterKind.CONDITION_CHAIN,
+            ),
+        ),
+        dispatcher_entry_block=3,
+        dispatcher_blocks=frozenset({3}),
+        state_var_stkoff=52,
+        state_var_lvar_idx=None,
+        router_kind=RouterKind.CONDITION_CHAIN,
+    )
+    range_evidence = ConditionChainAnalysisResult(
+        dispatcher=IntervalDispatcher(
+            [IntervalRow(lo=state, hi=state + 1, target=9)]
+        )
+    )
+    recovery = DispatcherRecovery(
+        dispatcher_block_serial=3,
+        state_var_stkoff=52,
+        state_var_reg=None,
+        dispatch_map=dispatch_map,
+    )
+    monkeypatch.setattr(
+        state_machine_module,
+        "recover_dispatcher",
+        lambda *args, **kwargs: recovery,
+    )
+    monkeypatch.setattr(
+        state_machine_module,
+        "observe_state_dispatcher_rows",
+        lambda **kwargs: None,
+    )
+    am = AnalysisManager(graph)
+    am.put_analysis("range_evidence", range_evidence)
+
+    RecoverDispatcher().run(_ctx(graph, am))
+
+    retained = tuple(
+        observation
+        for observation in am.retained_observations
+        if observation.kind == CONDITION_CHAIN_INTERVAL_ROUTE_FACT_TYPE
+    )
+    assert len(retained) == 1
+    projected = project_condition_chain_interval_route_observations(retained)
+    assert len(projected) == 1
+    assert projected[0].target_native_ea == target_ea
 
 
 def test_recover_state_transitions_publishes_dispatcher_predicate_evidence():

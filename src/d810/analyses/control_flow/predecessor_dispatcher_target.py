@@ -16,6 +16,7 @@ from d810.analyses.control_flow.semantic_transition import (
     SUPPORTED_PREDECESSOR_ROUTE_RESOLVERS as _SUPPORTED_PREDECESSOR_ROUTE_RESOLVERS,
     SUCCESSFUL_TRANSITION_RESOLUTION_REASONS as _SUCCESSFUL_TRANSITION_RESOLUTION_REASONS,
 )
+from d810.analyses.value_flow.observation import FactObservation
 from d810.ir.flowgraph import OperandKind
 
 
@@ -23,6 +24,7 @@ PREDECESSOR_DISPATCHER_TARGET_FACT_TYPE = "predecessor_dispatcher_target"
 PREDECESSOR_DISPATCHER_TARGET_FACTS_ANALYSIS = (
     "predecessor_dispatcher_target_facts"
 )
+CONDITION_CHAIN_INTERVAL_ROUTE_FACT_TYPE = "condition_chain_interval_route"
 
 _STATE_MASK_32 = 0xFFFFFFFF
 
@@ -93,6 +95,61 @@ class PredecessorDispatcherTargetFact:
             "target_native_ea": self.target_native_ea,
             "confidence": self.confidence,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class ConditionChainIntervalRouteFact:
+    """One producer-snapshot interval route with a native target identity.
+
+    The interval target serial is provenance only.  It is accepted at
+    collection time only after checking the dispatcher topology from the same
+    graph snapshot and obtaining one native target EA from that graph.  Later
+    consumers must rebind ``target_native_ea`` in their current graph instead
+    of trusting ``target_block_serial``.
+    """
+
+    fact_id: str
+    dispatcher_entry_serial: int
+    dispatcher_entry_native_ea: int
+    row_lo_inclusive: int
+    row_hi_exclusive: int
+    target_block_serial: int
+    target_native_ea: int
+    source_dispatcher_region_serials: tuple[int, ...]
+    confidence: float = 1.0
+
+    def to_observation(self, *, maturity: str, phase: str) -> FactObservation:
+        return FactObservation(
+            fact_id=self.fact_id,
+            kind=CONDITION_CHAIN_INTERVAL_ROUTE_FACT_TYPE,
+            semantic_key=(
+                f"condition_chain_interval_route:dispatcher_ea=0x"
+                f"{int(self.dispatcher_entry_native_ea):x}:"
+                f"lo=0x{int(self.row_lo_inclusive):08x}:"
+                f"hi=0x{int(self.row_hi_exclusive):08x}"
+            ),
+            maturity=str(maturity),
+            phase=str(phase),
+            confidence=float(self.confidence),
+            source_block=int(self.dispatcher_entry_serial),
+            source_ea=int(self.dispatcher_entry_native_ea),
+            payload={
+                "fact_id": self.fact_id,
+                "dispatcher_entry_serial": int(self.dispatcher_entry_serial),
+                "dispatcher_entry_native_ea": int(
+                    self.dispatcher_entry_native_ea
+                ),
+                "row_lo_inclusive": int(self.row_lo_inclusive),
+                "row_hi_exclusive": int(self.row_hi_exclusive),
+                "target_block_serial": int(self.target_block_serial),
+                "target_native_ea": int(self.target_native_ea),
+                "source_dispatcher_region_serials": list(
+                    self.source_dispatcher_region_serials
+                ),
+                "confidence": float(self.confidence),
+            },
+            evidence=("condition_chain_interval_dispatcher",),
+        )
 
 
 def _hex_u64(value: int) -> str:
@@ -400,6 +457,277 @@ def _unique_target_native_ea(
         is not None
     }
     return next(iter(instruction_eas)) if len(instruction_eas) == 1 else None
+
+
+def _interval_route_fact_id(
+    *,
+    dispatcher_entry_native_ea: int,
+    row_lo_inclusive: int,
+    row_hi_exclusive: int,
+    target_native_ea: int,
+) -> str:
+    """Build a stable identity for one native-anchored interval row."""
+    return (
+        f"{CONDITION_CHAIN_INTERVAL_ROUTE_FACT_TYPE}:"
+        f"dispatcher_ea=0x{int(dispatcher_entry_native_ea):x}:"
+        f"lo=0x{int(row_lo_inclusive):08x}:"
+        f"hi=0x{int(row_hi_exclusive):08x}:"
+        f"target_ea=0x{int(target_native_ea):x}"
+    )
+
+
+def collect_condition_chain_interval_route_observations(
+    *,
+    range_evidence: ConditionChainAnalysisResult | None,
+    flow_graph: object | None,
+    dispatcher_entry_serial: int,
+    dispatcher_region_serials: object,
+    maturity: str,
+    phase: str,
+) -> tuple[FactObservation, ...]:
+    """Retain producer-snapshot interval targets with native identities.
+
+    ``IntervalRow.target`` is only a snapshot-local serial.  This helper is
+    deliberately called while the producer graph is live: it rejects targets
+    in the *same* snapshot's complete dispatcher topology, requires a unique
+    target native EA, and serializes both the EA and the source topology proof
+    into the retained observation.  Consumers can then rebind the EA after a
+    maturity change without trusting the recorded serial.
+    """
+    dispatcher = getattr(range_evidence, "dispatcher", None)
+    rows = getattr(dispatcher, "_rows", ()) if dispatcher is not None else ()
+    if not rows:
+        return ()
+    try:
+        source_region = frozenset(
+            int(serial) for serial in (dispatcher_region_serials or ())
+        )
+    except (TypeError, ValueError):
+        return ()
+    source_region = source_region | {int(dispatcher_entry_serial)}
+    dispatcher_entry_native_ea = _unique_target_native_ea(
+        flow_graph,
+        int(dispatcher_entry_serial),
+    )
+    if dispatcher_entry_native_ea is None:
+        return ()
+
+    observations: list[FactObservation] = []
+    for row in rows:
+        lo = _maybe_int(getattr(row, "lo", None))
+        hi = _maybe_int(getattr(row, "hi", None))
+        target = _maybe_int(getattr(row, "target", None))
+        if (
+            lo is None
+            or hi is None
+            or target is None
+            or not 0 <= lo < hi <= (1 << 32)
+            or target < 0
+            or target in source_region
+        ):
+            continue
+        target_native_ea = _unique_target_native_ea(flow_graph, target)
+        if target_native_ea is None:
+            continue
+        fact = ConditionChainIntervalRouteFact(
+            fact_id=_interval_route_fact_id(
+                dispatcher_entry_native_ea=dispatcher_entry_native_ea,
+                row_lo_inclusive=lo,
+                row_hi_exclusive=hi,
+                target_native_ea=target_native_ea,
+            ),
+            dispatcher_entry_serial=int(dispatcher_entry_serial),
+            dispatcher_entry_native_ea=dispatcher_entry_native_ea,
+            row_lo_inclusive=lo,
+            row_hi_exclusive=hi,
+            target_block_serial=target,
+            target_native_ea=target_native_ea,
+            source_dispatcher_region_serials=tuple(sorted(source_region)),
+        )
+        observations.append(fact.to_observation(maturity=maturity, phase=phase))
+    return tuple(observations)
+
+
+def _condition_chain_interval_route_from_observation(
+    observation: object,
+) -> ConditionChainIntervalRouteFact | None:
+    """Parse one retained interval route, rejecting malformed topology proof."""
+    if getattr(observation, "kind", None) != CONDITION_CHAIN_INTERVAL_ROUTE_FACT_TYPE:
+        return None
+    payload = getattr(observation, "payload", None)
+    if not hasattr(payload, "get"):
+        return None
+    fact_id = getattr(observation, "fact_id", None)
+    if not isinstance(fact_id, str) or payload.get("fact_id") != fact_id:
+        return None
+    entry = _maybe_int(payload.get("dispatcher_entry_serial"))
+    entry_native_ea = _normalize_native_ea(
+        payload.get("dispatcher_entry_native_ea")
+    )
+    lo = _maybe_int(payload.get("row_lo_inclusive"))
+    hi = _maybe_int(payload.get("row_hi_exclusive"))
+    target = _maybe_int(payload.get("target_block_serial"))
+    target_native_ea = _normalize_native_ea(payload.get("target_native_ea"))
+    observation_source_ea = _normalize_native_ea(
+        getattr(observation, "source_ea", None)
+    )
+    topology_raw = payload.get("source_dispatcher_region_serials")
+    if not isinstance(topology_raw, (tuple, list, set, frozenset)):
+        return None
+    try:
+        topology = tuple(sorted({_maybe_int(serial) for serial in topology_raw}))
+    except (TypeError, ValueError):
+        return None
+    if any(serial is None for serial in topology):
+        return None
+    topology_int = tuple(int(serial) for serial in topology)
+    if (
+        entry is None
+        or entry_native_ea is None
+        or lo is None
+        or hi is None
+        or target is None
+        or target_native_ea is None
+        or (
+            observation_source_ea is not None
+            and observation_source_ea != entry_native_ea
+        )
+        or not 0 <= lo < hi <= (1 << 32)
+        or target < 0
+        or entry < 0
+        or entry not in topology_int
+        or target in topology_int
+    ):
+        return None
+    try:
+        confidence = float(payload.get("confidence", 1.0))
+        fact = ConditionChainIntervalRouteFact(
+            fact_id=fact_id,
+            dispatcher_entry_serial=entry,
+            dispatcher_entry_native_ea=entry_native_ea,
+            row_lo_inclusive=lo,
+            row_hi_exclusive=hi,
+            target_block_serial=target,
+            target_native_ea=target_native_ea,
+            source_dispatcher_region_serials=topology_int,
+            confidence=confidence,
+        )
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return fact if fact.fact_id == _interval_route_fact_id(
+        dispatcher_entry_native_ea=entry_native_ea,
+        row_lo_inclusive=lo,
+        row_hi_exclusive=hi,
+        target_native_ea=target_native_ea,
+    ) else None
+
+
+def project_condition_chain_interval_route_observations(
+    observations: object,
+) -> tuple[ConditionChainIntervalRouteFact, ...]:
+    """Project retained interval-route observations with conflict rejection."""
+    projected: dict[str, ConditionChainIntervalRouteFact] = {}
+    conflicts: set[str] = set()
+    seen_routes: dict[
+        int, list[tuple[str, ConditionChainIntervalRouteFact]]
+    ] = {}
+    for observation in observations or ():
+        fact = _condition_chain_interval_route_from_observation(observation)
+        if fact is None:
+            continue
+        # The row bounds identify the state partition.  A second native target
+        # for the same partition is contradictory even if its fact ID differs.
+        route_key = (
+            f"0x{fact.dispatcher_entry_native_ea:x}:"
+            f"{fact.row_lo_inclusive}:{fact.row_hi_exclusive}"
+        )
+        overlapping_keys = {
+            existing_key
+            for existing_key, existing in seen_routes.get(
+                fact.dispatcher_entry_native_ea, []
+            )
+            if existing_key != route_key
+            and max(existing.row_lo_inclusive, fact.row_lo_inclusive)
+            < min(existing.row_hi_exclusive, fact.row_hi_exclusive)
+        }
+        if overlapping_keys:
+            conflicts.update(overlapping_keys)
+            conflicts.add(route_key)
+            for existing_key in overlapping_keys:
+                projected.pop(existing_key, None)
+        seen_routes.setdefault(fact.dispatcher_entry_native_ea, []).append(
+            (route_key, fact)
+        )
+        if route_key in conflicts:
+            continue
+        existing = projected.get(route_key)
+        if existing is None:
+            projected[route_key] = fact
+        elif existing.target_native_ea != fact.target_native_ea:
+            conflicts.add(route_key)
+            projected.pop(route_key, None)
+    return tuple(projected.values())
+
+
+def _unique_current_block_for_native_ea(
+    flow_graph: object | None,
+    native_ea: int,
+) -> int | None:
+    """Rebind one retained target EA to exactly one current block serial."""
+    blocks = getattr(flow_graph, "blocks", None)
+    if not hasattr(blocks, "items"):
+        return None
+    matches: set[int] = set()
+    for serial, block in blocks.items():
+        block_native_ea = _normalize_native_ea(
+            getattr(block, "native_start_ea", None)
+        )
+        if block_native_ea == int(native_ea):
+            matches.add(int(serial))
+            continue
+        for instruction in getattr(block, "insn_snapshots", ()) or ():
+            if _normalize_native_ea(getattr(instruction, "native_ea", None)) == int(
+                native_ea
+            ):
+                matches.add(int(serial))
+                break
+    return next(iter(matches)) if len(matches) == 1 else None
+
+
+def _select_retained_interval_route(
+    *,
+    retained_interval_routes: object,
+    state_const: int,
+    dispatcher_entry_serial: int,
+    flow_graph: object | None,
+    dispatcher_topology_serials: frozenset[int],
+) -> tuple[ConditionChainIntervalRouteFact, int] | None:
+    """Select one covering retained route and bind its native target currently."""
+    normalized_state = _normalize_state32(state_const)
+    if normalized_state is None:
+        return None
+    candidates: list[tuple[ConditionChainIntervalRouteFact, int]] = []
+    for route in retained_interval_routes or ():
+        if not isinstance(route, ConditionChainIntervalRouteFact):
+            continue
+        current_entry_serial = _unique_current_block_for_native_ea(
+            flow_graph,
+            route.dispatcher_entry_native_ea,
+        )
+        if current_entry_serial != int(dispatcher_entry_serial):
+            continue
+        if not route.row_lo_inclusive <= normalized_state < route.row_hi_exclusive:
+            continue
+        current_serial = _unique_current_block_for_native_ea(
+            flow_graph,
+            route.target_native_ea,
+        )
+        if current_serial is None or current_serial in dispatcher_topology_serials:
+            continue
+        candidates.append((route, current_serial))
+    if len(candidates) != 1:
+        return None
+    return candidates[0]
 
 
 def _attach_target_native_ea(
@@ -844,13 +1172,16 @@ def resolve_predecessor_dispatcher_target(
     source_instruction_ea: int | None = None,
     flow_graph: object | None = None,
     allow_handler_map_fallback_after_incomplete_route: bool = False,
+    retained_interval_routes: object | None = None,
+    current_dispatcher_region_serials: frozenset[int] = frozenset(),
 ) -> PredecessorDispatcherTargetFact | None:
     """Resolve one predecessor-carried state through exact or interval rows.
 
     ``allow_handler_map_fallback_after_incomplete_route`` is reserved for the
     caller that has already proven the current source-to-entry carrier and DAG
-    context.  It falls through to one unique non-dispatcher handler map entry;
-    it never turns a coarse dispatcher target into a typed handler fact.
+    context.  It falls through to one unique non-dispatcher handler map entry
+    or one retained interval route with a producer-native target identity; it
+    never turns a coarse dispatcher target into a typed handler fact.
     """
 
     normalized_state = _normalize_state32(state_const)
@@ -972,6 +1303,42 @@ def resolve_predecessor_dispatcher_target(
         if fallback_target is None:
             if not allow_handler_map_fallback_after_incomplete_route:
                 return None
+            retained = _select_retained_interval_route(
+                retained_interval_routes=retained_interval_routes,
+                state_const=normalized_state,
+                dispatcher_entry_serial=int(dispatcher_entry_serial),
+                flow_graph=flow_graph,
+                dispatcher_topology_serials=current_dispatcher_region_serials,
+            )
+            if retained is not None:
+                retained_route, current_target_serial = retained
+                return _build_fact(
+                    predecessor_block_serial=predecessor_block_serial,
+                    dispatcher_entry_serial=dispatcher_entry_serial,
+                    state_const=normalized_state,
+                    target_block_serial=current_target_serial,
+                    resolver_kind=CONDITION_CHAIN_INTERVAL_ROUTE_FACT_TYPE,
+                    row_kind=(
+                        "interval_exact"
+                        if retained_route.row_hi_exclusive
+                        - retained_route.row_lo_inclusive
+                        == 1
+                        else "interval_range"
+                    ),
+                    dispatcher_block_serial=None,
+                    compare_block_serial=None,
+                    branch_kind=None,
+                    row_lo_inclusive=retained_route.row_lo_inclusive,
+                    row_hi_exclusive=retained_route.row_hi_exclusive,
+                    source_state_const=source_state_const,
+                    transition_provenance_kind=transition_provenance_kind,
+                    condition_block_serial=condition_block_serial,
+                    state_var_stkoff=state_var_stkoff,
+                    confidence=retained_route.confidence,
+                    source_instruction_ea=source_instruction_ea,
+                    state_var_reg=state_var_reg,
+                    target_native_ea=retained_route.target_native_ea,
+                )
         else:
             return _build_fact(
                 predecessor_block_serial=predecessor_block_serial,
@@ -1111,6 +1478,7 @@ def collect_predecessor_dispatcher_target_facts(
     state_var_stkoff: int | None = None,
     state_var_reg: int | None = None,
     flow_graph: object | None = None,
+    retained_interval_routes: object | None = None,
 ) -> tuple[PredecessorDispatcherTargetFact, ...]:
     """Resolve transition target states into predecessor-target facts."""
 
@@ -1122,6 +1490,12 @@ def collect_predecessor_dispatcher_target_facts(
     # for route resolution below rather than treated as dispatcher serials.
     dispatcher_topology = set(_dispatcher_topology_serials(state_dispatcher_map))
     dispatcher_topology.add(int(dispatcher_entry_serial))
+    dispatcher_topology.update(_condition_chain_region_serials(range_evidence))
+    retained_interval_route_facts = (
+        tuple(retained_interval_routes)
+        if retained_interval_routes is not None
+        else ()
+    )
     dispatcher_identity = _dispatcher_state_identity(state_dispatcher_map)
     supported_identity = select_supported_transition_identity(
         transition_resolutions,
@@ -1268,6 +1642,8 @@ def collect_predecessor_dispatcher_target_facts(
                 allow_handler_map_fallback_after_incomplete_route=(
                     allow_handler_map_fallback_after_incomplete_route
                 ),
+                retained_interval_routes=retained_interval_route_facts,
+                current_dispatcher_region_serials=frozenset(dispatcher_topology),
             )
         except (TypeError, ValueError):
             blocked_resolution_keys.add(resolution_key)
@@ -1514,9 +1890,13 @@ def _maybe_str(value: object | None) -> str | None:
 __all__ = [
     "PREDECESSOR_DISPATCHER_TARGET_FACT_TYPE",
     "PREDECESSOR_DISPATCHER_TARGET_FACTS_ANALYSIS",
+    "CONDITION_CHAIN_INTERVAL_ROUTE_FACT_TYPE",
+    "ConditionChainIntervalRouteFact",
     "PredecessorDispatcherTargetFact",
     "StateIdentity",
+    "collect_condition_chain_interval_route_observations",
     "collect_predecessor_dispatcher_target_facts",
+    "project_condition_chain_interval_route_observations",
     "project_predecessor_dispatcher_target_observations",
     "resolve_current_snapshot_dispatcher_route",
     "resolve_predecessor_dispatcher_target",
