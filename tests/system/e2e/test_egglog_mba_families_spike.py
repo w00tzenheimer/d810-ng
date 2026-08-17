@@ -133,6 +133,13 @@ def _assert_degree_one_success_receipt(metadata: dict[str, object]) -> None:
     )
 
 
+def _force_fresh_saturation(optimizer, monkeypatch) -> None:
+    """Keep this spike focused on Egglog rather than the portfolio fast paths."""
+
+    monkeypatch.setattr(optimizer, "_direct_native_application", lambda **_: None)
+    monkeypatch.setattr(optimizer, "learned_replay_enabled", False)
+
+
 class TestEgglogMbaFamiliesSpike:
     binary_name = _get_default_binary()
 
@@ -169,6 +176,7 @@ class TestEgglogMbaFamiliesSpike:
         self,
         ida_database,
         d810_state,
+        monkeypatch,
         pseudocode_to_string,
         code_comparator,
         capture_stats,
@@ -185,6 +193,7 @@ class TestEgglogMbaFamiliesSpike:
                 for rule in state.current_ins_rules
                 if rule.name == "EgglogOptimizer"
             )
+            _force_fresh_saturation(captured_optimizer, monkeypatch)
             provider_cursor = captured_optimizer.provider_outcome_cursor()
 
         def capture_runtime_state(state) -> None:
