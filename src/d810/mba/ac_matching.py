@@ -85,6 +85,7 @@ class _PatternAdapter:
     candidate_operation: Callable[[object], str | None]
     candidate_children: Callable[[object], tuple[object, ...]]
     candidate_value: Callable[[object], int | None]
+    candidate_is_bindable: Callable[[object], bool]
     candidate_is_terminal: Callable[[object], bool]
     candidate_is_constant: Callable[[object], bool]
     candidate_fingerprint: Callable[[object], str]
@@ -162,6 +163,7 @@ def _iter_ac_operand_matches(
     state: _State,
     bindings: dict[str, tuple[str, object, tuple[int, ...]]],
     adapter: _PatternAdapter,
+    pattern_index: int = 0,
 ) -> Iterator[dict[str, tuple[str, object, tuple[int, ...]]]]:
     if not patterns:
         yield bindings
@@ -176,13 +178,20 @@ def _iter_ac_operand_matches(
         key=lambda item: (adapter.candidate_fingerprint(item[0]), item[1]),
     )
     for candidate, path in ordered_candidates:
+        if pattern_index > 0:
+            state.commuted_branches += 1
         for matched in _iter_matches(
             pattern, candidate, path, state, bindings, adapter
         ):
             remaining = list(candidates)
             remaining.remove((candidate, path))
             yield from _iter_ac_operand_matches(
-                patterns[1:], remaining, state, matched, adapter
+                patterns[1:],
+                remaining,
+                state,
+                matched,
+                adapter,
+                pattern_index + 1,
             )
             if state.stopped is not None:
                 return
@@ -201,6 +210,8 @@ def _iter_matches(
     placeholder = adapter.pattern_placeholder(pattern)
     if placeholder is not None:
         kind, name = placeholder
+        if not adapter.candidate_is_bindable(candidate):
+            return
         if kind == "pattern_const" and not adapter.candidate_is_constant(candidate):
             return
         value = adapter.pattern_literal(pattern)
@@ -362,6 +373,7 @@ def _legacy_adapter() -> _PatternAdapter:
         candidate_children,
         candidate_value,
         lambda candidate: candidate_operation(candidate) is None,
+        lambda candidate: candidate_operation(candidate) is None,
         lambda candidate: candidate_operation(candidate) is None
         and candidate_value(candidate) is not None,
         term_fingerprint,
@@ -407,6 +419,7 @@ def _typed_adapter() -> _PatternAdapter:
         operation,
         children,
         literal,
+        lambda _term: True,
         lambda term: operation(term) is None,
         lambda term: operation(term) is None and literal(term) is not None,
         term_fingerprint,
@@ -546,11 +559,10 @@ def match_canonical_term_pattern(
                 bindings=CanonicalFixedBindings(terms, paths, width),
             )
         )
-    if state.stopped is not None:
-        reason = state.stopped
-        matches = []
-    elif matches:
+    if matches:
         reason = AcMatchStopReason.MATCHED
+    elif state.stopped is not None:
+        reason = state.stopped
     elif state.saw_cardinality_mismatch:
         reason = AcMatchStopReason.CARDINALITY_MISMATCH
     else:

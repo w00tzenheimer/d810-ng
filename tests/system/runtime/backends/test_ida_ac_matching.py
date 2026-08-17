@@ -27,6 +27,7 @@ from d810.mba.certified_catalogue import (  # noqa: E402
     load_structural_matcher_parity_certificate,
 )
 from d810.mba.dsl import Const, Var, Zext  # noqa: E402
+from d810.mba.typed_term import TypedBvTerm  # noqa: E402
 from d810.optimizers.microcode.instructions.pattern_matching.handler import (  # noqa: E402
     PatternOptimizer,
     RulePatternInfo,
@@ -71,6 +72,41 @@ def test_shadow_matcher_resolves_only_original_native_binding_paths() -> None:
     assert report.stop_reason is AcMatchStopReason.MATCHED
     assert report.bindings is not None
     assert report.bindings.candidate_path_by_name == {"x": (1,), "one": (0,)}
+
+
+def test_shadow_matcher_fails_closed_for_synthetic_internal_binding_path() -> None:
+    x = Var("x")
+
+    class Rule:
+        pattern = x
+        replacement = x
+
+    adapter = IDAPatternAdapter(Rule())
+    candidate = TypedBvTerm(
+        "add",
+        32,
+        children=(
+            TypedBvTerm(None, 32, leaf_key=("synthetic", "left")),
+            TypedBvTerm(None, 32, leaf_key=("synthetic", "right")),
+        ),
+    )
+    lowering = SimpleNamespace(
+        term=candidate,
+        raw_term=candidate,
+        native_nodes_by_path={(): object()},
+        raw_native_nodes_by_path={},
+    )
+
+    report = adapter.observe_structural_match(
+        object(), lowering=lowering, lowering_provided=True
+    )
+
+    assert report is not None
+    assert report.stop_reason is AcMatchStopReason.MATCHED
+    metadata = adapter._matcher_metadata()
+    assert metadata is not None
+    assert metadata.stop_reason == "native_path_unavailable"
+    assert adapter._shadow_structural_native_paths is None
 
 
 def test_shadow_reconstruction_uses_the_active_ast_binding_context() -> None:

@@ -105,6 +105,30 @@ def test_nested_cardinality_miss_does_not_abort_an_outer_ac_backtrack() -> None:
     assert set(report.bindings.candidate_path_by_name) == set("abcdefg")
 
 
+def test_legacy_variable_binds_only_terminal_candidates() -> None:
+    x = Var("x")
+
+    report = match_ac_pattern(
+        x,
+        _node("add", _leaf("left"), _leaf("right")),
+        comparison_budget=8,
+    )
+
+    assert report.stop_reason is AcMatchStopReason.MISS
+    assert report.bindings is None
+
+
+def test_nary_ac_alternatives_preserve_legacy_commuted_branch_count() -> None:
+    a, b = Var("a"), Var("b")
+    candidate = _node("add", _leaf("a"), _node("add", _leaf("b"), _leaf("a")))
+
+    report = match_ac_pattern((a + b) + a, candidate, comparison_budget=64)
+
+    assert report.stop_reason is AcMatchStopReason.MATCHED
+    assert report.bindings is not None
+    assert report.commuted_branches == 2
+
+
 def test_repeated_variables_and_constants_are_rigid() -> None:
     x = Var("x")
     report = match_ac_pattern(
@@ -172,3 +196,30 @@ def test_canonical_matcher_is_exposed_by_the_shared_ac_core() -> None:
 
     assert report.stop_reason is AcMatchStopReason.MATCHED
     assert report.matches
+
+
+def test_canonical_match_keeps_first_branch_when_budget_closes_after_match() -> None:
+    from d810.mba.ac_matching import match_canonical_term_pattern
+    from d810.mba.canonical_pattern import compile_canonical_pattern
+
+    rule = SimpleNamespace(
+        pattern=Var("x") + Var("y"),
+        replacement=Var("x"),
+        source_name="BudgetBoundaryRule",
+        aliases=(),
+        family="add",
+        proof_widths=(32,),
+        guarded=False,
+        constraints=(),
+    )
+    compiled = compile_canonical_pattern(rule, width=32, declaration_index=0)
+
+    report = match_canonical_term_pattern(
+        compiled,
+        _node("add", _leaf("x"), _leaf("y")),
+        comparison_budget=4,
+    )
+
+    assert report.comparisons == 4
+    assert report.matches
+    assert report.stop_reason is AcMatchStopReason.MATCHED

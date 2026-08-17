@@ -58,3 +58,61 @@ requested worktree and separate logs.
 
 The implementation and tests changed only the Task 4 source/test files plus
 this report. No unrelated changes were reverted or staged.
+
+## Follow-up repair evidence
+
+The review follow-up restored four legacy contracts without changing candidate
+selection:
+
+- Legacy DSL variables now bind only terminal candidates; canonical typed
+  templates retain an explicit adapter policy for internal grouping terms.
+- Canonical matches found before the comparison cap are retained and report
+  `MATCHED`; the cap remains observable through the comparison count and the
+  ordered catalogue boundary.
+- Zero or multiple exact raw/native occurrences fail closed as
+  `native_path_unavailable` matcher metadata and never claim structural native
+  paths.
+- N-ary AC alternative visits increment `commuted_branches` with the legacy
+  count (`2` in the regression case).
+
+### Follow-up RED
+
+- `test_legacy_variable_binds_only_terminal_candidates` failed because the
+  matcher returned `MATCHED` with root path `()` for `Var("x")` against an
+  internal `add` term.
+- `test_nary_ac_alternatives_preserve_legacy_commuted_branch_count` failed with
+  `commuted_branches == 0` instead of `2`.
+- `test_canonical_match_keeps_first_branch_when_budget_closes_after_match`
+  failed before the repair because the shared matcher cleared the first match
+  when the later branch hit the cap.
+- Docker RED command:
+
+  ```text
+  D810_REPO_ROOT=/Users/mahmoud/src/idapro/d810 ./tools/scripts/run_system_tests_docker.sh test -w domain-lifted-semantic-simplification -o task4-followup-red-python.log -- tests/system/runtime/backends/test_ida_ac_matching.py::test_shadow_matcher_fails_closed_for_synthetic_internal_binding_path -q
+  ```
+
+  Result before the repair: `1 failed`; metadata was `matched` instead of
+  `native_path_unavailable`.
+
+### Follow-up GREEN
+
+- Focused repair tests: `4 passed in 35.96s`.
+- Required portable Task 4 command: `31 passed in 79.02s (0:01:19)`.
+- Required Python Docker log `.tmp/canonical-shadow-python.log`:
+  `38 passed, 118 warnings in 0.08s`.
+- Required Cython Docker log `.tmp/canonical-shadow-cython.log`:
+  `38 passed, 118 warnings in 0.10s`.
+- Synthetic native-path regression after repair: `1 passed` in the Python
+  Docker runtime.
+- Final native-path guard rerun after the last adapter-state refinement:
+  `1 passed` in `.tmp/task4-followup-final-native-path.log`.
+
+### Follow-up static gates
+
+- Ruff on all changed source/test files: passed (`All checks passed!`).
+- `git diff --check`: passed.
+- `sg scan --config sgconfig.yml --report-style short`: passed, 14 contracts
+  kept and 0 broken.
+- `PYTHONPATH=src lint-imports --config .importlinter`: passed.
+- A follow-up `graphify update .` was attempted from the worktree but failed
+  with `[Errno 1] Operation not permitted`; no graph artifacts were staged.

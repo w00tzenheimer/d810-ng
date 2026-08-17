@@ -452,6 +452,7 @@ class IDAPatternAdapter:
         self._shadow_lowering = None
         self._shadow_source_ast = None
         self._shadow_structural_native_paths: dict[str, tuple[int, ...]] | None = None
+        self._shadow_native_path_unavailable = False
         self._legacy_binding_paths: (
             dict[str, frozenset[tuple[int, ...]]] | None
         ) = None
@@ -488,6 +489,7 @@ class IDAPatternAdapter:
         self._shadow_lowering = None
         self._shadow_source_ast = None
         self._shadow_structural_native_paths = None
+        self._shadow_native_path_unavailable = False
         self._legacy_binding_paths = None
         self._legacy_match_observed = False
         self._shadow_parity_recorded = False
@@ -743,6 +745,7 @@ class IDAPatternAdapter:
         lowerer's original native objects through exact raw-path provenance.
         """
 
+        self._shadow_native_path_unavailable = False
         try:
             from d810.mba.ac_matching import match_canonical_term_pattern
             from d810.mba.canonical_pattern import (
@@ -819,18 +822,26 @@ class IDAPatternAdapter:
                         ),
                     )
             structural_native_paths: dict[str, tuple[int, ...]] | None = None
+            native_path_unavailable = False
             if report.matches:
                 binding = report.bindings
                 if binding is None:
+                    self._shadow_lowering = lowering
+                    self._shadow_source_ast = test_ast
+                    self._shadow_match_report = report
+                    self._shadow_structural_native_paths = None
+                    self._shadow_native_path_unavailable = True
                     return report
                 required_names = set(
                     getattr(template, "fixed_constant_values", {})
                 )
                 if not required_names.issubset(binding.candidate_paths):
+                    native_path_unavailable = True
                     self._shadow_lowering = lowering
                     self._shadow_source_ast = test_ast
                     self._shadow_match_report = report
                     self._shadow_structural_native_paths = None
+                    self._shadow_native_path_unavailable = True
                     return report
                 raw_paths_by_identity: dict[int, list[tuple[int, ...]]] = {}
                 for raw_path, native in lowering.raw_native_nodes_by_path.items():
@@ -839,10 +850,12 @@ class IDAPatternAdapter:
                 for name, canonical_path in binding.candidate_paths.items():
                     native = lowering.native_nodes_by_path.get(canonical_path)
                     if native is None:
+                        native_path_unavailable = True
                         mapped_paths = {}
                         break
                     raw_paths = raw_paths_by_identity.get(id(native), ())
                     if len(raw_paths) != 1:
+                        native_path_unavailable = True
                         mapped_paths = {}
                         break
                     mapped_paths[name] = raw_paths[0]
@@ -852,6 +865,7 @@ class IDAPatternAdapter:
             self._shadow_source_ast = test_ast
             self._shadow_match_report = report
             self._shadow_structural_native_paths = structural_native_paths
+            self._shadow_native_path_unavailable = native_path_unavailable
             return report
         except Exception:
             # Shadow telemetry must never widen the legacy callback failure set.
@@ -865,7 +879,11 @@ class IDAPatternAdapter:
             comparisons=report.comparisons,
             lazy_swaps=report.commuted_branches,
             flattened_arity=report.flattened_nodes,
-            stop_reason=report.stop_reason.value,
+            stop_reason=(
+                "native_path_unavailable"
+                if getattr(self, "_shadow_native_path_unavailable", False)
+                else report.stop_reason.value
+            ),
         )
 
     def record_legacy_match_bindings(
