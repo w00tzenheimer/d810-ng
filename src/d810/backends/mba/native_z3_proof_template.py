@@ -150,40 +150,118 @@ class NativeZ3ProofTemplate:
 
         if not isinstance(validation, TemplateValidation):
             return False
-        if validation.width != self.width:
+        if type(validation.width) is not int or validation.width != self.width:
             return False
-        if not isinstance(validation.original, TypedBvTerm) or not isinstance(
-            validation.replacement, TypedBvTerm
-        ):
+        if type(validation.original) is not TypedBvTerm or type(
+            validation.replacement
+        ) is not TypedBvTerm:
             return False
         try:
             original_width = validation.original.width
             replacement_width = validation.replacement.width
         except (AttributeError, TypeError):
             return False
-        if original_width != self.width or replacement_width != self.width:
+        if (
+            type(original_width) is not int
+            or type(replacement_width) is not int
+            or original_width != self.width
+            or replacement_width != self.width
+        ):
+            return False
+        if not _is_exact_validated_term(validation.original, width=self.width):
+            return False
+        if not _is_exact_validated_term(validation.replacement, width=self.width):
             return False
         try:
             import z3
-
-            variables: dict[tuple[object, ...], object] = {}
-            # ``validate_terms`` has already matched these exact concrete
-            # bindings against both immutable shapes.  Rebinding the shapes
-            # here adds a second Python AC walk and was slower than the legacy
-            # AST path.  Lower the validated fixed-width terms directly into
-            # this fresh solver instead.
-            original = _lower_validated_term(
-                validation.original, variables=variables, z3=z3
-            )
-            replacement = _lower_validated_term(
-                validation.replacement, variables=variables, z3=z3
-            )
-            solver = z3.Solver()
-            solver.set(timeout=50)
-            solver.add(original != replacement)
-            return solver.check() == z3.unsat
-        except (ImportError, ValueError):
+        except ImportError:
             return False
+
+        variables: dict[tuple[object, ...], object] = {}
+        # validate_terms has already matched these exact concrete bindings
+        # against both immutable shapes.  Rebinding the shapes here adds a
+        # second Python AC walk and was slower than the legacy AST path.
+        # Lower the validated fixed-width terms directly into this fresh
+        # solver instead.
+        original = _lower_validated_term(
+            validation.original, variables=variables, z3=z3
+        )
+        replacement = _lower_validated_term(
+            validation.replacement, variables=variables, z3=z3
+        )
+        solver = z3.Solver()
+        solver.set(timeout=50)
+        solver.add(original != replacement)
+        return solver.check() == z3.unsat
+
+
+def _is_exact_validated_term(
+    term: object,
+    *,
+    width: int,
+    _active: set[int] | None = None,
+) -> bool:
+    """Validate forged-proof input without importing or invoking Z3."""
+
+    if type(term) is not TypedBvTerm:
+        return False
+    active = set() if _active is None else _active
+    marker = id(term)
+    if marker in active:
+        return False
+    active.add(marker)
+    try:
+        try:
+            operation = term.operation
+            term_width = term.width
+            value = term.value
+            leaf_key = term.leaf_key
+            children = term.children
+            shift_count = term.shift_count
+        except (AttributeError, TypeError):
+            return False
+        if type(term_width) is not int or term_width != width or term_width <= 0:
+            return False
+        if type(children) is not tuple:
+            return False
+        if operation is None:
+            if children or shift_count is not None:
+                return False
+            if (value is None) == (leaf_key is None):
+                return False
+            if value is not None:
+                return type(value) is int and 0 <= value < (1 << term_width)
+            if type(leaf_key) is not tuple or not leaf_key:
+                return False
+            try:
+                hash(leaf_key)
+            except (TypeError, ValueError):
+                return False
+            return True
+        if type(operation) is not str or operation not in SUPPORTED_OPERATIONS:
+            return False
+        if value is not None or leaf_key is not None:
+            return False
+        expected_arity = (
+            1
+            if operation in {"bnot", "neg"} | FIXED_SHIFT_OPERATIONS
+            else 2
+        )
+        if len(children) != expected_arity:
+            return False
+        if operation in FIXED_SHIFT_OPERATIONS:
+            if type(shift_count) is not int or not 0 <= shift_count < term_width:
+                return False
+            if operation in {"rol", "ror"} and term_width not in _TEMPLATE_WIDTHS:
+                return False
+        elif shift_count is not None:
+            return False
+        return all(
+            _is_exact_validated_term(child, width=term_width, _active=active)
+            for child in children
+        )
+    finally:
+        active.remove(marker)
 
 
 def _lower_validated_term(
@@ -191,7 +269,7 @@ def _lower_validated_term(
 ):
     """Lower one already template-validated fixed-width term to Z3."""
 
-    if not isinstance(term, TypedBvTerm):
+    if type(term) is not TypedBvTerm:
         raise ValueError("validated term must be a TypedBvTerm")
     try:
         operation = term.operation
@@ -209,17 +287,19 @@ def _lower_validated_term(
     if operation is None:
         if children:
             raise ValueError("validated terminal cannot have children")
+        if shift_count is not None:
+            raise ValueError("validated terminal cannot have shift_count")
         if (value is None) == (leaf_key is None):
             raise ValueError("validated terminal must have one value or leaf key")
         if value is not None:
-            if type(value) is not int:
+            if type(value) is not int or not 0 <= value < (1 << width):
                 raise ValueError("validated constant must be an integer")
             return z3.BitVecVal(value, width)
         if type(leaf_key) is not tuple or not leaf_key:
             raise ValueError("missing validated leaf key")
         try:
             hash(leaf_key)
-        except TypeError as exc:
+        except (TypeError, ValueError) as exc:
             raise ValueError("validated leaf key must be hashable") from exc
         return variables.setdefault(
             leaf_key,
@@ -227,6 +307,8 @@ def _lower_validated_term(
         )
     if type(operation) is not str or operation not in SUPPORTED_OPERATIONS:
         raise ValueError("unsupported validated operation")
+    if value is not None or leaf_key is not None:
+        raise ValueError("validated operation cannot carry terminal state")
     expected_arity = (
         1
         if operation in {"bnot", "neg"} | FIXED_SHIFT_OPERATIONS
@@ -234,11 +316,15 @@ def _lower_validated_term(
     )
     if len(children) != expected_arity:
         raise ValueError("validated operation has malformed arity")
-    if any(
-        not isinstance(child, TypedBvTerm) or child.width != width
-        for child in children
-    ):
-        raise ValueError("validated operation has malformed children")
+    for child in children:
+        if type(child) is not TypedBvTerm:
+            raise ValueError("validated operation has malformed children")
+        try:
+            child_width = child.width
+        except (AttributeError, TypeError) as exc:
+            raise ValueError("validated operation has malformed children") from exc
+        if child_width != width:
+            raise ValueError("validated operation has malformed children")
     if operation in FIXED_SHIFT_OPERATIONS:
         if type(shift_count) is not int or not 0 <= shift_count < width:
             raise ValueError("validated fixed shift has malformed shift_count")

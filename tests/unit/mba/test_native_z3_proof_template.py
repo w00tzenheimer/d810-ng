@@ -248,3 +248,62 @@ def test_proof_template_rejects_non_typed_validation_roots_without_raising(
 
     assert template.prove_validation(validation) is False
     assert template.prove_validation(object()) is False  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("forged_field", "forged_value"),
+    [
+        ("shift_count", 1),
+        ("value", 1),
+        ("leaf_key", ("forged",)),
+    ],
+)
+def test_proof_template_rejects_forged_forbidden_term_state_before_solver(
+    monkeypatch,
+    forged_field: str,
+    forged_value: object,
+) -> None:
+    import z3
+
+    template = NativeZ3ProofTemplate.from_compiled_rule(
+        _rule("Add_HackersDelightRule_2"), width=32
+    )
+    assert template is not None
+    if forged_field == "shift_count":
+        forged = TypedBvTerm(None, 32, value=1)
+    else:
+        x = TypedBvTerm(None, 32, leaf_key=("mop", "x"))
+        y = TypedBvTerm(None, 32, leaf_key=("mop", "y"))
+        forged = _term("add", x, y)
+    object.__setattr__(forged, forged_field, forged_value)
+    validation = TemplateValidation(
+        width=32,
+        original=forged,
+        replacement=forged,
+        leaf_keys=(),
+    )
+
+    def forbidden_solver() -> None:
+        raise AssertionError("forged term state must be rejected before solving")
+
+    monkeypatch.setattr(z3, "Solver", forbidden_solver)
+    assert template.prove_validation(validation) is False
+
+
+def test_proof_template_does_not_swallow_solver_value_error(monkeypatch) -> None:
+    import z3
+
+    template = NativeZ3ProofTemplate.from_compiled_rule(
+        _rule("Add_HackersDelightRule_2"), width=32
+    )
+    assert template is not None
+    original, replacement = _valid_terms()
+    validation = template.validate_terms(original, replacement)
+    assert validation is not None
+
+    def solver_value_error() -> None:
+        raise ValueError("unexpected solver failure")
+
+    monkeypatch.setattr(z3, "Solver", solver_value_error)
+    with pytest.raises(ValueError, match="unexpected solver failure"):
+        template.prove_validation(validation)
