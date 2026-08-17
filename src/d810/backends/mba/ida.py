@@ -1616,9 +1616,20 @@ class IDAPatternAdapter:
         Returns:
             A new minsn_t instruction, or None if replacement failed.
         """
-        repl_pat = self.REPLACEMENT_PATTERN
-        if not repl_pat:
+        replacement_template = self.REPLACEMENT_PATTERN
+        if not replacement_template:
             logger.debug(f"No replacement pattern for rule {self.name}")
+            return None
+        try:
+            # Replacement AST leaves hold the mops copied from the last
+            # candidate.  Never mutate the cached template across attempts.
+            repl_pat = replacement_template.clone()
+        except (AttributeError, TypeError, ValueError, RuntimeError) as exc:
+            logger.debug(
+                "Failed to clone replacement pattern for rule %s: %s",
+                self.name,
+                exc,
+            )
             return None
 
         candidate_for_update = candidate
@@ -1637,9 +1648,19 @@ class IDAPatternAdapter:
                 )
                 return None
 
-        is_ok = repl_pat.update_leafs_mop(candidate_for_update)
+        try:
+            is_ok = repl_pat.update_leafs_mop(candidate_for_update)
+        except (AttributeError, TypeError, ValueError, RuntimeError) as exc:
+            logger.debug(
+                "Failed to update replacement mops for rule %s: %s",
+                self.name,
+                exc,
+            )
+            return None
 
-        if not is_ok:
+        if not is_ok and not self._replacement_only_literals_are_resolved(
+            repl_pat, candidate_for_update
+        ):
             logger.debug(f"Failed to update leaf mops for rule {self.name}")
             return None
 
@@ -1647,9 +1668,18 @@ class IDAPatternAdapter:
             logger.debug(f"No EA for candidate in rule {self.name}")
             return None
 
-        if not self._materialize_replacement_constants(
-            repl_pat, candidate_for_update
-        ):
+        try:
+            constants_ok = self._materialize_replacement_constants(
+                repl_pat, candidate_for_update
+            )
+        except (AttributeError, TypeError, ValueError, OverflowError, RuntimeError) as exc:
+            logger.debug(
+                "Failed to materialize replacement constants for rule %s: %s",
+                self.name,
+                exc,
+            )
+            return None
+        if not constants_ok:
             logger.debug(
                 "Failed to materialize replacement constants for rule %s",
                 self.name,
@@ -1660,22 +1690,58 @@ class IDAPatternAdapter:
             new_ins = repl_pat.create_minsn(
                 candidate_for_update.ea, candidate_for_update.dst_mop
             )
-        except AstEvaluationException as exc:
+        except (
+            AstEvaluationException,
+            AttributeError,
+            TypeError,
+            ValueError,
+            RuntimeError,
+        ) as exc:
             logger.debug(
-                "Replacement creation failed for rule %s at 0x%x: %s",
+                "Replacement creation failed for rule %s at %r: %s",
                 self.name,
-                candidate.ea,
+                getattr(candidate_for_update, "ea", None),
                 exc,
             )
             return None
         return new_ins
 
+    @staticmethod
+    def _replacement_only_literals_are_resolved(repl_pat, candidate) -> bool:
+        """Allow only declared concrete constants to lack a match binding.
+
+        The Python AST emitter treats a concrete ``Const(name, value)`` as
+        self-contained, while the Cython ``AstConstant`` updater reports it as
+        missing when the name is absent from the pattern bindings.  The DSL
+        value is already carried by ``expected_value`` on that replacement
+        leaf, so accept that narrow case without inventing a native binding.
+        Symbolic/computed constants still require a binding and fail closed.
+        """
+
+        try:
+            candidate_leafs = getattr(candidate, "leafs_by_name", {}) or {}
+            if not isinstance(candidate_leafs, Mapping):
+                return False
+            leaves = repl_pat.get_leaf_list()
+        except (AttributeError, TypeError, ValueError, RuntimeError):
+            return False
+        for leaf in leaves:
+            name = getattr(leaf, "name", None)
+            if name in candidate_leafs:
+                continue
+            if isinstance(leaf, AstConstantProtocol) and type(
+                getattr(leaf, "expected_value", None)
+            ) is int:
+                continue
+            return False
+        return True
+
     def _materialize_replacement_constants(self, repl_pat, candidate) -> bool:
         """Ensure computed AstConstant leaves have concrete mops before emission."""
         try:
             leafs = repl_pat.get_leaf_list()
-        except Exception:
-            return True
+        except (AttributeError, TypeError, ValueError, RuntimeError):
+            return False
 
         candidate_leafs = getattr(candidate, "leafs_by_name", {}) or {}
         dst_mop = getattr(candidate, "dst_mop", None)

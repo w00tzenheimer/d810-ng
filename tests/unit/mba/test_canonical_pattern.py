@@ -9,7 +9,7 @@ import pytest
 from d810.backends.mba.egglog_add_rule_compiler import (
     compile_mba_rule_catalogue,
 )
-from d810.mba.dsl import Const, Var, Zext
+from d810.mba.dsl import Const, SymbolicExpression, Var, Zext
 from d810.mba.typed_term import TypedBvTerm, term_fingerprint
 
 
@@ -282,6 +282,23 @@ def test_symbolic_fixed_shift_form_is_explicitly_unsupported():
 
     with pytest.raises(CanonicalPatternUnsupported, match="fixed-count"):
         lower_symbolic_template(Var("x") << Const("shift", 1), width=32)
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    (
+        SymbolicExpression(operation="bnot", left=Var("x"), right=Var("y")),
+        SymbolicExpression(operation="add", left=Var("x"), right=None),
+    ),
+)
+def test_malformed_symbolic_tree_is_not_legacy_unsupported(malformed):
+    from d810.mba.canonical_pattern import (
+        CanonicalPatternMalformed,
+        lower_symbolic_template,
+    )
+
+    with pytest.raises(CanonicalPatternMalformed):
+        lower_symbolic_template(malformed, width=32)
 
 
 def test_declaration_order_survives_canonical_alias_collapse():

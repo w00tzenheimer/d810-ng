@@ -19,6 +19,7 @@ from types import (
 )
 from d810.core.typing import Any, TypeAlias
 from d810.mba.canonical_pattern import (
+    CanonicalPatternMalformed,
     CanonicalPatternUnsupported,
     TRANSIENT_RULE_STATE_FIELDS,
     canonical_template_payload,
@@ -843,6 +844,13 @@ def build_certified_catalogue_snapshot(
                 # they do not make the supported canonical snapshot opaque.
                 canonical_statuses[(rule_id, width)] = "unsupported"
                 width_statuses.append({"width": width, "status": "unsupported"})
+                continue
+            except CanonicalPatternMalformed:
+                # Malformed/opaque DSL cannot authorize a structural snapshot;
+                # preserve the legacy rule identity while rejecting activation.
+                semantic_state.structural_authorizable = False
+                canonical_statuses[(rule_id, width)] = "opaque"
+                width_statuses.append({"width": width, "status": "opaque"})
                 continue
             except (TypeError, ValueError):
                 # A malformed or opaque rule semantic cannot authorize a

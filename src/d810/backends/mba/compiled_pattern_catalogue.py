@@ -25,6 +25,7 @@ from d810.mba.canonical_pattern import (
     CanonicalCompiledPattern,
     CanonicalFixedBindings,
     CanonicalPatternMatchReport,
+    CanonicalPatternMalformed,
     CanonicalPatternUnsupported,
     compile_canonical_pattern,
     evaluate_frozen_constraints,
@@ -166,7 +167,7 @@ class CompiledPatternCatalogue:
                         width=width,
                         declaration_index=index,
                     )
-                except CanonicalPatternUnsupported:
+                except (CanonicalPatternMalformed, CanonicalPatternUnsupported):
                     # Unsupported DSL semantics remain available to the POD
                     # matcher and therefore stay legacy-eligible.
                     continue

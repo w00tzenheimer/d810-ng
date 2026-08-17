@@ -54,6 +54,10 @@ class CanonicalPatternUnsupported(ValueError):
     """A DSL expression that is intentionally left on the legacy path."""
 
 
+class CanonicalPatternMalformed(ValueError):
+    """A malformed or opaque DSL expression that cannot authorize matching."""
+
+
 @dataclass(frozen=True, slots=True)
 class FrozenConstraintExpression:
     """A portable constraint expression captured during catalogue freezing."""
@@ -283,7 +287,7 @@ def resolve_canonical_match_paths(
 
 def _expression_or_raise(expression: object) -> SymbolicExpressionProtocol:
     if not isinstance(expression, SymbolicExpressionProtocol):
-        raise CanonicalPatternUnsupported(
+        raise CanonicalPatternMalformed(
             f"expression is not a supported symbolic DSL node: {type(expression).__name__}"
         )
     return expression
@@ -308,14 +312,14 @@ def lower_symbolic_template(
     operation = node.operation
     if operation is None:
         if node.left is not None or node.right is not None:
-            raise CanonicalPatternUnsupported("malformed symbolic leaf")
+            raise CanonicalPatternMalformed("malformed symbolic leaf")
         if node.value is not None:
             if type(node.value) is not int:
-                raise CanonicalPatternUnsupported("symbolic literal is not an integer")
+                raise CanonicalPatternMalformed("symbolic literal is not an integer")
             return TypedBvTerm(None, width, value=node.value), {}
         name = node.name
         if type(name) is not str or not name:
-            raise CanonicalPatternUnsupported("symbolic placeholder has no name")
+            raise CanonicalPatternMalformed("symbolic placeholder has no name")
         kind = "pattern_const" if bool(getattr(node, "is_pattern_constant", False)) else "pattern_var"
         key: PatternLeafKey = (kind, name)
         return TypedBvTerm(None, width, leaf_key=key), {key: kind}
@@ -323,25 +327,25 @@ def lower_symbolic_template(
     if operation not in SUPPORTED_OPERATIONS:
         raise CanonicalPatternUnsupported(f"unsupported canonical DSL operation: {operation}")
     if node.left is None:
-        raise CanonicalPatternUnsupported(f"malformed {operation} expression")
+        raise CanonicalPatternMalformed(f"malformed {operation} expression")
     if operation in FIXED_SHIFT_OPERATIONS:
         raise CanonicalPatternUnsupported(
             f"symbolic {operation} requires a fixed-count term"
         )
     if operation in {"bnot", "neg"}:
         if node.right is not None:
-            raise CanonicalPatternUnsupported(f"malformed unary {operation} expression")
+            raise CanonicalPatternMalformed(f"malformed unary {operation} expression")
         left, kinds = lower_symbolic_template(node.left, width=width)
         return TypedBvTerm(operation, width, children=(left,)), kinds
     if node.right is None:
-        raise CanonicalPatternUnsupported(f"malformed binary {operation} expression")
+        raise CanonicalPatternMalformed(f"malformed binary {operation} expression")
     left, left_kinds = lower_symbolic_template(node.left, width=width)
     right, right_kinds = lower_symbolic_template(node.right, width=width)
     kinds = dict(left_kinds)
     for key, kind in right_kinds.items():
         existing = kinds.get(key)
         if existing is not None and existing != kind:
-            raise CanonicalPatternUnsupported("placeholder kind changed for one name")
+            raise CanonicalPatternMalformed("placeholder kind changed for one name")
         kinds[key] = kind
     return TypedBvTerm(operation, width, children=(left, right)), kinds
 
@@ -363,13 +367,13 @@ def _fixed_constant_values(
             ):
                 previous = values.get(node.name)
                 if previous is not None and previous != node.value:
-                    raise CanonicalPatternUnsupported(
+                    raise CanonicalPatternMalformed(
                         "one pattern constant name has multiple fixed values"
                     )
                 values[node.name] = node.value
             return
         if node.left is None:
-            raise CanonicalPatternUnsupported("malformed symbolic expression")
+            raise CanonicalPatternMalformed("malformed symbolic expression")
         visit(node.left)
         if node.right is not None:
             visit(node.right)
@@ -407,31 +411,31 @@ def _freeze_constraint_expression(expression: object) -> FrozenConstraintExpress
     operation = node.operation
     if operation is None:
         if node.left is not None or node.right is not None:
-            raise CanonicalPatternUnsupported("malformed symbolic constraint leaf")
+            raise CanonicalPatternMalformed("malformed symbolic constraint leaf")
         if node.value is not None:
             if type(node.value) is not int:
-                raise CanonicalPatternUnsupported(
+                raise CanonicalPatternMalformed(
                     "symbolic constraint literal is not an integer"
                 )
             return FrozenConstraintExpression(value=node.value)
         if type(node.name) is not str or not node.name:
-            raise CanonicalPatternUnsupported("symbolic constraint placeholder has no name")
+            raise CanonicalPatternMalformed("symbolic constraint placeholder has no name")
         return FrozenConstraintExpression(name=node.name)
     if operation not in SUPPORTED_OPERATIONS:
         raise CanonicalPatternUnsupported(
             f"unsupported canonical constraint operation: {operation}"
         )
     if node.left is None:
-        raise CanonicalPatternUnsupported(f"malformed constraint {operation} expression")
+        raise CanonicalPatternMalformed(f"malformed constraint {operation} expression")
     left = _freeze_constraint_expression(node.left)
     if operation in {"bnot", "neg"}:
         if node.right is not None:
-            raise CanonicalPatternUnsupported(
+            raise CanonicalPatternMalformed(
                 f"malformed unary constraint {operation} expression"
             )
         return FrozenConstraintExpression(operation=operation, children=(left,))
     if node.right is None:
-        raise CanonicalPatternUnsupported(f"malformed binary constraint {operation} expression")
+        raise CanonicalPatternMalformed(f"malformed binary constraint {operation} expression")
     right = _freeze_constraint_expression(node.right)
     return FrozenConstraintExpression(operation=operation, children=(left, right))
 
@@ -441,13 +445,13 @@ def _freeze_constraints(rule: object) -> tuple[FrozenConstraint, ...]:
     try:
         values = tuple(constraints)
     except TypeError as exc:
-        raise CanonicalPatternUnsupported("rule constraints are not iterable") from exc
+        raise CanonicalPatternMalformed("rule constraints are not iterable") from exc
     frozen: list[FrozenConstraint] = []
     for constraint in values:
         left = getattr(constraint, "left", None)
         right = getattr(constraint, "right", None)
         if left is None or right is None:
-            raise CanonicalPatternUnsupported(
+            raise CanonicalPatternMalformed(
                 "rule constraint is not a declarative equality"
             )
         frozen.append(
@@ -730,7 +734,7 @@ def compile_canonical_pattern(
     pattern_expression = _rule_value(rule, "pattern")
     replacement_expression = _rule_value(rule, "replacement")
     if pattern_expression is None or replacement_expression is None:
-        raise CanonicalPatternUnsupported("rule has no symbolic pattern/replacement")
+        raise CanonicalPatternMalformed("rule has no symbolic pattern/replacement")
     pattern_raw, pattern_kinds = lower_symbolic_template(
         pattern_expression, width=width
     )
@@ -742,7 +746,7 @@ def compile_canonical_pattern(
     for key, kind in replacement_kinds.items():
         existing = terminal_kinds.get(key)
         if existing is not None and existing != kind:
-            raise CanonicalPatternUnsupported("placeholder kind changed for one name")
+            raise CanonicalPatternMalformed("placeholder kind changed for one name")
         terminal_kinds[key] = kind
     pattern_term = canonicalize_mba_term(pattern_raw).canonical_term
     replacement_template = canonicalize_mba_term(replacement_raw).canonical_term
@@ -940,6 +944,7 @@ __all__ = [
     "CanonicalPatternMatch",
     "CanonicalPatternMatchReport",
     "CanonicalPatternMatchResult",
+    "CanonicalPatternMalformed",
     "CanonicalPatternUnsupported",
     "FrozenConstraint",
     "FrozenConstraintExpression",

@@ -17,7 +17,7 @@ from d810.mba.certified_catalogue import (
     load_structural_matcher_parity_certificate,
     make_structural_matcher_parity_certificate,
 )
-from d810.mba.dsl import Const, Var, Zext
+from d810.mba.dsl import Const, SymbolicExpression, Var, Zext
 from d810.mba.semantic_canonicalization import CANONICALIZER_SCHEMA_VERSION
 
 
@@ -574,6 +574,24 @@ def test_snapshot_authorizes_supported_pattern_with_unsupported_replacement() ->
 
     assert snapshot.canonical_status_by_rule_width[(0, 32)] == "unsupported"
     assert snapshot.structural_authorizable is True
+
+
+@pytest.mark.parametrize(
+    "malformed",
+    (
+        SymbolicExpression(operation="bnot", left=Var("x"), right=Var("y")),
+        SymbolicExpression(operation="add", left=Var("x"), right=None),
+    ),
+)
+def test_snapshot_rejects_malformed_symbolic_tree(malformed) -> None:
+    rule = _SemanticRule("malformed-symbolic-tree", malformed, Var("x"))
+
+    snapshot = build_certified_catalogue_snapshot(
+        (rule,), compiler_version="malformed-symbolic-tree-v1", widths=(32,)
+    )
+
+    assert snapshot.canonical_status_by_rule_width[(0, 32)] == "opaque"
+    assert snapshot.structural_authorizable is False
 
 
 def test_snapshot_fingerprint_binds_proof_widths_for_canonical_ineligible_rule() -> None:

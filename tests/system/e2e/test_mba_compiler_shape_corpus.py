@@ -623,47 +623,53 @@ class TestCompilerShapeCatalogueNative:
     ) -> None:
         """The explicit nomut opt-in must still apply the catalogue rule."""
 
+        from d810.core.settings import get_settings, reset_settings
+
         monkeypatch.setenv("D810_NOMUT_MATCHING", "1")
         monkeypatch.delenv("D810_LEGACY_STORAGE", raising=False)
         monkeypatch.setenv("D810_LEGACY_DSL_PERMUTATIONS", "1")
         monkeypatch.setenv("D810_SHADOW_DSL_MATCHING", "1")
-        from d810.core.settings import reset_settings
-
         reset_settings()
 
-        @contextlib.contextmanager
-        def nomut_state():
-            with d810_state() as state:
-                state.load_project(
-                    state.project_manager.index("mba_compiler_shape_catalogue.json")
-                )
-                assert state.current_ins_rules
-                instruction_optimizers = state.manager.instruction_optimizer
-                pattern_optimizers = tuple(
-                    optimizer
-                    for optimizer in instruction_optimizers.instruction_optimizers
-                    if hasattr(optimizer, "_use_nomut_matching")
-                )
-                assert pattern_optimizers
-                assert all(
-                    optimizer._use_nomut_matching
-                    and not optimizer._use_legacy_storage
-                    for optimizer in pattern_optimizers
-                )
-                yield state
+        try:
+            @contextlib.contextmanager
+            def nomut_state():
+                with d810_state() as state:
+                    state.load_project(
+                        state.project_manager.index("mba_compiler_shape_catalogue.json")
+                    )
+                    assert state.current_ins_rules
+                    instruction_optimizers = state.manager.instruction_optimizer
+                    pattern_optimizers = tuple(
+                        optimizer
+                        for optimizer in instruction_optimizers.instruction_optimizers
+                        if hasattr(optimizer, "_use_nomut_matching")
+                    )
+                    assert pattern_optimizers
+                    assert all(
+                        optimizer._use_nomut_matching
+                        and not optimizer._use_legacy_storage
+                        for optimizer in pattern_optimizers
+                    )
+                    yield state
 
-        run_deobfuscation_test(
-            DeobfuscationCase(
-                function="mba_shape_catalogue_01",
-                description="catalogue rule fires through explicit nomut matching",
-                project="mba_compiler_shape_catalogue.json",
-                must_change=True,
-                required_rules=["Add_HackersDelightRule_2"],
-                forbidden_rules=[],
-            ),
-            d810_state=nomut_state,
-            pseudocode_to_string=pseudocode_to_string,
-        )
+            run_deobfuscation_test(
+                DeobfuscationCase(
+                    function="mba_shape_catalogue_01",
+                    description="catalogue rule fires through explicit nomut matching",
+                    project="mba_compiler_shape_catalogue.json",
+                    must_change=True,
+                    required_rules=["Add_HackersDelightRule_2"],
+                    forbidden_rules=[],
+                ),
+                d810_state=nomut_state,
+                pseudocode_to_string=pseudocode_to_string,
+            )
+        finally:
+            monkeypatch.undo()
+            reset_settings()
+
+        assert get_settings().nomut_matching is False
 
     def test_native_shadow_evidence_certificate_and_activation(
         self,

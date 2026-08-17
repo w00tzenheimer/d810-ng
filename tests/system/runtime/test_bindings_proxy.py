@@ -274,3 +274,146 @@ class TestBindingsProxyRealIntegration:
         replacement = adapter.get_replacement(proxy)
 
         assert replacement is not None
+
+    @pytest.mark.ida_required
+    def test_proxy_get_replacement_materializes_replacement_only_literal(
+        self, ida_database
+    ):
+        """A concrete replacement literal need not be a pattern binding."""
+
+        ida_hexrays = pytest.importorskip("ida_hexrays")
+        import idautils
+
+        from d810.backends.mba.ida import IDAPatternAdapter
+        from d810.hexrays.expr import ast as ast_dispatcher
+        from d810.mba.dsl import Const, Var
+        from d810.optimizers.microcode.instructions.pattern_matching.engine import (
+            MatchBindings,
+            match_pattern_nomut,
+        )
+
+        x = Var("x")
+
+        class Rule:
+            name = "ReplacementOnlyLiteral"
+            pattern = x + Const("two", 2)
+            replacement = x ^ Const("one", 1)
+
+        adapter = IDAPatternAdapter(Rule())
+        source = ast_dispatcher.AstNode(
+            ida_hexrays.m_add,
+            ast_dispatcher.AstLeaf("x"),
+            ast_dispatcher.AstConstant("two", 2, 4),
+        )
+        source.left.mop = MopSnapshot(t=ida_hexrays.mop_r, size=4, reg=1)
+        source.right.mop = MopSnapshot(t=ida_hexrays.mop_n, size=4, value=2)
+        source.dest_size = 4
+        source.ea = next(iter(idautils.Functions()))
+
+        bindings = MatchBindings()
+        assert match_pattern_nomut(adapter.pattern_candidates[0], source, bindings)
+        replacement = adapter.get_replacement(BindingsProxy(bindings))
+
+        assert replacement is not None
+        assert replacement.opcode == ida_hexrays.m_xor
+        assert replacement.r.t == ida_hexrays.mop_n
+        assert replacement.r.nnn.value == 1
+
+    @pytest.mark.ida_required
+    def test_proxy_replacement_clone_discards_failed_partial_attempt(
+        self, ida_database
+    ):
+        """A failed attempt must not retain its binding mops in the cache."""
+
+        ida_hexrays = pytest.importorskip("ida_hexrays")
+        import idautils
+
+        from d810.backends.mba.ida import IDAPatternAdapter
+        from d810.hexrays.expr import ast as ast_dispatcher
+        from d810.mba.dsl import Const, Var
+        from d810.optimizers.microcode.instructions.pattern_matching.engine import (
+            MatchBindings,
+            match_pattern_nomut,
+        )
+
+        x = Var("x")
+
+        class Rule:
+            name = "ReplacementCloneIsolation"
+            pattern = x + Const("two", 2)
+            replacement = x ^ Const("one", 1)
+
+        adapter = IDAPatternAdapter(Rule())
+        function_ea = next(iter(idautils.Functions()))
+
+        def make_source(register: int):
+            source = ast_dispatcher.AstNode(
+                ida_hexrays.m_add,
+                ast_dispatcher.AstLeaf("x"),
+                ast_dispatcher.AstConstant("two", 2, 4),
+            )
+            source.left.mop = MopSnapshot(
+                t=ida_hexrays.mop_r, size=4, reg=register
+            )
+            source.right.mop = MopSnapshot(t=ida_hexrays.mop_n, size=4, value=2)
+            source.dest_size = 4
+            source.ea = function_ea
+            return source
+
+        first = make_source(1)
+        first_bindings = MatchBindings()
+        assert match_pattern_nomut(adapter.pattern_candidates[0], first, first_bindings)
+        failed = BindingsProxy(first_bindings)
+        failed.ea = 0
+        assert adapter.get_replacement(failed) is None
+        assert all(leaf.mop is None for leaf in adapter.REPLACEMENT_PATTERN.get_leaf_list())
+
+        second = make_source(2)
+        second_bindings = MatchBindings()
+        assert match_pattern_nomut(
+            adapter.pattern_candidates[0], second, second_bindings
+        )
+        replacement = adapter.get_replacement(BindingsProxy(second_bindings))
+
+        assert replacement is not None
+        assert replacement.l.t == ida_hexrays.mop_r
+        assert MopSnapshot.from_mop(replacement.l).reg == 2
+
+    @pytest.mark.ida_required
+    def test_proxy_replacement_unresolved_computed_constant_fails_closed(
+        self, ida_database
+    ):
+        """Replacement-only computed constants remain fail-closed."""
+
+        ida_hexrays = pytest.importorskip("ida_hexrays")
+        import idautils
+
+        from d810.backends.mba.ida import IDAPatternAdapter
+        from d810.hexrays.expr import ast as ast_dispatcher
+        from d810.mba.dsl import Const, Var
+        from d810.optimizers.microcode.instructions.pattern_matching.engine import (
+            MatchBindings,
+            match_pattern_nomut,
+        )
+
+        x = Var("x")
+
+        class Rule:
+            name = "UnresolvedReplacementConstant"
+            pattern = x + Const("two", 2)
+            replacement = x ^ Const("computed")
+
+        adapter = IDAPatternAdapter(Rule())
+        source = ast_dispatcher.AstNode(
+            ida_hexrays.m_add,
+            ast_dispatcher.AstLeaf("x"),
+            ast_dispatcher.AstConstant("two", 2, 4),
+        )
+        source.left.mop = MopSnapshot(t=ida_hexrays.mop_r, size=4, reg=1)
+        source.right.mop = MopSnapshot(t=ida_hexrays.mop_n, size=4, value=2)
+        source.dest_size = 4
+        source.ea = next(iter(idautils.Functions()))
+        bindings = MatchBindings()
+        assert match_pattern_nomut(adapter.pattern_candidates[0], source, bindings)
+
+        assert adapter.get_replacement(BindingsProxy(bindings)) is None
