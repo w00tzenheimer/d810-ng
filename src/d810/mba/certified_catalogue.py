@@ -50,6 +50,12 @@ def _is_exact_zero(value: object) -> bool:
     return type(value) is int and value == 0
 
 
+def _is_exact_canonicalizer_schema(value: object) -> bool:
+    """Accept only the exact integer canonicalizer schema version."""
+
+    return type(value) is int and value == CANONICALIZER_SCHEMA_VERSION
+
+
 @dataclass(frozen=True)
 class CertifiedCatalogueSnapshot:
     fingerprint: str
@@ -73,7 +79,7 @@ class CertifiedCatalogueSnapshot:
             "rule_ids_by_root_shape",
             MappingProxyType(dict(self.rule_ids_by_root_shape)),
         )
-        if self.canonicalizer_schema_version != CANONICALIZER_SCHEMA_VERSION:
+        if not _is_exact_canonicalizer_schema(self.canonicalizer_schema_version):
             raise ValueError("unsupported canonicalizer schema version")
         object.__setattr__(
             self,
@@ -163,14 +169,20 @@ class StructuralMatcherParityCertificate:
             and self.runtime_mode == runtime_mode
             and self.corpus_digest == expectation.corpus_digest
             and self.toolchain_digest == expectation.toolchain_digest
+            and type(self.legacy_observation_count) is int
+            and type(expectation.legacy_observation_count) is int
             and self.legacy_observation_count == expectation.legacy_observation_count
             and expectation.observation_count is not None
+            and type(expectation.observation_count) is int
             and self.observation_count == expectation.observation_count
             and type(self.observation_count) is int
             and self.observation_count >= self.legacy_observation_count
+            and _is_exact_canonicalizer_schema(self.canonicalizer_schema_version)
+            and _is_exact_canonicalizer_schema(
+                snapshot.canonicalizer_schema_version
+            )
             and self.canonicalizer_schema_version
             == snapshot.canonicalizer_schema_version
-            == CANONICALIZER_SCHEMA_VERSION
             and _is_exact_zero(self.legacy_rule_mismatches)
             and _is_exact_zero(self.legacy_binding_mismatches)
             and _is_exact_zero(self.legacy_binding_unknown)
@@ -193,7 +205,10 @@ def load_structural_matcher_parity_certificate(
     raw = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise ValueError("structural parity certificate must be an object")
-    if raw.get("schema_version") != _PARITY_CERTIFICATE_SCHEMA_VERSION:
+    if (
+        type(raw.get("schema_version")) is not int
+        or raw.get("schema_version") != _PARITY_CERTIFICATE_SCHEMA_VERSION
+    ):
         raise ValueError("structural parity certificate schema_version must be 3")
     fingerprint = raw.get("snapshot_fingerprint")
     if not _is_sha256_digest(fingerprint):
@@ -244,7 +259,7 @@ def load_structural_matcher_parity_certificate(
             "structural parity certificate has invalid new_safe_coverage_proved"
         )
     canonicalizer_version = raw.get("canonicalizer_schema_version")
-    if canonicalizer_version != CANONICALIZER_SCHEMA_VERSION:
+    if not _is_exact_canonicalizer_schema(canonicalizer_version):
         raise ValueError(
             "structural parity certificate canonicalizer_schema_version must be 1"
         )
@@ -335,6 +350,10 @@ def make_structural_matcher_parity_certificate(
         raise ValueError("structural parity certificate has invalid corpus_digest")
     if not _is_sha256_digest(toolchain_digest):
         raise ValueError("structural parity certificate has invalid toolchain_digest")
+    if not _is_exact_canonicalizer_schema(snapshot.canonicalizer_schema_version):
+        raise ValueError(
+            "structural parity certificate has invalid canonicalizer schema"
+        )
     if type(ledger.legacy_match_count) is not int or ledger.legacy_match_count <= 0:
         raise ValueError(
             "structural parity certificate needs positive legacy_match_count"

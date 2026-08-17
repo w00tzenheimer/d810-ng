@@ -61,7 +61,10 @@ def _evidence_snapshot(value: object) -> CertifiedCatalogueSnapshot:
             "parity evidence snapshot requires canonicalizer_schema_version"
         )
     canonicalizer_version = value["canonicalizer_schema_version"]
-    if canonicalizer_version != CANONICALIZER_SCHEMA_VERSION:
+    if (
+        type(canonicalizer_version) is not int
+        or canonicalizer_version != CANONICALIZER_SCHEMA_VERSION
+    ):
         raise ValueError("parity evidence snapshot has invalid canonicalizer schema")
     return CertifiedCatalogueSnapshot(
         fingerprint=fingerprint,

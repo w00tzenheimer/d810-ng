@@ -100,6 +100,20 @@ def test_build_certificate_rejects_missing_canonicalizer_version(tmp_path: Path)
         build_certificate(evidence, manifest=manifest, toolchain=toolchain)
 
 
+def test_build_certificate_rejects_boolean_canonicalizer_version(
+    tmp_path: Path,
+) -> None:
+    manifest = tmp_path / "manifest.json"
+    toolchain = tmp_path / "toolchain.json"
+    manifest.write_text("{}", encoding="utf-8")
+    toolchain.write_text("{}", encoding="utf-8")
+    evidence = _evidence()
+    evidence["snapshot"]["canonicalizer_schema_version"] = True
+
+    with pytest.raises(ValueError):
+        build_certificate(evidence, manifest=manifest, toolchain=toolchain)
+
+
 def test_build_certificate_rejects_non_object_toolchain(tmp_path: Path) -> None:
     manifest = tmp_path / "manifest.json"
     toolchain = tmp_path / "toolchain.json"

@@ -335,6 +335,43 @@ def test_structural_authorization_fails_closed_per_bound_input(
     assert authorized is expected
 
 
+@pytest.mark.parametrize(
+    "field",
+    (
+        "canonicalizer_schema_version",
+        "legacy_observation_count",
+        "observation_count",
+        "new_safe_coverage_proved",
+    ),
+)
+def test_parity_certificate_loader_rejects_boolean_integer_fields(
+    tmp_path: Path, field: str
+) -> None:
+    case = _generated_authorization_case(tmp_path)
+    payload = dict(case.certificate_payload)
+    payload[field] = True
+    path = tmp_path / f"boolean-{field}.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        load_structural_matcher_parity_certificate(path)
+
+
+def test_authorization_rejects_boolean_schema_and_count_dataclass_inputs(
+    tmp_path: Path,
+) -> None:
+    case = _generated_authorization_case(tmp_path)
+
+    assert not replace(
+        case.certificate, canonicalizer_schema_version=True
+    ).authorizes(case.snapshot, case.runtime_mode, case.expectation)
+    assert not replace(
+        case.certificate, legacy_observation_count=True
+    ).authorizes(case.snapshot, case.runtime_mode, case.expectation)
+    with pytest.raises(ValueError, match="canonicalizer schema version"):
+        replace(case.snapshot, canonicalizer_schema_version=True)
+
+
 def test_snapshot_is_memoized_immutable_and_preserves_declaration_order() -> None:
     x, y = Var("x"), Var("y")
     first = _Rule("later_alphabetically", x + y)

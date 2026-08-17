@@ -15,6 +15,7 @@ import itertools
 import json
 import os
 import time
+from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -71,6 +72,7 @@ _COMMUTATIVE_OPS = {"add", "mul", "and", "or", "xor"}
 _STRUCTURAL_DSL_OPERATIONS = frozenset(
     {"add", "sub", "mul", "and", "or", "xor", "bnot", "neg"}
 )
+_STRUCTURAL_PROOF_WIDTHS = (8, 16, 32, 64)
 
 
 def _supports_structural_dsl_pattern(expr: object) -> bool:
@@ -100,6 +102,31 @@ def _supports_structural_dsl_pattern(expr: object) -> bool:
             active_nodes.remove(identity)
 
     return visit(expr)
+
+
+def _snapshot_rule_widths_are_structurally_eligible(
+    snapshot: object, rule_id: object, rule: object
+) -> bool:
+    """Require one complete canonical template set before starving legacy storage."""
+
+    if type(rule_id) is not int:
+        return False
+    statuses = getattr(snapshot, "canonical_status_by_rule_width", None)
+    if not isinstance(statuses, Mapping):
+        return False
+    widths = getattr(rule, "proof_widths", _STRUCTURAL_PROOF_WIDTHS)
+    try:
+        widths = tuple(widths)
+    except TypeError:
+        return False
+    if not widths:
+        widths = _STRUCTURAL_PROOF_WIDTHS
+    return all(
+        type(width) is int
+        and width > 0
+        and statuses.get((rule_id, width)) == "eligible"
+        for width in widths
+    )
 
 
 def _generate_commutative_permutations(
@@ -622,6 +649,11 @@ class IDAPatternAdapter:
         )
         structural_matching_enabled = (
             _supports_structural_dsl_pattern(getattr(self.rule, "pattern", None))
+            and _snapshot_rule_widths_are_structurally_eligible(
+                snapshot,
+                self._certified_catalogue_rule_id,
+                self.rule,
+            )
             and os.environ.get("D810_STRUCTURAL_DSL_MATCHING", "0") == "1"
             and os.environ.get("D810_LEGACY_DSL_PERMUTATIONS", "0") != "1"
             and self._structural_parity_authorized

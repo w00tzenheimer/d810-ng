@@ -25,9 +25,13 @@ from d810.mba.certified_catalogue import (  # noqa: E402
     ShadowMatcherParityLedger,
     StructuralMatcherParityExpectation,
     load_structural_matcher_parity_certificate,
+    make_structural_matcher_parity_certificate,
 )
 from d810.mba.dsl import Const, Var, Zext  # noqa: E402
 from d810.mba.typed_term import TypedBvTerm  # noqa: E402
+from tools.scripts.mba_structural_matcher_certificate import (  # noqa: E402
+    build_certificate,
+)
 from d810.optimizers.microcode.instructions.pattern_matching.handler import (  # noqa: E402
     PatternOptimizer,
     RulePatternInfo,
@@ -324,14 +328,32 @@ def test_structural_opt_in_requires_matching_persisted_parity_certificate(
     class CertifiedRule:
         name = "CertifiedAdd"
         pattern = x + Const("one", 1)
+        replacement = x
 
     assert ida_backend._supports_structural_dsl_pattern(CertifiedRule.pattern)
     monkeypatch.setenv("D810_STRUCTURAL_DSL_MATCHING", "1")
     monkeypatch.delenv("D810_LEGACY_DSL_PERMUTATIONS", raising=False)
     runtime_mode = get_engine_info()["backend"]
+    manifest_path = tmp_path / "controlled-native-corpus.json"
+    manifest_path.write_text('{"cases":["controlled"]}\n', encoding="utf-8")
+    toolchain_document = {"backend": runtime_mode, "ida": "9.4"}
+    toolchain_path = tmp_path / "controlled-toolchain.json"
+    toolchain_path.write_text(
+        json.dumps(toolchain_document, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    corpus_digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    toolchain_digest = hashlib.sha256(
+        json.dumps(
+            toolchain_document,
+            allow_nan=False,
+            ensure_ascii=True,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
     expectation = StructuralMatcherParityExpectation(
-        corpus_digest=_parity_digest("controlled-native-corpus"),
-        toolchain_digest=_parity_digest(f"ida-9.4-{runtime_mode}"),
+        corpus_digest=corpus_digest,
+        toolchain_digest=toolchain_digest,
         legacy_observation_count=1,
         observation_count=1,
     )
@@ -345,29 +367,52 @@ def test_structural_opt_in_requires_matching_persisted_parity_certificate(
     probe = IDAPatternAdapter(CertifiedRule())
     snapshot, _ = attach_selected_certified_catalogue_snapshot((probe,))
     certificate_path = tmp_path / "structural-parity.json"
-    certificate_path.write_text(
-        json.dumps(
-            {
-                "schema_version": 3,
-                "snapshot_fingerprint": "0" * 64,
-                "canonicalizer_schema_version": 1,
-                "runtime_mode": runtime_mode,
-                "corpus_digest": expectation.corpus_digest,
-                "toolchain_digest": expectation.toolchain_digest,
-                "legacy_observation_count": 1,
+    generated_payload = build_certificate(
+        {
+            "snapshot": {
+                "fingerprint": snapshot.fingerprint,
+                "structural_authorizable": snapshot.structural_authorizable,
+                "canonicalizer_schema_version": snapshot.canonicalizer_schema_version,
+            },
+            "ledger": {
                 "observation_count": 1,
+                "legacy_match_count": 1,
                 "legacy_rule_mismatches": 0,
                 "legacy_binding_mismatches": 0,
                 "legacy_binding_unknown": 0,
+                "new_safe_coverage_pending": 0,
+                "new_safe_coverage_proved": 0,
                 "unsafe_mutations": 0,
                 "unproved_structural_replacements": 0,
-            }
-        ),
+            },
+            "runtime_mode": runtime_mode,
+        },
+        manifest=manifest_path,
+        toolchain=toolchain_path,
+    )
+    missing_pending_payload = dict(generated_payload)
+    missing_pending_payload.pop("new_safe_coverage_pending")
+    certificate_path.write_text(
+        json.dumps(missing_pending_payload),
         encoding="utf-8",
     )
     with pytest.raises(ValueError, match="new_safe_coverage_pending=0"):
         load_structural_matcher_parity_certificate(certificate_path)
 
+    invalid_certificate = IDAPatternAdapter(CertifiedRule())
+    attach_selected_certified_catalogue_snapshot(
+        (invalid_certificate,),
+        parity_certificate_path=certificate_path,
+        parity_expectation=expectation,
+        runtime_mode=runtime_mode,
+    )
+    assert invalid_certificate.uses_structural_matching is False
+
+    wrong_snapshot_payload = dict(generated_payload)
+    wrong_snapshot_payload["snapshot_fingerprint"] = "0" * 64
+    certificate_path.write_text(
+        json.dumps(wrong_snapshot_payload), encoding="utf-8"
+    )
     wrong_snapshot = IDAPatternAdapter(CertifiedRule())
     attach_selected_certified_catalogue_snapshot(
         (wrong_snapshot,),
@@ -378,26 +423,10 @@ def test_structural_opt_in_requires_matching_persisted_parity_certificate(
     assert wrong_snapshot.uses_structural_matching is False
 
     other_runtime_mode = "cython" if runtime_mode == "python" else "python"
+    wrong_runtime_payload = dict(generated_payload)
+    wrong_runtime_payload["runtime_mode"] = other_runtime_mode
     certificate_path.write_text(
-        json.dumps(
-            {
-                "schema_version": 3,
-                "snapshot_fingerprint": snapshot.fingerprint,
-                "canonicalizer_schema_version": 1,
-                "runtime_mode": other_runtime_mode,
-                "corpus_digest": expectation.corpus_digest,
-                "toolchain_digest": expectation.toolchain_digest,
-                "legacy_observation_count": 1,
-                "observation_count": 1,
-                "legacy_rule_mismatches": 0,
-                "legacy_binding_mismatches": 0,
-                "legacy_binding_unknown": 0,
-                "new_safe_coverage_pending": 0,
-                "new_safe_coverage_proved": 0,
-                "unsafe_mutations": 0,
-                "unproved_structural_replacements": 0,
-            }
-        ),
+        json.dumps(wrong_runtime_payload),
         encoding="utf-8",
     )
     wrong_runtime = IDAPatternAdapter(CertifiedRule())
@@ -409,28 +438,7 @@ def test_structural_opt_in_requires_matching_persisted_parity_certificate(
     )
     assert wrong_runtime.uses_structural_matching is False
 
-    certificate_path.write_text(
-        json.dumps(
-            {
-                "schema_version": 3,
-                "snapshot_fingerprint": snapshot.fingerprint,
-                "canonicalizer_schema_version": 1,
-                "runtime_mode": runtime_mode,
-                "corpus_digest": expectation.corpus_digest,
-                "toolchain_digest": expectation.toolchain_digest,
-                "legacy_observation_count": 1,
-                "observation_count": 1,
-                "legacy_rule_mismatches": 0,
-                "legacy_binding_mismatches": 0,
-                "legacy_binding_unknown": 0,
-                "new_safe_coverage_pending": 0,
-                "new_safe_coverage_proved": 0,
-                "unsafe_mutations": 0,
-                "unproved_structural_replacements": 0,
-            }
-        ),
-        encoding="utf-8",
-    )
+    certificate_path.write_text(json.dumps(generated_payload), encoding="utf-8")
 
     certificate = load_structural_matcher_parity_certificate(certificate_path)
     assert certificate.authorizes(snapshot, runtime_mode, expectation)
@@ -603,6 +611,89 @@ def test_selected_unsupported_dsl_rules_keep_legacy_dispatch_by_default(
         allowed_rule_names=None,
         scheduled_rule_names=None,
         source_label="legacy-unsupported",
+    )
+
+    assert outcome is not None
+    assert calls == [(registered, candidate)]
+
+
+def test_supported_pattern_with_unsupported_replacement_keeps_legacy_dispatch(
+    monkeypatch, tmp_path
+) -> None:
+    """A valid certificate must not starve a rule lacking a structural template."""
+
+    x = Var("x")
+
+    class UnsupportedReplacementRule:
+        name = "SupportedPatternUnsupportedReplacement"
+        pattern = x + Const("one", 1)
+        replacement = x << Const("shift", 1)
+
+    monkeypatch.setenv("D810_STRUCTURAL_DSL_MATCHING", "1")
+    monkeypatch.delenv("D810_LEGACY_DSL_PERMUTATIONS", raising=False)
+    probe = IDAPatternAdapter(UnsupportedReplacementRule())
+    snapshot, _ = attach_selected_certified_catalogue_snapshot((probe,))
+    runtime_mode = get_engine_info()["backend"]
+    corpus_digest = _parity_digest("unsupported-replacement-corpus")
+    toolchain_digest = _parity_digest(f"ida-9.4-{runtime_mode}")
+    payload = make_structural_matcher_parity_certificate(
+        snapshot=snapshot,
+        ledger=ShadowMatcherParityLedger(observation_count=1, legacy_match_count=1),
+        runtime_mode=runtime_mode,
+        corpus_digest=corpus_digest,
+        toolchain_digest=toolchain_digest,
+    )
+    certificate_path = tmp_path / "unsupported-replacement.certificate.json"
+    certificate_path.write_text(json.dumps(payload), encoding="utf-8")
+    expectation = StructuralMatcherParityExpectation(
+        corpus_digest=corpus_digest,
+        toolchain_digest=toolchain_digest,
+        legacy_observation_count=1,
+        observation_count=1,
+    )
+
+    attach_selected_certified_catalogue_snapshot(
+        (probe,),
+        parity_certificate_path=certificate_path,
+        parity_expectation=expectation,
+        runtime_mode=runtime_mode,
+    )
+
+    assert probe._structural_parity_authorized is True
+    assert probe.uses_structural_matching is False
+    assert len(probe.pattern_candidates) == 2
+
+    optimizer = PatternOptimizer(maturities=[7], stats=None, log_dir=None)
+    assert optimizer._add_rule_internal(probe)
+    optimizer.cur_maturity = 7
+
+    class Instruction:
+        ea = 0
+
+        @staticmethod
+        def _print():
+            return "legacy-unsupported-replacement"
+
+    calls: list[object] = []
+    monkeypatch.setattr(
+        probe,
+        "check_pattern_and_replace",
+        lambda registered, candidate: calls.append((registered, candidate))
+        or Instruction(),
+    )
+    registered = probe.pattern_candidates[0]
+    optimizer._get_candidates = lambda _candidate: [
+        RulePatternInfo(probe, registered)
+    ]
+
+    candidate = object()
+    outcome = optimizer._try_matches(
+        None,
+        Instruction(),
+        candidate,
+        allowed_rule_names=None,
+        scheduled_rule_names=None,
+        source_label="legacy-unsupported-replacement",
     )
 
     assert outcome is not None
