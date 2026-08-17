@@ -7,6 +7,7 @@ import json
 import hashlib
 import os
 import re
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -62,7 +63,9 @@ def _write_legacy(path: Path) -> Path:
     return path
 
 
-def _run_cli(*arguments: str) -> subprocess.CompletedProcess[str]:
+def _run_cli(
+    *arguments: str, timeout: float = 10
+) -> subprocess.CompletedProcess[str]:
     environment = os.environ.copy()
     environment["PYTHONPATH"] = os.pathsep.join(
         (str(REPO_ROOT / "src"), str(REPO_ROOT), environment.get("PYTHONPATH", ""))
@@ -74,6 +77,7 @@ def _run_cli(*arguments: str) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         check=False,
+        timeout=timeout,
     )
 
 # Keep this historical data local to the test.  The routing module is removed
@@ -638,15 +642,12 @@ def test_cli_check_reports_every_legacy_file_in_stable_order(tmp_path: Path) -> 
     assert result.returncode == 1
     assert result.stdout == ""
     lines = [line for line in result.stderr.splitlines() if line]
-    assert [line.split(":", 1)[0] for line in lines] == [
-        str(tmp_path / "a.json"),
-        str(tmp_path / "b.json"),
+    assert lines == [
+        f"{tmp_path / 'a.json'}: legacy project requires migration; migrate with: "
+        f"python tools/migrations/migrate_project_config_v2.py {tmp_path / 'a.json'} --in-place",
+        f"{tmp_path / 'b.json'}: legacy project requires migration; migrate with: "
+        f"python tools/migrations/migrate_project_config_v2.py {tmp_path / 'b.json'} --in-place",
     ]
-    for name in ("a.json", "b.json"):
-        assert (
-            f"python tools/migrations/migrate_project_config_v2.py "
-            f"{tmp_path / name} --in-place"
-        ) in result.stderr
     assert not list(tmp_path.glob(".*.tmp"))
 
 
@@ -706,3 +707,166 @@ def test_cli_rejects_directory_without_check_and_output_for_directory(
     assert "directory input requires --check" in no_check.stderr
     assert with_output.returncode == 2
     assert "--output cannot be used with directory input" in with_output.stderr
+
+
+def test_cli_output_publish_is_atomic_no_clobber_when_creator_races(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    source = _write_legacy(tmp_path / "project.json")
+    destination = tmp_path / "migrated.json"
+    real_link = migration_cli.os.link
+
+    def create_destination_then_publish(
+        staged: Path, target: Path, **kwargs: object
+    ) -> None:
+        target.write_text("creator-owned\n", encoding="utf-8")
+        real_link(staged, target, **kwargs)
+
+    monkeypatch.setattr(migration_cli.os, "link", create_destination_then_publish)
+
+    status = migration_cli.main([str(source), "--output", str(destination)])
+    captured = capsys.readouterr()
+
+    assert status == 1
+    assert captured.out == ""
+    assert captured.err == f"error: {destination}: destination already exists\n"
+    assert destination.read_text(encoding="utf-8") == "creator-owned\n"
+    assert not list(tmp_path.glob(f".{destination.name}.*.tmp"))
+
+
+def test_cli_output_refuses_dangling_destination_symlink(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    source = _write_legacy(tmp_path / "project.json")
+    destination = tmp_path / "migrated.json"
+    missing_target = tmp_path / "not-created.json"
+    destination.symlink_to(missing_target)
+
+    status = migration_cli.main([str(source), "--output", str(destination)])
+    captured = capsys.readouterr()
+
+    assert status == 1
+    assert captured.out == ""
+    assert captured.err == f"error: {destination}: destination already exists\n"
+    assert destination.is_symlink()
+    assert not missing_target.exists()
+    assert not list(tmp_path.glob(f".{destination.name}.*.tmp"))
+
+
+def test_cli_public_in_place_replace_failure_is_controlled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source = _write_legacy(tmp_path / "project.json")
+    original = source.read_bytes()
+
+    def fail_replace(_temporary: Path, _destination: Path) -> None:
+        raise OSError("injected replace failure")
+
+    monkeypatch.setattr(project_persistence.os, "replace", fail_replace)
+
+    status = migration_cli.main([str(source), "--in-place"])
+    captured = capsys.readouterr()
+
+    assert status == 1
+    assert captured.out == ""
+    assert captured.err == (
+        f"error: Could not atomically write project configuration {source}\n"
+    )
+    assert "Traceback" not in captured.err
+    assert source.read_bytes() == original
+    assert not list(tmp_path.glob(f".{source.name}.*.tmp"))
+
+
+def test_cli_rejects_invalid_utf8_without_traceback(tmp_path: Path) -> None:
+    source = tmp_path / "invalid.json"
+    source.write_bytes(b"{\xff\n")
+
+    result = _run_cli(str(source))
+
+    assert result.returncode == 1
+    assert "invalid UTF-8" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert not list(tmp_path.glob(f".{source.name}.*.tmp"))
+
+
+def test_cli_rejects_symlink_input_without_opening_target(tmp_path: Path) -> None:
+    target = _write_legacy(tmp_path / "target.json")
+    source = tmp_path / "project.json"
+    source.symlink_to(target)
+
+    result = _run_cli(str(source))
+
+    assert result.returncode == 2
+    assert "symlink" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_cli_rejects_dangling_symlink_input(tmp_path: Path) -> None:
+    source = tmp_path / "project.json"
+    source.symlink_to(tmp_path / "missing.json")
+
+    result = _run_cli(str(source))
+
+    assert result.returncode == 2
+    assert "symlink" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO inputs are POSIX-only")
+def test_cli_rejects_fifo_input_without_blocking(tmp_path: Path) -> None:
+    source = tmp_path / "project.json"
+    os.mkfifo(source)
+
+    result = _run_cli(str(source), timeout=2)
+
+    assert result.returncode == 2
+    assert "regular file" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_cli_check_reports_unreadable_directory_even_when_privileged(
+    tmp_path: Path,
+) -> None:
+    directory = tmp_path / "unreadable"
+    directory.mkdir()
+    directory.chmod(0)
+    try:
+        result = _run_cli(str(directory), "--check")
+    finally:
+        directory.chmod(stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+
+    assert result.returncode == 1
+    assert "read/search permission bits" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO entries are POSIX-only")
+def test_cli_check_reports_special_json_entries_instead_of_skipping(
+    tmp_path: Path,
+) -> None:
+    special = tmp_path / "special.json"
+    os.mkfifo(special)
+
+    result = _run_cli(str(tmp_path), "--check", timeout=2)
+
+    assert result.returncode == 1
+    assert (
+        f"{special}: special/non-regular JSON directory entry; "
+        "migration command is not applicable"
+    ) in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_cli_check_rejects_directory_symlink(tmp_path: Path) -> None:
+    target = tmp_path / "projects"
+    target.mkdir()
+    directory = tmp_path / "projects-link"
+    directory.symlink_to(target, target_is_directory=True)
+
+    result = _run_cli(str(directory), "--check")
+
+    assert result.returncode == 2
+    assert "symlink" in result.stderr
+    assert "Traceback" not in result.stderr
