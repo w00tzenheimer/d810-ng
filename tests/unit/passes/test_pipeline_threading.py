@@ -757,7 +757,7 @@ def test_native_bound_pipeline_keeps_entry_and_later_routes_with_carrier_drift()
     ]
 
 
-def test_native_bound_adapter_rejects_conflicting_typed_prior_targets():
+def test_native_bound_adapter_accepts_target_serial_drift_for_same_native_identity():
     class _Index:
         def rebind_native_ea(self, ea):
             serial = {
@@ -782,6 +782,49 @@ def test_native_bound_adapter_rejects_conflicting_typed_prior_targets():
         fact,
         fact_id="predecessor:route-b",
         target_block_serial=100,
+    )
+
+    routes = state_machine_module.bind_native_bound_transition_routes_for_current_mba(
+        (fact, conflicting),
+        current_block_identity_index=_Index(),
+        graph=SimpleNamespace(blocks={7: object(), 42: object()}),
+        dispatcher=SimpleNamespace(lookup=lambda state: 7),
+        dispatcher_region_serials=frozenset({2, 3}),
+        state_var_stkoff=52,
+        state_var_reg=None,
+    )
+
+    assert len(routes) == 1
+    assert routes[0].target_handler_serial == 7
+
+
+def test_native_bound_adapter_rejects_conflicting_typed_target_native_identities():
+    class _Index:
+        def rebind_native_ea(self, ea):
+            serial = {
+                0x7FF855576BA0: 42,
+                0x7FF855576BB1: 7,
+                0x7FF855576BB2: 7,
+            }[int(ea)]
+            return SimpleNamespace(block=SimpleNamespace(serial=serial))
+
+    fact = PredecessorDispatcherTargetFact(
+        fact_id="predecessor:route-a",
+        predecessor_block_serial=15,
+        dispatcher_entry_serial=2,
+        state_const=0x16AA65E9,
+        target_block_serial=99,
+        resolver_kind="interval_dispatcher_row",
+        row_kind="interval_range",
+        source_instruction_ea=0x7FF855576BA0,
+        target_native_ea=0x7FF855576BB1,
+        state_var_stkoff=52,
+    )
+    conflicting = replace(
+        fact,
+        fact_id="predecessor:route-b",
+        target_block_serial=100,
+        target_native_ea=0x7FF855576BB2,
     )
 
     routes = state_machine_module.bind_native_bound_transition_routes_for_current_mba(

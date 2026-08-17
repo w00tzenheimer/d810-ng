@@ -490,8 +490,8 @@ def bind_native_bound_transition_routes(
         source_serials = {item[5] for item in observations}
         if len(source_serials) != 1:
             continue
-        typed_prior_targets: dict[int, set[int]] = {}
         typed_target_native_eas: set[int] = set()
+        typed_missing_target_native_ea = False
         for item in observations:
             (
                 _fact_id,
@@ -503,20 +503,18 @@ def bind_native_bound_transition_routes(
                 target_native_ea,
             ) = item
             if typed_fact:
-                typed_prior_targets.setdefault(state_constant, set()).add(
-                    prior_target
-                )
                 if target_native_ea is not None:
                     typed_target_native_eas.add(target_native_ea)
-        if any(len(targets) != 1 for targets in typed_prior_targets.values()):
-            # Contradictory predecessor provenance is itself a failed
-            # corroboration.  Do not silently select one typed fact merely
-            # because the current router happens to agree for both.
-            continue
+                else:
+                    typed_missing_target_native_ea = True
         if len(typed_target_native_eas) > 1:
             # Two native target identities for one source group cannot be
             # reconciled by a stale serial or by whichever route happens to
             # win in the current dispatcher.
+            continue
+        if typed_target_native_eas and typed_missing_target_native_ea:
+            # A missing native identity cannot be merged safely with a
+            # native-keyed observation whose prior serial drifted.
             continue
         bound_target_serial: int | None = None
         if typed_target_native_eas:

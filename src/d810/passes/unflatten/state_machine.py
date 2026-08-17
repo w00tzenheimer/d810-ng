@@ -53,6 +53,7 @@ from d810.analyses.control_flow.predecessor_dispatcher_target import (
     PREDECESSOR_DISPATCHER_TARGET_FACTS_ANALYSIS,
     collect_condition_chain_interval_route_observations,
     collect_predecessor_dispatcher_target_facts,
+    current_snapshot_dispatcher_region_serials,
     project_condition_chain_interval_route_observations,
     project_predecessor_dispatcher_target_observations,
     resolve_current_snapshot_dispatcher_route,
@@ -440,6 +441,21 @@ def bind_native_bound_transition_routes_for_current_mba(
     dispatcher_region = frozenset(
         int(serial) for serial in (dispatcher_region_serials or ())
     )
+    decision_dag = getattr(range_evidence, "decision_dag", None)
+    has_current_range_topology = bool(
+        getattr(range_evidence, "condition_chain_blocks", ())
+        or getattr(decision_dag, "nodes", None)
+        or getattr(decision_dag, "root", None) is not None
+    )
+    if dispatcher_entry_serial is not None and has_current_range_topology:
+        # StateDispatcherMap serials can come from a different maturity and
+        # misclassify an interval leaf as a router.  Native-bound rebinding
+        # must use the live range/DAG producer topology; target native EA is
+        # the authority for the leaf itself.
+        dispatcher_region = current_snapshot_dispatcher_region_serials(
+            range_evidence=range_evidence,
+            dispatcher_entry_serial=int(dispatcher_entry_serial),
+        )
     current_blocks = getattr(graph, "blocks", {})
     current_block_serials = tuple(int(serial) for serial in current_blocks)
     return bind_native_bound_transition_routes(
@@ -2743,22 +2759,32 @@ class LowerStateMachine(PipelinePass):
                         )
                     },
                 )
-            dispatcher_region_serials = (
-                frozenset(int(block) for block in dmap.dispatcher_blocks)
-                if dmap is not None
-                else frozenset()
+            decision_dag = getattr(range_evidence, "decision_dag", None)
+            has_current_range_topology = bool(
+                getattr(range_evidence, "condition_chain_blocks", ())
+                or getattr(decision_dag, "nodes", None)
+                or getattr(decision_dag, "root", None) is not None
             )
-            if dispatcher_entry is not None:
-                dispatcher_region_serials |= frozenset({int(dispatcher_entry)})
-            dispatcher_region_serials |= materialized_dispatcher_router_serials
-            if range_evidence is not None:
-                dispatcher_region_serials |= frozenset(
-                    int(block) for block in range_evidence.condition_chain_blocks
-                )
-                if range_evidence.decision_dag is not None:
-                    dispatcher_region_serials |= frozenset(
-                        int(block) for block in range_evidence.decision_dag.nodes
+            if dispatcher_entry is not None and has_current_range_topology:
+                # The live range/DAG producer owns current router topology.
+                # A StateDispatcherMap can carry a stale interval leaf as a
+                # router, which would veto both native rebinding and the
+                # source-keyed entry bridge.
+                dispatcher_region_serials = (
+                    current_snapshot_dispatcher_region_serials(
+                        range_evidence=range_evidence,
+                        dispatcher_entry_serial=int(dispatcher_entry),
                     )
+                )
+            else:
+                dispatcher_region_serials = (
+                    frozenset(int(block) for block in dmap.dispatcher_blocks)
+                    if dmap is not None
+                    else frozenset()
+                )
+                if dispatcher_entry is not None:
+                    dispatcher_region_serials |= frozenset({int(dispatcher_entry)})
+            dispatcher_region_serials |= materialized_dispatcher_router_serials
             native_bound_transition_routes = (
                 bind_native_bound_transition_routes_for_current_mba(
                     tuple(

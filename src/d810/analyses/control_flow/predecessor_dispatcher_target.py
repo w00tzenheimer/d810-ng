@@ -349,18 +349,17 @@ def _condition_chain_region_serials(
     return frozenset(serials)
 
 
-def _current_snapshot_dispatcher_region_serials(
+def current_snapshot_dispatcher_region_serials(
     *,
     range_evidence: ConditionChainAnalysisResult | None,
     dispatcher_entry_serial: int,
-    coarse_target: int | None = None,
 ) -> frozenset[int]:
     """Build current router topology from range/DAG evidence only.
 
     State-dispatcher maps can retain serials from another maturity.  The live
-    range/DAG producer owns the current comparison nodes; a proven coarse
-    target is added as the router anchor, but interval leaves are never copied
-    from the stale map into this set.
+    range/DAG producer owns the current comparison nodes.  The coarse target
+    is deliberately not added: an interval row can name a handler leaf, and
+    only the producer's own DAG/condition nodes establish router topology.
     """
     serials = {int(dispatcher_entry_serial)}
     serials.update(_condition_chain_region_serials(range_evidence))
@@ -369,8 +368,6 @@ def _current_snapshot_dispatcher_region_serials(
     )
     if dag_root is not None:
         serials.add(dag_root)
-    if coarse_target is not None:
-        serials.add(int(coarse_target))
     return frozenset(serials)
 
 
@@ -967,7 +964,15 @@ def resolve_current_snapshot_dispatcher_route(
     if get_block(resolved_serial) is None:
         return None
     dag_target = _maybe_int(getattr(dag_path, "target", None))
-    if dag_target is not None and dag_target not in dispatcher_region_serials:
+    if (
+        dag_target is not None
+        and dag_target not in dispatcher_region_serials
+        and dag_target != coarse_target_serial
+    ):
+        # A coarse interval-row target can be the DAG's snapshot-local route
+        # anchor even when the producer's current topology proves that serial
+        # is a leaf.  Keep the canonical root replay authoritative; the anchor
+        # only prevents an unrelated DAG target from being silently ignored.
         if resolved_serial != dag_target:
             return None
     return resolved_serial
@@ -1322,7 +1327,9 @@ def resolve_predecessor_dispatcher_target(
             coarse_target=coarse_target,
             exit_state=normalized_state,
             dispatcher_entry_serial=int(dispatcher_entry_serial),
-            dispatcher_region_serials=frozenset(dispatcher_topology),
+            dispatcher_region_serials=frozenset(
+                current_dispatcher_region_serials or dispatcher_topology
+            ),
             range_evidence=range_evidence,
         )
         if fallback_target is None:
@@ -1517,7 +1524,7 @@ def collect_predecessor_dispatcher_target_facts(
     dispatcher_topology.add(int(dispatcher_entry_serial))
     dispatcher_topology.update(_condition_chain_region_serials(range_evidence))
     current_dispatcher_topology = set(
-        _current_snapshot_dispatcher_region_serials(
+        current_snapshot_dispatcher_region_serials(
             range_evidence=range_evidence,
             dispatcher_entry_serial=int(dispatcher_entry_serial),
         )
@@ -1596,10 +1603,9 @@ def collect_predecessor_dispatcher_target_facts(
                     blocked_resolution_keys.add(resolution_key)
                     continue
                 current_topology = set(
-                    _current_snapshot_dispatcher_region_serials(
+                    current_snapshot_dispatcher_region_serials(
                         range_evidence=range_evidence,
                         dispatcher_entry_serial=int(dispatcher_entry_serial),
-                        coarse_target=coarse_target,
                     )
                 )
                 current_snapshot_target = _current_snapshot_entry_route_proof(
