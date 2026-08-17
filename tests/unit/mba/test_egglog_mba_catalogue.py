@@ -334,8 +334,8 @@ def test_family_manifest_covers_every_module_owned_rule_in_source_order():
         )
 
     assert set(manifest_keys) == set(discovered_keys)
-    assert len(manifest_keys) == 191
-    assert sum(len(MBA_RULE_FAMILIES[family]) for family in _CLOSED_FAMILIES) == 121
+    assert len(manifest_keys) == 192
+    assert sum(len(MBA_RULE_FAMILIES[family]) for family in _CLOSED_FAMILIES) == 122
 
 
 def test_whole_corpus_has_one_family_qualified_receipt_per_declaration(
@@ -348,7 +348,7 @@ def test_whole_corpus_has_one_family_qualified_receipt_per_declaration(
         for rule_type in rule_types
     }
 
-    assert len(catalogue.receipts) == 191
+    assert len(catalogue.receipts) == 192
     assert set(catalogue.receipts_by_key) == expected_keys
     assert len(catalogue.receipts_by_key) == len(catalogue.receipts)
     assert (
