@@ -73,6 +73,7 @@ from d810.mba.egglog_composite_rewrite import (
     CompositeRewriteSemantics,
     EgglogCompositeRewrite,
 )
+from d810.mba.island_profile import profile_to_dict
 from d810.mba.performance_timing import (
     EMPTY_MBA_STAGE_TIMINGS,
     MbaStageTimer,
@@ -191,6 +192,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             0.0,
             None,
         )
+        self._replay_fallback_reason: str | None = None
         self.generic_native_z3_before_certificate = False
         self.function_time_budget_ms: int | None = None
         self._function_budget: EgglogFunctionBudget | None = None
@@ -207,6 +209,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         self._last_provider_outcome = None
         self._pending_composite_rewrite = None
         self._cache_lookup_context = ("disabled", None, 0.0, None)
+        self._replay_fallback_reason = None
 
     def _provider_outcome_capture_enabled(self) -> bool:
         return self._provider_outcome_capture_depth > 0
@@ -496,6 +499,20 @@ class EgglogOptimizer(PeepholeSimplificationRule):
     def _cache_key(bucket_key: tuple[object, ...]) -> str:
         return json.dumps(list(bucket_key), ensure_ascii=True, separators=(",", ":"))
 
+    def _mark_replay_fallback(self, reason: str) -> None:
+        """Record that a cache hit was rejected by current replay validation."""
+
+        self._replay_fallback_reason = reason
+        _status, cache_key, lookup_elapsed_ms, profile_digest = (
+            self._cache_lookup_context
+        )
+        self._cache_lookup_context = (
+            "stale",
+            cache_key,
+            lookup_elapsed_ms,
+            profile_digest,
+        )
+
     def _replay_profile_digest(self) -> str:
         """Fingerprint the configured replay/extraction semantic profile."""
 
@@ -631,7 +648,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         receipt = EgglogExtractionReceipt(
             input_cost=input_cost,
             extracted_cost=extracted_cost,
-            degree=0,
+            degree=len(derivation_trace) if execution_path == "learned_replay" else 0,
             elapsed_ms=0.0,
             selected_family=provenance[0],
             selected_source=provenance[1],
@@ -643,6 +660,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             distinct_leaf_count=profile.distinct_leaf_count,
             nonlinear_product_count=profile.nonlinear_product_count,
             blockers=tuple(blocker.value for blocker in profile.blockers),
+            native_profile=profile_to_dict(profile),
             execution_path=execution_path,
             cache_status=cache_status,
             cache_key=cache_key,
@@ -736,6 +754,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
                 )
             except Exception:
                 continue
+        self._mark_replay_fallback("stale_template")
         self._cache_lookup_context = (
             "stale",
             cache_key,
@@ -786,6 +805,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         replacement_term = extraction.replacement_term
         if replacement_term is None:
             if allow_fallback:
+                self._mark_replay_fallback("stale_template")
                 return None
             self._record_extraction_receipt(extraction.receipt)
             return None
@@ -798,6 +818,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
                 self._finish_stage("ast_construction")
         if ast is None:
             if allow_fallback:
+                self._mark_replay_fallback("rebuild_failed")
                 return None
             self._record_extraction_receipt(
                 replace(
@@ -817,6 +838,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         )
         if lowering.term is None or lowering.term != expected_term:
             if allow_fallback:
+                self._mark_replay_fallback("rebuild_failed")
                 return None
             self._record_extraction_receipt(
                 replace(
@@ -848,6 +870,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         )
         if replacement is None:
             if allow_fallback:
+                self._mark_replay_fallback("rebuild_failed")
                 return None
             self._record_extraction_receipt(
                 replace(
@@ -862,6 +885,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             and self._node_count(replacement) >= self._node_count(ast)
         ):
             if allow_fallback:
+                self._mark_replay_fallback("rebuild_failed")
                 return None
             self._record_extraction_receipt(
                 replace(
@@ -873,6 +897,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         selected = extraction.selected_provenance
         if selected is None:
             if allow_fallback:
+                self._mark_replay_fallback("stale_template")
                 return None
             self._record_extraction_receipt(
                 replace(
@@ -914,6 +939,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
         )
         if not proved:
             if allow_fallback:
+                self._mark_replay_fallback("proof_failed")
                 return None
             self._record_extraction_receipt(
                 replace(
@@ -952,6 +978,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             self._finish_stage("reconstruction")
         if new_ins is None:
             if allow_fallback:
+                self._mark_replay_fallback("rebuild_failed")
                 return None
             self._record_extraction_receipt(
                 replace(
@@ -1275,6 +1302,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
                 cache_status=(cache_status if cache_status != "disabled" else "disabled"),
                 cache_key=cache_key,
                 cache_lookup_elapsed_ms=cache_lookup_elapsed_ms,
+                replay_fallback_reason=self._replay_fallback_reason,
             ),
         )
         return self._finish_extraction_candidate(
@@ -1490,6 +1518,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
                 cache_status=cache_status,
                 cache_key=cache_key,
                 cache_lookup_elapsed_ms=cache_lookup_elapsed_ms,
+                replay_fallback_reason=self._replay_fallback_reason,
             ),
         )
         return self._finish_extraction_candidate(
@@ -1691,6 +1720,7 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             "replay_rebuild_elapsed_ms": receipt.replay_rebuild_elapsed_ms,
             "replay_proof_elapsed_ms": receipt.replay_proof_elapsed_ms,
             "egglog_work_units": receipt.egglog_work_units,
+            "replay_fallback_reason": receipt.replay_fallback_reason,
             "extracted_cost": receipt.extracted_cost,
             "degree": receipt.degree,
             "eclass_count": receipt.eclass_count,

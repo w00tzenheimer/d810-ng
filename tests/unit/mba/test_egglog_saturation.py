@@ -37,6 +37,7 @@ from d810.backends.mba.egglog_saturation import (
 from d810.mba import typed_term
 from d810.mba.ac_matching import AcMatchStopReason
 from d810.mba.canonical_pattern import CanonicalPatternMatchReport
+from d810.mba.island_profile import MbaIslandClass, MbaIslandProfile
 from d810.mba.rules._base import VerifiableRule
 from d810.mba.rules.sub import Sub_ComplementMaskHodurRule_1
 from d810.mba.rules.xor import Xor_NestedStuff
@@ -489,6 +490,32 @@ def test_replay_receipt_and_provider_outcome_keep_path_latency_and_work_telemetr
     assert outcome.metadata["replay_rebuild_elapsed_ms"] == 0.75
     assert outcome.metadata["replay_proof_elapsed_ms"] == 1.25
     assert outcome.metadata["egglog_work_units"] == 0
+
+
+def test_profile_receipt_preserves_portable_native_capture_metadata():
+    profile = MbaIslandProfile(
+        width_bits=32,
+        operator_count=3,
+        total_node_count=5,
+        distinct_leaf_count=2,
+        constant_count=0,
+        operations=(("add", 1), ("xor", 2)),
+        has_boolean=True,
+        has_arithmetic=True,
+        nonlinear_product_count=0,
+        island_class=MbaIslandClass.LINEAR_MBA,
+        blockers=(),
+        fingerprint="live-native-profile",
+    )
+
+    receipt = egglog_saturation.extraction_receipt_for_profile(
+        profile,
+        ExtractionSkipReason.CANDIDATE_BUDGET,
+    )
+    outcome = egglog_receipt_to_outcome(receipt)
+
+    assert outcome.fingerprint == profile.fingerprint
+    assert outcome.metadata["native_profile"]["fingerprint"] == profile.fingerprint
 
 
 def test_canonical_match_budget_never_registers_partial_catalogue_application(

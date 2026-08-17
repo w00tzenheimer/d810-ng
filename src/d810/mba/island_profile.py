@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import enum
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
 from d810.mba.typed_term import (
@@ -137,9 +137,60 @@ def profile_typed_term(
     )
 
 
+def profile_to_dict(profile: MbaIslandProfile) -> dict[str, object]:
+    """Encode one profile using the portable provider metadata wire shape."""
+
+    return {
+        "width_bits": profile.width_bits,
+        "operator_count": profile.operator_count,
+        "total_node_count": profile.total_node_count,
+        "distinct_leaf_count": profile.distinct_leaf_count,
+        "constant_count": profile.constant_count,
+        "operations": [list(item) for item in profile.operations],
+        "has_boolean": profile.has_boolean,
+        "has_arithmetic": profile.has_arithmetic,
+        "nonlinear_product_count": profile.nonlinear_product_count,
+        "island_class": profile.island_class.value,
+        "blockers": [item.value for item in profile.blockers],
+        "fingerprint": profile.fingerprint,
+    }
+
+
+def profile_from_dict(data: Mapping[str, object]) -> MbaIslandProfile:
+    """Strictly decode the portable provider metadata wire shape."""
+
+    try:
+        operations = tuple(
+            (str(item[0]), int(item[1]))
+            for item in data["operations"]  # type: ignore[index,union-attr]
+        )
+        blockers = tuple(
+            IslandBlocker(str(item))
+            for item in data["blockers"]  # type: ignore[index,union-attr]
+        )
+        return MbaIslandProfile(
+            width_bits=int(data["width_bits"]),
+            operator_count=int(data["operator_count"]),
+            total_node_count=int(data["total_node_count"]),
+            distinct_leaf_count=int(data["distinct_leaf_count"]),
+            constant_count=int(data["constant_count"]),
+            operations=operations,
+            has_boolean=bool(data["has_boolean"]),
+            has_arithmetic=bool(data["has_arithmetic"]),
+            nonlinear_product_count=int(data["nonlinear_product_count"]),
+            island_class=MbaIslandClass(str(data["island_class"])),
+            blockers=blockers,
+            fingerprint=str(data["fingerprint"]),
+        )
+    except (KeyError, TypeError, ValueError, IndexError) as exc:
+        raise ValueError(f"invalid MBA island profile: {exc}") from exc
+
+
 __all__ = [
     "IslandBlocker",
     "MbaIslandClass",
     "MbaIslandProfile",
+    "profile_from_dict",
+    "profile_to_dict",
     "profile_typed_term",
 ]

@@ -16,10 +16,8 @@ from pathlib import Path
 from d810.mba.differential_report import (
     MbaCorpusCaseReport,
     MbaDifferentialReport,
-    profile_from_dict,
-    profile_to_dict,
 )
-from d810.mba.island_profile import MbaIslandProfile
+from d810.mba.island_profile import MbaIslandProfile, profile_from_dict, profile_to_dict
 from d810.mba.provider_outcome import (
     MbaProviderKind,
     MbaProviderOutcome,

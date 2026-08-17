@@ -46,6 +46,7 @@ from d810.optimizers.microcode.instructions.egraph.egglog_handler import (  # no
 )
 from d810.mba.semantic_canonicalization import canonicalize_mba_term  # noqa: E402
 from d810.mba.ac_matching import AcMatchStopReason  # noqa: E402
+from d810.mba.native_corpus_capture import select_native_capture_profile  # noqa: E402
 from d810.mba.egglog_composite_rewrite import (  # noqa: E402
     CompositeRewriteMalformed,
     EgglogCompositeRewrite,
@@ -941,6 +942,7 @@ def test_direct_catalogue_hit_bypasses_replay_and_runtime(monkeypatch):
     assert runtime_calls == []
     assert handler.last_extraction_receipt.execution_path == "direct_catalogue"
     assert handler.last_extraction_receipt.cache_status == "disabled"
+    assert handler.last_extraction_receipt.degree == 0
 
 
 def test_direct_catalogue_scans_past_equal_cost_match_for_strict_improvement():
@@ -1005,10 +1007,14 @@ def test_replay_hit_rebinds_current_terms_and_never_runs_fresh(monkeypatch):
         learned_replay_enabled=True,
     )
     semantics = handler._current_replay_semantics()
+    trace = (
+        ("xor", "Xor_HackersDelightRule_3", ()),
+        ("xor", "Xor_Rule_1", ()),
+    )
     rewrite = EgglogCompositeRewrite.from_extraction(
         input_term=source,
         output_term=replacement,
-        derivation_trace=(("xor", "Xor_HackersDelightRule_3", ()),),
+        derivation_trace=trace,
         semantics=semantics,
     )
     store = {}
@@ -1030,6 +1036,7 @@ def test_replay_hit_rebinds_current_terms_and_never_runs_fresh(monkeypatch):
     assert receipt.execution_path == "learned_replay"
     assert receipt.cache_status == "hit"
     assert receipt.replayed_trace == rewrite.derivation_trace
+    assert receipt.degree == len(trace) == 2
     assert receipt.egglog_work_units == 0
     assert receipt.replay_rebuild_elapsed_ms is not None
     assert receipt.replay_proof_elapsed_ms is not None
@@ -1037,6 +1044,10 @@ def test_replay_hit_rebinds_current_terms_and_never_runs_fresh(monkeypatch):
     assert runtime_calls == []
     assert len(handler.provider_outcomes()) == 1
     assert handler.provider_outcomes()[0].status.value == "improved"
+    outcome = handler.provider_outcomes()[0]
+    assert outcome.metadata["degree"] == 2
+    assert outcome.metadata["native_profile"]["fingerprint"] == receipt.island_fingerprint
+    assert select_native_capture_profile((handler,)).fingerprint == receipt.island_fingerprint
     handler.record_mutation_accepted()
     assert len(handler.provider_outcomes()) == 1
     assert handler.provider_outcomes()[0].status.value == "applied"
@@ -1299,9 +1310,19 @@ def test_replay_failure_falls_through_to_fresh(monkeypatch, failure):
         or _fresh_result(source, replacement, cache_status="hit"),
     )
 
+    handler.begin_provider_outcome_capture()
     assert handler._check_and_replace(_Instruction()) is not None
     assert len(fresh_calls) == 1
     assert handler.last_extraction_receipt.execution_path == "fresh_saturation"
+    assert handler.last_extraction_receipt.cache_status == "stale"
+    assert handler.last_extraction_receipt.replay_fallback_reason == (
+        "rebuild_failed" if failure == "rebuild" else "proof_failed"
+    )
+    assert handler.provider_outcomes()[0].metadata["cache_status"] == "stale"
+    assert handler.provider_outcomes()[0].metadata["replay_fallback_reason"] == (
+        "rebuild_failed" if failure == "rebuild" else "proof_failed"
+    )
+    handler.end_provider_outcome_capture()
 
 
 def test_fresh_template_stores_only_after_outer_acceptance(monkeypatch):

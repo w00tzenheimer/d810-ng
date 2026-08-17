@@ -14,7 +14,12 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from types import MappingProxyType
 
-from d810.mba.island_profile import IslandBlocker, MbaIslandClass, MbaIslandProfile
+from d810.mba.island_profile import (
+    MbaIslandClass,
+    MbaIslandProfile,
+    profile_from_dict,
+    profile_to_dict,
+)
 from d810.mba.provider_outcome import (
     MatcherOutcomeMetadata,
     MbaProviderKind,
@@ -87,6 +92,7 @@ def egglog_receipt_to_outcome(receipt: object) -> MbaProviderOutcome:
         ),
         "replay_proof_elapsed_ms": getattr(receipt, "replay_proof_elapsed_ms", None),
         "egglog_work_units": getattr(receipt, "egglog_work_units", 0),
+        "replay_fallback_reason": getattr(receipt, "replay_fallback_reason", None),
         "degree": getattr(receipt, "degree", None),
         "eclass_count": getattr(receipt, "eclass_count", None),
         "enode_count": getattr(receipt, "enode_count", None),
@@ -141,55 +147,6 @@ def egglog_receipt_to_outcome(receipt: object) -> MbaProviderOutcome:
         refusal_reason=skip_text,
         metadata=metadata,
     )
-
-
-def profile_to_dict(profile: MbaIslandProfile) -> dict[str, object]:
-    """Encode one actual native island profile for portable report/capture use."""
-
-    return {
-        "width_bits": profile.width_bits,
-        "operator_count": profile.operator_count,
-        "total_node_count": profile.total_node_count,
-        "distinct_leaf_count": profile.distinct_leaf_count,
-        "constant_count": profile.constant_count,
-        "operations": [list(item) for item in profile.operations],
-        "has_boolean": profile.has_boolean,
-        "has_arithmetic": profile.has_arithmetic,
-        "nonlinear_product_count": profile.nonlinear_product_count,
-        "island_class": profile.island_class.value,
-        "blockers": [item.value for item in profile.blockers],
-        "fingerprint": profile.fingerprint,
-    }
-
-
-def profile_from_dict(data: Mapping[str, object]) -> MbaIslandProfile:
-    """Strictly decode the portable profile wire shape used by the CLI."""
-
-    try:
-        operations = tuple(
-            (str(item[0]), int(item[1]))
-            for item in data["operations"]  # type: ignore[index,union-attr]
-        )
-        blockers = tuple(
-            IslandBlocker(str(item))
-            for item in data["blockers"]  # type: ignore[index,union-attr]
-        )
-        return MbaIslandProfile(
-            width_bits=int(data["width_bits"]),
-            operator_count=int(data["operator_count"]),
-            total_node_count=int(data["total_node_count"]),
-            distinct_leaf_count=int(data["distinct_leaf_count"]),
-            constant_count=int(data["constant_count"]),
-            operations=operations,
-            has_boolean=bool(data["has_boolean"]),
-            has_arithmetic=bool(data["has_arithmetic"]),
-            nonlinear_product_count=int(data["nonlinear_product_count"]),
-            island_class=MbaIslandClass(str(data["island_class"])),
-            blockers=blockers,
-            fingerprint=str(data["fingerprint"]),
-        )
-    except (KeyError, TypeError, ValueError, IndexError) as exc:
-        raise ValueError(f"invalid MBA island profile: {exc}") from exc
 
 
 def outcome_from_dict(data: Mapping[str, object]) -> MbaProviderOutcome:

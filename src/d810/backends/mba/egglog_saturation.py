@@ -29,8 +29,7 @@ from d810.backends.mba.hexrays_island import (
     lower_hexrays_island,
     rebuild_hexrays_island,
 )
-from d810.mba.island_profile import profile_typed_term
-from d810.mba.native_corpus_capture import native_profile_metadata
+from d810.mba.island_profile import profile_to_dict, profile_typed_term
 from d810.mba.semantic_canonicalization import (
     CANONICALIZER_SCHEMA_VERSION,
     CanonicalMbaTermView,
@@ -316,6 +315,7 @@ class EgglogExtractionReceipt:
     replay_rebuild_elapsed_ms: float | None = None
     replay_proof_elapsed_ms: float | None = None
     egglog_work_units: int = 0
+    replay_fallback_reason: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "selected_aliases", tuple(self.selected_aliases))
@@ -378,6 +378,11 @@ class EgglogExtractionReceipt:
             raise ValueError("cache_key must be a string or null")
         if type(self.egglog_work_units) is not int or self.egglog_work_units < 0:
             raise ValueError("egglog_work_units must be a non-negative integer")
+        if self.replay_fallback_reason is not None and (
+            type(self.replay_fallback_reason) is not str
+            or not self.replay_fallback_reason
+        ):
+            raise ValueError("replay_fallback_reason must be a non-empty string or null")
         for name in (
             "cache_lookup_elapsed_ms",
             "replay_rebuild_elapsed_ms",
@@ -590,6 +595,7 @@ def _extraction_result(
     replay_rebuild_elapsed_ms: float | None = None,
     replay_proof_elapsed_ms: float | None = None,
     egglog_work_units: int = 0,
+    replay_fallback_reason: str | None = None,
     extracted_cost: tuple[int, int] | None = None,
     degree: int | None = None,
     eclass_count: int | None = None,
@@ -629,6 +635,7 @@ def _extraction_result(
             replay_rebuild_elapsed_ms=replay_rebuild_elapsed_ms,
             replay_proof_elapsed_ms=replay_proof_elapsed_ms,
             egglog_work_units=egglog_work_units,
+            replay_fallback_reason=replay_fallback_reason,
             extracted_cost=extracted_cost,
             degree=degree,
             eclass_count=eclass_count,
@@ -652,7 +659,7 @@ def _extraction_result(
             if profile is None
             else tuple(blocker.value for blocker in profile.blockers),
             native_profile=(
-                None if profile is None else native_profile_metadata(profile)
+                None if profile is None else profile_to_dict(profile)
             ),
             skip_reason=skip_reason,
         ),
@@ -678,7 +685,7 @@ def extraction_receipt_for_lowering(
         distinct_leaf_count=profile.distinct_leaf_count,
         nonlinear_product_count=profile.nonlinear_product_count,
         blockers=tuple(blocker.value for blocker in profile.blockers),
-        native_profile=native_profile_metadata(profile),
+        native_profile=profile_to_dict(profile),
         skip_reason=skip_reason,
     )
 
@@ -696,6 +703,7 @@ def extraction_receipt_for_profile(
         distinct_leaf_count=int(profile.distinct_leaf_count),
         nonlinear_product_count=int(profile.nonlinear_product_count),
         blockers=tuple(blocker.value for blocker in profile.blockers),
+        native_profile=profile_to_dict(profile),
         skip_reason=skip_reason,
     )
 
