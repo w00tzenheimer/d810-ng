@@ -100,6 +100,29 @@ These are rulings, not choices left to the implementer:
    and use `-w config-v2-final-cutover-impl`; local commands run inside the
    implementation worktree with `PYTHONPATH=src`.
 
+## Normative Execution Order and Atomic Boundaries
+
+Execute tasks in this order, which intentionally differs from numeric document
+order: **1, 2, 3, 4, 7, 5, 6, 8, 9, 10**.
+
+- Task 4 introduces v2-only validation but retains the deprecated mode enum and
+  parser functions until Task 6 removes their remaining consumers. It must not
+  create an import-time break in the state-machine host.
+- Task 7 copies donor semantics into canonical source files and moves every
+  consumer to canonical names, but temporarily retains the 21 routed donor
+  canaries and `config_v2_defaults.py`. This makes canonical files ready while
+  the old manager can still start.
+- Task 5 is the atomic runtime cutover: it activates canonical files directly,
+  collapses source/runtime state, deletes `config_v2_defaults.py`, and deletes
+  the 21 now-unreferenced mapped donor canaries in the same commit. There must
+  never be a commit where routing points at deleted donors.
+- Task 6 removes legacy/shadow mode APIs after manager consumers are gone.
+- Task 8 deletes the temporary bridge import shim, compatibility-only tests,
+  remaining legacy vocabulary, and installs the final inventory ratchet.
+
+These atomic boundaries override any older wording in an individual task that
+suggests deleting mapped canaries in Task 7 or deleting mode APIs in Task 4.
+
 ## Exact Historical Canonicalization Matrix
 
 The following table is copied from the current routing policy and donor files.
@@ -655,7 +678,9 @@ git commit -m "refactor(config-v2): compile unconditional hook schedules"
 
 **Interfaces:**
 - Produces: `require_config_v2_project(project_config) -> tuple[PipelineConfig, ...]`
-- Removes: `PipelineV2Mode`, `pipeline_v2_mode_from_project_config`, and shadow fields.
+- Adds the v2-only validation API while retaining `PipelineV2Mode` and
+  `pipeline_v2_mode_from_project_config` as deprecated compatibility symbols
+  until Task 6 removes their remaining runtime consumers.
 - Changes: `ProjectConfiguration.save()` omits `ins_rules` and `blk_rules` for canonical v2 projects.
 
 - [ ] **Step 1: Add failing v2-only schema tests**
@@ -686,7 +711,9 @@ Run the parser, project configuration, and editor tests in Docker.
 
 - [ ] **Step 3: Implement one parser path**
 
-Delete the enum and return typed configs directly:
+Add the required parser and make all new call sites use it. Do not delete the
+enum in this task because the state-machine host and module pass manager still
+import it until Task 6:
 
 ```python
 def require_config_v2_project(project_config) -> tuple[PipelineConfig, ...]:
@@ -717,7 +744,7 @@ git commit -m "refactor(config-v2): require canonical v2 project schema"
 
 ---
 
-### Task 5: Collapse manager activation to one project and one schedule
+### Task 5: Atomically collapse manager activation and remove mapped routing
 
 **Files:**
 - Modify: `src/d810/manager/state.py`
@@ -732,6 +759,12 @@ git commit -m "refactor(config-v2): require canonical v2 project schema"
 - Modify: `src/d810/ui/workbench_logic.py`
 - Modify: `src/d810/ui/workbench_panel.py`
 - Modify: `src/d810/ui/workbench_workflow_logic.py`
+- Delete: `src/d810/core/config_v2_defaults.py`
+- Delete: `tests/unit/core/test_config_v2_defaults.py`
+- Delete: the 21 mapped donor `src/d810/conf/*_config_v2_canary.json` files
+  listed in the canonicalization matrix.
+- Modify: every remaining import of `config_v2_defaults` and every test that
+  asserted source/runtime routing.
 - Modify: corresponding `tests/unit/manager/**` and `tests/unit/ui/**` files.
 
 **Interfaces:**
@@ -780,7 +813,11 @@ def _activate_project(self, *, project_index: int, project: ProjectConfiguration
 
 Delete the legacy registry-order branch; schedule binding order is always
 pipeline order. Update workbench projections to use one identity and remove UI
-copy implying a source/runtime route.
+copy implying a source/runtime route. In this same implementation, remove
+`select_config_v2_default_project`, delete `config_v2_defaults.py`, and delete
+the 21 mapped donors retained by Task 7. The project manager now loads the
+canonical source document and compiles it directly. Do not leave a temporary
+basename alias or compatibility routing map.
 
 - [ ] **Step 4: Verify GREEN**
 
@@ -790,7 +827,8 @@ through Docker.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/d810/manager src/d810/ui tests/unit/manager tests/unit/ui \
+git add -A src/d810/core/config_v2_defaults.py src/d810/conf \
+  src/d810/manager src/d810/ui tests/unit/core tests/unit/manager tests/unit/ui \
   tests/system/runtime/test_state_project_loading.py
 git commit -m "refactor(config-v2): activate one canonical project runtime"
 ```
@@ -866,11 +904,12 @@ git commit -m "refactor(unflatten): remove legacy and shadow execution modes"
 
 ---
 
-### Task 7: Canonicalize bundled configurations and fixture names
+### Task 7: Stage canonical bundled configurations and fixture names
 
 **Files:**
 - Modify: every `source_config` in the historical pair list from Task 1.
-- Delete: every paired `runtime_config` ending `_config_v2_canary.json`.
+- Retain temporarily: the 21 paired routed donor canaries; Task 5 deletes them
+  atomically with routing.
 - Rename: fixture-only canaries such as `dead_store_elimination_fixture_config_v2_canary.json` to stable `*_fixture.json` names.
 - Modify: all references returned by `rg -n 'config_v2_canary.json|_config_v2_canary'`.
 - Modify: README, HEADLESS docs, MASM fixture docs, CLI defaults, and test parameter tables.
@@ -881,9 +920,11 @@ git commit -m "refactor(unflatten): remove legacy and shadow execution modes"
 
 - [ ] **Step 1: Write a failing canonical bundled-config test**
 
-Create a test that iterates every bundled JSON except `options.json` and
-explicit spike/catalogue data. For project files, require a nonempty typed
-pipeline and prohibit active legacy arrays or canary metadata.
+Create a test that iterates canonical bundled project names except
+`options.json` and explicit spike/catalogue data. Require a nonempty typed
+pipeline and prohibit active legacy arrays or canary metadata in canonical
+files. The temporary donor files are not canonical projects and remain covered
+by exact source/donor equivalence tests until Task 5 deletes them.
 
 ```python
 def test_bundled_runtime_projects_are_canonical_v2():
@@ -904,9 +945,11 @@ set, not unrelated data files.
 - [ ] **Step 3: Replace each mapped source atomically**
 
 For each historical pair, copy semantic content from canary to canonical source,
-remove empty legacy arrays and obsolete routing/canary metadata, preserve the
-canonical description where accurate, and validate through the operational
-registry before deleting the canary.
+remove empty legacy arrays and obsolete routing/canary metadata from the
+canonical copy, preserve the canonical description where accurate, and validate
+through the operational registry. Retain the mapped donor file unchanged until
+Task 5. Rename/delete the two non-routed fixture variants in this task because
+the routing table never points at them.
 
 Use the Task 2 `--check` command on `src/d810/conf` and an explicit allowlist for
 non-project JSON datasets. Do not edit JSON with ad-hoc regex replacement.
@@ -921,7 +964,10 @@ rg -n 'config_v2_canary.json|_config_v2_canary' \
   src tests tools samples README.md HEADLESS.md
 ```
 
-Expected: zero matches.
+Expected after Task 7: matches are limited to the 21 temporary donor files,
+`config_v2_defaults.py`, and tests explicitly proving source/donor equivalence.
+All runtime fixtures, scripts, docs, and CLI defaults must already use canonical
+source names. Task 5 makes this query reach zero.
 
 - [ ] **Step 5: Verify all canonical projects compile**
 
@@ -938,12 +984,10 @@ git commit -m "refactor(config-v2): canonicalize bundled project presets"
 
 ---
 
-### Task 8: Delete routing, bridge shims, legacy registrations, and compatibility tests
+### Task 8: Delete bridge shims, legacy registrations, and compatibility tests
 
 **Files:**
-- Delete: `src/d810/core/config_v2_defaults.py`
 - Delete: `src/d810/passes/pipeline_v2_hook_bridge.py`
-- Delete: `tests/unit/core/test_config_v2_defaults.py`
 - Delete: `tests/unit/passes/test_pipeline_v2_hook_bridge.py`
 - Modify: all remaining imports and status/UI text.
 - Create: `tests/unit/architecture/test_config_v2_only_inventory.py`
@@ -987,10 +1031,10 @@ Run the architecture test and confirm it names the routing module and shim.
 
 - [ ] **Step 3: Delete compatibility files and remaining branches**
 
-Remove default-selection status, source/runtime routing fields, compatibility
-imports, direct JSON registration of `StateMachineCffUnflattener`, and tests
-whose only assertion was legacy parity/routing. Preserve algorithmic and
-semantic tests under v2-native terminology.
+Remove remaining compatibility imports, direct JSON registration of
+`StateMachineCffUnflattener`, and tests whose only assertion was legacy
+parity/routing. Source/runtime routing itself was deleted atomically in Task 5.
+Preserve algorithmic and semantic tests under v2-native terminology.
 
 - [ ] **Step 4: Verify GREEN and repository inventory**
 
