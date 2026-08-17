@@ -262,7 +262,7 @@ git commit -m "test(unflatten): reproduce Eid v2 completeness gaps"
 - Create: `src/d810/analyses/control_flow/concrete_state_route.py`
 - Create: `tests/unit/analyses/control_flow/test_concrete_state_route.py`
 - Modify: `src/d810/transforms/reconstruction_bridge_planning.py`
-- Modify: `tests/unit/transforms/test_reconstruction_bridge_planning.py`
+- Create: `tests/unit/transforms/test_reconstruction_bridge_planning.py`
 - Inspect: `src/d810/analyses/control_flow/dispatcher_resolution.py`
 - Inspect: `src/d810/analyses/control_flow/interval_map.py`
 
@@ -366,7 +366,7 @@ git commit -m "feat(unflatten): resolve concrete states across exact and interva
 
 **Files:**
 - Modify: `src/d810/analyses/control_flow/dispatcher_recovery.py`
-- Modify: `tests/unit/analyses/control_flow/test_dispatcher_recovery.py`
+- Modify: `tests/unit/analyses/control_flow/test_reachability_and_recover_dispatcher.py`
 - Modify: `src/d810/passes/unflatten/state_machine.py`
 - Modify: `tests/unit/passes/test_state_machine_entry_bridge_policy.py`
 
@@ -401,7 +401,7 @@ Run and capture RED:
 
 ```bash
 PYTHONPATH=src pytest -q \
-  tests/unit/analyses/control_flow/test_dispatcher_recovery.py \
+  tests/unit/analyses/control_flow/test_reachability_and_recover_dispatcher.py \
   tests/unit/passes/test_state_machine_entry_bridge_policy.py -vv
 ```
 
@@ -439,7 +439,7 @@ range-evidence hint.
 
 ```bash
 PYTHONPATH=src pytest -q \
-  tests/unit/analyses/control_flow/test_dispatcher_recovery.py \
+  tests/unit/analyses/control_flow/test_reachability_and_recover_dispatcher.py \
   tests/unit/passes/test_state_machine_entry_bridge_policy.py \
   tests/unit/preanalysis/flow/test_minimal_state_recovery.py -vv
 git diff --check
@@ -451,7 +451,7 @@ git diff --check
 git add \
   src/d810/analyses/control_flow/dispatcher_recovery.py \
   src/d810/passes/unflatten/state_machine.py \
-  tests/unit/analyses/control_flow/test_dispatcher_recovery.py \
+  tests/unit/analyses/control_flow/test_reachability_and_recover_dispatcher.py \
   tests/unit/passes/test_state_machine_entry_bridge_policy.py
 git commit -m "fix(unflatten): recover same-block dispatcher initial state"
 ```
@@ -559,7 +559,7 @@ add a new portable RED test before changing production code.
 ```bash
 PYTHONPATH=src pytest -q \
   tests/unit/analyses/control_flow/test_concrete_state_route.py \
-  tests/unit/analyses/control_flow/test_dispatcher_recovery.py \
+  tests/unit/analyses/control_flow/test_reachability_and_recover_dispatcher.py \
   tests/unit/preanalysis/flow/test_minimal_state_recovery.py \
   tests/unit/transforms/test_minimal_unflatten_emit.py \
   tests/unit/passes/test_state_machine_entry_bridge_policy.py
@@ -700,7 +700,7 @@ git commit -m "fix(unflatten): preserve effectful shared corridors"
   terminal classifier lacks required semantics
 - Modify: `src/d810/transforms/minimal_unflatten_emit.py`
 - Modify: `src/d810/transforms/dispatcher_corridor_coverage.py`
-- Modify: `tests/unit/analyses/control_flow/test_graph_checks.py`
+- Modify: `tests/unit/test_graph_checks.py`
 - Modify: `tests/unit/transforms/test_minimal_unflatten_emit.py`
 - Modify: `tests/unit/transforms/test_dispatcher_corridor_coverage.py`
 
@@ -735,7 +735,7 @@ Run RED:
 
 ```bash
 PYTHONPATH=src pytest -q \
-  tests/unit/analyses/control_flow/test_graph_checks.py \
+  tests/unit/test_graph_checks.py \
   tests/unit/transforms/test_minimal_unflatten_emit.py \
   tests/unit/transforms/test_dispatcher_corridor_coverage.py -vv
 ```
@@ -792,7 +792,7 @@ Required evidence:
 
 ```bash
 PYTHONPATH=src pytest -q \
-  tests/unit/analyses/control_flow/test_graph_checks.py \
+  tests/unit/test_graph_checks.py \
   tests/unit/transforms/test_minimal_unflatten_emit.py \
   tests/unit/transforms/test_dispatcher_corridor_coverage.py \
   tests/unit/backends/hexrays/test_mutation_backend.py
@@ -801,7 +801,7 @@ git add \
   src/d810/analyses/control_flow/graph_checks.py \
   src/d810/transforms/minimal_unflatten_emit.py \
   src/d810/transforms/dispatcher_corridor_coverage.py \
-  tests/unit/analyses/control_flow/test_graph_checks.py \
+  tests/unit/test_graph_checks.py \
   tests/unit/transforms/test_minimal_unflatten_emit.py \
   tests/unit/transforms/test_dispatcher_corridor_coverage.py
 git commit -m "fix(unflatten): preserve conditional semantic terminals"
@@ -828,8 +828,8 @@ change merely because it appears in the plan.
 ```bash
 PYTHONPATH=src pytest -q \
   tests/unit/analyses/control_flow/test_concrete_state_route.py \
-  tests/unit/analyses/control_flow/test_dispatcher_recovery.py \
-  tests/unit/analyses/control_flow/test_graph_checks.py \
+  tests/unit/analyses/control_flow/test_reachability_and_recover_dispatcher.py \
+  tests/unit/test_graph_checks.py \
   tests/unit/preanalysis/flow/test_minimal_state_recovery.py \
   tests/unit/transforms/test_reconstruction_bridge_planning.py \
   tests/unit/transforms/test_minimal_unflatten_emit.py \
