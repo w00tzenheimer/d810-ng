@@ -19,7 +19,10 @@ from dataclasses import dataclass, replace
 
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnKind
 from d810.ir.insn_projection import (
+    is_effect_free_operand_tree,
     operand_stack_offsets,
+    operand_sizes,
+    operand_snapshots,
     operand_storages,
     project_instruction,
 )
@@ -626,6 +629,7 @@ def _state_write_constant(
     *,
     state_var_stkoff: int | None,
     state_var_reg: int | None,
+    require_32bit: bool = False,
 ) -> tuple[bool, int | None]:
     """Classify one exact state-cell write and its constant source.
 
@@ -637,31 +641,65 @@ def _state_write_constant(
     prefix scanner.
     """
     src_view, _r_view, dst_view = operand_storages(insn)
+    destination_matches = (
+        state_var_stkoff is not None
+        and _stkoff_of(dst_view) == int(state_var_stkoff)
+    ) or (state_var_reg is not None and _reg_of(dst_view) == int(state_var_reg))
+
     if insn.kind is InsnKind.MOV:
-        destination_matches = (
-            state_var_stkoff is not None
-            and _stkoff_of(dst_view) == int(state_var_stkoff)
-        ) or (
-            state_var_reg is not None and _reg_of(dst_view) == int(state_var_reg)
-        )
-        if destination_matches:
-            return True, _const_of(src_view)
-        return False, None
+        if not destination_matches:
+            return False, None
+        if require_32bit:
+            operands = operand_snapshots(insn)
+            sizes = operand_sizes(insn)
+            if (
+                operands[0] is None
+                or operands[2] is None
+                or sizes[0] != 4
+                or sizes[2] != 4
+                or not all(is_effect_free_operand_tree(operand) for operand in operands)
+            ):
+                return True, None
+        src_value = _const_of(src_view)
+        if src_value is None:
+            return True, None
+        return True, (src_value & 0xFFFFFFFF) if require_32bit else src_value
 
     if insn.kind is InsnKind.STORE:
         # m_stx <value>, <addr>: the address operand is the right slot.  A
         # register-resident state variable cannot be identified by an indirect
         # store, so only the recovered stack identity admits this form.
         _l_off, addr_off, _d_off = operand_stack_offsets(insn)
-        if state_var_stkoff is not None and addr_off == int(state_var_stkoff):
-            return True, _const_of(src_view)
+        address_matches = (
+            state_var_stkoff is not None and addr_off == int(state_var_stkoff)
+        )
+        if not address_matches and not destination_matches:
+            return False, None
+        if require_32bit:
+            operands = operand_snapshots(insn)
+            sizes = operand_sizes(insn)
+            if (
+                operands[0] is None
+                or sizes[0] != 4
+                or not all(is_effect_free_operand_tree(operand) for operand in operands)
+            ):
+                return True, None
+        src_value = _const_of(src_view)
+        if src_value is None:
+            return True, None
+        return True, (src_value & 0xFFFFFFFF) if require_32bit else src_value
+
+    # Any other instruction with the recovered destination is a state write,
+    # but it is not the one exact constant-init form admitted above.  The
+    # caller must reject it even when the operation is otherwise pure.
+    if destination_matches:
+        return True, None
     return False, None
 
 
 def _read_state_init_const(
     blk: BlockSnapshot | None,
     state_var_stkoff: int | None,
-    state_var_reg: int | None = None,
 ) -> int | None:
     """Read the constant a block initializes the state variable to, portably.
 
@@ -672,13 +710,13 @@ def _read_state_init_const(
     form where the value being stored is the *left* operand and the destination
     address resolves to the state slot's stkoff). Returns the constant or None.
     """
-    if blk is None or (state_var_stkoff is None and state_var_reg is None):
+    if blk is None or state_var_stkoff is None:
         return None
     for insn in blk.insn_snapshots:
         wrote_state, src_value = _state_write_constant(
             insn,
             state_var_stkoff=state_var_stkoff,
-            state_var_reg=state_var_reg,
+            state_var_reg=None,
         )
         if wrote_state and src_value is not None:
             return src_value
@@ -705,6 +743,36 @@ _PREFIX_PURE_KINDS = frozenset(
         InsnKind.MUL,
     }
 )
+
+
+def _state_operand_width(
+    insn,
+    *,
+    state_var_stkoff: int | None,
+    state_var_reg: int | None,
+) -> int | None:
+    """Return the unique known width of the routed state operand."""
+    if insn is None:
+        return None
+    views = operand_storages(insn)
+    offsets = operand_stack_offsets(insn)
+    widths: list[int] = []
+    for mop, view, stack_offset in zip(
+        operand_snapshots(insn), views, offsets, strict=False
+    ):
+        matches_stack = (
+            state_var_stkoff is not None
+            and _state_var_offset(view, stack_offset) == int(state_var_stkoff)
+        )
+        matches_register = (
+            state_var_reg is not None and _reg_of(view) == int(state_var_reg)
+        )
+        if matches_stack or matches_register:
+            width = int(getattr(mop, "size", 0) or 0)
+            widths.append(width)
+    if len(widths) != 1 or widths[0] <= 0:
+        return None
+    return widths[0]
 
 
 def _recover_same_block_prefix_initial_state(
@@ -734,12 +802,21 @@ def _recover_same_block_prefix_initial_state(
     if boundary is None:
         return None
 
+    state_width = _state_operand_width(
+        blk.insn_snapshots[boundary],
+        state_var_stkoff=state_var_stkoff,
+        state_var_reg=state_var_reg,
+    )
+    if state_width != 4:
+        return None
+
     constants: list[int] = []
     for insn in blk.insn_snapshots[:boundary]:
         wrote_state, src_value = _state_write_constant(
             insn,
             state_var_stkoff=state_var_stkoff,
             state_var_reg=state_var_reg,
+            require_32bit=True,
         )
         if wrote_state:
             if src_value is None:
@@ -753,6 +830,8 @@ def _recover_same_block_prefix_initial_state(
         if insn.kind is InsnKind.CALL or insn.is_call or insn.kind is InsnKind.STORE:
             return None
         if insn.kind not in _PREFIX_PURE_KINDS:
+            return None
+        if not all(is_effect_free_operand_tree(operand) for operand in operand_snapshots(insn)):
             return None
 
     if len(constants) != 1:
@@ -820,11 +899,11 @@ def recover_entry_dominated_initial_state(
     ]
     if len(qualifying) != 1:
         return None
-    return _read_state_init_const(
-        graph.blocks.get(qualifying[0]),
-        state_var_stkoff,
-        state_var_reg,
-    )
+    # Keep the historical predecessor path stack-only.  Register-resident
+    # initialization is intentionally limited to the same-block prefix above.
+    if state_var_stkoff is None:
+        return None
+    return _read_state_init_const(graph.blocks.get(qualifying[0]), state_var_stkoff)
 
 
 @dataclass(frozen=True, slots=True)

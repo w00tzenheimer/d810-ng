@@ -33,7 +33,10 @@ from d810.ir.flowgraph import (
     OperandKind,
     PredicateKind,
 )
-from d810.ir.insn_projection import InstructionProjection
+from d810.ir.insn_projection import (
+    InstructionProjection,
+    is_effect_free_operand_tree,
+)
 from d810.ir.instructions import Instruction
 from d810.ir.semantics import ControlTransferKind
 from d810.ir.storage_identity import StorageIdentity, storage_identity_from_varnode
@@ -1675,69 +1678,13 @@ def _is_effect_free_dispatcher_router(block: object) -> bool:
     return True
 
 
-_ROUTER_SCALAR_OPERANDS = frozenset(
-    {
-        OperandKind.EMPTY,
-        OperandKind.REGISTER,
-        OperandKind.STACK,
-        OperandKind.NUMBER,
-        OperandKind.BLOCK,
-    }
-)
-_ROUTER_PURE_SUBINSNS = frozenset(
-    {
-        InsnKind.NOP,
-        InsnKind.MOV,
-        InsnKind.XDU,
-        InsnKind.XDS,
-        InsnKind.ADD,
-        InsnKind.SUB,
-        InsnKind.AND,
-        InsnKind.MUL,
-    }
-)
-
-
 def _is_effect_free_dispatcher_router_operand(
     operand: object | None,
     *,
     _seen: set[int] | None = None,
 ) -> bool:
-    """Prove that one router operand has no memory, global, or call effect.
-
-    This is deliberately a small recursive proof, not a general expression
-    evaluator.  Scalar register/stack/constant/block operands are safe to
-    inspect.  A nested ``SUBINSN`` is admitted only for the portable pure
-    arithmetic families and only when all of its children are themselves
-    admitted.  Every other operand kind is unknown at this boundary and
-    therefore abstains.
-    """
-    if operand is None:
-        return True
-    kind = getattr(operand, "kind", None)
-    if kind in _ROUTER_SCALAR_OPERANDS:
-        return True
-    if kind is not OperandKind.SUBINSN:
-        return False
-    seen = set() if _seen is None else _seen
-    identity = id(operand)
-    if identity in seen:
-        return False
-    seen.add(identity)
-    sub_kind = getattr(operand, "sub_kind", None)
-    if sub_kind not in _ROUTER_PURE_SUBINSNS:
-        return False
-    # ``mop_f`` children are call arguments.  A SUBINSN with an argument list
-    # is not a pure arithmetic tree even if the child leaves look scalar.
-    if tuple(getattr(operand, "args", ()) or ()):
-        return False
-    return all(
-        _is_effect_free_dispatcher_router_operand(child, _seen=seen)
-        for child in (
-            getattr(operand, "sub_l", None),
-            getattr(operand, "sub_r", None),
-        )
-    )
+    """Compatibility wrapper for the shared portable operand-tree proof."""
+    return is_effect_free_operand_tree(operand, _seen=_seen)
 
 
 def _independent_comparison_dispatcher_region(

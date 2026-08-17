@@ -57,6 +57,9 @@ from d810.ir.varnode import Space, Varnode, varnode_from_mop_snapshot
 __all__ = [
     "InstructionProjection",
     "iter_operand_exprs",
+    "is_effect_free_operand_tree",
+    "operand_snapshots",
+    "operand_sizes",
     "operand_kinds",
     "operand_stack_offsets",
     "operand_stack_refs",
@@ -675,6 +678,69 @@ def iter_operand_exprs(mop: MopSnapshot | None) -> tuple[ExprRef, ...]:
     return tuple(exprs)
 
 
+_EFFECT_FREE_SCALAR_OPERANDS = frozenset(
+    {
+        OperandKind.EMPTY,
+        OperandKind.REGISTER,
+        OperandKind.STACK,
+        OperandKind.NUMBER,
+        OperandKind.BLOCK,
+    }
+)
+_EFFECT_FREE_PURE_SUBINSNS = frozenset(
+    {
+        InsnKind.NOP,
+        InsnKind.MOV,
+        InsnKind.XDU,
+        InsnKind.XDS,
+        InsnKind.ADD,
+        InsnKind.SUB,
+        InsnKind.AND,
+        InsnKind.MUL,
+    }
+)
+
+
+def is_effect_free_operand_tree(
+    operand: MopSnapshot | None,
+    *,
+    _seen: set[int] | None = None,
+) -> bool:
+    """Prove that a lifted operand tree contains no call/store/unknown effect.
+
+    Scalar register/stack/constant/block leaves are safe to inspect.  A
+    nested ``SUBINSN`` is admitted only for the portable pure arithmetic
+    families, and every child must satisfy the same contract.  Argument-list
+    children are deliberately rejected because they represent call-shaped
+    operands even when their leaves happen to be scalar.  This is shared by
+    portable dispatcher analyses and transform-side router coverage so effect
+    classification cannot drift between them.
+    """
+    if operand is None:
+        return True
+    kind = getattr(operand, "kind", None)
+    if kind in _EFFECT_FREE_SCALAR_OPERANDS:
+        return True
+    if kind is not OperandKind.SUBINSN:
+        return False
+    seen = set() if _seen is None else _seen
+    identity = id(operand)
+    if identity in seen:
+        return False
+    seen.add(identity)
+    if getattr(operand, "sub_kind", None) not in _EFFECT_FREE_PURE_SUBINSNS:
+        return False
+    if tuple(getattr(operand, "args", ()) or ()):
+        return False
+    return all(
+        is_effect_free_operand_tree(child, _seen=seen)
+        for child in (
+            getattr(operand, "sub_l", None),
+            getattr(operand, "sub_r", None),
+        )
+    )
+
+
 def project_assignment(insn: InsnSnapshot) -> Assignment | None:
     """Project a MOV-family ``InsnSnapshot`` to a portable assignment.
 
@@ -759,6 +825,33 @@ def operand_kinds(
         insn.l.kind if insn.l is not None else None,
         insn.r.kind if insn.r is not None else None,
         insn.d.kind if insn.d is not None else None,
+    )
+
+
+def operand_snapshots(
+    insn: InsnSnapshot,
+) -> tuple[MopSnapshot | None, MopSnapshot | None, MopSnapshot | None]:
+    """Return the portable l/r/d operand snapshots at the lift boundary.
+
+    Portable analyses should use this named projection rather than reaching
+    through the backend-shaped fields on ``InsnSnapshot``.  The tuple keeps
+    the operand order stable for consumers that need structure unavailable in
+    the canonical instruction projection, such as recursive purity checks.
+    """
+    return (insn.l, insn.r, insn.d)
+
+
+def operand_sizes(
+    insn: InsnSnapshot,
+) -> tuple[int, int, int]:
+    """Return known byte widths for the projected l/r/d operands.
+
+    Missing or unknown widths are represented as zero, matching the
+    fail-closed width checks used by portable analyses.
+    """
+    return tuple(
+        int(getattr(operand, "size", 0) or 0)
+        for operand in operand_snapshots(insn)
     )
 
 

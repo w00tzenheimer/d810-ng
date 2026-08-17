@@ -6,6 +6,8 @@ shared primitive, and proves ``recover_dispatcher`` computes reachability over a
 
 from __future__ import annotations
 
+import pytest
+
 from d810.analyses.control_flow.reachability import reachable_from
 from d810.capabilities.dispatcher import RouterKind
 from d810.analyses.control_flow.dispatcher_recovery import (
@@ -177,10 +179,16 @@ _PREFIX_NEXT = 11
 
 
 def _prefix_mov_const(
-    value: int, *, destination: int = _PREFIX_STATE_OFF
+    value: int,
+    *,
+    destination: int = _PREFIX_STATE_OFF,
+    source_size: int = 4,
+    destination_size: int = 4,
 ) -> InsnSnapshot:
-    source = MopSnapshot(kind=OperandKind.NUMBER, value=value, size=4)
-    dest = MopSnapshot(kind=OperandKind.STACK, stkoff=destination, size=4)
+    source = MopSnapshot(kind=OperandKind.NUMBER, value=value, size=source_size)
+    dest = MopSnapshot(
+        kind=OperandKind.STACK, stkoff=destination, size=destination_size
+    )
     return InsnSnapshot(
         opcode=2,
         ea=0x2000,
@@ -216,6 +224,89 @@ def _prefix_add() -> InsnSnapshot:
         r=right,
         d=dest,
         kind=InsnKind.ADD,
+    )
+
+
+def _prefix_state_overwrite(kind: InsnKind) -> InsnSnapshot:
+    left = MopSnapshot(kind=OperandKind.STACK, stkoff=0x50, size=4)
+    right = MopSnapshot(kind=OperandKind.NUMBER, value=1, size=4)
+    dest = MopSnapshot(kind=OperandKind.STACK, stkoff=_PREFIX_STATE_OFF, size=4)
+    return InsnSnapshot(
+        opcode=6,
+        ea=0x2005,
+        operands=(left, right, dest),
+        l=left,
+        r=right,
+        d=dest,
+        kind=kind,
+    )
+
+
+def _prefix_reg_mov_const(value: int) -> InsnSnapshot:
+    source = MopSnapshot(kind=OperandKind.NUMBER, value=value, size=4)
+    dest = MopSnapshot(kind=OperandKind.REGISTER, reg=20, size=4)
+    return InsnSnapshot(
+        opcode=2,
+        ea=0x2006,
+        operands=(source, dest),
+        l=source,
+        d=dest,
+        kind=InsnKind.MOV,
+    )
+
+
+def _prefix_reg_tail(const: int = _PREFIX_COMPARE_STATE) -> InsnSnapshot:
+    left = MopSnapshot(kind=OperandKind.REGISTER, reg=20, size=4)
+    right = MopSnapshot(kind=OperandKind.NUMBER, value=const, size=4)
+    dest = MopSnapshot(kind=OperandKind.BLOCK, block_ref=_PREFIX_NEXT)
+    return InsnSnapshot(
+        opcode=1,
+        ea=0x2011,
+        operands=(left, right, dest),
+        l=left,
+        r=right,
+        d=dest,
+        kind=InsnKind.EQUALITY_JUMP,
+        branch_predicate=PredicateKind.NE,
+        is_conditional_jump=True,
+    )
+
+
+def _prefix_nested_effect(kind: InsnKind) -> MopSnapshot:
+    inner = MopSnapshot(kind=OperandKind.SUBINSN, sub_kind=kind, size=4)
+    right = MopSnapshot(kind=OperandKind.NUMBER, value=1, size=4)
+    return MopSnapshot(
+        kind=OperandKind.SUBINSN,
+        sub_kind=InsnKind.ADD,
+        sub_l=inner,
+        sub_r=right,
+        size=4,
+    )
+
+
+def _prefix_add_with_source(source: MopSnapshot) -> InsnSnapshot:
+    right = MopSnapshot(kind=OperandKind.NUMBER, value=1, size=4)
+    dest = MopSnapshot(kind=OperandKind.STACK, stkoff=0x50, size=4)
+    return InsnSnapshot(
+        opcode=4,
+        ea=0x2007,
+        operands=(source, right, dest),
+        l=source,
+        r=right,
+        d=dest,
+        kind=InsnKind.ADD,
+    )
+
+
+def _prefix_reg_graph(prefix: tuple[InsnSnapshot, ...]) -> FlowGraph:
+    return FlowGraph(
+        blocks={
+            0: _prefix_block(0, (_PREFIX_HANDLER, _PREFIX_NEXT), (), prefix),
+            _PREFIX_HANDLER: _prefix_block(_PREFIX_HANDLER, (), (0,)),
+            _PREFIX_NEXT: _prefix_block(_PREFIX_NEXT, (), (0,)),
+        },
+        entry_serial=0,
+        func_ea=0x2000,
     )
 
 
@@ -306,16 +397,19 @@ def test_recover_dispatcher_threads_same_block_initial_state_to_map():
     assert recovery.dispatch_map.initial_state == _PREFIX_INITIAL_STATE
 
 
-def test_entry_dominated_initial_state_rejects_write_after_dispatch_tail():
+def test_entry_dominated_initial_state_stops_at_first_dispatch_tail():
     graph = _prefix_graph(
         (
-            _prefix_tail(),
             _prefix_mov_const(_PREFIX_INITIAL_STATE),
+            _prefix_tail(),
+            _prefix_mov_nonconstant(),
             _prefix_tail(_PREFIX_COMPARE_STATE + 1),
         )
     )
 
-    assert recover_entry_dominated_initial_state(graph, _prefix_dmap(graph)) is None
+    assert recover_entry_dominated_initial_state(graph, _prefix_dmap(graph)) == (
+        _PREFIX_INITIAL_STATE
+    )
 
 
 def test_entry_dominated_initial_state_rejects_conflicting_prefix_writes():
@@ -350,6 +444,153 @@ def test_entry_dominated_initial_state_rejects_effect_barrier_after_write():
     )
 
     assert recover_entry_dominated_initial_state(graph, _prefix_dmap(graph)) is None
+
+
+@pytest.mark.parametrize(
+    "kind",
+    (
+        InsnKind.ADD,
+        InsnKind.SUB,
+        InsnKind.AND,
+        InsnKind.MUL,
+        InsnKind.XDU,
+        InsnKind.XDS,
+    ),
+)
+def test_entry_dominated_initial_state_rejects_arithmetic_state_overwrite(
+    kind: InsnKind,
+):
+    graph = _prefix_graph(
+        (_prefix_mov_const(_PREFIX_INITIAL_STATE), _prefix_state_overwrite(kind), _prefix_tail())
+    )
+
+    assert recover_entry_dominated_initial_state(graph, _prefix_dmap(graph)) is None
+
+
+@pytest.mark.parametrize("nested_kind", (InsnKind.CALL, InsnKind.STORE, InsnKind.UNKNOWN))
+def test_entry_dominated_initial_state_rejects_nested_effect_operand(
+    nested_kind: InsnKind,
+):
+    graph = _prefix_graph(
+        (
+            _prefix_mov_const(_PREFIX_INITIAL_STATE),
+            _prefix_add_with_source(_prefix_nested_effect(nested_kind)),
+            _prefix_tail(),
+        )
+    )
+
+    assert recover_entry_dominated_initial_state(graph, _prefix_dmap(graph)) is None
+
+
+def test_entry_dominated_initial_state_rejects_mixed_64_to_32_write():
+    graph = _prefix_graph(
+        (
+            _prefix_mov_const(
+                _PREFIX_INITIAL_STATE,
+                source_size=8,
+                destination_size=4,
+            ),
+            _prefix_tail(),
+        )
+    )
+
+    assert recover_entry_dominated_initial_state(graph, _prefix_dmap(graph)) is None
+
+
+def test_entry_dominated_initial_state_rejects_unknown_write_width():
+    graph = _prefix_graph(
+        (
+            _prefix_mov_const(
+                _PREFIX_INITIAL_STATE,
+                source_size=0,
+                destination_size=4,
+            ),
+            _prefix_tail(),
+        )
+    )
+
+    assert recover_entry_dominated_initial_state(graph, _prefix_dmap(graph)) is None
+
+
+def test_entry_dominated_initial_state_normalizes_32_bit_literal():
+    graph = _prefix_graph(
+        (
+            _prefix_mov_const(
+                0x100000001,
+                source_size=4,
+                destination_size=4,
+            ),
+            _prefix_tail(),
+        )
+    )
+
+    assert recover_entry_dominated_initial_state(graph, _prefix_dmap(graph)) == 1
+
+
+def test_entry_dominated_initial_state_rejects_mixed_dispatcher_state_width():
+    graph = _prefix_graph(
+        (
+            _prefix_mov_const(_PREFIX_INITIAL_STATE),
+            _prefix_tail(),
+        )
+    )
+    block = graph.blocks[0]
+    tail = block.tail
+    assert tail is not None
+    wide_left = MopSnapshot(kind=OperandKind.STACK, stkoff=_PREFIX_STATE_OFF, size=8)
+    wide_tail = InsnSnapshot(
+        opcode=tail.opcode,
+        ea=tail.ea,
+        operands=(wide_left, tail.r, tail.d),
+        l=wide_left,
+        r=tail.r,
+        d=tail.d,
+        kind=tail.kind,
+        branch_predicate=tail.branch_predicate,
+        is_conditional_jump=True,
+    )
+    blocks = dict(graph.blocks)
+    blocks[0] = _prefix_block(
+        0,
+        (_PREFIX_HANDLER, _PREFIX_NEXT),
+        (),
+        (_prefix_mov_const(_PREFIX_INITIAL_STATE), wide_tail),
+    )
+    wide_graph = FlowGraph(blocks=blocks, entry_serial=0, func_ea=graph.func_ea)
+
+    assert recover_entry_dominated_initial_state(wide_graph, _prefix_dmap(wide_graph)) is None
+
+
+def test_predecessor_register_initialization_remains_unhandled():
+    graph = FlowGraph(
+        blocks={
+            0: _prefix_block(0, (1,), (), (_prefix_reg_mov_const(_PREFIX_INITIAL_STATE),)),
+            1: _prefix_block(1, (_PREFIX_HANDLER, _PREFIX_NEXT), (0, 3), (_prefix_reg_tail(),)),
+            _PREFIX_HANDLER: _prefix_block(_PREFIX_HANDLER, (), (1,)),
+            _PREFIX_NEXT: _prefix_block(_PREFIX_NEXT, (), (1,)),
+            3: _prefix_block(3, (1,), (1,)),
+        },
+        entry_serial=0,
+        func_ea=0x2000,
+    )
+    dmap = build_state_dispatcher_map_from_flow_graph(graph)
+    assert dmap is not None
+    assert dmap.state_var_stkoff is None
+    assert dmap.state_var_reg == 20
+
+    assert recover_entry_dominated_initial_state(graph, dmap) is None
+
+
+def test_same_block_register_initialization_is_recovered():
+    graph = _prefix_reg_graph(
+        (_prefix_reg_mov_const(_PREFIX_INITIAL_STATE), _prefix_reg_tail())
+    )
+    dmap = build_state_dispatcher_map_from_flow_graph(graph)
+    assert dmap is not None
+    assert dmap.state_var_stkoff is None
+    assert dmap.state_var_reg == 20
+
+    assert recover_entry_dominated_initial_state(graph, dmap) == _PREFIX_INITIAL_STATE
 
 
 def test_predecessor_initialization_behavior_is_unchanged():
