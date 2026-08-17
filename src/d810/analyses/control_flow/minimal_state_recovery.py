@@ -433,6 +433,7 @@ def enrich_native_bound_transition_routes(
                 transition,
                 next_state=state,
                 target_handler=target,
+                is_return=False,
                 proof=TransitionProof(
                     "native_bound_transition_route",
                     "native_bound_route",

@@ -13,6 +13,8 @@ import unittest
 from contextlib import contextmanager
 from pathlib import Path
 
+import pytest
+
 
 class MockIdaDiskio:
     """Mock for ida_diskio module."""
@@ -265,6 +267,42 @@ class TestConfiguration(unittest.TestCase):
             "recover_state_transitions",
             lower["contract"]["requires"]["analyses"],
         )
+
+
+def _bundled_config_v2_lower_state_machine_paths():
+    conf_dir = Path(__file__).parents[3] / "src/d810/conf"
+    paths = []
+    for config_path in sorted(conf_dir.glob("*.json")):
+        config = json.loads(config_path.read_text())
+        pipeline = config.get("additional_configuration", {}).get(
+            "pipeline_v2",
+            config.get("pipeline_v2", ()),
+        )
+        if any(entry.get("pass_id") == "lower_state_machine" for entry in pipeline):
+            paths.append(config_path)
+    return tuple(paths)
+
+
+@pytest.mark.parametrize(
+    "config_path",
+    _bundled_config_v2_lower_state_machine_paths(),
+    ids=lambda path: path.name,
+)
+def test_every_bundled_config_v2_lowering_declares_recovered_transitions(
+    config_path,
+):
+    config = json.loads(config_path.read_text())
+    pipeline = config.get("additional_configuration", {}).get(
+        "pipeline_v2",
+        config.get("pipeline_v2", ()),
+    )
+    pass_ids = [entry["pass_id"] for entry in pipeline]
+    recover_index = pass_ids.index("recover_state_transitions")
+    lower = pipeline[pass_ids.index("lower_state_machine")]
+
+    assert recover_index < pass_ids.index("lower_state_machine")
+    assert "recover_state_transitions" in lower["analyses"]["required"]
+    assert "recover_state_transitions" in lower["contract"]["requires"]["analyses"]
 
 
 if __name__ == "__main__":

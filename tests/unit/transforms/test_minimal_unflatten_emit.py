@@ -521,7 +521,7 @@ def test_native_bound_route_enriches_unresolved_entry_transition() -> None:
     assert enriched.target_handler == 20
     assert enriched.branch_arm == transition.branch_arm
     assert enriched.via_block == transition.via_block
-    assert enriched.is_return is transition.is_return
+    assert enriched.is_return is False
     assert enriched.proof is not None
     assert enriched.proof.oracle_kind == "native_bound_transition_route"
     assert enriched.proof.kind == "native_bound_route"
@@ -625,6 +625,104 @@ def test_native_bound_route_receipt_identifies_accepted_current_route(monkeypatc
             "target_block": "blk[20]@0x1500",
         },
     )
+
+
+def test_native_bound_route_recovers_initial_state_and_entry_bridge(monkeypatch):
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (2,), ()),
+            2: _b(2, (20,), (0, 20)),
+            20: _b(20, (2,), (2,)),
+            99: _b(99, (), ()),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    state = 0x16AA65E9
+    disp = _disp({state: 20}, exit_block=99)
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "recover_state_write_transitions_via_partitioned_fixpoint",
+        lambda *_args, **_kwargs: (
+            StateWriteTransition(0, None, None, True, None),
+        ),
+    )
+    route = _native_bound_route(source=0, state=state, target=20)
+    enriched = enrich_native_bound_transition_routes(
+        (StateWriteTransition(0, None, None, True, None),),
+        (route,),
+    )
+    assert _recover_initial_state(
+        fg,
+        enriched,
+        2,
+        None,
+        state_var_stkoff=_STATE,
+    ) == state
+
+    plan = emit_minimal_unflatten(
+        fg,
+        disp,
+        state_var_stkoff=_STATE,
+        dispatcher_entry_serial=2,
+        native_bound_transition_routes=(route,),
+    )
+
+    gotos = {
+        (mod.from_serial, mod.old_target, mod.new_target)
+        for mod in graph_modifications(plan)
+        if isinstance(mod, RedirectGoto)
+    }
+    assert (0, 2, 20) in gotos
+
+
+def test_native_bound_route_receipt_is_absent_after_use_def_veto(
+    monkeypatch,
+):
+    fg = FlowGraph(
+        blocks={
+            0: _b(0, (2,), ()),
+            2: _b(2, (10, 20), (0, 10, 20)),
+            10: _b(10, (2,), (2,)),
+            20: _b(20, (2,), (2,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    disp = _disp({0x10: 10, 0x20: 20}, exit_block=99)
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "recover_state_write_transitions_via_partitioned_fixpoint",
+        lambda *_args, **_kwargs: (
+            StateWriteTransition(10, None, None, True, None),
+        ),
+    )
+    monkeypatch.setenv("D810_USE_DEF_VETO", "1")
+
+    class _UseDefSafety:
+        @staticmethod
+        def redirect_use_def_violations(*_args: object) -> tuple[object, ...]:
+            return (SimpleNamespace(var_stkoff=_CARRIER_OFF),)
+
+    route = _native_bound_route(
+        source=10,
+        state=0x20,
+        target=20,
+        fact_id="transition:veto",
+    )
+    plan = emit_minimal_unflatten(
+        fg,
+        disp,
+        state_var_stkoff=_STATE,
+        dispatcher_entry_serial=2,
+        initial_state=0x10,
+        native_bound_transition_routes=(route,),
+        use_def_safety=_UseDefSafety(),
+        live_function=object(),
+    )
+
+    assert graph_modifications(plan) == []
+    assert NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA not in plan.metadata_dict()
 
 
 def test_materialized_state_route_rebinds_to_exact_imported_handler_owner() -> None:

@@ -7518,7 +7518,10 @@ def emit_minimal_unflatten(
         }
 
     def attach_native_bound_route_receipts(plan: PatchPlan) -> PatchPlan:
-        if not native_bound_route_receipts:
+        if (
+            not native_bound_route_receipts
+            or (not plan.steps and not plan.new_blocks)
+        ):
             return plan
         return plan.with_metadata(
             **{

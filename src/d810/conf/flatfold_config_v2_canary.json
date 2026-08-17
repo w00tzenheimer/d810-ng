@@ -657,6 +657,7 @@
           "required": [
             "plan_semantic_regions",
             "recover_dispatcher",
+            "recover_state_transitions",
             "transition_result"
           ],
           "provided": [
@@ -685,6 +686,7 @@
             "analyses": [
               "plan_semantic_regions",
               "recover_dispatcher",
+              "recover_state_transitions",
               "transition_result"
             ],
             "evidence": [],
