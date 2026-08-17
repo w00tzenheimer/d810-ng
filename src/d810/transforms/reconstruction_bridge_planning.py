@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from d810.analyses.control_flow.concrete_state_route import (
+    resolve_concrete_state_route,
+)
 from d810.core.logging import getLogger
 from d810.ir.block_identity import (
     block_label,
@@ -80,17 +83,13 @@ def _resolve_exact_then_interval(
     exact_dispatcher_map=None,
     dispatcher=None,
 ) -> int | None:
-    """Resolve a concrete state through exact rows before interval fallback."""
-    normalized = int(state_value) & 0xFFFFFFFF
-    exact_resolver = getattr(exact_dispatcher_map, "resolve_target", None)
-    if callable(exact_resolver):
-        exact = exact_resolver(normalized)
-        if exact is not None:
-            return int(exact)
-    if dispatcher is None:
-        return None
-    resolved = dispatcher.lookup(normalized)
-    return int(resolved) if resolved is not None else None
+    """Resolve a concrete state through shared exact/interval evidence."""
+    route = resolve_concrete_state_route(
+        state_value,
+        exact_dispatcher_map=exact_dispatcher_map,
+        interval_dispatcher=dispatcher,
+    )
+    return route.target_block if route is not None else None
 
 
 def _edge_kind_name(edge) -> str:
