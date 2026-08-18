@@ -42,7 +42,6 @@ from d810.passes.pass_pipeline import (
     live_mba,
     no_caps,
 )
-from d810.passes.pipeline_shadow import PipelineShadowMismatchError
 from d810.passes.scheduler import PassScheduler, RunLater, RunLaterDomain
 from d810.passes.registry import PassRegistry
 from d810.transforms.cfg_transaction import LogicalBlockRef
@@ -200,8 +199,6 @@ def _run_specs(
     backend=None,
     maturity=IRMaturity.CANONICAL,
     project_config=None,
-    pipeline_v2_shadow_registry=None,
-    require_pipeline_v2_shadow_match=False,
     capabilities=None,
 ):
     class _OneShot:
@@ -221,8 +218,7 @@ def _run_specs(
         project_config=project_config,
         maturity=maturity,
         capabilities=capabilities,
-        pipeline_v2_shadow_registry=pipeline_v2_shadow_registry,
-        require_pipeline_v2_shadow_match=require_pipeline_v2_shadow_match,
+        pipeline_v2_specs=specs,
     )
 
 
@@ -348,66 +344,25 @@ def _recording_pass(name: str, calls: list[str]):
     return type("_RecordPass", (), {"name": name, "run": run})
 
 
-def test_pipeline_v2_shadow_gate_missing_config_runs_live_specs():
-    calls: list[str] = []
-    live_pass = _recording_pass("live", calls)
-    spec = PassSpec("live", live_pass, no_caps, default)
-    registry = PassRegistry()
-    registry.register("live", _recording_pass("configured", calls))
+def test_driver_requires_compiled_v2_specs_before_family_detection():
+    class _LegacyFallback:
+        name = "legacy_fallback"
 
-    _run_specs(
-        (spec,),
-        project_config={},
-        pipeline_v2_shadow_registry=registry,
-        require_pipeline_v2_shadow_match=True,
-    )
+        def detect(self, graph, capabilities, context=None):
+            raise AssertionError("legacy family detection must not run")
 
-    assert calls == ["live"]
+        def pipeline_for(self, match, context):
+            raise AssertionError("legacy family pipeline must not run")
 
-
-def test_pipeline_v2_shadow_gate_matching_config_runs_live_not_configured_specs():
-    calls: list[str] = []
-    spec = PassSpec("live", _recording_pass("live", calls), no_caps, default)
-    registry = PassRegistry()
-    registry.register("live", _recording_pass("configured", calls))
-
-    _run_specs(
-        (spec,),
-        project_config={"pipeline_v2": [spec.config.to_dict()]},
-        pipeline_v2_shadow_registry=registry,
-        require_pipeline_v2_shadow_match=True,
-    )
-
-    assert calls == ["live"]
-
-
-def test_pipeline_v2_shadow_gate_drift_fails_before_pass_execution():
-    calls: list[str] = []
-    first = PassSpec("first", _recording_pass("first", calls), no_caps, default)
-    second = PassSpec("second", _recording_pass("second", calls), no_caps, default)
-    registry = PassRegistry()
-    registry.register("first", _recording_pass("configured_first", calls))
-    registry.register("second", _recording_pass("configured_second", calls))
-
-    with pytest.raises(PipelineShadowMismatchError):
-        _run_specs(
-            (first, second),
-            project_config={"pipeline_v2": [first.config.to_dict()]},
-            pipeline_v2_shadow_registry=registry,
-            require_pipeline_v2_shadow_match=True,
+    with pytest.raises(PipelineConfigError, match="pipeline_v2_specs"):
+        run_pipeline(
+            source=_Src(),
+            family=_LegacyFallback(),
+            backend=_Backend(),
+            facts=AnalysisManager(_GRAPH),
+            project_config={},
+            maturity=IRMaturity.CANONICAL,
         )
-
-    assert calls == []
-
-
-def test_pipeline_v2_shadow_gate_requires_registry_when_enabled():
-    calls: list[str] = []
-    spec = PassSpec("live", _recording_pass("live", calls), no_caps, default)
-
-    with pytest.raises(PipelineConfigError, match="requires a pass registry"):
-        _run_specs((spec,), require_pipeline_v2_shadow_match=True)
-
-    assert calls == []
 
 
 def test_config_v2_specs_execute_configured_pipeline_without_family_detection():
@@ -433,7 +388,7 @@ def test_config_v2_specs_execute_configured_pipeline_without_family_detection():
         family=_NoDetect(),
         backend=_Backend(),
         facts=AnalysisManager(_GRAPH),
-        project_config={"pipeline_v2_mode": "config-v2"},
+        project_config=None,
         maturity=IRMaturity.CANONICAL,
         pipeline_v2_specs=(configured,),
     )
@@ -457,7 +412,7 @@ def test_config_v2_specs_reject_empty_configured_pipeline():
             family=_NoDetect(),
             backend=_Backend(),
             facts=AnalysisManager(_GRAPH),
-            project_config={"pipeline_v2_mode": "config-v2"},
+            project_config=None,
             maturity=IRMaturity.CANONICAL,
             pipeline_v2_specs=(),
         )
@@ -473,6 +428,7 @@ def test_run_pipeline_runs_all_five_passes_no_apply_on_empty_plans():
         facts=facts,
         project_config=None,
         maturity=None,
+        pipeline_v2_specs=standard_state_machine_passes(),
     )
     # skeleton transforms emit empty plans -> backend.apply never called, graph unchanged.
     assert backend.applied == 0
@@ -491,6 +447,7 @@ def test_run_pipeline_does_not_record_empty_run_later_requests():
         project_config=None,
         maturity=IRMaturity.CANONICAL,
         scheduler=scheduler,
+        pipeline_v2_specs=standard_state_machine_passes(),
     )
     assert scheduler.requests == []
 
@@ -732,19 +689,6 @@ def test_real_lower_contract_native_safety_reaches_backend():
     ]
 
 
-def test_run_pipeline_no_match_is_a_noop():
-    backend = _Backend()
-    out = run_pipeline(
-        source=_Src(),
-        family=HodurFamily(),
-        backend=backend,  # detect() -> None
-        facts=_Facts(),
-        project_config=None,
-        maturity=None,
-    )
-    assert backend.applied == 0 and out is _GRAPH
-
-
 def test_run_pipeline_applies_nonempty_plan_and_invalidates():
     """A pass that emits a real plan drives backend.apply + facts.invalidate + re-context."""
 
@@ -774,6 +718,7 @@ def test_run_pipeline_applies_nonempty_plan_and_invalidates():
         facts=facts,
         project_config=None,
         maturity=None,
+        pipeline_v2_specs=_OneShot().pipeline_for(None, None),
     )
     assert backend.applied == 1
     assert facts.invalidations == 1
@@ -814,6 +759,7 @@ def test_missing_required_analysis_raises_contract_error():
             facts=AnalysisManager(_GRAPH),
             project_config=None,
             maturity=IRMaturity.CANONICAL,
+            pipeline_v2_specs=_OneShot().pipeline_for(None, None),
         )
 
 
@@ -854,6 +800,7 @@ def test_required_analysis_present_runs():
         facts=facts,
         project_config=None,
         maturity=IRMaturity.CANONICAL,
+        pipeline_v2_specs=_OneShot().pipeline_for(None, None),
     )
 
     assert out is _GRAPH
@@ -900,6 +847,7 @@ def test_required_analysis_provider_runs():
         facts=facts,
         project_config=None,
         maturity=IRMaturity.CANONICAL,
+        pipeline_v2_specs=_OneShot().pipeline_for(None, None),
     )
 
     assert out is _GRAPH
@@ -2391,6 +2339,7 @@ def test_declared_analysis_output_is_visible_to_later_pass():
         facts=AnalysisManager(_GRAPH),
         project_config=None,
         maturity=IRMaturity.CANONICAL,
+        pipeline_v2_specs=_TwoPasses().pipeline_for(None, None),
     )
 
 
@@ -2418,6 +2367,7 @@ def test_undeclared_analysis_output_is_rejected():
             facts=AnalysisManager(_GRAPH),
             project_config=None,
             maturity=IRMaturity.CANONICAL,
+            pipeline_v2_specs=_OneShot().pipeline_for(None, None),
         )
 
 
@@ -2457,6 +2407,7 @@ def test_analysis_only_pass_with_empty_plan_succeeds():
         facts=facts,
         project_config=None,
         maturity=IRMaturity.CANONICAL,
+        pipeline_v2_specs=_OneShot().pipeline_for(None, None),
     )
 
     assert out is _GRAPH
@@ -2504,6 +2455,7 @@ def test_analysis_only_pass_with_rewrite_plan_fails_before_apply():
             facts=facts,
             project_config=None,
             maturity=IRMaturity.CANONICAL,
+            pipeline_v2_specs=_OneShot().pipeline_for(None, None),
         )
 
     assert backend.applied == 0
@@ -2682,6 +2634,7 @@ def test_mutation_backend_pass_with_rewrite_plan_still_applies():
         facts=facts,
         project_config=None,
         maturity=IRMaturity.CANONICAL,
+        pipeline_v2_specs=_OneShot().pipeline_for(None, None),
     )
 
     assert backend.applied == 1
@@ -2729,6 +2682,7 @@ def test_noop_backend_apply_preserves_analysis_epoch():
         facts=facts,
         project_config=None,
         maturity=IRMaturity.CANONICAL,
+        pipeline_v2_specs=_TwoPasses().pipeline_for(None, None),
     )
 
     assert out is _GRAPH
@@ -2768,6 +2722,7 @@ def test_spec_preservation_applies_when_result_omits_preservation():
         facts=facts,
         project_config=None,
         maturity=IRMaturity.CANONICAL,
+        pipeline_v2_specs=_OneShot().pipeline_for(None, None),
     )
 
     assert facts.last_preserved == PreservedAnalyses.preserving({"domtree"})
@@ -2809,6 +2764,7 @@ def test_result_preservation_overrides_spec_default():
         facts=facts,
         project_config=None,
         maturity=IRMaturity.CANONICAL,
+        pipeline_v2_specs=_OneShot().pipeline_for(None, None),
     )
 
     assert facts.last_preserved == PreservedAnalyses.none()
@@ -2845,6 +2801,7 @@ def test_run_pipeline_records_pass_result_run_later_requests():
         project_config=None,
         maturity=IRMaturity.CANONICAL,
         scheduler=scheduler,
+        pipeline_v2_specs=_OneShot().pipeline_for(None, None),
     )
 
     assert out is _GRAPH
@@ -2901,6 +2858,7 @@ def test_run_pipeline_drains_pipeline_domain_into_worklist_without_duplicate():
         project_config=None,
         maturity=IRMaturity.CANONICAL,
         scheduler=scheduler,
+        pipeline_v2_specs=_OneShot().pipeline_for(None, None),
     )
 
     assert calls == [IRMaturity.CANONICAL]
@@ -2920,6 +2878,7 @@ def test_run_pipeline_drains_pipeline_domain_into_worklist_without_duplicate():
         project_config=None,
         maturity=IRMaturity.GLOBAL_ANALYZED,
         scheduler=scheduler,
+        pipeline_v2_specs=_OneShot().pipeline_for(None, None),
     )
 
     assert calls == [
@@ -2982,6 +2941,7 @@ def test_run_pipeline_scheduled_worklist_pass_dedupes_at_normal_position():
         project_config=None,
         maturity=IRMaturity.GLOBAL_ANALYZED,
         scheduler=scheduler,
+        pipeline_v2_specs=_TwoPasses().pipeline_for(None, None),
     )
 
     assert calls == ["first", "second"]
@@ -3047,6 +3007,7 @@ def test_run_pipeline_replay_after_pipeline_policy_is_explicit_opt_in():
         project_config=None,
         maturity=IRMaturity.GLOBAL_ANALYZED,
         scheduler=scheduler,
+        pipeline_v2_specs=_TwoPasses().pipeline_for(None, None),
     )
 
     assert calls == ["first", "second", "second"]
@@ -3390,7 +3351,6 @@ def test_select_family_threads_runtime_dispatcher_exclusions(monkeypatch):
 def test_effective_family_selection_config_preserves_rule_options_and_project_policy():
     assert effective_family_selection_config(
         project_config={
-            "pipeline_v2_mode": "config-v2",
             "router_resolution": {"require": "tigress"},
         },
         rule_config={
@@ -3399,7 +3359,6 @@ def test_effective_family_selection_config_preserves_rule_options_and_project_po
         },
     ) == {
         "recovery_engine": "reduced_product",
-        "pipeline_v2_mode": "config-v2",
         "router_resolution": {"require": "tigress"},
     }
 
@@ -3473,7 +3432,7 @@ def _run_config_v2(
         family=_NeverDetect(),
         backend=backend if backend is not None else _Backend(),
         facts=facts if facts is not None else AnalysisManager(_GRAPH),
-        project_config={"pipeline_v2_mode": "config-v2"},
+        project_config=None,
         maturity=maturity,
         pipeline_v2_specs=specs,
         journal=journal,
@@ -3695,34 +3654,6 @@ def test_driver_without_a_journal_records_nothing_and_behaves_as_before() -> Non
 
     assert calls == ["no_effect"]
     assert out is _GRAPH
-
-
-def test_legacy_family_pipeline_never_records_attempts_even_with_a_journal() -> None:
-    """Attempt recording is mandatory for config-v2 only, never the legacy path."""
-    session = DecompilationSessionId.new()
-    journal = _journal_store()
-
-    try:
-        _run_specs(
-            (PassSpec("live", _recording_pass("live", []), no_caps, default),),
-        )
-        # The legacy call path (``_run_specs``) never threads pipeline_v2_specs,
-        # so run_pipeline below is the direct equivalent with a journal attached
-        # to prove the family-detected (non config-v2) path stays silent.
-        run_pipeline(
-            source=_Src(),
-            family=_MatchingHodur(),
-            backend=_Backend(),
-            facts=AnalysisManager(_GRAPH),
-            project_config=None,
-            maturity=IRMaturity.CANONICAL,
-            journal=journal,
-            session_id=session,
-        )
-
-        assert journal.attempts_for_session(session) == ()
-    finally:
-        journal.close()
 
 
 def test_session_id_defaults_when_a_journal_is_given_without_one() -> None:

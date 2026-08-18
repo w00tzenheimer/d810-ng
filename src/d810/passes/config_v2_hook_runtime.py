@@ -51,7 +51,7 @@ from d810.passes.rotate_idiom_recovery import (
 )
 from d810.passes.pass_pipeline import PipelineConfig, PipelineConfigError
 from d810.passes.pipeline_config_parser import (
-    pipeline_configs_from_project_config,
+    require_config_v2_project,
 )
 from d810.passes.state_machine_options import (
     STATE_MACHINE_NATIVE_PASS_IDS,
@@ -60,17 +60,12 @@ from d810.passes.state_machine_options import (
     state_machine_cff_options_from_config,
 )
 
-STATE_MACHINE_UNFLATTENER_RULE = "StateMachineCffUnflattener"
-STATE_MACHINE_RUNTIME_HOST = STATE_MACHINE_UNFLATTENER_RULE
-
-
-def _migration_message(project_path: object) -> str:
-    path = str(project_path) if project_path is not None else "PROJECT"
-    return (
-        f"project {path} has no non-empty additional_configuration.pipeline_v2; "
-        "migrate it with: python tools/migrations/migrate_project_config_v2.py "
-        f"{path} --in-place"
-    )
+# This is an internal hook binding identity.  Projects select the typed native
+# pass IDs and never name the Hex-Rays callback implementation.
+STATE_MACHINE_RUNTIME_HOST = "__d810_state_machine_runtime_host__"
+# Transitional bridge export; the bridge module is removed in the next cutover
+# task.  Keep it identical to the private binding so no second identity exists.
+STATE_MACHINE_UNFLATTENER_RULE = STATE_MACHINE_RUNTIME_HOST
 
 
 @dataclass(frozen=True, slots=True)
@@ -342,29 +337,16 @@ def _constrain_state_machine_constant_schedule(
 
 
 def _runtime_pipeline_configs(project_config) -> tuple[PipelineConfig, ...]:
-    """Parse the required v2 payload and attach the offline migration remedy."""
-    try:
-        configs = pipeline_configs_from_project_config(project_config)
-    except PipelineConfigError as exc:
-        if "pipeline_v2 must contain at least one pass config" in str(exc):
-            raise PipelineConfigError(
-                _migration_message(getattr(project_config, "path", None))
-            ) from exc
-        raise
-    if not configs:
-        raise PipelineConfigError(
-            _migration_message(getattr(project_config, "path", None))
-        )
-    return configs
+    """Validate and parse the required canonical v2 payload."""
+    return require_config_v2_project(project_config)
 
 
 def compile_config_v2_hook_schedule(project_config) -> ConfigV2HookSchedule:
     """Compile one non-empty typed v2 pipeline into callback bindings.
 
-    ``pipeline_configs_from_project_config`` intentionally remains a permissive
-    parser for the migration release.  This runtime boundary is stricter: a
-    missing or empty pipeline is never treated as an inert activation and gets
-    a copyable offline migration command instead.
+    The strict canonical parser rejects missing or empty pipelines, active
+    legacy rules, and retired runtime mode metadata before any hook binding is
+    materialized.
     """
     configs = _runtime_pipeline_configs(project_config)
     _validate_constant_simplification_ownership(configs)

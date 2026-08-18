@@ -2736,6 +2736,17 @@ class TestUnflattenBoundedRerunGate:
 
         rule = StateMachineCffUnflattener()
         rule.config = {}
+        rule.set_project_config(
+            {
+                "pipeline_v2": [
+                    {"pass_id": "recover_dispatcher"},
+                    {"pass_id": "recover_state_transitions"},
+                    {"pass_id": "plan_semantic_regions"},
+                    {"pass_id": "lower_state_machine"},
+                    {"pass_id": "cleanup_residual_dispatcher"},
+                ]
+            }
+        )
         rule.flow_context = SimpleNamespace(
             validated_fact_view=lambda _maturity: fact_view,
             new_mba_mutation_gateway=lambda: object(),
@@ -2883,7 +2894,6 @@ class TestUnflattenBoundedRerunGate:
             "enable_transition_validator": True,
         }
         project_config = {
-            "pipeline_v2_mode": "config-v2",
             "pipeline_v2": [
                 {"pass_id": "recover_dispatcher"},
                 {"pass_id": "recover_state_transitions"},
@@ -2909,11 +2919,6 @@ class TestUnflattenBoundedRerunGate:
         monkeypatch.setattr(
             StateMachineCffUnflattener,
             "_publish_unflat_diagnostics",
-            lambda self, *args, **kwargs: None,
-        )
-        monkeypatch.setattr(
-            StateMachineCffUnflattener,
-            "_log_pipeline_v2_shadow",
             lambda self, *args, **kwargs: None,
         )
         monkeypatch.setattr(unflat_mod, "FunctionPassManager", _FunctionPassManager)
@@ -3008,9 +3013,7 @@ class TestUnflattenBoundedRerunGate:
         assert captured["journal"] is journal
         assert captured["session_id"] == session_id
         assert captured["parent_attempt_id"] == parent_attempt_id
-        assert "pipeline_v2_shadow_registry" not in captured
         assert captured["reset_func"] == _EA
-        assert rule._last_pipeline_v2_mode == "config-v2"
         assert rule._last_config_v2_pass_ids == (
             "recover_dispatcher",
             "recover_state_transitions",
@@ -3043,7 +3046,6 @@ class TestUnflattenBoundedRerunGate:
         )
         manager.add_rule(rule)
         manager.configure(
-            pipeline_v2_mode="config-v2",
             pipeline_v2=({"pass_id": "recover_dispatcher"},),
             profile_guidance_enabled=True,
             profile_guidance_budget_ms=3.5,
@@ -3051,7 +3053,6 @@ class TestUnflattenBoundedRerunGate:
         )
 
         assert rule.project_configs[-1] == {
-            "pipeline_v2_mode": "config-v2",
             "pipeline_v2": ({"pass_id": "recover_dispatcher"},),
             "profile_guidance_enabled": True,
             "profile_guidance_budget_ms": 3.5,

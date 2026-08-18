@@ -27,21 +27,20 @@ _CONF_DIR = Path("src/d810/conf")
 def _config_v2_project(name: str) -> ProjectConfiguration:
     canonical = ProjectConfiguration.from_file(_CONF_DIR / f"{name}.json")
     additional_configuration = dict(canonical.additional_configuration)
-    additional_configuration["pipeline_v2_mode"] = "config-v2"
     return ProjectConfiguration(
         path=Path(f"{name}.runtime-config-v2.json"),
         description=canonical.description,
         ins_rules=[
             RuleConfiguration(
                 name="CopiedLegacyInstructionRule",
-                is_activated=True,
+                is_activated=False,
                 config={"must_not": "leak"},
             )
         ],
         blk_rules=[
             RuleConfiguration(
                 name="CopiedLegacyBlockRule",
-                is_activated=True,
+                is_activated=False,
                 config={"must_not": "leak"},
             )
         ],
@@ -53,7 +52,6 @@ def test_constant_simplification_bundle_expands_to_private_live_stages():
     project = ProjectConfiguration(
         path=Path("constant-simplification.runtime-config-v2.json"),
         additional_configuration={
-            "pipeline_v2_mode": "config-v2",
             "pipeline_v2": [
                 {
                     "pass_id": "constant-simplification",
@@ -123,7 +121,6 @@ def test_constant_bundle_rejects_duplicate_or_former_constant_selection(
     project = ProjectConfiguration(
         path=Path("constant-conflict.runtime-config-v2.json"),
         additional_configuration={
-            "pipeline_v2_mode": "config-v2",
             "pipeline_v2": [
                 {
                     "pass_id": "constant-simplification",
@@ -187,7 +184,6 @@ def test_state_machine_plus_constant_bundle_schedules_one_late_flow_fold():
     project = ProjectConfiguration(
         path=Path("state-machine-constant.runtime-config-v2.json"),
         additional_configuration={
-            "pipeline_v2_mode": "config-v2",
             "pipeline_v2": [
                 *(
                     {"pass_id": pass_id, "options": {}}
@@ -217,7 +213,6 @@ def test_state_cff_bridge_accepts_typed_direct_threshold_on_the_complete_spine()
     project = ProjectConfiguration(
         path=Path("typed-state-cff.runtime-config-v2.json"),
         additional_configuration={
-            "pipeline_v2_mode": "config-v2",
             "pipeline_v2": [
                 {
                     "pass_id": pass_id,
@@ -241,7 +236,6 @@ def test_state_cff_bridge_maps_public_modes_only_at_the_private_hook_boundary():
     project = ProjectConfiguration(
         path=Path("typed-state-cff.runtime-config-v2.json"),
         additional_configuration={
-            "pipeline_v2_mode": "config-v2",
             "pipeline_v2": [
                 {
                     "pass_id": pass_id,
@@ -269,7 +263,6 @@ def test_state_cff_bridge_rejects_disagreeing_typed_thresholds():
     project = ProjectConfiguration(
         path=Path("divergent-state-cff.runtime-config-v2.json"),
         additional_configuration={
-            "pipeline_v2_mode": "config-v2",
             "pipeline_v2": [
                 {
                     "pass_id": pass_id,
@@ -388,7 +381,6 @@ def test_unsupported_non_spine_pass_fails_closed():
     project = ProjectConfiguration(
         path=Path("unsupported.runtime-config-v2.json"),
         additional_configuration={
-            "pipeline_v2_mode": "config-v2",
             "pipeline_v2": [
                 {
                     "pass_id": "block-level-egglog-optimizer",

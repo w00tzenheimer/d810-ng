@@ -95,6 +95,7 @@ from d810.passes.constant_simplification_options import (
 )
 from d810.passes.pass_pipeline import PipelineConfigError
 from d810.passes.pipeline_config_parser import pipeline_configs_from_project_config
+from d810.passes.config_v2_hook_runtime import STATE_MACHINE_RUNTIME_HOST
 from d810.passes.operational_config_v2 import operational_config_v2_pass_registry
 from d810.passes.pass_pipeline_factory import (
     PassPipelineSpec,
@@ -3374,7 +3375,7 @@ class D810Manager:
             ExecutionPipeline.CTREE: tuple(self.ctree_optimizer_rules),
         }
         expanded: list[ExpandedExecutionStage] = []
-        state_fallback_used = False
+        state_host_bound = False
         constant_schedule = self._constant_simplification_schedule
         for config in configs:
             for descriptor in registry.stages_for(config.pass_id):
@@ -3404,7 +3405,7 @@ class D810Manager:
                     continue
                 if (
                     implementation is None
-                    and not state_fallback_used
+                    and not state_host_bound
                     and config.pass_id == "recover_dispatcher"
                 ):
                     implementation = next(
@@ -3412,11 +3413,11 @@ class D810Manager:
                             item
                             for item in candidates
                             if str(getattr(item, "name", ""))
-                            == "StateMachineCffUnflattener"
+                            == STATE_MACHINE_RUNTIME_HOST
                         ),
                         None,
                     )
-                    state_fallback_used = implementation is not None
+                    state_host_bound = implementation is not None
                 if (
                     constant_stage is not None
                     and implementation is None

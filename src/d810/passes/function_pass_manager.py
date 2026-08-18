@@ -20,13 +20,12 @@ from d810.core.execution_profile import (
 from d810.ir.maturity import IRMaturity
 from d810.passes.analysis_manager import AnalysisManager
 from d810.passes.driver import run_pipeline
-from d810.passes.pass_pipeline import PassSpec, PreservedAnalyses
+from d810.passes.pass_pipeline import PipelineConfigError, PassSpec, PreservedAnalyses
 from d810.passes.profile_guidance import (
     ProfileCandidate,
     ProfileGuidancePlanner,
     record_profile_guidance_preview,
 )
-from d810.passes.registry import PassRegistry
 from d810.passes.scheduler import PassScheduler
 
 
@@ -254,8 +253,6 @@ class FunctionPassManager:
         capabilities: CapabilitySet | None = None,
         input_facts: object | None = None,
         analysis_seeds: Mapping[str, object] | None = None,
-        pipeline_v2_shadow_registry: PassRegistry | None = None,
-        require_pipeline_v2_shadow_match: bool = False,
         pipeline_v2_specs: tuple[PassSpec, ...] | None = None,
         journal: ExecutionJournalStore | None = None,
         session_id: DecompilationSessionId | None = None,
@@ -273,17 +270,19 @@ class FunctionPassManager:
             input_facts=input_facts,
             analysis_seeds=analysis_seeds,
         )
-        effective_specs = pipeline_v2_specs
-        if pipeline_v2_specs is not None:
-            effective_specs = _profile_guided_specs(
-                specs=pipeline_v2_specs,
-                source=source,
-                maturity=maturity,
-                project_config=project_config,
-                journal=journal,
-                session_id=session_id,
-                parent_attempt_id=parent_attempt_id,
+        if pipeline_v2_specs is None:
+            raise PipelineConfigError(
+                "pipeline_v2_specs is required for pass execution"
             )
+        effective_specs = _profile_guided_specs(
+            specs=pipeline_v2_specs,
+            source=source,
+            maturity=maturity,
+            project_config=project_config,
+            journal=journal,
+            session_id=session_id,
+            parent_attempt_id=parent_attempt_id,
+        )
         return run_pipeline(
             source=source,
             family=family,
@@ -293,8 +292,6 @@ class FunctionPassManager:
             maturity=maturity,
             capabilities=capabilities,
             scheduler=self.scheduler,
-            pipeline_v2_shadow_registry=pipeline_v2_shadow_registry,
-            require_pipeline_v2_shadow_match=require_pipeline_v2_shadow_match,
             pipeline_v2_specs=effective_specs,
             journal=journal,
             session_id=session_id,

@@ -24,7 +24,6 @@ def _write_source(path: Path) -> ProjectConfiguration:
                 "blk_rules": [],
                 "future_top_level": {"retain": [1, 2, 3]},
                 "additional_configuration": {
-                    "pipeline_v2_mode": "config-v2",
                     "recon_fact_profile_modules": ["example.profile"],
                     "pipeline_v2": [
                         {
@@ -172,7 +171,6 @@ def test_strict_atomic_v2_result_remains_canonical_on_second_save(
         "ins_rules": [],
         "blk_rules": [],
         "additional_configuration": {
-            "pipeline_v2_mode": "config-v2",
             "pipeline_v2": [{"pass_id": "recover_dispatcher"}],
         },
     }
@@ -188,10 +186,12 @@ def test_strict_atomic_v2_result_remains_canonical_on_second_save(
 
     assert "ins_rules" not in actual
     assert "blk_rules" not in actual
-    assert "pipeline_v2_mode" not in actual["additional_configuration"]
+    assert actual["additional_configuration"]["pipeline_v2"] == [
+        {"pass_id": "recover_dispatcher"}
+    ]
 
 
-def test_v2_atomic_write_without_validator_preserves_migration_metadata(
+def test_v2_atomic_write_without_validator_preserves_pipeline_metadata(
     tmp_path: Path,
 ):
     document = {
@@ -199,7 +199,6 @@ def test_v2_atomic_write_without_validator_preserves_migration_metadata(
         "ins_rules": [],
         "blk_rules": [],
         "additional_configuration": {
-            "pipeline_v2_mode": "config-v2",
             "pipeline_v2": [{"pass_id": "recover_dispatcher"}],
         },
     }
@@ -210,4 +209,6 @@ def test_v2_atomic_write_without_validator_preserves_migration_metadata(
 
     assert actual["ins_rules"] == []
     assert actual["blk_rules"] == []
-    assert actual["additional_configuration"]["pipeline_v2_mode"] == "config-v2"
+    assert actual["additional_configuration"]["pipeline_v2"] == [
+        {"pass_id": "recover_dispatcher"}
+    ]

@@ -392,7 +392,6 @@ class TestMbaEgraphRegistration(unittest.TestCase):
         project = ProjectConfiguration(
             path=Path("mba-egraph.runtime-config-v2.json"),
             additional_configuration={
-                "pipeline_v2_mode": "config-v2",
                 "pipeline_v2": [
                     {
                         "pass_id": PassId.MBA_EGRAPH,

@@ -149,7 +149,7 @@ def _run_config_v2(specs, *, journal, session_id) -> object:
         family=_NeverDetectedFamily(),
         backend=_Backend(),
         facts=AnalysisManager(_GRAPH),
-        project_config={"pipeline_v2_mode": "config-v2"},
+        project_config={},
         maturity=IRMaturity.CANONICAL,
         pipeline_v2_specs=specs,
         journal=journal,

@@ -3,7 +3,7 @@
 The five-pass spine is dispatcher-shape neutral: every standard kind (equality-chain, condition-chain,
 switch-table) runs the SAME passes, which re-derive their own evidence from ``ctx.graph``.
 This module owns the canonical 5-tuple — the DRY source consumed by the family
-``pipeline_for`` implementations and config-v2 shadow migration.
+``pipeline_for`` implementations and the config-v2 runtime host.
 """
 
 from __future__ import annotations

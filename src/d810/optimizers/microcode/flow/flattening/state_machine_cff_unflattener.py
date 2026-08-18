@@ -4,12 +4,13 @@ This is the runtime realization of the unflatten pseudocode: at the maturity hoo
 ``mba`` to a portable ``FunctionSource``, routes facts through ``FunctionPassManager``, and routes
 through the registered state-machine-CFF profiles — ``select_family`` polls the
 ``StateMachineCffFamily`` registry (``HodurFamily``=equality-chain, ``ApproovFamily``=
-switch/indirect) and the claiming profile's ``pipeline_for`` drives the pass manager. The ONLY
-live-mba touch points are the lifter + ``HexRaysMutationBackend`` (backends/hexrays).
+switch/indirect) for algorithm context while canonical config-v2 specs drive the pass manager.
+The ONLY live-mba touch points are the lifter + ``HexRaysMutationBackend`` (backends/hexrays).
 
 PRODUCTION PATH (M2 cutover, llr-ibpi): the unflatten chain+spine pipeline is the SOLE CFF unflattener.
-The hodur configs route ``StateMachineCffUnflattener``; full-fleet golden parity verified at 3032/0.
-The legacy HCC fork is removed and unflatten runs unconditionally — there is no enable/disable flag.
+The private runtime host is scheduled by canonical config-v2 pass IDs; no project-visible class
+name selects this callback. The legacy HCC fork is removed and unflatten runs unconditionally —
+there is no enable/disable flag.
 """
 
 from __future__ import annotations
@@ -206,14 +207,14 @@ from d810.hexrays.mutation.detached_handler_island import (
     stable_mba_identity,
 )
 from d810.passes.function_pass_manager import FunctionPassManager
+from d810.passes.config_v2_hook_runtime import STATE_MACHINE_RUNTIME_HOST
 from d810.passes.operational_config_v2 import operational_config_v2_pass_registry
 from d810.passes.pipeline_config_parser import (
-    PipelineV2Mode,
     pass_specs_from_project_config,
-    pipeline_v2_mode_from_project_config,
+    require_config_v2_project,
 )
 from d810.passes.state_machine_options import STATE_MACHINE_NATIVE_PASS_IDS
-from d810.passes.pipeline_shadow import compare_pipeline_v2_shadow
+from d810.passes.pass_pipeline import PipelineConfigError
 from d810.passes.unflatten.dispatcher_progress import (
     DispatcherProgressLedger,
     flowgraph_content_fingerprint,
@@ -221,7 +222,6 @@ from d810.passes.unflatten.dispatcher_progress import (
 from d810.passes.unflatten.state_machine import LOWER_STATE_MACHINE_PLAN_METADATA
 from d810.families.state_machine_cff.pipeline import (
     standard_state_machine_passes,
-    state_machine_pass_registry,
 )
 from d810.passes.state_machine_spine import (
     semantic_evidence_state_machine_passes,
@@ -1167,6 +1167,24 @@ class _CanonicalComputedGotoCompositionFamily:
         return semantic_evidence_state_machine_passes()
 
 
+def _effective_native_specs(configured_specs, family):
+    """Select the native state-machine specs in declared project order."""
+    native_specs = tuple(
+        spec for spec in configured_specs if spec.pass_id in STATE_MACHINE_NATIVE_PASS_IDS
+    )
+    if not native_specs:
+        return ()
+    if isinstance(
+        family,
+        (
+            _CanonicalComputedGotoCompositionFamily,
+            _MaterializedComputedGotoContinuationFamily,
+        ),
+    ):
+        return semantic_evidence_state_machine_passes()
+    return native_specs
+
+
 class StateMachineCffUnflattener(ComposedUnflatteningRule):
     """unflatten state-machine-CFF entry — the production CFF unflattener (M2 cutover, llr-ibpi).
 
@@ -1177,6 +1195,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
     """
 
     DESCRIPTION = "State-machine CFF unflattener (unflatten chain+spine pipeline)"
+    NAME = STATE_MACHINE_RUNTIME_HOST
     # EXPERIMENT (llr-m9r4): Tigress-indirect loses its state-write transitions
     # to DCE by GLBOPT1 (writes 37@LOCOPT / 36@CALLS / 0@GLBOPT1) even though the
     # handler blocks survive. Fire at CALLS (transitions + m_ijmp + handler blocks
@@ -1237,7 +1256,6 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         self._unflat_done_eas: set[int] = set()
         self._dispatcher_progress = DispatcherProgressLedger()
         self._project_config: dict[str, object] = {}
-        self._last_pipeline_v2_mode: str | None = None
         self._last_config_v2_pass_ids: tuple[str, ...] = ()
         self._pass_scheduler = None
         self._pass_manager = FunctionPassManager()
@@ -1795,67 +1813,6 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             )
         )
 
-    def _log_pipeline_v2_shadow(
-        self,
-        project_config,
-        family,
-        source,
-        backend,
-        *,
-        family_context=None,
-    ) -> None:
-        """Compare optional project PipelineConfig v2 against the live family pipeline."""
-        if (
-            pipeline_v2_mode_from_project_config(project_config)
-            is not PipelineV2Mode.SHADOW_CHECK
-        ):
-            return
-        config = (
-            project_config
-            if isinstance(project_config, ABCMapping)
-            else getattr(project_config, "additional_configuration", {}) or {}
-        )
-        if not isinstance(config, ABCMapping) or "pipeline_v2" not in config:
-            return
-        try:
-            match = family.detect(
-                source.flow_graph,
-                backend.capabilities(),
-                context=(
-                    family_context if family_context is not None else project_config
-                ),
-            )
-            if match is None:
-                return
-            live_specs = tuple(family.pipeline_for(match, None))
-            comparison = compare_pipeline_v2_shadow(
-                project_config=project_config,
-                registry=state_machine_pass_registry(),
-                live_specs=live_specs,
-            )
-        except Exception:
-            logger.warning(
-                "unflat: pipeline_v2 shadow comparison failed for family=%s",
-                getattr(family, "name", "?"),
-                exc_info=True,
-            )
-            raise
-        if not comparison.enabled:
-            return
-        if comparison.matches:
-            logger.debug(
-                "unflat: pipeline_v2 shadow matches family=%s passes=%s",
-                getattr(family, "name", "?"),
-                list(comparison.live_pass_ids),
-            )
-            return
-        logger.warning(
-            "unflat: pipeline_v2 shadow mismatch family=%s configured=%s live=%s",
-            getattr(family, "name", "?"),
-            list(comparison.configured_pass_ids),
-            list(comparison.live_pass_ids),
-        )
-
     def _lower_plan_requested_terminal_convergence(self, facts: object) -> bool:
         getter = getattr(facts, "get_analysis", None)
         if not callable(getter):
@@ -2187,63 +2144,43 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                         maturity_to_string(int(mba.maturity)),
                     )
                 return 0
-            self._log_pipeline_v2_shadow(
+            validation_config = project_config
+            if isinstance(project_config, ABCMapping) and "additional_configuration" not in project_config:
+                validation_config = {"additional_configuration": project_config}
+            require_config_v2_project(validation_config)
+            configured_specs = pass_specs_from_project_config(
                 project_config,
-                family,
-                source,
-                backend,
-                family_context=rule_config,
+                operational_config_v2_pass_registry(),
             )
-            pipeline_mode = pipeline_v2_mode_from_project_config(project_config)
-            self._last_pipeline_v2_mode = pipeline_mode.value
-            self._last_config_v2_pass_ids = ()
-            shadow_gate_kwargs = {}
-            if pipeline_mode is PipelineV2Mode.CONFIG_V2:
-                configured_specs = pass_specs_from_project_config(
-                    project_config,
-                    operational_config_v2_pass_registry(),
+            configured_pass_ids = tuple(spec.pass_id for spec in configured_specs)
+            self._last_config_v2_pass_ids = configured_pass_ids
+            configured_native_specs = tuple(
+                spec
+                for spec in configured_specs
+                if spec.pass_id in STATE_MACHINE_NATIVE_PASS_IDS
+            )
+            configured_native_ids = tuple(
+                spec.pass_id for spec in configured_native_specs
+            )
+            if configured_native_ids != STATE_MACHINE_NATIVE_PASS_IDS:
+                raise PipelineConfigError(
+                    "native state-machine spine must contain the complete sequence: "
+                    f"{list(STATE_MACHINE_NATIVE_PASS_IDS)}"
                 )
-                configured_pass_ids = tuple(spec.pass_id for spec in configured_specs)
-                self._last_config_v2_pass_ids = configured_pass_ids
-                configured_native_specs = tuple(
-                    spec
-                    for spec in configured_specs
-                    if spec.pass_id in STATE_MACHINE_NATIVE_PASS_IDS
+            native_specs = _effective_native_specs(configured_specs, family)
+            if not native_specs:
+                raise PipelineConfigError(
+                    "native state-machine spine is required for the runtime host"
                 )
-                if not configured_native_specs:
-                    logger.warning(
-                        "unflat: config-v2 project activated the live unflattener "
-                        "without native state-machine spine specs for func=0x%x",
-                        int(mba.entry_ea),
-                    )
-                    return 0
-                native_specs = (
-                    semantic_evidence_state_machine_passes()
-                    if isinstance(
-                        family,
-                        (
-                            _CanonicalComputedGotoCompositionFamily,
-                            _MaterializedComputedGotoContinuationFamily,
-                        ),
-                    )
-                    else configured_native_specs
+            if logger.debug_on:
+                logger.debug(
+                    "unflat: executing config-v2 pipeline for func=0x%x "
+                    "configured_passes=%s effective_native_passes=%s",
+                    int(mba.entry_ea),
+                    list(configured_pass_ids),
+                    [spec.pass_id for spec in native_specs],
                 )
-                if logger.debug_on:
-                    logger.debug(
-                        "unflat: executing config-v2 pipeline for func=0x%x "
-                        "configured_passes=%s effective_native_passes=%s",
-                        int(mba.entry_ea),
-                        list(configured_pass_ids),
-                        [spec.pass_id for spec in native_specs],
-                    )
-                shadow_gate_kwargs = {
-                    "pipeline_v2_specs": native_specs,
-                }
-            elif pipeline_mode is PipelineV2Mode.SHADOW_CHECK:
-                shadow_gate_kwargs = {
-                    "pipeline_v2_shadow_registry": state_machine_pass_registry(),
-                    "require_pipeline_v2_shadow_match": True,
-                }
+            execution_kwargs = {"pipeline_v2_specs": native_specs}
 
             execution_attempt_context = getattr(
                 self.flow_context,
@@ -2257,7 +2194,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     and session_id is not None
                     and parent_attempt_id is not None
                 ):
-                    shadow_gate_kwargs.update(
+                    execution_kwargs.update(
                         journal=journal,
                         session_id=session_id,
                         parent_attempt_id=parent_attempt_id,
@@ -2273,7 +2210,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     capabilities=capabilities,
                     input_facts=fact_view,
                     analysis_seeds=analysis_seeds,
-                    **shadow_gate_kwargs,
+                    **execution_kwargs,
                 )
 
             if not self._run_pipeline_with_canonical_diagnostics(
@@ -3952,8 +3889,9 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         # Route through the registered profiles (llr-ibpi): select_family polls the
         # StateMachineCffFamily registry (HodurFamily=equality-chain, ApproovFamily/
         # TigressFamily=switch/indirect) and returns the one whose detect claims this
-        # graph; the selected profile's pipeline_for drives the pass manager. The rule's
-        # JSON config is threaded so a project may override the choice via the
+        # graph. The family supplies algorithm and maturity context only; the pass
+        # manager always receives the canonical native specs compiled above. The rule's
+        # JSON config is threaded so a project may override family choice via the
         # router_resolution policy (llr-11du); empty config preserves registration order.
         selection_kwargs = {
             "capabilities": backend.capabilities(),

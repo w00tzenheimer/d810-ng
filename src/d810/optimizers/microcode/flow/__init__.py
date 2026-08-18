@@ -17,8 +17,8 @@ else:
     # NOTE: the standalone ``EmulatedDispatcherUnflattener`` RULE has been
     # retired and its source module deleted (tickets llr-i80t / llr-qbqb): no
     # production conf/*.json activated it, and the concolic reduced-product leg
-    # (ConcolicEmulationEngine) plus the default StateMachineCffUnflattener cover
-    # its cases. Nothing here re-registers that rule as selectable.
+    # (ConcolicEmulationEngine) plus the private state-machine runtime host cover
+    # its cases. Nothing here re-registers the host as a project-selectable rule.
     from d810.optimizers.microcode.flow.flattening import state_machine_cff_unflattener  # noqa: F401  (unflatten, flag-gated)
     from d810.optimizers.microcode.flow.jumps import indirect_branch  # noqa: F401
     from d810.optimizers.microcode.flow.jumps import indirect_call  # noqa: F401

@@ -4,7 +4,7 @@ The maturity-hook shell in ``optimizers/`` supplies the live Hex-Rays ``Mutation
 lifted ``FunctionSource``; this function is the portable orchestration from the north-star
 pseudocode (spec unflatten):
 
-    family.detect -> for spec in family.pipeline_for(match, ctx):
+    for spec in pipeline_v2_specs:
         validate_capabilities; result = spec.pass_factory().run(ctx)
         if result.rewrite_plan has work: ctx = ctx(graph=backend.apply(...)); facts.invalidate_to(...)
         elif result.fragment_plan: ctx = ctx(graph=backend.apply(...)); facts.invalidate_to(...)
@@ -50,10 +50,6 @@ from d810.passes.pass_pipeline import (
     SafetyPolicy,
     SchedulerPolicy,
 )
-from d810.passes.pipeline_shadow import (
-    require_pipeline_v2_shadow_match as _require_pipeline_v2_shadow_match,
-)
-from d810.passes.registry import PassRegistry
 from d810.passes.scheduler import PassScheduler, RunLaterDomain
 from d810.transforms.cfg_transaction import CfgGenerationPoisoned
 from d810.transforms.native_cfg_normalization import (
@@ -670,7 +666,7 @@ def _reason_code_for_exception(exc: BaseException) -> str:
 
 
 def _maturity_detail(phase_token: object) -> str:
-    """Return a portable maturity label without constraining legacy callers."""
+    """Return a portable maturity label for execution provenance."""
     value = getattr(phase_token, "value", None)
     return str(value) if isinstance(value, str) and value else "unknown"
 
@@ -1297,8 +1293,6 @@ def run_pipeline(
     maturity,
     capabilities=None,
     scheduler: PassScheduler | None = None,
-    pipeline_v2_shadow_registry: PassRegistry | None = None,
-    require_pipeline_v2_shadow_match: bool = False,
     pipeline_v2_specs: tuple[PassSpec, ...] | None = None,
     session_id: DecompilationSessionId | None = None,
     journal: ExecutionJournalStore | None = None,
@@ -1313,16 +1307,13 @@ def run_pipeline(
     ``optional`` are unaffected).
 
     ``journal``/``session_id``/``parent_attempt_id`` are the generic execution-
-    provenance wiring: when ``journal`` is supplied for a **config-v2**
-    execution (``pipeline_v2_specs`` is not ``None``), every pass in the
+    provenance wiring: when ``journal`` is supplied, every pass in the
     configured pipeline gets a mandatory outer :class:`~d810.core.
     execution_journal.ExecutionAttempt` record -- one that runs, safely
     abstains (its own declared prerequisites were not met), fails, or is not
     scheduled at the current maturity -- with no exception yet raised by
     ``run_pipeline`` ever recorded, this exists purely to persist provenance
-    around it. Legacy family-detected pipelines (``pipeline_v2_specs`` is
-    ``None``) never record attempts, even if a journal is supplied -- see the
-    plan's Task 3, "mandatory outer execution attempt for config-v2 passes".
+    around it.
     ``session_id`` defaults to a fresh session scoped to this one call when a
     ``journal`` is given without one.
     """
@@ -1339,26 +1330,11 @@ def run_pipeline(
         capabilities=capabilities if capabilities is not None else CapabilitySet(),
     )
     if pipeline_v2_specs is None:
-        match = family.detect(graph, backend.capabilities(), context=project_config)
-        if match is None:
-            return graph
-        specs = family.pipeline_for(match, ctx)
-    else:
-        specs = tuple(pipeline_v2_specs)
-        if not specs:
-            raise PipelineConfigError(
-                "config-v2 execution requires at least one configured pass"
-            )
-
-    if require_pipeline_v2_shadow_match:
-        if pipeline_v2_shadow_registry is None:
-            raise PipelineConfigError(
-                "pipeline_v2 shadow enforcement requires a pass registry"
-            )
-        _require_pipeline_v2_shadow_match(
-            project_config=project_config,
-            registry=pipeline_v2_shadow_registry,
-            live_specs=specs,
+        raise PipelineConfigError("pipeline_v2_specs is required for pass execution")
+    specs = tuple(pipeline_v2_specs)
+    if not specs:
+        raise PipelineConfigError(
+            "config-v2 execution requires at least one configured pass"
         )
     worklist, replay_after_pipeline = _build_pass_worklists(
         specs=specs,
@@ -1366,16 +1342,14 @@ def run_pipeline(
         ctx=ctx,
     )
 
-    # Attempt recording is mandatory for config-v2 execution only -- a
-    # legacy family-detected pipeline never records attempts, even when a
-    # caller supplies a journal (see the ``run_pipeline`` docstring).
-    record_attempts = pipeline_v2_specs is not None and journal is not None
+    # Every execution is config-v2 and therefore participates in journal
+    # provenance whenever a journal is supplied.
+    record_attempts = journal is not None
     effective_journal = journal if record_attempts else None
     native_cfg_observer_state = None
-    if pipeline_v2_specs is not None:
-        observer = ctx.capabilities.optional(NativeCfgFreezeObserver)
-        if observer is not None:
-            native_cfg_observer_state = _NativeCfgObserverRunState(observer=observer)
+    observer = ctx.capabilities.optional(NativeCfgFreezeObserver)
+    if observer is not None:
+        native_cfg_observer_state = _NativeCfgObserverRunState(observer=observer)
 
     for spec in worklist:
         ctx = _run_pass_spec(

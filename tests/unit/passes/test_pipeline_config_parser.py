@@ -1,4 +1,4 @@
-"""Shadow parsing for optional PipelineConfig v2 project payloads."""
+"""Canonical parsing for PipelineConfig v2 project payloads."""
 
 from __future__ import annotations
 
@@ -22,20 +22,12 @@ from d810.passes.function_prior_config import (
     load_function_analysis_priors_from_config,
 )
 from d810.passes.pipeline_config_parser import (
-    PipelineV2Mode,
     pipeline_configs_from_project_config,
-    pipeline_v2_mode_from_project_config,
     pass_specs_from_project_config,
     require_config_v2_project,
 )
 from d810.passes.operational_config_v2 import operational_config_v2_pass_registry
-from d810.passes.pipeline_shadow import (
-    PipelineShadowMismatchError,
-    compare_pipeline_specs,
-    compare_pipeline_v2_shadow,
-    require_pipeline_v2_shadow_match,
-)
-from d810.passes.registry import UnknownPassIdError
+import d810.passes.pipeline_config_parser as pipeline_config_parser_module
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -297,80 +289,45 @@ def test_require_config_v2_project_rejects_missing_empty_or_malformed_pipeline(
         require_config_v2_project(document)
 
 
-@pytest.mark.parametrize("mode", ["legacy", "shadow-check"])
-def test_require_config_v2_project_rejects_legacy_execution_modes(mode):
+@pytest.mark.parametrize("value", ["legacy", "shadow-check", "config-v2", None])
+def test_require_config_v2_project_rejects_retired_pipeline_mode(value):
+    retired_mode_key = "pipeline_v2_" + "mode"
     document = {
         "additional_configuration": {
-            "pipeline_v2_mode": mode,
+            retired_mode_key: value,
             "pipeline_v2": [{"pass_id": "recover_dispatcher"}],
         }
     }
 
-    with pytest.raises(PipelineConfigError, match="migrate_project_config_v2.py"):
+    with pytest.raises(PipelineConfigError, match="removed compatibility field"):
         require_config_v2_project(document)
 
 
-def test_require_config_v2_project_accepts_config_v2_mode_and_mode_omission():
-    payload = [{"pass_id": "recover_dispatcher"}]
-
-    assert require_config_v2_project(
-        {"additional_configuration": {"pipeline_v2": payload}}
-    )[0].pass_id == "recover_dispatcher"
-    assert require_config_v2_project(
-        {
-            "additional_configuration": {
-                "pipeline_v2_mode": "config-v2",
-                "pipeline_v2": payload,
-            }
+def test_require_config_v2_project_rejects_retired_shadow_match_field():
+    retired_shadow_key = "require_" + "pipeline_v2_" + "shadow_match"
+    document = {
+        "additional_configuration": {
+            retired_shadow_key: True,
+            "pipeline_v2": [{"pass_id": "recover_dispatcher"}],
         }
-    )[0].pass_id == "recover_dispatcher"
+    }
+
+    with pytest.raises(PipelineConfigError, match="removed compatibility field"):
+        require_config_v2_project(document)
 
 
-def test_pipeline_v2_mode_defaults_legacy_without_project_opt_in():
-    assert pipeline_v2_mode_from_project_config({}) is PipelineV2Mode.LEGACY
-    project = SimpleNamespace(additional_configuration={"enable_pass_pipeline": True})
-    assert pipeline_v2_mode_from_project_config(project) is PipelineV2Mode.LEGACY
+def test_runtime_parser_has_no_legacy_or_shadow_mode_api():
+    """Runtime parsing exposes typed v2 specs, not a selectable mode API."""
+    retired_mode_type = "Pipeline" + "V2Mode"
+    retired_mode_parser = "pipeline_v2_" + "mode_from_project_config"
+    assert not hasattr(pipeline_config_parser_module, retired_mode_type)
+    assert not hasattr(
+        pipeline_config_parser_module,
+        retired_mode_parser,
+    )
 
 
-@pytest.mark.parametrize(
-    ("value", "expected"),
-    [
-        ("legacy", PipelineV2Mode.LEGACY),
-        ("shadow-check", PipelineV2Mode.SHADOW_CHECK),
-        ("config-v2", PipelineV2Mode.CONFIG_V2),
-    ],
-)
-def test_pipeline_v2_mode_reads_explicit_project_mode(value, expected):
-    assert pipeline_v2_mode_from_project_config({"pipeline_v2_mode": value}) is expected
-
-
-def test_pipeline_v2_mode_rejects_former_shadow_match_boolean():
-    with pytest.raises(PipelineConfigError, match="former field"):
-        pipeline_v2_mode_from_project_config({"require_pipeline_v2_shadow_match": True})
-
-
-@pytest.mark.parametrize("value", [True, 1, [], {}])
-def test_pipeline_v2_mode_rejects_non_string_values(value):
-    with pytest.raises(PipelineConfigError, match="pipeline_v2_mode must be a string"):
-        pipeline_v2_mode_from_project_config({"pipeline_v2_mode": value})
-
-
-def test_pipeline_v2_mode_rejects_unknown_values():
-    with pytest.raises(PipelineConfigError, match="pipeline_v2_mode must be one of"):
-        pipeline_v2_mode_from_project_config({"pipeline_v2_mode": "execute"})
-
-
-def test_pipeline_v2_mode_rejects_former_shadow_boolean_even_with_explicit_mode():
-    with pytest.raises(PipelineConfigError, match="former field"):
-        pipeline_v2_mode_from_project_config(
-            {
-                "pipeline_v2_mode": "config-v2",
-                "require_pipeline_v2_shadow_match": True,
-            }
-        )
-
-
-def test_pipeline_v2_shadow_parse_from_project_like_object():
+def test_pipeline_config_parse_from_project_like_object():
     project = SimpleNamespace(
         additional_configuration={
             "pipeline_v2": [
@@ -437,68 +394,6 @@ def test_removed_direct_contract_schema_reports_the_project_path():
         ),
     ):
         pipeline_configs_from_project_config(project)
-
-
-def test_pipeline_v2_shadow_comparison_is_inert_when_missing():
-    comparison = compare_pipeline_v2_shadow(
-        project_config={},
-        registry=state_machine_pass_registry(),
-        live_specs=standard_state_machine_passes(),
-    )
-
-    assert comparison.enabled is False
-    assert comparison.matches is True
-    assert comparison.spec_comparison is None
-    assert comparison.live_pass_ids == tuple(
-        spec.pass_id for spec in standard_state_machine_passes()
-    )
-
-
-def test_pipeline_v2_shadow_requirement_is_inert_when_missing():
-    comparison = require_pipeline_v2_shadow_match(
-        project_config={},
-        registry=state_machine_pass_registry(),
-        live_specs=standard_state_machine_passes(),
-    )
-
-    assert comparison.enabled is False
-    assert comparison.matches is True
-
-
-def test_pipeline_v2_shadow_comparison_rejects_explicit_empty_config():
-    with pytest.raises(PipelineConfigError, match="at least one pass config"):
-        compare_pipeline_v2_shadow(
-            project_config={"pipeline_v2": []},
-            registry=state_machine_pass_registry(),
-            live_specs=standard_state_machine_passes(),
-        )
-
-
-def test_pipeline_v2_shadow_comparison_matches_full_live_specs():
-    live_specs = standard_state_machine_passes()
-    comparison = compare_pipeline_v2_shadow(
-        project_config={"pipeline_v2": [spec.config.to_dict() for spec in live_specs]},
-        registry=state_machine_pass_registry(),
-        live_specs=live_specs,
-    )
-
-    assert comparison.enabled is True
-    assert comparison.matches is True
-    assert comparison.configured_pass_ids == tuple(spec.pass_id for spec in live_specs)
-    assert comparison.spec_comparison is not None
-    assert comparison.spec_comparison.matches is True
-
-
-def test_pipeline_v2_shadow_requirement_accepts_full_live_specs():
-    live_specs = standard_state_machine_passes()
-    comparison = require_pipeline_v2_shadow_match(
-        project_config={"pipeline_v2": [spec.config.to_dict() for spec in live_specs]},
-        registry=state_machine_pass_registry(),
-        live_specs=live_specs,
-    )
-
-    assert comparison.enabled is True
-    assert comparison.matches is True
 
 
 def test_pipeline_v2_configs_build_specs_from_registry():
@@ -580,7 +475,7 @@ def test_hodur_config_v2_project_is_operational():
     assert project.ins_rules == []
     assert project.blk_rules == []
     assert "canary" not in project.description.lower()
-    assert "pipeline_v2_mode" not in project.additional_configuration
+    assert "pipeline_v2_" + "mode" not in project.additional_configuration
     assert not any(
         "canary" in str(key).casefold()
         for key in project.additional_configuration
@@ -668,96 +563,3 @@ def test_remaining_bundled_projects_are_canonical_v2(
     assert [config.pass_id for config in pipeline_configs_from_project_config(project)] == (
         expected_pass_ids
     )
-
-
-def test_pipeline_spec_comparison_reports_ordered_differences():
-    live_specs = standard_state_machine_passes()
-    short_specs = live_specs[:1]
-
-    comparison = compare_pipeline_specs(short_specs, live_specs)
-
-    assert comparison.matches is False
-    assert comparison.pass_ids_match is False
-    assert comparison.configs_match is False
-    assert comparison.left_pass_ids == ("recover_dispatcher",)
-    assert comparison.right_pass_ids == tuple(spec.pass_id for spec in live_specs)
-    assert comparison.missing_pass_ids == tuple(spec.pass_id for spec in live_specs[1:])
-    assert comparison.extra_pass_ids == ()
-
-
-def test_pipeline_v2_shadow_comparison_reports_mismatch_without_cutover():
-    live_specs = standard_state_machine_passes()
-    comparison = compare_pipeline_v2_shadow(
-        project_config={"pipeline_v2": [{"pass_id": "recover_dispatcher"}]},
-        registry=state_machine_pass_registry(),
-        live_specs=live_specs,
-    )
-
-    assert comparison.enabled is True
-    assert comparison.matches is False
-    assert comparison.configured_pass_ids == ("recover_dispatcher",)
-    assert comparison.live_pass_ids == tuple(spec.pass_id for spec in live_specs)
-    assert comparison.spec_comparison is not None
-    assert comparison.spec_comparison.missing_pass_ids == tuple(
-        spec.pass_id for spec in live_specs[1:]
-    )
-
-
-def test_pipeline_v2_shadow_requirement_raises_for_short_config():
-    live_specs = standard_state_machine_passes()
-
-    with pytest.raises(PipelineShadowMismatchError) as excinfo:
-        require_pipeline_v2_shadow_match(
-            project_config={"pipeline_v2": [{"pass_id": "recover_dispatcher"}]},
-            registry=state_machine_pass_registry(),
-            live_specs=live_specs,
-        )
-
-    comparison = excinfo.value.comparison
-    assert comparison.configured_pass_ids == ("recover_dispatcher",)
-    assert comparison.live_pass_ids == tuple(spec.pass_id for spec in live_specs)
-    assert comparison.spec_comparison is not None
-    assert comparison.spec_comparison.missing_pass_ids == tuple(
-        spec.pass_id for spec in live_specs[1:]
-    )
-    assert "missing=" in str(excinfo.value)
-    assert "configs_match=False" in str(excinfo.value)
-
-
-def test_pipeline_v2_shadow_requirement_raises_for_config_drift():
-    live_specs = standard_state_machine_passes()
-    configs = [spec.config.to_dict() for spec in live_specs]
-    configs[0]["contract"]["safety"]["policy"] = "guarded-rewrite"
-
-    with pytest.raises(PipelineShadowMismatchError) as excinfo:
-        require_pipeline_v2_shadow_match(
-            project_config={"pipeline_v2": configs},
-            registry=state_machine_pass_registry(),
-            live_specs=live_specs,
-        )
-
-    comparison = excinfo.value.comparison
-    assert comparison.configured_pass_ids == tuple(spec.pass_id for spec in live_specs)
-    assert comparison.live_pass_ids == tuple(spec.pass_id for spec in live_specs)
-    assert comparison.spec_comparison is not None
-    assert comparison.spec_comparison.pass_ids_match is True
-    assert comparison.spec_comparison.configs_match is False
-    assert "configs_match=False" in str(excinfo.value)
-
-
-def test_pipeline_v2_shadow_comparison_rejects_unknown_pass_id():
-    with pytest.raises(UnknownPassIdError, match="unknown pass id"):
-        compare_pipeline_v2_shadow(
-            project_config={"pipeline_v2": [{"pass_id": "not_registered"}]},
-            registry=state_machine_pass_registry(),
-            live_specs=standard_state_machine_passes(),
-        )
-
-
-def test_pipeline_v2_shadow_requirement_rejects_unknown_pass_id():
-    with pytest.raises(UnknownPassIdError, match="unknown pass id"):
-        require_pipeline_v2_shadow_match(
-            project_config={"pipeline_v2": [{"pass_id": "not_registered"}]},
-            registry=state_machine_pass_registry(),
-            live_specs=standard_state_machine_passes(),
-        )

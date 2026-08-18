@@ -32,8 +32,6 @@ from d810.passes.pass_pipeline import (
     default,
     no_caps,
 )
-from d810.passes.pipeline_shadow import PipelineShadowMismatchError
-from d810.passes.registry import PassRegistry
 from d810.passes.scheduler import RunLater, RunLaterDomain
 
 _GRAPH = FlowGraph(
@@ -121,6 +119,7 @@ def test_manager_threads_scheduler_across_maturity_runs():
         backend=_Backend(),
         project_config=None,
         maturity=IRMaturity.CANONICAL,
+        pipeline_v2_specs=family._specs,
     )
     assert calls == [IRMaturity.CANONICAL]
     assert (
@@ -138,6 +137,7 @@ def test_manager_threads_scheduler_across_maturity_runs():
         backend=_Backend(),
         project_config=None,
         maturity=IRMaturity.GLOBAL_ANALYZED,
+        pipeline_v2_specs=family._specs,
     )
 
     assert calls == [
@@ -145,6 +145,22 @@ def test_manager_threads_scheduler_across_maturity_runs():
         IRMaturity.GLOBAL_ANALYZED,
         IRMaturity.GLOBAL_ANALYZED,
     ]
+
+
+def test_manager_requires_compiled_v2_specs_before_execution():
+    calls: list[str] = []
+    spec = PassSpec("live", _recording_pass("live", calls), no_caps, default)
+
+    with pytest.raises(PipelineConfigError, match="pipeline_v2_specs"):
+        FunctionPassManager().run(
+            source=_Src(),
+            family=_MatchingFamily((spec,)),
+            backend=_Backend(),
+            project_config={},
+            maturity=IRMaturity.CANONICAL,
+        )
+
+    assert calls == []
 
 
 def test_manager_threads_config_v2_attempts_into_the_active_session(tmp_path):
@@ -168,7 +184,7 @@ def test_manager_threads_config_v2_attempts_into_the_active_session(tmp_path):
             source=_Src(),
             family=_MatchingFamily((spec,)),
             backend=_Backend(),
-            project_config={"pipeline_v2_mode": "config-v2"},
+            project_config=None,
             maturity=IRMaturity.CANONICAL,
             pipeline_v2_specs=(spec,),
             journal=journal,
@@ -322,6 +338,7 @@ def test_manager_bubbles_analysis_contract_failure_with_pass_id():
             backend=_Backend(),
             project_config=None,
             maturity=IRMaturity.CANONICAL,
+            pipeline_v2_specs=family._specs,
         )
 
 
@@ -354,6 +371,7 @@ def test_manager_satisfies_domtree_from_default_provider():
         backend=_Backend(),
         project_config=None,
         maturity=IRMaturity.CANONICAL,
+        pipeline_v2_specs=family._specs,
     )
 
     assert captured == {"dominates_entry": True}
@@ -373,22 +391,24 @@ def test_manager_registers_provider_on_existing_facts():
     manager.facts_for(_Src())
     manager.register_analysis_provider("aa", lambda graph: f"AA:{graph.func_ea:x}")
 
+    family = _MatchingFamily(
+        (
+            PassSpec(
+                "needs_aa",
+                _NeedsAa,
+                no_caps,
+                default,
+                analyses=AnalysisContract(required=frozenset({"aa"})),
+            ),
+        )
+    )
     manager.run(
         source=_Src(),
-        family=_MatchingFamily(
-            (
-                PassSpec(
-                    "needs_aa",
-                    _NeedsAa,
-                    no_caps,
-                    default,
-                    analyses=AnalysisContract(required=frozenset({"aa"})),
-                ),
-            )
-        ),
+        family=family,
         backend=_Backend(),
         project_config=None,
         maturity=IRMaturity.CANONICAL,
+        pipeline_v2_specs=family._specs,
     )
 
     assert captured == {"aa": "AA:1000"}
@@ -396,7 +416,9 @@ def test_manager_registers_provider_on_existing_facts():
 
 def test_manager_owns_analysis_manager_per_function():
     manager = FunctionPassManager()
-    family = _MatchingFamily(())
+    family = _MatchingFamily(
+        (PassSpec("noop", _recording_pass("noop", []), no_caps, default),)
+    )
 
     manager.run(
         source=_Src(),
@@ -404,69 +426,12 @@ def test_manager_owns_analysis_manager_per_function():
         backend=_Backend(),
         project_config=None,
         maturity=IRMaturity.CANONICAL,
+        pipeline_v2_specs=family._specs,
     )
 
     facts = manager.analysis_manager_for(0x1000)
     assert facts is not None
     assert facts.graph is _GRAPH
-
-
-def test_manager_pipeline_v2_shadow_gate_matching_config_runs_live_specs():
-    calls: list[str] = []
-    spec = PassSpec("live", _recording_pass("live", calls), no_caps, default)
-    registry = PassRegistry()
-    registry.register("live", _recording_pass("configured", calls))
-
-    FunctionPassManager().run(
-        source=_Src(),
-        family=_MatchingFamily((spec,)),
-        backend=_Backend(),
-        project_config={"pipeline_v2": [spec.config.to_dict()]},
-        maturity=IRMaturity.CANONICAL,
-        pipeline_v2_shadow_registry=registry,
-        require_pipeline_v2_shadow_match=True,
-    )
-
-    assert calls == ["live"]
-
-
-def test_manager_pipeline_v2_shadow_gate_drift_fails_before_execution():
-    calls: list[str] = []
-    first = PassSpec("first", _recording_pass("first", calls), no_caps, default)
-    second = PassSpec("second", _recording_pass("second", calls), no_caps, default)
-    registry = PassRegistry()
-    registry.register("first", _recording_pass("configured_first", calls))
-    registry.register("second", _recording_pass("configured_second", calls))
-
-    with pytest.raises(PipelineShadowMismatchError):
-        FunctionPassManager().run(
-            source=_Src(),
-            family=_MatchingFamily((first, second)),
-            backend=_Backend(),
-            project_config={"pipeline_v2": [first.config.to_dict()]},
-            maturity=IRMaturity.CANONICAL,
-            pipeline_v2_shadow_registry=registry,
-            require_pipeline_v2_shadow_match=True,
-        )
-
-    assert calls == []
-
-
-def test_manager_pipeline_v2_shadow_gate_requires_registry_when_enabled():
-    calls: list[str] = []
-    spec = PassSpec("live", _recording_pass("live", calls), no_caps, default)
-
-    with pytest.raises(PipelineConfigError, match="requires a pass registry"):
-        FunctionPassManager().run(
-            source=_Src(),
-            family=_MatchingFamily((spec,)),
-            backend=_Backend(),
-            project_config={},
-            maturity=IRMaturity.CANONICAL,
-            require_pipeline_v2_shadow_match=True,
-        )
-
-    assert calls == []
 
 
 def test_manager_threads_input_facts_and_seeded_analysis_inputs():
@@ -489,6 +454,7 @@ def test_manager_threads_input_facts_and_seeded_analysis_inputs():
         backend=_Backend(),
         project_config=None,
         maturity=IRMaturity.CANONICAL,
+        pipeline_v2_specs=family._specs,
         input_facts=SimpleNamespace(active_observations=("obs",)),
         analysis_seeds={"range_evidence": "R"},
     )
@@ -518,6 +484,7 @@ def test_manager_replaces_and_clears_input_facts_between_runs():
         backend=_Backend(),
         project_config=None,
         maturity=IRMaturity.CANONICAL,
+        pipeline_v2_specs=family._specs,
         input_facts=SimpleNamespace(active_observations=("first",)),
     )
     manager.run(
@@ -526,6 +493,7 @@ def test_manager_replaces_and_clears_input_facts_between_runs():
         backend=_Backend(),
         project_config=None,
         maturity=IRMaturity.CANONICAL,
+        pipeline_v2_specs=family._specs,
         input_facts=SimpleNamespace(active_observations=("second",)),
     )
     manager.run(
@@ -534,6 +502,7 @@ def test_manager_replaces_and_clears_input_facts_between_runs():
         backend=_Backend(),
         project_config=None,
         maturity=IRMaturity.CANONICAL,
+        pipeline_v2_specs=family._specs,
         input_facts=None,
     )
 

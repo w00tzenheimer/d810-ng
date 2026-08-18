@@ -20,11 +20,7 @@ from d810.passes.function_recipe_runtime import (
     build_recipe_runtime_project,
 )
 from d810.passes.pass_pipeline import PipelineConfigError
-from d810.passes.pipeline_config_parser import (
-    PipelineV2Mode,
-    pipeline_configs_from_project_config,
-    pipeline_v2_mode_from_project_config,
-)
+from d810.passes.pipeline_config_parser import pipeline_configs_from_project_config
 from d810.passes.operational_config_v2 import operational_config_v2_pass_registry
 
 
@@ -36,7 +32,6 @@ def _base_project() -> ProjectConfiguration:
         blk_rules=[RuleConfiguration("JumpFixer", True, {"y": 2})],
         additional_configuration={
             "unknown_nested": {"keep": [1, 2]},
-            "pipeline_v2_mode": "config-v2",
             "pipeline_v2": [
                 {
                     "pass_id": "jump-fixer",
@@ -68,7 +63,6 @@ def test_recipe_runtime_project_is_in_memory_lossless_and_config_v2() -> None:
         project.additional_configuration["unknown_nested"]
         is not base.additional_configuration["unknown_nested"]
     )
-    assert pipeline_v2_mode_from_project_config(project) is PipelineV2Mode.CONFIG_V2
     assert tuple(
         config.pass_id for config in pipeline_configs_from_project_config(project)
     ) == ("mba-simplify",)

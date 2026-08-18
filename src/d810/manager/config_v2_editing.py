@@ -491,10 +491,9 @@ class ConfigV2EditingService:
         self, document: dict[str, object], path: pathlib.Path
     ) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...], str]:
         additional = _additional(document)
-        # Presence of a typed pipeline is the schema requirement.  The
-        # transitional config-v2 mode marker is tolerated on read and removed
-        # by canonical persistence; legacy/shadow values are rejected by the
-        # strict parser with the offline migration command.
+        # Presence of a typed pipeline is the schema requirement.  Retired
+        # compatibility metadata is rejected by the strict parser with the
+        # offline migration command.
         configs = require_config_v2_project(document)
         for config in configs:
             self._registry.build_spec(config)

@@ -104,6 +104,18 @@ def test_native_spine_compiles_private_runtime_host() -> None:
     ]
 
 
+def test_state_machine_runtime_host_is_not_a_project_visible_class_name():
+    assert STATE_MACHINE_RUNTIME_HOST != "StateMachineCffUnflattener"
+
+
+def test_runtime_rejects_retired_pipeline_mode_metadata():
+    project = _v2_project({"pass_id": "jump-fixer", "options": {}})
+    project.additional_configuration["pipeline_v2_" + "mode"] = "config-v2"
+
+    with pytest.raises(PipelineConfigError, match="removed compatibility field"):
+        compile_config_v2_hook_schedule(project)
+
+
 def test_native_spine_projection_preserves_typed_options() -> None:
     schedule = compile_config_v2_hook_schedule(
         _v2_project(

@@ -59,7 +59,6 @@ def build_recipe_runtime_project(
     additional_configuration = copy.deepcopy(
         dict(base_project.additional_configuration)
     )
-    additional_configuration["pipeline_v2_mode"] = "config-v2"
     additional_configuration["pipeline_v2"] = [
         config.to_dict() for config in materialized_configs
     ]

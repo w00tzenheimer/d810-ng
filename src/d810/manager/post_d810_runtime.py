@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 from d810.hexrays.diagnostics.microcode_capture import mba_to_dict
 from d810.core.logging import getLogger
+from d810.passes.config_v2_hook_runtime import STATE_MACHINE_RUNTIME_HOST
 from d810.core.provider_phase import ProviderPhaseSnapshot
 from d810.core.settings import get_settings
 from d810.core.typing import Any, Callable
@@ -170,7 +171,7 @@ class HexRaysPostD810Runtime:
         candidates = [
             rule
             for rule in getattr(self.block_optimizer, "cfg_rules", ())
-            if type(rule).__name__ in ("StateMachineCffUnflattener",)
+            if str(getattr(rule, "name", "")) == STATE_MACHINE_RUNTIME_HOST
             and int(getattr(rule, "_last_func_ea", 0) or 0) == entry_ea
         ]
 

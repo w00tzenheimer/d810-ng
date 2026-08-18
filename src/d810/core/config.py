@@ -256,13 +256,10 @@ class ProjectConfiguration:
         project_data["description"] = self.description
         additional = copy.deepcopy(self.additional_configuration)
         if self._is_canonical_v2_project():
-            additional.pop("pipeline_v2_mode", None)
             project_data["additional_configuration"] = additional
         elif not self.ins_rules and not self.blk_rules:
             # Preserve an already-canonical file's absence without pretending
-            # that a migration-era v2 document was registry-validated.  A
-            # compatibility mode marker is removed only by explicit strict
-            # approval above.
+            # that a migration-era v2 document was registry-validated.
             if self._ins_rules_present:
                 project_data["ins_rules"] = []
             if self._blk_rules_present:

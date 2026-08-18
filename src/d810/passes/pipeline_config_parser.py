@@ -1,21 +1,10 @@
-"""Shadow parsing helpers for optional PipelineConfig v2 project config."""
+"""Typed config-v2 parsing helpers for project configuration."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from enum import Enum
-
 from d810.passes.pass_pipeline import PipelineConfig, PipelineConfigError
 from d810.passes.registry import PassRegistry
-
-
-class PipelineV2Mode(str, Enum):
-    """Explicit runtime mode for optional project ``pipeline_v2`` payloads."""
-
-    LEGACY = "legacy"
-    SHADOW_CHECK = "shadow-check"
-    CONFIG_V2 = "config-v2"
-
 
 def _project_additional_config(project_config) -> Mapping:
     return _project_additional_config_for(project_config, strict=False)
@@ -114,23 +103,18 @@ def _migration_message(project_config, reason: str) -> str:
     )
 
 
-def _validate_config_v2_compatibility_mode(project_config) -> None:
+def _validate_retired_runtime_metadata(project_config) -> None:
     config = _project_additional_config_for(project_config, strict=True)
-    if "require_pipeline_v2_shadow_match" in config:
+    retired_shadow_key = "require_" + "pipeline_v2_" + "shadow_match"
+    if retired_shadow_key in config:
         raise PipelineConfigError(
-            "require_pipeline_v2_shadow_match is a removed compatibility field"
+            f"{retired_shadow_key} is a removed compatibility field"
         )
-    if "pipeline_v2_mode" not in config:
-        return
-    value = config["pipeline_v2_mode"]
-    if not isinstance(value, str):
-        raise PipelineConfigError("pipeline_v2_mode must be a string")
-    if value in {PipelineV2Mode.LEGACY.value, PipelineV2Mode.SHADOW_CHECK.value}:
+    retired_mode_key = "pipeline_v2_" + "mode"
+    if retired_mode_key in config:
         raise PipelineConfigError(
-            f"pipeline_v2_mode={value!r} is not allowed by the v2 runtime"
+            f"{retired_mode_key} is a removed compatibility field"
         )
-    if value != PipelineV2Mode.CONFIG_V2.value:
-        raise PipelineConfigError(f"unknown pipeline_v2_mode={value!r}")
 
 
 def pipeline_configs_from_project_config(project_config) -> tuple[PipelineConfig, ...]:
@@ -138,7 +122,7 @@ def pipeline_configs_from_project_config(project_config) -> tuple[PipelineConfig
 
     Accepts either a loaded ProjectConfiguration-like object with
     ``additional_configuration`` or a plain mapping. Missing ``pipeline_v2`` is a
-    no-op; malformed payloads fail loudly for diagnostics/shadow comparison.
+    no-op for permissive offline readers; malformed payloads fail loudly.
     """
     config = _project_additional_config(project_config)
     payload = config.get("pipeline_v2")
@@ -186,13 +170,13 @@ def pipeline_configs_from_project_config(project_config) -> tuple[PipelineConfig
 def require_config_v2_project(project_config) -> tuple[PipelineConfig, ...]:
     """Require a complete, runtime-safe config-v2 project.
 
-    This is the single strict parser entry point.  The permissive
+    This is the single strict parser entry point. The permissive
     ``pipeline_configs_from_project_config`` function remains available to
-    transitional readers until the later cutover tasks remove them; runtime
-    activation must use this function instead.  Empty legacy arrays are
-    accepted as inert migration-era metadata, but an active legacy rule,
-    missing/empty/malformed ``pipeline_v2``, or a legacy/shadow mode is a hard
-    error with a copyable offline migration command.
+    offline migration readers; runtime activation must use this function.
+    Empty legacy arrays are accepted as inert migration-era metadata, but an
+    active legacy rule, missing/empty/malformed ``pipeline_v2``, or retired
+    mode/shadow metadata is a hard error with a copyable offline migration
+    command.
     """
     try:
         if isinstance(project_config, Mapping):
@@ -214,7 +198,7 @@ def require_config_v2_project(project_config) -> tuple[PipelineConfig, ...]:
         if any(validated_blk):
             raise PipelineConfigError("active legacy rule arrays are present")
 
-        _validate_config_v2_compatibility_mode(project_config)
+        _validate_retired_runtime_metadata(project_config)
         configs = pipeline_configs_from_project_config(project_config)
         if not configs:
             raise PipelineConfigError(
@@ -244,35 +228,11 @@ def require_config_v2_project(project_config) -> tuple[PipelineConfig, ...]:
     return configs
 
 
-def pipeline_v2_mode_from_project_config(project_config) -> PipelineV2Mode:
-    """Return the explicit ``pipeline_v2`` execution mode."""
-    config = _project_additional_config(project_config)
-    if "require_pipeline_v2_shadow_match" in config:
-        raise PipelineConfigError(
-            "require_pipeline_v2_shadow_match is a former field; "
-            "use pipeline_v2_mode='shadow-check'"
-        )
-    if "pipeline_v2_mode" not in config:
-        return PipelineV2Mode.LEGACY
-
-    value = config["pipeline_v2_mode"]
-    if not isinstance(value, str):
-        raise PipelineConfigError("pipeline_v2_mode must be a string")
-    try:
-        mode = PipelineV2Mode(value)
-    except ValueError as exc:
-        allowed = ", ".join(mode.value for mode in PipelineV2Mode)
-        raise PipelineConfigError(
-            f"pipeline_v2_mode must be one of: {allowed}"
-        ) from exc
-    return mode
-
-
 def pass_specs_from_project_config(
     project_config,
     registry: PassRegistry,
 ):
-    """Build shadow PassSpecs from optional project ``pipeline_v2`` config."""
+    """Build typed PassSpecs from a project's ``pipeline_v2`` config."""
     return tuple(
         registry.build_spec(config)
         for config in pipeline_configs_from_project_config(project_config)

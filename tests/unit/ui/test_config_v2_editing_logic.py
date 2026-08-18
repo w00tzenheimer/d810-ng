@@ -300,7 +300,6 @@ def test_document_projection_exposes_typed_fields_and_read_only_complete_payload
         "description": "OLLVM profile",
         "migration_metadata": {"schema": 7},
         "additional_configuration": {
-            "pipeline_v2_mode": "config-v2",
             "analysis_priors": {"opaque": True},
             "router_resolution": {
                 "prefer": {"approov": 4.0},
