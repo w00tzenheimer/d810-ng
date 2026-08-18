@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import dataclasses
 import json
 from pathlib import Path
 
@@ -27,15 +28,20 @@ from d810.manager.workbench_recipe_models import PassCatalogEntry
 from d810.ui import config_v2_editing_logic as logic
 
 
-def test_project_description_preview_is_single_line_bounded_and_preserves_empty_state() -> None:
+def test_project_description_preview_is_single_line_bounded_and_preserves_empty_state() -> (
+    None
+):
     assert logic.project_description_preview("  Fold\n  proven constants.  ") == (
         "Fold proven constants."
     )
     assert logic.project_description_preview("") == "No description"
-    assert logic.project_description_preview(
-        "A very long project description that must remain a compact pipeline header.",
-        maximum_length=32,
-    ) == "A very long project..."
+    assert (
+        logic.project_description_preview(
+            "A very long project description that must remain a compact pipeline header.",
+            maximum_length=32,
+        )
+        == "A very long project..."
+    )
 
 
 def _draft() -> ConfigV2ProjectDraft:
@@ -364,6 +370,42 @@ def test_editor_overview_lists_only_configured_passes_and_real_selection():
     assert view.overview.rows[1].selected_transform_summary == "0 selected rules"
 
 
+def test_editor_overview_uses_portable_maturity_labels_for_every_source():
+    catalog = tuple(
+        dataclasses.replace(
+            entry,
+            maturity=(
+                "ir.global.analyzed"
+                if entry.pass_id == "jump-fixer"
+                else entry.maturity
+            ),
+        )
+        for entry in _catalog()
+    )
+    draft = _draft_with_pipeline(
+        document={
+            "description": "Portable maturity labels",
+            "additional_configuration": {
+                "pipeline_v2": [
+                    {"pass_id": "jump-fixer", "options": {}},
+                    {
+                        "pass_id": "mba-simplify",
+                        "options": {"maturities": ["GLOBAL_OPTIMIZED"]},
+                    },
+                ]
+            },
+        }
+    )
+
+    view = logic.project_config_v2_editor_view(draft, _validation(), catalog)
+
+    assert tuple(row.runs_during for row in view.overview.rows) == (
+        "ir.global.analyzed",
+        "ir.global.optimized",
+    )
+    assert "Hex-Rays stage: MMAT_GLBOPT2" in view.overview.rows[1].schedule_summary
+
+
 def test_editor_overview_omits_selection_summary_without_a_selectable_catalog():
     draft = _draft_with_pipeline(
         document={
@@ -379,9 +421,10 @@ def test_editor_overview_omits_selection_summary_without_a_selectable_catalog():
 
     view = logic.project_config_v2_editor_view(draft, _validation(), _catalog())
 
-    assert tuple(
-        row.selected_transform_summary for row in view.overview.rows
-    ) == ("", "")
+    assert tuple(row.selected_transform_summary for row in view.overview.rows) == (
+        "",
+        "",
+    )
 
 
 def test_editor_inspector_uses_catalog_contract_and_presentation_purpose():
@@ -390,7 +433,7 @@ def test_editor_inspector_uses_catalog_contract_and_presentation_purpose():
     )
     inspector = view.inspectors[0]
 
-    assert inspector.runs_during == "MMAT_LOCOPT"
+    assert inspector.runs_during == "ir.local.optimized"
     assert inspector.purpose == "Simplify selected mixed-boolean arithmetic transforms."
     assert inspector.contract_chips == (
         ("Scope", "function"),
