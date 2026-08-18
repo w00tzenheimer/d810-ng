@@ -36,7 +36,7 @@ def test_portfolio_spike_declares_fast_path_then_opt_in_egglog() -> None:
     assert [
         entry["pass_id"]
         for entry in project.additional_configuration["pipeline_v2"]
-    ] == ["mba-simplify", "mba-egglog"]
+    ] == ["mba-simplify", "mba-egraph"]
     assert "mba-solve" not in project.additional_configuration["pipeline_v2"]
     fast_options = project.additional_configuration["pipeline_v2"][0]["options"]
     assert fast_options["generate_commutative_permutations"] is False
@@ -50,7 +50,7 @@ def test_portfolio_spike_declares_fast_path_then_opt_in_egglog() -> None:
 def test_hook_activation_keeps_chain_before_catalogue_before_egglog() -> None:
     activation = pipeline_v2_hook_activation(_project())
 
-    assert activation.configured_pass_ids == ("mba-simplify", "mba-egglog")
+    assert activation.configured_pass_ids == ("mba-simplify", "mba-egraph")
     implementation_names = tuple(rule.name for rule in activation.instruction_rules)
     assert implementation_names[: len(_CHAIN_IMPLEMENTATIONS)] == _CHAIN_IMPLEMENTATIONS
     assert implementation_names[-1] == "EgglogOptimizer"
@@ -89,7 +89,7 @@ def test_telemetry_profile_keeps_the_same_order_but_never_enables_egglog() -> No
 
     activation = pipeline_v2_hook_activation(_project(_TELEMETRY_CONFIG))
 
-    assert activation.configured_pass_ids == ("mba-simplify", "mba-egglog")
+    assert activation.configured_pass_ids == ("mba-simplify", "mba-egraph")
     egglog_options = _project(_TELEMETRY_CONFIG).additional_configuration[
         "pipeline_v2"
     ][1]["options"]
@@ -103,7 +103,7 @@ def test_deep_profile_is_explicitly_bounded_and_never_the_default_lane() -> None
     activation = pipeline_v2_hook_activation(project)
     egglog_options = project.additional_configuration["pipeline_v2"][1]["options"]
 
-    assert activation.configured_pass_ids == ("mba-simplify", "mba-egglog")
+    assert activation.configured_pass_ids == ("mba-simplify", "mba-egraph")
     assert egglog_options["time_budget_ms"] == 500
     assert egglog_options["function_time_budget_ms"] == 5_000
     assert egglog_options["max_degree"] == 2

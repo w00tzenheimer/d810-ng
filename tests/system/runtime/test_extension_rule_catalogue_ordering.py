@@ -148,7 +148,7 @@ def test_disabled_egglog_catalogue_construction_stays_cold(
         egglog_handler,
         "compiled_rules_for_families",
         lambda _families: (_ for _ in ()).throw(
-            AssertionError("disabled mba-egglog must not compile its catalogue")
+            AssertionError("disabled mba-egraph must not compile its catalogue")
         ),
     )
     with d810_state() as state:

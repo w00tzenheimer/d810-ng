@@ -31,10 +31,10 @@ from d810.passes.mba_solve import (
     build_mba_solve_pass,
     mba_solve_implementation,
 )
-from d810.passes.mba_egglog import (
-    MBA_EGGLOG_IMPLEMENTATION,
-    MBA_EGGLOG_PASS_ID,
-    build_mba_egglog_pass,
+from d810.passes.mba_egraph import (
+    MBA_EGRAPH_IMPLEMENTATION,
+    MBA_EGRAPH_PASS_ID,
+    build_mba_egraph_pass,
 )
 from d810.passes.rotate_idiom_recovery import (
     ROTATE_IDIOM_RECOVERY_IMPLEMENTATION,
@@ -191,8 +191,8 @@ def _mba_solve_options(config: PipelineConfig) -> dict[str, object]:
     }
 
 
-def _mba_egglog_options(config: PipelineConfig) -> dict[str, object]:
-    adapter = build_mba_egglog_pass(config)
+def _mba_egraph_options(config: PipelineConfig) -> dict[str, object]:
+    adapter = build_mba_egraph_pass(config)
     return {
         "max_leaves": adapter.max_leaves,
         "max_operator_nodes": adapter.max_operator_nodes,
@@ -359,9 +359,9 @@ def pipeline_v2_hook_activation(project_config) -> PipelineV2HookActivation:
                 _rule_config(rule_name, _mba_solve_options(config))
             )
             continue
-        if pass_id == MBA_EGGLOG_PASS_ID:
+        if pass_id == MBA_EGRAPH_PASS_ID:
             instruction_rules.append(
-                _rule_config(MBA_EGGLOG_IMPLEMENTATION, _mba_egglog_options(config))
+                _rule_config(MBA_EGRAPH_IMPLEMENTATION, _mba_egraph_options(config))
             )
             continue
         if pass_id == ROTATE_IDIOM_RECOVERY_PASS_ID:

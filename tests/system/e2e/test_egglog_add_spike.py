@@ -127,7 +127,7 @@ class TestEgglogAddSpike:
                 "EgglogOptimizer"
             ]
             assert state.current_blk_rules == []
-            assert state.last_pipeline_v2_hook_pass_ids == ("mba-egglog",)
+            assert state.last_pipeline_v2_hook_pass_ids == ("mba-egraph",)
             optimizer = state.current_ins_rules[0]
             assert optimizer.maturities == [ida_hexrays.MMAT_GLBOPT1]
             assert optimizer.collect_stage_timings is True

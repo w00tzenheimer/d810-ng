@@ -24,9 +24,9 @@ from d810.passes.pass_pipeline import (
 )
 from d810.passes.registry import PassRegistry
 
-MBA_EGGLOG_PASS_ID = PassId.MBA_EGGLOG
-MBA_EGGLOG_STAGE_ID = "mba-egglog"
-MBA_EGGLOG_IMPLEMENTATION = "EgglogOptimizer"
+MBA_EGRAPH_PASS_ID = PassId.MBA_EGRAPH
+MBA_EGRAPH_STAGE_ID = "mba-egraph"
+MBA_EGRAPH_IMPLEMENTATION = "EgglogOptimizer"
 DEFAULT_MATURITIES = ("GLOBAL_OPTIMIZED",)
 DEFAULT_FAMILIES = ("add",)
 DEFAULT_LEARNED_REPLAY_ENABLED = False
@@ -34,7 +34,7 @@ DEFAULT_LEARNED_REPLAY_MAX_ENTRIES = 256
 DEFAULT_LEARNED_REPLAY_MAX_BYTES = 2_097_152
 MAX_LEARNED_REPLAY_ENTRIES = 4_096
 MAX_LEARNED_REPLAY_BYTES = 16_777_216
-MBA_EGGLOG_FAMILIES = (
+MBA_EGRAPH_FAMILIES = (
     "add",
     "and",
     "bnot",
@@ -48,7 +48,7 @@ MBA_EGGLOG_FAMILIES = (
 
 
 @dataclass(frozen=True)
-class MbaEgglogOptions:
+class MbaEgraphOptions:
     """Validated portable options for one bounded Egglog extraction."""
 
     max_leaves: int = 2
@@ -75,7 +75,7 @@ class MbaEgglogOptions:
 
 
 @dataclass(frozen=True)
-class MbaEgglogPass(PipelinePass):
+class MbaEgraphPass(PipelinePass):
     """Portable descriptor; the live hook stage performs the extraction."""
 
     max_leaves: int = 2
@@ -99,18 +99,18 @@ class MbaEgglogPass(PipelinePass):
     native_proof_mode: str = "legacy"
     families: tuple[str, ...] = DEFAULT_FAMILIES
     maturities: tuple[str, ...] = DEFAULT_MATURITIES
-    name: str = MBA_EGGLOG_PASS_ID
+    name: str = MBA_EGRAPH_PASS_ID
 
     def run(self, context: FunctionPipelineContext) -> PassResult:
         return PassResult()
 
 
-def parse_mba_egglog_options(
+def parse_mba_egraph_options(
     config: PipelineConfig,
-) -> MbaEgglogOptions:
-    if config.pass_id != MBA_EGGLOG_PASS_ID:
+) -> MbaEgraphOptions:
+    if config.pass_id != MBA_EGRAPH_PASS_ID:
         raise PipelineConfigError(
-            f"expected {MBA_EGGLOG_PASS_ID!r}, got {config.pass_id!r}"
+            f"expected {MBA_EGRAPH_PASS_ID!r}, got {config.pass_id!r}"
         )
     options: Mapping[str, object] = config.options or {}
     unknown = set(options) - {
@@ -138,14 +138,14 @@ def parse_mba_egglog_options(
         "maturities",
     }
     if unknown:
-        raise PipelineConfigError(f"mba-egglog has unknown options: {sorted(unknown)}")
+        raise PipelineConfigError(f"mba-egraph has unknown options: {sorted(unknown)}")
     if "rounds" in options and "saturation_rounds" in options:
         raise PipelineConfigError(
-            "mba-egglog options.rounds and options.saturation_rounds cannot both be set"
+            "mba-egraph options.rounds and options.saturation_rounds cannot both be set"
         )
     if "rounds" in options:
         warnings.warn(
-            "mba-egglog options.rounds is deprecated; use saturation_rounds",
+            "mba-egraph options.rounds is deprecated; use saturation_rounds",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -186,7 +186,7 @@ def parse_mba_egglog_options(
         or not 1 <= max_leaves <= 8
     ):
         raise PipelineConfigError(
-            "mba-egglog options.max_leaves must be an integer from 1 to 8"
+            "mba-egraph options.max_leaves must be an integer from 1 to 8"
         )
 
     for name, value in (
@@ -198,63 +198,63 @@ def parse_mba_egglog_options(
     ):
         if type(value) is not int or value <= 0:
             raise PipelineConfigError(
-                f"mba-egglog options.{name} must be a positive integer"
+                f"mba-egraph options.{name} must be a positive integer"
             )
     if function_time_budget_ms is not None and (
         type(function_time_budget_ms) is not int
         or not 0 <= function_time_budget_ms <= 5_000
     ):
         raise PipelineConfigError(
-            "mba-egglog options.function_time_budget_ms must be an integer from 0 to 5000"
+            "mba-egraph options.function_time_budget_ms must be an integer from 0 to 5000"
         )
     if function_time_budget_ms == 0:
         function_time_budget_ms = None
     if type(residual_only) is not bool:
-        raise PipelineConfigError("mba-egglog options.residual_only must be boolean")
+        raise PipelineConfigError("mba-egraph options.residual_only must be boolean")
     if type(max_degree) is not int or max_degree not in (1, 2):
         raise PipelineConfigError(
-            "mba-egglog options.max_degree must be exactly 1 or 2"
+            "mba-egraph options.max_degree must be exactly 1 or 2"
         )
     if type(cross_block_constant_preparation) is not bool:
         raise PipelineConfigError(
-            "mba-egglog options.cross_block_constant_preparation must be boolean"
+            "mba-egraph options.cross_block_constant_preparation must be boolean"
         )
     if type(cross_block_def_use_preparation) is not bool:
         raise PipelineConfigError(
-            "mba-egglog options.cross_block_def_use_preparation must be boolean"
+            "mba-egraph options.cross_block_def_use_preparation must be boolean"
         )
     if type(learned_replay_enabled) is not bool:
         raise PipelineConfigError(
-            "mba-egglog options.learned_replay_enabled must be boolean"
+            "mba-egraph options.learned_replay_enabled must be boolean"
         )
     if type(learned_replay_max_entries) is not int or not 1 <= learned_replay_max_entries <= MAX_LEARNED_REPLAY_ENTRIES:
         raise PipelineConfigError(
-            "mba-egglog options.learned_replay_max_entries must be an integer from 1 to 4096"
+            "mba-egraph options.learned_replay_max_entries must be an integer from 1 to 4096"
         )
     if type(learned_replay_max_bytes) is not int or not 1 <= learned_replay_max_bytes <= MAX_LEARNED_REPLAY_BYTES:
         raise PipelineConfigError(
-            "mba-egglog options.learned_replay_max_bytes must be an integer from 1 to 16777216"
+            "mba-egraph options.learned_replay_max_bytes must be an integer from 1 to 16777216"
         )
     if type(saturation_rounds) is not int or not 1 <= saturation_rounds <= 6:
         raise PipelineConfigError(
-            "mba-egglog options.saturation_rounds must be an integer from 1 to 6"
+            "mba-egraph options.saturation_rounds must be an integer from 1 to 6"
         )
     if require_proof is not True:
-        raise PipelineConfigError("mba-egglog native proof is mandatory")
+        raise PipelineConfigError("mba-egraph native proof is mandatory")
     if type(collect_stage_timings) is not bool:
         raise PipelineConfigError(
-            "mba-egglog options.collect_stage_timings must be a boolean"
+            "mba-egraph options.collect_stage_timings must be a boolean"
         )
     if type(execution_mode) is not str or execution_mode not in {
         "interactive",
         "noninteractive",
     }:
         raise PipelineConfigError(
-            "mba-egglog options.execution_mode must be interactive or noninteractive"
+            "mba-egraph options.execution_mode must be interactive or noninteractive"
         )
     if native_proof_mode not in {"legacy", "shadow"}:
         raise PipelineConfigError(
-            "mba-egglog options.native_proof_mode must be legacy or shadow; "
+            "mba-egraph options.native_proof_mode must be legacy or shadow; "
             "enforced is not rollout-authorized"
         )
     if (
@@ -263,28 +263,28 @@ def parse_mba_egglog_options(
         or any(type(value) is not str for value in families)
     ):
         raise PipelineConfigError(
-            "mba-egglog options.families must be a nonempty list of names"
+            "mba-egraph options.families must be a nonempty list of names"
         )
     resolved_families = tuple(families)
     if len(set(resolved_families)) != len(resolved_families):
-        raise PipelineConfigError("mba-egglog options.families must be unique")
+        raise PipelineConfigError("mba-egraph options.families must be unique")
     if "fixed_rotate" in resolved_families and len(resolved_families) != 1:
         raise PipelineConfigError(
-            "mba-egglog options.families fixed_rotate must be selected alone"
+            "mba-egraph options.families fixed_rotate must be selected alone"
         )
     unsupported_families = tuple(
-        family for family in resolved_families if family not in MBA_EGGLOG_FAMILIES
+        family for family in resolved_families if family not in MBA_EGRAPH_FAMILIES
     )
     if unsupported_families:
         raise PipelineConfigError(
-            "mba-egglog options.families must name supported families; got "
+            "mba-egraph options.families must name supported families; got "
             + ", ".join(unsupported_families)
         )
     if "fixed_rotate" in resolved_families and (
         cross_block_constant_preparation or cross_block_def_use_preparation
     ):
         raise PipelineConfigError(
-            "mba-egglog options.families fixed_rotate cannot use "
+            "mba-egraph options.families fixed_rotate cannot use "
             "cross-block preparation"
         )
     if (
@@ -293,16 +293,16 @@ def parse_mba_egglog_options(
         or any(type(value) is not str for value in maturities)
     ):
         raise PipelineConfigError(
-            "mba-egglog options.maturities must be a list of names"
+            "mba-egraph options.maturities must be a list of names"
         )
     resolved = tuple(maturities)
     if not resolved or any(
         value not in {member.name for member in IRMaturity} for value in resolved
     ):
         raise PipelineConfigError(
-            "mba-egglog options.maturities must name supported IR maturities"
+            "mba-egraph options.maturities must name supported IR maturities"
         )
-    return MbaEgglogOptions(
+    return MbaEgraphOptions(
         max_leaves=max_leaves,
         max_operator_nodes=max_operator_nodes,
         max_degree=max_degree,
@@ -327,9 +327,9 @@ def parse_mba_egglog_options(
     )
 
 
-def build_mba_egglog_pass(config: PipelineConfig) -> MbaEgglogPass:
-    options = parse_mba_egglog_options(config)
-    return MbaEgglogPass(
+def build_mba_egraph_pass(config: PipelineConfig) -> MbaEgraphPass:
+    options = parse_mba_egraph_options(config)
+    return MbaEgraphPass(
         max_leaves=options.max_leaves,
         max_operator_nodes=options.max_operator_nodes,
         max_degree=options.max_degree,
@@ -354,7 +354,7 @@ def build_mba_egglog_pass(config: PipelineConfig) -> MbaEgglogPass:
     )
 
 
-def mba_egglog_editor_spec() -> PassEditorSpec:
+def mba_egraph_editor_spec() -> PassEditorSpec:
     """Return the complete public config-v2 editor contract for Egglog."""
     maturity_choices = tuple(member.name for member in IRMaturity)
     return PassEditorSpec.fields_editor(
@@ -543,7 +543,7 @@ def mba_egglog_editor_spec() -> PassEditorSpec:
                 path=("families",),
                 control=FieldControlKind.STRING_LIST,
                 description="Ordered subset of certified MBA rule families available to Egglog.",
-                choices=MBA_EGGLOG_FAMILIES,
+                choices=MBA_EGRAPH_FAMILIES,
                 default=list(DEFAULT_FAMILIES),
             ),
             FieldEditorSpec(
@@ -559,12 +559,12 @@ def mba_egglog_editor_spec() -> PassEditorSpec:
     )
 
 
-def register_mba_egglog_pass(registry: PassRegistry) -> PassRegistry:
+def register_mba_egraph_pass(registry: PassRegistry) -> PassRegistry:
     registry.register_configured(
-        MBA_EGGLOG_PASS_ID,
-        build_mba_egglog_pass,
+        MBA_EGRAPH_PASS_ID,
+        build_mba_egraph_pass,
         config_template=PipelineConfig(
-            pass_id=MBA_EGGLOG_PASS_ID,
+            pass_id=MBA_EGRAPH_PASS_ID,
             options={
                 "max_leaves": 2,
                 "max_operator_nodes": 10,
@@ -591,25 +591,25 @@ def register_mba_egglog_pass(registry: PassRegistry) -> PassRegistry:
         ),
         stages=(
             ExecutionStageDescriptor(
-                pass_id=MBA_EGGLOG_PASS_ID,
-                stage_id=MBA_EGGLOG_STAGE_ID,
+                pass_id=MBA_EGRAPH_PASS_ID,
+                stage_id=MBA_EGRAPH_STAGE_ID,
                 pipeline=ExecutionPipeline.INSTRUCTION,
-                implementation_name=MBA_EGGLOG_IMPLEMENTATION,
+                implementation_name=MBA_EGRAPH_IMPLEMENTATION,
             ),
         ),
-        editor_spec=mba_egglog_editor_spec(),
+        editor_spec=mba_egraph_editor_spec(),
     )
     return registry
 
 
 __all__ = [
-    "MBA_EGGLOG_IMPLEMENTATION",
-    "MBA_EGGLOG_FAMILIES",
-    "MBA_EGGLOG_PASS_ID",
-    "MBA_EGGLOG_STAGE_ID",
-    "MbaEgglogOptions",
-    "build_mba_egglog_pass",
-    "mba_egglog_editor_spec",
-    "parse_mba_egglog_options",
-    "register_mba_egglog_pass",
+    "MBA_EGRAPH_IMPLEMENTATION",
+    "MBA_EGRAPH_FAMILIES",
+    "MBA_EGRAPH_PASS_ID",
+    "MBA_EGRAPH_STAGE_ID",
+    "MbaEgraphOptions",
+    "build_mba_egraph_pass",
+    "mba_egraph_editor_spec",
+    "parse_mba_egraph_options",
+    "register_mba_egraph_pass",
 ]

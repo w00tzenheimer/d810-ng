@@ -1,4 +1,4 @@
-"""Unit tests for the bounded ``mba-egglog`` config-v2 stage (no IDA)."""
+"""Unit tests for the bounded ``mba-egraph`` config-v2 stage (no IDA)."""
 
 from __future__ import annotations
 
@@ -8,14 +8,14 @@ from pathlib import Path
 from d810.core.config import ProjectConfiguration
 from d810.core.pass_editor_spec import FieldControlKind
 from d810.core.pass_ids import PassId
-from d810.passes.mba_egglog import (
-    MBA_EGGLOG_IMPLEMENTATION,
-    MBA_EGGLOG_PASS_ID,
-    MbaEgglogPass,
-    MbaEgglogOptions,
-    build_mba_egglog_pass,
-    parse_mba_egglog_options,
-    register_mba_egglog_pass,
+from d810.passes.mba_egraph import (
+    MBA_EGRAPH_IMPLEMENTATION,
+    MBA_EGRAPH_PASS_ID,
+    MbaEgraphPass,
+    MbaEgraphOptions,
+    build_mba_egraph_pass,
+    parse_mba_egraph_options,
+    register_mba_egraph_pass,
 )
 from d810.passes.pass_pipeline import PipelineConfig, PipelineConfigError
 from d810.passes.pipeline_v2_hook_bridge import pipeline_v2_hook_activation
@@ -24,16 +24,16 @@ from d810.passes.registry import PassRegistry
 
 def _config(options: dict | None = None) -> PipelineConfig:
     return PipelineConfig(
-        pass_id=MBA_EGGLOG_PASS_ID,
+        pass_id=MBA_EGRAPH_PASS_ID,
         options=options if options is not None else {},
     )
 
 
-class TestMbaEgglogOptions(unittest.TestCase):
+class TestMbaEgraphOptions(unittest.TestCase):
     def test_defaults_are_degree_one_add_only_and_proof_gated(self):
-        options = parse_mba_egglog_options(_config())
+        options = parse_mba_egraph_options(_config())
 
-        self.assertIsInstance(options, MbaEgglogOptions)
+        self.assertIsInstance(options, MbaEgraphOptions)
         self.assertEqual(
             (
                 options.max_leaves,
@@ -80,7 +80,7 @@ class TestMbaEgglogOptions(unittest.TestCase):
         )
 
     def test_explicit_options_reach_the_pass(self):
-        built = build_mba_egglog_pass(
+        built = build_mba_egraph_pass(
             _config(
                 {
                     "max_leaves": 4,
@@ -104,7 +104,7 @@ class TestMbaEgglogOptions(unittest.TestCase):
                 }
             )
         )
-        self.assertIsInstance(built, MbaEgglogPass)
+        self.assertIsInstance(built, MbaEgraphPass)
         self.assertEqual(
             (
                 built.max_leaves,
@@ -193,27 +193,27 @@ class TestMbaEgglogOptions(unittest.TestCase):
         ):
             with self.subTest(options=options):
                 with self.assertRaises(PipelineConfigError):
-                    parse_mba_egglog_options(_config(options))
+                    parse_mba_egraph_options(_config(options))
 
     def test_zero_function_budget_means_no_function_cap(self):
-        options = parse_mba_egglog_options(_config({"function_time_budget_ms": 0}))
+        options = parse_mba_egraph_options(_config({"function_time_budget_ms": 0}))
 
         self.assertIsNone(options.function_time_budget_ms)
 
     def test_legacy_rounds_alias_is_normalized_and_conflicts_are_rejected(self):
         with self.assertWarns(DeprecationWarning):
-            options = parse_mba_egglog_options(_config({"rounds": 4}))
+            options = parse_mba_egraph_options(_config({"rounds": 4}))
 
         self.assertEqual(options.saturation_rounds, 4)
         with self.assertRaisesRegex(PipelineConfigError, "cannot both"):
-            parse_mba_egglog_options(_config({"rounds": 4, "saturation_rounds": 4}))
+            parse_mba_egraph_options(_config({"rounds": 4, "saturation_rounds": 4}))
 
     def test_rejects_duplicate_families(self):
         with self.assertRaisesRegex(PipelineConfigError, "unique"):
-            parse_mba_egglog_options(_config({"families": ["add", "add"]}))
+            parse_mba_egraph_options(_config({"families": ["add", "add"]}))
 
     def test_fixed_rotate_family_is_explicitly_supported(self):
-        options = parse_mba_egglog_options(_config({"families": ["fixed_rotate"]}))
+        options = parse_mba_egraph_options(_config({"families": ["fixed_rotate"]}))
 
         self.assertEqual(options.families, ("fixed_rotate",))
         self.assertFalse(options.cross_block_constant_preparation)
@@ -233,29 +233,29 @@ class TestMbaEgglogOptions(unittest.TestCase):
                     PipelineConfigError,
                     "fixed_rotate.*cross-block preparation",
                 ):
-                    parse_mba_egglog_options(
+                    parse_mba_egraph_options(
                         _config({"families": ["fixed_rotate"], **preparation})
                     )
 
     def test_rejects_mixed_fixed_rotate_family(self):
         with self.assertRaisesRegex(PipelineConfigError, "fixed_rotate.*alone"):
-            parse_mba_egglog_options(_config({"families": ["add", "fixed_rotate"]}))
+            parse_mba_egraph_options(_config({"families": ["add", "fixed_rotate"]}))
 
     def test_rejects_unknown_or_unsupported_families(self):
         for family in ("predicates", "imaginary"):
             with self.subTest(family=family):
                 with self.assertRaisesRegex(PipelineConfigError, "supported families"):
-                    parse_mba_egglog_options(_config({"families": [family]}))
+                    parse_mba_egraph_options(_config({"families": [family]}))
 
 
-class TestMbaEgglogRegistration(unittest.TestCase):
+class TestMbaEgraphRegistration(unittest.TestCase):
     def test_public_instruction_stage_names_the_live_rule_and_exposes_all_options(self):
-        registry = register_mba_egglog_pass(PassRegistry())
-        descriptor = registry.stages_for(MBA_EGGLOG_PASS_ID)[0]
+        registry = register_mba_egraph_pass(PassRegistry())
+        descriptor = registry.stages_for(MBA_EGRAPH_PASS_ID)[0]
 
-        self.assertEqual(descriptor.implementation_name, MBA_EGGLOG_IMPLEMENTATION)
-        self.assertIn(MBA_EGGLOG_PASS_ID, registry.public_pass_ids())
-        editor = registry.editor_spec_for(MBA_EGGLOG_PASS_ID)
+        self.assertEqual(descriptor.implementation_name, MBA_EGRAPH_IMPLEMENTATION)
+        self.assertIn(MBA_EGRAPH_PASS_ID, registry.public_pass_ids())
+        editor = registry.editor_spec_for(MBA_EGRAPH_PASS_ID)
         self.assertIsNotNone(editor)
         assert editor is not None
         self.assertEqual(
@@ -298,12 +298,12 @@ class TestMbaEgglogRegistration(unittest.TestCase):
 
     def test_hook_bridge_forwards_all_validated_options(self):
         project = ProjectConfiguration(
-            path=Path("mba-egglog.runtime-config-v2.json"),
+            path=Path("mba-egraph.runtime-config-v2.json"),
             additional_configuration={
                 "pipeline_v2_mode": "config-v2",
                 "pipeline_v2": [
                     {
-                        "pass_id": PassId.MBA_EGGLOG,
+                        "pass_id": PassId.MBA_EGRAPH,
                         "options": {
                             "max_leaves": 4,
                             "max_operator_nodes": 12,
@@ -331,7 +331,7 @@ class TestMbaEgglogRegistration(unittest.TestCase):
 
         self.assertEqual(
             [rule.name for rule in activation.instruction_rules],
-            [MBA_EGGLOG_IMPLEMENTATION],
+            [MBA_EGRAPH_IMPLEMENTATION],
         )
         rule = activation.instruction_rules[0]
         self.assertEqual(

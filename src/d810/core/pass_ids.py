@@ -51,7 +51,7 @@ class PassId(enum.StrEnum):
     MBA_SOLVE = "mba-solve"
 
     #: Bounded Egglog extraction with a proof-gated live hook implementation.
-    MBA_EGGLOG = "mba-egglog"
+    MBA_EGRAPH = "mba-egraph"
 
     #: Exact 64-bit compiler idiom lifting after bounded MBA simplification.
     ROTATE_IDIOM_RECOVERY = "rotate-idiom-recovery"

@@ -4,7 +4,7 @@
     "pipeline_v2_mode": "config-v2",
     "pipeline_v2": [
       {
-        "pass_id": "mba-egglog",
+        "pass_id": "mba-egraph",
         "options": {
           "families": [
             "add",

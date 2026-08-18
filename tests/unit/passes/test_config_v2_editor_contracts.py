@@ -293,8 +293,8 @@ def test_operational_config_v2_public_passes_have_complete_editor_contracts() ->
     assert registry.validate_editor_contracts() == ()
 
 
-def test_mba_egglog_replay_options_are_flat_typed_and_editor_visible() -> None:
-    entry = next(item for item in registered_pass_catalog() if item.pass_id == "mba-egglog")
+def test_mba_egraph_replay_options_are_flat_typed_and_editor_visible() -> None:
+    entry = next(item for item in registered_pass_catalog() if item.pass_id == "mba-egraph")
     fields = {field.path: field for field in entry.editor_spec.fields}
 
     assert set(fields) >= {

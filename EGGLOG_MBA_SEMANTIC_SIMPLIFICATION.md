@@ -259,7 +259,7 @@ Important metadata fields include:
 - `egglog_run_count` and `replay_saved_egglog_runs`;
 - portable `mba_provider_outcome`.
 
-Set `collect_stage_timings` to `true` in the `mba-egglog` options to add a
+Set `collect_stage_timings` to `true` in the `mba-egraph` options to add a
 per-stage timing breakdown.
 
 ### Recognizing learned replay

@@ -23,7 +23,7 @@ class TestMbaPortfolioSpike:
 
             assert state.last_pipeline_v2_hook_pass_ids == (
                 "mba-simplify",
-                "mba-egglog",
+                "mba-egraph",
             )
             names = tuple(rule.name for rule in state.current_ins_rules)
             assert names[: len(_CHAIN_RULE_NAMES)] == _CHAIN_RULE_NAMES

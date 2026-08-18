@@ -25,7 +25,7 @@
         }
       },
       {
-        "pass_id": "mba-egglog",
+        "pass_id": "mba-egraph",
         "options": {
           "families": ["add", "and", "bnot", "mul", "neg", "or", "sub", "xor"],
           "maturities": ["GLOBAL_ANALYZED"],

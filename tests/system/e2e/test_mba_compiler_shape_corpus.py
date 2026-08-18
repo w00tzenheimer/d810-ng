@@ -513,13 +513,13 @@ def test_corpus_projects_register_their_one_intended_provider(
         state.load_project(
             state.project_manager.index("mba_compiler_shape_egglog.json")
         )
-        assert state.last_pipeline_v2_hook_pass_ids == ("mba-egglog",)
+        assert state.last_pipeline_v2_hook_pass_ids == ("mba-egraph",)
         assert [rule.name for rule in state.current_ins_rules] == ["EgglogOptimizer"]
 
         state.load_project(
             state.project_manager.index("mba_compiler_shape_egglog_degree2.json")
         )
-        assert state.last_pipeline_v2_hook_pass_ids == ("mba-egglog",)
+        assert state.last_pipeline_v2_hook_pass_ids == ("mba-egraph",)
         optimizer = state.current_ins_rules[0]
         assert optimizer.max_degree == 2
         assert optimizer.families == ("add", "and", "or", "sub", "xor")
