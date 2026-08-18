@@ -17,20 +17,39 @@ Usage:
     python tools/sync_plugin_version.py --check    # exit 1 if out of sync, no write
 
 The pre-commit hook runs the ``--check`` form; ``tests/unit/test_sync_plugin_version.py``
-is the backstop. Adapted from ``~/src/idapro/ida-sigmaker/tools/sync_plugin_version.py``
-(that project also pins a ``pythonDependencies`` entry; d810's manifest has no
-such field, so that half is dropped).
+is the backstop. Adapted from ``~/src/idapro/ida-sigmaker/tools/sync_plugin_version.py``;
+this version also keeps the manifest's self-wheel pin aligned with the package.
 """
 
 import argparse
 import ast
 import json
 import pathlib
+import re
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 INIT = ROOT / "src" / "d810" / "__init__.py"
 MANIFEST = ROOT / "ida-plugin.json"
+SELF_DISTRIBUTION = "d810-ng"
+_REQUIREMENT_NAME = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)")
+
+
+def normalize_project_name(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def is_self_dependency(requirement: str) -> bool:
+    match = _REQUIREMENT_NAME.match(requirement)
+    return bool(
+        match
+        and normalize_project_name(match.group(1))
+        == normalize_project_name(SELF_DISTRIBUTION)
+    )
+
+
+def expected_self_dependency(version: str) -> str:
+    return f"{SELF_DISTRIBUTION}=={version}"
 
 
 def package_version() -> str:
@@ -49,9 +68,26 @@ def manifest_version(text: str) -> str:
 
 
 def sync_manifest(text: str, version: str) -> str:
-    """Return the manifest JSON with the plugin version updated."""
+    """Return the manifest JSON with the version and wheel pin updated."""
     manifest = json.loads(text)
-    manifest["plugin"]["version"] = version
+    plugin = manifest["plugin"]
+    plugin["version"] = version
+
+    expected_dependency = expected_self_dependency(version)
+    dependencies = plugin.get("pythonDependencies", [])
+    updated_dependencies = []
+    found_self_dependency = False
+    for dependency in dependencies:
+        if is_self_dependency(dependency):
+            if not found_self_dependency:
+                updated_dependencies.append(expected_dependency)
+                found_self_dependency = True
+            continue
+        updated_dependencies.append(dependency)
+    if not found_self_dependency:
+        updated_dependencies.append(expected_dependency)
+    plugin["pythonDependencies"] = updated_dependencies
+
     return json.dumps(manifest, indent=4) + "\n"
 
 
@@ -66,20 +102,21 @@ def main(argv=None) -> int:
 
     version = package_version()
     text = MANIFEST.read_text(encoding="utf-8")
+    expected = sync_manifest(text, version)
     current = manifest_version(text)
 
-    if current == version:
+    if json.loads(text) == json.loads(expected):
         return 0
 
     if args.check:
         print(
-            f"ida-plugin.json is out of sync: version={current!r}, expected "
-            f"{version!r}; run: python tools/sync_plugin_version.py",
+            "ida-plugin.json is out of sync with the package version and wheel "
+            f"pin {version!r}; run: python tools/sync_plugin_version.py",
             file=sys.stderr,
         )
         return 1
 
-    MANIFEST.write_text(sync_manifest(text, version), encoding="utf-8")
+    MANIFEST.write_text(expected, encoding="utf-8")
     print(f"synced ida-plugin.json from version {current} to {version}")
     return 0
 

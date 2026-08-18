@@ -1,15 +1,47 @@
 {
+    "$schema": "https://hcli.docs.hex-rays.com/schemas/ida-plugin.json",
     "IDAMetadataDescriptorVersion": 1,
     "plugin": {
         "name": "d810-ng",
-        "entryPoint": "src/d810ng.py",
+        "entryPoint": "d810ng.py",
+        "version": "1.0.0b1",
+        "urls": {
+            "repository": "https://github.com/w00tzenheimer/d810-ng"
+        },
         "categories": [
             "decompilation",
-            "debugging-and-tracing"
+            "debugging-and-tracing",
+            "deobfuscation"
+        ],
+        "keywords": [
+            "deobfuscation",
+            "hex-rays",
+            "microcode",
+            "mixed-boolean-arithmetic",
+            "mba",
+            "control-flow-flattening",
+            "unflattening"
+        ],
+        "license": "AGPL-3.0-only",
+        "authors": [
+            {
+                "name": "w00tzenheimer",
+                "email": "w00tzenheimer@gmail.com"
+            },
+            {
+                "name": "Mahmoud Abdelkader",
+                "email": "mabdelkader@gmail.com"
+            },
+            {
+                "name": "Boris Batteux",
+                "email": "boris.batteux@eshard.com"
+            }
+        ],
+        "pythonDependencies": [
+            "d810-ng==1.0.0b1"
         ],
         "logoPath": "resources/d810ng-logo.png",
         "idaVersions": ">=9.0",
-        "description": "D810-ng (Next Generation) is an updated, tested, refactored, and optimized IDA Pro plugin that serves as a framework and deobfuscation harness used to deobfuscate code at decompilation time by modifying IDA Pro microcode.",
-        "version": "1.0.0b1"
+        "description": "D810-ng (Next Generation) is an updated, tested, refactored, and optimized IDA Pro plugin that serves as a framework and deobfuscation harness used to deobfuscate code at decompilation time by modifying IDA Pro microcode."
     }
 }

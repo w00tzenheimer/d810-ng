@@ -71,21 +71,100 @@ class TestSyncManifest:
         assert text.endswith("\n")
         json.loads(text)
 
+    def test_rewrites_version_and_exact_self_dependency(self, tool) -> None:
+        original = json.dumps(
+            {
+                "plugin": {
+                    "name": "d810-ng",
+                    "version": "0.6.6",
+                    "pythonDependencies": [
+                        "typing-extensions",
+                        "d810_ng==0.6.6",
+                    ],
+                }
+            },
+            indent=4,
+        )
+
+        updated = json.loads(tool.sync_manifest(original, "1.0.0b1"))
+
+        assert updated["plugin"]["version"] == "1.0.0b1"
+        assert updated["plugin"]["pythonDependencies"] == [
+            "typing-extensions",
+            "d810-ng==1.0.0b1",
+        ]
+
+    def test_adds_missing_self_dependency_without_dropping_others(self, tool) -> None:
+        original = json.dumps(
+            {
+                "plugin": {
+                    "name": "d810-ng",
+                    "version": "0.6.6",
+                    "pythonDependencies": ["typing-extensions"],
+                }
+            }
+        )
+
+        updated = json.loads(tool.sync_manifest(original, "1.0.0b1"))
+
+        assert updated["plugin"]["pythonDependencies"] == [
+            "typing-extensions",
+            "d810-ng==1.0.0b1",
+        ]
+
+    def test_removes_duplicate_normalized_self_dependencies(self, tool) -> None:
+        original = json.dumps(
+            {
+                "plugin": {
+                    "name": "d810-ng",
+                    "version": "0.6.6",
+                    "pythonDependencies": [
+                        "typing-extensions",
+                        "d810_ng==0.6.6",
+                        "d810-ng>=0.6.6",
+                        "unrelated-package",
+                    ],
+                }
+            }
+        )
+
+        updated = json.loads(tool.sync_manifest(original, "1.0.0b1"))
+
+        assert updated["plugin"]["pythonDependencies"] == [
+            "typing-extensions",
+            "d810-ng==1.0.0b1",
+            "unrelated-package",
+        ]
+
 
 class TestCheckMode:
-    def _write(self, tmp_path, version, manifest_version):
+    def _write(self, tmp_path, version, manifest_version, dependencies: list[str]):
         init = tmp_path / "__init__.py"
         init.write_text(f'__version__ = "{version}"\n', encoding="utf-8")
         manifest = tmp_path / "ida-plugin.json"
         manifest.write_text(
-            json.dumps({"plugin": {"name": "d810-ng", "version": manifest_version}}, indent=4)
+            json.dumps(
+                {
+                    "plugin": {
+                        "name": "d810-ng",
+                        "version": manifest_version,
+                        "pythonDependencies": dependencies,
+                    }
+                },
+                indent=4,
+            )
             + "\n",
             encoding="utf-8",
         )
         return init, manifest
 
     def test_check_passes_when_in_sync(self, tool, tmp_path, monkeypatch) -> None:
-        init, manifest = self._write(tmp_path, "1.0.0b1", "1.0.0b1")
+        init, manifest = self._write(
+            tmp_path,
+            "1.0.0b1",
+            "1.0.0b1",
+            ["d810-ng==1.0.0b1"],
+        )
         monkeypatch.setattr(tool, "INIT", init)
         monkeypatch.setattr(tool, "MANIFEST", manifest)
         assert tool.main(["--check"]) == 0
@@ -93,19 +172,45 @@ class TestCheckMode:
     def test_check_fails_on_drift_and_writes_nothing(
         self, tool, tmp_path, monkeypatch
     ) -> None:
-        init, manifest = self._write(tmp_path, "1.0.0b1", "0.6.6")
+        init, manifest = self._write(
+            tmp_path,
+            "1.0.0b1",
+            "0.6.6",
+            ["d810-ng==0.6.6"],
+        )
         monkeypatch.setattr(tool, "INIT", init)
         monkeypatch.setattr(tool, "MANIFEST", manifest)
         before = manifest.read_text(encoding="utf-8")
         assert tool.main(["--check"]) == 1
         assert manifest.read_text(encoding="utf-8") == before
 
+    def test_check_fails_when_only_self_dependency_drifts(
+        self, tool, tmp_path, monkeypatch
+    ) -> None:
+        init, manifest = self._write(
+            tmp_path,
+            version="1.0.0b1",
+            manifest_version="1.0.0b1",
+            dependencies=["d810-ng==0.6.6"],
+        )
+        monkeypatch.setattr(tool, "INIT", init)
+        monkeypatch.setattr(tool, "MANIFEST", manifest)
+
+        assert tool.main(["--check"]) == 1
+
     def test_write_form_fixes_the_drift(self, tool, tmp_path, monkeypatch) -> None:
-        init, manifest = self._write(tmp_path, "1.0.0b1", "0.6.6")
+        init, manifest = self._write(
+            tmp_path,
+            "1.0.0b1",
+            "0.6.6",
+            ["d810-ng==0.6.6"],
+        )
         monkeypatch.setattr(tool, "INIT", init)
         monkeypatch.setattr(tool, "MANIFEST", manifest)
         assert tool.main([]) == 0
-        assert json.loads(manifest.read_text())["plugin"]["version"] == "1.0.0b1"
+        updated = json.loads(manifest.read_text())
+        assert updated["plugin"]["version"] == "1.0.0b1"
+        assert updated["plugin"]["pythonDependencies"] == ["d810-ng==1.0.0b1"]
         assert tool.main(["--check"]) == 0
 
 
@@ -119,3 +224,19 @@ class TestRepositoryManifestIsInSync:
             (ROOT / "ida-plugin.json").read_text(encoding="utf-8")
         )
         assert manifest["plugin"]["version"] == d810.__version__
+        assert manifest["plugin"]["pythonDependencies"] == [
+            f"d810-ng=={d810.__version__}"
+        ]
+
+    def test_shipped_manifest_has_hcli_repository_metadata(self) -> None:
+        manifest = json.loads(
+            (ROOT / "ida-plugin.json").read_text(encoding="utf-8")
+        )
+        plugin = manifest["plugin"]
+
+        assert plugin["urls"]["repository"] == (
+            "https://github.com/w00tzenheimer/d810-ng"
+        )
+        assert plugin["authors"]
+        assert plugin["keywords"]
+        assert plugin["license"] == "AGPL-3.0-only"
