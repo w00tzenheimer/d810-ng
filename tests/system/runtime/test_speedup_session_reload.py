@@ -6,14 +6,6 @@ import os
 
 import pytest
 
-from d810._vendor.ida_reloader import reload_package
-from d810.core.cymode import CythonMode
-from d810.hexrays.expr import ast as ast_dispatcher
-from d810.optimizers.microcode.instructions.pattern_matching import (
-    engine as pattern_dispatcher,
-)
-
-
 _RELOAD_GATE_ENV = "D810_RELOAD_GATE"
 
 
@@ -31,6 +23,7 @@ def _reload_gate_enabled() -> bool:
 def _reload_through_production_package_ordering() -> None:
     """Use the full-package ordering called by ``D810Plugin.reload``."""
     import d810
+    from d810._vendor.ida_reloader import reload_package
 
     reload_package(
         d810,
@@ -47,12 +40,27 @@ def test_reload_gate_is_explicitly_opt_in(monkeypatch) -> None:
     assert _reload_gate_enabled() is True
 
 
+def test_reload_gate_off_does_not_bind_reload_dependencies(monkeypatch) -> None:
+    monkeypatch.delenv(_RELOAD_GATE_ENV, raising=False)
+    assert _reload_gate_enabled() is False
+    assert "reload_package" not in globals()
+    assert "CythonMode" not in globals()
+    assert "ast_dispatcher" not in globals()
+    assert "pattern_dispatcher" not in globals()
+
+
 def test_session_cython_policy_rebinds_core_dispatchers_after_reload() -> None:
     if not _reload_gate_enabled():
         pytest.skip(
             "package reload is standalone-only; set D810_RELOAD_GATE=1 in a "
             "dedicated runner process"
         )
+
+    from d810.core.cymode import CythonMode
+    from d810.hexrays.expr import ast as ast_dispatcher
+    from d810.optimizers.microcode.instructions.pattern_matching import (
+        engine as pattern_dispatcher,
+    )
 
     mode = CythonMode()
     original_enabled = mode.is_enabled()
