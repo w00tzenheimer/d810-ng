@@ -20,6 +20,7 @@ from d810.manager.config_v2_edit_models import (
     ConfigV2ProjectDraft,
     ConfigV2ProjectValidation,
 )
+from d810.manager.effective_pipeline_schedule import normalize_maturity
 from d810.manager.workbench_recipe_models import PassCatalogEntry
 
 
@@ -40,16 +41,15 @@ _PASS_PURPOSES = {
     "mba-state-preconditioner": "Prepare state facts for MBA-backed recovery.",
 }
 
-_CONFIGURED_MATURITY_TO_MMAT = {
-    "LIFTED": "MMAT_GENERATED",
-    "CANONICAL": "MMAT_PREOPTIMIZED",
-    "LOCAL_OPTIMIZED": "MMAT_LOCOPT",
-    "CALL_MODELED": "MMAT_CALLS",
-    "GLOBAL_ANALYZED": "MMAT_GLBOPT1",
-    "GLOBAL_OPTIMIZED": "MMAT_GLBOPT2",
-    "STRUCTURED": "MMAT_GLBOPT3",
-    "VARIABLE_RECOVERED": "MMAT_LVARS",
-}
+
+def _project_maturity(value: object) -> tuple[str, str | None]:
+    """Return one portable operator label plus optional provider provenance."""
+
+    normalized = normalize_maturity(value)
+    if normalized is None:
+        return f"rule-defined ({value})", None
+    maturity, provider = normalized
+    return maturity.value, provider
 
 
 def project_description_preview(
@@ -1086,22 +1086,31 @@ def project_config_v2_editor_view(
         )
         purpose = _PASS_PURPOSES.get(pass_id, "Registered config-v2 pass.")
         configured_maturities = options.get("maturities")
+        provider_maturities: tuple[str, ...] = ()
         if isinstance(configured_maturities, list) and configured_maturities:
+            projected_maturities = tuple(
+                _project_maturity(value) for value in configured_maturities
+            )
             runs_during = ", ".join(
-                (
-                    value
-                    if str(value).startswith("MMAT_")
-                    else _CONFIGURED_MATURITY_TO_MMAT.get(
-                        str(value),
-                        f"rule-defined ({value})",
-                    )
-                )
-                for value in configured_maturities
+                maturity for maturity, _provider in projected_maturities
+            )
+            provider_maturities = tuple(
+                provider
+                for _maturity, provider in projected_maturities
+                if provider is not None
             )
         elif catalog_entry.maturity == "any":
             runs_during = "rule-defined"
         else:
-            runs_during = catalog_entry.maturity
+            runs_during, provider_maturity = _project_maturity(catalog_entry.maturity)
+            if provider_maturity is not None:
+                provider_maturities = (provider_maturity,)
+        schedule_summary = "Configured position is not global execution order."
+        if provider_maturities:
+            stage_label = "stage" if len(provider_maturities) == 1 else "stages"
+            schedule_summary += (
+                f" Hex-Rays {stage_label}: {', '.join(provider_maturities)}."
+            )
         overview_rows.append(
             ConfigV2PipelineRow(
                 index=index,
@@ -1112,6 +1121,7 @@ def project_config_v2_editor_view(
                 selected_transform_summary=_selection_summary(catalog_entry, options),
                 option_summary=_option_summary(options),
                 configured_order=index + 1,
+                schedule_summary=schedule_summary,
             )
         )
         inspectors.append(

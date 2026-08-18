@@ -36,10 +36,12 @@ def _implementation_name(value: object) -> str:
     return str(getattr(value, "name", value.__class__.__name__))
 
 
-def _normalize_maturity(
+def normalize_maturity(
     value: object,
-    maturity_name_provider: Callable[[int], str],
+    maturity_name_provider: Callable[[int], str] = lambda value: f"MMAT_{value}",
 ) -> tuple[IRMaturity, str] | None:
+    """Normalize portable or provider maturity spelling without importing IDA."""
+
     if isinstance(value, IRMaturity):
         return value, _PROVIDER_BY_IR[value]
     if isinstance(value, bool):
@@ -137,7 +139,7 @@ def build_effective_maturity_schedule(
                 normalized = [
                     item
                     for value in tuple(getattr(implementation, "maturities", ()) or ())
-                    if (item := _normalize_maturity(value, maturity_name_provider))
+                    if (item := normalize_maturity(value, maturity_name_provider))
                     is not None
                 ]
                 if normalized:
@@ -148,7 +150,7 @@ def build_effective_maturity_schedule(
                     normalized = [
                         item
                         for value in configured_maturities
-                        if (item := _normalize_maturity(value, maturity_name_provider))
+                        if (item := normalize_maturity(value, maturity_name_provider))
                         is not None
                     ]
                     if normalized:
@@ -223,4 +225,4 @@ def build_effective_maturity_schedule(
     return EffectiveMaturitySchedule(rows=tuple(rows), stages=stages)
 
 
-__all__ = ["build_effective_maturity_schedule"]
+__all__ = ["build_effective_maturity_schedule", "normalize_maturity"]
