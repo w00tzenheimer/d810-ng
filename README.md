@@ -318,118 +318,112 @@ So an unknown obfuscator that flattens with, say, an equality-chain dispatcher i
 
 ## Installation
 
-**Only IDA v9 or later is supported with Python 3.10 and higher** (since we need the microcode Python API)
+**D-810 ng supports IDA 9 or later with Python 3.10 or later.**
 
-Copy the contents of this repository to `.idapro/plugins` or `%appdata%\Hex-Rays\IDA pro\plugins`.
+There are two supported installation paths: a managed HCLI installation for
+normal use, or an editable source checkout for development.
 
-To activate [Cython](https://cython.org) speedups, install the package and run
-the bootstrap. For a pre-built wheel, the bootstrap verifies the bundled native
-modules and keeps Z3 isolated from IDA:
+### Install with HCLI
+
+Use the normal plugin-repository path:
 
 ```bash
-pip3 install d810-ng[speedups]
+hcli plugin install d810-ng
+```
+
+HCLI reads `ida-plugin.json`, selects the exact `d810-ng==<plugin version>`
+wheel for IDA's Python ABI and the host platform, and installs that wheel into
+IDA's Python environment. The selected wheel already contains D-810's
+compiled native speedups, so the HCLI path requires neither a compiler nor the
+IDA SDK. See [D-810 ng in the Hex-Rays Plugin Repository](https://plugins.hex-rays.com/w00tzenheimer/d810-ng)
+and the official [HCLI plugin documentation](https://hcli.docs.hex-rays.com/getting-started/quick-start/)
+for HCLI setup and plugin-management commands.
+
+If no compatible wheel exists for the current platform and ABI, installation
+must fail clearly. It must not fall back to a pure-Python package while
+claiming native support. Restart IDA after installation or upgrade.
+
+For an HCLI wheel installation, the optional bootstrap only verifies the
+bundled native modules in a fresh process and provisions isolated Z3 support
+where configured:
+
+```bash
 python -m d810.speedups.install
 ```
 
-Speedups are generously provided by [Mahmoud Abdelkader](https://mahmoudimus.com) who writes about how Cython ["super-charging the work-horse of reverse engineering"](https://mahmoudimus.com/blog/2025/08/ida-pro-and-cython-super-charging-the-work-horse-of-reverse-engineering/) gives C++ level performance with the same productivity of Python.
+It does not recompile an immutable installed wheel.
 
-### Optional speedups dependencies
-
-`install-speedups` verifies the native extensions and installs Z3 into an
-isolated user directory instead of `site-packages`. This avoids conflicts with
-the older DLL shipped with IDA:
-
-```bash
-python -m d810.speedups.install
-```
-
-This command installs `z3-solver>=4.13,<4.15.5` into `~/.d810-speedups/` (override with `D810_SPEEDUPS_DIR`) and d810 prepends that directory to `sys.path` before importing Z3, preventing IDA DLL conflicts.
+The local Docker installation proof covers one target only: Linux ARM64,
+CPython 3.13, and IDA 9.4. The release matrix remains responsible for Linux
+x86-64, Windows x86-64, macOS x86-64, macOS ARM64, and CPython 3.10 through
+3.13.
 
 ### Install from source
 
-To install D-810 ng as an editable package (useful for development or staying up to date with the repo):
+Use an editable installation when developing D-810 ng or tracking a repository
+branch. Clone or symlink the checkout under IDA's user plugin directory:
 
-```bash
-pip install -e .
+```text
+~/.idapro/plugins/d810-ng/                         # macOS and Linux
+%APPDATA%\Hex-Rays\IDA Pro\plugins\d810-ng\       # Windows
 ```
 
-#### Building with Cython Speedups
-
-d810 includes optional Cython extensions for performance-critical paths. Every Cython module has a pure Python fallback, so speedups are strictly optional.
-
-#### Prerequisites
+Then use the Python interpreter configured for IDAPython:
 
 ```bash
-pip install "Cython>=3.0.0"
-```
-
-#### Local Build
-
-**Without speedups (pure Python, all platforms):**
-
-```bash
-pip install -e .
-```
-
-This installs the package in development mode so that changes to the source are immediately reflected and works on every platform and requires no compiler or IDA SDK. All Cython modules have pure-Python fallbacks.
-
-**macOS / Linux (recommended bootstrap):**
-
-```bash
-# Install the editable package and any non-native optional features first.
-python -m pip install -e . --no-build-isolation
-
-# Finds this checkout, opts into the Cython build, installs solver support,
-# and verifies ABI-compatible native modules in a fresh interpreter.
+python -m pip install -e .
 python -m d810.speedups.install
 ```
 
-The SDK auto-downloads from GitHub if it is not present. To specify a local IDA
-SDK path, set it for the bootstrap:
+The speedup bootstrap discovers the IDA SDK and local IDA installation, builds
+native extensions for the editable checkout, installs isolated Z3 support
+where configured, and performs a fresh-process ABI/load verification. It
+requires an IDA restart after rebuilding. The SDK is auto-downloaded when it
+is not available; set `IDA_SDK=/path/to/ida-sdk` to use a local SDK explicitly.
+
+D-810 includes optional [Cython](https://cython.org) extensions for
+performance-critical paths. Every native module has a pure-Python fallback,
+but the editable bootstrap is the supported path for building and verifying
+the native extensions.
+
+For packaging or advanced builds, the direct form remains available:
 
 ```bash
-IDA_SDK=/path/to/ida-sdk python -m d810.speedups.install
+D810_BUILD_SPEEDUPS=1 python -m pip install -e ".[speedups]" --no-build-isolation
 ```
 
-**Windows (PowerShell):**
-
-```powershell
-python -m pip install -e . --no-build-isolation
-$env:IDA_SDK="C:\IDA\9\sdk"
-python -m d810.speedups.install
-```
-
-The direct `D810_BUILD_SPEEDUPS=1` form remains available for packaging and
-advanced builds. Normal editable installs should use `install-speedups`, which
-sets it internally and verifies the result. Restart IDA after a successful
-bootstrap.
-
-**Build extensions in-place only (no install):**
+To compile extensions in place without installing:
 
 ```bash
 D810_BUILD_SPEEDUPS=1 python setup.py build_ext --inplace
 ```
 
-### Inside Docker (recommended)
+#### Build inside Docker
 
 Building inside an IDA container ensures SDK headers and symbols are available:
 
 ```bash
 apt-get update && apt-get install -y g++
-pip install setuptools wheel "Cython>=3.0.0"
-D810_BUILD_SPEEDUPS=1 pip install --no-build-isolation -e ".[dev]"
+python -m pip install setuptools wheel "Cython>=3.0.0"
+D810_BUILD_SPEEDUPS=1 python -m pip install --no-build-isolation -e ".[dev]"
 ```
 
-### Environment Variables
+#### Build environment variables
 
 | Variable | Purpose | Default |
 |---|---|---|
 | `D810_BUILD_SPEEDUPS` | Set to `1` to compile `.pyx` files | `0` (disabled) |
 | `IDA_SDK` | Path to IDA SDK directory | Auto-downloads to `.ida-sdk/` |
+| `D810_SPEEDUPS_DIR` | Isolated directory for solver support | `~/.d810-speedups/` |
 | `DEBUG` | Set to `1` for debug builds with profiling/tracing | `0` |
 | `D810_NO_CYTHON` | Set to `1` to disable Cython at runtime | Not set (enabled) |
 
-> **Note:** `--no-build-isolation` is important so pip uses your already-installed Cython rather than creating an isolated build environment.
+`--no-build-isolation` is intentional: it makes the build use the Cython
+installed for the same interpreter that will load the extensions.
+
+Speedups are generously provided by
+[Mahmoud Abdelkader](https://mahmoudimus.com), who describes the approach in
+["IDA Pro and Cython: Super-charging the Work-horse of Reverse Engineering"](https://mahmoudimus.com/blog/2025/08/ida-pro-and-cython-super-charging-the-work-horse-of-reverse-engineering/).
 
 ## How to use D810
 
