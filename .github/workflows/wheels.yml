@@ -79,14 +79,12 @@ jobs:
                   CIBW_SKIP: "*-win32 *-musllinux_*"
                   CIBW_ENVIRONMENT: "D810_BUILD_SPEEDUPS=1"
                   CIBW_BEFORE_BUILD: "pip install Cython>=3.0.0"
-                  # Prints every backend with a reason for any that is not
-                  # usable. Optional backends live in their own distributions
-                  # now (d810-cobra), so this reports what THIS wheel
-                  # carries; an absent extension is expected, not a failure.
+                  # Reports every backend and verifies the wheel's native
+                  # speedups. Optional backends live in their own distributions
+                  # now (d810-cobra), so this reports what THIS wheel carries;
+                  # an absent extension is expected, not a failure.
                   CIBW_TEST_COMMAND: >-
-                      python -c "from d810.backends import registry;
-                      from d810.core.plugins import format_report;
-                      print(format_report(registry().probe_all()))"
+                      python "{project}/tools/verify_release_wheel.py"
               with:
                   package-dir: .
                   output-dir: wheelhouse

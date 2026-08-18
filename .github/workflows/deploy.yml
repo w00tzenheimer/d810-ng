@@ -95,20 +95,15 @@ jobs:
                   CIBW_ENVIRONMENT: "D810_BUILD_SPEEDUPS=1"
                   CIBW_BEFORE_BUILD: "pip install Cython>=3.0.0"
                   # Report every backend with a reason for any that is not
-                  # usable. The wheel must import cleanly; optional backends now
-                  # ship as their own distributions (d810-cobra), so an
-                  # absent one is expected rather than a build failure.
+                  # usable and verify the wheel's native speedups. Optional
+                  # backends now ship as their own distributions (d810-cobra),
+                  # so an absent one is expected rather than a build failure.
                   #
                   # A defect IS fatal: BROKEN or INCOMPATIBLE means a backend
                   # this wheel claims to carry is mis-declared, which would
                   # otherwise reach PyPI silently.
                   CIBW_TEST_COMMAND: >-
-                      python -c "from d810.backends import registry;
-                      from d810.core.plugins import format_report, has_defects;
-                      import sys;
-                      infos = registry().probe_all();
-                      print(format_report(infos));
-                      sys.exit(1 if has_defects(infos) else 0)"
+                      python "{project}/tools/verify_release_wheel.py"
               with:
                   package-dir: .
                   output-dir: wheelhouse
