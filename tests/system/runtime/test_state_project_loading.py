@@ -17,6 +17,82 @@ import shlex
 
 import pytest
 
+
+def _capture_live_container(container):
+    """Keep the object identity beside a content snapshot for rollback checks."""
+
+    return container, copy.deepcopy(container)
+
+
+def _live_container_snapshot(manager):
+    service = manager.execution_scope_service
+    snapshot = {
+        "scope_active_cache": _capture_live_container(service._active_cache),
+        "scope_metadata_cache": _capture_live_container(service._metadata_cache),
+        "scope_hint_inferences": _capture_live_container(service._hint_inferences),
+        "scope_hint_suppressions": _capture_live_container(
+            service._hint_suppressions
+        ),
+        "instruction_scheduler": _capture_live_container(
+            manager.instruction_pass_scheduler._pending_by_func
+        ),
+        "block_scheduler": _capture_live_container(
+            manager.block_pass_scheduler._pending_by_func
+        ),
+    }
+    optimizer = getattr(manager, "instruction_optimizer", None)
+    for index, child in enumerate(
+        tuple(getattr(optimizer, "instruction_optimizers", ()))
+    ):
+        for name in (
+            "rules",
+            "pattern_storage",
+            "_indexed_storage",
+            "_structural_rules_by_root_opcode",
+            "_allowed_root_opcodes",
+        ):
+            value = getattr(child, name, None)
+            if isinstance(value, (dict, list, set)):
+                snapshot[f"instruction_child_{index}_{name}"] = _capture_live_container(
+                    value
+                )
+    analyzer = getattr(optimizer, "analyzer", None)
+    if analyzer is not None and isinstance(getattr(analyzer, "rules", None), set):
+        snapshot["instruction_analyzer_rules"] = _capture_live_container(
+            analyzer.rules
+        )
+    block_optimizer = getattr(manager, "block_optimizer", None)
+    if block_optimizer is not None and isinstance(
+        getattr(block_optimizer, "cfg_rules", None), list
+    ):
+        snapshot["block_cfg_rules"] = _capture_live_container(
+            block_optimizer.cfg_rules
+        )
+    return snapshot
+
+
+def _assert_live_container_snapshot(manager, snapshot) -> None:
+    for key, (container, contents) in snapshot.items():
+        if key.startswith("scope_"):
+            name = key.removeprefix("scope_")
+            current = getattr(manager.execution_scope_service, f"_{name}")
+        elif key == "instruction_scheduler":
+            current = manager.instruction_pass_scheduler._pending_by_func
+        elif key == "block_scheduler":
+            current = manager.block_pass_scheduler._pending_by_func
+        elif key == "block_cfg_rules":
+            current = manager.block_optimizer.cfg_rules
+        elif key == "instruction_analyzer_rules":
+            current = manager.instruction_optimizer.analyzer.rules
+        else:
+            _, _, index, name = key.split("_", 3)
+            current = getattr(
+                manager.instruction_optimizer.instruction_optimizers[int(index)],
+                name,
+            )
+        assert current is container, key
+        assert current == contents, key
+
 MALFORMED = "mba-solve has unknown options: ['maturities']"
 
 
@@ -477,6 +553,261 @@ def test_execution_scope_compilation_failure_rolls_back_runtime_state(
             assert manager.execution_scope_service.generation == generation_before
             assert lifecycle_events == []
             assert scope_events == []
+        finally:
+            manager._started = previous_started
+            if previous_instruction_optimizer is None:
+                del manager.instruction_optimizer
+            else:
+                manager.instruction_optimizer = previous_instruction_optimizer
+            if previous_block_optimizer is None:
+                del manager.block_optimizer
+            else:
+                manager.block_optimizer = previous_block_optimizer
+            monkeypatch.undo()
+            _restore(state, original_index)
+
+
+def test_published_activation_isolated_from_raising_observers(
+    d810_state,
+) -> None:
+    """Observer failures cannot invalidate or partially hide a live project."""
+
+    with d810_state() as state:
+        original_index = state.current_project_index
+        target_index = 0 if original_index != 0 else 1
+        target = state.project_manager.get(target_index)
+        state.invalid_projects.pop(target.path.name, None)
+        lifecycle_calls: list[str] = []
+        scope_calls: list[str] = []
+
+        from d810.core.project import (
+            ProjectLifecycleEvent,
+            subscribe_project_lifecycle,
+            unsubscribe_project_lifecycle,
+        )
+        from d810.core.execution_scope import ExecutionScopeEvent
+
+        def lifecycle_raiser(_payload):
+            lifecycle_calls.append("raise")
+            raise RuntimeError("lifecycle observer failure")
+
+        def lifecycle_peer(_payload):
+            lifecycle_calls.append("peer")
+
+        def scope_raiser(_payload):
+            scope_calls.append("raise")
+            raise RuntimeError("scope observer failure")
+
+        def scope_peer(_payload):
+            scope_calls.append("peer")
+
+        manager = state.manager
+        event = ExecutionScopeEvent.PROJECT_PIPELINE_RELOADED
+        subscribe_project_lifecycle(
+            ProjectLifecycleEvent.PROJECT_RELOADING, lifecycle_raiser
+        )
+        subscribe_project_lifecycle(
+            ProjectLifecycleEvent.PROJECT_RELOADING, lifecycle_peer
+        )
+        manager.event_emitter.on(event, scope_raiser)
+        manager.event_emitter.on(event, scope_peer)
+        try:
+            assert state.load_project(target_index) is target
+            assert state.current_project is target
+            assert state.current_project_index == target_index
+            assert state.current_project_runtime_snapshot.project.basename == (
+                target.path.name
+            )
+            assert state.last_config_v2_pass_ids == (
+                state.current_project_runtime_snapshot.effective_pass_ids
+            )
+            assert target.path.name not in state.invalid_projects
+            assert set(lifecycle_calls) == {"raise", "peer"}
+            assert set(scope_calls) == {"raise", "peer"}
+        finally:
+            unsubscribe_project_lifecycle(
+                ProjectLifecycleEvent.PROJECT_RELOADING, lifecycle_raiser
+            )
+            unsubscribe_project_lifecycle(
+                ProjectLifecycleEvent.PROJECT_RELOADING, lifecycle_peer
+            )
+            manager.event_emitter.remove(event, scope_raiser)
+            manager.event_emitter.remove(event, scope_peer)
+            _restore(state, original_index)
+
+
+def test_tigress_profile_global_registries_roll_back_after_late_failure(
+    d810_state, monkeypatch
+) -> None:
+    """Tigress candidate registration is restored when manager staging fails."""
+
+    with d810_state() as state:
+        original_index = state.current_project_index
+        target_index = state.project_manager.index(
+            "default_unflattening_tigress_indirect.json"
+        )
+        manager = state.manager
+        import d810.core.project as project_module
+        from d810.hexrays.preanalysis.indirect_jump_labels import (
+            snapshot_indirect_materialization_registry,
+        )
+
+        before_cleanup = (
+            project_module._project_reload_cleanup_handlers,
+            dict(project_module._project_reload_cleanup_handlers),
+        )
+        before_indirect = snapshot_indirect_materialization_registry()
+        real_configure = manager.configure
+
+        def configure_then_fail(**kwargs):
+            real_configure(**kwargs)
+            raise RuntimeError("late manager activation failure")
+
+        monkeypatch.setattr(manager, "configure", configure_then_fail)
+        try:
+            assert state.load_project(target_index) is None
+            after_indirect = snapshot_indirect_materialization_registry()
+            assert project_module._project_reload_cleanup_handlers is (
+                before_cleanup[0]
+            )
+            assert project_module._project_reload_cleanup_handlers == before_cleanup[1]
+            assert after_indirect.goto_table_ref is before_indirect.goto_table_ref
+            assert after_indirect.goto_table_ref == before_indirect.goto_table_contents
+            assert after_indirect.registered is before_indirect.registered
+            assert after_indirect.executor is before_indirect.executor
+            assert after_indirect.flowchart_registry[0] is (
+                before_indirect.flowchart_registry[0]
+            )
+            assert after_indirect.flowchart_registry[0] == (
+                before_indirect.flowchart_registry[1]
+            )
+        finally:
+            monkeypatch.undo()
+            _restore(state, original_index)
+
+
+def test_tigress_profile_registration_survives_successful_activation_once(
+    d810_state,
+) -> None:
+    """A successful Tigress activation keeps one current materializer hook."""
+
+    with d810_state() as state:
+        original_index = state.current_project_index
+        target_index = state.project_manager.index(
+            "default_unflattening_tigress_indirect.json"
+        )
+        target = state.project_manager.get(target_index)
+        import d810.core.project as project_module
+        import d810.hexrays.preanalysis.flowchart_preanalysis as flowchart_module
+        from d810.hexrays.preanalysis.indirect_jump_labels import (
+            snapshot_indirect_materialization_registry,
+        )
+
+        try:
+            assert state.load_project(target_index) is target
+            first = snapshot_indirect_materialization_registry()
+            assert first.registered is True
+            assert (
+                list(project_module._project_reload_cleanup_handlers).count(
+                    "hexrays.indirect_jump_label_materialization"
+                )
+                == 1
+            )
+            assert (
+                list(flowchart_module._FLOWCHART_PREANALYSIS_HANDLERS).count(
+                    "hexrays.indirect_jump_label_materialization"
+                )
+                == 1
+            )
+
+            assert state.load_project(target_index) is target
+            second = snapshot_indirect_materialization_registry()
+            assert second.registered is True
+            assert second.goto_table_ref == first.goto_table_contents
+            assert (
+                list(project_module._project_reload_cleanup_handlers).count(
+                    "hexrays.indirect_jump_label_materialization"
+                )
+                == 1
+            )
+            assert (
+                list(flowchart_module._FLOWCHART_PREANALYSIS_HANDLERS).count(
+                    "hexrays.indirect_jump_label_materialization"
+                )
+                == 1
+            )
+        finally:
+            _restore(state, original_index)
+
+
+def test_started_activation_failure_restores_live_container_identity(
+    d810_state, monkeypatch
+) -> None:
+    """Caches, dispatch indexes, rules, cfg lists, and schedulers stay live."""
+
+    with d810_state() as state:
+        original_index = state.current_project_index
+        target_index, _rule = _load_project_with_rule(state, "current_ins_rules")
+        manager = state.manager
+        previous_started = manager._started
+        previous_instruction_optimizer = getattr(manager, "instruction_optimizer", None)
+        previous_block_optimizer = getattr(manager, "block_optimizer", None)
+
+        class _Child:
+            def __init__(self):
+                self.rules = {"old-rule"}
+                self.pattern_storage = {"pattern": "old"}
+                self._indexed_storage = {"index": "old"}
+                self._structural_rules_by_root_opcode = {"old": ["rule"]}
+                self._allowed_root_opcodes = {"old"}
+
+        class _Analyzer:
+            def __init__(self):
+                self.rules = {"old-analyzer-rule"}
+
+        class _Optimizer:
+            def __init__(self, owner):
+                self.owner = owner
+                self.child = _Child()
+                self.instruction_optimizers = (self.child,)
+                self.analyzer = _Analyzer()
+
+            def replace_rules(self, _rules):
+                self.child.rules.clear()
+                self.child.rules.add("candidate-rule")
+                self.child.pattern_storage["pattern"] = "candidate"
+                self.child._indexed_storage["index"] = "candidate"
+                self.child._structural_rules_by_root_opcode.clear()
+                self.child._allowed_root_opcodes.clear()
+                self.analyzer.rules.clear()
+                self.analyzer.rules.add("candidate-analyzer-rule")
+
+            def configure(self, **_kwargs):
+                self.owner.instruction_pass_scheduler._pending_by_func.clear()
+                self.owner.block_pass_scheduler._pending_by_func.clear()
+
+        class _BlockOptimizer(_Optimizer):
+            def __init__(self, owner):
+                super().__init__(owner)
+                self.cfg_rules = ["old-cfg-rule"]
+
+        manager._started = True
+        manager.instruction_optimizer = _Optimizer(manager)
+        manager.block_optimizer = _BlockOptimizer(manager)
+        manager.execution_scope_service._active_cache[(1, 2, 3)] = "old"
+        manager.execution_scope_service._metadata_cache[1] = "old"
+        manager.instruction_pass_scheduler._pending_by_func[1] = {"old": "run"}
+        manager.block_pass_scheduler._pending_by_func[2] = {"old": "run"}
+        before = _live_container_snapshot(manager)
+
+        def compile_then_fail():
+            manager.execution_scope_service._active_cache.clear()
+            raise RuntimeError("scope failure after live container mutation")
+
+        monkeypatch.setattr(manager, "_compile_execution_scope", compile_then_fail)
+        try:
+            assert state.load_project(target_index) is None
+            _assert_live_container_snapshot(manager, before)
         finally:
             manager._started = previous_started
             if previous_instruction_optimizer is None:

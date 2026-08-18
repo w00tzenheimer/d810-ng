@@ -32,6 +32,7 @@ from d810.core.project import (
     ProjectContext,
     ProjectManager,
     emit_project_reloading,
+    prepare_project_activation_cleanups,
 )
 from d810.core.registry import SingletonMeta
 from d810.core.execution_scope import ExecutionScopeEvent
@@ -330,8 +331,31 @@ class D810State(metaclass=SingletonMeta):
         schedule = compile_config_v2_hook_schedule(project)
         snapshot = build_project_runtime_snapshot(project=project, schedule=schedule)
 
-        candidate_known_ins_rules = self._build_known_instruction_rules()
-        candidate_known_blk_rules = self._build_known_block_rules()
+        # Capture manager-owned objects and profile-global registries before
+        # constructing/configuring any candidate rule.  Tigress-indirect
+        # configuration registers reload/materialization handlers as a side
+        # effect, so those globals are part of the same rollback boundary.
+        manager_snapshot = self.manager.snapshot_project_activation_state()
+        # Existing-profile cleanup belongs before candidate configuration.  A
+        # post-publication lifecycle notification must not immediately invoke
+        # the cleanup hook just registered by the candidate itself.
+        prepare_project_activation_cleanups()
+
+        def _rollback_activation() -> None:
+            try:
+                self.manager.restore_project_activation_state(manager_snapshot)
+            except BaseException:  # noqa: BLE001 - preserve primary failure
+                logger.exception("project activation rollback failed")
+
+        def _stage_call(callable_, *args, **kwargs):
+            try:
+                return callable_(*args, **kwargs)
+            except BaseException:
+                _rollback_activation()
+                raise
+
+        candidate_known_ins_rules = _stage_call(self._build_known_instruction_rules)
+        candidate_known_blk_rules = _stage_call(self._build_known_block_rules)
         candidate_ins_rules: list = []
         candidate_blk_rules: list = []
 
@@ -343,12 +367,14 @@ class D810State(metaclass=SingletonMeta):
             for rule in candidate_known_ins_rules:
                 if rule.name != rule_conf.name:
                     continue
-                effective_config = resolve_arch_config(rule_conf.config)
+                effective_config = _stage_call(
+                    resolve_arch_config, rule_conf.config
+                )
                 effective_config["dump_intermediate_microcode"] = self.d810_config.get(
                     "dump_intermediate_microcode"
                 )
-                rule.configure(effective_config)
-                rule.set_log_dir(self.log_dir)
+                _stage_call(rule.configure, effective_config)
+                _stage_call(rule.set_log_dir, self.log_dir)
                 candidate_ins_rules.append(rule)
         logger.debug("Instruction rules configured")
 
@@ -429,7 +455,8 @@ class D810State(metaclass=SingletonMeta):
             (
                 candidate_certified_catalogue_snapshot,
                 candidate_shadow_matcher_parity_ledger,
-            ) = attach_selected_certified_catalogue_snapshot(
+            ) = _stage_call(
+                attach_selected_certified_catalogue_snapshot,
                 selected_catalogue_adapters,
                 parity_certificate_path=certificate_path,
                 parity_expectation=parity_expectation,
@@ -441,22 +468,23 @@ class D810State(metaclass=SingletonMeta):
             for blk_rule in candidate_known_blk_rules:
                 if blk_rule.name != rule_conf.name:
                     continue
-                effective_config = resolve_arch_config(rule_conf.config)
+                effective_config = _stage_call(
+                    resolve_arch_config, rule_conf.config
+                )
                 effective_config["dump_intermediate_microcode"] = (
                     self.d810_config.get("dump_intermediate_microcode")
                 )
-                blk_rule.configure(effective_config)
-                blk_rule.set_log_dir(self.log_dir)
+                _stage_call(blk_rule.configure, effective_config)
+                _stage_call(blk_rule.set_log_dir, self.log_dir)
                 candidate_blk_rules.append(blk_rule)
         logger.debug("Block rules configured")
 
-        cfg = dict(project.additional_configuration)
+        cfg = _stage_call(dict, project.additional_configuration)
         cfg["config_v2_native_state_machine_active"] = (
-            requires_native_preanalysis_handlers(schedule)
+            _stage_call(requires_native_preanalysis_handlers, schedule)
         )
         cfg.setdefault("project_name", project.path.name)
 
-        manager_snapshot = self.manager.snapshot_project_activation_state()
         try:
             # Stage the candidate rule lists into manager-owned scope inputs.
             # The old lists and optimizer objects are restored if any manager
@@ -492,10 +520,7 @@ class D810State(metaclass=SingletonMeta):
                 )
                 self.manager._compile_execution_scope()
         except BaseException:
-            try:
-                self.manager.restore_project_activation_state(manager_snapshot)
-            except BaseException:  # noqa: BLE001 - preserve primary failure
-                logger.exception("project activation rollback failed")
+            _rollback_activation()
             raise
 
         # This is the non-fallible publication point.  No identity/list field
@@ -522,10 +547,13 @@ class D810State(metaclass=SingletonMeta):
         emit_project_reloading(
             old_project_name=old_project_name,
             new_project_name=project.path.name,
+            isolated=True,
+            run_cleanups=False,
         )
         self.manager.emit_execution_scope_invalidation(
             ExecutionScopeEvent.PROJECT_PIPELINE_RELOADED,
             project_name=project.path.name,
+            isolated=True,
         )
         if getattr(self, "gui", None) is not None:
             logger.info(

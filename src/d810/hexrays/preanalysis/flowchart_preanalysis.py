@@ -37,6 +37,24 @@ def unregister_flowchart_preanalysis_handler(name: str) -> None:
     _FLOWCHART_PREANALYSIS_HANDLERS.pop(str(name), None)
 
 
+def snapshot_flowchart_preanalysis_registry() -> tuple[dict[str, RegisteredSeamHandler], dict[str, RegisteredSeamHandler]]:
+    """Capture the handler registry without replacing its live dictionary."""
+
+    return _FLOWCHART_PREANALYSIS_HANDLERS, dict(_FLOWCHART_PREANALYSIS_HANDLERS)
+
+
+def restore_flowchart_preanalysis_registry(
+    snapshot: tuple[
+        dict[str, RegisteredSeamHandler], dict[str, RegisteredSeamHandler]
+    ],
+) -> None:
+    """Restore a staged handler registry in place."""
+
+    registry, contents = snapshot
+    registry.clear()
+    registry.update(contents)
+
+
 def request_hexrays_redo(
     decision: MutableMapping[str, object],
     reason: str,
@@ -81,5 +99,7 @@ __all__ = [
     "register_flowchart_preanalysis_handler",
     "request_hexrays_redo",
     "run_flowchart_preanalysis_handlers",
+    "snapshot_flowchart_preanalysis_registry",
     "unregister_flowchart_preanalysis_handler",
+    "restore_flowchart_preanalysis_registry",
 ]

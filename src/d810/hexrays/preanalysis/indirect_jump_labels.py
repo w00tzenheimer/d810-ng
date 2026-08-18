@@ -1101,6 +1101,53 @@ _INDIRECT_MATERIALIZATION_EXECUTOR: NativePatchPlanRequestExecutor | None = None
 _INDIRECT_MATERIALIZATION_HANDLER = "hexrays.indirect_jump_label_materialization"
 
 
+@dataclass(frozen=True, slots=True)
+class IndirectMaterializationRegistrySnapshot:
+    """Identity-preserving snapshot of profile-global materialization state."""
+
+    registered: bool
+    goto_table_ref: dict
+    goto_table_contents: dict
+    executor: NativePatchPlanRequestExecutor | None
+    flowchart_registry: tuple[dict, dict]
+
+
+def snapshot_indirect_materialization_registry() -> IndirectMaterializationRegistrySnapshot:
+    """Capture all globals changed by indirect-profile rule configuration."""
+
+    from d810.hexrays.preanalysis.flowchart_preanalysis import (
+        snapshot_flowchart_preanalysis_registry,
+    )
+
+    return IndirectMaterializationRegistrySnapshot(
+        registered=_INDIRECT_MATERIALIZATION_REGISTERED,
+        goto_table_ref=_INDIRECT_MATERIALIZATION_GOTO_TABLE,
+        goto_table_contents=dict(_INDIRECT_MATERIALIZATION_GOTO_TABLE),
+        executor=_INDIRECT_MATERIALIZATION_EXECUTOR,
+        flowchart_registry=snapshot_flowchart_preanalysis_registry(),
+    )
+
+
+def restore_indirect_materialization_registry(
+    snapshot: IndirectMaterializationRegistrySnapshot,
+) -> None:
+    """Restore indirect materialization state and handler registry in place."""
+
+    global _INDIRECT_MATERIALIZATION_REGISTERED
+    global _INDIRECT_MATERIALIZATION_GOTO_TABLE
+    global _INDIRECT_MATERIALIZATION_EXECUTOR
+    from d810.hexrays.preanalysis.flowchart_preanalysis import (
+        restore_flowchart_preanalysis_registry,
+    )
+
+    snapshot.goto_table_ref.clear()
+    snapshot.goto_table_ref.update(snapshot.goto_table_contents)
+    _INDIRECT_MATERIALIZATION_REGISTERED = snapshot.registered
+    _INDIRECT_MATERIALIZATION_GOTO_TABLE = snapshot.goto_table_ref
+    _INDIRECT_MATERIALIZATION_EXECUTOR = snapshot.executor
+    restore_flowchart_preanalysis_registry(snapshot.flowchart_registry)
+
+
 def merge_materialized_indirect_transfers(
     state: object,
     transfers: tuple[MaterializedIndirectTransfer, ...],
@@ -1291,6 +1338,9 @@ __all__ = [
     "register_indirect_materialization",
     "reset_indirect_materialization",
     "set_indirect_materialization_default_executor",
+    "IndirectMaterializationRegistrySnapshot",
+    "snapshot_indirect_materialization_registry",
+    "restore_indirect_materialization_registry",
     "run_indirect_materialization_for_function",
     "materialize_indirect_label_targets_from_config",
     "plan_indirect_label_materialization",

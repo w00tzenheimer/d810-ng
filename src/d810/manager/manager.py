@@ -23,6 +23,8 @@ from d810.core.observability import get_active_diag_path
 from d810.core.provider_phase import ProviderPhaseSnapshot
 from d810.core.project import (
     emit_preanalysis_fact_collector_registration,
+    restore_project_activation_registries,
+    snapshot_project_activation_registries,
 )
 from d810.core.registry import EventEmitter
 from d810.core.execution_scope import (
@@ -207,6 +209,14 @@ def _session_telemetry_summary() -> dict[str, object]:
     except Exception:
         summary["mop_to_ast_cache"] = {"error": "unavailable"}
     return summary
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _ActivationContainerSnapshot:
+    """Identity plus contents for a live mutable activation container."""
+
+    target: object
+    contents: object
 
 
 def _load_semantic_route_reference_oracle_registry(
@@ -1980,7 +1990,12 @@ class D810Manager:
 
     @staticmethod
     def _activation_copy(value: object) -> object:
-        """Copy ordinary activation state without cloning live rule objects."""
+        """Copy ordinary activation state without cloning live rule objects.
+
+        Required live mutable containers are handled explicitly by
+        :meth:`_snapshot_activation_object`; this fallback is for opaque,
+        disposable implementation details only.
+        """
 
         try:
             return copy.deepcopy(value)
@@ -2001,19 +2016,33 @@ class D810Manager:
             return (obj, {})
 
         def _preserved_value(name: str, value: object) -> object:
-            if name == "rules" and isinstance(value, set):
-                return set(value)
-            if name == "cfg_rules" and isinstance(value, list):
-                return value
+            if isinstance(value, dict):
+                return _ActivationContainerSnapshot(value, dict(value))
+            if isinstance(value, list):
+                return _ActivationContainerSnapshot(value, list(value))
+            if isinstance(value, set):
+                return _ActivationContainerSnapshot(value, set(value))
+            if name in {"pattern_storage", "_indexed_storage"}:
+                object_dict = getattr(value, "__dict__", None)
+                if isinstance(object_dict, dict):
+                    contents = {
+                        attr: (
+                            dict(attr_value)
+                            if isinstance(attr_value, dict)
+                            else list(attr_value)
+                            if isinstance(attr_value, list)
+                            else set(attr_value)
+                            if isinstance(attr_value, set)
+                            else attr_value
+                        )
+                        for attr, attr_value in object_dict.items()
+                    }
+                    return _ActivationContainerSnapshot(value, contents)
             if name == "_stages" and isinstance(value, tuple):
-                return tuple(value)
-            if name in {
-                "_active_cache",
-                "_metadata_cache",
-                "_hint_inferences",
-                "_hint_suppressions",
-            } and isinstance(value, dict):
-                return dict(value)
+                # Tuples are immutable; restoration rebinds the original tuple
+                # object.  It is an internal stage descriptor, not a mutable
+                # cache observed by callers.
+                return value
             return value
 
         return (
@@ -2029,7 +2058,27 @@ class D810Manager:
         )
 
     @staticmethod
-    def _restore_activation_object(snapshot) -> None:
+    def _restore_activation_container(snapshot: _ActivationContainerSnapshot) -> object:
+        target = snapshot.target
+        contents = snapshot.contents
+        if isinstance(target, dict) and isinstance(contents, dict):
+            target.clear()
+            target.update(contents)
+        elif isinstance(target, list) and isinstance(contents, list):
+            target.clear()
+            target.extend(contents)
+        elif isinstance(target, set) and isinstance(contents, set):
+            target.clear()
+            target.update(contents)
+        else:
+            object_dict = getattr(target, "__dict__", None)
+            if isinstance(object_dict, dict) and isinstance(contents, dict):
+                object_dict.clear()
+                object_dict.update(contents)
+        return target
+
+    @classmethod
+    def _restore_activation_object(cls, snapshot) -> None:
         if snapshot is None:
             return
         obj, attributes = snapshot
@@ -2042,13 +2091,23 @@ class D810Manager:
             if name not in attributes:
                 try:
                     delattr(obj, name)
-                except Exception:  # noqa: BLE001 - rollback is best effort
-                    pass
+                except Exception:  # noqa: BLE001 - preserve the primary error
+                    logger.exception(
+                        "project activation rollback could not remove %s.%s",
+                        type(obj).__name__,
+                        name,
+                    )
         for name, value in attributes.items():
             try:
+                if isinstance(value, _ActivationContainerSnapshot):
+                    value = cls._restore_activation_container(value)
                 setattr(obj, name, value)
-            except Exception:  # noqa: BLE001 - rollback is best effort
-                pass
+            except Exception:  # noqa: BLE001 - preserve the primary error
+                logger.exception(
+                    "project activation rollback could not restore %s.%s",
+                    type(obj).__name__,
+                    name,
+                )
 
     def snapshot_project_activation_state(self) -> dict[str, object]:
         """Capture mutable manager/runtime state before project activation.
@@ -2072,6 +2131,8 @@ class D810Manager:
                             "pattern_storage",
                             "_indexed_storage",
                             "_structural_rules_by_root_opcode",
+                            "_allowed_root_opcodes",
+                            "_active_cache",
                             "event_emitter",
                             "stats",
                             "log_dir",
@@ -2098,7 +2159,15 @@ class D810Manager:
                 for rule in tuple(getattr(block_optimizer, "cfg_rules", ()))
             )
 
+        from d810.hexrays.preanalysis.indirect_jump_labels import (
+            snapshot_indirect_materialization_registry,
+        )
+
         return {
+            "project_activation_registries": snapshot_project_activation_registries(),
+            "indirect_materialization_registry": (
+                snapshot_indirect_materialization_registry()
+            ),
             "config": (self.config, self._activation_copy(self.config)),
             "semantic_registry": self._semantic_route_reference_oracle_registry,
             "priors": (
@@ -2138,6 +2207,7 @@ class D810Manager:
                         "log_dir",
                         "_instruction_optimizer_type",
                         "instruction_visitor",
+                        "_active_rule_cache",
                     }
                 ),
             ),
@@ -2153,15 +2223,18 @@ class D810Manager:
                         "log_dir",
                         "_flow_context_type",
                         "_run_later_scheduler",
+                        "_active_cache",
                     }
                 ),
             ),
             "block_rule_snapshots": block_rule_snapshots,
             "instruction_scheduler": self._snapshot_activation_object(
-                self.instruction_pass_scheduler
+                self.instruction_pass_scheduler,
+                preserve=frozenset({"_pending_by_func"}),
             ),
             "block_scheduler": self._snapshot_activation_object(
-                self.block_pass_scheduler
+                self.block_pass_scheduler,
+                preserve=frozenset({"_pending_by_func"}),
             ),
         }
 
@@ -2212,6 +2285,23 @@ class D810Manager:
             except Exception:  # noqa: BLE001 - preserve the activation failure
                 logger.exception("project activation native handler rollback failed")
             self._native_preanalysis_handlers_installed = expected_native
+
+        # Native-handler reconciliation can itself touch the indirect
+        # materialization executor.  Restore profile-global registries last so
+        # their identity and contents are exact after every rollback path.
+        try:
+            restore_project_activation_registries(
+                snapshot["project_activation_registries"]
+            )
+            from d810.hexrays.preanalysis.indirect_jump_labels import (
+                restore_indirect_materialization_registry,
+            )
+
+            restore_indirect_materialization_registry(
+                snapshot["indirect_materialization_registry"]
+            )
+        except Exception:  # noqa: BLE001 - preserve the activation failure
+            logger.exception("project activation registry rollback failed")
 
     def reconfigure_function_storage(
         self,
@@ -2313,16 +2403,30 @@ class D810Manager:
         project_name: str | None = None,
         func_eas: frozenset[int] | None = None,
         changed_targets: frozenset[str] | None = None,
+        isolated: bool = False,
     ) -> None:
-        self.event_emitter.emit(
-            reason,
-            ExecutionScopeInvalidation(
-                reason=reason,
-                project_name=project_name,
-                func_eas=func_eas,
-                changed_targets=changed_targets,
-            ),
+        """Notify execution-scope observers.
+
+        Existing callers keep propagating emitter semantics.  Project
+        activation passes ``isolated=True`` after its publication commit so
+        observer failures are logged while every peer listener still runs.
+        """
+
+        payload = ExecutionScopeInvalidation(
+            reason=reason,
+            project_name=project_name,
+            func_eas=func_eas,
+            changed_targets=changed_targets,
         )
+        if not isolated:
+            self.event_emitter.emit(reason, payload)
+            return
+        for failure in self.event_emitter.emit_isolated(reason, payload):
+            logger.warning(
+                "execution-scope observer failed during isolated activation notification: %s",
+                failure,
+                exc_info=(type(failure), failure, failure.__traceback__),
+            )
 
     @property
     def is_profiling(self) -> bool:

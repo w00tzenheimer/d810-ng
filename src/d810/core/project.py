@@ -73,6 +73,36 @@ def unregister_project_reload_cleanup(name: str) -> None:
     _project_reload_cleanup_handlers.pop(str(name), None)
 
 
+def snapshot_project_activation_registries() -> dict[str, object]:
+    """Capture process-global project-profile registries for activation rollback.
+
+    Project rules are configured before the canonical state is published, but
+    some profile adapters register reload callbacks during that configuration.
+    Keep the registry objects themselves so a failed candidate can be restored
+    in place for observers that retained a reference to them.
+    """
+
+    return {
+        "reload_cleanup_registry": (
+            _project_reload_cleanup_handlers,
+            dict(_project_reload_cleanup_handlers),
+        ),
+        "fact_collector_registry": (
+            _preanalysis_fact_collector_registration_handlers,
+            dict(_preanalysis_fact_collector_registration_handlers),
+        ),
+    }
+
+
+def restore_project_activation_registries(snapshot: dict[str, object]) -> None:
+    """Restore project-profile registries captured by activation staging."""
+
+    for key in ("reload_cleanup_registry", "fact_collector_registry"):
+        registry_ref, contents = snapshot[key]
+        registry_ref.clear()
+        registry_ref.update(contents)
+
+
 def register_preanalysis_fact_collector_registration_handler(
     name: str,
     handler: typing.Callable[..., None],
@@ -122,20 +152,48 @@ def _run_project_reload_cleanups() -> None:
             logger.warning("project reload cleanup failed: %s", name, exc_info=True)
 
 
+def prepare_project_activation_cleanups() -> None:
+    """Run and retire old profile cleanup hooks before candidate staging."""
+
+    _run_project_reload_cleanups()
+    _project_reload_cleanup_handlers.clear()
+
+
 def emit_project_reloading(
     *,
     old_project_name: str | None,
     new_project_name: str | None,
+    isolated: bool = False,
+    run_cleanups: bool = True,
 ) -> None:
-    """Emit the pre-configuration project reload event and run cleanups."""
+    """Emit the project reload event and run cleanups.
+
+    Ordinary callers retain propagating :class:`EventEmitter` semantics.  The
+    project activation transaction opts into ``isolated`` dispatch only after
+    publication, so one observer cannot turn a successful activation into a
+    reported load failure or prevent peer observers from seeing the event.
+    """
 
     payload = ProjectLifecyclePayload(
         reason=ProjectLifecycleEvent.PROJECT_RELOADING,
         old_project_name=old_project_name,
         new_project_name=new_project_name,
     )
-    _run_project_reload_cleanups()
-    _project_lifecycle_emitter.emit(ProjectLifecycleEvent.PROJECT_RELOADING, payload)
+    if run_cleanups:
+        _run_project_reload_cleanups()
+    if not isolated:
+        _project_lifecycle_emitter.emit(
+            ProjectLifecycleEvent.PROJECT_RELOADING, payload
+        )
+        return
+    for failure in _project_lifecycle_emitter.emit_isolated(
+        ProjectLifecycleEvent.PROJECT_RELOADING, payload
+    ):
+        logger.warning(
+            "project lifecycle observer failed during isolated activation notification: %s",
+            failure,
+            exc_info=(type(failure), failure, failure.__traceback__),
+        )
 
 
 def clear_project_lifecycle_for_tests() -> None:
