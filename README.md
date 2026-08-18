@@ -141,50 +141,96 @@ no durable per-function implementation-class override.
 
 ## Architecture
 
-### The 7-Stage Deobfuscation Pipeline
+### The deobfuscation pipeline
 
-D-810 ng implements a strictly isolated, uni-directional 7-stage architectural workflow for microcode transformations. Keeping these layers decoupled is critical for portability, safe live decompilation reasoners, and verifiable mutations:
+D-810 ng implements a strictly isolated, uni-directional workflow for
+microcode transformations. Diagnostics mirror the observations emitted by
+that workflow, but they are not part of the behavioral data path. Keeping
+these layers decoupled is critical for portability, safe live decompilation
+reasoners, and verifiable mutations:
 
 ```mermaid
 graph LR
     Preanalysis["1. Preanalysis (d810.analyses + d810.passes)"]
-    Persist["2. Persist (d810.passes.store)"]
-    Analyze["3. Analyze (d810.analyses.control_flow)"]
-    Plan["4. CFG Plan (d810.transforms.plan)"]
-    Project["5. Project & Validate (d810.transforms.contract)"]
-    Lower["6. Lower (d810.transforms)"]
-    Mutate["7. Mutate (d810.hexrays.mutation)"]
+    Diagnostics["Diagnostics mirror (d810.passes.store)"]
+    Analyze["2. Analyze (d810.analyses.control_flow)"]
+    Plan["3. CFG Plan (d810.transforms.plan)"]
+    Project["4. Project & Validate (d810.transforms.contract)"]
+    Lower["5. Lower (d810.transforms)"]
+    Mutate["6. Mutate (d810.hexrays.mutation)"]
 
-    Preanalysis --> Persist
-    Persist --> Analyze
+    Preanalysis --> Analyze
+    Preanalysis -. observations .-> Diagnostics
     Analyze --> Plan
     Plan --> Project
     Project --> Lower
     Lower --> Mutate
 ```
 
-> Package note: the read-only/planning/lowering layers below were restructured into the LLVM/LiSA-style portable taxonomy (`preanalysis`/`cfg` were dissolved into `analyses`/`transforms`/`passes`/`ir`); the 7-stage *flow* is unchanged, only the package homes moved.
+> Package note: the read-only/planning/lowering layers below were restructured
+> into the LLVM/LiSA-style portable taxonomy (`preanalysis`/`cfg` were
+> dissolved into `analyses`/`transforms`/`passes`/`ir`).
 
 1. **Preanalysis Facts (`d810.analyses` collectors + `d810.passes` orchestration)**:
-   A read-only, backend-agnostic pre-analysis layer. It extracts topological facts, conditional control flow shapes, entry/return frontiers, and value-flow evidence from the raw microcode using `Collector` classes (`d810.analyses.value_flow` / `d810.analyses.control_flow`), orchestrated by `d810.passes`. Live IDA/Hex-Rays decompilation dependencies are strictly isolated.
-2. **Persist Facts (`d810.passes.store`)**:
-   All collected facts, recommended inferences, and lifecycle metrics are written to an offline SQLite database. A dedicated background thread performs the writes asynchronously to eliminate decompiler latency.
-3. **Analyze Facts (`d810.analyses.control_flow`)**:
-   Topological and state-machine discovery engines process the persisted facts in pure Python. They resolve BST lookup intervals, model state variable paths, and detect dispatcher boundaries.
-4. **CFG Flow Graph Planning (`d810.transforms.plan`)**:
+   A read-only, backend-agnostic pre-analysis layer. It extracts topological facts, conditional control flow shapes, entry/return frontiers, and value-flow evidence from the raw microcode using `Collector` classes (`d810.analyses.value_flow` / `d810.analyses.control_flow`), orchestrated by `d810.passes`. Live IDA/Hex-Rays decompilation dependencies are strictly isolated. Observations needed by later passes remain in the current function's in-memory `AnalysisManager` session.
+2. **Analyze Facts (`d810.analyses.control_flow`)**:
+   Topological and state-machine discovery engines consume the current in-memory facts in pure Python. They resolve condition-chain intervals, model state variable paths, and detect dispatcher boundaries.
+3. **CFG Flow Graph Planning (`d810.transforms.plan`)**:
    Generates a backend-neutral graph modification strategy (`PatchPlan`, `GraphModification`). These plans represent control-flow changes (e.g. unflattening, conditional splits, predecessor branch repairs) purely in topological form.
-5. **Project Modifications & Validation (`d810.transforms.contract` + `d810.hexrays.contracts`)**:
+4. **Project Modifications & Validation (`d810.transforms.contract` + `d810.hexrays.contracts`)**:
    The planning output is audited for structural validity, semantic reference consistency, and target-entry admission constraints prior to mutation.
-6. **Lower Projections (`d810.transforms`)**:
+5. **Lower Projections (`d810.transforms`)**:
    Translates validated abstract modifications into backend-specific lower-level instructions and edge routing instructions.
-7. **Lowering to Mutations (`d810.hexrays.mutation`)**:
+6. **Lowering to Mutations (`d810.hexrays.mutation`)**:
    The final materialization backend transforms Hex-Rays microcode. By architecture policy (enforced via `no-direct-hexrays-mutation-outside-deferred-modifier.yml`), mutators must queue rewrites via `DeferredGraphModifier` (e.g. NOP blocks, successor modifications). This layer owns invalidation, stale pointer tracking, `MBL_KEEP` preservation, and transactional safety/rollbacks.
+
+The diagnostics store is an asynchronous observer of this pipeline. It can
+persist facts, lifecycle events, and mutation provenance for inspection, but
+behavior code does not query SQLite to decide what to rewrite.
+
+### Native-bound in-memory observations
+
+Hex-Rays can renumber or replace microcode blocks between maturity snapshots,
+so a block serial observed during preanalysis is not a safe identity for a
+later mutation. D-810 solves this without turning the diagnostic database into
+a behavior dependency:
+
+1. A producer records the relevant source and target native instruction EAs,
+   along with the snapshot-local serials and topology that explain the
+   observation.
+2. The observation is retained in the current function's in-memory
+   `AnalysisManager` session. Graph-keyed analysis caches may be invalidated,
+   but these session observations survive for later passes in the same
+   decompilation.
+3. At the consuming maturity, both native EAs must bind uniquely to blocks in
+   the current graph. Recorded serials remain provenance only; they never
+   become current authority.
+4. The rebound route must agree with the current state carrier, dispatcher
+   topology, and any concrete router result. Agreement strengthens a heuristic
+   candidate into an actionable route. A malformed observation, conflicting
+   native target, ambiguous binding, or contradictory current route invalidates
+   the candidate and D-810 abstains.
+5. A `native-bound transition route receipt` is emitted only after the backend
+   reports a changed graph and the route's operation key appears exactly once
+   in the committed mutation inventory.
+
+This is deliberately stronger than treating observations as hints and narrower
+than treating them as timeless proof. Native identity carries evidence across
+maturities; the current graph decides whether that evidence is still coherent.
+The diagnostic SQLite database may mirror the same events for inspection, but
+it is never queried as the authority for the rewrite.
+
+The committed MASM acceptance fixture
+[`Eidolon_ShowErrorAndTerminateProcess.asm`](samples/masm/Eidolon_ShowErrorAndTerminateProcess.asm)
+exercises two such routes and
+[`test_native_bound_transition_routes.py`](tests/system/e2e/test_native_bound_transition_routes.py)
+requires one mutation-coupled receipt for each recovered edge.
 
 ---
 
 ### Lift → Transform → Lower: the round-trip (and why it is not just LLVM / LiSA)
 
-The 7-stage pipeline above is uni-directional, but the *system* it lives inside is a **round-trip against a live, still-optimizing Hex-Rays**: D-810 lifts the live microcode into a portable snapshot IR, runs portable analyses/transforms that emit declarative modification *intents*, then lowers those intents back into the same `mba_t` — which Hex-Rays keeps optimizing afterwards. That round-trip is the hard, partially-novel part, and finishing the portable-IR convergence is the project's central open problem (ticket `llr-lxas`).
+The pipeline above is uni-directional, but the *system* it lives inside is a **round-trip against a live, still-optimizing Hex-Rays**: D-810 lifts the live microcode into a portable snapshot IR, runs portable analyses/transforms that emit declarative modification *intents*, then lowers those intents back into the same `mba_t` — which Hex-Rays keeps optimizing afterwards. That round-trip is the hard, partially-novel part, and finishing the portable-IR convergence is the project's central open problem (ticket `llr-lxas`).
 
 It helps to see it as **two IRs sharing one substrate**:
 
