@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from io import StringIO
+import os
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -95,11 +98,64 @@ def test_release_probe_covers_required_native_sentinels() -> None:
     )
 
 
+def _assigned_cibw_test_command(text: str) -> str:
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if line.strip() == "CIBW_TEST_COMMAND: >-":
+            assert index + 1 < len(lines)
+            return lines[index + 1].strip()
+    raise AssertionError("workflow does not assign CIBW_TEST_COMMAND")
+
+
+def test_deploy_is_wheels_only_and_preserves_native_wheel_verification() -> None:
+    text = (ROOT / ".github" / "workflows" / "deploy.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "build_sdist" not in text
+    assert "--sdist" not in text
+    assert ".tar.gz" not in text
+    assert "needs: [build_wheels]" in text
+    assert (
+        _assigned_cibw_test_command(text)
+        == 'python "{project}/tools/verify_release_wheel.py"'
+    )
+
+
 @pytest.mark.parametrize("workflow", WORKFLOWS, ids=lambda path: path.name)
 def test_wheel_builds_invoke_release_verifier_with_required_matrix(workflow: Path) -> None:
     text = workflow.read_text(encoding="utf-8")
 
     assert 'CIBW_BUILD: "cp310-* cp311-* cp312-* cp313-*"' in text
     assert 'CIBW_ENVIRONMENT: "D810_BUILD_SPEEDUPS=1"' in text
-    assert "CIBW_TEST_COMMAND:" in text
-    assert "tools/verify_release_wheel.py" in text
+    assert (
+        _assigned_cibw_test_command(text)
+        == 'python "{project}/tools/verify_release_wheel.py"'
+    )
+
+
+def test_release_verifier_cli_exits_nonzero_when_native_probe_fails() -> None:
+    code = """
+import runpy
+import d810.speedups.install as install
+
+install.inspect_native_extensions = lambda: install.NativeSpeedupsProbe(
+    False, "forced native probe failure"
+)
+runpy.run_path("tools/verify_release_wheel.py", run_name="__main__")
+"""
+    environment = os.environ.copy()
+    environment["PYTHONPATH"] = os.pathsep.join(
+        [str(ROOT / "src"), str(ROOT), environment.get("PYTHONPATH", "")]
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert "forced native probe failure" in completed.stdout + completed.stderr

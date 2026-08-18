@@ -15,48 +15,6 @@ concurrency:
     cancel-in-progress: true
 
 jobs:
-    build_sdist:
-        name: Build source distribution
-        runs-on: ubuntu-latest
-        steps:
-            - uses: actions/checkout@v4
-              with:
-                  persist-credentials: false
-
-            - name: Display version
-              run: |
-                  python --version
-                  pip --version
-
-            - name: Install pypa/build and pypa/twine
-              run: |
-                  pip install --upgrade pip
-                  pip install --upgrade setuptools==77.0.1
-                  pip install --upgrade build==1.3.0
-                  pip install --upgrade twine==6.2.0
-                  pip install --upgrade packaging==25.0
-                  echo "Installed versions:"
-                  pip list | grep -E "(twine|packaging|setuptools|build)"
-
-            - name: Build sdist
-              run: |
-                  rm -rf dist/*
-                  python -m build --sdist
-
-            - name: Display content of dist folder
-              run: |
-                  ls -shR dist/
-
-            - name: Run twine check
-              run: |
-                  twine check dist/*
-
-            - name: Upload artifact
-              uses: actions/upload-artifact@v4
-              with:
-                  path: ./dist/*.tar.gz
-                  name: cibw-sdist
-
     build_wheels:
         name: Build wheels for ${{ matrix.os }}
         runs-on: ${{ matrix.runs-on }}
@@ -115,7 +73,7 @@ jobs:
                   path: ./wheelhouse/*.whl
 
     upload_to_pypi:
-        needs: [build_wheels, build_sdist]
+        needs: [build_wheels]
         runs-on: ubuntu-latest
         name: Upload to PyPI
         permissions:

@@ -348,10 +348,13 @@ bundled native modules in a fresh process and provisions isolated Z3 support
 where configured:
 
 ```bash
-python -m d810.speedups.install
+IDA_PYTHON=/path/to/ida-pro/python_standalone/bin/python3
+"$IDA_PYTHON" -m d810.speedups.install
 ```
 
-It does not recompile an immutable installed wheel.
+Run this command with IDA's Python, not a system Python. It does not recompile
+an immutable installed wheel. If solver support is installed or changes,
+restart IDA before using D-810.
 
 The local Docker installation proof covers one target only: Linux ARM64,
 CPython 3.13, and IDA 9.4. The release matrix remains responsible for Linux

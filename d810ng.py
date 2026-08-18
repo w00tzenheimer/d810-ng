@@ -14,9 +14,19 @@ _IMPLEMENTATION_PATH = Path(__file__).resolve().parent / "src" / "d810ng.py"
 # Resolve the manifest-pinned distribution before loading the implementation.
 # The extracted plugin root is importable, but its ``src`` directory is not.
 _RUNTIME_PACKAGE = importlib.import_module("d810")
+_NATIVE_PROBE = importlib.import_module(
+    "d810.speedups.install"
+).inspect_native_extensions
 
 
 def _load_implementation() -> ModuleType:
+    native_probe = _NATIVE_PROBE()
+    if not native_probe.ok:
+        raise ImportError(
+            "D810 HCLI bootstrap refused to load the plugin because native "
+            f"speedups are unavailable: {native_probe.detail}"
+        )
+
     if not _IMPLEMENTATION_PATH.is_file():
         raise ImportError(
             f"D810 HCLI entrypoint implementation is missing: {_IMPLEMENTATION_PATH}"

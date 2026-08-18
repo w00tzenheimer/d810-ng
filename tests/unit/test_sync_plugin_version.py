@@ -52,7 +52,9 @@ class TestPackageVersion:
 
 
 class TestSyncManifest:
-    def test_rewrites_only_the_version_field(self, tool) -> None:
+    def test_rewrites_version_and_self_pin_without_touching_other_fields(
+        self, tool
+    ) -> None:
         original = json.dumps(
             {
                 "IDAMetadataDescriptorVersion": 1,
