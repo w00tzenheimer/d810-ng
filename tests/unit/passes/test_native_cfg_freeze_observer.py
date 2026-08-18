@@ -251,19 +251,6 @@ class _NeverDetect:
         raise AssertionError("config-v2 must use supplied specs")
 
 
-class _LegacyFamily:
-    name = "legacy"
-
-    def __init__(self, spec: PassSpec) -> None:
-        self.spec = spec
-
-    def detect(self, graph, capabilities, context=None):
-        return object()
-
-    def pipeline_for(self, match, context):
-        return (self.spec,)
-
-
 class _Observer:
     def __init__(self, *, fail_observe: bool = False) -> None:
         self.fail_observe = fail_observe
@@ -288,18 +275,17 @@ def _run(
     *,
     journal: ExecutionJournalStore | None = None,
     session_id: DecompilationSessionId | None = None,
-    config_v2: bool = True,
 ) -> FlowGraph:
     capabilities = CapabilitySet({NativeCfgFreezeObserver: observer})
     return run_pipeline(
         source=_Source(),
-        family=_NeverDetect() if config_v2 else _LegacyFamily(spec),
+        family=_NeverDetect(),
         backend=_Backend(),
         facts=_Facts(),
         project_config={},
         maturity=IRMaturity.CANONICAL,
         capabilities=capabilities,
-        pipeline_v2_specs=(spec,) if config_v2 else None,
+        pipeline_v2_specs=(spec,),
         journal=journal,
         session_id=session_id,
     )
@@ -374,21 +360,6 @@ def test_non_authoritative_results_are_not_observed(
 
     assert observer.observations == []
     assert len(observer.freezes) == 1
-
-
-def test_legacy_pipeline_never_calls_stage_c_observer() -> None:
-    observer = _Observer()
-    spec = PassSpec(
-        "stage-c-pass",
-        _Pass,
-        no_caps,
-        default,
-        options={"native_cfg_persistence": True},
-    )
-
-    assert _run(spec, observer, config_v2=False) == _FINAL
-    assert observer.observations == []
-    assert observer.freezes == []
 
 
 def test_observer_failure_is_journaled_and_disables_final_freeze(tmp_path) -> None:

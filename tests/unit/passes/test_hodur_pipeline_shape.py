@@ -21,6 +21,9 @@ from d810.passes.pass_pipeline import (
 )
 from d810.ir.maturity import IRMaturity
 from d810.transforms.plan import PatchPlan
+from d810.analyses.control_flow.predecessor_dispatcher_target import (
+    PREDECESSOR_DISPATCHER_TARGET_FACTS_ANALYSIS,
+)
 from d810.families.state_machine_cff import HodurFamily
 
 EXPECTED = (
@@ -87,6 +90,17 @@ def test_each_spec_carries_native_state_machine_contract():
     assert contracts["recover_state_transitions"].requires.analyses == frozenset(
         {"recover_dispatcher"}
     )
+    transition_analyses = next(
+        spec.analyses
+        for spec in specs
+        if spec.name == "recover_state_transitions"
+    )
+    assert transition_analyses.provided >= frozenset(
+        {
+            "recover_state_transitions",
+            PREDECESSOR_DISPATCHER_TARGET_FACTS_ANALYSIS,
+        }
+    )
     assert contracts["recover_state_transitions"].requires.facts.required == frozenset(
         {"role.dispatcher"}
     )
@@ -107,9 +121,9 @@ def test_each_spec_carries_native_state_machine_contract():
     assert contracts["lower_state_machine"].requires.analyses == frozenset(
         {
             "plan_semantic_regions",
-            "predecessor_dispatcher_target_facts",
             "recover_dispatcher",
             "recover_state_transitions",
+            PREDECESSOR_DISPATCHER_TARGET_FACTS_ANALYSIS,
             "transition_result",
         }
     )

@@ -1417,6 +1417,7 @@ def test_run_pipeline_publishes_state_machine_contract_facts():
         facts=am,
         project_config=None,
         maturity=IRMaturity.GLOBAL_ANALYZED,
+        pipeline_v2_specs=standard_state_machine_passes(),
     )
 
     assert am.has_fact("dispatcher_family")
@@ -1448,6 +1449,7 @@ def test_transition_contract_requires_published_branch_target_evidence():
             facts=am,
             project_config=None,
             maturity=IRMaturity.GLOBAL_ANALYZED,
+            pipeline_v2_specs=(standard_state_machine_passes()[1],),
         )
 
 
@@ -1467,6 +1469,7 @@ def test_transition_contract_requires_dispatcher_family_fact_not_just_analysis()
             facts=am,
             project_config=None,
             maturity=IRMaturity.GLOBAL_ANALYZED,
+            pipeline_v2_specs=(standard_state_machine_passes()[1],),
         )
 
 
@@ -1487,6 +1490,7 @@ def test_region_contract_requires_state_transition_fact_not_just_analysis():
             facts=am,
             project_config=None,
             maturity=IRMaturity.GLOBAL_ANALYZED,
+            pipeline_v2_specs=(standard_state_machine_passes()[2],),
         )
 
 
@@ -1503,6 +1507,7 @@ def test_out_of_range_maturity_skips_state_machine_contract_specs():
         facts=am,
         project_config=None,
         maturity=IRMaturity.LOCAL_OPTIMIZED,
+        pipeline_v2_specs=standard_state_machine_passes(),
     )
 
     assert not am.has_fact("dispatcher_family")

@@ -5,7 +5,7 @@ import pathlib
 
 import pytest
 
-from d810.core.config import ProjectConfiguration, RuleConfiguration
+from d810.core.config import ProjectConfiguration
 from d810.manager.function_recipe_activation import build_workbench_recipe_projection
 from d810.manager.function_recipe_activation import select_workbench_recipe_projection
 from d810.manager.project_runtime import (
@@ -28,8 +28,8 @@ def _base_project() -> ProjectConfiguration:
     return ProjectConfiguration(
         path=pathlib.Path("/configs/runtime.json"),
         description="Runtime",
-        ins_rules=[RuleConfiguration("LegacyInsn", True, {"x": 1})],
-        blk_rules=[RuleConfiguration("JumpFixer", True, {"y": 2})],
+        ins_rules=[],
+        blk_rules=[],
         additional_configuration={
             "unknown_nested": {"keep": [1, 2]},
             "pipeline_v2": [

@@ -29,12 +29,16 @@ def _walk(value: object):
             yield from _walk(child)
 
 
-def test_config_v2_canaries_use_only_strict_pass_and_transform_keys() -> None:
-    canaries = tuple(sorted((ROOT / "src/d810/conf").glob("*config_v2*.json")))
-    assert canaries
-    for path in canaries:
+def test_bundled_projects_use_only_strict_pass_and_transform_keys() -> None:
+    bundled_projects = tuple(sorted((ROOT / "src/d810/conf").glob("*.json")))
+    canonical_projects = []
+    for path in bundled_projects:
         document = json.loads(path.read_text(encoding="utf-8"))
-        pipeline = document["additional_configuration"]["pipeline_v2"]
+        additional = document.get("additional_configuration", {})
+        pipeline = additional.get("pipeline_v2") if isinstance(additional, dict) else None
+        if pipeline is None:
+            continue
+        canonical_projects.append(path)
         for entry in pipeline:
             found = FORBIDDEN_CONFIG_KEYS.intersection(
                 value for value in _walk(entry) if isinstance(value, str)
@@ -42,6 +46,7 @@ def test_config_v2_canaries_use_only_strict_pass_and_transform_keys() -> None:
             assert not found, f"{path.name} contains former config keys: {found}"
             assert "pass_id" in entry
             assert "pass" not in entry
+    assert canonical_projects
 
 
 def test_recipe_models_do_not_serialize_private_implementation_selection() -> None:

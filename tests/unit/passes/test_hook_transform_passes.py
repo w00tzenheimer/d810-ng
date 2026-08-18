@@ -244,6 +244,7 @@ def test_hook_transform_pipeline_missing_backend_capability_fails_before_executi
                 HookTransformCapability,
                 capability,
             ),
+            pipeline_v2_specs=(spec,),
         )
 
     assert capability.requests == []
@@ -275,6 +276,7 @@ def test_hook_transform_pipeline_executes_when_capabilities_exist():
             HookTransformCapability,
             capability,
         ),
+        pipeline_v2_specs=(spec,),
     )
 
     assert out == _graph()
