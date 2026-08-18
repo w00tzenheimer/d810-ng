@@ -13,6 +13,17 @@ REPO = Path(__file__).resolve().parents[2]
 SUB = (REPO / "samples/src/masm/sub_1815C8C30.asm").read_text()
 
 
+def test_committed_windows_fixture_contains_every_masm_export():
+    """Do not let a stale DLL turn tracked MASM regressions into skips."""
+    fixture = (REPO / "samples/bins/libobfuscated.dll").read_bytes()
+    missing = [
+        source.stem
+        for source in sorted((REPO / "samples/src/masm").glob("*.asm"))
+        if source.stem.encode("ascii") + b"\0" not in fixture
+    ]
+    assert missing == []
+
+
 def test_detects_slot_const_and_reg_from_committed_asm():
     folds = detect_indirect_call_folds(SUB)
     assert (

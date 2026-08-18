@@ -20,6 +20,9 @@ import platform
 import pytest
 
 import idaapi
+import ida_bytes
+import ida_ua
+import idc
 
 from d810.testing.runner import run_deobfuscation_test
 from tests.system.cases.libobfuscated_comprehensive import (
@@ -53,6 +56,70 @@ def _get_default_binary() -> str:
     return (
         "libobfuscated.dylib" if platform.system() == "Darwin" else "libobfuscated.dll"
     )
+
+
+_EXACT_MASM_CODE_EXTENTS = {
+    # The linked fixture's single PROC range. The committed MASM contains only
+    # instructions in this range, but a fresh IDA analysis can misclassify
+    # bytes inside valid instruction spans as data and leave direct branch
+    # targets undefined. Hex-Rays then renders those in-function targets as
+    # JUMPOUTs. Recreate the exact dense instruction stream in the disposable
+    # test IDB so the fixture preserves the source IDB's code-head oracle.
+    "sub_7FF856533A20": 0x43FF,
+}
+
+
+def _materialize_exact_masm_code_extent(function: str) -> None:
+    size = _EXACT_MASM_CODE_EXTENTS.get(function)
+    if size is None:
+        return
+    start = idc.get_name_ea_simple(function)
+    if start == idaapi.BADADDR:
+        start = idc.get_name_ea_simple(f"_{function}")
+    assert start != idaapi.BADADDR, function
+    function_start = int(idc.get_func_attr(int(start), idc.FUNCATTR_START))
+    function_end = int(idc.get_func_attr(int(start), idc.FUNCATTR_END))
+    assert function_start != idaapi.BADADDR, function
+    assert function_end != idaapi.BADADDR, function
+    end = int(start) + int(size)
+    assert function_start == int(start)
+    assert function_end == end, (
+        function,
+        hex(function_start),
+        hex(function_end),
+        hex(end),
+    )
+
+    cursor = int(start)
+    instruction = ida_ua.insn_t()
+    while cursor < end:
+        decoded_size = int(ida_ua.decode_insn(instruction, cursor))
+        assert decoded_size > 0, f"cannot decode {function} at 0x{cursor:X}"
+        assert (
+            cursor + decoded_size <= end
+        ), f"instruction at 0x{cursor:X} crosses {function}'s exact extent"
+        overlapping_heads = {
+            int(ida_bytes.get_item_head(ea))
+            for ea in range(cursor, cursor + decoded_size)
+        }
+        for head in sorted(overlapping_heads):
+            flags = ida_bytes.get_full_flags(head)
+            if head == cursor and ida_bytes.is_code(flags):
+                continue
+            ida_bytes.del_items(
+                head,
+                ida_bytes.DELIT_SIMPLE,
+                max(1, int(ida_bytes.get_item_size(head))),
+            )
+        created_size = int(ida_ua.create_insn(cursor))
+        assert created_size == decoded_size, (
+            f"instruction recreation drift at 0x{cursor:X}: "
+            f"decoded={decoded_size} created={created_size}"
+        )
+        cursor += decoded_size
+
+    idaapi.auto_wait()
+    idaapi.mark_cfunc_dirty(int(start), False)
 
 
 @pytest.fixture(scope="class")
@@ -250,6 +317,7 @@ class TestDacMasmFixtures:
         load_expected_stats,
     ):
         """dac.dll issue-48 functions extracted as MASM."""
+        _materialize_exact_masm_code_extent(case.function)
         run_deobfuscation_test(
             case=case,
             d810_state=d810_state,

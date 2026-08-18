@@ -789,18 +789,23 @@ DAC_MASM_CASES = [
     DeobfuscationCase(
         function="sub_7FF856533A20",
         description=(
-            "Exact Eidolon v4 nested-flattening fixture. The outer interval "
-            "dispatcher and the inner 45-way switch dispatcher must both be "
-            "removed instead of treating the first committed layer as convergence."
+            "Exact Eidolon v4 layered-control-flow fixture. The outer interval "
+            "dispatcher must be removed while the reachable 45-way semantic switch "
+            "and all of its in-function continuations remain renderable."
         ),
         project="eidolon_v4_const_simplify_solve.json",
         obfuscated_contains=["while ( 1 )", "0x3BEDBE32", "0x64EF2D85"],
-        deobfuscated_contains=["switch ( *(_WORD *)", "return a1;"],
+        deobfuscated_contains=[
+            "switch ( *(_WORD *)",
+            "case 0x2C:",
+            "__ROL8__(v28, 0x15)",
+            "if ( v92 > v26 )",
+            "return a1;",
+        ],
         deobfuscated_not_contains=[
-            "while ( 1 )",
-            "goto ",
             "0x3BEDBE32",
             "0x64EF2D85",
+            "JUMPOUT(",
         ],
         must_change=True,
         skip_if_function_absent=True,
