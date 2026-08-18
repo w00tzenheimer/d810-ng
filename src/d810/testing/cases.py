@@ -79,7 +79,9 @@ class DeobfuscationCase:
 
     Attributes:
         function: Name of the function to test (without leading underscore).
-        project: D810 project configuration file to use.
+        project: D810 project configuration file to use.  ``None`` leaves the
+            caller's already-active project untouched; this is required when
+            a test has captured live, state-owned rule objects.
         description: Optional description of what this test verifies.
         disabled_pass_ids: Exact registered pass IDs to disable only for this
             function's in-memory test recipe. This keeps a semantic oracle from
@@ -122,7 +124,7 @@ class DeobfuscationCase:
     function: str
 
     # Project configuration
-    project: str = "default_instruction_only.json"
+    project: Optional[str] = "default_instruction_only.json"
 
     # Optional per-function typed state-CFF threshold override. The runner
     # applies this through an in-memory function recipe and preserves the

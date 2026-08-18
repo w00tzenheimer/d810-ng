@@ -22,6 +22,13 @@ class _State:
         self.stop_calls = 0
         self.start_calls = 0
         self.stats = SimpleNamespace()
+        self.loaded_projects: list[int] = []
+        self.project_manager = SimpleNamespace()
+        self.current_project = object()
+        self.current_ins_rules = [object()]
+
+    def load_project(self, index: int) -> None:
+        self.loaded_projects.append(index)
 
     def stop_d810(self) -> None:
         self.stop_calls += 1
@@ -176,6 +183,63 @@ def test_database_capture_forces_the_before_decompile(monkeypatch) -> None:
     assert state.stop_calls == 1
     assert capture.row["code_before"] == "before"
     assert capture.row["code_after"] == "after"
+
+
+def test_runner_none_project_preserves_selected_project_and_rule_identity(
+    monkeypatch,
+) -> None:
+    """Selected-state callers must not reactivate a fresh rule population."""
+    from d810.testing import runner
+
+    state = _State()
+    original_project = state.current_project
+    original_rules = state.current_ins_rules
+    monkeypatch.setattr(runner, "get_binary_suffix", lambda: ".dll")
+    monkeypatch.setattr(runner, "get_func_ea", lambda _name: 0x401000)
+    monkeypatch.setattr(runner.idaapi, "decompile", lambda _ea, *, flags: _Cfunc("after"))
+
+    run_deobfuscation_test(
+        DeobfuscationCase(
+            function="selected",
+            project=None,
+            must_change=False,
+            check_stats=False,
+        ),
+        _state_context(state),
+        lambda pseudocode: str(pseudocode),
+    )
+
+    assert state.loaded_projects == []
+    assert state.current_project is original_project
+    assert state.current_ins_rules is original_rules
+
+
+def test_runner_default_project_still_loads_default_configuration(monkeypatch) -> None:
+    from d810.testing import runner
+
+    state = _State()
+    resolved: list[str] = []
+    monkeypatch.setattr(runner, "get_binary_suffix", lambda: ".dll")
+    monkeypatch.setattr(runner, "get_func_ea", lambda _name: 0x401000)
+    monkeypatch.setattr(runner.idaapi, "decompile", lambda _ea, *, flags: _Cfunc("after"))
+
+    def resolve(_state, project_name: str) -> int:
+        resolved.append(project_name)
+        return 7
+
+    monkeypatch.setattr(runner, "_resolve_test_project_index", resolve)
+    run_deobfuscation_test(
+        DeobfuscationCase(
+            function="default",
+            must_change=False,
+            check_stats=False,
+        ),
+        _state_context(state),
+        lambda pseudocode: str(pseudocode),
+    )
+
+    assert resolved == ["default_instruction_only.json"]
+    assert state.loaded_projects == [7]
 
 
 def test_runner_opens_runtime_capture_window_immediately_before_after_decompile(

@@ -284,6 +284,19 @@ def capture_native_provider_case(
         for outcome in _history_for_provider(rule, history_snapshot):
             if outcome.fingerprint != profile.fingerprint:
                 continue
+            # A provider can report that the candidate is ineligible after a
+            # previous provider established the island fingerprint.  That
+            # refusal is not native-profile evidence and, by design, carries
+            # no profile metadata.  Retain the refusal as provider telemetry,
+            # while keeping strict validation for every other matching
+            # outcome: an observed candidate outcome must still be
+            # self-describing.
+            if (
+                outcome.status is ProviderOutcomeStatus.INELIGIBLE
+                and not _has_native_profile(outcome)
+            ):
+                grouped.setdefault(outcome.provider, []).append(outcome)
+                continue
             recorded_profile = native_profile_from_outcome(outcome)
             if recorded_profile != profile:
                 raise ValueError(

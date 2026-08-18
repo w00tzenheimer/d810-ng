@@ -170,6 +170,34 @@ def test_capture_rejects_missing_or_conflicting_actual_profile_evidence() -> Non
         )
 
 
+def test_capture_ignores_unprofiled_ineligible_refusal_for_selected_profile() -> None:
+    """A telemetry-only refusal is not a second native-profile observation."""
+
+    profile = _profile()
+    provider = _Provider(
+        _outcome(MbaProviderKind.CATALOGUE, ProviderOutcomeStatus.APPLIED, profile),
+        MbaProviderOutcome(
+            provider=MbaProviderKind.EGGLOG,
+            status=ProviderOutcomeStatus.INELIGIBLE,
+            fingerprint=profile.fingerprint,
+            refusal_reason="over_budget",
+        ),
+    )
+
+    case = capture_native_provider_case(
+        case_id="telemetry-refusal",
+        stratum="catalogue",
+        profile=profile,
+        rules=(provider,),
+        expected_providers=(MbaProviderKind.CATALOGUE, MbaProviderKind.EGGLOG),
+    )
+
+    assert [(outcome.provider, outcome.status) for outcome in case.outcomes] == [
+        (MbaProviderKind.CATALOGUE, ProviderOutcomeStatus.APPLIED),
+        (MbaProviderKind.EGGLOG, ProviderOutcomeStatus.INELIGIBLE),
+    ]
+
+
 def test_capture_snapshot_excludes_prior_decompilation_history() -> None:
     profile = _profile()
     provider = _Provider(
