@@ -1,8 +1,10 @@
 import dataclasses
+import copy
 import json
 import os
 import pathlib
 import sys
+from collections.abc import Mapping
 
 from d810.core import typing
 from .logging import getLogger
@@ -83,6 +85,15 @@ class ProjectConfiguration:
     additional_configuration: dict[str, typing.Any] = dataclasses.field(
         default_factory=dict
     )
+    # Top-level fields unknown to the typed project model are retained so a
+    # load/edit/save cycle cannot erase forward-compatible metadata.  This is
+    # intentionally not part of the public constructor or equality contract.
+    _unknown_top_level: dict[str, typing.Any] = dataclasses.field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     @property
     def pre_hexrays_payload(self) -> dict[str, typing.Any]:
@@ -124,7 +135,22 @@ class ProjectConfiguration:
             logger.error("Failed to parse project config %s: %s", config_path, e)
             raise
 
-        return cls(
+        if not isinstance(data, dict):
+            raise ValueError("project configuration document must be an object")
+
+        known_fields = {
+            "description",
+            "ins_rules",
+            "blk_rules",
+            "additional_configuration",
+        }
+        unknown_top_level = {
+            key: copy.deepcopy(value)
+            for key, value in data.items()
+            if key not in known_fields
+        }
+
+        project = cls(
             path=config_path,
             description=data.get("description", ""),
             ins_rules=[
@@ -135,21 +161,77 @@ class ProjectConfiguration:
             ],
             additional_configuration=data.get("additional_configuration", {}),
         )
+        project._unknown_top_level = unknown_top_level
+        return project
+
+    def _has_active_legacy_rule(self) -> bool:
+        return any(
+            rule.is_activated for rule in (*self.ins_rules, *self.blk_rules)
+        )
+
+    def _is_structural_v2_project(self) -> bool:
+        """Recognize the canonical shape without importing the parser.
+
+        ``core.config`` is loaded by ``pipeline_config_parser`` itself, so the
+        core model must not import that parser at module import time.  This
+        narrow shape check is only used to choose canonical serialization; the
+        strict runtime validator remains ``require_config_v2_project``.
+        """
+        if self._has_active_legacy_rule() or not isinstance(
+            self.additional_configuration, Mapping
+        ):
+            return False
+        payload = self.additional_configuration.get("pipeline_v2")
+        if not isinstance(payload, (list, tuple)) or not payload:
+            return False
+        mode = self.additional_configuration.get("pipeline_v2_mode")
+        if mode not in (None, "config-v2"):
+            return False
+        return all(
+            isinstance(entry, Mapping)
+            and isinstance(entry.get("pass_id"), str)
+            and bool(entry.get("pass_id"))
+            for entry in payload
+        )
+
+    def to_document(self) -> dict[str, typing.Any]:
+        """Return a deterministic JSON document for the current project.
+
+        A structurally valid v2 project is serialized canonically: legacy rule
+        arrays and the transitional ``pipeline_v2_mode`` marker are omitted.
+        Legacy or malformed documents remain representable for the offline
+        migration tool and diagnostics; runtime activation still requires the
+        strict parser entry point.
+        """
+        project_data = copy.deepcopy(self._unknown_top_level)
+        project_data["description"] = self.description
+        additional = copy.deepcopy(self.additional_configuration)
+        if self._is_structural_v2_project():
+            project_data["additional_configuration"] = additional
+            additional.pop("pipeline_v2_mode", None)
+            project_data["additional_configuration"] = additional
+        else:
+            project_data["ins_rules"] = [rule.to_dict() for rule in self.ins_rules]
+            project_data["blk_rules"] = [rule.to_dict() for rule in self.blk_rules]
+            project_data["additional_configuration"] = additional
+        return project_data
 
     def save(self) -> None:
         """Saves the project configuration back to its file."""
         logger.info("Saving project configuration to %s", self.path)
-        project_data = {
-            "description": self.description,
-            "ins_rules": [rule.to_dict() for rule in self.ins_rules],
-            "blk_rules": [rule.to_dict() for rule in self.blk_rules],
-            "additional_configuration": dict(self.additional_configuration),
-        }
+        project_data = self.to_document()
 
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with self.path.open("w", encoding="utf-8") as fp:
-                json.dump(project_data, fp, indent=2)
+                json.dump(
+                    project_data,
+                    fp,
+                    indent=2,
+                    sort_keys=True,
+                    ensure_ascii=False,
+                )
+                fp.write("\n")
         except IOError as e:
             logger.error("Could not save project configuration to %s: %s", self.path, e)
 

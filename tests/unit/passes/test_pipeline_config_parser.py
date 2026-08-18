@@ -25,6 +25,7 @@ from d810.passes.pipeline_config_parser import (
     pipeline_configs_from_project_config,
     pipeline_v2_mode_from_project_config,
     pass_specs_from_project_config,
+    require_config_v2_project,
 )
 from d810.passes.operational_config_v2 import operational_config_v2_pass_registry
 from d810.passes.pipeline_shadow import (
@@ -147,6 +148,82 @@ def test_missing_pipeline_v2_is_inert_for_existing_project_configs():
     assert pipeline_configs_from_project_config({}) == ()
     project = SimpleNamespace(additional_configuration={"enable_pass_pipeline": True})
     assert pipeline_configs_from_project_config(project) == ()
+
+
+def test_require_config_v2_project_rejects_active_legacy_rules_with_migration_command():
+    project = SimpleNamespace(
+        path=Path("/tmp/legacy-project.json"),
+        ins_rules=[SimpleNamespace(is_activated=True)],
+        blk_rules=[],
+        additional_configuration={},
+    )
+
+    with pytest.raises(PipelineConfigError, match="migrate_project_config_v2.py"):
+        require_config_v2_project(project)
+
+
+def test_require_config_v2_project_tolerates_empty_legacy_arrays_when_pipeline_exists():
+    project = {
+        "ins_rules": [],
+        "blk_rules": [],
+        "additional_configuration": {
+            "pipeline_v2": [
+                {
+                    "pass_id": "recover_dispatcher",
+                    "maturity_gates": ["GLOBAL_ANALYZED"],
+                    "backend_route": "analysis_only",
+                }
+            ]
+        },
+    }
+
+    configs = require_config_v2_project(project)
+
+    assert tuple(config.pass_id for config in configs) == ("recover_dispatcher",)
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        {},
+        {"additional_configuration": {"pipeline_v2": []}},
+        {"additional_configuration": {"pipeline_v2": {"pass_id": "x"}}},
+    ],
+)
+def test_require_config_v2_project_rejects_missing_empty_or_malformed_pipeline(
+    document,
+):
+    with pytest.raises(PipelineConfigError, match="migrate_project_config_v2.py"):
+        require_config_v2_project(document)
+
+
+@pytest.mark.parametrize("mode", ["legacy", "shadow-check"])
+def test_require_config_v2_project_rejects_legacy_execution_modes(mode):
+    document = {
+        "additional_configuration": {
+            "pipeline_v2_mode": mode,
+            "pipeline_v2": [{"pass_id": "recover_dispatcher"}],
+        }
+    }
+
+    with pytest.raises(PipelineConfigError, match="migrate_project_config_v2.py"):
+        require_config_v2_project(document)
+
+
+def test_require_config_v2_project_accepts_config_v2_mode_and_mode_omission():
+    payload = [{"pass_id": "recover_dispatcher"}]
+
+    assert require_config_v2_project(
+        {"additional_configuration": {"pipeline_v2": payload}}
+    )[0].pass_id == "recover_dispatcher"
+    assert require_config_v2_project(
+        {
+            "additional_configuration": {
+                "pipeline_v2_mode": "config-v2",
+                "pipeline_v2": payload,
+            }
+        }
+    )[0].pass_id == "recover_dispatcher"
 
 
 def test_pipeline_v2_mode_defaults_legacy_without_project_opt_in():

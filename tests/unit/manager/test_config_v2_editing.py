@@ -67,7 +67,7 @@ def test_serializer_manifest_is_explicit_immutable_and_bounded():
 def test_complete_document_edit_save_uses_typed_options_and_config_v2_policy(
     tmp_path: Path,
 ):
-    project, original = _runtime_project(tmp_path)
+    project, _ = _runtime_project(tmp_path)
     destination = tmp_path / "edited.json"
     service = _service()
     draft = service.create_draft(project, destination=destination)
@@ -105,9 +105,34 @@ def test_complete_document_edit_save_uses_typed_options_and_config_v2_policy(
         "transforms": ["add-xor-1"],
         "transform_options": {},
     }
-    assert actual["ins_rules"] == original["ins_rules"]
-    assert actual["blk_rules"] == original["blk_rules"]
-    assert actual["additional_configuration"]["pipeline_v2_mode"] == "config-v2"
+    assert "ins_rules" not in actual
+    assert "blk_rules" not in actual
+    assert "pipeline_v2_mode" not in actual["additional_configuration"]
+
+
+def test_editor_accepts_v2_pipeline_without_execution_mode(tmp_path: Path):
+    project, document = _runtime_project(tmp_path)
+    document["additional_configuration"].pop("pipeline_v2_mode", None)
+    source = tmp_path / "mode-less.json"
+    source.write_text(json.dumps(document, indent=2), encoding="utf-8")
+    project = ProjectConfiguration.from_file(source)
+
+    service = _service()
+    draft = service.create_draft(project, destination=tmp_path / "edited.json")
+
+    assert service.validate(draft).valid is True
+
+
+@pytest.mark.parametrize("mode", ["legacy", "shadow-check"])
+def test_editor_rejects_legacy_execution_modes(tmp_path: Path, mode: str):
+    project, document = _runtime_project(tmp_path)
+    document["additional_configuration"]["pipeline_v2_mode"] = mode
+    source = tmp_path / f"{mode}.json"
+    source.write_text(json.dumps(document, indent=2), encoding="utf-8")
+    project = ProjectConfiguration.from_file(source)
+
+    with pytest.raises(ConfigV2EditError, match="migrate_project_config_v2.py"):
+        _service().create_draft(project, destination=tmp_path / "edited.json")
 
 
 def test_save_atomically_overwrites_an_existing_writable_user_override(

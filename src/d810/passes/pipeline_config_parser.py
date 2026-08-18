@@ -19,7 +19,8 @@ class PipelineV2Mode(str, Enum):
 
 def _project_additional_config(project_config) -> Mapping:
     if isinstance(project_config, Mapping):
-        config = project_config
+        nested = project_config.get("additional_configuration")
+        config = nested if isinstance(nested, Mapping) else project_config
     else:
         config = getattr(project_config, "additional_configuration", None)
         if config is None:
@@ -27,6 +28,75 @@ def _project_additional_config(project_config) -> Mapping:
     if not isinstance(config, Mapping):
         raise PipelineConfigError("project additional_configuration must be a mapping")
     return config
+
+
+def _project_legacy_rules(project_config) -> tuple[object, ...]:
+    """Return both legacy rule arrays without interpreting their rule names."""
+    if isinstance(project_config, Mapping):
+        ins_rules = project_config.get("ins_rules", ())
+        blk_rules = project_config.get("blk_rules", ())
+    else:
+        ins_rules = getattr(project_config, "ins_rules", ())
+        blk_rules = getattr(project_config, "blk_rules", ())
+    if ins_rules is None:
+        ins_rules = ()
+    if blk_rules is None:
+        blk_rules = ()
+    if isinstance(ins_rules, (str, bytes)) or not isinstance(ins_rules, (list, tuple)):
+        raise PipelineConfigError("ins_rules must be a sequence")
+    if isinstance(blk_rules, (str, bytes)) or not isinstance(blk_rules, (list, tuple)):
+        raise PipelineConfigError("blk_rules must be a sequence")
+    return tuple(ins_rules) + tuple(blk_rules)
+
+
+def _rule_is_active(rule: object) -> bool:
+    if isinstance(rule, Mapping):
+        return rule.get("is_activated") is True
+    return getattr(rule, "is_activated", False) is True
+
+
+def _project_path(project_config) -> object:
+    if isinstance(project_config, Mapping):
+        return project_config.get("path", "PROJECT")
+    return getattr(project_config, "path", "PROJECT")
+
+
+def _migration_message(project_config, reason: str) -> str:
+    path = str(_project_path(project_config))
+    return (
+        f"project {path} is not a canonical config-v2 project: {reason}; "
+        "migrate it with: python tools/migrations/migrate_project_config_v2.py "
+        f"{path} --in-place"
+    )
+
+
+def _validate_config_v2_compatibility_mode(project_config) -> None:
+    config = _project_additional_config(project_config)
+    if "require_pipeline_v2_shadow_match" in config:
+        raise PipelineConfigError(
+            _migration_message(
+                project_config,
+                "require_pipeline_v2_shadow_match is a removed compatibility field",
+            )
+        )
+    if "pipeline_v2_mode" not in config:
+        return
+    value = config["pipeline_v2_mode"]
+    if not isinstance(value, str):
+        raise PipelineConfigError(
+            _migration_message(project_config, "pipeline_v2_mode must be a string")
+        )
+    if value in {PipelineV2Mode.LEGACY.value, PipelineV2Mode.SHADOW_CHECK.value}:
+        raise PipelineConfigError(
+            _migration_message(
+                project_config,
+                f"pipeline_v2_mode={value!r} is not allowed by the v2 runtime",
+            )
+        )
+    if value != PipelineV2Mode.CONFIG_V2.value:
+        raise PipelineConfigError(
+            _migration_message(project_config, f"unknown pipeline_v2_mode={value!r}")
+        )
 
 
 def pipeline_configs_from_project_config(project_config) -> tuple[PipelineConfig, ...]:
@@ -77,6 +147,45 @@ def pipeline_configs_from_project_config(project_config) -> tuple[PipelineConfig
                 f"{source_prefix}pipeline_v2[{index}]: {exc}"
             ) from exc
     return tuple(configs)
+
+
+def require_config_v2_project(project_config) -> tuple[PipelineConfig, ...]:
+    """Require a complete, runtime-safe config-v2 project.
+
+    This is the single strict parser entry point.  The permissive
+    ``pipeline_configs_from_project_config`` function remains available to
+    transitional readers until the later cutover tasks remove them; runtime
+    activation must use this function instead.  Empty legacy arrays are
+    accepted as inert migration-era metadata, but an active legacy rule,
+    missing/empty/malformed ``pipeline_v2``, or a legacy/shadow mode is a hard
+    error with a copyable offline migration command.
+    """
+    try:
+        legacy_rules = _project_legacy_rules(project_config)
+    except PipelineConfigError as exc:
+        raise PipelineConfigError(
+            _migration_message(project_config, str(exc))
+        ) from exc
+    if any(_rule_is_active(rule) for rule in legacy_rules):
+        raise PipelineConfigError(
+            _migration_message(project_config, "active legacy rule arrays are present")
+        )
+
+    _validate_config_v2_compatibility_mode(project_config)
+    try:
+        configs = pipeline_configs_from_project_config(project_config)
+    except PipelineConfigError as exc:
+        raise PipelineConfigError(
+            _migration_message(project_config, str(exc))
+        ) from exc
+    if not configs:
+        raise PipelineConfigError(
+            _migration_message(
+                project_config,
+                "additional_configuration.pipeline_v2 is missing or empty",
+            )
+        )
+    return configs
 
 
 def pipeline_v2_mode_from_project_config(project_config) -> PipelineV2Mode:

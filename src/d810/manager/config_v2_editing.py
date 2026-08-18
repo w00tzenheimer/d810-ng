@@ -33,7 +33,7 @@ from d810.passes.constant_simplification_options import (
 )
 from d810.passes.operational_config_v2 import operational_config_v2_pass_registry
 from d810.passes.pass_pipeline import PipelineConfig, PipelineConfigError
-from d810.passes.pipeline_config_parser import pipeline_configs_from_project_config
+from d810.passes.pipeline_config_parser import require_config_v2_project
 from d810.passes.config_v2_hook_runtime import compile_config_v2_hook_schedule
 from d810.passes.registry import PassRegistry, PassRegistryError, UnknownPassIdError
 
@@ -531,11 +531,11 @@ class ConfigV2EditingService:
         self, document: dict[str, object], path: pathlib.Path
     ) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...], str]:
         additional = _additional(document)
-        if additional.get("pipeline_v2_mode") != "config-v2":
-            raise ConfigV2EditError(
-                "pipeline_v2_mode must remain 'config-v2'; schema downgrade is refused"
-            )
-        configs = pipeline_configs_from_project_config(additional)
+        # Presence of a typed pipeline is the schema requirement.  The
+        # transitional config-v2 mode marker is tolerated on read and removed
+        # by canonical persistence; legacy/shadow values are rejected by the
+        # strict parser with the offline migration command.
+        configs = require_config_v2_project(document)
         for config in configs:
             self._registry.build_spec(config)
         project = ProjectConfiguration(
