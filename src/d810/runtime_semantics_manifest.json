@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "runtime_sources": [
+    "backends/mba/compiled_pattern_catalogue.py",
+    "backends/mba/hexrays_island.py",
+    "backends/mba/ida.py",
+    "backends/mba/native_mba_term_view.py",
+    "backends/mba/native_pod_matcher.py",
+    "backends/mba/native_rotate_helper.py",
+    "backends/mba/native_z3.py",
+    "backends/mba/native_z3_proof_template.py",
+    "backends/mba/runtime_semantics.py",
+    "core/cymode.py",
+    "mba/ac_matching.py",
+    "mba/canonical_pattern.py"
+  ]
+}

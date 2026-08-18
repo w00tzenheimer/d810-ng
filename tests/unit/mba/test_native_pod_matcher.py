@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
+from d810.backends.mba import native_pod_matcher
 from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
 from d810.backends.mba.egglog_add_rule_compiler import (
     _compile_rule_families,
@@ -19,6 +22,11 @@ from d810.mba.rules.sub import Sub_HackersDelightRule_2
 from d810.mba.typed_term import term_fingerprint
 from d810.mba.dsl import Const, Var
 from d810.mba.rules._base import VerifiableRule
+from d810.mba.certified_catalogue import (
+    CertifiedCatalogueSnapshot,
+    StructuralMatcherParityCertificate,
+    StructuralMatcherParityExpectation,
+)
 
 
 _TIGHT_X, _TIGHT_Y, _TIGHT_Z = Var("tight_x"), Var("tight_y"), Var("tight_z")
@@ -54,6 +62,63 @@ def _constant(value: int) -> NativeMbaTermView:
 
 def _node(name: str, *children: NativeMbaTermView) -> NativeMbaTermView:
     return NativeMbaTermView(name, 32, children=children)
+
+
+def _runtime_authorization_case(digest: str):
+    snapshot = CertifiedCatalogueSnapshot(
+        fingerprint="a" * 64,
+        rules_in_declaration_order=(),
+        rule_ids_by_root_shape={},
+        structural_authorizable=True,
+        runtime_semantics_digest=digest,
+    )
+    expectation = StructuralMatcherParityExpectation(
+        corpus_digest="b" * 64,
+        toolchain_digest="c" * 64,
+        runtime_semantics_digest=digest,
+        legacy_observation_count=1,
+        observation_count=1,
+    )
+    certificate = StructuralMatcherParityCertificate(
+        snapshot_fingerprint=snapshot.fingerprint,
+        runtime_mode="python",
+        corpus_digest=expectation.corpus_digest,
+        toolchain_digest=expectation.toolchain_digest,
+        runtime_semantics_digest=digest,
+        legacy_observation_count=1,
+        observation_count=1,
+        legacy_rule_mismatches=0,
+        legacy_binding_mismatches=0,
+        legacy_binding_unknown=0,
+        new_safe_coverage_pending=0,
+        unsafe_mutations=0,
+        unproved_structural_replacements=0,
+    )
+    return snapshot, expectation, certificate
+
+
+def test_runtime_digest_binds_active_pod_backend_and_artifact_identity() -> None:
+    identity = native_pod_matcher.active_runtime_identity()
+    digest = native_pod_matcher.runtime_semantics_digest(identity=identity)
+
+    backend_changed = replace(
+        identity,
+        pod_backend="cython" if identity.pod_backend == "python" else "python",
+    )
+    artifact_changed = replace(
+        identity,
+        artifact_identity=f"{identity.artifact_identity}:changed",
+    )
+    assert native_pod_matcher.runtime_semantics_digest(identity=backend_changed) != digest
+    changed_digest = native_pod_matcher.runtime_semantics_digest(
+        identity=artifact_changed
+    )
+    assert changed_digest != digest
+
+    snapshot, expectation, certificate = _runtime_authorization_case(digest)
+    assert certificate.authorizes(snapshot, "python", expectation) is True
+    stale_snapshot = replace(snapshot, runtime_semantics_digest=changed_digest)
+    assert certificate.authorizes(stale_snapshot, "python", expectation) is False
 
 
 def _rule(name: str):

@@ -11,8 +11,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import cached_property
+from types import ModuleType
 
 from d810.backends.mba.native_mba_term_view import NativeMbaTermView
+from d810.backends.mba.runtime_semantics import (
+    NativeMatcherRuntimeIdentity,
+    RuntimeSemanticsUnavailable,
+    loaded_extension_artifact_identity,
+    runtime_semantics_digest as _runtime_semantics_digest,
+)
 from d810.core.cymode import CythonMode
 from d810.core.typing import Any
 from d810.mba.typed_term import TypedBvTerm, _leaf_key_fingerprint
@@ -41,22 +48,25 @@ _AC_OPERATIONS = frozenset({"add", "and", "mul", "or", "xor"})
 # lowering the number of comparisons that the live path may explore.
 _MAX_CYTHON_COMPARISONS = 256
 
+_CYTHON_POD_MODULE: ModuleType | None = None
 if CythonMode().is_enabled():
     try:
-        from d810.speedups.mba.c_native_pod_matcher import (  # type: ignore[import-not-found]
-            match_pod_catalogue_trusted as _match_pod_catalogue,
-        )
+        from d810.speedups.mba import c_native_pod_matcher as _CYTHON_POD_MODULE  # type: ignore[import-not-found]
     except ImportError:
-        _match_pod_catalogue = None
-    try:
-        from d810.speedups.mba.c_native_pod_matcher import (  # type: ignore[import-not-found]
-            match_pod_pattern as _match_pod_pattern,
-        )
-    except ImportError:
-        _match_pod_pattern = None
+        _CYTHON_POD_MODULE = None
 else:
-    _match_pod_catalogue = None
-    _match_pod_pattern = None
+    _CYTHON_POD_MODULE = None
+
+_match_pod_catalogue = (
+    getattr(_CYTHON_POD_MODULE, "match_pod_catalogue_trusted", None)
+    if _CYTHON_POD_MODULE is not None
+    else None
+)
+_match_pod_pattern = (
+    getattr(_CYTHON_POD_MODULE, "match_pod_pattern", None)
+    if _CYTHON_POD_MODULE is not None
+    else None
+)
 
 
 @dataclass(frozen=True)
@@ -226,6 +236,39 @@ def matcher_backend() -> str:
     """Name the available numeric matcher backend."""
 
     return "cython" if _match_pod_catalogue is not None else "python"
+
+
+def active_runtime_identity() -> NativeMatcherRuntimeIdentity:
+    """Return the identity of the POD matcher implementation in use."""
+
+    if _match_pod_catalogue is None:
+        return NativeMatcherRuntimeIdentity(
+            pod_backend="python",
+            implementation="d810.backends.mba.native_pod_matcher",
+            artifact_identity="python-fallback",
+        )
+    if _CYTHON_POD_MODULE is None:
+        raise RuntimeSemanticsUnavailable(
+            "Cython POD matcher function is active without its module"
+        )
+    return NativeMatcherRuntimeIdentity(
+        pod_backend="cython",
+        implementation="d810.speedups.mba.c_native_pod_matcher",
+        artifact_identity=loaded_extension_artifact_identity(_CYTHON_POD_MODULE),
+    )
+
+
+def runtime_semantics_digest(
+    *,
+    identity: NativeMatcherRuntimeIdentity | None = None,
+    package_name: str = "d810",
+) -> str:
+    """Return the packaged source plus active matcher artifact digest."""
+
+    selected_identity = (
+        active_runtime_identity() if identity is None else identity
+    )
+    return _runtime_semantics_digest(selected_identity, package_name=package_name)
 
 
 def _masked_u64(value: int, width: int) -> int:
@@ -502,4 +545,6 @@ __all__ = [
     "encode_symbolic_pattern",
     "match_root_pod",
     "matcher_backend",
+    "active_runtime_identity",
+    "runtime_semantics_digest",
 ]
