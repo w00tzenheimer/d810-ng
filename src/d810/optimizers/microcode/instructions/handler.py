@@ -179,6 +179,25 @@ class GenericPatternRule(InstructionOptimizationRule):
 T_Rule = typing.TypeVar("T_Rule", bound=InstructionOptimizationRule)
 
 
+class _InsertionOrderedRuleSet(typing.Generic[T_Rule]):
+    """Deduplicate rules without discarding their registration order."""
+
+    def __init__(self) -> None:
+        self._rules: dict[T_Rule, None] = {}
+
+    def add(self, rule: T_Rule) -> None:
+        self._rules.setdefault(rule, None)
+
+    def __contains__(self, rule: object) -> bool:
+        return rule in self._rules
+
+    def __iter__(self) -> typing.Iterator[T_Rule]:
+        return iter(self._rules)
+
+    def __len__(self) -> int:
+        return len(self._rules)
+
+
 class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
     RULE_CLASSES: list[typing.Type[T_Rule]] = []
     NAME = None
@@ -186,7 +205,7 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
     def __init__(
         self, maturities: list[int], stats: OptimizationStatistics, log_dir=None
     ):
-        self.rules: set[T_Rule] = set()
+        self.rules = _InsertionOrderedRuleSet[T_Rule]()
         self.maturities = maturities
         self.log_dir = log_dir
         self.cur_maturity = ida_hexrays.MMAT_PREOPTIMIZED
