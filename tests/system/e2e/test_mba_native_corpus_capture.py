@@ -498,15 +498,6 @@ class TestNativeMbaCorpusCapture:
                                 "provider": MbaProviderKind.EGGLOG.value,
                             }
                         ],
-                        "latency_samples": [
-                            {
-                                "population": "whole_function",
-                                "mode": egglog_mode,
-                                "provider": MbaProviderKind.EGGLOG.value,
-                                "elapsed_ms": elapsed_ms,
-                            }
-                            for elapsed_ms in whole_function_elapsed_ms.values()
-                        ],
                     }
                 },
                 allow_nan=False,
@@ -578,7 +569,7 @@ class TestNativeMbaCorpusCapture:
         whole_function_lane = evidence["whole_function_latency_by_mode"][egglog_mode][
             MbaProviderKind.EGGLOG.value
         ]
-        assert whole_function_lane["count"] == 2 * len(whole_function_elapsed_ms)
+        assert whole_function_lane["count"] == len(whole_function_elapsed_ms)
         assert whole_function_lane["p50_ms"] is not None
         assert whole_function_lane["p95_ms"] is not None
         assert whole_function_lane["p95_ms"] <= max(whole_function_elapsed_ms.values())
