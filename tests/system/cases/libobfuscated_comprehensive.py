@@ -914,7 +914,7 @@ DAC_MASM_CASES = [
             "state-slot writes. Guards conservative stack dead-store "
             "elimination after dispatcher recovery."
         ),
-        project="dead_store_elimination_fixture_config_v2_canary.json",
+        project="dead_store_elimination_fixture.json",
         obfuscated_contains=["while ( 1 )"],
         deobfuscated_contains=["0x80100004"],
         deobfuscated_not_contains=[
@@ -939,7 +939,7 @@ DAC_MASM_CASES = [
             "comparison forest while preserving the mapped-image setup and the "
             "two-word result publication."
         ),
-        project="hodur_flag2_s1a_config_v2_canary_constant_simplification.json",
+        project="hodur_flag2_s1a_fixture_constant_simplification.json",
         obfuscated_contains=["0x37E2E8EF", "while ( 1 )"],
         deobfuscated_contains=[
             "0x4160200",
@@ -960,7 +960,7 @@ DAC_MASM_CASES = [
             "Guards removal of the comparison dispatcher while preserving "
             "the allocated-object initialization and event-handle publication."
         ),
-        project="hodur_flag2_s1a_config_v2_canary_constant_simplification.json",
+        project="hodur_flag2_s1a_fixture_constant_simplification.json",
         # IDA 9.4 no longer renders the readonly data initializer 0x7E174EE2
         # as a literal in the baseline pseudocode.  The control-flow literals
         # below remain stable evidence that the comparison dispatcher exists.
@@ -985,7 +985,7 @@ DAC_MASM_CASES = [
             "the terminal opaque arithmetic chain, which must simplify to "
             "the concrete zero result."
         ),
-        project="hodur_flag2_s1a_config_v2_canary_constant_simplification.json",
+        project="hodur_flag2_s1a_fixture_constant_simplification.json",
         obfuscated_contains=["0x7D0D862F", "0xC195E826"],
         deobfuscated_contains=["result = 0;"],
         deobfuscated_not_contains=["0x7D0D862F", "0xC195E826"],

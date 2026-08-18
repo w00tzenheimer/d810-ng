@@ -1,16 +1,137 @@
 {
-  "description": "Default system-test project for indirect branch/call resolver coverage",
-  "ins_rules": [],
-  "blk_rules": [
-    {
-      "name": "IndirectBranchResolver",
-      "is_activated": true,
-      "config": {}
-    },
-    {
-      "name": "IndirectCallResolver",
-      "is_activated": true,
-      "config": {}
-    }
-  ]
+  "additional_configuration": {
+    "pipeline_v2": [
+      {
+        "analyses": {
+          "provided": [],
+          "required": []
+        },
+        "backend_route": "mutation_backend",
+        "contract": {
+          "invalidates": {
+            "analyses": [],
+            "facts": []
+          },
+          "maturity": {
+            "max": "ir.global.optimized",
+            "min": "ir.canonical",
+            "preferred": null
+          },
+          "outputs": {
+            "evidence": [],
+            "facts": []
+          },
+          "preserves": {
+            "analyses": [],
+            "facts": []
+          },
+          "requires": {
+            "analyses": [],
+            "capabilities": [
+              "hook_transform_adapter"
+            ],
+            "evidence": [],
+            "facts": {
+              "optional": [],
+              "required": []
+            }
+          },
+          "safety": {
+            "policy": "default",
+            "requires_oracle": false
+          },
+          "scope": "block"
+        },
+        "granularity": "function",
+        "maturity_gates": [],
+        "options": {},
+        "pass_id": "indirect-branch-resolver",
+        "preservation": {
+          "all_preserved": true,
+          "kept": []
+        },
+        "requirements": {
+          "required": []
+        },
+        "safety_policy": {
+          "golden_required": false,
+          "name": "default"
+        },
+        "scheduler_policy": "worklist",
+        "target": {
+          "exclude_eas": [],
+          "include_eas": [],
+          "tags_all": [],
+          "tags_any": []
+        },
+        "workflow_stage": "canonical_pipeline"
+      },
+      {
+        "analyses": {
+          "provided": [],
+          "required": []
+        },
+        "backend_route": "mutation_backend",
+        "contract": {
+          "invalidates": {
+            "analyses": [],
+            "facts": []
+          },
+          "maturity": {
+            "max": "ir.global.optimized",
+            "min": "ir.canonical",
+            "preferred": null
+          },
+          "outputs": {
+            "evidence": [],
+            "facts": []
+          },
+          "preserves": {
+            "analyses": [],
+            "facts": []
+          },
+          "requires": {
+            "analyses": [],
+            "capabilities": [
+              "hook_transform_adapter"
+            ],
+            "evidence": [],
+            "facts": {
+              "optional": [],
+              "required": []
+            }
+          },
+          "safety": {
+            "policy": "default",
+            "requires_oracle": false
+          },
+          "scope": "block"
+        },
+        "granularity": "function",
+        "maturity_gates": [],
+        "options": {},
+        "pass_id": "indirect-call-resolver",
+        "preservation": {
+          "all_preserved": true,
+          "kept": []
+        },
+        "requirements": {
+          "required": []
+        },
+        "safety_policy": {
+          "golden_required": false,
+          "name": "default"
+        },
+        "scheduler_policy": "worklist",
+        "target": {
+          "exclude_eas": [],
+          "include_eas": [],
+          "tags_all": [],
+          "tags_any": []
+        },
+        "workflow_stage": "canonical_pipeline"
+      }
+    ]
+  },
+  "description": "Canonical config-v2 project for default.json."
 }

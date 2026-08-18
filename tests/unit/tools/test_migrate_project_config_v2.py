@@ -5,7 +5,6 @@ from __future__ import annotations
 import copy
 import errno
 import json
-import hashlib
 import os
 import re
 import stat
@@ -178,14 +177,13 @@ def _normalized_pipeline_entries(
 
 
 @pytest.mark.parametrize("source_name", tuple(KNOWN_LEGACY_FINGERPRINTS))
-def test_historical_legacy_fingerprint_is_frozen(source_name: str) -> None:
-    encoded = json.dumps(
-        _load(source_name),
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    assert hashlib.sha256(encoded).hexdigest() == KNOWN_LEGACY_FINGERPRINTS[source_name]
+def test_historical_legacy_fingerprint_catalogue_is_frozen(source_name: str) -> None:
+    # The bundled source files are canonical v2 now, so the old legacy
+    # documents are intentionally no longer shipped as runtime fixtures.  The
+    # readable migration resource is the durable record of each historical
+    # source identity and is independently validated below.
+    resource = json.loads(KNOWN_RESOURCE_PATH.read_text(encoding="utf-8"))
+    assert resource[source_name]["fingerprint"] == KNOWN_LEGACY_FINGERPRINTS[source_name]
 
 
 def test_known_template_resource_is_readable_and_self_consistent() -> None:

@@ -278,7 +278,7 @@ def test_adapter_clear_routing_override_delegates_once_then_revalidates_once() -
 
 def test_clear_routing_override_projects_as_task_1_auto_routing(tmp_path: Path) -> None:
     document = json.loads(
-        Path("src/d810/conf/default_instruction_only_config_v2_canary.json").read_text(
+        Path("src/d810/conf/default_instruction_only.json").read_text(
             encoding="utf-8"
         )
     )

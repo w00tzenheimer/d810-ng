@@ -21,7 +21,7 @@ CONF_DIR = Path("src/d810/conf")
 
 def _runtime_project(tmp_path: Path) -> tuple[ProjectConfiguration, dict[str, object]]:
     document = json.loads(
-        (CONF_DIR / "default_instruction_only_config_v2_canary.json").read_text(
+        (CONF_DIR / "default_instruction_only.json").read_text(
             encoding="utf-8"
         )
     )
@@ -267,7 +267,7 @@ def test_replacing_document_rejects_unsupported_field_changes(tmp_path: Path):
 
 
 def test_bundled_runtime_project_cannot_be_overwritten_in_place():
-    source = (CONF_DIR / "default_instruction_only_config_v2_canary.json").resolve()
+    source = (CONF_DIR / "default_instruction_only.json").resolve()
     project = ProjectConfiguration.from_file(source)
 
     with pytest.raises(ConfigV2EditError, match="bundled"):
@@ -275,7 +275,7 @@ def test_bundled_runtime_project_cannot_be_overwritten_in_place():
 
 
 def test_save_rejects_a_retargeted_bundled_source_destination(tmp_path: Path):
-    source = (CONF_DIR / "default_instruction_only_config_v2_canary.json").resolve()
+    source = (CONF_DIR / "default_instruction_only.json").resolve()
     project = ProjectConfiguration.from_file(source)
     service = _service()
     draft = service.create_draft(project, destination=tmp_path / "edited.json")

@@ -121,7 +121,7 @@ def test_native_spine_projection_preserves_typed_options() -> None:
 
 
 def test_native_state_machine_config_filter_excludes_hook_bindings() -> None:
-    project = _project("hodur_flag2_config_v2_canary.json")
+    project = _project("hodur_flag2.json")
 
     configs = config_v2_native_state_machine_configs(project)
 
@@ -141,7 +141,7 @@ def test_native_spine_requires_preanalysis_handlers() -> None:
 
 
 def test_state_machine_native_spine_rejects_partial_sequence() -> None:
-    project = _project("hodur_flag2_config_v2_canary.json")
+    project = _project("hodur_flag2.json")
     payload = list(project.additional_configuration["pipeline_v2"])
     project.additional_configuration["pipeline_v2"] = payload[:-2]
 
@@ -169,7 +169,7 @@ def test_constant_simplification_bundle_expands_to_live_stages() -> None:
 
 
 def test_legacy_rule_arrays_are_not_used_as_bindings() -> None:
-    project = _project("default_instruction_only_config_v2_canary.json")
+    project = _project("default_instruction_only.json")
     project.ins_rules = []
     project.blk_rules = []
 

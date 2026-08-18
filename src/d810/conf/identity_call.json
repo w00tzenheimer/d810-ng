@@ -1,15 +1,76 @@
 {
-  "description": "Identity-call resolver profile (experimental) for Hikari-style wrappers",
-  "ins_rules": [],
-  "blk_rules": [
-    {
-      "name": "IdentityCallResolver",
-      "is_activated": true,
-      "config": {
-        "enable_experimental": true,
-        "max_trampoline_depth": 32,
-        "max_search_instructions": 30
+  "additional_configuration": {
+    "pipeline_v2": [
+      {
+        "analyses": {
+          "provided": [],
+          "required": []
+        },
+        "backend_route": "mutation_backend",
+        "contract": {
+          "invalidates": {
+            "analyses": [],
+            "facts": []
+          },
+          "maturity": {
+            "max": "ir.global.optimized",
+            "min": "ir.canonical",
+            "preferred": null
+          },
+          "outputs": {
+            "evidence": [],
+            "facts": []
+          },
+          "preserves": {
+            "analyses": [],
+            "facts": []
+          },
+          "requires": {
+            "analyses": [],
+            "capabilities": [
+              "hook_transform_adapter"
+            ],
+            "evidence": [],
+            "facts": {
+              "optional": [],
+              "required": []
+            }
+          },
+          "safety": {
+            "policy": "default",
+            "requires_oracle": false
+          },
+          "scope": "block"
+        },
+        "granularity": "function",
+        "maturity_gates": [],
+        "options": {
+          "enable_experimental": true,
+          "max_search_instructions": 30,
+          "max_trampoline_depth": 32
+        },
+        "pass_id": "identity-call-resolver",
+        "preservation": {
+          "all_preserved": true,
+          "kept": []
+        },
+        "requirements": {
+          "required": []
+        },
+        "safety_policy": {
+          "golden_required": false,
+          "name": "default"
+        },
+        "scheduler_policy": "worklist",
+        "target": {
+          "exclude_eas": [],
+          "include_eas": [],
+          "tags_all": [],
+          "tags_any": []
+        },
+        "workflow_stage": "canonical_pipeline"
       }
-    }
-  ]
+    ]
+  },
+  "description": "Canonical config-v2 project for identity_call.json."
 }

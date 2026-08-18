@@ -1,1157 +1,861 @@
 {
-  "description": "flatfold deobfuscation",
-  "ins_rules": [
-    {
-      "name": "RotateHelperInlineRule",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "FoldReadonlyDataRule",
-      "is_activated": true,
-      "config": {
-        "default": {
-          "fold_writable_constants": true
+  "additional_configuration": {
+    "pipeline_v2": [
+      {
+        "analyses": {
+          "provided": [],
+          "required": []
         },
-        "macho": {
-          "allow_executable_readonly": true,
-          "fold_writable_constants": true
-        }
-      }
-    },
-    {
-      "name": "ConstantCallResultFoldRule",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "ReplaceReadonlyAddressOfWithImmediate",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "XorChain",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "AndChain",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "OrChain",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "ArithmeticChain",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "WeirdRule1",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "WeirdRule2",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "WeirdRule3",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "WeirdRule4",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "WeirdRule5",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "WeirdRule6",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Xor_HackersDelightRule_1",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Xor_HackersDelightRule_2",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Xor_HackersDelightRule_3",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Xor_HackersDelightRule_4",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Xor_HackersDelightRule_5",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Xor_MbaRule_1",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Xor_MbaRule_2",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Xor_MbaRule_3",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Xor_FactorRule_1",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Xor_FactorRule_2",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Xor_FactorRule_3",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Xor_SpecialConstantRule_1",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Xor_SpecialConstantRule_2",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Xor1_MbaRule_1",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Xor_Rule_1",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Xor_Rule_2",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Xor_Rule_3",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "XorAlmost_Rule_1",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Xor_NestedStuff",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Sub_HackersDelightRule_1",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Sub_HackersDelightRule_2",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Sub_HackersDelightRule_3",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Sub_HackersDelightRule_4",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Sub1_FactorRule_1",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Sub1_FactorRule_2",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Sub1Add_HackersDelightRule_1",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Sub1And_HackersDelightRule_1",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Sub1Or_MbaRule_1",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Sub1And1_MbaRule_1",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "PredSetnzRule1",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "PredSetnzRule2",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "PredSetnzRule3",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "PredSetnzRule4",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "PredSetnzRule5",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "PredSetnzRule6",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "PredSetnzRule8",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "PredSetzRule1",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "PredSetzRule2",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "PredSetzRule3",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "PredSetbRule1",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "PredOdd1",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "PredOdd2",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Pred0Rule1",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Pred0Rule2",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Pred0Rule3",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Pred0Rule4",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Pred0Rule5",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "PredFFRule1",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "PredFFRule2",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "PredFFRule3",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "PredFFRule4",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "PredOr2_Rule_1",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "PredOr1_Rule_1",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Or_HackersDelightRule_1",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Or_HackersDelightRule_2",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Or_HackersDelightRule_2_variant_1",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Or_MbaRule_1",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Or_MbaRule_2",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Or_MbaRule_3",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Or_FactorRule_1",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Or_FactorRule_2",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Or_FactorRule_3",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Or_OllvmRule_1",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Or_Rule_1",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Or_Rule_2",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "CstSimplificationRule1",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "CstSimplificationRule2",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "CstSimplificationRule3",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "CstSimplificationRule4",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "CstSimplificationRule5",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "CstSimplificationRule6",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "CstSimplificationRule7",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "CstSimplificationRule8",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "CstSimplificationRule9",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "CstSimplificationRule10",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "CstSimplificationRule11",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "CstSimplificationRule13",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "CstSimplificationRule14",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "CstSimplificationRule15",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "CstSimplificationRule16",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "CstSimplificationRule17",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "CstSimplificationRule18",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "CstSimplificationRule19",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "CstSimplificationRule20",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "CstSimplificationRule21",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "CstSimplificationRule22",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Bnot_HackersDelightRule_1",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Bnot_HackersDelightRule_2",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Bnot_MbaRule_1",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Bnot_FactorRule_1",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Bnot_FactorRule_2",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Bnot_FactorRule_3",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Bnot_FactorRule_4",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Bnot_FactorRule_5",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "BnotXor_Rule_1",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "BnotXor_Rule_2",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "BnotXor_Rule_3",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "BnotXor_FactorRule_1",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "BnotAnd_FactorRule_1",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "BnotAnd_FactorRule_2",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "BnotAnd_FactorRule_3",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "BnotAnd_FactorRule_4",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "BnotOr_FactorRule_1",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "BnotAdd_MbaRule_1",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Bnot_Rule_1",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Bnot_XorRule_1",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "And_HackersDelightRule_1",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "And_HackersDelightRule_2",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "And_HackersDelightRule_3",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "And_HackersDelightRule_4",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "And_OllvmRule_1",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "And_OllvmRule_2",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "And_OllvmRule_3",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "And_FactorRule_1",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "And_FactorRule_2",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "AndBnot_HackersDelightRule_1",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "AndBnot_HackersDelightRule_2",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "AndBnot_FactorRule_1",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "AndBnot_FactorRule_2",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "AndBnot_FactorRule_3",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "AndBnot_FactorRule_4",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "AndOr_FactorRule_1",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "AndXor_FactorRule_1",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "And1_MbaRule_1",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Add_HackersDelightRule_1",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Add_HackersDelightRule_2",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Add_HackersDelightRule_3",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Add_HackersDelightRule_4",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Add_HackersDelightRule_5",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Add_SpecialConstantRule_1",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Add_SpecialConstantRule_2",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Add_SpecialConstantRule_3",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Add_OllvmRule_1",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Add_OllvmRule_2",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Add_OllvmRule_3",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Add_OllvmRule_4",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "AddXor_Rule_1",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "AddXor_Rule_2",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Z3setzRuleGeneric",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Z3setnzRuleGeneric",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Z3lnotRuleGeneric",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Z3SmodRuleGeneric",
-      "is_activated": true,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "Z3ConstantOptimization",
-      "is_activated": true,
-      "config": {
-        "min_nb_opcode": 4,
-        "min_nb_constant": 3,
-        "dump_intermediate_microcode": false
-      }
-    }
-  ],
-  "blk_rules": [
-    {
-      "name": "ForwardConstantPropagationRule",
-      "is_activated": false,
-      "config": {
-        "dump_intermediate_microcode": false
-      }
-    },
-    {
-      "name": "MbaStatePreconditioner",
-      "is_activated": true,
-      "config": {
-        "max_optimize_local_rounds": 1
-      }
-    },
-    {
-      "name": "JumpFixer",
-      "is_activated": true,
-      "config": {
-        "enabled_rules": [
-          "CompareConstantRule1",
-          "CompareConstantRule2",
-          "CompareConstantRule3",
-          "JaeRule1",
-          "JbRule1",
-          "JnzRule1",
-          "JnzRule2",
-          "JnzRule3",
-          "JnzRule4",
-          "JnzRule5",
-          "JnzRule6",
-          "JnzRule7",
-          "JnzRule8",
-          "JmpRuleZ3Const"
-        ]
-      }
-    },
-    {
-      "name": "StateMachineCffUnflattener",
-      "is_activated": true,
-      "config": {
-        "profile": "state_dispatcher_map"
-      }
-    }
-  ]
+        "backend_route": "mutation_backend",
+        "contract": {
+          "invalidates": {
+            "analyses": [],
+            "facts": []
+          },
+          "maturity": {
+            "max": null,
+            "min": null,
+            "preferred": null
+          },
+          "outputs": {
+            "evidence": [],
+            "facts": []
+          },
+          "preserves": {
+            "analyses": [],
+            "facts": []
+          },
+          "requires": {
+            "analyses": [],
+            "capabilities": [],
+            "evidence": [],
+            "facts": {
+              "optional": [],
+              "required": []
+            }
+          },
+          "safety": {
+            "policy": "default",
+            "requires_oracle": false
+          },
+          "scope": "function"
+        },
+        "granularity": "function",
+        "maturity_gates": [],
+        "options": {
+          "allow_executable_readonly": false,
+          "memory_policy": "aggressive_no_direct_writes"
+        },
+        "pass_id": "constant-simplification",
+        "preservation": {
+          "all_preserved": true,
+          "kept": []
+        },
+        "requirements": {
+          "required": []
+        },
+        "safety_policy": {
+          "golden_required": false,
+          "name": "default"
+        },
+        "scheduler_policy": "worklist",
+        "target": {
+          "exclude_eas": [],
+          "include_eas": [],
+          "tags_all": [],
+          "tags_any": []
+        },
+        "workflow_stage": "canonical_pipeline"
+      },
+      {
+        "analyses": {
+          "provided": [],
+          "required": []
+        },
+        "backend_route": "mutation_backend",
+        "contract": {
+          "invalidates": {
+            "analyses": [],
+            "facts": []
+          },
+          "maturity": {
+            "max": "ir.global.optimized",
+            "min": "ir.canonical",
+            "preferred": null
+          },
+          "outputs": {
+            "evidence": [],
+            "facts": []
+          },
+          "preserves": {
+            "analyses": [],
+            "facts": []
+          },
+          "requires": {
+            "analyses": [],
+            "capabilities": [
+              "local_instruction_rewrite",
+              "z3_solver"
+            ],
+            "evidence": [],
+            "facts": {
+              "optional": [],
+              "required": []
+            }
+          },
+          "safety": {
+            "policy": "default",
+            "requires_oracle": false
+          },
+          "scope": "expression"
+        },
+        "granularity": "function",
+        "maturity_gates": [],
+        "options": {
+          "transform_options": {
+            "z-3-constant-optimization": {
+              "min_nb_constant": 3,
+              "min_nb_opcode": 4
+            }
+          },
+          "transforms": [
+            "rotate-helper-inline",
+            "constant-call-result-fold",
+            "replace-readonly-address-of-with-immediate",
+            "xor-chain",
+            "and-chain",
+            "or-chain",
+            "arithmetic-chain",
+            "weird-1",
+            "weird-2",
+            "weird-3",
+            "weird-4",
+            "weird-5",
+            "weird-6",
+            "xor-hackers-delight-1",
+            "xor-hackers-delight-2",
+            "xor-hackers-delight-3",
+            "xor-hackers-delight-4",
+            "xor-hackers-delight-5",
+            "xor-mba-1",
+            "xor-mba-2",
+            "xor-mba-3",
+            "xor-factor-1",
+            "xor-factor-2",
+            "xor-factor-3",
+            "xor-special-constant-1",
+            "xor-special-constant-2",
+            "xor-1-mba-1",
+            "xor-1",
+            "xor-2",
+            "xor-3",
+            "xor-almost-1",
+            "xor-nested-stuff",
+            "sub-hackers-delight-1",
+            "sub-hackers-delight-2",
+            "sub-hackers-delight-3",
+            "sub-hackers-delight-4",
+            "sub-1-factor-1",
+            "sub-1-factor-2",
+            "sub-1-add-hackers-delight-1",
+            "sub-1-and-hackers-delight-1",
+            "sub-1-or-mba-1",
+            "sub-1-and-1-mba-1",
+            "pred-setnz-1",
+            "pred-setnz-2",
+            "pred-setnz-3",
+            "pred-setnz-4",
+            "pred-setnz-5",
+            "pred-setnz-6",
+            "pred-setnz-8",
+            "pred-setz-1",
+            "pred-setz-2",
+            "pred-setz-3",
+            "pred-setb-1",
+            "pred-odd-1",
+            "pred-odd-2",
+            "pred-0-1",
+            "pred-0-2",
+            "pred-0-3",
+            "pred-0-4",
+            "pred-0-5",
+            "pred-ff-1",
+            "pred-ff-2",
+            "pred-ff-3",
+            "pred-ff-4",
+            "pred-or-2-1",
+            "pred-or-1-1",
+            "or-hackers-delight-1",
+            "or-hackers-delight-2",
+            "or-hackers-delight-2-variant-1",
+            "or-mba-1",
+            "or-mba-2",
+            "or-mba-3",
+            "or-factor-1",
+            "or-factor-2",
+            "or-factor-3",
+            "or-ollvm-1",
+            "or-1",
+            "or-2",
+            "cst-simplification-1",
+            "cst-simplification-2",
+            "cst-simplification-3",
+            "cst-simplification-4",
+            "cst-simplification-5",
+            "cst-simplification-6",
+            "cst-simplification-7",
+            "cst-simplification-8",
+            "cst-simplification-9",
+            "cst-simplification-10",
+            "cst-simplification-11",
+            "cst-simplification-13",
+            "cst-simplification-14",
+            "cst-simplification-15",
+            "cst-simplification-16",
+            "cst-simplification-17",
+            "cst-simplification-18",
+            "cst-simplification-19",
+            "cst-simplification-20",
+            "cst-simplification-21",
+            "cst-simplification-22",
+            "bnot-hackers-delight-1",
+            "bnot-hackers-delight-2",
+            "bnot-mba-1",
+            "bnot-factor-1",
+            "bnot-factor-2",
+            "bnot-factor-3",
+            "bnot-factor-4",
+            "bnot-factor-5",
+            "bnot-xor-paired-not-1",
+            "bnot-xor-2",
+            "bnot-xor-3",
+            "bnot-xor-factor-1",
+            "bnot-and-factor-1",
+            "bnot-and-factor-2",
+            "bnot-and-factor-3",
+            "bnot-and-factor-4",
+            "bnot-or-factor-1",
+            "bnot-add-mba-1",
+            "bnot-1",
+            "bnot-xor-demorgan-1",
+            "and-hackers-delight-1",
+            "and-hackers-delight-2",
+            "and-hackers-delight-3",
+            "and-hackers-delight-4",
+            "and-ollvm-1",
+            "and-ollvm-2",
+            "and-ollvm-3",
+            "and-factor-1",
+            "and-factor-2",
+            "and-bnot-hackers-delight-1",
+            "and-bnot-hackers-delight-2",
+            "and-bnot-factor-1",
+            "and-bnot-factor-2",
+            "and-bnot-factor-3",
+            "and-bnot-factor-4",
+            "and-or-factor-1",
+            "and-xor-factor-1",
+            "and-1-mba-1",
+            "add-hackers-delight-1",
+            "add-hackers-delight-2",
+            "add-hackers-delight-3",
+            "add-hackers-delight-4",
+            "add-hackers-delight-5",
+            "add-special-constant-1",
+            "add-special-constant-2",
+            "add-special-constant-3",
+            "add-ollvm-1",
+            "add-ollvm-2",
+            "add-ollvm-3",
+            "add-ollvm-4",
+            "add-xor-1",
+            "add-xor-2",
+            "z-3-setz-generic",
+            "z-3-setnz-generic",
+            "z-3-lnot-generic",
+            "z-3-smod-generic",
+            "z-3-constant-optimization"
+          ]
+        },
+        "pass_id": "mba-simplify",
+        "preservation": {
+          "all_preserved": true,
+          "kept": []
+        },
+        "requirements": {
+          "required": []
+        },
+        "safety_policy": {
+          "golden_required": false,
+          "name": "default"
+        },
+        "scheduler_policy": "worklist",
+        "target": {
+          "exclude_eas": [],
+          "include_eas": [],
+          "tags_all": [],
+          "tags_any": []
+        },
+        "workflow_stage": "canonical_pipeline"
+      },
+      {
+        "analyses": {
+          "provided": [],
+          "required": []
+        },
+        "backend_route": "mutation_backend",
+        "contract": {
+          "invalidates": {
+            "analyses": [],
+            "facts": []
+          },
+          "maturity": {
+            "max": "ir.global.optimized",
+            "min": "ir.canonical",
+            "preferred": null
+          },
+          "outputs": {
+            "evidence": [],
+            "facts": []
+          },
+          "preserves": {
+            "analyses": [],
+            "facts": []
+          },
+          "requires": {
+            "analyses": [],
+            "capabilities": [
+              "hook_transform_adapter"
+            ],
+            "evidence": [],
+            "facts": {
+              "optional": [],
+              "required": []
+            }
+          },
+          "safety": {
+            "policy": "default",
+            "requires_oracle": false
+          },
+          "scope": "block"
+        },
+        "granularity": "function",
+        "maturity_gates": [],
+        "options": {
+          "max_optimize_local_rounds": 1
+        },
+        "pass_id": "mba-state-preconditioner",
+        "preservation": {
+          "all_preserved": true,
+          "kept": []
+        },
+        "requirements": {
+          "required": []
+        },
+        "safety_policy": {
+          "golden_required": false,
+          "name": "default"
+        },
+        "scheduler_policy": "worklist",
+        "target": {
+          "exclude_eas": [],
+          "include_eas": [],
+          "tags_all": [],
+          "tags_any": []
+        },
+        "workflow_stage": "canonical_pipeline"
+      },
+      {
+        "analyses": {
+          "provided": [],
+          "required": []
+        },
+        "backend_route": "mutation_backend",
+        "contract": {
+          "invalidates": {
+            "analyses": [],
+            "facts": []
+          },
+          "maturity": {
+            "max": "ir.global.optimized",
+            "min": "ir.canonical",
+            "preferred": null
+          },
+          "outputs": {
+            "evidence": [],
+            "facts": []
+          },
+          "preserves": {
+            "analyses": [],
+            "facts": []
+          },
+          "requires": {
+            "analyses": [],
+            "capabilities": [
+              "hook_transform_adapter"
+            ],
+            "evidence": [],
+            "facts": {
+              "optional": [],
+              "required": []
+            }
+          },
+          "safety": {
+            "policy": "default",
+            "requires_oracle": false
+          },
+          "scope": "block"
+        },
+        "granularity": "function",
+        "maturity_gates": [],
+        "options": {
+          "enabled_rules": [
+            "CompareConstantRule1",
+            "CompareConstantRule2",
+            "CompareConstantRule3",
+            "JaeRule1",
+            "JbRule1",
+            "JnzRule1",
+            "JnzRule2",
+            "JnzRule3",
+            "JnzRule4",
+            "JnzRule5",
+            "JnzRule6",
+            "JnzRule7",
+            "JnzRule8",
+            "JmpRuleZ3Const"
+          ]
+        },
+        "pass_id": "jump-fixer",
+        "preservation": {
+          "all_preserved": true,
+          "kept": []
+        },
+        "requirements": {
+          "required": []
+        },
+        "safety_policy": {
+          "golden_required": false,
+          "name": "default"
+        },
+        "scheduler_policy": "worklist",
+        "target": {
+          "exclude_eas": [],
+          "include_eas": [],
+          "tags_all": [],
+          "tags_any": []
+        },
+        "workflow_stage": "canonical_pipeline"
+      },
+      {
+        "analyses": {
+          "provided": [
+            "dispatcher_model",
+            "recover_dispatcher",
+            "recovered_machine"
+          ],
+          "required": []
+        },
+        "backend_route": "mutation_backend",
+        "contract": {
+          "invalidates": {
+            "analyses": [],
+            "facts": []
+          },
+          "maturity": {
+            "max": "ir.global.analyzed",
+            "min": "ir.call.modeled",
+            "preferred": null
+          },
+          "outputs": {
+            "evidence": [],
+            "facts": [
+              "role.dispatcher"
+            ]
+          },
+          "preserves": {
+            "analyses": [],
+            "facts": []
+          },
+          "requires": {
+            "analyses": [],
+            "capabilities": [
+              "live_mba"
+            ],
+            "evidence": [],
+            "facts": {
+              "optional": [],
+              "required": []
+            }
+          },
+          "safety": {
+            "policy": "default",
+            "requires_oracle": false
+          },
+          "scope": "function"
+        },
+        "granularity": "function",
+        "maturity_gates": [],
+        "options": {
+          "min_state_constant": 16777216
+        },
+        "pass_id": "recover_dispatcher",
+        "preservation": {
+          "all_preserved": true,
+          "kept": []
+        },
+        "requirements": {
+          "required": []
+        },
+        "safety_policy": {
+          "golden_required": false,
+          "name": "default"
+        },
+        "scheduler_policy": "worklist",
+        "target": {
+          "exclude_eas": [],
+          "include_eas": [],
+          "tags_all": [],
+          "tags_any": []
+        },
+        "workflow_stage": "canonical_pipeline"
+      },
+      {
+        "analyses": {
+          "provided": [
+            "predecessor_dispatcher_target_facts",
+            "recover_state_transitions",
+            "transition_result",
+            "valrange_confirmable_count"
+          ],
+          "required": [
+            "recover_dispatcher"
+          ]
+        },
+        "backend_route": "mutation_backend",
+        "contract": {
+          "invalidates": {
+            "analyses": [],
+            "facts": []
+          },
+          "maturity": {
+            "max": "ir.global.analyzed",
+            "min": "ir.call.modeled",
+            "preferred": null
+          },
+          "outputs": {
+            "evidence": [],
+            "facts": [
+              "recovered.state_transition"
+            ]
+          },
+          "preserves": {
+            "analyses": [],
+            "facts": []
+          },
+          "requires": {
+            "analyses": [
+              "recover_dispatcher"
+            ],
+            "capabilities": [
+              "live_mba"
+            ],
+            "evidence": [
+              "ir.branch_target",
+              "ir.state_variable_write"
+            ],
+            "facts": {
+              "optional": [],
+              "required": [
+                "role.dispatcher"
+              ]
+            }
+          },
+          "safety": {
+            "policy": "default",
+            "requires_oracle": false
+          },
+          "scope": "function"
+        },
+        "granularity": "function",
+        "maturity_gates": [],
+        "options": {
+          "min_state_constant": 16777216
+        },
+        "pass_id": "recover_state_transitions",
+        "preservation": {
+          "all_preserved": true,
+          "kept": []
+        },
+        "requirements": {
+          "required": []
+        },
+        "safety_policy": {
+          "golden_required": false,
+          "name": "default"
+        },
+        "scheduler_policy": "worklist",
+        "target": {
+          "exclude_eas": [],
+          "include_eas": [],
+          "tags_all": [],
+          "tags_any": []
+        },
+        "workflow_stage": "canonical_pipeline"
+      },
+      {
+        "analyses": {
+          "provided": [
+            "plan_semantic_regions"
+          ],
+          "required": [
+            "recover_dispatcher",
+            "transition_result"
+          ]
+        },
+        "backend_route": "mutation_backend",
+        "contract": {
+          "invalidates": {
+            "analyses": [],
+            "facts": []
+          },
+          "maturity": {
+            "max": "ir.global.analyzed",
+            "min": "ir.call.modeled",
+            "preferred": null
+          },
+          "outputs": {
+            "evidence": [],
+            "facts": [
+              "recovered.region"
+            ]
+          },
+          "preserves": {
+            "analyses": [],
+            "facts": []
+          },
+          "requires": {
+            "analyses": [
+              "recover_dispatcher",
+              "transition_result"
+            ],
+            "capabilities": [],
+            "evidence": [],
+            "facts": {
+              "optional": [],
+              "required": [
+                "recovered.state_transition",
+                "role.dispatcher"
+              ]
+            }
+          },
+          "safety": {
+            "policy": "default",
+            "requires_oracle": false
+          },
+          "scope": "function"
+        },
+        "granularity": "function",
+        "maturity_gates": [],
+        "options": {
+          "min_state_constant": 16777216
+        },
+        "pass_id": "plan_semantic_regions",
+        "preservation": {
+          "all_preserved": true,
+          "kept": []
+        },
+        "requirements": {
+          "required": []
+        },
+        "safety_policy": {
+          "golden_required": false,
+          "name": "default"
+        },
+        "scheduler_policy": "worklist",
+        "target": {
+          "exclude_eas": [],
+          "include_eas": [],
+          "tags_all": [],
+          "tags_any": []
+        },
+        "workflow_stage": "canonical_pipeline"
+      },
+      {
+        "analyses": {
+          "provided": [
+            "lower_state_machine_plan_metadata"
+          ],
+          "required": [
+            "plan_semantic_regions",
+            "predecessor_dispatcher_target_facts",
+            "recover_dispatcher",
+            "recover_state_transitions",
+            "transition_result"
+          ]
+        },
+        "backend_route": "mutation_backend",
+        "contract": {
+          "invalidates": {
+            "analyses": [
+              "dominators",
+              "loop_info",
+              "postdominators",
+              "regions"
+            ],
+            "facts": [
+              "ir.cfg_shape.stale"
+            ]
+          },
+          "maturity": {
+            "max": "ir.global.analyzed",
+            "min": "ir.call.modeled",
+            "preferred": null
+          },
+          "outputs": {
+            "evidence": [],
+            "facts": [
+              "recovered.cfg_edge"
+            ]
+          },
+          "preserves": {
+            "analyses": [
+              "function_boundaries"
+            ],
+            "facts": [
+              "raw_instruction_addresses",
+              "recovered.cfg_edge"
+            ]
+          },
+          "requires": {
+            "analyses": [
+              "plan_semantic_regions",
+              "predecessor_dispatcher_target_facts",
+              "recover_dispatcher",
+              "recover_state_transitions",
+              "transition_result"
+            ],
+            "capabilities": [],
+            "evidence": [],
+            "facts": {
+              "optional": [],
+              "required": [
+                "recovered.region",
+                "recovered.state_transition",
+                "role.dispatcher"
+              ]
+            }
+          },
+          "safety": {
+            "policy": "golden",
+            "requires_oracle": true
+          },
+          "scope": "function"
+        },
+        "granularity": "function",
+        "maturity_gates": [],
+        "options": {
+          "min_state_constant": 16777216
+        },
+        "pass_id": "lower_state_machine",
+        "preservation": {
+          "all_preserved": true,
+          "kept": []
+        },
+        "requirements": {
+          "required": []
+        },
+        "safety_policy": {
+          "golden_required": false,
+          "name": "default"
+        },
+        "scheduler_policy": "worklist",
+        "target": {
+          "exclude_eas": [],
+          "include_eas": [],
+          "tags_all": [],
+          "tags_any": []
+        },
+        "workflow_stage": "canonical_pipeline"
+      },
+      {
+        "analyses": {
+          "provided": [],
+          "required": []
+        },
+        "backend_route": "mutation_backend",
+        "contract": {
+          "invalidates": {
+            "analyses": [
+              "dominators",
+              "loop_info",
+              "postdominators",
+              "regions"
+            ],
+            "facts": [
+              "ir.cfg_shape.stale"
+            ]
+          },
+          "maturity": {
+            "max": "ir.global.analyzed",
+            "min": "ir.call.modeled",
+            "preferred": null
+          },
+          "outputs": {
+            "evidence": [],
+            "facts": []
+          },
+          "preserves": {
+            "analyses": [
+              "function_boundaries"
+            ],
+            "facts": [
+              "raw_instruction_addresses",
+              "recovered.cfg_edge"
+            ]
+          },
+          "requires": {
+            "analyses": [],
+            "capabilities": [],
+            "evidence": [],
+            "facts": {
+              "optional": [],
+              "required": []
+            }
+          },
+          "safety": {
+            "policy": "golden",
+            "requires_oracle": true
+          },
+          "scope": "function"
+        },
+        "granularity": "function",
+        "maturity_gates": [],
+        "options": {
+          "min_state_constant": 16777216
+        },
+        "pass_id": "cleanup_residual_dispatcher",
+        "preservation": {
+          "all_preserved": true,
+          "kept": []
+        },
+        "requirements": {
+          "required": []
+        },
+        "safety_policy": {
+          "golden_required": false,
+          "name": "default"
+        },
+        "scheduler_policy": "worklist",
+        "target": {
+          "exclude_eas": [],
+          "include_eas": [],
+          "tags_all": [],
+          "tags_any": []
+        },
+        "workflow_stage": "canonical_pipeline"
+      }
+    ]
+  },
+  "description": "Canonical config-v2 project for flatfold.json."
 }

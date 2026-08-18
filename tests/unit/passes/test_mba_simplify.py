@@ -194,7 +194,7 @@ def test_mba_simplify_empty_rule_selection_is_noop_without_capability():
 
 def test_mba_simplify_registry_builds_default_instruction_canary_mba_stage():
     project = ProjectConfiguration.from_file(
-        _CONF_DIR / "default_instruction_only_config_v2_canary.json"
+        _CONF_DIR / "default_instruction_only.json"
     )
     config = next(
         config

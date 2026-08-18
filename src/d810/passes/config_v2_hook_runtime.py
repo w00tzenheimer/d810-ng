@@ -85,11 +85,6 @@ class ConfigV2HookSchedule:
     constant_simplification_schedule: CompiledConstantSimplificationSchedule | None = None
 
     @property
-    def enabled(self) -> bool:
-        """Compatibility view for consumers migrating from activation objects."""
-        return True
-
-    @property
     def instruction_rules(self) -> tuple[RuleConfiguration, ...]:
         return self.instruction_bindings
 

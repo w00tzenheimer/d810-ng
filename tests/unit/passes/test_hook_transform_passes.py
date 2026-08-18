@@ -161,7 +161,7 @@ def test_hook_transform_pass_requires_typed_capability():
 
 def test_hook_transform_registry_builds_jump_fixer_canary_entry():
     project = ProjectConfiguration.from_file(
-        _CONF_DIR / "hodur_flag2_config_v2_canary.json"
+        _CONF_DIR / "hodur_flag2.json"
     )
     config = pipeline_configs_from_project_config(project)[-1]
 
@@ -284,12 +284,12 @@ def test_hook_transform_pipeline_executes_when_capabilities_exist():
 
 
 def test_operational_registry_builds_mba_spine_and_simple_block_canary():
-    canary = ProjectConfiguration.from_file(
-        _CONF_DIR / "default_unflattening_tigress_indirect_config_v2_canary.json"
+    project = ProjectConfiguration.from_file(
+        _CONF_DIR / "default_unflattening_tigress_indirect.json"
     )
 
     specs = pass_specs_from_project_config(
-        canary,
+        project,
         operational_config_v2_pass_registry(),
     )
 
@@ -305,12 +305,12 @@ def test_operational_registry_builds_mba_spine_and_simple_block_canary():
 
 
 def test_operational_registry_builds_identity_call_canary():
-    canary = ProjectConfiguration.from_file(
-        _CONF_DIR / "identity_call_config_v2_canary.json"
+    project = ProjectConfiguration.from_file(
+        _CONF_DIR / "identity_call.json"
     )
 
     specs = pass_specs_from_project_config(
-        canary,
+        project,
         operational_config_v2_pass_registry(),
     )
 
@@ -327,12 +327,10 @@ def test_operational_registry_builds_identity_call_canary():
 
 @pytest.mark.parametrize("config_name", ["default", "default_indirect_resolution"])
 def test_operational_registry_builds_indirect_branch_call_canary(config_name):
-    canary = ProjectConfiguration.from_file(
-        _CONF_DIR / f"{config_name}_config_v2_canary.json"
-    )
+    project = ProjectConfiguration.from_file(_CONF_DIR / f"{config_name}.json")
 
     specs = pass_specs_from_project_config(
-        canary,
+        project,
         operational_config_v2_pass_registry(),
     )
 

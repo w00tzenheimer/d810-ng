@@ -619,7 +619,7 @@ def test_dump_binary_selects_target_database(
         argparse.Namespace(
             worktree="wt",
             function="sub_7FF85A9CD360",
-            project="hodur_flag2_s1a_config_v2_canary.json",
+            project="hodur_flag2_s1a.json",
             prefix="dump",
             label="a9cd360",
             capture_post_maturity="8",

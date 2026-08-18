@@ -493,106 +493,43 @@ Speedups are generously provided by
 2. Click on the `Start` button to enable deobfuscation
 3. Decompile an obfuscated function, the code should be simplified (hopefully)
 
-### Config-v2 supported defaults and canaries
+### Config-v2 bundled projects
 
-Config-v2 is the runtime path for every bundled project configuration. Each
-bundled config routes to its `*_config_v2_canary.json` counterpart:
+Config v2 is the only runtime schema for bundled projects. Each bundled project
+contains its own typed `additional_configuration.pipeline_v2` declaration and
+is loaded directly; there is no source/runtime alias or basename routing step.
 
-- `default_instruction_only.json` routes to
-  `default_instruction_only_config_v2_canary.json`.
-- `default_unflattening_tigress_engine.json` routes to
-  `default_unflattening_tigress_engine_config_v2_canary.json`.
-- `hodur_flag2.json` routes to `hodur_flag2_config_v2_canary.json`.
-- `hodur_glbopt2_only.json` routes to
-  `hodur_glbopt2_only_config_v2_canary.json`.
-- `eidolon.json` routes to `eidolon_config_v2_canary.json`.
-- `default_unflattening_approov.json` routes to
-  `default_unflattening_approov_config_v2_canary.json`.
-- `default_unflattening_approov_s1a.json` routes to
-  `default_unflattening_approov_s1a_config_v2_canary.json`.
-- `hodur_flag2_s1a.json` routes to `hodur_flag2_s1a_config_v2_canary.json`.
-- `hodur_flag2_with_fcp.json` routes to
-  `hodur_flag2_with_fcp_config_v2_canary.json`.
-- `identity_call.json` routes to `identity_call_config_v2_canary.json`.
-- `default_unflattening_tigress_engine_transition_facts.json` routes to
-  `default_unflattening_tigress_engine_transition_facts_config_v2_canary.json`.
-- `example_libobfuscated_abc.json` routes to
-  `example_libobfuscated_abc_config_v2_canary.json`.
-- `flatfold.json` routes to `flatfold_config_v2_canary.json`.
-- `example_hodur.json` routes to `example_hodur_config_v2_canary.json`.
-- `default_unflattening_ollvm.json` routes to
-  `default_unflattening_ollvm_config_v2_canary.json`.
-- `default_indirect_resolution.json` routes to
-  `default_indirect_resolution_config_v2_canary.json`.
-- `default_unflattening_tigress_indirect.json` routes to
-  `default_unflattening_tigress_indirect_config_v2_canary.json`.
-- `default.json` routes to `default_config_v2_canary.json`.
-- `example_libobfuscated_no_fixprecedessor.json` routes to
-  `example_libobfuscated_no_fixprecedessor_config_v2_canary.json`.
-- `bogus_loops.json` routes to `bogus_loops_config_v2_canary.json`.
-- `example_libobfuscated.json` routes to
-  `example_libobfuscated_config_v2_canary.json`.
+The supported bundled project names are:
 
-User configs that override those filenames remain on the existing project
-configuration path by default. Routing only trusts checked-in bundled configs
-under `d810/conf`.
+- `default_instruction_only.json`
+- `default_unflattening_tigress_engine.json`
+- `hodur_flag2.json` and `hodur_glbopt2_only.json`
+- `eidolon.json` and `eidolon_v3_const_solve.json`
+- `default_unflattening_approov.json` and
+  `default_unflattening_approov_s1a.json`
+- `hodur_flag2_s1a.json` and `hodur_flag2_with_fcp.json`
+- `identity_call.json`
+- `default_unflattening_tigress_engine_transition_facts.json`
+- `example_libobfuscated_abc.json`, `flatfold.json`, and `example_hodur.json`
+- `default_unflattening_ollvm.json`, `default_indirect_resolution.json`, and
+  `default_unflattening_tigress_indirect.json`
+- `default.json`, `example_libobfuscated_no_fixprecedessor.json`,
+  `bogus_loops.json`, and `example_libobfuscated.json`
 
-Each canary exercises a specific hook lane:
+Fixture-only projects use stable names such as
+`dead_store_elimination_fixture.json` and
+`hodur_flag2_s1a_fixture_constant_simplification.json`. Research portfolios,
+shape catalogues, and spike configurations remain separate data fixtures and
+are not bundled runtime defaults.
 
-- `default_instruction_only_config_v2_canary.json` exercises the
-  MBA/instruction plus supported simple flow-rule lane.
-- `default_unflattening_tigress_engine_config_v2_canary.json` exercises a
-  non-Hodur native state-machine spine lane.
-- `hodur_flag2_config_v2_canary.json` exercises the Hodur native
-  state-machine spine plus the supported simple flow-rule lane.
-- `default_unflattening_ollvm_config_v2_canary.json` exercises the OLLVM
-  generated-shadow lane with MBA/instruction, indirect-call, native
-  state-machine spine, cleanup-family, and simple flow-rule hooks.
-- `hodur_glbopt2_only_config_v2_canary.json` (config-v2 counterpart of the
-  `hodur_glbopt2_only.json` isolation config) exercises the native
-  state-machine spine lane alone, with no simple flow-rule hooks.
-- `eidolon_config_v2_canary.json` (config-v2 counterpart of `eidolon.json`)
-  exercises the MBA/instruction hook lane.
-- `default_unflattening_approov_config_v2_canary.json` (config-v2 counterpart
-  of `default_unflattening_approov.json`) exercises the native
-  state-machine spine plus the supported simple flow-rule lane, with an
-  additional MBA/state-preconditioner hook.
-- `default_unflattening_approov_s1a_config_v2_canary.json` (config-v2
-  counterpart of `default_unflattening_approov_s1a.json`, the §1a
-  StateMachineCffUnflattener/ApproovFamily route) exercises the native
-  state-machine spine plus the supported simple flow-rule lane, with an
-  additional MBA/state-preconditioner hook.
-- `hodur_flag2_s1a_config_v2_canary.json` (config-v2 counterpart of
-  `hodur_flag2_s1a.json`) exercises the Hodur native state-machine spine
-  plus the supported simple flow-rule lane.
-- `hodur_flag2_with_fcp_config_v2_canary.json` (config-v2 counterpart of
-  `hodur_flag2_with_fcp.json`) exercises the MBA/instruction hook lane plus
-  native state-machine spine and simple flow-rule hooks.
-- `identity_call_config_v2_canary.json` (config-v2 counterpart of
-  `identity_call.json`) exercises the explicit identity-call legacy
-  flow-rule adapter lane.
-- `default_unflattening_tigress_engine_transition_facts_config_v2_canary.json`
-  (config-v2 counterpart of
-  `default_unflattening_tigress_engine_transition_facts.json`) exercises the
-  MBA/instruction hook lane plus native state-machine spine.
-- `example_libobfuscated_abc_config_v2_canary.json` (config-v2 counterpart of
-  `example_libobfuscated_abc.json`) exercises the MBA/instruction hook lane
-  plus native state-machine spine and simple flow-rule hooks.
-- `flatfold_config_v2_canary.json` (config-v2 counterpart of `flatfold.json`)
-  exercises the MBA/instruction hook lane plus native state-machine spine and
-  simple flow-rule hooks.
-- `example_hodur_config_v2_canary.json` (config-v2 counterpart of
-  `example_hodur.json`) exercises the MBA/instruction hook lane plus native
-  state-machine spine and simple flow-rule hooks (nested Hodur while-loop
-  dispatcher recovery).
-- `default_indirect_resolution_config_v2_canary.json` (config-v2 counterpart
-  of `default_indirect_resolution.json`) exercises the indirect branch/call
-  legacy flow-rule adapter lane.
-- `example_libobfuscated_no_fixprecedessor_config_v2_canary.json`
-  (config-v2 counterpart of `example_libobfuscated_no_fixprecedessor.json`)
-  exercises the explicit cleanup-family planner/executor hook lane.
+To migrate an older user project offline, run:
 
-Each canary sets `pipeline_v2_mode: config-v2`.
+```bash
+python tools/migrations/migrate_project_config_v2.py INPUT --output OUTPUT
+```
+
+The migrator is fail-closed: it refuses unsupported rule ownership or lossy
+options rather than selecting a different runtime project.
 
 ### Config-v2 validation
 

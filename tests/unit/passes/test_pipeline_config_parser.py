@@ -513,32 +513,33 @@ def test_pipeline_v2_configs_build_specs_from_registry():
     )
 
 
-def test_default_instruction_only_legacy_config_remains_runtime_source():
+def test_default_instruction_only_bundled_project_is_canonical_v2():
     project = ProjectConfiguration.from_file(
         _CONF_DIR / "default_instruction_only.json"
     )
 
-    assert len(project.ins_rules) == 179
-    assert [rule.name for rule in project.blk_rules] == ["JumpFixer"]
-    fold = next(
-        rule for rule in project.ins_rules if rule.name == "FoldReadonlyDataRule"
-    )
-    assert fold.config == {"fold_writable_constants": True}
-    assert pipeline_configs_from_project_config(project) == ()
+    assert project.ins_rules == []
+    assert project.blk_rules == []
+    assert [config.pass_id for config in pipeline_configs_from_project_config(project)] == [
+        "constant-simplification",
+        "mba-simplify",
+        "jump-fixer",
+    ]
 
 
-def test_example_libobfuscated_legacy_config_remains_runtime_source():
+def test_example_libobfuscated_bundled_project_is_canonical_v2():
     project = ProjectConfiguration.from_file(_CONF_DIR / "example_libobfuscated.json")
 
-    assert len([rule for rule in project.ins_rules if rule.is_activated]) == 186
-    assert [rule.name for rule in project.blk_rules if rule.is_activated] == [
-        "ForwardConstantPropagationRule",
-        "MbaStatePreconditioner",
-        "StateMachineCffUnflattener",
-        "JumpFixer",
+    assert project.ins_rules == []
+    assert project.blk_rules == []
+    assert project.additional_configuration["enable_pass_pipeline"] is True
+    assert [config.pass_id for config in pipeline_configs_from_project_config(project)] == [
+        "constant-simplification",
+        "mba-simplify",
+        "mba-state-preconditioner",
+        *_STATE_MACHINE_NATIVE_PIPELINE,
+        "jump-fixer",
     ]
-    assert project.additional_configuration == {"enable_pass_pipeline": True}
-    assert pipeline_configs_from_project_config(project) == ()
 
 
 @pytest.mark.parametrize(
@@ -556,44 +557,33 @@ def test_example_libobfuscated_legacy_config_remains_runtime_source():
         ),
     ],
 )
-def test_hodur_legacy_configs_remain_runtime_source(
+def test_hodur_bundled_projects_are_canonical_v2(
     config_name,
     expected_instruction_rules,
     expected_block_rules,
 ):
     project = ProjectConfiguration.from_file(_CONF_DIR / f"{config_name}.json")
 
-    assert len([rule for rule in project.ins_rules if rule.is_activated]) == (
-        expected_instruction_rules
-    )
-    assert [rule.name for rule in project.blk_rules if rule.is_activated] == (
-        expected_block_rules
-    )
-    assert pipeline_configs_from_project_config(project) == ()
+    assert project.ins_rules == []
+    assert project.blk_rules == []
+    assert [config.pass_id for config in pipeline_configs_from_project_config(project)] == [
+        *_STATE_MACHINE_NATIVE_PIPELINE,
+        "jump-fixer",
+    ]
 
 
-def test_hodur_config_v2_canary_is_explicit_opt_in_and_operational():
-    canary = ProjectConfiguration.from_file(
-        _CONF_DIR / "hodur_flag2_config_v2_canary.json"
-    )
+def test_hodur_config_v2_project_is_operational():
+    project = ProjectConfiguration.from_file(_CONF_DIR / "hodur_flag2.json")
 
-    canary_configs = pipeline_configs_from_project_config(canary)
+    project_configs = pipeline_configs_from_project_config(project)
 
-    normalized_description = " ".join(canary.description.split())
-    assert canary.ins_rules == []
-    assert canary.blk_rules == []
-    assert "existing project configuration path remains the default runtime" in (
-        normalized_description
-    )
-    assert "Legacy remains the default runtime" not in normalized_description
-    assert canary.additional_configuration["pipeline_v2_mode"] == "config-v2"
-    assert "pipeline_v2_shadow" not in canary.additional_configuration
-    assert canary.additional_configuration["config_v2_canary"] == {
-        "source_config": "hodur_flag2.json",
-        "runtime_source": "pipeline_v2",
-    }
+    assert project.ins_rules == []
+    assert project.blk_rules == []
+    assert "canary" not in project.description.lower()
+    assert "pipeline_v2_mode" not in project.additional_configuration
+    assert "config_v2_canary" not in project.additional_configuration
     priors_by_key = load_function_analysis_priors_from_config(
-        canary.additional_configuration["function_analysis_priors"]
+        project.additional_configuration["function_analysis_priors"]
     )
     priors = priors_by_key["sub_7ffd3338c040"]
     assert priors_by_key["0x180014be0"] == priors
@@ -604,13 +594,13 @@ def test_hodur_config_v2_canary_is_explicit_opt_in_and_operational():
     assert len(priors.return_frontier_artifacts.impossible_return_artifact_edges) == 1
     terminal_priors = priors.terminal_tail_cascade_egress
     assert terminal_priors.is_empty
-    assert [config.pass_id for config in canary_configs] == [
+    assert [config.pass_id for config in project_configs] == [
         *_STATE_MACHINE_NATIVE_PIPELINE,
         "jump-fixer",
     ]
 
     specs = pass_specs_from_project_config(
-        canary,
+        project,
         operational_config_v2_pass_registry(),
     )
     assert [spec.pass_id for spec in specs] == [
@@ -639,20 +629,16 @@ def test_hodur_config_v2_canary_is_explicit_opt_in_and_operational():
         ),
     ],
 )
-def test_tigress_switch_legacy_configs_remain_runtime_source(
+def test_tigress_bundled_projects_are_canonical_v2(
     config_name,
     expected_instruction_rules,
     expected_block_rules,
 ):
     project = ProjectConfiguration.from_file(_CONF_DIR / f"{config_name}.json")
 
-    assert len([rule for rule in project.ins_rules if rule.is_activated]) == (
-        expected_instruction_rules
-    )
-    assert [rule.name for rule in project.blk_rules if rule.is_activated] == (
-        expected_block_rules
-    )
-    assert pipeline_configs_from_project_config(project) == ()
+    assert project.ins_rules == []
+    assert project.blk_rules == []
+    assert pipeline_configs_from_project_config(project)
 
 
 @pytest.mark.parametrize(
@@ -665,7 +651,7 @@ def test_tigress_switch_legacy_configs_remain_runtime_source(
     ),
     _REMAINING_GENERATED_SHADOWS,
 )
-def test_remaining_legacy_configs_remain_runtime_source(
+def test_remaining_bundled_projects_are_canonical_v2(
     config_name,
     expected_instruction_rules,
     expected_block_rules,
@@ -674,13 +660,11 @@ def test_remaining_legacy_configs_remain_runtime_source(
 ):
     project = ProjectConfiguration.from_file(_CONF_DIR / f"{config_name}.json")
 
-    assert len([rule for rule in project.ins_rules if rule.is_activated]) == (
-        expected_instruction_rules
+    assert project.ins_rules == []
+    assert project.blk_rules == []
+    assert [config.pass_id for config in pipeline_configs_from_project_config(project)] == (
+        expected_pass_ids
     )
-    assert [rule.name for rule in project.blk_rules if rule.is_activated] == (
-        expected_block_rules
-    )
-    assert pipeline_configs_from_project_config(project) == ()
 
 
 def test_pipeline_spec_comparison_reports_ordered_differences():

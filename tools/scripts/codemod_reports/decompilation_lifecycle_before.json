@@ -21,7 +21,7 @@
       "detail": "recon_fact_profile_modules",
       "kind": "manual-config-key",
       "line": 6,
-      "path": "src/d810/conf/default_unflattening_ollvm_config_v2_canary.json",
+      "path": "src/d810/conf/default_unflattening_ollvm.json",
       "rewriteable": false
     },
     {
