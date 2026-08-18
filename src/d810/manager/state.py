@@ -450,6 +450,9 @@ class D810State(metaclass=SingletonMeta):
                     parity_expectation = StructuralMatcherParityExpectation(
                         corpus_digest=expectation_setting["corpus_digest"],
                         toolchain_digest=expectation_setting["toolchain_digest"],
+                        runtime_semantics_digest=expectation_setting[
+                            "runtime_semantics_digest"
+                        ],
                         legacy_observation_count=expectation_setting[
                             "legacy_observation_count"
                         ],

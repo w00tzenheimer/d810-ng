@@ -528,6 +528,8 @@ class TestNativeMbaCorpusCapture:
                 str(_MANIFEST),
                 "--providers",
                 ",".join(provider.value for provider in _PROVIDER_MATRIX),
+                "--rollout-evidence",
+                str(telemetry_sidecar_path),
                 str(capture_path),
             ],
             cwd=_ROOT,
@@ -554,7 +556,16 @@ class TestNativeMbaCorpusCapture:
         assert toolchain["reporter"] == "mba_differential_report"
         assert len(report["cases"]) == len(expected_case_ids)
         assert all(len(case["outcomes"]) == len(_PROVIDER_MATRIX) for case in report["cases"])
-        assert report["capture_metadata"] == capture.report().to_dict()["capture_metadata"]
+        capture_metadata = capture.report().to_dict()["capture_metadata"]
+        for key, value in capture_metadata.items():
+            assert report["capture_metadata"][key] == value
+        assert report["capture_metadata"]["latency_lanes"] == [
+            {
+                "population": "candidate",
+                "mode": egglog_mode,
+                "provider": MbaProviderKind.EGGLOG.value,
+            },
+        ]
         _assert_task13_capture_rows(
             task13_captured,
             tuple(case for case in report["cases"] if case["case_id"] in _TASK13_CASE_IDS),
@@ -564,10 +575,25 @@ class TestNativeMbaCorpusCapture:
         )
         evidence = report["summary"]["rollout_evidence"]
         assert egglog_mode in evidence["whole_function_latency_by_mode"], evidence
+        whole_function_lane = evidence["whole_function_latency_by_mode"][egglog_mode][
+            MbaProviderKind.EGGLOG.value
+        ]
+        assert whole_function_lane["count"] == 2 * len(whole_function_elapsed_ms)
+        assert whole_function_lane["p50_ms"] is not None
+        assert whole_function_lane["p95_ms"] is not None
+        assert whole_function_lane["p95_ms"] <= max(whole_function_elapsed_ms.values())
         assert evidence["lifecycle_measurements"]["project_configuration_ms"]["count"] == 1
         if egglog_mode == "interactive":
             assert "interactive" in evidence["candidate_latency_by_mode"], evidence
         else:
+            zero_sample_lane = evidence["candidate_latency_by_mode"][egglog_mode][
+                MbaProviderKind.EGGLOG.value
+            ]
+            assert zero_sample_lane == {
+                "count": 0,
+                "p50_ms": None,
+                "p95_ms": None,
+            }
             egglog_rows = tuple(
                 outcome
                 for case in report["cases"]

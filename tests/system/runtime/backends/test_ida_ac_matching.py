@@ -492,12 +492,6 @@ def test_structural_opt_in_requires_matching_persisted_parity_certificate(
             sort_keys=True,
         ).encode("utf-8")
     ).hexdigest()
-    expectation = StructuralMatcherParityExpectation(
-        corpus_digest=corpus_digest,
-        toolchain_digest=toolchain_digest,
-        legacy_observation_count=1,
-        observation_count=1,
-    )
     warnings: list[tuple[object, ...]] = []
     monkeypatch.setattr(
         ida_backend.logger,
@@ -507,6 +501,13 @@ def test_structural_opt_in_requires_matching_persisted_parity_certificate(
 
     probe = IDAPatternAdapter(CertifiedRule())
     snapshot, _ = attach_selected_certified_catalogue_snapshot((probe,))
+    expectation = StructuralMatcherParityExpectation(
+        corpus_digest=corpus_digest,
+        toolchain_digest=toolchain_digest,
+        runtime_semantics_digest=snapshot.runtime_semantics_digest,
+        legacy_observation_count=1,
+        observation_count=1,
+    )
     certificate_path = tmp_path / "structural-parity.json"
     generated_payload = build_certificate(
         {
@@ -514,6 +515,7 @@ def test_structural_opt_in_requires_matching_persisted_parity_certificate(
                 "fingerprint": snapshot.fingerprint,
                 "structural_authorizable": snapshot.structural_authorizable,
                 "canonicalizer_schema_version": snapshot.canonicalizer_schema_version,
+                "runtime_semantics_digest": snapshot.runtime_semantics_digest,
             },
             "ledger": {
                 "observation_count": 1,
@@ -597,6 +599,26 @@ def test_structural_opt_in_requires_matching_persisted_parity_certificate(
     assert matching_snapshot._structural_parity_authorized is True
     assert matching_snapshot.uses_structural_matching is True
     assert len(matching_snapshot.pattern_candidates) == 1
+
+    mutated_runtime_payload = dict(generated_payload)
+    mutated_runtime_payload["runtime_semantics_digest"] = _parity_digest(
+        "changed-runtime-semantics"
+    )
+    certificate_path.write_text(
+        json.dumps(mutated_runtime_payload), encoding="utf-8"
+    )
+    attach_selected_certified_catalogue_snapshot(
+        (matching_snapshot,),
+        parity_certificate_path=certificate_path,
+        parity_expectation=expectation,
+        runtime_mode=runtime_mode,
+    )
+    assert matching_snapshot._structural_parity_authorized is False
+    assert matching_snapshot.uses_structural_matching is False
+    assert matching_snapshot._pattern_candidates_cache is None
+    assert len(matching_snapshot.pattern_candidates) == 2
+
+    certificate_path.write_text(json.dumps(generated_payload), encoding="utf-8")
 
     attach_selected_certified_catalogue_snapshot(
         (matching_snapshot,), runtime_mode=runtime_mode
@@ -783,12 +805,14 @@ def test_supported_pattern_with_unsupported_replacement_keeps_legacy_dispatch(
         runtime_mode=runtime_mode,
         corpus_digest=corpus_digest,
         toolchain_digest=toolchain_digest,
+        runtime_semantics_digest=snapshot.runtime_semantics_digest,
     )
     certificate_path = tmp_path / "unsupported-replacement.certificate.json"
     certificate_path.write_text(json.dumps(payload), encoding="utf-8")
     expectation = StructuralMatcherParityExpectation(
         corpus_digest=corpus_digest,
         toolchain_digest=toolchain_digest,
+        runtime_semantics_digest=snapshot.runtime_semantics_digest,
         legacy_observation_count=1,
         observation_count=1,
     )

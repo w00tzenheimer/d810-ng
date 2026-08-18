@@ -800,6 +800,7 @@ class TestCompilerShapeCatalogueNative:
                         "fingerprint": snapshot.fingerprint,
                         "structural_authorizable": snapshot.structural_authorizable,
                         "canonicalizer_schema_version": snapshot.canonicalizer_schema_version,
+                        "runtime_semantics_digest": snapshot.runtime_semantics_digest,
                     },
                     "ledger": {
                         field: getattr(combined, field)
@@ -857,6 +858,7 @@ class TestCompilerShapeCatalogueNative:
         )
         assert certificate["corpus_digest"] == _sha256_file(_MANIFEST)
         assert certificate["toolchain_digest"] == toolchain_digest
+        assert certificate["runtime_semantics_digest"] == snapshot.runtime_semantics_digest
         assert certificate["legacy_observation_count"] > 0
         assert certificate["observation_count"] == combined.observation_count
         assert certificate["observation_count"] > 0
@@ -890,6 +892,7 @@ class TestCompilerShapeCatalogueNative:
                 "structural_matcher_parity_expectation": {
                     "corpus_digest": _sha256_file(_MANIFEST),
                     "toolchain_digest": toolchain_digest,
+                    "runtime_semantics_digest": snapshot.runtime_semantics_digest,
                     "legacy_observation_count": combined.legacy_match_count,
                     "observation_count": combined.observation_count,
                 },
@@ -1074,6 +1077,7 @@ class TestCompilerShapeCatalogueNative:
             expectation = StructuralMatcherParityExpectation(
                 corpus_digest=_sha256_file(_MANIFEST),
                 toolchain_digest=toolchain_digest,
+                runtime_semantics_digest=loaded_certificate.runtime_semantics_digest,
                 legacy_observation_count=combined.legacy_match_count,
                 observation_count=combined.observation_count,
             )
@@ -1111,6 +1115,15 @@ class TestCompilerShapeCatalogueNative:
                     "wrong_toolchain_digest",
                     loaded_certificate,
                     replace(expectation, toolchain_digest="0" * 64),
+                    runtime_mode,
+                ),
+                (
+                    "wrong_runtime_semantics_digest",
+                    replace(
+                        loaded_certificate,
+                        runtime_semantics_digest="0" * 64,
+                    ),
+                    expectation,
                     runtime_mode,
                 ),
                 (

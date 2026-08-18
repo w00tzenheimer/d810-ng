@@ -19,6 +19,7 @@ from d810.mba.typed_term import TypedBvTerm
 
 
 _MANIFEST = Path(__file__).resolve().parents[2] / "fixtures/mba_portfolio/compiler_shapes.json"
+_RUNTIME_SEMANTICS_DIGEST = "b" * 64
 
 
 def _digest(path: Path) -> str:
@@ -53,6 +54,7 @@ def _evidence(*, mismatch: int = 0) -> dict[str, object]:
             "fingerprint": "a" * 64,
             "structural_authorizable": True,
             "canonicalizer_schema_version": CANONICALIZER_SCHEMA_VERSION,
+            "runtime_semantics_digest": _RUNTIME_SEMANTICS_DIGEST,
         },
         "ledger": {
             "observation_count": 11,
@@ -189,6 +191,7 @@ def test_build_certificate_binds_exact_manifest_and_canonical_toolchain(
         b'{"backend":"python","ida":"9.4"}'
     ).hexdigest()
     assert certificate["legacy_observation_count"] == 9
+    assert certificate["runtime_semantics_digest"] == _RUNTIME_SEMANTICS_DIGEST
 
 
 def test_build_certificate_rejects_nonzero_parity_mismatch(tmp_path: Path) -> None:

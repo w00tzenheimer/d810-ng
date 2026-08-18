@@ -837,9 +837,16 @@ def test_rollout_evidence_marks_unmeasured_questions_as_unavailable() -> None:
 
     evidence = compare_provider_outcomes(report).rollout_evidence
 
+    summary = compare_provider_outcomes(report)
     assert evidence.candidate_latency_by_mode == {}
     assert evidence.whole_function_latency_by_mode == {}
     assert evidence.lifecycle_measurements == {}
+    assert evidence.egglog_unique_wins_by_degree == {}
+    assert summary.to_dict()["rollout_evidence"]["egglog_unique_wins_by_degree"] == {}
+    markdown = summary_markdown(summary)
+    assert "Egglog unique wins by degree: unmeasured" in markdown
+    assert "degree 1=0" not in markdown
+    assert "degree 2=0" not in markdown
 
 
 def test_rollout_evidence_extends_domain_lifted_measurements_additively() -> None:

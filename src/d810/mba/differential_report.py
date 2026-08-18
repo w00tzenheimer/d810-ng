@@ -783,6 +783,7 @@ def _rollout_evidence(report: MbaDifferentialReport) -> RolloutEvidence:
 
     refusals: dict[str, int] = defaultdict(int)
     egglog_unique_by_degree: dict[int, int] = defaultdict(int)
+    observed_egglog_degrees: set[int] = set()
     external_unique = 0
     nonlinear_residuals = 0
     bucket_sizes: list[float] = []
@@ -1026,6 +1027,10 @@ def _rollout_evidence(report: MbaDifferentialReport) -> RolloutEvidence:
 
         for outcome in case.outcomes:
             metadata = outcome.metadata
+            if outcome.provider is MbaProviderKind.EGGLOG:
+                degree = _metadata_int(metadata, "degree")
+                if degree is not None:
+                    observed_egglog_degrees.add(degree)
             if outcome.refusal_reason is not None:
                 refusals[outcome.refusal_reason] += 1
 
@@ -1204,9 +1209,11 @@ def _rollout_evidence(report: MbaDifferentialReport) -> RolloutEvidence:
         # evidence.  A zero ``egglog_run_count`` on a replay is not itself a
         # measurement of the fresh work that the template replaced.
         replay_saved_egglog_runs = row_replay_saved_egglog_runs
-    # A degree with captured observations but no unique win must be visible as
-    # a real measured zero.  Degree-one/two are the rollout comparison lanes.
-    for degree in (1, 2):
+
+    # A zero-win lane is evidence only when an Egglog outcome explicitly
+    # reports that degree. Unavailable rows without degree metadata remain
+    # unmeasured rather than being materialized as synthetic zeroes.
+    for degree in observed_egglog_degrees:
         egglog_unique_by_degree.setdefault(degree, 0)
 
     def latency_stats(
@@ -1493,11 +1500,14 @@ def summary_markdown(summary: DifferentialSummary) -> str:
             "## Rollout evidence",
             "",
             "Egglog unique wins by degree: "
-            + ", ".join(
-                f"degree {degree}={count}"
-                for degree, count in sorted(
-                    evidence.egglog_unique_wins_by_degree.items()
+            + (
+                ", ".join(
+                    f"degree {degree}={count}"
+                    for degree, count in sorted(
+                        evidence.egglog_unique_wins_by_degree.items()
+                    )
                 )
+                or "unmeasured"
             ),
             f"External-reference unique wins: {evidence.external_reference_unique_wins}",
             f"Nonlinear residuals: {evidence.nonlinear_residuals}",

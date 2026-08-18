@@ -133,12 +133,18 @@ def _evidence_snapshot(value: object) -> CertifiedCatalogueSnapshot:
         or canonicalizer_version != CANONICALIZER_SCHEMA_VERSION
     ):
         raise ValueError("parity evidence snapshot has invalid canonicalizer schema")
+    runtime_semantics_digest = value.get("runtime_semantics_digest")
+    if not _is_sha256_digest(runtime_semantics_digest):
+        raise ValueError(
+            "parity evidence snapshot requires a valid runtime_semantics_digest"
+        )
     return CertifiedCatalogueSnapshot(
         fingerprint=fingerprint,
         rules_in_declaration_order=(),
         rule_ids_by_root_shape={},
         structural_authorizable=authorizable,
         canonicalizer_schema_version=canonicalizer_version,
+        runtime_semantics_digest=runtime_semantics_digest,
     )
 
 
@@ -199,12 +205,14 @@ def build_certificate(
     runtime_mode = evidence.get("runtime_mode")
     if runtime_mode not in {"python", "cython"}:
         raise ValueError("parity evidence has invalid runtime_mode")
+    snapshot = _evidence_snapshot(evidence.get("snapshot"))
     return make_structural_matcher_parity_certificate(
-        snapshot=_evidence_snapshot(evidence.get("snapshot")),
+        snapshot=snapshot,
         ledger=_evidence_ledger(evidence.get("ledger")),
         runtime_mode=runtime_mode,
         corpus_digest=_file_digest(manifest),
         toolchain_digest=_canonical_toolchain_digest(toolchain),
+        runtime_semantics_digest=snapshot.runtime_semantics_digest,
     )
 
 
@@ -562,6 +570,7 @@ def build_certificate_from_artifacts(
         runtime_mode=runtime_mode,
         corpus_digest=corpus_digest,
         toolchain_digest=toolchain_digest,
+        runtime_semantics_digest=snapshot.runtime_semantics_digest,
     )
 
 

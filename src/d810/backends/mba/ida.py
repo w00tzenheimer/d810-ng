@@ -11,6 +11,7 @@ the rule definitions in d810.mba.rules pure and backend-agnostic.
 
 from __future__ import annotations
 
+import hashlib
 import itertools
 import json
 import os
@@ -82,6 +83,38 @@ _STRUCTURAL_DSL_OPERATIONS = frozenset(
     {"add", "sub", "mul", "and", "or", "xor", "bnot", "neg"}
 )
 _STRUCTURAL_PROOF_WIDTHS = (8, 16, 32, 64)
+
+# The portable catalogue receives this value through the backend boundary. It
+# covers every implementation layer that can change structural matching,
+# native binding/path resolution, replacement materialization, or the final
+# proof-gated emitter, including the optional Cython matcher implementation.
+_RUNTIME_SEMANTICS_SOURCE_FILES = (
+    "src/d810/backends/mba/ida.py",
+    "src/d810/backends/mba/compiled_pattern_catalogue.py",
+    "src/d810/backends/mba/hexrays_island.py",
+    "src/d810/backends/mba/native_mba_term_view.py",
+    "src/d810/backends/mba/native_pod_matcher.py",
+    "src/d810/backends/mba/native_rotate_helper.py",
+    "src/d810/backends/mba/native_z3.py",
+    "src/d810/backends/mba/native_z3_proof_template.py",
+    "src/d810/mba/ac_matching.py",
+    "src/d810/mba/canonical_pattern.py",
+    "src/d810/speedups/mba/c_native_pod_matcher.pyx",
+)
+
+
+def runtime_semantics_digest() -> str:
+    """Return the backend-owned digest for the active structural runtime."""
+
+    repository_root = Path(__file__).resolve().parents[4]
+    digest = hashlib.sha256()
+    for relative_name in _RUNTIME_SEMANTICS_SOURCE_FILES:
+        path = repository_root / relative_name
+        digest.update(relative_name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
 
 
 def _supports_structural_dsl_pattern(expr: object) -> bool:
@@ -2044,6 +2077,11 @@ def attach_selected_certified_catalogue_snapshot(
     enabled_families = tuple(
         dict.fromkeys(type(rule).__module__.rsplit(".", 1)[-1] for rule in rules)
     )
+    try:
+        active_runtime_semantics_digest = runtime_semantics_digest()
+    except OSError as exc:
+        logger.warning("Structural runtime semantics digest unavailable: %s", exc)
+        active_runtime_semantics_digest = None
     snapshot = build_certified_catalogue_snapshot(
         rules,
         compiler_version="verifiable-rule-dsl-v1",
@@ -2053,6 +2091,7 @@ def attach_selected_certified_catalogue_snapshot(
             for receipt in compile_all_fixed_rotate_rules()
             if receipt.compiled_rule is not None
         ),
+        runtime_semantics_digest=active_runtime_semantics_digest,
     )
     parity_certificate = None
     if parity_certificate_path is not None:
@@ -2090,4 +2129,5 @@ __all__ = [
     "IDAPatternAdapter",
     "adapt_rules",
     "attach_selected_certified_catalogue_snapshot",
+    "runtime_semantics_digest",
 ]

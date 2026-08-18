@@ -100,6 +100,10 @@ class CertifiedCatalogueSnapshot:
     )
     structural_rule_fingerprints: tuple[str, ...] = ()
     structural_rule_digest: str = ""
+    # The backend-owned implementation boundary for the active matcher and
+    # proof/emitter path. An empty value is retained for non-structural test
+    # snapshots, but can never authorize a persisted structural certificate.
+    runtime_semantics_digest: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -135,6 +139,14 @@ class CertifiedCatalogueSnapshot:
         object.__setattr__(self, "structural_rule_fingerprints", fingerprints)
         if type(self.structural_rule_digest) is not str:
             raise ValueError("structural_rule_digest must be a string")
+        if type(self.runtime_semantics_digest) is not str:
+            raise ValueError("runtime_semantics_digest must be a string")
+        if self.runtime_semantics_digest and not _is_sha256_digest(
+            self.runtime_semantics_digest
+        ):
+            raise ValueError(
+                "runtime_semantics_digest must be a lowercase SHA-256 digest"
+            )
 
 
 @dataclass(frozen=True)
@@ -148,6 +160,7 @@ class StructuralMatcherParityExpectation:
 
     corpus_digest: str
     toolchain_digest: str
+    runtime_semantics_digest: str
     legacy_observation_count: int
     observation_count: int | None = None
 
@@ -156,6 +169,10 @@ class StructuralMatcherParityExpectation:
             raise ValueError("corpus_digest must be a lowercase SHA-256 digest")
         if not _is_sha256_digest(self.toolchain_digest):
             raise ValueError("toolchain_digest must be a lowercase SHA-256 digest")
+        if not _is_sha256_digest(self.runtime_semantics_digest):
+            raise ValueError(
+                "runtime_semantics_digest must be a lowercase SHA-256 digest"
+            )
         if (
             type(self.legacy_observation_count) is not int
             or self.legacy_observation_count <= 0
@@ -179,6 +196,7 @@ class StructuralMatcherParityCertificate:
     runtime_mode: str
     corpus_digest: str
     toolchain_digest: str
+    runtime_semantics_digest: str
     legacy_observation_count: int
     canonicalizer_schema_version: int = CANONICALIZER_SCHEMA_VERSION
     observation_count: int | None = None
@@ -203,6 +221,10 @@ class StructuralMatcherParityCertificate:
             and self.runtime_mode == runtime_mode
             and self.corpus_digest == expectation.corpus_digest
             and self.toolchain_digest == expectation.toolchain_digest
+            and _is_sha256_digest(self.runtime_semantics_digest)
+            and _is_sha256_digest(snapshot.runtime_semantics_digest)
+            and self.runtime_semantics_digest == expectation.runtime_semantics_digest
+            and self.runtime_semantics_digest == snapshot.runtime_semantics_digest
             and type(self.legacy_observation_count) is int
             and type(expectation.legacy_observation_count) is int
             and self.legacy_observation_count == expectation.legacy_observation_count
@@ -258,6 +280,11 @@ def load_structural_matcher_parity_certificate(
     toolchain_digest = raw.get("toolchain_digest")
     if not _is_sha256_digest(toolchain_digest):
         raise ValueError("structural parity certificate has invalid toolchain_digest")
+    runtime_semantics_digest = raw.get("runtime_semantics_digest")
+    if not _is_sha256_digest(runtime_semantics_digest):
+        raise ValueError(
+            "structural parity certificate has invalid runtime_semantics_digest"
+        )
     observation_count = raw.get("legacy_observation_count")
     if type(observation_count) is not int or observation_count <= 0:
         raise ValueError(
@@ -302,6 +329,7 @@ def load_structural_matcher_parity_certificate(
         runtime_mode=runtime_mode,
         corpus_digest=corpus_digest,
         toolchain_digest=toolchain_digest,
+        runtime_semantics_digest=runtime_semantics_digest,
         legacy_observation_count=observation_count,
         canonicalizer_schema_version=canonicalizer_version,
         observation_count=total_observation_count,
@@ -368,6 +396,7 @@ def make_structural_matcher_parity_certificate(
     runtime_mode: str,
     corpus_digest: str,
     toolchain_digest: str,
+    runtime_semantics_digest: str,
 ) -> dict[str, object]:
     """Render one reproducible certificate from completed parity evidence.
 
@@ -384,6 +413,14 @@ def make_structural_matcher_parity_certificate(
         raise ValueError("structural parity certificate has invalid corpus_digest")
     if not _is_sha256_digest(toolchain_digest):
         raise ValueError("structural parity certificate has invalid toolchain_digest")
+    if not _is_sha256_digest(runtime_semantics_digest):
+        raise ValueError(
+            "structural parity certificate has invalid runtime_semantics_digest"
+        )
+    if snapshot.runtime_semantics_digest != runtime_semantics_digest:
+        raise ValueError(
+            "structural parity certificate runtime_semantics_digest does not match snapshot"
+        )
     if not _is_exact_canonicalizer_schema(snapshot.canonicalizer_schema_version):
         raise ValueError(
             "structural parity certificate has invalid canonicalizer schema"
@@ -427,6 +464,7 @@ def make_structural_matcher_parity_certificate(
         "runtime_mode": runtime_mode,
         "corpus_digest": corpus_digest,
         "toolchain_digest": toolchain_digest,
+        "runtime_semantics_digest": runtime_semantics_digest,
         "legacy_observation_count": ledger.legacy_match_count,
         "observation_count": ledger.observation_count,
         "legacy_rule_mismatches": ledger.legacy_rule_mismatches,
@@ -752,11 +790,19 @@ def build_certified_catalogue_snapshot(
     widths: tuple[int, ...] = (8, 16, 32, 64),
     enabled_families: tuple[str, ...] | None = None,
     structural_rules: Iterable[object] = (),
+    runtime_semantics_digest: str | None = None,
 ) -> CertifiedCatalogueSnapshot:
     """Freeze already-admitted rules; never compile or verify inside this API."""
 
     if type(compiler_version) is not str or not compiler_version:
         raise ValueError("compiler_version must be non-empty")
+    if runtime_semantics_digest is not None and not _is_sha256_digest(
+        runtime_semantics_digest
+    ):
+        raise ValueError(
+            "runtime_semantics_digest must be a lowercase SHA-256 digest"
+        )
+    active_runtime_semantics_digest = runtime_semantics_digest or ""
     all_rules = tuple(rules)
     families = None if enabled_families is None else tuple(enabled_families)
     enabled = None if families is None else frozenset(families)
@@ -767,6 +813,10 @@ def build_certified_catalogue_snapshot(
     structural_rule_payload: list[object] = []
     structural_rule_fingerprints: list[str] = []
     structural_authorizable = True
+    if structural_rule_list and not _is_sha256_digest(
+        active_runtime_semantics_digest
+    ):
+        structural_authorizable = False
     if structural_rule_list:
         for structural_rule in structural_rule_list:
             # Keep the portable catalogue independent of the backend that
@@ -900,6 +950,7 @@ def build_certified_catalogue_snapshot(
         ),
         "structural_rules": tuple(structural_rule_payload),
         "structural_rule_digest": structural_rule_digest,
+        "runtime_semantics_digest": active_runtime_semantics_digest,
     }
     encoded = json.dumps(
         payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True
@@ -929,6 +980,7 @@ def build_certified_catalogue_snapshot(
         },
         structural_rule_fingerprints=structural_rule_fingerprints_tuple,
         structural_rule_digest=structural_rule_digest,
+        runtime_semantics_digest=active_runtime_semantics_digest,
     )
     with _SNAPSHOT_MEMO_LOCK:
         # Another thread may have completed the same immutable snapshot while

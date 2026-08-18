@@ -103,6 +103,9 @@ def _digest(value: str) -> str:
     return hashlib.sha256(value.encode("ascii")).hexdigest()
 
 
+_RUNTIME_SEMANTICS_DIGEST = _digest("runtime-semantics")
+
+
 @contextmanager
 def _isolated_snapshot_memo() -> Iterator[object]:
     import d810.mba.certified_catalogue as certified_catalogue
@@ -160,6 +163,7 @@ def _generated_authorization_case(tmp_path: Path) -> _AuthorizationCase:
         (_SemanticRule("task5-valid", x + y, x ^ y),),
         compiler_version="task5-valid-v1",
         widths=(32,),
+        runtime_semantics_digest=_RUNTIME_SEMANTICS_DIGEST,
     )
     ledger = ShadowMatcherParityLedger(observation_count=3, legacy_match_count=2)
     corpus_digest = _digest("task5-corpus")
@@ -170,6 +174,7 @@ def _generated_authorization_case(tmp_path: Path) -> _AuthorizationCase:
         runtime_mode="python",
         corpus_digest=corpus_digest,
         toolchain_digest=toolchain_digest,
+        runtime_semantics_digest=_RUNTIME_SEMANTICS_DIGEST,
     )
     path = tmp_path / "task5-valid-certificate.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
@@ -177,6 +182,7 @@ def _generated_authorization_case(tmp_path: Path) -> _AuthorizationCase:
     expectation = StructuralMatcherParityExpectation(
         corpus_digest=corpus_digest,
         toolchain_digest=toolchain_digest,
+        runtime_semantics_digest=_RUNTIME_SEMANTICS_DIGEST,
         legacy_observation_count=ledger.legacy_match_count,
         observation_count=ledger.observation_count,
     )
@@ -373,6 +379,23 @@ def test_parity_certificate_loader_rejects_boolean_integer_fields(
     path.write_text(json.dumps(payload), encoding="utf-8")
 
     with pytest.raises(ValueError):
+        load_structural_matcher_parity_certificate(path)
+
+
+@pytest.mark.parametrize("value", (None, "not-a-sha256-digest"))
+def test_parity_certificate_loader_rejects_missing_or_malformed_runtime_digest(
+    tmp_path: Path, value: object
+) -> None:
+    case = _generated_authorization_case(tmp_path)
+    payload = dict(case.certificate_payload)
+    if value is None:
+        payload.pop("runtime_semantics_digest")
+    else:
+        payload["runtime_semantics_digest"] = value
+    path = tmp_path / "invalid-runtime-semantics-digest.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="runtime_semantics_digest"):
         load_structural_matcher_parity_certificate(path)
 
 
@@ -712,6 +735,7 @@ def test_snapshot_with_unfingerprintable_hook_global_cannot_authorize() -> None:
     expectation = StructuralMatcherParityExpectation(
         corpus_digest=_digest("native-corpus"),
         toolchain_digest=_digest("ida-9.4-cython"),
+        runtime_semantics_digest=_RUNTIME_SEMANTICS_DIGEST,
         legacy_observation_count=1,
     )
     certificate = StructuralMatcherParityCertificate(
@@ -719,6 +743,7 @@ def test_snapshot_with_unfingerprintable_hook_global_cannot_authorize() -> None:
         runtime_mode="cython",
         corpus_digest=expectation.corpus_digest,
         toolchain_digest=expectation.toolchain_digest,
+        runtime_semantics_digest=_RUNTIME_SEMANTICS_DIGEST,
         legacy_observation_count=expectation.legacy_observation_count,
     )
 
@@ -742,11 +767,14 @@ def test_parity_certificate_requires_exact_expected_corpus_toolchain_and_coverag
 ) -> None:
     x, y = Var("x"), Var("y")
     snapshot = build_certified_catalogue_snapshot(
-        (_SemanticRule("one", x + y, x ^ y),), compiler_version="v1"
+        (_SemanticRule("one", x + y, x ^ y),),
+        compiler_version="v1",
+        runtime_semantics_digest=_RUNTIME_SEMANTICS_DIGEST,
     )
     expectation = StructuralMatcherParityExpectation(
         corpus_digest=_digest("native-corpus"),
         toolchain_digest=_digest("ida-9.4-cython"),
+        runtime_semantics_digest=_RUNTIME_SEMANTICS_DIGEST,
         legacy_observation_count=17,
         observation_count=17,
     )
@@ -760,6 +788,7 @@ def test_parity_certificate_requires_exact_expected_corpus_toolchain_and_coverag
         runtime_mode="cython",
         corpus_digest=expectation.corpus_digest,
         toolchain_digest=expectation.toolchain_digest,
+        runtime_semantics_digest=_RUNTIME_SEMANTICS_DIGEST,
     )
     certificate_path.write_text(json.dumps(payload), encoding="utf-8")
 
@@ -771,6 +800,7 @@ def test_parity_certificate_requires_exact_expected_corpus_toolchain_and_coverag
         StructuralMatcherParityExpectation(
             corpus_digest=_digest("other-corpus"),
             toolchain_digest=expectation.toolchain_digest,
+            runtime_semantics_digest=expectation.runtime_semantics_digest,
             legacy_observation_count=17,
         ),
     )
@@ -780,6 +810,7 @@ def test_parity_certificate_requires_exact_expected_corpus_toolchain_and_coverag
         StructuralMatcherParityExpectation(
             corpus_digest=expectation.corpus_digest,
             toolchain_digest=_digest("other-toolchain"),
+            runtime_semantics_digest=expectation.runtime_semantics_digest,
             legacy_observation_count=17,
         ),
     )
@@ -789,6 +820,7 @@ def test_parity_certificate_requires_exact_expected_corpus_toolchain_and_coverag
         StructuralMatcherParityExpectation(
             corpus_digest=expectation.corpus_digest,
             toolchain_digest=expectation.toolchain_digest,
+            runtime_semantics_digest=expectation.runtime_semantics_digest,
             legacy_observation_count=18,
         ),
     )
@@ -803,7 +835,9 @@ def test_parity_certificate_requires_exact_expected_corpus_toolchain_and_coverag
 def test_parity_certificate_generator_refuses_nonzero_or_incomplete_ledger() -> None:
     x, y = Var("x"), Var("y")
     snapshot = build_certified_catalogue_snapshot(
-        (_SemanticRule("one", x + y, x ^ y),), compiler_version="v1"
+        (_SemanticRule("one", x + y, x ^ y),),
+        compiler_version="v1",
+        runtime_semantics_digest=_RUNTIME_SEMANTICS_DIGEST,
     )
     ledger = ShadowMatcherParityLedger(observation_count=7, legacy_match_count=7)
 
@@ -813,6 +847,7 @@ def test_parity_certificate_generator_refuses_nonzero_or_incomplete_ledger() -> 
         runtime_mode="python",
         corpus_digest=_digest("manifest"),
         toolchain_digest=_digest("ida-python"),
+        runtime_semantics_digest=_RUNTIME_SEMANTICS_DIGEST,
     )
 
     assert certificate["schema_version"] == 3
@@ -829,6 +864,7 @@ def test_parity_certificate_generator_refuses_nonzero_or_incomplete_ledger() -> 
             runtime_mode="python",
             corpus_digest=_digest("manifest"),
             toolchain_digest=_digest("ida-python"),
+            runtime_semantics_digest=_RUNTIME_SEMANTICS_DIGEST,
         )
 
 
