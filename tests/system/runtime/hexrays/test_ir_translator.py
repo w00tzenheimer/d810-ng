@@ -1342,6 +1342,41 @@ class TestTypedPatchBinding:
 
         assert created == []
 
+    def test_lower_rejects_wrong_maturity_before_modifier_creation(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Native binding must fail closed for stale source maturity."""
+        mba = SimpleNamespace(qty=1, maturity=4)
+        gateway = make_mutation_gateway(mba, generation=7)
+        block_ref = gateway.identity_index.plan_ref_for_serial(0)
+        plan = PatchPlan(
+            plan_id="typed-lowering-stale-maturity",
+            snapshot_id=gateway.identity_index.snapshot_id,
+            source_maturity=MaturityEnvelope(
+                ir=None,
+                provider="hexrays",
+                provider_id=5,
+            ),
+            source_generation=7,
+            steps=(PatchNopInstructions(block_ref, (0x401000,)),),
+            source_coordinates=((block_ref, 0),),
+        )
+        created: list[object] = []
+        deferred_modifier = importlib.import_module(
+            "d810.hexrays.mutation.deferred_modifier"
+        )
+        monkeypatch.setattr(
+            deferred_modifier,
+            "DeferredGraphModifier",
+            lambda *_args, **_kwargs: created.append(object()),
+        )
+
+        with pytest.raises(PatchBindingRejected, match="maturity authority"):
+            _lower_bound(IDAIRTranslator(), plan, mba, gateway)
+
+        assert created == []
+
     def test_queue_exception_aborts_all_prewrite_identity_residue_and_retry_works(
         self,
         monkeypatch: pytest.MonkeyPatch,

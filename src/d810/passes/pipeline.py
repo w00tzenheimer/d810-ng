@@ -20,6 +20,7 @@ from d810.core.execution_journal import (
 from d810.core.execution_journal_store import ExecutionJournalStore
 from d810.core.logging import getLogger
 from d810.core.typing import Any
+from d810.ir.maturity import MaturityEnvelope
 
 from d810.transforms.cfg_transaction import (
     CfgGenerationPoisoned,
@@ -219,10 +220,20 @@ class FlowGraphTransformPipeline:
                     raise TypeError(
                         "FlowGraph transform compilation requires exact block authority"
                     )
+                source_maturity_id = getattr(identity_index, "maturity", None)
+                if source_maturity_id is None:
+                    raise TypeError(
+                        "FlowGraph transform compilation requires exact maturity authority"
+                    )
                 patch_plan = compile_patch_plan(
                     mods,
                     cfg,
                     snapshot_id=identity_index.snapshot_id,
+                    source_maturity=MaturityEnvelope(
+                        ir=None,
+                        provider="hexrays",
+                        provider_id=int(source_maturity_id),
+                    ),
                     source_generation=identity_index.generation,
                     block_refs_by_serial=identity_index.plan_refs_by_serial(),
                 )

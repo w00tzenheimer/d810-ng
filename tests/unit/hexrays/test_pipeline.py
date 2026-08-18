@@ -19,6 +19,7 @@ from d810.core.execution_journal import (
     ExecutionDomain,
 )
 from d810.core.execution_journal_store import ExecutionJournalStore
+from d810.ir.maturity import MaturityEnvelope
 from d810.transforms._base import FlowGraphTransform
 from d810.transforms.graph_modification import (
     ConvertToGoto,
@@ -32,7 +33,14 @@ from tests.typed_patch_authority import mutation_gateway_for
 from tests.unit.hexrays.conftest import InMemoryBackend
 
 
-MUTATION_GATEWAY = mutation_gateway_for(*range(1024))
+def _pipeline_gateway(*values: object, maturity: int = 0) -> object:
+    """Build a synthetic gateway with the native maturity witness attached."""
+    gateway = mutation_gateway_for(*values)
+    gateway.identity_index.maturity = maturity
+    return gateway
+
+
+MUTATION_GATEWAY = _pipeline_gateway(*range(1024))
 
 
 # ============================================================================
@@ -117,6 +125,34 @@ class ExplodingExecutionBackend(InMemoryBackend):
     ):
         del plan, state, mutation_gateway, pre_cfg
         raise RuntimeError("live mutation backend rejected the plan")
+
+
+class SourceAuthorityCheckingBackend(InMemoryBackend):
+    """Backend that enforces the live source-maturity binding contract."""
+
+    def execute_patch_plan(
+        self,
+        plan,
+        state=None,
+        *,
+        mutation_gateway: object,
+        pre_cfg: FlowGraph,
+    ):
+        """Reject plans whose source authority is absent or stale."""
+        source_maturity = plan.source_maturity
+        live_maturity = mutation_gateway.identity_index.maturity
+        if (
+            not isinstance(source_maturity, MaturityEnvelope)
+            or source_maturity.provider != "hexrays"
+            or source_maturity.provider_id != live_maturity
+        ):
+            raise ValueError("source maturity authority differs")
+        return super().execute_patch_plan(
+            plan,
+            state,
+            mutation_gateway=mutation_gateway,
+            pre_cfg=pre_cfg,
+        )
 
 
 # ============================================================================
@@ -224,6 +260,39 @@ class TestPassPipeline:
         assert len(backend.applied_patch_plans) == 1
         assert not backend.applied_patch_plans[0].contains_block_creation
         assert isinstance(backend.applied_steps[0], PatchConvertToGoto)
+
+    def test_patch_plan_uses_live_source_maturity_authority(self):
+        """Plans must carry the coordinator's exact source maturity witness.
+
+        A missing or stale source maturity is rejected by the native patch
+        binder.  This backend models that boundary so the pipeline cannot
+        regress to compiling an unbound plan at a maturity transition.
+        """
+        backend = SourceAuthorityCheckingBackend()
+        pipeline = FlowGraphTransformPipeline(backend, [SingleModPass()])
+        gateway = _pipeline_gateway(*range(1024), maturity=6)
+
+        total = pipeline.run({}, mutation_gateway=gateway)
+
+        assert total == 1
+        assert len(backend.applied_patch_plans) == 1
+        source_maturity = backend.applied_patch_plans[0].source_maturity
+        assert source_maturity == MaturityEnvelope(
+            ir=None,
+            provider="hexrays",
+            provider_id=6,
+        )
+
+    def test_patch_plan_fails_closed_without_source_maturity_authority(self):
+        """A gateway without maturity authority cannot execute a patch plan."""
+        backend = InMemoryBackend()
+        pipeline = FlowGraphTransformPipeline(backend, [SingleModPass()])
+        gateway = mutation_gateway_for(*range(1024))
+
+        with pytest.raises(TypeError, match="exact maturity authority"):
+            pipeline.run({}, mutation_gateway=gateway)
+
+        assert backend.applied_patch_plans == []
 
     def test_multiple_passes_accumulate(self):
         """Multiple transform should accumulate modification counts."""
