@@ -805,11 +805,11 @@ class D810Manager:
     def prepare_native_preanalysis(self, function_ea: int) -> int:
         """Establish resolver evidence before the first top-level decompile.
 
-        This is the manager-owned entry point for UI-triggered decompilations.
-        It creates the same lifecycle session that the Hex-Rays hook will
-        subsequently reuse, then resolves native computed-goto evidence before
-        the first MBA is generated.  No function-EA registry or second UI
-        preflight lifecycle is retained.
+        This explicit batch/headless entry point may generate auxiliary
+        microcode for detached native ranges. It creates the lifecycle session
+        that the subsequent top-level decompile reuses, then resolves native
+        computed-goto evidence before the first MBA is generated. Interactive
+        decompilation must not call it.
         """
         if not getattr(self, "_started", False):
             return 0
@@ -1001,13 +1001,18 @@ class D810Manager:
         function_ea: int,
         decompile: typing.Callable[[], typing.Any],
         invalidate_cached_cfunc: typing.Callable[[], None],
+        *,
+        eager_native_preanalysis: bool = False,
     ) -> typing.Any:
         """Run one top-level decompile plus bounded generated retries.
 
         CALLS can stage evidence for PREOPT but cannot restart generated
         microcode. This manager-owned controller performs the follow-up only
         after the first decompile unwinds; the retained session lets its
-        flowchart callback issue the one supported ``MERR_REDO``.
+        flowchart callback issue the one supported ``MERR_REDO``. Exhaustive
+        native preanalysis may recursively generate auxiliary microcode, so it
+        is disabled for ordinary interactive calls and requires an explicit
+        headless opt-in.
         """
         if (
             not getattr(self, "_started", False)
@@ -1060,7 +1065,23 @@ class D810Manager:
         # folded into the evidence loop and never routed through MERR_REDO.
         while True:
             if not recovery_mode:
-                self.prepare_native_preanalysis(function_ea)
+                if eager_native_preanalysis:
+                    self.prepare_native_preanalysis(function_ea)
+                else:
+                    # Session ownership is cheap and required by Stage C and
+                    # live callback collection. Keep it independent from the
+                    # auxiliary microcode generation performed by exhaustive
+                    # native preanalysis.
+                    ensure_session = getattr(
+                        lifecycle,
+                        "ensure_hexrays_session",
+                        None,
+                    )
+                    if callable(ensure_session):
+                        ensure_session(
+                            function_ea=function_ea,
+                            database_identity=self._database_identity,
+                        )
             from d810.optimizers.microcode.flow.jumps.computed_goto_resolver import (
                 acquire_detached_call_stack_capacity_witness,
             )
@@ -2999,12 +3020,17 @@ class D810Manager:
         was_active = bool(stack)
         stack.append(key)
         depth[key] = depth.get(key, 0) + 1
-        if depth[key] == 1:
-            logger.info(
-                "[D810] Decompiling %s @ 0x%X",
-                self._function_display_name(int(event.function_ea)),
-                int(event.function_ea),
-            )
+        if not was_active:
+            try:
+                logger.info(
+                    "[D810] Decompiling %s @ 0x%X",
+                    self._function_display_name(int(event.function_ea)),
+                    int(event.function_ea),
+                )
+            except BaseException:
+                # User-facing telemetry must never prevent Hex-Rays lifecycle
+                # ownership from opening or subsequently releasing a session.
+                pass
         native_perf.begin_session(
             {
                 "function_ea": int(event.function_ea),

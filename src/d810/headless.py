@@ -170,12 +170,19 @@ def restore_idb_preparation(transaction_id: str):
     )
 
 
-def decompile(function_ea: int, *, failure: typing.Any | None = None) -> typing.Any:
+def decompile(
+    function_ea: int,
+    *,
+    failure: typing.Any | None = None,
+    eager_native_preanalysis: bool = False,
+) -> typing.Any:
     """Decompile through the manager-owned bounded PREOPT restart controller.
 
     ``failure`` is the optional caller-owned ``hexrays_failure_t`` output used
     by headless regression probes that must distinguish a valid cfunc from a
-    decompiler failure carrying partial output.
+    decompiler failure carrying partial output. ``eager_native_preanalysis``
+    explicitly permits auxiliary microcode generation for exhaustive batch
+    analysis; it is disabled by default even in headless mode.
     """
     if not _configured or _state is None:
         raise RuntimeError(
@@ -194,6 +201,7 @@ def decompile(function_ea: int, *, failure: typing.Any | None = None) -> typing.
         function_ea,
         run_decompile,
         ida_hexrays.clear_cached_cfuncs,
+        eager_native_preanalysis=bool(eager_native_preanalysis),
     )
 
 

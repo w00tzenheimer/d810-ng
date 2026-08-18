@@ -11,9 +11,6 @@ from d810.core import typing
 
 from d810.core.logging import getLogger
 from d810.core.provider_phase import provider_phase_snapshot_from_level
-from d810.capabilities.detached_handler_snippets import (
-    prepare_detached_handler_snippets,
-)
 from d810.ui.actions.base import D810ActionHandler
 
 logger = getLogger("d810.ui")
@@ -154,21 +151,6 @@ class DeobfuscateThisFunction(D810ActionHandler):
         logger.info("Triggering re-decompilation for function at %s", hex(func_ea))
         try:
             with activation:
-                captured = prepare_detached_handler_snippets(
-                    int(func_ea),
-                    live_mba=(
-                        getattr(vdui.cfunc, "mba", None)
-                        if vdui is not None
-                        else None
-                    ),
-                )
-                if captured:
-                    logger.info(
-                        "Prepared %d detached microcode snippet(s) for %s",
-                        int(captured),
-                        hex(func_ea),
-                    )
-
                 manager = getattr(self._state, "manager", None)
                 native_decompile = getattr(
                     manager, "decompile_with_native_preanalysis", None

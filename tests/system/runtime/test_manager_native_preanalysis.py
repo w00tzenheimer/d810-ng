@@ -1193,6 +1193,53 @@ def test_preflight_records_complete_call_companion_mismatch(
     assert event.payload["mismatch_ea"] == 0x40C2BE
 
 
+def test_interactive_decompile_does_not_run_eager_native_preanalysis(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, int]] = []
+
+    class _Lifecycle:
+        @staticmethod
+        def ensure_hexrays_session(**kwargs):
+            calls.append(("ensure", int(kwargs["function_ea"])))
+            return SimpleNamespace(), True
+
+        @staticmethod
+        def current_session(_function_ea: int):
+            return None
+
+        @staticmethod
+        def has_exhausted_poison_restart(_function_ea: int) -> bool:
+            return False
+
+        @staticmethod
+        def pending_generated_restart(_function_ea: int):
+            return None
+
+    manager = _started_manager_without_init()
+    manager.decompilation_lifecycle = _Lifecycle()
+    monkeypatch.setattr(
+        manager,
+        "prepare_native_preanalysis",
+        lambda function_ea: (_ for _ in ()).throw(
+            AssertionError(f"interactive decompile eagerly prepared 0x{function_ea:X}")
+        ),
+    )
+
+    result = manager.decompile_with_native_preanalysis(
+        0x401000,
+        lambda: calls.append(("decompile", 0x401000)) or "cfunc",
+        lambda: calls.append(("invalidate", 0x401000)),
+    )
+
+    assert result == "cfunc"
+    assert calls == [
+        ("ensure", 0x401000),
+        ("invalidate", 0x401000),
+        ("decompile", 0x401000),
+    ]
+
+
 def test_decompile_controller_runs_one_followup_for_pending_generated_restart(
     monkeypatch,
 ) -> None:
@@ -1226,6 +1273,7 @@ def test_decompile_controller_runs_one_followup_for_pending_generated_restart(
         0x401000,
         lambda: calls.append(("decompile", 0x401000)) or next(rounds),
         lambda: calls.append(("invalidate", 0x401000)),
+        eager_native_preanalysis=True,
     )
 
     assert result == "final"
@@ -1281,6 +1329,7 @@ def test_preparation_runs_once_before_native_preanalysis_and_generated_retries(
         0x401000,
         lambda: calls.append(("hexrays", 0x401000)) or next(rounds),
         lambda: None,
+        eager_native_preanalysis=True,
     )
 
     assert result == "final"
@@ -1317,11 +1366,6 @@ def test_decompile_controller_runs_stage_b_after_decompile_and_refreshes_applied
         calls.append(("stage_b", function_ea))
         or SimpleNamespace(outcome=NativeNormalizationOutcome.APPLIED)
     )
-    monkeypatch.setattr(
-        manager,
-        "prepare_native_preanalysis",
-        lambda function_ea: calls.append(("prepare", function_ea)) or 0,
-    )
     outputs = iter(("before-native", "after-native"))
 
     result = manager.decompile_with_native_preanalysis(
@@ -1332,7 +1376,6 @@ def test_decompile_controller_runs_stage_b_after_decompile_and_refreshes_applied
 
     assert result == "after-native"
     assert calls == [
-        ("prepare", 0x401000),
         ("invalidate", 0x401000),
         ("decompile", 0x401000),
         ("stage_b", 0x401000),
@@ -1363,11 +1406,6 @@ def test_decompile_controller_releases_stack_capacity_witness_when_decompile_rai
     manager.get_function_tags = lambda _function_ea: frozenset()
     manager.decompilation_lifecycle = _Lifecycle()
     monkeypatch.setattr(
-        manager,
-        "prepare_native_preanalysis",
-        lambda function_ea: calls.append(("prepare", function_ea)) or 0,
-    )
-    monkeypatch.setattr(
         computed_goto_resolver,
         "acquire_detached_call_stack_capacity_witness",
         lambda current_session: calls.append(("acquire", current_session)) or _Lease(),
@@ -1386,7 +1424,6 @@ def test_decompile_controller_releases_stack_capacity_witness_when_decompile_rai
         )
 
     assert calls == [
-        ("prepare", 0x401000),
         ("session", 0x401000),
         ("acquire", session),
         ("invalidate", 0x401000),
@@ -1518,6 +1555,7 @@ def test_decompile_controller_routes_poison_to_manager_fresh_recovery(
         function_ea,
         decompile,
         lambda: None,
+        eager_native_preanalysis=True,
     )
 
     assert result == "recovered"

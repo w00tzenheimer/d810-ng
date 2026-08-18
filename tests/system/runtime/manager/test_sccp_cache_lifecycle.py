@@ -208,10 +208,11 @@ def test_nested_callbacks_keep_one_session_and_one_aggregate() -> None:
     outer = _event()
     nested = _event()
     handler = _LogHandler()
+    handler.setLevel(logging.DEBUG)
     logger = manager_module.logger
     logger.addHandler(handler)
     previous_level = logger.level
-    logger.setLevel(logging.INFO)
+    logger.setLevel(logging.DEBUG)
     try:
         manager._on_session_started(outer)
         sccp_session_stats().requests = 1
@@ -243,7 +244,12 @@ def test_nested_callbacks_keep_one_session_and_one_aggregate() -> None:
         MOP_TO_AST_CACHE.lookup("outer")
         manager._on_session_finished(nested)
         assert "profiling.stop" not in calls.events
-        assert not handler.records
+        start_records = [
+            record
+            for record in handler.records
+            if record.getMessage().startswith("[D810] Decompiling ")
+        ]
+        assert len(start_records) == 1
         assert stats.requests == 2
         assert MOP_CONSTANT_CACHE.stats.lookups == 1
         assert MOP_TO_AST_CACHE.stats.lookups == 1
@@ -251,8 +257,11 @@ def test_nested_callbacks_keep_one_session_and_one_aggregate() -> None:
         manager._on_session_finished(outer)
         assert calls.events.count("profiling.start") == 1
         assert calls.events.count("profiling.stop") == 1
-        assert len(handler.records) == 1
-        aggregate = handler.records[0].args
+        aggregate_records = [
+            record for record in handler.records if isinstance(record.args, dict)
+        ]
+        assert len(aggregate_records) == 1
+        aggregate = aggregate_records[0].args
         assert aggregate["sccp"] == {
             "requests": 2,
             "executions": 1,

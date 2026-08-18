@@ -42,18 +42,28 @@ Run this inside IDA, `idat64`, `idalib`, or an automation layer that executes
 IDAPython in a process with Hex-Rays available:
 
 ```python
-from d810.headless import configure, start, status
+from d810.headless import configure, decompile, start, status
 
 configure(project="default_unflattening_ollvm.json")
 start()
 
 print(status())
 
-import ida_hexrays
-
-cfunc = ida_hexrays.decompile(0x401000)
+cfunc = decompile(0x401000)
 print(str(cfunc))
 ```
+
+Ordinary headless decompilation, like interactive IDA use, analyzes only the
+requested function. Batch jobs that deliberately accept recursive auxiliary
+microcode generation may opt in per call:
+
+```python
+cfunc = decompile(0x401000, eager_native_preanalysis=True)
+```
+
+The eager option can generate detached-handler and terminal-carrier microcode
+outside the requested function. It is never inferred from headless mode and is
+disabled by default.
 
 Stop deobfuscation hooks when the script is done:
 

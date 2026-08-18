@@ -61,9 +61,7 @@ def test_computed_goto_dispatcher_unflattens(monkeypatch) -> None:
             "jmp" in baseline.lower()
             or "jumpout" in baseline.lower()
             or baseline == "None"
-        ), (
-            f"fixture no longer reproduces the unresolved computed goto:\n{baseline}"
-        )
+        ), f"fixture no longer reproduces the unresolved computed goto:\n{baseline}"
 
         # start d810 with the unflattener config + install the computed-goto pass
         import d810.headless as headless
@@ -91,7 +89,14 @@ def test_computed_goto_dispatcher_unflattens(monkeypatch) -> None:
             try:
                 ida_hexrays.clear_cached_cfuncs()
                 failure = ida_hexrays.hexrays_failure_t()
-                recovered = str(headless.decompile(func_ea, failure=failure) or "None")
+                recovered = str(
+                    headless.decompile(
+                        func_ea,
+                        failure=failure,
+                        eager_native_preanalysis=True,
+                    )
+                    or "None"
+                )
             finally:
                 cg.uninstall()
         finally:

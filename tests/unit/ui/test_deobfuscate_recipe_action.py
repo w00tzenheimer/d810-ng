@@ -3,6 +3,10 @@ from __future__ import annotations
 import contextlib
 from types import SimpleNamespace
 
+from d810.capabilities.detached_handler_snippets import (
+    register_detached_handler_snippet_preparer,
+    unregister_detached_handler_snippet_preparer,
+)
 from d810.ui.actions import deobfuscate_this as action_module
 
 
@@ -11,7 +15,7 @@ def _validation(*, satisfied: bool):
     return SimpleNamespace(satisfied=satisfied, diagnostics=diagnostics)
 
 
-def test_explicit_recipe_is_revalidated_activated_and_decompiled_once(monkeypatch):
+def test_explicit_recipe_is_revalidated_activated_and_decompiled_once():
     events: list[object] = []
     draft = SimpleNamespace(function_ea=0x401000)
     mba = SimpleNamespace(maturity=5)
@@ -30,27 +34,35 @@ def test_explicit_recipe_is_revalidated_activated_and_decompiled_once(monkeypatc
             events.append(("exit", candidate))
 
     state = SimpleNamespace(
-        analyze_workbench_recipe=lambda **kwargs: events.append(("analyze", kwargs))
-        or object(),
-        validate_workbench_recipe=lambda candidate, facts=None: events.append(
-            ("validate", candidate, facts)
-        )
-        or _validation(satisfied=True),
+        analyze_workbench_recipe=lambda **kwargs: (
+            events.append(("analyze", kwargs)) or object()
+        ),
+        validate_workbench_recipe=lambda candidate, facts=None: (
+            events.append(("validate", candidate, facts)) or _validation(satisfied=True)
+        ),
         activate_workbench_recipe=activate,
         create_saved_workbench_recipe_draft=lambda **kwargs: (_ for _ in ()).throw(
             AssertionError("explicit apply must not load a saved recipe")
         ),
     )
     shim = SimpleNamespace(get_widget_vdui=lambda widget: vdui)
-    monkeypatch.setattr(
-        action_module, "prepare_detached_handler_snippets", lambda *args, **kwargs: 0
-    )
+
+    def fail_if_prepared(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError(
+            "interactive deobfuscation must not generate detached snippets"
+        )
+
+    register_detached_handler_snippet_preparer(fail_if_prepared)
     action = action_module.DeobfuscateThisFunction(
         state,
         ida_modules={"idaapi": shim},
     )
 
-    result = action.execute_with_recipe(SimpleNamespace(widget=object()), draft)
+    try:
+        result = action.execute_with_recipe(SimpleNamespace(widget=object()), draft)
+    finally:
+        unregister_detached_handler_snippet_preparer(fail_if_prepared)
 
     assert result == 1
     assert [event[0] for event in events] == [

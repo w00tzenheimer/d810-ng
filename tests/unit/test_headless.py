@@ -112,10 +112,13 @@ def test_decompile_routes_through_manager_owned_controller(monkeypatch):
 
     calls = []
     manager = SimpleNamespace(
-        decompile_with_native_preanalysis=lambda function_ea, decompile, invalidate: (
-            calls.append(("controller", function_ea)),
-            decompile(),
-        )[1]
+        decompile_with_native_preanalysis=lambda function_ea, decompile, invalidate, *, eager_native_preanalysis: (
+            (
+                calls.append(("controller", function_ea)),
+                calls.append(("eager", eager_native_preanalysis)),
+                decompile(),
+            )[2]
+        )
     )
     headless._state = SimpleNamespace(manager=manager)
     headless._configured = True
@@ -131,7 +134,49 @@ def test_decompile_routes_through_manager_owned_controller(monkeypatch):
     )
 
     assert headless.decompile(0x401000) == "cfunc"
-    assert calls == [("controller", 0x401000), ("decompile", 0x401000)]
+    assert calls == [
+        ("controller", 0x401000),
+        ("eager", False),
+        ("decompile", 0x401000),
+    ]
+
+
+def test_headless_decompile_can_explicitly_enable_eager_native_preanalysis(
+    monkeypatch,
+):
+    from d810 import headless
+
+    calls = []
+
+    def decompile_with_native_preanalysis(
+        function_ea, decompile, invalidate, *, eager_native_preanalysis
+    ):
+        del invalidate
+        calls.append(("controller", function_ea, eager_native_preanalysis))
+        return decompile()
+
+    headless._state = SimpleNamespace(
+        manager=SimpleNamespace(
+            decompile_with_native_preanalysis=decompile_with_native_preanalysis
+        )
+    )
+    headless._configured = True
+    monkeypatch.setitem(
+        sys.modules,
+        "ida_hexrays",
+        SimpleNamespace(
+            decompile=lambda function_ea: (
+                calls.append(("decompile", function_ea)) or "cfunc"
+            ),
+            clear_cached_cfuncs=lambda: None,
+        ),
+    )
+
+    assert headless.decompile(0x401000, eager_native_preanalysis=True) == "cfunc"
+    assert calls == [
+        ("controller", 0x401000, True),
+        ("decompile", 0x401000),
+    ]
 
 
 def test_decompile_forwards_hexrays_failure_output_through_controller(monkeypatch):
@@ -140,10 +185,13 @@ def test_decompile_forwards_hexrays_failure_output_through_controller(monkeypatc
     calls = []
     failure = object()
     manager = SimpleNamespace(
-        decompile_with_native_preanalysis=lambda function_ea, decompile, invalidate: (
-            calls.append(("controller", function_ea)),
-            decompile(),
-        )[1]
+        decompile_with_native_preanalysis=lambda function_ea, decompile, invalidate, *, eager_native_preanalysis: (
+            (
+                calls.append(("controller", function_ea)),
+                calls.append(("eager", eager_native_preanalysis)),
+                decompile(),
+            )[2]
+        )
     )
     headless._state = SimpleNamespace(manager=manager)
     headless._configured = True
@@ -161,6 +209,7 @@ def test_decompile_forwards_hexrays_failure_output_through_controller(monkeypatc
     assert headless.decompile(0x401000, failure=failure) == "cfunc"
     assert calls == [
         ("controller", 0x401000),
+        ("eager", False),
         ("decompile", 0x401000, failure),
     ]
 
