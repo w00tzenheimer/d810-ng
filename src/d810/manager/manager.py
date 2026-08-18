@@ -2015,6 +2015,15 @@ class D810Manager:
         if not isinstance(attributes, dict):
             return (obj, {})
 
+        def _preserve_nested_container(value: object) -> object:
+            if isinstance(value, dict):
+                return _ActivationContainerSnapshot(value, dict(value))
+            if isinstance(value, list):
+                return _ActivationContainerSnapshot(value, list(value))
+            if isinstance(value, set):
+                return _ActivationContainerSnapshot(value, set(value))
+            return value
+
         def _preserved_value(name: str, value: object) -> object:
             if isinstance(value, dict):
                 return _ActivationContainerSnapshot(value, dict(value))
@@ -2026,15 +2035,7 @@ class D810Manager:
                 object_dict = getattr(value, "__dict__", None)
                 if isinstance(object_dict, dict):
                     contents = {
-                        attr: (
-                            dict(attr_value)
-                            if isinstance(attr_value, dict)
-                            else list(attr_value)
-                            if isinstance(attr_value, list)
-                            else set(attr_value)
-                            if isinstance(attr_value, set)
-                            else attr_value
-                        )
+                        attr: _preserve_nested_container(attr_value)
                         for attr, attr_value in object_dict.items()
                     }
                     return _ActivationContainerSnapshot(value, contents)
@@ -2057,24 +2058,40 @@ class D810Manager:
             },
         )
 
-    @staticmethod
-    def _restore_activation_container(snapshot: _ActivationContainerSnapshot) -> object:
+    @classmethod
+    def _restore_activation_container(
+        cls, snapshot: _ActivationContainerSnapshot
+    ) -> object:
         target = snapshot.target
         contents = snapshot.contents
+        if isinstance(contents, dict):
+            restored_contents = {
+                key: cls._restore_activation_container(value)
+                if isinstance(value, _ActivationContainerSnapshot)
+                else value
+                for key, value in contents.items()
+            }
+        else:
+            restored_contents = contents
         if isinstance(target, dict) and isinstance(contents, dict):
             target.clear()
-            target.update(contents)
+            target.update(restored_contents)
         elif isinstance(target, list) and isinstance(contents, list):
             target.clear()
-            target.extend(contents)
+            target.extend(
+                cls._restore_activation_container(value)
+                if isinstance(value, _ActivationContainerSnapshot)
+                else value
+                for value in contents
+            )
         elif isinstance(target, set) and isinstance(contents, set):
             target.clear()
-            target.update(contents)
+            target.update(restored_contents)
         else:
             object_dict = getattr(target, "__dict__", None)
             if isinstance(object_dict, dict) and isinstance(contents, dict):
                 object_dict.clear()
-                object_dict.update(contents)
+                object_dict.update(restored_contents)
         return target
 
     @classmethod

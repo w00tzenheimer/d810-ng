@@ -656,6 +656,10 @@ def test_tigress_profile_global_registries_roll_back_after_late_failure(
             project_module._project_reload_cleanup_handlers,
             dict(project_module._project_reload_cleanup_handlers),
         )
+        before_fact_collectors = (
+            project_module._preanalysis_fact_collector_registration_handlers,
+            dict(project_module._preanalysis_fact_collector_registration_handlers),
+        )
         before_indirect = snapshot_indirect_materialization_registry()
         real_configure = manager.configure
 
@@ -671,6 +675,13 @@ def test_tigress_profile_global_registries_roll_back_after_late_failure(
                 before_cleanup[0]
             )
             assert project_module._project_reload_cleanup_handlers == before_cleanup[1]
+            assert project_module._preanalysis_fact_collector_registration_handlers is (
+                before_fact_collectors[0]
+            )
+            assert (
+                project_module._preanalysis_fact_collector_registration_handlers
+                == before_fact_collectors[1]
+            )
             assert after_indirect.goto_table_ref is before_indirect.goto_table_ref
             assert after_indirect.goto_table_ref == before_indirect.goto_table_contents
             assert after_indirect.registered is before_indirect.registered
@@ -681,6 +692,93 @@ def test_tigress_profile_global_registries_roll_back_after_late_failure(
             assert after_indirect.flowchart_registry[0] == (
                 before_indirect.flowchart_registry[1]
             )
+        finally:
+            monkeypatch.undo()
+            _restore(state, original_index)
+
+
+def test_active_tigress_state_survives_failed_non_tigress_switch(
+    d810_state, monkeypatch
+) -> None:
+    """A failed profile switch restores the complete active Tigress registry set."""
+
+    with d810_state() as state:
+        original_index = state.current_project_index
+        tigress_index = state.project_manager.index(
+            "default_unflattening_tigress_indirect.json"
+        )
+        other_index = state.project_manager.index("default_instruction_only.json")
+        manager = state.manager
+        import d810.core.project as project_module
+        import d810.hexrays.preanalysis.flowchart_preanalysis as flowchart_module
+        from d810.hexrays.preanalysis.indirect_jump_labels import (
+            snapshot_indirect_materialization_registry,
+        )
+
+        tigress = state.project_manager.get(tigress_index)
+        other = state.project_manager.get(other_index)
+        state.invalid_projects.pop(tigress.path.name, None)
+        state.invalid_projects.pop(other.path.name, None)
+        real_configure = manager.configure
+
+        try:
+            assert state.load_project(tigress_index) is tigress
+            before_cleanup = (
+                project_module._project_reload_cleanup_handlers,
+                dict(project_module._project_reload_cleanup_handlers),
+            )
+            before_fact_collectors = (
+                project_module._preanalysis_fact_collector_registration_handlers,
+                dict(project_module._preanalysis_fact_collector_registration_handlers),
+            )
+            before_flowchart = (
+                flowchart_module._FLOWCHART_PREANALYSIS_HANDLERS,
+                dict(flowchart_module._FLOWCHART_PREANALYSIS_HANDLERS),
+            )
+            before_indirect = snapshot_indirect_materialization_registry()
+            before_snapshot = state.current_project_runtime_snapshot
+            before_pass_ids = state.last_config_v2_pass_ids
+
+            def configure_then_fail(**kwargs):
+                real_configure(**kwargs)
+                raise RuntimeError("late non-Tigress profile failure")
+
+            monkeypatch.setattr(manager, "configure", configure_then_fail)
+            assert state.load_project(other_index) is None
+
+            assert state.current_project is tigress
+            assert state.current_project_index == tigress_index
+            assert state.current_project_runtime_snapshot is before_snapshot
+            assert state.last_config_v2_pass_ids is before_pass_ids
+            assert project_module._project_reload_cleanup_handlers is (
+                before_cleanup[0]
+            )
+            assert project_module._project_reload_cleanup_handlers == before_cleanup[1]
+            assert project_module._preanalysis_fact_collector_registration_handlers is (
+                before_fact_collectors[0]
+            )
+            assert (
+                project_module._preanalysis_fact_collector_registration_handlers
+                == before_fact_collectors[1]
+            )
+            assert flowchart_module._FLOWCHART_PREANALYSIS_HANDLERS is (
+                before_flowchart[0]
+            )
+            assert flowchart_module._FLOWCHART_PREANALYSIS_HANDLERS == (
+                before_flowchart[1]
+            )
+            after_indirect = snapshot_indirect_materialization_registry()
+            assert after_indirect.goto_table_ref is before_indirect.goto_table_ref
+            assert after_indirect.goto_table_ref == before_indirect.goto_table_contents
+            assert after_indirect.registered is before_indirect.registered
+            assert after_indirect.executor is before_indirect.executor
+            assert after_indirect.flowchart_registry[0] is (
+                before_indirect.flowchart_registry[0]
+            )
+            assert after_indirect.flowchart_registry[0] == (
+                before_indirect.flowchart_registry[1]
+            )
+            assert other.path.name in state.invalid_projects
         finally:
             monkeypatch.undo()
             _restore(state, original_index)
@@ -808,6 +906,136 @@ def test_started_activation_failure_restores_live_container_identity(
         try:
             assert state.load_project(target_index) is None
             _assert_live_container_snapshot(manager, before)
+        finally:
+            manager._started = previous_started
+            if previous_instruction_optimizer is None:
+                del manager.instruction_optimizer
+            else:
+                manager.instruction_optimizer = previous_instruction_optimizer
+            if previous_block_optimizer is None:
+                del manager.block_optimizer
+            else:
+                manager.block_optimizer = previous_block_optimizer
+            monkeypatch.undo()
+            _restore(state, original_index)
+
+
+def test_started_activation_failure_restores_real_pattern_storage_objects(
+    d810_state, monkeypatch
+) -> None:
+    """PatternOptimizer reset/rebind does not strand its real dispatch stores."""
+
+    with d810_state() as state:
+        original_index = state.current_project_index
+        target_index, _rule = _load_project_with_rule(state, "current_ins_rules")
+        manager = state.manager
+        previous_started = manager._started
+        previous_instruction_optimizer = getattr(manager, "instruction_optimizer", None)
+        previous_block_optimizer = getattr(manager, "block_optimizer", None)
+
+        from d810.optimizers.microcode.instructions.pattern_matching.handler import (
+            PatternOptimizer,
+            PatternStorage,
+        )
+        from d810.optimizers.microcode.instructions.pattern_matching.pattern_speedups import (
+            OpcodeIndexedStorage,
+        )
+
+        child = PatternOptimizer([], manager.stats, log_dir=manager.log_dir)
+        # Use the production Python storage class directly so this regression
+        # exercises the manager's custom ``__dict__`` restoration branch even
+        # when the runtime selects the optional Cython matcher backend.
+        child._indexed_storage = OpcodeIndexedStorage()
+        assert isinstance(child.pattern_storage, PatternStorage)
+        assert isinstance(child._indexed_storage, OpcodeIndexedStorage)
+        child.pattern_storage.next_layer_patterns[("old",)] = PatternStorage(depth=2)
+        resolved_marker = object()
+        child.pattern_storage.rule_resolved.append(resolved_marker)
+        child._indexed_storage._by_opcode[0x123] = []
+
+        old_pattern_storage = child.pattern_storage
+        old_pattern_layers = old_pattern_storage.next_layer_patterns
+        old_pattern_resolved = old_pattern_storage.rule_resolved
+        old_pattern_contents = (
+            old_pattern_storage.depth,
+            dict(old_pattern_layers),
+            list(old_pattern_resolved),
+        )
+        old_indexed_storage = child._indexed_storage
+        old_indexed_by_opcode = old_indexed_storage._by_opcode
+        old_indexed_contents = (
+            dict(old_indexed_by_opcode),
+            old_indexed_storage._total_patterns,
+        )
+
+        class _Analyzer:
+            def __init__(self):
+                self.rules = {"old-analyzer-rule"}
+
+        class _InstructionOptimizer:
+            def __init__(self, owner):
+                self.owner = owner
+                self.instruction_optimizers = (child,)
+                self.analyzer = _Analyzer()
+
+            def replace_rules(self, _rules):
+                # This is the real PatternOptimizer reset path: it clears the
+                # rule set and rebinds both production dispatch storages.
+                child.reset_rules()
+                self.analyzer.rules.clear()
+                self.analyzer.rules.add("candidate-analyzer-rule")
+
+            def configure(self, **_kwargs):
+                self.owner.instruction_pass_scheduler._pending_by_func.clear()
+                self.owner.block_pass_scheduler._pending_by_func.clear()
+
+        class _BlockOptimizer:
+            def __init__(self, owner):
+                self.owner = owner
+                self.cfg_rules = ["old-cfg-rule"]
+
+            def replace_rules(self, _rules):
+                self.cfg_rules[:] = ["candidate-cfg-rule"]
+
+            def configure(self, **_kwargs):
+                self.owner.instruction_pass_scheduler._pending_by_func.clear()
+                self.owner.block_pass_scheduler._pending_by_func.clear()
+
+        manager._started = True
+        manager.instruction_optimizer = _InstructionOptimizer(manager)
+        manager.block_optimizer = _BlockOptimizer(manager)
+        manager.execution_scope_service._active_cache[(1, 2, 3)] = "old"
+        manager.instruction_pass_scheduler._pending_by_func[1] = {"old": "run"}
+
+        def compile_then_fail():
+            manager.execution_scope_service._active_cache.clear()
+            raise RuntimeError("scope failure after real storage rebind")
+
+        monkeypatch.setattr(manager, "_compile_execution_scope", compile_then_fail)
+        try:
+            assert state.load_project(target_index) is None
+            restored_child = manager.instruction_optimizer.instruction_optimizers[0]
+            assert restored_child is child
+            assert restored_child.pattern_storage is old_pattern_storage
+            assert restored_child.pattern_storage.depth == old_pattern_contents[0]
+            assert restored_child.pattern_storage.next_layer_patterns == (
+                old_pattern_contents[1]
+            )
+            assert restored_child.pattern_storage.rule_resolved == (
+                old_pattern_contents[2]
+            )
+            assert restored_child._indexed_storage is old_indexed_storage
+            assert restored_child._indexed_storage._by_opcode == (
+                old_indexed_contents[0]
+            )
+            assert restored_child._indexed_storage._total_patterns == (
+                old_indexed_contents[1]
+            )
+            # The manager must restore the original live containers rather
+            # than only equivalent copies of the custom storage state.
+            assert restored_child.pattern_storage.next_layer_patterns is old_pattern_layers
+            assert restored_child.pattern_storage.rule_resolved is old_pattern_resolved
+            assert restored_child._indexed_storage._by_opcode is old_indexed_by_opcode
         finally:
             manager._started = previous_started
             if previous_instruction_optimizer is None:
