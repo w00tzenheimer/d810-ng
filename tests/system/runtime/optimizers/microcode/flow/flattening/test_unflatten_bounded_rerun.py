@@ -51,6 +51,12 @@ from d810.analyses.control_flow.native_preanalysis_session import (
 from d810.analyses.control_flow.materialized_indirect_transfer import (
     MaterializedIndirectTransfer,
 )
+from d810.analyses.control_flow.dispatcher_resolution import (
+    DispatcherCandidateIdentity,
+)
+from d810.analyses.control_flow.dispatcher_recovery import DispatcherRecovery
+from d810.capabilities.dispatcher import RouterKind
+from d810.passes.unflatten.dispatcher_progress import DispatcherProgressLedger
 from d810.hexrays.ir.mba_identity_index import MbaBlockIdentityIndex
 from d810.hexrays.mutation.semantic_fragment_backend import (
     SemanticFragmentBackendRejected,
@@ -75,6 +81,7 @@ _EA = 0x1800017F0
 #: (ticket llr-a93i), so a cap at one maturity must leave the other's budget intact.
 _MAT = ida_hexrays.MMAT_GLBOPT1
 _MAT2 = ida_hexrays.MMAT_CALLS
+_IR_MAT = IRMaturity.GLOBAL_ANALYZED
 
 
 @pytest.mark.parametrize(
@@ -1622,7 +1629,108 @@ def _fresh_rule() -> StateMachineCffUnflattener:
     # __init__ / IDA lifecycle — the gate is pure and reads nothing else).
     rule._unflat_round_count = {}
     rule._unflat_done_eas = set()
+    rule._dispatcher_progress = DispatcherProgressLedger()
     return rule
+
+
+def _outer_dispatcher_identity() -> DispatcherCandidateIdentity:
+    return DispatcherCandidateIdentity(
+        resolver_name="equality_chain",
+        router_kind=RouterKind.EQUALITY_CHAIN,
+        table_provenance=None,
+        dispatcher_entry_ea=0x7FF856533AF0,
+        state_location_kind="stack",
+        state_location_value=0xC,
+    )
+
+
+def test_committed_dispatcher_mutation_is_not_mistaken_for_convergence() -> None:
+    """Invalidated post-pass analyses cannot hide a dispatcher that just mutated."""
+    rule = _fresh_rule()
+    identity = _outer_dispatcher_identity()
+    prelim = SimpleNamespace(
+        dispatcher_block_serial=3,
+        candidate_identity=identity,
+    )
+    backend = SimpleNamespace(
+        last_patch_execution=SimpleNamespace(applied_count=35),
+        last_patch_failure=None,
+        committed_fragment_operation_count=0,
+    )
+
+    rule._finalize_dispatcher_round(
+        func_ea=_EA,
+        maturity=_IR_MAT,
+        graph_fingerprint="graph-a",
+        prelim=prelim,
+        excluded_identities=frozenset(),
+        family=SimpleNamespace(name="hodur"),
+        backend=backend,
+    )
+
+    assert _EA not in rule._unflat_done_eas
+    assert (
+        rule._dispatcher_progress.excluded_identities(_EA, _IR_MAT, "graph-a")
+        == frozenset()
+    )
+
+
+def test_repeated_identical_noop_dispatcher_round_becomes_exact_exclusion() -> None:
+    rule = _fresh_rule()
+    identity = _outer_dispatcher_identity()
+    prelim = SimpleNamespace(
+        dispatcher_block_serial=7,
+        candidate_identity=identity,
+    )
+    backend = SimpleNamespace(
+        last_patch_execution=None,
+        last_patch_failure=None,
+        committed_fragment_operation_count=0,
+    )
+
+    for _ in range(2):
+        rule._finalize_dispatcher_round(
+            func_ea=_EA,
+            maturity=_IR_MAT,
+            graph_fingerprint="graph-residual",
+            prelim=prelim,
+            excluded_identities=frozenset(),
+            family=SimpleNamespace(name="hodur"),
+            backend=backend,
+        )
+
+    assert rule._dispatcher_progress.excluded_identities(
+        _EA, _IR_MAT, "graph-residual"
+    ) == frozenset({identity})
+    assert _EA not in rule._unflat_done_eas
+
+
+def test_all_excluded_candidates_exhaust_only_the_exact_graph() -> None:
+    rule = _fresh_rule()
+    identity = _outer_dispatcher_identity()
+    backend = SimpleNamespace(
+        last_patch_execution=None,
+        last_patch_failure=None,
+        committed_fragment_operation_count=0,
+    )
+
+    rule._finalize_dispatcher_round(
+        func_ea=_EA,
+        maturity=_IR_MAT,
+        graph_fingerprint="graph-residual",
+        prelim=DispatcherRecovery(),
+        excluded_identities=frozenset({identity}),
+        family=None,
+        backend=backend,
+    )
+
+    assert rule._dispatcher_progress.is_exhausted(
+        _EA, _IR_MAT, "graph-residual"
+    )
+    assert not rule._dispatcher_progress.is_exhausted(
+        _EA, _IR_MAT, "graph-changed"
+    )
+    assert _EA not in rule._unflat_done_eas
 
 
 def test_committed_fragment_reports_one_hexrays_callback_change() -> None:

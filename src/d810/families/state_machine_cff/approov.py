@@ -85,7 +85,14 @@ class ApproovFamily(StateMachineCffFamily):
     #: by this declaration.
     recovery_maturities = (IRMaturity.GLOBAL_ANALYZED,)
 
-    def detect(self, graph, capabilities, context=None):
+    def detect(
+        self,
+        graph,
+        capabilities,
+        context=None,
+        *,
+        excluded_dispatcher_identities=frozenset(),
+    ):
         """Claim ONLY switch/indirect dispatchers over a portable ``FlowGraph``.
 
         Reuses the shared front-end ``build_dispatch_map_any_kind`` (so detect and the
@@ -96,7 +103,14 @@ class ApproovFamily(StateMachineCffFamily):
         """
         if graph is None or not hasattr(graph, "blocks"):
             return None
-        dmap = build_dispatch_map_any_kind(graph)
+        dmap = (
+            build_dispatch_map_any_kind(
+                graph,
+                excluded_identities=excluded_dispatcher_identities,
+            )
+            if excluded_dispatcher_identities
+            else build_dispatch_map_any_kind(graph)
+        )
         if (
             dmap is None
             or dmap.router_kind is not RouterKind.TABLE

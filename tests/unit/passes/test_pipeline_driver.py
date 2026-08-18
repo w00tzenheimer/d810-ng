@@ -77,6 +77,9 @@ from d810.families.registry import (
     select_family,
 )
 from d810.capabilities.dispatcher import RouterKind, TableProvenance
+from d810.analyses.control_flow.dispatcher_resolution import (
+    DispatcherCandidateIdentity,
+)
 from d810.core.native_preanalysis_key import NativePreanalysisKey
 from d810.ir.block_identity import NativeEaInterval, StableBlockIdentity
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph
@@ -3124,6 +3127,38 @@ def test_approov_detect_is_kind_scoped_to_switch_and_indirect(monkeypatch):
     assert fam.detect(_GRAPH, frozenset()) is None
 
 
+def test_approov_detect_threads_exact_dispatcher_exclusions(monkeypatch):
+    identity = DispatcherCandidateIdentity(
+        resolver_name="equality_chain",
+        router_kind=RouterKind.CONDITION_CHAIN,
+        table_provenance=None,
+        dispatcher_entry_ea=0x1000,
+        state_location_kind="stack",
+        state_location_value=0xC,
+    )
+    seen = {}
+
+    def _capture(graph, *, excluded_identities=frozenset()):
+        seen["excluded"] = excluded_identities
+        return None
+
+    monkeypatch.setattr(
+        approov_pipeline,
+        "build_dispatch_map_any_kind",
+        _capture,
+    )
+
+    assert (
+        ApproovFamily().detect(
+            _GRAPH,
+            frozenset(),
+            excluded_dispatcher_identities=frozenset({identity}),
+        )
+        is None
+    )
+    assert seen["excluded"] == frozenset({identity})
+
+
 def test_approov_pipeline_for_switch_is_standard_no_emulation():
     """TABLE/switch runs the standard seeded-fold spine — NO emulation
     (abc_or_dispatch folds masked-OR writes via the partitioned fixpoint)."""
@@ -3308,6 +3343,48 @@ def test_select_family_default_empty_policy_is_registration_order(monkeypatch):
     monkeypatch.setattr("d810.families.registry.registered_families", lambda: (a, b))
     assert select_family("G", project_config=None) is a
     assert select_family("G", project_config={}) is a
+
+
+def test_select_family_threads_runtime_dispatcher_exclusions(monkeypatch):
+    identity = DispatcherCandidateIdentity(
+        resolver_name="equality_chain",
+        router_kind=RouterKind.CONDITION_CHAIN,
+        table_provenance=None,
+        dispatcher_entry_ea=0x1000,
+        state_location_kind="stack",
+        state_location_value=0xC,
+    )
+
+    class _CaptureClaim(_ClaimAny):
+        def __init__(self):
+            super().__init__("capture")
+            self.excluded = None
+
+        def detect(
+            self,
+            graph,
+            capabilities,
+            context=None,
+            *,
+            excluded_dispatcher_identities=frozenset(),
+        ):
+            self.excluded = excluded_dispatcher_identities
+            return object()
+
+    family = _CaptureClaim()
+    monkeypatch.setattr(
+        "d810.families.registry.registered_families", lambda: (family,)
+    )
+
+    assert (
+        select_family(
+            "G",
+            project_config={},
+            excluded_dispatcher_identities=frozenset({identity}),
+        )
+        is family
+    )
+    assert family.excluded == frozenset({identity})
 
 
 def test_effective_family_selection_config_preserves_rule_options_and_project_policy():

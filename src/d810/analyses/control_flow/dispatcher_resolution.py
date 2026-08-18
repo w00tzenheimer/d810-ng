@@ -17,6 +17,24 @@ from d810.capabilities.dispatcher import RouterKind, TableProvenance
 
 
 @dataclass(frozen=True, slots=True)
+class DispatcherCandidateIdentity:
+    """Stable identity of one dispatcher candidate across FlowGraph relifts.
+
+    Block serials are deliberately excluded: they are snapshot-local.  The
+    resolver provenance, native dispatcher EA, and state storage identify the
+    candidate whose exact graph-local attempt stalled without suppressing a
+    different dispatcher in the same function.
+    """
+
+    resolver_name: str
+    router_kind: RouterKind
+    table_provenance: TableProvenance | None
+    dispatcher_entry_ea: int
+    state_location_kind: str
+    state_location_value: int | None
+
+
+@dataclass(frozen=True, slots=True)
 class StateDispatcherRow:
     """One exact dispatcher row: ``state_const`` routes to ``target_block``."""
 
@@ -157,6 +175,7 @@ class DispatcherResolution:
 
 
 __all__ = [
+    "DispatcherCandidateIdentity",
     "DispatcherResolution",
     "ResolverCandidate",
     "StateDispatcherMap",

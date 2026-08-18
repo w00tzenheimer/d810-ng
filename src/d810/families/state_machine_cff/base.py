@@ -58,7 +58,14 @@ class StateMachineCffFamily(Registrant):
     recovery_maturities: "tuple[IRMaturity, ...]" = (IRMaturity.GLOBAL_ANALYZED,)
 
     @abc.abstractmethod
-    def detect(self, graph, capabilities, context=None):
+    def detect(
+        self,
+        graph,
+        capabilities,
+        context=None,
+        *,
+        excluded_dispatcher_identities=frozenset(),
+    ):
         """Return the dispatcher match this profile claims (truthy), else ``None``."""
 
     @abc.abstractmethod

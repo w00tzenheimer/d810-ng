@@ -212,6 +212,10 @@ from d810.passes.pipeline_config_parser import (
 )
 from d810.passes.pipeline_v2_hook_bridge import STATE_MACHINE_NATIVE_PASS_IDS
 from d810.passes.pipeline_shadow import compare_pipeline_v2_shadow
+from d810.passes.unflatten.dispatcher_progress import (
+    DispatcherProgressLedger,
+    flowgraph_content_fingerprint,
+)
 from d810.passes.unflatten.state_machine import LOWER_STATE_MACHINE_PLAN_METADATA
 from d810.families.state_machine_cff.pipeline import (
     standard_state_machine_passes,
@@ -1227,6 +1231,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         #: Per-ea (not per-maturity): once a function is fully unflattened at ANY
         #: maturity, no later maturity should reprocess it.
         self._unflat_done_eas: set[int] = set()
+        self._dispatcher_progress = DispatcherProgressLedger()
         self._project_config: dict[str, object] = {}
         self._last_pipeline_v2_mode: str | None = None
         self._last_config_v2_pass_ids: tuple[str, ...] = ()
@@ -1247,6 +1252,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         self._pass_manager_session_by_func.clear()
         self._unflat_round_count.clear()
         self._unflat_done_eas.clear()
+        self._dispatcher_progress.reset_all()
 
     def _reset_pass_manager_if_new_session(
         self,
@@ -1285,6 +1291,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             if int(key[0]) != func_ea
         }
         self._unflat_done_eas.discard(func_ea)
+        self._dispatcher_progress.reset_function(func_ea)
 
     def _should_run_unflatten_round(
         self,
@@ -1330,6 +1337,83 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
     def _mark_ea_converged(self, func_ea: int) -> None:
         """Mark ``func_ea`` terminal — recovery found no dispatcher (graph fully unflattened)."""
         self._unflat_done_eas.add(func_ea)
+
+    def _finalize_dispatcher_round(
+        self,
+        *,
+        func_ea: int,
+        maturity: IRMaturity,
+        graph_fingerprint: str,
+        prelim: object | None,
+        excluded_identities: frozenset,
+        family: object | None,
+        backend: object,
+    ) -> None:
+        """Record candidate-local progress without consulting invalidated analyses."""
+        identity = getattr(prelim, "candidate_identity", None)
+        dispatcher_present = (
+            prelim is not None
+            and getattr(prelim, "dispatcher_block_serial", None) is not None
+        )
+        if identity is not None:
+            if getattr(backend, "last_patch_failure", None) is not None:
+                return
+            execution = getattr(backend, "last_patch_execution", None)
+            patch_count = int(getattr(execution, "applied_count", 0) or 0)
+            fragment_count = int(
+                getattr(backend, "committed_fragment_operation_count", 0) or 0
+            )
+            if max(patch_count, fragment_count) > 0:
+                self._dispatcher_progress.record_progress(
+                    func_ea,
+                    maturity,
+                    identity,
+                )
+                return
+            self._dispatcher_progress.record_no_progress(
+                func_ea,
+                maturity,
+                graph_fingerprint,
+                identity,
+            )
+            excluded_next = identity in self._dispatcher_progress.excluded_identities(
+                func_ea, maturity, graph_fingerprint
+            )
+            log = logger.info if excluded_next else logger.debug
+            log(
+                "UNFLAT_CANDIDATE_NO_PROGRESS func=0x%x maturity=%s "
+                "identity=%s graph=%s excluded_next=%s",
+                int(func_ea),
+                maturity.name,
+                identity,
+                graph_fingerprint,
+                excluded_next,
+            )
+            return
+
+        # A selected/recovered dispatcher without the new provenance remains
+        # non-terminal.  This preserves reduced-product and materialized paths
+        # until they acquire an equivalent stable candidate identity.
+        if dispatcher_present or family is not None:
+            return
+        # Filtered recovery finding nothing means only "all candidates for this
+        # exact graph are stalled", not that the function is dispatcher-free.
+        if excluded_identities:
+            self._dispatcher_progress.record_exhausted(
+                func_ea,
+                maturity,
+                graph_fingerprint,
+            )
+            logger.info(
+                "UNFLAT_GRAPH_EXHAUSTED func=0x%x maturity=%s graph=%s "
+                "excluded=%s",
+                int(func_ea),
+                maturity.name,
+                graph_fingerprint,
+                tuple(sorted(excluded_identities, key=repr)),
+            )
+            return
+        self._mark_ea_converged(func_ea)
 
     def _report_recovery_gate_decision(
         self,
@@ -1952,6 +2036,35 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         func_ea: int = int(mba.entry_ea)
 
         source = lift_function(mba, maturity=mba.maturity)
+        portable_maturity = ida_maturity_to_ir(int(mba.maturity))
+        graph_fingerprint = flowgraph_content_fingerprint(source.flow_graph)
+        if self._dispatcher_progress.is_exhausted(
+            func_ea,
+            portable_maturity,
+            graph_fingerprint,
+        ):
+            return 0
+        excluded_dispatcher_identities = (
+            self._dispatcher_progress.excluded_identities(
+                func_ea,
+                portable_maturity,
+                graph_fingerprint,
+            )
+        )
+        if excluded_dispatcher_identities:
+            logger.debug(
+                "UNFLAT_CANDIDATE_FALLBACK func=0x%x maturity=%s graph=%s "
+                "excluded=%s",
+                func_ea,
+                maturity_to_string(int(mba.maturity)),
+                graph_fingerprint,
+                tuple(
+                    sorted(
+                        excluded_dispatcher_identities,
+                        key=repr,
+                    )
+                ),
+            )
         self._register_dispatcher_resolvers(mba)
         materialized_computed_goto_profile = bool(
             _is_indirect
@@ -1970,6 +2083,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             mba,
             source,
             materialized_computed_goto_profile=(materialized_computed_goto_profile),
+            excluded_dispatcher_identities=excluded_dispatcher_identities,
         )
         if (
             resolver_state is not None
@@ -2045,6 +2159,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             backend,
             materialized_evidence_ready=materialized_evidence_ready,
             canonical_composition_ready=canonical_composition_ready,
+            excluded_dispatcher_identities=excluded_dispatcher_identities,
         )
         if self._family_defers(mba, family, is_indirect=_is_indirect):
             return 0
@@ -2175,26 +2290,19 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         self._publish_unflat_diagnostics(
             mba, source, rec, tr, regions, fact_view, range_evidence, capabilities
         )
-        # Termination (ticket llr-3gn4): mark the ea done the moment recovery finds NO
-        # dispatcher to lower -- the graph is clean or fully unflattened, so re-running
-        # would only re-lift and re-detect nothing. The common case on the very first round
-        # for every already-clean function (hodur / sub_7FFD / the 4 clean approov fns), so
-        # they run once. A round that still SEES a dispatcher but emits no redirect is NOT
-        # terminal: approov_real_pattern's residual blk3 entry only becomes recoverable
-        # after IDA's interleaved optimize_global collapses it several re-invocations later.
-        #
-        # NOTE (ticket llr-a93i): this keys on the pipeline ``rec`` (a profile claimed and
-        # recovered a dispatcher). With the current GLBOPT1-only family declarations that is
-        # baseline behaviour. A future per-family CALLS FALLBACK (where a profile recovers
-        # at more than one maturity) must make this maturity-aware -- converge only once the
-        # function is unflattened or its LAST declared maturity is exhausted -- so an early
-        # maturity that declines does not foreclose a later one.
-        dispatcher_present = (
-            rec is not None
-            and getattr(rec, "dispatcher_block_serial", None) is not None
+        # The pipeline may invalidate ``recover_dispatcher`` after a successful
+        # lowering.  Its absence therefore says nothing about convergence.  Base
+        # progress and candidate fallback on the pristine preliminary recovery
+        # plus the backend's typed commit receipt instead.
+        self._finalize_dispatcher_round(
+            func_ea=func_ea,
+            maturity=portable_maturity,
+            graph_fingerprint=graph_fingerprint,
+            prelim=prelim,
+            excluded_identities=excluded_dispatcher_identities,
+            family=family,
+            backend=backend,
         )
-        if family is not None and not dispatcher_present:
-            self._mark_ea_converged(func_ea)
         # Preserve the historical zero-return cadence for legacy PatchPlan and
         # no-op rounds: approov_real_pattern depends on IDA's interleaved
         # optimize_global cadence. A committed FragmentPlan is different: SDK
@@ -2414,6 +2522,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         source,
         *,
         materialized_computed_goto_profile: bool = False,
+        excluded_dispatcher_identities=frozenset(),
     ):
         """Build the pre-pipeline recovery inputs.
 
@@ -2451,6 +2560,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 source.flow_graph,
                 fact_view,
                 min_state_constant=prelim_min_state_constant,
+                excluded_identities=excluded_dispatcher_identities,
             )
             if getattr(prelim, "dispatcher_block_serial", None) is not None:
                 # Thread the recovered register identity so a register-resident
@@ -3665,6 +3775,10 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         }
         if bound_bootstrap_routes:
             analysis_seeds["bound_bootstrap_routes"] = bound_bootstrap_routes
+        if excluded_dispatcher_identities:
+            analysis_seeds["dispatcher_candidate_exclusions"] = frozenset(
+                excluded_dispatcher_identities
+            )
         facts = self._pass_manager.facts_for(
             source,
             input_facts=fact_view,
@@ -3796,6 +3910,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         *,
         materialized_evidence_ready: bool = False,
         canonical_composition_ready: bool = False,
+        excluded_dispatcher_identities=frozenset(),
     ):
         """Poll the family registry (reduced-product bypass on opt-in). Returns family|None."""
         if (
@@ -3827,10 +3942,17 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         # graph; the selected profile's pipeline_for drives the pass manager. The rule's
         # JSON config is threaded so a project may override the choice via the
         # router_resolution policy (llr-11du); empty config preserves registration order.
+        selection_kwargs = {
+            "capabilities": backend.capabilities(),
+        }
+        if excluded_dispatcher_identities:
+            selection_kwargs["excluded_dispatcher_identities"] = frozenset(
+                excluded_dispatcher_identities
+            )
         family = select_family(
             source.flow_graph,
             project_config=rule_config,
-            capabilities=backend.capabilities(),
+            **selection_kwargs,
         )
         # Reduced-product family-gate bypass (ticket llr-iy9i): the static select_family
         # poll declines a non-identity-selector machine (XOR-masked

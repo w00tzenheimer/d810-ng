@@ -31,6 +31,7 @@ from d810.analyses.control_flow.reachability import reachable_from
 from d810.analyses.control_flow.dominator import compute_dom_tree
 from d810.capabilities.dispatcher import RouterKind, TableProvenance
 from d810.analyses.control_flow.dispatcher_resolution import (
+    DispatcherCandidateIdentity,
     DispatcherResolution,
     ResolverCandidate,
     StateDispatcherMap,
@@ -38,6 +39,7 @@ from d810.analyses.control_flow.dispatcher_resolution import (
 )
 from d810.analyses.control_flow.dispatcher_resolver import (
     DispatcherResolver,
+    dispatcher_resolution_identity,
     resolve_dispatcher,
 )
 from d810.analyses.control_flow.switch_table_analysis import (
@@ -127,6 +129,7 @@ class DispatcherRecovery:
     # with no stack home (``state_var_stkoff is None``).
     state_var_reg: int | None = None
     dispatch_map: StateDispatcherMap | None = None
+    candidate_identity: DispatcherCandidateIdentity | None = None
 
 
 def _split_const_state(
@@ -862,7 +865,10 @@ def default_dispatcher_resolvers(
 
 
 def build_dispatch_map_any_kind(
-    graph: FlowGraph, *, min_state_constant: int = MIN_STATE_CONSTANT
+    graph: FlowGraph,
+    *,
+    min_state_constant: int = MIN_STATE_CONSTANT,
+    excluded_identities: frozenset[DispatcherCandidateIdentity] = frozenset(),
 ) -> StateDispatcherMap | None:
     """Recover a ``StateDispatcherMap`` of ANY supported dispatcher kind.
 
@@ -883,12 +889,30 @@ def build_dispatch_map_any_kind(
     here too while every portable consumer stays IDA-free (the registry holds
     opaque ``DispatcherResolver`` Protocol objects).
     """
+    resolution = resolve_dispatcher_any_kind(
+        graph,
+        min_state_constant=min_state_constant,
+        excluded_identities=excluded_identities,
+    )
+    return resolution.dispatcher_map if resolution is not None else None
+
+
+def resolve_dispatcher_any_kind(
+    graph: FlowGraph,
+    *,
+    min_state_constant: int = MIN_STATE_CONSTANT,
+    excluded_identities: frozenset[DispatcherCandidateIdentity] = frozenset(),
+) -> DispatcherResolution | None:
+    """Return the selected resolution envelope for any supported router kind."""
     resolvers = (
         default_dispatcher_resolvers(min_state_constant=min_state_constant)
         + extra_dispatcher_resolvers()
     )
-    resolution = resolve_dispatcher(graph, resolvers)
-    return resolution.dispatcher_map if resolution is not None else None
+    return resolve_dispatcher(
+        graph,
+        resolvers,
+        excluded_identities=excluded_identities,
+    )
 
 
 def recover_dispatcher(
@@ -897,6 +921,7 @@ def recover_dispatcher(
     *,
     min_state_constant: int = MIN_STATE_CONSTANT,
     materialized_indirect_transfers: tuple[object, ...] = (),
+    excluded_identities: frozenset[DispatcherCandidateIdentity] = frozenset(),
 ) -> DispatcherRecovery:
     """Recover dispatcher structure + the exact state->handler map over a portable ``FlowGraph``.
 
@@ -907,9 +932,15 @@ def recover_dispatcher(
         return DispatcherRecovery()
     adjacency = {serial: graph.successors(serial) for serial in graph.blocks}
     reachable = reachable_from(adjacency, graph.block_count, graph.entry_serial)
-    dmap = build_dispatch_map_any_kind(graph, min_state_constant=min_state_constant)
-    if dmap is None:
+    resolution = resolve_dispatcher_any_kind(
+        graph,
+        min_state_constant=min_state_constant,
+        excluded_identities=excluded_identities,
+    )
+    if resolution is None:
         return DispatcherRecovery(reachable_block_serials=reachable)
+    dmap = resolution.dispatcher_map
+    candidate_identity = dispatcher_resolution_identity(graph, resolution)
     # Equality-chain / switch dispatchers do not thread an ``initial_state`` (the
     # live range evidence supplies a SPURIOUS mid-chain value via the backwards
     # ``_find_pre_header`` heuristic). Recover the true prologue state by
@@ -932,4 +963,5 @@ def recover_dispatcher(
         state_var_stkoff=dmap.state_var_stkoff,
         state_var_reg=getattr(dmap, "state_var_reg", None),
         dispatch_map=dmap,
+        candidate_identity=candidate_identity,
     )

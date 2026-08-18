@@ -20,6 +20,7 @@ from d810.analyses.control_flow.dispatcher_recovery import (
     build_state_dispatcher_map_from_flow_graph,
     min_state_constant_from_config,
 )
+from d810.analyses.control_flow.dispatcher_resolver import dispatcher_map_identity
 from d810.families.state_machine_cff.base import StateMachineCffFamily
 from d810.ir.maturity import IRMaturity
 from d810.families.state_machine_cff.pipeline import standard_state_machine_passes
@@ -45,7 +46,14 @@ class HodurFamily(StateMachineCffFamily):
     #: sound fix is a CALL_MODELED fallback gated on a GLOBAL_ANALYZED miss — follow-on work.
     recovery_maturities = (IRMaturity.GLOBAL_ANALYZED,)
 
-    def detect(self, graph: FlowGraph, capabilities, context=None):
+    def detect(
+        self,
+        graph: FlowGraph,
+        capabilities,
+        context=None,
+        *,
+        excluded_dispatcher_identities=frozenset(),
+    ):
         """Recognize the equality-chain (``CONDITION_CHAIN``) Hodur state machine.
 
         Claims ONLY the equality-chain dispatcher shape via
@@ -71,7 +79,15 @@ class HodurFamily(StateMachineCffFamily):
             graph, min_state_constant=min_state_constant
         )
         if dmap is not None:
-            return dmap
+            identity = dispatcher_map_identity(
+                graph,
+                dmap,
+                resolver_name="equality_chain",
+                router_kind=RouterKind.EQUALITY_CHAIN,
+                table_provenance=None,
+            )
+            if identity not in excluded_dispatcher_identities:
+                return dmap
         # Fallback (ticket llr-a93i, Slice 5): a NON-identity-selector machine -- XOR-masked
         # ``switch((state^KEY)&MASK)`` -- is invisible to the equality-chain detector (its case
         # labels are sub-threshold byte projections; the compared operand is a computed m_xor
@@ -87,7 +103,9 @@ class HodurFamily(StateMachineCffFamily):
         if not (isinstance(context, dict) and context.get("emulation_dispatcher")):
             return None
         fallback = build_dispatch_map_any_kind(
-            graph, min_state_constant=min_state_constant
+            graph,
+            min_state_constant=min_state_constant,
+            excluded_identities=excluded_dispatcher_identities,
         )
         if fallback is not None and fallback.router_kind is RouterKind.CONDITION_CHAIN:
             return fallback

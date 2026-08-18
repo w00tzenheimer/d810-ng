@@ -53,7 +53,13 @@ def effective_family_selection_config(
     return effective
 
 
-def select_family(graph, project_config, *, capabilities=frozenset()):
+def select_family(
+    graph,
+    project_config,
+    *,
+    capabilities=frozenset(),
+    excluded_dispatcher_identities=frozenset(),
+):
     """Return the registered profile that recognizes ``graph``, or ``None``.
 
     Mirrors unflatten ``select_family``: polls the candidate profiles and returns the first
@@ -79,6 +85,15 @@ def select_family(graph, project_config, *, capabilities=frozenset()):
         candidates.sort(key=lambda f: -float(prefer.get(f.name, 0.0)))
 
     for family in candidates:
-        if family.detect(graph, capabilities, context=project_config) is not None:
+        if excluded_dispatcher_identities:
+            match = family.detect(
+                graph,
+                capabilities,
+                context=project_config,
+                excluded_dispatcher_identities=excluded_dispatcher_identities,
+            )
+        else:
+            match = family.detect(graph, capabilities, context=project_config)
+        if match is not None:
             return family
     return None

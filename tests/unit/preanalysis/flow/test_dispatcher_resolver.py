@@ -18,6 +18,7 @@ from d810.ir.flowgraph import (
 )
 from d810.capabilities.dispatcher import RouterKind, TableProvenance
 from d810.analyses.control_flow.dispatcher_resolution import (
+    DispatcherCandidateIdentity,
     DispatcherResolution,
     ResolverCandidate,
 )
@@ -25,8 +26,12 @@ from d810.analyses.control_flow.dispatcher_recovery import (
     SwitchTableDispatcherResolver,
     build_dispatch_map_any_kind,
     default_dispatcher_resolvers,
+    recover_dispatcher,
 )
-from d810.analyses.control_flow.dispatcher_resolver import resolve_dispatcher
+from d810.analyses.control_flow.dispatcher_resolver import (
+    dispatcher_resolution_identity,
+    resolve_dispatcher,
+)
 
 
 def _mop(
@@ -68,6 +73,8 @@ def _block(
     preds=(),
     succs=(),
     tail: InsnSnapshot | None = None,
+    start_ea: int = 0,
+    native_start_ea: int | None = None,
 ) -> BlockSnapshot:
     return BlockSnapshot(
         serial=serial,
@@ -75,8 +82,9 @@ def _block(
         succs=tuple(succs),
         preds=tuple(preds),
         flags=0,
-        start_ea=0,
+        start_ea=start_ea,
         insn_snapshots=() if tail is None else (tail,),
+        native_start_ea=native_start_ea,
     )
 
 
@@ -172,6 +180,199 @@ def test_no_dispatcher_graph_returns_none():
 
 def test_resolve_dispatcher_none_graph_returns_none():
     assert resolve_dispatcher(None, default_dispatcher_resolvers()) is None
+
+
+class _FixedResolver:
+    """Resolver with a literal map used to exercise ranked fallback."""
+
+    def __init__(
+        self,
+        *,
+        name: str,
+        router_kind: RouterKind,
+        specificity: int,
+        dispatcher_entry_block: int,
+        state_var_stkoff: int,
+    ) -> None:
+        self.name = name
+        self.router_kind = router_kind
+        self.specificity = specificity
+        self._dispatcher_entry_block = dispatcher_entry_block
+        self._state_var_stkoff = state_var_stkoff
+
+    def accepts(self, graph):
+        return ResolverCandidate(
+            resolver_name=self.name,
+            router_kind=self.router_kind,
+            confidence=1.0,
+            specificity=self.specificity,
+            reasons=(self.name,),
+        )
+
+    def resolve(self, graph, candidate):
+        row = StateDispatcherRow(
+            state_const=self._dispatcher_entry_block,
+            target_block=4,
+            dispatcher_block=self._dispatcher_entry_block,
+            compare_block=None,
+            branch_kind=self.name,
+            router_kind=self.router_kind,
+        )
+        dmap = StateDispatcherMap(
+            rows=(row,),
+            dispatcher_entry_block=self._dispatcher_entry_block,
+            dispatcher_blocks=frozenset({self._dispatcher_entry_block}),
+            state_var_stkoff=self._state_var_stkoff,
+            state_var_lvar_idx=None,
+            router_kind=self.router_kind,
+        )
+        return DispatcherResolution(
+            dispatcher_map=dmap,
+            resolver_name=self.name,
+            router_kind=self.router_kind,
+            confidence=candidate.confidence,
+            ranking_reason=candidate.reasons,
+        )
+
+
+def test_excluding_exact_ranked_dispatcher_selects_next_candidate():
+    """A stalled outer candidate must not starve a distinct nested dispatcher."""
+    graph = _flow_graph(
+        {
+            0: _block(0, succs=(2, 3)),
+            2: _block(2, preds=(0,), succs=(4,)),
+            3: _block(3, preds=(0,), succs=(4,)),
+            4: _block(4, preds=(2, 3)),
+        }
+    )
+    outer = _FixedResolver(
+        name="outer_interval",
+        router_kind=RouterKind.CONDITION_CHAIN,
+        specificity=10,
+        dispatcher_entry_block=2,
+        state_var_stkoff=0xC,
+    )
+    inner = _FixedResolver(
+        name="inner_switch",
+        router_kind=RouterKind.TABLE,
+        specificity=5,
+        dispatcher_entry_block=3,
+        state_var_stkoff=0x28,
+    )
+
+    first = resolve_dispatcher(graph, (outer, inner))
+    assert first is not None
+    assert first.resolver_name == "outer_interval"
+    outer_identity = dispatcher_resolution_identity(graph, first)
+    assert isinstance(outer_identity, DispatcherCandidateIdentity)
+
+    fallback = resolve_dispatcher(
+        graph,
+        (outer, inner),
+        excluded_identities=frozenset({outer_identity}),
+    )
+
+    assert fallback is not None
+    assert fallback.resolver_name == "inner_switch"
+    assert fallback.dispatcher_map.state_var_stkoff == 0x28
+
+
+def test_dispatcher_exclusion_is_exact_not_resolver_wide():
+    """Excluding one native/state identity must not disable its resolver globally."""
+    graph = _flow_graph(
+        {
+            0: _block(0, succs=(2,)),
+            2: _block(2, preds=(0,), succs=(4,)),
+            4: _block(4, preds=(2,)),
+        }
+    )
+    resolver = _FixedResolver(
+        name="outer_interval",
+        router_kind=RouterKind.CONDITION_CHAIN,
+        specificity=10,
+        dispatcher_entry_block=2,
+        state_var_stkoff=0xC,
+    )
+    different_state_identity = DispatcherCandidateIdentity(
+        resolver_name="outer_interval",
+        router_kind=RouterKind.CONDITION_CHAIN,
+        table_provenance=None,
+        dispatcher_entry_ea=0,
+        state_location_kind="stack",
+        state_location_value=0x28,
+    )
+
+    resolution = resolve_dispatcher(
+        graph,
+        (resolver,),
+        excluded_identities=frozenset({different_state_identity}),
+    )
+
+    assert resolution is not None
+    assert resolution.resolver_name == "outer_interval"
+
+
+def test_dispatcher_identity_prefers_native_entry_ea_over_fictitious_coordinate():
+    graph = _flow_graph(
+        {
+            0: _block(0, succs=(2,)),
+            2: _block(
+                2,
+                preds=(0,),
+                succs=(4,),
+                start_ea=0xFFFF000000001000,
+                native_start_ea=0x401100,
+            ),
+            4: _block(4, preds=(2,)),
+        }
+    )
+    resolver = _FixedResolver(
+        name="outer_interval",
+        router_kind=RouterKind.CONDITION_CHAIN,
+        specificity=10,
+        dispatcher_entry_block=2,
+        state_var_stkoff=0xC,
+    )
+    resolution = resolve_dispatcher(graph, (resolver,))
+
+    assert resolution is not None
+    assert dispatcher_resolution_identity(
+        graph, resolution
+    ).dispatcher_entry_ea == 0x401100
+
+
+def test_shared_dispatcher_frontends_honor_exact_exclusion():
+    """Family detection and pipeline recovery must see the same fallback policy."""
+    graph = _switch_flow_graph()
+    selected = resolve_dispatcher(graph, default_dispatcher_resolvers())
+    assert selected is not None
+    identity = dispatcher_resolution_identity(graph, selected)
+
+    assert (
+        build_dispatch_map_any_kind(
+            graph,
+            excluded_identities=frozenset({identity}),
+        )
+        is None
+    )
+    recovery = recover_dispatcher(
+        graph,
+        facts=None,
+        excluded_identities=frozenset({identity}),
+    )
+    assert recovery.dispatcher_block_serial is None
+
+
+def test_recovery_retains_selected_native_candidate_identity():
+    graph = _switch_flow_graph()
+    selected = resolve_dispatcher(graph, default_dispatcher_resolvers())
+    assert selected is not None
+
+    recovery = recover_dispatcher(graph, facts=None)
+
+    assert recovery.candidate_identity == dispatcher_resolution_identity(
+        graph, selected
+    )
 
 
 # --- Extra-resolver registry seam (llr-qb33) ---------------------------------

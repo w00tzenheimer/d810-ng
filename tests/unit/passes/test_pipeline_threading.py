@@ -51,6 +51,7 @@ from d810.passes.unflatten.state_machine import (
 from d810.passes.state_machine_spine import LOWER_ANALYSES
 from d810.analyses.control_flow.dispatcher_recovery import DispatcherRecovery
 from d810.analyses.control_flow.dispatcher_resolution import (
+    DispatcherCandidateIdentity,
     StateDispatcherMap,
     StateDispatcherRow,
 )
@@ -328,6 +329,31 @@ def test_recover_dispatcher_builds_exact_map_from_materialized_identities():
     assert recovery.state_var_reg == 28
     assert recovery.dispatch_map is not None
     assert recovery.dispatch_map.state_to_handler() == {C1: 1}
+
+
+def test_recover_dispatcher_consumes_runtime_candidate_exclusions(monkeypatch):
+    identity = DispatcherCandidateIdentity(
+        resolver_name="equality_chain",
+        router_kind=RouterKind.EQUALITY_CHAIN,
+        table_provenance=None,
+        dispatcher_entry_ea=0x1000,
+        state_location_kind="stack",
+        state_location_value=STATE_OFF,
+    )
+    graph = _chain_graph()
+    am = AnalysisManager(graph)
+    am.put_analysis("dispatcher_candidate_exclusions", frozenset({identity}))
+    seen = {}
+
+    def _capture(graph, facts, **kwargs):
+        seen["excluded"] = kwargs.get("excluded_identities")
+        return DispatcherRecovery()
+
+    monkeypatch.setattr(state_machine_module, "recover_dispatcher", _capture)
+
+    RecoverDispatcher().run(_ctx(graph, am.view()))
+
+    assert seen["excluded"] == frozenset({identity})
 
 
 def test_recover_dispatcher_publishes_branch_target_evidence():

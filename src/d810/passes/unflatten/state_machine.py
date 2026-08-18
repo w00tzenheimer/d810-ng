@@ -848,6 +848,9 @@ class RecoverDispatcher(PipelinePass):
                 materialized_indirect_transfers=tuple(
                     _analysis(context, "materialized_indirect_transfers", ()) or ()
                 ),
+                excluded_identities=frozenset(
+                    _analysis(context, "dispatcher_candidate_exclusions", ()) or ()
+                ),
             )
             analysis_outputs = {}
         recovery = _adopt_range_evidence_stack_identity(
