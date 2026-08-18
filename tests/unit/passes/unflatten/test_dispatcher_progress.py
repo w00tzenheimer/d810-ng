@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-
 from d810.analyses.control_flow.dispatcher_resolution import (
     DispatcherCandidateIdentity,
 )
@@ -84,7 +82,7 @@ def test_exhausted_graph_is_exact_and_cleared_by_function_reset():
     assert not ledger.is_exhausted(0x401000, _MAT, "graph-a")
 
 
-def test_graph_fingerprint_changes_when_instruction_changes_without_topology_change():
+def test_graph_fingerprint_ignores_instruction_changes_without_topology_change():
     def graph_with_instruction(opcode: int, value: int) -> FlowGraph:
         insn = InsnSnapshot(
             opcode=opcode,
@@ -109,43 +107,73 @@ def test_graph_fingerprint_changes_when_instruction_changes_without_topology_cha
             metadata={"maturity_name": "MMAT_GLBOPT1"},
         )
 
-    assert flowgraph_content_fingerprint(
-        graph_with_instruction(1, 0x10)
-    ) != flowgraph_content_fingerprint(graph_with_instruction(2, 0x10))
-    assert flowgraph_content_fingerprint(
-        graph_with_instruction(1, 0x10)
-    ) != flowgraph_content_fingerprint(graph_with_instruction(1, 0x20))
+    baseline = flowgraph_content_fingerprint(graph_with_instruction(1, 0x10))
+
+    assert baseline == flowgraph_content_fingerprint(graph_with_instruction(2, 0x10))
+    assert baseline == flowgraph_content_fingerprint(graph_with_instruction(1, 0x20))
 
 
-def test_graph_fingerprint_ignores_non_comparable_owned_backend_objects():
-    @dataclass(frozen=True)
-    class RichOperand:
-        value: int
-        owned_backend_object: object = field(compare=False, repr=False)
-
-    def graph_with_owned_object(owned: object) -> FlowGraph:
-        insn = InsnSnapshot(
-            opcode=1,
-            ea=0x401100,
-            operands=(RichOperand(value=0x42, owned_backend_object=owned),),
-            kind=InsnKind.MOV,
-        )
-        block = BlockSnapshot(
-            serial=0,
-            block_type=0,
-            succs=(),
-            preds=(),
-            flags=0,
-            start_ea=0x401100,
-            insn_snapshots=(insn,),
-        )
+def test_graph_fingerprint_changes_when_topology_changes():
+    def graph_with_successors(*successors: int) -> FlowGraph:
+        blocks = {
+            serial: BlockSnapshot(
+                serial=serial,
+                block_type=0,
+                succs=(() if serial else tuple(successors)),
+                preds=(() if serial == 0 else (0,)),
+                flags=0,
+                start_ea=0x401100 + serial * 0x10,
+                insn_snapshots=(),
+            )
+            for serial in range(max(successors, default=0) + 1)
+        }
         return FlowGraph(
-            blocks={0: block},
+            blocks=blocks,
             entry_serial=0,
             func_ea=0x401000,
             metadata={"maturity_name": "MMAT_GLBOPT1"},
         )
 
     assert flowgraph_content_fingerprint(
-        graph_with_owned_object(object())
-    ) == flowgraph_content_fingerprint(graph_with_owned_object(object()))
+        graph_with_successors(1)
+    ) != flowgraph_content_fingerprint(graph_with_successors(1, 2))
+
+
+def test_graph_fingerprint_ignores_control_tail_rewrites_when_edges_are_unchanged():
+    def graph_with_tail(display_text: str) -> FlowGraph:
+        tail = InsnSnapshot(
+            opcode=1,
+            ea=0x401100,
+            operands=(),
+            display_text=display_text,
+            kind=InsnKind.GOTO,
+            d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=1),
+        )
+        return FlowGraph(
+            blocks={
+                0: BlockSnapshot(
+                    serial=0,
+                    block_type=1,
+                    succs=(1,),
+                    preds=(),
+                    flags=0,
+                    start_ea=0x401100,
+                    insn_snapshots=(tail,),
+                ),
+                1: BlockSnapshot(
+                    serial=1,
+                    block_type=0,
+                    succs=(),
+                    preds=(0,),
+                    flags=0,
+                    start_ea=0x401110,
+                    insn_snapshots=(),
+                ),
+            },
+            entry_serial=0,
+            func_ea=0x401000,
+        )
+
+    assert flowgraph_content_fingerprint(
+        graph_with_tail("goto 1")
+    ) == flowgraph_content_fingerprint(graph_with_tail("goto blk1"))

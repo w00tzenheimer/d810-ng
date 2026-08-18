@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass, field, fields, is_dataclass
-from enum import Enum
+from dataclasses import dataclass, field
 import hashlib
 
 from d810.analyses.control_flow.dispatcher_resolution import (
@@ -17,39 +15,16 @@ _AttemptKey = tuple[int, IRMaturity, str, DispatcherCandidateIdentity]
 _GraphKey = tuple[int, IRMaturity, str]
 
 
-def _stable_value(value: object) -> object:
-    if value is None or isinstance(value, (bool, int, float, str, bytes)):
-        return value
-    if isinstance(value, Enum):
-        return (type(value).__qualname__, value.value)
-    if isinstance(value, Mapping):
-        return tuple(
-            sorted(
-                (
-                    (_stable_value(key), _stable_value(item))
-                    for key, item in value.items()
-                ),
-                key=repr,
-            )
-        )
-    if isinstance(value, (tuple, list)):
-        return tuple(_stable_value(item) for item in value)
-    if isinstance(value, (set, frozenset)):
-        return tuple(sorted((_stable_value(item) for item in value), key=repr))
-    if is_dataclass(value) and not isinstance(value, type):
-        return (
-            type(value).__qualname__,
-            tuple(
-                (item.name, _stable_value(getattr(value, item.name)))
-                for item in fields(value)
-                if item.compare
-            ),
-        )
-    return repr(value)
-
-
 def flowgraph_content_fingerprint(graph: object) -> str:
-    """Hash topology and portable instructions for exact no-progress comparison."""
+    """Hash the topology epoch used for candidate progress accounting.
+
+    Instruction optimizers may rewrite unrelated handler expressions between
+    optblock callbacks without changing whether a dispatcher candidate is
+    actionable.  Hashing every instruction turns that ordinary churn into a
+    fresh recovery opportunity and defeats the no-progress bound on large
+    functions.  Dispatcher fallback is reopened when block identity, type, or
+    edges change; tail rendering and block flags are intentionally excluded.
+    """
     blocks = getattr(graph, "blocks")
     content = tuple(
         (
@@ -57,15 +32,13 @@ def flowgraph_content_fingerprint(graph: object) -> str:
             int(getattr(block, "start_ea", 0)),
             int(getattr(block, "native_start_ea", 0) or 0),
             int(getattr(block, "block_type", 0)),
-            int(getattr(block, "flags", 0)),
             tuple(int(succ) for succ in getattr(block, "succs", ())),
             tuple(int(pred) for pred in getattr(block, "preds", ())),
-            _stable_value(getattr(block, "insn_snapshots", ())),
         )
         for serial, block in sorted(blocks.items())
     )
     digest = hashlib.sha256(repr(content).encode("utf-8")).hexdigest()
-    return f"flowgraph-content-v1:{digest}"
+    return f"flowgraph-topology-epoch-v1:{digest}"
 
 
 @dataclass(slots=True)

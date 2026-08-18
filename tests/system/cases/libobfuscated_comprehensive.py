@@ -500,11 +500,15 @@ CONSTANT_FOLDING_CASES = [
         function="AntiDebug_ExceptionFilter",
         description=(
             "Anti-debugging exception handler through the shared Tigress switch "
-            "engine profile. This gate guards against invalid readonly "
-            "folding such as a synthetic MEMORY[0xB10000007FFE00E1] rotate chain."
+            "engine profile. The native constant chain deliberately computes "
+            "0xB10000007FFE00E1 and dereferences it; the recovered pseudocode "
+            "must preserve that access."
         ),
         project="default_unflattening_tigress_engine_transition_facts.json",
-        deobfuscated_not_contains=[
+        # Cases 0x7C..0x88 in the native fixture reduce to
+        # v240=0xB10000007FFE00B8, then v241=(v240 ^ 0x65)+4.  Treating the
+        # resulting MEMORY access as forbidden would reward an omission.
+        deobfuscated_contains=[
             "MEMORY[0xB10000007FFE00E1]",
         ],
         # EmulatedDispatcherUnflattener was swapped to the §1a StateMachineCffUnflattener
