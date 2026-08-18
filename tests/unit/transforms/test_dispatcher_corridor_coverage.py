@@ -24,6 +24,7 @@ from d810.transforms import minimal_unflatten_emit as emit_module
 from d810.transforms.dispatcher_corridor_coverage import (
     USE_DEF_SEVERANCE_AUDIT_METADATA,
     DispatcherRemovalPreflightProof,
+    DispatcherRemovalPreflightValidation,
     analyze_dispatcher_corridor_coverage,
     build_dispatcher_removal_preflight_proof,
     canonicalize_observed_dispatcher_graph,
@@ -753,6 +754,21 @@ def _interval_state_normalizer_fixture(
     normalized_value: int = 0x37E2E8EF,
     semantic_normalizer_predecessor: bool = False,
     retain_dynamic_corridor: bool = False,
+    downstream_state_carrier: bool = False,
+    carrier_effectful: bool = False,
+    downstream_carrier_reg: int = 8,
+    downstream_carrier_size: int = 4,
+    duplicate_carrier_destination: bool = False,
+    carrier_branch_is_call: bool = False,
+    state_write_prefix_dispatcher: bool = False,
+    routed_target_authoritative: bool = True,
+    source_owned_predecessor_route: bool = False,
+    source_route_assignment: str = "exact",
+    source_route_value: int | None = None,
+    source_route_projected_successors: tuple[int, ...] = (6,),
+    source_route_handler_root: bool = False,
+    normalizer_effectful: bool = False,
+    lose_unrelated_handler: bool = False,
 ) -> tuple[FlowGraph, FlowGraph, object, object]:
     """One strict interval-normalizer plus a predecessor-partitioned state merge."""
 
@@ -777,6 +793,13 @@ def _interval_state_normalizer_fixture(
         size=4,
     )
     carrier = MopSnapshot(kind=OperandKind.REGISTER, reg=carrier_register, size=4)
+    source_route_value = (
+        normalized_value + 1
+        if source_route_value is None and source_owned_predecessor_route
+        else normalized_value
+        if source_route_value is None
+        else source_route_value
+    )
     normalizer_insns = (
         move(
             0x1450,
@@ -796,6 +819,16 @@ def _interval_state_normalizer_fixture(
                 MopSnapshot(kind=OperandKind.REGISTER, reg=10, size=4),
             ),
         )
+    if normalizer_effectful:
+        normalizer_insns += (
+            InsnSnapshot(
+                opcode=0x41,
+                ea=0x1451,
+                operands=(),
+                kind=InsnKind.CALL,
+                is_call=True,
+            ),
+        )
     normalizer_insns += (
         InsnSnapshot(
             opcode=55,
@@ -812,23 +845,104 @@ def _interval_state_normalizer_fixture(
         l=state,
         r=MopSnapshot(
             kind=OperandKind.NUMBER,
-            value=0x37E2E8EF,
+            value=(
+                normalized_value + 1
+                if downstream_state_carrier
+                else 0x37E2E8EF
+            ),
             size=4,
         ),
-        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=43),
+        d=MopSnapshot(
+            kind=OperandKind.BLOCK,
+            block_ref=(
+                6
+                if source_owned_predecessor_route
+                else 70
+                if downstream_state_carrier
+                else 43
+            ),
+        ),
         kind=InsnKind.COND_JUMP,
         predicate_kind=PredicateKind.EQ,
+        is_call=carrier_branch_is_call,
+    )
+    carrier_operand = MopSnapshot(
+        kind=OperandKind.REGISTER,
+        reg=downstream_carrier_reg,
+        size=downstream_carrier_size,
     )
     secondary_dispatcher_branch = InsnSnapshot(
         opcode=42,
         ea=0x1210,
         operands=(),
-        l=state,
-        r=MopSnapshot(kind=OperandKind.NUMBER, value=0x22222222, size=4),
-        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=70),
+        l=carrier_operand if downstream_state_carrier else state,
+        r=MopSnapshot(
+            kind=OperandKind.NUMBER,
+            value=normalized_value if downstream_state_carrier else 0x22222222,
+            size=4,
+        ),
+        d=MopSnapshot(
+            kind=OperandKind.BLOCK,
+            block_ref=43 if downstream_state_carrier else 70,
+        ),
         kind=InsnKind.COND_JUMP,
         predicate_kind=PredicateKind.EQ,
     )
+    source_route_entry_branch = InsnSnapshot(
+        opcode=42,
+        ea=0x1220,
+        operands=(),
+        l=carrier_operand,
+        r=MopSnapshot(
+            kind=OperandKind.NUMBER,
+            value=source_route_value + 1,
+            size=4,
+        ),
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=71),
+        kind=InsnKind.COND_JUMP,
+        predicate_kind=PredicateKind.EQ,
+    )
+    source_route_terminal_branch = InsnSnapshot(
+        opcode=42,
+        ea=0x1228,
+        operands=(),
+        l=carrier_operand,
+        r=MopSnapshot(
+            kind=OperandKind.NUMBER,
+            value=source_route_value,
+            size=4,
+        ),
+        d=MopSnapshot(
+            kind=OperandKind.BLOCK,
+            block_ref=72 if source_route_handler_root else 43,
+        ),
+        kind=InsnKind.COND_JUMP,
+        predicate_kind=PredicateKind.EQ,
+    )
+    dispatcher_insns: tuple[InsnSnapshot, ...] = (dispatcher_branch,)
+    if downstream_state_carrier:
+        carrier_xdu = InsnSnapshot(
+            opcode=9,
+            ea=0x1201,
+            operands=(),
+            l=state,
+            d=MopSnapshot(kind=OperandKind.REGISTER, reg=8, size=8),
+            kind=InsnKind.XDU,
+            value_op_kind=ValueOpKind.ZEXT,
+        )
+        if carrier_effectful:
+            carrier_xdu = InsnSnapshot(
+                opcode=9,
+                ea=0x1201,
+                operands=(),
+                l=MopSnapshot(kind=OperandKind.GLOBAL, gaddr=0x140003000, size=4),
+                d=MopSnapshot(kind=OperandKind.REGISTER, reg=8, size=8),
+                kind=InsnKind.XDU,
+                value_op_kind=ValueOpKind.ZEXT,
+            )
+        dispatcher_insns = (carrier_xdu, dispatcher_branch)
+        if duplicate_carrier_destination:
+            dispatcher_insns = (carrier_xdu, replace(carrier_xdu, ea=0x1202), dispatcher_branch)
     unrelated_handler_branch = InsnSnapshot(
         opcode=42,
         ea=0x1710,
@@ -854,7 +968,99 @@ def _interval_state_normalizer_fixture(
         kind=InsnKind.UNKNOWN,
         value_op_kind=ValueOpKind.XOR,
     )
-    entry_successors = (10, 12, 99) if semantic_normalizer_predecessor else (10, 12)
+    source_route_destination = carrier
+    source_route_source = MopSnapshot(
+        kind=OperandKind.NUMBER,
+        value=source_route_value,
+        size=4,
+    )
+    if source_route_assignment == "wrong_carrier":
+        source_route_destination = MopSnapshot(
+            kind=OperandKind.REGISTER,
+            reg=carrier_register + 1,
+            size=4,
+        )
+    elif source_route_assignment == "wrong_width":
+        source_route_destination = MopSnapshot(
+            kind=OperandKind.REGISTER,
+            reg=carrier_register,
+            size=8,
+        )
+        source_route_source = replace(source_route_source, size=8)
+    source_route_insns: tuple[InsnSnapshot, ...] = ()
+    if source_route_assignment != "absent":
+        if source_route_assignment == "unknown_expression":
+            source_route_insns = (
+                InsnSnapshot(
+                    opcode=21,
+                    ea=0x1300,
+                    operands=(),
+                    l=source_route_source,
+                    r=MopSnapshot(kind=OperandKind.REGISTER, reg=31, size=4),
+                    d=source_route_destination,
+                    kind=InsnKind.UNKNOWN,
+                    value_op_kind=ValueOpKind.XOR,
+                ),
+            )
+        elif source_route_assignment == "effectful_expression":
+            source_route_insns = (
+                move(
+                    0x1300,
+                    MopSnapshot(
+                        kind=OperandKind.GLOBAL,
+                        gaddr=0x140009000,
+                        size=4,
+                    ),
+                    source_route_destination,
+                ),
+            )
+        else:
+            source_route_insns = (
+                move(0x1300, source_route_source, source_route_destination),
+            )
+    if source_route_assignment == "later_clobber":
+        source_route_insns += (
+            move(
+                0x1301,
+                MopSnapshot(kind=OperandKind.REGISTER, reg=30, size=4),
+                carrier,
+            ),
+        )
+    if source_route_assignment == "preserved_effect":
+        source_route_insns = (
+            InsnSnapshot(
+                opcode=0x41,
+                ea=0x12FF,
+                operands=(),
+                kind=InsnKind.CALL,
+            ),
+            *source_route_insns,
+        )
+    if source_route_assignment == "effect_after_assignment":
+        source_route_insns += (
+            InsnSnapshot(
+                opcode=0x41,
+                ea=0x1301,
+                operands=(),
+                kind=InsnKind.CALL,
+            ),
+        )
+    if source_route_assignment == "unknown_after_assignment":
+        source_route_insns += (
+            InsnSnapshot(
+                opcode=0x7FFF,
+                ea=0x1301,
+                operands=(),
+                kind=InsnKind.UNKNOWN,
+            ),
+        )
+    entry_successors = (
+        (10, 12, 99)
+        if semantic_normalizer_predecessor
+        else (10, 12, 73)
+        if lose_unrelated_handler
+        else (10, 12)
+    )
     normalizer_predecessors = (5, 99) if semantic_normalizer_predecessor else (5,)
     blocks = {
         0: _block(0, entry_successors, (), 0x1000, kind=BlockKind.N_WAY),
@@ -865,27 +1071,60 @@ def _interval_state_normalizer_fixture(
             0x1100,
             kind=BlockKind.ONE_WAY,
             insns=(move(0x1100, carrier, feeder_state),),
-            tail_kind=InsnKind.GOTO,
+            tail_kind=(None if state_write_prefix_dispatcher else InsnKind.GOTO),
         ),
         4: _block(
             4,
-            (5, 43),
+            (
+                (5, 6)
+                if source_owned_predecessor_route
+                else (5, 70 if downstream_state_carrier else 43)
+            ),
             (3, 65),
             0x1200,
             kind=BlockKind.TWO_WAY,
-            insns=(dispatcher_branch,),
+            insns=dispatcher_insns,
             tail_kind=InsnKind.COND_JUMP,
         ),
         5: _block(
             5,
-            (50, 70),
+            (50, 43 if downstream_state_carrier else 70),
             (4,),
             0x1210,
             kind=BlockKind.TWO_WAY,
             insns=(secondary_dispatcher_branch,),
             tail_kind=InsnKind.COND_JUMP,
         ),
-        10: _block(10, (3,), (0,), 0x1300, kind=BlockKind.ONE_WAY),
+        6: _block(
+            6,
+            (7, 71),
+            (4,) if source_owned_predecessor_route else (),
+            0x1220,
+            kind=BlockKind.TWO_WAY,
+            insns=(source_route_entry_branch,),
+            tail_kind=InsnKind.COND_JUMP,
+        ),
+        7: _block(
+            7,
+            (71, 72 if source_route_handler_root else 43),
+            (6,) if source_owned_predecessor_route else (),
+            0x1228,
+            kind=BlockKind.TWO_WAY,
+            insns=(source_route_terminal_branch,),
+            tail_kind=InsnKind.COND_JUMP,
+        ),
+        10: _block(
+            10,
+            (3,),
+            (0,),
+            0x1300,
+            kind=BlockKind.ONE_WAY,
+            insns=(
+                source_route_insns
+                if source_owned_predecessor_route or state_write_prefix_dispatcher
+                else ()
+            ),
+        ),
         12: _block(12, (65,), (0,), 0x1350, kind=BlockKind.ONE_WAY),
         43: _block(
             43,
@@ -930,35 +1169,92 @@ def _interval_state_normalizer_fixture(
             insns=(unrelated_handler_branch,),
             tail_kind=InsnKind.COND_JUMP,
         ),
+        72: _block(
+            72,
+            (88,),
+            (7,) if source_route_handler_root else (),
+            0x1720,
+            kind=BlockKind.ONE_WAY,
+            tail_kind=InsnKind.GOTO,
+        ),
+        73: _block(
+            73,
+            (88,),
+            (0,) if lose_unrelated_handler else (),
+            0x1730,
+            kind=BlockKind.ONE_WAY,
+            insns=(
+                InsnSnapshot(
+                    opcode=0x41,
+                    ea=0x1730,
+                    operands=(),
+                    kind=InsnKind.CALL,
+                    is_call=True,
+                ),
+            ),
+        ),
         88: _block(88, (), (43,), 0x1780, kind=BlockKind.STOP),
         89: _block(89, (), (71,), 0x1790, kind=BlockKind.STOP),
     }
     if semantic_normalizer_predecessor:
         blocks[99] = _block(99, (50,), (0,), 0x1800, kind=BlockKind.ONE_WAY)
     pre_graph = FlowGraph(blocks=blocks, entry_serial=0, func_ea=0x1000)
-    modifications = [
-        RedirectGoto(from_serial=10, old_target=3, new_target=43),
-    ]
+    pre_graph = _replace_observed_edges(
+        pre_graph,
+        {serial: tuple(block.succs) for serial, block in pre_graph.blocks.items()},
+    )
+    dispatcher_entry_serial = 3 if state_write_prefix_dispatcher else 4
+    modifications = []
+    if source_owned_predecessor_route:
+        modifications.append(
+            RedirectGoto(
+                from_serial=10,
+                old_target=3,
+                new_target=source_route_projected_successors[0],
+            )
+        )
+    else:
+        modifications.append(
+            RedirectGoto(from_serial=10, old_target=3, new_target=43)
+        )
     if not retain_dynamic_corridor:
         modifications.append(RedirectGoto(from_serial=12, old_target=65, new_target=71))
+    if lose_unrelated_handler:
+        modifications.append(RedirectGoto(from_serial=0, old_target=73, new_target=12))
     coverage = analyze_dispatcher_corridor_coverage(
         pre_graph,
         modifications=tuple(modifications),
-        dispatcher_entry_serial=4,
+        dispatcher_entry_serial=dispatcher_entry_serial,
     )
     post_successors = {
         serial: tuple(block.succs) for serial, block in pre_graph.blocks.items()
     }
-    post_successors[10] = (43,)
+    post_successors[10] = (
+        source_route_projected_successors
+        if source_owned_predecessor_route
+        else (43,)
+    )
     if not retain_dynamic_corridor:
         post_successors[12] = (71,)
+    if lose_unrelated_handler:
+        post_successors[0] = tuple(
+            12 if int(target) == 73 else int(target)
+            for target in post_successors[0]
+        )
     post_graph = _replace_observed_edges(pre_graph, post_successors)
+    authoritative_handlers = (
+        {43, 50, 71} if routed_target_authoritative else {50, 71}
+    )
+    if source_route_handler_root:
+        authoritative_handlers.add(72)
+    if lose_unrelated_handler:
+        authoritative_handlers.add(73)
     proof = build_dispatcher_removal_preflight_proof(
         pre_graph,
         post_graph=post_graph,
         coverage=coverage,
-        dispatcher_entry_serial=4,
-        authoritative_handler_serials=frozenset({43, 50, 71}),
+        dispatcher_entry_serial=dispatcher_entry_serial,
+        authoritative_handler_serials=frozenset(authoritative_handlers),
         dispatcher_region_serials=frozenset({4}),
         producer_safety=_executed_fragment_safety(),
         state_plumbing_serials=frozenset({3, 50, 65}),
@@ -1167,6 +1463,764 @@ def test_state_transition_plumbing_retirement_rejects_near_misses(
     assert validation.reason == "dispatcher_removal_proof_drift"
     assert validation.proof is not None
     assert validation.proof.reason == "untyped_lost_block"
+
+def test_applied_normalizer_observation_projects_observed_verdict() -> None:
+    pre_graph, post_graph, coverage, proof = _interval_state_normalizer_fixture()
+    validation = validate_dispatcher_removal_preflight_proof(
+        pre_graph,
+        post_graph=post_graph,
+        plan_metadata={
+            "dispatcher_corridor_coverage": coverage.to_metadata(),
+            "dispatcher_removal_preflight_proof": proof.to_metadata(),
+        },
+    )
+    assert validation.passed
+
+    observations = collect_dispatcher_removal_preflight_proof_observations_from_metadata(
+        proof.to_metadata(),
+        coverage_metadata=coverage.to_metadata(),
+        maturity="MMAT_GLBOPT1",
+        phase="lower_state_machine",
+        application_status="applied",
+        projected_validation=validation,
+        observed_validation=validation,
+    )
+
+    payload = observations[0].payload
+    assert payload["proof_status"] == "accepted"
+    assert payload["reason"] == "interval_state_normalizer_retirement"
+    assert payload["producer_proof_status"] == "rejected"
+    assert payload["producer_reason"] == "authoritative_handler_lost"
+
+
+@pytest.mark.parametrize("application_status", ("applied", "pending", "failed"))
+def test_unobserved_normalizer_projection_keeps_producer_verdict(
+    application_status: str,
+) -> None:
+    _, _, coverage, proof = _interval_state_normalizer_fixture()
+    projected_validation = DispatcherRemovalPreflightValidation(
+        passed=True,
+        reason="projected_only_normalizer_retirement",
+    )
+
+    observations = collect_dispatcher_removal_preflight_proof_observations_from_metadata(
+        proof.to_metadata(),
+        coverage_metadata=coverage.to_metadata(),
+        maturity="MMAT_GLBOPT1",
+        phase="lower_state_machine",
+        application_status=application_status,
+        projected_validation=projected_validation,
+    )
+
+    payload = observations[0].payload
+    assert payload["proof_status"] == "rejected"
+    assert payload["reason"] == "authoritative_handler_lost"
+    assert "producer_proof_status" not in payload
+    assert "producer_reason" not in payload
+
+
+def test_pending_observed_acceptance_keeps_producer_verdict() -> None:
+    _, _, coverage, proof = _interval_state_normalizer_fixture()
+    observed_validation = DispatcherRemovalPreflightValidation(
+        passed=True,
+        reason="interval_state_normalizer_retirement",
+    )
+
+    observations = collect_dispatcher_removal_preflight_proof_observations_from_metadata(
+        proof.to_metadata(),
+        coverage_metadata=coverage.to_metadata(),
+        maturity="MMAT_GLBOPT1",
+        phase="lower_state_machine",
+        application_status="pending",
+        observed_validation=observed_validation,
+    )
+
+    payload = observations[0].payload
+    assert payload["proof_status"] == "rejected"
+    assert payload["reason"] == "authoritative_handler_lost"
+    assert "producer_proof_status" not in payload
+    assert "producer_reason" not in payload
+
+
+def test_applied_observed_rejection_overrides_accepted_producer() -> None:
+    _, _, coverage, proof = _interval_state_normalizer_fixture()
+    producer_metadata = proof.to_metadata()
+    producer_metadata["proof_status"] = "accepted"
+    producer_metadata["reason"] = "typed_dispatcher_infrastructure_removed"
+    observed_validation = DispatcherRemovalPreflightValidation(
+        passed=False,
+        reason="observed_reachability_drift",
+    )
+
+    observations = collect_dispatcher_removal_preflight_proof_observations_from_metadata(
+        producer_metadata,
+        coverage_metadata=coverage.to_metadata(),
+        maturity="MMAT_GLBOPT1",
+        phase="lower_state_machine",
+        application_status="applied",
+        observed_validation=observed_validation,
+    )
+
+    payload = observations[0].payload
+    assert payload["proof_status"] == "rejected"
+    assert payload["reason"] == "observed_reachability_drift"
+    assert payload["producer_proof_status"] == "accepted"
+    assert payload["producer_reason"] == "typed_dispatcher_infrastructure_removed"
+
+
+def test_interval_state_normalizer_retirement_accepts_typed_state_carrier() -> None:
+    pre_graph, post_graph, coverage, proof = _interval_state_normalizer_fixture(
+        downstream_state_carrier=True,
+        normalized_value=0x1939CB36,
+    )
+
+    assert not proof.passed
+    assert proof.reason == "authoritative_handler_lost"
+    validation = validate_dispatcher_removal_preflight_proof(
+        pre_graph,
+        post_graph=post_graph,
+        plan_metadata={
+            "dispatcher_corridor_coverage": coverage.to_metadata(),
+            "dispatcher_removal_preflight_proof": proof.to_metadata(),
+        },
+    )
+
+    assert validation.passed
+    assert validation.reason == "interval_state_normalizer_retirement"
+    payload = validation.to_payload()["interval_state_normalizer_retirement"]
+    normalizer = payload["normalizers"][0]
+    assert normalizer["normalized_value"] == 0x1939CB36
+    assert normalizer["routed_handler"] == {
+        "serial": 43,
+        "ea": 0x1400,
+        "label": "blk43@0x1400",
+    }
+    assert {item["serial"] for item in payload["semantic_handlers"]} == {43, 71}
+
+
+def _stable_semantic_route_target_fixture() -> tuple[
+    FlowGraph,
+    FlowGraph,
+    frozenset[int],
+    frozenset[int],
+    frozenset[int],
+]:
+    pre_graph, post_graph, _coverage, _proof = _interval_state_normalizer_fixture(
+        downstream_state_carrier=True,
+        state_write_prefix_dispatcher=True,
+        routed_target_authoritative=False,
+        normalized_value=0x1939CB36,
+    )
+    resolution = corridor_module._resolve_dispatcher_state_comparison_entry(
+        pre_graph,
+        dispatcher_entry_serial=3,
+    )
+    assert resolution is not None
+    comparison_region = corridor_module._state_dispatcher_comparison_region(
+        pre_graph,
+        dispatcher_entry_serial=resolution.comparison_entry_serial,
+        state_identity=resolution.state_identity,
+    )
+    pre_reachable = corridor_module._reachable_from_entry(
+        pre_graph.as_adjacency_dict(),
+        pre_graph.entry_serial,
+    )
+    post_reachable = corridor_module._reachable_from_entry(
+        post_graph.as_adjacency_dict(),
+        post_graph.entry_serial,
+    )
+    return (
+        pre_graph,
+        post_graph,
+        comparison_region,
+        frozenset(pre_reachable - post_reachable),
+        post_reachable,
+    )
+
+
+def test_stable_semantic_route_target_rejects_anchor_drift() -> None:
+    pre_graph, post_graph, comparison_region, lost, post_reachable = (
+        _stable_semantic_route_target_fixture()
+    )
+    drifted_post = _replace_observed_edges(
+        post_graph,
+        {serial: tuple(block.succs) for serial, block in post_graph.blocks.items()},
+        overrides={43: {"start_ea": 0x1401}},
+    )
+
+    assert not corridor_module._is_stable_post_reachable_semantic_route_target(
+        pre_graph,
+        post_graph=drifted_post,
+        serial=43,
+        comparison_region=comparison_region,
+        lost=lost,
+        post_reachable=post_reachable,
+    )
+
+
+def test_stable_semantic_route_target_rejects_unreachable_lost_target() -> None:
+    pre_graph, post_graph, comparison_region, lost, post_reachable = (
+        _stable_semantic_route_target_fixture()
+    )
+
+    assert not corridor_module._is_stable_post_reachable_semantic_route_target(
+        pre_graph,
+        post_graph=post_graph,
+        serial=43,
+        comparison_region=comparison_region,
+        lost=lost | {43},
+        post_reachable=post_reachable - {43},
+    )
+
+
+def test_stable_semantic_route_target_rejects_effect_free_router() -> None:
+    pre_graph, post_graph, comparison_region, lost, post_reachable = (
+        _stable_semantic_route_target_fixture()
+    )
+    successors = {
+        serial: tuple(block.succs) for serial, block in pre_graph.blocks.items()
+    }
+    router_pre = _replace_observed_edges(
+        pre_graph,
+        successors,
+        overrides={43: {"insn_snapshots": ()}},
+    )
+    router_post = _replace_observed_edges(
+        post_graph,
+        {serial: tuple(block.succs) for serial, block in post_graph.blocks.items()},
+        overrides={43: {"insn_snapshots": ()}},
+    )
+
+    assert not corridor_module._is_stable_post_reachable_semantic_route_target(
+        router_pre,
+        post_graph=router_post,
+        serial=43,
+        comparison_region=comparison_region,
+        lost=lost,
+        post_reachable=post_reachable,
+    )
+
+
+def test_interval_state_normalizer_retirement_accepts_state_write_prefix_dispatcher() -> None:
+    pre_graph, post_graph, coverage, proof = _interval_state_normalizer_fixture(
+        downstream_state_carrier=True,
+        state_write_prefix_dispatcher=True,
+        normalized_value=0x1939CB36,
+    )
+
+    validation = validate_dispatcher_removal_preflight_proof(
+        pre_graph,
+        post_graph=post_graph,
+        plan_metadata={
+            "dispatcher_corridor_coverage": coverage.to_metadata(),
+            "dispatcher_removal_preflight_proof": proof.to_metadata(),
+        },
+    )
+
+    assert validation.passed
+    assert validation.reason == "interval_state_normalizer_retirement"
+    payload = validation.to_payload()["interval_state_normalizer_retirement"]
+    assert payload["normalizers"][0]["routed_handler"] == {
+        "serial": 43,
+        "ea": 0x1400,
+        "label": "blk43@0x1400",
+    }
+    # The proof receipt retains the original prefix anchor even though the
+    # interval proof traverses the comparison forest at blk4.
+    assert payload["dispatcher"] == {
+        "serial": 3,
+        "ea": 0x1100,
+        "label": "blk3@0x1100",
+    }
+
+
+def test_interval_state_normalizer_accepts_stable_semantic_route_target() -> None:
+    pre_graph, post_graph, coverage, proof = _interval_state_normalizer_fixture(
+        downstream_state_carrier=True,
+        state_write_prefix_dispatcher=True,
+        routed_target_authoritative=False,
+        normalized_value=0x1939CB36,
+    )
+
+    validation = validate_dispatcher_removal_preflight_proof(
+        pre_graph,
+        post_graph=post_graph,
+        plan_metadata={
+            "dispatcher_corridor_coverage": coverage.to_metadata(),
+            "dispatcher_removal_preflight_proof": proof.to_metadata(),
+        },
+    )
+
+    assert validation.passed
+    assert validation.reason == "interval_state_normalizer_retirement"
+    payload = validation.to_payload()["interval_state_normalizer_retirement"]
+    normalizer = payload["normalizers"][0]
+    assert normalizer["normalizer"]["serial"] == 50
+    assert normalizer["routed_handler"] == {
+        "serial": 43,
+        "ea": 0x1400,
+        "label": "blk43@0x1400",
+    }
+    assert {item["serial"] for item in payload["semantic_handlers"]} == {43, 71}
+
+
+@pytest.mark.parametrize("assignment", ("exact", "preserved_effect"))
+def test_interval_state_normalizer_accepts_source_owned_route_through_surviving_router(
+    assignment: str,
+) -> None:
+    pre_graph, post_graph, coverage, proof = _interval_state_normalizer_fixture(
+        downstream_state_carrier=True,
+        state_write_prefix_dispatcher=True,
+        routed_target_authoritative=False,
+        normalized_value=0x1939CB36,
+        source_owned_predecessor_route=True,
+        source_route_assignment=assignment,
+    )
+
+    validation = validate_dispatcher_removal_preflight_proof(
+        pre_graph,
+        post_graph=post_graph,
+        plan_metadata={
+            "dispatcher_corridor_coverage": coverage.to_metadata(),
+            "dispatcher_removal_preflight_proof": proof.to_metadata(),
+        },
+    )
+
+    assert validation.passed
+    assert validation.reason == "interval_state_normalizer_retirement"
+    payload = validation.to_payload()["interval_state_normalizer_retirement"]
+    assert payload["source_routes"] == [
+        {
+            "source": {"serial": 10, "ea": 0x1300, "label": "blk10@0x1300"},
+            "state_feeder": {
+                "serial": 3,
+                "ea": 0x1100,
+                "label": "blk3@0x1100",
+            },
+            "state_value": 0x1939CB37,
+            "projected_successor": {
+                "serial": 6,
+                "ea": 0x1220,
+                "label": "blk6@0x1220",
+            },
+            "routed_handler": {
+                "serial": 43,
+                "ea": 0x1400,
+                "label": "blk43@0x1400",
+            },
+            "retired_normalizers": [],
+        }
+    ]
+    retired_serials = {
+        item["anchor"]["serial"] for item in payload["retired_state_plumbing"]
+    }
+    assert 10 not in retired_serials
+
+
+def test_interval_state_normalizer_accepts_source_route_via_retired_normalizer() -> None:
+    pre_graph, post_graph, coverage, proof = _interval_state_normalizer_fixture(
+        downstream_state_carrier=True,
+        state_write_prefix_dispatcher=True,
+        routed_target_authoritative=False,
+        normalized_value=0x1939CB36,
+        source_owned_predecessor_route=True,
+        source_route_value=0x1939CB38,
+        source_route_projected_successors=(43,),
+    )
+
+    validation = validate_dispatcher_removal_preflight_proof(
+        pre_graph,
+        post_graph=post_graph,
+        plan_metadata={
+            "dispatcher_corridor_coverage": coverage.to_metadata(),
+            "dispatcher_removal_preflight_proof": proof.to_metadata(),
+        },
+    )
+
+    assert validation.passed
+    payload = validation.to_payload()["interval_state_normalizer_retirement"]
+    assert payload["source_routes"][0]["routed_handler"]["serial"] == 43
+    assert payload["source_routes"][0]["retired_normalizers"] == [
+        {"serial": 50, "ea": 0x1450, "label": "blk50@0x1450"}
+    ]
+
+
+def test_interval_state_normalizer_accepts_exact_authoritative_handler_root_receipt() -> None:
+    """Retain the exact handler root even when pure exit glue follows it.
+
+    Target C's state ``0x6CF816C1`` is redirected to authoritative handler
+    ``blk7``.  That handler is itself a pure one-way root of the termination
+    corridor, so a generic comparison-region walk continues past it.  The
+    source-owned route receipt must bind the exact projected handler anchor
+    without reclassifying the handler as retired plumbing.
+    """
+
+    pre_graph, post_graph, coverage, proof = _interval_state_normalizer_fixture(
+        downstream_state_carrier=True,
+        state_write_prefix_dispatcher=True,
+        normalized_value=0x1939CB36,
+        source_owned_predecessor_route=True,
+        source_route_handler_root=True,
+        source_route_projected_successors=(72,),
+    )
+
+    validation = validate_dispatcher_removal_preflight_proof(
+        pre_graph,
+        post_graph=post_graph,
+        plan_metadata={
+            "dispatcher_corridor_coverage": coverage.to_metadata(),
+            "dispatcher_removal_preflight_proof": proof.to_metadata(),
+        },
+    )
+
+    assert validation.passed
+    assert validation.reason == "interval_state_normalizer_retirement"
+    payload = validation.to_payload()["interval_state_normalizer_retirement"]
+    assert payload["source_routes"][0]["projected_successor"] == {
+        "serial": 72,
+        "ea": 0x1720,
+        "label": "blk72@0x1720",
+    }
+    assert payload["source_routes"][0]["routed_handler"] == {
+        "serial": 72,
+        "ea": 0x1720,
+        "label": "blk72@0x1720",
+    }
+    retired = {
+        item["anchor"]["serial"]
+        for item in payload["retired_state_plumbing"]
+    }
+    assert 72 not in retired
+
+
+@pytest.mark.parametrize(
+    ("projected_successors", "drift_handler_anchor"),
+    (
+        ((88,), False),  # no exact authoritative-handler receipt
+        ((71,), False),  # route/target mismatch
+        ((72,), True),  # exact serial with a stale native-EA anchor
+    ),
+)
+def test_interval_state_normalizer_rejects_forged_authoritative_handler_root_receipt(
+    projected_successors: tuple[int, ...],
+    drift_handler_anchor: bool,
+) -> None:
+    pre_graph, post_graph, coverage, proof = _interval_state_normalizer_fixture(
+        downstream_state_carrier=True,
+        state_write_prefix_dispatcher=True,
+        normalized_value=0x1939CB36,
+        source_owned_predecessor_route=True,
+        source_route_handler_root=True,
+        source_route_projected_successors=projected_successors,
+    )
+    if drift_handler_anchor:
+        post_graph = _replace_observed_edges(
+            post_graph,
+            {
+                serial: tuple(block.succs)
+                for serial, block in post_graph.blocks.items()
+            },
+            overrides={72: {"start_ea": 0x1721}},
+        )
+
+    validation = validate_dispatcher_removal_preflight_proof(
+        pre_graph,
+        post_graph=post_graph,
+        plan_metadata={
+            "dispatcher_corridor_coverage": coverage.to_metadata(),
+            "dispatcher_removal_preflight_proof": proof.to_metadata(),
+        },
+    )
+
+    assert not validation.passed
+
+
+@pytest.mark.parametrize(
+    "fixture_override",
+    (
+        {"normalizer_effectful": True},
+        {"extra_normalizer_operation": True},
+        {"carrier_register": 9},
+        {"feeder_state_stkoff": 453},
+        {"lose_unrelated_handler": True},
+    ),
+)
+def test_authoritative_handler_root_receipt_cannot_widen_normalizer_retirement(
+    fixture_override: dict[str, object],
+) -> None:
+    """The handler-root receipt proves one route, never arbitrary loss."""
+
+    pre_graph, post_graph, coverage, proof = _interval_state_normalizer_fixture(
+        downstream_state_carrier=True,
+        state_write_prefix_dispatcher=True,
+        normalized_value=0x1939CB36,
+        source_owned_predecessor_route=True,
+        source_route_handler_root=True,
+        source_route_projected_successors=(72,),
+        **fixture_override,
+    )
+
+    validation = validate_dispatcher_removal_preflight_proof(
+        pre_graph,
+        post_graph=post_graph,
+        plan_metadata={
+            "dispatcher_corridor_coverage": coverage.to_metadata(),
+            "dispatcher_removal_preflight_proof": proof.to_metadata(),
+        },
+    )
+
+    assert not validation.passed
+
+
+@pytest.mark.parametrize(
+    "assignment",
+    (
+        "absent",
+        "wrong_carrier",
+        "wrong_width",
+        "later_clobber",
+        "unknown_expression",
+        "effectful_expression",
+        "effect_after_assignment",
+        "unknown_after_assignment",
+    ),
+)
+def test_interval_state_normalizer_source_owned_route_rejects_unproved_state_value(
+    assignment: str,
+) -> None:
+    pre_graph, post_graph, coverage, proof = _interval_state_normalizer_fixture(
+        downstream_state_carrier=True,
+        state_write_prefix_dispatcher=True,
+        routed_target_authoritative=False,
+        normalized_value=0x1939CB36,
+        source_owned_predecessor_route=True,
+        source_route_assignment=assignment,
+    )
+
+    validation = validate_dispatcher_removal_preflight_proof(
+        pre_graph,
+        post_graph=post_graph,
+        plan_metadata={
+            "dispatcher_corridor_coverage": coverage.to_metadata(),
+            "dispatcher_removal_preflight_proof": proof.to_metadata(),
+        },
+    )
+
+    assert not validation.passed
+
+
+def test_interval_state_normalizer_source_owned_route_rejects_intermediate_anchor_drift() -> None:
+    pre_graph, post_graph, coverage, proof = _interval_state_normalizer_fixture(
+        downstream_state_carrier=True,
+        state_write_prefix_dispatcher=True,
+        routed_target_authoritative=False,
+        normalized_value=0x1939CB36,
+        source_owned_predecessor_route=True,
+    )
+    post_graph = _replace_observed_edges(
+        post_graph,
+        {
+            serial: tuple(block.succs)
+            for serial, block in post_graph.blocks.items()
+        },
+        overrides={7: {"start_ea": 0x2228}},
+    )
+
+    validation = validate_dispatcher_removal_preflight_proof(
+        pre_graph,
+        post_graph=post_graph,
+        plan_metadata={
+            "dispatcher_corridor_coverage": coverage.to_metadata(),
+            "dispatcher_removal_preflight_proof": proof.to_metadata(),
+        },
+    )
+
+    assert not validation.passed
+
+
+@pytest.mark.parametrize("projected_successors", ((70,), (6, 43)))
+def test_interval_state_normalizer_source_owned_route_rejects_wrong_post_shape(
+    projected_successors: tuple[int, ...],
+) -> None:
+    pre_graph, post_graph, coverage, proof = _interval_state_normalizer_fixture(
+        downstream_state_carrier=True,
+        state_write_prefix_dispatcher=True,
+        routed_target_authoritative=False,
+        normalized_value=0x1939CB36,
+        source_owned_predecessor_route=True,
+        source_route_projected_successors=projected_successors,
+    )
+
+    validation = validate_dispatcher_removal_preflight_proof(
+        pre_graph,
+        post_graph=post_graph,
+        plan_metadata={
+            "dispatcher_corridor_coverage": coverage.to_metadata(),
+            "dispatcher_removal_preflight_proof": proof.to_metadata(),
+        },
+    )
+
+    assert not validation.passed
+
+
+def test_retired_normalizer_route_resolution_rejects_cycle_and_unproved_loss() -> None:
+    assert (
+        corridor_module._resolve_retired_normalizer_route_target(
+            50,
+            routes={50: 51, 51: 50},
+            lost=frozenset({50, 51}),
+        )
+        is None
+    )
+    assert (
+        corridor_module._resolve_retired_normalizer_route_target(
+            50,
+            routes={},
+            lost=frozenset({50}),
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("near_miss", ("extra_value", "multiple_successors", "identity_mismatch", "multi_hop"))
+def test_state_write_prefix_resolver_rejects_structural_near_misses(
+    near_miss: str,
+) -> None:
+    fixture_kwargs: dict[str, object] = {
+        "downstream_state_carrier": True,
+        "state_write_prefix_dispatcher": True,
+    }
+    if near_miss == "identity_mismatch":
+        fixture_kwargs["feeder_state_stkoff"] = 453
+    pre_graph, _post_graph, _coverage, _proof = _interval_state_normalizer_fixture(
+        **fixture_kwargs,
+    )
+
+    if near_miss == "extra_value":
+        prefix = pre_graph.get_block(3)
+        assert prefix is not None
+        pre_graph = _replace_observed_edges(
+            pre_graph,
+            {serial: tuple(block.succs) for serial, block in pre_graph.blocks.items()},
+            overrides={
+                3: {
+                    "insn_snapshots": prefix.insn_snapshots
+                    + (prefix.insn_snapshots[0],),
+                }
+            },
+        )
+    elif near_miss == "multiple_successors":
+        pre_graph = _replace_observed_edges(
+            pre_graph,
+            {
+                serial: ((4, 65) if serial == 3 else tuple(block.succs))
+                for serial, block in pre_graph.blocks.items()
+            },
+            overrides={3: {"kind": BlockKind.TWO_WAY}},
+        )
+    elif near_miss == "multi_hop":
+        pre_graph = _replace_observed_edges(
+            pre_graph,
+            {
+                serial: ((5,) if serial == 3 else tuple(block.succs))
+                for serial, block in pre_graph.blocks.items()
+            },
+        )
+
+    assert (
+        corridor_module._resolve_dispatcher_state_comparison_entry(
+            pre_graph,
+            dispatcher_entry_serial=3,
+        )
+        is None
+    )
+
+
+def test_interval_state_normalizer_retirement_rejects_foreign_state_carrier() -> None:
+    pre_graph, post_graph, coverage, proof = _interval_state_normalizer_fixture(
+        downstream_state_carrier=True,
+        downstream_carrier_reg=9,
+        normalized_value=0x1939CB36,
+    )
+
+    validation = validate_dispatcher_removal_preflight_proof(
+        pre_graph,
+        post_graph=post_graph,
+        plan_metadata={
+            "dispatcher_corridor_coverage": coverage.to_metadata(),
+            "dispatcher_removal_preflight_proof": proof.to_metadata(),
+        },
+    )
+
+    assert not validation.passed
+
+
+def test_interval_state_normalizer_retirement_rejects_effectful_state_carrier() -> None:
+    pre_graph, post_graph, coverage, proof = _interval_state_normalizer_fixture(
+        downstream_state_carrier=True,
+        carrier_effectful=True,
+        normalized_value=0x1939CB36,
+    )
+
+    validation = validate_dispatcher_removal_preflight_proof(
+        pre_graph,
+        post_graph=post_graph,
+        plan_metadata={
+            "dispatcher_corridor_coverage": coverage.to_metadata(),
+            "dispatcher_removal_preflight_proof": proof.to_metadata(),
+        },
+    )
+
+    assert not validation.passed
+
+
+def test_interval_state_normalizer_retirement_rejects_mixed_width_state_carrier() -> None:
+    pre_graph, post_graph, coverage, proof = _interval_state_normalizer_fixture(
+        downstream_state_carrier=True,
+        downstream_carrier_size=8,
+        normalized_value=0x1939CB36,
+    )
+
+    validation = validate_dispatcher_removal_preflight_proof(
+        pre_graph,
+        post_graph=post_graph,
+        plan_metadata={
+            "dispatcher_corridor_coverage": coverage.to_metadata(),
+            "dispatcher_removal_preflight_proof": proof.to_metadata(),
+        },
+    )
+
+    assert not validation.passed
+
+
+@pytest.mark.parametrize(
+    "fixture_overrides",
+    (
+        {"duplicate_carrier_destination": True},
+        {"carrier_branch_is_call": True},
+    ),
+)
+def test_interval_state_normalizer_retirement_rejects_unsafe_carrier_router_shapes(
+    fixture_overrides: dict[str, object],
+) -> None:
+    pre_graph, post_graph, coverage, proof = _interval_state_normalizer_fixture(
+        downstream_state_carrier=True,
+        normalized_value=0x1939CB36,
+        **fixture_overrides,
+    )
+
+    validation = validate_dispatcher_removal_preflight_proof(
+        pre_graph,
+        post_graph=post_graph,
+        plan_metadata={
+            "dispatcher_corridor_coverage": coverage.to_metadata(),
+            "dispatcher_removal_preflight_proof": proof.to_metadata(),
+        },
+    )
+
+    assert not validation.passed
+
+
 def test_interval_state_normalizer_retirement_is_independently_proven() -> None:
     pre_graph, post_graph, coverage, proof = _interval_state_normalizer_fixture()
 

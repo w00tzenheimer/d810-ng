@@ -106,6 +106,7 @@ from d810.transforms.minimal_unflatten_emit import (
     build_source_keyed_handler_redirects,
     build_state_write_redirects,
     enrich_native_bound_transition_routes,
+    CONCRETE_STATE_ROUTE_PROVENANCE_METADATA,
     NATIVE_BOUND_TRANSITION_ROUTE_RECEIPTS_METADATA,
 )
 from d810.transforms.dispatcher_corridor_coverage import (
@@ -10782,3 +10783,329 @@ def test_runtime_error_from_interval_row_target_propagates() -> None:
             initial_state=state,
             condition_chain_handlers=frozenset({10, 13}),
         )
+def test_state_route_conflict_abstains_before_any_fragment_modification(
+    monkeypatch,
+    _seam,
+) -> None:
+    """A stale interval row cannot leak beside conflicting exact DAG evidence."""
+
+    state = 0x079323F9
+    carrier = MopSnapshot(
+        t=_T_REG,
+        size=4,
+        reg=8,
+        kind=OperandKind.REGISTER,
+    )
+    state_slot = MopSnapshot(
+        t=_T_STK,
+        size=4,
+        stkoff=_STATE,
+        kind=OperandKind.STACK,
+    )
+    carrier_to_state = InsnSnapshot(
+        opcode=_OP_MOV,
+        ea=0x1300,
+        operands=(),
+        l=carrier,
+        d=state_slot,
+        kind=InsnKind.MOV,
+    )
+    graph = FlowGraph(
+        blocks={
+            3: _b(3, (4,), (16,), (carrier_to_state,)),
+            4: _b(4, (9, 2), (3,)),
+            9: _b(9, (12, 15), (4,)),
+            12: _b(12, (10, 19), (9,)),
+            2: _b(2, (3,), (4,)),
+            10: _b(10, (3,), (12,)),
+            13: _b(13, (3,), ()),
+            15: _b(15, (3,), (9,)),
+            16: _b(16, (3,), (10,)),
+            19: _exit_block(19, (12,)),
+        },
+        entry_serial=16,
+        func_ea=0x1000,
+    )
+    dag = DecisionDag(
+        32,
+        {
+            4: RouteComparison(4, "jz", 0x1BABC1DC, 2, 9),
+            9: RouteComparison(9, "jz", state, 15, 12),
+            12: RouteComparison(12, "jz", 0x1939CB36, 19, 10),
+        },
+        root=4,
+    )
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "recover_state_write_transitions_via_partitioned_fixpoint",
+        lambda *_args, **_kwargs: (
+            StateWriteTransition(
+                16,
+                state,
+                13,
+                False,
+                None,
+                via_block=3,
+                proof=TransitionProof(
+                    "region_partitioned_fixpoint",
+                    "region_seeded",
+                    True,
+                    route_source_kinds=("interval",),
+                ),
+            ),
+        ),
+    )
+
+    plan = emit_minimal_unflatten(
+        graph,
+        _disp({}, exit_block=99),
+        state_var_stkoff=_STATE,
+        dispatcher_entry_serial=3,
+        materialized_state_routes=(
+            MaterializedStateRoute(16, state, 13),
+        ),
+        condition_chain_dag=dag,
+        condition_chain_handlers=frozenset({2, 10, 13, 15, 19}),
+        authoritative_handler_serials=frozenset({2, 10, 13, 15, 19}),
+        dispatcher_region_serials=frozenset({4, 9, 12}),
+    )
+
+    assert graph_modifications(plan) == []
+
+
+def _task5_carrier_const(ea: int, value: int, reg: int = 8) -> InsnSnapshot:
+    return InsnSnapshot(
+        opcode=_OP_MOV,
+        ea=ea,
+        operands=(),
+        l=MopSnapshot(t=_T_NUM, size=4, value=value, kind=OperandKind.NUMBER),
+        d=MopSnapshot(t=_T_REG, size=4, reg=reg, kind=OperandKind.REGISTER),
+        kind=InsnKind.MOV,
+    )
+
+
+def _task5_goto(ea: int, target: int = 3) -> InsnSnapshot:
+    return InsnSnapshot(
+        opcode=55,
+        ea=ea,
+        operands=(),
+        l=MopSnapshot(kind=OperandKind.BLOCK, block_ref=target),
+        kind=InsnKind.GOTO,
+    )
+
+
+def _task5_carrier_fixture(
+    *,
+    initial_state: int = 0x079323F9,
+) -> tuple[FlowGraph, DecisionDag]:
+    carrier_to_state = InsnSnapshot(
+        opcode=_OP_MOV,
+        ea=0x1300,
+        operands=(),
+        l=MopSnapshot(t=_T_REG, size=4, reg=8, kind=OperandKind.REGISTER),
+        d=MopSnapshot(t=_T_STK, size=4, stkoff=_STATE, kind=OperandKind.STACK),
+        kind=InsnKind.MOV,
+    )
+    graph = FlowGraph(
+        blocks={
+            0: _b(0, (1,), ()),
+            1: _b(
+                1,
+                (3,),
+                (0,),
+                (
+                    _task5_carrier_const(0x1100, initial_state),
+                    _task5_goto(0x1101),
+                ),
+            ),
+            2: _b(2, (3,), (4,), (_task5_carrier_const(0x1200, 0x1939CB36),)),
+            3: _b(3, (4,), (1, 2, 14, 15), (carrier_to_state,)),
+            4: _b(4, (2, 9), (3,)),
+            9: _b(9, (12, 15), (4,)),
+            10: _b(10, (), (12,)),
+            12: _b(12, (10, 19), (9,)),
+            14: _b(
+                14,
+                (3,),
+                (),
+                (
+                    _task5_carrier_const(0x1E00, 0x6CF816C1),
+                    _task5_goto(0x1E01),
+                ),
+            ),
+            15: _b(
+                15,
+                (3,),
+                (9,),
+                (
+                    _task5_carrier_const(0x1F00, 0x079323F9),
+                    _task5_goto(0x1F01),
+                ),
+            ),
+            19: _b(19, (), (12,)),
+        },
+        entry_serial=0,
+        func_ea=0x1000,
+    )
+    dag = DecisionDag(
+        32,
+        {
+            4: RouteComparison(4, "jz", 0x1BABC1DC, 2, 9),
+            9: RouteComparison(9, "jz", 0x079323F9, 15, 12),
+            12: RouteComparison(12, "jz", 0x1939CB36, 19, 10),
+        },
+        root=4,
+    )
+    return graph, dag
+
+
+def _task5_unresolved_transitions() -> tuple[StateWriteTransition, ...]:
+    return tuple(
+        StateWriteTransition(
+            source,
+            None,
+            None,
+            False,
+            None,
+            proof=TransitionProof(
+                "region_partitioned_fixpoint",
+                "unresolved",
+                False,
+            ),
+        )
+        for source in (1, 2, 14, 15)
+    )
+
+
+def test_exact_source_carriers_plan_entry_bridge_and_backedges(
+    monkeypatch,
+    _seam,
+) -> None:
+    graph, dag = _task5_carrier_fixture()
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "recover_state_write_transitions_via_partitioned_fixpoint",
+        lambda *_args, **_kwargs: _task5_unresolved_transitions(),
+    )
+    dispatcher = _DualRouteDispatcher(
+        exact_targets={
+            0x079323F9: 15,
+            0x1939CB36: 19,
+            0x6CF816C1: 10,
+        },
+        interval_rows=(),
+    )
+
+    plan = emit_minimal_unflatten(
+        graph,
+        dispatcher,
+        state_var_stkoff=_STATE,
+        dispatcher_entry_serial=3,
+        condition_chain_dag=dag,
+        condition_chain_handlers=frozenset({10, 15, 19}),
+        authoritative_handler_serials=frozenset({10, 15, 19}),
+        dispatcher_region_serials=frozenset({3, 4, 9, 12}),
+    )
+
+    gotos = {
+        (mod.from_serial, mod.old_target, mod.new_target)
+        for mod in graph_modifications(plan)
+        if isinstance(mod, RedirectGoto)
+    }
+    assert (1, 3, 15) in gotos
+    assert (2, 3, 19) in gotos
+    assert (14, 3, 10) in gotos
+
+
+def test_exact_source_carrier_dag_route_authorizes_default_entry_leaf(
+    monkeypatch,
+    _seam,
+) -> None:
+    initial_state = 0x16AA65E9
+    graph, dag = _task5_carrier_fixture(initial_state=initial_state)
+    monkeypatch.setattr(
+        minimal_unflatten_emit_module,
+        "recover_state_write_transitions_via_partitioned_fixpoint",
+        lambda *_args, **_kwargs: _task5_unresolved_transitions(),
+    )
+    dispatcher = _DualRouteDispatcher(
+        exact_targets={},
+        interval_rows=(IntervalRow(0, 0x100000000, 10),),
+        default_target=10,
+    )
+
+    plan = emit_minimal_unflatten(
+        graph,
+        dispatcher,
+        state_var_stkoff=_STATE,
+        dispatcher_entry_serial=3,
+        condition_chain_dag=dag,
+        condition_chain_handlers=frozenset({15, 19}),
+        authoritative_handler_serials=frozenset({15, 19}),
+        dispatcher_region_serials=frozenset({3, 4, 9, 12}),
+    )
+
+    assert RedirectGoto(from_serial=1, old_target=3, new_target=10) in (
+        graph_modifications(plan)
+    )
+    (receipt,) = plan.metadata_dict()[CONCRETE_STATE_ROUTE_PROVENANCE_METADATA]
+    assert receipt == {
+        "site": "entry",
+        "normalized_state": initial_state,
+        "target_handler": 10,
+        "source_kinds": ("interval", "source_carrier_decision_dag"),
+    }
+
+
+def _task5_trusted_entry_transition(
+    *,
+    state: int = 0x16AA65E9,
+    target: int = 10,
+    source: int = 1,
+    via: int = 3,
+    trusted: bool = True,
+    oracle_kind: str = "exact_source_carrier_decision_dag_route",
+    kind: str = "source_carrier_decision_dag_reconciled",
+    route_source_kinds: tuple[str, ...] = ("decision_dag", "source_carrier"),
+) -> StateWriteTransition:
+    return StateWriteTransition(
+        source,
+        state,
+        target,
+        False,
+        None,
+        via_block=via,
+        proof=TransitionProof(
+            oracle_kind,
+            kind,
+            trusted,
+            route_source_kinds=route_source_kinds,
+        ),
+    )
+
+
+def _task5_entry_route_resolution(
+    graph: FlowGraph,
+    dispatcher: object,
+    transitions: tuple[StateWriteTransition, ...],
+    *,
+    state: int = 0x16AA65E9,
+):
+    return minimal_unflatten_emit_module._resolve_entry_state_route_resolution(
+        dispatcher,
+        state,
+        materialized_state_routes=(),
+        condition_chain_handlers=frozenset({15, 19}),
+        dispatcher_entry_serial=3,
+        flow_graph=graph,
+        state_write_transitions=transitions,
+        dispatcher_region_serials=frozenset({3, 4, 9, 12}),
+    )
+
+
+def _task5_default_dispatcher(target: int = 10) -> _DualRouteDispatcher:
+    return _DualRouteDispatcher(
+        exact_targets={},
+        interval_rows=(IntervalRow(0, 0x100000000, target),),
+        default_target=target,
+    )

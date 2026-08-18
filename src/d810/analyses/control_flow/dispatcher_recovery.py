@@ -54,6 +54,10 @@ from d810.analyses.control_flow.dispatcher_resolver import (
 from d810.analyses.control_flow.switch_table_analysis import (
     analyze_switch_table_flow_graph,
 )
+from d810.analyses.control_flow.state_carrier import (
+    ExactCarrierStateWrite,
+    prove_exact_u32_carrier_state_write,
+)
 from d810.core.logging import getLogger
 
 StorageView = Varnode | WeakStackSlot | None
@@ -794,30 +798,106 @@ def _state_write_constant(
     return False, None
 
 
-def _read_state_init_const(
+def _read_state_init_evidence(
     blk: BlockSnapshot | None,
+    *,
     state_var_stkoff: int | None,
-) -> int | None:
-    """Read the constant a block initializes the state variable to, portably.
+    state_var_reg: int | None,
+) -> tuple[bool, int | None]:
+    """Return whether a block writes state and its unique exact U32 value.
 
-    Mirrors the live ``_extract_state_from_block`` (condition_chain_analysis) over portable
-    ``InsnSnapshot``s: a state-var initialization is a ``mov #const -> stkoff``
-    (``InsnKind.MOV``, dest is the state slot, source is a number) or the
-    equivalent ``store #const -> &stkoff`` (``InsnKind.STORE``, the GLBOPT m_stx
-    form where the value being stored is the *left* operand and the destination
-    address resolves to the state slot's stkoff). Returns the constant or None.
+    ``(True, None)`` is conflicting/nonconstant direct evidence.  Keeping that
+    distinction lets carrier-derived initialization agree with an exact direct
+    write while refusing to hide a contradictory write in the retained source.
     """
-    if blk is None or state_var_stkoff is None:
-        return None
+
+    if blk is None:
+        return False, None
+    observed = False
+    values: list[int] = []
     for insn in blk.insn_snapshots:
-        wrote_state, src_value = _state_write_constant(
+        wrote_state, value = _state_write_constant(
             insn,
             state_var_stkoff=state_var_stkoff,
-            state_var_reg=None,
+            state_var_reg=state_var_reg,
+            require_32bit=True,
         )
-        if wrote_state and src_value is not None:
-            return src_value
-    return None
+        if not wrote_state:
+            continue
+        observed = True
+        if value is None:
+            return True, None
+        values.append(int(value) & 0xFFFFFFFF)
+    if not observed:
+        return False, None
+    if len(set(values)) != 1:
+        return True, None
+    return True, values[0]
+
+
+def _entry_carrier_initialization_proofs(
+    graph: FlowGraph,
+    dmap: StateDispatcherMap,
+    *,
+    dispatcher_entry: int,
+    qualifying_predecessor: int,
+    reachable: frozenset[int] | set[int],
+) -> tuple[ExactCarrierStateWrite, ...]:
+    """Prove either source->entry-feeder or source->feeder->entry."""
+
+    required_serials = {
+        int(dispatcher_entry),
+        *(int(serial) for serial in dmap.dispatcher_blocks),
+    }
+    dispatcher = graph.get_block(int(dispatcher_entry))
+    if dispatcher is not None and len(dispatcher.succs) == 1:
+        # A partial dispatcher map may start at a deeper comparison and omit
+        # the pure state-feeder's immediate comparison-prefix successor.  The
+        # carrier proof still binds both exact sole-successor edges and the
+        # feeder/state identity, so admitting this one root does not broaden
+        # handler or router authority.
+        required_serials.add(int(dispatcher.succs[0]))
+    required = frozenset(required_serials)
+    pairs: list[tuple[int, int]] = [
+        (int(qualifying_predecessor), int(dispatcher_entry))
+    ]
+    feeder = graph.get_block(int(qualifying_predecessor))
+    if feeder is not None and tuple(int(target) for target in feeder.succs) == (
+        int(dispatcher_entry),
+    ):
+        feeder_sources = tuple(
+            int(pred)
+            for pred in feeder.preds
+            if int(pred) in reachable and int(pred) != int(dispatcher_entry)
+        )
+        if len(feeder_sources) == 1:
+            pairs.append((feeder_sources[0], int(qualifying_predecessor)))
+
+    proofs = tuple(
+        proof
+        for source, feeder_serial in pairs
+        if (
+            proof := prove_exact_u32_carrier_state_write(
+                graph,
+                source,
+                feeder_serial,
+                state_var_stkoff=dmap.state_var_stkoff,
+                state_var_reg=getattr(dmap, "state_var_reg", None),
+                required_comparison_serials=required,
+            )
+        )
+        is not None
+    )
+    unique = {
+        (
+            proof.source_serial,
+            proof.feeder_serial,
+            proof.comparison_entry_serial,
+            proof.state,
+        ): proof
+        for proof in proofs
+    }
+    return tuple(unique.values())
 
 
 _DISPATCH_ROUTING_TAIL_KINDS = frozenset(
@@ -998,11 +1078,41 @@ def recover_entry_dominated_initial_state(
     ]
     if len(qualifying) != 1:
         return None
-    # Keep the historical predecessor path stack-only.  Register-resident
-    # initialization is intentionally limited to the same-block prefix above.
+    predecessor = int(qualifying[0])
+    carrier_proofs = _entry_carrier_initialization_proofs(
+        graph,
+        dmap,
+        dispatcher_entry=int(entry_block),
+        qualifying_predecessor=predecessor,
+        reachable=reachable,
+    )
+    if len(carrier_proofs) > 1:
+        return None
+    carrier_proof = carrier_proofs[0] if carrier_proofs else None
+    evidence_block = (
+        predecessor
+        if carrier_proof is None
+        else int(carrier_proof.source_serial)
+    )
+    direct_observed, direct_state = _read_state_init_evidence(
+        graph.blocks.get(evidence_block),
+        state_var_stkoff=state_var_stkoff,
+        state_var_reg=state_var_reg,
+    )
+    if direct_observed and direct_state is None:
+        return None
+    if carrier_proof is not None:
+        carrier_state = int(carrier_proof.state) & 0xFFFFFFFF
+        if direct_state is not None and direct_state != carrier_state:
+            return None
+        return carrier_state
+
+    # Preserve the historical direct predecessor behavior when no carrier
+    # corridor is proven.  Register predecessor initialization remains outside
+    # this path unless it is carried through the exact feeder above.
     if state_var_stkoff is None:
         return None
-    return _read_state_init_const(graph.blocks.get(qualifying[0]), state_var_stkoff)
+    return direct_state
 
 
 @dataclass(frozen=True, slots=True)

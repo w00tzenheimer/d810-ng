@@ -76,6 +76,13 @@ from d810.analyses.control_flow.materialized_indirect_transfer import (
 )
 from d810.analyses.control_flow.semantic_transition import NativeBoundTransitionRoute
 from d810.analyses.control_flow.route_predicate import DecisionDag
+from d810.analyses.control_flow.state_carrier import (
+    ExactCarrierStateWrite,
+    expected_u32_state_identities,
+    observes_u32_carrier_feeder_candidate,
+    observes_u32_state_feeder_candidate,
+    prove_exact_u32_carrier_state_write,
+)
 from d810.capabilities.providers import get_condition_chain_walkers
 from d810.ir.flowgraph import (
     BlockSnapshot,
@@ -85,6 +92,7 @@ from d810.ir.flowgraph import (
     OperandKind,
 )
 from d810.ir.insn_projection import (
+    InstructionProjection,
     operand_kinds,
     operand_stack_offsets,
     operand_stack_refs,
@@ -95,7 +103,8 @@ from d810.ir.insn_projection import (
 from d810.ir.expressions import ValueOpKind
 from d810.ir.instructions import Instruction
 from d810.ir.locations import WeakStackSlot
-from d810.ir.semantics import PredicateKind
+from d810.ir.semantics import ControlTransferKind, PredicateKind
+from d810.ir.storage_identity import StorageIdentity, storage_identity_from_varnode
 from d810.ir.varnode import Space, Varnode
 
 logger = getLogger(__name__)
@@ -172,6 +181,10 @@ __all__ = [
 #: The oracle that resolves a back-edge next-state after the S4 C3 flip: the sound
 #: region-partitioned multi-cell constant fixpoint (run_snapshot_constant_fixpoint).
 _FIXPOINT_ORACLE = "region_partitioned_fixpoint"
+_DAG_RECONCILIATION_ORACLE = "decision_dag_state_route_reconciliation"
+_DAG_RECONCILIATION_KIND = "decision_dag_reconciled"
+_SOURCE_CARRIER_DAG_ORACLE = "exact_source_carrier_decision_dag_route"
+_SOURCE_CARRIER_DAG_KIND = "source_carrier_decision_dag_reconciled"
 _KIND_STACK_ADDRESS_ALIAS_STORE = "stack_address_alias_store"
 _KIND_STACK_ADDRESS_ALIAS_STORE_PARTITIONED = "stack_address_alias_store_partitioned"
 _KIND_STACK_ADDRESS_ALIAS_TERMINAL_GUARD = "stack_address_alias_terminal_guard"
@@ -567,6 +580,504 @@ def _block_writes_state_cell(ctx: "_ResolverContext", block: BlockSnapshot) -> b
     return False
 
 
+@dataclass(frozen=True, slots=True)
+class _ExactStateNormalizerStep:
+    """One exact pure constant rewrite feeding a decision-DAG node."""
+
+    observed: bool
+    valid: bool
+    state: int | None = None
+    feeder_serial: int | None = None
+    dag_entry_serial: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _DecisionDagStateRoute:
+    """One exact route, including any pure state-normalizer leaves."""
+
+    target: int
+    certified_targets: frozenset[int]
+
+
+def _stable_flow_block(flow_graph: FlowGraph, serial: int) -> BlockSnapshot | None:
+    block = flow_graph.get_block(int(serial))
+    if block is None:
+        return None
+    ea = int(block.start_ea)
+    if not 0 < ea < 0xFFFFFFFFFFFFFFFF:
+        return None
+    return block
+
+
+def _bound_decision_dag_route(
+    flow_graph: FlowGraph,
+    decision_dag: DecisionDag,
+    state: int,
+    *,
+    root: int,
+) -> tuple[int, tuple[int, ...]] | None:
+    """Resolve one unique U32 DAG path and bind every edge to the source CFG."""
+
+    if int(decision_dag.width) != 32 or int(root) not in decision_dag.nodes:
+        return None
+    normalized = int(state) & 0xFFFFFFFF
+    try:
+        matches = tuple(
+            path
+            for path in decision_dag.resolve_paths()
+            if path.domain.contains(normalized)
+            and path.path
+            and int(path.path[0]) == int(root)
+        )
+    except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
+        return None
+    if len(matches) != 1:
+        return None
+    resolved = matches[0]
+    path = tuple(int(serial) for serial in resolved.path)
+    target = int(resolved.target)
+    if target in decision_dag.nodes:
+        return None
+    for source, destination in zip(path, (*path[1:], target), strict=True):
+        block = _stable_flow_block(flow_graph, source)
+        if block is None or destination not in {int(succ) for succ in block.succs}:
+            return None
+    if _stable_flow_block(flow_graph, target) is None:
+        return None
+    return target, path
+
+
+def _pure_move_instruction(instruction: Instruction) -> bool:
+    return bool(
+        instruction.operation is ValueOpKind.MOVE
+        and not instruction.effects
+        and instruction.memory is None
+        and instruction.control is None
+        and len(instruction.inputs) == 1
+        and instruction.result is not None
+    )
+
+
+def _exact_state_normalizer_step(
+    flow_graph: FlowGraph,
+    decision_dag: DecisionDag,
+    leaf_serial: int,
+    *,
+    expected_state_identities: frozenset[StorageIdentity],
+) -> _ExactStateNormalizerStep:
+    """Recognize exactly ``CONST -> carrier -> state -> DAG``.
+
+    A normal decision-DAG leaf remains semantic.  The only leaf considered a
+    normalizer candidate is one with a typed constant carrier write whose sole
+    successor contains the matching carrier-to-state move and whose sole
+    successor is a DAG node.  Effects/unknown operations in either candidate
+    block invalidate the route instead of being skipped.
+    """
+
+    normalizer = _stable_flow_block(flow_graph, int(leaf_serial))
+    if normalizer is None or tuple(int(s) for s in normalizer.succs) == ():
+        return _ExactStateNormalizerStep(False, False)
+    if len(normalizer.succs) != 1:
+        return _ExactStateNormalizerStep(False, False)
+    feeder_serial = int(normalizer.succs[0])
+    feeder = _stable_flow_block(flow_graph, feeder_serial)
+    if feeder is None or len(feeder.succs) != 1:
+        return _ExactStateNormalizerStep(False, False)
+    dag_entry = int(feeder.succs[0])
+    if dag_entry not in decision_dag.nodes:
+        return _ExactStateNormalizerStep(False, False)
+
+    normalizer_instructions = InstructionProjection.from_block(normalizer)
+    feeder_instructions = InstructionProjection.from_block(feeder)
+    constant_moves = tuple(
+        instruction
+        for instruction in normalizer_instructions
+        if instruction.operation is ValueOpKind.MOVE
+        and len(instruction.inputs) == 1
+        and instruction.inputs[0].space is Space.CONST
+        and instruction.result is not None
+        and instruction.result.space in {Space.REGISTER, Space.TEMP}
+        and int(instruction.inputs[0].size) > 0
+        and int(instruction.inputs[0].size) == int(instruction.result.size)
+    )
+    matching_pairs = tuple(
+        (constant_move, feeder_move)
+        for constant_move in constant_moves
+        for feeder_move in feeder_instructions
+        if feeder_move.operation is ValueOpKind.MOVE
+        and len(feeder_move.inputs) == 1
+        and feeder_move.inputs[0] == constant_move.result
+        and feeder_move.result is not None
+        and feeder_move.result.space in {
+            Space.STACK,
+            Space.REGISTER,
+            Space.LVAR,
+            Space.TEMP,
+        }
+        and int(feeder_move.result.size) == int(constant_move.result.size)
+    )
+    if not matching_pairs:
+        return _ExactStateNormalizerStep(False, False)
+
+    # A normal handler commonly ends in an explicit pure GOTO after writing its
+    # next state.  That is a semantic DAG leaf, not a hidden normalizer.  Any
+    # effectful/unknown extra instruction, however, makes an otherwise matching
+    # skipped-normalizer shape unsafe and therefore invalid.
+    if len(normalizer_instructions) != 1:
+        extras_are_pure_gotos = all(
+            instruction.control is not None
+            and instruction.control.transfer is ControlTransferKind.GOTO
+            and not instruction.effects
+            and instruction.memory is None
+            for instruction in normalizer_instructions
+            if instruction not in constant_moves
+        )
+        if extras_are_pure_gotos and len(constant_moves) == 1:
+            return _ExactStateNormalizerStep(False, False)
+        return _ExactStateNormalizerStep(True, False)
+    if len(feeder_instructions) != 1 or len(matching_pairs) != 1:
+        return _ExactStateNormalizerStep(True, False)
+
+    constant_move, feeder_move = matching_pairs[0]
+    if not _pure_move_instruction(constant_move) or not _pure_move_instruction(
+        feeder_move
+    ):
+        return _ExactStateNormalizerStep(True, False)
+    bits = int(constant_move.result.size) * 8
+    if (
+        bits <= 0
+        or bits != int(decision_dag.width)
+        or int(feeder_move.result.size) != 4
+        or storage_identity_from_varnode(feeder_move.result)
+        not in expected_state_identities
+    ):
+        return _ExactStateNormalizerStep(True, False)
+    return _ExactStateNormalizerStep(
+        True,
+        True,
+        int(constant_move.inputs[0].offset) & ((1 << bits) - 1),
+        feeder_serial,
+        dag_entry,
+    )
+
+
+def _route_state_through_decision_dag(
+    transition: StateWriteTransition,
+    flow_graph: FlowGraph,
+    decision_dag: DecisionDag,
+    *,
+    state_var_stkoff: int | None,
+    state_var_reg: int | None,
+) -> _DecisionDagStateRoute | None:
+    """Route one transition state through exact comparisons and normalizers."""
+
+    if transition.next_state is None or int(decision_dag.width) != 32:
+        return None
+    state = int(transition.next_state) & 0xFFFFFFFF
+    root = int(decision_dag.root)
+    expected_state_identities = expected_u32_state_identities(
+        state_var_stkoff=state_var_stkoff,
+        state_var_reg=state_var_reg,
+    )
+    seen: set[tuple[int, int]] = set()
+    targets: set[int] = set()
+    for _ in range(8):
+        bound_route = _bound_decision_dag_route(
+            flow_graph,
+            decision_dag,
+            state,
+            root=root,
+        )
+        if bound_route is None:
+            return None
+        target, _path = bound_route
+        targets.add(target)
+        step = _exact_state_normalizer_step(
+            flow_graph,
+            decision_dag,
+            target,
+            expected_state_identities=expected_state_identities,
+        )
+        if not step.observed:
+            return _DecisionDagStateRoute(target, frozenset(targets))
+        if (
+            not step.valid
+            or step.state is None
+            or step.feeder_serial is None
+            or step.dag_entry_serial is None
+            or transition.via_block is None
+            or int(transition.via_block) != int(step.feeder_serial)
+        ):
+            return None
+        key = (target, int(step.state))
+        if key in seen:
+            return None
+        seen.add(key)
+        state = int(step.state)
+        root = int(step.dag_entry_serial)
+    return None
+
+
+def _transition_has_exact_route_authority(transition: StateWriteTransition) -> bool:
+    proof = transition.proof
+    if proof is None:
+        return False
+    if proof.oracle_kind == "native_bound_transition_route":
+        return True
+    if proof.kind.startswith("computed_goto_") or "materialized" in proof.kind:
+        return True
+    return bool(
+        set(proof.route_source_kinds)
+        & {"exact", "materialized", "native_bound"}
+    )
+
+
+def _prior_exact_route_sources(transition: StateWriteTransition) -> set[str]:
+    proof = transition.proof
+    if proof is None:
+        return set()
+    sources = set(proof.route_source_kinds)
+    if proof.oracle_kind == "native_bound_transition_route":
+        sources.add("native_bound")
+    elif proof.kind.startswith("computed_goto_") or "materialized" in proof.kind:
+        sources.add("materialized")
+    return sources
+
+
+
+
+def _is_weak_region_seeded_interval_state(
+    transition: StateWriteTransition,
+) -> bool:
+    """Return whether carrier evidence may replace this coarse state hint.
+
+    ``region_seeded`` interval-only rows describe the state inferred at a
+    region boundary; they are not a source-local definition.  Every stronger,
+    mixed, malformed, or unattributed provider remains conflict-authoritative.
+    """
+
+    proof = transition.proof
+    return bool(
+        proof is not None
+        and proof.trusted
+        and proof.oracle_kind == "region_partitioned_fixpoint"
+        and proof.kind == "region_seeded"
+        and tuple(proof.route_source_kinds) == ("interval",)
+    )
+
+
+def _dispatcher_provider_targets(
+    dispatcher: object,
+    state: int,
+    *,
+    condition_chain_handlers: frozenset[int],
+) -> tuple[frozenset[int], frozenset[str]] | None:
+    """Collect exact/range targets without precedence; malformed conflicts fail."""
+
+    normalized = int(state) & 0xFFFFFFFF
+    targets: set[int] = set()
+    sources: set[str] = set()
+    try:
+        resolve_target = getattr(dispatcher, "resolve_target", None)
+        lookup_row = getattr(dispatcher, "lookup_row", None)
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError, OverflowError):
+        return None
+    try:
+        exact = resolve_target(normalized) if callable(resolve_target) else None
+        row = lookup_row(normalized) if callable(lookup_row) else None
+        interval = None if row is None else getattr(row, "target", None)
+        if exact is not None:
+            exact_i = int(exact)
+            if not condition_chain_handlers or exact_i in condition_chain_handlers:
+                targets.add(exact_i)
+                sources.add("exact")
+        if interval is not None:
+            interval_i = int(interval)
+            if not condition_chain_handlers or interval_i in condition_chain_handlers:
+                targets.add(interval_i)
+                sources.add("interval")
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError, OverflowError):
+        return None
+    if len(targets) > 1:
+        return None
+    return frozenset(targets), frozenset(sources)
+
+
+def _reconcile_transition_routes_with_decision_dag(
+    transitions: tuple[StateWriteTransition, ...],
+    flow_graph: FlowGraph,
+    dispatcher: object,
+    decision_dag: DecisionDag,
+    materialized_state_routes: tuple[MaterializedStateRoute, ...],
+    *,
+    condition_chain_handlers: frozenset[int],
+    state_var_stkoff: int | None,
+    state_var_reg: int | None,
+) -> tuple[StateWriteTransition, ...] | None:
+    """Recompute each concrete route from immutable source/DAG evidence."""
+
+    reconciled: list[StateWriteTransition] = []
+    for transition in transitions:
+        source = flow_graph.get_block(int(transition.write_block))
+        source_successors = (
+            () if source is None else tuple(int(target) for target in source.succs)
+        )
+        feeder_serial = (
+            int(transition.via_block)
+            if transition.via_block is not None
+            else (source_successors[0] if len(source_successors) == 1 else None)
+        )
+        carrier_observed = bool(
+            feeder_serial is not None
+            and (state_var_stkoff is not None or state_var_reg is not None)
+            and len(source_successors) == 1
+            and source_successors[0] == int(feeder_serial)
+            and (
+                observes_u32_carrier_feeder_candidate(
+                    flow_graph,
+                    int(transition.write_block),
+                    int(feeder_serial),
+                )
+                or observes_u32_state_feeder_candidate(
+                    flow_graph,
+                    int(feeder_serial),
+                    state_var_stkoff=state_var_stkoff,
+                    state_var_reg=state_var_reg,
+                )
+            )
+        )
+        carrier_proof: ExactCarrierStateWrite | None = None
+        if carrier_observed:
+            carrier_proof = prove_exact_u32_carrier_state_write(
+                flow_graph,
+                int(transition.write_block),
+                int(feeder_serial),
+                state_var_stkoff=state_var_stkoff,
+                state_var_reg=state_var_reg,
+                required_comparison_serials=frozenset(
+                    int(serial) for serial in decision_dag.nodes
+                ),
+            )
+            if carrier_proof is None:
+                return None
+
+        effective = transition
+        source_carrier_filled = False
+        weak_state_superseded = False
+        if carrier_proof is not None:
+            carrier_state = int(carrier_proof.state) & 0xFFFFFFFF
+            if (
+                transition.next_state is not None
+                and (int(transition.next_state) & 0xFFFFFFFF) != carrier_state
+            ):
+                if not _is_weak_region_seeded_interval_state(transition):
+                    return None
+                weak_state_superseded = True
+            source_carrier_filled = transition.next_state is None or weak_state_superseded
+            effective = replace(
+                transition,
+                next_state=carrier_state,
+                target_handler=None if weak_state_superseded else transition.target_handler,
+                via_block=int(carrier_proof.feeder_serial),
+            )
+
+        route = _route_state_through_decision_dag(
+            effective,
+            flow_graph,
+            decision_dag,
+            state_var_stkoff=state_var_stkoff,
+            state_var_reg=state_var_reg,
+        )
+        if route is None or effective.next_state is None:
+            return None
+        state = int(effective.next_state) & 0xFFFFFFFF
+
+        exact_targets: set[int] = set()
+        authority_sources: set[str] = set()
+        prior_exact = _transition_has_exact_route_authority(effective)
+        if prior_exact and effective.target_handler is not None:
+            exact_targets.add(int(effective.target_handler))
+            authority_sources.update(_prior_exact_route_sources(effective))
+
+        route_sources = {int(effective.write_block)}
+        if effective.via_block is not None:
+            route_sources.add(int(effective.via_block))
+        materialized_targets = {
+            int(item.target_handler_serial)
+            for item in materialized_state_routes
+            if int(item.source_block_serial) in route_sources
+            and (int(item.state_constant) & 0xFFFFFFFF) == state
+        }
+        if len(materialized_targets) > 1:
+            return None
+        if materialized_targets:
+            exact_targets.update(materialized_targets)
+            authority_sources.add("materialized")
+
+        provider = _dispatcher_provider_targets(
+            dispatcher,
+            state,
+            condition_chain_handlers=condition_chain_handlers,
+        )
+        if provider is None:
+            return None
+        provider_targets, provider_sources = provider
+        exact_targets.update(provider_targets)
+        authority_sources.update(provider_sources)
+        if any(target not in route.certified_targets for target in exact_targets):
+            return None
+
+        if (
+            prior_exact
+            and effective.target_handler is not None
+            and int(effective.target_handler) == int(route.target)
+        ):
+            reconciled.append(effective)
+            continue
+
+        if source_carrier_filled:
+            reason = "exact_source_carrier_u32;decision_dag_final_route"
+            if weak_state_superseded:
+                reason += (
+                    ";superseded="
+                    "region_partitioned_fixpoint:region_seeded:interval"
+                )
+            proof = TransitionProof(
+                _SOURCE_CARRIER_DAG_ORACLE,
+                _SOURCE_CARRIER_DAG_KIND,
+                True,
+                reason=reason,
+                route_source_kinds=("decision_dag", "source_carrier"),
+            )
+        else:
+            prior_reason = (
+                effective.proof.reason
+                if prior_exact and effective.proof is not None
+                else ""
+            )
+            reason = "decision_dag_final_route"
+            if prior_reason:
+                reason += f";prior={prior_reason}"
+            proof = TransitionProof(
+                _DAG_RECONCILIATION_ORACLE,
+                _DAG_RECONCILIATION_KIND,
+                True,
+                reason=reason,
+                route_source_kinds=tuple(sorted({"decision_dag", *authority_sources})),
+            )
+        reconciled.append(
+            replace(
+                effective,
+                target_handler=int(route.target),
+                is_return=_is_stop_block(flow_graph.get_block(int(route.target))),
+                proof=proof,
+            )
+        )
+    return tuple(reconciled)
+
+
+
+
 def resolve_materialized_indirect_transfer_targets(
     transitions: tuple[StateWriteTransition, ...],
     flow_graph: FlowGraph,
@@ -576,6 +1087,7 @@ def resolve_materialized_indirect_transfer_targets(
     materialized_state_routes: tuple[MaterializedStateRoute, ...] = (),
     condition_chain_dag: DecisionDag | None = None,
     condition_chain_handlers: frozenset[int] = frozenset(),
+    state_var_stkoff: int | None = None,
     state_var_reg: int | None = None,
 ) -> tuple[StateWriteTransition, ...]:
     """Reconnect concrete router misses using resolver-materialization proof.
@@ -586,6 +1098,31 @@ def resolve_materialized_indirect_transfer_targets(
     and maps uniquely onto this FlowGraph.  Every other transition is returned
     byte-identically, including unresolved and terminal transitions.
     """
+    if condition_chain_dag is not None:
+        reconciled = _reconcile_transition_routes_with_decision_dag(
+            transitions,
+            flow_graph,
+            dispatcher,
+            condition_chain_dag,
+            materialized_state_routes,
+            condition_chain_handlers=condition_chain_handlers,
+            state_var_stkoff=state_var_stkoff,
+            state_var_reg=state_var_reg,
+        )
+        if reconciled is None:
+            materialized_midtree_refinement = bool(
+                transfers
+                and not materialized_state_routes
+            )
+            if not materialized_midtree_refinement:
+                return ()
+            # A legacy materialized-indirect transfer intentionally refines a
+            # false-terminal/default transition below.  That shape is outside
+            # the source-carrier DAG reconciliation contract, so preserve the
+            # original tuple and let the existing materialization proof decide
+            # it; actionable C-route conflicts remain fragment-atomic.
+            reconciled = transitions
+        transitions = reconciled
     if not transfers and not materialized_state_routes:
         return transitions
     comparison_evidence_active = bool(condition_chain_handlers)

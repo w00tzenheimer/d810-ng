@@ -13,6 +13,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import ida_hexrays
+import pytest
 
 from d810.backends.hexrays.evidence.decision_dag_extract import extract_decision_dag
 
@@ -20,8 +21,9 @@ STK = 0x64  # state var mop_S.s.off (raw), as in sub_7FFD
 
 
 class _Blk:
-    def __init__(self, tail, succs):
+    def __init__(self, tail, succs, *, head=None):
         self.tail = tail
+        self.head = head
         self._succs = [int(s) for s in succs]
 
     def succ(self, i):
@@ -41,6 +43,17 @@ def _const(value):
 
 def _target(block):
     return SimpleNamespace(b=block)
+
+
+def _global(address=0x140001000):
+    return SimpleNamespace(t=ida_hexrays.mop_v, g=address)
+
+
+def _nested_call():
+    return SimpleNamespace(
+        t=ida_hexrays.mop_d,
+        d=_insn(ida_hexrays.m_call),
+    )
 
 
 def _cmp(opcode, const, jump_target, fallthrough):
@@ -134,6 +147,112 @@ def _entry_load(reg, valnum, fallthrough, jump_target, const):
     blk = _cmp(ida_hexrays.m_jg, const, jump_target, fallthrough)
     blk.head = load
     return blk
+
+
+def _insn(opcode, *, left=None, dest=None, next_insn=None):
+    return SimpleNamespace(
+        opcode=opcode,
+        l=left,
+        r=None,
+        d=dest,
+        next=next_insn,
+    )
+
+
+def _reg_cmp(opcode, reg, valnum, const, jump_target, fallthrough):
+    return _Blk(
+        SimpleNamespace(
+            opcode=opcode,
+            l=_reg(reg, valnum),
+            r=_const(const),
+            d=_target(jump_target),
+        ),
+        [fallthrough, jump_target],
+    )
+
+
+def _split_entry_alias_mba(
+    *,
+    glue_succs=(4,),
+    glue_head=None,
+    alias_offset=STK,
+    alias_loads=1,
+    alias_opcode=None,
+    alias_extra_opcode=None,
+    alias_extra_insn=None,
+):
+    """Target-C shape: state-write prefix -> stack root/alias -> reg subtree."""
+
+    state_reg, state_valnum = 8, 4
+    if glue_head is None:
+        glue_head = _insn(
+            ida_hexrays.m_mov,
+            left=_reg(20, 9),
+            dest=_state(),
+        )
+    alias_state = SimpleNamespace(
+        t=ida_hexrays.mop_S,
+        s=SimpleNamespace(off=alias_offset),
+    )
+    alias_head = None
+    alias_opcode = ida_hexrays.m_xdu if alias_opcode is None else alias_opcode
+    if alias_extra_insn is not None:
+        alias_head = alias_extra_insn
+    elif alias_extra_opcode is not None:
+        alias_head = _insn(alias_extra_opcode)
+    for index in reversed(range(alias_loads)):
+        alias_head = _insn(
+            alias_opcode,
+            left=alias_state,
+            dest=_reg(state_reg + index, state_valnum + index),
+            next_insn=alias_head,
+        )
+    root = _cmp(ida_hexrays.m_jle, 0x1888937D, 9, 5)
+    root.head = alias_head
+    blocks = {
+        2: _leaf(),
+        3: _Blk(tail=None, succs=glue_succs, head=glue_head),
+        4: root,
+        5: _reg_cmp(
+            ida_hexrays.m_jle,
+            state_reg,
+            state_valnum,
+            0x1BABC1DB,
+            12,
+            6,
+        ),
+        6: _reg_cmp(
+            ida_hexrays.m_jz,
+            state_reg,
+            state_valnum,
+            0x1BABC1DC,
+            2,
+            10,
+        ),
+        9: _reg_cmp(
+            ida_hexrays.m_jz,
+            state_reg,
+            state_valnum,
+            0x079323F9,
+            15,
+            12,
+        ),
+        10: _leaf(),
+        12: _reg_cmp(
+            ida_hexrays.m_jnz,
+            state_reg,
+            state_valnum,
+            0x1888937E,
+            19,
+            10,
+        ),
+        # Same physical register, locally redefined value: semantic leaf.
+        15: _reg_cmp(ida_hexrays.m_jnz, state_reg, 131, 0, 20, 21),
+        19: _leaf(),
+        20: _leaf(),
+        21: _leaf(),
+    }
+    return blocks
 
 
 def test_extract_rejects_same_register_with_different_value_number():
@@ -319,3 +438,160 @@ def test_extract_register_resident_state_var_without_stack_slot():
     assert dag.nodes[2].op == "jnz"
     assert dag.route(0x82F1899D) == 31
     assert dag.route(0xDEADBEEF) == 30
+
+
+def test_extract_follows_pure_feeder_to_split_entry_alias_and_full_reg_subtree():
+    blocks = _split_entry_alias_mba()
+
+    dag = extract_decision_dag(
+        _mba(blocks),
+        dispatcher_entry_serial=3,
+        state_var_stkoff=STK,
+    )
+
+    assert dag.root == 4
+    assert set(dag.nodes) == {4, 5, 6, 9, 12}
+    assert dag.route(0x079323F9) == 15
+    assert dag.route(0x1BABC1DC) == 2
+    assert dag.route(0x1939CB36) == 19
+    assert dag.route(0x6CF816C1) == 10
+    assert 15 not in dag.nodes
+
+
+def test_extract_does_not_cross_fork_before_split_entry_alias():
+    blocks = _split_entry_alias_mba(glue_succs=(4, 30))
+    blocks[30] = _leaf()
+
+    dag = extract_decision_dag(
+        _mba(blocks),
+        dispatcher_entry_serial=3,
+        state_var_stkoff=STK,
+    )
+
+    assert dag.nodes == {}
+
+
+def test_extract_rejects_wrong_stack_offset_split_entry_alias():
+    blocks = _split_entry_alias_mba(alias_offset=STK + 4)
+
+    dag = extract_decision_dag(
+        _mba(blocks),
+        dispatcher_entry_serial=3,
+        state_var_stkoff=STK,
+    )
+
+    assert set(dag.nodes) == {4}
+
+
+def test_extract_rejects_ambiguous_split_entry_alias_loads():
+    blocks = _split_entry_alias_mba(alias_loads=2)
+
+    dag = extract_decision_dag(
+        _mba(blocks),
+        dispatcher_entry_serial=3,
+        state_var_stkoff=STK,
+    )
+
+    assert set(dag.nodes) == {4}
+
+
+@pytest.mark.parametrize(
+    "extra_opcode",
+    (ida_hexrays.m_call, ida_hexrays.m_stx, -0x810),
+)
+def test_extract_rejects_effect_or_unknown_after_split_entry_alias(extra_opcode):
+    blocks = _split_entry_alias_mba(alias_extra_opcode=extra_opcode)
+
+    dag = extract_decision_dag(
+        _mba(blocks),
+        dispatcher_entry_serial=3,
+        state_var_stkoff=STK,
+    )
+
+    assert set(dag.nodes) == {4}
+
+
+def test_extract_rejects_arithmetic_state_to_register_pseudo_alias():
+    blocks = _split_entry_alias_mba(alias_opcode=ida_hexrays.m_add)
+
+    dag = extract_decision_dag(
+        _mba(blocks),
+        dispatcher_entry_serial=3,
+        state_var_stkoff=STK,
+    )
+
+    assert set(dag.nodes) == {4}
+
+
+@pytest.mark.parametrize("operand", (_global(), _nested_call()))
+def test_extract_rejects_nonlocal_or_nested_effect_glue_operand(operand):
+    blocks = _split_entry_alias_mba(
+        glue_head=_insn(
+            ida_hexrays.m_mov,
+            left=operand,
+            dest=_reg(20, 9),
+        ),
+    )
+
+    dag = extract_decision_dag(
+        _mba(blocks),
+        dispatcher_entry_serial=3,
+        state_var_stkoff=STK,
+    )
+
+    assert set(dag.nodes) == {4}
+
+
+def test_extract_rejects_global_read_after_split_entry_alias():
+    blocks = _split_entry_alias_mba(
+        alias_extra_insn=_insn(
+            ida_hexrays.m_mov,
+            left=_global(),
+            dest=_reg(30, 90),
+        ),
+    )
+
+    dag = extract_decision_dag(
+        _mba(blocks),
+        dispatcher_entry_serial=3,
+        state_var_stkoff=STK,
+    )
+
+    assert set(dag.nodes) == {4}
+
+
+def test_extract_does_not_cross_effectful_glue_before_alias():
+    blocks = _split_entry_alias_mba(
+        glue_head=_insn(ida_hexrays.m_call),
+    )
+
+    dag = extract_decision_dag(
+        _mba(blocks),
+        dispatcher_entry_serial=3,
+        state_var_stkoff=STK,
+    )
+
+    assert set(dag.nodes) == {4}
+
+
+def test_extract_split_entry_alias_scan_is_bounded_and_acyclic():
+    blocks = _split_entry_alias_mba()
+    blocks[3] = _Blk(tail=None, succs=(30,))
+    for serial in range(30, 39):
+        blocks[serial] = _Blk(tail=None, succs=(serial + 1,))
+    blocks[39] = blocks[4]
+
+    bounded = extract_decision_dag(
+        _mba(blocks),
+        dispatcher_entry_serial=3,
+        state_var_stkoff=STK,
+    )
+    assert bounded.nodes == {}
+
+    blocks[30] = _Blk(tail=None, succs=(3,))
+    cyclic = extract_decision_dag(
+        _mba(blocks),
+        dispatcher_entry_serial=3,
+        state_var_stkoff=STK,
+    )
+    assert cyclic.nodes == {}

@@ -78,6 +78,7 @@ __all__ = [
     "DispatcherRemovalPreflightValidation",
     "IntervalStateNormalizerRetirementProof",
     "IntervalStateNormalizerRouteProof",
+    "IntervalStateSourceRouteProof",
     "StateTransitionPlumbingRetirementProof",
     "StateTransitionPlumbingRouteProof",
     "TerminalSwitchCycleBreakProof",
@@ -253,6 +254,30 @@ class IntervalStateNormalizerRouteProof:
 
 
 @dataclass(frozen=True, slots=True)
+class IntervalStateSourceRouteProof:
+    """One source-owned constant route around a retired state feeder."""
+
+    source: DispatcherBlockAnchor
+    state_feeder: DispatcherBlockAnchor
+    state_value: int
+    projected_successor: DispatcherBlockAnchor
+    routed_handler: DispatcherBlockAnchor
+    retired_normalizers: tuple[DispatcherBlockAnchor, ...] = ()
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "source": self.source.to_payload(),
+            "state_feeder": self.state_feeder.to_payload(),
+            "state_value": int(self.state_value),
+            "projected_successor": self.projected_successor.to_payload(),
+            "routed_handler": self.routed_handler.to_payload(),
+            "retired_normalizers": [
+                anchor.to_payload() for anchor in self.retired_normalizers
+            ],
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class IntervalStateNormalizerRetirementProof:
     """Independent authority for retiring interval state-normalization plumbing."""
 
@@ -263,12 +288,14 @@ class IntervalStateNormalizerRetirementProof:
     semantic_handlers: tuple[DispatcherBlockAnchor, ...]
     post_reachable_handlers: tuple[DispatcherBlockAnchor, ...]
     lost_blocks: tuple[DispatcherBlockAnchor, ...]
+    source_routes: tuple[IntervalStateSourceRouteProof, ...] = ()
 
     def to_payload(self) -> dict[str, object]:
         return {
             "dispatcher": self.dispatcher.to_payload(),
             "state_identity": self.state_identity.to_record(),
             "normalizers": [route.to_payload() for route in self.normalizers],
+            "source_routes": [route.to_payload() for route in self.source_routes],
             "retired_state_plumbing": [
                 item.to_payload() for item in self.retired_state_plumbing
             ],
@@ -2353,6 +2380,15 @@ def collect_dispatcher_removal_preflight_proof_observations_from_metadata(
     dispatcher_label = "dispatcher@?" if dispatcher is None else dispatcher.label
     scope = _diagnostic_outcome_scope(plan_id=plan_id, attempt_id=attempt_id)
     scope_suffix = f":{scope}" if scope else ""
+    if application_status == "applied" and observed_validation is not None:
+        if "proof_status" in payload:
+            payload["producer_proof_status"] = payload["proof_status"]
+        if "reason" in payload:
+            payload["producer_reason"] = payload["reason"]
+        payload["proof_status"] = (
+            "accepted" if observed_validation.passed else "rejected"
+        )
+        payload["reason"] = str(observed_validation.reason)
     payload.update(
         {
             "application_status": application_status,
@@ -2612,6 +2648,354 @@ def _dispatcher_state_identity(
     return identity
 
 
+@dataclass(frozen=True, slots=True)
+class _DispatcherStateResolution:
+    """Resolved comparison entry behind a dispatcher state-write prefix."""
+
+    comparison_entry_serial: int
+    state_identity: StorageIdentity
+    state_width: int
+    prefix_input_carrier: Varnode | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _DispatcherStateCarrier:
+    """One pure storage carrier derived from the dispatcher state.
+
+    Storage identity is intentionally size-agnostic, so the widths remain
+    explicit evidence on the carrier.  This is what lets a 32-bit state pass
+    through a 64-bit ``ZEXT`` register while accepting only its 32-bit
+    subregister in a downstream comparison.
+    """
+
+    source_space: Space
+    source_offset: int
+    source_width: int
+    result_space: Space
+    result_offset: int
+    result_width: int
+    operation: ValueOpKind
+
+
+@dataclass(frozen=True, slots=True)
+class _DispatcherStateCarrierAnalysis:
+    """Fail-closed authority shared by region discovery and route evaluation."""
+
+    state_width: int
+    region: frozenset[int]
+    carriers: tuple[_DispatcherStateCarrier, ...]
+    valid: bool
+
+    def carrier_for_operand(self, operand: Varnode) -> _DispatcherStateCarrier | None:
+        return next(
+            (
+                carrier
+                for carrier in self.carriers
+                if carrier.result_space is operand.space
+                and int(carrier.result_offset) == int(operand.offset)
+            ),
+            None,
+        )
+
+    def resolves_state_operand(
+        self,
+        operand: Varnode,
+        *,
+        state_identity: StorageIdentity,
+    ) -> bool:
+        """Accept the state or a correctly sized slice of a pure carrier."""
+
+        identity = storage_identity_from_varnode(operand)
+        if identity == state_identity:
+            return int(operand.size) == int(self.state_width)
+        carrier = self.carrier_for_operand(operand)
+        if carrier is None:
+            return False
+        # A carrier can widen the value, but a comparison must consume the
+        # original state-width slice.  This rejects a full-width RAX compare
+        # after STACK4 -> RAX8 while accepting EAX4.
+        return (
+            int(operand.size) == int(carrier.source_width)
+            and int(operand.size) == int(self.state_width)
+            and int(operand.size) <= int(carrier.result_width)
+        )
+
+
+def _dispatcher_state_width(
+    flow_graph: FlowGraph,
+    *,
+    dispatcher_entry_serial: int,
+    state_identity: StorageIdentity,
+) -> int | None:
+    """Recover the bound state's source width from the dispatcher branch."""
+
+    block = flow_graph.get_block(int(dispatcher_entry_serial))
+    if block is None:
+        return None
+    instructions = InstructionProjection.from_block(block)
+    branches = tuple(
+        instruction
+        for instruction in instructions
+        if instruction.control is not None
+        and instruction.control.transfer is ControlTransferKind.CONDITIONAL_BRANCH
+    )
+    if len(branches) != 1:
+        return None
+    operands = tuple(
+        operand
+        for operand in branches[0].inputs
+        if storage_identity_from_varnode(operand) == state_identity
+    )
+    if len(operands) != 1 or int(operands[0].size) <= 0:
+        return None
+    return int(operands[0].size)
+
+
+def _dispatcher_state_branch_is_pure(block: object) -> bool:
+    """Apply the recursive operand-tree safety gate to the branch snapshot."""
+
+    branches = tuple(
+        instruction
+        for instruction in tuple(getattr(block, "insn_snapshots", ()) or ())
+        if getattr(instruction, "control_transfer_kind", None)
+        is ControlTransferKind.CONDITIONAL_BRANCH
+    )
+    if len(branches) != 1:
+        return False
+    branch = branches[0]
+    if (
+        bool(getattr(branch, "is_call", False))
+        or getattr(branch, "call_kind", None) is not None
+    ):
+        return False
+    return all(
+        is_effect_free_operand_tree(operand)
+        for operand in (
+            getattr(branch, "l", None),
+            getattr(branch, "r", None),
+            getattr(branch, "d", None),
+        )
+    )
+
+
+def _state_carrier_from_instruction(
+    instruction: Instruction,
+    *,
+    state_identity: StorageIdentity,
+    state_width: int,
+) -> _DispatcherStateCarrier | None:
+    """Recognize exactly one pure MOVE/ZEXT carrier definition."""
+
+    if (
+        instruction.operation not in {ValueOpKind.MOVE, ValueOpKind.ZEXT}
+        or instruction.effects
+        or instruction.memory is not None
+        or instruction.control is not None
+        or len(instruction.inputs) != 1
+        or instruction.result is None
+        or instruction.result.space not in {Space.REGISTER, Space.TEMP}
+    ):
+        return None
+    source = instruction.inputs[0]
+    source_identity = storage_identity_from_varnode(source)
+    source_width = int(source.size)
+    result_width = int(instruction.result.size)
+    if (
+        instruction.result.space not in {Space.REGISTER, Space.TEMP}
+        or source_width <= 0
+        or result_width <= 0
+        or source_width != int(state_width)
+    ):
+        return None
+    # Definitions are admitted only from the original state in the bound
+    # dispatcher.  A result may then be consumed as an existing carrier by
+    # downstream comparisons, but child definitions are deliberately outside
+    # this first exact-C authority because they require path-sensitive joins.
+    if source_identity != state_identity:
+        return None
+    if instruction.operation is ValueOpKind.MOVE:
+        if result_width != source_width:
+            return None
+    elif result_width <= source_width:
+        return None
+    return _DispatcherStateCarrier(
+        source_space=source.space,
+        source_offset=int(source.offset),
+        source_width=source_width,
+        result_space=instruction.result.space,
+        result_offset=int(instruction.result.offset),
+        result_width=result_width,
+        operation=instruction.operation,
+    )
+
+
+def _analyze_dispatcher_state_carriers(
+    flow_graph: FlowGraph,
+    *,
+    dispatcher_entry_serial: int,
+    state_identity: StorageIdentity,
+) -> _DispatcherStateCarrierAnalysis:
+    """Walk the comparison forest and derive pure state-carrier authority.
+
+    This intentionally has a smaller admission surface than the generic
+    router predicate.  A comparison block may contain only one or more exact
+    MOVE/ZEXT definitions followed by a scalar state/constant branch.  Any
+    unknown, effectful, global, memory, call, vendor, or competing definition
+    makes the whole analysis invalid.
+    """
+
+    state_width = _dispatcher_state_width(
+        flow_graph,
+        dispatcher_entry_serial=int(dispatcher_entry_serial),
+        state_identity=state_identity,
+    )
+    if state_width is None:
+        return _DispatcherStateCarrierAnalysis(0, frozenset(), (), False)
+
+    seen: set[int] = set()
+    pending = deque(((int(dispatcher_entry_serial), False),))
+    carriers: dict[tuple[Space, int], _DispatcherStateCarrier] = {}
+    region: set[int] = set()
+    while pending:
+        serial, allow_exit_leaf = pending.popleft()
+        serial = int(serial)
+        if serial in seen:
+            continue
+        block = flow_graph.get_block(serial)
+        if block is None:
+            continue
+        branch: Instruction | None = None
+        instructions = InstructionProjection.from_block(block)
+        successors = tuple(int(target) for target in block.succs)
+        if len(successors) == 2 and block.kind in {
+            BlockKind.TWO_WAY,
+            BlockKind.N_WAY,
+        }:
+            branches = tuple(
+                instruction
+                for instruction in instructions
+                if instruction.control is not None
+                and instruction.control.transfer
+                is ControlTransferKind.CONDITIONAL_BRANCH
+            )
+            if len(branches) != 1:
+                continue
+            branch = branches[0]
+            if branch.control is None or branch.control.target not in successors:
+                continue
+        elif not (allow_exit_leaf and len(successors) == 1):
+            continue
+
+        block_carriers: list[_DispatcherStateCarrier] = []
+        invalid_value = False
+        for instruction in instructions:
+            if instruction.control is not None:
+                continue
+            carrier = _state_carrier_from_instruction(
+                instruction,
+                state_identity=state_identity,
+                state_width=state_width,
+            )
+            if carrier is None:
+                # A projected VENDOR with no value/result is the portable
+                # representation of a NOP.  Any other value instruction is
+                # semantic/unknown and stops this candidate path.  The bound
+                # dispatcher itself is stricter: malformed carrier plumbing
+                # there invalidates the complete authority.
+                if not (
+                    instruction.operation is ValueOpKind.VENDOR
+                    and not instruction.inputs
+                    and instruction.result is None
+                    and not instruction.effects
+                    and instruction.memory is None
+                ):
+                    invalid_value = True
+                    break
+                continue
+            block_carriers.append(carrier)
+
+        if invalid_value:
+            if serial == int(dispatcher_entry_serial):
+                return _DispatcherStateCarrierAnalysis(
+                    state_width, frozenset(), (), False
+                )
+            continue
+
+        # Definitions in a non-dominating child would make a global carrier
+        # map unsound at sibling joins.  Keep this first lifting narrow: all
+        # accepted definitions must be in the bound dispatcher block, where
+        # they dominate every comparison-forest successor.
+        if block_carriers and serial != int(dispatcher_entry_serial):
+            return _DispatcherStateCarrierAnalysis(
+                state_width, frozenset(), (), False
+            )
+
+        if branch is not None and not _dispatcher_state_branch_is_pure(block):
+            if serial == int(dispatcher_entry_serial):
+                return _DispatcherStateCarrierAnalysis(
+                    state_width, frozenset(), (), False
+                )
+            continue
+
+        for carrier in block_carriers:
+            result_key = (carrier.result_space, int(carrier.result_offset))
+            previous = carriers.get(result_key)
+            if previous is not None:
+                return _DispatcherStateCarrierAnalysis(
+                    state_width, frozenset(), (), False
+                )
+            carriers[result_key] = carrier
+
+        if branch is not None:
+            if len(branch.inputs) != 2:
+                if serial == int(dispatcher_entry_serial):
+                    return _DispatcherStateCarrierAnalysis(
+                        state_width, frozenset(), (), False
+                    )
+                continue
+            saw_state = False
+            saw_constant = False
+            invalid_branch = False
+            for operand in branch.inputs:
+                if operand.space is Space.CONST:
+                    saw_constant = True
+                elif _DispatcherStateCarrierAnalysis(
+                    state_width, frozenset(), tuple(carriers.values()), True
+                ).resolves_state_operand(
+                    operand,
+                    state_identity=state_identity,
+                ):
+                    saw_state = True
+                else:
+                    invalid_branch = True
+                    break
+            if invalid_branch or not saw_state or not saw_constant:
+                if serial == int(dispatcher_entry_serial):
+                    return _DispatcherStateCarrierAnalysis(
+                        state_width, frozenset(), (), False
+                    )
+                continue
+        elif not block_carriers and not _is_effect_free_dispatcher_router(block):
+            return _DispatcherStateCarrierAnalysis(
+                state_width, frozenset(), (), False
+            )
+
+        seen.add(serial)
+        region.add(serial)
+        pending.extend((target, True) for target in successors)
+    return _DispatcherStateCarrierAnalysis(
+        state_width,
+        frozenset(region),
+        tuple(
+            sorted(
+                carriers.values(),
+                key=lambda item: (item.result_space.value, int(item.result_offset)),
+            )
+        ),
+        True,
+    )
+
+
 def _state_dispatcher_comparison_region(
     flow_graph: FlowGraph,
     *,
@@ -2625,44 +3009,14 @@ def _state_dispatcher_comparison_region(
     another conditional.  Retirement authority stops at that boundary unless
     the conditional compares the dispatcher entry's exact state identity.
     """
-    start = int(dispatcher_entry_serial)
-    seen: set[int] = set()
-    pending = deque(((start, False),))
-    while pending:
-        serial, allow_exit_leaf = pending.popleft()
-        serial = int(serial)
-        if serial in seen:
-            continue
-        block = flow_graph.get_block(serial)
-        if block is None or not _is_effect_free_dispatcher_router(block):
-            continue
-        successors = tuple(int(target) for target in block.succs)
-        if len(successors) == 2 and block.kind in {
-            BlockKind.TWO_WAY,
-            BlockKind.N_WAY,
-        }:
-            instructions = InstructionProjection.from_block(block)
-            branches = tuple(
-                index
-                for index, instruction in enumerate(instructions)
-                if instruction.control is not None
-                and instruction.control.transfer
-                is ControlTransferKind.CONDITIONAL_BRANCH
-            )
-            if len(branches) != 1:
-                continue
-            _constant, identity = split_const_storage_identity_from_branch(
-                instructions,
-                branches[0],
-                min_const=-1,
-            )
-            if identity != state_identity:
-                continue
-        elif not (allow_exit_leaf and len(successors) == 1):
-            continue
-        seen.add(serial)
-        pending.extend((target, True) for target in successors)
-    return frozenset(seen)
+    analysis = _analyze_dispatcher_state_carriers(
+        flow_graph,
+        dispatcher_entry_serial=int(dispatcher_entry_serial),
+        state_identity=state_identity,
+    )
+    if not analysis.valid:
+        return frozenset()
+    return analysis.region
 
 
 def _pure_dispatcher_state_writer(
@@ -2691,6 +3045,100 @@ def _pure_dispatcher_state_writer(
     ):
         return None
     return instruction
+
+
+def _resolve_dispatcher_state_comparison_entry(
+    flow_graph: FlowGraph,
+    *,
+    dispatcher_entry_serial: int,
+) -> _DispatcherStateResolution | None:
+    """Resolve a comparison forest behind an exact one-way state writer.
+
+    Most dispatchers bind directly to their first comparison block.  Some
+    native lifts instead bind the preceding ``MOVE carrier, state`` prefix.
+    Admit only that one-hop shape: a single pure MOVE in a one-way block, one
+    successor, and a successor whose sole constant comparison reads the MOVE
+    result.  The original bound anchor remains the receipt identity; callers
+    use ``comparison_entry_serial`` only for forest analysis.
+    """
+
+    start = int(dispatcher_entry_serial)
+    direct_identity = _dispatcher_state_identity(flow_graph, start)
+    if direct_identity is not None:
+        width = _dispatcher_state_width(
+            flow_graph,
+            dispatcher_entry_serial=start,
+            state_identity=direct_identity,
+        )
+        if width is not None:
+            return _DispatcherStateResolution(start, direct_identity, width)
+
+    block = flow_graph.get_block(start)
+    if block is None or getattr(block, "kind", None) is not BlockKind.ONE_WAY:
+        return None
+    successors = tuple(int(target) for target in getattr(block, "succs", ()) or ())
+    if len(successors) != 1:
+        return None
+    instructions = InstructionProjection.from_block(block)
+    values = tuple(
+        instruction for instruction in instructions if instruction.control is None
+    )
+    controls = tuple(
+        instruction for instruction in instructions if instruction.control is not None
+    )
+    if len(values) != 1:
+        return None
+    # Native block snapshots commonly omit an unconditional tail instruction;
+    # the one-way topology and tail metadata still provide the exact transfer
+    # evidence.  If a control snapshot is present, accept only one GOTO and
+    # reject every other control shape.
+    if controls:
+        if len(controls) != 1:
+            return None
+        control = controls[0].control
+        if control is None or control.transfer is not ControlTransferKind.GOTO:
+            return None
+        if (
+            control.target is not None
+            and int(control.target) != successors[0]
+        ):
+            return None
+    writer = values[0]
+    if (
+        writer.operation is not ValueOpKind.MOVE
+        or writer.effects
+        or writer.memory is not None
+        or len(writer.inputs) != 1
+        or writer.result is None
+        or writer.result.space not in {Space.REGISTER, Space.STACK, Space.LVAR}
+        or writer.inputs[0].space is Space.GLOBAL
+    ):
+        return None
+    source_identity = storage_identity_from_varnode(writer.inputs[0])
+    state_identity = storage_identity_from_varnode(writer.result)
+    if source_identity is None or state_identity is None:
+        return None
+    source_width = int(writer.inputs[0].size)
+    state_width = int(writer.result.size)
+    if source_width <= 0 or state_width <= 0 or source_width != state_width:
+        return None
+    comparison_entry = successors[0]
+    comparison_identity = _dispatcher_state_identity(flow_graph, comparison_entry)
+    if comparison_identity != state_identity:
+        return None
+    comparison_width = _dispatcher_state_width(
+        flow_graph,
+        dispatcher_entry_serial=comparison_entry,
+        state_identity=comparison_identity,
+    )
+    if comparison_width != state_width:
+        return None
+    return _DispatcherStateResolution(
+        comparison_entry,
+        state_identity,
+        state_width,
+        writer.inputs[0],
+    )
 
 
 def _constant_register_normalizer(
@@ -2731,19 +3179,33 @@ def _constant_register_normalizer(
     return int(source.offset), instruction.result
 
 
-def _route_dispatcher_constant(
+@dataclass(frozen=True, slots=True)
+class _DispatcherConstantRoute:
+    """Deterministic comparison nodes and the first non-router exit."""
+
+    comparison_path: tuple[int, ...]
+    exit_serial: int
+
+
+def _route_dispatcher_constant_with_analysis(
     flow_graph: FlowGraph,
     *,
-    dispatcher_serial: int,
+    start_serial: int,
     comparison_region: frozenset[int],
     state_identity: StorageIdentity,
+    carrier_analysis: _DispatcherStateCarrierAnalysis,
     value: int,
-) -> int | None:
-    """Evaluate one constant through the canonical comparison forest."""
-    current = int(dispatcher_serial)
+) -> _DispatcherConstantRoute | None:
+    """Evaluate one constant from an exact node in a proven comparison forest."""
+
+    current = int(start_serial)
+    if current not in comparison_region:
+        return None
     seen: set[int] = set()
+    path: list[int] = []
     while current in comparison_region and current not in seen:
         seen.add(current)
+        path.append(current)
         block = flow_graph.get_block(current)
         if block is None:
             return None
@@ -2758,7 +3220,8 @@ def _route_dispatcher_constant(
             instruction
             for instruction in instructions
             if instruction.control is not None
-            and instruction.control.transfer is ControlTransferKind.CONDITIONAL_BRANCH
+            and instruction.control.transfer
+            is ControlTransferKind.CONDITIONAL_BRANCH
         )
         if len(branches) != 1:
             return None
@@ -2772,7 +3235,10 @@ def _route_dispatcher_constant(
         saw_state = False
         saw_constant = False
         for operand in branch.inputs:
-            if storage_identity_from_varnode(operand) == state_identity:
+            if carrier_analysis.resolves_state_operand(
+                operand,
+                state_identity=state_identity,
+            ):
                 evaluated.append(int(value))
                 saw_state = True
             elif operand.space is Space.CONST:
@@ -2797,7 +3263,326 @@ def _route_dispatcher_constant(
         if fallthrough is None:
             return None
         current = int(control.target) if taken else int(fallthrough)
-    return None if current in seen else current
+    if current in seen:
+        return None
+    return _DispatcherConstantRoute(tuple(path), current)
+
+
+def _route_dispatcher_constant(
+    flow_graph: FlowGraph,
+    *,
+    dispatcher_serial: int,
+    comparison_region: frozenset[int],
+    state_identity: StorageIdentity,
+    value: int,
+) -> int | None:
+    """Evaluate one constant through the canonical comparison forest."""
+    carrier_analysis = _analyze_dispatcher_state_carriers(
+        flow_graph,
+        dispatcher_entry_serial=int(dispatcher_serial),
+        state_identity=state_identity,
+    )
+    if not carrier_analysis.valid or carrier_analysis.region != comparison_region:
+        return None
+    route = _route_dispatcher_constant_with_analysis(
+        flow_graph,
+        start_serial=int(dispatcher_serial),
+        comparison_region=comparison_region,
+        state_identity=state_identity,
+        carrier_analysis=carrier_analysis,
+        value=value,
+    )
+    return None if route is None else int(route.exit_serial)
+
+
+def _is_stable_post_reachable_semantic_route_target(
+    pre_graph: FlowGraph,
+    *,
+    post_graph: FlowGraph,
+    serial: int,
+    comparison_region: frozenset[int],
+    lost: frozenset[int],
+    post_reachable: frozenset[int],
+) -> bool:
+    """Prove one routed target semantic without producer handler authority.
+
+    This is deliberately an alternative to, not a replacement for, the
+    producer's authoritative-handler set.  The route must leave the proven
+    comparison forest at a stable pre/post block anchor, remain reachable
+    after mutation, and land on a block that the existing portable purity
+    classifier independently rejects as control-only dispatcher plumbing.
+    """
+
+    target = int(serial)
+    if (
+        target in comparison_region
+        or target in lost
+        or target not in post_reachable
+    ):
+        return False
+    pre_block = pre_graph.get_block(target)
+    post_block = post_graph.get_block(target)
+    if pre_block is None or post_block is None:
+        return False
+    pre_ea = int(getattr(pre_block, "start_ea", 0) or 0)
+    post_ea = int(getattr(post_block, "start_ea", 0) or 0)
+    if pre_ea != post_ea:
+        return False
+    return not _is_effect_free_dispatcher_router(pre_block)
+
+
+@dataclass(frozen=True, slots=True)
+class _RetiredNormalizerRouteResolution:
+    """Acyclic substitution through exact lost-normalizer receipts."""
+
+    target_serial: int
+    normalizers: tuple[int, ...]
+
+
+def _resolve_retired_normalizer_route_target(
+    start_serial: int,
+    *,
+    routes: Mapping[int, int],
+    lost: frozenset[int],
+) -> _RetiredNormalizerRouteResolution | None:
+    """Resolve only lost intermediates named by exact normalizer receipts."""
+
+    current = int(start_serial)
+    seen: set[int] = set()
+    normalizers: list[int] = []
+    while current in lost:
+        if current in seen:
+            return None
+        seen.add(current)
+        target = routes.get(current)
+        if target is None:
+            return None
+        normalizers.append(current)
+        current = int(target)
+    return _RetiredNormalizerRouteResolution(current, tuple(normalizers))
+
+
+def _final_constant_assignment_to_carrier(
+    block: object,
+    *,
+    carrier: Varnode,
+    state_width: int,
+) -> int | None:
+    """Recover the final exact constant definition of one prefix carrier.
+
+    Effects and unrelated values before the final exact overwrite remain owned
+    by the source block.  Once a constant is recovered, any later effect,
+    memory operation, or unknown operation invalidates it because the portable
+    projection cannot prove that instruction preserves the carrier.
+    """
+
+    carrier_identity = storage_identity_from_varnode(carrier)
+    if carrier_identity is None or int(carrier.size) != int(state_width):
+        return None
+    candidate: int | None = None
+    for instruction in InstructionProjection.from_block(block):
+        result_identity = storage_identity_from_varnode(instruction.result)
+        if result_identity != carrier_identity:
+            if candidate is not None and (
+                instruction.effects
+                or instruction.memory is not None
+                or instruction.operation is ValueOpKind.VENDOR
+                or (
+                    instruction.control is not None
+                    and instruction.control.transfer is not ControlTransferKind.GOTO
+                )
+            ):
+                candidate = None
+            continue
+        candidate = None
+        if (
+            instruction.operation is not ValueOpKind.MOVE
+            or instruction.effects
+            or instruction.memory is not None
+            or instruction.control is not None
+            or instruction.result != carrier
+            or len(instruction.inputs) != 1
+        ):
+            continue
+        source = instruction.inputs[0]
+        if source.space is not Space.CONST or int(source.size) != int(state_width):
+            continue
+        bits = int(state_width) * 8
+        if bits <= 0:
+            continue
+        candidate = int(source.offset) & ((1 << bits) - 1)
+    return candidate
+
+
+def _prove_source_owned_state_route(
+    pre_graph: FlowGraph,
+    *,
+    post_graph: FlowGraph,
+    source_serial: int,
+    state_feeder_serial: int,
+    prefix_input_carrier: Varnode,
+    state_width: int,
+    comparison_entry_serial: int,
+    comparison_region: frozenset[int],
+    state_identity: StorageIdentity,
+    normalizer_routes: Mapping[int, int],
+    handler_serials: set[int],
+    lost: frozenset[int],
+    post_reachable: frozenset[int],
+) -> IntervalStateSourceRouteProof | None:
+    """Prove a surviving source's exact route around one retired state feeder."""
+
+    source = int(source_serial)
+    feeder = int(state_feeder_serial)
+    pre_source = pre_graph.get_block(source)
+    post_source = post_graph.get_block(source)
+    if (
+        pre_source is None
+        or post_source is None
+        or tuple(int(target) for target in pre_source.succs) != (feeder,)
+    ):
+        return None
+    state_value = _final_constant_assignment_to_carrier(
+        pre_source,
+        carrier=prefix_input_carrier,
+        state_width=int(state_width),
+    )
+    if state_value is None:
+        return None
+    projected_successors = tuple(int(target) for target in post_source.succs)
+    if len(projected_successors) != 1:
+        return None
+    projected_successor = projected_successors[0]
+    if projected_successor in lost or projected_successor not in post_reachable:
+        return None
+    pre_projected = pre_graph.get_block(projected_successor)
+    post_projected = post_graph.get_block(projected_successor)
+    if pre_projected is None or post_projected is None:
+        return None
+    if int(pre_projected.start_ea) != int(post_projected.start_ea):
+        return None
+
+    routed_handler = _route_dispatcher_constant(
+        pre_graph,
+        dispatcher_serial=comparison_entry_serial,
+        comparison_region=comparison_region,
+        state_identity=state_identity,
+        value=state_value,
+    )
+    carrier_analysis = _analyze_dispatcher_state_carriers(
+        pre_graph,
+        dispatcher_entry_serial=comparison_entry_serial,
+        state_identity=state_identity,
+    )
+    if (
+        routed_handler is None
+        or not carrier_analysis.valid
+        or carrier_analysis.region != comparison_region
+    ):
+        return None
+    pre_route = _route_dispatcher_constant_with_analysis(
+        pre_graph,
+        start_serial=comparison_entry_serial,
+        comparison_region=comparison_region,
+        state_identity=state_identity,
+        carrier_analysis=carrier_analysis,
+        value=state_value,
+    )
+    if pre_route is None or int(pre_route.exit_serial) != int(routed_handler):
+        return None
+    resolved_pre = _resolve_retired_normalizer_route_target(
+        int(routed_handler),
+        routes=normalizer_routes,
+        lost=lost,
+    )
+    if resolved_pre is None:
+        return None
+
+    retired_normalizers = list(resolved_pre.normalizers)
+    routed_receipt_target: int | None = None
+    if projected_successor == int(resolved_pre.target_serial):
+        if any(serial not in lost for serial in pre_route.comparison_path):
+            return None
+        routed_receipt_target = int(resolved_pre.target_serial)
+    elif projected_successor in pre_route.comparison_path:
+        projected_index = pre_route.comparison_path.index(projected_successor)
+        if any(
+            serial not in lost
+            for serial in pre_route.comparison_path[:projected_index]
+        ):
+            return None
+        post_route = _route_dispatcher_constant_with_analysis(
+            post_graph,
+            start_serial=projected_successor,
+            comparison_region=comparison_region,
+            state_identity=state_identity,
+            carrier_analysis=carrier_analysis,
+            value=state_value,
+        )
+        if post_route is None:
+            return None
+        for serial in post_route.comparison_path:
+            if serial in lost or serial not in post_reachable:
+                return None
+            pre_route_block = pre_graph.get_block(serial)
+            post_route_block = post_graph.get_block(serial)
+            if pre_route_block is None or post_route_block is None:
+                return None
+            if int(pre_route_block.start_ea) != int(post_route_block.start_ea):
+                return None
+        resolved_post = _resolve_retired_normalizer_route_target(
+            int(post_route.exit_serial),
+            routes=normalizer_routes,
+            lost=lost,
+        )
+        if (
+            resolved_post is None
+            or int(resolved_post.target_serial) != int(resolved_pre.target_serial)
+        ):
+            return None
+        for serial in resolved_post.normalizers:
+            if serial not in retired_normalizers:
+                retired_normalizers.append(serial)
+        # A producer-authoritative handler root may itself be a pure one-way
+        # exit corridor.  The generic comparison walk deliberately continues
+        # through that glue, but the applied redirect receipt targets the
+        # handler root, not the eventual STOP.  Bind that root only after the
+        # complete pre/post route has exact-matched above; a non-handler
+        # intermediate remains router plumbing and cannot gain authority.
+        routed_receipt_target = (
+            projected_successor
+            if projected_successor in handler_serials
+            else int(resolved_pre.target_serial)
+        )
+    else:
+        return None
+
+    if routed_receipt_target is None:
+        return None
+    final_target = int(routed_receipt_target)
+    if final_target in lost or final_target not in post_reachable:
+        return None
+    if final_target not in handler_serials and not (
+        _is_stable_post_reachable_semantic_route_target(
+            pre_graph,
+            post_graph=post_graph,
+            serial=final_target,
+            comparison_region=comparison_region,
+            lost=lost,
+            post_reachable=post_reachable,
+        )
+    ):
+        return None
+    return IntervalStateSourceRouteProof(
+        source=_anchor(pre_graph, source),
+        state_feeder=_anchor(pre_graph, feeder),
+        state_value=state_value,
+        projected_successor=_anchor(pre_graph, projected_successor),
+        routed_handler=_anchor(pre_graph, final_target),
+        retired_normalizers=tuple(
+            _anchor(pre_graph, serial) for serial in retired_normalizers
+        ),
+    )
 
 
 def _payload_anchor_set(value: object) -> frozenset[DispatcherBlockAnchor] | None:
@@ -2826,18 +3611,20 @@ def _interval_state_normalizer_retirement_allowance(
         or not proof.authoritative_handlers
     ):
         return None
-    state_identity = _dispatcher_state_identity(
-        pre_graph,
-        int(dispatcher.serial),
-    )
-    if state_identity is None:
-        return None
-    comparison_region = _state_dispatcher_comparison_region(
+    state_resolution = _resolve_dispatcher_state_comparison_entry(
         pre_graph,
         dispatcher_entry_serial=int(dispatcher.serial),
+    )
+    if state_resolution is None:
+        return None
+    comparison_entry_serial = int(state_resolution.comparison_entry_serial)
+    state_identity = state_resolution.state_identity
+    comparison_region = _state_dispatcher_comparison_region(
+        pre_graph,
+        dispatcher_entry_serial=comparison_entry_serial,
         state_identity=state_identity,
     )
-    if int(dispatcher.serial) not in comparison_region:
+    if comparison_entry_serial not in comparison_region:
         return None
     pre_reachable = _reachable_from_entry(
         pre_graph.as_adjacency_dict(),
@@ -2867,7 +3654,7 @@ def _interval_state_normalizer_retirement_allowance(
         writer = _pure_dispatcher_state_writer(
             pre_graph,
             serial=int(serial),
-            dispatcher_serial=int(dispatcher.serial),
+            dispatcher_serial=comparison_entry_serial,
             state_identity=state_identity,
         )
         if writer is not None:
@@ -2876,6 +3663,7 @@ def _interval_state_normalizer_retirement_allowance(
     handler_serials = {int(anchor.serial) for anchor in proof.authoritative_handlers}
     normalizer_routes: list[IntervalStateNormalizerRouteProof] = []
     normalizer_serials: set[int] = set()
+    routed_semantic_serials: set[int] = set()
     for serial in sorted(lost & handler_serials):
         block = pre_graph.get_block(int(serial))
         if block is None:
@@ -2901,18 +3689,26 @@ def _interval_state_normalizer_retirement_allowance(
         normalized_value, _carrier = normalized
         routed_handler = _route_dispatcher_constant(
             pre_graph,
-            dispatcher_serial=int(dispatcher.serial),
+            dispatcher_serial=comparison_entry_serial,
             comparison_region=comparison_region,
             state_identity=state_identity,
             value=normalized_value,
         )
-        if (
-            routed_handler is None
-            or routed_handler == int(serial)
-            or routed_handler not in handler_serials
-            or routed_handler not in post_reachable
-        ):
+        if routed_handler is None or routed_handler == int(serial):
             continue
+        if routed_handler not in post_reachable:
+            continue
+        if routed_handler not in handler_serials:
+            if not _is_stable_post_reachable_semantic_route_target(
+                pre_graph,
+                post_graph=post_graph,
+                serial=routed_handler,
+                comparison_region=comparison_region,
+                lost=lost,
+                post_reachable=post_reachable,
+            ):
+                continue
+            routed_semantic_serials.add(int(routed_handler))
         normalizer_serials.add(int(serial))
         normalizer_routes.append(
             IntervalStateNormalizerRouteProof(
@@ -2925,7 +3721,9 @@ def _interval_state_normalizer_retirement_allowance(
     if not normalizer_routes:
         return None
 
-    semantic_handler_serials = handler_serials - normalizer_serials
+    semantic_handler_serials = (
+        handler_serials - normalizer_serials
+    ) | routed_semantic_serials
     if not semantic_handler_serials:
         return None
     semantic_handlers = _anchors_for_serials(pre_graph, semantic_handler_serials)
@@ -2940,6 +3738,13 @@ def _interval_state_normalizer_retirement_allowance(
     if set(proof.pre_reachable_terminals) != set(proof.post_reachable_terminals):
         return None
 
+    normalizer_route_map = {
+        int(route.normalizer.serial): int(route.routed_handler.serial)
+        for route in normalizer_routes
+    }
+    if len(normalizer_route_map) != len(normalizer_routes):
+        return None
+    source_routes: list[IntervalStateSourceRouteProof] = []
     for serial in state_writers:
         block = pre_graph.get_block(serial)
         if block is None:
@@ -2951,10 +3756,39 @@ def _interval_state_normalizer_retirement_allowance(
             if projected is None:
                 return None
             projected_successors = {int(target) for target in projected.succs}
-            if serial in projected_successors or not (
-                projected_successors & semantic_handler_serials
-            ):
+            if serial in projected_successors:
                 return None
+            prefix_input_carrier = state_resolution.prefix_input_carrier
+            writer = state_writers[serial]
+            is_prefix_writer = (
+                int(serial) == int(dispatcher.serial)
+                and prefix_input_carrier is not None
+                and tuple(writer.inputs) == (prefix_input_carrier,)
+            )
+            if not is_prefix_writer:
+                if projected_successors & semantic_handler_serials:
+                    continue
+                return None
+            if prefix_input_carrier is None:
+                return None
+            source_route = _prove_source_owned_state_route(
+                pre_graph,
+                post_graph=post_graph,
+                source_serial=predecessor,
+                state_feeder_serial=serial,
+                prefix_input_carrier=prefix_input_carrier,
+                state_width=state_resolution.state_width,
+                comparison_entry_serial=comparison_entry_serial,
+                comparison_region=comparison_region,
+                state_identity=state_identity,
+                normalizer_routes=normalizer_route_map,
+                handler_serials=handler_serials,
+                lost=lost,
+                post_reachable=post_reachable,
+            )
+            if source_route is None:
+                return None
+            source_routes.append(source_route)
 
     allowed_lost = (
         comparison_region | frozenset(state_writers) | frozenset(normalizer_serials)
@@ -2988,6 +3822,7 @@ def _interval_state_normalizer_retirement_allowance(
         semantic_handlers=semantic_handlers,
         post_reachable_handlers=post_handlers,
         lost_blocks=_anchors_for_serials(pre_graph, lost),
+        source_routes=tuple(source_routes),
     )
 
 

@@ -107,56 +107,152 @@ def _is_state_var(
     return False
 
 
+def _is_empty_operand(mop) -> bool:
+    if mop is None:
+        return True
+    return getattr(mop, "t", None) == getattr(ida_hexrays, "mop_z", object())
+
+
+def _is_local_value_operand(mop) -> bool:
+    if mop is None:
+        return False
+    return getattr(mop, "t", None) in {
+        ida_hexrays.mop_n,
+        ida_hexrays.mop_r,
+        ida_hexrays.mop_S,
+        ida_hexrays.mop_l,
+    }
+
+
+def _is_block_operand(mop) -> bool:
+    if mop is None:
+        return False
+    mop_b = getattr(ida_hexrays, "mop_b", None)
+    operand_type = getattr(mop, "t", None)
+    return bool(
+        (mop_b is not None and operand_type == mop_b)
+        or (operand_type is None and getattr(mop, "b", None) is not None)
+    )
+
+
+def _alias_prefix_instruction_is_pure(instruction, comparison_opcodes: set[int]) -> bool:
+    """Exact local-value operand contract for traversed alias-prefix code."""
+
+    opcode = getattr(instruction, "opcode", None)
+    if opcode is None:
+        return False
+    opcode = int(opcode)
+    left = getattr(instruction, "l", None)
+    right = getattr(instruction, "r", None)
+    dest = getattr(instruction, "d", None)
+    if opcode in {int(ida_hexrays.m_mov), int(ida_hexrays.m_xdu)}:
+        return bool(
+            _is_local_value_operand(left)
+            and _is_empty_operand(right)
+            and dest is not None
+            and getattr(dest, "t", None)
+            in {ida_hexrays.mop_r, ida_hexrays.mop_S, ida_hexrays.mop_l}
+        )
+    if opcode == int(ida_hexrays.m_goto):
+        operands = tuple(mop for mop in (left, right, dest) if not _is_empty_operand(mop))
+        return len(operands) == 1 and _is_block_operand(operands[0])
+    if opcode in comparison_opcodes:
+        return bool(
+            _is_local_value_operand(left)
+            and _is_local_value_operand(right)
+            and _is_block_operand(dest)
+        )
+    return False
+
+
 def _entry_state_alias(
     mba,
     dispatcher_entry_serial: int,
     *,
     state_var_stkoff: Optional[int] = None,
     state_var_reg: Optional[int] = None,
+    max_hops: int = 8,
 ) -> tuple[Optional[int], Optional[int], Optional[int]]:
-    """``(stkoff, mreg, valnum)`` for the entry block's stack->register state load.
+    """``(stkoff, mreg, valnum)`` for a split-entry state alias load.
 
-    The dispatcher entry homes the state variable in BOTH places: it loads the
-    stack slot into a register (``xdu %var_310.4, rax.8``) and the condition
-    chain below then compares that register.  A dispatcher like
-    sub_7FFE50C44430 is therefore DUAL-HOMED -- its BST root compares the STACK
-    slot while every deeper node compares the REGISTER -- so an identity that
-    carries only one half cannot match the whole chain.
+    The dispatcher entry may be a pure one-way state-write/glue block, with the
+    dual-homing load one hop later in the comparison root.  Follow only a
+    bounded, acyclic, sole-successor prefix and accept exactly one pure
+    ``mov``/``xdu`` stack-to-register definition.  The complete candidate block
+    is scanned before acceptance, so a later call/store/unknown operation or a
+    competing alias definition makes the identity unavailable.
 
-    Scans that one instruction and reports every identity it proves, matching on
-    whichever half the caller already knows (or the first such load when it
-    knows neither).  The destination's value number rides along so
+    The destination's value number rides along so
     :func:`_is_state_var` can tell the dispatcher's register-and-value from the
-    same register redefined inside a handler.  ``(None, None, None)`` when the
-    entry block has no such load.
+    same register redefined inside a handler.  Any fork, cycle, exhausted bound,
+    effectful/malformed instruction, wrong identity, or ambiguity returns
+    ``(None, None, None)``.
     """
-    try:
-        blk = mba.get_mblock(int(dispatcher_entry_serial))
-    except Exception:
-        return None, None, None
-    if blk is None:
-        return None, None, None
-    cur = getattr(blk, "head", None)
-    while cur is not None:
-        d = getattr(cur, "d", None)
-        left = getattr(cur, "l", None)
-        if (
-            d is not None
-            and getattr(d, "t", None) == ida_hexrays.mop_r
-            and left is not None
-            and getattr(left, "t", None) == ida_hexrays.mop_S
-        ):
+    comparison_opcodes = {int(opcode) for opcode in _op_mnemonic_map()}
+    alias_opcodes = {int(ida_hexrays.m_mov), int(ida_hexrays.m_xdu)}
+    candidates: list[tuple[int, int, Optional[int]]] = []
+    seen_blocks: set[int] = set()
+    serial = int(dispatcher_entry_serial)
+    for _ in range(int(max_hops) + 1):
+        if serial in seen_blocks:
+            return None, None, None
+        seen_blocks.add(serial)
+        try:
+            blk = mba.get_mblock(serial)
+        except Exception:
+            return None, None, None
+        if blk is None:
+            return None, None, None
+
+        instructions: list = []
+        seen_instructions: set[int] = set()
+        cur = getattr(blk, "head", None)
+        while cur is not None:
+            identity = id(cur)
+            if identity in seen_instructions:
+                return None, None, None
+            seen_instructions.add(identity)
+            instructions.append(cur)
+            cur = getattr(cur, "next", None)
+        tail = getattr(blk, "tail", None)
+        if tail is not None and id(tail) not in seen_instructions:
+            instructions.append(tail)
+
+        for instruction in instructions:
+            opcode = getattr(instruction, "opcode", None)
+            if not _alias_prefix_instruction_is_pure(
+                instruction,
+                comparison_opcodes,
+            ):
+                return None, None, None
+            if int(opcode) not in alias_opcodes:
+                continue
+            d = getattr(instruction, "d", None)
+            left = getattr(instruction, "l", None)
+            if (
+                d is None
+                or getattr(d, "t", None) != ida_hexrays.mop_r
+                or left is None
+                or getattr(left, "t", None) != ida_hexrays.mop_S
+            ):
+                continue
             off = getattr(getattr(left, "s", None), "off", None)
             reg = getattr(d, "r", None)
-            if off is not None and reg is not None:
-                stkoff_matches = (
-                    state_var_stkoff is None or int(off) == int(state_var_stkoff)
-                )
-                reg_matches = state_var_reg is None or int(reg) == int(state_var_reg)
-                if stkoff_matches and reg_matches:
-                    valnum = int(getattr(d, "valnum", 0) or 0) or None
-                    return int(off), int(reg), valnum
-        cur = getattr(cur, "next", None)
+            if off is None or reg is None:
+                return None, None, None
+            if state_var_stkoff is not None and int(off) != int(state_var_stkoff):
+                continue
+            if state_var_reg is not None and int(reg) != int(state_var_reg):
+                continue
+            valnum = int(getattr(d, "valnum", 0) or 0) or None
+            candidates.append((int(off), int(reg), valnum))
+            if len(candidates) > 1:
+                return None, None, None
+
+        succs = _block_succs(blk)
+        if len(succs) != 1:
+            return candidates[0] if len(candidates) == 1 else (None, None, None)
+        serial = int(succs[0])
     return None, None, None
 
 

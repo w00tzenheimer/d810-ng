@@ -789,3 +789,276 @@ def test_predecessor_initialization_behavior_is_unchanged():
     assert dmap.dispatcher_entry_block == 1
 
     assert recover_entry_dominated_initial_state(graph, dmap) == _PREFIX_INITIAL_STATE
+
+
+def _carrier_entry_graph() -> FlowGraph:
+    """Entry CONST->carrier followed by a shared carrier->state feeder."""
+
+    carrier = MopSnapshot(kind=OperandKind.REGISTER, reg=8, size=4)
+    state = MopSnapshot(kind=OperandKind.STACK, stkoff=_PREFIX_STATE_OFF, size=4)
+    source = MopSnapshot(
+        kind=OperandKind.NUMBER,
+        value=_PREFIX_INITIAL_STATE,
+        size=4,
+    )
+    source_write = InsnSnapshot(
+        opcode=2,
+        ea=0x3000,
+        operands=(source, carrier),
+        l=source,
+        d=carrier,
+        kind=InsnKind.MOV,
+    )
+    feeder_write = InsnSnapshot(
+        opcode=2,
+        ea=0x3010,
+        operands=(carrier, state),
+        l=carrier,
+        d=state,
+        kind=InsnKind.MOV,
+    )
+    compare = InsnSnapshot(
+        opcode=1,
+        ea=0x3020,
+        operands=(state, MopSnapshot(kind=OperandKind.NUMBER, value=0x1888937E, size=4), MopSnapshot(kind=OperandKind.BLOCK, block_ref=11)),
+        l=state,
+        r=MopSnapshot(kind=OperandKind.NUMBER, value=0x1888937E, size=4),
+        d=MopSnapshot(kind=OperandKind.BLOCK, block_ref=11),
+        kind=InsnKind.EQUALITY_JUMP,
+        branch_predicate=PredicateKind.EQ,
+        is_conditional_jump=True,
+    )
+    return FlowGraph(
+        blocks={
+            0: _prefix_block(0, (1,), (), (source_write,)),
+            1: _prefix_block(1, (2,), (0, 10), (feeder_write,)),
+            2: _prefix_block(2, (10, 11), (1,), (compare,)),
+            10: _prefix_block(10, (1,), (2,)),
+            11: _prefix_block(11, (), (2,)),
+        },
+        entry_serial=0,
+        func_ea=0x3000,
+    )
+
+
+def test_recover_dispatcher_recovers_two_block_carrier_initial_state() -> None:
+    graph = _carrier_entry_graph()
+
+    recovery = recover_dispatcher(graph, facts=None)
+
+    assert recovery.dispatch_map is not None
+    assert recovery.dispatch_map.initial_state == _PREFIX_INITIAL_STATE
+
+
+def test_carrier_initial_state_accepts_omitted_comparison_prefix_root() -> None:
+    graph = _carrier_entry_graph()
+    dmap = build_state_dispatcher_map_from_flow_graph(graph)
+    assert dmap is not None
+    assert dmap.dispatcher_entry_block == 1
+    assert dmap.dispatcher_blocks == frozenset({2})
+    partial_dmap = replace(
+        dmap,
+        dispatcher_blocks=frozenset({3}),
+    )
+
+    assert recover_entry_dominated_initial_state(graph, partial_dmap) == (
+        _PREFIX_INITIAL_STATE
+    )
+
+
+def _replace_carrier_entry_block(
+    graph: FlowGraph,
+    serial: int,
+    *,
+    insns: tuple[InsnSnapshot, ...] | None = None,
+    succs: tuple[int, ...] | None = None,
+    preds: tuple[int, ...] | None = None,
+    entry_serial: int | None = None,
+) -> FlowGraph:
+    block = graph.blocks[serial]
+    blocks = dict(graph.blocks)
+    blocks[serial] = replace(
+        block,
+        insn_snapshots=block.insn_snapshots if insns is None else insns,
+        succs=block.succs if succs is None else succs,
+        preds=block.preds if preds is None else preds,
+    )
+    return FlowGraph(
+        blocks=blocks,
+        entry_serial=graph.entry_serial if entry_serial is None else entry_serial,
+        func_ea=graph.func_ea,
+    )
+
+
+def test_carrier_initial_state_allows_effect_before_final_overwrite() -> None:
+    graph = _carrier_entry_graph()
+    source = graph.blocks[0].insn_snapshots[0]
+    graph = _replace_carrier_entry_block(
+        graph,
+        0,
+        insns=(_prefix_call(), source),
+    )
+
+    recovery = recover_dispatcher(graph, facts=None)
+
+    assert recovery.dispatch_map is not None
+    assert recovery.dispatch_map.initial_state == _PREFIX_INITIAL_STATE
+
+
+def test_carrier_initial_state_rejects_multiple_reachable_sources() -> None:
+    graph = _carrier_entry_graph()
+    source = graph.blocks[0]
+    second_source = replace(
+        source,
+        serial=4,
+        start_ea=0x3004,
+        preds=(20,),
+        succs=(1,),
+    )
+    entry = _prefix_block(20, (0, 4), ())
+    blocks = {
+        **graph.blocks,
+        0: replace(source, preds=(20,)),
+        1: replace(graph.blocks[1], preds=(0, 4, 10)),
+        4: second_source,
+        20: entry,
+    }
+    graph = FlowGraph(blocks=blocks, entry_serial=20, func_ea=graph.func_ea)
+
+    recovery = recover_dispatcher(graph, facts=None)
+
+    assert recovery.dispatch_map is not None
+    assert recovery.dispatch_map.initial_state is None
+
+
+@pytest.mark.parametrize("source_size", (0, 8))
+def test_carrier_initial_state_rejects_wrong_source_width(source_size: int) -> None:
+    graph = _carrier_entry_graph()
+    source_write = graph.blocks[0].insn_snapshots[0]
+    graph = _replace_carrier_entry_block(
+        graph,
+        0,
+        insns=(
+            replace(
+                source_write,
+                l=replace(source_write.l, size=source_size),
+            ),
+        ),
+    )
+
+    recovery = recover_dispatcher(graph, facts=None)
+
+    assert recovery.dispatch_map is not None
+    assert recovery.dispatch_map.initial_state is None
+
+
+def test_carrier_initial_state_rejects_wrong_feeder_carrier() -> None:
+    graph = _carrier_entry_graph()
+    feeder = graph.blocks[1].insn_snapshots[0]
+    graph = _replace_carrier_entry_block(
+        graph,
+        1,
+        insns=(replace(feeder, l=MopSnapshot(kind=OperandKind.REGISTER, reg=9, size=4)),),
+    )
+
+    recovery = recover_dispatcher(graph, facts=None)
+
+    assert recovery.dispatch_map is not None
+    assert recovery.dispatch_map.initial_state is None
+
+
+@pytest.mark.parametrize(
+    "post_assignment",
+    (
+        _prefix_call(),
+        _prefix_reg_mov_const(0xDEADBEEF),
+        InsnSnapshot(opcode=99, ea=0x3008, operands=(), kind=InsnKind.UNKNOWN),
+    ),
+)
+def test_carrier_initial_state_rejects_instruction_after_assignment(
+    post_assignment: InsnSnapshot,
+) -> None:
+    graph = _carrier_entry_graph()
+    source = graph.blocks[0].insn_snapshots[0]
+    graph = _replace_carrier_entry_block(
+        graph,
+        0,
+        insns=(source, post_assignment),
+    )
+
+    recovery = recover_dispatcher(graph, facts=None)
+
+    assert recovery.dispatch_map is not None
+    assert recovery.dispatch_map.initial_state is None
+
+
+def test_carrier_initial_state_rejects_effectful_or_multi_instruction_feeder() -> None:
+    graph = _carrier_entry_graph()
+    feeder = graph.blocks[1].insn_snapshots[0]
+    graph = _replace_carrier_entry_block(
+        graph,
+        1,
+        insns=(feeder, _prefix_call()),
+    )
+
+    recovery = recover_dispatcher(graph, facts=None)
+
+    assert recovery.dispatch_map is not None
+    assert recovery.dispatch_map.initial_state is None
+
+
+def test_carrier_initial_state_rejects_feeder_fork() -> None:
+    graph = _replace_carrier_entry_block(_carrier_entry_graph(), 1, succs=(2, 11))
+
+    recovery = recover_dispatcher(graph, facts=None)
+
+    assert recovery.dispatch_map is not None
+    assert recovery.dispatch_map.initial_state is None
+
+
+def test_carrier_initial_state_rejects_state_identity_mismatch() -> None:
+    graph = _carrier_entry_graph()
+    feeder = graph.blocks[1].insn_snapshots[0]
+    wrong_state = MopSnapshot(kind=OperandKind.STACK, stkoff=0x40, size=4)
+    graph = _replace_carrier_entry_block(
+        graph,
+        1,
+        insns=(replace(feeder, d=wrong_state),),
+    )
+
+    recovery = recover_dispatcher(graph, facts=None)
+
+    assert recovery.dispatch_map is not None
+    assert recovery.dispatch_map.initial_state is None
+
+
+def test_carrier_initial_state_rejects_conflicting_direct_state_write() -> None:
+    graph = _carrier_entry_graph()
+    carrier_write = graph.blocks[0].insn_snapshots[0]
+    direct = _prefix_mov_const(0xDEADBEEF)
+    graph = _replace_carrier_entry_block(
+        graph,
+        0,
+        insns=(direct, carrier_write),
+    )
+
+    recovery = recover_dispatcher(graph, facts=None)
+
+    assert recovery.dispatch_map is not None
+    assert recovery.dispatch_map.initial_state is None
+
+
+def test_carrier_initial_state_accepts_agreeing_direct_state_write() -> None:
+    graph = _carrier_entry_graph()
+    carrier_write = graph.blocks[0].insn_snapshots[0]
+    direct = _prefix_mov_const(_PREFIX_INITIAL_STATE)
+    graph = _replace_carrier_entry_block(
+        graph,
+        0,
+        insns=(direct, carrier_write),
+    )
+
+    recovery = recover_dispatcher(graph, facts=None)
+
+    assert recovery.dispatch_map is not None
+    assert recovery.dispatch_map.initial_state == _PREFIX_INITIAL_STATE

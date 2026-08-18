@@ -2549,6 +2549,11 @@ def _explicit_singleton_route_evidence(
 
 
 NATIVE_BOUND_ENTRY_ROUTE_SOURCE_KIND = "native_bound"
+SOURCE_CARRIER_DECISION_DAG_ENTRY_ROUTE_SOURCE_KIND = (
+    "source_carrier_decision_dag"
+)
+_SOURCE_CARRIER_DAG_ORACLE = "exact_source_carrier_decision_dag_route"
+_SOURCE_CARRIER_DAG_KIND = "source_carrier_decision_dag_reconciled"
 
 
 @dataclass(frozen=True, slots=True)
@@ -2561,6 +2566,129 @@ class _ConcreteStateRouteResolution:
 class _EntryStateRouteResolution:
     route: ConcreteStateRoute | None
     conflict: bool = False
+
+
+def _block_has_stable_native_anchor(block: object | None) -> bool:
+    if block is None:
+        return False
+    try:
+        native_ea = getattr(block, "native_start_ea", None)
+        ea = int(block.start_ea if native_ea is None else native_ea)
+    except _PROVIDER_SHAPE_ERRORS:
+        return False
+    return 0 < ea < (1 << 64)
+
+
+def _flow_graph_reachable_serials(flow_graph) -> frozenset[int]:
+    """Return bounded source-graph reachability for entry-route anchoring."""
+    try:
+        entry = int(flow_graph.entry_serial)
+        limit = max(1, len(flow_graph.blocks) + 1)
+    except _PROVIDER_SHAPE_ERRORS:
+        return frozenset()
+    seen: set[int] = set()
+    pending = [entry]
+    while pending and len(seen) < limit:
+        serial = pending.pop()
+        if serial in seen:
+            continue
+        block = flow_graph.get_block(serial)
+        if block is None:
+            continue
+        seen.add(serial)
+        try:
+            pending.extend(int(successor) for successor in block.succs)
+        except _PROVIDER_SHAPE_ERRORS:
+            return frozenset()
+    return frozenset(seen)
+
+
+def _trusted_source_carrier_entry_route(
+    flow_graph,
+    *,
+    dispatcher_entry_serial: int,
+    state: int,
+    state_write_transitions: tuple[StateWriteTransition, ...],
+    dispatcher_region_serials: frozenset[int],
+) -> _ConcreteStateRouteResolution:
+    """Bind one exact prologue carrier proof to its DAG-derived semantic leaf.
+
+    This is intentionally not a generic default-route escape hatch. Authority
+    comes only from the transition reconciler's exact source-carrier proof, for
+    the unique source edge that enters this dispatcher with this initial state.
+    """
+    if flow_graph is None:
+        return _ConcreteStateRouteResolution(None)
+    try:
+        normalized = int(state) & 0xFFFFFFFF
+        dispatcher_entry = int(dispatcher_entry_serial)
+    except _PROVIDER_SHAPE_ERRORS:
+        return _ConcreteStateRouteResolution(None)
+    prologue_sources = frozenset(
+        _dispatcher_entry_preds(flow_graph, dispatcher_entry)
+    )
+    if not prologue_sources:
+        return _ConcreteStateRouteResolution(None)
+
+    proof_shaped: list[StateWriteTransition] = []
+    for transition in state_write_transitions:
+        proof = transition.proof
+        if (
+            proof is None
+            or not proof.trusted
+            or proof.oracle_kind != _SOURCE_CARRIER_DAG_ORACLE
+            or proof.kind != _SOURCE_CARRIER_DAG_KIND
+            or tuple(proof.route_source_kinds)
+            != ("decision_dag", "source_carrier")
+        ):
+            continue
+        try:
+            source = int(transition.write_block)
+            via = (
+                None
+                if transition.via_block is None
+                else int(transition.via_block)
+            )
+        except _PROVIDER_SHAPE_ERRORS:
+            return _ConcreteStateRouteResolution(None, conflict=True)
+        if source not in prologue_sources or via != dispatcher_entry:
+            continue
+        proof_shaped.append(transition)
+
+    if not proof_shaped:
+        return _ConcreteStateRouteResolution(None)
+    if len(prologue_sources) != 1 or len(proof_shaped) != 1:
+        return _ConcreteStateRouteResolution(None, conflict=True)
+    transition = proof_shaped[0]
+    if transition.next_state is None or transition.target_handler is None:
+        return _ConcreteStateRouteResolution(None, conflict=True)
+    if (int(transition.next_state) & 0xFFFFFFFF) != normalized:
+        return _ConcreteStateRouteResolution(None, conflict=True)
+
+    source = int(transition.write_block)
+    target = int(transition.target_handler)
+    source_block = flow_graph.get_block(source)
+    target_block = flow_graph.get_block(target)
+    if (
+        source_block is None
+        or tuple(int(successor) for successor in source_block.succs)
+        != (dispatcher_entry,)
+        or target == dispatcher_entry
+        or target in dispatcher_region_serials
+        or not _block_has_stable_native_anchor(source_block)
+        or not _block_has_stable_native_anchor(target_block)
+        or target not in _flow_graph_reachable_serials(flow_graph)
+    ):
+        return _ConcreteStateRouteResolution(None, conflict=True)
+    return _ConcreteStateRouteResolution(
+        ConcreteStateRoute(
+            normalized_state=normalized,
+            target_block=target,
+            source_kinds=(SOURCE_CARRIER_DECISION_DAG_ENTRY_ROUTE_SOURCE_KIND,),
+        )
+    )
+
+
 
 
 def _native_bound_entry_targets(
@@ -2630,6 +2758,7 @@ def _resolve_concrete_route_resolution(
     flow_graph=None,
     dispatcher_entry_serial: int | None = None,
     native_bound_transition_routes: tuple[NativeBoundTransitionRoute, ...] = (),
+    allow_interval_default: bool = False,
 ) -> _ConcreteStateRouteResolution:
     """Resolve one transition/entry state without provider precedence.
 
@@ -2703,7 +2832,7 @@ def _resolve_concrete_route_resolution(
             # singleton/equality rows may independently prove a target omitted
             # from a partial condition-chain set.
             frozenset(),
-            _dispatcher_default_target(dispatcher),
+            None if allow_interval_default else _dispatcher_default_target(dispatcher),
         )
         if _provider_method(dispatcher, "lookup_row") is not None
         else None
@@ -2724,7 +2853,9 @@ def _resolve_concrete_route_resolution(
     # detail, not provenance.
     if interval_provider is not None and "interval" in route.source_kinds:
         source_kinds.add("interval")
-    if target not in condition_chain_handlers and not (
+    if (
+        not allow_interval_default or condition_chain_handlers
+    ) and target not in condition_chain_handlers and not (
         set(source_kinds)
         & {"exact", "materialized", NATIVE_BOUND_ENTRY_ROUTE_SOURCE_KIND}
     ) and not _explicit_singleton_route_evidence(
@@ -2772,20 +2903,56 @@ def _resolve_entry_state_route_resolution(
     dispatcher_entry_serial: int,
     flow_graph=None,
     native_bound_transition_routes: tuple[NativeBoundTransitionRoute, ...] = (),
+    state_write_transitions: tuple[StateWriteTransition, ...] = (),
+    dispatcher_region_serials: frozenset[int] = frozenset(),
 ) -> _EntryStateRouteResolution:
     """Resolve scalar entry evidence once for preflight and mutation."""
+    source_carrier_resolution = _trusted_source_carrier_entry_route(
+        flow_graph,
+        dispatcher_entry_serial=dispatcher_entry_serial,
+        state=state,
+        state_write_transitions=state_write_transitions,
+        dispatcher_region_serials=dispatcher_region_serials,
+    )
+    if source_carrier_resolution.conflict:
+        return _EntryStateRouteResolution(None, conflict=True)
     resolution = _resolve_concrete_route_resolution(
         dispatcher,
         state,
         materialized_state_routes=materialized_state_routes,
         # Partial condition-chain discovery must not veto exact/native evidence;
         # interval evidence still requires membership when the set is present.
-        condition_chain_handlers=condition_chain_handlers,
+        condition_chain_handlers=(
+            frozenset()
+            if source_carrier_resolution.route is not None
+            else condition_chain_handlers
+        ),
         flow_graph=flow_graph,
         dispatcher_entry_serial=dispatcher_entry_serial,
         native_bound_transition_routes=native_bound_transition_routes,
+        allow_interval_default=source_carrier_resolution.route is not None,
     )
+    if resolution.conflict:
+        return _EntryStateRouteResolution(None, conflict=True)
     route = resolution.route
+    carrier_route = source_carrier_resolution.route
+    if carrier_route is not None:
+        if route is not None and int(route.target_block) != int(
+            carrier_route.target_block
+        ):
+            return _EntryStateRouteResolution(None, conflict=True)
+        route = ConcreteStateRoute(
+            normalized_state=int(carrier_route.normalized_state),
+            target_block=int(carrier_route.target_block),
+            source_kinds=tuple(
+                sorted(
+                    {
+                        SOURCE_CARRIER_DECISION_DAG_ENTRY_ROUTE_SOURCE_KIND,
+                        *(route.source_kinds if route is not None else ()),
+                    }
+                )
+            ),
+        )
     if route is None:
         return _EntryStateRouteResolution(None, conflict=resolution.conflict)
     target = int(route.target_block)
@@ -2794,7 +2961,12 @@ def _resolve_entry_state_route_resolution(
         and target not in condition_chain_handlers
         and not (
             set(route.source_kinds)
-            & {"exact", "materialized", NATIVE_BOUND_ENTRY_ROUTE_SOURCE_KIND}
+            & {
+                "exact",
+                "materialized",
+                NATIVE_BOUND_ENTRY_ROUTE_SOURCE_KIND,
+                SOURCE_CARRIER_DECISION_DAG_ENTRY_ROUTE_SOURCE_KIND,
+            }
         )
         and not _explicit_singleton_route_evidence(
             dispatcher, route.normalized_state, target
@@ -2807,6 +2979,8 @@ def _resolve_entry_state_route_resolution(
         or (
             default_target is not None
             and target == default_target
+            and SOURCE_CARRIER_DECISION_DAG_ENTRY_ROUTE_SOURCE_KIND
+            not in route.source_kinds
             and not _explicit_singleton_route_evidence(
                 dispatcher, route.normalized_state, target
             )
@@ -8645,16 +8819,27 @@ def emit_minimal_unflatten(
     # false-terminal default route of a materialized computed goto. Exact
     # dispatcher rows remain authoritative; the helper returns every unrelated
     # transition byte-identically.
+    pre_route_reconciliation_transitions = transitions
     transitions = resolve_materialized_indirect_transfer_targets(
-        transitions,
+        pre_route_reconciliation_transitions,
         flow_graph,
         dispatcher,
         materialized_indirect_transfers,
         materialized_state_routes=materialized_state_routes,
         condition_chain_dag=condition_chain_dag,
         condition_chain_handlers=route_handler_serials,
+        state_var_stkoff=_soff,
         state_var_reg=state_var_reg,
     )
+    if (
+        condition_chain_dag is not None
+        and pre_route_reconciliation_transitions
+        and not transitions
+    ):
+        # Decision-DAG reconciliation is fragment-atomic.  An empty result for
+        # a non-empty input means one transition contradicted the source graph;
+        # no entry or back-edge modification may escape that conflict.
+        return compile_with_dispatcher_coverage(())
     conditional_boundary_edges = _applied_conditional_boundary_edge_keys(
         flow_graph,
         imported_conditional_boundary_evidence,
@@ -9016,6 +9201,13 @@ def emit_minimal_unflatten(
                     flow_graph=flow_graph,
                     native_bound_transition_routes=tuple(
                         native_bound_transition_routes
+                    ),
+                    state_write_transitions=tuple(transitions),
+                    dispatcher_region_serials=frozenset(
+                        {
+                            int(dispatcher_entry_serial),
+                            *(int(serial) for serial in dispatcher_region_serials),
+                        }
                     ),
                 )
                 if initial_state is not None

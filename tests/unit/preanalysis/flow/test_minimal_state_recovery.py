@@ -6,6 +6,8 @@ runs through a registered portable ``forward_eval_insn`` seam.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 import d810.analyses.control_flow.minimal_state_recovery as minimal_state_recovery
@@ -34,6 +36,7 @@ from d810.analyses.control_flow.minimal_state_recovery import (
 from d810.analyses.control_flow.semantic_transition import (
     StateTransitionResolution,
 )
+from d810.analyses.control_flow.route_predicate import DecisionDag, RouteComparison
 from d810.analyses.control_flow.state_transition_domain import (
     StateValue,
     state_value_fixpoint_result,
@@ -56,7 +59,7 @@ from d810.ir.flowgraph import (
     OperandKind,
 )
 from d810.ir.expressions import ValueOpKind
-from d810.ir.semantics import PredicateKind
+from d810.ir.semantics import CallKind, PredicateKind
 
 _OP_MOV = 4
 _OP_XOR = 31
@@ -2780,3 +2783,828 @@ def test_back_edge_state_inside_interval_resolves_handler(_seam) -> None:
     assert transition.is_return is False
     assert transition.proof is not None
     assert transition.proof.trusted is True
+
+
+def _typed_state_route_reconciliation_fixture(
+    *,
+    effectful_normalizer: bool = False,
+    effectful_carrier: bool = False,
+) -> tuple[FlowGraph, DecisionDag]:
+    """A compact target-C dispatcher with one exact state normalizer."""
+
+    call = InsnSnapshot(
+        opcode=0x41,
+        ea=0x1A00,
+        operands=(),
+        kind=InsnKind.CALL,
+        call_kind=CallKind.DIRECT,
+    )
+    normalizer_insns = (_mov(0x1200, _num(0x1939CB36), _reg(8)),)
+    if effectful_normalizer:
+        normalizer_insns += (call,)
+    carrier_insns = (_mov(0x1300, _reg(8), _stk(_STATE_OFF)),)
+    if effectful_carrier:
+        carrier_insns += (_store(0x1301, _num(1), _global(0x140001000)),)
+    goto_prefix = InsnSnapshot(
+        opcode=55,
+        ea=0x1F01,
+        operands=(),
+        l=MopSnapshot(kind=OperandKind.BLOCK, block_ref=3),
+        kind=InsnKind.GOTO,
+    )
+    graph = FlowGraph(
+        blocks={
+            2: _blk(2, (3,), (4,), normalizer_insns),
+            3: _blk(3, (4,), (2, 14, 15, 16), carrier_insns),
+            4: _blk(4, (2, 9), (3,), ()),
+            9: _blk(9, (12, 15), (4,), ()),
+            10: _blk(10, (3,), (12,), (call,)),
+            12: _blk(12, (10, 19), (9,), ()),
+            13: _blk(13, (3,), (), (_mov(0x1D00, _num(1), _reg(11)),)),
+            14: _blk(
+                14,
+                (3,),
+                (13,),
+                (_mov(0x1E00, _num(0x1BABC1DC), _reg(8)), goto_prefix),
+            ),
+            15: _blk(
+                15,
+                (3,),
+                (9,),
+                (_mov(0x1F00, _num(0x6CF816C1), _reg(8)), goto_prefix),
+            ),
+            16: _blk(
+                16,
+                (3,),
+                (10,),
+                (_mov(0x2000, _num(0x079323F9), _reg(8)), goto_prefix),
+            ),
+            19: _blk(19, (3,), (12,), (call,)),
+        },
+        entry_serial=3,
+        func_ea=0x1000,
+    )
+    dag = DecisionDag(
+        32,
+        {
+            4: RouteComparison(4, "jz", 0x1BABC1DC, 2, 9),
+            9: RouteComparison(9, "jz", 0x079323F9, 15, 12),
+            12: RouteComparison(12, "jz", 0x1939CB36, 19, 10),
+        },
+        root=4,
+    )
+    return graph, dag
+
+
+def _coarse_transition(source: int, state: int, target: int) -> StateWriteTransition:
+    return StateWriteTransition(
+        source,
+        state,
+        target,
+        False,
+        None,
+        via_block=3,
+        proof=TransitionProof(
+            "region_partitioned_fixpoint",
+            "region_seeded",
+            True,
+            route_source_kinds=("interval",),
+        ),
+    )
+
+
+def test_nonreturn_coarse_target_is_reconciled_to_exact_state_route() -> None:
+    graph, dag = _typed_state_route_reconciliation_fixture()
+    transition = _coarse_transition(16, 0x079323F9, 13)
+
+    (resolved,) = resolve_materialized_indirect_transfer_targets(
+        (transition,),
+        graph,
+        _dispatcher({}, exit_block=99),
+        (),
+        condition_chain_dag=dag,
+        condition_chain_handlers=frozenset({13, 15}),
+    )
+
+    assert resolved.target_handler == 15
+    assert resolved.proof is not None
+    assert resolved.proof.oracle_kind == "decision_dag_state_route_reconciliation"
+    assert resolved.proof.kind == "decision_dag_reconciled"
+    assert resolved.proof.route_source_kinds == ("decision_dag",)
+
+
+def test_exact_state_normalizer_chain_routes_to_semantic_destination() -> None:
+    graph, dag = _typed_state_route_reconciliation_fixture()
+    transition = _coarse_transition(14, 0x1BABC1DC, 13)
+
+    (resolved,) = resolve_materialized_indirect_transfer_targets(
+        (transition,),
+        graph,
+        _dispatcher({}, exit_block=99),
+        (),
+        condition_chain_dag=dag,
+        condition_chain_handlers=frozenset({2, 13, 15, 19}),
+        state_var_stkoff=_STATE_OFF,
+    )
+
+    assert resolved.target_handler == 19
+    assert resolved.is_return is False
+
+
+def test_outside_interval_routes_through_surviving_effectful_handler() -> None:
+    graph, dag = _typed_state_route_reconciliation_fixture()
+    transition = _coarse_transition(15, 0x6CF816C1, 15)
+
+    (resolved,) = resolve_materialized_indirect_transfer_targets(
+        (transition,),
+        graph,
+        _dispatcher({}, exit_block=99),
+        (),
+        condition_chain_dag=dag,
+        condition_chain_handlers=frozenset({2, 13, 15}),
+    )
+
+    assert resolved.target_handler == 10
+    assert graph.get_block(10).insn_snapshots[0].is_call
+
+
+@pytest.mark.parametrize(
+    ("source", "expected_state", "expected_target"),
+    (
+        (2, 0x1939CB36, 19),
+        (15, 0x6CF816C1, 10),
+        (16, 0x079323F9, 15),
+    ),
+)
+def test_missing_transition_state_is_recovered_from_exact_source_carrier(
+    source: int,
+    expected_state: int,
+    expected_target: int,
+) -> None:
+    graph, dag = _typed_state_route_reconciliation_fixture()
+    unresolved = StateWriteTransition(
+        source,
+        None,
+        None,
+        False,
+        None,
+        via_block=None,
+        proof=TransitionProof(
+            "region_partitioned_fixpoint",
+            "unresolved",
+            False,
+        ),
+    )
+
+    (resolved,) = resolve_materialized_indirect_transfer_targets(
+        (unresolved,),
+        graph,
+        _dispatcher({}, exit_block=99),
+        (),
+        condition_chain_dag=dag,
+        condition_chain_handlers=frozenset({2, 10, 15, 19}),
+        state_var_stkoff=_STATE_OFF,
+    )
+
+    assert resolved.next_state == expected_state
+    assert resolved.target_handler == expected_target
+    assert resolved.via_block == 3
+    assert resolved.proof is not None
+    assert resolved.proof.oracle_kind == "exact_source_carrier_decision_dag_route"
+    assert resolved.proof.kind == "source_carrier_decision_dag_reconciled"
+    assert resolved.proof.route_source_kinds == ("decision_dag", "source_carrier")
+
+
+def _unresolved_carrier_transition(source: int = 15) -> StateWriteTransition:
+    return StateWriteTransition(
+        source,
+        None,
+        None,
+        False,
+        None,
+        via_block=None,
+        proof=TransitionProof(
+            "region_partitioned_fixpoint",
+            "unresolved",
+            False,
+        ),
+    )
+
+
+def _resolve_carrier_transition(
+    graph: FlowGraph,
+    dag: DecisionDag,
+    transition: StateWriteTransition,
+) -> tuple[StateWriteTransition, ...]:
+    return resolve_materialized_indirect_transfer_targets(
+        (transition,),
+        graph,
+        _dispatcher({}, exit_block=99),
+        (),
+        condition_chain_dag=dag,
+        condition_chain_handlers=frozenset({2, 10, 15, 19}),
+        state_var_stkoff=_STATE_OFF,
+    )
+
+
+def test_untrusted_source_carrier_state_disagreement_abstains_atomically() -> None:
+    graph, dag = _typed_state_route_reconciliation_fixture()
+    conflicting = replace(
+        _unresolved_carrier_transition(15),
+        next_state=0x079323F9,
+        target_handler=15,
+    )
+    assert conflicting.proof is not None and not conflicting.proof.trusted
+
+    assert _resolve_carrier_transition(graph, dag, conflicting) == ()
+
+
+def test_weak_region_seeded_state_is_superseded_by_exact_source_carrier() -> None:
+    graph, dag = _typed_state_route_reconciliation_fixture()
+    coarse = replace(
+        _coarse_transition(14, 0x1888937E, 13),
+        via_block=None,
+    )
+
+    (resolved,) = _resolve_carrier_transition(graph, dag, coarse)
+
+    assert resolved.next_state == 0x1BABC1DC
+    assert resolved.target_handler == 19
+    assert resolved.via_block == 3
+    assert resolved.proof is not None
+    assert resolved.proof.oracle_kind == "exact_source_carrier_decision_dag_route"
+    assert resolved.proof.kind == "source_carrier_decision_dag_reconciled"
+    assert resolved.proof.route_source_kinds == ("decision_dag", "source_carrier")
+    assert (
+        resolved.proof.reason
+        == "exact_source_carrier_u32;decision_dag_final_route;"
+        "superseded=region_partitioned_fixpoint:region_seeded:interval"
+    )
+
+
+@pytest.mark.parametrize(
+    "proof",
+    (
+        None,
+        TransitionProof(
+            "region_partitioned_fixpoint",
+            "region_seeded",
+            False,
+            route_source_kinds=("interval",),
+        ),
+        TransitionProof(
+            "native_bound_transition_route",
+            "native_bound_route",
+            True,
+            route_source_kinds=("native_bound",),
+        ),
+        TransitionProof(
+            "materialized_indirect_transfer",
+            "computed_goto_materialized",
+            True,
+            route_source_kinds=("materialized",),
+        ),
+        TransitionProof(
+            "region_partitioned_fixpoint",
+            "global_fold",
+            True,
+            route_source_kinds=("exact",),
+        ),
+        TransitionProof(
+            "unknown_oracle",
+            "unknown_kind",
+            True,
+            route_source_kinds=(),
+        ),
+        TransitionProof(
+            "region_partitioned_fixpoint",
+            "region_seeded",
+            True,
+            route_source_kinds=("exact", "interval"),
+        ),
+    ),
+    ids=(
+        "missing",
+        "untrusted",
+        "native-bound",
+        "materialized",
+        "exact-fold",
+        "unknown",
+        "mixed-sources",
+    ),
+)
+def test_strong_or_malformed_state_disagreement_remains_atomic_conflict(
+    proof: TransitionProof | None,
+) -> None:
+    graph, dag = _typed_state_route_reconciliation_fixture()
+    conflicting = replace(
+        _coarse_transition(14, 0x1888937E, 13),
+        via_block=None,
+        proof=proof,
+    )
+
+    assert _resolve_carrier_transition(graph, dag, conflicting) == ()
+
+
+def test_source_carrier_allows_effect_before_final_overwrite() -> None:
+    graph, dag = _typed_state_route_reconciliation_fixture()
+    source = graph.get_block(15)
+    assert source is not None
+    call = InsnSnapshot(
+        opcode=0x41,
+        ea=0x1EFF,
+        operands=(),
+        kind=InsnKind.CALL,
+        call_kind=CallKind.DIRECT,
+    )
+    graph = FlowGraph(
+        blocks={
+            **graph.blocks,
+            15: replace(source, insn_snapshots=(call, *source.insn_snapshots)),
+        },
+        entry_serial=graph.entry_serial,
+        func_ea=graph.func_ea,
+    )
+
+    (resolved,) = _resolve_carrier_transition(
+        graph,
+        dag,
+        _unresolved_carrier_transition(15),
+    )
+
+    assert resolved.next_state == 0x6CF816C1
+    assert resolved.target_handler == 10
+
+
+def test_direct_state_write_through_goto_bridge_is_not_a_carrier_candidate() -> None:
+    graph, dag = _typed_state_route_reconciliation_fixture()
+    source = graph.get_block(16)
+    feeder = graph.get_block(3)
+    assert source is not None and feeder is not None
+    goto_feeder = InsnSnapshot(
+        opcode=55,
+        ea=0x1300,
+        operands=(),
+        l=MopSnapshot(kind=OperandKind.BLOCK, block_ref=4),
+        kind=InsnKind.GOTO,
+    )
+    graph = FlowGraph(
+        blocks={
+            **graph.blocks,
+            16: replace(
+                source,
+                insn_snapshots=(
+                    _mov(0x2000, _num(0x079323F9), _stk(_STATE_OFF)),
+                    source.insn_snapshots[1],
+                ),
+            ),
+            3: replace(feeder, insn_snapshots=(goto_feeder,)),
+        },
+        entry_serial=graph.entry_serial,
+        func_ea=graph.func_ea,
+    )
+
+    transition = _coarse_transition(16, 0x079323F9, 13)
+    (resolved,) = resolve_materialized_indirect_transfer_targets(
+        (transition,),
+        graph,
+        _dispatcher({}, exit_block=99),
+        (),
+        condition_chain_dag=dag,
+        condition_chain_handlers=frozenset({2, 10, 13, 15, 19}),
+        state_var_stkoff=_STATE_OFF,
+    )
+
+    assert resolved.target_handler == 15
+
+
+@pytest.mark.parametrize(
+    "variant",
+    (
+        "absent_constant",
+        "wrong_width",
+        "wrong_carrier",
+        "carrier_clobber",
+        "goto_before_assignment",
+        "call_after_constant",
+        "unknown_expression",
+        "effectful_feeder",
+        "feeder_fork",
+        "wrong_feeder_successor",
+        "state_identity_mismatch",
+    ),
+)
+def test_malformed_source_carrier_transition_abstains_atomically(
+    variant: str,
+) -> None:
+    graph, dag = _typed_state_route_reconciliation_fixture()
+    source = graph.get_block(15)
+    feeder = graph.get_block(3)
+    assert source is not None and feeder is not None
+    source_insns = source.insn_snapshots
+    feeder_insns = feeder.insn_snapshots
+    source_succs = source.succs
+    feeder_succs = feeder.succs
+
+    if variant == "absent_constant":
+        source_insns = source_insns[1:]
+    elif variant == "wrong_width":
+        write = source_insns[0]
+        source_insns = (
+            replace(
+                write,
+                l=replace(write.l, size=8),
+                d=replace(write.d, size=8),
+            ),
+            *source_insns[1:],
+        )
+    elif variant == "wrong_carrier":
+        write = feeder_insns[0]
+        feeder_insns = (replace(write, l=_reg(9)),)
+    elif variant == "carrier_clobber":
+        clobber = _mov(0x1F01, _stk(_STATE_OFF + 4), _reg(8))
+        source_insns = (source_insns[0], clobber, *source_insns[1:])
+    elif variant == "goto_before_assignment":
+        source_insns = (source_insns[1], *source_insns)
+    elif variant == "call_after_constant":
+        call = InsnSnapshot(
+            opcode=0x41,
+            ea=0x1F01,
+            operands=(),
+            kind=InsnKind.CALL,
+            call_kind=CallKind.DIRECT,
+        )
+        source_insns = (source_insns[0], call, *source_insns[1:])
+    elif variant == "unknown_expression":
+        write = source_insns[0]
+        nested_call = MopSnapshot(
+            t=-1,
+            size=4,
+            kind=OperandKind.SUBINSN,
+            sub_kind=InsnKind.CALL,
+        )
+        source_insns = (replace(write, l=nested_call), *source_insns[1:])
+    elif variant == "effectful_feeder":
+        feeder_insns = (*feeder_insns, _store(0x1301, _num(1), _global(0x140001000)))
+    elif variant == "feeder_fork":
+        feeder_succs = (4, 10)
+    elif variant == "wrong_feeder_successor":
+        feeder_succs = (10,)
+    elif variant == "state_identity_mismatch":
+        write = feeder_insns[0]
+        feeder_insns = (replace(write, d=_stk(_STATE_OFF + 4)),)
+
+    graph = FlowGraph(
+        blocks={
+            **graph.blocks,
+            15: replace(source, insn_snapshots=source_insns, succs=source_succs),
+            3: replace(feeder, insn_snapshots=feeder_insns, succs=feeder_succs),
+        },
+        entry_serial=graph.entry_serial,
+        func_ea=graph.func_ea,
+    )
+
+    assert _resolve_carrier_transition(
+        graph,
+        dag,
+        _unresolved_carrier_transition(15),
+    ) == ()
+
+
+def test_conflicting_exact_materialized_and_interval_routes_abstain_atomically() -> None:
+    graph, dag = _typed_state_route_reconciliation_fixture()
+    transitions = (
+        _coarse_transition(16, 0x079323F9, 13),
+        _coarse_transition(15, 0x6CF816C1, 15),
+    )
+
+    resolved = resolve_materialized_indirect_transfer_targets(
+        transitions,
+        graph,
+        _dispatcher({}, exit_block=99),
+        (),
+        materialized_state_routes=(
+            MaterializedStateRoute(16, 0x079323F9, 13),
+        ),
+        condition_chain_dag=dag,
+        condition_chain_handlers=frozenset({2, 13, 15}),
+    )
+
+    assert resolved == ()
+
+
+def test_native_bound_route_conflicting_with_exact_dag_abstains_atomically() -> None:
+    graph, dag = _typed_state_route_reconciliation_fixture()
+    transition = StateWriteTransition(
+        16,
+        0x079323F9,
+        13,
+        False,
+        None,
+        via_block=3,
+        proof=TransitionProof(
+            "native_bound_transition_route",
+            "native_bound_route",
+            True,
+        ),
+    )
+
+    assert resolve_materialized_indirect_transfer_targets(
+        (transition,),
+        graph,
+        _dispatcher({}, exit_block=99),
+        (),
+        condition_chain_dag=dag,
+        condition_chain_handlers=frozenset({2, 13, 15}),
+    ) == ()
+
+
+def test_native_bound_route_agreeing_with_final_dag_leaf_preserves_proof() -> None:
+    graph, dag = _typed_state_route_reconciliation_fixture()
+    proof = TransitionProof(
+        "native_bound_transition_route",
+        "native_bound_route",
+        True,
+        reason="fact_id=native-16;native_ea=0x2000",
+    )
+    transition = replace(
+        _coarse_transition(16, 0x079323F9, 15),
+        proof=proof,
+    )
+
+    assert resolve_materialized_indirect_transfer_targets(
+        (transition,),
+        graph,
+        _dispatcher({}, exit_block=99),
+        (),
+        condition_chain_dag=dag,
+        condition_chain_handlers=frozenset({2, 13, 15}),
+    ) == (transition,)
+
+
+def test_native_bound_intermediate_normalizer_gets_truthful_reconciliation_proof() -> None:
+    graph, dag = _typed_state_route_reconciliation_fixture()
+    transition = replace(
+        _coarse_transition(14, 0x1BABC1DC, 2),
+        proof=TransitionProof(
+            "native_bound_transition_route",
+            "native_bound_route",
+            True,
+            reason="fact_id=native-14;native_ea=0x1E00",
+        ),
+    )
+
+    (resolved,) = resolve_materialized_indirect_transfer_targets(
+        (transition,),
+        graph,
+        _dispatcher({}, exit_block=99),
+        (),
+        condition_chain_dag=dag,
+        condition_chain_handlers=frozenset({2, 13, 15, 19}),
+        state_var_stkoff=_STATE_OFF,
+    )
+
+    assert resolved.target_handler == 19
+    assert resolved.proof is not None
+    assert resolved.proof.oracle_kind == "decision_dag_state_route_reconciliation"
+    assert resolved.proof.kind == "decision_dag_reconciled"
+    assert "native_bound" in resolved.proof.route_source_kinds
+    assert "fact_id=native-14" in resolved.proof.reason
+
+
+def test_materialized_proof_agreeing_with_final_dag_leaf_is_preserved() -> None:
+    graph, dag = _typed_state_route_reconciliation_fixture()
+    transition = replace(
+        _coarse_transition(16, 0x079323F9, 15),
+        proof=TransitionProof(
+            "region_partitioned_fixpoint",
+            "computed_goto_state_route",
+            True,
+            reason="resolver_proven_materialized_state_route",
+            route_source_kinds=("materialized",),
+        ),
+    )
+
+    assert resolve_materialized_indirect_transfer_targets(
+        (transition,),
+        graph,
+        _dispatcher({}, exit_block=99),
+        (),
+        condition_chain_dag=dag,
+        condition_chain_handlers=frozenset({2, 13, 15}),
+    ) == (transition,)
+
+
+def test_forged_dag_edge_absent_from_source_graph_abstains() -> None:
+    graph, _dag = _typed_state_route_reconciliation_fixture()
+    forged_dag = DecisionDag(
+        32,
+        {
+            4: RouteComparison(4, "jz", 0x1BABC1DC, 2, 9),
+            9: RouteComparison(9, "jz", 0x079323F9, 13, 12),
+            12: RouteComparison(12, "jz", 0x1939CB36, 19, 10),
+        },
+        root=4,
+    )
+
+    assert resolve_materialized_indirect_transfer_targets(
+        (_coarse_transition(16, 0x079323F9, 13),),
+        graph,
+        _dispatcher({}, exit_block=99),
+        (),
+        condition_chain_dag=forged_dag,
+        condition_chain_handlers=frozenset({2, 10, 13, 15, 19}),
+    ) == ()
+
+
+def test_non_u32_decision_dag_abstains() -> None:
+    graph, dag = _typed_state_route_reconciliation_fixture()
+    wide_dag = DecisionDag(64, dag.nodes, root=dag.root)
+
+    assert resolve_materialized_indirect_transfer_targets(
+        (_coarse_transition(16, 0x079323F9, 13),),
+        graph,
+        _dispatcher({}, exit_block=99),
+        (),
+        condition_chain_dag=wide_dag,
+        condition_chain_handlers=frozenset({2, 10, 13, 15, 19}),
+    ) == ()
+
+
+def test_const_write_plus_goto_leaf_remains_semantic() -> None:
+    graph, dag = _typed_state_route_reconciliation_fixture()
+    leaf = graph.get_block(15)
+    assert leaf is not None
+    assert len(leaf.insn_snapshots) == 2
+    assert leaf.insn_snapshots[0].kind is InsnKind.MOV
+    assert leaf.insn_snapshots[1].kind is InsnKind.GOTO
+
+    (resolved,) = resolve_materialized_indirect_transfer_targets(
+        (_coarse_transition(16, 0x079323F9, 13),),
+        graph,
+        _dispatcher({}, exit_block=99),
+        (),
+        condition_chain_dag=dag,
+        condition_chain_handlers=frozenset({2, 13, 15}),
+    )
+
+    assert resolved.target_handler == 15
+
+
+def test_exact_and_interval_route_conflict_with_dag_abstains_atomically() -> None:
+    graph, dag = _typed_state_route_reconciliation_fixture()
+    state = 0x079323F9
+    dispatcher = _DualRouteDispatcher(
+        exact_targets={state: 15},
+        interval_rows=(IntervalRow(state, state + 1, 13),),
+    )
+
+    assert resolve_materialized_indirect_transfer_targets(
+        (_coarse_transition(16, state, 13),),
+        graph,
+        dispatcher,
+        (),
+        condition_chain_dag=dag,
+        condition_chain_handlers=frozenset({2, 13, 15}),
+    ) == ()
+
+
+def test_normalizer_without_exact_shared_state_feeder_abstains() -> None:
+    graph, dag = _typed_state_route_reconciliation_fixture()
+    transition = _coarse_transition(14, 0x1BABC1DC, 13)
+
+    assert resolve_materialized_indirect_transfer_targets(
+        (replace(transition, via_block=None),),
+        graph,
+        _dispatcher({}, exit_block=99),
+        (),
+        condition_chain_dag=dag,
+        condition_chain_handlers=frozenset({2, 13, 15, 19}),
+    ) == ()
+
+
+def test_normalizer_feeder_to_unrelated_local_abstains_atomically() -> None:
+    graph, dag = _typed_state_route_reconciliation_fixture()
+    feeder = graph.get_block(3)
+    source = graph.get_block(13)
+    assert feeder is not None and source is not None
+    feeder_write = feeder.insn_snapshots[0]
+    graph = FlowGraph(
+        blocks={
+            **graph.blocks,
+            # Keep this transition outside source-carrier recognition so the
+            # assertion isolates the normalizer's own feeder-state proof.
+            13: replace(source, succs=(3, 10)),
+            3: replace(
+                feeder,
+                insn_snapshots=(
+                    replace(feeder_write, d=_stk(_STATE_OFF + 4)),
+                ),
+            ),
+        },
+        entry_serial=graph.entry_serial,
+        func_ea=graph.func_ea,
+    )
+
+    transition = replace(
+        _coarse_transition(13, 0x1BABC1DC, 13),
+        via_block=3,
+    )
+    assert resolve_materialized_indirect_transfer_targets(
+        (transition,),
+        graph,
+        _dispatcher({}, exit_block=99),
+        (),
+        condition_chain_dag=dag,
+        condition_chain_handlers=frozenset({2, 10, 13, 15, 19}),
+        state_var_stkoff=_STATE_OFF,
+    ) == ()
+
+
+def test_mixed_width_state_normalizer_abstains() -> None:
+    graph, dag = _typed_state_route_reconciliation_fixture()
+    normalizer = graph.get_block(2)
+    assert normalizer is not None
+    wide_const = MopSnapshot(
+        t=_T_NUM,
+        size=8,
+        value=0x1939CB36,
+        kind=OperandKind.NUMBER,
+    )
+    wide_carrier = MopSnapshot(
+        t=_T_REG,
+        size=8,
+        reg=8,
+        kind=OperandKind.REGISTER,
+    )
+    wide_state = MopSnapshot(
+        t=_T_STK,
+        size=8,
+        stkoff=_STATE_OFF,
+        stack_refs=(_STATE_OFF,),
+        kind=OperandKind.STACK,
+    )
+    graph = FlowGraph(
+        blocks={
+            **graph.blocks,
+            2: replace(
+                normalizer,
+                insn_snapshots=(_mov(0x1200, wide_const, wide_carrier),),
+            ),
+            3: replace(
+                graph.get_block(3),
+                insn_snapshots=(_mov(0x1300, wide_carrier, wide_state),),
+            ),
+        },
+        entry_serial=graph.entry_serial,
+        func_ea=graph.func_ea,
+    )
+
+    assert resolve_materialized_indirect_transfer_targets(
+        (_coarse_transition(14, 0x1BABC1DC, 13),),
+        graph,
+        _dispatcher({}, exit_block=99),
+        (),
+        condition_chain_dag=dag,
+        condition_chain_handlers=frozenset({2, 13, 15, 19}),
+    ) == ()
+
+
+def test_exact_state_normalizer_cycle_abstains() -> None:
+    graph, _dag = _typed_state_route_reconciliation_fixture()
+    cycle_dag = DecisionDag(
+        32,
+        {4: RouteComparison(4, "jz", 0x1939CB36, 2, 10)},
+        root=4,
+    )
+
+    assert resolve_materialized_indirect_transfer_targets(
+        (_coarse_transition(14, 0x1939CB36, 13),),
+        graph,
+        _dispatcher({}, exit_block=99),
+        (),
+        condition_chain_dag=cycle_dag,
+        condition_chain_handlers=frozenset({2, 10, 13}),
+    ) == ()
+
+
+@pytest.mark.parametrize(
+    "fixture_kwargs",
+    (
+        {"effectful_normalizer": True},
+        {"effectful_carrier": True},
+    ),
+)
+def test_effectful_state_normalizer_chain_abstains(
+    fixture_kwargs: dict[str, bool],
+) -> None:
+    graph, dag = _typed_state_route_reconciliation_fixture(**fixture_kwargs)
+
+    assert resolve_materialized_indirect_transfer_targets(
+        (_coarse_transition(14, 0x1BABC1DC, 13),),
+        graph,
+        _dispatcher({}, exit_block=99),
+        (),
+        condition_chain_dag=dag,
+        condition_chain_handlers=frozenset({2, 13, 15, 19}),
+    ) == ()
