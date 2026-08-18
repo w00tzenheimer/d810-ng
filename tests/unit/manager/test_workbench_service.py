@@ -335,7 +335,6 @@ def test_config_v2_workbench_service_fails_closed_when_constant_schedule_is_miss
     project_snapshot = dataclasses.replace(
         project_snapshot,
         effective_pass_ids=("constant-simplification",),
-        constant_simplification_schedule=None,
     )
     runtime_project = dataclasses.replace(
         runtime_project,

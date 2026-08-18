@@ -57,6 +57,8 @@ __all__ = [
     "MetadataActionExecutor",
     "MetadataStateMismatch",
     "UnexecutableMetadataAction",
+    "reversible_data_item_head",
+    "is_reversible_data_item_state",
 ]
 
 
@@ -110,6 +112,7 @@ class MetadataActionExecutor(Protocol):
 
 _ITEM_CODE = "code"
 _ITEM_DATA = "data"
+_ITEM_DATA_SNAPSHOT_PREFIX = "data:v1:"
 _ITEM_UNKNOWN = "unknown"
 _SWITCH_NONE = "switch:none"
 _SWITCH_PREFIX = "switch:"
@@ -131,6 +134,111 @@ _SWITCH_COMMON_FIELDS = frozenset(
         "version",
     }
 )
+
+
+def _is_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _parse_reversible_data_item_state(
+    token: str, *, expected_ea: int | None = None
+) -> dict[str, object] | None:
+    """Decode the deliberately narrow, versioned scalar-data token.
+
+    ``data:<size>`` is retained for arbitrary IDA data because it is not
+    enough information to restore the item.  The versioned form is emitted
+    only for a plain scalar item and carries every fact the inverse needs.
+    Returning ``None`` for malformed/legacy tokens is intentional: callers
+    must fail closed rather than guessing that a partial token is reversible.
+    """
+
+    if not isinstance(token, str) or not token.startswith(
+        _ITEM_DATA_SNAPSHOT_PREFIX
+    ):
+        return None
+    try:
+        payload = json.loads(token.removeprefix(_ITEM_DATA_SNAPSHOT_PREFIX))
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if set(payload) != {
+        "bytes",
+        "ea",
+        "flags",
+        "full_flags",
+        "head_ea",
+        "name",
+        "offset",
+        "size",
+    }:
+        return None
+    if not all(
+        _is_int(payload.get(key))
+        for key in ("ea", "flags", "head_ea", "offset", "size")
+    ):
+        return None
+    size = int(payload["size"])
+    head_ea = int(payload["head_ea"])
+    offset = int(payload["offset"])
+    if (
+        size <= 0
+        or int(payload["flags"]) < 0
+        or head_ea < 0
+        or offset < 0
+        or offset >= size
+        or int(payload["ea"]) != head_ea + offset
+    ):
+        return None
+    if expected_ea is not None and int(payload["ea"]) != int(expected_ea):
+        return None
+    full_flags = payload["full_flags"]
+    if not isinstance(full_flags, list) or len(full_flags) != size:
+        return None
+    if not all(_is_int(value) and int(value) >= 0 for value in full_flags):
+        return None
+    raw_hex = payload["bytes"]
+    if not isinstance(raw_hex, str) or len(raw_hex) != size * 2:
+        return None
+    name = payload["name"]
+    if not isinstance(name, str):
+        return None
+    try:
+        raw = bytes.fromhex(raw_hex)
+    except ValueError:
+        return None
+    if len(raw) != size:
+        return None
+    return {
+        "bytes": raw,
+        "ea": int(payload["ea"]),
+        "flags": int(payload["flags"]),
+        "full_flags": tuple(int(value) for value in full_flags),
+        "head_ea": head_ea,
+        "name": name,
+        "offset": offset,
+        "size": size,
+    }
+
+
+def is_reversible_data_item_state(
+    token: str, *, expected_ea: int | None = None
+) -> bool:
+    """Return whether ``token`` is a complete supported data-item snapshot."""
+
+    return (
+        _parse_reversible_data_item_state(token, expected_ea=expected_ea)
+        is not None
+    )
+
+
+def reversible_data_item_head(
+    token: str, *, expected_ea: int | None = None
+) -> int | None:
+    """Return the enclosing head EA carried by a valid data snapshot."""
+
+    payload = _parse_reversible_data_item_state(token, expected_ea=expected_ea)
+    return None if payload is None else int(payload["head_ea"])
 
 
 class IdaMetadataActionExecutor:
@@ -169,8 +277,13 @@ class IdaMetadataActionExecutor:
         flags = ida_bytes.get_flags(ea)
         if ida_bytes.is_code(flags):
             return f"{_ITEM_CODE}:{ida_bytes.get_item_size(ea)}"
-        if ida_bytes.is_data(flags):
-            return f"{_ITEM_DATA}:{ida_bytes.get_item_size(ea)}"
+        head_ea = int(ida_bytes.get_item_head(ea))
+        head_flags = ida_bytes.get_flags(head_ea)
+        if ida_bytes.is_data(head_flags):
+            snapshot = self._read_reversible_data_snapshot(ea)
+            if snapshot is not None:
+                return snapshot
+            return f"{_ITEM_DATA}:{int(ida_bytes.get_item_size(head_ea))}"
         # ``is_head(flags)`` is deliberately false for IDA's FF_UNK bytes;
         # ``get_item_head(ea) == ea`` is the matching head witness for an
         # undefined item. A tail byte resolves to its enclosing item head.
@@ -181,6 +294,92 @@ class IdaMetadataActionExecutor:
         # stable diagnostic token so the planner fails closed rather than
         # treating it as an undefined item head.
         return f"unsupported-item-flags:{int(flags):#x}"
+
+    @staticmethod
+    def _read_reversible_data_snapshot(ea: int) -> str | None:
+        """Capture only scalar data whose IDA representation we can restore.
+
+        The target data item is a compiler-created scalar label (``FF_WORD``)
+        over the first six bytes of an instruction.  Structs, strings,
+        user-named/commented items, and other typed data remain represented by
+        the old ``data:<size>`` token and therefore remain fail-closed.
+        """
+
+        import ida_bytes
+        import ida_name
+
+        head_ea = int(ida_bytes.get_item_head(ea))
+        item_flags = int(ida_bytes.get_flags(head_ea))
+        size = int(ida_bytes.get_item_size(head_ea))
+        if head_ea < 0 or size <= 0:
+            return None
+        data_type_mask = int(getattr(ida_bytes, "DT_TYPE", 0xF0000000))
+        data_type = item_flags & data_type_mask
+        scalar_widths = {
+            int(getattr(ida_bytes, "FF_BYTE", -1)) & data_type_mask: 1,
+            int(getattr(ida_bytes, "FF_WORD", -1)) & data_type_mask: 2,
+            int(getattr(ida_bytes, "FF_DWORD", -1)) & data_type_mask: 4,
+            int(getattr(ida_bytes, "FF_QWORD", -1)) & data_type_mask: 8,
+            int(getattr(ida_bytes, "FF_TBYTE", -1)) & data_type_mask: 10,
+        }
+        width = scalar_widths.get(data_type)
+        if width is None or size % width:
+            return None
+        # A scalar width alone does not imply plain data. Operand metadata is
+        # stored outside the flags needed by ``create_data`` (offset bases,
+        # enum ids, structure paths, stack references, custom formats). Until
+        # the snapshot vocabulary captures that opinfo, reject it rather than
+        # recreating a visually similar but semantically weaker item.
+        operand_metadata_predicates = (
+            "is_off0",
+            "is_off1",
+            "is_enum0",
+            "is_enum1",
+            "is_stroff0",
+            "is_stroff1",
+            "is_stkvar0",
+            "is_stkvar1",
+            "is_custfmt0",
+            "is_custfmt1",
+        )
+        if any(
+            bool(getattr(ida_bytes, predicate)(item_flags))
+            for predicate in operand_metadata_predicates
+        ):
+            return None
+        full_flags = [
+            int(ida_bytes.get_full_flags(head_ea + offset))
+            for offset in range(size)
+        ]
+        head_flags = full_flags[0]
+        if bool(ida_bytes.has_user_name(head_flags)):
+            return None
+        if bool(
+            getattr(ida_bytes, "is_manual_insn", lambda _ea: False)(head_ea)
+        ):
+            return None
+        get_cmt = getattr(ida_bytes, "get_cmt", None)
+        if get_cmt is not None and any(
+            get_cmt(head_ea, repeatable) is not None
+            for repeatable in (False, True)
+        ):
+            return None
+        raw = ida_bytes.get_bytes(head_ea, size)
+        if raw is None or len(raw) != size:
+            return None
+        payload = {
+            "bytes": bytes(raw).hex(),
+            "ea": int(ea),
+            "flags": item_flags,
+            "full_flags": full_flags,
+            "head_ea": head_ea,
+            "name": str(ida_name.get_name(head_ea) or ""),
+            "offset": int(ea) - head_ea,
+            "size": int(size),
+        }
+        return _ITEM_DATA_SNAPSHOT_PREFIX + json.dumps(
+            payload, sort_keys=True, separators=(",", ":")
+        )
 
     def _read_cref_state(self, ea: int) -> str:
         import ida_xref
@@ -344,6 +543,16 @@ class IdaMetadataActionExecutor:
         import ida_bytes
         import ida_ua
 
+        target_data = _parse_reversible_data_item_state(
+            target_state, expected_ea=ea
+        )
+        if target_state.startswith(_ITEM_DATA_SNAPSHOT_PREFIX):
+            if target_data is None:
+                raise UnexecutableMetadataAction(
+                    f"malformed reversible data item state {target_state!r}"
+                )
+            return self._apply_data_snapshot(ea, target_state, target_data)
+
         kind_name, _, _size_text = target_state.partition(":")
         current = self._read_item_state(ea)
         if kind_name == _ITEM_UNKNOWN:
@@ -359,6 +568,23 @@ class IdaMetadataActionExecutor:
             )
             return self._read_item_state(ea) == _ITEM_UNKNOWN
         if kind_name == _ITEM_CODE:
+            try:
+                code_size = int(_size_text, 10)
+            except ValueError as error:
+                raise UnexecutableMetadataAction(
+                    f"malformed code item state {target_state!r}"
+                ) from error
+            if code_size <= 0:
+                raise UnexecutableMetadataAction(
+                    f"malformed code item state {target_state!r}"
+                )
+            current_data = _parse_reversible_data_item_state(
+                current, expected_ea=ea
+            )
+            if current_data is not None:
+                return self._apply_data_to_code(
+                    ea, target_state, current, current_data
+                )
             if current != _ITEM_UNKNOWN:
                 raise UnexecutableMetadataAction(
                     f"cannot recreate code over item state {current!r}"
@@ -370,6 +596,137 @@ class IdaMetadataActionExecutor:
             # alignment, and opinfo, so it is intentionally unsupported.
             raise UnexecutableMetadataAction(f"item state {target_state!r}")
         return self._read_item_state(ea) == target_state
+
+    def _apply_data_to_code(
+        self,
+        ea: int,
+        target_state: str,
+        before_state: str,
+        before_data: dict[str, object],
+    ) -> bool:
+        import ida_bytes
+        import ida_ua
+
+        data_head = int(before_data["head_ea"])
+        data_size = int(before_data["size"])
+        try:
+            ida_bytes.del_items(
+                data_head, ida_bytes.DELIT_SIMPLE, max(1, data_size)
+            )
+            ida_ua.create_insn(ea)
+            observed = self._read_item_state(ea)
+            if observed != target_state:
+                raise UnexecutableMetadataAction(
+                    f"IDA decoded item at {ea:#x} as {observed!r}, "
+                    f"not {target_state!r}"
+                )
+            return True
+        except Exception as error:
+            try:
+                self._restore_data_snapshot(ea, before_state, before_data)
+            except Exception as restore_error:
+                raise UnexecutableMetadataAction(
+                    f"item transition at {ea:#x} failed and rollback failed"
+                ) from restore_error
+            if isinstance(error, UnexecutableMetadataAction):
+                raise
+            raise UnexecutableMetadataAction(
+                f"item transition at {ea:#x} failed"
+            ) from error
+
+    def _apply_data_snapshot(
+        self,
+        ea: int,
+        target_state: str,
+        target_data: dict[str, object],
+    ) -> bool:
+        import ida_bytes
+
+        current = self._read_item_state(ea)
+        current_code = current.partition(":")
+        if current_code[0] != _ITEM_CODE:
+            raise UnexecutableMetadataAction(
+                f"cannot recreate data over item state {current!r}"
+            )
+        try:
+            code_size = int(current_code[2], 10)
+        except ValueError as error:
+            raise UnexecutableMetadataAction(
+                f"malformed current code item state {current!r}"
+            ) from error
+        raw = target_data["bytes"]
+        target_size = int(target_data["size"])
+        if not isinstance(raw, bytes) or len(raw) != target_size:
+            raise UnexecutableMetadataAction(
+                f"invalid reversible data bytes at {ea:#x}"
+            )
+        target_head = int(target_data["head_ea"])
+        if ida_bytes.get_bytes(target_head, target_size) != raw:
+            raise UnexecutableMetadataAction(
+                f"data snapshot bytes no longer match at {ea:#x}"
+            )
+        try:
+            ida_bytes.del_items(ea, ida_bytes.DELIT_SIMPLE, max(1, code_size))
+            self._restore_data_snapshot(ea, target_state, target_data)
+            return True
+        except Exception as error:
+            try:
+                self._restore_code_item(ea, current, code_size)
+            except Exception as restore_error:
+                raise UnexecutableMetadataAction(
+                    f"item transition at {ea:#x} failed and rollback failed"
+                ) from restore_error
+            if isinstance(error, UnexecutableMetadataAction):
+                raise
+            raise UnexecutableMetadataAction(
+                f"item transition at {ea:#x} failed"
+            ) from error
+
+    def _restore_data_snapshot(
+        self,
+        ea: int, target_state: str, target_data: dict[str, object]
+    ) -> None:
+        import ida_bytes
+        import idaapi
+        import ida_name
+
+        if int(target_data["ea"]) != int(ea):
+            raise UnexecutableMetadataAction(
+                f"data snapshot belongs to {int(target_data['ea']):#x}, not {ea:#x}"
+            )
+        data_head = int(target_data["head_ea"])
+        if int(target_data["offset"]) != int(ea) - data_head:
+            raise UnexecutableMetadataAction(
+                f"data snapshot offset is inconsistent at {ea:#x}"
+            )
+        if not ida_bytes.create_data(
+            data_head,
+            int(target_data["flags"]),
+            int(target_data["size"]),
+            int(getattr(idaapi, "BADADDR", -1)),
+        ):
+            raise UnexecutableMetadataAction(
+                f"IDA refused data recreation at {ea:#x}"
+            )
+        name = str(target_data["name"])
+        if name and not ida_name.set_name(data_head, name, ida_name.SN_AUTO):
+            raise UnexecutableMetadataAction(
+                f"IDA refused data name recreation at {data_head:#x}"
+            )
+        if self._read_item_state(ea) != target_state:
+            raise UnexecutableMetadataAction(
+                f"data recreation at {ea:#x} did not reproduce the recorded state"
+            )
+
+    def _restore_code_item(self, ea: int, target_state: str, code_size: int) -> None:
+        import ida_ua
+
+        ida_ua.create_insn(ea)
+        observed = self._read_item_state(ea)
+        if observed != target_state or not observed.endswith(f":{code_size}"):
+            raise UnexecutableMetadataAction(
+                f"code recreation at {ea:#x} did not reproduce {target_state!r}"
+            )
 
     def _apply_cref_state(self, ea: int, target_state: str) -> bool:
         import ida_xref
@@ -394,29 +751,63 @@ class IdaMetadataActionExecutor:
                 )
             return result
 
+        before_state = self._read_cref_state(ea)
         wanted = _parse(target_state)
-        current = _parse(self._read_cref_state(ea))
+        current = _parse(before_state)
 
         removed = current - wanted
         added = wanted - current
         if not removed and not added:
             return True
-        # Replacing a type or auto edge is a remove plus add, and therefore
-        # not failure-atomic under one action.  The Task 7 writer only owns
-        # one user jump-edge addition/removal, so reject anything broader.
-        if len(removed) + len(added) != 1:
+        # A single source can own several requested user edges.  They must be
+        # one metadata action: IDA reanalysis may canonicalize an individual
+        # edge between sequential actions, making the second expected-before
+        # witness stale.  Mixed add/remove transitions still describe a
+        # replacement rather than one batch and remain unsupported.
+        if removed and added:
             raise UnexecutableMetadataAction(
-                "xref transition must add or remove exactly one user edge"
+                "xref transition cannot mix additions and removals"
             )
-        edge = next(iter(removed or added))
-        target, xref_type, user_owned = edge
-        if not user_owned:
+        changed = tuple(sorted(removed or added))
+        if any(not user_owned for _target, _xref_type, user_owned in changed):
             raise UnexecutableMetadataAction("gateway only owns user xrefs")
-        if removed:
-            ida_xref.del_cref(ea, target, False)
-        else:
-            ida_xref.add_cref(ea, target, xref_type | ida_xref.XREF_USER)
-        return self._read_cref_state(ea) == target_state
+
+        def _rollback() -> None:
+            try:
+                if added:
+                    for target, _xref_type, _user_owned in changed:
+                        ida_xref.del_cref(ea, target, False)
+                else:
+                    for target, xref_type, _user_owned in changed:
+                        ida_xref.add_cref(
+                            ea, target, xref_type | ida_xref.XREF_USER
+                        )
+            except Exception as rollback_error:
+                raise UnexecutableMetadataAction(
+                    f"xref batch at {ea:#x} failed and rollback failed"
+                ) from rollback_error
+            if self._read_cref_state(ea) != before_state:
+                raise UnexecutableMetadataAction(
+                    f"xref batch at {ea:#x} rollback did not restore its before-state"
+                )
+
+        try:
+            if added:
+                for target, xref_type, _user_owned in changed:
+                    ida_xref.add_cref(ea, target, xref_type | ida_xref.XREF_USER)
+            else:
+                for target, _xref_type, _user_owned in changed:
+                    ida_xref.del_cref(ea, target, False)
+        except Exception as error:
+            _rollback()
+            raise UnexecutableMetadataAction(
+                f"xref batch at {ea:#x} failed"
+            ) from error
+
+        if self._read_cref_state(ea) == target_state:
+            return True
+        _rollback()
+        return False
 
     def _apply_tail_state(self, ea: int, target_state: str) -> bool:
         raise UnexecutableMetadataAction(

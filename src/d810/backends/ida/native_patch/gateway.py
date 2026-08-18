@@ -1538,7 +1538,28 @@ class NativePatchGateway:
             transaction_id, self._read_current_byte
         )
 
-        if recovery.recommended_state is NativeJournalState.INTERFERENCE_DETECTED:
+        # Metadata-only plans carry unchanged bytes as an identity anchor.
+        # With no WRITE_APPLIED receipts, byte recovery correctly reports
+        # those bytes as NOT_APPLIED; however, a post-BYTES_APPLIED journal
+        # state would normally reinterpret that as external interference.
+        # Once metadata reversal has succeeded, an all-zero byte delta is an
+        # unambiguous rollback case, so continue through the ordinary
+        # lifecycle reconciliation lane instead of poisoning the transaction.
+        byte_records = self._journal.operation_bytes(transaction_id)
+        metadata_anchor_has_no_byte_delta = bool(
+            record.has_metadata_actions
+            and byte_records
+            and all(
+                byte.expected_current == byte.replacement
+                for byte in byte_records
+            )
+        )
+
+        if (
+            recovery.recommended_state
+            is NativeJournalState.INTERFERENCE_DETECTED
+            and not metadata_anchor_has_no_byte_delta
+        ):
             self._journal.transition(
                 transaction_id,
                 NativeJournalState.INTERFERENCE_DETECTED,

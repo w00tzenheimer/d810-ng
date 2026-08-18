@@ -120,8 +120,7 @@
           },
           "transforms": [
             "z-3-constant-optimization",
-            "z-3-setnz-generic",
-            "z-3-setz-generic"
+            "z-3-setnz-generic"
           ]
         },
         "pass_id": "mba-simplify",

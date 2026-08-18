@@ -1668,6 +1668,30 @@ class TestMetadataActionExecution:
         assert rig.db.reset_item_boundary_calls == []
         assert [a[2] for a in executor.applied] == ["code:2", "cref:0x1010"]
 
+    def test_metadata_only_apply_failure_recovers_without_byte_interference(
+        self, tmp_path
+    ) -> None:
+        """An unchanged byte anchor must not poison metadata-only recovery."""
+        plan, operation = _plan_with_metadata_actions()
+        operation = dataclasses.replace(
+            operation,
+            replacement_bytes=operation.expected_current_bytes,
+            expected_before_shape=operation.expected_after_shape,
+            writes_bytes=False,
+        )
+        plan = dataclasses.replace(plan, operations=(operation,))
+        initial = self._initial_state()
+        executor = FakeMetadataExecutor(dict(initial), mutate_then_fail=True)
+        rig = build_gateway(tmp_path, plan.operations, metadata_executor=executor)
+
+        with pytest.raises(Exception):
+            rig.gateway.apply(plan)
+
+        assert executor.state == initial
+        record = rig.journal.get(_sole_transaction_id(rig.journal))
+        assert record is not None
+        assert record.state is NativeJournalState.RESTORED
+
     def test_already_normalized_metadata_certifies_without_cleanup(
         self, tmp_path
     ) -> None:

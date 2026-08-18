@@ -99,4 +99,22 @@ def test_project_runtime_snapshot_type_contains_only_canonical_fields() -> None:
     assert tuple(field.name for field in dataclasses.fields(ProjectRuntimeSnapshot)) == (
         "project",
         "effective_pass_ids",
+        "preparation_scripts",
+        "global_const_persistence_enabled",
     )
+
+
+def test_snapshot_projects_global_const_persistence_from_typed_pass(
+    tmp_path: Path,
+) -> None:
+    project = _project(tmp_path)
+    project.additional_configuration["pipeline_v2"][0]["options"] = {
+        "persist_global_const_annotations": True,
+    }
+
+    snapshot = build_project_runtime_snapshot(
+        project=project,
+        schedule=compile_config_v2_hook_schedule(project),
+    )
+
+    assert snapshot.global_const_persistence_enabled is True

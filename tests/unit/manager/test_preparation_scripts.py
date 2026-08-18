@@ -11,7 +11,7 @@ from d810.manager.preparation_scripts import (
     PreparationScriptRegistry,
 )
 from d810.manager.project_runtime import build_project_runtime_snapshot
-from d810.passes.pipeline_v2_hook_bridge import pipeline_v2_hook_activation
+from d810.passes.config_v2_hook_runtime import compile_config_v2_hook_schedule
 
 pytestmark = pytest.mark.pure_python
 
@@ -128,6 +128,7 @@ def test_project_runtime_projects_attested_preparation_scripts(tmp_path: Path) -
     project = ProjectConfiguration(
         path=tmp_path / "profile.json",
         additional_configuration={
+            "pipeline_v2": [{"pass_id": "constant-simplification"}],
             "pre_hexrays": {
                 "scripts": [
                     {
@@ -141,11 +142,8 @@ def test_project_runtime_projects_attested_preparation_scripts(tmp_path: Path) -
     )
 
     snapshot = build_project_runtime_snapshot(
-        source_project=project,
-        runtime_project=project,
-        default_selection=None,
-        hook_activation=pipeline_v2_hook_activation(project),
-        hook_mode=None,
+        project=project,
+        schedule=compile_config_v2_hook_schedule(project),
     )
 
     assert len(snapshot.preparation_scripts) == 1

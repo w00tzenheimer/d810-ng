@@ -64,14 +64,15 @@ _TRANSFORM_ID_OVERRIDES = {
     "ModularProductNonzeroBlockRule": "modular-product-nonzero",
 }
 
-# The existing hook adapter and bundled projects use these implementation
-# identities. Keep that private binding exact while the pure MBA class names
-# remain an internal refactor detail.
+# The hook schedule must carry the concrete runtime class identities.  The
+# previous ``Mul_MbaRule_*`` spellings were legacy config names; the migrated
+# VerifiableRule catalogue registers ``Mul_MBA_*`` and activation now fails
+# closed when a schedule names anything else.
 _PRIVATE_BINDING_OVERRIDES = {
-    "Mul_MBA_1": "Mul_MbaRule_1",
-    "Mul_MBA_2": "Mul_MbaRule_2",
-    "Mul_MBA_3": "Mul_MbaRule_3",
-    "Mul_MBA_4": "Mul_MbaRule_4",
+    "Mul_MBA_1": "Mul_MBA_1",
+    "Mul_MBA_2": "Mul_MBA_2",
+    "Mul_MBA_3": "Mul_MBA_3",
+    "Mul_MBA_4": "Mul_MBA_4",
 }
 
 

@@ -148,10 +148,10 @@ class TestPreHexraysIdbPreparation:
                 state, "default_instruction_only.json"
             )
             state.load_project(project_index)
-            runtime_project = state.current_runtime_project
-            assert runtime_project is not None
-            prior_config = copy.deepcopy(runtime_project.additional_configuration)
-            runtime_project.additional_configuration["pre_hexrays"] = {
+            project = state.current_project
+            assert project is not None
+            prior_config = copy.deepcopy(project.additional_configuration)
+            project.additional_configuration["pre_hexrays"] = {
                 "scripts": [
                     {
                         "id": "normalize-dispatcher",
@@ -161,13 +161,9 @@ class TestPreHexraysIdbPreparation:
                     }
                 ]
             }
-            source_project = state.current_project
-            assert source_project is not None
-            state._activate_runtime_project(
+            state._activate_project(
                 project_index=project_index,
-                source_project=source_project,
-                runtime_project=runtime_project,
-                default_selection=state.last_config_v2_default_selection,
+                project=project,
             )
             state.start_d810()
             transaction_id = None
@@ -286,7 +282,7 @@ class TestPreHexraysIdbPreparation:
             finally:
                 if transaction_id is not None:
                     state.manager.restore_idb_preparation(transaction_id)
-                runtime_project.additional_configuration.clear()
-                runtime_project.additional_configuration.update(prior_config)
+                project.additional_configuration.clear()
+                project.additional_configuration.update(prior_config)
                 if int(ida_bytes.get_byte(inherited_ea)) == inherited_value:
                     ida_bytes.revert_byte(inherited_ea)

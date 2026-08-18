@@ -161,6 +161,60 @@ class TestIdaMetadataActionExecutor:
         assert executor.apply_state(kind, func_ea, before)
         assert executor.read_state(kind, func_ea) == before
 
+    def test_multiple_user_crefs_from_one_source_round_trip_atomically(
+        self, copy_of_idb
+    ) -> None:
+        """One source action must carry all additions through IDA together."""
+
+        executor = IdaMetadataActionExecutor()
+        kind = NativeMetadataActionKind.UPDATE_XREF
+        for candidate_ea in idautils.Functions():
+            func = ida_funcs.get_func(candidate_ea)
+            if func is None:
+                continue
+            source_ea = int(func.start_ea)
+            before = executor.read_state(kind, source_ea)
+            existing_targets = {
+                int(row.split("@", 1)[0], 16)
+                for row in before.removeprefix("cref3:").split(",")
+                if row
+            }
+            targets = [
+                int(item_ea)
+                for item_ea in idautils.FuncItems(source_ea)
+                if int(item_ea) != source_ea
+                and int(item_ea) not in existing_targets
+            ]
+            if len(targets) < 2:
+                continue
+            target_a, target_b = targets[:2]
+            rows = {
+                tuple(item.split("@", 2))
+                for item in before.removeprefix("cref3:").split(",")
+                if item
+            }
+            rows.update(
+                {
+                    (f"{target_a:#x}", f"{ida_xref.fl_JN:#x}", "u"),
+                    (f"{target_b:#x}", f"{ida_xref.fl_JN:#x}", "u"),
+                }
+            )
+            after = "cref3:" + ",".join(
+                f"{target}@{xref_type}@{owner}"
+                for target, xref_type, owner in sorted(
+                    rows,
+                    key=lambda row: (int(row[0], 16), int(row[1], 16), row[2]),
+                )
+            )
+            assert executor.apply_state(kind, source_ea, after), executor.read_state(
+                kind, source_ea
+            )
+            assert executor.read_state(kind, source_ea) == after
+            assert executor.apply_state(kind, source_ea, before)
+            assert executor.read_state(kind, source_ea) == before
+            return
+        pytest.fail("no function had two unused code targets for a cref batch")
+
     def test_function_tail_is_refused_without_a_lossless_snapshot(
         self, copy_of_idb
     ) -> None:
@@ -197,6 +251,66 @@ class TestIdaMetadataActionExecutor:
             executor.read_state(NativeMetadataActionKind.RECREATE_ITEM, func_ea)
             == before
         )
+
+    def test_plain_tigress_label_data_round_trips_through_code_and_back(
+        self, copy_of_idb
+    ) -> None:
+        """The canonical Tigress label promotion must be losslessly reversible."""
+        import ida_ua
+
+        executor = IdaMetadataActionExecutor()
+        kind = NativeMetadataActionKind.RECREATE_ITEM
+        target_ea = 0x1800169AA
+        before = executor.read_state(kind, target_ea)
+        assert before.startswith("data:"), before
+
+        instruction = ida_ua.insn_t()
+        code_size = int(ida_ua.decode_insn(instruction, target_ea))
+        assert code_size > 0
+        promoted = f"code:{code_size}"
+
+        assert executor.apply_state(kind, target_ea, promoted)
+        assert executor.read_state(kind, target_ea) == promoted
+        assert executor.apply_state(kind, target_ea, before)
+        assert executor.read_state(kind, target_ea) == before
+
+    def test_shared_tigress_data_item_targets_restore_as_one_item(
+        self, copy_of_idb
+    ) -> None:
+        """Several labels in one scalar item reverse only after the last code."""
+        import ida_ua
+
+        executor = IdaMetadataActionExecutor()
+        kind = NativeMetadataActionKind.RECREATE_ITEM
+        data_head = 0x1800169B0
+        data_size = int(ida_bytes.get_item_size(data_head))
+        assert data_size >= 226
+        table_ea = 0x180029F20
+        targets: list[tuple[int, int]] = []
+        for index in range(37):
+            target_ea = int(ida_bytes.get_qword(table_ea + index * 8))
+            if not data_head <= target_ea < data_head + data_size:
+                continue
+            instruction = ida_ua.insn_t()
+            size = int(ida_ua.decode_insn(instruction, target_ea))
+            if size > 0:
+                targets.append((target_ea, size))
+        assert len(targets) >= 2
+
+        first, second = targets[:2]
+        before_first = executor.read_state(kind, first[0])
+        before_second = executor.read_state(kind, second[0])
+        assert before_first.startswith("data:v1:")
+        assert before_second.startswith("data:v1:")
+
+        assert executor.apply_state(kind, first[0], f"code:{first[1]}")
+        assert executor.read_state(kind, second[0]) == "unknown"
+        assert executor.apply_state(kind, second[0], f"code:{second[1]}")
+
+        assert executor.apply_state(kind, second[0], "unknown")
+        assert executor.apply_state(kind, first[0], before_first)
+        assert executor.read_state(kind, first[0]) == before_first
+        assert executor.read_state(kind, second[0]) == before_second
 
     def test_switch_info_state_round_trips_through_absence_and_back(
         self, copy_of_idb

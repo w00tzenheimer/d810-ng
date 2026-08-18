@@ -12,7 +12,7 @@ from d810.manager.deobfuscation_case_service import DeobfuscationCaseCollectionE
 from d810.manager.effective_pipeline_schedule import (
     build_effective_maturity_schedule,
 )
-from d810.manager.project_runtime import ProjectConfigMode, ProjectRuntimeSnapshot
+from d810.manager.project_runtime import ProjectRuntimeSnapshot
 from d810.manager.workbench_models import (
     ArtifactRef,
     AttackSummary,
@@ -290,10 +290,7 @@ class WorkbenchService:
             errors.append(f"preparation: {exc}")
 
         try:
-            effective_schedule = self._effective_schedule(
-                runtime_project,
-                project_snapshot=project_snapshot,
-            )
+            effective_schedule = self._effective_schedule(project)
         except (KeyError, RuntimeError, TypeError, ValueError) as exc:
             from d810.manager.workbench_models import EffectiveMaturitySchedule
 
@@ -351,10 +348,10 @@ class WorkbenchService:
                 "current_project_runtime_snapshot",
                 None,
             )
-        constant_schedule = (
-            project_snapshot.constant_simplification_schedule
-            if project_snapshot is not None
-            else None
+        constant_schedule = getattr(
+            self._manager,
+            "_constant_simplification_schedule",
+            None,
         )
         preparation_status = None
         status_provider = getattr(self._manager, "preparation_status", None)
@@ -377,10 +374,7 @@ class WorkbenchService:
             maturity_name_provider=self._maturity_name_provider,
             constant_simplification_schedule=constant_schedule,
             preparation_status=preparation_status,
-            allow_legacy_constant_fallback=(
-                project_snapshot is not None
-                and project_snapshot.mode is ProjectConfigMode.LEGACY
-            ),
+            allow_legacy_constant_fallback=False,
         )
 
     @staticmethod

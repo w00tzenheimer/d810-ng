@@ -17,7 +17,11 @@ from d810.backends.ida.native_patch.capture import (
     IdaLiveDatabaseReader,
     capture_range_evidence,
 )
-from d810.backends.ida.native_patch.metadata import IdaMetadataActionExecutor
+from d810.backends.ida.native_patch.metadata import (
+    IdaMetadataActionExecutor,
+    reversible_data_item_head,
+    is_reversible_data_item_state,
+)
 from d810.capabilities.native_patch import (
     NativeInstructionHead,
     NativeInstructionSequenceShape,
@@ -40,7 +44,6 @@ __all__ = [
     "IndirectLabelPlanRequest",
     "build_indirect_label_metadata_plan",
 ]
-
 
 class IndirectLabelPlanFailureReason(str, enum.Enum):
     """Stable machine-readable reasons for planner abstention receipts."""
@@ -189,6 +192,58 @@ def _missing_cref_targets(token: str, targets: set[int]) -> tuple[int, ...]:
     return tuple(sorted(set(int(target) for target in targets) - existing_targets))
 
 
+def _bundle_cref_targets(
+    before: str, targets: set[int], *, xref_type: int
+) -> tuple[str, tuple[int, ...]]:
+    """Build one exact after-token for all missing targets at one source."""
+
+    missing = _missing_cref_targets(before, targets)
+    if not missing:
+        return before, ()
+    wanted = _parse_cref_state(before)
+    wanted.update((target, int(xref_type), True) for target in missing)
+    return _cref_state(wanted), missing
+
+
+def _group_item_transition_before(
+    before: str,
+    *,
+    target_ea: int,
+    seen_data_heads: set[int],
+) -> str:
+    """Plan one shared data item as a reversible first-plus-unknown sequence.
+
+    IDA's label table can place several instruction targets inside one scalar
+    data item. The first target removes that item and retains its snapshot;
+    later targets are genuinely ``unknown`` after that removal. Reverse
+    journal order restores the later unknowns first, then the first action
+    recreates the enclosing item.
+    """
+
+    head_ea = reversible_data_item_head(before, expected_ea=int(target_ea))
+    if head_ea is None:
+        return before
+    if head_ea in seen_data_heads:
+        return "unknown"
+    seen_data_heads.add(head_ea)
+    return before
+
+
+def _item_transition_order(target_eas: tuple[int, ...]) -> tuple[int, ...]:
+    """Order item promotions high-to-low to avoid adjacent-item overlap.
+
+    IDA can decode an instruction at a lower target across the boundary of a
+    following data item.  If that lower promotion runs first, IDA clears the
+    following item before its own action can verify the recorded snapshot.
+    Promoting the highest target first removes its enclosing item explicitly;
+    lower targets then observe the intentional ``unknown`` grouped state.
+    Reverse journal order restores the lower instruction before recreating the
+    enclosing data item, so the transition remains lossless.
+    """
+
+    return tuple(sorted((int(ea) for ea in target_eas), reverse=True))
+
+
 def _with_user_cref(
     executor: IdaMetadataActionExecutor,
     *,
@@ -321,7 +376,8 @@ def build_indirect_label_metadata_plan(
             "function-tail adoption is not yet proven losslessly reversible"
         )
 
-    for target_ea in request.target_eas:
+    seen_data_heads: set[int] = set()
+    for target_ea in _item_transition_order(request.target_eas):
         before = executor.read_state(NativeMetadataActionKind.RECREATE_ITEM, target_ea)
         after = f"code:{_instruction_size(target_ea)}"
         if before == "unknown":
@@ -350,6 +406,23 @@ def build_indirect_label_metadata_plan(
                     kind=NativeMetadataActionKind.RECREATE_ITEM,
                     ea=int(target_ea),
                     expected_before=before,
+                    expected_after=after,
+                )
+            )
+        elif is_reversible_data_item_state(before, expected_ea=int(target_ea)):
+            # A narrow scalar-data snapshot preserves the exact IDA flags,
+            # per-byte flags, and bytes needed to reverse the data->code
+            # promotion.  Generic ``data:<size>`` remains fail-closed.
+            expected_before = _group_item_transition_before(
+                before,
+                target_ea=int(target_ea),
+                seen_data_heads=seen_data_heads,
+            )
+            actions.append(
+                NativeMetadataAction(
+                    kind=NativeMetadataActionKind.RECREATE_ITEM,
+                    ea=int(target_ea),
+                    expected_before=expected_before,
                     expected_after=after,
                 )
             )
@@ -398,11 +471,14 @@ def build_indirect_label_metadata_plan(
             NativeMetadataActionKind.UPDATE_XREF,
             previous_ea,
         )
-        if int(target_ea) in _missing_cref_targets(boundary_state, {int(target_ea)}):
-            raise IndirectLabelPlanBuildError(
-                "missing label-boundary flow xref has no stable reversible "
-                f"representation at {previous_ea:#x}->{int(target_ea):#x}"
-            )
+        if int(target_ea) in _missing_cref_targets(
+            boundary_state, {int(target_ea)}
+        ):
+            # This edge is an analysis-only block-boundary hint, not a
+            # requested semantic mutation. Do not manufacture a user xref
+            # merely to satisfy a planner witness; actual requested xrefs
+            # below remain transactional and fail closed.
+            continue
         actions.append(
             NativeMetadataAction(
                 kind=NativeMetadataActionKind.UPDATE_XREF,
@@ -424,16 +500,25 @@ def build_indirect_label_metadata_plan(
             if target_ea is None:
                 continue
             source_ea = _following_jump_ea(ea, int(request.label_end)) or ea
+            # These resolved-state crefs are optional analysis hints.  The
+            # legacy writer also tolerates their initial rejection and only
+            # refreshes them after handler-body reanalysis.  A native plan
+            # cannot promise an exact reversible after-state from an undefined
+            # source, so include only sources that are already instruction
+            # heads; the required dispatcher fan-out above is unaffected.
+            if not ida_bytes.is_code(ida_bytes.get_flags(int(source_ea))):
+                continue
             targets_by_source.setdefault(source_ea, set()).add(target_ea)
     for source_ea, targets in sorted(targets_by_source.items()):
         before = executor.read_state(NativeMetadataActionKind.UPDATE_XREF, source_ea)
         import ida_xref
 
-        # One action owns one IDA ``add_cref`` primitive.  Do not collapse a
-        # fan-out into a delete/add batch: a mid-batch failure would leave no
-        # failure-atomic transition to journal or reverse.
-        cursor = before
-        missing_targets = _missing_cref_targets(before, targets)
+        # One action owns the complete source fan-out.  The executor applies
+        # the user-edge additions as a local failure-atomic batch, so the
+        # journal can reverse the entire source transition as one state move.
+        after, missing_targets = _bundle_cref_targets(
+            before, targets, xref_type=int(ida_xref.fl_JN)
+        )
         if not missing_targets:
             actions.append(
                 NativeMetadataAction(
@@ -443,19 +528,19 @@ def build_indirect_label_metadata_plan(
                     expected_after=before,
                 )
             )
-        for target_ea in missing_targets:
-            wanted = _parse_cref_state(cursor)
-            wanted.add((target_ea, int(ida_xref.fl_JN), True))
-            after = _cref_state(wanted)
+        else:
+            # Keep all additions for one source in one failure-atomic action.
+            # IDA can drop an earlier user edge while the same source is being
+            # revisited, so sequential expected-before witnesses are not
+            # stable on the live database.
             actions.append(
                 NativeMetadataAction(
                     kind=NativeMetadataActionKind.UPDATE_XREF,
                     ea=source_ea,
-                    expected_before=cursor,
+                    expected_before=before,
                     expected_after=after,
                 )
             )
-            cursor = after
 
     if request.install_switch_info:
         # IDA canonicalizes a persisted switch record (including flags,

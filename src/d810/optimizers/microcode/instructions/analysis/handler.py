@@ -15,6 +15,11 @@ optimizer_logger = getLogger("d810.optimizer")
 class InstructionAnalysisRule(InstructionOptimizationRule):
     CATEGORY = "Analysis"
 
+    def check_and_replace(self, blk, ins):
+        """Analysis rules observe instructions but never rewrite them here."""
+        del blk, ins
+        return None
+
     @abc.abstractmethod
     def analyze_instruction(self, blk: ida_hexrays.mblock_t, ins: ida_hexrays.minsn_t):
         """Analyze the instruction and return a replacement instruction if the rule matches, otherwise None."""

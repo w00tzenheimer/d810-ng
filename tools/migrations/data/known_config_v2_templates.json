@@ -4165,8 +4165,7 @@
         "options": {
           "transforms": [
             "z-3-constant-optimization",
-            "z-3-setnz-generic",
-            "z-3-setz-generic"
+            "z-3-setnz-generic"
           ],
           "transform_options": {
             "z-3-constant-optimization": {
@@ -4591,9 +4590,7 @@
     "fingerprint": "2101314f6b7a8213922818e88b4c8aa54d57048aa83dc2c414e6640b74ea9ec9",
     "donor_name": "default_unflattening_tigress_indirect_config_v2_canary.json",
     "description": "Canonical config-v2 project for default_unflattening_tigress_indirect.json.",
-    "owned_additional_configuration": {
-      "legacy_direct_indirect_materialization": true
-    },
+    "owned_additional_configuration": {},
     "pipeline_v2": [
       {
         "pass_id": "mba-simplify",

@@ -61,6 +61,21 @@ def test_typed_mba_options_preserve_order_and_resolve_private_bindings() -> None
     assert adapter.implementation_names == ("AddXor_Rule_1", "ExampleGuessingRule")
 
 
+def test_mba_transform_bindings_use_concrete_registered_mul_rule_names() -> None:
+    registry = mba_simplify_pass_registry()
+    adapter = build_mba_simplify_pass(
+        _config(["mul-mba-1", "mul-mba-2", "mul-mba-3", "mul-mba-4"]),
+        registry,
+    )
+
+    assert adapter.implementation_names == (
+        "Mul_MBA_1",
+        "Mul_MBA_2",
+        "Mul_MBA_3",
+        "Mul_MBA_4",
+    )
+
+
 def test_typed_mba_options_reject_an_undeclared_transform_option() -> None:
     config = _config(
         ["example-guessing"],

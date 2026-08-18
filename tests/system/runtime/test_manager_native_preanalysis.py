@@ -112,7 +112,7 @@ class TestPreparationStartupIntegration:
             project_index = next(
                 index
                 for index, project in enumerate(state.project_manager.projects())
-                if project.path.name == "default_instruction_only_config_v2_canary.json"
+                if project.path.name == "default_instruction_only.json"
             )
             state.load_project(project_index)
             state.start_d810()

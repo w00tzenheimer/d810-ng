@@ -284,6 +284,83 @@ def test_load_first_valid_project_returns_none_when_everything_is_broken(
             _restore(state, original_index)
 
 
+@pytest.mark.parametrize(
+    "builder_name",
+    ["_build_known_instruction_rules", "_build_known_block_rules"],
+)
+def test_missing_config_v2_binding_fails_closed_and_preserves_active_project(
+    d810_state,
+    monkeypatch,
+    builder_name: str,
+) -> None:
+    """A declared hook without a concrete registration cannot activate."""
+    with d810_state() as state:
+        original_index = state.current_project_index
+        rules_attr = (
+            "current_ins_rules"
+            if builder_name == "_build_known_instruction_rules"
+            else "current_blk_rules"
+        )
+        target_index = None
+        missing_rule_name = None
+        for candidate_index in range(len(state.project_manager)):
+            if state.load_project(candidate_index) is None:
+                continue
+            selected_rules = list(getattr(state, rules_attr))
+            if selected_rules:
+                target_index = candidate_index
+                missing_rule_name = str(selected_rules[0].name)
+                break
+        if target_index is None or missing_rule_name is None:
+            _restore(state, original_index)
+            raise AssertionError(
+                f"no loadable project selects a {rules_attr} rule"
+            )
+        target = state.project_manager.get(target_index)
+        state.invalid_projects.pop(target.path.name, None)
+        before = _activation_snapshot(state)
+        real_builder = getattr(state, builder_name)
+
+        def omit_binding():
+            return [
+                rule
+                for rule in real_builder()
+                if str(getattr(rule, "name", "")) != missing_rule_name
+            ]
+
+        monkeypatch.setattr(state, builder_name, omit_binding)
+        try:
+            assert state.load_project(target_index) is None
+            _assert_activation_snapshot_unchanged(state, before)
+            reason = state.invalid_projects[target.path.name]
+            assert "unregistered" in reason
+            assert missing_rule_name in reason
+        finally:
+            monkeypatch.undo()
+            _restore(state, original_index)
+
+
+def test_known_instruction_registry_includes_builtin_analysis_rules(d810_state) -> None:
+    with d810_state() as state:
+        assert "ExampleGuessingRule" in {
+            str(rule.name) for rule in state._build_known_instruction_rules()
+        }
+
+
+@pytest.mark.parametrize(
+    "project_name",
+    ("default_instruction_only.json", "dead_store_elimination_fixture.json"),
+)
+def test_bundled_config_v2_bindings_are_concrete_and_loadable(
+    d810_state,
+    project_name: str,
+) -> None:
+    with d810_state() as state:
+        index = state.project_manager.index(project_name)
+        project = state.project_manager.get(index)
+        assert state.load_project(index) is project
+
+
 def test_config_v2_native_spine_syncs_generated_restart_consumer(
     d810_state,
     monkeypatch,

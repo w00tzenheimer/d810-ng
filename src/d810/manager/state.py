@@ -91,9 +91,11 @@ from d810.manager.workbench_recipe_models import (
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
 from d810.optimizers.microcode.instructions.handler import InstructionOptimizationRule
 from d810.passes.config_v2_hook_runtime import (
+    ConfigV2HookSchedule,
     compile_config_v2_hook_schedule,
     requires_native_preanalysis_handlers,
 )
+from d810.passes.pass_pipeline import PipelineConfigError
 from d810.passes.state_machine_options import StateMachineCffOptions
 
 if TYPE_CHECKING:
@@ -103,6 +105,46 @@ if TYPE_CHECKING:
 
 logger = getLogger("d810")
 D810_LOG_DIR_NAME = "d810_logs"
+
+
+def _require_registered_schedule_bindings(
+    schedule: ConfigV2HookSchedule,
+    known_ins_rules: list,
+    known_blk_rules: list,
+) -> None:
+    """Reject a v2 schedule whose concrete Hex-Rays hooks are unavailable."""
+    known_ins_names = frozenset(
+        str(getattr(rule, "name", "")) for rule in known_ins_rules
+    )
+    known_blk_names = frozenset(
+        str(getattr(rule, "name", "")) for rule in known_blk_rules
+    )
+    missing_ins = tuple(
+        dict.fromkeys(
+            binding.name
+            for binding in schedule.instruction_bindings
+            if binding.is_activated and binding.name not in known_ins_names
+        )
+    )
+    missing_blk = tuple(
+        dict.fromkeys(
+            binding.name
+            for binding in schedule.block_bindings
+            if binding.is_activated and binding.name not in known_blk_names
+        )
+    )
+    if not (missing_ins or missing_blk):
+        return
+
+    details: list[str] = []
+    if missing_ins:
+        details.append(f"instruction={list(missing_ins)!r}")
+    if missing_blk:
+        details.append(f"block={list(missing_blk)!r}")
+    raise PipelineConfigError(
+        "config-v2 schedule contains unregistered concrete rule binding(s): "
+        + ", ".join(details)
+    )
 
 
 class D810State(metaclass=SingletonMeta):
@@ -336,10 +378,6 @@ class D810State(metaclass=SingletonMeta):
         # configuration registers reload/materialization handlers as a side
         # effect, so those globals are part of the same rollback boundary.
         manager_snapshot = self.manager.snapshot_project_activation_state()
-        # Existing-profile cleanup belongs before candidate configuration.  A
-        # post-publication lifecycle notification must not immediately invoke
-        # the cleanup hook just registered by the candidate itself.
-        prepare_project_activation_cleanups()
 
         def _rollback_activation() -> None:
             try:
@@ -356,6 +394,18 @@ class D810State(metaclass=SingletonMeta):
 
         candidate_known_ins_rules = _stage_call(self._build_known_instruction_rules)
         candidate_known_blk_rules = _stage_call(self._build_known_block_rules)
+        _stage_call(
+            _require_registered_schedule_bindings,
+            schedule,
+            candidate_known_ins_rules,
+            candidate_known_blk_rules,
+        )
+        # The registration preflight above is still part of the fallible
+        # validation phase.  Existing-profile cleanup belongs before candidate
+        # configuration, but must not run until every declared concrete binding
+        # has a candidate; otherwise a failed activation would retire the
+        # active profile's cleanup hooks.
+        prepare_project_activation_cleanups()
         candidate_ins_rules: list = []
         candidate_blk_rules: list = []
 
@@ -1168,6 +1218,13 @@ class D810State(metaclass=SingletonMeta):
     def _build_known_instruction_rules(self) -> list:
         """Every instruction rule available to be matched against a config."""
         self._ensure_extension_rules_registered()
+        # Analysis rules share the instruction-rule registry but are not
+        # imported by the peephole package.  Project activation snapshots this
+        # catalogue before D810Manager.start() performs its broad optimizer
+        # scan, so import the built-in analysis module explicitly here.
+        from d810.optimizers.microcode.instructions.analysis import (  # noqa: F401
+            pattern_guess,
+        )
         # Egglog is an optional dependency, so its rule cannot be imported at
         # module load time.  Import it before taking the rule catalogue
         # snapshot: importing only when D810Manager starts is too late for a
