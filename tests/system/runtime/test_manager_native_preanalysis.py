@@ -90,6 +90,47 @@ def _evidence_receipt() -> GeneratedRestartReceipt:
     )
 
 
+def _started_manager_without_init() -> D810Manager:
+    manager = D810Manager.__new__(D810Manager)
+    manager._started = True
+    return manager
+
+
+class TestPreparationStartupIntegration:
+    binary_name = "libobfuscated.dll"
+
+    def test_started_manager_composes_preparation_gateway_before_decompile(
+        self,
+        d810_state,
+        configure_hexrays,
+        ida_database,
+        setup_libobfuscated_funcs,
+    ) -> None:
+        import idaapi
+
+        assert idaapi.init_hexrays_plugin()
+        with d810_state() as state:
+            project_index = next(
+                index
+                for index, project in enumerate(state.project_manager.projects())
+                if project.path.name == "default_instruction_only_config_v2_canary.json"
+            )
+            state.load_project(project_index)
+            state.start_d810()
+
+            manager = state.manager
+            assert manager.pre_hex_preparation is not None
+            assert manager._idb_preparation_gateway is not None
+            assert manager._idb_preparation_journal is not None
+            receipt = manager.prepare_idb_for_hexrays(0x401000)
+            assert receipt.ok
+            assert receipt.run_receipts == ()
+            snapshot = state.get_workbench_snapshot(0x401000, "schedule_target")
+            fold_readonly = snapshot.effective_schedule.stage("fold-readonly-data")
+            assert fold_readonly.maturity_source == "private-rule"
+            assert "MMAT_PREOPTIMIZED" in fold_readonly.provider_maturities
+
+
 def test_manager_installs_and_uninstalls_generated_restart_consumer() -> None:
     session = DecompilationSessionContext(
         function_ea=0x401000,
@@ -1009,7 +1050,7 @@ def test_preflight_starts_one_session_and_hands_its_state_to_the_resolver(
         def finish_native_preanalysis(self, current_session):
             calls.append(("preanalysis.finish", current_session))
 
-    manager = D810Manager.__new__(D810Manager)
+    manager = _started_manager_without_init()
     manager.decompilation_lifecycle = _Lifecycle()
     manager._database_identity = "sample.i64"
     manager.event_emitter = SimpleNamespace(
@@ -1092,7 +1133,7 @@ def test_preflight_records_complete_call_companion_mismatch(
         def finish_native_preanalysis(_session):
             return None
 
-    manager = D810Manager.__new__(D810Manager)
+    manager = _started_manager_without_init()
     manager.decompilation_lifecycle = _Lifecycle()
     manager._database_identity = "sample.i64"
     resolution = SimpleNamespace(jmp_targets=(0x401100,))
@@ -1172,7 +1213,7 @@ def test_decompile_controller_runs_one_followup_for_pending_generated_restart(
             calls.append(("pending", function_ea))
             return _evidence_receipt() if next(pending) else None
 
-    manager = D810Manager.__new__(D810Manager)
+    manager = _started_manager_without_init()
     manager.decompilation_lifecycle = _Lifecycle()
     monkeypatch.setattr(
         manager,
@@ -1200,6 +1241,58 @@ def test_decompile_controller_runs_one_followup_for_pending_generated_restart(
     ]
 
 
+def test_preparation_runs_once_before_native_preanalysis_and_generated_retries(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, int]] = []
+    pending = iter((True, False))
+
+    class _Lifecycle:
+        @staticmethod
+        def current_session(_function_ea: int):
+            return None
+
+        @staticmethod
+        def has_exhausted_poison_restart(_function_ea: int) -> bool:
+            return False
+
+        @staticmethod
+        def pending_generated_restart(_function_ea: int):
+            return _evidence_receipt() if next(pending) else None
+
+    manager = _started_manager_without_init()
+    manager.decompilation_lifecycle = _Lifecycle()
+    monkeypatch.setattr(
+        manager,
+        "prepare_idb_for_hexrays",
+        lambda function_ea: (
+            calls.append(("preparation", function_ea))
+            or SimpleNamespace(ok=True, failure_reason=None)
+        ),
+    )
+    monkeypatch.setattr(
+        manager,
+        "prepare_native_preanalysis",
+        lambda function_ea: calls.append(("native", function_ea)) or 0,
+    )
+
+    rounds = iter(("first", "final"))
+    result = manager.decompile_with_native_preanalysis(
+        0x401000,
+        lambda: calls.append(("hexrays", 0x401000)) or next(rounds),
+        lambda: None,
+    )
+
+    assert result == "final"
+    assert calls == [
+        ("preparation", 0x401000),
+        ("native", 0x401000),
+        ("hexrays", 0x401000),
+        ("native", 0x401000),
+        ("hexrays", 0x401000),
+    ]
+
+
 def test_decompile_controller_runs_stage_b_after_decompile_and_refreshes_applied_output(
     monkeypatch,
 ) -> None:
@@ -1218,7 +1311,7 @@ def test_decompile_controller_runs_stage_b_after_decompile_and_refreshes_applied
         def pending_generated_restart(_function_ea: int):
             return None
 
-    manager = D810Manager.__new__(D810Manager)
+    manager = _started_manager_without_init()
     manager.decompilation_lifecycle = _Lifecycle()
     manager._dead_edge_normalizer = lambda function_ea: (
         calls.append(("stage_b", function_ea))
@@ -1265,7 +1358,7 @@ def test_decompile_controller_releases_stack_capacity_witness_when_decompile_rai
         def release() -> None:
             calls.append(("release", session))
 
-    manager = D810Manager.__new__(D810Manager)
+    manager = _started_manager_without_init()
     manager.config = {}
     manager.get_function_tags = lambda _function_ea: frozenset()
     manager.decompilation_lifecycle = _Lifecycle()
@@ -1305,7 +1398,7 @@ def test_decompile_controller_releases_stack_capacity_witness_when_decompile_rai
 def test_stage_c_collection_abstains_before_policy_lookup_without_configuration(
     monkeypatch,
 ) -> None:
-    manager = D810Manager.__new__(D810Manager)
+    manager = _started_manager_without_init()
     monkeypatch.setattr(
         manager,
         "get_function_tags",
@@ -1335,7 +1428,7 @@ def test_decompile_controller_services_poison_restart_from_second_round(
             calls.append(("pending", function_ea))
             return _evidence_receipt() if next(pending) else None
 
-    manager = D810Manager.__new__(D810Manager)
+    manager = _started_manager_without_init()
     manager.decompilation_lifecycle = _Lifecycle()
     monkeypatch.setattr(
         manager,
@@ -1392,7 +1485,7 @@ def test_decompile_controller_routes_poison_to_manager_fresh_recovery(
         def has_exhausted_poison_restart(_function_ea: int) -> bool:
             return state.has_exhausted_poison_restart
 
-    manager = D810Manager.__new__(D810Manager)
+    manager = _started_manager_without_init()
     manager.decompilation_lifecycle = _Lifecycle()
     normalizer_calls: list[int] = []
     manager._dead_edge_normalizer = lambda ea: (
@@ -1470,7 +1563,7 @@ def test_decompile_controller_refuses_second_poison_after_manager_recovery(
         def has_exhausted_poison_restart(_function_ea: int) -> bool:
             return state.has_exhausted_poison_restart
 
-    manager = D810Manager.__new__(D810Manager)
+    manager = _started_manager_without_init()
     manager.decompilation_lifecycle = _Lifecycle()
     monkeypatch.setattr(manager, "prepare_native_preanalysis", lambda _ea: 0)
     rounds = 0
@@ -1512,7 +1605,7 @@ def test_decompile_controller_requires_typed_pending_restart_projection(
         def pending_generated_restart(_function_ea: int):
             return True
 
-    manager = D810Manager.__new__(D810Manager)
+    manager = _started_manager_without_init()
     manager.decompilation_lifecycle = _Lifecycle()
     monkeypatch.setattr(manager, "prepare_native_preanalysis", lambda _ea: 0)
 
@@ -1556,7 +1649,7 @@ def test_decompile_controller_validates_manager_consumed_restart_kind(
             assert consumer is GeneratedRestartConsumer.MANAGER
             return _evidence_receipt()
 
-    manager = D810Manager.__new__(D810Manager)
+    manager = _started_manager_without_init()
     manager.decompilation_lifecycle = _Lifecycle()
     monkeypatch.setattr(manager, "prepare_native_preanalysis", lambda _ea: 0)
 
@@ -1586,7 +1679,7 @@ def test_decompile_controller_binds_post_recovery_dispatcher_evidence(
         def pending_generated_restart(_function_ea: int):
             return _evidence_receipt() if next(pending) else None
 
-    manager = D810Manager.__new__(D810Manager)
+    manager = _started_manager_without_init()
     manager.decompilation_lifecycle = _Lifecycle()
     monkeypatch.setattr(manager, "prepare_native_preanalysis", lambda _ea: 0)
     rounds: list[int] = []
@@ -1619,7 +1712,7 @@ def test_decompile_controller_binds_rebound_dispatcher_route_closure(
         def pending_generated_restart(_function_ea: int):
             return _evidence_receipt() if next(pending) else None
 
-    manager = D810Manager.__new__(D810Manager)
+    manager = _started_manager_without_init()
     manager.decompilation_lifecycle = _Lifecycle()
     monkeypatch.setattr(manager, "prepare_native_preanalysis", lambda _ea: 0)
     rounds: list[int] = []
@@ -1650,7 +1743,7 @@ def test_decompile_controller_fails_loudly_if_restart_remains_after_poison_retry
         def pending_generated_restart(_function_ea: int):
             return _evidence_receipt()
 
-    manager = D810Manager.__new__(D810Manager)
+    manager = _started_manager_without_init()
     manager.decompilation_lifecycle = _Lifecycle()
     monkeypatch.setattr(manager, "prepare_native_preanalysis", lambda _ea: 0)
     rounds: list[str] = []
@@ -1679,9 +1772,12 @@ def test_decompile_controller_fails_on_distinct_post_recovery_poison(
         evidence_family="ordinary",
         reason="ordinary evidence retry",
     )
-    assert state.consume_generated_restart(
-        consumer=GeneratedRestartConsumer.FLOWCHART,
-    ) is not None
+    assert (
+        state.consume_generated_restart(
+            consumer=GeneratedRestartConsumer.FLOWCHART,
+        )
+        is not None
+    )
 
     class _Lifecycle:
         @staticmethod
@@ -1704,7 +1800,7 @@ def test_decompile_controller_fails_on_distinct_post_recovery_poison(
         def has_exhausted_poison_restart(_function_ea: int) -> bool:
             return state.has_exhausted_poison_restart
 
-    manager = D810Manager.__new__(D810Manager)
+    manager = _started_manager_without_init()
     manager.decompilation_lifecycle = _Lifecycle()
     monkeypatch.setattr(manager, "prepare_native_preanalysis", lambda _ea: 0)
     rounds = 0
@@ -1747,7 +1843,7 @@ def test_decompile_controller_scopes_and_closes_stage_c_collector(monkeypatch) -
         def pending_generated_restart(_function_ea: int):
             return None
 
-    manager = D810Manager.__new__(D810Manager)
+    manager = _started_manager_without_init()
     manager.decompilation_lifecycle = _Lifecycle()
     monkeypatch.setattr(manager, "prepare_native_preanalysis", lambda _ea: 0)
     monkeypatch.setattr(manager, "_stage_c_collection_enabled", lambda _ea: True)
@@ -1799,7 +1895,7 @@ def test_decompile_controller_returns_stage_c_validated_cfunc(monkeypatch) -> No
 
     inherited_cfunc = object()
     validated_cfunc = object()
-    manager = D810Manager.__new__(D810Manager)
+    manager = _started_manager_without_init()
     manager.decompilation_lifecycle = _Lifecycle()
     monkeypatch.setattr(manager, "prepare_native_preanalysis", lambda _ea: 0)
     monkeypatch.setattr(manager, "_stage_c_collection_enabled", lambda _ea: True)
@@ -1833,7 +1929,7 @@ def test_decompile_controller_closes_stage_c_collector_on_exception(
         def current_session(_function_ea: int):
             return session
 
-    manager = D810Manager.__new__(D810Manager)
+    manager = _started_manager_without_init()
     manager.decompilation_lifecycle = _Lifecycle()
     monkeypatch.setattr(manager, "prepare_native_preanalysis", lambda _ea: 0)
     monkeypatch.setattr(manager, "_stage_c_collection_enabled", lambda _ea: True)
@@ -1873,7 +1969,7 @@ def test_decompile_controller_closes_stage_c_collector_when_pending_projection_f
         def pending_generated_restart(_function_ea: int):
             raise TypeError("malformed pending restart projection")
 
-    manager = D810Manager.__new__(D810Manager)
+    manager = _started_manager_without_init()
     manager.decompilation_lifecycle = _Lifecycle()
     monkeypatch.setattr(manager, "prepare_native_preanalysis", lambda _ea: 0)
     monkeypatch.setattr(manager, "_stage_c_collection_enabled", lambda _ea: True)

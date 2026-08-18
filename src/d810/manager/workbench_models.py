@@ -253,6 +253,86 @@ class WorkbenchComparisonSnapshot:
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
+class PreparationScriptSummary:
+    script_id: str
+    display_name: str
+    path: str
+    configured_source_sha256: str
+    current_source_sha256: str | None
+    source_hash_matches: bool
+    enabled: bool
+    portable: bool
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class PreparationTransactionSummary:
+    transaction_id: str
+    database_identity: str
+    anchor_function_ea: int
+    script_id: str
+    script_path: str
+    script_source_sha256: str
+    state: str
+    bytes_changed: int
+    byte_ranges: tuple[tuple[int, int], ...]
+    type_annotations: int
+    affected_function_eas: tuple[int, ...]
+    live_after_image: bool
+    restore_allowed: bool
+    restore_blocker: str
+    recovery_required: bool
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class PreparationWorkbenchSummary:
+    database_identity: str | None
+    scripts: tuple[PreparationScriptSummary, ...] = ()
+    transactions: tuple[PreparationTransactionSummary, ...] = ()
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class EffectiveScheduleStage:
+    configured_index: int
+    runtime_order: int
+    pass_id: str
+    stage_id: str
+    pipeline: str
+    implementation_name: str
+    requirements: tuple[str, ...]
+    provider_maturities: tuple[str, ...]
+    maturity_source: str
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class EffectiveMaturityScheduleRow:
+    ordinal: int
+    ir_maturity: str
+    provider_maturity: str
+    stages: tuple[EffectiveScheduleStage, ...]
+
+    def contains(self, stage_id: str) -> bool:
+        return any(stage.stage_id == stage_id for stage in self.stages)
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class EffectiveMaturitySchedule:
+    rows: tuple[EffectiveMaturityScheduleRow, ...] = ()
+    stages: tuple[EffectiveScheduleStage, ...] = ()
+
+    def at(self, provider_maturity: str) -> EffectiveMaturityScheduleRow:
+        for row in self.rows:
+            if row.provider_maturity == provider_maturity:
+                return row
+        return EffectiveMaturityScheduleRow(-1, "unknown", provider_maturity, ())
+
+    def stage(self, stage_id: str) -> EffectiveScheduleStage:
+        for stage in self.stages:
+            if stage.stage_id == stage_id:
+                return stage
+        raise KeyError(stage_id)
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
 class DeobfuscationWorkbenchSnapshot:
     generation: int
     function: FunctionRef
@@ -268,6 +348,12 @@ class DeobfuscationWorkbenchSnapshot:
     freshness: SnapshotFreshness
     engine_started: bool
     collection_errors: tuple[str, ...]
+    preparation: PreparationWorkbenchSummary = dataclasses.field(
+        default_factory=lambda: PreparationWorkbenchSummary(None)
+    )
+    effective_schedule: EffectiveMaturitySchedule = dataclasses.field(
+        default_factory=EffectiveMaturitySchedule
+    )
     execution_ledger: ExecutionLedgerSummary = dataclasses.field(
         default_factory=lambda: ExecutionLedgerSummary(None, 0, (), 0, 0)
     )
@@ -283,6 +369,9 @@ class WorkbenchCommandRequest:
     function_ea: int
     expected_generation: int
     function_fingerprint: str | None
+    database_identity: str | None = None
+    script_source_hashes: tuple[tuple[str, str], ...] = ()
+    transaction_id: str | None = None
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -309,6 +398,9 @@ __all__ = [
     "D810OutputRef",
     "DeobfuscationWorkbenchSnapshot",
     "EffectiveStageDecisionSummary",
+    "EffectiveMaturitySchedule",
+    "EffectiveMaturityScheduleRow",
+    "EffectiveScheduleStage",
     "ExecutionAttemptSummary",
     "ExecutionLedgerSummary",
     "ExecutionProfileCandidateSummary",
@@ -316,6 +408,9 @@ __all__ = [
     "FunctionRef",
     "OutcomeStatus",
     "PatchCountEntry",
+    "PreparationScriptSummary",
+    "PreparationTransactionSummary",
+    "PreparationWorkbenchSummary",
     "PipelineStageSnapshot",
     "ExecutionScopeSummary",
     "RuntimeConfigRef",

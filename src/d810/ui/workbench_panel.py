@@ -9,6 +9,7 @@ from d810.core.logging import getLogger
 from d810.manager.deobfuscation_case_workflow import project_case_workflow
 from d810.manager.workbench_models import (
     OutcomeStatus,
+    PreparationWorkbenchSummary,
     SnapshotFreshness,
     WorkbenchCommandResult,
 )
@@ -22,6 +23,7 @@ from d810.ui.workbench_logic import (
     detail_text,
     export_evidence_json,
     filter_workbench_rows,
+    preparation_action_states,
     project_workbench_rows,
     should_accept_command_result,
     stale_snapshot,
@@ -66,6 +68,7 @@ except ImportError:
 
 if IDA_AVAILABLE:
     from d810.qt_shim import QtCore, QtGui, QtWidgets
+    from d810.ui.workbench_preparation_panel import PreparationWorkbenchWidget
 
     WOPN_NOT_CLOSED_BY_ESC = getattr(
         ida_kernwin,
@@ -152,6 +155,12 @@ if IDA_AVAILABLE:
             self.case_stage_widgets: dict[str, typing.Any] = {}
             self.build_deobfuscator_button = QtWidgets.QPushButton()
             self.deobfuscate_function_button = QtWidgets.QPushButton()
+            self.preparation_widget = PreparationWorkbenchWidget(
+                preview=self._run_preview_preparation,
+                prepare_only=self._run_prepare_only,
+                prepare_and_decompile=self._run_prepare_and_decompile,
+                restore=self._run_restore_preparation,
+            )
 
             self.action_buttons: dict[str, typing.Any] = {}
             action_layout = QtWidgets.QHBoxLayout()
@@ -246,6 +255,7 @@ if IDA_AVAILABLE:
             layout.setContentsMargins(4, 4, 4, 4)
             layout.setSpacing(6)
             layout.addWidget(context_group)
+            layout.addWidget(self.preparation_widget)
             layout.addWidget(case_group)
             layout.addWidget(self.filter_edit)
             layout.addWidget(splitter, stretch=1)
@@ -356,6 +366,7 @@ if IDA_AVAILABLE:
             action_id: str,
             *,
             refresh_after: bool = True,
+            transaction_id: str | None = None,
         ) -> WorkbenchCommandResult | None:
             snapshot = self._snapshot
             adapter = self._command_adapter
@@ -365,7 +376,11 @@ if IDA_AVAILABLE:
             if not callable(handler):
                 return None
 
-            request = command_request(snapshot, action_id)
+            request = command_request(
+                snapshot,
+                action_id,
+                transaction_id=transaction_id,
+            )
             stale = stale_snapshot(snapshot)
             stale_rows = project_workbench_rows(stale)
             self._snapshot = stale
@@ -378,6 +393,7 @@ if IDA_AVAILABLE:
             self._render_context()
             self._render_rows(self._visible_rows)
             self._render_action_states(action_states(stale))
+            self._render_preparation()
             self._render_case_workflow()
 
             try:
@@ -395,6 +411,25 @@ if IDA_AVAILABLE:
             else:
                 self.detail.setPlainText(result.message)
             return result
+
+        def _run_preview_preparation(self, checked: bool = False) -> None:
+            del checked
+            self._run_command("preview_preparation")
+
+        def _run_prepare_only(self, checked: bool = False) -> None:
+            del checked
+            self._run_command("prepare_only")
+
+        def _run_prepare_and_decompile(self, checked: bool = False) -> None:
+            del checked
+            self._run_command("prepare_and_decompile")
+
+        def _run_restore_preparation(self, checked: bool = False) -> None:
+            del checked
+            self._run_command(
+                "restore_preparation",
+                transaction_id=self.preparation_widget.selected_transaction_id,
+            )
 
         def _run_build_deobfuscator(self, checked: bool = False) -> None:
             del checked
@@ -620,6 +655,10 @@ if IDA_AVAILABLE:
                 self.attack_label.setText("Attack: not analyzed")
                 self._render_rows(())
                 self._render_action_states(())
+                self.preparation_widget.set_projection(
+                    PreparationWorkbenchSummary(None),
+                    (),
+                )
                 self._render_case_workflow()
                 return
 
@@ -647,6 +686,7 @@ if IDA_AVAILABLE:
             self._render_context()
             self._render_rows(visible_rows)
             self._render_action_states(states)
+            self._render_preparation()
             self._render_case_workflow()
             self._focus_section(self._pending_focus)
 
@@ -690,6 +730,16 @@ if IDA_AVAILABLE:
                 widget.setText(f"{stage.label}\n{stage.status.value.replace('_', ' ')}")
                 widget.setToolTip(stage.detail)
 
+        def _render_preparation(self) -> None:
+            snapshot = self._snapshot
+            if snapshot is None:
+                return
+            states = preparation_action_states(
+                snapshot,
+                selected_transaction_id=self.preparation_widget.selected_transaction_id,
+            )
+            self.preparation_widget.set_projection(snapshot.preparation, states)
+
         def _render_context(self) -> None:
             snapshot = self._snapshot
             if snapshot is None:
@@ -705,7 +755,7 @@ if IDA_AVAILABLE:
                 else ""
             )
             self.runtime_label.setText(
-                f"{snapshot.runtime.runtime_name}{routed} " f"[{snapshot.runtime.mode}]"
+                f"{snapshot.runtime.runtime_name}{routed} [{snapshot.runtime.mode}]"
             )
             confidence = (
                 "unavailable"

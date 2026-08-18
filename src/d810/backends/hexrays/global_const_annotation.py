@@ -24,14 +24,23 @@ from d810.backends.hexrays.evidence.global_constness import (
     capture_hexrays_global_item_const_evidence,
     capture_hexrays_global_item_range_const_evidence,
 )
+from d810.backends.ida.type_serialization import (
+    SerializedTinfoParts,
+    capture_serialized_tinfo,
+    serialize_tinfo,
+)
+from d810.capabilities.idb_preparation import (
+    PreparationTypeDelta,
+    SerializedTypeSnapshot,
+)
 from d810.core import typing
 from d810.core.logging import getLogger
 from d810.core.persistence import Netnode
 
 logger = getLogger("d810.backends.hexrays.global_const_annotation")
 
-_RECEIPT_NODE_NAME = "$ d810.global_const_annotations.v1"
-_RECEIPT_SCHEMA_VERSION = 1
+_PROPOSAL_NODE_NAME = "$ d810.global_const_proposals.v1"
+_PROPOSAL_SCHEMA_VERSION = 1
 _SIZE_TO_BTF = {
     1: ida_typeinf.BTF_UINT8,
     2: ida_typeinf.BTF_UINT16,
@@ -41,6 +50,9 @@ _SIZE_TO_BTF = {
 
 
 class GlobalConstAnnotationStatus(str, Enum):
+    QUEUED = "queued"
+    ALREADY_QUEUED = "already_queued"
+    CANCELLED = "cancelled"
     APPLIED = "applied"
     REMOVED = "removed"
     ALREADY_CONST = "already_const"
@@ -71,6 +83,22 @@ class DynamicGlobalTableAccess:
 
 
 @dataclass(frozen=True, slots=True)
+class GlobalConstAnnotationProposal:
+    """Exact type change awaiting an explicit preparation transaction."""
+
+    function_ea: int
+    item_head: int
+    item_end: int
+    before: SerializedTypeSnapshot
+    after: SerializedTypeSnapshot
+    reason: GlobalConstReason
+
+    @property
+    def type_delta(self) -> PreparationTypeDelta:
+        return PreparationTypeDelta(self.item_head, self.before, self.after)
+
+
+@dataclass(frozen=True, slots=True)
 class GlobalConstAnnotationOutcome:
     item_head: int
     item_end: int
@@ -78,6 +106,7 @@ class GlobalConstAnnotationOutcome:
     reason: GlobalConstReason
     type_before: str | None = None
     type_after: str | None = None
+    proposal: GlobalConstAnnotationProposal | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +122,20 @@ class GlobalConstAnnotationReport:
         )
 
     @property
+    def queued_count(self) -> int:
+        return sum(
+            outcome.status is GlobalConstAnnotationStatus.QUEUED
+            for outcome in self.outcomes
+        )
+
+    @property
+    def cancelled_count(self) -> int:
+        return sum(
+            outcome.status is GlobalConstAnnotationStatus.CANCELLED
+            for outcome in self.outcomes
+        )
+
+    @property
     def removed_count(self) -> int:
         return sum(
             outcome.status is GlobalConstAnnotationStatus.REMOVED
@@ -101,7 +144,12 @@ class GlobalConstAnnotationReport:
 
     @property
     def changed_count(self) -> int:
-        return self.applied_count + self.removed_count
+        return (
+            self.applied_count
+            + self.removed_count
+            + self.queued_count
+            + self.cancelled_count
+        )
 
 
 def _mop_constant(mop: object) -> int | None:
@@ -286,32 +334,145 @@ def _type_rendering(tif: ida_typeinf.tinfo_t) -> str:
         return str(tif)
 
 
-def _delete_receipt(
-    receipt_store: MutableMapping[int, typing.Any], item_head: int
+def _snapshot_from_parts(
+    parts: SerializedTinfoParts | None,
+) -> SerializedTypeSnapshot:
+    if parts is None:
+        return SerializedTypeSnapshot.absent()
+    return SerializedTypeSnapshot.from_parts(
+        parts.type_bytes,
+        parts.field_bytes,
+        parts.field_comment_bytes,
+    )
+
+
+def _snapshot_from_tinfo(tif: ida_typeinf.tinfo_t) -> SerializedTypeSnapshot:
+    return _snapshot_from_parts(serialize_tinfo(tif))
+
+
+def _snapshot_payload(snapshot: SerializedTypeSnapshot) -> dict[str, typing.Any]:
+    return {
+        "present": snapshot.present,
+        "type": None if snapshot.type_bytes is None else snapshot.type_bytes.hex(),
+        "fields": None if snapshot.field_bytes is None else snapshot.field_bytes.hex(),
+        "field_comments": (
+            None
+            if snapshot.field_comment_bytes is None
+            else snapshot.field_comment_bytes.hex()
+        ),
+    }
+
+
+def _snapshot_from_payload(payload: object) -> SerializedTypeSnapshot:
+    if not isinstance(payload, dict):
+        raise ValueError("serialized type snapshot payload must be a mapping")
+    if not bool(payload.get("present")):
+        return SerializedTypeSnapshot.absent()
+
+    def _component(name: str, *, required: bool = False) -> bytes | None:
+        value = payload.get(name)
+        if value is None:
+            if required:
+                raise ValueError(f"missing proposal type component {name}")
+            return None
+        if not isinstance(value, str):
+            raise ValueError(f"proposal type component {name} must be hex")
+        return bytes.fromhex(value)
+
+    type_bytes = _component("type", required=True)
+    assert type_bytes is not None
+    return SerializedTypeSnapshot.from_parts(
+        type_bytes,
+        _component("fields"),
+        _component("field_comments"),
+    )
+
+
+def _proposal_payload(
+    proposal: GlobalConstAnnotationProposal,
+) -> dict[str, typing.Any]:
+    return {
+        "schema": _PROPOSAL_SCHEMA_VERSION,
+        "function_ea": proposal.function_ea,
+        "item_head": proposal.item_head,
+        "item_end": proposal.item_end,
+        "before": _snapshot_payload(proposal.before),
+        "after": _snapshot_payload(proposal.after),
+        "reason": proposal.reason.value,
+    }
+
+
+def _proposal_from_payload(payload: object) -> GlobalConstAnnotationProposal:
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema") != _PROPOSAL_SCHEMA_VERSION
+    ):
+        raise ValueError("unsupported global const proposal payload")
+    return GlobalConstAnnotationProposal(
+        function_ea=int(payload["function_ea"]),
+        item_head=int(payload["item_head"]),
+        item_end=int(payload["item_end"]),
+        before=_snapshot_from_payload(payload["before"]),
+        after=_snapshot_from_payload(payload["after"]),
+        reason=GlobalConstReason(str(payload["reason"])),
+    )
+
+
+def _delete_proposal(
+    proposal_store: MutableMapping[int, typing.Any], item_head: int
 ) -> None:
     try:
-        del receipt_store[int(item_head)]
+        del proposal_store[int(item_head)]
     except KeyError:
         pass
 
 
-def _receipt_matches_current(receipt: object, current_type: str) -> bool:
-    return (
-        isinstance(receipt, dict)
-        and receipt.get("schema") == _RECEIPT_SCHEMA_VERSION
-        and receipt.get("applied_type") == current_type
-    )
+def pending_global_const_proposals(
+    *,
+    proposal_store: MutableMapping[int, typing.Any] | None = None,
+) -> tuple[GlobalConstAnnotationProposal, ...]:
+    """Return the durable, deterministic proposal queue for this IDB."""
+
+    store = Netnode(_PROPOSAL_NODE_NAME) if proposal_store is None else proposal_store
+    if hasattr(store, "iterkeys"):
+        keys = tuple(store.iterkeys())
+    else:
+        keys = tuple(store.keys())
+    proposals: list[GlobalConstAnnotationProposal] = []
+    for key in sorted(key for key in keys if isinstance(key, int)):
+        payload = store.get(key)
+        if payload is None:
+            continue
+        try:
+            proposals.append(_proposal_from_payload(payload))
+        except (KeyError, TypeError, ValueError):
+            logger.warning("discarding malformed global const proposal at 0x%X", key)
+            _delete_proposal(store, key)
+    return tuple(proposals)
+
+
+def acknowledge_global_const_proposals(
+    proposals: tuple[GlobalConstAnnotationProposal, ...],
+    *,
+    proposal_store: MutableMapping[int, typing.Any] | None = None,
+) -> None:
+    """Remove only queue entries that still exactly match applied proposals."""
+
+    store = Netnode(_PROPOSAL_NODE_NAME) if proposal_store is None else proposal_store
+    for proposal in proposals:
+        if store.get(proposal.item_head) == _proposal_payload(proposal):
+            _delete_proposal(store, proposal.item_head)
 
 
 def annotate_function_global_consts(
     function_ea: int,
     *,
-    receipt_store: MutableMapping[int, typing.Any] | None = None,
+    proposal_store: MutableMapping[int, typing.Any] | None = None,
 ) -> GlobalConstAnnotationReport:
-    """Persist safe const qualifiers and repair only D810-owned stale ones."""
+    """Queue exact const proposals without mutating IDB metadata in Hex-Rays."""
 
     store: MutableMapping[int, typing.Any]
-    store = Netnode(_RECEIPT_NODE_NAME) if receipt_store is None else receipt_store
+    store = Netnode(_PROPOSAL_NODE_NAME) if proposal_store is None else proposal_store
     outcomes: list[GlobalConstAnnotationOutcome] = []
 
     for item in referenced_global_items(int(function_ea)):
@@ -319,7 +480,7 @@ def annotate_function_global_consts(
         item_head = int(evidence.item_head)
         item_size = int(evidence.item_end - evidence.item_head)
         tif = _tinfo_for(item_head, item_size)
-        receipt = store.get(item_head)
+        queued = store.get(item_head)
         if tif is None:
             outcomes.append(
                 GlobalConstAnnotationOutcome(
@@ -331,47 +492,26 @@ def annotate_function_global_consts(
             )
             continue
 
-        before = _type_rendering(tif)
+        live_before = _snapshot_from_parts(capture_serialized_tinfo(item_head))
+        before_rendering = None if not live_before.present else _type_rendering(tif)
         if not item.decision.can_persist_const:
-            if receipt is not None and _receipt_matches_current(receipt, before):
-                updated = tif.copy()
-                updated.clr_const()
-                after = _type_rendering(updated)
-                if ida_typeinf.apply_tinfo(
-                    item_head,
-                    updated,
-                    ida_typeinf.TINFO_DEFINITE,
-                ):
-                    _delete_receipt(store, item_head)
-                    status = GlobalConstAnnotationStatus.REMOVED
-                else:
-                    status = GlobalConstAnnotationStatus.APPLY_FAILED
-                outcomes.append(
-                    GlobalConstAnnotationOutcome(
-                        item_head=item_head,
-                        item_end=evidence.item_end,
-                        status=status,
-                        reason=item.decision.reason,
-                        type_before=before,
-                        type_after=after
-                        if status is GlobalConstAnnotationStatus.REMOVED
-                        else before,
-                    )
+            if queued is not None:
+                _delete_proposal(store, item_head)
+                status = GlobalConstAnnotationStatus.CANCELLED
+            else:
+                status = (
+                    GlobalConstAnnotationStatus.PRESERVED_USER_TYPE
+                    if tif.is_const()
+                    else GlobalConstAnnotationStatus.SKIPPED_POLICY
                 )
-                continue
-            status = (
-                GlobalConstAnnotationStatus.PRESERVED_USER_TYPE
-                if tif.is_const()
-                else GlobalConstAnnotationStatus.SKIPPED_POLICY
-            )
             outcomes.append(
                 GlobalConstAnnotationOutcome(
                     item_head=item_head,
                     item_end=evidence.item_end,
                     status=status,
                     reason=item.decision.reason,
-                    type_before=before,
-                    type_after=before,
+                    type_before=before_rendering,
+                    type_after=before_rendering,
                 )
             )
             continue
@@ -381,64 +521,41 @@ def annotate_function_global_consts(
                 GlobalConstAnnotationOutcome(
                     item_head=item_head,
                     item_end=evidence.item_end,
-                    status=(
-                        GlobalConstAnnotationStatus.OWNED_CONST
-                        if receipt is not None
-                        and _receipt_matches_current(receipt, before)
-                        else GlobalConstAnnotationStatus.ALREADY_CONST
-                    ),
+                    status=GlobalConstAnnotationStatus.ALREADY_CONST,
                     reason=item.decision.reason,
-                    type_before=before,
-                    type_after=before,
-                )
-            )
-            continue
-
-        if receipt is not None:
-            outcomes.append(
-                GlobalConstAnnotationOutcome(
-                    item_head=item_head,
-                    item_end=evidence.item_end,
-                    status=GlobalConstAnnotationStatus.PRESERVED_USER_TYPE,
-                    reason=item.decision.reason,
-                    type_before=before,
-                    type_after=before,
+                    type_before=before_rendering,
+                    type_after=before_rendering,
                 )
             )
             continue
 
         updated = tif.copy()
         updated.set_const()
-        after = _type_rendering(updated)
-        if ida_typeinf.apply_tinfo(
-            item_head,
-            updated,
-            ida_typeinf.TINFO_DEFINITE,
-        ):
-            store[item_head] = {
-                "schema": _RECEIPT_SCHEMA_VERSION,
-                "item_head": item_head,
-                "original_type": before,
-                "applied_type": after,
-            }
-            status = GlobalConstAnnotationStatus.APPLIED
-            logger.debug(
-                "persistent global const applied at 0x%X for function 0x%X",
-                item_head,
-                int(function_ea),
-            )
-        else:
-            status = GlobalConstAnnotationStatus.APPLY_FAILED
+        after_rendering = _type_rendering(updated)
+        proposal = GlobalConstAnnotationProposal(
+            function_ea=int(function_ea),
+            item_head=item_head,
+            item_end=int(evidence.item_end),
+            before=live_before,
+            after=_snapshot_from_tinfo(updated),
+            reason=item.decision.reason,
+        )
+        payload = _proposal_payload(proposal)
+        status = (
+            GlobalConstAnnotationStatus.ALREADY_QUEUED
+            if queued == payload
+            else GlobalConstAnnotationStatus.QUEUED
+        )
+        store[item_head] = payload
         outcomes.append(
             GlobalConstAnnotationOutcome(
                 item_head=item_head,
                 item_end=evidence.item_end,
                 status=status,
                 reason=item.decision.reason,
-                type_before=before,
-                type_after=after
-                if status is GlobalConstAnnotationStatus.APPLIED
-                else before,
+                type_before=before_rendering,
+                type_after=after_rendering,
+                proposal=proposal,
             )
         )
 
@@ -451,19 +568,20 @@ def annotate_function_global_consts(
 def annotate_global_table_access(
     access: DynamicGlobalTableAccess,
     *,
-    receipt_store: MutableMapping[int, typing.Any] | None = None,
+    function_ea: int = 0,
+    proposal_store: MutableMapping[int, typing.Any] | None = None,
 ) -> GlobalConstAnnotationReport:
-    """Persist const for one bounded dynamic table access."""
+    """Queue const for one bounded table without writing inside Hex-Rays."""
 
     store: MutableMapping[int, typing.Any]
-    store = Netnode(_RECEIPT_NODE_NAME) if receipt_store is None else receipt_store
+    store = Netnode(_PROPOSAL_NODE_NAME) if proposal_store is None else proposal_store
     evidence = capture_hexrays_global_item_range_const_evidence(
         access.item_head,
         access.item_end,
     )
     decision = decide_global_item_const(evidence)
     item_head = int(access.item_head)
-    receipt = store.get(item_head)
+    queued = store.get(item_head)
     existing = ida_typeinf.tinfo_t()
     has_existing = bool(
         ida_nalt.get_tinfo(existing, item_head) and not existing.empty()
@@ -476,7 +594,8 @@ def annotate_global_table_access(
             access.element_count,
         )
     )
-    before = _type_rendering(tif) if has_existing else None
+    before_rendering = _type_rendering(tif) if has_existing else None
+    live_before = _snapshot_from_parts(capture_serialized_tinfo(item_head))
 
     if has_existing:
         try:
@@ -489,79 +608,37 @@ def annotate_global_table_access(
                 item_end=access.item_end,
                 status=GlobalConstAnnotationStatus.PRESERVED_USER_TYPE,
                 reason=decision.reason,
-                type_before=before,
-                type_after=before,
+                type_before=before_rendering,
+                type_after=before_rendering,
             )
             return GlobalConstAnnotationReport(0, (outcome,))
 
     if not decision.can_persist_const:
-        if (
-            has_existing
-            and before is not None
-            and receipt is not None
-            and _receipt_matches_current(receipt, before)
-        ):
-            updated = tif.copy()
-            updated.clr_const()
-            after = _type_rendering(updated)
-            removed = bool(
-                ida_typeinf.apply_tinfo(
-                    item_head,
-                    updated,
-                    ida_typeinf.TINFO_DEFINITE,
-                )
-            )
-            if removed:
-                _delete_receipt(store, item_head)
-            outcome = GlobalConstAnnotationOutcome(
-                item_head=item_head,
-                item_end=access.item_end,
-                status=(
-                    GlobalConstAnnotationStatus.REMOVED
-                    if removed
-                    else GlobalConstAnnotationStatus.APPLY_FAILED
-                ),
-                reason=decision.reason,
-                type_before=before,
-                type_after=after if removed else before,
-            )
-            return GlobalConstAnnotationReport(0, (outcome,))
-        outcome = GlobalConstAnnotationOutcome(
-            item_head=item_head,
-            item_end=access.item_end,
-            status=(
+        if queued is not None:
+            _delete_proposal(store, item_head)
+            status = GlobalConstAnnotationStatus.CANCELLED
+        else:
+            status = (
                 GlobalConstAnnotationStatus.PRESERVED_USER_TYPE
                 if has_existing and tif.is_const()
                 else GlobalConstAnnotationStatus.SKIPPED_POLICY
-            ),
-            reason=decision.reason,
-            type_before=before,
-            type_after=before,
-        )
-        return GlobalConstAnnotationReport(0, (outcome,))
-
-    current_rendering = _type_rendering(tif)
-    if tif.is_const():
-        status = (
-            GlobalConstAnnotationStatus.OWNED_CONST
-            if receipt is not None
-            and _receipt_matches_current(receipt, current_rendering)
-            else GlobalConstAnnotationStatus.ALREADY_CONST
-        )
+            )
         outcome = GlobalConstAnnotationOutcome(
             item_head=item_head,
             item_end=access.item_end,
             status=status,
             reason=decision.reason,
-            type_before=current_rendering,
-            type_after=current_rendering,
+            type_before=before_rendering,
+            type_after=before_rendering,
         )
         return GlobalConstAnnotationReport(0, (outcome,))
-    if receipt is not None:
+
+    current_rendering = _type_rendering(tif)
+    if tif.is_const():
         outcome = GlobalConstAnnotationOutcome(
             item_head=item_head,
             item_end=access.item_end,
-            status=GlobalConstAnnotationStatus.PRESERVED_USER_TYPE,
+            status=GlobalConstAnnotationStatus.ALREADY_CONST,
             reason=decision.reason,
             type_before=current_rendering,
             type_after=current_rendering,
@@ -570,45 +647,45 @@ def annotate_global_table_access(
 
     updated = tif.copy()
     updated.set_const()
-    after = _type_rendering(updated)
-    applied = bool(
-        ida_typeinf.apply_tinfo(
-            item_head,
-            updated,
-            ida_typeinf.TINFO_DEFINITE,
-        )
+    after_rendering = _type_rendering(updated)
+    proposal = GlobalConstAnnotationProposal(
+        function_ea=int(function_ea),
+        item_head=item_head,
+        item_end=int(access.item_end),
+        before=live_before,
+        after=_snapshot_from_tinfo(updated),
+        reason=decision.reason,
     )
-    if applied:
-        store[item_head] = {
-            "schema": _RECEIPT_SCHEMA_VERSION,
-            "item_head": item_head,
-            "original_type": before,
-            "applied_type": after,
-            "item_end": int(access.item_end),
-        }
+    payload = _proposal_payload(proposal)
+    status = (
+        GlobalConstAnnotationStatus.ALREADY_QUEUED
+        if queued == payload
+        else GlobalConstAnnotationStatus.QUEUED
+    )
+    store[item_head] = payload
     outcome = GlobalConstAnnotationOutcome(
         item_head=item_head,
         item_end=access.item_end,
-        status=(
-            GlobalConstAnnotationStatus.APPLIED
-            if applied
-            else GlobalConstAnnotationStatus.APPLY_FAILED
-        ),
+        status=status,
         reason=decision.reason,
-        type_before=before,
-        type_after=after if applied else before,
+        type_before=before_rendering,
+        type_after=after_rendering,
+        proposal=proposal,
     )
-    return GlobalConstAnnotationReport(0, (outcome,))
+    return GlobalConstAnnotationReport(int(function_ea), (outcome,))
 
 
 __all__ = [
+    "GlobalConstAnnotationProposal",
     "GlobalConstAnnotationOutcome",
     "GlobalConstAnnotationReport",
     "GlobalConstAnnotationStatus",
     "DynamicGlobalTableAccess",
     "ReferencedGlobalItem",
+    "acknowledge_global_const_proposals",
     "annotate_global_table_access",
     "annotate_function_global_consts",
     "discover_dynamic_global_table_access",
+    "pending_global_const_proposals",
     "referenced_global_items",
 ]

@@ -39,7 +39,7 @@ def _method(name: str) -> ast.FunctionDef:
 
 
 class _RenderedItem:
-    def __init__(self, columns: tuple[str, str]) -> None:
+    def __init__(self, columns: tuple[str, ...]) -> None:
         self.columns = columns
 
     def setData(self, *args: object) -> None:
@@ -116,11 +116,12 @@ def test_widget_renders_only_active_overview_rows_in_configured_order() -> None:
 
     assert source is not None
     assert "for row in overview.rows" in source
-    assert "row.index + 1" in source
+    assert "row.configured_order" in source
     assert "row.display_name" in source
     assert "row.selected_transform_summary" in source
     assert "row.purpose" in source
     assert "row.runs_during" in source
+    assert '("Configured", "Active pass", "Runs during")' in _source()
 
 
 def test_widget_appends_only_declared_selection_summaries() -> None:
@@ -139,6 +140,7 @@ def test_widget_appends_only_declared_selection_summaries() -> None:
                 selected_transform_summary="2 selected transforms",
                 purpose="Simplify selected transforms.",
                 runs_during="MMAT_LOCOPT",
+                configured_order=1,
             ),
             SimpleNamespace(
                 index=1,
@@ -146,6 +148,7 @@ def test_widget_appends_only_declared_selection_summaries() -> None:
                 selected_transform_summary="",
                 purpose="Fold constants.",
                 runs_during="MMAT_LOCOPT",
+                configured_order=2,
             ),
         )
     )

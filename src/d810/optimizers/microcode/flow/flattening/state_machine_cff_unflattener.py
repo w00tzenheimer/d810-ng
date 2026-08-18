@@ -758,7 +758,7 @@ def _rebind_portable_materialized_state_routes(
         )
     )
     if rejection_reasons:
-        logger.info(
+        logger.debug(
             "portable materialized state-route rebind rejections: %s",
             {
                 reason: {
@@ -1743,7 +1743,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         if not comparison.enabled:
             return
         if comparison.matches:
-            logger.info(
+            logger.debug(
                 "unflat: pipeline_v2 shadow matches family=%s passes=%s",
                 getattr(family, "name", "?"),
                 list(comparison.live_pass_ids),
@@ -1891,7 +1891,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         # except set into IDA's optblock callback, suppressing this very log
         # line and leaving AFTER == BEFORE (ticket llr-1330).
         self.mba: ida_hexrays.mba_t = blk.mba
-        logger.info(
+        logger.debug(
             "unflat optimize: maturity=%s blk=%s",
             maturity_to_string(getattr(self.mba, "maturity", 0)),
             getattr(blk, "serial", "?"),
@@ -1975,7 +1975,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             resolver_state is not None
             and resolver_state.native_preanalysis.has_pending_generated_restart
         ):
-            logger.info(
+            logger.debug(
                 "unflat: deferring mutation for staged dispatcher recovery "
                 "restart at evidence generation %d",
                 int(resolver_state.evidence_generation),
@@ -1994,7 +1994,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             ),
             canonical_composition_ready=canonical_composition_ready,
         ):
-            logger.info(
+            logger.debug(
                 "unflat: deferring structural mutation until portable "
                 "materialized identity is complete for func=0x%x at %s "
                 "(handlers=%d missing=%d)",
@@ -2013,7 +2013,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             None if flow_context is None else flow_context.new_mba_mutation_gateway()
         )
         if mutation_gateway is None:
-            logger.info(
+            logger.debug(
                 "unflat: deferring structural mutation without a "
                 "coordinator-owned gateway for func=0x%x at %s",
                 int(mba.entry_ea),
@@ -2161,7 +2161,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         tr = facts.get_analysis("transition_result")
         regions = facts.get_analysis("plan_semantic_regions")
         valrange_confirmable = facts.get_analysis("valrange_confirmable_count")
-        logger.info(
+        logger.debug(
             "unflat func=0x%x: input_facts=%s map_rows=%d transitions=%d regions=%d valrange_confirmable=%s",
             func_ea,
             fact_view is not None,
@@ -2544,7 +2544,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     int(candidate_state_var_reg),
                 )
             if state_register_candidates != frozenset({candidate_state_var_reg}):
-                logger.info(
+                logger.debug(
                     "materialized state-register selected by state-bearing "
                     "evidence: selected=%d navigation_candidates=%s",
                     int(candidate_state_var_reg),
@@ -2741,7 +2741,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     or find_unique_live_block_by_native_ea(mba, int(entry_ea))
                 ),
             )
-            logger.info(
+            logger.debug(
                 "materialized portable identity rebind: state_reg=%d "
                 "handlers=%d entry=%s routers=%d missing=%d",
                 int(materialized_state_var_reg),
@@ -2758,7 +2758,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 unmapped_materialized_handler_targets
             )
             if unmapped_materialized_handler_targets:
-                logger.info(
+                logger.debug(
                     "materialized portable identity missing targets: %s",
                     tuple(
                         "state=0x%08X@0x%X" % (int(state), int(target_ea))
@@ -2812,7 +2812,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     if anchor.instruction_ea is None
                     or int(anchor.instruction_ea) not in rebound_instruction_eas
                 )
-                logger.info(
+                logger.debug(
                     "portable state-write anchor rebind: observed=%d "
                     "rebound=%d abstained=%d examples=%s",
                     len(observed_state_write_anchors),
@@ -2907,7 +2907,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                         del materialized_handler_entry_eas[selected_owner]
                     selected_block = source.flow_graph.get_block(selected_owner)
                     if selected_block is not None:
-                        logger.info(
+                        logger.debug(
                             "instruction-backed handler owner retained: "
                             "state=0x%X target_ea=0x%X live=blk%d@0x%X "
                             "imported_clone=blk%d@0x%X",
@@ -2938,7 +2938,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 materialized_handler_entry_eas[override_serial] = int(target_ea)
                 if int(target_ea) in imported_target_eas:
                     imported_handler_serials.add(override_serial)
-                logger.info(
+                logger.debug(
                     "exact materialized handler target override: state=0x%X "
                     "target_ea=0x%X live=blk%d@0x%X",
                     int(state_constant),
@@ -2986,7 +2986,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     )
                     continue
                 materialized_handler_entry_eas[int(target_serial)] = int(target_ea)
-                logger.info(
+                logger.debug(
                     "conditional handler native-entry ownership: "
                     "target_ea=0x%X live=blk%d@0x%X",
                     int(target_ea),
@@ -3027,7 +3027,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 live_materialized_routers
             )
             if materialized_dispatcher_router_serials:
-                logger.info(
+                logger.debug(
                     "materialized dispatcher routers: %s",
                     ",".join(
                         "blk%d@0x%X"
@@ -3139,7 +3139,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 missing_handler_targets=unmapped_materialized_handler_targets,
             )
             if unmapped_materialized_handler_targets:
-                logger.info(
+                logger.debug(
                     "materialized handler map incomplete: %s",
                     ",".join(
                         "state=0x%08X@0x%X" % (state, target_ea)
@@ -3172,7 +3172,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                         resolver_state.native_key,
                         terminal_carrier_requests,
                     )
-                logger.info(
+                logger.debug(
                     "terminal return-carrier requests: %s",
                     [
                         (
@@ -3201,7 +3201,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     if target_serial is not None
                     else None
                 )
-                logger.info(
+                logger.debug(
                     "conditional bridge live target: target_ea=0x%X live=%s graph=%s",
                     int(target_ea),
                     (
@@ -3376,7 +3376,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                         resolver_state.native_key,
                         portable_dispatcher_region,
                     )
-                    logger.info(
+                    logger.debug(
                         "portable materialized dispatcher-region evidence: "
                         "blocks=%d intervals=%d changed=%s",
                         len(native_dispatcher_region_serials),
@@ -3421,7 +3421,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                         if resolver_evidence is None
                         else resolver_evidence.state_routes
                     )
-                    logger.info(
+                    logger.debug(
                         "portable materialized state-route evidence: "
                         "published=%d total=%d changed=%s",
                         len(portable_state_route_evidence),
@@ -3429,7 +3429,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                         changed,
                     )
             if _request_materialized_recovery_generated_restart(resolver_state):
-                logger.info(
+                logger.debug(
                     "portable dispatcher recovery staged GENERATED restart: "
                     "generation=%d",
                     int(resolver_state.evidence_generation),
@@ -3452,7 +3452,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                         (*materialized_state_routes, *rebound_portable_routes)
                     )
                 )
-            logger.info(
+            logger.debug(
                 "portable materialized state-route rebind: stored=%d rebound=%d "
                 "live=%d",
                 len(stored_portable_routes),
@@ -3474,7 +3474,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 unfiltered_rebound_dispatcher_region & authoritative_handler_serials
             )
             if dispatcher_handler_overlap:
-                logger.info(
+                logger.debug(
                     "portable dispatcher/handler overlap: %s",
                     [
                         {
@@ -3504,7 +3504,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                         *rebound_dispatcher_region,
                     }
                 )
-            logger.info(
+            logger.debug(
                 "portable materialized dispatcher-region rebind: stored=%s "
                 "rebound=%d live=%d",
                 stored_dispatcher_identity is not None,
@@ -3521,13 +3521,13 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             if materialized_computed_goto_profile
             else ()
         )
-        if materialized_computed_goto_profile and logger.info_on:
+        if materialized_computed_goto_profile and logger.debug_on:
             router_eas = {
                 int(router_ea)
                 for transfer in materialized_indirect_transfers
                 for router_ea in transfer.dispatcher_router_eas
             }
-            logger.info(
+            logger.debug(
                 "imported native-origin router blocks: origins=%d blocks=%s "
                 "live_boundaries=%s",
                 len(imported_instruction_origins),
@@ -3589,7 +3589,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     iter(authoritative_consumers)
                 )
         if native_carrier_load_eas:
-            logger.info(
+            logger.debug(
                 "native stack-carrier consumer ownership: resolved=%s unresolved=%s",
                 {
                     f"0x{int(load_ea):X}": "blk%d@0x%X"
@@ -3608,7 +3608,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                 ],
             )
         if materialized_computed_goto_profile:
-            logger.info(
+            logger.debug(
                 "imported boundary-port evidence: direct=%d conditional=%d "
                 "predicates=%s",
                 len(imported_direct_boundary_evidence),
@@ -3802,7 +3802,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             materialized_evidence_ready
             and not self._uses_tigress_indirect_materialization(rule_config)
         ):
-            logger.info(
+            logger.debug(
                 "unflat: complete materialized identity resumes canonical fragment composition "
                 "for func=0x%x at %s",
                 int(mba.entry_ea),
@@ -3813,7 +3813,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             canonical_composition_ready
             and not self._uses_tigress_indirect_materialization(rule_config)
         ):
-            logger.info(
+            logger.debug(
                 "unflat: partial canonical evidence resumes fragment composition "
                 "for func=0x%x at %s",
                 int(mba.entry_ea),
@@ -3940,7 +3940,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
         except Exception:  # noqa: BLE001 — the diff is diagnostics-only
             logger.debug("unflat: LiSA dispatcher discovery diff failed", exc_info=True)
             return
-        logger.info(
+        logger.debug(
             "unflat discover(LiSA): exact_handlers=%d range_handlers=%d head=%s | "
             "condition-chain handlers=%d state_var=0x%x initial=%s",
             len(view.handler_entry_by_state),
@@ -4016,7 +4016,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             if my_snap is not None:
                 observe_dag(my_snap, _diag_dag_nodes(my_dag), _diag_dag_edges(my_dag))
                 observe_dag_local_facts(my_snap, my_dag)
-                logger.info(
+                logger.debug(
                     "unflat read_dag(LiSA): observed %d nodes / %d edges to diag snapshot "
                     "'unflat_read_dag_lisa' (SQL-diff vs 'unflat_recover_dispatcher')",
                     len(my_dag.nodes),
@@ -4331,7 +4331,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
             condition_chain_cond_edges = sum(
                 len(v) for v in (condition_chain.conditional_transitions or {}).values()
             )
-            logger.info(
+            logger.debug(
                 "unflat #2 fixpoint-probe: fixpoint cond=%d (anchor-only=%d, concrete-folds=%d) "
                 "uncond=%d total=%d handlers=%d writes=%d | condition_chain_walk cond_edges=%d | oracle cond=66",
                 cond,
@@ -4386,7 +4386,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     out_states=fp_result.out_states,
                 )
                 d = diff_back_edge_transitions(prod, shadow)
-                logger.info(
+                logger.debug(
                     "unflat C1 shadow-diff: prod=%d fixpoint=%d matched=%d "
                     "case2_opaque=%d mismatch=%d",
                     d["prod_edges"],
@@ -4396,7 +4396,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     len(d["mismatch"]),
                 )
                 if d["mismatch"]:
-                    logger.info("unflat C1 mismatch rows: %s", d["mismatch"][:20])
+                    logger.debug("unflat C1 mismatch rows: %s", d["mismatch"][:20])
 
                 # B1 (ticket llr-kz7n): the MULTI-CELL global const-fixpoint shadow —
                 # reuses _transfer_snapshot_constant_block (stk+reg) so opaque
@@ -4410,7 +4410,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     dispatcher_entry_serial=int(dispatcher_entry),
                 )
                 dmc = diff_back_edge_transitions(prod, shadow_mc)
-                logger.info(
+                logger.debug(
                     "unflat C1 shadow-diff[B1 multicell]: prod=%d fixpoint=%d matched=%d "
                     "case2_opaque=%d mismatch=%d",
                     dmc["prod_edges"],
@@ -4420,7 +4420,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     len(dmc["mismatch"]),
                 )
                 if dmc["mismatch"]:
-                    logger.info(
+                    logger.debug(
                         "unflat C1 mismatch rows[B1 multicell]: %s",
                         dmc["mismatch"][:20],
                     )
@@ -4437,7 +4437,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     dispatcher_entry_serial=int(dispatcher_entry),
                 )
                 dpp = diff_back_edge_transitions_partitioned(prod, shadow_pp)
-                logger.info(
+                logger.debug(
                     "unflat C1 shadow-diff[B2 partitioned]: prod=%d fixpoint=%d matched=%d "
                     "case2_opaque=%d mismatch=%d",
                     dpp["prod_edges"],
@@ -4447,7 +4447,7 @@ class StateMachineCffUnflattener(ComposedUnflatteningRule):
                     len(dpp["mismatch"]),
                 )
                 if dpp["mismatch"]:
-                    logger.info(
+                    logger.debug(
                         "unflat C1 mismatch rows[B2 partitioned]: %s",
                         dpp["mismatch"][:20],
                     )

@@ -1,7 +1,3 @@
-from __future__ import annotations
-
-from d810.core import typing
-
 """fold_readonlydata.py
 
 A peephole rule that replaces loads from a *provably read-only* table (typically
@@ -16,14 +12,13 @@ It handles two microcode patterns Hex-Rays emits:
 
 By eliminating the table look-up, we unlock many more constant-folding
 opportunities in later optimisation stages.
-"""
 
-""" TODO:
+TODO:
 
 Add support for indirect load through a temporary register
    mov  &($sym).8, rax.8
    xdu  [ds:(rax.8+#off)].1 ...   ***  ldc  #value
-   
+
 def _ea_from_indirect_load(
     self, blk: ida_hexrays.mblock_t | None, ins: ida_hexrays.minsn_t
 ) -> Optional[int]:
@@ -70,11 +65,10 @@ error:
 this becomes: `(__ROL8__(MEMORY[0xB10000007FFE03FD]...)` which is obviously wrong.
 """
 
-
-from d810.core.typing import Optional
+from __future__ import annotations
 
 import ida_hexrays
-import idaapi
+
 from d810.analyses.value_flow.global_constness import (
     GlobalConstDecision,
     GlobalConstPolicy,
@@ -91,7 +85,22 @@ from d810.backends.hexrays.global_const_annotation import (
     annotate_global_table_access,
     discover_dynamic_global_table_access,
 )
+from d810.core import getLogger
+from d810.core import typing
+from d810.core.typing import Optional
+from d810.errors import AstEvaluationException
 from d810.evaluator.evaluators import evaluate_concrete
+from d810.hexrays.ir.mop_utils import mop_to_ast
+from d810.hexrays.ir.number_operand import safe_make_number
+from d810.hexrays.utils.hexrays_helpers import extract_literal_from_mop
+from d810.optimizers.microcode.constant_materialization import (
+    make_ldc_replacement,
+    replace_operand_with_immediate,
+)
+from d810.optimizers.microcode.handler import ConfigParam
+from d810.optimizers.microcode.instructions.peephole.handler import (
+    PeepholeSimplificationRule,
+)
 
 # Opcodes where the right operand (shift amount) must have size == 1.
 # Folding a constant into ins.r with a larger size triggers INTERR 50835.
@@ -103,21 +112,6 @@ _SHIFT_OPCODES: frozenset[int] = frozenset(
         ida_hexrays.m_sar,
     }
 )
-
-import d810.core.typing as typing
-from d810.core import getLogger
-from d810.errors import AstEvaluationException
-from d810.hexrays.ir.mop_utils import mop_to_ast
-from d810.hexrays.utils.hexrays_helpers import extract_literal_from_mop
-from d810.optimizers.microcode.constant_materialization import (
-    make_ldc_replacement,
-    replace_operand_with_immediate,
-)
-from d810.optimizers.microcode.handler import ConfigParam
-from d810.optimizers.microcode.instructions.peephole.handler import (
-    PeepholeSimplificationRule,
-)
-from d810.hexrays.ir.number_operand import safe_make_number
 
 peephole_logger = getLogger(__name__)
 
@@ -287,7 +281,7 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
         blk: ida_hexrays.mblock_t | None,
         ins: ida_hexrays.minsn_t,
     ) -> None:
-        """Persist safe const metadata without affecting rewrite eligibility."""
+        """Queue safe const metadata for the next preparation boundary."""
 
         if not self._persist_global_const_annotations:
             return
@@ -324,8 +318,8 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
                         )
                 if report is not None and report.changed_count:
                     peephole_logger.info(
-                        "constant-simplification updated %d referenced global "
-                        "const annotation(s) for function 0x%X",
+                        "constant-simplification queued %d referenced global "
+                        "const proposal(s) for function 0x%X",
                         report.changed_count,
                         function_ea,
                     )
@@ -352,7 +346,10 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
             if access_key in self._dynamic_annotation_keys:
                 return
             self._dynamic_annotation_keys.add(access_key)
-            report = annotate_global_table_access(access)
+            report = annotate_global_table_access(
+                access,
+                function_ea=0 if mba is None else int(mba.entry_ea),
+            )
             outcome = report.outcomes[0]
             peephole_logger.debug(
                 "constant-simplification bounded table annotation "
@@ -368,7 +365,7 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
             )
             if report.changed_count:
                 peephole_logger.info(
-                    "constant-simplification persisted bounded const table "
+                    "constant-simplification queued bounded const table "
                     "0x%X..0x%X (%d x %d-byte elements)",
                     access.item_head,
                     access.item_end,
@@ -376,10 +373,10 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
                     access.element_size,
                 )
         except Exception:
-            # Persistent metadata is an optional enrichment. A backend/type
+            # Pending metadata is an optional enrichment. A backend/type
             # failure must never abort or change the peephole rewrite itself.
             peephole_logger.debug(
-                "constant-simplification could not persist global const metadata",
+                "constant-simplification could not queue global const metadata",
                 exc_info=True,
             )
 
@@ -412,7 +409,11 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
         if ins is None:
             ins = getattr(self, "_ctx_ins", None)
         reaches: bool | None = None
-        if self._rva_guard and (blk is None or ins is None) and peephole_logger.debug_on:
+        if (
+            self._rva_guard
+            and (blk is None or ins is None)
+            and peephole_logger.debug_on
+        ):
             peephole_logger.debug(
                 "constant-simplification fold decision site=%s addr=0x%X: no "
                 "instruction context, def-use test skipped",

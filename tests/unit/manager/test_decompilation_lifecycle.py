@@ -1147,9 +1147,12 @@ def test_pending_generated_restart_retains_owner_until_flowchart_consumes_it() -
     assert coordinator.current_session(0x401000) is session
     assert coordinator.has_pending_generated_restart(0x401000)
 
-    assert session.native_preanalysis.consume_generated_restart(
-        consumer=GeneratedRestartConsumer.FLOWCHART,
-    ) is not None
+    assert (
+        session.native_preanalysis.consume_generated_restart(
+            consumer=GeneratedRestartConsumer.FLOWCHART,
+        )
+        is not None
+    )
     assert coordinator.finish_hexrays_session() is None
     assert coordinator.current_session(0x401000) is None
 
@@ -1227,14 +1230,14 @@ def test_file_verified_identity_delegates_external_oracle_calls() -> None:
     assert calls == ["scope", "anchors"]
 
 
-def test_missing_identity_logs_warning_and_abstains_before_session_creation(
+def test_missing_identity_logs_debug_and_abstains_before_session_creation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    warnings: list[tuple[object, ...]] = []
+    diagnostics: list[tuple[object, ...]] = []
     monkeypatch.setattr(
         decompilation_lifecycle,
         "logger",
-        SimpleNamespace(warning=lambda *args: warnings.append(args)),
+        SimpleNamespace(debug=lambda *args: diagnostics.append(args)),
     )
     coordinator = DecompilationLifecycleCoordinator(
         preanalysis_runtime=None,
@@ -1257,7 +1260,7 @@ def test_missing_identity_logs_warning_and_abstains_before_session_creation(
             database_identity="sample.i64",
         )
 
-    assert warnings[0][0].startswith("D810 native mutation abstained")
+    assert diagnostics[0][0].startswith("D810 native mutation abstained")
     assert coordinator.current_session(0x401000) is None
 
 

@@ -1058,6 +1058,35 @@ class D810State(metaclass=SingletonMeta):
             provider_phase=provider_phase,
         )
 
+    def execute_workbench_preview_preparation(
+        self,
+        request: WorkbenchCommandRequest,
+    ) -> WorkbenchCommandResult:
+        return self.manager.workbench_service.execute_preview_preparation(request)
+
+    def execute_workbench_prepare_only(
+        self,
+        request: WorkbenchCommandRequest,
+    ) -> WorkbenchCommandResult:
+        return self.manager.workbench_service.execute_prepare_only(request)
+
+    def execute_workbench_prepare_and_decompile(
+        self,
+        request: WorkbenchCommandRequest,
+        *,
+        lifecycle: typing.Callable[[], object],
+    ) -> WorkbenchCommandResult:
+        return self.manager.workbench_service.execute_prepare_and_decompile(
+            request,
+            lifecycle=lifecycle,
+        )
+
+    def execute_workbench_restore_preparation(
+        self,
+        request: WorkbenchCommandRequest,
+    ) -> WorkbenchCommandResult:
+        return self.manager.workbench_service.execute_restore_preparation(request)
+
     def clone_current_runtime_project(
         self,
         destination: pathlib.Path,
@@ -1093,6 +1122,8 @@ class D810State(metaclass=SingletonMeta):
             [rule for rule in self.current_blk_rules],
             **runtime_project.additional_configuration,
         )
+        project_snapshot = self.get_project_runtime_snapshot()
+        self.manager.configure_preparation_scripts(project_snapshot.preparation_scripts)
         self.manager.start()
         logger.info("D-810 ready to deobfuscate...")
         self.d810_config.set("last_project_index", self.current_project_index)

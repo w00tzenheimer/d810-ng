@@ -43,6 +43,10 @@ from d810.transforms.reconstruction_fragment_builder import (
     DAG_AUDIT_METADATA_KEY,
     finalize_reconstruction_fragment,
 )
+from d810.transforms.fragment_arbitration import (
+    DAG_AUDIT_METADATA_KEY as _DAG_AUDIT_METADATA_KEY,
+    apply_dag_conformance_gate as _apply_engine_dag_conformance_gate,
+)
 
 
 def _stub_authority(
@@ -528,12 +532,12 @@ class TestPlanRunEndToEnd:
         strategy = _DropOnlyStrategy("srw", frag)
 
         planner = UnflatteningPlanner()
-        with caplog.at_level("INFO"):
+        with caplog.at_level("DEBUG", logger="d810.passes.planner"):
             _, provenance = planner.plan(snapshot, [strategy])
 
         # Provenance carries the audit records.
         assert provenance.dag_audit_records == records
-        # Summary went out at INFO via the planner's logger.
+        # Summary remains available at DEBUG via the planner's logger.
         joined = "\n".join(rec.message for rec in caplog.records)
         assert "PLANNER_DAG_AUDIT" in joined
         assert "srw: 1 disagreement" in joined
@@ -565,12 +569,6 @@ class TestPlanRunEndToEnd:
 # ----------------------------------------------------------------------------
 # uee-2hng — engine-level DAG conformance gate covers ALL strategies
 # ----------------------------------------------------------------------------
-
-
-from d810.transforms.fragment_arbitration import (
-    DAG_AUDIT_METADATA_KEY as _DAG_AUDIT_METADATA_KEY,
-    apply_dag_conformance_gate as _apply_engine_dag_conformance_gate,
-)
 
 
 class TestEngineDagConformanceGate:

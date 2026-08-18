@@ -57,6 +57,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+from d810.backends.ida.type_serialization import capture_serialized_tinfo
 from d810.core.typing import Protocol, runtime_checkable
 from d810.transforms.native_patch_lowering import NativeEdgeCaptureEvidence
 from d810.transforms.native_patch_plan import (
@@ -307,8 +308,6 @@ class IdaLiveDatabaseReader:
 
     def read_function_ownership(self, ea: int) -> NativeFunctionOwnership | None:
         import ida_funcs
-        import ida_nalt
-        import ida_typeinf
         import ida_xref
 
         func = ida_funcs.get_func(ea)
@@ -351,22 +350,12 @@ class IdaLiveDatabaseReader:
                     ok = xref.next_from()
 
         type_info = None
-        tif = ida_typeinf.tinfo_t()
-        if ida_nalt.get_tinfo(tif, int(func.start_ea)):
-            serialized = tif.serialize()
-            if not isinstance(serialized, tuple) or len(serialized) != 3:
-                return None
-            type_bytes, field_bytes, field_comment_bytes = serialized
-            if not isinstance(type_bytes, bytes) or not type_bytes:
-                return None
+        serialized = capture_serialized_tinfo(int(func.start_ea))
+        if serialized is not None:
             type_info = NativeFunctionTypeInfo(
-                type_bytes=type_bytes,
-                field_bytes=(bytes(field_bytes) if field_bytes is not None else None),
-                field_comment_bytes=(
-                    bytes(field_comment_bytes)
-                    if field_comment_bytes is not None
-                    else None
-                ),
+                type_bytes=serialized.type_bytes,
+                field_bytes=serialized.field_bytes,
+                field_comment_bytes=serialized.field_comment_bytes,
             )
 
         return NativeFunctionOwnership(

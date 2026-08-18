@@ -75,6 +75,12 @@ class TestPrepare:
         assert record.plan_hash == p.plan_hash
         assert record.authorizing_attempt_id == p.authorizing_attempt_id
         assert record.database_identity == p.database_identity.idb_uuid
+        assert store.active_operation_ranges(
+            database_identity=p.database_identity.idb_uuid
+        ) == tuple(
+            (operation.range.start_ea, operation.range.end_ea)
+            for operation in p.operations
+        )
 
     def test_prepare_without_metadata_actions(self, store) -> None:
         record = store.prepare(fixtures.plan())

@@ -206,7 +206,7 @@ class DecompilationAnalysisRuntime:
 
         summary = self._outcome_log.summary(func_ea)
         if summary.get("consumers"):
-            logger.info(
+            logger.debug(
                 "decompilation_finished: func=0x%x outcome_summary=%s",
                 func_ea,
                 summary,
@@ -233,7 +233,7 @@ class DecompilationAnalysisRuntime:
         if dedup_key in seen:
             return
         seen.add(dedup_key)
-        logger.info(
+        logger.debug(
             "outcome: func=0x%x consumer=%s artifacts=%s summary=%s verdict=%s",
             report.func_ea,
             report.consumer_name,
@@ -355,7 +355,7 @@ class DecompilationAnalysisRuntime:
                 suppress_stages=list(h.suppress_stages),
             )
         )
-        logger.info(
+        logger.debug(
             "analyze: derived fresh hints and stored session summary for "
             "func=0x%x (type=%s, confidence=%.2f)",
             func_ea,
@@ -404,7 +404,7 @@ class DecompilationAnalysisRuntime:
         apply_result = None
         if hints is not None:
             apply_result = execution_scope.apply_hints(hints)
-            logger.info(
+            logger.debug(
                 "apply_to_execution_scope: func=0x%x applied -> "
                 "inferences=%s suppressed=%s gen=%d->%d",
                 func_ea,

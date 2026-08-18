@@ -746,6 +746,10 @@ class NativePatchJournalStore(Protocol):
         be reconciled automatically at startup."""
         ...
 
+    def active_operation_ranges(
+        self, *, database_identity: str
+    ) -> tuple[tuple[int, int], ...]: ...
+
     def record_byte_event(
         self,
         transaction_id: NativePatchTransactionId,

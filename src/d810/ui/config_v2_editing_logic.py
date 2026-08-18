@@ -40,6 +40,17 @@ _PASS_PURPOSES = {
     "mba-state-preconditioner": "Prepare state facts for MBA-backed recovery.",
 }
 
+_CONFIGURED_MATURITY_TO_MMAT = {
+    "LIFTED": "MMAT_GENERATED",
+    "CANONICAL": "MMAT_PREOPTIMIZED",
+    "LOCAL_OPTIMIZED": "MMAT_LOCOPT",
+    "CALL_MODELED": "MMAT_CALLS",
+    "GLOBAL_ANALYZED": "MMAT_GLBOPT1",
+    "GLOBAL_OPTIMIZED": "MMAT_GLBOPT2",
+    "STRUCTURED": "MMAT_GLBOPT3",
+    "VARIABLE_RECOVERED": "MMAT_LVARS",
+}
+
 
 def project_description_preview(
     description: str,
@@ -109,6 +120,8 @@ class ConfigV2PipelineRow:
     runs_during: str
     selected_transform_summary: str
     option_summary: str
+    configured_order: int = 0
+    schedule_summary: str = "Configured position is not global execution order."
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -429,7 +442,9 @@ def _rule_summary(entry: PassCatalogEntry, selected_ids: set[str] | None) -> str
     if entry.editor_spec.kind is not PassEditorKind.RULE_CATALOG:
         return "No individually selectable rules"
     selected_count = len(
-        {item.rule_id for item in entry.editor_spec.rules}.intersection(selected_ids or set())
+        {item.rule_id for item in entry.editor_spec.rules}.intersection(
+            selected_ids or set()
+        )
     )
     if selected_count == 1:
         return "1 selected rule"
@@ -484,7 +499,9 @@ def project_transform_catalog(
     expanded or otherwise mutated while the catalog is projected.
     """
     if spec.kind is not PassEditorKind.TRANSFORM_CATALOG:
-        raise ValueError("transform catalog projection requires a transform_catalog spec")
+        raise ValueError(
+            "transform catalog projection requires a transform_catalog spec"
+        )
     normalized_query = str(query).strip().casefold()
     all_transform_ids = tuple(item.transform_id for item in spec.transforms)
     known_selected_ids = frozenset(selected_ids).intersection(all_transform_ids)
@@ -634,7 +651,9 @@ def apply_transform_catalog_selection(
     else:
         updated.difference_update(targets)
     return tuple(
-        transform_id for transform_id in view.all_transform_ids if transform_id in updated
+        transform_id
+        for transform_id in view.all_transform_ids
+        if transform_id in updated
     )
 
 
@@ -780,7 +799,9 @@ def project_rule_catalog(
     return ConfigV2RuleCatalogView(
         pass_editor_spec=spec,
         query=normalized_query,
-        selected_ids=tuple(rule_id for rule_id in all_rule_ids if rule_id in known_selected_ids),
+        selected_ids=tuple(
+            rule_id for rule_id in all_rule_ids if rule_id in known_selected_ids
+        ),
         all_rule_ids=all_rule_ids,
         visible_rule_ids=tuple(visible_rule_ids),
         families=tuple(families),
@@ -912,9 +933,7 @@ def _normalize_typed_field_value(field: FieldEditorSpec, value: object) -> objec
     if field.control is FieldControlKind.TEXT:
         return str(value)
     if field.control is FieldControlKind.STRING_LIST:
-        return [
-            item.strip() for item in str(value).split(",") if item.strip()
-        ]
+        return [item.strip() for item in str(value).split(",") if item.strip()]
     raise ValueError(f"{field.label} has an unsupported editor control")
 
 
@@ -1066,15 +1085,33 @@ def project_config_v2_editor_view(
             else None
         )
         purpose = _PASS_PURPOSES.get(pass_id, "Registered config-v2 pass.")
+        configured_maturities = options.get("maturities")
+        if isinstance(configured_maturities, list) and configured_maturities:
+            runs_during = ", ".join(
+                (
+                    value
+                    if str(value).startswith("MMAT_")
+                    else _CONFIGURED_MATURITY_TO_MMAT.get(
+                        str(value),
+                        f"rule-defined ({value})",
+                    )
+                )
+                for value in configured_maturities
+            )
+        elif catalog_entry.maturity == "any":
+            runs_during = "rule-defined"
+        else:
+            runs_during = catalog_entry.maturity
         overview_rows.append(
             ConfigV2PipelineRow(
                 index=index,
                 pass_id=pass_id,
                 display_name=catalog_entry.display_name,
                 purpose=purpose,
-                runs_during=catalog_entry.maturity,
+                runs_during=runs_during,
                 selected_transform_summary=_selection_summary(catalog_entry, options),
                 option_summary=_option_summary(options),
+                configured_order=index + 1,
             )
         )
         inspectors.append(
@@ -1083,7 +1120,7 @@ def project_config_v2_editor_view(
                 pass_id=pass_id,
                 display_name=catalog_entry.display_name,
                 purpose=purpose,
-                runs_during=catalog_entry.maturity,
+                runs_during=runs_during,
                 transform_catalog=transform_catalog,
                 rule_catalog=rule_catalog,
                 layout=project_pass_inspector_layout(

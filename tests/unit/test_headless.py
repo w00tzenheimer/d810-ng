@@ -165,6 +165,29 @@ def test_decompile_forwards_hexrays_failure_output_through_controller(monkeypatc
     ]
 
 
+def test_prepare_and_restore_idb_preparation_route_through_manager() -> None:
+    from d810 import headless
+
+    calls = []
+    manager = SimpleNamespace(
+        prepare_idb_for_hexrays=lambda function_ea, mode: (
+            calls.append(("prepare", function_ea, mode.value)) or "prepared"
+        ),
+        restore_idb_preparation=lambda transaction_id: (
+            calls.append(("restore", transaction_id.value)) or "restored"
+        ),
+    )
+    headless._state = SimpleNamespace(manager=manager)
+    headless._configured = True
+
+    assert headless.prepare_idb_for_hexrays(0x401000) == "prepared"
+    assert headless.restore_idb_preparation("transaction-1") == "restored"
+    assert calls == [
+        ("prepare", 0x401000, "prepare_only"),
+        ("restore", "transaction-1"),
+    ]
+
+
 def test_stop_without_state_is_noop():
     from d810 import headless
 

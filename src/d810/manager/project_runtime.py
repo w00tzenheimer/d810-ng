@@ -6,6 +6,7 @@ import dataclasses
 import enum
 import pathlib
 
+from d810.capabilities.idb_preparation import PreparationScriptDescriptor
 from d810.core.config import ProjectConfiguration
 from d810.core.config_v2_defaults import ConfigV2DefaultSelection
 from d810.core.project_config_persistence import (
@@ -13,6 +14,7 @@ from d810.core.project_config_persistence import (
     clone_project_configuration,
 )
 from d810.passes.pipeline_v2_hook_bridge import PipelineV2HookActivation
+from d810.manager.preparation_scripts import PreparationScriptRegistry
 
 
 class ProjectConfigMode(str, enum.Enum):
@@ -41,6 +43,7 @@ class ProjectRuntimeSnapshot:
     routed: bool
     hook_mode: str | None
     effective_pass_ids: tuple[str, ...]
+    preparation_scripts: tuple[PreparationScriptDescriptor, ...] = ()
 
 
 def _identity(project: ProjectConfiguration) -> ProjectIdentitySnapshot:
@@ -68,6 +71,11 @@ def build_project_runtime_snapshot(
         mode = ProjectConfigMode.LEGACY
         effective_pass_ids = ()
 
+    preparation_registry = PreparationScriptRegistry.from_project(
+        runtime_project.path,
+        runtime_project.pre_hexrays_payload,
+    )
+
     return ProjectRuntimeSnapshot(
         source=_identity(source_project),
         runtime=_identity(runtime_project),
@@ -75,6 +83,7 @@ def build_project_runtime_snapshot(
         routed=bool(default_selection and default_selection.routed),
         hook_mode=hook_mode,
         effective_pass_ids=tuple(effective_pass_ids),
+        preparation_scripts=preparation_registry.descriptors,
     )
 
 

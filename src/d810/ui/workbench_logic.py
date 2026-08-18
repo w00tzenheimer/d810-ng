@@ -21,9 +21,11 @@ from d810.manager.workbench_models import (
 class WorkbenchSection(str, enum.Enum):
     CONTEXT = "context"
     ATTACK = "attack"
+    PREPARATION = "preparation"
     PIPELINE = "pipeline"
     SUPPORTING = "supporting"
     EVIDENCE = "evidence"
+    HISTORY = "history"
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -331,6 +333,138 @@ def project_workbench_rows(
         ),
     ]
 
+    for ordinal, script in enumerate(snapshot.preparation.scripts):
+        source_status = (
+            "source attested"
+            if script.source_hash_matches
+            else "source changed or unavailable"
+        )
+        portability = "portable" if script.portable else "absolute path"
+        rows.append(
+            _row(
+                key=f"preparation:script:{script.script_id}",
+                section=WorkbenchSection.PREPARATION,
+                ordinal=ordinal,
+                label=script.display_name,
+                summary=f"{source_status}; {portability}",
+                detail=(
+                    f"id: {script.script_id}\n"
+                    f"path: {script.path}\n"
+                    f"enabled: {script.enabled}\n"
+                    f"portable: {script.portable}\n"
+                    f"configured sha256: {script.configured_source_sha256}\n"
+                    f"current sha256: {script.current_source_sha256 or 'unavailable'}\n"
+                    "Raw scripts may modify unmanaged metadata outside the exact "
+                    "byte/type restore contract."
+                ),
+                status=(
+                    OutcomeStatus.READY
+                    if script.source_hash_matches and script.enabled
+                    else (
+                        OutcomeStatus.BLOCKED
+                        if script.enabled
+                        else OutcomeStatus.NOT_ELIGIBLE
+                    )
+                ),
+            )
+        )
+
+    for ordinal, transaction in enumerate(snapshot.preparation.transactions):
+        range_count = len(transaction.byte_ranges)
+        summary = (
+            f"{transaction.bytes_changed} bytes in {range_count} ranges; "
+            f"{transaction.type_annotations} type annotations"
+        )
+        ranges = (
+            ", ".join(
+                f"0x{start:X}..0x{end:X}" for start, end in transaction.byte_ranges
+            )
+            or "none"
+        )
+        affected = (
+            ", ".join(
+                f"0x{function_ea:X}"
+                for function_ea in transaction.affected_function_eas
+            )
+            or "none"
+        )
+        rows.append(
+            _row(
+                key=f"preparation:tx:{transaction.transaction_id}",
+                section=WorkbenchSection.HISTORY,
+                ordinal=ordinal,
+                label=f"{transaction.script_id} [{transaction.state}]",
+                summary=summary,
+                detail=(
+                    f"transaction: {transaction.transaction_id}\n"
+                    f"database: {transaction.database_identity}\n"
+                    f"anchor: 0x{transaction.anchor_function_ea:X}\n"
+                    f"script: {transaction.script_path}\n"
+                    f"source sha256: {transaction.script_source_sha256}\n"
+                    f"ranges: {ranges}\n"
+                    f"affected functions: {affected}\n"
+                    f"live after-image: {transaction.live_after_image}\n"
+                    f"restore: "
+                    + (
+                        "available"
+                        if transaction.restore_allowed
+                        else transaction.restore_blocker
+                    )
+                ),
+                status=(
+                    OutcomeStatus.BLOCKED
+                    if transaction.recovery_required
+                    else (
+                        OutcomeStatus.CHANGED
+                        if transaction.state == "idb_prepared"
+                        else (
+                            OutcomeStatus.UNCHANGED
+                            if transaction.state == "restored"
+                            else OutcomeStatus.FAILED
+                        )
+                    )
+                ),
+            )
+        )
+
+    for schedule_row in snapshot.effective_schedule.rows:
+        if not schedule_row.stages:
+            continue
+        stage_labels = tuple(
+            f"{stage.pass_id} (configured {stage.configured_index + 1})"
+            for stage in schedule_row.stages
+        )
+        schedule_details: list[str] = []
+        for stage in schedule_row.stages:
+            callback_order = (
+                f"runtime callback order {stage.runtime_order}"
+                if stage.runtime_order >= 0
+                else "runtime callback order unavailable"
+            )
+            schedule_details.append(
+                f"{stage.pipeline} {stage.pass_id}/{stage.stage_id}: "
+                f"{callback_order}; maturity authority {stage.maturity_source}; "
+                f"requires {', '.join(stage.requirements) or 'none'}"
+            )
+        schedule_detail = "\n".join(schedule_details)
+        rows.append(
+            _row(
+                key=f"pipeline:maturity:{schedule_row.provider_maturity}",
+                section=WorkbenchSection.PIPELINE,
+                ordinal=schedule_row.ordinal,
+                label=(
+                    f"{schedule_row.provider_maturity} / {schedule_row.ir_maturity}"
+                ),
+                summary="; ".join(stage_labels),
+                detail=(
+                    "Configured position is descriptive, not global execution order.\n"
+                    + schedule_detail
+                ),
+                status=OutcomeStatus.READY,
+            )
+        )
+
+    configured_ordinal_offset = len(snapshot.effective_schedule.rows)
     for stage in snapshot.pipeline:
         diagnostic_text = "\n".join(item.message for item in stage.diagnostics)
         detail = (
@@ -343,7 +477,7 @@ def project_workbench_rows(
             _row(
                 key=f"pipeline:{stage.ordinal}:{stage.pass_id}",
                 section=WorkbenchSection.PIPELINE,
-                ordinal=stage.ordinal,
+                ordinal=configured_ordinal_offset + stage.ordinal,
                 label=f"{stage.ordinal + 1}. {stage.pass_id}",
                 summary=stage.summary,
                 detail=detail,
@@ -626,15 +760,108 @@ def action_states(
     )
 
 
+def preparation_action_states(
+    snapshot: DeobfuscationWorkbenchSnapshot,
+    *,
+    selected_transaction_id: str | None = None,
+) -> tuple[WorkbenchActionState, ...]:
+    current = snapshot.freshness is SnapshotFreshness.CURRENT
+    available = current and snapshot.preparation.database_identity is not None
+    drifted = tuple(
+        script.display_name
+        for script in snapshot.preparation.scripts
+        if script.enabled and not script.source_hash_matches
+    )
+    if not current:
+        preparation_reason = "Refresh the stale Workbench snapshot."
+    elif snapshot.preparation.database_identity is None:
+        preparation_reason = "Start D810 to initialize IDB preparation."
+    elif drifted:
+        preparation_reason = "Script source changed after preview: " + ", ".join(
+            drifted
+        )
+    else:
+        preparation_reason = ""
+    execute_enabled = available and not drifted
+
+    selected = next(
+        (
+            transaction
+            for transaction in snapshot.preparation.transactions
+            if transaction.transaction_id == selected_transaction_id
+        ),
+        None,
+    )
+    if selected is None:
+        restore_enabled = False
+        restore_reason = "Select an applied preparation transaction."
+    elif selected.database_identity != snapshot.preparation.database_identity:
+        restore_enabled = False
+        restore_reason = "The selected transaction belongs to another database."
+    elif selected.state in {
+        "prepared",
+        "script_running",
+        "capture_pending",
+        "captured",
+        "analysis_pending",
+        "restoring",
+        "rolling_back",
+    }:
+        restore_enabled = False
+        restore_reason = f"The transaction is still running ({selected.state})."
+    elif not selected.live_after_image:
+        restore_enabled = False
+        restore_reason = selected.restore_blocker or "Exact after-image is absent."
+    else:
+        restore_enabled = selected.restore_allowed
+        restore_reason = "" if restore_enabled else selected.restore_blocker
+
+    return (
+        WorkbenchActionState(
+            "preview_preparation",
+            "Preview",
+            available,
+            "" if available else preparation_reason,
+        ),
+        WorkbenchActionState(
+            "prepare_only",
+            "Prepare only",
+            execute_enabled,
+            preparation_reason,
+        ),
+        WorkbenchActionState(
+            "prepare_and_decompile",
+            "Prepare & Decompile",
+            execute_enabled,
+            preparation_reason,
+        ),
+        WorkbenchActionState(
+            "restore_preparation",
+            "Restore",
+            restore_enabled,
+            restore_reason,
+        ),
+    )
+
+
 def command_request(
     snapshot: DeobfuscationWorkbenchSnapshot,
     command: str,
+    *,
+    transaction_id: str | None = None,
 ) -> WorkbenchCommandRequest:
     return WorkbenchCommandRequest(
         command=str(command),
         function_ea=snapshot.function.ea,
         expected_generation=snapshot.generation,
         function_fingerprint=snapshot.function.fingerprint,
+        database_identity=snapshot.preparation.database_identity,
+        script_source_hashes=tuple(
+            (script.script_id, script.current_source_sha256 or "")
+            for script in snapshot.preparation.scripts
+            if script.enabled
+        ),
+        transaction_id=transaction_id,
     )
 
 
@@ -716,6 +943,7 @@ __all__ = [
     "export_evidence_json",
     "filter_workbench_rows",
     "project_workbench_rows",
+    "preparation_action_states",
     "should_accept_command_result",
     "stale_snapshot",
     "status_presentation",

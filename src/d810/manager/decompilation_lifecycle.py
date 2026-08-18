@@ -289,7 +289,7 @@ class DecompilationLifecycleCoordinator:
                 "native preanalysis identity provider returned no resolution"
             )
         if native_key is None:
-            logger.warning(
+            logger.debug(
                 "D810 native mutation abstained for func=0x%x: input identity %s",
                 int(function_ea),
                 resolution.reason,
@@ -336,9 +336,7 @@ class DecompilationLifecycleCoordinator:
                     provider="native_preanalysis",
                     phase="generated_restart",
                     evidence_generation=int(transition.resulting_generation),
-                    summary=(
-                        f"{transition.evidence_family} {transition.outcome}"
-                    ),
+                    summary=(f"{transition.evidence_family} {transition.outcome}"),
                     payload={
                         "restart_kind": transition.restart_kind,
                         "evidence_family": transition.evidence_family,
@@ -702,9 +700,7 @@ class DecompilationLifecycleCoordinator:
                     evidence_generation=int(state.evidence_generation),
                     mba_generation_before=generation,
                     mba_generation_after=generation,
-                    summary=(
-                        f"native mutation quarantined at {boundary.value}"
-                    ),
+                    summary=(f"native mutation quarantined at {boundary.value}"),
                     payload={
                         "boundary": boundary.value,
                         "maturity": maturity,
