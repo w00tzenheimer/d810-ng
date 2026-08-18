@@ -287,7 +287,7 @@ class TestPassPipeline:
         """A gateway without maturity authority cannot execute a patch plan."""
         backend = InMemoryBackend()
         pipeline = FlowGraphTransformPipeline(backend, [SingleModPass()])
-        gateway = mutation_gateway_for(*range(1024))
+        gateway = mutation_gateway_for(*range(1024), maturity=None)
 
         with pytest.raises(TypeError, match="exact maturity authority"):
             pipeline.run({}, mutation_gateway=gateway)

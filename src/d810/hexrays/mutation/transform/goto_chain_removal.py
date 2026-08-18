@@ -22,7 +22,8 @@ from d810.transforms.graph_modification import (
     RedirectBranch,
     RedirectGoto,
 )
-from d810.ir.flowgraph import BlockSnapshot, InsnSnapshot, FlowGraph
+from d810.transforms.fix_predecessor_planning import infer_conditional_target
+from d810.ir.flowgraph import BlockSnapshot, FlowGraph, InsnKind, InsnSnapshot
 
 _BLT_1WAY = ida_hexrays.BLT_1WAY
 _BLT_2WAY = ida_hexrays.BLT_2WAY
@@ -93,6 +94,48 @@ def _is_simple_goto_block(blk: BlockSnapshot, cfg: FlowGraph) -> bool:
     return True
 
 
+def _has_redirectable_goto_source(
+    blk: BlockSnapshot,
+    *,
+    old_target: int,
+) -> bool:
+    """Return whether a 1-way predecessor owns the edge being redirected.
+
+    ``RedirectGoto`` is lowered by the native Hex-Rays mutation primitive
+    that rewrites a one-way block.  The primitive accepts a non-entry block
+    with no tail (it inserts a goto), but explicitly rejects serial zero.  The
+    transform mirrors that contract and also checks the source edge so stale
+    predecessor metadata cannot produce an unrelated redirect.
+    """
+    if blk.block_type != _BLT_1WAY or blk.serial == 0:
+        return False
+    return len(blk.succs) == 1 and blk.succs[0] == old_target
+
+
+def _has_redirectable_branch_tail(
+    blk: BlockSnapshot,
+    *,
+    old_target: int,
+) -> bool:
+    """Return whether a 2-way predecessor's explicit arm owns the edge.
+
+    The native conditional-successor primitive rewrites the captured branch
+    destination (``tail.d.b``), not the fallthrough edge.  Checking the
+    destination itself is therefore required; membership in ``succs`` alone
+    would admit an invalid fallthrough redirect.
+    """
+    tail = blk.tail
+    return (
+        len(blk.succs) == 2
+        and tail is not None
+        and tail.kind in {
+            InsnKind.COND_JUMP,
+            InsnKind.EQUALITY_JUMP,
+        }
+        and infer_conditional_target(blk) == old_target
+    )
+
+
 class GotoChainRemovalPass(FlowGraphTransform):
     """Collapse goto-only blocks by redirecting their predecessors.
 
@@ -122,7 +165,7 @@ class GotoChainRemovalPass(FlowGraphTransform):
         >>> dest_mop = MopSnapshot(t=7, size=4, block_num=20)
         >>> goto_insn = InsnSnapshot(opcode=55, ea=0x1100, operands=(dest_mop,))
         >>> blk0 = BlockSnapshot(
-        ...     serial=0, block_type=3, succs=(10,), preds=(),
+        ...     serial=5, block_type=3, succs=(10,), preds=(),
         ...     flags=0, start_ea=0x1000, insn_snapshots=()
         ... )
         >>> blk10_goto = BlockSnapshot(
@@ -133,7 +176,7 @@ class GotoChainRemovalPass(FlowGraphTransform):
         ...     serial=20, block_type=2, succs=(), preds=(10,),
         ...     flags=0, start_ea=0x1200, insn_snapshots=()
         ... )
-        >>> cfg = FlowGraph(blocks={0: blk0, 10: blk10_goto, 20: blk20}, entry_serial=0, func_ea=0x1000)
+        >>> cfg = FlowGraph(blocks={5: blk0, 10: blk10_goto, 20: blk20}, entry_serial=5, func_ea=0x1000)
         >>> pass_instance = GotoChainRemovalPass()
         >>> mods = pass_instance.transform(cfg)
         >>> len(mods)
@@ -141,7 +184,7 @@ class GotoChainRemovalPass(FlowGraphTransform):
         >>> isinstance(mods[0], RedirectGoto)
         True
         >>> mods[0].from_serial
-        0
+        5
         >>> mods[0].old_target
         10
         >>> mods[0].new_target
@@ -237,6 +280,11 @@ class GotoChainRemovalPass(FlowGraphTransform):
                     continue
 
                 if pred_blk.block_type == _BLT_2WAY:
+                    if not _has_redirectable_branch_tail(
+                        pred_blk,
+                        old_target=serial,
+                    ):
+                        continue
                     mods.append(
                         RedirectBranch(
                             from_serial=pred_serial,
@@ -244,8 +292,10 @@ class GotoChainRemovalPass(FlowGraphTransform):
                             new_target=new_target,
                         )
                     )
-                else:
-                    # 1-way (and any other type) -> RedirectGoto
+                elif _has_redirectable_goto_source(
+                    pred_blk,
+                    old_target=serial,
+                ):
                     mods.append(
                         RedirectGoto(
                             from_serial=pred_serial,

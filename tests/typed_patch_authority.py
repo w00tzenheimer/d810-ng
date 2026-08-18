@@ -114,11 +114,22 @@ def block_refs_by_serial(*values: object) -> dict[int, LogicalBlockRef]:
     }
 
 
-def mutation_gateway_for(*values: object) -> object:
+def mutation_gateway_for(*values: object, maturity: int | None = 0) -> object:
+    """Return a synthetic gateway with complete source-authority witnesses.
+
+    Patch-plan compilation now requires the source maturity to be owned by the
+    gateway identity index, just as it does for a live coordinator gateway.
+    ``maturity`` remains configurable so a fixture can model a specific
+    Hex-Rays boundary; the default is the existing synthetic MMAT_ZERO value.
+    Passing ``None`` deliberately models a stale/incomplete gateway and is
+    reserved for fail-closed tests.
+    """
     refs = block_refs_by_serial(*values)
     index = SimpleNamespace(
         snapshot_id="unit-test-source-snapshot",
         generation=0,
         plan_refs_by_serial=lambda: refs,
     )
+    if maturity is not None:
+        index.maturity = int(maturity)
     return SimpleNamespace(identity_index=index)

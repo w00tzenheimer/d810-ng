@@ -87,10 +87,13 @@ class TestGotoChainRemovalPass:
 
     def test_single_goto_chain_returns_redirect_edge(self):
         """Pass returns RedirectGoto to bypass single goto-only block."""
-        # Create chain: 0 -> 10 (goto only, has m_goto insn) -> 20
-        # blk0 is a 1-way predecessor
+        # Create chain: 5 -> 10 (goto only) -> 20.  The non-entry source is
+        # intentionally tail-less: the native helper inserts the replacement
+        # goto for this valid one-way shape.
+        # Serial zero is the native synthetic entry and is not a redirectable
+        # one-way source, so use a real non-entry predecessor here.
         blk0 = BlockSnapshot(
-            serial=0,
+            serial=5,
             block_type=3,
             succs=(10,),
             preds=(),
@@ -103,7 +106,7 @@ class TestGotoChainRemovalPass:
             serial=10,
             block_type=3,
             succs=(20,),
-            preds=(0,),
+            preds=(5,),
             flags=0,
             start_ea=0x1100,
             insn_snapshots=(goto_insn,),
@@ -118,7 +121,9 @@ class TestGotoChainRemovalPass:
             insn_snapshots=(),
         )
         cfg = FlowGraph(
-            blocks={0: blk0, 10: blk10_goto, 20: blk20}, entry_serial=0, func_ea=0x1000
+            blocks={5: blk0, 10: blk10_goto, 20: blk20},
+            entry_serial=5,
+            func_ea=0x1000,
         )
 
         pass_instance = GotoChainRemovalPass()
@@ -126,7 +131,7 @@ class TestGotoChainRemovalPass:
 
         assert len(mods) == 1
         assert isinstance(mods[0], RedirectGoto)
-        assert mods[0].from_serial == 0
+        assert mods[0].from_serial == 5
         assert mods[0].old_target == 10
         assert mods[0].new_target == 20
 
@@ -175,11 +180,12 @@ class TestGotoChainRemovalPass:
             preds=(),
             flags=0,
             start_ea=0x1000,
-            insn_snapshots=(),
+            insn_snapshots=(_make_conditional_insn(0x1000, 10),),
         )
-        # Block 5 with instructions (not goto-only, 1-way predecessor of 10)
-        insn5a = InsnSnapshot(opcode=0x01, ea=0x1050, operands=())
-        insn5b = InsnSnapshot(opcode=0x02, ea=0x1054, operands=())
+        # Block 5 has a body followed by an executable unconditional tail and
+        # is a 1-way predecessor of the simple-goto block 10.  The body keeps
+        # it from also being treated as a simple-goto candidate itself.
+        insn5_body = InsnSnapshot(opcode=0x01, ea=0x104C, operands=())
         blk5 = BlockSnapshot(
             serial=5,
             block_type=3,
@@ -187,7 +193,7 @@ class TestGotoChainRemovalPass:
             preds=(0,),
             flags=0,
             start_ea=0x1050,
-            insn_snapshots=(insn5a, insn5b),
+            insn_snapshots=(insn5_body, _make_goto_insn(0x1050, 10)),
         )
         goto_insn = _make_goto_insn(ea=0x1100, dest_serial=20)
         blk10_goto = BlockSnapshot(
@@ -242,7 +248,7 @@ class TestGotoChainRemovalPass:
             preds=(),
             flags=0,
             start_ea=0x1000,
-            insn_snapshots=(),
+            insn_snapshots=(_make_conditional_insn(0x1000, 10),),
         )
         # Block with 2 instructions (not goto-only)
         insn10a = InsnSnapshot(opcode=0x01, ea=0x1100, operands=())
@@ -412,21 +418,110 @@ class TestGotoChainRemovalPass:
         mods = pass_instance.transform(cfg)
 
         # Block 2 is the last (max serial) -> sentinel, skip it as candidate.
-        # Block 0 has no predecessors -> no redirect emitted for it.
-        # Block 1 is goto-only with predecessor 0 -> RedirectGoto(0->1 becomes 0->2).
-        # Block 0 is goto-only with no predecessors -> 0 redirects from it.
+        # Block 1 is goto-only with predecessor 0, but serial-zero is the
+        # synthetic entry and is not a redirectable one-way source.
+        assert mods == []
+
+    def test_tail_less_entry_redirect_is_not_emitted(self):
+        """Reject the synthetic entry redirect while retaining a valid branch edit.
+
+        The native ``RedirectGoto`` primitive cannot rewrite the tail-less
+        serial-zero entry block.  This is the exact shape that previously
+        poisoned the live ``unwrap_loops_2`` GLBOPT2 transaction.  The second
+        redirect is a real conditional-tail rewrite and must remain planned.
+        """
+        entry = BlockSnapshot(
+            serial=0,
+            block_type=3,
+            succs=(1,),
+            preds=(),
+            flags=0,
+            start_ea=0x1000,
+            insn_snapshots=(),
+        )
+        first_goto = BlockSnapshot(
+            serial=1,
+            block_type=3,
+            succs=(3,),
+            preds=(0,),
+            flags=0,
+            start_ea=0x1010,
+            insn_snapshots=(_make_goto_insn(0x1010, 3),),
+        )
+        branch = BlockSnapshot(
+            serial=3,
+            block_type=4,
+            succs=(4, 2),
+            preds=(1,),
+            flags=0,
+            start_ea=0x1030,
+            insn_snapshots=(_make_conditional_insn(0x1030, 2),),
+        )
+        second_goto = BlockSnapshot(
+            serial=2,
+            block_type=3,
+            succs=(9,),
+            preds=(3,),
+            flags=0,
+            start_ea=0x1020,
+            insn_snapshots=(_make_goto_insn(0x1020, 9),),
+        )
+        target = BlockSnapshot(
+            serial=4,
+            block_type=2,
+            succs=(),
+            preds=(3,),
+            flags=0,
+            start_ea=0x1040,
+            insn_snapshots=(),
+        )
+        branch_target = BlockSnapshot(
+            serial=9,
+            block_type=2,
+            succs=(),
+            preds=(2,),
+            flags=0,
+            start_ea=0x1090,
+            insn_snapshots=(),
+        )
+        sentinel = BlockSnapshot(
+            serial=10,
+            block_type=2,
+            succs=(),
+            preds=(9,),
+            flags=0,
+            start_ea=0x10A0,
+            insn_snapshots=(),
+        )
+        cfg = FlowGraph(
+            blocks={
+                0: entry,
+                1: first_goto,
+                2: second_goto,
+                3: branch,
+                4: target,
+                9: branch_target,
+                10: sentinel,
+            },
+            entry_serial=0,
+            func_ea=0x1000,
+        )
+
+        mods = GotoChainRemovalPass().transform(cfg)
+
         assert len(mods) == 1
-        mod = mods[0]
-        assert isinstance(mod, RedirectGoto)
-        assert mod.from_serial == 0
-        assert mod.old_target == 1
-        assert mod.new_target == 2
+        assert isinstance(mods[0], RedirectBranch)
+        assert (mods[0].from_serial, mods[0].old_target, mods[0].new_target) == (
+            3,
+            2,
+            9,
+        )
 
     def test_multiple_goto_chains(self):
         """Pass handles multiple goto chains in same CFG."""
         # Create CFG with 2 goto chains:
-        # 0 -> 10 (goto only) -> 20
-        # 0 -> 30 (goto only) -> 40
+        # 0 -> 10 (goto only) -> 20 (taken conditional arm)
+        # 0 -> 30 (goto only) -> 40 (fallthrough arm, must be rejected)
         blk0 = BlockSnapshot(
             serial=0,
             block_type=4,
@@ -434,7 +529,7 @@ class TestGotoChainRemovalPass:
             preds=(),
             flags=0,
             start_ea=0x1000,
-            insn_snapshots=(),
+            insn_snapshots=(_make_conditional_insn(0x1000, 10),),
         )
         # First goto chain
         goto10 = _make_goto_insn(ea=0x1100, dest_serial=20)
@@ -485,12 +580,14 @@ class TestGotoChainRemovalPass:
         pass_instance = GotoChainRemovalPass()
         mods = pass_instance.transform(cfg)
 
-        # 2 goto blocks, each with 1 predecessor (blk0 is 2-way -> RedirectBranch x2)
-        assert len(mods) == 2
+        # Only the explicit conditional arm is directly rewritable.  The
+        # legacy/native primitive intentionally rejects bypassing a 2-way
+        # fallthrough helper.
+        assert len(mods) == 1
         assert all(isinstance(m, RedirectBranch) for m in mods)
         assert all(mod.from_serial == 0 for mod in mods)
         redirects = {(mod.old_target, mod.new_target) for mod in mods}
-        assert redirects == {(10, 20), (30, 40)}
+        assert redirects == {(10, 20)}
 
     # *** NEW TESTS FOR 4 SAFETY GAPS *****************************************
 
@@ -602,7 +699,7 @@ class TestGotoChainRemovalPass:
             preds=(),
             flags=0,
             start_ea=0x1000,
-            insn_snapshots=(),
+            insn_snapshots=(_make_conditional_insn(0x1000, 10),),
         )
         goto_insn = _make_goto_insn(ea=0x1100, dest_serial=20)
         blk10_goto = BlockSnapshot(
@@ -654,20 +751,20 @@ class TestGotoChainRemovalPass:
     def test_1way_predecessor_emits_redirect_goto(self):
         """CRITICAL-2 (complement): A 1-way predecessor gets RedirectGoto."""
         blk0 = BlockSnapshot(
-            serial=0,
+            serial=5,
             block_type=3,
             succs=(10,),
             preds=(),
             flags=0,
             start_ea=0x1000,
-            insn_snapshots=(),
+            insn_snapshots=(_make_goto_insn(0x1000, 10),),
         )
         goto_insn = _make_goto_insn(ea=0x1100, dest_serial=20)
         blk10_goto = BlockSnapshot(
             serial=10,
             block_type=3,
             succs=(20,),
-            preds=(0,),
+            preds=(5,),
             flags=0,
             start_ea=0x1100,
             insn_snapshots=(goto_insn,),
@@ -682,7 +779,9 @@ class TestGotoChainRemovalPass:
             insn_snapshots=(),
         )
         cfg = FlowGraph(
-            blocks={0: blk0, 10: blk10_goto, 20: blk20}, entry_serial=0, func_ea=0x1000
+            blocks={5: blk0, 10: blk10_goto, 20: blk20},
+            entry_serial=5,
+            func_ea=0x1000,
         )
 
         pass_instance = GotoChainRemovalPass()
@@ -693,7 +792,7 @@ class TestGotoChainRemovalPass:
         assert isinstance(mod, RedirectGoto), (
             f"Expected RedirectGoto for 1-way predecessor but got {type(mod).__name__}."
         )
-        assert mod.from_serial == 0
+        assert mod.from_serial == 5
         assert mod.old_target == 10
         assert mod.new_target == 20
 
@@ -890,20 +989,20 @@ class TestGotoChainRemovalPassIntegration:
     def test_pipeline_with_single_goto_chain(self):
         """PassPipeline integration: single goto chain."""
         blk0 = BlockSnapshot(
-            serial=0,
+            serial=5,
             block_type=3,
             succs=(10,),
             preds=(),
             flags=0,
             start_ea=0x1000,
-            insn_snapshots=(),
+            insn_snapshots=(_make_goto_insn(0x1000, 10),),
         )
         goto_insn = _make_goto_insn(ea=0x1100, dest_serial=20)
         blk10_goto = BlockSnapshot(
             serial=10,
             block_type=3,
             succs=(20,),
-            preds=(0,),
+            preds=(5,),
             flags=0,
             start_ea=0x1100,
             insn_snapshots=(goto_insn,),
@@ -917,7 +1016,7 @@ class TestGotoChainRemovalPassIntegration:
             start_ea=0x1200,
             insn_snapshots=(),
         )
-        blocks = {0: blk0, 10: blk10_goto, 20: blk20}
+        blocks = {5: blk0, 10: blk10_goto, 20: blk20}
         backend = InMemoryBackend(blocks)
 
         pipeline = FlowGraphTransformPipeline(backend, [GotoChainRemovalPass()])
@@ -930,7 +1029,7 @@ class TestGotoChainRemovalPassIntegration:
         assert len(backend.applied_modifications) == 1
         mod = backend.applied_modifications[0]
         assert isinstance(mod, RedirectGoto)
-        assert mod.from_serial == 0
+        assert mod.from_serial == 5
         assert mod.old_target == 10
         assert mod.new_target == 20
 
@@ -1039,8 +1138,7 @@ class TestGotoChainRemovalPassIntegration:
             start_ea=0x1000,
             insn_snapshots=(_make_conditional_insn(0x1000, 10),),
         )
-        insn5a = InsnSnapshot(opcode=0x01, ea=0x1050, operands=())
-        insn5b = InsnSnapshot(opcode=0x02, ea=0x1054, operands=())
+        insn5_body = InsnSnapshot(opcode=0x01, ea=0x104C, operands=())
         blk5 = BlockSnapshot(
             serial=5,
             block_type=3,
@@ -1048,7 +1146,7 @@ class TestGotoChainRemovalPassIntegration:
             preds=(0,),
             flags=0,
             start_ea=0x1050,
-            insn_snapshots=(insn5a, insn5b),
+            insn_snapshots=(insn5_body, _make_goto_insn(0x1050, 10)),
         )
         goto_insn = _make_goto_insn(ea=0x1100, dest_serial=20)
         blk10_goto = BlockSnapshot(
