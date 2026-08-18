@@ -8,16 +8,10 @@ import pytest
 
 from d810.core.config import ProjectConfiguration
 from d810.core.pass_editor_spec import PassEditorSpec
-from d810.passes.module_pass_manager import ModulePassManager
-from d810.passes.pass_pipeline import PipelineConfig
 from d810.passes.operational_config_v2 import (
-    CONFIG_V2_OPERATIONAL_REGISTRY_NAME,
     operational_config_v2_pass_registry,
 )
-from d810.passes.pipeline_config_parser import (
-    pass_specs_from_project_config,
-    pipeline_configs_from_project_config,
-)
+from d810.passes.pipeline_config_parser import pass_specs_from_project_config
 from d810.passes.registry import UnknownPassIdError
 
 _CONF_DIR = Path("src/d810/conf")
@@ -113,81 +107,6 @@ def test_operational_registry_builds_all_bundled_projects(project_name):
     assert specs
 
 
-def test_external_legacy_constant_options_still_compile_equivalently():
-    registry = operational_config_v2_pass_registry()
-    legacy = PipelineConfig.from_dict(
-        {
-            "pass_id": "constant-simplification",
-            "options": {
-                "memory_policy": "aggressive_no_direct_writes",
-                "rva_guard": False,
-                "allow_executable_readonly": False,
-                "persist_global_const_annotations": True,
-            },
-        }
-    )
-    canonical = PipelineConfig.from_dict(
-        {
-            "pass_id": "constant-simplification",
-            "options": {
-                "preparation": {
-                    "global_const_types": {
-                        "enabled": True,
-                        "discover_bounded_tables": True,
-                    }
-                },
-                "stages": {
-                    "fold-readonly-data": {
-                        "enabled": True,
-                        "maturities": [
-                            "CANONICAL",
-                            "LOCAL_OPTIMIZED",
-                            "CALL_MODELED",
-                            "GLOBAL_ANALYZED",
-                            "STRUCTURED",
-                        ],
-                        "memory_policy": "aggressive_no_direct_writes",
-                        "rva_guard": False,
-                        "allow_executable_readonly": False,
-                    },
-                    "fold-constant-subtree": {
-                        "enabled": True,
-                        "maturities": [
-                            "LOCAL_OPTIMIZED",
-                            "CALL_MODELED",
-                            "GLOBAL_ANALYZED",
-                            "GLOBAL_OPTIMIZED",
-                            "STRUCTURED",
-                        ],
-                    },
-                    "forward-constants": {
-                        "enabled": True,
-                        "maturities": [
-                            "CALL_MODELED",
-                            "GLOBAL_ANALYZED",
-                            "GLOBAL_OPTIMIZED",
-                            "STRUCTURED",
-                        ],
-                    },
-                },
-            },
-        }
-    )
-
-    # The parser is the external-config compatibility boundary. It projects
-    # accepted legacy entries to the canonical public editor contract before
-    # the registry validates editor-visible options.
-    legacy_config = pipeline_configs_from_project_config(
-        {"pipeline_v2": [legacy.to_dict()]}
-    )[0]
-    canonical_config = pipeline_configs_from_project_config(
-        {"pipeline_v2": [canonical.to_dict()]}
-    )[0]
-    legacy_schedule = registry.build_spec(legacy_config).pass_factory().options
-    canonical_schedule = registry.build_spec(canonical_config).pass_factory().options
-    assert legacy_schedule == canonical_schedule
-
-
 def test_operational_registry_keeps_state_machine_wrapper_unregistered():
     registry = operational_config_v2_pass_registry()
 
@@ -196,21 +115,6 @@ def test_operational_registry_keeps_state_machine_wrapper_unregistered():
             {"pipeline_v2": [{"pass_id": "state-machine-cff-unflattener"}]},
             registry,
         )
-
-
-def test_module_pass_manager_exposes_default_operational_registry():
-    manager = ModulePassManager()
-
-    specs = manager.pass_specs_from_project_config(
-        _canonical_project("default_instruction_only"),
-        CONFIG_V2_OPERATIONAL_REGISTRY_NAME,
-    )
-
-    assert [spec.pass_id for spec in specs] == [
-        "constant-simplification",
-        "mba-simplify",
-        "jump-fixer",
-    ]
 
 
 def test_operational_registry_builds_public_constant_simplification_bundle():

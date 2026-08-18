@@ -20,7 +20,11 @@ from d810.core.execution_profile import (
 from d810.ir.maturity import IRMaturity
 from d810.passes.analysis_manager import AnalysisManager
 from d810.passes.driver import run_pipeline
-from d810.passes.pass_pipeline import PipelineConfigError, PassSpec, PreservedAnalyses
+from d810.passes.pass_pipeline import (
+    PassSpec,
+    PreservedAnalyses,
+    require_pipeline_v2_specs,
+)
 from d810.passes.profile_guidance import (
     ProfileCandidate,
     ProfileGuidancePlanner,
@@ -265,17 +269,14 @@ class FunctionPassManager:
         correlation through the portable config-v2 driver; it never creates a
         second session or treats provenance as execution authority.
         """
+        compiled_specs = require_pipeline_v2_specs(pipeline_v2_specs)
         facts = self.facts_for(
             source,
             input_facts=input_facts,
             analysis_seeds=analysis_seeds,
         )
-        if pipeline_v2_specs is None:
-            raise PipelineConfigError(
-                "pipeline_v2_specs is required for pass execution"
-            )
         effective_specs = _profile_guided_specs(
-            specs=pipeline_v2_specs,
+            specs=compiled_specs,
             source=source,
             maturity=maturity,
             project_config=project_config,

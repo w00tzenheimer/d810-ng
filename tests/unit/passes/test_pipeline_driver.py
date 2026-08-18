@@ -13,6 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import d810.passes.driver as driver_module
 
 from d810.passes.analysis_manager import AnalysisManager
 from d810.analyses.value_flow.contract_evidence import contract_evidence_payload
@@ -344,6 +345,101 @@ def _recording_pass(name: str, calls: list[str]):
     return type("_RecordPass", (), {"name": name, "run": run})
 
 
+class _UntouchedSource:
+    func_ea = 0x1000
+    live_source = "LIVE"
+
+    def __init__(self):
+        self.flow_graph_accesses = 0
+
+    @property
+    def flow_graph(self):
+        self.flow_graph_accesses += 1
+        raise AssertionError("invalid specs must be rejected before graph access")
+
+
+class _UntouchedFacts:
+    def __init__(self):
+        self.view_calls = 0
+
+    def view(self):
+        self.view_calls += 1
+        raise AssertionError("invalid specs must be rejected before facts access")
+
+
+class _UntouchedBackend:
+    def __init__(self):
+        self.capabilities_calls = 0
+        self.apply_calls = 0
+
+    def capabilities(self):
+        self.capabilities_calls += 1
+        raise AssertionError("invalid specs must be rejected before backend access")
+
+    def apply(self, plan, live_source, safety_policy):
+        self.apply_calls += 1
+        raise AssertionError("invalid specs must be rejected before mutation")
+
+
+class _UntouchedFamily:
+    name = "untouched"
+
+    def __init__(self):
+        self.detect_calls = 0
+        self.pipeline_for_calls = 0
+
+    def detect(self, graph, capabilities, context=None):
+        self.detect_calls += 1
+        raise AssertionError("invalid specs must be rejected before family detection")
+
+    def pipeline_for(self, match, context):
+        self.pipeline_for_calls += 1
+        raise AssertionError("invalid specs must be rejected before family selection")
+
+
+@pytest.mark.parametrize("pipeline_v2_specs", [None, (), []])
+def test_driver_rejects_missing_or_empty_specs_before_context_and_journal(
+    pipeline_v2_specs,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    session_creations: list[object] = []
+
+    def unexpected_session(cls):
+        session_creations.append(object())
+        return DecompilationSessionId("unexpected")
+
+    monkeypatch.setattr(
+        driver_module.DecompilationSessionId,
+        "new",
+        classmethod(unexpected_session),
+    )
+    source = _UntouchedSource()
+    facts = _UntouchedFacts()
+    backend = _UntouchedBackend()
+    family = _UntouchedFamily()
+
+    with pytest.raises(PipelineConfigError, match="pipeline_v2_specs"):
+        run_pipeline(
+            source=source,
+            family=family,
+            backend=backend,
+            facts=facts,
+            project_config={},
+            maturity=IRMaturity.CANONICAL,
+            capabilities=object(),
+            journal=object(),
+            pipeline_v2_specs=pipeline_v2_specs,
+        )
+
+    assert session_creations == []
+    assert source.flow_graph_accesses == 0
+    assert facts.view_calls == 0
+    assert backend.capabilities_calls == 0
+    assert backend.apply_calls == 0
+    assert family.detect_calls == 0
+    assert family.pipeline_for_calls == 0
+
+
 def test_driver_requires_compiled_v2_specs_before_family_detection():
     class _LegacyFallback:
         name = "legacy_fallback"
@@ -406,7 +502,7 @@ def test_config_v2_specs_reject_empty_configured_pipeline():
         def pipeline_for(self, match, context):
             raise AssertionError("config-v2 execution should not use live specs")
 
-    with pytest.raises(PipelineConfigError, match="requires at least one configured"):
+    with pytest.raises(PipelineConfigError, match="pipeline_v2_specs"):
         run_pipeline(
             source=_Src(),
             family=_NoDetect(),

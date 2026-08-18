@@ -13,6 +13,7 @@ every concept that already exists is *bound to*, never duplicated.
 from __future__ import annotations
 
 from collections.abc import Mapping as ABCMapping
+from collections.abc import Sequence as ABCSequence
 from dataclasses import dataclass, field
 from enum import Enum
 from types import MappingProxyType
@@ -988,6 +989,28 @@ class PassSpec:
 
     def enabled_at(self, maturity: IRMaturity | None) -> bool:
         return self.config.enabled_at(maturity)
+
+
+def require_pipeline_v2_specs(value: object) -> tuple[PassSpec, ...]:
+    """Validate one non-empty sequence of compiled config-v2 pass specs."""
+    if value is None:
+        raise PipelineConfigError("pipeline_v2_specs is required for pass execution")
+    if isinstance(value, (str, bytes, ABCMapping)) or not isinstance(
+        value, ABCSequence
+    ):
+        raise PipelineConfigError(
+            "pipeline_v2_specs must be a non-empty sequence of PassSpec values"
+        )
+    specs = tuple(value)
+    if not specs:
+        raise PipelineConfigError(
+            "pipeline_v2_specs must contain at least one compiled pass"
+        )
+    if not all(isinstance(spec, PassSpec) for spec in specs):
+        raise PipelineConfigError(
+            "pipeline_v2_specs must contain only compiled PassSpec values"
+        )
+    return specs
 
 
 @runtime_checkable

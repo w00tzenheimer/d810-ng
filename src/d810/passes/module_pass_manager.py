@@ -7,16 +7,13 @@ from collections.abc import Callable, Mapping
 from d810.capabilities.resolver import CapabilitySet
 from d810.ir.maturity import IRMaturity
 from d810.passes.function_pass_manager import FunctionPassManager
-from d810.passes.pipeline_config_parser import (
-    pipeline_configs_from_project_config,
-    pass_specs_from_project_config,
-)
+from d810.passes.pipeline_config_parser import require_config_v2_project
 from d810.passes.operational_config_v2 import (
     CONFIG_V2_OPERATIONAL_REGISTRY_NAME,
     default_pass_registries,
 )
 from d810.passes.registry import PassRegistry, PassRegistryError
-from d810.passes.pass_pipeline import PipelineConfigError
+from d810.passes.pass_pipeline import require_pipeline_v2_specs
 
 
 class ModulePassManager:
@@ -47,17 +44,6 @@ class ModulePassManager:
             return self._pass_registries[str(name)]
         except KeyError as exc:
             raise PassRegistryError(f"unknown pass registry: {name!r}") from exc
-
-    def pipeline_configs_for(self, project_config):
-        """Parse optional project ``pipeline_v2`` config payloads."""
-        return pipeline_configs_from_project_config(project_config)
-
-    def pass_specs_from_project_config(self, project_config, registry_name: str):
-        """Build PassSpecs from project ``pipeline_v2`` using a named registry."""
-        return pass_specs_from_project_config(
-            project_config,
-            self.pass_registry_for(registry_name),
-        )
 
     def function_manager_for(self, func_ea: int) -> FunctionPassManager:
         """Return the isolated FunctionPassManager for ``func_ea``."""
@@ -98,17 +84,16 @@ class ModulePassManager:
         pipeline_v2_specs=None,
     ):
         """Run one function through its isolated FunctionPassManager."""
+        configs = require_config_v2_project(project_config)
         if pipeline_v2_specs is None:
             effective_registry_name = (
                 pipeline_registry_name or CONFIG_V2_OPERATIONAL_REGISTRY_NAME
             )
             pipeline_registry = self.pass_registry_for(effective_registry_name)
-            pipeline_v2_specs = pass_specs_from_project_config(
-                project_config,
-                pipeline_registry,
+            pipeline_v2_specs = tuple(
+                pipeline_registry.build_spec(config) for config in configs
             )
-        if not pipeline_v2_specs:
-            raise PipelineConfigError("pipeline_v2_specs is required for pass execution")
+        compiled_specs = require_pipeline_v2_specs(pipeline_v2_specs)
         return self.function_manager_for(source.func_ea).run(
             source=source,
             family=family,
@@ -118,5 +103,5 @@ class ModulePassManager:
             capabilities=capabilities,
             input_facts=input_facts,
             analysis_seeds=analysis_seeds,
-            pipeline_v2_specs=tuple(pipeline_v2_specs),
+            pipeline_v2_specs=compiled_specs,
         )

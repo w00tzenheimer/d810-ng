@@ -44,11 +44,11 @@ from d810.passes.pass_pipeline import (
     BackendRoute,
     CapabilityPolicy,
     FunctionPipelineContext,
-    PipelineConfigError,
     PassSpec,
     PreservedAnalyses,
     SafetyPolicy,
     SchedulerPolicy,
+    require_pipeline_v2_specs,
 )
 from d810.passes.scheduler import PassScheduler, RunLaterDomain
 from d810.transforms.cfg_transaction import CfgGenerationPoisoned
@@ -1317,6 +1317,7 @@ def run_pipeline(
     ``session_id`` defaults to a fresh session scoped to this one call when a
     ``journal`` is given without one.
     """
+    specs = require_pipeline_v2_specs(pipeline_v2_specs)
     if journal is not None and session_id is None:
         session_id = DecompilationSessionId.new()
     graph = source.flow_graph
@@ -1329,13 +1330,6 @@ def run_pipeline(
         facts=facts.view(),
         capabilities=capabilities if capabilities is not None else CapabilitySet(),
     )
-    if pipeline_v2_specs is None:
-        raise PipelineConfigError("pipeline_v2_specs is required for pass execution")
-    specs = tuple(pipeline_v2_specs)
-    if not specs:
-        raise PipelineConfigError(
-            "config-v2 execution requires at least one configured pass"
-        )
     worklist, replay_after_pipeline = _build_pass_worklists(
         specs=specs,
         scheduler=scheduler,

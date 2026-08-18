@@ -79,6 +79,35 @@ class _MatchingFamily:
         return self._specs
 
 
+class _UntouchedBackend(_Backend):
+    def __init__(self):
+        self.capabilities_calls = 0
+        self.apply_calls = 0
+
+    def capabilities(self):
+        self.capabilities_calls += 1
+        return super().capabilities()
+
+    def apply(self, plan, live_source, safety_policy):
+        self.apply_calls += 1
+        return super().apply(plan, live_source, safety_policy)
+
+
+class _UntouchedFamily(_MatchingFamily):
+    def __init__(self, specs):
+        super().__init__(specs)
+        self.detect_calls = 0
+        self.pipeline_for_calls = 0
+
+    def detect(self, graph, capabilities, context=None):
+        self.detect_calls += 1
+        return super().detect(graph, capabilities, context=context)
+
+    def pipeline_for(self, match, context):
+        self.pipeline_for_calls += 1
+        return super().pipeline_for(match, context)
+
+
 def _recording_pass(name: str, calls: list[str]):
     def run(self, ctx) -> PassResult:
         calls.append(name)
@@ -147,20 +176,33 @@ def test_manager_threads_scheduler_across_maturity_runs():
     ]
 
 
-def test_manager_requires_compiled_v2_specs_before_execution():
+@pytest.mark.parametrize("pipeline_v2_specs", [None, (), []])
+def test_manager_requires_nonempty_compiled_v2_specs_before_mutation(
+    pipeline_v2_specs,
+):
     calls: list[str] = []
     spec = PassSpec("live", _recording_pass("live", calls), no_caps, default)
+    manager = FunctionPassManager()
+    family = _UntouchedFamily((spec,))
+    backend = _UntouchedBackend()
 
     with pytest.raises(PipelineConfigError, match="pipeline_v2_specs"):
-        FunctionPassManager().run(
+        manager.run(
             source=_Src(),
-            family=_MatchingFamily((spec,)),
-            backend=_Backend(),
+            family=family,
+            backend=backend,
             project_config={},
             maturity=IRMaturity.CANONICAL,
+            pipeline_v2_specs=pipeline_v2_specs,
         )
 
     assert calls == []
+    assert manager._analysis_by_func == {}
+    assert manager.scheduler._pending_by_func == {}
+    assert family.detect_calls == 0
+    assert family.pipeline_for_calls == 0
+    assert backend.capabilities_calls == 0
+    assert backend.apply_calls == 0
 
 
 def test_manager_threads_config_v2_attempts_into_the_active_session(tmp_path):

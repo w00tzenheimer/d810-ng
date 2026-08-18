@@ -7,10 +7,6 @@ from pathlib import Path
 
 import pytest
 
-from d810.families.state_machine_cff.pipeline import (
-    standard_state_machine_passes,
-    state_machine_pass_registry,
-)
 from d810.ir.flowgraph import BlockSnapshot, FlowGraph
 from d810.ir.maturity import IRMaturity
 from d810.passes.module_pass_manager import ModulePassManager
@@ -77,6 +73,35 @@ class _MatchingFamily:
         return self._specs
 
 
+class _UntouchedBackend(_Backend):
+    def __init__(self):
+        self.capabilities_calls = 0
+        self.apply_calls = 0
+
+    def capabilities(self):
+        self.capabilities_calls += 1
+        return super().capabilities()
+
+    def apply(self, plan, live_source, safety_policy):
+        self.apply_calls += 1
+        return super().apply(plan, live_source, safety_policy)
+
+
+class _UntouchedFamily(_MatchingFamily):
+    def __init__(self, specs):
+        super().__init__(specs)
+        self.detect_calls = 0
+        self.pipeline_for_calls = 0
+
+    def detect(self, graph, capabilities, context=None):
+        self.detect_calls += 1
+        return super().detect(graph, capabilities, context=context)
+
+    def pipeline_for(self, match, context):
+        self.pipeline_for_calls += 1
+        return super().pipeline_for(match, context)
+
+
 def _recording_pass(name: str, calls: list[str]):
     def run(self, ctx) -> PassResult:
         calls.append(name)
@@ -85,29 +110,43 @@ def _recording_pass(name: str, calls: list[str]):
     return type("_RecordPass", (), {"name": name, "run": run})
 
 
+def _project_document(
+    *,
+    pipeline: tuple[str, ...] | None = ("recover_dispatcher",),
+    additional: dict[str, object] | None = None,
+    ins_rules: list[dict[str, object]] | None = None,
+    blk_rules: list[dict[str, object]] | None = None,
+) -> dict[str, object]:
+    config: dict[str, object] = {}
+    if pipeline is not None:
+        config["pipeline_v2"] = [{"pass_id": pass_id} for pass_id in pipeline]
+    config.update(additional or {})
+    return {
+        "ins_rules": list(ins_rules or ()),
+        "blk_rules": list(blk_rules or ()),
+        "additional_configuration": config,
+    }
+
+
+def _invalid_project_documents() -> tuple[dict[str, object], ...]:
+    retired_mode = "pipeline_v2_" + "mode"
+    retired_shadow = "require_" + "pipeline_v2_" + "shadow_match"
+    active_rule = {"name": "Legacy", "is_activated": True, "config": {}}
+    return (
+        _project_document(additional={retired_mode: "config-v2"}),
+        _project_document(additional={retired_shadow: True}),
+        _project_document(ins_rules=[active_rule]),
+        _project_document(blk_rules=[active_rule]),
+        _project_document(pipeline=("not-a-registered-pass",)),
+        _project_document(pipeline=None),
+        _project_document(pipeline=()),
+    )
+
+
 def test_module_pass_manager_stays_backend_adapter_free():
     text = Path("src/d810/passes/module_pass_manager.py").read_text()
 
     assert "ida_hexrays" not in text
-
-
-def test_builds_state_machine_specs_from_pipeline_v2_project_config():
-    live_specs = standard_state_machine_passes()
-    manager = ModulePassManager(
-        pass_registries={"state_machine_cff": state_machine_pass_registry()}
-    )
-
-    rebuilt_specs = manager.pass_specs_from_project_config(
-        {"pipeline_v2": [spec.config.to_dict() for spec in live_specs]},
-        "state_machine_cff",
-    )
-
-    assert tuple(spec.pass_id for spec in rebuilt_specs) == tuple(
-        spec.pass_id for spec in live_specs
-    )
-    assert tuple(spec.config for spec in rebuilt_specs) == tuple(
-        spec.config for spec in live_specs
-    )
 
 
 def test_module_manager_has_no_shadow_comparison_api():
@@ -115,23 +154,11 @@ def test_module_manager_has_no_shadow_comparison_api():
     assert not hasattr(ModulePassManager, "require_" + "pipeline_v2_shadow_match")
 
 
-def test_missing_pipeline_v2_is_inert():
-    manager = ModulePassManager(
-        pass_registries={"state_machine_cff": state_machine_pass_registry()}
-    )
-
-    assert manager.pipeline_configs_for({}) == ()
-    assert manager.pass_specs_from_project_config({}, "state_machine_cff") == ()
-
-
 def test_unknown_registry_fails_clearly():
     manager = ModulePassManager()
 
     with pytest.raises(PassRegistryError, match="unknown pass registry"):
-        manager.pass_specs_from_project_config(
-            {"pipeline_v2": [{"pass_id": "recover_dispatcher"}]},
-            "missing",
-        )
+        manager.pass_registry_for("missing")
 
 
 def test_owns_isolated_function_managers_per_function():
@@ -214,12 +241,19 @@ def test_run_function_uses_isolated_function_manager_state():
 
     family = _MatchingFamily((PassSpec("record", _Record, no_caps, default),))
     manager = ModulePassManager()
+    project_config = {
+        "ins_rules": [],
+        "blk_rules": [],
+        "additional_configuration": {
+            "pipeline_v2": [{"pass_id": "recover_dispatcher"}]
+        },
+    }
 
     manager.run_function(
         source=_Src(0x1000),
         family=family,
         backend=_Backend(),
-        project_config=None,
+        project_config=project_config,
         maturity=IRMaturity.CANONICAL,
         pipeline_v2_specs=(family._specs[0],),
     )
@@ -227,7 +261,7 @@ def test_run_function_uses_isolated_function_manager_state():
         source=_Src(0x2000),
         family=family,
         backend=_Backend(),
-        project_config=None,
+        project_config=project_config,
         maturity=IRMaturity.CANONICAL,
         pipeline_v2_specs=(family._specs[0],),
     )
@@ -237,21 +271,30 @@ def test_run_function_uses_isolated_function_manager_state():
     assert manager.function_manager_for(0x2000).analysis_manager_for(0x2000)
 
 
-def test_run_function_requires_compiled_specs_before_execution():
+def test_run_function_rejects_empty_compiled_specs_before_manager_creation():
     calls: list[str] = []
     spec = PassSpec("live", _recording_pass("live", calls), no_caps, default)
     manager = ModulePassManager()
+    project_config = {
+        "ins_rules": [],
+        "blk_rules": [],
+        "additional_configuration": {
+            "pipeline_v2": [{"pass_id": "recover_dispatcher"}]
+        },
+    }
 
     with pytest.raises(PipelineConfigError, match="pipeline_v2_specs"):
         manager.run_function(
             source=_Src(0x1000),
             family=_MatchingFamily((spec,)),
             backend=_Backend(),
-            project_config=None,
+            project_config=project_config,
             maturity=IRMaturity.CANONICAL,
+            pipeline_v2_specs=(),
         )
 
     assert calls == []
+    assert manager._function_managers == {}
 
 
 def test_run_function_executes_explicit_compiled_specs():
@@ -263,7 +306,13 @@ def test_run_function_executes_explicit_compiled_specs():
         source=_Src(0x1000),
         family=_MatchingFamily((spec,)),
         backend=_Backend(),
-        project_config=None,
+        project_config={
+            "ins_rules": [],
+            "blk_rules": [],
+            "additional_configuration": {
+                "pipeline_v2": [{"pass_id": "recover_dispatcher"}]
+            },
+        },
         maturity=IRMaturity.CANONICAL,
         pipeline_v2_specs=(spec,),
     )
@@ -273,18 +322,60 @@ def test_run_function_executes_explicit_compiled_specs():
 
 def test_run_function_derives_specs_from_canonical_pipeline():
     calls: list[str] = []
-    spec = PassSpec("live", _recording_pass("live", calls), no_caps, default)
+    spec = PassSpec(
+        "recover_dispatcher", _recording_pass("recover_dispatcher", calls), no_caps, default
+    )
     registry = PassRegistry()
-    registry.register("live", _recording_pass("live", calls))
+    registry.register("recover_dispatcher", _recording_pass("recover_dispatcher", calls))
     manager = ModulePassManager(pass_registries={"state_machine_cff": registry})
 
     manager.run_function(
         source=_Src(0x1000),
         family=_MatchingFamily((spec,)),
         backend=_Backend(),
-        project_config={"pipeline_v2": [spec.config.to_dict()]},
+        project_config={
+            "ins_rules": [],
+            "blk_rules": [],
+            "additional_configuration": {
+                "pipeline_v2": [{"pass_id": "recover_dispatcher"}]
+            },
+        },
         maturity=IRMaturity.CANONICAL,
         pipeline_registry_name="state_machine_cff",
     )
 
-    assert calls == ["live"]
+    assert calls == ["recover_dispatcher"]
+
+
+@pytest.mark.parametrize("use_explicit_specs", [False, True])
+@pytest.mark.parametrize("project_config", _invalid_project_documents())
+def test_run_function_strictly_rejects_invalid_project_before_mutation(
+    project_config, use_explicit_specs: bool
+):
+    calls: list[str] = []
+    spec = PassSpec(
+        "recover_dispatcher",
+        _recording_pass("recover_dispatcher", calls),
+        no_caps,
+        default,
+    )
+    family = _UntouchedFamily((spec,))
+    backend = _UntouchedBackend()
+    manager = ModulePassManager()
+
+    with pytest.raises(PipelineConfigError, match="migrate_project_config_v2.py"):
+        manager.run_function(
+            source=_Src(0x1000),
+            family=family,
+            backend=backend,
+            project_config=project_config,
+            maturity=IRMaturity.CANONICAL,
+            pipeline_v2_specs=(spec,) if use_explicit_specs else None,
+        )
+
+    assert manager._function_managers == {}
+    assert calls == []
+    assert family.detect_calls == 0
+    assert family.pipeline_for_calls == 0
+    assert backend.capabilities_calls == 0
+    assert backend.apply_calls == 0
