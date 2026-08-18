@@ -63,7 +63,7 @@ Flow optimizers restore natural control flow from flattened dispatchers. The cur
 | Config-v2 pass/profile | Target | Description |
 |-----------------------|--------|-------------|
 | **`recover_dispatcher`** | OLLVM / Tigress / Approov / Hodur dispatchers | The config-v2 dispatcher pass selects a structural family profile. Typed options such as `family`, `recovery_strategy`, and `min_state_constant` refine recovery without exposing implementation classes. |
-| **SimpleFlatteningCleanupUnflattener** | Generic cleanup | Shared cleanup family for fake jumps, single-iteration loops, bad-while-loop shapes, and predecessor branch-arm repairs. |
+| **`simple-flattening-cleanup-unflattener`** | Generic cleanup | Shared cleanup family for fake jumps, single-iteration loops, bad-while-loop shapes, and predecessor branch-arm repairs. |
 
 ### Flow Optimizations (non-unflattening)
 

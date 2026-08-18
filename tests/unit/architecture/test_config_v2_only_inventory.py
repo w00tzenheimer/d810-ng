@@ -61,6 +61,12 @@ def _legacy_class_name() -> str:
     return "StateMachineCff" + "Unflattener"
 
 
+def _cleanup_implementation_name() -> str:
+    """Return the cleanup implementation spelling at runtime only."""
+
+    return "SimpleFlatteningCleanup" + "Unflattener"
+
+
 def _relative(path: Path) -> str:
     return path.relative_to(_REPO_ROOT).as_posix()
 
@@ -209,6 +215,7 @@ def test_production_execution_does_not_route_by_legacy_class_name() -> None:
 def test_user_facing_docs_describe_pass_ids_not_legacy_configuration() -> None:
     legacy_doc_tokens = (
         _legacy_class_name(),
+        _cleanup_implementation_name(),
         "ins_" + "rules",
         "blk_" + "rules",
         "pipeline_v2_" + "mode",
