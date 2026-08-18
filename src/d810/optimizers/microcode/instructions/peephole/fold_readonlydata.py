@@ -818,6 +818,31 @@ class FoldReadonlyDataRule(PeepholeSimplificationRule):
         # Nested expression: recurse into its operands
         if op.t == ida_hexrays.mop_d:
             inner: ida_hexrays.minsn_t = op.d
+            # A nested ldx is a value expression. Its empty destination is
+            # intentional: the owning mop_d carries the result width. Replacing
+            # the inner instruction with a standalone ldc would therefore emit
+            # malformed microcode (``ldc #value, <no destination>``). Fold the
+            # owning operand to mop_n instead.
+            if inner.opcode == ida_hexrays.m_ldx:
+                ea = self._ea_from_direct_load(inner)
+                load_size = (
+                    getattr(op, "size", 0)
+                    or getattr(getattr(inner, "d", None), "size", 0)
+                    or 0
+                )
+                if ea is not None and load_size in (1, 2, 4, 8):
+                    decision = self._decision_for(ea, load_size, site="expr-ldx")
+                    if decision.can_inline_read and decision.value is not None:
+                        replace_operand_with_immediate(op, decision.value, load_size)
+                        if peephole_logger.debug_on:
+                            peephole_logger.debug(
+                                "constant-simplification fold APPLIED "
+                                "site=expr-ldx addr=0x%X size=%d value=0x%X",
+                                ea,
+                                load_size,
+                                decision.value,
+                            )
+                        return True
             # Handle zero/sign-extend of a memory byte/word into an immediate when
             # the effective address can be resolved to &sym + const in a RO segment.
             if inner.opcode in (ida_hexrays.m_xdu, ida_hexrays.m_xds):

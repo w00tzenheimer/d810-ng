@@ -512,6 +512,7 @@ CONSTANT_FOLDING_CASES = [
         # cfg_rule_usages -- assert the deobfuscation OUTCOME (must_change + contents)
         # instead of the rule name.
         required_rules=[],
+        forbidden_rules=["Z3setzRuleGeneric"],
         must_change=True,
     ),
 ]

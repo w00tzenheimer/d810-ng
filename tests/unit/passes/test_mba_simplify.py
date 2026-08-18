@@ -177,6 +177,24 @@ def test_mba_simplify_registry_builds_default_instruction_canary_mba_stage():
     assert "z3_solver" in spec.contract.requires.capabilities
 
 
+def test_tigress_transition_fact_profile_avoids_cycle_prone_generic_setz():
+    project = ProjectConfiguration.from_file(
+        _CONF_DIR
+        / "default_unflattening_tigress_engine_transition_facts_config_v2_canary.json"
+    )
+    config = next(
+        config
+        for config in pipeline_configs_from_project_config(project)
+        if config.pass_id == "mba-simplify"
+    )
+
+    adapter = mba_simplify_pass_registry().build_spec(config).pass_factory()
+
+    assert "Z3ConstantOptimization" in adapter.implementation_names
+    assert "Z3setnzRuleGeneric" in adapter.implementation_names
+    assert "Z3setzRuleGeneric" not in adapter.implementation_names
+
+
 def test_mba_simplify_registry_rejects_former_rule_selection_for_execution():
     with pytest.raises(PipelineConfigError, match="unknown fields"):
         PipelineConfig.from_dict(

@@ -32,6 +32,10 @@ def replace_operand_with_immediate(operand, value: int, size: int) -> None:
 def make_ldc_replacement(instruction, value: int, size: int):
     """Build an ``m_ldc`` replacement while preserving a legal destination."""
 
+    destination = instruction.d
+    if destination is None or destination.t not in _LEGAL_DESTINATION_TYPES:
+        return None
+
     replacement = ida_hexrays.minsn_t(instruction.ea)
     replacement.opcode = ida_hexrays.m_ldc
 
@@ -42,12 +46,8 @@ def make_ldc_replacement(instruction, value: int, size: int):
     replacement.r.erase()
 
     replacement.d = ida_hexrays.mop_t()
-    destination = instruction.d
-    if destination is not None and destination.t in _LEGAL_DESTINATION_TYPES:
-        replacement.d.assign(destination)
-        replacement.d.size = int(size)
-    else:
-        replacement.d.erase()
+    replacement.d.assign(destination)
+    replacement.d.size = int(size)
     return replacement
 
 

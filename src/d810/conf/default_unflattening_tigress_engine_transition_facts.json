@@ -18,11 +18,6 @@
       "name": "Z3setnzRuleGeneric",
       "is_activated": true,
       "config": {}
-    },
-    {
-      "name": "Z3setzRuleGeneric",
-      "is_activated": true,
-      "config": {}
     }
   ],
   "blk_rules": [

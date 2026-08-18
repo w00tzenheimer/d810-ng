@@ -92,6 +92,19 @@ def test_ldc_materializer_preserves_legal_destination(
     assert replacement.d.size == 4
 
 
+def test_ldc_materializer_rejects_destinationless_expression(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A value-only nested instruction cannot become a standalone ``ldc``."""
+    materializer = _load_materializer(monkeypatch)
+    original = _Insn(0x401000)
+    original.d.erase()
+
+    replacement = materializer.make_ldc_replacement(original, 0x42, 1)
+
+    assert replacement is None
+
+
 def test_move_materializer_erases_memory_address_operand(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
