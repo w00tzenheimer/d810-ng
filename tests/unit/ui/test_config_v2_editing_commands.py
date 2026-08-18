@@ -65,7 +65,7 @@ def _task_1_catalog() -> tuple[PassCatalogEntry, ...]:
     )
 
 
-def test_eidolon_overview_inspects_private_rotate_stage_without_authoring_it(
+def test_eid_overview_inspects_private_rotate_stage_without_authoring_it(
     tmp_path: Path,
 ) -> None:
     profile_path = (

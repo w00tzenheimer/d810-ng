@@ -159,5 +159,5 @@ asserted AFTER the retarget made it real). Verify with:
 - `sub_7FFD3338C040.asm` — earlier Hodur extraction.
 - `sub_7FF85A13D930.asm` — Hodur-like dispatcher with a cross-block constant
   return chain; guards forward propagation before subtree folding.
-- `sub_7FF85A59E4D0.asm` — live Eidolon state-machine export. Guards removal
+- `sub_7FF85A59E4D0.asm` — live Eid state-machine export. Guards removal
   of effect-free residual stack-state writes after dispatcher recovery.

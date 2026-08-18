@@ -433,7 +433,7 @@ git commit -m "fix(unflat): preflight effectful reachability"
 Use the live IDB named by MCP instance `13337`:
 
 ```text
-/Volumes/code/re/eidolon/115.9.6910.9/WowClassic_loader-115.9.6910.9-devirt.dll.i64
+/Volumes/code/re/eid/115.9.6910.9/MMORPG_loader-115.9.6910.9-devirt.dll.i64
 ```
 
 Run the existing structural exporter in the live IDA process through its MCP Python tool, then continue through the existing build/register flow:
@@ -462,9 +462,9 @@ Then run the non-IDB stages locally:
 
 ```bash
 cd /Users/mahmoud/src/idapro/d810/.worktrees/poison-restart-architecture
-PYTHONPATH=src python3 tools/d810cli.py fixture build --idb /Volumes/code/re/eidolon/115.9.6910.9/WowClassic_loader-115.9.6910.9-devirt.dll.i64 --func sub_7FF856629E30
-PYTHONPATH=src python3 tools/d810cli.py fixture register --idb /Volumes/code/re/eidolon/115.9.6910.9/WowClassic_loader-115.9.6910.9-devirt.dll.i64 --func sub_7FF856629E30 --project eidolon_v3_const_solve.json
-PYTHONPATH=src python3 tools/d810cli.py fixture verify --idb /Volumes/code/re/eidolon/115.9.6910.9/WowClassic_loader-115.9.6910.9-devirt.dll.i64 --func sub_7FF856629E30
+PYTHONPATH=src python3 tools/d810cli.py fixture build --idb /Volumes/code/re/eid/115.9.6910.9/MMORPG_loader-115.9.6910.9-devirt.dll.i64 --func sub_7FF856629E30
+PYTHONPATH=src python3 tools/d810cli.py fixture register --idb /Volumes/code/re/eid/115.9.6910.9/MMORPG_loader-115.9.6910.9-devirt.dll.i64 --func sub_7FF856629E30 --project eidolon_v3_const_solve.json
+PYTHONPATH=src python3 tools/d810cli.py fixture verify --idb /Volumes/code/re/eid/115.9.6910.9/MMORPG_loader-115.9.6910.9-devirt.dll.i64 --func sub_7FF856629E30
 ```
 
 - [ ] Export the whole function with `materialize_data=True` and `const_data=True`; inspect the generated call/data closure. If the generated body contains an indirect call whose original target must be named for the semantic assertion, use `d810.testing.fixture_builder.detect_indirect_call_folds`, resolve that exact VA through MCP, and apply only the leaf/import retarget accepted by `plan_retargets`. Otherwise leave the faithful exported call intact.

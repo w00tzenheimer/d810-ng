@@ -3,8 +3,8 @@ OPTION PROLOGUE:NONE
 OPTION EPILOGUE:NONE
 
 _TEXT SEGMENT ALIGN(16) 'CODE'
-PUBLIC Eidolon_QueueHandleForCurrentFiber
-Eidolon_QueueHandleForCurrentFiber:
+PUBLIC Eid_QueueHandleForCurrentFiber
+Eid_QueueHandleForCurrentFiber:
     ret
 _TEXT ENDS
 END

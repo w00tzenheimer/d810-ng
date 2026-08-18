@@ -256,7 +256,7 @@ class TestConfiguration(unittest.TestCase):
                 self.assertIn("my_user_project.json", saved_configs)
                 self.assertIn("hodur_flag2.json", saved_configs)
 
-    def test_eidolon_config_requires_recovered_transitions_before_lowering(self):
+    def test_eid_config_requires_recovered_transitions_before_lowering(self):
         config_path = Path(__file__).parents[3] / "src/d810/conf/eidolon_v3_const_solve.json"
         config = json.loads(config_path.read_text())
         pipeline = config["additional_configuration"]["pipeline_v2"]

@@ -221,7 +221,7 @@ The diagnostic SQLite database may mirror the same events for inspection, but
 it is never queried as the authority for the rewrite.
 
 The committed MASM acceptance fixture
-[`Eidolon_ShowErrorAndTerminateProcess.asm`](samples/masm/Eidolon_ShowErrorAndTerminateProcess.asm)
+[`Eid_ShowErrorAndTerminateProcess.asm`](samples/src/masm/Eid_ShowErrorAndTerminateProcess.asm)
 exercises two such routes and
 [`test_native_bound_transition_routes.py`](tests/system/e2e/test_native_bound_transition_routes.py)
 requires one mutation-coupled receipt for each recovered edge.

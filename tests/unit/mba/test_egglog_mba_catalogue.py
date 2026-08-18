@@ -281,10 +281,10 @@ _RULE_MODULE_BY_FAMILY = {
 }
 _RULE_MODULES_BY_FAMILY = {
     **_RULE_MODULE_BY_FAMILY,
-    # These two certified Eidolon identities are intentionally interleaved in
+    # These two certified Eid identities are intentionally interleaved in
     # the explicit XOR declaration order, so the manifest is not a one-module
     # inventory for this family.
-    "xor": ("xor", "eidolon"),
+    "xor": ("xor", "eid"),
 }
 _CLOSED_FAMILIES = frozenset({"add", "xor", "sub", "and", "or", "bnot", "neg", "mul"})
 

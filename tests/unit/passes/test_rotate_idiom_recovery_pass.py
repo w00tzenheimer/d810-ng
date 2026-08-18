@@ -20,7 +20,7 @@ def _profile() -> ProjectConfiguration:
     )
 
 
-def test_eidolon_profile_places_rotate_recovery_directly_after_mba_solve() -> None:
+def test_eid_profile_places_rotate_recovery_directly_after_mba_solve() -> None:
     pass_ids = [
         entry["pass_id"]
         for entry in _profile().additional_configuration["pipeline_v2"]

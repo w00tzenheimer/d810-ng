@@ -39,8 +39,8 @@ def test_exact_target_b_fixture_preserves_dispatcher_trap_and_lock_effect():
     assert "PUBLIC sub_7FF8568132D0" in source
     assert "EXTERN __imp_RtlAcquireSRWLockExclusive:PROC" in source
     assert "call qword ptr [__imp_RtlAcquireSRWLockExclusive]" in source
-    assert "EXTERN Eidolon_UpdateSharedStateIfSentinelMatches:PROC" in source
-    assert source.count("call Eidolon_UpdateSharedStateIfSentinelMatches") >= 4
+    assert "EXTERN Eid_UpdateSharedStateIfSentinelMatches:PROC" in source
+    assert source.count("call Eid_UpdateSharedStateIfSentinelMatches") >= 4
     assert "PUBLIC d810_callsite_sub_7FF8568132D0_srw_lock" in source
     assert "int 3" in source
     assert "CONST SEGMENT" in source

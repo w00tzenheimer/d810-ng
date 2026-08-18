@@ -3,8 +3,8 @@ OPTION PROLOGUE:NONE
 OPTION EPILOGUE:NONE
 
 _TEXT SEGMENT ALIGN(16) 'CODE'
-PUBLIC Eidolon_CreateOneShotWaitableTimerMilliseconds
-Eidolon_CreateOneShotWaitableTimerMilliseconds:
+PUBLIC Eid_CreateOneShotWaitableTimerMilliseconds
+Eid_CreateOneShotWaitableTimerMilliseconds:
     xor eax, eax
     ret
 _TEXT ENDS

@@ -1470,7 +1470,7 @@ def build_parser() -> argparse.ArgumentParser:
             "inside the worktree, since only the worktree is mounted into the "
             "container. Naming a .i64 opens that database directly and skips "
             "re-analysis, which matters for large targets. "
-            "Example: --binary WowClassicT_loader-205.6.6818.4-devirt.dll.i64"
+            "Example: --binary MMORPG_loader-205.6.6818.4-devirt.dll.i64"
         ),
     )
     sp.add_argument(

@@ -82,7 +82,7 @@ PYTHONPATH=src pyenv exec python -m pytest -q tests/unit/mba/test_canonical_patt
 The unrelated failures are:
 
 - `test_family_manifest_covers_every_module_owned_rule_in_source_order`: the
-  existing manifest differs from discovered order at Eidolon/Xor and omits
+  existing manifest differs from discovered order at Eid/Xor and omits
   two discovered Xor rules.
 - `test_whole_corpus_has_one_family_qualified_receipt_per_declaration`: the
   existing assertion expects 189 receipts while the current catalogue has 191.

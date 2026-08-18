@@ -3,15 +3,15 @@
 OPTION PROLOGUE:NONE
 OPTION EPILOGUE:NONE
 
-EXTERN Eidolon_ForwardDynamicKeyToProtectionEvent:PROC
-EXTERN Eidolon_UpdateSharedStateIfSentinelMatches:PROC
+EXTERN Eid_ForwardDynamicKeyToProtectionEvent:PROC
+EXTERN Eid_UpdateSharedStateIfSentinelMatches:PROC
 EXTERN VirtualProtect:PROC
 EXTERN __imp_RtlAcquireSRWLockExclusive:PROC
 EXTERN __imp_RtlReleaseSRWLockExclusive:PROC
 EXTERN sub_7FF85668BFB0:PROC
 
 CONST SEGMENT
-eidolon_sbox db 0EBh
+eid_sbox db 0EBh
 db 2Fh
 db 94h
 db 5Eh
@@ -16684,7 +16684,7 @@ sub_7FF8568132D0:
     xor edx, 6940481Eh
     add edx, eax
     mov dword ptr [rsp+3Ch], edx
-    lea r13, eidolon_sbox
+    lea r13, eid_sbox
     and ecx, 1
     mov dword ptr [rsp+424h], ecx
     mov qword ptr [rsp+328h], r12
@@ -16824,7 +16824,7 @@ sub_7FF8568132D0:
     mov ecx, 53h
     mov r8d, 60h
     mov r9d, 41h
-    call Eidolon_UpdateSharedStateIfSentinelMatches
+    call Eid_UpdateSharedStateIfSentinelMatches
     loc_7FF856813423:
     mov eax, dword ptr [r12+40h]
     mov dword ptr [rsp+494h], eax
@@ -32369,7 +32369,7 @@ d810_callsite_sub_7FF8568132D0_srw_lock_target:
     sub ecx, edx
     add ecx, 0AAC9A67h
     mov dword ptr [rsp+3Ch], ecx
-    lea r13, eidolon_sbox
+    lea r13, eid_sbox
     jmp loc_7FF856813884
     loc_7FF856818DA6:
     cmp eax, 4F0BC85Dh
@@ -34684,7 +34684,7 @@ d810_callsite_sub_7FF8568132D0_srw_lock_target:
     mov ecx, 1Ch
     mov r8d, 15h
     mov r9d, 47h
-    call Eidolon_UpdateSharedStateIfSentinelMatches
+    call Eid_UpdateSharedStateIfSentinelMatches
     loc_7FF856819C89:
     mov rax, qword ptr [qword_7FF8571CC990]
     mov rdx, rax
@@ -37033,7 +37033,7 @@ d810_callsite_sub_7FF8568132D0_srw_lock_target:
     mov ecx, 4Bh
     mov r8d, 56h
     mov r9d, 31h
-    call Eidolon_UpdateSharedStateIfSentinelMatches
+    call Eid_UpdateSharedStateIfSentinelMatches
     jmp loc_7FF85681E5B6
     loc_7FF85681A8D1:
     cmp eax, 0E917F6Ch
@@ -37960,7 +37960,7 @@ d810_callsite_sub_7FF8568132D0_srw_lock_target:
     lea eax, [rcx+r9]
     add eax, -55D79283h
     mov dword ptr [rsp+3Ch], eax
-    lea r13, eidolon_sbox
+    lea r13, eid_sbox
     jmp loc_7FF856813884
     loc_7FF85681AFD7:
     mov eax, dword ptr [rsp+1BCh]
@@ -41114,7 +41114,7 @@ d810_callsite_sub_7FF8568132D0_srw_lock_target:
     mov ecx, 46h
     mov edx, 2Ch
     mov r8d, 5Fh
-    call Eidolon_ForwardDynamicKeyToProtectionEvent
+    call Eid_ForwardDynamicKeyToProtectionEvent
     jmp loc_7FF85681E5C1
     loc_7FF85681C6F3:
     mov eax, dword ptr [dword_7FF85723AB14]
@@ -54610,7 +54610,7 @@ d810_callsite_sub_7FF8568132D0_srw_lock_target:
     cmp r10, r8
     jnz loc_7FF856821378
     mov dword ptr [rsp+0C8h], r9d
-    lea r13, eidolon_sbox
+    lea r13, eid_sbox
     jmp loc_7FF856825DC0
     loc_7FF856821378:
     mov r8d, dword ptr [rsp+20Ch]
@@ -54624,7 +54624,7 @@ d810_callsite_sub_7FF8568132D0_srw_lock_target:
     mov qword ptr [rsp+5F0h], rcx
     mov qword ptr [rsp+5F8h], r11
     mov qword ptr [rsp+600h], r10
-    lea r13, eidolon_sbox
+    lea r13, eid_sbox
     loc_7FF8568213D4:
     mov rax, qword ptr [rsp+600h]
     mov rcx, qword ptr [rsp+5F8h]
@@ -62694,7 +62694,7 @@ d810_callsite_sub_7FF8568132D0_srw_lock_target:
     mov ecx, 31h
     mov r8d, 1Fh
     mov r9d, 43h
-    call Eidolon_UpdateSharedStateIfSentinelMatches
+    call Eid_UpdateSharedStateIfSentinelMatches
     loc_7FF85682426A:
     nop
     nop
@@ -70433,7 +70433,7 @@ d810_callsite_sub_7FF8568132D0_srw_lock_target:
     add eax, ecx
     add eax, 47AE4E7h
     mov dword ptr [rsp+174h], eax
-    lea r13, eidolon_sbox
+    lea r13, eid_sbox
     mov eax, dword ptr [r8+r13]
     xor dword ptr [r11+r10], eax
     mov eax, r8d
@@ -80509,7 +80509,7 @@ d810_callsite_sub_7FF8568132D0_srw_lock_target:
     mov ecx, 3Ch
     mov r8d, 3Eh
     mov r9d, 6
-    call Eidolon_UpdateSharedStateIfSentinelMatches
+    call Eid_UpdateSharedStateIfSentinelMatches
     loc_7FF85682A8AF:
     mov byte ptr [r12+58h], 96h
     jmp loc_7FF85682ABF6
@@ -80597,7 +80597,7 @@ d810_callsite_sub_7FF8568132D0_srw_lock_target:
     mov ecx, 0Fh
     mov r8d, 3Fh
     mov r9d, 26h
-    call Eidolon_UpdateSharedStateIfSentinelMatches
+    call Eid_UpdateSharedStateIfSentinelMatches
     loc_7FF85682A950:
     cmp dword ptr [rsp+60h], 1
     jz loc_7FF85682ABB1
@@ -81039,7 +81039,7 @@ d810_callsite_sub_7FF8568132D0_srw_lock_target:
     mov ecx, 2Dh
     mov edx, 2Ch
     mov r8d, 38h
-    call Eidolon_ForwardDynamicKeyToProtectionEvent
+    call Eid_ForwardDynamicKeyToProtectionEvent
     loc_7FF85682ABB1:
     nop
     nop

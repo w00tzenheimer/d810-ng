@@ -408,7 +408,7 @@ class TestRotateIdiomRecoveryNative:
             match_rol64_idiom,
         )
 
-        function_ea = idc.get_name_ea_simple("Eidolon_ComputeTwoQwordBufferHash")
+        function_ea = idc.get_name_ea_simple("Eid_ComputeTwoQwordBufferHash")
         assert function_ea != idaapi.BADADDR
         mba = gen_microcode_at_maturity(function_ea, ida_hexrays.MMAT_GLBOPT2)
         assert mba is not None
@@ -472,7 +472,7 @@ class TestRotateIdiomRecoveryNative:
             rotate_idiom_recovery_native as native,
         )
 
-        function_ea = idc.get_name_ea_simple("Eidolon_ComputeTwoQwordBufferHash")
+        function_ea = idc.get_name_ea_simple("Eid_ComputeTwoQwordBufferHash")
         mba = gen_microcode_at_maturity(function_ea, ida_hexrays.MMAT_GLBOPT2)
         assert mba is not None
         block, instruction, _, _ = _find_64_bit_value_and_destination(mba)
@@ -499,7 +499,7 @@ class TestRotateIdiomRecoveryNative:
         )
         assert helpers == ()
 
-    def test_eidolon_profile_installs_rotate_rule(self, libobfuscated_setup, d810_state):
+    def test_eid_profile_installs_rotate_rule(self, libobfuscated_setup, d810_state):
         with d810_state() as state:
             index = next(
                 index
@@ -511,7 +511,7 @@ class TestRotateIdiomRecoveryNative:
                 rule.name for rule in state.current_blk_rules
             }
             state.start_d810()
-            function_ea = idc.get_name_ea_simple("Eidolon_ComputeTwoQwordBufferHash")
+            function_ea = idc.get_name_ea_simple("Eid_ComputeTwoQwordBufferHash")
             report = state.manager.get_effective_execution_report(function_ea)
             assert any(
                 decision.stage_id == "rotate-idiom-recovery" and decision.active
@@ -526,7 +526,7 @@ class TestRotateIdiomRecoveryNative:
     ):
         """Prove the real hook, helper lowering, and ctree renderer together.
 
-        The production Eidolon profile intentionally retains its much broader
+        The production Eid profile intentionally retains its much broader
         solver portfolio.  This fixture isolates the new value-only rule so a
         failure is attributable to rotate lowering rather than an unrelated
         solver rewrite in a synthetic MASM body.
@@ -548,7 +548,7 @@ class TestRotateIdiomRecoveryNative:
             assert len(state.current_blk_rules) == 1
             state.start_d810()
 
-            function_ea = idc.get_name_ea_simple("Eidolon_ComputeTwoQwordBufferHash")
+            function_ea = idc.get_name_ea_simple("Eid_ComputeTwoQwordBufferHash")
             assert function_ea != idaapi.BADADDR
             cfunc = idaapi.decompile(function_ea, flags=idaapi.DECOMP_NO_CACHE)
             assert cfunc is not None

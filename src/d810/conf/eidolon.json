@@ -1,5 +1,5 @@
 {
-    "description": "eidolon deobfuscation",
+    "description": "eid deobfuscation",
     "ins_rules": [
         {
             "name": "AddXor_Rule_1",

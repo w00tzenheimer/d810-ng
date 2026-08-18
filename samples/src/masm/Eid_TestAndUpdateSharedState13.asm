@@ -3,8 +3,8 @@ OPTION PROLOGUE:NONE
 OPTION EPILOGUE:NONE
 
 _TEXT SEGMENT ALIGN(16) 'CODE'
-PUBLIC Eidolon_TestAndUpdateSharedState13
-Eidolon_TestAndUpdateSharedState13:
+PUBLIC Eid_TestAndUpdateSharedState13
+Eid_TestAndUpdateSharedState13:
     xor eax, eax
     ret
 _TEXT ENDS

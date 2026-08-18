@@ -52,11 +52,11 @@ from verify_sccp_perf_receipt import (  # noqa: E402
 
 
 _SHA = "a" * 64
-_EXPECTED_BINARY = "WowClassic_loader-115.9.6910.9-devirt.dll.i64"
+_EXPECTED_BINARY = "MMORPG_loader-115.9.6910.9-devirt.dll.i64"
 _SHORT_BINARY = "libobfuscated.dll"
 _DEFAULT_FUNCTION_EA = 0x7FF8560D8AE0
 _MATURITY_LABEL = "GLBOPT1"
-_SOURCE_IDB = str(Path("/Volumes/code/re/eidolon/115.9.6910.9") / _EXPECTED_BINARY)
+_SOURCE_IDB = str(Path("/Volumes/code/re/eid/115.9.6910.9") / _EXPECTED_BINARY)
 _SCCP_COUNTERS = (
     "requests",
     "executions",

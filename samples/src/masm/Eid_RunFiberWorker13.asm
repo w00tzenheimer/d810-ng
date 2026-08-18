@@ -1,11 +1,11 @@
 ; Auto-generated x64 MASM (d810 structural export) -- assemble with ml64
-; Function: Eidolon_RunFiberWorker13  @ 0x7ff8564adc40
+; Function: Eid_RunFiberWorker13  @ 0x7ff8564adc40
 OPTION PROLOGUE:NONE
 OPTION EPILOGUE:NONE
 
-EXTERN Eidolon_CreateOneShotWaitableTimerMilliseconds:PROC
-EXTERN Eidolon_QueueHandleForCurrentFiber:PROC
-EXTERN Eidolon_TestAndUpdateSharedState13:PROC
+EXTERN Eid_CreateOneShotWaitableTimerMilliseconds:PROC
+EXTERN Eid_QueueHandleForCurrentFiber:PROC
+EXTERN Eid_TestAndUpdateSharedState13:PROC
 
 CONST SEGMENT
 dword_7FF8571C669C dd 36FF109Ah
@@ -15,8 +15,8 @@ dword_7FF85722BF04 dd 0F213A7AFh
 CONST ENDS
 
 _TEXT SEGMENT ALIGN(16) 'CODE'
-PUBLIC Eidolon_RunFiberWorker13
-Eidolon_RunFiberWorker13:
+PUBLIC Eid_RunFiberWorker13
+Eid_RunFiberWorker13:
     push rbp
     sub rsp, 30h
     lea rbp, [rsp+30h]
@@ -267,7 +267,7 @@ Eidolon_RunFiberWorker13:
     mov ecx, 32h
     mov edx, 1Ah
     mov r8d, 62h
-    call Eidolon_TestAndUpdateSharedState13
+    call Eid_TestAndUpdateSharedState13
     mov eax, dword ptr [dword_7FF8571C669C]
     mov ecx, eax
     not ecx
@@ -289,12 +289,12 @@ Eidolon_RunFiberWorker13:
     mov ecx, 3Eh
     mov r8d, 59h
     mov r9d, 27h
-    call Eidolon_CreateOneShotWaitableTimerMilliseconds
+    call Eid_CreateOneShotWaitableTimerMilliseconds
     mov edx, 47h
     mov r8d, 2Bh
     mov r9d, 4Fh
     mov rcx, rax
-    call Eidolon_QueueHandleForCurrentFiber
+    call Eid_QueueHandleForCurrentFiber
     jmp loc_7FF8564ADDC0
 _TEXT ENDS
 END

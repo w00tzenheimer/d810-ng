@@ -539,7 +539,7 @@ class TestUnflatteningEffectSafetyFixtures:
 
         assert "PUBLIC sub_7FF8568132D0" in source
         assert "call qword ptr [__imp_RtlAcquireSRWLockExclusive]" in source
-        assert "EXTERN Eidolon_UpdateSharedStateIfSentinelMatches:PROC" in source
+        assert "EXTERN Eid_UpdateSharedStateIfSentinelMatches:PROC" in source
         assert "int 3" in source
         assert "CONST SEGMENT" in source
 

@@ -116,5 +116,5 @@ samples/restructuring_lab/
 - Add `llvm-ml64` to Docker; keep the MASM dialect (do NOT add a GAS emitter).
 - Self-contained mini-project (own Makefile/Dockerfile), not a shared-Makefile
   override.
-- Seed = small purpose-built fixtures (C + MASM), not the real WoW function.
+- Seed = small purpose-built fixtures (C + MASM), not the real MMORPG function.
 - Flat `c/` and `masm/` dirs (not `src/c/`).

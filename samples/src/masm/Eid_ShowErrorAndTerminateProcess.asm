@@ -1,5 +1,5 @@
 ; Auto-generated x64 MASM (d810 structural export) -- assemble with ml64
-; Function: Eidolon_ShowErrorAndTerminateProcess  @ 0x7ff855576b50
+; Function: Eid_ShowErrorAndTerminateProcess  @ 0x7ff855576b50
 OPTION PROLOGUE:NONE
 OPTION EPILOGUE:NONE
 
@@ -31,8 +31,8 @@ byte_7FF85726196F db 0FFh
 CONST ENDS
 
 _TEXT SEGMENT ALIGN(16) 'CODE'
-PUBLIC Eidolon_ShowErrorAndTerminateProcess
-Eidolon_ShowErrorAndTerminateProcess:
+PUBLIC Eid_ShowErrorAndTerminateProcess
+Eid_ShowErrorAndTerminateProcess:
     push rbp
     push r14
     push rsi

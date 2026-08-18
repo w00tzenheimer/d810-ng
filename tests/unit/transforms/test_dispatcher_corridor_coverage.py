@@ -610,7 +610,7 @@ def test_observed_stateful_helpers_require_exact_adjacent_state_writes() -> None
 
 
 def _nested_merge_corridor_graph() -> FlowGraph:
-    """The two real WowClassicT residual corridors, in portable CFG form."""
+    """The two real MMORPG residual corridors, in portable CFG form."""
     return FlowGraph(
         blocks={
             0: _block(0, (45, 122), (), 0x7FF859C06F60),

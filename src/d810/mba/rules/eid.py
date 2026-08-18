@@ -1,4 +1,4 @@
-"""Eidolon linear-MBA XOR rules.
+"""Eid linear-MBA XOR rules.
 
 Both rules are proved by the pure Z3 backend.  The regular package import and
 the deterministic rule catalogue list this module explicitly; that is the
@@ -32,7 +32,7 @@ TWO = Const("2", 2)
 SIX = Const("6", 6)
 
 
-class Xor_EidolonKeySchedule_1(VerifiableRule):
+class Xor_EidKeySchedule_1(VerifiableRule):
     """Simplify a constrained seven-term linear-MBA expression to ``x ^ y``.
 
     The identity holds at every operand width when ``c_1 == -c_2``.  It was
@@ -57,11 +57,11 @@ class Xor_EidolonKeySchedule_1(VerifiableRule):
 
     CONSTRAINTS = [c_1 == -c_2]
 
-    DESCRIPTION = "Simplify the Eidolon 7-term linear-MBA XOR to x ^ y"
-    REFERENCE = "Eidolon loader message-template key schedule (0x711B67)"
+    DESCRIPTION = "Simplify the Eid 7-term linear-MBA XOR to x ^ y"
+    REFERENCE = "Eid loader message-template key schedule (0x711B67)"
 
 
-class Xor_EidolonKeySchedule_2(VerifiableRule):
+class Xor_EidKeySchedule_2(VerifiableRule):
     """Simplify an unconditional six-term linear-MBA expression to ``x ^ y``.
 
     This form was observed at 0x70FC53 on byte operands and is valid at every
@@ -80,11 +80,11 @@ class Xor_EidolonKeySchedule_2(VerifiableRule):
     )
     REPLACEMENT = x ^ y
 
-    DESCRIPTION = "Simplify the Eidolon 6-term linear-MBA XOR to x ^ y"
-    REFERENCE = "Eidolon loader message-template key schedule (0x70FC53)"
+    DESCRIPTION = "Simplify the Eid 6-term linear-MBA XOR to x ^ y"
+    REFERENCE = "Eid loader message-template key schedule (0x70FC53)"
 
 
-class Xor_EidolonKeySchedule_3(VerifiableRule):
+class Xor_EidKeySchedule_3(VerifiableRule):
     """Simplify a second unconditional six-term expression to ``x ^ y``.
 
     The coefficient-six terms cancel because the three disjoint masks
@@ -93,7 +93,7 @@ class Xor_EidolonKeySchedule_3(VerifiableRule):
     """
 
     maturities = _ALL_MATURITIES
-    Z3_CERTIFICATE_PROVER = "eidolon-key-schedule-3-v1"
+    Z3_CERTIFICATE_PROVER = "eid-key-schedule-3-v1"
 
     PATTERN = (
         SIX * (~(x | y))
@@ -104,5 +104,5 @@ class Xor_EidolonKeySchedule_3(VerifiableRule):
     )
     REPLACEMENT = x ^ y
 
-    DESCRIPTION = "Simplify the Eidolon coefficient-six linear-MBA XOR to x ^ y"
-    REFERENCE = "Eidolon loader message-template rolling XOR"
+    DESCRIPTION = "Simplify the Eid coefficient-six linear-MBA XOR to x ^ y"
+    REFERENCE = "Eid loader message-template rolling XOR"

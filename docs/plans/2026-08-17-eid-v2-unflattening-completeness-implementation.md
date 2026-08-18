@@ -1,4 +1,4 @@
-# Eidolon Config-V2 Unflattening Completeness Implementation Plan
+# Eid Config-V2 Unflattening Completeness Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use
 > `superpowers:subagent-driven-development` to implement this plan task-by-task.
@@ -6,7 +6,7 @@
 > `superpowers:test-driven-development` for every production change and
 > `superpowers:verification-before-completion` before every completion claim.
 
-**Goal:** Safely and completely unflatten the three confirmed Eidolon
+**Goal:** Safely and completely unflatten the three confirmed Eid
 config-v2 failures while preserving every exact call and semantic terminal.
 
 **Architecture:** Keep `eidolon_v3_const_solve.json` unchanged and repair the
@@ -22,15 +22,15 @@ reachability oracles.
 fixtures, SQLite diagnostic snapshots, pytest, IDA Docker system tests,
 ast-grep, import-linter, graphify.
 
-**Spec:** `docs/plans/2026-08-17-eidolon-v2-unflattening-completeness-design.md`
+**Spec:** `docs/plans/2026-08-17-eid-v2-unflattening-completeness-design.md`
 
 ## Global Constraints
 
-- Work only in `.worktrees/eidolon-v2-unflattening-completeness` on branch
-  `diff/eidolon-v2-unflattening-completeness`, created from the current
+- Work only in `.worktrees/eid-v2-unflattening-completeness` on branch
+  `diff/eid-v2-unflattening-completeness`, created from the current
   `cfg-recon-mainline` tip after this plan is committed.
 - Do not modify, delete, or add tests for the legacy unflattening engine in this
-  plan. Changing the A/B fixture profile from legacy to Eidolon v2 is required
+  plan. Changing the A/B fixture profile from legacy to Eid v2 is required
   test correction, not legacy migration.
 - Do not change `eidolon_v3_const_solve.json` unless a RED fixture proves a
   required existing v2 pass is disabled. Current live diagnostics prove the
@@ -54,7 +54,7 @@ ast-grep, import-linter, graphify.
 
 ```bash
 ./tools/scripts/run_system_tests_docker.sh <action> \
-  -w eidolon-v2-unflattening-completeness ...
+  -w eid-v2-unflattening-completeness ...
 ```
 
 - Write Docker output with `-o <bare-filename>` so it lands in the worktree's
@@ -72,8 +72,8 @@ The controller creates the worktree from the plan-bearing tip:
 ```bash
 cd /Users/mahmoud/src/idapro/d810
 git worktree add \
-  .worktrees/eidolon-v2-unflattening-completeness \
-  -b diff/eidolon-v2-unflattening-completeness \
+  .worktrees/eid-v2-unflattening-completeness \
+  -b diff/eid-v2-unflattening-completeness \
   cfg-recon-mainline
 ```
 
@@ -81,13 +81,13 @@ Use these paths in every report:
 
 ```text
 MAIN=/Users/mahmoud/src/idapro/d810
-WORKTREE=/Users/mahmoud/src/idapro/d810/.worktrees/eidolon-v2-unflattening-completeness
+WORKTREE=/Users/mahmoud/src/idapro/d810/.worktrees/eid-v2-unflattening-completeness
 PROFILE=eidolon_v3_const_solve.json
 ```
 
 ---
 
-### Task 1: Reproduce All Three Failures Under The Exact Eidolon V2 Profile
+### Task 1: Reproduce All Three Failures Under The Exact Eid V2 Profile
 
 **Files:**
 - Modify: `tests/system/e2e/test_unflattening_effect_safety_fixtures.py`
@@ -97,7 +97,7 @@ PROFILE=eidolon_v3_const_solve.json
 - Inspect: `samples/src/masm/sub_7FF8569F0540.asm`
 - Inspect: `samples/src/masm/sub_7FF8568132D0.asm`
 - Inspect: `tests/system/e2e/unflattening_effect_safety_oracle.py`
-- Create: `docs/plans/evidence/2026-08-17-eidolon-v2-unflattening-red-baseline.md`
+- Create: `docs/plans/evidence/2026-08-17-eid-v2-unflattening-red-baseline.md`
 
 **Interfaces:**
 - Consumes: existing MASM export/build flow and session-scoped exact-call BFS
@@ -164,7 +164,7 @@ Build through the canonical Docker flow from `MAIN`:
 
 ```bash
 ./tools/scripts/run_system_tests_docker.sh exec \
-  -w eidolon-v2-unflattening-completeness -- \
+  -w eid-v2-unflattening-completeness -- \
   bash -lc 'samples/scripts/build_masm.sh unflattening_effect_safety'
 ```
 
@@ -172,7 +172,7 @@ If the script's established target selector differs, use its documented
 selector and record the exact command. Remove the generated DLL after tests;
 only source and build metadata are committed.
 
-- [ ] **Step 4: Make every effect-safety system test select Eidolon v2**
+- [ ] **Step 4: Make every effect-safety system test select Eid v2**
 
 In `TestUnflatteningEffectSafetyDecompilation`, replace the two existing
 `state.for_project("default_unflattening_ollvm.json")` selections with:
@@ -185,7 +185,7 @@ Add `test_target_c_after_preserves_termination_effects_and_commits`. It must:
 
 1. resolve the loaded function entry for `sub_7FF855576B50`;
 2. resolve each of the three callsite data markers;
-3. decompile with the Eidolon profile;
+3. decompile with the Eid profile;
 4. require a committed transaction from the same diagnostic session;
 5. require all three exact call EAs in the latest reachable post-D810 snapshot;
 6. reject residual dispatcher state constants `0x16AA65E9`, `0x079323F9`,
@@ -203,19 +203,19 @@ other failure:
 
 ```bash
 ./tools/scripts/run_system_tests_docker.sh test \
-  -w eidolon-v2-unflattening-completeness -l \
+  -w eid-v2-unflattening-completeness -l \
   -o task1_target_a_red.txt -- \
   tests/system/e2e/test_unflattening_effect_safety_fixtures.py::TestUnflatteningEffectSafetyDecompilation::test_target_a_after_preserves_memcpy_effect_and_commits \
   -vv -s
 
 ./tools/scripts/run_system_tests_docker.sh test \
-  -w eidolon-v2-unflattening-completeness -l \
+  -w eid-v2-unflattening-completeness -l \
   -o task1_target_b_red.txt -- \
   tests/system/e2e/test_unflattening_effect_safety_fixtures.py::TestUnflatteningEffectSafetyDecompilation::test_target_b_after_preserves_srw_lock_effect_and_commits \
   -vv -s
 
 ./tools/scripts/run_system_tests_docker.sh test \
-  -w eidolon-v2-unflattening-completeness -l \
+  -w eid-v2-unflattening-completeness -l \
   -o task1_target_c_red.txt -- \
   tests/system/e2e/test_unflattening_effect_safety_fixtures.py::TestUnflatteningEffectSafetyDecompilation::test_target_c_after_preserves_termination_effects_and_commits \
   -vv -s
@@ -250,8 +250,8 @@ git add \
   tests/unit/test_unflattening_effect_safety_masm_fixtures.py \
   tests/system/e2e/test_unflattening_effect_safety_fixtures.py
 git add -f \
-  docs/plans/evidence/2026-08-17-eidolon-v2-unflattening-red-baseline.md
-git commit -m "test(unflatten): reproduce Eidolon v2 completeness gaps"
+  docs/plans/evidence/2026-08-17-eid-v2-unflattening-red-baseline.md
+git commit -m "test(unflatten): reproduce Eid v2 completeness gaps"
 ```
 
 ---
@@ -537,7 +537,7 @@ First run focused local tests. Then from `MAIN`:
 
 ```bash
 ./tools/scripts/run_system_tests_docker.sh test \
-  -w eidolon-v2-unflattening-completeness -l \
+  -w eid-v2-unflattening-completeness -l \
   -o task4_target_c_green.txt -- \
   tests/system/e2e/test_unflattening_effect_safety_fixtures.py::TestUnflatteningEffectSafetyDecompilation::test_target_c_after_preserves_termination_effects_and_commits \
   -vv -s
@@ -661,7 +661,7 @@ From `MAIN`:
 
 ```bash
 ./tools/scripts/run_system_tests_docker.sh test \
-  -w eidolon-v2-unflattening-completeness -l \
+  -w eid-v2-unflattening-completeness -l \
   -o task5_target_a_green.txt -- \
   tests/system/e2e/test_unflattening_effect_safety_fixtures.py::TestUnflatteningEffectSafetyDecompilation::test_target_a_after_preserves_memcpy_effect_and_commits \
   -vv -s
@@ -707,7 +707,7 @@ git commit -m "fix(unflatten): preserve effectful shared corridors"
 **Interfaces:**
 - Produces: generalized semantic-terminal retention based on reachable portable
   control-flow/instruction semantics.
-- Does not produce: an `int3`, `__debugbreak`, Eidolon, or address-specific
+- Does not produce: an `int3`, `__debugbreak`, Eid, or address-specific
   special case.
 
 - [ ] **Step 1: Write the conditional-terminal RED tests**
@@ -774,7 +774,7 @@ From `MAIN`:
 
 ```bash
 ./tools/scripts/run_system_tests_docker.sh test \
-  -w eidolon-v2-unflattening-completeness -l \
+  -w eid-v2-unflattening-completeness -l \
   -o task6_target_b_green.txt -- \
   tests/system/e2e/test_unflattening_effect_safety_fixtures.py::TestUnflatteningEffectSafetyDecompilation::test_target_b_after_preserves_srw_lock_effect_and_commits \
   -vv -s
@@ -816,7 +816,7 @@ change merely because it appears in the plan.
 
 **Files:**
 - Inspect: `tests/system/e2e/test_unflattening_effect_safety_fixtures.py`
-- Create: `docs/plans/evidence/2026-08-17-eidolon-v2-unflattening-acceptance.md`
+- Create: `docs/plans/evidence/2026-08-17-eid-v2-unflattening-acceptance.md`
 - Inspect: all files changed by Tasks 1-6
 
 **Interfaces:**
@@ -847,8 +847,8 @@ From `MAIN`:
 
 ```bash
 ./tools/scripts/run_system_tests_docker.sh test \
-  -w eidolon-v2-unflattening-completeness -l \
-  -o task7_exact_eidolon_v2_acceptance.txt -- \
+  -w eid-v2-unflattening-completeness -l \
+  -o task7_exact_eid_v2_acceptance.txt -- \
   tests/system/e2e/test_unflattening_effect_safety_fixtures.py \
   -vv -s
 ```
@@ -864,7 +864,7 @@ mutation transaction runtime file. Run from `MAIN`:
 
 ```bash
 ./tools/scripts/run_system_tests_docker.sh test \
-  -w eidolon-v2-unflattening-completeness -l \
+  -w eid-v2-unflattening-completeness -l \
   -o task7_protected_unflattening_baselines.txt -- \
   tests/system/e2e/test_strategy_migration_baselines.py \
   tests/system/e2e/test_approov_engine_wrapper_baselines.py \
@@ -872,7 +872,7 @@ mutation transaction runtime file. Run from `MAIN`:
   -vv -s
 
 ./tools/scripts/run_system_tests_docker.sh test \
-  -w eidolon-v2-unflattening-completeness -l \
+  -w eid-v2-unflattening-completeness -l \
   -o task7_transaction_runtime.txt -- \
   tests/system/runtime/optimizers/microcode/flow/flattening/engine/test_runtime.py \
   -vv -s
@@ -922,8 +922,8 @@ and any unresolved concern. Do not call live MCP verification complete here.
 git add \
   tests/system/e2e/test_unflattening_effect_safety_fixtures.py
 git add -f \
-  docs/plans/evidence/2026-08-17-eidolon-v2-unflattening-acceptance.md
-git commit -m "test(unflatten): verify Eidolon v2 completeness repairs"
+  docs/plans/evidence/2026-08-17-eid-v2-unflattening-acceptance.md
+git commit -m "test(unflatten): verify Eid v2 completeness repairs"
 ```
 
 Stage the test file only if Task 7 required a test-only correction. Never commit
@@ -934,7 +934,7 @@ Stage the test file only if Task 7 required a test-only correction. Never commit
 ### Task 8: Verify The Original Live MCP Targets
 
 **Files:**
-- Create: `docs/plans/evidence/2026-08-17-eidolon-v2-unflattening-live.md`
+- Create: `docs/plans/evidence/2026-08-17-eid-v2-unflattening-live.md`
 - Do not modify production code unless a new live RED regression is added first.
 
 **Interfaces:**
@@ -990,8 +990,8 @@ The report distinguishes fixture-proven and live-proven claims and includes
 every artifact path. Run `git diff --check`, then:
 
 ```bash
-git add -f docs/plans/evidence/2026-08-17-eidolon-v2-unflattening-live.md
-git commit -m "docs(unflatten): record live Eidolon v2 acceptance"
+git add -f docs/plans/evidence/2026-08-17-eid-v2-unflattening-live.md
+git commit -m "docs(unflatten): record live Eid v2 acceptance"
 ```
 
 If the user has not yet restarted/installed the worktree, record Task 8 as

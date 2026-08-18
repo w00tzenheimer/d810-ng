@@ -20,7 +20,7 @@ def _profile() -> ProjectConfiguration:
     )
 
 
-def test_eidolon_profile_selects_finite_zero_set_as_an_mba_predicate_transform() -> None:
+def test_eid_profile_selects_finite_zero_set_as_an_mba_predicate_transform() -> None:
     mba_simplify = next(
         entry
         for entry in _profile().additional_configuration["pipeline_v2"]

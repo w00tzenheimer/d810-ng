@@ -44,11 +44,12 @@ if [ -z "$(echo "$MASM_FUNCS" | tr -d ' ')" ]; then
     exit 2
 fi
 
-BUILD_DIR="$SAMPLES_DIR/.build_masm"
+BUILD_DIR=".build_masm"
 rm -rf "$BUILD_DIR"; mkdir -p "$BUILD_DIR" bins
 
 CFLAGS=(--target=x86_64-pc-windows-msvc -c -O0 -g -Iinclude -ffreestanding
-        -fms-compatibility -fms-extensions -Wno-error -DD810_DLL_EXPORT=1)
+        -fms-compatibility -fms-extensions -Wno-error -DD810_DLL_EXPORT=1
+        "-fdebug-prefix-map=$SAMPLES_DIR=/src/d810/samples")
 
 # --- exclude the C bodies the asm replaces ---------------------------------
 declare -A IS_MASM
@@ -98,12 +99,15 @@ done
 # Unresolved externs (inter-sample calls, the 3 sub_* targets) are expected and
 # tolerated via /FORCE:UNRESOLVED; keep the noise in a log and just summarize.
 out="bins/$BINARY_NAME.dll"
+pdb="bins/$BINARY_NAME.pdb"
 linklog="$BUILD_DIR/link.log"
-"$LINKER" /DLL /NOENTRY /FORCE:UNRESOLVED "${export_flags[@]}" \
-    "/OUT:$out" "${objs[@]}" 2>"$linklog" || true
+"$LINKER" /DLL /NOENTRY /DEBUG /FORCE:UNRESOLVED "${export_flags[@]}" \
+    "/OUT:$out" "/PDB:$pdb" "/PDBALTPATH:$BINARY_NAME.pdb" \
+    /PDBSOURCEPATH:/src/d810/samples "${objs[@]}" 2>"$linklog" || true
 undef=$(grep -c "undefined symbol" "$linklog" 2>/dev/null || echo 0)
 [ -s "$out" ] || { echo "error: link failed:" >&2; cat "$linklog" >&2; exit 1; }
-echo "linked $out  (${undef} unresolved externs tolerated; log: $linklog)"
+[ -s "$pdb" ] || { echo "error: linker did not produce $pdb" >&2; exit 1; }
+echo "linked $out and $pdb  (${undef} unresolved externs tolerated; log: $linklog)"
 file "$out" 2>/dev/null || true
 echo "exported MASM funcs:"
 for f in $MASM_FUNCS; do

@@ -1,10 +1,10 @@
-# Eidolon Config-V2 Unflattening Completeness Design
+# Eid Config-V2 Unflattening Completeness Design
 
 ## Goal
 
 Make the existing config-v2 unflattening pipeline used by
 `eidolon_v3_const_solve.json` completely and safely unflatten these three live
-Eidolon functions:
+Eid functions:
 
 - `0x7FF8569F0540`: preserve the state-routed `memcpy` corridor while removing
   the residual comparison dispatcher;
@@ -227,7 +227,7 @@ Fixture success without live success is incomplete.
 
 - deleting or modifying the legacy unflattening engine;
 - migrating the configuration catalogue;
-- adding a legacy pass to the Eidolon profile;
+- adding a legacy pass to the Eid profile;
 - changing Egglog, MBA rules, or constant solving;
 - recognizing MurmurHash, Win32 APIs, or these three functions by name;
 - removing reachable traps;
@@ -236,7 +236,7 @@ Fixture success without live success is incomplete.
 
 ## Definition of Done
 
-The work is complete only when all three exact Eidolon v2 fixtures commit safe
+The work is complete only when all three exact Eid v2 fixtures commit safe
 transactions, all semantic-effect oracles pass, protected system/runtime suites
 remain green, architecture checks pass, and all three original live MCP targets
 produce complete pseudocode without omissions or residual dispatchers.

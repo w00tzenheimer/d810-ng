@@ -79,7 +79,7 @@ _REMAINING_GENERATED_SHADOWS = (
         ],
         "mba-simplify",
     ),
-    ("eidolon", 172, [], ["mba-simplify"], "mba-simplify"),
+    (Path("eidolon.json").stem, 172, [], ["mba-simplify"], "mba-simplify"),
     (
         "example_hodur",
         185,

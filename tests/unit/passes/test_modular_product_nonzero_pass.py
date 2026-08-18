@@ -13,7 +13,7 @@ _ROOT = Path(__file__).resolve().parents[3]
 _PROFILE = _ROOT / "src/d810/conf/eidolon_v3_const_solve.json"
 
 
-def test_eidolon_profile_selects_modular_product_nonzero_as_an_mba_predicate_transform() -> None:
+def test_eid_profile_selects_modular_product_nonzero_as_an_mba_predicate_transform() -> None:
     profile = ProjectConfiguration(
         path=_PROFILE,
         **json.loads(_PROFILE.read_text(encoding="utf-8")),

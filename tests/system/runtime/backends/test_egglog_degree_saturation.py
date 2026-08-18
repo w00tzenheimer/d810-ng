@@ -328,7 +328,7 @@ class TestCertifiedFixedRotateNative:
             )
             state.stop_d810()
 
-            function_ea = idc.get_name_ea_simple("Eidolon_ComputeTwoQwordBufferHash")
+            function_ea = idc.get_name_ea_simple("Eid_ComputeTwoQwordBufferHash")
             assert function_ea != idaapi.BADADDR
             mba = gen_microcode_at_maturity(function_ea, ida_hexrays.MMAT_GLBOPT2)
             assert mba is not None

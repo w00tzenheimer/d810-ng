@@ -822,8 +822,8 @@ def _verify_complement_mask_hodur_v1(rule: Any, bit_width: int) -> bool:
         return False
 
 
-def _eidolon_key_schedule_3_expected_rule():
-    """Build the audited coefficient-six Eidolon identity."""
+def _eid_key_schedule_3_expected_rule():
+    """Build the audited coefficient-six Eid identity."""
 
     from d810.mba.dsl import Const, Var
 
@@ -839,14 +839,14 @@ def _eidolon_key_schedule_3_expected_rule():
     return pattern, x ^ y
 
 
-def _verify_eidolon_key_schedule_3_v1(rule: Any, bit_width: int) -> bool:
+def _verify_eid_key_schedule_3_v1(rule: Any, bit_width: int) -> bool:
     """Certify the coefficient-six identity through small Z3 obligations."""
 
     if type(bit_width) is not int or bit_width <= 0:
         return False
     try:
         expected_pattern, expected_replacement = (
-            _eidolon_key_schedule_3_expected_rule()
+            _eid_key_schedule_3_expected_rule()
         )
         if _symbolic_expression_signature(rule.pattern) != _symbolic_expression_signature(
             expected_pattern
@@ -948,9 +948,9 @@ def verify_rule(
 
     z3_certificate_prover = getattr(rule, "Z3_CERTIFICATE_PROVER", None)
     if z3_certificate_prover is not None:
-        if z3_certificate_prover != "eidolon-key-schedule-3-v1":
+        if z3_certificate_prover != "eid-key-schedule-3-v1":
             return False
-        return _verify_eidolon_key_schedule_3_v1(rule, bit_width)
+        return _verify_eid_key_schedule_3_v1(rule, bit_width)
 
     certificate_prover = getattr(rule, "EGGLOG_CERTIFICATE_PROVER", None)
     if certificate_prover is not None:

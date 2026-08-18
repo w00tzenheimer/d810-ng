@@ -1,4 +1,4 @@
-"""Acceptance coverage for the Eidolon native-bound transition fixture."""
+"""Acceptance coverage for the Eid native-bound transition fixture."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from d810.testing.runner import run_deobfuscation_test
 from tests.system.cases.libobfuscated_comprehensive import DAC_MASM_CASES
 
 
-_FUNCTION = "Eidolon_ShowErrorAndTerminateProcess"
+_FUNCTION = "Eid_ShowErrorAndTerminateProcess"
 _CASE = next(case for case in DAC_MASM_CASES if case.function == _FUNCTION)
 _RECEIPT_IDENTITY = re.compile(
     r"fact_id=.*:state=0x(?P<state>[0-9A-Fa-f]+):target=.*"

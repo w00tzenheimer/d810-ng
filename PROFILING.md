@@ -54,7 +54,7 @@ The August 2026 investigation used this immutable workload:
 | --- | --- |
 | Worktree | `sccp-cython-performance` |
 | Function EA | `0x7ff8560d8ae0` |
-| Binary | `WowClassic_loader-115.9.6910.9-devirt.dll.i64` |
+| Binary | `MMORPG_loader-115.9.6910.9-devirt.dll.i64` |
 | Fixture SHA-256 | `4eeda74c08f668c55dd0810174055d3da2446c0a85563c29f4c9387738b31cb5` |
 | SCCP program | 226 blocks, 3,642 instructions |
 | Constant MOP cache | 4,096 entries |
@@ -90,7 +90,7 @@ D810_PROFILE_LABEL=compiled-overlay-on \
 D810_SCCP_FUNCTION_EA=0x7ff8560d8ae0 \
 D810_EXPECTED_FIXTURE_SHA256=4eeda74c08f668c55dd0810174055d3da2446c0a85563c29f4c9387738b31cb5 \
 D810_FIXTURE_ATTESTATION=.tmp/sccp_exact_fixture_attestation.json \
-D810_TEST_BINARY=WowClassic_loader-115.9.6910.9-devirt.dll.i64 \
+D810_TEST_BINARY=MMORPG_loader-115.9.6910.9-devirt.dll.i64 \
 ./tools/scripts/run_system_tests_docker.sh test \
   -w WORKTREE \
   -o bounded-profile.txt \
@@ -351,11 +351,11 @@ The main checkout also currently contains a separate antidebug capture:
 ```
 
 It includes `d810_profile.html`, `d810_profile.txt`, a combined cProfile, and
-per-maturity cProfile snapshots. Earlier Eidolon exact-A pyinstrument and
+per-maturity cProfile snapshots. Earlier Eid exact-A pyinstrument and
 cProfile experiments remain under:
 
 ```text
-.worktrees/eidolon-v2-unflattening-completeness/.tmp/
+.worktrees/eid-v2-unflattening-completeness/.tmp/
 ```
 
 ## Preservation policy

@@ -2480,7 +2480,7 @@ def test_shared_store_partitions_through_a_bottom_glue_merge(_seam) -> None:
 
 
 def _nested_transitive_merge_fg(*, supported: bool) -> FlowGraph:
-    """Real residual shape with the source and handler anchors from WowClassicT.
+    """Real residual shape with the source and handler anchors from MMORPG.
 
     ``blk123@0x7FF859C08D35`` computes ``edx = eax ^ (edx - ecx)`` and
     enters ``blk3@0x7FF859C070C0``, which writes the dispatcher state before
@@ -2550,7 +2550,7 @@ def _nested_transitive_merge_fg(*, supported: bool) -> FlowGraph:
     )
 
 
-def test_nested_subinsn_transitive_merge_partitions_real_wowclassic_corridors(
+def test_nested_subinsn_transitive_merge_partitions_real_mmorpg_corridors(
     _seam,
 ) -> None:
     """A supported nested expression must reach the canonical evaluator.

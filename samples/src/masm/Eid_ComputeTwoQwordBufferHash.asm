@@ -5,8 +5,8 @@ OPTION PROLOGUE:NONE
 OPTION EPILOGUE:NONE
 
 _TEXT SEGMENT ALIGN(16) 'CODE'
-PUBLIC Eidolon_ComputeTwoQwordBufferHash
-Eidolon_ComputeTwoQwordBufferHash:
+PUBLIC Eid_ComputeTwoQwordBufferHash
+Eid_ComputeTwoQwordBufferHash:
     ; Keep a real CFG split so Hex-Rays enters its final global-optimization
     ; maturity, where this profile's semantic-lifting stage is scheduled.
     test rcx, rcx

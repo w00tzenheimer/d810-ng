@@ -789,7 +789,7 @@ DAC_MASM_CASES = [
     DeobfuscationCase(
         function="sub_7FF856533A20",
         description=(
-            "Exact Eidolon v4 layered-control-flow fixture. The outer interval "
+            "Exact Eid v4 layered-control-flow fixture. The outer interval "
             "dispatcher must be removed while the reachable 45-way semantic switch "
             "and all of its in-function continuations remain renderable."
         ),
@@ -826,7 +826,7 @@ DAC_MASM_CASES = [
         skip_if_function_absent=True,
     ),
     DeobfuscationCase(
-        function="Eidolon_ComputeTwoQwordBufferHash",
+        function="Eid_ComputeTwoQwordBufferHash",
         description=(
             "MurmurHash3-shaped 64-bit multiply/shift rotate pair. The exact "
             "semantic lift must render both inner rotates as __ROL8__ helpers."
@@ -853,21 +853,21 @@ DAC_MASM_CASES = [
         skip_if_function_absent=True,
     ),
     DeobfuscationCase(
-        function="Eidolon_RunFiberWorker13",
+        function="Eid_RunFiberWorker13",
         description=(
-            "Live Eidolon worker-loop export. Guards the transaction preflight "
+            "Live Eid worker-loop export. Guards the transaction preflight "
             "against stranding the direct task, one-shot timer, or current-fiber "
             "queue calls while dispatcher cleanup rewrites the CFG."
         ),
         project="eidolon_v3_const_solve.json",
         obfuscated_contains=[
             "0x47C3C789",
-            "Eidolon_TestAndUpdateSharedState13",
+            "Eid_TestAndUpdateSharedState13",
         ],
         deobfuscated_contains=[
-            "Eidolon_TestAndUpdateSharedState13",
-            "Eidolon_CreateOneShotWaitableTimerMilliseconds",
-            "Eidolon_QueueHandleForCurrentFiber",
+            "Eid_TestAndUpdateSharedState13",
+            "Eid_CreateOneShotWaitableTimerMilliseconds",
+            "Eid_QueueHandleForCurrentFiber",
         ],
         must_change=True,
         required_rules=["SimpleFlatteningCleanupUnflattener"],
@@ -876,7 +876,7 @@ DAC_MASM_CASES = [
     DeobfuscationCase(
         function="sub_7FF856629E30",
         description=(
-            "Exact live Eidolon call-preservation fixture. The direct "
+            "Exact live Eid call-preservation fixture. The direct "
             "effectful helper call and its control-flow operands must remain "
             "visible in the rebuilt export. Portable fake-jump preflight "
             "coverage is provided separately by the executor tests."
@@ -893,7 +893,7 @@ DAC_MASM_CASES = [
     DeobfuscationCase(
         function="sub_7FF85A59E4D0",
         description=(
-            "Live Eidolon state-machine export with residual effect-free "
+            "Live Eid state-machine export with residual effect-free "
             "state-slot writes. Guards conservative stack dead-store "
             "elimination after dispatcher recovery."
         ),
@@ -993,9 +993,9 @@ DAC_MASM_CASES = [
         skip_if_function_absent=True,
     ),
     DeobfuscationCase(
-        function="Eidolon_ShowErrorAndTerminateProcess",
+        function="Eid_ShowErrorAndTerminateProcess",
         description=(
-            "Live Eidolon native-bound transition fixture. The entry state "
+            "Live Eid native-bound transition fixture. The entry state "
             "write at 0x7FF855576BA0 and loop-back state write at "
             "0x7FF855576E95 must bypass the dispatcher while preserving the "
             "MessageBoxA/GetCurrentProcess/TerminateProcess effect corridor "

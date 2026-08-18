@@ -15,7 +15,7 @@ from d810.optimizers.microcode.instructions.egraph.egglog_handler import (
 )
 
 
-_PROBE_BINARY = "/work/.tmp/disposable-wow-mba-probe/wow_mba_probe.dll"
+_PROBE_BINARY = "/work/.tmp/disposable-mmorpg-mba-probe/mmorpg_mba_probe.dll"
 _FUNCTION_NAME = "sub_7FF85A13D930"
 
 

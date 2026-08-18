@@ -626,13 +626,13 @@ def test_dump_binary_selects_target_database(
             no_debug_logging=False,
             full_diagnostics=True,
             extra=None,
-            binary="WowClassicT_loader-205.6.6818.4-devirt.dll.i64",
+            binary="MMORPG_loader-205.6.6818.4-devirt.dll.i64",
         )
     )
 
     assert rc == 0
     _argv, env, _cwd = calls[0]
-    assert env["D810_TEST_BINARY"] == "WowClassicT_loader-205.6.6818.4-devirt.dll.i64"
+    assert env["D810_TEST_BINARY"] == "MMORPG_loader-205.6.6818.4-devirt.dll.i64"
     assert wt.exists()
 
 
