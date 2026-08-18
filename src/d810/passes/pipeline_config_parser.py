@@ -56,10 +56,6 @@ def _project_legacy_rules(project_config) -> tuple[object, ...]:
     else:
         ins_rules = getattr(project_config, "ins_rules", ())
         blk_rules = getattr(project_config, "blk_rules", ())
-    if ins_rules is None:
-        ins_rules = ()
-    if blk_rules is None:
-        blk_rules = ()
     if isinstance(ins_rules, (str, bytes)) or not isinstance(ins_rules, (list, tuple)):
         raise PipelineConfigError("ins_rules must be a sequence")
     if isinstance(blk_rules, (str, bytes)) or not isinstance(blk_rules, (list, tuple)):

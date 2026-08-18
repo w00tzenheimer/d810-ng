@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 from pathlib import Path
 
 import pytest
@@ -153,4 +154,62 @@ def test_manager_requires_runtime_project_for_clone(tmp_path: Path) -> None:
             runtime_project=None,
             destination=tmp_path / "missing.json",
             description="missing",
+        )
+
+
+def test_manager_v2_clone_supplies_strict_validation_and_canonicalizes(
+    tmp_path: Path,
+):
+    source_path = tmp_path / "source-v2.json"
+    source_path.write_text(
+        json.dumps(
+            {
+                "description": "migration-era v2",
+                "ins_rules": [],
+                "blk_rules": [],
+                "additional_configuration": {
+                    "pipeline_v2_mode": "config-v2",
+                    "pipeline_v2": [{"pass_id": "recover_dispatcher"}],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    source = ProjectConfiguration.from_file(source_path)
+
+    destination = tmp_path / "clone-v2.json"
+    clone_runtime_project(
+        runtime_project=source,
+        destination=destination,
+        description="clone",
+    )
+
+    actual = json.loads(destination.read_text(encoding="utf-8"))
+    assert "ins_rules" not in actual
+    assert "blk_rules" not in actual
+    assert "pipeline_v2_mode" not in actual["additional_configuration"]
+
+
+def test_manager_v2_clone_rejects_missing_pipeline_before_canonicalization(
+    tmp_path: Path,
+):
+    source_path = tmp_path / "invalid-v2.json"
+    source_path.write_text(
+        json.dumps(
+            {
+                "description": "incomplete v2",
+                "ins_rules": [],
+                "blk_rules": [],
+                "additional_configuration": {"pipeline_v2_mode": "config-v2"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    source = ProjectConfiguration.from_file(source_path)
+
+    with pytest.raises(ProjectConfigurationEditError, match="invalid-v2-clone.json"):
+        clone_runtime_project(
+            runtime_project=source,
+            destination=tmp_path / "invalid-v2-clone.json",
+            description="clone",
         )

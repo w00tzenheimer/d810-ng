@@ -66,6 +66,8 @@ def write_project_document_atomically(
             fp.flush()
             os.fsync(fp.fileno())
         validated = ProjectConfiguration.from_file(temp_path)
+        if validator is not None:
+            validator(validated)
         os.replace(temp_path, destination)
         temp_path = None
         validated.path = destination
@@ -83,7 +85,12 @@ def clone_project_configuration(
     source: ProjectConfiguration,
     destination: pathlib.Path,
     description: str,
+    validator: Callable[[ProjectConfiguration], None] | None = None,
 ) -> ProjectConfiguration:
     document = _read_complete_document(source.path)
     document["description"] = description
-    return write_project_document_atomically(destination, document)
+    return write_project_document_atomically(
+        destination,
+        document,
+        validator=validator,
+    )

@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import enum
 import pathlib
+from collections.abc import Mapping
 
 from d810.capabilities.idb_preparation import PreparationScriptDescriptor
 from d810.core.config import ProjectConfiguration
@@ -18,6 +19,7 @@ from d810.passes.constant_simplification_options import (
 )
 from d810.manager.preparation_scripts import PreparationScriptRegistry
 from d810.passes.config_v2_hook_runtime import ConfigV2HookSchedule
+from d810.passes.pipeline_config_parser import require_config_v2_project
 
 
 class ProjectConfigMode(str, enum.Enum):
@@ -114,10 +116,21 @@ def clone_runtime_project(
             "No effective runtime project is available to clone"
         )
     try:
+        additional = runtime_project.additional_configuration
+        validator = (
+            require_config_v2_project
+            if isinstance(additional, Mapping)
+            and (
+                "pipeline_v2" in additional
+                or additional.get("pipeline_v2_mode") == "config-v2"
+            )
+            else None
+        )
         return clone_project_configuration(
             source=runtime_project,
             destination=destination,
             description=description,
+            validator=validator,
         )
     except ProjectConfigurationWriteError as exc:
         raise ProjectConfigurationEditError(str(exc)) from exc

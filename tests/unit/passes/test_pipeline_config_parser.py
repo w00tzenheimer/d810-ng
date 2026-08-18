@@ -217,6 +217,21 @@ def test_require_config_v2_project_rejects_explicit_non_mapping_additional_confi
         require_config_v2_project(document)
 
 
+@pytest.mark.parametrize("field", ["ins_rules", "blk_rules"])
+def test_require_config_v2_project_rejects_null_legacy_rule_arrays(field):
+    document = {
+        "ins_rules": [],
+        "blk_rules": [],
+        "additional_configuration": {
+            "pipeline_v2": [{"pass_id": "recover_dispatcher"}]
+        },
+    }
+    document[field] = None
+
+    with pytest.raises(PipelineConfigError, match="migrate_project_config_v2.py"):
+        require_config_v2_project(document)
+
+
 def test_require_config_v2_project_wraps_malformed_project_like_additional_configuration():
     project = SimpleNamespace(
         path=Path("/tmp/malformed-project-like.json"),

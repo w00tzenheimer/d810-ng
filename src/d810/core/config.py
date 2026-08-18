@@ -105,6 +105,18 @@ class ProjectConfiguration:
         repr=False,
         compare=False,
     )
+    _ins_rules_present: bool = dataclasses.field(
+        default=True,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+    _blk_rules_present: bool = dataclasses.field(
+        default=True,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     @property
     def pre_hexrays_payload(self) -> dict[str, typing.Any]:
@@ -161,18 +173,44 @@ class ProjectConfiguration:
             if key not in known_fields
         }
 
+        def load_rule_array(field_name: str) -> list[RuleConfiguration]:
+            if field_name not in data:
+                return []
+            raw_rules = data[field_name]
+            if not isinstance(raw_rules, list):
+                raise ValueError(
+                    f"{field_name} must be an array; migrate it with: "
+                    "python tools/migrations/migrate_project_config_v2.py "
+                    f"{config_path} --in-place"
+                )
+            rules: list[RuleConfiguration] = []
+            for index, raw_rule in enumerate(raw_rules):
+                if not isinstance(raw_rule, dict):
+                    raise ValueError(
+                        f"{field_name}[{index}] must be an object; migrate it "
+                        "with: python tools/migrations/migrate_project_config_v2.py "
+                        f"{config_path} --in-place"
+                    )
+                try:
+                    rules.append(RuleConfiguration.from_dict(raw_rule))
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(
+                        f"{field_name}[{index}] is malformed ({exc}); migrate it "
+                        "with: python tools/migrations/migrate_project_config_v2.py "
+                        f"{config_path} --in-place"
+                    ) from exc
+            return rules
+
         project = cls(
             path=config_path,
             description=data.get("description", ""),
-            ins_rules=[
-                RuleConfiguration.from_dict(r) for r in data.get("ins_rules", [])
-            ],
-            blk_rules=[
-                RuleConfiguration.from_dict(r) for r in data.get("blk_rules", [])
-            ],
+            ins_rules=load_rule_array("ins_rules"),
+            blk_rules=load_rule_array("blk_rules"),
             additional_configuration=data.get("additional_configuration", {}),
         )
         project._unknown_top_level = unknown_top_level
+        project._ins_rules_present = "ins_rules" in data
+        project._blk_rules_present = "blk_rules" in data
         return project
 
     def _config_v2_validation_snapshot(self) -> str | None:
@@ -218,8 +256,17 @@ class ProjectConfiguration:
         project_data["description"] = self.description
         additional = copy.deepcopy(self.additional_configuration)
         if self._is_canonical_v2_project():
-            project_data["additional_configuration"] = additional
             additional.pop("pipeline_v2_mode", None)
+            project_data["additional_configuration"] = additional
+        elif not self.ins_rules and not self.blk_rules:
+            # Preserve an already-canonical file's absence without pretending
+            # that a migration-era v2 document was registry-validated.  A
+            # compatibility mode marker is removed only by explicit strict
+            # approval above.
+            if self._ins_rules_present:
+                project_data["ins_rules"] = []
+            if self._blk_rules_present:
+                project_data["blk_rules"] = []
             project_data["additional_configuration"] = additional
         else:
             project_data["ins_rules"] = [rule.to_dict() for rule in self.ins_rules]

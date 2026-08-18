@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from d810.core.config import ProjectConfiguration
+from d810.passes.pipeline_config_parser import require_config_v2_project
 from d810.core.project_config_persistence import (
     ProjectConfigurationWriteError,
     clone_project_configuration,
@@ -58,6 +59,35 @@ def test_clone_changes_only_path_and_description_and_preserves_nested_v2_payload
     assert json.loads(destination.read_text(encoding="utf-8")) == expected
     assert duplicate.path == destination
     assert duplicate.additional_configuration == source.additional_configuration
+
+
+def test_clone_without_validator_preserves_legacy_document_shape(tmp_path: Path) -> None:
+    source_path = tmp_path / "legacy-source.json"
+    source_path.write_text(
+        json.dumps(
+            {
+                "description": "legacy",
+                "ins_rules": [
+                    {"name": "legacy-rule", "is_activated": True, "config": {}}
+                ],
+                "blk_rules": [],
+                "additional_configuration": {"enable_pass_pipeline": True},
+            }
+        ),
+        encoding="utf-8",
+    )
+    source = ProjectConfiguration.from_file(source_path)
+    destination = tmp_path / "legacy-copy.json"
+
+    clone_project_configuration(
+        source=source,
+        destination=destination,
+        description="copy",
+    )
+
+    actual = json.loads(destination.read_text(encoding="utf-8"))
+    assert actual["ins_rules"][0]["name"] == "legacy-rule"
+    assert actual["blk_rules"] == []
 
 
 def test_atomic_reload_failure_leaves_existing_destination_unchanged(
@@ -132,3 +162,52 @@ def test_full_validator_runs_on_temporary_reload_before_atomic_replace(
     assert observed_paths and observed_paths[0] != destination
     assert destination.read_text(encoding="utf-8") == '{"sentinel": "old"}'
     assert list(tmp_path.glob(".destination.json.*.tmp")) == []
+
+
+def test_strict_atomic_v2_result_remains_canonical_on_second_save(
+    tmp_path: Path,
+):
+    document = {
+        "description": "migration-era v2",
+        "ins_rules": [],
+        "blk_rules": [],
+        "additional_configuration": {
+            "pipeline_v2_mode": "config-v2",
+            "pipeline_v2": [{"pass_id": "recover_dispatcher"}],
+        },
+    }
+    destination = tmp_path / "strict-v2.json"
+
+    result = write_project_document_atomically(
+        destination,
+        document,
+        validator=require_config_v2_project,
+    )
+    result.save()
+    actual = json.loads(destination.read_text(encoding="utf-8"))
+
+    assert "ins_rules" not in actual
+    assert "blk_rules" not in actual
+    assert "pipeline_v2_mode" not in actual["additional_configuration"]
+
+
+def test_v2_atomic_write_without_validator_preserves_migration_metadata(
+    tmp_path: Path,
+):
+    document = {
+        "description": "migration-era v2",
+        "ins_rules": [],
+        "blk_rules": [],
+        "additional_configuration": {
+            "pipeline_v2_mode": "config-v2",
+            "pipeline_v2": [{"pass_id": "recover_dispatcher"}],
+        },
+    }
+    destination = tmp_path / "unvalidated-v2.json"
+
+    write_project_document_atomically(destination, document)
+    actual = json.loads(destination.read_text(encoding="utf-8"))
+
+    assert actual["ins_rules"] == []
+    assert actual["blk_rules"] == []
+    assert actual["additional_configuration"]["pipeline_v2_mode"] == "config-v2"

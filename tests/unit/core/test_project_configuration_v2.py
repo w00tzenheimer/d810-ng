@@ -85,6 +85,40 @@ def test_legacy_project_save_keeps_legacy_arrays_and_does_not_implicitly_migrate
     assert "pipeline_v2" not in actual["additional_configuration"]
 
 
+def test_already_canonical_absence_survives_load_save_without_revalidation(
+    tmp_path: Path,
+):
+    document = {
+        "description": "already canonical",
+        "additional_configuration": {
+            "pipeline_v2": [{"pass_id": "recover_dispatcher"}]
+        },
+    }
+    project = _write_project(tmp_path, document)
+
+    project.save()
+
+    actual = json.loads(project.path.read_text(encoding="utf-8"))
+    assert "ins_rules" not in actual
+    assert "blk_rules" not in actual
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [("ins_rules", None), ("blk_rules", None), ("ins_rules", {}), ("blk_rules", "bad")],
+)
+def test_project_file_rejects_malformed_legacy_rule_array_with_migration_command(
+    tmp_path: Path, field: str, value: object
+):
+    document = _v2_document()
+    document[field] = value
+    path = tmp_path / "malformed-array.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="migrate_project_config_v2.py"):
+        ProjectConfiguration.from_file(path)
+
+
 @pytest.mark.parametrize("mode", ["legacy", "shadow-check"])
 def test_save_rejects_legacy_compatibility_modes_for_v2_projects(
     tmp_path: Path, mode: str
