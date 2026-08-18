@@ -207,7 +207,10 @@ def match_root_pod(
     result type exactly.
     """
 
-    packed = PackedNativeMbaTerm.from_view(view)
+    try:
+        packed = PackedNativeMbaTerm.from_view(view)
+    except ValueError:
+        return catalogue._match_root_portable(view, comparison_budget=comparison_budget)
     if _match_pod_catalogue is not None:
         accelerated = _match_cython_catalogue(
             catalogue,
@@ -291,6 +294,7 @@ def _view_match_keys(
                 "node",
                 current.operation,
                 current.width,
+                current.shift_count,
                 tuple(sort_key(child) for child in sorted(children, key=sort_key)),
             )
         sort_memo[identity] = result
@@ -318,6 +322,7 @@ def _view_match_keys(
                 "node",
                 current.operation,
                 current.width,
+                current.shift_count,
                 tuple(key(child) for child in sorted(children, key=sort_key)),
             )
         memo[identity] = result

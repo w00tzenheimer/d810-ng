@@ -408,6 +408,7 @@ def _view_sort_key(view: NativeMbaTermView) -> tuple[object, ...]:
         "node",
         view.operation,
         view.width,
+        view.shift_count,
         tuple(_view_sort_key(child) for child in view.canonical_children()),
     )
 

@@ -587,6 +587,7 @@ def _view_key(candidate: NativeMbaTermView) -> tuple[Any, ...]:
         "node",
         candidate.operation,
         candidate.width,
+        candidate.shift_count,
         tuple(_view_key(child) for child in candidate.canonical_children()),
     )
 

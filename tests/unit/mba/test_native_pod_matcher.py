@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from d810.backends.mba.compiled_pattern_catalogue import CompiledPatternCatalogue
 from d810.backends.mba.egglog_add_rule_compiler import (
     _compile_rule_families,
@@ -167,4 +169,75 @@ def test_shared_feasibility_filter_preserves_later_match_under_tight_budget() ->
     assert result.comparison_budget_exceeded is False
     assert tuple(match.rule.source_name for match in result.matches) == (
         "_ValidAfterImpossibleRule",
+    )
+
+
+@pytest.mark.parametrize("operation", ("shl", "lshr"))
+def test_pod_adapter_falls_back_for_fixed_shift_child(
+    monkeypatch, operation: str
+) -> None:
+    """Unsupported fixed-shift packing must retain the portable root match."""
+
+    monkeypatch.setattr(VerifiableRule, "registry", dict(VerifiableRule.registry))
+    left, right = Var("fallback_left"), Var("fallback_right")
+
+    class _WildcardRootRule(VerifiableRule):
+        PATTERN = left + right
+        REPLACEMENT = PATTERN
+
+    rules = _compile_rule_families({"add": (_WildcardRootRule,)}).compiled_rules
+    catalogue = CompiledPatternCatalogue.from_rules(rules)
+    shifted = NativeMbaTermView(
+        operation,
+        32,
+        children=(_leaf("x"),),
+        shift_count=1,
+    )
+    candidate = _node("add", shifted, _leaf("y"))
+
+    portable = catalogue._match_root_portable(candidate, comparison_budget=64)
+    pod = match_root_pod(catalogue, candidate, comparison_budget=64)
+
+    assert pod == portable
+    assert tuple(match.rule.source_name for match in pod.matches) == (
+        "_WildcardRootRule",
+    )
+
+
+@pytest.mark.parametrize("operation", ("shl", "lshr"))
+def test_portable_repeated_binding_distinguishes_fixed_shift_counts(
+    monkeypatch, operation: str
+) -> None:
+    """Repeated bindings compare fixed-shift metadata, not only child shape."""
+
+    monkeypatch.setattr(VerifiableRule, "registry", dict(VerifiableRule.registry))
+    value = Var("repeated_value")
+
+    class _RepeatedBindingRule(VerifiableRule):
+        PATTERN = value + value
+        REPLACEMENT = PATTERN
+
+    rules = _compile_rule_families({"add": (_RepeatedBindingRule,)}).compiled_rules
+    catalogue = CompiledPatternCatalogue.from_rules(rules)
+
+    def shifted(count: int) -> NativeMbaTermView:
+        return NativeMbaTermView(
+            operation,
+            32,
+            children=(_leaf("shared"),),
+            shift_count=count,
+        )
+
+    different_counts = catalogue._match_root_portable(
+        _node("add", shifted(1), shifted(2)),
+        comparison_budget=64,
+    )
+    identical_counts = catalogue._match_root_portable(
+        _node("add", shifted(1), shifted(1)),
+        comparison_budget=64,
+    )
+
+    assert different_counts.matches == ()
+    assert tuple(match.rule.source_name for match in identical_counts.matches) == (
+        "_RepeatedBindingRule",
     )
