@@ -143,7 +143,7 @@ from d810.manager.workbench_models import (
     DeobfuscationCaseSnapshot,
     DeobfuscationWorkbenchSnapshot,
     FunctionRef,
-    RuntimeConfigRef,
+    ProjectConfigRef,
     WorkbenchComparisonSnapshot,
 )
 from d810.manager.workbench_service import WorkbenchService
@@ -1536,12 +1536,12 @@ class D810Manager:
 
     def create_config_v2_project_draft(
         self,
-        runtime_project: object,
+        project: object,
         *,
         destination: pathlib.Path,
     ) -> ConfigV2ProjectDraft:
         return self.config_v2_editing_service.create_draft(
-            runtime_project,
+            project,
             destination=destination,
         )
 
@@ -1689,7 +1689,7 @@ class D810Manager:
     def create_workbench_recipe_draft(
         self,
         snapshot: DeobfuscationWorkbenchSnapshot,
-        runtime_project: object,
+        project: object,
     ) -> PipelineRecipeDraft:
         override = self.get_workbench_function_recipe(snapshot.function.ea)
         if override is not None:
@@ -1698,34 +1698,30 @@ class D810Manager:
                 function_ea=snapshot.function.ea,
                 function_fingerprint=snapshot.function.fingerprint,
                 workbench_generation=snapshot.generation,
-                source_path=snapshot.runtime.source_path,
-                runtime_path=snapshot.runtime.runtime_path,
+                project_path=snapshot.project.project_path,
             )
         return self.recipe_service.create_draft(
             function_ea=snapshot.function.ea,
             function_fingerprint=snapshot.function.fingerprint,
             workbench_generation=snapshot.generation,
-            source_path=snapshot.runtime.source_path,
-            runtime_path=snapshot.runtime.runtime_path,
-            configs=pipeline_configs_from_project_config(runtime_project),
+            project_path=snapshot.project.project_path,
+            configs=pipeline_configs_from_project_config(project),
         )
 
     def create_active_workbench_recipe_draft(
         self,
         *,
         function_ea: int,
-        source_path: str,
-        runtime_path: str,
-        runtime_project: object,
+        project_path: str,
+        project: object,
     ) -> PipelineRecipeDraft:
         """Create an in-memory recipe from the exact active config-v2 pipeline."""
         return self.recipe_service.create_draft(
             function_ea=function_ea,
             function_fingerprint=None,
             workbench_generation=0,
-            source_path=source_path,
-            runtime_path=runtime_path,
-            configs=pipeline_configs_from_project_config(runtime_project),
+            project_path=project_path,
+            configs=pipeline_configs_from_project_config(project),
         )
 
     def create_saved_workbench_recipe_draft(
@@ -1734,8 +1730,7 @@ class D810Manager:
         function_ea: int,
         function_fingerprint: str | None,
         workbench_generation: int,
-        source_path: str,
-        runtime_path: str,
+        project_path: str,
     ) -> PipelineRecipeDraft | None:
         override = self.get_workbench_function_recipe(function_ea)
         if override is None:
@@ -1745,8 +1740,7 @@ class D810Manager:
             function_ea=function_ea,
             function_fingerprint=function_fingerprint,
             workbench_generation=workbench_generation,
-            source_path=source_path,
-            runtime_path=runtime_path,
+            project_path=project_path,
         )
 
     def validate_workbench_recipe(
@@ -1864,43 +1858,43 @@ class D810Manager:
         function_name: str,
         function_fingerprint: str | None,
         project_snapshot: ProjectRuntimeSnapshot,
-        runtime_project: typing.Any,
+        project: typing.Any,
         facts: typing.Any | None = None,
         baseline: BaselineRef | None = None,
         latest_output: D810OutputRef | None = None,
     ) -> DeobfuscationWorkbenchSnapshot:
         """Collect one immutable read-only workbench snapshot."""
-        runtime_scope = "project-runtime"
+        project_scope = "project"
         initial_errors: tuple[str, ...] = ()
         saved_recipe: FunctionPipelineOverride | None = None
         try:
             override = self.function_recipe_runtime.get(function_ea)
             selection = select_workbench_recipe_projection(
-                runtime_project,
+                project,
                 project_snapshot,
                 override,
                 function_ea=function_ea,
                 function_fingerprint=function_fingerprint,
             )
-            runtime_project = selection.runtime_project
+            project = selection.project
             project_snapshot = selection.project_snapshot
-            runtime_scope = selection.recipe_scope
+            project_scope = selection.recipe_scope
             initial_errors = selection.errors
             if selection.recipe_scope == "saved-recipe-explicit":
                 saved_recipe = override
         except FunctionRecipePersistenceError as exc:
-            runtime_scope = "saved-recipe-blocked"
+            project_scope = "saved-recipe-blocked"
             initial_errors = (f"function recipe: {exc}",)
         return self.workbench_service.collect(
             function_ea=function_ea,
             function_name=function_name,
             function_fingerprint=function_fingerprint,
             project_snapshot=project_snapshot,
-            runtime_project=runtime_project,
+            project=project,
             facts=facts,
             baseline=baseline,
             latest_output=latest_output,
-            runtime_scope=runtime_scope,
+            project_scope=project_scope,
             saved_recipe=saved_recipe,
             initial_errors=initial_errors,
         )
@@ -1909,7 +1903,7 @@ class D810Manager:
         self,
         *,
         function: FunctionRef,
-        runtime: RuntimeConfigRef,
+        project: ProjectConfigRef,
         saved_recipe: FunctionPipelineOverride | None,
     ) -> DeobfuscationCaseSnapshot:
         """Project only closed, current-schema diagnostic databases for one function."""
@@ -1928,7 +1922,7 @@ class D810Manager:
         repository = DeobfuscationCaseRepository(SqliteCaseDiagnosticReader(paths))
         return DeobfuscationCaseService(repository).collect(
             function=function,
-            runtime=runtime,
+            project=project,
             saved_recipe=saved_recipe,
         )
 

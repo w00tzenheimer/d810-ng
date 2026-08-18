@@ -141,9 +141,9 @@ class TestTigressIndirectSemanticOracle:
                 # the target labels are otherwise absent from Hex-Rays' MBA.
                 # Exercise the explicit enabled path rather than treating a
                 # policy-disabled abstention as a semantic unflattening failure.
-                runtime_project = state.current_runtime_project
-                assert runtime_project is not None
-                runtime_config = runtime_project.additional_configuration
+                project = state.current_project
+                assert project is not None
+                runtime_config = project.additional_configuration
                 prior_enabled = runtime_config.get("native_patch_enabled")
                 had_prior_enabled = "native_patch_enabled" in runtime_config
                 prior_manager_config = dict(state.manager.config)

@@ -41,14 +41,9 @@ def _snapshot() -> object:
         fingerprint="sha256:abc",
         generation=generation,
     )
-    runtime = models.RuntimeConfigRef(
-        source_name="default_ollvm.json",
-        source_path="/projects/default_ollvm.json",
-        runtime_name="default_ollvm_v2.json",
-        runtime_path="/projects/default_ollvm_v2.json",
-        mode="config-v2",
-        routed=True,
-        hook_mode="config-v2",
+    project = models.ProjectConfigRef(
+        project_name="default_ollvm.json",
+        project_path="/projects/default_ollvm.json",
         pass_ids=("recon", "recover_dispatcher"),
     )
     attack = models.AttackSummary(
@@ -130,7 +125,7 @@ def _snapshot() -> object:
     return models.DeobfuscationWorkbenchSnapshot(
         generation=generation,
         function=function,
-        runtime=runtime,
+        project=project,
         attack=attack,
         pipeline=(stage,),
         consumers=(consumer,),
@@ -170,7 +165,7 @@ def test_every_nested_record_is_frozen_and_slotted() -> None:
     snapshot = _snapshot()
     records = (
         snapshot.function,
-        snapshot.runtime,
+        snapshot.project,
         snapshot.attack,
         snapshot.pipeline[0],
         snapshot.pipeline[0].diagnostics[0],
@@ -247,9 +242,9 @@ def test_comparison_records_carry_complete_identity_and_metrics() -> None:
         line_count=1,
         character_count=22,
         content_sha256="sha256:d810",
-        runtime_path="/configs/default_ollvm_v2.json",
-        runtime_pass_ids=("first", "second"),
-        runtime_generation=4,
+        project_path="/configs/default_ollvm.json",
+        project_pass_ids=("first", "second"),
+        project_generation=4,
     )
     comparison = models.WorkbenchComparisonSnapshot(
         function_ea=0x401000,
@@ -264,7 +259,7 @@ def test_comparison_records_carry_complete_identity_and_metrics() -> None:
     )
 
     assert comparison.baseline.idb_identity == comparison.d810_output.idb_identity
-    assert comparison.d810_output.runtime_pass_ids == ("first", "second")
+    assert comparison.d810_output.project_pass_ids == ("first", "second")
     assert comparison.metrics[0].delta == 0
     assert tuple(item.value for item in models.ArtifactFreshness) == (
         "current",
@@ -281,4 +276,4 @@ def test_extended_comparison_fields_preserve_legacy_four_argument_callers() -> N
 
     assert baseline.function_ea is None
     assert baseline.pseudocode is None
-    assert output.runtime_pass_ids == ()
+    assert output.project_pass_ids == ()

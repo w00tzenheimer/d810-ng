@@ -46,8 +46,7 @@ class PipelineRecipeDraft:
     function_ea: int
     function_fingerprint: str | None
     workbench_generation: int
-    source_path: str
-    runtime_path: str
+    project_path: str
     passes: tuple[RecipePass, ...]
 
 
@@ -75,8 +74,7 @@ class FunctionPipelineOverride:
     schema_version: int
     function_ea: int
     function_fingerprint: str | None
-    source_path: str
-    runtime_path: str
+    project_path: str
     pass_configs_json: str
     updated_at: float
 

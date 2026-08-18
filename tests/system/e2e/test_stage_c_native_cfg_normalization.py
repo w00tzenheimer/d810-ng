@@ -112,12 +112,12 @@ class TestStageCNativeCfgNormalization:
             assert inherited_cfunc is not None
             inherited_ctree = fingerprint_ctree(inherited_cfunc)
 
-            runtime_project = state.current_runtime_project
-            assert runtime_project is not None
+            project = state.current_project
+            assert project is not None
             prior_config = dict(state.manager.config)
-            configured = _enable_stage_c(dict(runtime_project.additional_configuration))
-            runtime_project.additional_configuration.clear()
-            runtime_project.additional_configuration.update(configured)
+            configured = _enable_stage_c(dict(project.additional_configuration))
+            project.additional_configuration.clear()
+            project.additional_configuration.update(configured)
             state.manager.configure(**configured)
             state.start_d810()
             was_opted_in = state.manager.is_native_patch_opted_in(function_ea)

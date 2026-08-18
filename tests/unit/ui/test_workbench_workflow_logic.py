@@ -15,7 +15,7 @@ from d810.manager.workbench_models import (
     FunctionRef,
     OutcomeStatus,
     ExecutionScopeSummary,
-    RuntimeConfigRef,
+    ProjectConfigRef,
     SnapshotFreshness,
     StatisticsSummary,
     WorkbenchCommandResult,
@@ -29,14 +29,9 @@ def _snapshot(*, generation: int = 4) -> DeobfuscationWorkbenchSnapshot:
     return DeobfuscationWorkbenchSnapshot(
         generation=generation,
         function=FunctionRef(0x401000, "target", "sha256:abc", generation),
-        runtime=RuntimeConfigRef(
-            source_name="default_ollvm.json",
-            source_path="/configs/default_ollvm.json",
-            runtime_name="default_ollvm_v2.json",
-            runtime_path="/configs/default_ollvm_v2.json",
-            mode="config-v2",
-            routed=True,
-            hook_mode="config-v2",
+        project=ProjectConfigRef(
+            project_name="default_ollvm.json",
+            project_path="/configs/default_ollvm.json",
             pass_ids=("first", "second"),
         ),
         attack=AttackSummary(
@@ -195,7 +190,7 @@ def test_current_started_snapshot_offers_immediate_deobfuscation() -> None:
     assert view.primary.action_id == "deobfuscate"
     assert view.primary.label == "Deobfuscate this function"
     assert view.primary.enabled is True
-    assert "default_ollvm_v2.json" in view.detail
+    assert "default_ollvm.json" in view.detail
 
 
 def test_current_comparison_offers_contextual_tuning() -> None:

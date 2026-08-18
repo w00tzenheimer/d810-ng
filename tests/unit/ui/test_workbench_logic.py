@@ -22,7 +22,7 @@ from d810.manager.workbench_models import (
     OutcomeStatus,
     PipelineStageSnapshot,
     ExecutionScopeSummary,
-    RuntimeConfigRef,
+    ProjectConfigRef,
     SnapshotFreshness,
     StatisticsSummary,
     EffectiveMaturitySchedule,
@@ -43,14 +43,9 @@ def _snapshot() -> DeobfuscationWorkbenchSnapshot:
     return DeobfuscationWorkbenchSnapshot(
         generation=generation,
         function=FunctionRef(0x401000, "target", "sha256:abc", generation),
-        runtime=RuntimeConfigRef(
-            source_name="default_ollvm.json",
-            source_path="/configs/default_ollvm.json",
-            runtime_name="default_ollvm_v2.json",
-            runtime_path="/configs/default_ollvm_v2.json",
-            mode="config-v2",
-            routed=True,
-            hook_mode="config-v2",
+        project=ProjectConfigRef(
+            project_name="default_ollvm.json",
+            project_path="/configs/default_ollvm.json",
             pass_ids=("first", "second"),
         ),
         attack=AttackSummary(
@@ -449,37 +444,36 @@ def test_supporting_rows_lead_with_session_execution_ledger_and_demote_counters(
     assert supporting.index(ledger) < supporting.index(legacy)
 
 
-def test_context_rows_keep_source_and_runtime_truth_distinct() -> None:
+def test_context_rows_project_one_canonical_identity() -> None:
     rows = logic.project_workbench_rows(_snapshot())
-    runtime = next(row for row in rows if row.key == "context:runtime")
+    project = next(row for row in rows if row.key == "context:project")
 
-    assert "default_ollvm_v2.json" in runtime.summary
-    assert "default_ollvm.json" in runtime.detail
-    assert "/configs/default_ollvm_v2.json" in runtime.detail
-    assert "config-v2" in runtime.detail
+    assert "default_ollvm.json" in project.summary
+    assert "/configs/default_ollvm.json" in project.detail
+    assert "passes: first, second" in project.detail
 
 
-def test_context_runtime_labels_saved_recipe_as_explicit_only() -> None:
+def test_context_project_labels_saved_recipe_as_explicit_only() -> None:
     snapshot = _snapshot()
     scoped = dataclasses.replace(
         snapshot,
-        runtime=dataclasses.replace(
-            snapshot.runtime,
+        project=dataclasses.replace(
+            snapshot.project,
             recipe_scope="saved-recipe-explicit",
             pass_ids=("jump-fixer",),
         ),
     )
 
-    runtime = next(
+    project = next(
         row
         for row in logic.project_workbench_rows(scoped)
-        if row.key == "context:runtime"
+        if row.key == "context:project"
     )
 
-    assert "saved recipe" in runtime.summary
-    assert "ordinary refresh uses project runtime" in runtime.detail
-    assert "Deobfuscate This" in runtime.detail
-    assert "passes: jump-fixer" in runtime.detail
+    assert "saved recipe" in project.summary
+    assert "ordinary refresh uses the project" in project.detail
+    assert "Deobfuscate This" in project.detail
+    assert "passes: jump-fixer" in project.detail
 
 
 def test_filter_is_case_insensitive_searches_status_and_preserves_order() -> None:
@@ -566,7 +560,7 @@ def _comparison(
     output_reasons = (
         ()
         if d810_freshness is ArtifactFreshness.CURRENT
-        else ("Runtime generation changed",)
+        else ("Project generation changed",)
     )
     return WorkbenchComparisonSnapshot(
         function_ea=0x401000,
@@ -615,7 +609,7 @@ def test_comparison_view_exposes_stale_reasons_and_suppresses_metrics() -> None:
     assert view.comparable is False
     assert view.native.is_current is True
     assert view.d810.is_current is False
-    assert view.d810.reasons == ("Runtime generation changed",)
+    assert view.d810.reasons == ("Project generation changed",)
     assert view.metrics == ()
     assert view.text_changed is None
     assert "stale" in view.d810.status.casefold()
@@ -784,9 +778,9 @@ def test_evidence_export_is_canonical_deterministic_json() -> None:
             "line_count": 0,
             "path": None,
             "pseudocode": None,
-            "runtime_generation": None,
-            "runtime_pass_ids": [],
-            "runtime_path": None,
+            "project_generation": None,
+            "project_pass_ids": [],
+            "project_path": None,
             "type_generation": None,
         },
         "pipeline": [
@@ -835,16 +829,11 @@ def test_evidence_export_is_canonical_deterministic_json() -> None:
             "public_passes": ["constant-simplification"],
             "unknown_targets": [],
         },
-        "runtime": {
-            "hook_mode": "config-v2",
-            "mode": "config-v2",
+        "project": {
             "pass_ids": ["first", "second"],
-            "recipe_scope": "project-runtime",
-            "routed": True,
-            "runtime_name": "default_ollvm_v2.json",
-            "runtime_path": "/configs/default_ollvm_v2.json",
-            "source_name": "default_ollvm.json",
-            "source_path": "/configs/default_ollvm.json",
+            "project_name": "default_ollvm.json",
+            "project_path": "/configs/default_ollvm.json",
+            "recipe_scope": "project",
         },
         "statistics": {
             "stage_patches": [],

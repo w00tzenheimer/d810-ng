@@ -34,7 +34,7 @@ from d810.manager.workbench_models import (
     PreparationTransactionSummary,
     PreparationWorkbenchSummary,
     ExecutionScopeSummary,
-    RuntimeConfigRef,
+    ProjectConfigRef,
     SnapshotFreshness,
     StatisticsSummary,
     WorkbenchCommandRequest,
@@ -198,11 +198,11 @@ class WorkbenchService:
         function_name: str,
         function_fingerprint: str | None,
         project_snapshot: ProjectRuntimeSnapshot,
-        runtime_project: object,
+        project: object,
         facts: object | None = None,
         baseline: BaselineRef | None = None,
         latest_output: D810OutputRef | None = None,
-        runtime_scope: str = "project",
+        project_scope: str = "project",
         saved_recipe: FunctionPipelineOverride | None = None,
         initial_errors: tuple[str, ...] = (),
     ) -> DeobfuscationWorkbenchSnapshot:
@@ -213,16 +213,11 @@ class WorkbenchService:
         self._latest_function_fingerprint = function_fingerprint
         errors = list(initial_errors)
 
-        runtime = RuntimeConfigRef(
-            source_name=project_snapshot.source.basename,
-            source_path=str(project_snapshot.source.path),
-            runtime_name=project_snapshot.runtime.basename,
-            runtime_path=str(project_snapshot.runtime.path),
-            mode=project_snapshot.mode.value,
-            routed=project_snapshot.routed,
-            hook_mode=project_snapshot.hook_mode,
+        project_ref = ProjectConfigRef(
+            project_name=project_snapshot.project.basename,
+            project_path=str(project_snapshot.project.path),
             pass_ids=tuple(project_snapshot.effective_pass_ids),
-            recipe_scope=str(runtime_scope),
+            recipe_scope=str(project_scope),
         )
         function = FunctionRef(
             ea=int(function_ea),
@@ -232,12 +227,12 @@ class WorkbenchService:
         )
 
         try:
-            pipeline = self._pipeline(runtime_project, facts=facts)
+            pipeline = self._pipeline(project, facts=facts)
             actual_ids = tuple(stage.pass_id for stage in pipeline)
-            if actual_ids != runtime.pass_ids:
+            if actual_ids != project_ref.pass_ids:
                 errors.append(
-                    "pipeline: runtime pass IDs do not match parsed pass specs "
-                    f"({runtime.pass_ids!r} != {actual_ids!r})"
+                    "pipeline: project pass IDs do not match parsed pass specs "
+                    f"({project_ref.pass_ids!r} != {actual_ids!r})"
                 )
         except (KeyError, TypeError, ValueError, RuntimeError) as exc:
             pipeline = ()
@@ -316,7 +311,7 @@ class WorkbenchService:
 
         case = self._case_snapshot(
             function=function,
-            runtime=runtime,
+            project=project_ref,
             saved_recipe=saved_recipe,
             errors=errors,
         )
@@ -324,7 +319,7 @@ class WorkbenchService:
         return DeobfuscationWorkbenchSnapshot(
             generation=generation,
             function=function,
-            runtime=runtime,
+            project=project_ref,
             attack=attack,
             pipeline=pipeline,
             consumers=consumers,
@@ -746,7 +741,7 @@ class WorkbenchService:
         self,
         *,
         function: FunctionRef,
-        runtime: RuntimeConfigRef,
+        project: ProjectConfigRef,
         saved_recipe: FunctionPipelineOverride | None,
         errors: list[str],
     ) -> DeobfuscationCaseSnapshot:
@@ -761,7 +756,7 @@ class WorkbenchService:
         try:
             return collector(
                 function=function,
-                runtime=runtime,
+                project=project,
                 saved_recipe=saved_recipe,
             )
         except DeobfuscationCaseCollectionError as exc:
@@ -907,11 +902,11 @@ class WorkbenchService:
 
     def _pipeline(
         self,
-        runtime_project: object,
+        project: object,
         *,
         facts: object | None,
     ) -> tuple[PipelineStageSnapshot, ...]:
-        specs = pass_specs_from_project_config(runtime_project, self._registry)
+        specs = pass_specs_from_project_config(project, self._registry)
         if facts is None:
             manifests = pipeline_contract_manifest(specs)
             results: tuple[object | None, ...] = (None,) * len(specs)
@@ -1197,14 +1192,9 @@ class WorkbenchService:
             )
         return (
             _path_ref(
-                kind="source-config",
-                label="Source project configuration",
-                value=project_snapshot.source.path,
-            ),
-            _path_ref(
-                kind="runtime-config",
-                label="Effective runtime configuration",
-                value=project_snapshot.runtime.path,
+                kind="project-config",
+                label="Active project configuration",
+                value=project_snapshot.project.path,
             ),
             _path_ref(
                 kind="recon-db",

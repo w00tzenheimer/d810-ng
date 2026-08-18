@@ -53,12 +53,16 @@ class FunctionRecipeRuntime:
 
     @staticmethod
     def _override(persisted: object) -> FunctionPipelineOverride:
+        project_path = getattr(persisted, "project_path", None)
+        if project_path is None:
+            # Read historical storage rows only at the persistence boundary;
+            # all manager/UI projections expose the single canonical project.
+            project_path = getattr(persisted, "source_path")
         return FunctionPipelineOverride(
             schema_version=int(getattr(persisted, "schema_version")),
             function_ea=int(getattr(persisted, "locator").function_addr),
             function_fingerprint=getattr(persisted, "function_fingerprint", None),
-            source_path=str(getattr(persisted, "source_path")),
-            runtime_path=str(getattr(persisted, "runtime_path")),
+            project_path=str(project_path),
             pass_configs_json=str(getattr(persisted, "pass_configs_json")),
             updated_at=float(getattr(persisted, "updated_at")),
         )
@@ -105,8 +109,10 @@ class FunctionRecipeRuntime:
             locator=locator,
             schema_version=draft.schema_version,
             function_fingerprint=draft.function_fingerprint,
-            source_path=draft.source_path,
-            runtime_path=draft.runtime_path,
+            # The storage schema still has two historical columns; canonical
+            # project activation writes the same identity to both.
+            source_path=draft.project_path,
+            runtime_path=draft.project_path,
             pass_configs_json=str(pass_configs_json),
         )
         persisted = storage.get_function_recipe(locator)

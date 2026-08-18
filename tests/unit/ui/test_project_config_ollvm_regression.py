@@ -4,10 +4,8 @@ import json
 from pathlib import Path
 
 from d810.core.config import ProjectConfiguration
-from d810.core.config_v2_defaults import select_config_v2_default_project
-from d810.core.project_config_persistence import clone_project_configuration
 from d810.manager.project_runtime import (
-    ProjectConfigMode,
+    clone_project,
     build_project_runtime_snapshot,
 )
 from d810.passes.config_v2_hook_runtime import compile_config_v2_hook_schedule
@@ -35,30 +33,20 @@ EXPECTED_PASS_IDS = (
 )
 
 
-def test_ollvm_routing_view_and_lossless_user_duplicate(tmp_path: Path) -> None:
-    source = ProjectConfiguration.from_file(
+def test_ollvm_project_view_and_lossless_user_duplicate(tmp_path: Path) -> None:
+    project = ProjectConfiguration.from_file(
         CONF_DIR / "default_unflattening_ollvm.json"
     )
-    selection = select_config_v2_default_project(source)
-    assert selection is not None
-    schedule = compile_config_v2_hook_schedule(selection.runtime_project)
+    schedule = compile_config_v2_hook_schedule(project)
     snapshot = build_project_runtime_snapshot(
-        source_project=source,
-        runtime_project=selection.runtime_project,
-        default_selection=selection,
+        project=project,
         schedule=schedule,
-        hook_mode="config-v2",
     )
     view = build_project_config_view(snapshot)
 
-    assert snapshot.source.basename == "default_unflattening_ollvm.json"
-    assert snapshot.runtime.basename == (
-        "default_unflattening_ollvm_config_v2_canary.json"
-    )
-    assert snapshot.routed is True
-    assert snapshot.mode is ProjectConfigMode.CONFIG_V2
+    assert snapshot.project.basename == "default_unflattening_ollvm.json"
     assert snapshot.effective_pass_ids == EXPECTED_PASS_IDS
-    assert view.mode_text == "Config v2 (routed)"
+    assert view.mode_text == "Config v2"
     assert view.effective_passes_text.startswith("11 passes: ")
     assert view.pass_tree_title == "Pass pipeline (11 active)"
     assert view.effective_pass_ids == EXPECTED_PASS_IDS
@@ -70,20 +58,19 @@ def test_ollvm_routing_view_and_lossless_user_duplicate(tmp_path: Path) -> None:
     assert duplicate_policy.save_strategy is ConfigSaveStrategy.STRUCTURED_V2
 
     destination = tmp_path / "ollvm-user-copy.json"
-    duplicate = clone_project_configuration(
-        source=selection.runtime_project,
+    duplicate = clone_project(
+        project=project,
         destination=destination,
         description="OLLVM user copy",
     )
     expected_document = json.loads(
-        selection.runtime_project.path.read_text(encoding="utf-8")
+        project.path.read_text(encoding="utf-8")
     )
     expected_document["description"] = "OLLVM user copy"
     assert json.loads(destination.read_text(encoding="utf-8")) == expected_document
     assert duplicate.additional_configuration == (
-        selection.runtime_project.additional_configuration
+        project.additional_configuration
     )
-    assert select_config_v2_default_project(duplicate) is None
 
     duplicate_schedule = compile_config_v2_hook_schedule(duplicate)
     assert duplicate_schedule.configured_pass_ids == EXPECTED_PASS_IDS

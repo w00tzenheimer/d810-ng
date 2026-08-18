@@ -181,8 +181,7 @@ class RecipeService:
         function_ea: int,
         function_fingerprint: str | None,
         workbench_generation: int,
-        source_path: str,
-        runtime_path: str,
+        project_path: str,
         configs: Sequence[PipelineConfig],
     ) -> PipelineRecipeDraft:
         recipe_passes: list[RecipePass] = []
@@ -213,8 +212,7 @@ class RecipeService:
             function_ea=int(function_ea),
             function_fingerprint=function_fingerprint,
             workbench_generation=int(workbench_generation),
-            source_path=str(source_path),
-            runtime_path=str(runtime_path),
+            project_path=str(project_path),
             passes=tuple(recipe_passes),
         )
 
@@ -225,8 +223,7 @@ class RecipeService:
         function_ea: int,
         function_fingerprint: str | None,
         workbench_generation: int,
-        source_path: str,
-        runtime_path: str,
+        project_path: str,
     ) -> PipelineRecipeDraft:
         """Revalidate and materialize the saved effective function recipe."""
         if int(override.schema_version) != RECIPE_SCHEMA_VERSION:
@@ -237,16 +234,13 @@ class RecipeService:
             raise RecipeEditError("saved recipe belongs to a different function")
         if override.function_fingerprint != function_fingerprint:
             raise RecipeEditError("saved recipe function fingerprint is stale")
-        if str(override.source_path) != str(source_path):
-            raise RecipeEditError("saved recipe source project is stale")
-        if str(override.runtime_path) != str(runtime_path):
-            raise RecipeEditError("saved recipe runtime project is stale")
+        if str(override.project_path) != str(project_path):
+            raise RecipeEditError("saved recipe project is stale")
         return self.create_draft(
             function_ea=function_ea,
             function_fingerprint=function_fingerprint,
             workbench_generation=workbench_generation,
-            source_path=source_path,
-            runtime_path=runtime_path,
+            project_path=project_path,
             configs=self.deserialize_configs(override.pass_configs_json),
         )
 

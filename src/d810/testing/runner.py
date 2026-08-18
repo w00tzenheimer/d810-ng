@@ -184,7 +184,7 @@ def run_deobfuscation_test(
         if effective_case.project:
             # Load the project by name using deterministic test resolution.
             # Bundled configs route to their config-v2 runtime inside
-            # ``state.load_project`` (see ``select_config_v2_default_project``).
+            # ``state.load_project`` activates the canonical project document.
             project_index = _resolve_test_project_index(state, effective_case.project)
             state.load_project(project_index)
 

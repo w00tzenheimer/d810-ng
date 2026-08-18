@@ -514,8 +514,7 @@ def test_recipe_materialization_serializes_only_canonical_entries(
         function_ea=0x401000,
         function_fingerprint="sha256:test",
         workbench_generation=1,
-        source_path=str(project.path),
-        runtime_path=str(project.path),
+            project_path=str(project.path),
         passes=tuple(reversed(recipe_items)),
     )
 

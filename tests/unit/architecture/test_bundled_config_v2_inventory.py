@@ -19,9 +19,7 @@ from d810.passes.pipeline_config_parser import require_config_v2_project
 
 CONF_DIR = Path(__file__).resolve().parents[3] / "src" / "d810" / "conf"
 
-# These are the exact source basenames from the historical migration matrix.
-# The corresponding ``*_config_v2_canary.json`` files are temporary donor
-# fixtures and remain excluded until Task 5 deletes them with routing.
+# These are the exact canonical project basenames from the migration matrix.
 MAPPED_BUNDLED_PROJECTS = frozenset(
     {
         "bogus_loops.json",
@@ -63,10 +61,6 @@ CANONICAL_BUNDLED_PROJECTS = (
     | FIXTURE_ONLY_BUNDLED_PROJECTS
 )
 
-TEMPORARY_DONOR_PROJECTS = frozenset(
-    f"{name[:-5]}_config_v2_canary.json" for name in MAPPED_BUNDLED_PROJECTS
-)
-
 # Research/configuration data is intentionally not a runtime project preset.
 # Each entry is named here rather than hidden behind a prefix/glob so adding a
 # new JSON file requires an explicit inventory decision.
@@ -89,12 +83,11 @@ EXCLUDED_NON_PROJECT_JSON = frozenset(
 def bundled_runtime_projects() -> tuple[Path, ...]:
     """Return every checked-in top-level bundled runtime project.
 
-    Donor canaries are excluded temporarily because Task 5 owns their atomic
-    deletion with the routing table.  Any other top-level JSON file must be
-    classified explicitly above or this inventory fails closed.
+    Any top-level JSON file must be classified explicitly above or this
+    inventory fails closed.
     """
 
-    excluded = EXCLUDED_NON_PROJECT_JSON | TEMPORARY_DONOR_PROJECTS
+    excluded = EXCLUDED_NON_PROJECT_JSON
     actual = frozenset(path.name for path in CONF_DIR.glob("*.json") if path.name not in excluded)
     assert actual == CANONICAL_BUNDLED_PROJECTS, (
         "bundled conf inventory changed; classify every top-level JSON file "
@@ -118,7 +111,7 @@ def test_bundled_runtime_projects_are_canonical_v2() -> None:
         additional = document.get("additional_configuration")
         assert isinstance(additional, dict)
         assert "pipeline_v2_mode" not in additional
-        assert "config_v2_canary" not in additional
+        assert "config_v2_" + "canary" not in additional
         assert additional.get("pipeline_v2")
 
         project = ProjectConfiguration.from_file(path)

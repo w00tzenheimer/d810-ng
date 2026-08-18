@@ -71,18 +71,14 @@ def _context_name(snapshot: DeobfuscationWorkbenchSnapshot) -> str:
     return snapshot.function.name or f"sub_{snapshot.function.ea:x}"
 
 
-def _runtime_detail(snapshot: DeobfuscationWorkbenchSnapshot) -> str:
-    runtime = snapshot.runtime
-    pass_count = len(runtime.pass_ids)
+def _project_detail(snapshot: DeobfuscationWorkbenchSnapshot) -> str:
+    project = snapshot.project
+    pass_count = len(project.pass_ids)
     pass_word = "pass" if pass_count == 1 else "passes"
     if snapshot.attack.observed_shape == "ollvm_flat":
-        path = "effective routed pipeline" if runtime.routed else "effective pipeline"
-        return (
-            f"D810 will run the {path} {runtime.runtime_name} "
-            f"with {pass_count} {pass_word}."
-        )
+        return f"D810 will run the project pipeline {project.project_name} with {pass_count} {pass_word}."
     return (
-        f"D810 will run the effective project pipeline {runtime.runtime_name} "
+        f"D810 will run the project pipeline {project.project_name} "
         f"with {pass_count} {pass_word} and retain observed shape evidence "
         f"({snapshot.attack.observed_shape})."
     )
@@ -99,7 +95,7 @@ def _ready_view(snapshot: DeobfuscationWorkbenchSnapshot) -> WorkbenchWorkflowVi
     return WorkbenchWorkflowView(
         phase=WorkflowPhase.READY,
         headline=f"Ready to deobfuscate {_context_name(snapshot)}",
-        detail=_runtime_detail(snapshot),
+        detail=_project_detail(snapshot),
         primary=_action(_DIRECT_ACTION, "Deobfuscate this function"),
         comparison_state="offer",
     )
@@ -109,7 +105,7 @@ def _unavailable_view(
     reason: str,
     snapshot: DeobfuscationWorkbenchSnapshot | None = None,
 ) -> WorkbenchWorkflowView:
-    detail = reason if snapshot is None else f"{reason} {_runtime_detail(snapshot)}"
+    detail = reason if snapshot is None else f"{reason} {_project_detail(snapshot)}"
     return WorkbenchWorkflowView(
         phase=WorkflowPhase.UNAVAILABLE,
         headline="Deobfuscation unavailable",

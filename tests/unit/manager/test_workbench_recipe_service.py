@@ -66,8 +66,7 @@ def _draft(service: RecipeService):
         function_ea=0x401000,
         function_fingerprint="sha256:abc",
         workbench_generation=4,
-        source_path="/source.json",
-        runtime_path="/runtime.json",
+        project_path="/project.json",
         configs=(
             PipelineConfig(
                 pass_id="jump-fixer",
@@ -226,8 +225,7 @@ def _state_cff_draft(service: RecipeService):
         function_ea=0x401000,
         function_fingerprint="sha256:abc",
         workbench_generation=4,
-        source_path="/source.json",
-        runtime_path="/runtime.json",
+        project_path="/project.json",
         configs=tuple(
             dataclasses.replace(
                 registry.config_template_for(pass_id),
@@ -331,8 +329,7 @@ def test_preflight_reports_ordering_requirements_without_auto_reordering() -> No
         function_ea=0x401000,
         function_fingerprint="sha256:abc",
         workbench_generation=4,
-        source_path="/source.json",
-        runtime_path="/runtime.json",
+        project_path="/project.json",
         configs=(
             registry.config_template_for("recover_state_transitions"),
             registry.config_template_for("recover_dispatcher"),
@@ -366,8 +363,7 @@ def test_preflight_accepts_declared_output_flow_in_user_selected_order() -> None
         function_ea=0x401000,
         function_fingerprint="sha256:abc",
         workbench_generation=4,
-        source_path="/source.json",
-        runtime_path="/runtime.json",
+        project_path="/project.json",
         configs=(
             registry.config_template_for("recover_dispatcher"),
             registry.config_template_for("recover_state_transitions"),
@@ -464,8 +460,7 @@ def test_saved_function_recipe_seeds_effective_draft_after_identity_revalidation
         schema_version=1,
         function_ea=0x401000,
         function_fingerprint="sha256:abc",
-        source_path="/source.json",
-        runtime_path="/runtime.json",
+        project_path="/project.json",
         pass_configs_json=service.serialize_enabled_configs(original),
         updated_at=1.0,
     )
@@ -475,8 +470,7 @@ def test_saved_function_recipe_seeds_effective_draft_after_identity_revalidation
         function_ea=0x401000,
         function_fingerprint="sha256:abc",
         workbench_generation=9,
-        source_path="/source.json",
-        runtime_path="/runtime.json",
+        project_path="/project.json",
     )
 
     assert draft.workbench_generation == 9
@@ -491,8 +485,7 @@ def test_saved_function_recipe_seeds_effective_draft_after_identity_revalidation
     (
         ("function_ea", 0x402000, "different function"),
         ("function_fingerprint", "sha256:def", "fingerprint"),
-        ("source_path", "/other-source.json", "source project"),
-        ("runtime_path", "/other-runtime.json", "runtime project"),
+        ("project_path", "/other-project.json", "project"),
     ),
 )
 def test_saved_function_recipe_stale_identity_is_rejected(
@@ -503,16 +496,14 @@ def test_saved_function_recipe_stale_identity_is_rejected(
     values = {
         "function_ea": 0x401000,
         "function_fingerprint": "sha256:abc",
-        "source_path": "/source.json",
-        "runtime_path": "/runtime.json",
+        "project_path": "/project.json",
     }
     values[field] = value
     override = FunctionPipelineOverride(
         schema_version=1,
         function_ea=0x401000,
         function_fingerprint="sha256:abc",
-        source_path="/source.json",
-        runtime_path="/runtime.json",
+        project_path="/project.json",
         pass_configs_json=service.serialize_enabled_configs(original),
         updated_at=1.0,
     )

@@ -54,8 +54,7 @@ def _draft() -> PipelineRecipeDraft:
         function_ea=0x401000,
         function_fingerprint="sha256:abc",
         workbench_generation=4,
-        source_path="/source.json",
-        runtime_path="/runtime.json",
+        project_path="/project.json",
         passes=(RecipePass("item-1", "jump-fixer", True, "{}"),),
     )
 

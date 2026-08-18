@@ -581,7 +581,10 @@ def test_hodur_config_v2_project_is_operational():
     assert project.blk_rules == []
     assert "canary" not in project.description.lower()
     assert "pipeline_v2_mode" not in project.additional_configuration
-    assert "config_v2_canary" not in project.additional_configuration
+    assert not any(
+        "canary" in str(key).casefold()
+        for key in project.additional_configuration
+    )
     priors_by_key = load_function_analysis_priors_from_config(
         project.additional_configuration["function_analysis_priors"]
     )

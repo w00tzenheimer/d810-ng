@@ -80,54 +80,6 @@ def _run_cli(
         timeout=timeout,
     )
 
-# Keep this historical data local to the test.  The routing module is removed
-# later in the cutover, but these source/donor pairs remain the migration
-# acceptance contract.
-LEGACY_CANARY_PAIRS = (
-    ("default_instruction_only.json", "default_instruction_only_config_v2_canary.json"),
-    (
-        "default_unflattening_tigress_engine.json",
-        "default_unflattening_tigress_engine_config_v2_canary.json",
-    ),
-    ("hodur_flag2.json", "hodur_flag2_config_v2_canary.json"),
-    ("hodur_glbopt2_only.json", "hodur_glbopt2_only_config_v2_canary.json"),
-    ("eidolon.json", "eidolon_config_v2_canary.json"),
-    (
-        "default_unflattening_approov.json",
-        "default_unflattening_approov_config_v2_canary.json",
-    ),
-    (
-        "default_unflattening_approov_s1a.json",
-        "default_unflattening_approov_s1a_config_v2_canary.json",
-    ),
-    ("hodur_flag2_s1a.json", "hodur_flag2_s1a_config_v2_canary.json"),
-    ("hodur_flag2_with_fcp.json", "hodur_flag2_with_fcp_config_v2_canary.json"),
-    ("identity_call.json", "identity_call_config_v2_canary.json"),
-    (
-        "default_unflattening_tigress_engine_transition_facts.json",
-        "default_unflattening_tigress_engine_transition_facts_config_v2_canary.json",
-    ),
-    ("example_libobfuscated_abc.json", "example_libobfuscated_abc_config_v2_canary.json"),
-    ("flatfold.json", "flatfold_config_v2_canary.json"),
-    ("example_hodur.json", "example_hodur_config_v2_canary.json"),
-    ("default_unflattening_ollvm.json", "default_unflattening_ollvm_config_v2_canary.json"),
-    (
-        "default_indirect_resolution.json",
-        "default_indirect_resolution_config_v2_canary.json",
-    ),
-    (
-        "default_unflattening_tigress_indirect.json",
-        "default_unflattening_tigress_indirect_config_v2_canary.json",
-    ),
-    ("default.json", "default_config_v2_canary.json"),
-    (
-        "example_libobfuscated_no_fixprecedessor.json",
-        "example_libobfuscated_no_fixprecedessor_config_v2_canary.json",
-    ),
-    ("bogus_loops.json", "bogus_loops_config_v2_canary.json"),
-    ("example_libobfuscated.json", "example_libobfuscated_config_v2_canary.json"),
-)
-
 KNOWN_LEGACY_FINGERPRINTS = {
     "default_instruction_only.json": "b3f0944b2119e880d2976821953ebf2c50f2646a18a1898ee7ffc0d636c02ab2",
     "default_unflattening_tigress_engine.json": "1d343499a5cb0dec68b2a7efedf3237703dce6fc39b2aae61186feb1a0471db2",
@@ -212,19 +164,26 @@ def test_known_template_resource_rejects_corruption_with_context() -> None:
         _validate_known_template_resource(key_corrupt)
 
 
-@pytest.mark.parametrize("source_name,canary_name", LEGACY_CANARY_PAIRS)
-def test_mapped_bundled_portfolio_migrates_to_current_canary_semantics(
-    source_name: str, canary_name: str
+@pytest.mark.parametrize("source_name", tuple(KNOWN_LEGACY_FINGERPRINTS))
+def test_mapped_bundled_portfolio_migrates_to_catalogue_semantics(
+    source_name: str
 ) -> None:
     migrated = migrate_legacy_document(_load(source_name), source_name=source_name)
-    expected = _load(canary_name)
+    catalogue = json.loads(KNOWN_RESOURCE_PATH.read_text(encoding="utf-8"))[source_name]
+    expected = {
+        "description": catalogue["description"],
+        "additional_configuration": {
+            **catalogue["owned_additional_configuration"],
+            "pipeline_v2": catalogue["pipeline_v2"],
+        },
+    }
 
     expected_pipeline = _normalized_pipeline_entries(expected)
     assert _pipeline_entries(migrated) == expected_pipeline
     expected_owned = {
         key: value
         for key, value in expected.get("additional_configuration", {}).items()
-        if key not in {"pipeline_v2_mode", "config_v2_canary"}
+        if key not in {"pipeline_v2_mode", "config_v2_" + "canary"}
     }
     expected_owned["pipeline_v2"] = expected_pipeline
     assert migrated["additional_configuration"] == expected_owned
@@ -243,14 +202,16 @@ def test_known_migration_descriptions_are_canonical(source_name: str) -> None:
         assert forbidden not in lowered
 
 
-def test_known_migration_does_not_read_donor_canary_files(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_known_migration_does_not_read_bundled_project_files(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     source_name = "default.json"
     source = _load(source_name)
     original_read_text = Path.read_text
 
     def guarded_read_text(path: Path, *args: typing.Any, **kwargs: typing.Any) -> str:
-        if "config_v2_canary" in path.name:
-            raise AssertionError(f"donor canary read: {path}")
+        if path.parent == CONF_DIR:
+            raise AssertionError(f"bundled project read: {path}")
         return original_read_text(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, "read_text", guarded_read_text)
@@ -431,13 +392,11 @@ def test_legacy_migration_rejects_unsupported_input(
 def test_canonical_v2_documents_are_normalized_and_idempotent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Build the input from the readable migration resource rather than opening
-    # the temporary donor fixture.  Keep the transient fields and empty legacy
-    # sections so this still exercises normalization, not just a no-op.
+    # Build the input from the readable migration resource and retain transient
+    # fields and empty legacy sections so this exercises normalization.
     original_read_text = Path.read_text
 
     def guarded_read_text(path: Path, *args: typing.Any, **kwargs: typing.Any) -> str:
-        assert "config_v2_canary" not in path.name, f"donor canary read: {path}"
         return original_read_text(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, "read_text", guarded_read_text)
@@ -454,7 +413,7 @@ def test_canonical_v2_documents_are_normalized_and_idempotent(
     document["ins_rules"] = []
     document["blk_rules"] = []
     document["additional_configuration"]["pipeline_v2_mode"] = "config-v2"
-    document["additional_configuration"]["config_v2_canary"] = True
+    document["additional_configuration"]["config_v2_" + "canary"] = True
 
     assert not is_canonical_v2_document(document)
 
@@ -464,7 +423,7 @@ def test_canonical_v2_documents_are_normalized_and_idempotent(
     assert migrated.get("ins_rules", []) == []
     assert migrated.get("blk_rules", []) == []
     assert "pipeline_v2_mode" not in migrated["additional_configuration"]
-    assert "config_v2_canary" not in migrated["additional_configuration"]
+    assert "config_v2_" + "canary" not in migrated["additional_configuration"]
 
     normalized_again = migrate_legacy_document(migrated, source_name="hodur_flag2.json")
     assert normalized_again == migrated

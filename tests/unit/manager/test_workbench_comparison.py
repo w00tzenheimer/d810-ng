@@ -20,9 +20,9 @@ def _identity(**changes: object) -> ComparisonIdentity:
         idb_identity="idb:sample",
         type_generation="types:4",
         hexrays_version="9.2",
-        runtime_path="/runtime/sample.json",
-        runtime_pass_ids=("pass.one", "pass.two"),
-        runtime_generation=3,
+        project_path="/project/sample.json",
+        project_pass_ids=("pass.one", "pass.two"),
+        project_generation=3,
     )
     return dataclasses.replace(identity, **changes)
 
@@ -56,9 +56,9 @@ def test_capture_normalizes_text_and_records_deterministic_metadata() -> None:
     )
     assert output.pseudocode == "int f() {\n  return 2;\n}\n"
     assert output.captured_at == 101.5
-    assert output.runtime_path == "/runtime/sample.json"
-    assert output.runtime_pass_ids == ("pass.one", "pass.two")
-    assert output.runtime_generation == 3
+    assert output.project_path == "/project/sample.json"
+    assert output.project_pass_ids == ("pass.one", "pass.two")
+    assert output.project_generation == 3
 
 
 def test_compare_returns_current_evidence_and_non_semantic_metrics() -> None:
@@ -86,9 +86,9 @@ def test_compare_returns_current_evidence_and_non_semantic_metrics() -> None:
         ({"idb_identity": "idb:other"}, "IDB identity changed", "both"),
         ({"type_generation": "types:5"}, "Type generation changed", "both"),
         ({"hexrays_version": "9.3"}, "Hex-Rays version changed", "both"),
-        ({"runtime_path": "/runtime/other.json"}, "Runtime path changed", "d810"),
-        ({"runtime_pass_ids": ("pass.two",)}, "Runtime pass IDs changed", "d810"),
-        ({"runtime_generation": 4}, "Runtime generation changed", "d810"),
+        ({"project_path": "/project/other.json"}, "Project path changed", "d810"),
+        ({"project_pass_ids": ("pass.two",)}, "Project pass IDs changed", "d810"),
+        ({"project_generation": 4}, "Project generation changed", "d810"),
     ),
 )
 def test_compare_rejects_each_drift_dimension(

@@ -34,14 +34,14 @@ class TestMalformedProjectIsSkipped:
             assert len(state.project_manager) > 1
             bad_index = 0
             bad_name = state.project_manager.get(bad_index).path.name
-            real_activate = state._activate_runtime_project
+            real_activate = state._activate_project
 
             def _boom(**kwargs):
                 if kwargs["project_index"] == bad_index:
                     raise ValueError(MALFORMED)
                 return real_activate(**kwargs)
 
-            monkeypatch.setattr(state, "_activate_runtime_project", _boom)
+            monkeypatch.setattr(state, "_activate_project", _boom)
             try:
                 assert state.load_project(bad_index) is None
                 assert bad_name in state.invalid_projects
@@ -58,14 +58,14 @@ class TestMalformedProjectIsSkipped:
             original_index = state.current_project_index
             bad_index = 0
             bad_name = state.project_manager.get(bad_index).path.name
-            real_activate = state._activate_runtime_project
+            real_activate = state._activate_project
 
             def _boom(**kwargs):
                 if kwargs["project_index"] == bad_index:
                     raise ValueError(MALFORMED)
                 return real_activate(**kwargs)
 
-            monkeypatch.setattr(state, "_activate_runtime_project", _boom)
+            monkeypatch.setattr(state, "_activate_project", _boom)
             try:
                 fallback = state._load_first_valid_project(bad_index)
                 assert fallback is not None
@@ -82,11 +82,14 @@ class TestMalformedProjectIsSkipped:
             original_index = state.current_project_index
             before_project = state.current_project
             before_blk_rules = list(state.current_blk_rules)
+            before_ins_rules = list(state.current_ins_rules)
+            before_snapshot = state.current_project_runtime_snapshot
+            before_pass_ids = state.last_config_v2_pass_ids
             bad_index = 0 if original_index != 0 else 1
 
             import d810.manager.state as state_mod
 
-            def _boom(_runtime_project):
+            def _boom(_project):
                 raise ValueError(MALFORMED)
 
             monkeypatch.setattr(state_mod, "compile_config_v2_hook_schedule", _boom)
@@ -95,6 +98,12 @@ class TestMalformedProjectIsSkipped:
                 assert state.current_project is before_project
                 assert state.current_project_index == original_index
                 assert list(state.current_blk_rules) == before_blk_rules
+                assert list(state.current_ins_rules) == before_ins_rules
+                assert state.current_project_runtime_snapshot is before_snapshot
+                assert state.last_config_v2_pass_ids == before_pass_ids
+                assert "migrate_project_config_v2.py" in state.invalid_projects[
+                    state.project_manager.get(bad_index).path.name
+                ]
             finally:
                 monkeypatch.undo()
                 _restore(state, original_index)
@@ -140,8 +149,8 @@ def test_config_v2_native_spine_syncs_generated_restart_consumer(
     """A config-v2 native spine installs its handler and removes it on fallback."""
     with d810_state() as state:
         original_index = state.current_project_index
-        native_index = state.project_manager.index("hodur_flag2_config_v2_canary.json")
-        legacy_index = state.project_manager.index("default_instruction_only.json")
+        native_index = state.project_manager.index("hodur_flag2.json")
+        other_index = state.project_manager.index("default_instruction_only.json")
         manager = state.manager
         calls: list[str] = []
         monkeypatch.setattr(
@@ -169,7 +178,7 @@ def test_config_v2_native_spine_syncs_generated_restart_consumer(
         try:
             assert state.load_project(native_index) is not None
             assert manager.config["config_v2_native_state_machine_active"] is True
-            assert state.load_project(legacy_index) is not None
+            assert state.load_project(other_index) is not None
             assert calls == ["install", "uninstall"]
         finally:
             monkeypatch.undo()

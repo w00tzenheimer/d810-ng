@@ -30,7 +30,6 @@ __all__ = [
     "PipelineRecipeDraft",
     "PipelineStageSnapshot",
     "ProjectConfigurationEditError",
-    "ProjectConfigMode",
     "ProjectIdentitySnapshot",
     "ProjectRuntimeSnapshot",
     "ExecutionScopeSummary",
@@ -39,7 +38,7 @@ __all__ = [
     "RecipeDiagnostic",
     "RecipePass",
     "RecipeValidation",
-    "RuntimeConfigRef",
+    "ProjectConfigRef",
     "SnapshotFreshness",
     "StatisticsSummary",
     "WorkbenchCommandRequest",
@@ -65,7 +64,7 @@ _WORKBENCH_MODEL_NAMES = {
     "PatchCountEntry",
     "PipelineStageSnapshot",
     "ExecutionScopeSummary",
-    "RuntimeConfigRef",
+    "ProjectConfigRef",
     "SnapshotFreshness",
     "StatisticsSummary",
     "WorkbenchCommandRequest",
@@ -113,7 +112,6 @@ def __getattr__(name: str):
         return getattr(config_v2_editing, name)
     if name in {
         "ProjectConfigurationEditError",
-        "ProjectConfigMode",
         "ProjectIdentitySnapshot",
         "ProjectRuntimeSnapshot",
     }:

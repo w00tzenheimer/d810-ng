@@ -9,7 +9,6 @@ from d810.core.config import ProjectConfiguration, RuleConfiguration
 from d810.manager.function_recipe_activation import build_workbench_recipe_projection
 from d810.manager.function_recipe_activation import select_workbench_recipe_projection
 from d810.manager.project_runtime import (
-    ProjectConfigMode,
     ProjectIdentitySnapshot,
     ProjectRuntimeSnapshot,
 )
@@ -90,21 +89,14 @@ def test_recipe_runtime_project_requires_typed_nonempty_configs() -> None:
 def test_workbench_projection_reports_saved_recipe_as_the_effective_pipeline() -> None:
     base = _base_project()
     snapshot = ProjectRuntimeSnapshot(
-        source=ProjectIdentitySnapshot(
-            "source.json", pathlib.Path("/configs/source.json"), "Source"
-        ),
-        runtime=ProjectIdentitySnapshot("runtime.json", base.path, "Runtime"),
-        mode=ProjectConfigMode.CONFIG_V2,
-        routed=True,
-        hook_mode="config-v2",
+        project=ProjectIdentitySnapshot("runtime.json", base.path, "Runtime"),
         effective_pass_ids=("jump-fixer",),
     )
     override = FunctionPipelineOverride(
         schema_version=1,
         function_ea=0x401000,
         function_fingerprint="sha256:abc",
-        source_path="/configs/source.json",
-        runtime_path="/configs/runtime.json",
+        project_path="/configs/runtime.json",
         pass_configs_json='[{"pass_id":"mba-simplify","options":{"transforms":["add-xor-1"],"transform_options":{}}}]',
         updated_at=1.0,
     )
@@ -118,8 +110,8 @@ def test_workbench_projection_reports_saved_recipe_as_the_effective_pipeline() -
         workbench_generation=7,
     )
 
-    assert projection.runtime_project.path == base.path
-    assert projection.project_snapshot.runtime == snapshot.runtime
+    assert projection.project.path == base.path
+    assert projection.project_snapshot.project == snapshot.project
     assert projection.project_snapshot.effective_pass_ids == ("mba-simplify",)
     assert projection.draft.workbench_generation == 7
     assert tuple(item.pass_id for item in projection.draft.passes) == ("mba-simplify",)
@@ -131,21 +123,14 @@ def test_workbench_projection_reports_saved_recipe_as_the_effective_pipeline() -
 def test_selection_keeps_project_runtime_and_marks_recipe_explicit_only() -> None:
     base = _base_project()
     snapshot = ProjectRuntimeSnapshot(
-        source=ProjectIdentitySnapshot(
-            "source.json", pathlib.Path("/configs/source.json"), "Source"
-        ),
-        runtime=ProjectIdentitySnapshot("runtime.json", base.path, "Runtime"),
-        mode=ProjectConfigMode.CONFIG_V2,
-        routed=True,
-        hook_mode="config-v2",
+        project=ProjectIdentitySnapshot("runtime.json", base.path, "Runtime"),
         effective_pass_ids=("jump-fixer",),
     )
     override = FunctionPipelineOverride(
         schema_version=1,
         function_ea=0x401000,
         function_fingerprint="sha256:abc",
-        source_path="/configs/source.json",
-        runtime_path="/configs/runtime.json",
+        project_path="/configs/runtime.json",
         pass_configs_json='[{"pass_id":"mba-simplify","options":{"transforms":["add-xor-1"],"transform_options":{}}}]',
         updated_at=1.0,
     )
@@ -160,33 +145,26 @@ def test_selection_keeps_project_runtime_and_marks_recipe_explicit_only() -> Non
     assert selection.recipe_scope == "saved-recipe-explicit"
     assert selection.errors == ()
     assert selection.project_snapshot is snapshot
-    assert selection.runtime_project is base
+    assert selection.project is base
     assert selection.project_snapshot.effective_pass_ids == ("jump-fixer",)
     assert selection.draft is not None
     assert tuple(
         config.pass_id
-        for config in pipeline_configs_from_project_config(selection.runtime_project)
+        for config in pipeline_configs_from_project_config(selection.project)
     ) == ("jump-fixer",)
 
 
 def test_selection_blocks_stale_saved_recipe_without_mutating_project() -> None:
     base = _base_project()
     snapshot = ProjectRuntimeSnapshot(
-        source=ProjectIdentitySnapshot(
-            "source.json", pathlib.Path("/configs/source.json"), "Source"
-        ),
-        runtime=ProjectIdentitySnapshot("runtime.json", base.path, "Runtime"),
-        mode=ProjectConfigMode.CONFIG_V2,
-        routed=True,
-        hook_mode="config-v2",
+        project=ProjectIdentitySnapshot("runtime.json", base.path, "Runtime"),
         effective_pass_ids=("jump-fixer",),
     )
     stale = FunctionPipelineOverride(
         schema_version=1,
         function_ea=0x401000,
         function_fingerprint="sha256:old",
-        source_path="/configs/source.json",
-        runtime_path="/configs/runtime.json",
+        project_path="/configs/runtime.json",
         pass_configs_json='[{"pass_id":"jump-fixer"}]',
         updated_at=1.0,
     )
@@ -199,7 +177,7 @@ def test_selection_blocks_stale_saved_recipe_without_mutating_project() -> None:
         function_fingerprint="sha256:new",
     )
 
-    assert selection.runtime_project is base
+    assert selection.project is base
     assert selection.project_snapshot is snapshot
     assert selection.recipe_scope == "saved-recipe-blocked"
     assert selection.draft is None
@@ -209,13 +187,7 @@ def test_selection_blocks_stale_saved_recipe_without_mutating_project() -> None:
 def test_selection_blocks_cross_pass_hook_materialization_failure() -> None:
     base = _base_project()
     snapshot = ProjectRuntimeSnapshot(
-        source=ProjectIdentitySnapshot(
-            "source.json", pathlib.Path("/configs/source.json"), "Source"
-        ),
-        runtime=ProjectIdentitySnapshot("runtime.json", base.path, "Runtime"),
-        mode=ProjectConfigMode.CONFIG_V2,
-        routed=True,
-        hook_mode="config-v2",
+        project=ProjectIdentitySnapshot("runtime.json", base.path, "Runtime"),
         effective_pass_ids=("jump-fixer",),
     )
     individually_valid = operational_config_v2_pass_registry().config_template_for(
@@ -225,8 +197,7 @@ def test_selection_blocks_cross_pass_hook_materialization_failure() -> None:
         schema_version=1,
         function_ea=0x401000,
         function_fingerprint="sha256:abc",
-        source_path="/configs/source.json",
-        runtime_path="/configs/runtime.json",
+        project_path="/configs/runtime.json",
         pass_configs_json=json.dumps([individually_valid.to_dict()]),
         updated_at=1.0,
     )
@@ -239,7 +210,7 @@ def test_selection_blocks_cross_pass_hook_materialization_failure() -> None:
         function_fingerprint="sha256:abc",
     )
 
-    assert selection.runtime_project is base
+    assert selection.project is base
     assert selection.project_snapshot is snapshot
     assert selection.recipe_scope == "saved-recipe-blocked"
     assert selection.draft is None

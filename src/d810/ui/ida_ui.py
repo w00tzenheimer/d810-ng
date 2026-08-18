@@ -832,10 +832,8 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
 
         self._view_passes_title = "Pass pipeline"
 
-        # Disclosure state: what the user asked for, and what the project makes
-        # mandatory. Divergent identity outranks the request.
+        # Disclosure state: what the user asked to see.
         self._details_requested = False
-        self._identity_is_divergent = False
 
         # Initialize all widget attributes to None (defensive pattern)
         # These are created in OnCreate() but may be accessed before OnCreate() runs
@@ -858,10 +856,8 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         self.btn_edit_cfg = None
         self.btn_delele_cfg = None
         self._config_mode_value = None
-        self._config_source_value = None
-        self._config_runtime_value = None
-        self._copy_source_path_button = None
-        self._copy_runtime_path_button = None
+        self._config_project_value = None
+        self._copy_project_path_button = None
         self._config_passes_value = None
         self.cfg_description = None
         self._pipeline_overview = None
@@ -935,8 +931,7 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         self._details_toggle = None
         self._details_panel = None
         self._config_mode_value = None
-        self._config_source_value = None
-        self._config_runtime_value = None
+        self._config_project_value = None
         self._config_passes_value = None
 
         if self.test_runner is not None:
@@ -1092,8 +1087,7 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         self._details_toggle.toggled.connect(self._on_details_toggled)
         summary_row.addWidget(self._details_toggle)
 
-        # Details disclosure: identity form plus description, collapsed by
-        # default and force-expanded whenever source and runtime differ.
+        # Details disclosure: canonical project identity plus description.
         self._details_panel = QtWidgets.QWidget(self._header_fixed)
         project_vbox.addWidget(self._details_panel)
         details_layout = QtWidgets.QVBoxLayout(self._details_panel)
@@ -1103,41 +1097,31 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         identity_layout = QtWidgets.QFormLayout()
         configure_left_aligned_form(identity_layout)
         self._config_mode_value = QtWidgets.QLabel()
-        self._config_source_value = QtWidgets.QLabel()
-        self._config_runtime_value = QtWidgets.QLabel()
-        self._copy_source_path_button = CopyPathButton("Source", parent=self._details_panel)
-        self._copy_runtime_path_button = CopyPathButton("Runtime", parent=self._details_panel)
+        self._config_project_value = QtWidgets.QLabel()
+        self._copy_project_path_button = CopyPathButton(
+            "Project",
+            parent=self._details_panel,
+        )
         self._config_passes_value = QtWidgets.QLabel()
         for value_label in (
             self._config_mode_value,
-            self._config_source_value,
-            self._config_runtime_value,
+            self._config_project_value,
             self._config_passes_value,
         ):
             value_label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
         self._config_passes_value.setWordWrap(True)
         identity_layout.addRow("Mode:", self._config_mode_value)
-        source_row = QtWidgets.QWidget(self._details_panel)
-        source_layout = QtWidgets.QHBoxLayout(source_row)
-        source_layout.setContentsMargins(0, 0, 0, 0)
-        source_layout.addWidget(self._config_source_value, 1)
-        source_layout.addWidget(self._copy_source_path_button)
-        runtime_row = QtWidgets.QWidget(self._details_panel)
-        runtime_layout = QtWidgets.QHBoxLayout(runtime_row)
-        runtime_layout.setContentsMargins(0, 0, 0, 0)
-        runtime_layout.addWidget(self._config_runtime_value, 1)
-        runtime_layout.addWidget(self._copy_runtime_path_button)
-        source_label = QtWidgets.QLabel("Source config:")
-        source_label.setToolTip(
-            "The project configuration you selected. Copy copies its absolute path."
+        project_row = QtWidgets.QWidget(self._details_panel)
+        project_layout = QtWidgets.QHBoxLayout(project_row)
+        project_layout.setContentsMargins(0, 0, 0, 0)
+        project_layout.addWidget(self._config_project_value, 1)
+        project_layout.addWidget(self._copy_project_path_button)
+        project_label = QtWidgets.QLabel("Project:")
+        project_label.setToolTip(
+            "The canonical project configuration D810 executes. Copy copies its "
+            "absolute path."
         )
-        runtime_label = QtWidgets.QLabel("Runtime config:")
-        runtime_label.setToolTip(
-            "The effective configuration D810 executes after config-v2 routing. "
-            "It can differ from the selected source project."
-        )
-        identity_layout.addRow(source_label, source_row)
-        identity_layout.addRow(runtime_label, runtime_row)
+        identity_layout.addRow(project_label, project_row)
         identity_layout.addRow("Effective passes:", self._config_passes_value)
         details_layout.addLayout(identity_layout)
 
@@ -1267,16 +1251,11 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
             row_px=self._pipeline_overview.row_height(),
             filter_has_text=False,
             details_requested=self._details_requested,
-            identity_is_divergent=self._identity_is_divergent,
         )
 
         self._details_panel.setVisible(plan.show_details)
-        self._details_toggle.setEnabled(not plan.details_locked)
-        self._details_toggle.setToolTip(
-            "Source and runtime projects differ; identity stays visible."
-            if plan.details_locked
-            else "Show project mode, identity, and effective passes"
-        )
+        self._details_toggle.setEnabled(True)
+        self._details_toggle.setToolTip("Show project mode, identity, and effective passes")
         self._details_toggle.setArrowType(
             QtCore.Qt.DownArrow if plan.show_details else QtCore.Qt.RightArrow
         )
@@ -1450,11 +1429,11 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
         duplicate: bool,
     ) -> pathlib.Path | None:
         config_dir = pathlib.Path(self.state.d810_config.config_dir).resolve()
-        runtime_path = pathlib.Path(snapshot.runtime.path).resolve()
-        default = config_v2_user_destination(config_dir, runtime_path)
+        project_path = pathlib.Path(snapshot.project.path).resolve()
+        default = config_v2_user_destination(config_dir, project_path)
         if not duplicate:
             return default
-        default = config_dir / f"{runtime_path.stem}_copy.json"
+        default = config_dir / f"{project_path.stem}_copy.json"
         destination, _ = QtWidgets.QFileDialog.getSaveFileName(
             self.parent,
             "Choose a lossless config-v2 project destination",
@@ -1513,18 +1492,9 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
 
     def _apply_project_config_view(self, view: ProjectConfigView) -> None:
         self._config_mode_value.setText(view.mode_text)
-        self._config_source_value.setText(view.source_text)
-        self._config_source_value.setToolTip(view.source_tooltip)
-        self._copy_source_path_button.set_path(view.source_tooltip)
-        # Name the divergence in the row itself: a routed runtime must never
-        # look like the project the user picked.
-        self._config_runtime_value.setText(
-            f"{view.runtime_text}  (differs from source)"
-            if view.identity_is_divergent
-            else view.runtime_text
-        )
-        self._config_runtime_value.setToolTip(view.runtime_tooltip)
-        self._copy_runtime_path_button.set_path(view.runtime_tooltip)
+        self._config_project_value.setText(view.project_text)
+        self._config_project_value.setToolTip(view.project_tooltip)
+        self._copy_project_path_button.set_path(view.project_tooltip)
         self._config_passes_value.setText(view.effective_passes_text)
         self._config_summary_value.setText(view.header_summary_text)
         self.btn_edit_cfg.setEnabled(view.edit_enabled)
@@ -1537,8 +1507,8 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
             from d810.ui.config_v2_editing_commands import ConfigV2EditingAdapter
 
             config_dir = pathlib.Path(self.state.d810_config.config_dir).resolve()
-            runtime_path = pathlib.Path(view.runtime_tooltip).resolve()
-            destination = config_v2_user_destination(config_dir, runtime_path)
+            project_path = pathlib.Path(view.project_tooltip).resolve()
+            destination = config_v2_user_destination(config_dir, project_path)
             try:
                 adapter = ConfigV2EditingAdapter(
                     self.state,
@@ -1555,7 +1525,6 @@ class D810ConfigForm_t(ida_kernwin.PluginForm):
                 logger.warning("Config-v2 pipeline overview failed: %s", exc)
         self._config_v2_overview = overview
         self._pipeline_overview.set_overview(overview)
-        self._identity_is_divergent = view.identity_is_divergent
         self._apply_panel_density()
 
     # Called when the edit combo is changed

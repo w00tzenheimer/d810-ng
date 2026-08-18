@@ -249,9 +249,9 @@ class TestDeadEdgeOracleDemonstration:
             state.stop_d810()
             baseline_off = _decompile_text(pseudocode_to_string, func_ea)
 
-            runtime_project = state.current_runtime_project
-            assert runtime_project is not None
-            runtime_config = runtime_project.additional_configuration
+            project = state.current_project
+            assert project is not None
+            runtime_config = project.additional_configuration
             had_prior_enabled = "native_patch_enabled" in runtime_config
             prior_enabled = runtime_config.get("native_patch_enabled")
             prior_manager_config = dict(state.manager.config)
@@ -589,9 +589,9 @@ class TestDeadEdgeOracleDemonstration:
             start_ea, end_ea = int(func.start_ea), int(func.end_ea)
             bytes_before = bytes(ida_bytes.get_bytes(start_ea, end_ea - start_ea))
 
-            runtime_project = state.current_runtime_project
-            assert runtime_project is not None
-            runtime_config = runtime_project.additional_configuration
+            project = state.current_project
+            assert project is not None
+            runtime_config = project.additional_configuration
             had_prior_enabled = "native_patch_enabled" in runtime_config
             prior_enabled = runtime_config.get("native_patch_enabled")
             prior_manager_config = dict(state.manager.config)

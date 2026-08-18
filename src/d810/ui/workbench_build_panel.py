@@ -104,7 +104,7 @@ if IDA_AVAILABLE and QT_GRAPHICS_AVAILABLE:
             self.right_rail: typing.Any = None
             self.footer_capture_label = QtWidgets.QLabel()
             self.footer_maturity_label = QtWidgets.QLabel()
-            self.footer_runtime_label = QtWidgets.QLabel()
+            self.footer_project_label = QtWidgets.QLabel()
             self.footer_engine_label = QtWidgets.QLabel()
 
             self.build_deobfuscator_button.clicked.connect(self._request_build)
@@ -234,7 +234,7 @@ if IDA_AVAILABLE and QT_GRAPHICS_AVAILABLE:
             footer_layout.addWidget(self.footer_capture_label)
             footer_layout.addWidget(self.footer_maturity_label)
             footer_layout.addStretch(1)
-            footer_layout.addWidget(self.footer_runtime_label)
+            footer_layout.addWidget(self.footer_project_label)
             footer_layout.addWidget(self.footer_engine_label)
 
             layout = QtWidgets.QVBoxLayout(self.parent)
@@ -388,7 +388,7 @@ if IDA_AVAILABLE and QT_GRAPHICS_AVAILABLE:
             self.dossier_panel.set_sections(build_dossier_sections(dossier))
             self.footer_capture_label.setText(footer.diagnostics_capture)
             self.footer_maturity_label.setText(footer.maturity_summary)
-            self.footer_runtime_label.setText(footer.runtime_summary)
+            self.footer_project_label.setText(footer.project_summary)
             self.footer_engine_label.setText(footer.engine_summary)
 
         def _capture_state_changed(self, _enabled: bool) -> None:

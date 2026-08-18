@@ -82,7 +82,9 @@ def _rewrite_payload(payload: dict[str, object], *, source: Path) -> bool:
 def _candidate_files(root: Path) -> tuple[Path, ...]:
     if root.is_file():
         return (root,)
-    return tuple(sorted(root.glob("*config_v2_canary.json")))
+    # The rewrite is now a maintenance tool for canonical project documents;
+    # the transitional config-v2 donor files were removed during cutover.
+    return tuple(sorted(root.glob("*.json")))
 
 
 def main() -> int:

@@ -47,8 +47,7 @@ def test_recipe_records_are_frozen_and_keep_ordered_tuple_payloads() -> None:
         function_ea=0x401000,
         function_fingerprint="sha256:abc",
         workbench_generation=4,
-        source_path="/source.json",
-        runtime_path="/runtime.json",
+        project_path="/project.json",
         passes=(recipe_pass,),
     )
 
@@ -79,8 +78,7 @@ def test_validation_override_and_command_records_preserve_exact_identity() -> No
         schema_version=1,
         function_ea=0x401000,
         function_fingerprint="sha256:abc",
-        source_path="/source.json",
-        runtime_path="/runtime.json",
+        project_path="/project.json",
         pass_configs_json='[{"pass_id":"lower_state_machine"}]',
         updated_at=10.5,
     )

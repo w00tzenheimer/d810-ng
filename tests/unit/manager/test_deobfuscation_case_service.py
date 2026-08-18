@@ -16,7 +16,7 @@ from d810.manager.deobfuscation_case_service import (
     DeobfuscationCaseCollectionError,
     DeobfuscationCaseService,
 )
-from d810.manager.workbench_models import FunctionRef, RuntimeConfigRef
+from d810.manager.workbench_models import FunctionRef, ProjectConfigRef
 from d810.manager.workbench_recipe_models import FunctionPipelineOverride
 
 
@@ -50,15 +50,10 @@ def _function(*, fingerprint: str | None = "workbench:current") -> FunctionRef:
     )
 
 
-def _runtime() -> RuntimeConfigRef:
-    return RuntimeConfigRef(
-        source_name="source.json",
-        source_path="/source.json",
-        runtime_name="runtime.json",
-        runtime_path="/runtime.json",
-        mode="config-v2",
-        routed=True,
-        hook_mode="config-v2",
+def _project() -> ProjectConfigRef:
+    return ProjectConfigRef(
+        project_name="project.json",
+        project_path="/project.json",
         pass_ids=("recover_dispatcher",),
     )
 
@@ -93,8 +88,7 @@ def _saved_recipe(*, fingerprint: str | None = "workbench:current") -> FunctionP
         schema_version=1,
         function_ea=0x1800020F0,
         function_fingerprint=fingerprint,
-        source_path="/source.json",
-        runtime_path="/runtime.json",
+        project_path="/project.json",
         pass_configs_json='[{"pass":"recover_dispatcher"}]',
         updated_at=1.0,
     )
@@ -106,7 +100,7 @@ def test_saved_current_recipe_permits_direct_run_without_overwriting_case_eviden
 
     snapshot = DeobfuscationCaseService(repository).collect(
         function=_function(),
-        runtime=_runtime(),
+        project=_project(),
         saved_recipe=_saved_recipe(),
     )
 
@@ -123,7 +117,7 @@ def test_unknown_function_requires_build_before_direct_run() -> None:
 
     snapshot = DeobfuscationCaseService(repository).collect(
         function=_function(),
-        runtime=_runtime(),
+        project=_project(),
         saved_recipe=None,
     )
 
@@ -135,7 +129,7 @@ def test_unknown_function_requires_build_before_direct_run() -> None:
 def test_stale_saved_recipe_does_not_permit_direct_run() -> None:
     snapshot = DeobfuscationCaseService(_Repository(_evidence())).collect(
         function=_function(),
-        runtime=_runtime(),
+        project=_project(),
         saved_recipe=_saved_recipe(fingerprint="workbench:stale"),
     )
 
@@ -151,6 +145,6 @@ def test_malformed_diagnostic_evidence_becomes_a_collection_error() -> None:
     with pytest.raises(DeobfuscationCaseCollectionError, match="bad diagnostic schema"):
         service.collect(
             function=_function(),
-            runtime=_runtime(),
+            project=_project(),
             saved_recipe=None,
         )

@@ -72,8 +72,7 @@ def _draft(*passes: RecipePass) -> PipelineRecipeDraft:
         function_ea=0x401000,
         function_fingerprint="sha256:canvas",
         workbench_generation=1,
-        source_path="/source.json",
-        runtime_path="/runtime.json",
+        project_path="/project.json",
         passes=passes,
     )
 
@@ -376,8 +375,7 @@ def test_projection_accepts_actual_recipe_service_portable_maturity_values() -> 
         function_ea=0x401000,
         function_fingerprint="sha256:canvas",
         workbench_generation=1,
-        source_path="/source.json",
-        runtime_path="/runtime.json",
+            project_path="/project.json",
         configs=(
             PipelineConfig(pass_id="jump-fixer"),
             PipelineConfig(pass_id="recover_dispatcher"),

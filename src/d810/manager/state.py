@@ -7,6 +7,7 @@ import inspect
 import importlib
 import os
 import pathlib
+import shlex
 
 from d810.backends.hexrays.registration import register_hexrays_backend_providers
 from d810.hexrays.utils.ida_utils import ensure_hexrays_available
@@ -19,11 +20,6 @@ from d810.core import typing
 from d810.core.config import (
     D810Configuration,
     ProjectConfiguration,
-)
-from d810.core.config_v2_defaults import (
-    ConfigV2DefaultSelection,
-    format_config_v2_default_selection_status,
-    select_config_v2_default_project,
 )
 from d810.core.deobfuscation_case import DeobfuscationCaseEvidence
 from d810.core.diagnostics_capture_preferences import (
@@ -60,7 +56,7 @@ from d810.mba.certified_catalogue import StructuralMatcherParityExpectation
 from d810.manager.project_runtime import (
     ProjectRuntimeSnapshot,
     build_project_runtime_snapshot,
-    clone_runtime_project as clone_runtime_project_command,
+    clone_project as clone_project_command,
 )
 from d810.core.function_storage_config import (
     FunctionStorageConfigurationError,
@@ -97,15 +93,6 @@ from d810.passes.config_v2_hook_runtime import (
     compile_config_v2_hook_schedule,
     requires_native_preanalysis_handlers,
 )
-from d810.passes.constant_simplification import (
-    CONSTANT_SIMPLIFICATION_PASS_ID,
-    constant_simplification_provider_maturities,
-)
-from d810.optimizers.microcode.handler import (
-    configure_rule_with_maturity_contract,
-)
-from d810.hexrays.utils.hexrays_formatters import string_to_maturity
-from d810.passes.pass_pipeline import PipelineConfigError
 from d810.passes.state_machine_options import StateMachineCffOptions
 
 if TYPE_CHECKING:
@@ -115,10 +102,6 @@ if TYPE_CHECKING:
 
 logger = getLogger("d810")
 D810_LOG_DIR_NAME = "d810_logs"
-
-
-class RuntimeActivationRollbackError(RuntimeError):
-    """The previous live runtime could not be re-established after failure."""
 
 
 class D810State(metaclass=SingletonMeta):
@@ -137,7 +120,6 @@ class D810State(metaclass=SingletonMeta):
     manager: D810Manager
     gui: D810GUI
     current_project: ProjectConfiguration
-    current_runtime_project: ProjectConfiguration | None
 
     def __init__(self):
         self.gui = None  # Set by load(gui=True)
@@ -166,15 +148,12 @@ class D810State(metaclass=SingletonMeta):
         self.current_blk_rules: typing.List = []
         self.known_ins_rules: typing.List = []
         self.known_blk_rules: typing.List = []
-        self.last_pipeline_v2_hook_pass_ids: tuple[str, ...] = ()
-        self.last_pipeline_v2_hook_mode: str | None = None
-        self.last_config_v2_default_selection: ConfigV2DefaultSelection | None = None
+        self.last_config_v2_pass_ids: tuple[str, ...] = ()
         #: ``project file name -> one-line reason`` for every project whose
         #: activation raised.  A malformed project is SKIPPED, never fatal, so one
         #: bad file in the config directory cannot leave the plugin with no
         #: project at all (ticket lpccp-8c87).
         self.invalid_projects: dict[str, str] = {}
-        self.current_runtime_project: ProjectConfiguration | None = None
         self.current_project_runtime_snapshot: ProjectRuntimeSnapshot | None = None
         self._is_loaded: bool = False
         self.gui = None
@@ -272,29 +251,21 @@ class D810State(metaclass=SingletonMeta):
     def load_project(self, project_index: int) -> ProjectConfiguration | None:
         """Activate one project, or return ``None`` when it is malformed.
 
-        A project whose routing/pipeline payload cannot be resolved is recorded in
+        A project whose pipeline payload cannot be resolved is recorded in
         :attr:`invalid_projects` and SKIPPED.  It must never abort the caller:
         ``load()`` enumerates every file in the config directory, so one bad
         project used to leave the plugin with no project at all (lpccp-8c87).
         """
-        next_project = self.project_manager.get(project_index)
+        project = self.project_manager.get(project_index)
         try:
-            default_selection = select_config_v2_default_project(next_project)
-            runtime_project = (
-                default_selection.runtime_project
-                if default_selection is not None
-                else next_project
-            )
-            activated = self._activate_runtime_project(
+            activated = self._activate_project(
                 project_index=project_index,
-                source_project=next_project,
-                runtime_project=runtime_project,
-                default_selection=default_selection,
+                project=project,
             )
         except Exception as exc:  # noqa: BLE001 - any malformed project is skippable
-            self._record_invalid_project(next_project, exc)
+            self._record_invalid_project(project, exc)
             return None
-        self.invalid_projects.pop(next_project.path.name, None)
+        self.invalid_projects.pop(project.path.name, None)
         return activated
 
     def _load_first_valid_project(
@@ -328,345 +299,60 @@ class D810State(metaclass=SingletonMeta):
     ) -> None:
         """Mark *project* unusable and say why, without taking the plugin down."""
         name = project.path.name
-        reason = f"{type(exc).__name__}: {exc}"
+        migration_command = shlex.join(
+            (
+                "python",
+                "tools/migrations/migrate_project_config_v2.py",
+                "--in-place",
+                str(project.path),
+            )
+        )
+        reason = (
+            f"{type(exc).__name__}: {exc}; migrate with: {migration_command}"
+        )
         self.invalid_projects[name] = reason
         logger.warning(
             "Skipping malformed project configuration %s: %s", project.path, reason
         )
         logger.debug("project activation traceback for %s", project.path, exc_info=True)
 
-    def _capture_runtime_activation_state(self) -> dict[str, object]:
-        """Capture state that must survive a rejected project activation."""
-
-        state_attributes = (
-            "current_project_index",
-            "current_project",
-            "current_runtime_project",
-            "current_ins_rules",
-            "current_blk_rules",
-            "known_ins_rules",
-            "known_blk_rules",
-            "last_pipeline_v2_hook_pass_ids",
-            "last_pipeline_v2_hook_mode",
-            "last_config_v2_default_selection",
-            "current_project_runtime_snapshot",
-            "current_certified_catalogue_snapshot",
-            "current_shadow_matcher_parity_ledger",
-        )
-        missing = object()
-        captured: dict[str, object] = {
-            "_missing": missing,
-            "state": {
-                name: getattr(self, name, missing) for name in state_attributes
-            },
-        }
-        manager = self.manager
-        service = manager.execution_scope_service
-        captured["manager"] = {
-            "instruction_optimizer_rules": list(manager.instruction_optimizer_rules),
-            "instruction_optimizer_config": dict(manager.instruction_optimizer_config),
-            "block_optimizer_rules": list(manager.block_optimizer_rules),
-            "block_optimizer_config": dict(manager.block_optimizer_config),
-            "config": dict(manager.config),
-            "semantic_registry": manager._semantic_route_reference_oracle_registry,
-            "function_analysis_priors": dict(manager._function_analysis_priors),
-            "native_handlers_installed": manager._native_preanalysis_handlers_installed,
-            "constant_schedule": manager._constant_simplification_schedule,
-            "constant_preparation_options": manager._constant_preparation_options,
-            "runtime_invalidated": manager.runtime_invalidated,
-            "scope_stages": tuple(service._stages),
-            "scope_generation": service._generation,
-            "scope_active_cache": dict(service._active_cache),
-            "scope_metadata_cache": dict(service._metadata_cache),
-            "started": manager.started,
-            "started_optimizer_state": manager.capture_started_optimizer_runtime_state(),
-        }
-        preparation_controller = getattr(manager, "pre_hex_preparation", None)
-        controller_snapshot = None
-        snapshot_controller = getattr(preparation_controller, "snapshot_state", None)
-        if callable(snapshot_controller):
-            controller_snapshot = snapshot_controller()
-        post_d810_runtime = getattr(manager, "_post_d810_runtime", None)
-        global_const_observer = getattr(post_d810_runtime, "global_const_observer", None)
-        observer_snapshot = None
-        snapshot_observer = getattr(global_const_observer, "snapshot_state", None)
-        if callable(snapshot_observer):
-            observer_snapshot = snapshot_observer()
-        captured["manager"].update(
-            {
-                "preparation_controller": preparation_controller,
-                "preparation_controller_state": controller_snapshot,
-                "post_d810_runtime": post_d810_runtime,
-                "global_const_observer": global_const_observer,
-                "global_const_observer_state": observer_snapshot,
-            }
-        )
-        return captured
-
-    def _restore_runtime_activation_state(
-        self,
-        captured: dict[str, object],
-        activation_error: BaseException | None = None,
-    ) -> None:
-        """Restore the exact pre-activation state after a failed candidate."""
-
-        missing = captured["_missing"]
-        errors: list[tuple[str, BaseException]] = []
-
-        def attempt(label: str, callback) -> None:
-            try:
-                callback()
-            except BaseException as exc:
-                errors.append((label, exc))
-
-        for name, value in captured["state"].items():  # type: ignore[union-attr]
-            if value is missing:
-                if hasattr(self, name):
-                    attempt(f"state.{name}.delete", lambda name=name: delattr(self, name))
-            else:
-                attempt(f"state.{name}", lambda name=name, value=value: setattr(self, name, value))
-
-        previous = captured["manager"]  # type: ignore[assignment]
-        manager = self.manager
-        manager.instruction_optimizer_rules = list(
-            previous["instruction_optimizer_rules"]  # type: ignore[index]
-        )
-        manager.instruction_optimizer_config = dict(
-            previous["instruction_optimizer_config"]  # type: ignore[index]
-        )
-        manager.block_optimizer_rules = list(previous["block_optimizer_rules"])  # type: ignore[index]
-        manager.block_optimizer_config = dict(previous["block_optimizer_config"])  # type: ignore[index]
-        manager.config = dict(previous["config"])  # type: ignore[index]
-        manager._semantic_route_reference_oracle_registry = previous[  # type: ignore[index]
-            "semantic_registry"
-        ]
-        manager._function_analysis_priors = dict(previous["function_analysis_priors"])  # type: ignore[index]
-        manager._constant_simplification_schedule = previous[  # type: ignore[index]
-            "constant_schedule"
-        ]
-        manager._constant_preparation_options = previous[  # type: ignore[index]
-            "constant_preparation_options"
-        ]
-        # Project activation can reconfigure these lanes before a later
-        # adapter/scope failure.  Restore their live policy and callback
-        # suppression state along with the manager's scalar fields.
-        manager.pre_hex_preparation = previous["preparation_controller"]  # type: ignore[index]
-        manager._post_d810_runtime = previous["post_d810_runtime"]  # type: ignore[index]
-        controller = previous["preparation_controller"]  # type: ignore[index]
-        controller_state = previous["preparation_controller_state"]  # type: ignore[index]
-        if controller is not None and controller_state is not None:
-            attempt(
-                "preparation controller",
-                lambda: controller.restore_state(controller_state),
-            )
-        observer = previous["global_const_observer"]  # type: ignore[index]
-        observer_state = previous["global_const_observer_state"]  # type: ignore[index]
-        if observer is not None and observer_state is not None:
-            attempt(
-                "global const observer",
-                lambda: observer.restore_state(observer_state),
-            )
-        if previous["started"]:  # type: ignore[index]
-            attempt(
-                "started optimizer adapters",
-                lambda: manager.restore_started_optimizer_runtime_state(
-                    previous["started_optimizer_state"]  # type: ignore[index]
-                ),
-            )
-            attempt("native preanalysis handlers", manager._sync_native_preanalysis_handlers)
-        service = manager.execution_scope_service
-        service._stages = tuple(previous["scope_stages"])  # type: ignore[index]
-        service._generation = previous["scope_generation"]  # type: ignore[index]
-        service._active_cache = dict(previous["scope_active_cache"])  # type: ignore[index]
-        service._metadata_cache = dict(previous["scope_metadata_cache"])  # type: ignore[index]
-        if not errors:
-            manager._native_preanalysis_handlers_installed = previous[  # type: ignore[index]
-                "native_handlers_installed"
-            ]
-            manager._runtime_invalidated = previous["runtime_invalidated"]  # type: ignore[index]
-            manager._started = previous["started"]  # type: ignore[index]
-            return
-
-        invalidation_errors = manager.invalidate_runtime_after_activation_rollback()
-        errors.extend(
-            ("runtime invalidation", error) for error in invalidation_errors
-        )
-        detail = "; ".join(
-            f"{label}: {type(error).__name__}: {error}" for label, error in errors
-        )
-        rollback_error = RuntimeActivationRollbackError(
-            f"runtime activation rollback failed: {detail}"
-        )
-        if activation_error is None:
-            raise rollback_error from errors[0][1]
-        raise rollback_error from activation_error
-
-    def _activate_runtime_project(
+    def _activate_project(
         self,
         *,
         project_index: int,
-        source_project: ProjectConfiguration,
-        runtime_project: ProjectConfiguration,
-        default_selection: ConfigV2DefaultSelection | None,
+        project: ProjectConfiguration,
     ) -> ProjectConfiguration:
-        captured = self._capture_runtime_activation_state()
-        try:
-            return self._activate_runtime_project_unchecked(
-                project_index=project_index,
-                source_project=source_project,
-                runtime_project=runtime_project,
-                default_selection=default_selection,
-            )
-        except BaseException as activation_error:
-            self._restore_runtime_activation_state(captured, activation_error)
-            raise
-
-    def _activate_runtime_project_unchecked(
-        self,
-        *,
-        project_index: int,
-        source_project: ProjectConfiguration,
-        runtime_project: ProjectConfiguration,
-        default_selection: ConfigV2DefaultSelection | None,
-    ) -> ProjectConfiguration:
-        """Configure one explicit source/runtime pair without rediscovering it."""
-        # Resolve a config-v2 schedule BEFORE touching any state: it is the
-        # step that validates the pipeline payload and therefore the step that
-        # can raise.  Projects without a pipeline_v2 key remain on the
-        # transitional legacy rule path until the final cutover (lpccp-8c87).
-        # An explicitly present empty/malformed pipeline is never treated as
-        # legacy; the compiler raises its migration diagnostic instead.
-        schedule = (
-            compile_config_v2_hook_schedule(runtime_project)
-            if "pipeline_v2" in runtime_project.additional_configuration
-            else None
-        )
-
-        # Candidate rules must not reuse the live instances from the previous
-        # project: ``configure()`` mutates maturity/configuration state.  Build
-        # a fresh catalogue for this activation so a rejected candidate cannot
-        # poison the still-running project.
-        candidate_known_ins_rules = self._build_known_instruction_rules()
-        candidate_known_blk_rules = self._build_known_block_rules()
-        from d810.optimizers.microcode.flow.constant_prop.forward_const_prop import (
-            ForwardConstantPropagationRule,
-        )
-        from d810.optimizers.microcode.instructions.peephole.fold_constant_subtree import (
-            ConstantSubtreeFoldRule,
-        )
-        from d810.optimizers.microcode.instructions.peephole.fold_readonlydata import (
-            FoldReadonlyDataRule,
-        )
-
-        candidate_instruction_names = {
-            str(getattr(rule, "name", rule.__class__.__name__))
-            for rule in candidate_known_ins_rules
-        }
-        if "FoldReadonlyDataRule" not in candidate_instruction_names:
-            candidate_known_ins_rules.append(FoldReadonlyDataRule())
-        if "ConstantSubtreeFoldRule" not in candidate_instruction_names:
-            candidate_known_ins_rules.append(ConstantSubtreeFoldRule())
-        candidate_block_names = {
-            str(getattr(rule, "name", rule.__class__.__name__))
-            for rule in candidate_known_blk_rules
-        }
-        if "ForwardConstantPropagationRule" not in candidate_block_names:
-            candidate_known_blk_rules.append(ForwardConstantPropagationRule())
-
-        constant_schedule = hook_activation.constant_simplification_schedule
-        constant_stages_by_rule = {
-            stage.implementation_name: stage
-            for stage in (constant_schedule.stages if constant_schedule else ())
-            if stage.enabled and stage.implementation_name
-        }
-
-        def configure_rule(rule, effective_config):
-            stage = constant_stages_by_rule.get(rule.name)
-            if stage is None:
-                rule.configure(effective_config)
-                return
-            supported_names = constant_simplification_provider_maturities(
-                stage.supported_maturities
-            )
-            effective_names = constant_simplification_provider_maturities(
-                stage.effective_maturities
-            )
-            supported = tuple(string_to_maturity(name) for name in supported_names)
-            effective = tuple(string_to_maturity(name) for name in effective_names)
-            if any(value is None for value in (*supported, *effective)):
-                raise PipelineConfigError(
-                    f"{CONSTANT_SIMPLIFICATION_PASS_ID} stage {stage.stage_id} "
-                    f"implementation {stage.implementation_name} has an unknown "
-                    "provider maturity spelling"
-                )
-            configure_rule_with_maturity_contract(
-                rule,
-                effective_config,
-                pass_id=CONSTANT_SIMPLIFICATION_PASS_ID,
-                stage_id=stage.stage_id,
-                expected_supported=tuple(value for value in supported if value is not None),
-                expected_effective=tuple(value for value in effective if value is not None),
-            )
+        """Compile and activate one canonical project transactionally."""
+        # Compilation and snapshot construction happen before the lifecycle
+        # event, state fields, rule lists, or manager configuration are touched.
+        # Any schema/migration failure therefore leaves the previous activation
+        # intact and is recorded by ``load_project``.
+        schedule = compile_config_v2_hook_schedule(project)
+        snapshot = build_project_runtime_snapshot(project=project, schedule=schedule)
 
         old_project_name = (
             self.current_project.path.name
             if getattr(self, "current_project", None) is not None
             else None
         )
-        next_project = source_project
         emit_project_reloading(
             old_project_name=old_project_name,
-            new_project_name=next_project.path.name,
+            new_project_name=project.path.name,
         )
         self.current_project_index = project_index
-        self.current_project = next_project
-        self.current_runtime_project = runtime_project
+        self.current_project = project
         self.current_ins_rules = []
         self.current_blk_rules = []
-        self.last_pipeline_v2_hook_pass_ids = ()
-        self.last_pipeline_v2_hook_mode = None
-        self.last_config_v2_default_selection = default_selection
+        self.last_config_v2_pass_ids = schedule.configured_pass_ids
+        self.current_project_runtime_snapshot = snapshot
 
-        if default_selection is not None:
-            logger.info(
-                "%s",
-                format_config_v2_default_selection_status(
-                    selection=default_selection,
-                ),
-            )
-
-        if schedule is not None:
-            self.last_pipeline_v2_hook_mode = "config-v2"
-            self.last_pipeline_v2_hook_pass_ids = schedule.configured_pass_ids
-            project_ins_rules = schedule.instruction_bindings
-            project_blk_rules = schedule.block_bindings
-        else:
-            project_ins_rules = tuple(runtime_project.ins_rules)
-            project_blk_rules = tuple(runtime_project.blk_rules)
-
-        self.current_project_runtime_snapshot = build_project_runtime_snapshot(
-            source_project=self.current_project,
-            runtime_project=runtime_project,
-            default_selection=default_selection,
-            schedule=schedule,
-            hook_mode=self.last_pipeline_v2_hook_mode,
+        # The compiled schedule is authoritative.  Binding order is the
+        # declared pipeline order, never the registry discovery order.
+        rule_pairs = (
+            (rule_conf, rule)
+            for rule_conf in schedule.instruction_bindings
+            for rule in self.known_ins_rules
         )
-
-        # Config-v2's schedule is explicit, so it
-        # must retain declared pass/transform order. Legacy projects retain
-        # their registry-order contract.
-        if schedule is not None:
-            rule_pairs = (
-                (rule_conf, rule)
-                for rule_conf in project_ins_rules
-                for rule in candidate_known_ins_rules
-            )
-        else:
-            rule_pairs = (
-                (rule_conf, rule)
-                for rule in candidate_known_ins_rules
-                for rule_conf in project_ins_rules
-            )
         for rule_conf, rule in rule_pairs:
             if not rule_conf.is_activated:
                 continue
@@ -675,7 +361,7 @@ class D810State(metaclass=SingletonMeta):
                 effective_config["dump_intermediate_microcode"] = self.d810_config.get(
                     "dump_intermediate_microcode"
                 )
-                configure_rule(rule, effective_config)
+                rule.configure(effective_config)
                 rule.set_log_dir(self.log_dir)
                 self.current_ins_rules.append(rule)
         logger.debug("Instruction rules configured")
@@ -685,8 +371,8 @@ class D810State(metaclass=SingletonMeta):
             if isinstance(rule, IDAPatternAdapter)
         )
         # Snapshot construction fingerprints every selected rule and allocates
-        # the parity ledger.  Neither belongs to ordinary legacy execution:
-        # the rollout stays legacy-authoritative unless an operator explicitly
+        # the parity ledger.  Neither belongs to ordinary schedule execution:
+        # the rollout stays registry-authoritative unless an operator explicitly
         # requests shadow observation or certificate-gated structural matching.
         shadow_observation_requested = (
             os.environ.get("D810_SHADOW_DSL_MATCHING", "0") == "1"
@@ -699,7 +385,7 @@ class D810State(metaclass=SingletonMeta):
         ):
             certificate_path = None
             parity_expectation = None
-            certificate_setting = runtime_project.additional_configuration.get(
+            certificate_setting = project.additional_configuration.get(
                 "structural_matcher_parity_certificate"
             )
             if type(certificate_setting) is str and certificate_setting:
@@ -707,13 +393,13 @@ class D810State(metaclass=SingletonMeta):
                 certificate_path = (
                     configured_path
                     if configured_path.is_absolute()
-                    else runtime_project.path.parent / configured_path
+                    else project.path.parent / configured_path
                 )
             elif certificate_setting is not None:
                 logger.warning(
                     "Ignoring non-string structural matcher parity certificate setting"
                 )
-            expectation_setting = runtime_project.additional_configuration.get(
+            expectation_setting = project.additional_configuration.get(
                 "structural_matcher_parity_expectation"
             )
             if isinstance(expectation_setting, dict):
@@ -763,8 +449,8 @@ class D810State(metaclass=SingletonMeta):
         else:
             self.current_certified_catalogue_snapshot = None
             self.current_shadow_matcher_parity_ledger = None
-        for blk_rule in candidate_known_blk_rules:
-            for rule_conf in project_blk_rules:
+        for rule_conf in schedule.block_bindings:
+            for blk_rule in self.known_blk_rules:
                 if not rule_conf.is_activated:
                     continue
                 if blk_rule.name == rule_conf.name:
@@ -772,39 +458,19 @@ class D810State(metaclass=SingletonMeta):
                     effective_config["dump_intermediate_microcode"] = (
                         self.d810_config.get("dump_intermediate_microcode")
                     )
-                    configure_rule(blk_rule, effective_config)
+                    blk_rule.configure(effective_config)
                     blk_rule.set_log_dir(self.log_dir)
                     self.current_blk_rules.append(blk_rule)
         logger.debug("Block rules configured")
-        self.known_ins_rules = candidate_known_ins_rules
-        self.known_blk_rules = candidate_known_blk_rules
-        self.manager.configure_constant_simplification_schedule(
-            hook_activation.constant_simplification_schedule
-        )
-        # Keep manager-owned worklists synchronized with the state selection.
-        # When hooks are already installed these calls also replace the live
-        # adapter rule collections; startup uses the same lists on its first
-        # construction.
-        self.manager.configure_instruction_optimizer(
-            list(self.current_ins_rules),
-            **self.manager.instruction_optimizer_config,
-        )
-        self.manager.configure_block_optimizer(
-            list(self.current_blk_rules),
-            **self.manager.block_optimizer_config,
-        )
-        cfg = dict(runtime_project.additional_configuration)
+        cfg = dict(project.additional_configuration)
         # This is derived from the validated config-v2 schedule rather than
         # user-editable project JSON.  A complete native state-machine spine
         # may stage one generated-MBA restart, whose flowchart consumer must
-        # therefore be installed while this runtime project is active.
+        # therefore be installed while this project is active.
         cfg["config_v2_native_state_machine_active"] = (
             requires_native_preanalysis_handlers(schedule)
-            if schedule is not None
-            else False
         )
         cfg.setdefault("project_name", self.current_project.path.name)
-        cfg.setdefault("runtime_project_name", runtime_project.path.name)
         self.manager.configure(**cfg)
         self.manager.emit_execution_scope_invalidation(
             ExecutionScopeEvent.PROJECT_PIPELINE_RELOADED,
@@ -842,12 +508,6 @@ class D810State(metaclass=SingletonMeta):
             self.current_project.description,
             self.current_project.path,
         )
-        if runtime_project.path != self.current_project.path:
-            logger.debug(
-                "Runtime project %s selected from %s",
-                runtime_project.path.name,
-                runtime_project.path,
-            )
         return self.current_project
 
     def get_project_runtime_snapshot(self) -> ProjectRuntimeSnapshot:
@@ -864,17 +524,16 @@ class D810State(metaclass=SingletonMeta):
         *,
         facts: typing.Any | None = None,
     ) -> DeobfuscationWorkbenchSnapshot:
-        """Collect workbench truth for the current source/runtime project pair."""
+        """Collect workbench truth for the current canonical project."""
         project_snapshot = self.current_project_runtime_snapshot
-        runtime_project = self.current_runtime_project
-        if project_snapshot is None or runtime_project is None:
-            raise RuntimeError("No runtime project is available for the workbench")
+        if project_snapshot is None:
+            raise RuntimeError("No project is available for the workbench")
         return self.manager.get_workbench_snapshot(
             function_ea=function_ea,
             function_name=function_name,
             function_fingerprint=function_fingerprint,
             project_snapshot=project_snapshot,
-            runtime_project=runtime_project,
+            project=self.current_project,
             facts=facts,
         )
 
@@ -970,11 +629,9 @@ class D810State(metaclass=SingletonMeta):
     def create_config_v2_project_draft(
         self, destination: pathlib.Path
     ) -> ConfigV2ProjectDraft:
-        runtime_project = self.current_runtime_project
-        if runtime_project is None:
-            raise RuntimeError("No runtime project is available for config-v2 editing")
+        project = self.current_project
         return self.manager.create_config_v2_project_draft(
-            runtime_project,
+            project,
             destination=destination,
         )
 
@@ -1102,25 +759,21 @@ class D810State(metaclass=SingletonMeta):
         self,
         snapshot: DeobfuscationWorkbenchSnapshot,
     ) -> PipelineRecipeDraft:
-        runtime_project = self.current_runtime_project
-        if runtime_project is None:
-            raise RuntimeError("No runtime project is available for the recipe")
-        return self.manager.create_workbench_recipe_draft(snapshot, runtime_project)
+        return self.manager.create_workbench_recipe_draft(snapshot, self.current_project)
 
     def create_active_workbench_recipe_draft(
         self,
         function_ea: int,
     ) -> PipelineRecipeDraft:
-        """Create a temporary function recipe from the active config-v2 runtime."""
-        runtime_project = self.current_runtime_project
+        """Create a temporary function recipe from the active project."""
+        project = self.current_project
         snapshot = self.current_project_runtime_snapshot
-        if runtime_project is None or snapshot is None:
-            raise RuntimeError("No runtime project is available for the recipe")
+        if snapshot is None:
+            raise RuntimeError("No project is available for the recipe")
         return self.manager.create_active_workbench_recipe_draft(
             function_ea=function_ea,
-            source_path=str(snapshot.source.path),
-            runtime_path=str(snapshot.runtime.path),
-            runtime_project=runtime_project,
+            project_path=str(snapshot.project.path),
+            project=project,
         )
 
     def create_saved_workbench_recipe_draft(
@@ -1132,13 +785,12 @@ class D810State(metaclass=SingletonMeta):
     ) -> PipelineRecipeDraft | None:
         snapshot = self.current_project_runtime_snapshot
         if snapshot is None:
-            raise RuntimeError("No runtime project is available for the recipe")
+            raise RuntimeError("No project is available for the recipe")
         return self.manager.create_saved_workbench_recipe_draft(
             function_ea=function_ea,
             function_fingerprint=function_fingerprint,
             workbench_generation=workbench_generation,
-            source_path=str(snapshot.source.path),
-            runtime_path=str(snapshot.runtime.path),
+            project_path=str(snapshot.project.path),
         )
 
     def validate_workbench_recipe(
@@ -1239,33 +891,25 @@ class D810State(metaclass=SingletonMeta):
         """Run one synchronous decompile under an in-memory function recipe."""
         if not self.manager.started:
             raise RuntimeError("D810 must be started before activating a recipe")
-        source_project = self.current_project
-        runtime_project = self.current_runtime_project
-        if runtime_project is None:
-            raise RuntimeError("No runtime project is available for recipe activation")
+        project = self.current_project
         project_index = self.current_project_index
-        default_selection = self.last_config_v2_default_selection
         pass_configs_json = self.manager.recipe_service.serialize_enabled_configs(draft)
         recipe_project = build_recipe_runtime_project(
-            runtime_project,
+            project,
             self.manager.recipe_service.deserialize_configs(pass_configs_json),
             function_ea=draft.function_ea,
         )
 
         def activate_recipe() -> None:
-            self._activate_runtime_project(
+            self._activate_project(
                 project_index=project_index,
-                source_project=source_project,
-                runtime_project=recipe_project,
-                default_selection=None,
+                project=recipe_project,
             )
 
         def restore_project() -> None:
-            self._activate_runtime_project(
+            self._activate_project(
                 project_index=project_index,
-                source_project=source_project,
-                runtime_project=runtime_project,
-                default_selection=default_selection,
+                project=project,
             )
 
         with activate_function_recipe_runtime(
@@ -1390,13 +1034,13 @@ class D810State(metaclass=SingletonMeta):
     ) -> WorkbenchCommandResult:
         return self.manager.workbench_service.execute_restore_preparation(request)
 
-    def clone_current_runtime_project(
+    def clone_current_project(
         self,
         destination: pathlib.Path,
         description: str,
     ) -> ProjectConfiguration:
-        return clone_runtime_project_command(
-            runtime_project=self.current_runtime_project,
+        return clone_project_command(
+            project=self.current_project,
             destination=destination,
             description=description,
         )
@@ -1412,29 +1056,23 @@ class D810State(metaclass=SingletonMeta):
             logger.error("Cannot start D-810: Hex-Rays decompiler is not available")
             return
         self._register_backend_analysis_providers()
-        runtime_project = self.current_runtime_project or self.current_project
         self.manager.configure_instruction_optimizer(
             [rule for rule in self.current_ins_rules],
             generate_z3_code=self.d810_config.get("generate_z3_code"),
             dump_intermediate_microcode=self.d810_config.get(
                 "dump_intermediate_microcode"
             ),
-            **runtime_project.additional_configuration,
+            **self.current_project.additional_configuration,
         )
         self.manager.configure_block_optimizer(
             [rule for rule in self.current_blk_rules],
-            **runtime_project.additional_configuration,
+            **self.current_project.additional_configuration,
         )
         project_snapshot = self.get_project_runtime_snapshot()
         self.manager.configure_preparation_scripts(
             project_snapshot.preparation_scripts,
             global_const_persistence_enabled=(
                 project_snapshot.global_const_persistence_enabled
-            ),
-            constant_preparation_options=(
-                project_snapshot.constant_simplification_schedule.preparation
-                if project_snapshot.constant_simplification_schedule is not None
-                else None
             ),
         )
         self.manager.start()
@@ -1457,7 +1095,7 @@ class D810State(metaclass=SingletonMeta):
         snapshotted the registry and matched configured rule names against it.
         An extension's rule therefore never entered the catalogue, never
         matched, and never had ``configure()`` called, leaving its pass
-        configured, routed and silently inert (ticket d81-ix9c).
+        configured and silently inert (ticket d81-ix9c).
 
         Calling ``load_extension_rules()`` rather than the whole
         ``load_optimizer_registries()`` is deliberate: the latter re-runs the
@@ -1472,6 +1110,19 @@ class D810State(metaclass=SingletonMeta):
     def _build_known_instruction_rules(self) -> list:
         """Every instruction rule available to be matched against a config."""
         self._ensure_extension_rules_registered()
+        # Egglog is an optional dependency, so its rule cannot be imported at
+        # module load time.  Import it before taking the rule catalogue
+        # snapshot: importing only when D810Manager starts is too late for a
+        # configured project to find and configure the rule.
+        try:
+            from d810.backends.mba.egglog_backend import EGGLOG_AVAILABLE
+
+            if EGGLOG_AVAILABLE:
+                from d810.optimizers.microcode.instructions.egraph import (  # noqa: F401
+                    egglog_handler,
+                )
+        except ImportError as exc:
+            logger.info("Egglog instruction rule unavailable: %s", exc)
         rules = [
             rule_cls()
             for rule_cls in InstructionOptimizationRule.registry.values()

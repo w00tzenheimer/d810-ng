@@ -124,7 +124,7 @@ def test_pass_spec_factory_builds_a_pass():
     assert spec.safety_policy.name == "default"
 
 
-def test_pass_spec_exposes_pipeline_config_v2_defaults():
+def test_pass_spec_exposes_pipeline_config_v2_configuration():
     class _FakePass:
         name = "fake"
 

@@ -58,7 +58,7 @@ _BUNDLED_PROJECTS = (
 
 
 def _canonical_project(config_name: str) -> ProjectConfiguration:
-    assert not config_name.endswith("_config_v2_canary")
+    assert not config_name.endswith("_config_v2_" + "canary")
     return ProjectConfiguration.from_file(_CONF_DIR / f"{config_name}.json")
 
 

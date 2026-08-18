@@ -77,8 +77,7 @@ def _draft() -> PipelineRecipeDraft:
         0x401000,
         "sha256:abc",
         4,
-        "/source.json",
-        "/runtime.json",
+            "/project.json",
         (
             RecipePass("item-z", "z-pass", True, '{"pass_id":"z-pass"}'),
             RecipePass("item-a", "a-pass", False, '{"pass_id":"a-pass"}'),

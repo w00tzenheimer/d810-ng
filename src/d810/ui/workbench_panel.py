@@ -111,7 +111,7 @@ if IDA_AVAILABLE:
             self.parent: typing.Any = None
 
             self.function_label = QtWidgets.QLabel("No function selected")
-            self.runtime_label = QtWidgets.QLabel("No runtime project")
+            self.project_label = QtWidgets.QLabel("No project")
             self.attack_label = QtWidgets.QLabel("Attack: not analyzed")
 
             self.filter_edit = QtWidgets.QLineEdit()
@@ -198,7 +198,7 @@ if IDA_AVAILABLE:
             context_layout = QtWidgets.QFormLayout(context_group)
             configure_left_aligned_form(context_layout)
             context_layout.addRow("Function:", self.function_label)
-            context_layout.addRow("Runtime:", self.runtime_label)
+            context_layout.addRow("Project:", self.project_label)
             context_layout.addRow("Attack:", self.attack_label)
 
             case_group = QtWidgets.QGroupBox("Deobfuscation workflow", self.parent)
@@ -651,7 +651,7 @@ if IDA_AVAILABLE:
                 self._visible_rows = ()
                 self._row_by_key = {}
                 self.function_label.setText("No function selected")
-                self.runtime_label.setText("No runtime project")
+                self.project_label.setText("No project")
                 self.attack_label.setText("Attack: not analyzed")
                 self._render_rows(())
                 self._render_action_states(())
@@ -749,13 +749,9 @@ if IDA_AVAILABLE:
                 f"{function_name} @ 0x{snapshot.function.ea:X} "
                 f"(generation {snapshot.generation})"
             )
-            routed = (
-                " routed from " + snapshot.runtime.source_name
-                if snapshot.runtime.routed
-                else ""
-            )
-            self.runtime_label.setText(
-                f"{snapshot.runtime.runtime_name}{routed} [{snapshot.runtime.mode}]"
+            self.project_label.setText(
+                f"{snapshot.project.project_name} "
+                f"[{len(snapshot.project.pass_ids)} passes]"
             )
             confidence = (
                 "unavailable"

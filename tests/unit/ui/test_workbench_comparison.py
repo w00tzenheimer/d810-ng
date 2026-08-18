@@ -16,7 +16,7 @@ from d810.manager.workbench_models import (
     DeobfuscationWorkbenchSnapshot,
     FunctionRef,
     ExecutionScopeSummary,
-    RuntimeConfigRef,
+    ProjectConfigRef,
     SnapshotFreshness,
     StatisticsSummary,
 )
@@ -32,14 +32,9 @@ def _snapshot() -> DeobfuscationWorkbenchSnapshot:
     return DeobfuscationWorkbenchSnapshot(
         generation=7,
         function=FunctionRef(0x401000, "target", "sha256:abc", 7),
-        runtime=RuntimeConfigRef(
-            source_name="source.json",
-            source_path="/source.json",
-            runtime_name="runtime.json",
-            runtime_path="/runtime.json",
-            mode="config-v2",
-            routed=True,
-            hook_mode="config-v2",
+        project=ProjectConfigRef(
+            project_name="project.json",
+            project_path="/project.json",
             pass_ids=("pass.one", "pass.two"),
         ),
         attack=AttackSummary("unknown", "unavailable", None, "none", None, (), (), ()),
@@ -123,9 +118,9 @@ def test_capture_suppresses_hooks_once_and_decompiles_native_once_inside() -> No
     assert identity.idb_identity == "idb:sample"
     assert identity.type_generation == "types:4"
     assert identity.hexrays_version == "9.2"
-    assert identity.runtime_path == "/runtime.json"
-    assert identity.runtime_pass_ids == ("pass.one", "pass.two")
-    assert identity.runtime_generation == 7
+    assert identity.project_path == "/project.json"
+    assert identity.project_pass_ids == ("pass.one", "pass.two")
+    assert identity.project_generation == 7
     assert captured["baseline_text"] == "native();\n"
     assert captured["output_text"] == "d810();\n"
 

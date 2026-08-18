@@ -26,14 +26,12 @@ def _plan(
     row_px: int = ROW_PX,
     filter_has_text: bool = False,
     details_requested: bool = False,
-    identity_is_divergent: bool = False,
 ):
     return plan_panel_density(
         available_px=available_px,
         row_px=row_px,
         filter_has_text=filter_has_text,
         details_requested=details_requested,
-        identity_is_divergent=identity_is_divergent,
     )
 
 
@@ -60,22 +58,12 @@ def test_cramped_panel_keeps_a_filter_that_already_holds_text() -> None:
     assert plan.show_filter is True
 
 
-def test_divergent_identity_expands_and_locks_the_disclosure_at_any_height() -> None:
-    roomy = _plan(available_px=ROOMY_PX, identity_is_divergent=True)
-    cramped = _plan(
-        available_px=CRAMPED_PX,
-        details_requested=False,
-        identity_is_divergent=True,
-    )
+def test_canonical_project_disclosure_remains_user_controlled() -> None:
+    roomy = _plan(available_px=ROOMY_PX, details_requested=True)
+    cramped = _plan(available_px=CRAMPED_PX, details_requested=True)
 
     assert roomy.show_details is True
-    assert roomy.details_locked is True
-    assert cramped.show_details is True
-    assert cramped.details_locked is True
-
-
-def test_agreeing_identity_leaves_the_disclosure_unlocked() -> None:
-    assert _plan(available_px=ROOMY_PX).details_locked is False
+    assert cramped.show_details is False
 
 
 def test_exactly_the_minimum_tree_height_still_counts_as_roomy() -> None:

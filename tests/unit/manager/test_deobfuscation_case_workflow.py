@@ -24,7 +24,7 @@ from d810.manager.workbench_models import (
     DeobfuscationWorkbenchSnapshot,
     FunctionRef,
     ExecutionScopeSummary,
-    RuntimeConfigRef,
+    ProjectConfigRef,
     SnapshotFreshness,
     StatisticsSummary,
 )
@@ -87,14 +87,9 @@ def _snapshot(
     return DeobfuscationWorkbenchSnapshot(
         generation=4,
         function=FunctionRef(0x1800020F0, "target", "workbench:fixture", 4),
-        runtime=RuntimeConfigRef(
-            source_name="source.json",
-            source_path="/source.json",
-            runtime_name="runtime.json",
-            runtime_path="/runtime.json",
-            mode="config-v2",
-            routed=True,
-            hook_mode="config-v2",
+        project=ProjectConfigRef(
+            project_name="project.json",
+            project_path="/project.json",
             pass_ids=("recover_dispatcher",),
         ),
         attack=AttackSummary(

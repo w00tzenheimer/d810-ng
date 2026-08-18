@@ -10,7 +10,7 @@ from d810.core.typing import Protocol
 from d810.diagnostics.deobfuscation_case_repository import (
     DeobfuscationCaseEvidenceError,
 )
-from d810.manager.workbench_models import FunctionRef, RuntimeConfigRef
+from d810.manager.workbench_models import FunctionRef, ProjectConfigRef
 from d810.manager.workbench_recipe_models import FunctionPipelineOverride
 
 __all__ = [
@@ -38,15 +38,14 @@ def _is_current_saved_recipe(
     recipe: FunctionPipelineOverride | None,
     *,
     function: FunctionRef,
-    runtime: RuntimeConfigRef,
+    project: ProjectConfigRef,
 ) -> bool:
     """Defend the direct-run gate even if an upstream selection regresses."""
     return bool(
         recipe is not None
         and int(recipe.function_ea) == int(function.ea)
         and recipe.function_fingerprint == function.fingerprint
-        and str(recipe.source_path) == runtime.source_path
-        and str(recipe.runtime_path) == runtime.runtime_path
+        and str(recipe.project_path) == project.project_path
     )
 
 
@@ -60,7 +59,7 @@ class DeobfuscationCaseService:
         self,
         *,
         function: FunctionRef,
-        runtime: RuntimeConfigRef,
+        project: ProjectConfigRef,
         saved_recipe: FunctionPipelineOverride | None,
     ) -> DeobfuscationCaseSnapshot:
         """Return a dossier without treating diagnostic progress as execution proof.
@@ -80,7 +79,7 @@ class DeobfuscationCaseService:
         if _is_current_saved_recipe(
             saved_recipe,
             function=function,
-            runtime=runtime,
+            project=project,
         ):
             return DeobfuscationCaseSnapshot(
                 evidence=evidence,

@@ -6,7 +6,7 @@ import dataclasses
 import enum
 import pathlib
 
-from d810.manager.project_runtime import ProjectConfigMode, ProjectRuntimeSnapshot
+from d810.manager.project_runtime import ProjectRuntimeSnapshot
 
 
 V2_STRUCTURED_EDIT_EXPLANATION = (
@@ -17,8 +17,7 @@ V2_CLONE_EXPLANATION = (
     "Duplicate the complete effective config-v2 document before editing it."
 )
 STRICT_V2_EXPLANATION = (
-    "This project does not expose a config-v2 pass pipeline and cannot be edited "
-    "with the strict project editor."
+    "No canonical config-v2 project is active."
 )
 
 
@@ -43,14 +42,11 @@ class ConfigEditPolicy:
 @dataclasses.dataclass(frozen=True, slots=True)
 class ProjectConfigView:
     mode_text: str
-    source_text: str
-    source_tooltip: str
-    runtime_text: str
-    runtime_tooltip: str
+    project_text: str
+    project_tooltip: str
     effective_passes_text: str
     pass_tree_title: str
     header_summary_text: str
-    identity_is_divergent: bool
     effective_pass_ids: tuple[str, ...]
     edit_enabled: bool
     edit_tooltip: str
@@ -121,20 +117,20 @@ def resolve_config_v2_focus_target(
 
 def config_v2_user_destination(
     config_dir: pathlib.Path,
-    runtime_path: pathlib.Path,
+    project_path: pathlib.Path,
 ) -> pathlib.Path:
     config_dir = pathlib.Path(config_dir).expanduser()
-    runtime_path = pathlib.Path(runtime_path).expanduser()
-    if runtime_path.parent == config_dir:
-        return runtime_path
-    return config_dir / runtime_path.name
+    project_path = pathlib.Path(project_path).expanduser()
+    if project_path.parent == config_dir:
+        return project_path
+    return config_dir / project_path.name
 
 
 def select_config_edit_policy(
     mode: ConfigEditMode,
     snapshot: ProjectRuntimeSnapshot | None,
 ) -> ConfigEditPolicy:
-    if snapshot is None or snapshot.mode is not ProjectConfigMode.CONFIG_V2:
+    if snapshot is None:
         return ConfigEditPolicy(False, ConfigSaveStrategy.REFUSE, STRICT_V2_EXPLANATION)
     explanation = (
         V2_CLONE_EXPLANATION
@@ -145,35 +141,22 @@ def select_config_edit_policy(
 
 
 def build_project_config_view(snapshot: ProjectRuntimeSnapshot) -> ProjectConfigView:
-    is_v2 = snapshot.mode is ProjectConfigMode.CONFIG_V2
-    mode_text = (
-        "Config v2 (routed)"
-        if is_v2 and snapshot.routed
-        else "Config v2"
-        if is_v2
-        else "Unsupported project format"
-    )
-    pass_ids = tuple(snapshot.effective_pass_ids) if is_v2 else ()
+    mode_text = "Config v2"
+    pass_ids = tuple(snapshot.effective_pass_ids)
     passes_text = (
         f"{len(pass_ids)} passes: " + ", ".join(pass_ids)
         if pass_ids
         else "No executable config-v2 pass pipeline"
     )
     policy = select_config_edit_policy(ConfigEditMode.EDIT, snapshot)
-    # Compare resolved paths, not the routed flag and not basenames: two
-    # projects in different directories can share a filename.
-    divergent = snapshot.source.path != snapshot.runtime.path
     summary_text = f"{mode_text} . {len(pass_ids)} passes" if pass_ids else mode_text
     return ProjectConfigView(
         mode_text=mode_text,
-        source_text=snapshot.source.basename,
-        source_tooltip=str(snapshot.source.path),
-        runtime_text=snapshot.runtime.basename,
-        runtime_tooltip=str(snapshot.runtime.path),
+        project_text=snapshot.project.basename,
+        project_tooltip=str(snapshot.project.path),
         effective_passes_text=passes_text,
         pass_tree_title=f"Pass pipeline ({len(pass_ids)} active)",
         header_summary_text=summary_text,
-        identity_is_divergent=divergent,
         effective_pass_ids=pass_ids,
         edit_enabled=policy.allowed,
         edit_tooltip=policy.explanation,

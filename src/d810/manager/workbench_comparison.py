@@ -26,9 +26,9 @@ class ComparisonIdentity:
     idb_identity: str
     type_generation: str
     hexrays_version: str
-    runtime_path: str
-    runtime_pass_ids: tuple[str, ...]
-    runtime_generation: int
+    project_path: str
+    project_pass_ids: tuple[str, ...]
+    project_generation: int
 
 
 def _normalize_pseudocode(pseudocode: str) -> str:
@@ -148,9 +148,9 @@ class WorkbenchComparisonService:
             line_count=len(normalized.splitlines()),
             character_count=len(normalized),
             content_sha256=_content_sha256(normalized),
-            runtime_path=identity.runtime_path,
-            runtime_pass_ids=identity.runtime_pass_ids,
-            runtime_generation=identity.runtime_generation,
+            project_path=identity.project_path,
+            project_pass_ids=identity.project_pass_ids,
+            project_generation=identity.project_generation,
         )
         self._outputs[int(identity.function_ea)] = output
         return output
@@ -178,14 +178,14 @@ class WorkbenchComparisonService:
         if output.available:
             output_reasons = _common_stale_reasons(output, current)
             runtime_checks = (
-                (output.runtime_path != current.runtime_path, "Runtime path changed"),
+                (output.project_path != current.project_path, "Project path changed"),
                 (
-                    output.runtime_pass_ids != current.runtime_pass_ids,
-                    "Runtime pass IDs changed",
+                    output.project_pass_ids != current.project_pass_ids,
+                    "Project pass IDs changed",
                 ),
                 (
-                    output.runtime_generation != current.runtime_generation,
-                    "Runtime generation changed",
+                    output.project_generation != current.project_generation,
+                    "Project generation changed",
                 ),
             )
             output_reasons += tuple(

@@ -46,16 +46,11 @@ class FunctionRef:
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
-class RuntimeConfigRef:
-    source_name: str
-    source_path: str
-    runtime_name: str
-    runtime_path: str
-    mode: str
-    routed: bool
-    hook_mode: str | None
+class ProjectConfigRef:
+    project_name: str
+    project_path: str
     pass_ids: tuple[str, ...]
-    recipe_scope: str = "project-runtime"
+    recipe_scope: str = "project"
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -226,9 +221,9 @@ class D810OutputRef:
     line_count: int = 0
     character_count: int = 0
     content_sha256: str | None = None
-    runtime_path: str | None = None
-    runtime_pass_ids: tuple[str, ...] = ()
-    runtime_generation: int | None = None
+    project_path: str | None = None
+    project_pass_ids: tuple[str, ...] = ()
+    project_generation: int | None = None
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -356,7 +351,7 @@ class EffectiveMaturitySchedule:
 class DeobfuscationWorkbenchSnapshot:
     generation: int
     function: FunctionRef
-    runtime: RuntimeConfigRef
+    project: ProjectConfigRef
     attack: AttackSummary
     pipeline: tuple[PipelineStageSnapshot, ...]
     consumers: tuple[ConsumerOutcomeSnapshot, ...]
@@ -433,7 +428,7 @@ __all__ = [
     "PreparationWorkbenchSummary",
     "PipelineStageSnapshot",
     "ExecutionScopeSummary",
-    "RuntimeConfigRef",
+    "ProjectConfigRef",
     "SnapshotFreshness",
     "StatisticsSummary",
     "WorkbenchCommandRequest",

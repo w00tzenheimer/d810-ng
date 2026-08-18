@@ -171,14 +171,13 @@ def test_identity_form_and_description_live_behind_the_details_disclosure() -> N
     assert "setFixedHeight(60)" not in source
 
 
-def test_divergent_identity_forces_and_locks_the_disclosure() -> None:
+def test_project_identity_does_not_add_divergent_config_disclosure_state() -> None:
     density = ast.unparse(_method("_apply_panel_density"))
     apply_view = ast.unparse(_method("_apply_project_config_view"))
 
-    assert "identity_is_divergent=self._identity_is_divergent" in density
-    assert "self._details_toggle.setEnabled(not plan.details_locked)" in density
-    assert "self._identity_is_divergent = view.identity_is_divergent" in apply_view
-    assert "differs from source" in apply_view
+    assert "identity_is_divergent" not in density
+    assert "identity_is_divergent" not in apply_view
+    assert "differs from source" not in apply_view
 
 
 def test_density_plan_comes_from_the_pure_logic_layer() -> None:

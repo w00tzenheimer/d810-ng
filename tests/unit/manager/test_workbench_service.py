@@ -22,7 +22,6 @@ from d810.core.execution_journal import (
 from d810.core.execution_journal_store import ExecutionJournalStore
 from d810.core.native_preanalysis_key import NativePreanalysisKey
 from d810.manager.project_runtime import (
-    ProjectConfigMode,
     ProjectIdentitySnapshot,
     ProjectRuntimeSnapshot,
 )
@@ -178,29 +177,19 @@ class _Report:
 def _project_context(
     tmp_path: Path,
 ) -> tuple[ProjectRuntimeSnapshot, ProjectConfiguration]:
-    source_path = tmp_path / "default_ollvm.json"
-    runtime_path = tmp_path / "default_ollvm_v2.json"
-    source_path.write_text("{}", encoding="utf-8")
-    runtime_path.write_text("{}", encoding="utf-8")
+    project_path = tmp_path / "default_ollvm.json"
+    project_path.write_text("{}", encoding="utf-8")
     project_snapshot = ProjectRuntimeSnapshot(
-        source=ProjectIdentitySnapshot(
-            basename=source_path.name,
-            path=source_path,
-            description="source policy",
+        project=ProjectIdentitySnapshot(
+            basename=project_path.name,
+            path=project_path,
+            description="project policy",
         ),
-        runtime=ProjectIdentitySnapshot(
-            basename=runtime_path.name,
-            path=runtime_path,
-            description="effective runtime",
-        ),
-        mode=ProjectConfigMode.CONFIG_V2,
-        routed=True,
-        hook_mode="config-v2",
         effective_pass_ids=("first", "second"),
     )
-    runtime_project = ProjectConfiguration(
-        path=runtime_path,
-        description="effective runtime",
+    project = ProjectConfiguration(
+        path=project_path,
+        description="project policy",
         additional_configuration={
             "pipeline_v2": [
                 {"pass_id": "first"},
@@ -208,7 +197,7 @@ def _project_context(
             ]
         },
     )
-    return project_snapshot, runtime_project
+    return project_snapshot, project
 
 
 def _manager(tmp_path: Path) -> SimpleNamespace:
@@ -306,10 +295,10 @@ def _service(manager: object) -> object:
     )
 
 
-def test_collect_projects_runtime_identity_order_and_not_run_without_facts(
+def test_collect_projects_identity_order_and_not_run_without_facts(
     tmp_path: Path,
 ) -> None:
-    project_snapshot, runtime_project = _project_context(tmp_path)
+    project_snapshot, project = _project_context(tmp_path)
     service = _service(_manager(tmp_path))
 
     snapshot = service.collect(
@@ -317,18 +306,17 @@ def test_collect_projects_runtime_identity_order_and_not_run_without_facts(
         function_name="target",
         function_fingerprint="sha256:abc",
         project_snapshot=project_snapshot,
-        runtime_project=runtime_project,
+        project=project,
     )
 
     assert snapshot.generation == 1
     assert snapshot.function.ea == 0x401000
     assert snapshot.function.name == "target"
     assert snapshot.function.generation == snapshot.generation
-    assert snapshot.runtime.source_name == "default_ollvm.json"
-    assert snapshot.runtime.runtime_name == "default_ollvm_v2.json"
-    assert snapshot.runtime.mode == "config-v2"
-    assert snapshot.runtime.routed is True
-    assert snapshot.runtime.pass_ids == ("first", "second")
+    assert snapshot.project.project_name == "default_ollvm.json"
+    assert snapshot.project.project_path.endswith("default_ollvm.json")
+    assert snapshot.project.recipe_scope == "project"
+    assert snapshot.project.pass_ids == ("first", "second")
     assert tuple(stage.pass_id for stage in snapshot.pipeline) == ("first", "second")
     assert tuple(stage.ordinal for stage in snapshot.pipeline) == (0, 1)
     assert tuple(stage.status for stage in snapshot.pipeline) == (
@@ -381,7 +369,7 @@ def test_config_v2_workbench_service_fails_closed_when_constant_schedule_is_miss
 def test_collect_preserves_effective_recipe_scope_and_projection_error(
     tmp_path: Path,
 ) -> None:
-    project_snapshot, runtime_project = _project_context(tmp_path)
+    project_snapshot, project = _project_context(tmp_path)
     service = _service(_manager(tmp_path))
 
     snapshot = service.collect(
@@ -389,19 +377,19 @@ def test_collect_preserves_effective_recipe_scope_and_projection_error(
         function_name="target",
         function_fingerprint="sha256:abc",
         project_snapshot=project_snapshot,
-        runtime_project=runtime_project,
-        runtime_scope="saved-recipe-blocked",
+        project=project,
+        project_scope="saved-recipe-blocked",
         initial_errors=("function recipe: stale fingerprint",),
     )
 
-    assert snapshot.runtime.recipe_scope == "saved-recipe-blocked"
+    assert snapshot.project.recipe_scope == "saved-recipe-blocked"
     assert snapshot.collection_errors[0] == "function recipe: stale fingerprint"
 
 
 def test_preflight_distinguishes_ready_and_blocked_with_structured_diagnostics(
     tmp_path: Path,
 ) -> None:
-    project_snapshot, runtime_project = _project_context(tmp_path)
+    project_snapshot, project = _project_context(tmp_path)
     service = _service(_manager(tmp_path))
 
     blocked = service.collect(
@@ -409,7 +397,7 @@ def test_preflight_distinguishes_ready_and_blocked_with_structured_diagnostics(
         function_name="target",
         function_fingerprint=None,
         project_snapshot=project_snapshot,
-        runtime_project=runtime_project,
+        project=project,
         facts=_Facts(),
     )
     ready = service.collect(
@@ -417,7 +405,7 @@ def test_preflight_distinguishes_ready_and_blocked_with_structured_diagnostics(
         function_name="target",
         function_fingerprint=None,
         project_snapshot=project_snapshot,
-        runtime_project=runtime_project,
+        project=project,
         facts=_Facts(("needed",)),
     )
 
@@ -441,13 +429,13 @@ def test_preflight_distinguishes_ready_and_blocked_with_structured_diagnostics(
 def test_attack_consumers_execution_scope_statistics_and_artifacts_are_truthful(
     tmp_path: Path,
 ) -> None:
-    project_snapshot, runtime_project = _project_context(tmp_path)
+    project_snapshot, project = _project_context(tmp_path)
     snapshot = _service(_manager(tmp_path)).collect(
         function_ea=0x401000,
         function_name="target",
         function_fingerprint=None,
         project_snapshot=project_snapshot,
-        runtime_project=runtime_project,
+        project=project,
     )
 
     assert snapshot.attack.observed_shape == "ollvm_flat"
@@ -497,8 +485,7 @@ def test_attack_consumers_execution_scope_statistics_and_artifacts_are_truthful(
     assert snapshot.statistics.total_stage_firings == 3
 
     artifacts = {artifact.kind: artifact for artifact in snapshot.artifacts}
-    assert artifacts["source-config"].available is True
-    assert artifacts["runtime-config"].available is True
+    assert artifacts["project-config"].available is True
     assert artifacts["recon-db"].available is True
     assert artifacts["log-directory"].available is True
     assert artifacts["function-recipe-storage"].path is not None
@@ -510,7 +497,7 @@ def test_attack_consumers_execution_scope_statistics_and_artifacts_are_truthful(
 def test_collect_uses_latest_function_session_as_primary_execution_ledger(
     tmp_path: Path,
 ) -> None:
-    project_snapshot, runtime_project = _project_context(tmp_path)
+    project_snapshot, project = _project_context(tmp_path)
     manager = _manager(tmp_path)
     journal = ExecutionJournalStore(tmp_path / "execution.sqlite")
     session_id = DecompilationSessionId.new()
@@ -571,7 +558,7 @@ def test_collect_uses_latest_function_session_as_primary_execution_ledger(
             function_name="target",
             function_fingerprint=None,
             project_snapshot=project_snapshot,
-            runtime_project=runtime_project,
+            project=project,
         )
 
         assert snapshot.execution_ledger.session_id == session_id.value
@@ -610,7 +597,7 @@ def test_collect_uses_latest_function_session_as_primary_execution_ledger(
 def test_collection_failure_is_reported_without_hiding_other_sections(
     tmp_path: Path,
 ) -> None:
-    project_snapshot, runtime_project = _project_context(tmp_path)
+    project_snapshot, project = _project_context(tmp_path)
     manager = _manager(tmp_path)
 
     def fail_hints(function_ea: int) -> object:
@@ -622,7 +609,7 @@ def test_collection_failure_is_reported_without_hiding_other_sections(
         function_name="target",
         function_fingerprint=None,
         project_snapshot=project_snapshot,
-        runtime_project=runtime_project,
+        project=project,
     )
 
     assert snapshot.attack.observed_shape == "unknown"
@@ -637,7 +624,7 @@ def test_collect_uses_manager_owned_comparison_refs_by_default(tmp_path: Path) -
         WorkbenchComparisonService,
     )
 
-    project_snapshot, runtime_project = _project_context(tmp_path)
+    project_snapshot, project = _project_context(tmp_path)
     manager = _manager(tmp_path)
     comparison_service = WorkbenchComparisonService(clock=lambda: 10.0)
     identity = ComparisonIdentity(
@@ -647,9 +634,9 @@ def test_collect_uses_manager_owned_comparison_refs_by_default(tmp_path: Path) -
         idb_identity="idb:sample",
         type_generation="types:1",
         hexrays_version="9.2",
-        runtime_path=str(project_snapshot.runtime.path),
-        runtime_pass_ids=tuple(project_snapshot.effective_pass_ids),
-        runtime_generation=1,
+        project_path=str(project_snapshot.project.path),
+        project_pass_ids=tuple(project_snapshot.effective_pass_ids),
+        project_generation=1,
     )
     baseline = comparison_service.capture_baseline(identity, "native\n")
     output = comparison_service.capture_d810_output(identity, "d810\n")
@@ -660,7 +647,7 @@ def test_collect_uses_manager_owned_comparison_refs_by_default(tmp_path: Path) -
         function_name="target",
         function_fingerprint="sha256:abc",
         project_snapshot=project_snapshot,
-        runtime_project=runtime_project,
+        project=project,
     )
 
     assert snapshot.baseline == baseline
@@ -695,7 +682,7 @@ def test_manager_owns_service_and_exposes_read_only_recon_facades() -> None:
     )
 
 
-def test_state_facade_supplies_current_runtime_context_without_parsing() -> None:
+def test_state_facade_supplies_current_project_context_without_parsing() -> None:
     state_path = _ROOT / "src" / "d810" / "manager" / "state.py"
     method = _method(state_path, "D810State", "get_workbench_snapshot")
     calls = _call_names(method)
@@ -706,7 +693,7 @@ def test_state_facade_supplies_current_runtime_context_without_parsing() -> None
         node.attr for node in ast.walk(method) if isinstance(node, ast.Attribute)
     }
     assert "current_project_runtime_snapshot" in attributes
-    assert "current_runtime_project" in attributes
+    assert "current_project" in attributes
 
     assert "capture_workbench_baseline" in _call_names(
         _method(state_path, "D810State", "capture_workbench_baseline")
@@ -729,7 +716,7 @@ def _request(snapshot: object, command: str) -> WorkbenchCommandRequest:
 
 
 def _collected_service(tmp_path: Path) -> tuple[object, object, object, object]:
-    project_snapshot, runtime_project = _project_context(tmp_path)
+    project_snapshot, project = _project_context(tmp_path)
     manager = _manager(tmp_path)
     service = _service(manager)
     snapshot = service.collect(
@@ -737,9 +724,9 @@ def _collected_service(tmp_path: Path) -> tuple[object, object, object, object]:
         function_name="target",
         function_fingerprint="sha256:abc",
         project_snapshot=project_snapshot,
-        runtime_project=runtime_project,
+        project=project,
     )
-    return service, manager, snapshot, (project_snapshot, runtime_project)
+    return service, manager, snapshot, (project_snapshot, project)
 
 
 def test_stale_before_command_rejects_without_invoking_any_lifecycle(
@@ -864,7 +851,7 @@ def test_generation_changed_inside_callback_returns_stale_completion(
     tmp_path: Path,
 ) -> None:
     service, _manager_obj, snapshot, context = _collected_service(tmp_path)
-    project_snapshot, runtime_project = context
+    project_snapshot, project = context
 
     def lifecycle() -> bool:
         service.collect(
@@ -872,7 +859,7 @@ def test_generation_changed_inside_callback_returns_stale_completion(
             function_name="new_target",
             function_fingerprint="sha256:new",
             project_snapshot=project_snapshot,
-            runtime_project=runtime_project,
+            project=project,
         )
         return True
 

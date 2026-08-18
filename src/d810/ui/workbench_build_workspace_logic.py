@@ -38,7 +38,7 @@ class BuildWorkspaceFooter:
 
     diagnostics_capture: str
     maturity_summary: str
-    runtime_summary: str
+    project_summary: str
     engine_summary: str
 
 
@@ -138,8 +138,10 @@ def build_workspace_projection(
     if dossier.function_ea is not None:
         function_label = f"{function_label} @ 0x{dossier.function_ea:X}"
     direct_enabled, direct_reason = _deobfuscate_state(snapshot)
-    runtime = getattr(snapshot, "runtime", None)
-    runtime_name = str(getattr(runtime, "runtime_name", "No runtime project") or "No runtime project")
+    project = getattr(snapshot, "project", None)
+    project_name = str(
+        getattr(project, "project_name", "No project") or "No project"
+    )
     engine_started = bool(getattr(snapshot, "engine_started", False))
     diagnostics_capture = (
         "Diagnostics capture ON"
@@ -157,7 +159,7 @@ def build_workspace_projection(
         footer=BuildWorkspaceFooter(
             diagnostics_capture=diagnostics_capture,
             maturity_summary=f"{len(canvas.maturities)} maturity stage(s)",
-            runtime_summary=runtime_name,
+            project_summary=project_name,
             engine_summary="Engine running" if engine_started else "Engine idle",
         ),
         canvas=canvas,

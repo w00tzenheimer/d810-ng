@@ -1,4 +1,4 @@
-"""In-memory runtime project materialization for per-function recipes."""
+"""In-memory project materialization for per-function recipes."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ import pathlib
 
 from d810.core.config import ProjectConfiguration
 from d810.manager.project_runtime import (
-    ProjectConfigMode,
     ProjectRuntimeSnapshot,
 )
 from d810.manager.workbench_recipe_models import (
@@ -24,14 +23,14 @@ from d810.passes.config_v2_hook_runtime import compile_config_v2_hook_schedule
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class FunctionRecipeWorkbenchProjection:
-    runtime_project: ProjectConfiguration
+    project: ProjectConfiguration
     project_snapshot: ProjectRuntimeSnapshot
     draft: PipelineRecipeDraft
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class FunctionRecipeWorkbenchSelection:
-    runtime_project: ProjectConfiguration
+    project: ProjectConfiguration
     project_snapshot: ProjectRuntimeSnapshot
     recipe_scope: str
     errors: tuple[str, ...]
@@ -54,26 +53,23 @@ def build_workbench_recipe_projection(
         function_ea=function_ea,
         function_fingerprint=function_fingerprint,
         workbench_generation=workbench_generation,
-        source_path=str(project_snapshot.source.path),
-        runtime_path=str(project_snapshot.runtime.path),
+        project_path=str(project_snapshot.project.path),
     )
-    runtime_project = build_recipe_runtime_project(
+    recipe_project = build_recipe_runtime_project(
         base_project,
         recipe_service.deserialize_configs(
             recipe_service.serialize_enabled_configs(draft)
         ),
         function_ea=function_ea,
     )
-    runtime_project.path = pathlib.Path(base_project.path)
-    schedule = compile_config_v2_hook_schedule(runtime_project)
+    recipe_project.path = pathlib.Path(base_project.path)
+    schedule = compile_config_v2_hook_schedule(recipe_project)
     effective_snapshot = dataclasses.replace(
         project_snapshot,
-        mode=ProjectConfigMode.CONFIG_V2,
-        hook_mode="config-v2",
         effective_pass_ids=schedule.configured_pass_ids,
     )
     return FunctionRecipeWorkbenchProjection(
-        runtime_project=runtime_project,
+        project=recipe_project,
         project_snapshot=effective_snapshot,
         draft=draft,
     )
@@ -87,12 +83,12 @@ def select_workbench_recipe_projection(
     function_ea: int,
     function_fingerprint: str | None,
 ) -> FunctionRecipeWorkbenchSelection:
-    """Keep project runtime truth while validating any explicit saved recipe."""
+    """Keep project truth while validating any explicit saved recipe."""
     if override is None:
         return FunctionRecipeWorkbenchSelection(
-            runtime_project=base_project,
+            project=base_project,
             project_snapshot=project_snapshot,
-            recipe_scope="project-runtime",
+            recipe_scope="project",
             errors=(),
             draft=None,
         )
@@ -107,14 +103,14 @@ def select_workbench_recipe_projection(
         )
     except (PipelineConfigError, RecipeEditError) as exc:
         return FunctionRecipeWorkbenchSelection(
-            runtime_project=base_project,
+            project=base_project,
             project_snapshot=project_snapshot,
             recipe_scope="saved-recipe-blocked",
             errors=(f"function recipe: {exc}",),
             draft=None,
         )
     return FunctionRecipeWorkbenchSelection(
-        runtime_project=base_project,
+        project=base_project,
         project_snapshot=project_snapshot,
         recipe_scope="saved-recipe-explicit",
         errors=(),

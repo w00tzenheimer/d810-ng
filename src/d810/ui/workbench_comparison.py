@@ -63,9 +63,9 @@ class WorkbenchComparisonAdapter:
             idb_identity=str(self._idb_identity()),
             type_generation=str(self._type_generation()),
             hexrays_version=str(self._hexrays_version()),
-            runtime_path=snapshot.runtime.runtime_path,
-            runtime_pass_ids=snapshot.runtime.pass_ids,
-            runtime_generation=snapshot.generation,
+            project_path=snapshot.project.project_path,
+            project_pass_ids=snapshot.project.pass_ids,
+            project_generation=snapshot.generation,
         )
 
     def capture(

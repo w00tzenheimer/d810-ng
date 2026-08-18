@@ -253,24 +253,24 @@ def _execution_profile_detail(snapshot: DeobfuscationWorkbenchSnapshot) -> str:
 def project_workbench_rows(
     snapshot: DeobfuscationWorkbenchSnapshot,
 ) -> tuple[WorkbenchRow, ...]:
-    """Project a snapshot without deriving runtime or execution truth."""
+    """Project a snapshot without deriving project or execution truth."""
     context_status = _context_status(snapshot)
-    runtime = snapshot.runtime
+    project = snapshot.project
     attack = snapshot.attack
     recipe_scope_suffix = (
         " (saved recipe: Deobfuscate This only)"
-        if runtime.recipe_scope == "saved-recipe-explicit"
+        if project.recipe_scope == "saved-recipe-explicit"
         else ""
     )
     recipe_scope_detail = {
         "saved-recipe-explicit": (
-            "ordinary refresh uses project runtime; Deobfuscate This uses the saved recipe"
+            "ordinary refresh uses the project; Deobfuscate This uses the saved recipe"
         ),
         "saved-recipe-blocked": (
-            "ordinary refresh uses project runtime; saved recipe is blocked"
+            "ordinary refresh uses the project; saved recipe is blocked"
         ),
-        "project-runtime": "ordinary refresh and execution use project runtime",
-    }.get(runtime.recipe_scope, f"scope: {runtime.recipe_scope}")
+        "project": "ordinary refresh and execution use the project",
+    }.get(project.recipe_scope, f"scope: {project.recipe_scope}")
     rows: list[WorkbenchRow] = [
         _row(
             key="context:function",
@@ -285,23 +285,15 @@ def project_workbench_rows(
             status=context_status,
         ),
         _row(
-            key="context:runtime",
+            key="context:project",
             section=WorkbenchSection.CONTEXT,
             ordinal=1,
-            label="Effective runtime",
-            summary=(
-                f"{runtime.runtime_name} from {runtime.source_name}"
-                if runtime.routed
-                else runtime.runtime_name
-            )
-            + recipe_scope_suffix,
+            label="Active project",
+            summary=project.project_name + recipe_scope_suffix,
             detail=(
-                f"source: {runtime.source_path}\n"
-                f"runtime: {runtime.runtime_path}\n"
-                f"mode: {runtime.mode}\n"
-                f"hook mode: {runtime.hook_mode or 'none'}\n"
+                f"project: {project.project_path}\n"
                 f"{recipe_scope_detail}\n"
-                f"passes: {', '.join(runtime.pass_ids) or 'none'}"
+                f"passes: {', '.join(project.pass_ids) or 'none'}"
             ),
             status=context_status,
         ),

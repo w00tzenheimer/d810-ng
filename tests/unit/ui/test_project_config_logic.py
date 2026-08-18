@@ -3,11 +3,8 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-import pytest
-
 import d810.ui.project_config_logic as project_config_logic
 from d810.manager.project_runtime import (
-    ProjectConfigMode,
     ProjectIdentitySnapshot,
     ProjectRuntimeSnapshot,
 )
@@ -20,95 +17,43 @@ from d810.ui.project_config_logic import (
 )
 
 
-def _snapshot(*, mode: ProjectConfigMode, routed: bool) -> ProjectRuntimeSnapshot:
-    source = ProjectIdentitySnapshot(
-        "source.json", Path("/configs/source.json"), "source"
-    )
-    runtime = ProjectIdentitySnapshot(
-        "runtime.json" if routed else "source.json",
-        Path("/configs/runtime.json" if routed else "/configs/source.json"),
-        "runtime",
-    )
+def _snapshot(*, pass_ids: tuple[str, ...] = ("pass-a", "pass-b")) -> ProjectRuntimeSnapshot:
     return ProjectRuntimeSnapshot(
-        source=source,
-        runtime=runtime,
-        mode=mode,
-        routed=routed,
-        hook_mode="config-v2" if mode is ProjectConfigMode.CONFIG_V2 else None,
-        effective_pass_ids=("pass-a", "pass-b")
-        if mode is ProjectConfigMode.CONFIG_V2
-        else (),
+        project=ProjectIdentitySnapshot(
+            "project.json", Path("/configs/project.json"), "project"
+        ),
+        effective_pass_ids=pass_ids,
     )
 
 
-def test_routed_v2_view_exposes_only_public_pass_identity() -> None:
-    view = build_project_config_view(
-        _snapshot(mode=ProjectConfigMode.CONFIG_V2, routed=True)
-    )
+def test_project_view_exposes_only_public_pass_identity() -> None:
+    view = build_project_config_view(_snapshot())
 
-    assert view.mode_text == "Config v2 (routed)"
+    assert view.mode_text == "Config v2"
     assert view.effective_passes_text == "2 passes: pass-a, pass-b"
     assert view.pass_tree_title == "Pass pipeline (2 active)"
     assert view.effective_pass_ids == ("pass-a", "pass-b")
     assert view.edit_enabled is True
 
 
-def test_routed_v2_view_reports_divergent_source_and_runtime_identity() -> None:
-    view = build_project_config_view(
-        _snapshot(mode=ProjectConfigMode.CONFIG_V2, routed=True)
-    )
+def test_project_view_has_one_identity() -> None:
+    view = build_project_config_view(_snapshot())
 
-    assert view.identity_is_divergent is True
-    assert view.header_summary_text == "Config v2 (routed) . 2 passes"
-
-
-def test_unrouted_v2_view_reports_agreeing_identity() -> None:
-    view = build_project_config_view(
-        _snapshot(mode=ProjectConfigMode.CONFIG_V2, routed=False)
-    )
-
-    assert view.identity_is_divergent is False
+    assert view.project_text == "project.json"
+    assert view.project_tooltip == "/configs/project.json"
     assert view.header_summary_text == "Config v2 . 2 passes"
 
 
-def test_project_without_a_pipeline_summarizes_mode_alone() -> None:
-    view = build_project_config_view(
-        _snapshot(mode=ProjectConfigMode.LEGACY, routed=False)
-    )
-
-    assert view.header_summary_text == "Unsupported project format"
-
-
-def test_non_v2_project_is_visible_but_not_editable() -> None:
-    snapshot = _snapshot(mode=ProjectConfigMode.LEGACY, routed=False)
-    view = build_project_config_view(snapshot)
-
-    assert view.mode_text == "Unsupported project format"
-    assert view.effective_pass_ids == ()
-    assert view.edit_enabled is False
-    assert "strict project editor" in view.edit_tooltip
+def test_config_v2_edits_use_the_structured_editor() -> None:
+    for mode in (ConfigEditMode.EDIT, ConfigEditMode.DUPLICATE):
+        policy = select_config_edit_policy(mode, _snapshot())
+        assert policy.allowed is True
+        assert policy.save_strategy is ConfigSaveStrategy.STRUCTURED_V2
 
 
-@pytest.mark.parametrize("mode", (ConfigEditMode.EDIT, ConfigEditMode.DUPLICATE))
-def test_config_v2_edits_use_the_structured_editor(mode: ConfigEditMode) -> None:
-    policy = select_config_edit_policy(
-        mode,
-        _snapshot(mode=ProjectConfigMode.CONFIG_V2, routed=True),
-    )
-
-    assert policy.allowed is True
-    assert policy.save_strategy is ConfigSaveStrategy.STRUCTURED_V2
-
-
-def test_new_and_non_v2_edits_are_refused() -> None:
+def test_new_edits_are_refused_but_existing_project_edits_are_allowed() -> None:
     assert select_config_edit_policy(ConfigEditMode.NEW, None).allowed is False
-    assert (
-        select_config_edit_policy(
-            ConfigEditMode.EDIT,
-            _snapshot(mode=ProjectConfigMode.LEGACY, routed=False),
-        ).save_strategy
-        is ConfigSaveStrategy.REFUSE
-    )
+    assert select_config_edit_policy(ConfigEditMode.EDIT, _snapshot()).allowed is True
 
 
 def test_focus_target_uses_stable_pass_id_without_private_mapping() -> None:
