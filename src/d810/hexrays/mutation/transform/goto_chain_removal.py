@@ -144,8 +144,8 @@ class GotoChainRemovalPass(FlowGraphTransform):
     For each such block it emits the appropriate modification for each
     predecessor:
 
-    - 1-way predecessor (block_type == 3)  -> RedirectGoto
-    - 2-way predecessor (block_type == 4)  -> RedirectBranch
+    - 1-way predecessor (``block_type == _BLT_1WAY``) -> RedirectGoto
+    - 2-way predecessor (``block_type == _BLT_2WAY``) -> RedirectBranch
 
     Safety guards (matching the legacy mba_remove_simple_goto_blocks()):
     - The last block (highest serial, IDA sentinel dummy) is never treated
@@ -272,8 +272,8 @@ class GotoChainRemovalPass(FlowGraphTransform):
                 continue
 
             # CRITICAL-2: For each predecessor emit the correct modification type:
-            # - 1-way predecessor (block_type == 1) -> RedirectGoto
-            # - 2-way predecessor (block_type == 2) -> RedirectBranch
+            # - _BLT_1WAY predecessor -> RedirectGoto
+            # - _BLT_2WAY predecessor -> RedirectBranch
             for pred_serial in blk.preds:
                 pred_blk = cfg.blocks.get(pred_serial)
                 if pred_blk is None:
