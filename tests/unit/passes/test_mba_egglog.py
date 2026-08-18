@@ -216,6 +216,26 @@ class TestMbaEgglogOptions(unittest.TestCase):
         options = parse_mba_egglog_options(_config({"families": ["fixed_rotate"]}))
 
         self.assertEqual(options.families, ("fixed_rotate",))
+        self.assertFalse(options.cross_block_constant_preparation)
+        self.assertFalse(options.cross_block_def_use_preparation)
+
+    def test_fixed_rotate_family_rejects_cross_block_preparation(self):
+        for preparation in (
+            {"cross_block_constant_preparation": True},
+            {"cross_block_def_use_preparation": True},
+            {
+                "cross_block_constant_preparation": True,
+                "cross_block_def_use_preparation": True,
+            },
+        ):
+            with self.subTest(preparation=preparation):
+                with self.assertRaisesRegex(
+                    PipelineConfigError,
+                    "fixed_rotate.*cross-block preparation",
+                ):
+                    parse_mba_egglog_options(
+                        _config({"families": ["fixed_rotate"], **preparation})
+                    )
 
     def test_rejects_mixed_fixed_rotate_family(self):
         with self.assertRaisesRegex(PipelineConfigError, "fixed_rotate.*alone"):

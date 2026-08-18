@@ -281,6 +281,13 @@ class EgglogOptimizer(PeepholeSimplificationRule):
             raise ValueError(
                 "EgglogOptimizer cross_block_def_use_preparation must be boolean"
             )
+        if families == ("fixed_rotate",) and (
+            preparation or def_use_preparation
+        ):
+            raise ValueError(
+                "EgglogOptimizer families fixed_rotate cannot use "
+                "cross-block preparation"
+            )
         learned_replay_enabled = self.config.get("learned_replay_enabled", False)
         if type(learned_replay_enabled) is not bool:
             raise ValueError("EgglogOptimizer learned_replay_enabled must be boolean")

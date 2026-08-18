@@ -280,6 +280,13 @@ def parse_mba_egglog_options(
             "mba-egglog options.families must name supported families; got "
             + ", ".join(unsupported_families)
         )
+    if "fixed_rotate" in resolved_families and (
+        cross_block_constant_preparation or cross_block_def_use_preparation
+    ):
+        raise PipelineConfigError(
+            "mba-egglog options.families fixed_rotate cannot use "
+            "cross-block preparation"
+        )
     if (
         isinstance(maturities, str)
         or not isinstance(maturities, (list, tuple))

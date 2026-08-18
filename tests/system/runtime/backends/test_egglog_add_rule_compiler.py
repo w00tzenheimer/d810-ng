@@ -258,6 +258,24 @@ def test_live_handler_rejects_disabling_mandatory_proof():
         handler.configure({"require_proof": False})
 
 
+@pytest.mark.parametrize(
+    "preparation",
+    (
+        {"cross_block_constant_preparation": True},
+        {"cross_block_def_use_preparation": True},
+        {
+            "cross_block_constant_preparation": True,
+            "cross_block_def_use_preparation": True,
+        },
+    ),
+)
+def test_live_handler_rejects_fixed_rotate_cross_block_preparation(preparation):
+    handler = EgglogOptimizer()
+
+    with pytest.raises(ValueError, match="fixed_rotate.*cross-block preparation"):
+        handler.configure({"families": ["fixed_rotate"], **preparation})
+
+
 def test_central_statistics_records_and_serializes_egglog_provenance(monkeypatch):
     stats = OptimizationStatistics()
     optimizer = PeepholeOptimizer([ida_hexrays.MMAT_GLBOPT2], stats)
