@@ -7,9 +7,11 @@ import dis
 import hashlib
 import json
 import weakref
+from collections import OrderedDict
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from threading import RLock
 from types import (
     BuiltinFunctionType,
     BuiltinMethodType,
@@ -437,7 +439,13 @@ def make_structural_matcher_parity_certificate(
     }
 
 
-_SNAPSHOTS: dict[str, CertifiedCatalogueSnapshot] = {}
+# Catalogue snapshots are immutable and keyed by their complete semantic
+# fingerprint.  Keep only a small process-local working set: IDA sessions can
+# reconfigure projects repeatedly, and retaining every historical configuration
+# would make the memo itself an unbounded production-state leak.
+_SNAPSHOT_MEMO_CAPACITY = 16
+_SNAPSHOT_MEMO_LOCK = RLock()
+_SNAPSHOTS: OrderedDict[str, CertifiedCatalogueSnapshot] = OrderedDict()
 
 
 @dataclass
@@ -897,9 +905,11 @@ def build_certified_catalogue_snapshot(
         payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True
     )
     fingerprint = hashlib.sha256(encoded.encode("ascii")).hexdigest()
-    cached = _SNAPSHOTS.get(fingerprint)
-    if cached is not None:
-        return cached
+    with _SNAPSHOT_MEMO_LOCK:
+        cached = _SNAPSHOTS.get(fingerprint)
+        if cached is not None:
+            _SNAPSHOTS.move_to_end(fingerprint)
+            return cached
     buckets: dict[RootShape, list[int]] = {}
     for rule_id, rule in enumerate(frozen_rules):
         for width in widths:
@@ -920,7 +930,18 @@ def build_certified_catalogue_snapshot(
         structural_rule_fingerprints=structural_rule_fingerprints_tuple,
         structural_rule_digest=structural_rule_digest,
     )
-    _SNAPSHOTS[fingerprint] = snapshot
+    with _SNAPSHOT_MEMO_LOCK:
+        # Another thread may have completed the same immutable snapshot while
+        # this thread was compiling its canonical views.  Reuse that instance
+        # so identity memoization remains stable under concurrent callers.
+        cached = _SNAPSHOTS.get(fingerprint)
+        if cached is not None:
+            _SNAPSHOTS.move_to_end(fingerprint)
+            return cached
+        _SNAPSHOTS[fingerprint] = snapshot
+        _SNAPSHOTS.move_to_end(fingerprint)
+        while len(_SNAPSHOTS) > _SNAPSHOT_MEMO_CAPACITY:
+            _SNAPSHOTS.popitem(last=False)
     return snapshot
 
 

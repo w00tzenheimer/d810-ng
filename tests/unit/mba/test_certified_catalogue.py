@@ -395,6 +395,37 @@ def test_snapshot_is_memoized_immutable_and_preserves_declaration_order() -> Non
         raise AssertionError("snapshot index must be immutable")
 
 
+def test_snapshot_memo_is_bounded_without_changing_semantic_reuse() -> None:
+    import d810.mba.certified_catalogue as certified_catalogue
+
+    certified_catalogue._SNAPSHOTS.clear()
+    x, y = Var("x"), Var("y")
+    first = build_certified_catalogue_snapshot(
+        (_Rule("memoized", x + y),), compiler_version="memo-v0"
+    )
+    same = build_certified_catalogue_snapshot(
+        (_Rule("memoized", x + y),), compiler_version="memo-v0"
+    )
+
+    assert first is same
+
+    for index in range(certified_catalogue._SNAPSHOT_MEMO_CAPACITY + 1):
+        build_certified_catalogue_snapshot(
+            (_Rule(f"memoized-{index}", x + y),),
+            compiler_version=f"memo-v{index + 1}",
+        )
+
+    assert len(certified_catalogue._SNAPSHOTS) == (
+        certified_catalogue._SNAPSHOT_MEMO_CAPACITY
+    )
+    reloaded = build_certified_catalogue_snapshot(
+        (_Rule("memoized", x + y),), compiler_version="memo-v0"
+    )
+    assert reloaded is not first
+    assert reloaded.fingerprint == first.fingerprint
+    assert reloaded.structural_authorizable is first.structural_authorizable
+
+
 def test_snapshot_fingerprint_changes_with_content_version_or_enabled_families() -> (
     None
 ):
