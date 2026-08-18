@@ -332,28 +332,106 @@ def test_block_optimizer_threads_its_lifecycle_attempt_into_pass_pipeline(
         journal.close()
 
 
-def test_pass_pipeline_rebuilds_flow_context_at_maturity_boundary() -> None:
-    """The maturity callback invalidates the old context before the pipeline runs."""
+def test_pass_pipeline_uses_coordinator_gateway_after_maturity_transition(
+    tmp_path,
+) -> None:
+    """The GLBOPT2 pipeline must not depend on the prior maturity context.
+
+    ``log_info_on_input`` deliberately invalidates ``_flow_context`` when IDA
+    advances the MBA to a new maturity.  The pipeline runs at that boundary,
+    before any GLBOPT2 flow rule has had a chance to recreate the context, so
+    its mutation gateway must come from the lifecycle coordinator directly.
+    """
+    manager = BlockOptimizerManager(
+        OptimizationStatistics(), Path("."), ctx_cls=FlowMaturityContext
+    )
+    manager.current_maturity = ida_hexrays.MMAT_GLBOPT1
+    rule = _DummyRule("pipeline_boundary_context")
+    lifecycle = _MutationGatewayLifecycle(object(), object())
+    lifecycle.analyze_current_function = lambda **_kwargs: None
+    journal = ExecutionJournalStore(tmp_path / "execution.sqlite")
+    session_id = DecompilationSessionId.new()
+    parent = journal.begin_attempt(
+        session_id,
+        stage_id="hexrays_preanalysis",
+        domain=ExecutionDomain.HOOK,
+    )
+    lifecycle.execution_journal = journal
+    lifecycle.current_session = lambda _function_ea: SimpleNamespace(
+        session_id=session_id,
+        preanalysis_attempt_id=parent.attempt_id,
+    )
+    pipeline = _RecordingPassPipeline()
+    manager.configure(
+        execution_scope_service=_FakeExecutionScopeService((rule,)),
+        execution_scope_project_name="proj",
+        execution_scope_idb_key="idb",
+        decompilation_lifecycle=lifecycle,
+        pass_pipeline=pipeline,
+    )
+
+    try:
+        # Create the GLBOPT1 context, then cross the maturity boundary.  The
+        # boundary callback invalidates that context before the GLBOPT2
+        # pipeline fires.
+        first_block = _make_block(maturity=ida_hexrays.MMAT_GLBOPT1)
+        assert manager.optimize(first_block) == 0
+        assert manager._flow_context is not None
+
+        manager.log_info_on_input(_make_block(maturity=ida_hexrays.MMAT_GLBOPT2))
+
+        assert manager._flow_context is None
+        assert len(pipeline.calls) == 1
+        _, pipeline_kwargs = pipeline.calls[0]
+        assert pipeline_kwargs["mutation_gateway"] is lifecycle.gateway
+        assert pipeline_kwargs["journal"] is journal
+        assert pipeline_kwargs["session_id"] == session_id
+        assert pipeline_kwargs["parent_attempt_id"] == parent.attempt_id
+        assert lifecycle.gateway_calls[-1] == (
+            0x401000,
+            ida_hexrays.MMAT_GLBOPT2,
+        )
+    finally:
+        journal.close()
+
+
+def test_pass_pipeline_abstains_when_coordinator_gateway_is_unavailable() -> None:
+    """A missing coordinator context must fail closed without running passes."""
+
+    class _UnavailableLifecycle(_MutationGatewayLifecycle):
+        def build_current_mba_identity_index(self, *, function_ea: int, mba):
+            self.build_calls.append((function_ea, mba))
+            return None
+
+    class _UnexpectedFlowContext:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def new_mba_mutation_gateway(self):
+            self.calls += 1
+            raise AssertionError("pipeline must not use a stale flow context")
 
     manager = BlockOptimizerManager(
         OptimizationStatistics(), Path("."), ctx_cls=FlowMaturityContext
     )
     manager.current_maturity = ida_hexrays.MMAT_GLBOPT2
+    lifecycle = _UnavailableLifecycle(object(), object())
     pipeline = _RecordingPassPipeline()
-    lifecycle = _MutationGatewayLifecycle(object(), object())
+    stale_context = _UnexpectedFlowContext()
+    manager._flow_context = stale_context
     manager.configure(
         decompilation_lifecycle=lifecycle,
         pass_pipeline=pipeline,
     )
-    block = _make_block(maturity=ida_hexrays.MMAT_GLBOPT2)
-    block.mba.get_mblock = lambda serial: block if serial == 0 else None
 
-    manager._flow_context = None
-    manager._flow_context_key = None
-    manager._run_pass_pipeline_once(block.mba, phase_label="MMAT_GLBOPT2")
+    manager._run_pass_pipeline_once(
+        _make_block(maturity=ida_hexrays.MMAT_GLBOPT2).mba,
+        phase_label="MMAT_GLBOPT2",
+    )
 
-    assert len(pipeline.calls) == 1
-    assert pipeline.calls[0][1]["mutation_gateway"] is lifecycle.gateway
+    assert pipeline.calls == []
+    assert stale_context.calls == 0
+    assert lifecycle.gateway_calls == []
 
 
 def test_block_optimizer_records_rule_and_mba_mutation_attempts(tmp_path) -> None:

@@ -158,6 +158,34 @@ def _flow_rule_execution_context(
     return context
 
 
+def _lifecycle_execution_attempt_context(
+    lifecycle: object | None,
+    *,
+    function_ea: int,
+) -> tuple[object | None, object | None, object | None]:
+    """Read the coordinator-owned journal/session correlation for a function."""
+    journal = getattr(lifecycle, "execution_journal", None)
+    current_session = getattr(lifecycle, "current_session", None)
+    if journal is None or not callable(current_session):
+        return None, None, None
+    try:
+        session = current_session(int(function_ea))
+    except Exception:
+        optimizer_logger.debug(
+            "execution attempt context unavailable for func=0x%x",
+            int(function_ea),
+            exc_info=True,
+        )
+        return None, None, None
+    if session is None:
+        return None, None, None
+    return (
+        journal,
+        getattr(session, "session_id", None),
+        getattr(session, "preanalysis_attempt_id", None),
+    )
+
+
 def _optblock_callback_exception_context(
     blk: object,
 ) -> tuple[int, str, int | None, int | None, str]:
@@ -497,26 +525,12 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                 func_ea_hex,
                 phase_label,
             )
-            flow_context = self._flow_context
-            if flow_context is None:
-                get_mblock = getattr(mba, "get_mblock", None)
-                first_block = get_mblock(0) if callable(get_mblock) else None
-                if first_block is not None:
-                    flow_context = self._get_or_create_flow_context(
-                        first_block,
-                        phase_priority=0,
-                        phase_index=0,
-                        phase_rules=(),
-                    )
-            if flow_context is None:
-                optimizer_logger.warning(
-                    "PassPipeline: skipped function %s at %s without a "
-                    "current flow context",
-                    func_ea_hex,
-                    phase_label,
-                )
-                return
-            mutation_gateway = flow_context.new_mba_mutation_gateway()
+            # The pipeline runs at the maturity boundary, immediately after
+            # ``log_info_on_input`` invalidates the prior per-maturity flow
+            # context.  Mutation authority belongs to the lifecycle
+            # coordinator, which rebuilds the live-MBA identity index and
+            # returns a gateway for this exact callback snapshot.
+            mutation_gateway = self._new_coordinator_mutation_gateway(mba)
             if mutation_gateway is None:
                 optimizer_logger.warning(
                     "PassPipeline: skipped function %s at %s without a "
@@ -530,6 +544,11 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                 "execution_attempt_context",
                 None,
             )
+            if not callable(execution_attempt_context):
+                execution_attempt_context = lambda: _lifecycle_execution_attempt_context(
+                    self._decompilation_lifecycle,
+                    function_ea=int(getattr(mba, "entry_ea", 0) or 0),
+                )
             pipeline_kwargs: dict[str, object] = {
                 "mutation_gateway": mutation_gateway,
                 "maturity": maturity_to_string(int(self.current_maturity)),
@@ -1213,32 +1232,16 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         if not callable(set_context):
             return
         lifecycle = self._decompilation_lifecycle
-        if lifecycle is None:
-            set_context(None, None, None)
-            return
         journal = getattr(lifecycle, "execution_journal", None)
-        current_session = getattr(lifecycle, "current_session", None)
-        if journal is None or not callable(current_session):
-            set_context(None, None, None)
-            return
         function_ea = int(getattr(mba, "entry_ea", 0) or 0)
-        try:
-            session = current_session(function_ea)
-        except Exception:
-            optimizer_logger.debug(
-                "execution attempt context unavailable for func=0x%x",
-                function_ea,
-                exc_info=True,
-            )
-            set_context(None, None, None)
-            return
-        if session is None:
+        if journal is None:
             set_context(None, None, None)
             return
         set_context(
-            journal,
-            getattr(session, "session_id", None),
-            getattr(session, "preanalysis_attempt_id", None),
+            *_lifecycle_execution_attempt_context(
+                lifecycle,
+                function_ea=function_ea,
+            )
         )
 
     def _bind_native_cfg_freeze_observer(
