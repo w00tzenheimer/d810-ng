@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 import hashlib
 import json
 from dataclasses import dataclass, replace
 from pathlib import Path
+from threading import Barrier
 
 import pytest
 
 from d810.core.logging import getLogger
+from d810.core.typing import Iterator
 from d810.backends.mba.egglog_add_rule_compiler import compile_mba_rule_catalogue
 from d810.mba.certified_catalogue import (
     ShadowMatcherParityLedger,
@@ -97,6 +101,21 @@ class _RuntimeLoggingRule(_SemanticRule):
 
 def _digest(value: str) -> str:
     return hashlib.sha256(value.encode("ascii")).hexdigest()
+
+
+@contextmanager
+def _isolated_snapshot_memo() -> Iterator[object]:
+    import d810.mba.certified_catalogue as certified_catalogue
+
+    with certified_catalogue._SNAPSHOT_MEMO_LOCK:
+        original = certified_catalogue._SNAPSHOTS.copy()
+        certified_catalogue._SNAPSHOTS.clear()
+    try:
+        yield certified_catalogue
+    finally:
+        with certified_catalogue._SNAPSHOT_MEMO_LOCK:
+            certified_catalogue._SNAPSHOTS.clear()
+            certified_catalogue._SNAPSHOTS.update(original)
 
 
 def _first_difference(before: object, after: object, path: tuple[object, ...] = ()):
@@ -396,34 +415,76 @@ def test_snapshot_is_memoized_immutable_and_preserves_declaration_order() -> Non
 
 
 def test_snapshot_memo_is_bounded_without_changing_semantic_reuse() -> None:
-    import d810.mba.certified_catalogue as certified_catalogue
-
-    certified_catalogue._SNAPSHOTS.clear()
-    x, y = Var("x"), Var("y")
-    first = build_certified_catalogue_snapshot(
-        (_Rule("memoized", x + y),), compiler_version="memo-v0"
-    )
-    same = build_certified_catalogue_snapshot(
-        (_Rule("memoized", x + y),), compiler_version="memo-v0"
-    )
-
-    assert first is same
-
-    for index in range(certified_catalogue._SNAPSHOT_MEMO_CAPACITY + 1):
-        build_certified_catalogue_snapshot(
-            (_Rule(f"memoized-{index}", x + y),),
-            compiler_version=f"memo-v{index + 1}",
+    with _isolated_snapshot_memo() as certified_catalogue:
+        x, y = Var("x"), Var("y")
+        first = build_certified_catalogue_snapshot(
+            (_Rule("memoized", x + y),), compiler_version="memo-v0"
+        )
+        same = build_certified_catalogue_snapshot(
+            (_Rule("memoized", x + y),), compiler_version="memo-v0"
         )
 
-    assert len(certified_catalogue._SNAPSHOTS) == (
-        certified_catalogue._SNAPSHOT_MEMO_CAPACITY
-    )
-    reloaded = build_certified_catalogue_snapshot(
-        (_Rule("memoized", x + y),), compiler_version="memo-v0"
-    )
-    assert reloaded is not first
-    assert reloaded.fingerprint == first.fingerprint
-    assert reloaded.structural_authorizable is first.structural_authorizable
+        assert first is same
+
+        for index in range(certified_catalogue._SNAPSHOT_MEMO_CAPACITY + 1):
+            build_certified_catalogue_snapshot(
+                (_Rule(f"memoized-{index}", x + y),),
+                compiler_version=f"memo-v{index + 1}",
+            )
+
+        with certified_catalogue._SNAPSHOT_MEMO_LOCK:
+            assert len(certified_catalogue._SNAPSHOTS) == (
+                certified_catalogue._SNAPSHOT_MEMO_CAPACITY
+            )
+        reloaded = build_certified_catalogue_snapshot(
+            (_Rule("memoized", x + y),), compiler_version="memo-v0"
+        )
+        assert reloaded is not first
+        assert reloaded.fingerprint == first.fingerprint
+        assert reloaded.structural_authorizable is first.structural_authorizable
+
+
+def test_concurrent_snapshot_builders_converge_on_one_memoized_instance(
+    monkeypatch,
+) -> None:
+    import d810.mba.certified_catalogue as certified_catalogue
+
+    with _isolated_snapshot_memo():
+        x, y = Var("x"), Var("y")
+        rule = _Rule("concurrent", x + y)
+        original_snapshot_type = certified_catalogue.CertifiedCatalogueSnapshot
+        builders_ready = Barrier(2)
+
+        def synchronized_snapshot(*args, **kwargs):
+            snapshot = original_snapshot_type(*args, **kwargs)
+            builders_ready.wait(timeout=5)
+            return snapshot
+
+        monkeypatch.setattr(
+            certified_catalogue,
+            "CertifiedCatalogueSnapshot",
+            synchronized_snapshot,
+        )
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [
+                executor.submit(
+                    build_certified_catalogue_snapshot,
+                    (rule,),
+                    compiler_version="concurrent-v1",
+                )
+                for _ in range(2)
+            ]
+            snapshots = [future.result(timeout=10) for future in futures]
+
+        assert snapshots[0] is snapshots[1]
+        with certified_catalogue._SNAPSHOT_MEMO_LOCK:
+            assert list(certified_catalogue._SNAPSHOTS) == [
+                snapshots[0].fingerprint
+            ]
+            assert (
+                certified_catalogue._SNAPSHOTS[snapshots[0].fingerprint]
+                is snapshots[0]
+            )
 
 
 def test_snapshot_fingerprint_changes_with_content_version_or_enabled_families() -> (
