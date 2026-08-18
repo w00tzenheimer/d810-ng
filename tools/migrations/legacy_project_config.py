@@ -529,6 +529,33 @@ def _known_resource_error(path: str, message: str) -> LegacyMigrationError:
     )
 
 
+class _DuplicateJsonKeyError(ValueError):
+    """Internal parse error retaining the duplicate key for migration context."""
+
+    def __init__(self, key: object) -> None:
+        self.key = key
+        super().__init__(f"duplicate JSON object key {key!r}")
+
+
+def _reject_duplicate_json_keys(
+    pairs: list[tuple[object, object]],
+) -> dict[object, object]:
+    """Build a JSON object without silently overwriting repeated keys.
+
+    ``json.loads`` otherwise keeps the last occurrence, which would make the
+    readable migration catalogue nondeterministic and could hide a corrupted
+    template before the schema validator sees it.  The hook is applied to
+    every object recursively by the standard decoder.
+    """
+
+    result: dict[object, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise _DuplicateJsonKeyError(key)
+        result[key] = value
+    return result
+
+
 def _validate_known_template_resource(
     resource: object,
 ) -> dict[str, dict[str, object]]:
@@ -680,7 +707,14 @@ def _validate_known_template_resource(
 
 def _load_known_template_resource() -> dict[str, dict[str, object]]:
     try:
-        raw_resource = json.loads(_KNOWN_TEMPLATE_RESOURCE_PATH.read_text(encoding="utf-8"))
+        raw_resource = json.loads(
+            _KNOWN_TEMPLATE_RESOURCE_PATH.read_text(encoding="utf-8"),
+            object_pairs_hook=_reject_duplicate_json_keys,
+        )
+    except _DuplicateJsonKeyError as exc:
+        raise LegacyMigrationError(
+            f"{_KNOWN_TEMPLATE_RESOURCE_PATH.name}: {exc}"
+        ) from exc
     except (OSError, json.JSONDecodeError) as exc:
         raise LegacyMigrationError(
             f"{_KNOWN_TEMPLATE_RESOURCE_PATH.name}: unable to read valid JSON resource"

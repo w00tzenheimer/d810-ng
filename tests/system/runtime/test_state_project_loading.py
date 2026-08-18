@@ -12,6 +12,9 @@ IDA-dependent (``D810State`` pulls in the live manager) -> system/runtime.
 
 from __future__ import annotations
 
+import copy
+import shlex
+
 import pytest
 
 MALFORMED = "mba-solve has unknown options: ['maturities']"
@@ -23,6 +26,67 @@ def _restore(state, index: int) -> None:
         state.load_project(index)
     except Exception:  # noqa: BLE001 - best effort teardown
         pass
+
+
+def _activation_snapshot(state):
+    """Capture identity-bearing state and mutable configuration for rollback tests."""
+
+    manager = state.manager
+    return {
+        "project": state.current_project,
+        "project_index": state.current_project_index,
+        "ins_list": state.current_ins_rules,
+        "blk_list": state.current_blk_rules,
+        "known_ins": state.known_ins_rules,
+        "known_blk": state.known_blk_rules,
+        "pass_ids": state.last_config_v2_pass_ids,
+        "runtime_snapshot": state.current_project_runtime_snapshot,
+        "manager_config": manager.config,
+        "manager_config_value": copy.deepcopy(manager.config),
+        "manager_priors": manager.snapshot_function_analysis_priors(),
+        "native_handlers": manager._native_preanalysis_handlers_installed,
+        "ins_rule_configs": tuple(
+            (rule, copy.deepcopy(getattr(rule, "config", None)))
+            for rule in state.current_ins_rules
+        ),
+        "blk_rule_configs": tuple(
+            (rule, copy.deepcopy(getattr(rule, "config", None)))
+            for rule in state.current_blk_rules
+        ),
+    }
+
+
+def _assert_activation_snapshot_unchanged(state, before) -> None:
+    manager = state.manager
+    assert state.current_project is before["project"]
+    assert state.current_project_index == before["project_index"]
+    assert state.current_ins_rules is before["ins_list"]
+    assert state.current_blk_rules is before["blk_list"]
+    assert state.known_ins_rules is before["known_ins"]
+    assert state.known_blk_rules is before["known_blk"]
+    assert state.last_config_v2_pass_ids == before["pass_ids"]
+    assert state.current_project_runtime_snapshot is before["runtime_snapshot"]
+    assert manager.config is before["manager_config"]
+    assert manager.config == before["manager_config_value"]
+    assert manager.snapshot_function_analysis_priors() == before["manager_priors"]
+    assert (
+        manager._native_preanalysis_handlers_installed
+        == before["native_handlers"]
+    )
+    for rule, config in before["ins_rule_configs"] + before["blk_rule_configs"]:
+        assert getattr(rule, "config", None) == config
+
+
+def _load_project_with_rule(state, rules_attr: str) -> tuple[int, object]:
+    """Find a real config-v2 project whose declared schedule selects a rule."""
+
+    for index in range(len(state.project_manager)):
+        if state.load_project(index) is None:
+            continue
+        rules = list(getattr(state, rules_attr))
+        if rules:
+            return index, rules[0]
+    raise AssertionError(f"no project selects a {rules_attr} rule")
 
 
 class TestMalformedProjectIsSkipped:
@@ -101,9 +165,11 @@ class TestMalformedProjectIsSkipped:
                 assert list(state.current_ins_rules) == before_ins_rules
                 assert state.current_project_runtime_snapshot is before_snapshot
                 assert state.last_config_v2_pass_ids == before_pass_ids
-                assert "migrate_project_config_v2.py" in state.invalid_projects[
-                    state.project_manager.get(bad_index).path.name
-                ]
+                bad_path = state.project_manager.get(bad_index).path
+                assert (
+                    f"migrate with: {shlex.join(('python', 'tools/migrations/migrate_project_config_v2.py', str(bad_path), '--in-place'))}"
+                    in state.invalid_projects[bad_path.name]
+                )
             finally:
                 monkeypatch.undo()
                 _restore(state, original_index)
@@ -181,6 +247,246 @@ def test_config_v2_native_spine_syncs_generated_restart_consumer(
             assert state.load_project(other_index) is not None
             assert calls == ["install", "uninstall"]
         finally:
+            monkeypatch.undo()
+            _restore(state, original_index)
+
+
+def test_instruction_rule_failure_is_transactional_after_partial_mutation(
+    d810_state, monkeypatch
+) -> None:
+    with d810_state() as state:
+        original_index = state.current_project_index
+        target_index, rule = _load_project_with_rule(state, "current_ins_rules")
+        before = _activation_snapshot(state)
+        lifecycle_events: list[str] = []
+        scope_events: list[str] = []
+        import d810.manager.state as state_mod
+
+        monkeypatch.setattr(
+            state_mod,
+            "emit_project_reloading",
+            lambda **kwargs: lifecycle_events.append("reloading"),
+        )
+        monkeypatch.setattr(
+            state.manager,
+            "emit_execution_scope_invalidation",
+            lambda *args, **kwargs: scope_events.append("invalidated"),
+        )
+
+        def mutate_then_fail(self, config):
+            self.config = {"poisoned": True}
+            raise RuntimeError("instruction rule staging failure")
+
+        monkeypatch.setattr(type(rule), "configure", mutate_then_fail)
+        try:
+            assert state.load_project(target_index) is None
+            _assert_activation_snapshot_unchanged(state, before)
+            assert lifecycle_events == []
+            assert scope_events == []
+        finally:
+            monkeypatch.undo()
+            _restore(state, original_index)
+
+
+def test_block_rule_failure_is_transactional_after_partial_mutation(
+    d810_state, monkeypatch
+) -> None:
+    with d810_state() as state:
+        original_index = state.current_project_index
+        target_index, rule = _load_project_with_rule(state, "current_blk_rules")
+        before = _activation_snapshot(state)
+        lifecycle_events: list[str] = []
+        scope_events: list[str] = []
+        import d810.manager.state as state_mod
+
+        monkeypatch.setattr(
+            state_mod,
+            "emit_project_reloading",
+            lambda **kwargs: lifecycle_events.append("reloading"),
+        )
+        monkeypatch.setattr(
+            state.manager,
+            "emit_execution_scope_invalidation",
+            lambda *args, **kwargs: scope_events.append("invalidated"),
+        )
+
+        def mutate_then_fail(self, config):
+            self.config = {"poisoned": True}
+            raise RuntimeError("block rule staging failure")
+
+        monkeypatch.setattr(type(rule), "configure", mutate_then_fail)
+        try:
+            assert state.load_project(target_index) is None
+            _assert_activation_snapshot_unchanged(state, before)
+            assert lifecycle_events == []
+            assert scope_events == []
+        finally:
+            monkeypatch.undo()
+            _restore(state, original_index)
+
+
+def test_manager_configuration_failure_rolls_back_partial_mutation(
+    d810_state, monkeypatch
+) -> None:
+    with d810_state() as state:
+        original_index = state.current_project_index
+        before = _activation_snapshot(state)
+        lifecycle_events: list[str] = []
+        scope_events: list[str] = []
+        import d810.manager.state as state_mod
+
+        monkeypatch.setattr(
+            state_mod,
+            "emit_project_reloading",
+            lambda **kwargs: lifecycle_events.append("reloading"),
+        )
+        monkeypatch.setattr(
+            state.manager,
+            "emit_execution_scope_invalidation",
+            lambda *args, **kwargs: scope_events.append("invalidated"),
+        )
+        real_configure = state.manager.configure
+
+        def mutate_then_fail(**kwargs):
+            real_configure(**kwargs)
+            state.manager.config["poisoned"] = True
+            raise RuntimeError("manager staging failure")
+
+        monkeypatch.setattr(state.manager, "configure", mutate_then_fail)
+        try:
+            assert state.load_project(original_index) is None
+            _assert_activation_snapshot_unchanged(state, before)
+            assert lifecycle_events == []
+            assert scope_events == []
+        finally:
+            monkeypatch.undo()
+            _restore(state, original_index)
+
+
+def test_started_optimizer_configuration_failure_rolls_back_everything(
+    d810_state, monkeypatch
+) -> None:
+    with d810_state() as state:
+        original_index = state.current_project_index
+        target_index, _rule = _load_project_with_rule(state, "current_ins_rules")
+        manager = state.manager
+        previous_started = manager._started
+        previous_instruction_optimizer = getattr(manager, "instruction_optimizer", None)
+        previous_block_optimizer = getattr(manager, "block_optimizer", None)
+
+        class _Optimizer:
+            def configure(self, **kwargs):
+                return None
+
+            def replace_rules(self, rules):
+                return None
+
+        manager._started = True
+        manager.instruction_optimizer = _Optimizer()
+        manager.block_optimizer = _Optimizer()
+        before = _activation_snapshot(state)
+        lifecycle_events: list[str] = []
+        scope_events: list[str] = []
+        import d810.manager.state as state_mod
+
+        monkeypatch.setattr(
+            state_mod,
+            "emit_project_reloading",
+            lambda **kwargs: lifecycle_events.append("reloading"),
+        )
+        monkeypatch.setattr(
+            state.manager,
+            "emit_execution_scope_invalidation",
+            lambda *args, **kwargs: scope_events.append("invalidated"),
+        )
+        optimizer = manager.instruction_optimizer
+        real_configure = optimizer.configure
+
+        def mutate_then_fail(**kwargs):
+            real_configure(**kwargs)
+            optimizer._execution_scope_project_name = "poisoned"
+            raise RuntimeError("started optimizer staging failure")
+
+        monkeypatch.setattr(optimizer, "configure", mutate_then_fail)
+        try:
+            assert state.load_project(target_index) is None
+            _assert_activation_snapshot_unchanged(state, before)
+            assert lifecycle_events == []
+            assert scope_events == []
+            assert getattr(optimizer, "_execution_scope_project_name", None) != "poisoned"
+        finally:
+            manager._started = previous_started
+            if previous_instruction_optimizer is None:
+                del manager.instruction_optimizer
+            else:
+                manager.instruction_optimizer = previous_instruction_optimizer
+            if previous_block_optimizer is None:
+                del manager.block_optimizer
+            else:
+                manager.block_optimizer = previous_block_optimizer
+            monkeypatch.undo()
+            _restore(state, original_index)
+
+
+def test_execution_scope_compilation_failure_rolls_back_runtime_state(
+    d810_state, monkeypatch
+) -> None:
+    with d810_state() as state:
+        original_index = state.current_project_index
+        target_index, _rule = _load_project_with_rule(state, "current_ins_rules")
+        manager = state.manager
+        previous_started = manager._started
+        previous_instruction_optimizer = getattr(manager, "instruction_optimizer", None)
+        previous_block_optimizer = getattr(manager, "block_optimizer", None)
+
+        class _Optimizer:
+            def configure(self, **kwargs):
+                return None
+
+            def replace_rules(self, rules):
+                return None
+
+        manager._started = True
+        manager.instruction_optimizer = _Optimizer()
+        manager.block_optimizer = _Optimizer()
+        before = _activation_snapshot(state)
+        generation_before = manager.execution_scope_service.generation
+        lifecycle_events: list[str] = []
+        scope_events: list[str] = []
+        import d810.manager.state as state_mod
+
+        monkeypatch.setattr(
+            state_mod,
+            "emit_project_reloading",
+            lambda **kwargs: lifecycle_events.append("reloading"),
+        )
+        monkeypatch.setattr(
+            manager,
+            "emit_execution_scope_invalidation",
+            lambda *args, **kwargs: scope_events.append("invalidated"),
+        )
+
+        def mutate_then_fail():
+            manager.execution_scope_service._generation = 999
+            raise RuntimeError("execution scope compilation failure")
+
+        monkeypatch.setattr(manager, "_compile_execution_scope", mutate_then_fail)
+        try:
+            assert state.load_project(target_index) is None
+            _assert_activation_snapshot_unchanged(state, before)
+            assert manager.execution_scope_service.generation == generation_before
+            assert lifecycle_events == []
+            assert scope_events == []
+        finally:
+            manager._started = previous_started
+            if previous_instruction_optimizer is None:
+                del manager.instruction_optimizer
+            else:
+                manager.instruction_optimizer = previous_instruction_optimizer
+            if previous_block_optimizer is None:
+                del manager.block_optimizer
+            else:
+                manager.block_optimizer = previous_block_optimizer
             monkeypatch.undo()
             _restore(state, original_index)
 

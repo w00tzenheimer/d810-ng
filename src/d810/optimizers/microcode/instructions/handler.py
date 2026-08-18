@@ -270,6 +270,11 @@ class InstructionOptimizer(Registrant, typing.Generic[T_Rule]):
         self.rules.add(rule)
         return True
 
+    def reset_rules(self) -> None:
+        """Remove the live rule set before a transactional project swap."""
+
+        self.rules.clear()
+
     def get_optimized_instruction(
         self,
         blk: ida_hexrays.mblock_t,

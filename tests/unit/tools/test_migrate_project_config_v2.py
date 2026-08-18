@@ -164,6 +164,39 @@ def test_known_template_resource_rejects_corruption_with_context() -> None:
         _validate_known_template_resource(key_corrupt)
 
 
+@pytest.mark.parametrize(
+    ("payload", "duplicate_key"),
+    (
+        ('{"default.json": {}, "default.json": {}}', "default.json"),
+        (
+            '{"default.json": {"owned_additional_configuration": '
+            '{"idb_key": 1, "idb_key": 2}}}',
+            "idb_key",
+        ),
+    ),
+)
+def test_known_template_loader_rejects_root_and_nested_duplicate_keys(
+    monkeypatch, payload: str, duplicate_key: str
+) -> None:
+    class _FakeResource:
+        name = "known_config_v2_templates.json"
+
+        def read_text(self, **kwargs):
+            return payload
+
+    monkeypatch.setattr(
+        legacy_migrator, "_KNOWN_TEMPLATE_RESOURCE_PATH", _FakeResource()
+    )
+
+    with pytest.raises(LegacyMigrationError) as raised:
+        legacy_migrator._load_known_template_resource()
+
+    message = str(raised.value)
+    assert "known_config_v2_templates.json" in message
+    assert duplicate_key in message
+    assert "duplicate JSON object key" in message
+
+
 @pytest.mark.parametrize("source_name", tuple(KNOWN_LEGACY_FINGERPRINTS))
 def test_mapped_bundled_portfolio_migrates_to_catalogue_semantics(
     source_name: str

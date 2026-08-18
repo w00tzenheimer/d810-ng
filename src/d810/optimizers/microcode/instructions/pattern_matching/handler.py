@@ -424,6 +424,17 @@ class PatternOptimizer(InstructionOptimizer):
             self._compiled_view = self._compile_rules()
         return self._compiled_view
 
+    def reset_rules(self) -> None:
+        """Clear rules and rebuild dispatch indexes for a project swap."""
+
+        super().reset_rules()
+        self.pattern_storage = PatternStorage(depth=1)
+        self._indexed_storage = _IndexedStorage()
+        self._allowed_root_opcodes = set()
+        self._structural_rules_by_root_opcode = {}
+        self._generation += 1
+        self._compiled_view = None
+
     def _compile_rules(self) -> CompiledRuleView:
         """Build compiled view from current rule set.
 

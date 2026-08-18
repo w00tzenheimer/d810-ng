@@ -303,8 +303,8 @@ class D810State(metaclass=SingletonMeta):
             (
                 "python",
                 "tools/migrations/migrate_project_config_v2.py",
-                "--in-place",
                 str(project.path),
+                "--in-place",
             )
         )
         reason = (
@@ -323,51 +323,38 @@ class D810State(metaclass=SingletonMeta):
         project: ProjectConfiguration,
     ) -> ProjectConfiguration:
         """Compile and activate one canonical project transactionally."""
-        # Compilation and snapshot construction happen before the lifecycle
-        # event, state fields, rule lists, or manager configuration are touched.
-        # Any schema/migration failure therefore leaves the previous activation
-        # intact and is recorded by ``load_project``.
+        # Every fallible operation is staged before the identity-bearing state
+        # fields or lifecycle events are published.  In particular, rules are
+        # rebuilt for every candidate project: configuring a candidate can
+        # never poison the rule objects used by the active project.
         schedule = compile_config_v2_hook_schedule(project)
         snapshot = build_project_runtime_snapshot(project=project, schedule=schedule)
 
-        old_project_name = (
-            self.current_project.path.name
-            if getattr(self, "current_project", None) is not None
-            else None
-        )
-        emit_project_reloading(
-            old_project_name=old_project_name,
-            new_project_name=project.path.name,
-        )
-        self.current_project_index = project_index
-        self.current_project = project
-        self.current_ins_rules = []
-        self.current_blk_rules = []
-        self.last_config_v2_pass_ids = schedule.configured_pass_ids
-        self.current_project_runtime_snapshot = snapshot
+        candidate_known_ins_rules = self._build_known_instruction_rules()
+        candidate_known_blk_rules = self._build_known_block_rules()
+        candidate_ins_rules: list = []
+        candidate_blk_rules: list = []
 
         # The compiled schedule is authoritative.  Binding order is the
-        # declared pipeline order, never the registry discovery order.
-        rule_pairs = (
-            (rule_conf, rule)
-            for rule_conf in schedule.instruction_bindings
-            for rule in self.known_ins_rules
-        )
-        for rule_conf, rule in rule_pairs:
+        # declared pipeline order, never registry discovery order.
+        for rule_conf in schedule.instruction_bindings:
             if not rule_conf.is_activated:
                 continue
-            if rule.name == rule_conf.name:
+            for rule in candidate_known_ins_rules:
+                if rule.name != rule_conf.name:
+                    continue
                 effective_config = resolve_arch_config(rule_conf.config)
                 effective_config["dump_intermediate_microcode"] = self.d810_config.get(
                     "dump_intermediate_microcode"
                 )
                 rule.configure(effective_config)
                 rule.set_log_dir(self.log_dir)
-                self.current_ins_rules.append(rule)
+                candidate_ins_rules.append(rule)
         logger.debug("Instruction rules configured")
+
         selected_catalogue_adapters = tuple(
             rule
-            for rule in self.current_ins_rules
+            for rule in candidate_ins_rules
             if isinstance(rule, IDAPatternAdapter)
         )
         # Snapshot construction fingerprints every selected rule and allocates
@@ -380,6 +367,8 @@ class D810State(metaclass=SingletonMeta):
         structural_matching_requested = (
             os.environ.get("D810_STRUCTURAL_DSL_MATCHING", "0") == "1"
         )
+        candidate_certified_catalogue_snapshot = None
+        candidate_shadow_matcher_parity_ledger = None
         if selected_catalogue_adapters and (
             shadow_observation_requested or structural_matching_requested
         ):
@@ -438,77 +427,118 @@ class D810State(metaclass=SingletonMeta):
             except Exception:  # noqa: BLE001 - experimental selection fails closed
                 runtime_mode = None
             (
-                self.current_certified_catalogue_snapshot,
-                self.current_shadow_matcher_parity_ledger,
+                candidate_certified_catalogue_snapshot,
+                candidate_shadow_matcher_parity_ledger,
             ) = attach_selected_certified_catalogue_snapshot(
                 selected_catalogue_adapters,
                 parity_certificate_path=certificate_path,
                 parity_expectation=parity_expectation,
                 runtime_mode=runtime_mode,
             )
-        else:
-            self.current_certified_catalogue_snapshot = None
-            self.current_shadow_matcher_parity_ledger = None
         for rule_conf in schedule.block_bindings:
-            for blk_rule in self.known_blk_rules:
-                if not rule_conf.is_activated:
+            if not rule_conf.is_activated:
+                continue
+            for blk_rule in candidate_known_blk_rules:
+                if blk_rule.name != rule_conf.name:
                     continue
-                if blk_rule.name == rule_conf.name:
-                    effective_config = resolve_arch_config(rule_conf.config)
-                    effective_config["dump_intermediate_microcode"] = (
-                        self.d810_config.get("dump_intermediate_microcode")
-                    )
-                    blk_rule.configure(effective_config)
-                    blk_rule.set_log_dir(self.log_dir)
-                    self.current_blk_rules.append(blk_rule)
+                effective_config = resolve_arch_config(rule_conf.config)
+                effective_config["dump_intermediate_microcode"] = (
+                    self.d810_config.get("dump_intermediate_microcode")
+                )
+                blk_rule.configure(effective_config)
+                blk_rule.set_log_dir(self.log_dir)
+                candidate_blk_rules.append(blk_rule)
         logger.debug("Block rules configured")
+
         cfg = dict(project.additional_configuration)
-        # This is derived from the validated config-v2 schedule rather than
-        # user-editable project JSON.  A complete native state-machine spine
-        # may stage one generated-MBA restart, whose flowchart consumer must
-        # therefore be installed while this project is active.
         cfg["config_v2_native_state_machine_active"] = (
             requires_native_preanalysis_handlers(schedule)
         )
-        cfg.setdefault("project_name", self.current_project.path.name)
-        self.manager.configure(**cfg)
+        cfg.setdefault("project_name", project.path.name)
+
+        manager_snapshot = self.manager.snapshot_project_activation_state()
+        try:
+            # Stage the candidate rule lists into manager-owned scope inputs.
+            # The old lists and optimizer objects are restored if any manager
+            # or started-optimizer operation fails.
+            self.manager.instruction_optimizer_rules = list(candidate_ins_rules)
+            self.manager.block_optimizer_rules = list(candidate_blk_rules)
+            if self.manager.started:
+                self.manager.instruction_optimizer.replace_rules(candidate_ins_rules)
+                self.manager.block_optimizer.cfg_rules = list(candidate_blk_rules)
+
+            self.manager.configure(**cfg)
+            if self.manager.started:
+                self.manager.instruction_optimizer.configure(
+                    **self.manager.instruction_optimizer_config,
+                    execution_scope_service=self.manager.execution_scope_service,
+                    execution_scope_project_name=project.path.name,
+                    execution_scope_idb_key=str(
+                        cfg.get("idb_key", project.path.name)
+                    ),
+                    pass_scheduler=self.manager.instruction_pass_scheduler,
+                )
+                self.manager.block_optimizer.configure(
+                    **cfg,
+                    execution_scope_service=self.manager.execution_scope_service,
+                    execution_scope_project_name=project.path.name,
+                    execution_scope_idb_key=str(
+                        cfg.get("idb_key", project.path.name)
+                    ),
+                    pass_scheduler=self.manager.block_pass_scheduler,
+                    function_priors_provider=(
+                        self.manager.function_analysis_priors_for_ea
+                    ),
+                )
+                self.manager._compile_execution_scope()
+        except BaseException:
+            try:
+                self.manager.restore_project_activation_state(manager_snapshot)
+            except BaseException:  # noqa: BLE001 - preserve primary failure
+                logger.exception("project activation rollback failed")
+            raise
+
+        # This is the non-fallible publication point.  No identity/list field
+        # is changed until candidate rule configuration, parity attachment,
+        # manager configuration, and execution-scope compilation all succeed.
+        old_project_name = (
+            self.current_project.path.name
+            if getattr(self, "current_project", None) is not None
+            else None
+        )
+        self.current_project_index = project_index
+        self.current_project = project
+        self.known_ins_rules = candidate_known_ins_rules
+        self.known_blk_rules = candidate_known_blk_rules
+        self.current_ins_rules = candidate_ins_rules
+        self.current_blk_rules = candidate_blk_rules
+        self.last_config_v2_pass_ids = schedule.configured_pass_ids
+        self.current_project_runtime_snapshot = snapshot
+        self.current_certified_catalogue_snapshot = candidate_certified_catalogue_snapshot
+        self.current_shadow_matcher_parity_ledger = (
+            candidate_shadow_matcher_parity_ledger
+        )
+
+        emit_project_reloading(
+            old_project_name=old_project_name,
+            new_project_name=project.path.name,
+        )
         self.manager.emit_execution_scope_invalidation(
             ExecutionScopeEvent.PROJECT_PIPELINE_RELOADED,
-            project_name=self.current_project.path.name,
+            project_name=project.path.name,
         )
-        if self.manager.started:
-            self.manager.instruction_optimizer.configure(
-                **self.manager.instruction_optimizer_config,
-                execution_scope_service=self.manager.execution_scope_service,
-                execution_scope_project_name=self.current_project.path.name,
-                execution_scope_idb_key=str(
-                    cfg.get("idb_key", self.current_project.path.name)
-                ),
-                pass_scheduler=self.manager.instruction_pass_scheduler,
-            )
-            self.manager.block_optimizer.configure(
-                **cfg,
-                execution_scope_service=self.manager.execution_scope_service,
-                execution_scope_project_name=self.current_project.path.name,
-                execution_scope_idb_key=str(
-                    cfg.get("idb_key", self.current_project.path.name)
-                ),
-                pass_scheduler=self.manager.block_pass_scheduler,
-                function_priors_provider=(self.manager.function_analysis_priors_for_ea),
-            )
-            self.manager._compile_execution_scope()
         if getattr(self, "gui", None) is not None:
             logger.info(
                 "d810-ng: Rules reconfigured for project %s",
-                self.current_project.path.name,
+                project.path.name,
             )
         logger.debug(
             "Loaded project %s (%s) from %s",
-            self.current_project.path.name,
-            self.current_project.description,
-            self.current_project.path,
+            project.path.name,
+            project.description,
+            project.path,
         )
-        return self.current_project
+        return project
 
     def get_project_runtime_snapshot(self) -> ProjectRuntimeSnapshot:
         snapshot = self.current_project_runtime_snapshot

@@ -185,6 +185,11 @@ class Z3Optimizer(InstructionOptimizer):
             pass
         return True
 
+    def reset_rules(self) -> None:
+        super().reset_rules()
+        self._allowed_root_opcodes.clear()
+        self._has_patternless_rule = False
+
     def get_optimized_instruction(
         self,
         blk: ida_hexrays.mblock_t,

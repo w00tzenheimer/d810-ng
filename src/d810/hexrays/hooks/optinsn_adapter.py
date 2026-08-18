@@ -359,6 +359,24 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         self.analyzer.add_rule(rule)
         self._invalidate_residual_admission_cache()
 
+    def replace_rules(self, rules) -> None:
+        """Install a project candidate rule set while preserving manager identity."""
+
+        for ins_optimizer in self.instruction_optimizers:
+            reset_rules = getattr(ins_optimizer, "reset_rules", None)
+            if callable(reset_rules):
+                reset_rules()
+            else:
+                ins_optimizer.rules.clear()
+        reset_analyzer_rules = getattr(self.analyzer, "reset_rules", None)
+        if callable(reset_analyzer_rules):
+            reset_analyzer_rules()
+        else:
+            self.analyzer.rules.clear()
+        for rule in rules:
+            self.add_rule(rule)
+        self._invalidate_residual_admission_cache()
+
     @staticmethod
     def _capture_child_runtime_state(
         optimizer: object,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import dataclasses
 import importlib
 import json
@@ -1976,6 +1977,223 @@ class D810Manager:
         )
         if self._started:
             self._sync_native_preanalysis_handlers()
+
+    @staticmethod
+    def _activation_copy(value: object) -> object:
+        """Copy ordinary activation state without cloning live rule objects."""
+
+        try:
+            return copy.deepcopy(value)
+        except Exception:  # noqa: BLE001 - some IDA/SWIG values are opaque
+            return value
+
+    @classmethod
+    def _snapshot_activation_object(
+        cls,
+        obj: object | None,
+        *,
+        preserve: frozenset[str] = frozenset(),
+    ) -> tuple[object | None, dict[str, object]] | None:
+        if obj is None:
+            return None
+        attributes = getattr(obj, "__dict__", None)
+        if not isinstance(attributes, dict):
+            return (obj, {})
+
+        def _preserved_value(name: str, value: object) -> object:
+            if name == "rules" and isinstance(value, set):
+                return set(value)
+            if name == "cfg_rules" and isinstance(value, list):
+                return list(value)
+            return value
+
+        return (
+            obj,
+            {
+                name: (
+                    _preserved_value(name, value)
+                    if name in preserve
+                    else cls._activation_copy(value)
+                )
+                for name, value in attributes.items()
+            },
+        )
+
+    @staticmethod
+    def _restore_activation_object(snapshot) -> None:
+        if snapshot is None:
+            return
+        obj, attributes = snapshot
+        if obj is None:
+            return
+        current = getattr(obj, "__dict__", None)
+        if not isinstance(current, dict):
+            return
+        for name in tuple(current):
+            if name not in attributes:
+                try:
+                    delattr(obj, name)
+                except Exception:  # noqa: BLE001 - rollback is best effort
+                    pass
+        for name, value in attributes.items():
+            try:
+                setattr(obj, name, value)
+            except Exception:  # noqa: BLE001 - rollback is best effort
+                pass
+
+    def snapshot_project_activation_state(self) -> dict[str, object]:
+        """Capture mutable manager/runtime state before project activation.
+
+        Project loading stages against candidate rule objects, but manager
+        configuration still touches the live execution-scope service and (when
+        started) optimizer adapters.  This snapshot is intentionally private
+        to the activation transaction and keeps object identity for live rules,
+        schedulers, event emitters, and IDA-owned services.
+        """
+
+        instruction_optimizer = getattr(self, "instruction_optimizer", None)
+        instruction_children = ()
+        if instruction_optimizer is not None:
+            instruction_children = tuple(
+                self._snapshot_activation_object(
+                    optimizer,
+                    preserve=frozenset(
+                        {
+                            "rules",
+                            "pattern_storage",
+                            "_indexed_storage",
+                            "_structural_rules_by_root_opcode",
+                            "event_emitter",
+                            "stats",
+                            "log_dir",
+                            "_run_later_callback",
+                        }
+                    ),
+                )
+                for optimizer in tuple(
+                    getattr(instruction_optimizer, "instruction_optimizers", ())
+                )
+            )
+            instruction_analyzer = self._snapshot_activation_object(
+                getattr(instruction_optimizer, "analyzer", None),
+                preserve=frozenset({"rules", "stats", "log_dir"}),
+            )
+        else:
+            instruction_analyzer = None
+
+        block_optimizer = getattr(self, "block_optimizer", None)
+        block_rule_snapshots = ()
+        if block_optimizer is not None:
+            block_rule_snapshots = tuple(
+                self._snapshot_activation_object(rule)
+                for rule in tuple(getattr(block_optimizer, "cfg_rules", ()))
+            )
+
+        return {
+            "config": (self.config, self._activation_copy(self.config)),
+            "semantic_registry": self._semantic_route_reference_oracle_registry,
+            "priors": (
+                self._function_analysis_priors,
+                self._activation_copy(self._function_analysis_priors),
+            ),
+            "native_handlers": self._native_preanalysis_handlers_installed,
+            "instruction_rules": self.instruction_optimizer_rules,
+            "instruction_config": self.instruction_optimizer_config,
+            "block_rules": self.block_optimizer_rules,
+            "block_config": self.block_optimizer_config,
+            "ctree_rules": self.ctree_optimizer_rules,
+            "ctree_config": self.ctree_optimizer_config,
+            "execution_scope": self._snapshot_activation_object(
+                self.execution_scope_service,
+                preserve=frozenset(
+                    {"_metadata_provider", "_inference_registry", "_attached_emitter"}
+                ),
+            ),
+            "instruction_optimizer": self._snapshot_activation_object(
+                instruction_optimizer,
+                preserve=frozenset(
+                    {
+                        "instruction_optimizers",
+                        "analyzer",
+                        "event_emitter",
+                        "stats",
+                        "log_dir",
+                        "_instruction_optimizer_type",
+                        "instruction_visitor",
+                    }
+                ),
+            ),
+            "instruction_children": instruction_children,
+            "instruction_analyzer": instruction_analyzer,
+            "block_optimizer": self._snapshot_activation_object(
+                block_optimizer,
+                preserve=frozenset(
+                    {
+                        "cfg_rules",
+                        "event_emitter",
+                        "stats",
+                        "log_dir",
+                        "_flow_context_type",
+                        "_run_later_scheduler",
+                    }
+                ),
+            ),
+            "block_rule_snapshots": block_rule_snapshots,
+            "instruction_scheduler": self._snapshot_activation_object(
+                self.instruction_pass_scheduler
+            ),
+            "block_scheduler": self._snapshot_activation_object(
+                self.block_pass_scheduler
+            ),
+        }
+
+    def restore_project_activation_state(self, snapshot: dict[str, object]) -> None:
+        """Restore a failed project activation without masking its exception."""
+
+        config_ref, config_value = snapshot["config"]
+        try:
+            config_ref.clear()
+            config_ref.update(self._activation_copy(config_value))
+        except Exception:  # noqa: BLE001 - preserve the activation failure
+            logger.exception("project activation config rollback failed")
+        self.config = config_ref
+        self._semantic_route_reference_oracle_registry = snapshot[
+            "semantic_registry"
+        ]
+        priors_ref, priors_value = snapshot["priors"]
+        try:
+            priors_ref.clear()
+            priors_ref.update(self._activation_copy(priors_value))
+        except Exception:  # noqa: BLE001 - preserve the activation failure
+            logger.exception("project activation priors rollback failed")
+        self._function_analysis_priors = priors_ref
+        self.instruction_optimizer_rules = snapshot["instruction_rules"]
+        self.instruction_optimizer_config = snapshot["instruction_config"]
+        self.block_optimizer_rules = snapshot["block_rules"]
+        self.block_optimizer_config = snapshot["block_config"]
+        self.ctree_optimizer_rules = snapshot["ctree_rules"]
+        self.ctree_optimizer_config = snapshot["ctree_config"]
+        self._restore_activation_object(snapshot["execution_scope"])
+        self._restore_activation_object(snapshot["instruction_optimizer"])
+        for child_snapshot in snapshot["instruction_children"]:
+            self._restore_activation_object(child_snapshot)
+        self._restore_activation_object(snapshot["instruction_analyzer"])
+        self._restore_activation_object(snapshot["block_optimizer"])
+        for rule_snapshot in snapshot["block_rule_snapshots"]:
+            self._restore_activation_object(rule_snapshot)
+        self._restore_activation_object(snapshot["instruction_scheduler"])
+        self._restore_activation_object(snapshot["block_scheduler"])
+
+        expected_native = bool(snapshot["native_handlers"])
+        if self._native_preanalysis_handlers_installed != expected_native:
+            try:
+                if self._native_preanalysis_handlers_installed:
+                    self._uninstall_native_preanalysis_handlers()
+                if expected_native:
+                    self._install_native_preanalysis_handlers()
+            except Exception:  # noqa: BLE001 - preserve the activation failure
+                logger.exception("project activation native handler rollback failed")
+            self._native_preanalysis_handlers_installed = expected_native
 
     def reconfigure_function_storage(
         self,
