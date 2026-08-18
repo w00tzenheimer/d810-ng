@@ -18,9 +18,27 @@ class PipelineV2Mode(str, Enum):
 
 
 def _project_additional_config(project_config) -> Mapping:
+    return _project_additional_config_for(project_config, strict=False)
+
+
+def _project_additional_config_for(project_config, *, strict: bool) -> Mapping:
     if isinstance(project_config, Mapping):
-        nested = project_config.get("additional_configuration")
-        config = nested if isinstance(nested, Mapping) else project_config
+        if "additional_configuration" in project_config:
+            nested = project_config["additional_configuration"]
+            if not isinstance(nested, Mapping):
+                raise PipelineConfigError(
+                    "additional_configuration must be a mapping"
+                )
+            config = nested
+        elif strict:
+            raise PipelineConfigError(
+                "full project mapping must contain additional_configuration"
+            )
+        else:
+            # The permissive helper historically accepts a bare additional
+            # configuration mapping.  The strict runtime entry point never
+            # uses this fallback.
+            config = project_config
     else:
         config = getattr(project_config, "additional_configuration", None)
         if config is None:
@@ -49,10 +67,40 @@ def _project_legacy_rules(project_config) -> tuple[object, ...]:
     return tuple(ins_rules) + tuple(blk_rules)
 
 
-def _rule_is_active(rule: object) -> bool:
+_LEGACY_RULE_FIELDS = frozenset({"name", "is_activated", "config"})
+
+
+def _validated_legacy_rule(rule: object, *, section: str, index: int) -> bool:
+    """Validate one legacy rule before consulting its activation bit."""
+    prefix = f"{section}[{index}]"
     if isinstance(rule, Mapping):
-        return rule.get("is_activated") is True
-    return getattr(rule, "is_activated", False) is True
+        unknown = sorted(set(rule).difference(_LEGACY_RULE_FIELDS))
+        if unknown:
+            raise PipelineConfigError(
+                f"{prefix} has unknown fields: {', '.join(unknown)}"
+            )
+        name = rule.get("name")
+        if not isinstance(name, str) or not name:
+            raise PipelineConfigError(f"{prefix}.name must be a non-empty string")
+        activated = rule.get("is_activated")
+        if not isinstance(activated, bool):
+            raise PipelineConfigError(f"{prefix}.is_activated must be a boolean")
+        config = rule.get("config", {})
+    else:
+        name = getattr(rule, "name", None)
+        if not isinstance(name, str) or not name:
+            raise PipelineConfigError(f"{prefix}.name must be a non-empty string")
+        activated = getattr(rule, "is_activated", None)
+        if not isinstance(activated, bool):
+            raise PipelineConfigError(f"{prefix}.is_activated must be a boolean")
+        config = getattr(rule, "config", None)
+    if not isinstance(config, Mapping):
+        raise PipelineConfigError(f"{prefix}.config must be a mapping")
+    return activated
+
+
+def _rule_is_active(rule: object, *, section: str, index: int) -> bool:
+    return _validated_legacy_rule(rule, section=section, index=index)
 
 
 def _project_path(project_config) -> object:
@@ -71,32 +119,22 @@ def _migration_message(project_config, reason: str) -> str:
 
 
 def _validate_config_v2_compatibility_mode(project_config) -> None:
-    config = _project_additional_config(project_config)
+    config = _project_additional_config_for(project_config, strict=True)
     if "require_pipeline_v2_shadow_match" in config:
         raise PipelineConfigError(
-            _migration_message(
-                project_config,
-                "require_pipeline_v2_shadow_match is a removed compatibility field",
-            )
+            "require_pipeline_v2_shadow_match is a removed compatibility field"
         )
     if "pipeline_v2_mode" not in config:
         return
     value = config["pipeline_v2_mode"]
     if not isinstance(value, str):
-        raise PipelineConfigError(
-            _migration_message(project_config, "pipeline_v2_mode must be a string")
-        )
+        raise PipelineConfigError("pipeline_v2_mode must be a string")
     if value in {PipelineV2Mode.LEGACY.value, PipelineV2Mode.SHADOW_CHECK.value}:
         raise PipelineConfigError(
-            _migration_message(
-                project_config,
-                f"pipeline_v2_mode={value!r} is not allowed by the v2 runtime",
-            )
+            f"pipeline_v2_mode={value!r} is not allowed by the v2 runtime"
         )
     if value != PipelineV2Mode.CONFIG_V2.value:
-        raise PipelineConfigError(
-            _migration_message(project_config, f"unknown pipeline_v2_mode={value!r}")
-        )
+        raise PipelineConfigError(f"unknown pipeline_v2_mode={value!r}")
 
 
 def pipeline_configs_from_project_config(project_config) -> tuple[PipelineConfig, ...]:
@@ -161,30 +199,52 @@ def require_config_v2_project(project_config) -> tuple[PipelineConfig, ...]:
     error with a copyable offline migration command.
     """
     try:
+        if isinstance(project_config, Mapping):
+            ins_rules = project_config.get("ins_rules", ())
+        else:
+            ins_rules = getattr(project_config, "ins_rules", ())
         legacy_rules = _project_legacy_rules(project_config)
-    except PipelineConfigError as exc:
-        raise PipelineConfigError(
-            _migration_message(project_config, str(exc))
-        ) from exc
-    if any(_rule_is_active(rule) for rule in legacy_rules):
-        raise PipelineConfigError(
-            _migration_message(project_config, "active legacy rule arrays are present")
+        ins_count = len(ins_rules or ())
+        validated_ins = tuple(
+            _rule_is_active(rule, section="ins_rules", index=index)
+            for index, rule in enumerate(legacy_rules[:ins_count])
+        )
+        validated_blk = tuple(
+            _rule_is_active(rule, section="blk_rules", index=index)
+            for index, rule in enumerate(legacy_rules[ins_count:])
+        )
+        if any(validated_ins):
+            raise PipelineConfigError("active legacy rule arrays are present")
+        if any(validated_blk):
+            raise PipelineConfigError("active legacy rule arrays are present")
+
+        _validate_config_v2_compatibility_mode(project_config)
+        configs = pipeline_configs_from_project_config(project_config)
+        if not configs:
+            raise PipelineConfigError(
+                "additional_configuration.pipeline_v2 is missing or empty"
+            )
+
+        # Runtime v2 projects must name a currently executable pass and carry
+        # options accepted by its typed registry contract.  Keep this inside
+        # the strict wrapper so registry failures remain actionable offline
+        # migration diagnostics.
+        from d810.passes.operational_config_v2 import (
+            operational_config_v2_pass_registry,
         )
 
-    _validate_config_v2_compatibility_mode(project_config)
-    try:
-        configs = pipeline_configs_from_project_config(project_config)
-    except PipelineConfigError as exc:
+        registry = operational_config_v2_pass_registry()
+        for config in configs:
+            registry.build_spec(config)
+        mark_validated = getattr(
+            project_config, "_mark_config_v2_validation_succeeded", None
+        )
+        if callable(mark_validated):
+            mark_validated()
+    except Exception as exc:
         raise PipelineConfigError(
             _migration_message(project_config, str(exc))
         ) from exc
-    if not configs:
-        raise PipelineConfigError(
-            _migration_message(
-                project_config,
-                "additional_configuration.pipeline_v2 is missing or empty",
-            )
-        )
     return configs
 
 

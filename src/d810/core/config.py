@@ -4,7 +4,6 @@ import json
 import os
 import pathlib
 import sys
-from collections.abc import Mapping
 
 from d810.core import typing
 from .logging import getLogger
@@ -94,6 +93,18 @@ class ProjectConfiguration:
         repr=False,
         compare=False,
     )
+    _config_v2_validation_succeeded: bool = dataclasses.field(
+        default=False,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+    _config_v2_validation_fingerprint: str | None = dataclasses.field(
+        default=None,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     @property
     def pre_hexrays_payload(self) -> dict[str, typing.Any]:
@@ -164,49 +175,49 @@ class ProjectConfiguration:
         project._unknown_top_level = unknown_top_level
         return project
 
-    def _has_active_legacy_rule(self) -> bool:
-        return any(
-            rule.is_activated for rule in (*self.ins_rules, *self.blk_rules)
-        )
+    def _config_v2_validation_snapshot(self) -> str | None:
+        try:
+            return json.dumps(
+                {
+                    "ins_rules": [rule.to_dict() for rule in self.ins_rules],
+                    "blk_rules": [rule.to_dict() for rule in self.blk_rules],
+                    "additional_configuration": self.additional_configuration,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            )
+        except (TypeError, ValueError):
+            return None
 
-    def _is_structural_v2_project(self) -> bool:
-        """Recognize the canonical shape without importing the parser.
+    def _mark_config_v2_validation_succeeded(self) -> None:
+        """Record an explicit strict-parser decision for canonical save."""
+        self._config_v2_validation_succeeded = True
+        self._config_v2_validation_fingerprint = self._config_v2_validation_snapshot()
 
-        ``core.config`` is loaded by ``pipeline_config_parser`` itself, so the
-        core model must not import that parser at module import time.  This
-        narrow shape check is only used to choose canonical serialization; the
-        strict runtime validator remains ``require_config_v2_project``.
-        """
-        if self._has_active_legacy_rule() or not isinstance(
-            self.additional_configuration, Mapping
-        ):
-            return False
-        payload = self.additional_configuration.get("pipeline_v2")
-        if not isinstance(payload, (list, tuple)) or not payload:
-            return False
-        mode = self.additional_configuration.get("pipeline_v2_mode")
-        if mode not in (None, "config-v2"):
-            return False
-        return all(
-            isinstance(entry, Mapping)
-            and isinstance(entry.get("pass_id"), str)
-            and bool(entry.get("pass_id"))
-            for entry in payload
+    def _is_canonical_v2_project(self) -> bool:
+        """Return true only after an external strict validator approved v2."""
+        return bool(
+            self._config_v2_validation_succeeded
+            and self._config_v2_validation_fingerprint is not None
+            and self._config_v2_validation_fingerprint
+            == self._config_v2_validation_snapshot()
         )
 
     def to_document(self) -> dict[str, typing.Any]:
         """Return a deterministic JSON document for the current project.
 
-        A structurally valid v2 project is serialized canonically: legacy rule
-        arrays and the transitional ``pipeline_v2_mode`` marker are omitted.
-        Legacy or malformed documents remain representable for the offline
-        migration tool and diagnostics; runtime activation still requires the
-        strict parser entry point.
+        A project is serialized canonically only after the strict parser and
+        operational pass registry explicitly approve it.  This keeps the core
+        persistence layer independent of ``d810.passes`` while ensuring direct
+        save/persistence callers cannot turn an unknown or malformed pipeline
+        into a canonical-looking document.  Legacy or malformed documents
+        remain representable for the offline migration tool and diagnostics.
         """
         project_data = copy.deepcopy(self._unknown_top_level)
         project_data["description"] = self.description
         additional = copy.deepcopy(self.additional_configuration)
-        if self._is_structural_v2_project():
+        if self._is_canonical_v2_project():
             project_data["additional_configuration"] = additional
             additional.pop("pipeline_v2_mode", None)
             project_data["additional_configuration"] = additional

@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from d810.core.config import ProjectConfiguration, RuleConfiguration
+from d810.core.project_config_persistence import write_project_document_atomically
 from d810.passes.pass_pipeline import PipelineConfigError
 from d810.passes.pipeline_config_parser import require_config_v2_project
 
@@ -56,6 +57,7 @@ def test_canonical_v2_save_omits_legacy_arrays_and_mode_and_preserves_unknown_fi
 def test_v2_project_without_compatibility_mode_is_canonical_on_save(tmp_path: Path):
     project = _write_project(tmp_path, _v2_document(mode=None))
 
+    require_config_v2_project(project)
     project.save()
     actual = json.loads(project.path.read_text(encoding="utf-8"))
 
@@ -102,7 +104,73 @@ def test_existing_v2_file_with_empty_legacy_arrays_loads_and_saves_canonically(
     assert reloaded.ins_rules == []
     assert reloaded.blk_rules == []
 
+    require_config_v2_project(reloaded)
     reloaded.save()
     actual = json.loads(project.path.read_text(encoding="utf-8"))
     assert "ins_rules" not in actual
     assert "blk_rules" not in actual
+
+
+def test_unknown_pass_direct_save_retains_source_fields(tmp_path: Path):
+    document = _v2_document()
+    document["additional_configuration"]["pipeline_v2"] = [
+        {"pass_id": "not-a-registered-pass"}
+    ]
+    project = _write_project(tmp_path, document)
+
+    project.save()
+    actual = json.loads(project.path.read_text(encoding="utf-8"))
+
+    assert actual["ins_rules"] == []
+    assert actual["blk_rules"] == []
+    assert actual["additional_configuration"]["pipeline_v2_mode"] == "config-v2"
+    assert actual["additional_configuration"]["pipeline_v2"] == [
+        {"pass_id": "not-a-registered-pass"}
+    ]
+
+
+def test_save_does_not_reuse_stale_validation_after_pipeline_mutation(tmp_path: Path):
+    project = _write_project(tmp_path, _v2_document())
+    require_config_v2_project(project)
+    project.additional_configuration["pipeline_v2"] = [
+        {"pass_id": "not-a-registered-pass"}
+    ]
+
+    project.save()
+    actual = json.loads(project.path.read_text(encoding="utf-8"))
+
+    assert actual["ins_rules"] == []
+    assert actual["blk_rules"] == []
+    assert actual["additional_configuration"]["pipeline_v2_mode"] == "config-v2"
+
+
+def test_unknown_pass_atomic_persistence_retains_source_fields(tmp_path: Path):
+    document = _v2_document()
+    document["additional_configuration"]["pipeline_v2"] = [
+        {"pass_id": "not-a-registered-pass"}
+    ]
+    destination = tmp_path / "atomic.json"
+
+    write_project_document_atomically(destination, document)
+    actual = json.loads(destination.read_text(encoding="utf-8"))
+
+    assert actual["ins_rules"] == []
+    assert actual["blk_rules"] == []
+    assert actual["additional_configuration"]["pipeline_v2_mode"] == "config-v2"
+
+
+def test_malformed_inactive_source_rule_is_not_stripped_on_save(tmp_path: Path):
+    document = _v2_document()
+    malformed_rule = {"name": "bad", "is_activated": 0, "config": {}}
+    document["ins_rules"] = [malformed_rule]
+    project = _write_project(tmp_path, document)
+
+    with pytest.raises(PipelineConfigError, match="migrate_project_config_v2.py"):
+        require_config_v2_project(project)
+
+    project.save()
+    actual = json.loads(project.path.read_text(encoding="utf-8"))
+
+    assert actual["ins_rules"] == [malformed_rule]
+    assert actual["blk_rules"] == []
+    assert actual["additional_configuration"]["pipeline_v2_mode"] == "config-v2"

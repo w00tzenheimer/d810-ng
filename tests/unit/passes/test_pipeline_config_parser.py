@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from d810.core.config import ProjectConfiguration
+from d810.core.config import RuleConfiguration
 from d810.ir.maturity import IRMaturity
 from d810.families.state_machine_cff.pipeline import (
     standard_state_machine_passes,
@@ -160,6 +161,90 @@ def test_require_config_v2_project_rejects_active_legacy_rules_with_migration_co
 
     with pytest.raises(PipelineConfigError, match="migrate_project_config_v2.py"):
         require_config_v2_project(project)
+
+
+@pytest.mark.parametrize(
+    "rule",
+    [
+        {"name": "inactive", "is_activated": 0, "config": {}},
+        {"name": "inactive", "is_activated": False, "config": []},
+        {"is_activated": False, "config": {}},
+        {"name": None, "is_activated": False, "config": {}},
+        {"name": "inactive", "is_activated": False, "config": {}, "extra": 1},
+    ],
+)
+def test_require_config_v2_project_rejects_malformed_inactive_raw_rules(rule):
+    document = {
+        "ins_rules": [rule],
+        "blk_rules": [],
+        "additional_configuration": {"pipeline_v2": [{"pass_id": "recover_dispatcher"}]},
+    }
+
+    with pytest.raises(PipelineConfigError, match="migrate_project_config_v2.py"):
+        require_config_v2_project(document)
+
+
+@pytest.mark.parametrize(
+    "rule",
+    [
+        RuleConfiguration(name="inactive", is_activated=0, config={}),
+        RuleConfiguration(name=None, is_activated=False, config={}),
+        RuleConfiguration(name="inactive", is_activated=False, config=[]),
+    ],
+)
+def test_require_config_v2_project_rejects_malformed_loaded_rule_objects(rule):
+    project = SimpleNamespace(
+        path=Path("/tmp/malformed-project.json"),
+        ins_rules=[rule],
+        blk_rules=[],
+        additional_configuration={"pipeline_v2": [{"pass_id": "recover_dispatcher"}]},
+    )
+
+    with pytest.raises(PipelineConfigError, match="migrate_project_config_v2.py"):
+        require_config_v2_project(project)
+
+
+def test_require_config_v2_project_rejects_explicit_non_mapping_additional_configuration():
+    document = {
+        "ins_rules": [],
+        "blk_rules": [],
+        "additional_configuration": [],
+        # This must not be treated as a bare additional-configuration mapping.
+        "pipeline_v2": [{"pass_id": "recover_dispatcher"}],
+    }
+
+    with pytest.raises(PipelineConfigError, match="migrate_project_config_v2.py"):
+        require_config_v2_project(document)
+
+
+def test_require_config_v2_project_wraps_malformed_project_like_additional_configuration():
+    project = SimpleNamespace(
+        path=Path("/tmp/malformed-project-like.json"),
+        ins_rules=[],
+        blk_rules=[],
+        additional_configuration=[],
+    )
+
+    with pytest.raises(PipelineConfigError, match="migrate_project_config_v2.py"):
+        require_config_v2_project(project)
+
+
+def test_require_config_v2_project_does_not_accept_bare_additional_mapping():
+    with pytest.raises(PipelineConfigError, match="migrate_project_config_v2.py"):
+        require_config_v2_project({"pipeline_v2": [{"pass_id": "recover_dispatcher"}]})
+
+
+def test_require_config_v2_project_rejects_unknown_pass_ids():
+    document = {
+        "ins_rules": [],
+        "blk_rules": [],
+        "additional_configuration": {
+            "pipeline_v2": [{"pass_id": "not-a-registered-pass"}]
+        },
+    }
+
+    with pytest.raises(PipelineConfigError, match="migrate_project_config_v2.py"):
+        require_config_v2_project(document)
 
 
 def test_require_config_v2_project_tolerates_empty_legacy_arrays_when_pipeline_exists():

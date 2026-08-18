@@ -669,6 +669,7 @@ class ConfigV2EditingService:
             reloaded_document = json.loads(project.path.read_text(encoding="utf-8"))
             if not isinstance(reloaded_document, dict):
                 raise ConfigV2EditError("reloaded project document is not an object")
+            require_config_v2_project(project)
             self._validate_semantics(reloaded_document, project.path)
 
         try:
