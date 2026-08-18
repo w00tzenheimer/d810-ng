@@ -89,6 +89,7 @@ _PRESERVE_EXACT_SIDE_EFFECT_CORRIDORS_ENV = (
 )
 _SIDE_EFFECT_INSN_KINDS = frozenset({InsnKind.STORE, InsnKind.CALL})
 _SIDE_EFFECT_KIND_VALUES = frozenset(kind.value for kind in _SIDE_EFFECT_INSN_KINDS)
+_HYBRID_CORRIDOR_EXPANSION_BUDGET = 50_000
 
 
 def _preserve_exact_side_effect_corridors_gate() -> bool:
@@ -569,6 +570,227 @@ class SideEffectFragment:
     exit_kind: str
 
 
+@dataclass(frozen=True, slots=True)
+class HybridCorridorEnumerationResult:
+    """Deterministic result of bounded hybrid-corridor enumeration.
+
+    ``budget_exhausted`` distinguishes exact path enumeration from the
+    conservative fallback. On fallback, ``corridors`` is one deterministic
+    corridor containing the union of every valid block owned by a side-effect
+    fragment. Consumers interpret corridors as protected block membership,
+    so this can only retain additional effects; it cannot authorize a rewrite
+    or silently omit a candidate effect block.
+    """
+
+    corridors: tuple[tuple[int, ...], ...]
+    accepted_handlers: frozenset[int]
+    expansions: int
+    expansion_budget: int
+    budget_exhausted: bool
+    fragment_count: int
+    edge_count: int
+
+
+def _valid_fragment_blocks(fragment: SideEffectFragment) -> tuple[int, ...]:
+    seen: set[int] = set()
+    blocks: list[int] = []
+    for raw_block in tuple(fragment.blocks or ()):
+        if not isinstance(raw_block, int) or isinstance(raw_block, bool):
+            continue
+        block = int(raw_block)
+        if block < 0 or block in seen:
+            continue
+        seen.add(block)
+        blocks.append(block)
+    return tuple(blocks)
+
+
+def _conservative_hybrid_corridor(
+    fragments: Mapping[int, SideEffectFragment],
+) -> tuple[tuple[int, ...], ...]:
+    """Return deterministic superset coverage for a bounded enumeration."""
+
+    seen: set[int] = set()
+    blocks: list[int] = []
+    for handler in sorted(fragments):
+        for block in _valid_fragment_blocks(fragments[handler]):
+            if block in seen:
+                continue
+            seen.add(block)
+            blocks.append(block)
+    if not blocks:
+        return ()
+    return (tuple(blocks),)
+
+
+def _enumerate_hybrid_corridors(
+    fragments: Mapping[int, SideEffectFragment],
+    forward: Mapping[int, tuple[int, ...] | list[int]],
+    *,
+    min_total_blocks: int,
+    max_chain_handlers: int,
+    expansion_budget: int,
+) -> HybridCorridorEnumerationResult:
+    """Enumerate exact hybrid paths up to a deterministic expansion budget.
+
+    One expansion is one popped simple handler path. Below the budget this
+    preserves the legacy maximal-handler-set result. If another path would
+    exceed the budget, exact enumeration is abandoned atomically and the
+    result covers the union of all side-effect fragment blocks instead.
+    """
+
+    normalized_fragments = {
+        int(handler): fragment
+        for handler, fragment in fragments.items()
+        if isinstance(handler, int) and not isinstance(handler, bool)
+    }
+    normalized_forward: dict[int, tuple[int, ...]] = {}
+    edge_count = 0
+    for handler in sorted(normalized_fragments):
+        successors = tuple(
+            sorted(
+                {
+                    int(successor)
+                    for successor in tuple(forward.get(handler, ()) or ())
+                    if isinstance(successor, int)
+                    and not isinstance(successor, bool)
+                    and int(successor) in normalized_fragments
+                }
+            )
+        )
+        normalized_forward[handler] = successors
+        edge_count += len(successors)
+
+    fragment_count = len(normalized_fragments)
+    budget = max(0, int(expansion_budget))
+    expansions = 0
+    qualifying_chains: list[tuple[int, ...]] = []
+    terminal_exit_kinds = {"terminal", "local_terminal_edge"}
+
+    for head_handler in sorted(normalized_fragments):
+        stack: list[tuple[list[int], set[int]]] = [
+            ([head_handler], {head_handler})
+        ]
+        while stack:
+            if expansions >= budget:
+                return HybridCorridorEnumerationResult(
+                    corridors=_conservative_hybrid_corridor(normalized_fragments),
+                    accepted_handlers=frozenset(normalized_fragments),
+                    expansions=expansions,
+                    expansion_budget=budget,
+                    budget_exhausted=True,
+                    fragment_count=fragment_count,
+                    edge_count=edge_count,
+                )
+            chain_handlers, visited = stack.pop()
+            expansions += 1
+            current_handler = chain_handlers[-1]
+            current_frag = normalized_fragments[current_handler]
+            total_blocks = sum(
+                len(_valid_fragment_blocks(normalized_fragments[handler]))
+                for handler in chain_handlers
+            )
+            chain_has_terminal = any(
+                normalized_fragments[handler].exit_kind in terminal_exit_kinds
+                for handler in chain_handlers
+            )
+            successors = (
+                ()
+                if current_frag.exit_kind in terminal_exit_kinds
+                or len(chain_handlers) >= int(max_chain_handlers)
+                else tuple(
+                    successor
+                    for successor in normalized_forward.get(current_handler, ())
+                    if successor not in visited
+                )
+            )
+            # A qualifying strict prefix can never survive the legacy maximal
+            # set filter: every simple extension remains qualifying and is a
+            # strict handler superset. Retain only stopped paths, preserving
+            # the exact maximal result without materializing doomed prefixes.
+            if not successors:
+                if total_blocks >= int(min_total_blocks) or chain_has_terminal:
+                    qualifying_chains.append(tuple(chain_handlers))
+                continue
+            # Canonical successor order makes the result independent of DAG
+            # edge insertion. Appending in ascending order preserves the
+            # legacy LIFO traversal for an already canonical adjacency list.
+            for successor in successors:
+                stack.append(
+                    (chain_handlers + [successor], visited | {successor})
+                )
+
+    qualifying_chains.sort(key=len, reverse=True)
+    maximal_chains: list[tuple[int, ...]] = []
+    seen_handler_sets: list[frozenset[int]] = []
+    handler_to_kept_indices: dict[int, set[int]] = defaultdict(set)
+    for chain in qualifying_chains:
+        chain_set = frozenset(chain)
+        candidate_indices: set[int] | None = None
+        for handler in sorted(chain_set):
+            posting = handler_to_kept_indices.get(handler, set())
+            candidate_indices = (
+                set(posting)
+                if candidate_indices is None
+                else candidate_indices & posting
+            )
+            if not candidate_indices:
+                break
+        if candidate_indices and any(
+            chain_set != seen_handler_sets[index]
+            and chain_set.issubset(seen_handler_sets[index])
+            for index in sorted(candidate_indices)
+        ):
+            continue
+        # Length-descending order means a newly visited chain cannot be a
+        # strict superset of a kept chain. Equal handler sets intentionally
+        # remain distinct when their forward block order differs, matching the
+        # legacy output before corridor-level de-duplication.
+        kept_index = len(maximal_chains)
+        maximal_chains.append(chain)
+        seen_handler_sets.append(chain_set)
+        for handler in chain_set:
+            handler_to_kept_indices[handler].add(kept_index)
+
+    corridors: list[tuple[int, ...]] = []
+    seen_corridors: set[tuple[int, ...]] = set()
+    accepted_handlers: set[int] = set()
+    for chain in maximal_chains:
+        seen_blocks: set[int] = set()
+        ordered_blocks: list[int] = []
+        for handler in chain:
+            accepted_handlers.add(handler)
+            for block in _valid_fragment_blocks(normalized_fragments[handler]):
+                if block in seen_blocks:
+                    continue
+                seen_blocks.add(block)
+                ordered_blocks.append(block)
+        chain_has_terminal = any(
+            normalized_fragments[handler].exit_kind in terminal_exit_kinds
+            for handler in chain
+        )
+        corridor = tuple(ordered_blocks)
+        if not corridor:
+            continue
+        if len(corridor) < int(min_total_blocks) and not chain_has_terminal:
+            continue
+        if corridor in seen_corridors:
+            continue
+        seen_corridors.add(corridor)
+        corridors.append(corridor)
+    corridors.sort(key=lambda corridor: corridor[0])
+
+    return HybridCorridorEnumerationResult(
+        corridors=tuple(corridors),
+        accepted_handlers=frozenset(accepted_handlers),
+        expansions=expansions,
+        expansion_budget=budget,
+        budget_exhausted=False,
+        fragment_count=fragment_count,
+        edge_count=edge_count,
+    )
+
+
 def _extract_side_effect_fragment(
     node: "StateDagNode",
     flow_graph: FlowGraph,
@@ -634,6 +856,7 @@ def detect_hybrid_terminal_byte_corridors(
     *,
     min_total_blocks: int = 2,
     max_chain_handlers: int = 12,
+    expansion_budget: int = _HYBRID_CORRIDOR_EXPANSION_BUDGET,
 ) -> tuple[tuple[int, ...], ...]:
     """Hybrid corridor detector: per-handler fragments + DAG stitching.
 
@@ -672,6 +895,10 @@ def detect_hybrid_terminal_byte_corridors(
          fragment OR have at least one such fragment in the chain.
       5. Emit the de-duplicated, forward-ordered union of blocks
          across the chain.
+      6. Bound simple-path expansion deterministically. If the bound
+         is exhausted, abandon partial path output and conservatively
+         protect the complete valid block union of every extracted
+         side-effect fragment.
     """
     if dag is None or flow_graph is None:
         return ()
@@ -783,112 +1010,31 @@ def detect_hybrid_terminal_byte_corridors(
             continue
         forward[src_h].append(tgt_h)
 
-    # 3-4. Walk forward from each fragment as a potential head.  Collect
-    #      *every* qualifying chain (not just the single best) — the
-    #      byte-emit cascade is distributed across multiple disjoint
-    #      handler chains that all terminate at the same shared suffix,
-    #      so emitting only the highest-scoring chain leaves the other
-    #      cascade-fragments unprotected.
-    qualifying_chains: list[tuple[int, ...]] = []
-
+    # 3-6. Enumerate exact maximal paths while the deterministic work budget
+    # permits it. Exhaustion is fail-closed: protect the union of every
+    # side-effect fragment block instead of returning an incomplete path set.
     terminal_exit_kinds = {"terminal", "local_terminal_edge"}
-
-    # Single-fragment chains qualify when:
-    #   * the fragment has >= min_total_blocks side-effect blocks
-    #     (e.g. handler=101 owns blk[101]+blk[103]), OR
-    #   * the fragment's exit_kind is terminal/local_terminal_edge —
-    #     the cascade's tail-emit blocks (e.g. handler=118 owns just
-    #     blk[118] with terminal exit, handler=217 owns blk[217] with
-    #     terminal exit) are semantically part of the corridor's sink
-    #     even when they're singletons; HCC must not rewrite them
-    #     because the structurer reaches them only via the cascade's
-    #     ordered exit edge.
-    for head_handler in sorted(fragments):
-        # DFS expansion; cap at max_chain_handlers depth.
-        stack: list[tuple[list[int], set[int]]] = [
-            (
-                [head_handler],
-                {head_handler},
-            )
-        ]
-        while stack:
-            chain_handlers, visited = stack.pop()
-            current_handler = chain_handlers[-1]
-            current_frag = fragments[current_handler]
-            total_blocks = sum(len(fragments[h].blocks) for h in chain_handlers)
-            chain_has_terminal = any(
-                fragments[h].exit_kind in terminal_exit_kinds for h in chain_handlers
-            )
-            qualifies = total_blocks >= int(min_total_blocks) or chain_has_terminal
-            if qualifies:
-                qualifying_chains.append(tuple(chain_handlers))
-            # Stop expanding when current fragment has terminal-style exit.
-            if current_frag.exit_kind in terminal_exit_kinds:
-                continue
-            if len(chain_handlers) >= int(max_chain_handlers):
-                continue
-            for nxt in forward.get(current_handler, ()):
-                if nxt in visited:
-                    continue
-                stack.append((chain_handlers + [nxt], visited | {nxt}))
-
-    if not qualifying_chains:
-        return ()
-
-    # 5. Deduplicate: drop chains that are strict subsequences of
-    #    another collected chain.  Keep only maximal chains so we
-    #    emit each distinct corridor once.
-    qualifying_chains.sort(key=len, reverse=True)
-    maximal_chains: list[tuple[int, ...]] = []
-    seen_handler_sets: list[frozenset[int]] = []
-    for chain in qualifying_chains:
-        chain_set = frozenset(chain)
-        is_subset_of_existing = any(
-            chain_set.issubset(prev) and chain_set != prev for prev in seen_handler_sets
+    enumeration = _enumerate_hybrid_corridors(
+        fragments,
+        forward,
+        min_total_blocks=min_total_blocks,
+        max_chain_handlers=max_chain_handlers,
+        expansion_budget=expansion_budget,
+    )
+    if enumeration.budget_exhausted:
+        logger.warning(
+            "DAG: hybrid corridor bounded fallback: fragments=%d edges=%d "
+            "expansions=%d budget=%d protected_blocks=%d",
+            enumeration.fragment_count,
+            enumeration.edge_count,
+            enumeration.expansions,
+            enumeration.expansion_budget,
+            sum(len(corridor) for corridor in enumeration.corridors),
         )
-        if is_subset_of_existing:
-            continue
-        # If this chain is a *superset* of a kept maximal chain,
-        # replace that one (we kept the smaller version too eagerly).
-        # Since we sort by length desc, this rarely fires — guard
-        # anyway for the equal-length case.
-        kept_idx_to_drop: list[int] = []
-        for i, prev in enumerate(seen_handler_sets):
-            if prev.issubset(chain_set) and prev != chain_set:
-                kept_idx_to_drop.append(i)
-        for i in reversed(kept_idx_to_drop):
-            del maximal_chains[i]
-            del seen_handler_sets[i]
-        maximal_chains.append(chain)
-        seen_handler_sets.append(chain_set)
+        return enumeration.corridors
 
-    # 6. Flatten each chain into an ordered corridor (de-duplicated
-    #    block serials, forward order across handlers).
-    out_corridors: list[tuple[int, ...]] = []
-    seen_corridor_blocks: set[tuple[int, ...]] = set()
-    for chain in maximal_chains:
-        seen: set[int] = set()
-        ordered_blocks: list[int] = []
-        for handler in chain:
-            for owned in fragments[handler].blocks:
-                if owned in seen:
-                    continue
-                seen.add(owned)
-                ordered_blocks.append(owned)
-        chain_has_terminal = any(
-            fragments[h].exit_kind in terminal_exit_kinds for h in chain
-        )
-        # Accept singletons when the chain reaches a terminal exit;
-        # otherwise fall back to the min_total_blocks bound.
-        if not ordered_blocks:
-            continue
-        if len(ordered_blocks) < int(min_total_blocks) and not chain_has_terminal:
-            continue
-        corridor = tuple(ordered_blocks)
-        if corridor in seen_corridor_blocks:
-            continue
-        seen_corridor_blocks.add(corridor)
-        out_corridors.append(corridor)
+    out_corridors = list(enumeration.corridors)
+    seen_corridor_blocks = set(out_corridors)
 
     # Family-based singleton admission.  After collecting maximal
     # chains, look at every fragment NOT yet covered.  If a singleton
@@ -899,14 +1045,10 @@ def detect_hybrid_terminal_byte_corridors(
     # established by the DAG edge.  This catches mid-cascade emit
     # blocks like blk[111] whose owning handler doesn't itself reach
     # a terminal but is a direct semantic predecessor of one that does.
-    accepted_handlers: set[int] = set()
-    for chain in maximal_chains:
-        accepted_handlers.update(chain)
-    accepted_blocks: set[int] = set()
-    for chain in maximal_chains:
-        for h in chain:
-            for b in fragments[h].blocks:
-                accepted_blocks.add(b)
+    accepted_handlers = set(enumeration.accepted_handlers)
+    accepted_blocks = {
+        block for corridor in out_corridors for block in corridor
+    }
 
     # Build a *full* DAG-edge adjacency that traverses ALL state nodes
     # (not just side-effect fragments).  Mid-cascade handlers like

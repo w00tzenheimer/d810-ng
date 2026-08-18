@@ -28,6 +28,7 @@ from d810.analyses.control_flow.linearized_state_dag import (
     RenderOrderStrategy,
     RedirectSourceKind,
     SemanticEdgeKind,
+    SideEffectFragment,
     StateDagEdge,
     StateDagNode,
     StateDagNodeKey,
@@ -36,6 +37,7 @@ from d810.analyses.control_flow.linearized_state_dag import (
     StateNodeKind,
     StateRedirectAnchor,
     _compute_alias_label_override,
+    _enumerate_hybrid_corridors,
     _detect_interval_router_insufficiencies,
     _build_state_resolver,
     _normalize_alias_nodes,
@@ -103,6 +105,291 @@ def test_side_effect_detection_uses_portable_instruction_kind() -> None:
     )
 
     assert linearized_state_dag._block_has_side_effect_opcode(block)
+
+
+def _hybrid_fragments() -> dict[int, SideEffectFragment]:
+    return {
+        1: SideEffectFragment(1, (10,), "transition"),
+        2: SideEffectFragment(2, (20, 21), "transition"),
+        3: SideEffectFragment(3, (30,), "terminal"),
+        4: SideEffectFragment(4, (40,), "local_terminal_edge"),
+    }
+
+
+def test_hybrid_corridor_enumerator_preserves_small_branching_cycle_output() -> None:
+    result = _enumerate_hybrid_corridors(
+        _hybrid_fragments(),
+        {1: (2, 4), 2: (1, 3), 3: (), 4: ()},
+        min_total_blocks=2,
+        max_chain_handlers=12,
+        expansion_budget=100,
+    )
+
+    assert not result.budget_exhausted
+    assert result.corridors == (
+        (10, 20, 21, 30),
+        (20, 21, 10, 40),
+    )
+    assert result.accepted_handlers == frozenset({1, 2, 3, 4})
+
+
+def test_hybrid_corridor_enumerator_budget_fallback_is_complete_and_bounded() -> None:
+    fragments = {
+        handler: SideEffectFragment(
+            handler,
+            (handler * 10, handler * 10 + 1),
+            "terminal" if handler >= 7 else "transition",
+        )
+        for handler in range(1, 9)
+    }
+    forward = {
+        1: (2, 3, 4),
+        2: (3, 4, 5),
+        3: (1, 5, 6),
+        4: (2, 6, 7),
+        5: (3, 7, 8),
+        6: (4, 7, 8),
+        7: (),
+        8: (),
+    }
+
+    result = _enumerate_hybrid_corridors(
+        fragments,
+        forward,
+        min_total_blocks=2,
+        max_chain_handlers=12,
+        expansion_budget=17,
+    )
+
+    assert result.budget_exhausted
+    assert result.expansions == 17
+    assert result.fragment_count == 8
+    assert result.edge_count == 18
+    assert result.corridors == (
+        tuple(block for handler in range(1, 9) for block in fragments[handler].blocks),
+    )
+
+
+def test_hybrid_corridor_exact_a_shape_has_deterministic_expansion_ceiling() -> None:
+    fragment_count = 46
+    fragments = {
+        handler: SideEffectFragment(
+            handler,
+            (1000 + handler,),
+            "terminal" if handler > 42 else "transition",
+        )
+        for handler in range(1, fragment_count + 1)
+    }
+    forward = {
+        handler: tuple(
+            {
+                (handler % fragment_count) + 1,
+                ((handler + 6) % fragment_count) + 1,
+                ((handler + 14) % fragment_count) + 1,
+            }
+        )
+        for handler in fragments
+    }
+
+    result = _enumerate_hybrid_corridors(
+        fragments,
+        forward,
+        min_total_blocks=2,
+        max_chain_handlers=12,
+        expansion_budget=500,
+    )
+
+    assert result.budget_exhausted
+    assert result.expansions == 500
+    assert result.fragment_count == fragment_count
+    assert set(result.corridors[0]) == {
+        block for fragment in fragments.values() for block in fragment.blocks
+    }
+
+
+def test_hybrid_corridor_enumerator_larger_budget_matches_exact_shape() -> None:
+    fragments = _hybrid_fragments()
+    forward = {1: (2, 4), 2: (1, 3), 3: (), 4: ()}
+
+    exact = _enumerate_hybrid_corridors(
+        fragments,
+        forward,
+        min_total_blocks=2,
+        max_chain_handlers=12,
+        expansion_budget=100,
+    )
+    bounded = _enumerate_hybrid_corridors(
+        fragments,
+        forward,
+        min_total_blocks=2,
+        max_chain_handlers=12,
+        expansion_budget=exact.expansions,
+    )
+
+    assert not bounded.budget_exhausted
+    assert bounded.corridors == exact.corridors
+
+
+def test_hybrid_corridor_exact_result_is_deterministic_across_insertion_order() -> None:
+    fragments = _hybrid_fragments()
+    reversed_fragments = dict(reversed(tuple(fragments.items())))
+    forward = {1: (4, 2), 2: (3, 1), 3: (), 4: ()}
+    reversed_forward = dict(reversed(tuple(forward.items())))
+
+    first = _enumerate_hybrid_corridors(
+        fragments,
+        forward,
+        min_total_blocks=2,
+        max_chain_handlers=12,
+        expansion_budget=100,
+    )
+    second = _enumerate_hybrid_corridors(
+        reversed_fragments,
+        reversed_forward,
+        min_total_blocks=2,
+        max_chain_handlers=12,
+        expansion_budget=100,
+    )
+
+    assert first == second
+
+
+@pytest.mark.parametrize("budget", [0, 1])
+def test_hybrid_corridor_enumerator_zero_and_one_budget_fail_closed(
+    budget: int,
+) -> None:
+    fragments = _hybrid_fragments()
+    result = _enumerate_hybrid_corridors(
+        fragments,
+        {1: (2, 4), 2: (1, 3), 3: (), 4: ()},
+        min_total_blocks=2,
+        max_chain_handlers=12,
+        expansion_budget=budget,
+    )
+
+    assert result.budget_exhausted
+    assert result.expansions == budget
+    assert result.corridors == ((10, 20, 21, 30, 40),)
+
+
+def test_hybrid_corridor_fallback_is_deterministic_and_sanitizes_blocks() -> None:
+    fragments_a = {
+        2: SideEffectFragment(2, (20, 10, 20, -1), "transition"),
+        1: SideEffectFragment(1, (10, 30), "terminal"),
+    }
+    fragments_b = dict(reversed(tuple(fragments_a.items())))
+    forward_a = {2: (1,), 1: ()}
+    forward_b = {1: (), 2: (1,)}
+
+    first = _enumerate_hybrid_corridors(
+        fragments_a,
+        forward_a,
+        min_total_blocks=2,
+        max_chain_handlers=12,
+        expansion_budget=0,
+    )
+    second = _enumerate_hybrid_corridors(
+        fragments_b,
+        forward_b,
+        min_total_blocks=2,
+        max_chain_handlers=12,
+        expansion_budget=0,
+    )
+
+    assert first == second
+    assert first.corridors == ((10, 30, 20),)
+    assert len(first.corridors[0]) == len(set(first.corridors[0]))
+
+
+def test_hybrid_corridor_fallback_preserves_terminal_singleton_family_membership() -> None:
+    fragments = {
+        1: SideEffectFragment(1, (11,), "transition"),
+        2: SideEffectFragment(2, (22,), "terminal"),
+        3: SideEffectFragment(3, (33,), "transition"),
+    }
+
+    result = _enumerate_hybrid_corridors(
+        fragments,
+        {1: (2,), 2: (), 3: (1,)},
+        min_total_blocks=2,
+        max_chain_handlers=12,
+        expansion_budget=1,
+    )
+
+    assert result.budget_exhausted
+    assert set(result.corridors[0]) == {11, 22, 33}
+    assert result.accepted_handlers == frozenset({1, 2, 3})
+
+
+def test_hybrid_corridor_detector_logs_bounded_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    fragments = {
+        1: SideEffectFragment(1, (11,), "transition"),
+        2: SideEffectFragment(2, (22,), "terminal"),
+    }
+    dag = SimpleNamespace(
+        nodes=(SimpleNamespace(handler_serial=1), SimpleNamespace(handler_serial=2)),
+        edges=(
+            SimpleNamespace(
+                kind=SemanticEdgeKind.TRANSITION,
+                source_key=SimpleNamespace(handler_serial=1),
+                target_key=SimpleNamespace(handler_serial=2),
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        linearized_state_dag,
+        "_extract_side_effect_fragment",
+        lambda node, _flow_graph: fragments[node.handler_serial],
+    )
+
+    with caplog.at_level("WARNING"):
+        corridors = linearized_state_dag.detect_hybrid_terminal_byte_corridors(
+            dag,
+            SimpleNamespace(),
+            expansion_budget=1,
+        )
+
+    assert corridors == ((11, 22),)
+    assert "hybrid corridor bounded fallback" in caplog.text
+    assert "fragments=2 edges=1 expansions=1 budget=1 protected_blocks=2" in caplog.text
+
+
+def test_hybrid_corridor_exact_path_preserves_family_singleton_admission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fragments = {
+        1: SideEffectFragment(1, (11,), "terminal"),
+        3: SideEffectFragment(3, (33,), "transition"),
+    }
+    nodes = tuple(SimpleNamespace(handler_serial=handler) for handler in (1, 3, 99))
+    edges = (
+        SimpleNamespace(
+            kind=SemanticEdgeKind.TRANSITION,
+            source_key=SimpleNamespace(handler_serial=3),
+            target_key=SimpleNamespace(handler_serial=99),
+        ),
+        SimpleNamespace(
+            kind=SemanticEdgeKind.TRANSITION,
+            source_key=SimpleNamespace(handler_serial=99),
+            target_key=SimpleNamespace(handler_serial=1),
+        ),
+    )
+    monkeypatch.setattr(
+        linearized_state_dag,
+        "_extract_side_effect_fragment",
+        lambda node, _flow_graph: fragments.get(node.handler_serial),
+    )
+
+    corridors = linearized_state_dag.detect_hybrid_terminal_byte_corridors(
+        SimpleNamespace(nodes=nodes, edges=edges),
+        SimpleNamespace(),
+        expansion_budget=100,
+    )
+
+    assert corridors == ((11,), (33,))
 
 
 class _ExactMap:
