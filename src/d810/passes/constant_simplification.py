@@ -28,7 +28,14 @@ CONSTANT_SIMPLIFICATION_PASS_ID = PassId.CONSTANT_SIMPLIFICATION
 STRICT_MEMORY_POLICY = "strict"
 AGGRESSIVE_MEMORY_POLICY = "aggressive_no_direct_writes"
 _MEMORY_POLICIES = frozenset({STRICT_MEMORY_POLICY, AGGRESSIVE_MEMORY_POLICY})
-_OPTION_NAMES = frozenset({"memory_policy", "allow_executable_readonly", "rva_guard"})
+_OPTION_NAMES = frozenset(
+    {
+        "memory_policy",
+        "allow_executable_readonly",
+        "rva_guard",
+        "persist_global_const_annotations",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +44,7 @@ class ConstantSimplificationOptions:
 
     memory_policy: str = STRICT_MEMORY_POLICY
     allow_executable_readonly: bool = False
+    persist_global_const_annotations: bool = False
     #: How the pointer-like veto is answered. True keeps a veto but prefers a
     #: def-use "is this value dereferenced?" answer over the value-shape guess;
     #: False drops the veto entirely. Orthogonal to ``memory_policy``, which
@@ -89,9 +97,18 @@ def _parse_options(config: PipelineConfig) -> ConstantSimplificationOptions:
         raise PipelineConfigError(
             "constant-simplification options.rva_guard must be boolean"
         )
+    persist_global_const_annotations = config.options.get(
+        "persist_global_const_annotations", False
+    )
+    if not isinstance(persist_global_const_annotations, bool):
+        raise PipelineConfigError(
+            "constant-simplification options.persist_global_const_annotations "
+            "must be boolean"
+        )
     return ConstantSimplificationOptions(
         memory_policy=memory_policy,
         allow_executable_readonly=dangerous,
+        persist_global_const_annotations=persist_global_const_annotations,
         rva_guard=rva_guard,
     )
 
@@ -121,7 +138,7 @@ def constant_simplification_hook_rules(
     memory_options: dict[str, object] = {
         # Private bundle-owned behavior. Direct/legacy activation of the
         # implementation rule does not persist IDB type metadata.
-        "persist_global_const_annotations": True,
+        "persist_global_const_annotations": options.persist_global_const_annotations,
         "rva_guard": options.rva_guard,
     }
     if options.memory_policy == AGGRESSIVE_MEMORY_POLICY:
@@ -151,6 +168,7 @@ def register_constant_simplification_pass(registry: PassRegistry) -> PassRegistr
                 "memory_policy": STRICT_MEMORY_POLICY,
                 "rva_guard": True,
                 "allow_executable_readonly": False,
+                "persist_global_const_annotations": False,
             },
         ),
         stages=(
@@ -196,6 +214,18 @@ def register_constant_simplification_pass(registry: PassRegistry) -> PassRegistr
                         "is no veto."
                     ),
                     default=True,
+                ),
+                FieldEditorSpec(
+                    field_id="persist_global_const_annotations",
+                    label="Persist proven global constants in IDB",
+                    path=("persist_global_const_annotations",),
+                    control=FieldControlKind.BOOLEAN,
+                    description=(
+                        "Apply proven global const types through D810's reversible "
+                        "IDB preparation journal. Restore them from the "
+                        "Deobfuscation Workbench."
+                    ),
+                    default=False,
                 ),
                 FieldEditorSpec(
                     field_id="allow_executable_readonly",

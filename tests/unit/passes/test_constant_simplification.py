@@ -30,7 +30,7 @@ def test_default_bundle_expands_to_one_ordered_memory_fold_flow_pipeline():
         "ForwardConstantPropagationRule"
     ]
     assert rules.instruction_rules[0].config == {
-        "persist_global_const_annotations": True,
+        "persist_global_const_annotations": False,
         "rva_guard": True,
     }
     assert rules.instruction_rules[1].config == {}
@@ -46,7 +46,9 @@ def test_state_machine_bundle_configures_one_post_unflatten_flow_rule():
         },
     )
 
-    assert [rule.name for rule in rules.block_rules] == ["ForwardConstantPropagationRule"]
+    assert [rule.name for rule in rules.block_rules] == [
+        "ForwardConstantPropagationRule"
+    ]
     assert rules.block_rules[0].config == {
         "maturities": ["MMAT_GLBOPT2"],
         "cython_enabled": False,
@@ -64,7 +66,7 @@ def test_bundle_maps_aggressive_and_dangerous_options_only_to_memory_stage():
     assert rules.instruction_rules[0].config == {
         "fold_writable_constants": True,
         "allow_executable_readonly": True,
-        "persist_global_const_annotations": True,
+        "persist_global_const_annotations": False,
         "rva_guard": True,
     }
     assert rules.instruction_rules[1].config == {}
@@ -77,6 +79,7 @@ def test_bundle_maps_aggressive_and_dangerous_options_only_to_memory_stage():
         {"memory_policy": "guess"},
         {"memory_policy": True},
         {"memory_policy": "strict", "allow_executable_readonly": "yes"},
+        {"memory_policy": "strict", "persist_global_const_annotations": "yes"},
         {"memory_policy": "strict", "extra": False},
     ],
 )
@@ -93,3 +96,20 @@ def test_bundle_descriptor_is_a_noop_for_portable_execution():
     assert isinstance(result, PassResult)
     assert result.facts == ()
     assert result.rewrite_plan.steps == ()
+
+
+def test_global_const_persistence_is_an_explicit_opt_in() -> None:
+    default_pass = build_constant_simplification_pass(_config())
+    enabled_pass = build_constant_simplification_pass(
+        _config(persist_global_const_annotations=True)
+    )
+
+    assert default_pass.options.persist_global_const_annotations is False
+    assert enabled_pass.options.persist_global_const_annotations is True
+    enabled_rules = constant_simplification_hook_rules(
+        _config(persist_global_const_annotations=True)
+    )
+    assert (
+        enabled_rules.instruction_rules[0].config["persist_global_const_annotations"]
+        is True
+    )

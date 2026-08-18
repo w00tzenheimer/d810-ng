@@ -153,3 +153,19 @@ def test_config_template_seeds_rva_guard_with_its_real_default():
         template.options["rva_guard"]
         is build_constant_simplification_pass(_config()).options.rva_guard
     )
+
+
+def test_global_const_persistence_is_exposed_as_an_off_by_default_checkbox() -> None:
+    from d810.passes.constant_simplification import (
+        register_constant_simplification_pass,
+    )
+    from d810.passes.registry import PassRegistry
+
+    registry = register_constant_simplification_pass(PassRegistry())
+    field = _editor_fields()["persist_global_const_annotations"]
+    template = registry.config_template_for(CONSTANT_SIMPLIFICATION_PASS_ID)
+
+    assert field.path == ("persist_global_const_annotations",)
+    assert field.control.name == "BOOLEAN"
+    assert field.label == "Persist proven global constants in IDB"
+    assert template.options["persist_global_const_annotations"] is False

@@ -20,6 +20,7 @@ from d810.passes.cleanup_family_adapter import (
 )
 from d810.passes.constant_simplification import (
     CONSTANT_SIMPLIFICATION_PASS_ID,
+    build_constant_simplification_pass,
     constant_simplification_hook_rules,
 )
 from d810.passes.hook_transform_passes import build_hook_transform_pass
@@ -65,6 +66,7 @@ class PipelineV2HookActivation:
     instruction_rules: tuple[RuleConfiguration, ...] = ()
     block_rules: tuple[RuleConfiguration, ...] = ()
     native_state_machine_pass_ids: tuple[str, ...] = ()
+    global_const_persistence_enabled: bool = False
 
 
 def requires_native_preanalysis_handlers(
@@ -199,12 +201,8 @@ def _mba_egglog_options(config: PipelineConfig) -> dict[str, object]:
         "max_eclasses": adapter.max_eclasses,
         "max_enodes": adapter.max_enodes,
         "max_rule_firings": adapter.max_rule_firings,
-        "cross_block_constant_preparation": (
-            adapter.cross_block_constant_preparation
-        ),
-        "cross_block_def_use_preparation": (
-            adapter.cross_block_def_use_preparation
-        ),
+        "cross_block_constant_preparation": (adapter.cross_block_constant_preparation),
+        "cross_block_def_use_preparation": (adapter.cross_block_def_use_preparation),
         "time_budget_ms": adapter.time_budget_ms,
         "function_time_budget_ms": adapter.function_time_budget_ms,
         "residual_only": adapter.residual_only,
@@ -300,6 +298,7 @@ def pipeline_v2_hook_activation(project_config) -> PipelineV2HookActivation:
 
     instruction_rules: list[RuleConfiguration] = []
     block_rules: list[RuleConfiguration] = []
+    global_const_persistence_enabled = False
     native_present = any(
         config.pass_id in STATE_MACHINE_NATIVE_PASS_IDS for config in configs
     )
@@ -309,6 +308,11 @@ def pipeline_v2_hook_activation(project_config) -> PipelineV2HookActivation:
     for config in configs:
         pass_id = config.pass_id
         if pass_id == CONSTANT_SIMPLIFICATION_PASS_ID:
+            global_const_persistence_enabled = bool(
+                build_constant_simplification_pass(
+                    config
+                ).options.persist_global_const_annotations
+            )
             bundle = constant_simplification_hook_rules(
                 config,
                 forward_constant_options=(
@@ -382,6 +386,7 @@ def pipeline_v2_hook_activation(project_config) -> PipelineV2HookActivation:
         native_state_machine_pass_ids=(
             STATE_MACHINE_NATIVE_PASS_IDS if native_present else ()
         ),
+        global_const_persistence_enabled=global_const_persistence_enabled,
     )
 
 

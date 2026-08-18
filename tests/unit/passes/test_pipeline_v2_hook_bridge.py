@@ -83,12 +83,39 @@ def test_constant_simplification_bundle_expands_to_private_live_stages():
         "ConstantSubtreeFoldRule",
     ]
     assert activation.instruction_rules[0].config == {
-        "persist_global_const_annotations": True,
+        "persist_global_const_annotations": False,
         "rva_guard": True,
     }
+    assert activation.global_const_persistence_enabled is False
     assert [rule.name for rule in activation.block_rules] == [
         "ForwardConstantPropagationRule",
     ]
+
+
+def test_constant_simplification_projects_enabled_const_persistence() -> None:
+    project = ProjectConfiguration(
+        path=Path("constant-persistence.runtime-config-v2.json"),
+        additional_configuration={
+            "pipeline_v2_mode": "config-v2",
+            "pipeline_v2": [
+                {
+                    "pass_id": "constant-simplification",
+                    "options": {
+                        "memory_policy": "strict",
+                        "persist_global_const_annotations": True,
+                    },
+                }
+            ],
+        },
+    )
+
+    activation = pipeline_v2_hook_activation(project)
+
+    assert activation.global_const_persistence_enabled is True
+    assert (
+        activation.instruction_rules[0].config["persist_global_const_annotations"]
+        is True
+    )
 
 
 @pytest.mark.parametrize(

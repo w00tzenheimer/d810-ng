@@ -1123,7 +1123,12 @@ class D810State(metaclass=SingletonMeta):
             **runtime_project.additional_configuration,
         )
         project_snapshot = self.get_project_runtime_snapshot()
-        self.manager.configure_preparation_scripts(project_snapshot.preparation_scripts)
+        self.manager.configure_preparation_scripts(
+            project_snapshot.preparation_scripts,
+            global_const_persistence_enabled=(
+                project_snapshot.global_const_persistence_enabled
+            ),
+        )
         self.manager.start()
         logger.info("D-810 ready to deobfuscate...")
         self.d810_config.set("last_project_index", self.current_project_index)

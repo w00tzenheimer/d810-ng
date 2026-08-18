@@ -44,6 +44,7 @@ def test_non_v2_snapshot_exposes_no_public_pass_pipeline(
     assert snapshot.mode is ProjectConfigMode.LEGACY
     assert snapshot.routed is False
     assert snapshot.effective_pass_ids == ()
+    assert snapshot.global_const_persistence_enabled is False
 
 
 def test_routed_config_v2_snapshot_reports_distinct_source_and_runtime() -> None:
@@ -97,6 +98,37 @@ def test_direct_canary_snapshot_is_config_v2_without_routing() -> None:
         "mba-simplify",
         "jump-fixer",
     )
+
+
+def test_snapshot_projects_explicit_global_const_persistence_authority(
+    tmp_path: Path,
+) -> None:
+    project = ProjectConfiguration(
+        path=tmp_path / "const-persistence.json",
+        additional_configuration={
+            "pipeline_v2_mode": "config-v2",
+            "pipeline_v2": [
+                {
+                    "pass_id": "constant-simplification",
+                    "options": {
+                        "memory_policy": "strict",
+                        "persist_global_const_annotations": True,
+                    },
+                }
+            ],
+        },
+    )
+    activation = pipeline_v2_hook_activation(project)
+
+    snapshot = build_project_runtime_snapshot(
+        source_project=project,
+        runtime_project=project,
+        default_selection=None,
+        hook_activation=activation,
+        hook_mode="config-v2",
+    )
+
+    assert snapshot.global_const_persistence_enabled is True
 
 
 def test_snapshot_is_immutable(tmp_path: Path) -> None:

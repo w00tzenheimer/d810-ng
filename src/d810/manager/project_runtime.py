@@ -44,6 +44,7 @@ class ProjectRuntimeSnapshot:
     hook_mode: str | None
     effective_pass_ids: tuple[str, ...]
     preparation_scripts: tuple[PreparationScriptDescriptor, ...] = ()
+    global_const_persistence_enabled: bool = False
 
 
 def _identity(project: ProjectConfiguration) -> ProjectIdentitySnapshot:
@@ -84,6 +85,9 @@ def build_project_runtime_snapshot(
         hook_mode=hook_mode,
         effective_pass_ids=tuple(effective_pass_ids),
         preparation_scripts=preparation_registry.descriptors,
+        global_const_persistence_enabled=(
+            hook_activation.global_const_persistence_enabled
+        ),
     )
 
 
