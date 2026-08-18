@@ -2,6 +2,7 @@
   "bogus_loops.json": {
     "source_name": "bogus_loops.json",
     "fingerprint": "a1c7a9b5ce95589848c0444413af458e33c599093f722dc89617bbf081a16945",
+    "fingerprint_aliases": [],
     "donor_name": "bogus_loops_config_v2_canary.json",
     "description": "Canonical config-v2 project for bogus_loops.json.",
     "owned_additional_configuration": {},
@@ -226,6 +227,7 @@
   "default.json": {
     "source_name": "default.json",
     "fingerprint": "3ad2011d8a652b62a1d7c33a4c42f43a9c66f95d8bd4ce42a48f0514baa2a3ee",
+    "fingerprint_aliases": [],
     "donor_name": "default_config_v2_canary.json",
     "description": "Canonical config-v2 project for default.json.",
     "owned_additional_configuration": {},
@@ -365,6 +367,7 @@
   "default_indirect_resolution.json": {
     "source_name": "default_indirect_resolution.json",
     "fingerprint": "3ad2011d8a652b62a1d7c33a4c42f43a9c66f95d8bd4ce42a48f0514baa2a3ee",
+    "fingerprint_aliases": [],
     "donor_name": "default_indirect_resolution_config_v2_canary.json",
     "description": "Canonical config-v2 project for default_indirect_resolution.json.",
     "owned_additional_configuration": {},
@@ -504,6 +507,7 @@
   "default_instruction_only.json": {
     "source_name": "default_instruction_only.json",
     "fingerprint": "b3f0944b2119e880d2976821953ebf2c50f2646a18a1898ee7ffc0d636c02ab2",
+    "fingerprint_aliases": [],
     "donor_name": "default_instruction_only_config_v2_canary.json",
     "description": "Canonical config-v2 project for default_instruction_only.json.",
     "owned_additional_configuration": {},
@@ -920,6 +924,7 @@
   "default_unflattening_approov.json": {
     "source_name": "default_unflattening_approov.json",
     "fingerprint": "83f454590e43ae04800cff57670a33e06185cd66ff7daf2141e1f84f62d1c9ac",
+    "fingerprint_aliases": [],
     "donor_name": "default_unflattening_approov_config_v2_canary.json",
     "description": "Canonical config-v2 project for default_unflattening_approov.json.",
     "owned_additional_configuration": {},
@@ -1744,6 +1749,7 @@
   "default_unflattening_approov_s1a.json": {
     "source_name": "default_unflattening_approov_s1a.json",
     "fingerprint": "1ca9be3289dd1ef4ec4893434612dbafaed5058bc12b2422ca86218ed51eda05",
+    "fingerprint_aliases": [],
     "donor_name": "default_unflattening_approov_s1a_config_v2_canary.json",
     "description": "Canonical config-v2 project for default_unflattening_approov_s1a.json.",
     "owned_additional_configuration": {},
@@ -2568,6 +2574,7 @@
   "default_unflattening_ollvm.json": {
     "source_name": "default_unflattening_ollvm.json",
     "fingerprint": "176a9441b7c866ca37d174c9bf3bcd494521acd94c4ec29c55d115cd951451cb",
+    "fingerprint_aliases": [],
     "donor_name": "default_unflattening_ollvm_config_v2_canary.json",
     "description": "Canonical config-v2 project for default_unflattening_ollvm.json.",
     "owned_additional_configuration": {
@@ -3611,6 +3618,7 @@
   "default_unflattening_tigress_engine.json": {
     "source_name": "default_unflattening_tigress_engine.json",
     "fingerprint": "1d343499a5cb0dec68b2a7efedf3237703dce6fc39b2aae61186feb1a0471db2",
+    "fingerprint_aliases": [],
     "donor_name": "default_unflattening_tigress_engine_config_v2_canary.json",
     "description": "Canonical config-v2 project for default_unflattening_tigress_engine.json.",
     "owned_additional_configuration": {},
@@ -4028,6 +4036,9 @@
   "default_unflattening_tigress_engine_transition_facts.json": {
     "source_name": "default_unflattening_tigress_engine_transition_facts.json",
     "fingerprint": "33a35478e5adcf6b952ec30f30727524a31f721c1d502c89f80165c9b01c4750",
+    "fingerprint_aliases": [
+      "dbc9188afe30a2aa64f46a457293a68412e3f8462bd9e54743edd2ffdc4b179b"
+    ],
     "donor_name": "default_unflattening_tigress_engine_transition_facts_config_v2_canary.json",
     "description": "Canonical config-v2 project for default_unflattening_tigress_engine_transition_facts.json.",
     "owned_additional_configuration": {},
@@ -4588,6 +4599,7 @@
   "default_unflattening_tigress_indirect.json": {
     "source_name": "default_unflattening_tigress_indirect.json",
     "fingerprint": "2101314f6b7a8213922818e88b4c8aa54d57048aa83dc2c414e6640b74ea9ec9",
+    "fingerprint_aliases": [],
     "donor_name": "default_unflattening_tigress_indirect_config_v2_canary.json",
     "description": "Canonical config-v2 project for default_unflattening_tigress_indirect.json.",
     "owned_additional_configuration": {},
@@ -5168,6 +5180,9 @@
   "eidolon.json": {
     "source_name": "eidolon.json",
     "fingerprint": "bc241830174e4e5433a0b7d3aaac3f042d56978e9e77c6ed46d000c76cbbcd6c",
+    "fingerprint_aliases": [
+      "435dac2b0c3aa6c8a7fc00188b1cd5e25d57d17e288d6f703fad2f34cc836995"
+    ],
     "donor_name": "eidolon_config_v2_canary.json",
     "description": "Canonical config-v2 project for eidolon.json.",
     "owned_additional_configuration": {},
@@ -5425,6 +5440,7 @@
   "example_hodur.json": {
     "source_name": "example_hodur.json",
     "fingerprint": "859f94847f7796fb4166b2a7feb70d927a0c54fb50c3f750c7209cddb8c8e6c0",
+    "fingerprint_aliases": [],
     "donor_name": "example_hodur_config_v2_canary.json",
     "description": "Canonical config-v2 project for example_hodur.json.",
     "owned_additional_configuration": {},
@@ -6255,6 +6271,7 @@
   "example_libobfuscated.json": {
     "source_name": "example_libobfuscated.json",
     "fingerprint": "0e24934ca11872a24d65384967a9830fb567caf2d9b64ae4e15b88ec2d49f546",
+    "fingerprint_aliases": [],
     "donor_name": "example_libobfuscated_config_v2_canary.json",
     "description": "Canonical config-v2 project for example_libobfuscated.json.",
     "owned_additional_configuration": {
@@ -7159,6 +7176,7 @@
   "example_libobfuscated_abc.json": {
     "source_name": "example_libobfuscated_abc.json",
     "fingerprint": "dcf343cfb6ce6f701e5954c64607d8cd8a3512345d1f3057f2be7cf7a006fa5e",
+    "fingerprint_aliases": [],
     "donor_name": "example_libobfuscated_abc_config_v2_canary.json",
     "description": "Canonical config-v2 project for example_libobfuscated_abc.json.",
     "owned_additional_configuration": {},
@@ -7989,6 +8007,7 @@
   "example_libobfuscated_no_fixprecedessor.json": {
     "source_name": "example_libobfuscated_no_fixprecedessor.json",
     "fingerprint": "9bf4606216bfe471d526b1f12d19cb6da17fdd7a542c51f8283ab350da98c457",
+    "fingerprint_aliases": [],
     "donor_name": "example_libobfuscated_no_fixprecedessor_config_v2_canary.json",
     "description": "Canonical config-v2 project for example_libobfuscated_no_fixprecedessor.json.",
     "owned_additional_configuration": {},
@@ -8476,6 +8495,7 @@
   "flatfold.json": {
     "source_name": "flatfold.json",
     "fingerprint": "fb2f480fcc9088f637a83c9ed5fc9354ed9c40ae61f0fe134ae7f237160d56dd",
+    "fingerprint_aliases": [],
     "donor_name": "flatfold_config_v2_canary.json",
     "description": "Canonical config-v2 project for flatfold.json.",
     "owned_additional_configuration": {},
@@ -9339,6 +9359,7 @@
   "hodur_flag2.json": {
     "source_name": "hodur_flag2.json",
     "fingerprint": "2c57256b924f15329eb0166edbfc693f19f56d57a4e317b2c1d03d5458fbc9eb",
+    "fingerprint_aliases": [],
     "donor_name": "hodur_flag2_config_v2_canary.json",
     "description": "Canonical config-v2 project for hodur_flag2.json.",
     "owned_additional_configuration": {
@@ -9863,6 +9884,7 @@
   "hodur_flag2_s1a.json": {
     "source_name": "hodur_flag2_s1a.json",
     "fingerprint": "11d0f3aa77a291c12715550156585afe577010e865faaf55bdf04b4f2aef2e63",
+    "fingerprint_aliases": [],
     "donor_name": "hodur_flag2_s1a_config_v2_canary.json",
     "description": "Canonical config-v2 project for hodur_flag2_s1a.json.",
     "owned_additional_configuration": {},
@@ -10362,6 +10384,7 @@
   "hodur_flag2_with_fcp.json": {
     "source_name": "hodur_flag2_with_fcp.json",
     "fingerprint": "8bbdc05360b7d3f5fe9c345c19a70d8d5269fc0f6d64c5b49bef42ac8e52ae10",
+    "fingerprint_aliases": [],
     "donor_name": "hodur_flag2_with_fcp_config_v2_canary.json",
     "description": "Canonical config-v2 project for hodur_flag2_with_fcp.json.",
     "owned_additional_configuration": {},
@@ -11000,6 +11023,7 @@
   "hodur_glbopt2_only.json": {
     "source_name": "hodur_glbopt2_only.json",
     "fingerprint": "c6a288756aed1880a54981c5cf596bbb5abddc09e74cefd2c6af60406445c986",
+    "fingerprint_aliases": [],
     "donor_name": "hodur_glbopt2_only_config_v2_canary.json",
     "description": "Canonical config-v2 project for hodur_glbopt2_only.json.",
     "owned_additional_configuration": {},
@@ -11417,6 +11441,7 @@
   "identity_call.json": {
     "source_name": "identity_call.json",
     "fingerprint": "cd035f21e1ba345d0a6108616344375f1e93866a8cfdee23c6f6770224525339",
+    "fingerprint_aliases": [],
     "donor_name": "identity_call_config_v2_canary.json",
     "description": "Canonical config-v2 project for identity_call.json.",
     "owned_additional_configuration": {},

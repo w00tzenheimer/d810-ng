@@ -104,9 +104,41 @@ KNOWN_LEGACY_FINGERPRINTS = {
     "example_libobfuscated.json": "0e24934ca11872a24d65384967a9830fb567caf2d9b64ae4e15b88ec2d49f546",
 }
 
+# These are the identities of the legacy documents at the current
+# config-recon-mainline cutover point.  Keep this small compatibility ledger
+# explicit: the bundled runtime presets are canonical v2 now, but migration
+# must continue to recognize the last legacy inputs that users can still
+# present to the offline migrator.
+LATEST_MAINLINE_LEGACY_FINGERPRINTS = {
+    "eidolon.json": "435dac2b0c3aa6c8a7fc00188b1cd5e25d57d17e288d6f703fad2f34cc836995",
+    "default_unflattening_tigress_engine_transition_facts.json": (
+        "dbc9188afe30a2aa64f46a457293a68412e3f8462bd9e54743edd2ffdc4b179b"
+    ),
+}
+
+LEGACY_MIGRATION_FIXTURE_DIR = (
+    Path(__file__).resolve().parents[2] / "fixtures" / "migration_legacy"
+)
+LEGACY_MIGRATION_FIXTURES = {
+    "eidolon.json": (
+        "eidolon_historical.json",
+        "eidolon_mainline.json",
+    ),
+    "default_unflattening_tigress_engine_transition_facts.json": (
+        "tigress_transition_facts_historical.json",
+        "tigress_transition_facts_mainline.json",
+    ),
+}
+
 
 def _load(name: str) -> dict[str, typing.Any]:
     return json.loads((CONF_DIR / name).read_text(encoding="utf-8"))
+
+
+def _load_legacy_fixture(name: str) -> dict[str, typing.Any]:
+    """Load a committed historical migration corpus document."""
+
+    return json.loads((LEGACY_MIGRATION_FIXTURE_DIR / name).read_text(encoding="utf-8"))
 
 
 def _pipeline(document: dict[str, typing.Any]) -> list[tuple[str, dict[str, typing.Any]]]:
@@ -138,6 +170,44 @@ def test_historical_legacy_fingerprint_catalogue_is_frozen(source_name: str) -> 
     assert resource[source_name]["fingerprint"] == KNOWN_LEGACY_FINGERPRINTS[source_name]
 
 
+@pytest.mark.parametrize(
+    "source_name", tuple(LATEST_MAINLINE_LEGACY_FINGERPRINTS)
+)
+def test_latest_mainline_legacy_identities_are_catalogued(source_name: str) -> None:
+    """The migration catalogue follows the current mainline legacy corpus."""
+
+    resource = json.loads(KNOWN_RESOURCE_PATH.read_text(encoding="utf-8"))
+    alias = LATEST_MAINLINE_LEGACY_FINGERPRINTS[source_name]
+    assert resource[source_name]["fingerprint_aliases"] == [alias]
+    assert legacy_migrator._KNOWN_BY_IDENTITY[(source_name, alias)] is (
+        legacy_migrator._KNOWN_BY_IDENTITY[
+            (source_name, KNOWN_LEGACY_FINGERPRINTS[source_name])
+        ]
+    )
+
+
+@pytest.mark.parametrize("source_name", tuple(LATEST_MAINLINE_LEGACY_FINGERPRINTS))
+def test_historical_and_latest_mainline_documents_use_same_donor(
+    source_name: str,
+) -> None:
+    """Both real legacy snapshots resolve through the frozen donor projection."""
+
+    catalogue = json.loads(KNOWN_RESOURCE_PATH.read_text(encoding="utf-8"))[source_name]
+    expected = {
+        "description": catalogue["description"],
+        "additional_configuration": {
+            **catalogue["owned_additional_configuration"],
+            "pipeline_v2": catalogue["pipeline_v2"],
+        },
+    }
+    historical_name, latest_name = LEGACY_MIGRATION_FIXTURES[source_name]
+    historical = _load_legacy_fixture(historical_name)
+    latest = _load_legacy_fixture(latest_name)
+
+    assert migrate_legacy_document(historical, source_name=source_name) == expected
+    assert migrate_legacy_document(latest, source_name=source_name) == expected
+
+
 def test_known_template_resource_is_readable_and_self_consistent() -> None:
     resource = json.loads(KNOWN_RESOURCE_PATH.read_text(encoding="utf-8"))
     assert list(resource) == sorted(KNOWN_LEGACY_FINGERPRINTS)
@@ -152,6 +222,13 @@ def test_known_template_resource_rejects_corruption_with_context() -> None:
     fingerprint_corrupt["default.json"]["fingerprint"] = "0" * 64
     with pytest.raises(LegacyMigrationError, match=re.escape("default.json.fingerprint")):
         _validate_known_template_resource(fingerprint_corrupt)
+
+    aliases_corrupt = copy.deepcopy(resource)
+    aliases_corrupt["eidolon.json"]["fingerprint_aliases"] = ["0" * 64]
+    with pytest.raises(
+        LegacyMigrationError, match=re.escape("eidolon.json.fingerprint_aliases")
+    ):
+        _validate_known_template_resource(aliases_corrupt)
 
     pipeline_corrupt = copy.deepcopy(resource)
     pipeline_corrupt["default.json"]["pipeline_v2"][0]["pass_id"] = "unknown-pass"

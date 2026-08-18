@@ -251,13 +251,13 @@ class TestTigressIndirectSemanticOracle:
                     details
                 )
                 assert details.get("reason") == (
-                    "lossless_item_recreation_unsupported"
+                    "function_tail_adoption_unsupported"
                 ), details
-                assert details.get("ea") == 0x180013EAA, details
-                assert details.get("before_shape") == "data:6", details
-                assert details.get("after_shape") == "code:7", details
+                assert details.get("ea") is None, details
+                assert details.get("before_shape") is None, details
+                assert details.get("after_shape") is None, details
                 assert details.get("message") == (
-                    "cannot losslessly recreate 'data:6' as 'code:7' at 0x180013eaa"
+                    "function-tail adoption is not yet proven losslessly reversible"
                 ), details
             pytest.xfail(
                 "verified native materialization abstention(s): "

@@ -49,6 +49,7 @@ class IndirectLabelPlanFailureReason(str, enum.Enum):
     """Stable machine-readable reasons for planner abstention receipts."""
 
     UNCLASSIFIED = "unclassified"
+    FUNCTION_TAIL_ADOPTION_UNSUPPORTED = "function_tail_adoption_unsupported"
     LOSSLESS_ITEM_RECREATION_UNSUPPORTED = "lossless_item_recreation_unsupported"
 
 
@@ -373,7 +374,10 @@ def build_indirect_label_metadata_plan(
         # no detached creatable code span, so this transition is intentionally
         # unavailable rather than carrying an unproven append/remove inverse.
         raise IndirectLabelPlanBuildError(
-            "function-tail adoption is not yet proven losslessly reversible"
+            "function-tail adoption is not yet proven losslessly reversible",
+            reason=(
+                IndirectLabelPlanFailureReason.FUNCTION_TAIL_ADOPTION_UNSUPPORTED
+            ),
         )
 
     seen_data_heads: set[int] = set()

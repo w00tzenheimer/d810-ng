@@ -301,8 +301,9 @@ class IdaMetadataActionExecutor:
 
         The target data item is a compiler-created scalar label (``FF_WORD``)
         over the first six bytes of an instruction.  Structs, strings,
-        user-named/commented items, and other typed data remain represented by
-        the old ``data:<size>`` token and therefore remain fail-closed.
+        xref-bearing items, user-named/commented items, and other typed data
+        remain represented by the old ``data:<size>`` token and therefore
+        remain fail-closed.
         """
 
         import ida_bytes
@@ -347,6 +348,13 @@ class IdaMetadataActionExecutor:
             for predicate in operand_metadata_predicates
         ):
             return None
+        # Xrefs are metadata separate from the item bytes and flags.  The
+        # versioned snapshot has no xref vocabulary, so admitting an item
+        # with either incoming or outgoing edges would make reversal silently
+        # drop those edges.  Reject the whole item until the snapshot can
+        # carry and restore them losslessly.
+        if IdaMetadataActionExecutor._data_item_has_xrefs(head_ea, size):
+            return None
         full_flags = [
             int(ida_bytes.get_full_flags(head_ea + offset))
             for offset in range(size)
@@ -380,6 +388,21 @@ class IdaMetadataActionExecutor:
         return _ITEM_DATA_SNAPSHOT_PREFIX + json.dumps(
             payload, sort_keys=True, separators=(",", ":")
         )
+
+    @staticmethod
+    def _data_item_has_xrefs(head_ea: int, size: int) -> bool:
+        """Return whether any byte in a data item owns or receives an xref."""
+
+        import ida_xref
+
+        for item_ea in range(int(head_ea), int(head_ea) + int(size)):
+            incoming = ida_xref.xrefblk_t()
+            if incoming.first_to(item_ea, ida_xref.XREF_ALL):
+                return True
+            outgoing = ida_xref.xrefblk_t()
+            if outgoing.first_from(item_ea, ida_xref.XREF_ALL):
+                return True
+        return False
 
     def _read_cref_state(self, ea: int) -> str:
         import ida_xref

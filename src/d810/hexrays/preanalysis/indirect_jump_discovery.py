@@ -65,23 +65,96 @@ def bound_table_count(
     func_start: int,
     func_end: int,
     max_entries: int,
+    next_function_start: int | None = None,
+    segment_start: int | None = None,
+    segment_end: int | None = None,
+    segment_executable: bool = False,
 ) -> int:
-    """Return the count of leading qwords that point inside the function.
+    """Return the count of leading qwords in the validated target window.
 
     Pure logic (no IDA): consumes already-read qword entries and stops at the
-    first entry outside the owned function range.  ``max_entries`` caps the walk
-    so a degenerate table never explodes.
+    first entry outside the primary function or its tightly bounded
+    same-segment label gap. ``max_entries`` caps the walk so a degenerate table
+    never explodes.
     """
-    count = 0
+    extended = (
+        next_function_start is not None
+        and segment_start is not None
+        and segment_end is not None
+    )
+    ceiling = int(next_function_start) if extended else int(func_end)
+    candidates: list[int] = []
     for index, qword in enumerate(raw_qwords):
         if index >= int(max_entries):
             break
         if not qword:
             break
-        if not _ea_owned_by_function(int(qword), func_start, func_end):
+        if not int(func_start) <= int(qword) < ceiling:
             break
-        count += 1
-    return count
+        candidates.append(int(qword))
+    if not extended:
+        return len(candidates)
+    if (
+        validate_table_target_window(
+            candidates,
+            func_start=func_start,
+            func_end=func_end,
+            next_function_start=int(next_function_start),
+            segment_start=int(segment_start),
+            segment_end=int(segment_end),
+            segment_executable=segment_executable,
+        )
+        is None
+    ):
+        return 0
+    return len(candidates)
+
+
+def validate_table_target_window(
+    target_eas: Sequence[int],
+    *,
+    func_start: int,
+    func_end: int,
+    next_function_start: int | None,
+    segment_start: int | None,
+    segment_end: int | None,
+    segment_executable: bool,
+) -> int | None:
+    """Return the narrow lossless label extent for a table target sequence.
+
+    Targets already owned by the primary function keep its exact end. IDA can
+    leave computed-goto label bodies undefined immediately after the primary
+    chunk, so an anchored target set may extend into that gap only when the gap
+    is bounded by the next function and lies wholly inside the same executable
+    segment.
+    """
+
+    targets = tuple(int(ea) for ea in target_eas)
+    if not targets:
+        return None
+    if all(int(func_start) <= ea < int(func_end) for ea in targets):
+        return int(func_end)
+    if (
+        next_function_start is None
+        or segment_start is None
+        or segment_end is None
+        or not segment_executable
+    ):
+        return None
+    ceiling = int(next_function_start)
+    if not int(func_end) < ceiling <= int(segment_end):
+        return None
+    if not int(segment_start) <= int(func_start) < int(segment_end):
+        return None
+    if not any(int(func_start) <= ea < int(func_end) for ea in targets):
+        return None
+    if not all(
+        int(func_start) <= ea < ceiling
+        and int(segment_start) <= ea < int(segment_end)
+        for ea in targets
+    ):
+        return None
+    return ceiling
 
 
 def _read_qword(ea: int) -> int:
@@ -101,6 +174,34 @@ def _func_bounds(function_ea: int) -> tuple[int, int] | None:
     except Exception:
         logger.debug("failed reading func bounds for 0x%X", function_ea, exc_info=True)
         return None
+
+
+def _function_target_window(
+    func_start: int, func_end: int
+) -> tuple[int | None, int | None, int | None, bool]:
+    """Describe the same-segment gap before the next defined function."""
+
+    try:
+        import ida_funcs  # type: ignore[import-untyped]
+        import ida_segment  # type: ignore[import-untyped]
+
+        segment = ida_segment.getseg(int(func_start))
+        next_function = ida_funcs.get_next_func(int(func_start))
+        if segment is None or next_function is None:
+            return None, None, None, False
+        segment_start = int(segment.start_ea)
+        segment_end = int(segment.end_ea)
+        next_start = int(next_function.start_ea)
+        executable = bool(
+            int(getattr(segment, "perm", 0))
+            & int(getattr(ida_segment, "SEGPERM_EXEC", 1))
+        )
+        if not int(func_end) < next_start <= segment_end:
+            return None, segment_start, segment_end, executable
+        return next_start, segment_start, segment_end, executable
+    except Exception:
+        logger.debug("failed reading function target window", exc_info=True)
+        return None, None, None, False
 
 
 def _find_reg_indirect_jump_ea(func_start: int, func_end: int) -> int | None:
@@ -154,6 +255,11 @@ def _table_base_from_switch_info(dispatch_jump_ea: int) -> tuple[int, int] | Non
 def _table_base_from_operand_decode(
     func_start: int,
     func_end: int,
+    *,
+    next_function_start: int | None = None,
+    segment_start: int | None = None,
+    segment_end: int | None = None,
+    segment_executable: bool = False,
 ) -> int | None:
     """Recover the table base by decoding the ``lea/mov reg, <o_mem>`` feeder.
 
@@ -185,13 +291,18 @@ def _table_base_from_operand_decode(
                     if candidate <= 0:
                         continue
                     first = int(ida_bytes.get_qword(candidate))
-                    if _ea_owned_by_function(first, func_start, func_end):
-                        # Confirm at least two leading entries are in-function so
-                        # a stray code pointer cannot masquerade as a table.
-                        second = int(ida_bytes.get_qword(candidate + 8))
-                        if _ea_owned_by_function(second, func_start, func_end):
-                            best = candidate
-                            break
+                    second = int(ida_bytes.get_qword(candidate + 8))
+                    if validate_table_target_window(
+                        (first, second),
+                        func_start=func_start,
+                        func_end=func_end,
+                        next_function_start=next_function_start,
+                        segment_start=segment_start,
+                        segment_end=segment_end,
+                        segment_executable=segment_executable,
+                    ) is not None:
+                        best = candidate
+                        break
             if best is not None:
                 return best
             next_ea = int(ida_bytes.next_head(ea, int(func_end)))
@@ -291,6 +402,12 @@ def discover_indirect_jump_table(
     if bounds is None:
         return None
     func_start, func_end = bounds
+    (
+        next_function_start,
+        segment_start,
+        segment_end,
+        segment_executable,
+    ) = _function_target_window(func_start, func_end)
 
     dispatch_jump_ea = _find_reg_indirect_jump_ea(func_start, func_end)
     if dispatch_jump_ea is None:
@@ -305,7 +422,14 @@ def discover_indirect_jump_table(
 
     if table_address is None:
         source = "operand_decode"
-        table_address = _table_base_from_operand_decode(func_start, func_end)
+        table_address = _table_base_from_operand_decode(
+            func_start,
+            func_end,
+            next_function_start=next_function_start,
+            segment_start=segment_start,
+            segment_end=segment_end,
+            segment_executable=segment_executable,
+        )
     if table_address is None:
         return None
 
@@ -318,6 +442,10 @@ def discover_indirect_jump_table(
         raw,
         func_start=func_start,
         func_end=func_end,
+        next_function_start=next_function_start,
+        segment_start=segment_start,
+        segment_end=segment_end,
+        segment_executable=segment_executable,
         max_entries=walk_cap,
     )
     if table_count <= 0:
@@ -329,8 +457,18 @@ def discover_indirect_jump_table(
     unique_targets = sorted({int(t) for t in target_eas if t})
     if not unique_targets:
         return None
+    label_end = validate_table_target_window(
+        unique_targets,
+        func_start=func_start,
+        func_end=func_end,
+        next_function_start=next_function_start,
+        segment_start=segment_start,
+        segment_end=segment_end,
+        segment_executable=segment_executable,
+    )
+    if label_end is None:
+        return None
     label_start = int(min(unique_targets))
-    label_end = int(func_end)
     if label_end <= label_start:
         return None
 
@@ -373,4 +511,5 @@ __all__ = [
     "DiscoveredIndirectJumpTable",
     "bound_table_count",
     "discover_indirect_jump_table",
+    "validate_table_target_window",
 ]

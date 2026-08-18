@@ -81,6 +81,109 @@ def _first_instruction_tail() -> int:
 class TestIdaMetadataActionExecutor:
     binary_name = "libobfuscated.dll"
 
+    def _reversible_scalar_data_heads(
+        self, executor: IdaMetadataActionExecutor, *, minimum_size: int = 1
+    ) -> list[int]:
+        """Find plain scalar items accepted by the current live fixture."""
+
+        kind = NativeMetadataActionKind.RECREATE_ITEM
+        result: list[int] = []
+        for candidate in idautils.Heads():
+            data_head = int(candidate)
+            flags = ida_bytes.get_flags(data_head)
+            if not ida_bytes.is_data(flags):
+                continue
+            if int(ida_bytes.get_item_head(data_head)) != data_head:
+                continue
+            if int(ida_bytes.get_item_size(data_head)) < minimum_size:
+                continue
+            state = executor.read_state(kind, data_head)
+            if state.startswith("data:v1:") and not self._has_xrefs_in_item(
+                data_head
+            ):
+                result.append(data_head)
+        return result
+
+    def _canonical_scalar_data_head(self, executor: IdaMetadataActionExecutor) -> int:
+        """Return one plain scalar item accepted by the current fixture."""
+
+        candidates = self._reversible_scalar_data_heads(executor)
+        if candidates:
+            return candidates[0]
+        pytest.fail("current fixture has no xref-free reversible scalar item")
+
+    def _decodable_scalar_target_pair(
+        self, executor: IdaMetadataActionExecutor
+    ) -> tuple[int, tuple[tuple[int, int], tuple[int, int]]]:
+        """Find two non-overlapping instruction-shaped labels in one item."""
+
+        import ida_ua
+
+        for data_head in self._reversible_scalar_data_heads(executor, minimum_size=100):
+            data_end = data_head + int(ida_bytes.get_item_size(data_head))
+            decoded: list[tuple[int, int]] = []
+            for target_ea in range(data_head, data_end):
+                instruction = ida_ua.insn_t()
+                code_size = int(ida_ua.decode_insn(instruction, target_ea))
+                if code_size <= 1 or target_ea + code_size > data_end:
+                    continue
+                if any(
+                    target_ea < previous_ea + previous_size
+                    and previous_ea < target_ea + code_size
+                    for previous_ea, previous_size in decoded
+                ):
+                    continue
+                decoded.append((target_ea, code_size))
+                if len(decoded) == 2:
+                    return data_head, (decoded[0], decoded[1])
+        pytest.fail("current fixture has no scalar item with two decodable labels")
+
+    @staticmethod
+    def _has_xrefs_in_item(ea: int) -> bool:
+        head = int(ida_bytes.get_item_head(ea))
+        size = int(ida_bytes.get_item_size(head))
+        for item_ea in range(head, head + size):
+            incoming = ida_xref.xrefblk_t()
+            if incoming.first_to(item_ea, ida_xref.XREF_ALL):
+                return True
+            outgoing = ida_xref.xrefblk_t()
+            if outgoing.first_from(item_ea, ida_xref.XREF_ALL):
+                return True
+        return False
+
+    @pytest.mark.parametrize("direction", ("incoming", "outgoing"))
+    def test_scalar_data_with_xrefs_is_not_admitted_as_reversible_snapshot(
+        self, copy_of_idb, direction: str
+    ) -> None:
+        """The data:v1 token must not omit xrefs it cannot restore."""
+
+        executor = IdaMetadataActionExecutor()
+        kind = NativeMetadataActionKind.RECREATE_ITEM
+        data_head = self._canonical_scalar_data_head(executor)
+        before = executor.read_state(kind, data_head)
+        data_size = int(ida_bytes.get_item_size(data_head))
+        assert not self._has_xrefs_in_item(data_head)
+
+        source_ea = _first_function_with_min_size()
+        if direction == "incoming":
+            xref_source, xref_target = source_ea, data_head
+        else:
+            xref_source, xref_target = data_head, source_ea
+        assert ida_xref.add_dref(xref_source, xref_target, ida_xref.dr_R)
+        try:
+            assert self._has_xrefs_in_item(data_head)
+            observed = executor.read_state(kind, data_head)
+            assert not observed.startswith("data:v1:"), (
+                f"xref-bearing scalar item was admitted as {observed!r}; "
+                f"item size={data_size} direction={direction}"
+            )
+        finally:
+            ida_xref.del_dref(xref_source, xref_target)
+
+        # Removing the temporary edge must restore the canonical fixture's
+        # original positive admission result.
+        assert executor.read_state(kind, data_head) == before
+
     def test_item_state_round_trips_through_code_and_back(self, copy_of_idb) -> None:
         """RECREATE_ITEM must return the item to exactly what it was.
 
@@ -260,7 +363,8 @@ class TestIdaMetadataActionExecutor:
 
         executor = IdaMetadataActionExecutor()
         kind = NativeMetadataActionKind.RECREATE_ITEM
-        target_ea = 0x1800169AA
+        _data_head, targets = self._decodable_scalar_target_pair(executor)
+        target_ea, _code_size = targets[0]
         before = executor.read_state(kind, target_ea)
         assert before.startswith("data:"), before
 
@@ -278,26 +382,9 @@ class TestIdaMetadataActionExecutor:
         self, copy_of_idb
     ) -> None:
         """Several labels in one scalar item reverse only after the last code."""
-        import ida_ua
-
         executor = IdaMetadataActionExecutor()
         kind = NativeMetadataActionKind.RECREATE_ITEM
-        data_head = 0x1800169B0
-        data_size = int(ida_bytes.get_item_size(data_head))
-        assert data_size >= 226
-        table_ea = 0x180029F20
-        targets: list[tuple[int, int]] = []
-        for index in range(37):
-            target_ea = int(ida_bytes.get_qword(table_ea + index * 8))
-            if not data_head <= target_ea < data_head + data_size:
-                continue
-            instruction = ida_ua.insn_t()
-            size = int(ida_ua.decode_insn(instruction, target_ea))
-            if size > 0:
-                targets.append((target_ea, size))
-        assert len(targets) >= 2
-
-        first, second = targets[:2]
+        data_head, (first, second) = self._decodable_scalar_target_pair(executor)
         before_first = executor.read_state(kind, first[0])
         before_second = executor.read_state(kind, second[0])
         assert before_first.startswith("data:v1:")

@@ -46,7 +46,12 @@ MAPPED_BUNDLED_PROJECTS = frozenset(
     }
 )
 
-STANDALONE_BUNDLED_PROJECTS = frozenset({"eidolon_v3_const_solve.json"})
+STANDALONE_BUNDLED_PROJECTS = frozenset(
+    {
+        "eidolon_v3_const_solve.json",
+        "eidolon_v4_const_simplify_solve.json",
+    }
+)
 
 FIXTURE_ONLY_BUNDLED_PROJECTS = frozenset(
     {

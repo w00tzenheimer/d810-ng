@@ -100,6 +100,21 @@ def test_lossless_recreation_error_carries_exact_item_transition() -> None:
     )
 
 
+def test_function_tail_adoption_error_has_stable_reason() -> None:
+    error = IndirectLabelPlanBuildError(
+        "function-tail adoption is not yet proven losslessly reversible",
+        reason=IndirectLabelPlanFailureReason.FUNCTION_TAIL_ADOPTION_UNSUPPORTED,
+    )
+
+    assert (
+        error.reason
+        is IndirectLabelPlanFailureReason.FUNCTION_TAIL_ADOPTION_UNSUPPORTED
+    )
+    assert error.ea is None
+    assert error.before_shape is None
+    assert error.after_shape is None
+
+
 def test_existing_automatic_flow_edge_satisfies_target_materialization() -> None:
     assert (
         _missing_cref_targets(

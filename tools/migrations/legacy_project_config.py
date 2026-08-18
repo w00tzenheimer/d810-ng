@@ -62,6 +62,7 @@ class KnownPortfolio:
     fingerprint: str
     donor_name: str
     pass_ids: tuple[str, ...]
+    fingerprint_aliases: tuple[str, ...] = ()
 
 
 _STATE_MACHINE_PASS_IDS = tuple(str(item) for item in STATE_MACHINE_NATIVE_PASS_IDS)
@@ -138,12 +139,14 @@ def _portfolio(
     fingerprint: str,
     donor_name: str,
     pass_ids: Sequence[str],
+    fingerprint_aliases: Sequence[str] = (),
 ) -> KnownPortfolio:
     return KnownPortfolio(
         source_name=source_name,
         fingerprint=fingerprint,
         donor_name=donor_name,
         pass_ids=tuple(pass_ids),
+        fingerprint_aliases=tuple(fingerprint_aliases),
     )
 
 
@@ -178,6 +181,7 @@ _KNOWN_PORTFOLIOS = (
         "bc241830174e4e5433a0b7d3aaac3f042d56978e9e77c6ed46d000c76cbbcd6c",
         "eidolon_config_v2_canary.json",
         ("mba-simplify",),
+        ("435dac2b0c3aa6c8a7fc00188b1cd5e25d57d17e288d6f703fad2f34cc836995",),
     ),
     _portfolio(
         "default_unflattening_approov.json",
@@ -229,6 +233,7 @@ _KNOWN_PORTFOLIOS = (
         "33a35478e5adcf6b952ec30f30727524a31f721c1d502c89f80165c9b01c4750",
         "default_unflattening_tigress_engine_transition_facts_config_v2_canary.json",
         ("constant-simplification", "mba-simplify", *_NATIVE_SPINE),
+        ("dbc9188afe30a2aa64f46a457293a68412e3f8462bd9e54743edd2ffdc4b179b",),
     ),
     _portfolio(
         "example_libobfuscated_abc.json",
@@ -317,7 +322,9 @@ _KNOWN_PORTFOLIOS = (
     ),
 )
 _KNOWN_BY_IDENTITY = {
-    (item.source_name, item.fingerprint): item for item in _KNOWN_PORTFOLIOS
+    (item.source_name, fingerprint): item
+    for item in _KNOWN_PORTFOLIOS
+    for fingerprint in (item.fingerprint, *item.fingerprint_aliases)
 }
 
 _KNOWN_TEMPLATE_RESOURCE_PATH = (
@@ -579,6 +586,7 @@ def _validate_known_template_resource(
         {
             "source_name",
             "fingerprint",
+            "fingerprint_aliases",
             "donor_name",
             "description",
             "owned_additional_configuration",
@@ -610,6 +618,16 @@ def _validate_known_template_resource(
             raise _known_resource_error(
                 f"{path}.fingerprint",
                 f"must equal frozen fingerprint {portfolio.fingerprint}",
+            )
+        aliases = raw_entry["fingerprint_aliases"]
+        if (
+            not isinstance(aliases, Sequence)
+            or isinstance(aliases, (str, bytes))
+            or tuple(aliases) != portfolio.fingerprint_aliases
+        ):
+            raise _known_resource_error(
+                f"{path}.fingerprint_aliases",
+                f"must equal frozen aliases {list(portfolio.fingerprint_aliases)!r}",
             )
         if raw_entry["donor_name"] != portfolio.donor_name:
             raise _known_resource_error(
