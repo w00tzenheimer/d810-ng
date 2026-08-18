@@ -119,6 +119,7 @@ def _mutation_manager(optimizer, stats):
     manager._last_optimizer_tried = None
     manager._rewrite_seen = defaultdict(set)
     manager._scheduled_implementation_names = frozenset()
+    manager._invalidate_residual_admission_cache()
     manager._resolve_active_instruction_rule_names = lambda _blk: None
     manager.analyzer = SimpleNamespace(analyze=lambda _blk, _ins: None)
     manager.stats = stats
@@ -236,6 +237,7 @@ def test_cycle_detection_allows_represented_pre_state_but_quarantines_a_revisit(
     manager.analyzer = SimpleNamespace(analyze=lambda _blk, _ins: None)
     manager._resolve_active_instruction_rule_names = lambda _blk: None
     manager._scheduled_implementation_names = frozenset()
+    manager._invalidate_residual_admission_cache()
     blk = SimpleNamespace(
         mba=SimpleNamespace(
             entry_ea=0x7FF856F83C70,
@@ -301,6 +303,7 @@ def test_cycle_detection_rejects_a_noop_without_quarantining_its_producer(
     manager.analyzer = SimpleNamespace(analyze=lambda _blk, _ins: None)
     manager._resolve_active_instruction_rule_names = lambda _blk: None
     manager._scheduled_implementation_names = frozenset()
+    manager._invalidate_residual_admission_cache()
     blk = SimpleNamespace(
         mba=SimpleNamespace(
             entry_ea=0x7FF856F83C70,
@@ -720,6 +723,7 @@ def test_active_optimizer_list_filters_by_maturity():
     mgr._run_later_scheduler = None
     mgr._scheduled_stage_identities = frozenset()
     mgr._scheduled_implementation_names = frozenset()
+    mgr._invalidate_residual_admission_cache()
 
     # Simulate maturity change to MMAT_LOCOPT
     blk = _make_blk(ida_hexrays.MMAT_LOCOPT)
@@ -781,6 +785,7 @@ def test_instruction_optimizer_accepts_destination_owned_imported_mba():
     mgr._execution_scope_service = None
     mgr._scheduled_stage_identities = frozenset()
     mgr._scheduled_implementation_names = frozenset()
+    mgr._invalidate_residual_admission_cache()
     mgr._active_optimizers = [optimizer]
     mgr._last_optimizer_tried = None
     mgr.analyzer = SimpleNamespace(analyze=lambda _blk, _ins: None)

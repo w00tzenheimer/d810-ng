@@ -53,7 +53,11 @@ class TestZ3AstProxyRegression:
         case = DeobfuscationCase(
             function="test_cst_simplification",
             description="Regression: Z3 replacement must handle AstProxy candidates",
-            project="default_instruction_only.json",
+            # Keep this regression owned by Z3ConstantOptimization.  The broad
+            # default portfolio now lets CstSimplificationRule19 consume the
+            # candidate first, which makes a required-rule assertion depend on
+            # unrelated rule ordering rather than the AstProxy lowering path.
+            project="hodur_flag2_with_fcp.json",
             required_rules=["Z3ConstantOptimization"],
             must_change=True,
         )

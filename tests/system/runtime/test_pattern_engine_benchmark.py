@@ -358,7 +358,10 @@ except ImportError:
     HAS_CYTHON = False
 
 
-@pytest.mark.skipif(not HAS_CYTHON, reason="Cython extensions not built")
+@pytest.mark.skipif(
+    not HAS_CYTHON or not CythonMode().is_enabled(),
+    reason="Cython extensions are unavailable or disabled for this runtime",
+)
 class TestCythonPythonParity:
     """Verify Cython implementations match pure-Python outputs exactly."""
 
