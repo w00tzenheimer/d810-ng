@@ -35,6 +35,7 @@ def _clean_bootstrap_modules():
         "_d810_hcli_entrypoint_impl",
         "_test_d810_hcli_bootstrap",
         "_test_d810_hcli_missing",
+        "_test_d810_hcli_missing_export",
     ):
         sys.modules.pop(name, None)
 
@@ -81,4 +82,28 @@ def test_bootstrap_reports_missing_implementation_and_cleans_private_module(
     with pytest.raises(ImportError, match=r"src/d810ng\.py"):
         _load(plugin / "d810ng.py", "_test_d810_hcli_missing")
 
+    assert "_d810_hcli_entrypoint_impl" not in sys.modules
+
+
+def test_bootstrap_reports_missing_export_and_cleans_private_module(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plugin = tmp_path / "plugin"
+    (plugin / "src").mkdir(parents=True)
+    shutil.copy2(BOOTSTRAP, plugin / "d810ng.py")
+    (plugin / "src" / "d810ng.py").write_text(
+        "class D810Plugin:\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+
+    wheel_package = types.ModuleType("d810")
+    monkeypatch.setitem(sys.modules, "d810", wheel_package)
+
+    with pytest.raises(BaseException) as caught:
+        _load(plugin / "d810ng.py", "_test_d810_hcli_missing_export")
+
+    assert isinstance(caught.value, ImportError), repr(caught.value)
+    assert "PLUGIN_ENTRY" in str(caught.value)
+    assert str(plugin / "src" / "d810ng.py") in str(caught.value)
     assert "_d810_hcli_entrypoint_impl" not in sys.modules

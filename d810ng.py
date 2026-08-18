@@ -34,6 +34,12 @@ def _load_implementation() -> ModuleType:
     sys.modules[_IMPLEMENTATION_NAME] = module
     try:
         spec.loader.exec_module(module)
+        for export_name in ("D810Plugin", "PLUGIN_ENTRY"):
+            if not hasattr(module, export_name):
+                raise ImportError(
+                    f"D810 HCLI entrypoint is missing required export "
+                    f"{export_name}: {_IMPLEMENTATION_PATH}"
+                )
     except BaseException:
         sys.modules.pop(_IMPLEMENTATION_NAME, None)
         raise
