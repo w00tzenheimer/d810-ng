@@ -70,6 +70,7 @@ TransactionTypeDeltaProvider = Callable[
     [PreparationTransactionId], tuple[PreparationTypeDelta, ...]
 ]
 PendingTypeProposalProvider = Callable[[], tuple[PendingTypeProposal, ...]]
+TypeProposalDiscovery = Callable[[int], object]
 ProposalAcknowledgement = Callable[[tuple[PendingTypeProposal, ...]], None]
 
 
@@ -84,6 +85,7 @@ class PreHexPreparationController:
         gateway: PreparationGateway,
         prepared_records: PreparedRecordProvider,
         transaction_type_deltas: TransactionTypeDeltaProvider,
+        discover_type_proposals: TypeProposalDiscovery,
         pending_type_proposals: PendingTypeProposalProvider,
         acknowledge_type_proposals: ProposalAcknowledgement,
         type_step_descriptor: PreparationScriptDescriptor,
@@ -95,6 +97,7 @@ class PreHexPreparationController:
         self._gateway = gateway
         self._prepared_records = prepared_records
         self._transaction_type_deltas = transaction_type_deltas
+        self._discover_type_proposals = discover_type_proposals
         self._pending_type_proposals = pending_type_proposals
         self._acknowledge_type_proposals = acknowledge_type_proposals
         self._type_step_descriptor = type_step_descriptor
@@ -182,6 +185,13 @@ class PreHexPreparationController:
             raise ValueError("function_ea must be non-negative")
         if not isinstance(mode, PreparationMode):
             raise TypeError("mode must be a PreparationMode")
+
+        # Whole-item constness is answerable from IDA function items, data
+        # references, segment permissions, write xrefs, and live types.  Run
+        # that discovery before Hex-Rays so its exact proposals can be applied
+        # in this preparation round.  Microcode-only bounded-table proposals
+        # remain queued by the rule and are consumed by the next natural round.
+        self._discover_type_proposals(function_ea)
 
         records = self._prepared_records(self._database_identity)
         run_receipts: list[PreparationRunReceipt] = []

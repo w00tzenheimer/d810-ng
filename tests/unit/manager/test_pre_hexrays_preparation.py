@@ -89,6 +89,7 @@ def _controller(
     proposals=(),
     transaction_types=None,
     acknowledged=None,
+    discover_type_proposals=None,
 ) -> PreHexPreparationController:
     type_script = _script("d810-global-const-types")
     return PreHexPreparationController(
@@ -97,6 +98,7 @@ def _controller(
         gateway=gateway,
         prepared_records=lambda identity: prepared,
         transaction_type_deltas=(transaction_types or (lambda transaction_id: ())),
+        discover_type_proposals=(discover_type_proposals or (lambda function_ea: None)),
         pending_type_proposals=lambda: tuple(proposals),
         acknowledge_type_proposals=(acknowledged or (lambda values: None)),
         type_step_descriptor=type_script,
@@ -190,6 +192,39 @@ def test_pending_types_use_transaction_lane_and_ack_only_after_success() -> None
     assert request.script.script_id == "d810-global-const-types"
     assert deltas == (proposal.type_delta,)
     assert acknowledged == [(proposal,)]
+
+
+def test_static_type_discovery_runs_before_pending_proposals_are_consumed() -> None:
+    before = SerializedTypeSnapshot.absent()
+    after = SerializedTypeSnapshot.from_parts(b"const", b"fields", b"comments")
+    proposal = type(
+        "Proposal",
+        (),
+        {
+            "function_ea": 0x401000,
+            "type_delta": PreparationTypeDelta(0x500000, before, after),
+        },
+    )()
+    proposals: list[object] = []
+    discoveries: list[int] = []
+    gateway = _Gateway()
+
+    def discover(function_ea: int) -> None:
+        discoveries.append(function_ea)
+        proposals.append(proposal)
+
+    controller = _controller(
+        gateway=gateway,
+        proposals=proposals,
+        discover_type_proposals=discover,
+    )
+
+    receipt = controller.prepare(0x401000, PreparationMode.AUTOMATIC)
+
+    assert receipt.ok
+    assert discoveries == [0x401000]
+    assert len(gateway.requests) == 1
+    assert gateway.requests[0][1] == (proposal.type_delta,)
 
 
 def test_generated_retry_does_not_reenter_controller() -> None:

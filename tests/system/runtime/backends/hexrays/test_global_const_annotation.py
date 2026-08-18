@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import os
 import platform
 
@@ -23,6 +24,7 @@ from d810.backends.hexrays.global_const_annotation import (
     referenced_global_items,
 )
 from d810.backends.ida.type_serialization import capture_serialized_tinfo
+from d810.capabilities.idb_preparation import PreparationTransactionId
 from d810.core.persistence import Netnode
 
 
@@ -37,6 +39,33 @@ def _get_default_binary() -> str:
 
 def _function_ea(name: str) -> int:
     return int(ida_name.get_name_ea(idaapi.BADADDR, name))
+
+
+def _enable_global_const_persistence(state) -> None:
+    project_index = next(
+        index
+        for index, project in enumerate(state.project_manager.projects())
+        if project.path.name == "default_instruction_only_config_v2_canary.json"
+    )
+    state.load_project(project_index)
+    runtime_project = state.current_runtime_project
+    source_project = state.current_project
+    assert runtime_project is not None
+    assert source_project is not None
+    additional = copy.deepcopy(runtime_project.additional_configuration)
+    constant_pass = next(
+        entry
+        for entry in additional["pipeline_v2"]
+        if entry["pass_id"] == "constant-simplification"
+    )
+    constant_pass.setdefault("options", {})["persist_global_const_annotations"] = True
+    runtime_project.additional_configuration = additional
+    state._activate_runtime_project(
+        project_index=project_index,
+        source_project=source_project,
+        runtime_project=runtime_project,
+        default_selection=state.last_config_v2_default_selection,
+    )
 
 
 def _lookup_table_access():
@@ -156,7 +185,7 @@ class TestGlobalConstAnnotation:
                     )
 
     @pytest.mark.ida_required
-    def test_public_operation_annotates_defined_readonly_item(
+    def test_default_public_operation_does_not_persist_defined_readonly_item(
         self,
         libobfuscated_setup,
         d810_state,
@@ -202,8 +231,92 @@ class TestGlobalConstAnnotation:
                 )
 
             assert capture_serialized_tinfo(item_ea) == before_snapshot
-            pending = pending_global_const_proposals(proposal_store=proposals)
-            assert any(proposal.item_head == item_ea for proposal in pending)
+            assert not pending_global_const_proposals(proposal_store=proposals)
+        finally:
+            try:
+                del proposals[item_ea]
+            except KeyError:
+                pass
+            if had_original:
+                ida_typeinf.apply_tinfo(
+                    item_ea,
+                    original,
+                    ida_typeinf.TINFO_DEFINITE,
+                )
+            else:
+                ida_nalt.del_tinfo(item_ea)
+
+    @pytest.mark.ida_required
+    def test_enabled_pass_applies_static_const_before_one_decompilation_and_restores(
+        self,
+        libobfuscated_setup,
+        d810_state,
+    ) -> None:
+        function_ea = _function_ea("global_const_rva_guard")
+        items = referenced_global_items(function_ea)
+        eligible = [item for item in items if item.decision.can_persist_const]
+        assert eligible
+        item_ea = eligible[0].evidence.item_head
+        original = ida_typeinf.tinfo_t()
+        had_original = bool(
+            ida_nalt.get_tinfo(original, item_ea) and not original.empty()
+        )
+        if had_original:
+            before_type = original.copy()
+            before_type.clr_const()
+            assert ida_typeinf.apply_tinfo(
+                item_ea,
+                before_type,
+                ida_typeinf.TINFO_DEFINITE,
+            )
+        else:
+            ida_nalt.del_tinfo(item_ea)
+        before_snapshot = capture_serialized_tinfo(item_ea)
+        proposals = Netnode("$ d810.global_const_proposals.v1")
+        try:
+            try:
+                del proposals[item_ea]
+            except KeyError:
+                pass
+            with d810_state() as state:
+                _enable_global_const_persistence(state)
+                state.start_d810()
+                const_seen_by_decompile: list[bool] = []
+
+                def decompile_once():
+                    live = ida_typeinf.tinfo_t()
+                    assert ida_nalt.get_tinfo(live, item_ea)
+                    const_seen_by_decompile.append(bool(live.is_const()))
+                    return idaapi.decompile(
+                        function_ea,
+                        flags=idaapi.DECOMP_NO_CACHE,
+                    )
+
+                result = state.manager.decompile_with_native_preanalysis(
+                    function_ea,
+                    decompile_once,
+                    ida_hexrays.clear_cached_cfuncs,
+                )
+                assert result is not None
+                assert const_seen_by_decompile == [True]
+                assert not pending_global_const_proposals(proposal_store=proposals)
+
+                snapshot = state.get_workbench_snapshot(
+                    function_ea,
+                    "global_const_rva_guard",
+                )
+                transaction = next(
+                    row
+                    for row in snapshot.preparation.transactions
+                    if row.script_id == "d810-global-const-types"
+                    and row.type_annotations > 0
+                    and row.restore_allowed
+                )
+                restored = state.manager.restore_idb_preparation(
+                    PreparationTransactionId(transaction.transaction_id)
+                )
+                assert restored.ok, restored
+                assert capture_serialized_tinfo(item_ea) == before_snapshot
         finally:
             try:
                 del proposals[item_ea]
@@ -411,13 +524,7 @@ class TestGlobalConstAnnotation:
             except KeyError:
                 pass
             with d810_state() as state:
-                project_index = next(
-                    index
-                    for index, project in enumerate(state.project_manager.projects())
-                    if project.path.name
-                    == "default_instruction_only_config_v2_canary.json"
-                )
-                state.load_project(project_index)
+                _enable_global_const_persistence(state)
                 state.start_d810()
                 decompiled = idaapi.decompile(
                     function_ea,

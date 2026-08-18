@@ -726,6 +726,9 @@ class D810Manager:
     _preparation_scripts: tuple[typing.Any, ...] = dataclasses.field(
         default=(), init=False, repr=False
     )
+    _global_const_persistence_enabled: bool = dataclasses.field(
+        default=False, init=False, repr=False
+    )
     _idb_preparation_journal: typing.Any = dataclasses.field(
         default=None, init=False, repr=False
     )
@@ -2244,6 +2247,7 @@ class D810Manager:
 
         from d810.backends.hexrays.global_const_annotation import (
             acknowledge_global_const_proposals,
+            annotate_function_global_consts,
             pending_global_const_proposals,
         )
         from d810.backends.hexrays.input_identity_attestation import (
@@ -2336,13 +2340,21 @@ class D810Manager:
             enabled=True,
             portable=True,
         )
+        persistence_enabled = self._global_const_persistence_enabled
         self.pre_hex_preparation = PreHexPreparationController(
             database_identity=database_identity,
             scripts=tuple(self._preparation_scripts),
             gateway=gateway,
             prepared_records=journal.prepared,
             transaction_type_deltas=journal.type_deltas,
-            pending_type_proposals=pending_global_const_proposals,
+            discover_type_proposals=(
+                annotate_function_global_consts
+                if persistence_enabled
+                else lambda function_ea: None
+            ),
+            pending_type_proposals=(
+                pending_global_const_proposals if persistence_enabled else lambda: ()
+            ),
             acknowledge_type_proposals=acknowledge_global_const_proposals,
             type_step_descriptor=type_step,
         )
@@ -3839,8 +3851,14 @@ class D810Manager:
         self.instruction_optimizer_rules = list(rules)
         self.instruction_optimizer_config = kwargs
 
-    def configure_preparation_scripts(self, scripts) -> None:
+    def configure_preparation_scripts(
+        self,
+        scripts,
+        *,
+        global_const_persistence_enabled: bool = False,
+    ) -> None:
         self._preparation_scripts = tuple(scripts)
+        self._global_const_persistence_enabled = bool(global_const_persistence_enabled)
 
     def configure_block_optimizer(self, rules, **kwargs):
         self.block_optimizer_rules = list(rules)
