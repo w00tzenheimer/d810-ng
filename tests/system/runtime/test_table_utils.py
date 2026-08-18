@@ -21,6 +21,7 @@ import platform
 
 import pytest
 
+from d810.hexrays.utils import table_utils
 from d810.hexrays.utils.table_utils import (
     TableEncoding,
     XorKeyInfo,
@@ -580,7 +581,10 @@ class TestAnalyzeTableEncoding:
             "Could not build a real microcode block from current binary"
         )
         encoding, xor_key, base = analyze_table_encoding(blk)
-        assert isinstance(encoding, TableEncoding)
+        # The plugin deliberately reloads implementation modules between test
+        # sessions.  Resolve the enum from the live module instead of comparing
+        # against the class object captured during pytest collection.
+        assert isinstance(encoding, table_utils.TableEncoding)
         assert isinstance(xor_key, int)
         assert isinstance(base, int)
 

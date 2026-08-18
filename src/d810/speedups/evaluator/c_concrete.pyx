@@ -49,9 +49,9 @@ cdef object _AstConstant = None
 cdef object _AstProxy = None
 
 
-cdef inline void _ensure_types_loaded():
+cdef inline void _ensure_types_loaded(bint force=False):
     global _AstNode, _AstLeaf, _AstConstant, _AstProxy
-    if _AstNode is None:
+    if force or _AstNode is None:
         from d810.hexrays.expr.ast import AstNode, AstLeaf, AstConstant, AstProxy
         _AstNode = AstNode
         _AstLeaf = AstLeaf
@@ -147,6 +147,18 @@ cdef class CythonConcreteEvaluator:
             AstEvaluationException: For unsupported node types or opcodes.
         """
         _ensure_types_loaded()
+        if isinstance(node, _AstNode):
+            return self._eval_node(node, dict_index_to_value)
+        if isinstance(node, _AstLeaf):
+            return self._eval_leaf(node, dict_index_to_value)
+        if isinstance(node, _AstProxy):
+            return self.evaluate(node._target, dict_index_to_value)
+
+        # The Python AST module is reloadable while this compiled extension is
+        # process-stable.  Refresh the cached Python class objects once before
+        # rejecting a node: otherwise a post-reload AstProxy is structurally
+        # valid but fails every isinstance check against the pre-reload class.
+        _ensure_types_loaded(True)
         if isinstance(node, _AstNode):
             return self._eval_node(node, dict_index_to_value)
         if isinstance(node, _AstLeaf):

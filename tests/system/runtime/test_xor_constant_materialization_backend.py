@@ -5,11 +5,7 @@ from types import SimpleNamespace
 import ida_hexrays
 import pytest
 
-from d810.hexrays.mutation.semantic_fragment_backend import (
-    SemanticFragmentBackendRejected,
-    _require_xor_absolute_envelope,
-)
-from d810.transforms.fragment_plan import FragmentConstantPublicationEnvelope
+from d810.hexrays.mutation import semantic_fragment_backend
 
 
 def _materialization() -> SimpleNamespace:
@@ -21,7 +17,7 @@ def _materialization() -> SimpleNamespace:
         destination_width_bits=8,
         destination_storage=SimpleNamespace(offset=8),
         publication_envelope=(
-            FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_BYTE_XOR
+            semantic_fragment_backend.FragmentConstantPublicationEnvelope.IMPORTED_GLOBAL_BYTE_XOR
         ),
     )
 
@@ -45,7 +41,7 @@ def _xor_fact(
 
 
 def test_xor_constant_preflight_accepts_exact_left_global_byte_envelope() -> None:
-    _require_xor_absolute_envelope(
+    semantic_fragment_backend._require_xor_absolute_envelope(
         _materialization(),
         (_xor_fact(),),
     )
@@ -53,10 +49,10 @@ def test_xor_constant_preflight_accepts_exact_left_global_byte_envelope() -> Non
 
 def test_xor_constant_preflight_rejects_swapped_global_operand() -> None:
     with pytest.raises(
-        SemanticFragmentBackendRejected,
+        semantic_fragment_backend.SemanticFragmentBackendRejected,
         match="data flow differs",
     ) as exc_info:
-        _require_xor_absolute_envelope(
+        semantic_fragment_backend._require_xor_absolute_envelope(
             _materialization(),
             (_xor_fact(global_on_left=False),),
         )
