@@ -51,11 +51,6 @@ MATERIALIZED_COMPUTED_GOTO_ISLAND_PATH = (
 MANAGER_PATH = REPO_ROOT / "src" / "d810" / "manager" / "manager.py"
 LEGACY_ISLAND_REFERENCE_PATHS = (
     REPO_ROOT / "src" / "d810" / "conf" / "default_unflattening_ollvm.json",
-    REPO_ROOT
-    / "src"
-    / "d810"
-    / "conf"
-    / "default_unflattening_ollvm_config_v2_canary.json",
     REPO_ROOT / "src" / "d810" / "core" / "config_v2_defaults.py",
     REPO_ROOT / "src" / "d810" / "passes" / "hook_transform_passes.py",
     REPO_ROOT / "tools" / "scripts" / "rhad_investigation" / "README.md",

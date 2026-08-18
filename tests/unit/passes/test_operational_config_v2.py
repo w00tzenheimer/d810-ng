@@ -7,7 +7,6 @@ from pathlib import Path
 import pytest
 
 from d810.core.config import ProjectConfiguration
-from d810.core.config_v2_defaults import CONFIG_V2_SUPPORTED_DEFAULT_MAPPINGS
 from d810.core.pass_editor_spec import PassEditorSpec
 from d810.passes.module_pass_manager import ModulePassManager
 from d810.passes.pass_pipeline import PipelineConfig
@@ -29,17 +28,38 @@ _STATE_MACHINE_NATIVE_PIPELINE = [
     "lower_state_machine",
     "cleanup_residual_dispatcher",
 ]
-# Every bundled config-v2 canary is a runtime config the operational registry
-# must be able to build. Derived from the routing table so it cannot drift.
-_BUNDLED_CANARIES = tuple(
-    mapping.runtime_config for mapping in CONFIG_V2_SUPPORTED_DEFAULT_MAPPINGS
+# Every canonical bundled config-v2 source is a runtime config the operational
+# registry must be able to build. Keep this list explicit: these tests exercise
+# the checked-in runtime projects, not the temporary source/donor routing
+# table, and therefore must remain valid after donor removal.
+_BUNDLED_PROJECTS = (
+    "bogus_loops",
+    "default",
+    "default_indirect_resolution",
+    "default_instruction_only",
+    "default_unflattening_approov",
+    "default_unflattening_approov_s1a",
+    "default_unflattening_ollvm",
+    "default_unflattening_tigress_engine",
+    "default_unflattening_tigress_engine_transition_facts",
+    "default_unflattening_tigress_indirect",
+    "eidolon",
+    "example_hodur",
+    "example_libobfuscated",
+    "example_libobfuscated_abc",
+    "example_libobfuscated_no_fixprecedessor",
+    "flatfold",
+    "hodur_flag2",
+    "hodur_flag2_s1a",
+    "hodur_flag2_with_fcp",
+    "hodur_glbopt2_only",
+    "identity_call",
 )
 
 
-def _canary(config_name: str) -> ProjectConfiguration:
-    return ProjectConfiguration.from_file(
-        _CONF_DIR / f"{config_name}_config_v2_canary.json"
-    )
+def _canonical_project(config_name: str) -> ProjectConfiguration:
+    assert not config_name.endswith("_config_v2_canary")
+    return ProjectConfiguration.from_file(_CONF_DIR / f"{config_name}.json")
 
 
 @pytest.mark.parametrize(
@@ -72,21 +92,21 @@ def _canary(config_name: str) -> ProjectConfiguration:
         ),
     ],
 )
-def test_operational_registry_builds_canary(config_name, expected_pass_ids):
+def test_operational_registry_builds_canonical_project(config_name, expected_pass_ids):
     specs = pass_specs_from_project_config(
-        _canary(config_name),
+        _canonical_project(config_name),
         operational_config_v2_pass_registry(),
     )
 
     assert [spec.pass_id for spec in specs] == expected_pass_ids
 
 
-@pytest.mark.parametrize("canary_name", _BUNDLED_CANARIES)
-def test_operational_registry_builds_all_bundled_canaries(canary_name):
-    canary = ProjectConfiguration.from_file(_CONF_DIR / canary_name)
+@pytest.mark.parametrize("project_name", _BUNDLED_PROJECTS)
+def test_operational_registry_builds_all_bundled_projects(project_name):
+    project = _canonical_project(project_name)
 
     specs = pass_specs_from_project_config(
-        canary,
+        project,
         operational_config_v2_pass_registry(),
     )
 
@@ -182,7 +202,7 @@ def test_module_pass_manager_exposes_default_operational_registry():
     manager = ModulePassManager()
 
     specs = manager.pass_specs_from_project_config(
-        _canary("default_instruction_only"),
+        _canonical_project("default_instruction_only"),
         CONFIG_V2_OPERATIONAL_REGISTRY_NAME,
     )
 
