@@ -47,6 +47,20 @@ _RESOLVE_NODE_BUDGET = 4096
 # already caps at _MAX_PRED_DEPTH, this guards against a malformed CFG cycle).
 _MAX_PRED_DEPTH = 8
 
+
+def _valid_predecessor_search_budget(
+    max_predecessor_blocks: int,
+    max_paths: int,
+) -> bool:
+    """Return whether a caller-supplied predecessor search budget is valid."""
+
+    return (
+        type(max_predecessor_blocks) is int
+        and 1 <= max_predecessor_blocks <= _MAX_PRED_DEPTH
+        and type(max_paths) is int
+        and 1 <= max_paths <= 32
+    )
+
 _SNAPSHOT_TYPES_REQUIRING_OWNED_MOP = {
     ida_hexrays.mop_d,
     ida_hexrays.mop_f,
@@ -315,6 +329,9 @@ def resolve_mop_via_predecessors(
     mop: ida_hexrays.mop_t | MopSnapshot,
     blk: ida_hexrays.mblock_t,
     ins: ida_hexrays.minsn_t,
+    *,
+    max_predecessor_blocks: int = 1,
+    max_paths: int = 1,
 ) -> AstNode | AstLeaf | None:
     """Resolve *mop* to an AST by following single-predecessor chains.
 
@@ -326,10 +343,20 @@ def resolve_mop_via_predecessors(
         mop: The register or stack-variable mop to resolve.
         blk: The block containing *ins*.
         ins: The instruction at which *mop* is used.
+        max_predecessor_blocks: Maximum number of single-predecessor blocks to
+            inspect beyond the current block. Defaults to one.
+        max_paths: Caller path budget. The native resolver follows one
+            unambiguous path; broader path exploration remains owned by the
+            MopTracker fallback.
 
     Returns:
         The AST of the defining instruction, or None if resolution failed.
     """
+    if not _valid_predecessor_search_budget(
+        max_predecessor_blocks,
+        max_paths,
+    ):
+        return None
     if blk is None or mop is None:
         return None
     mop = _materialize_mop_for_tracking(
@@ -360,7 +387,7 @@ def resolve_mop_via_predecessors(
     # which would otherwise spin until the depth cap (crash-safety, llr-pydd).
     cur_blk = blk
     visited_serials: set[int] = set()
-    for _ in range(_MAX_PRED_DEPTH):
+    for _ in range(max_predecessor_blocks):
         if cur_blk is None:
             return None
         try:
@@ -459,11 +486,9 @@ def resolve_mop_to_ast(
     Returns:
         The AST of the defining instruction's RHS, or None if not found
     """
-    if (
-        type(max_predecessor_blocks) is not int
-        or not 1 <= max_predecessor_blocks <= _MAX_PRED_DEPTH
-        or type(max_paths) is not int
-        or not 1 <= max_paths <= 32
+    if not _valid_predecessor_search_budget(
+        max_predecessor_blocks,
+        max_paths,
     ):
         return None
 
@@ -508,7 +533,13 @@ def resolve_mop_to_ast(
     # Only follows single-predecessor chains -- guarantees one execution path
     # from definition to use, so no wrong definitions from CFF dispatchers.
     if _USE_NATIVE_DEF_SEARCH:
-        result = resolve_mop_via_predecessors(mop, blk, ins)
+        result = resolve_mop_via_predecessors(
+            mop,
+            blk,
+            ins,
+            max_predecessor_blocks=max_predecessor_blocks,
+            max_paths=max_paths,
+        )
         if result is not None:
             return result
 

@@ -3,6 +3,7 @@
 from types import SimpleNamespace
 
 import ida_hexrays
+import pytest
 
 from d810.evaluator.hexrays_microcode import def_search
 
@@ -110,6 +111,129 @@ def test_resolve_mop_to_ast_forwards_explicit_cross_block_tracker_budget(monkeyp
 
     assert result is None
     assert RecordingTracker.received_budget == (2, 3)
+
+
+def test_resolve_mop_to_ast_forwards_native_def_search_budget(monkeypatch):
+    received_budgets = []
+
+    def native_resolver(
+        _mop,
+        _blk,
+        _ins,
+        *,
+        max_predecessor_blocks,
+        max_paths,
+    ):
+        received_budgets.append((max_predecessor_blocks, max_paths))
+        return None
+
+    monkeypatch.setattr(def_search, "resolve_mop_via_predecessors", native_resolver)
+    monkeypatch.setattr(def_search, "_USE_NATIVE_DEF_SEARCH", True)
+    monkeypatch.setitem(
+        def_search.sys.modules,
+        "d810.evaluator.hexrays_microcode.tracker",
+        SimpleNamespace(),
+    )
+    mop = SimpleNamespace(t=ida_hexrays.mop_r, size=4, r=0)
+    block = object()
+    instruction = SimpleNamespace(ea=0x1000)
+
+    assert def_search.resolve_mop_to_ast(mop, block, instruction) is None
+    assert (
+        def_search.resolve_mop_to_ast(
+            mop,
+            block,
+            instruction,
+            max_predecessor_blocks=2,
+            max_paths=3,
+        )
+        is None
+    )
+
+    assert received_budgets == [(1, 1), (2, 3)]
+
+
+def test_native_predecessor_walk_honors_predecessor_budget(monkeypatch):
+    searched_blocks = []
+    predecessor_lookups = []
+
+    class Block:
+        def __init__(self, serial, predecessor):
+            self.serial = serial
+            self._predecessor = predecessor
+            self.mba = None
+
+        def npred(self):
+            return 0 if self._predecessor is None else 1
+
+        def pred(self, index):
+            assert index == 0
+            return self._predecessor
+
+    blocks = {
+        serial: Block(serial, serial + 1 if serial < 2 else None)
+        for serial in range(3)
+    }
+
+    class Mba:
+        def get_mblock(self, serial):
+            predecessor_lookups.append(serial)
+            return blocks[serial]
+
+    mba = Mba()
+    for block in blocks.values():
+        block.mba = mba
+
+    monkeypatch.setattr(
+        def_search,
+        "find_def_in_block",
+        lambda _mop, block, _before: searched_blocks.append(block.serial) or None,
+    )
+    mop = SimpleNamespace(t=ida_hexrays.mop_r, size=4, r=0)
+
+    assert (
+        def_search.resolve_mop_via_predecessors(
+            mop,
+            blocks[0],
+            SimpleNamespace(ea=0x1000),
+            max_predecessor_blocks=2,
+            max_paths=1,
+        )
+        is None
+    )
+    assert searched_blocks == [0, 1, 2]
+    assert predecessor_lookups == [1, 2]
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"max_predecessor_blocks": 0},
+        {"max_predecessor_blocks": 9},
+        {"max_predecessor_blocks": True},
+        {"max_paths": 0},
+        {"max_paths": 33},
+        {"max_paths": True},
+    ],
+)
+def test_native_predecessor_walk_rejects_invalid_budget(monkeypatch, kwargs):
+    monkeypatch.setattr(
+        def_search,
+        "find_def_in_block",
+        lambda *_args: pytest.fail("invalid budget must fail before searching"),
+    )
+    mop = SimpleNamespace(t=ida_hexrays.mop_r, size=4, r=0)
+    block = SimpleNamespace(serial=0)
+
+    assert (
+        def_search.resolve_mop_via_predecessors(
+            mop,
+            block,
+            SimpleNamespace(ea=0x1000),
+            **kwargs,
+        )
+        is None
+    )
 
 
 def test_recursive_cache_distinguishes_same_ea_microinstructions(monkeypatch):
