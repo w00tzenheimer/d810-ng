@@ -428,12 +428,39 @@ def test_legacy_migration_rejects_unsupported_input(
         migrate_legacy_document(document, source_name="custom.json")
 
 
-def test_canonical_v2_documents_are_normalized_and_idempotent() -> None:
-    canary = _load("hodur_flag2_config_v2_canary.json")
-    assert not is_canonical_v2_document(canary)
+def test_canonical_v2_documents_are_normalized_and_idempotent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Build the input from the readable migration resource rather than opening
+    # the temporary donor fixture.  Keep the transient fields and empty legacy
+    # sections so this still exercises normalization, not just a no-op.
+    original_read_text = Path.read_text
 
-    migrated = migrate_legacy_document(canary, source_name="hodur_flag2.json")
+    def guarded_read_text(path: Path, *args: typing.Any, **kwargs: typing.Any) -> str:
+        assert "config_v2_canary" not in path.name, f"donor canary read: {path}"
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", guarded_read_text)
+    resource = json.loads(KNOWN_RESOURCE_PATH.read_text(encoding="utf-8"))
+    template = resource["hodur_flag2.json"]
+    canonical = {
+        "description": template["description"],
+        "additional_configuration": {
+            **copy.deepcopy(template["owned_additional_configuration"]),
+            "pipeline_v2": copy.deepcopy(template["pipeline_v2"]),
+        },
+    }
+    document = copy.deepcopy(canonical)
+    document["ins_rules"] = []
+    document["blk_rules"] = []
+    document["additional_configuration"]["pipeline_v2_mode"] = "config-v2"
+    document["additional_configuration"]["config_v2_canary"] = True
+
+    assert not is_canonical_v2_document(document)
+
+    migrated = migrate_legacy_document(document, source_name="hodur_flag2.json")
     assert is_canonical_v2_document(migrated)
+    assert migrated == canonical
     assert migrated.get("ins_rules", []) == []
     assert migrated.get("blk_rules", []) == []
     assert "pipeline_v2_mode" not in migrated["additional_configuration"]
