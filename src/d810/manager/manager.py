@@ -2004,7 +2004,16 @@ class D810Manager:
             if name == "rules" and isinstance(value, set):
                 return set(value)
             if name == "cfg_rules" and isinstance(value, list):
-                return list(value)
+                return value
+            if name == "_stages" and isinstance(value, tuple):
+                return tuple(value)
+            if name in {
+                "_active_cache",
+                "_metadata_cache",
+                "_hint_inferences",
+                "_hint_suppressions",
+            } and isinstance(value, dict):
+                return dict(value)
             return value
 
         return (
@@ -2106,7 +2115,16 @@ class D810Manager:
             "execution_scope": self._snapshot_activation_object(
                 self.execution_scope_service,
                 preserve=frozenset(
-                    {"_metadata_provider", "_inference_registry", "_attached_emitter"}
+                    {
+                        "_metadata_provider",
+                        "_inference_registry",
+                        "_attached_emitter",
+                        "_stages",
+                        "_active_cache",
+                        "_metadata_cache",
+                        "_hint_inferences",
+                        "_hint_suppressions",
+                    }
                 ),
             ),
             "instruction_optimizer": self._snapshot_activation_object(
