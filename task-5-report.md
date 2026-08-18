@@ -117,4 +117,5 @@ Additional gates:
 
 ## Commit
 
-Full commit hash: `98a54e288051c6ebddac74c532facb5648ca535e`
+Implementation commit (the commit documented here):
+`e2b5f494e53147a2277985e3a4966764c247ca54`
