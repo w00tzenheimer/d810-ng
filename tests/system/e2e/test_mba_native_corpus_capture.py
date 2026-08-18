@@ -362,8 +362,8 @@ class TestNativeMbaCorpusCapture:
                         function=_manifest_function(case.case_id),
                         project=None,
                         description="manifest native provider capture",
-                        # Keep the preloaded project's live provider objects;
-                        # see the stale-adapter contract above.
+                        # Keep the preloaded project's live provider objects
+                        # and their history cursors for this case.
                         must_change=False,
                     ),
                     d810_state=selected_state,

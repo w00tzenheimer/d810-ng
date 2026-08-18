@@ -97,6 +97,12 @@ def _has_native_profile(outcome: MbaProviderOutcome) -> bool:
     return isinstance((outcome.metadata or {}).get(_NATIVE_PROFILE_METADATA_KEY), Mapping)
 
 
+def _native_profile_key_present(outcome: MbaProviderOutcome) -> bool:
+    """Return whether an outcome explicitly supplied native-profile metadata."""
+
+    return _NATIVE_PROFILE_METADATA_KEY in (outcome.metadata or {})
+
+
 def _history_for_provider(
     rule: object,
     snapshot: NativeProviderHistorySnapshot | None = None,
@@ -293,7 +299,7 @@ def capture_native_provider_case(
             # self-describing.
             if (
                 outcome.status is ProviderOutcomeStatus.INELIGIBLE
-                and not _has_native_profile(outcome)
+                and not _native_profile_key_present(outcome)
             ):
                 grouped.setdefault(outcome.provider, []).append(outcome)
                 continue

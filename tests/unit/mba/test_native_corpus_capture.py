@@ -170,7 +170,7 @@ def test_capture_rejects_missing_or_conflicting_actual_profile_evidence() -> Non
         )
 
 
-def test_capture_ignores_unprofiled_ineligible_refusal_for_selected_profile() -> None:
+def test_capture_retains_unprofiled_ineligible_refusal_for_selected_profile() -> None:
     """A telemetry-only refusal is not a second native-profile observation."""
 
     profile = _profile()
@@ -196,6 +196,31 @@ def test_capture_ignores_unprofiled_ineligible_refusal_for_selected_profile() ->
         (MbaProviderKind.CATALOGUE, ProviderOutcomeStatus.APPLIED),
         (MbaProviderKind.EGGLOG, ProviderOutcomeStatus.INELIGIBLE),
     ]
+
+
+@pytest.mark.parametrize("malformed_profile", ("malformed", None, ["malformed"]))
+def test_capture_rejects_present_but_malformed_ineligible_profile_metadata(
+    malformed_profile,
+) -> None:
+    """An explicit malformed profile must not use the telemetry exemption."""
+
+    profile = _profile()
+    outcome = MbaProviderOutcome(
+        provider=MbaProviderKind.EGGLOG,
+        status=ProviderOutcomeStatus.INELIGIBLE,
+        fingerprint=profile.fingerprint,
+        refusal_reason="over_budget",
+        metadata={"native_profile": malformed_profile},
+    )
+
+    with pytest.raises(ValueError, match="native_profile"):
+        capture_native_provider_case(
+            case_id="malformed-telemetry-refusal",
+            stratum="catalogue",
+            profile=profile,
+            rules=(_Provider(outcome),),
+            expected_providers=(MbaProviderKind.EGGLOG,),
+        )
 
 
 def test_capture_snapshot_excludes_prior_decompilation_history() -> None:
