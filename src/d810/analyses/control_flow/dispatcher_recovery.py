@@ -193,15 +193,14 @@ _EQUALITY_PREDICATES = (PredicateKind.EQ, PredicateKind.NE)
 
 
 def min_state_constant_from_config(project_config) -> int:
-    """Read ``min_state_constant`` from the unflatten rule's JSON config.
+    """Read the typed state-machine threshold forwarded by the v2 runtime.
 
-    ``project_config`` is the ``StateMachineCffUnflattener`` blk_rule ``config`` dict
-    (e.g. ``{"min_state_constant": 16777216, ...}``) threaded by both detection
-    (``HodurFamily.detect`` via ``select_family(context=...)``) and the recovery pass
-    (``FunctionPipelineContext.project_config``). Both sites read the SAME value via this
-    helper so detection and recovery never diverge on the threshold (a known bug class).
-    Falls back to :data:`MIN_STATE_CONSTANT` when the field (or the config) is absent so
-    every existing caller keeps the module default (hodur/sub_7FFD/tigress goldens).
+    ``project_config`` is the normalized runtime-options mapping threaded by
+    both detection (``HodurFamily.detect`` via ``select_family(context=...)``)
+    and the recovery pass (``FunctionPipelineContext.project_config``). Both
+    sites read the same value through this helper so detection and recovery
+    never diverge on the threshold. It falls back to :data:`MIN_STATE_CONSTANT`
+    when the field (or the config) is absent.
     """
     if not isinstance(project_config, dict):
         return MIN_STATE_CONSTANT

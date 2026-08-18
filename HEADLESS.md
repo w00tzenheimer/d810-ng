@@ -2,7 +2,10 @@
 
 D-810 ng can be driven from IDAPython without loading the GUI plugin entry point
 in `src/d810ng.py`. The headless API is deliberately small and reuses the normal
-project configuration path:
+canonical config-v2 project path. Projects provide an ordered
+`additional_configuration.pipeline_v2` sequence of stable pass IDs and typed
+options; older project files must be converted with the offline migration
+command documented in `README.md`:
 
 - `configure()` loads a D-810 project.
 - `start()` installs Hex-Rays optimization hooks.

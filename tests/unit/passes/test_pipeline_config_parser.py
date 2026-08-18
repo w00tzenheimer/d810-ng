@@ -41,99 +41,68 @@ _STATE_MACHINE_NATIVE_PIPELINE = [
 ]
 
 
-_REMAINING_GENERATED_SHADOWS = (
+_REMAINING_CANONICAL_PROJECTS = (
     (
         "bogus_loops",
-        0,
-        ["SingleTripLoopPeel", "MbaStatePreconditioner", "JumpFixer"],
-        ["single-trip-loop-peel", "mba-state-preconditioner", "jump-fixer"],
-        "single-trip-loop-peel",
+        ("single-trip-loop-peel", "mba-state-preconditioner", "jump-fixer"),
     ),
     (
         "default_unflattening_approov",
-        178,
-        ["MbaStatePreconditioner", "StateMachineCffUnflattener", "JumpFixer"],
-        [
+        (
             "mba-simplify",
             "mba-state-preconditioner",
             *_STATE_MACHINE_NATIVE_PIPELINE,
             "jump-fixer",
-        ],
-        "mba-simplify",
+        ),
     ),
     (
         "default_unflattening_approov_s1a",
-        178,
-        ["MbaStatePreconditioner", "StateMachineCffUnflattener", "JumpFixer"],
-        [
+        (
             "mba-simplify",
             "mba-state-preconditioner",
             *_STATE_MACHINE_NATIVE_PIPELINE,
             "jump-fixer",
-        ],
-        "mba-simplify",
+        ),
     ),
-    (Path("eidolon.json").stem, 172, [], ["mba-simplify"], "mba-simplify"),
+    ("eidolon", ("mba-simplify",)),
     (
         "example_hodur",
-        185,
-        ["ForwardConstantPropagationRule", "StateMachineCffUnflattener", "JumpFixer"],
-        [
+        (
             "constant-simplification",
             "mba-simplify",
             *_STATE_MACHINE_NATIVE_PIPELINE,
             "jump-fixer",
-        ],
-        "mba-simplify",
+        ),
     ),
     (
         "example_libobfuscated_abc",
-        198,
-        ["ForwardConstantPropagationRule", "StateMachineCffUnflattener", "JumpFixer"],
-        [
+        (
             "constant-simplification",
             "mba-simplify",
             *_STATE_MACHINE_NATIVE_PIPELINE,
             "jump-fixer",
-        ],
-        "mba-simplify",
+        ),
     ),
     (
         "flatfold",
-        157,
-        [
-            "MbaStatePreconditioner",
-            "JumpFixer",
-            "StateMachineCffUnflattener",
-        ],
-        [
+        (
             "constant-simplification",
             "mba-simplify",
             "mba-state-preconditioner",
             "jump-fixer",
             *_STATE_MACHINE_NATIVE_PIPELINE,
-        ],
-        "mba-simplify",
+        ),
     ),
     (
         "hodur_flag2_with_fcp",
-        3,
-        ["StateMachineCffUnflattener", "JumpFixer", "ForwardConstantPropagationRule"],
-        [
+        (
             "mba-simplify",
             *_STATE_MACHINE_NATIVE_PIPELINE,
             "jump-fixer",
             "constant-simplification",
-        ],
-        "mba-simplify",
+        ),
     ),
-    (
-        "hodur_glbopt2_only",
-        0,
-        ["StateMachineCffUnflattener"],
-        [*_STATE_MACHINE_NATIVE_PIPELINE],
-        None,
-    ),
+    ("hodur_glbopt2_only", tuple(_STATE_MACHINE_NATIVE_PIPELINE)),
 )
 
 
@@ -169,7 +138,9 @@ def test_require_config_v2_project_rejects_malformed_inactive_raw_rules(rule):
     document = {
         "ins_rules": [rule],
         "blk_rules": [],
-        "additional_configuration": {"pipeline_v2": [{"pass_id": "recover_dispatcher"}]},
+        "additional_configuration": {
+            "pipeline_v2": [{"pass_id": "recover_dispatcher"}]
+        },
     }
 
     with pytest.raises(PipelineConfigError, match="migrate_project_config_v2.py"):
@@ -415,7 +386,9 @@ def test_default_instruction_only_bundled_project_is_canonical_v2():
 
     assert project.ins_rules == []
     assert project.blk_rules == []
-    assert [config.pass_id for config in pipeline_configs_from_project_config(project)] == [
+    assert [
+        config.pass_id for config in pipeline_configs_from_project_config(project)
+    ] == [
         "constant-simplification",
         "mba-simplify",
         "jump-fixer",
@@ -428,7 +401,9 @@ def test_example_libobfuscated_bundled_project_is_canonical_v2():
     assert project.ins_rules == []
     assert project.blk_rules == []
     assert project.additional_configuration["enable_pass_pipeline"] is True
-    assert [config.pass_id for config in pipeline_configs_from_project_config(project)] == [
+    assert [
+        config.pass_id for config in pipeline_configs_from_project_config(project)
+    ] == [
         "constant-simplification",
         "mba-simplify",
         "mba-state-preconditioner",
@@ -438,30 +413,20 @@ def test_example_libobfuscated_bundled_project_is_canonical_v2():
 
 
 @pytest.mark.parametrize(
-    ("config_name", "expected_instruction_rules", "expected_block_rules"),
+    "config_name",
     [
-        (
-            "hodur_flag2",
-            0,
-            ["StateMachineCffUnflattener", "JumpFixer"],
-        ),
-        (
-            "hodur_flag2_s1a",
-            0,
-            ["StateMachineCffUnflattener", "JumpFixer"],
-        ),
+        "hodur_flag2",
+        "hodur_flag2_s1a",
     ],
 )
-def test_hodur_bundled_projects_are_canonical_v2(
-    config_name,
-    expected_instruction_rules,
-    expected_block_rules,
-):
+def test_hodur_bundled_projects_are_canonical_v2(config_name):
     project = ProjectConfiguration.from_file(_CONF_DIR / f"{config_name}.json")
 
     assert project.ins_rules == []
     assert project.blk_rules == []
-    assert [config.pass_id for config in pipeline_configs_from_project_config(project)] == [
+    assert [
+        config.pass_id for config in pipeline_configs_from_project_config(project)
+    ] == [
         *_STATE_MACHINE_NATIVE_PIPELINE,
         "jump-fixer",
     ]
@@ -477,8 +442,7 @@ def test_hodur_config_v2_project_is_operational():
     assert "canary" not in project.description.lower()
     assert "pipeline_v2_" + "mode" not in project.additional_configuration
     assert not any(
-        "canary" in str(key).casefold()
-        for key in project.additional_configuration
+        "canary" in str(key).casefold() for key in project.additional_configuration
     )
     priors_by_key = load_function_analysis_priors_from_config(
         project.additional_configuration["function_analysis_priors"]
@@ -508,30 +472,14 @@ def test_hodur_config_v2_project_is_operational():
 
 
 @pytest.mark.parametrize(
-    ("config_name", "expected_instruction_rules", "expected_block_rules"),
+    "config_name",
     [
-        (
-            "default_unflattening_tigress_engine",
-            0,
-            ["StateMachineCffUnflattener"],
-        ),
-        (
-            "default_unflattening_tigress_engine_transition_facts",
-            3,
-            ["ForwardConstantPropagationRule", "StateMachineCffUnflattener"],
-        ),
-        (
-            "default_unflattening_tigress_indirect",
-            7,
-            ["StateMachineCffUnflattener", "JumpFixer"],
-        ),
+        "default_unflattening_tigress_engine",
+        "default_unflattening_tigress_engine_transition_facts",
+        "default_unflattening_tigress_indirect",
     ],
 )
-def test_tigress_bundled_projects_are_canonical_v2(
-    config_name,
-    expected_instruction_rules,
-    expected_block_rules,
-):
+def test_tigress_bundled_projects_are_canonical_v2(config_name):
     project = ProjectConfiguration.from_file(_CONF_DIR / f"{config_name}.json")
 
     assert project.ins_rules == []
@@ -540,26 +488,16 @@ def test_tigress_bundled_projects_are_canonical_v2(
 
 
 @pytest.mark.parametrize(
-    (
-        "config_name",
-        "expected_instruction_rules",
-        "expected_block_rules",
-        "expected_pass_ids",
-        "expected_unknown_pass",
-    ),
-    _REMAINING_GENERATED_SHADOWS,
+    ("config_name", "expected_pass_ids"), _REMAINING_CANONICAL_PROJECTS
 )
-def test_remaining_bundled_projects_are_canonical_v2(
-    config_name,
-    expected_instruction_rules,
-    expected_block_rules,
-    expected_pass_ids,
-    expected_unknown_pass,
-):
+def test_remaining_bundled_projects_are_canonical_v2(config_name, expected_pass_ids):
     project = ProjectConfiguration.from_file(_CONF_DIR / f"{config_name}.json")
 
     assert project.ins_rules == []
     assert project.blk_rules == []
-    assert [config.pass_id for config in pipeline_configs_from_project_config(project)] == (
-        expected_pass_ids
+    assert (
+        tuple(
+            config.pass_id for config in pipeline_configs_from_project_config(project)
+        )
+        == expected_pass_ids
     )

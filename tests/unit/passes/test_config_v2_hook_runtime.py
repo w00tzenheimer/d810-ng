@@ -7,7 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from d810.core.config import ProjectConfiguration
+from d810.core.config import ProjectConfiguration, RuleConfiguration
+from d810.passes.cleanup_family_adapter import (
+    SIMPLE_FLATTENING_CLEANUP_PASS_ID,
+    SIMPLE_FLATTENING_CLEANUP_RULE,
+)
 from d810.passes.config_v2_hook_runtime import (
     STATE_MACHINE_NATIVE_PASS_IDS,
     STATE_MACHINE_RUNTIME_HOST,
@@ -33,6 +37,30 @@ def _v2_project(*entries: dict[str, object]) -> ProjectConfiguration:
         path=Path("runtime-config-v2.json"),
         additional_configuration={"pipeline_v2": list(entries)},
     )
+
+
+def _project_with_unrelated_legacy_rules(name: str) -> ProjectConfiguration:
+    canonical = _project(f"{name}.json")
+    return ProjectConfiguration(
+        path=Path(f"{name}.runtime-config-v2.json"),
+        description=canonical.description,
+        ins_rules=[
+            RuleConfiguration(
+                name="UnrelatedInstructionRule",
+                is_activated=False,
+                config={"must_not": "leak"},
+            )
+        ],
+        blk_rules=[
+            RuleConfiguration(
+                name="UnrelatedBlockRule",
+                is_activated=False,
+                config={"must_not": "leak"},
+            )
+        ],
+        additional_configuration=dict(canonical.additional_configuration),
+    )
+
 
 def test_compile_schedule_requires_nonempty_v2_pipeline() -> None:
     project = ProjectConfiguration(path=Path("legacy.json"))
@@ -180,19 +208,252 @@ def test_constant_simplification_bundle_expands_to_live_stages() -> None:
     ]
 
 
-def test_legacy_rule_arrays_are_not_used_as_bindings() -> None:
-    project = _project("default_instruction_only.json")
-    project.ins_rules = []
-    project.blk_rules = []
+def test_constant_bundle_rejects_duplicate_or_former_constant_selection() -> None:
+    project = _v2_project(
+        {
+            "pass_id": "constant-simplification",
+            "options": {"memory_policy": "strict"},
+        },
+        {
+            "pass_id": "forward-constant-propagation",
+            "options": {},
+        },
+    )
 
-    schedule = compile_config_v2_hook_schedule(project)
+    with pytest.raises(PipelineConfigError, match="constant-simplification"):
+        compile_config_v2_hook_schedule(project)
+
+
+def test_constant_bundle_rejects_unknown_rule_selection_field() -> None:
+    project = _v2_project(
+        {
+            "pass_id": "constant-simplification",
+            "options": {"memory_policy": "strict"},
+        },
+        {
+            "pass_id": "mba-simplify",
+            "rules": {
+                "include": ["FoldReadonlyDataRule"],
+                "include_order": ["FoldReadonlyDataRule"],
+            },
+        },
+    )
+
+    with pytest.raises(PipelineConfigError, match="unknown field: rules"):
+        compile_config_v2_hook_schedule(project)
+
+
+def test_instruction_only_schedule_derives_bindings_from_pass_ids() -> None:
+    schedule = compile_config_v2_hook_schedule(
+        _project_with_unrelated_legacy_rules("default_instruction_only")
+    )
 
     assert schedule.configured_pass_ids == (
         "constant-simplification",
         "mba-simplify",
         "jump-fixer",
     )
+    assert len(schedule.instruction_bindings) == 180
+    assert [binding.name for binding in schedule.instruction_bindings[:2]] == [
+        "FoldReadonlyDataRule",
+        "ConstantSubtreeFoldRule",
+    ]
     assert all(
-        binding.name != "CopiedLegacyInstructionRule"
+        binding.name != "UnrelatedInstructionRule"
         for binding in schedule.instruction_bindings
     )
+    assert [binding.name for binding in schedule.block_bindings] == [
+        "ForwardConstantPropagationRule",
+        "JumpFixer",
+    ]
+    assert all(
+        binding.name != "UnrelatedBlockRule" for binding in schedule.block_bindings
+    )
+    assert "enabled_rules" in schedule.block_bindings[-1].config
+
+
+def test_hodur_schedule_derives_private_runtime_host_and_jump_fixer() -> None:
+    schedule = compile_config_v2_hook_schedule(
+        _project_with_unrelated_legacy_rules("hodur_flag2")
+    )
+
+    assert schedule.configured_pass_ids == (
+        *STATE_MACHINE_NATIVE_PASS_IDS,
+        "jump-fixer",
+    )
+    assert schedule.native_state_machine_pass_ids == STATE_MACHINE_NATIVE_PASS_IDS
+    assert schedule.instruction_bindings == ()
+    assert [binding.name for binding in schedule.block_bindings] == [
+        STATE_MACHINE_RUNTIME_HOST,
+        "JumpFixer",
+    ]
+    assert schedule.block_bindings[0].config == {"min_state_constant": 16777216}
+
+
+def test_state_machine_plus_constant_schedule_places_late_flow_fold() -> None:
+    schedule = compile_config_v2_hook_schedule(
+        _v2_project(
+            *(
+                {"pass_id": pass_id, "options": {}}
+                for pass_id in STATE_MACHINE_NATIVE_PASS_IDS
+            ),
+            {
+                "pass_id": "constant-simplification",
+                "options": {"memory_policy": "strict"},
+            },
+        )
+    )
+
+    assert [binding.name for binding in schedule.block_bindings] == [
+        STATE_MACHINE_RUNTIME_HOST,
+        "ForwardConstantPropagationRule",
+    ]
+    assert schedule.block_bindings[1].config == {
+        "maturities": ["MMAT_GLBOPT2"],
+        "cython_enabled": False,
+    }
+
+
+def test_state_machine_schedule_accepts_typed_direct_threshold() -> None:
+    schedule = compile_config_v2_hook_schedule(
+        _v2_project(
+            *(
+                {
+                    "pass_id": pass_id,
+                    "options": {"min_state_constant": 0x8000},
+                }
+                for pass_id in STATE_MACHINE_NATIVE_PASS_IDS
+            )
+        )
+    )
+
+    assert schedule.native_state_machine_pass_ids == STATE_MACHINE_NATIVE_PASS_IDS
+    assert [binding.name for binding in schedule.block_bindings] == [
+        STATE_MACHINE_RUNTIME_HOST
+    ]
+    assert schedule.block_bindings[0].config == {"min_state_constant": 0x8000}
+
+
+def test_state_machine_schedule_maps_profile_options_at_private_host_boundary() -> None:
+    schedule = compile_config_v2_hook_schedule(
+        _v2_project(
+            *(
+                {
+                    "pass_id": pass_id,
+                    "options": {
+                        "min_state_constant": 0x8000,
+                        "family": "tigress-indirect",
+                        "recovery_strategy": "reduced-product",
+                    },
+                }
+                for pass_id in STATE_MACHINE_NATIVE_PASS_IDS
+            )
+        )
+    )
+
+    assert schedule.block_bindings[0].config == {
+        "min_state_constant": 0x8000,
+        "profile": "tigress_indirect",
+        "recovery_engine": "reduced_product",
+    }
+
+
+def test_state_machine_schedule_rejects_disagreeing_typed_thresholds() -> None:
+    project = _v2_project(
+        *(
+            {
+                "pass_id": pass_id,
+                "options": {"min_state_constant": 0x8000 + index},
+            }
+            for index, pass_id in enumerate(STATE_MACHINE_NATIVE_PASS_IDS)
+        )
+    )
+
+    with pytest.raises(PipelineConfigError, match="disagree"):
+        compile_config_v2_hook_schedule(project)
+
+
+def test_ollvm_schedule_omits_retired_materialized_goto_island_pass() -> None:
+    schedule = compile_config_v2_hook_schedule(
+        _project_with_unrelated_legacy_rules("default_unflattening_ollvm")
+    )
+
+    assert "materialized-computed-goto-island" not in schedule.configured_pass_ids
+    assert all(
+        binding.name != "MaterializedComputedGotoIslandRule"
+        for binding in schedule.block_bindings
+    )
+
+
+def test_identity_call_schedule_derives_explicit_opt_in_rule_config() -> None:
+    schedule = compile_config_v2_hook_schedule(
+        _project_with_unrelated_legacy_rules("identity_call")
+    )
+
+    assert schedule.configured_pass_ids == ("identity-call-resolver",)
+    assert schedule.native_state_machine_pass_ids == ()
+    assert schedule.instruction_bindings == ()
+    assert [binding.name for binding in schedule.block_bindings] == [
+        "IdentityCallResolver"
+    ]
+    assert schedule.block_bindings[0].config == {
+        "enable_experimental": True,
+        "max_trampoline_depth": 32,
+        "max_search_instructions": 30,
+    }
+
+
+def test_indirect_branch_call_schedule_derives_explicit_flow_rules() -> None:
+    schedule = compile_config_v2_hook_schedule(
+        _project_with_unrelated_legacy_rules("default_indirect_resolution")
+    )
+
+    assert schedule.configured_pass_ids == (
+        "indirect-branch-resolver",
+        "indirect-call-resolver",
+    )
+    assert schedule.native_state_machine_pass_ids == ()
+    assert schedule.instruction_bindings == ()
+    assert [binding.name for binding in schedule.block_bindings] == [
+        "IndirectBranchResolver",
+        "IndirectCallResolver",
+    ]
+    assert [binding.config for binding in schedule.block_bindings] == [{}, {}]
+    assert all(
+        binding.name != "UnrelatedBlockRule" for binding in schedule.block_bindings
+    )
+
+
+def test_cleanup_family_schedule_derives_explicit_cleanup_rule() -> None:
+    schedule = compile_config_v2_hook_schedule(
+        _project_with_unrelated_legacy_rules("example_libobfuscated_no_fixprecedessor")
+    )
+
+    assert schedule.configured_pass_ids == (
+        "constant-simplification",
+        "mba-simplify",
+        SIMPLE_FLATTENING_CLEANUP_PASS_ID,
+        "jump-fixer",
+    )
+    assert schedule.native_state_machine_pass_ids == ()
+    assert [binding.name for binding in schedule.block_bindings] == [
+        "ForwardConstantPropagationRule",
+        SIMPLE_FLATTENING_CLEANUP_RULE,
+        "JumpFixer",
+    ]
+    assert schedule.block_bindings[1].config == {}
+    assert all(
+        binding.name != "UnrelatedBlockRule" for binding in schedule.block_bindings
+    )
+
+
+def test_unsupported_non_spine_pass_fails_closed() -> None:
+    project = _v2_project(
+        {
+            "pass_id": "block-level-egglog-optimizer",
+            "options": {},
+        }
+    )
+
+    with pytest.raises(PipelineConfigError, match="unknown pass id"):
+        compile_config_v2_hook_schedule(project)

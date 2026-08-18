@@ -63,9 +63,6 @@ from d810.passes.state_machine_options import (
 # This is an internal hook binding identity.  Projects select the typed native
 # pass IDs and never name the Hex-Rays callback implementation.
 STATE_MACHINE_RUNTIME_HOST = "__d810_state_machine_runtime_host__"
-# Transitional bridge export; the bridge module is removed in the next cutover
-# task.  Keep it identical to the private binding so no second identity exists.
-STATE_MACHINE_UNFLATTENER_RULE = STATE_MACHINE_RUNTIME_HOST
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,9 +94,7 @@ def requires_native_preanalysis_handlers(
     evidence after the first generated MBA.  Its controller-owned retry must
     reach the flowchart handler that consumes that evidence exactly once.
     """
-    return bool(
-        schedule.native_state_machine_pass_ids == STATE_MACHINE_NATIVE_PASS_IDS
-    )
+    return bool(schedule.native_state_machine_pass_ids == STATE_MACHINE_NATIVE_PASS_IDS)
 
 
 def _rule_config(name: str, config: object) -> RuleConfiguration:
@@ -469,9 +464,7 @@ def config_v2_native_state_machine_configs(
     """Return only native state-machine spine configs from a v2 payload."""
     configs = _runtime_pipeline_configs(project_config)
     return tuple(
-        config
-        for config in configs
-        if config.pass_id in STATE_MACHINE_NATIVE_PASS_IDS
+        config for config in configs if config.pass_id in STATE_MACHINE_NATIVE_PASS_IDS
     )
 
 
@@ -479,7 +472,6 @@ __all__ = [
     "ConfigV2HookSchedule",
     "STATE_MACHINE_NATIVE_PASS_IDS",
     "STATE_MACHINE_RUNTIME_HOST",
-    "STATE_MACHINE_UNFLATTENER_RULE",
     "compile_config_v2_hook_schedule",
     "config_v2_native_state_machine_configs",
     "requires_native_preanalysis_handlers",

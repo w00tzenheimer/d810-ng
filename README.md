@@ -60,9 +60,9 @@ D-810 operates on IDA Hex-Rays microcode at multiple maturity levels. Instructio
 
 Flow optimizers restore natural control flow from flattened dispatchers. The current unflattening path is engine-profile based: preanalysis produces dispatcher/value-flow evidence, cfg plans typed graph modifications, and Hex-Rays materializes the plan.
 
-| Engine rule | Target | Description |
-|-------------|--------|-------------|
-| **StateMachineCffUnflattener** | OLLVM / Tigress / Approov / Hodur dispatchers | The dispatcher unflattener (a `ComposedUnflatteningRule`). Config-v2 profiles select its per-obfuscator strategy/profile — equality-chain, switch-table, indirect-transfer, and dynamic state-machine shapes. |
+| Config-v2 pass/profile | Target | Description |
+|-----------------------|--------|-------------|
+| **`recover_dispatcher`** | OLLVM / Tigress / Approov / Hodur dispatchers | The config-v2 dispatcher pass selects a structural family profile. Typed options such as `family`, `recovery_strategy`, and `min_state_constant` refine recovery without exposing implementation classes. |
 | **SimpleFlatteningCleanupUnflattener** | Generic cleanup | Shared cleanup family for fake jumps, single-iteration loops, bad-while-loop shapes, and predecessor branch-arm repairs. |
 
 ### Flow Optimizations (non-unflattening)
@@ -82,13 +82,13 @@ PE/COFF, and raw binaries.
 
 ### Supported Obfuscators / Patterns
 
-| Obfuscator | Config | Engine path | Notes |
+| Obfuscator | Config | Config-v2 pass/profile | Notes |
 |------------|--------|-------------|-------|
-| O-LLVM (obfuscator-llvm) | `default_unflattening_ollvm.json` | `StateMachineCffUnflattener` | FLA + BCF + MBA through the OLLVM dispatcher profile. |
-| Tigress switch | `default_unflattening_tigress_engine_transition_facts.json` | `StateMachineCffUnflattener` | Switch-table state dispatcher and transition facts. |
-| Approov | `default_unflattening_approov.json` | `StateMachineCffUnflattener` / `SimpleFlatteningCleanupUnflattener` | Approov-like state constants and cleanup shapes. |
-| Hodur (PlugX) | `example_hodur.json` | `StateMachineCffUnflattener` | Hodur MBA + Hodur while-loop state-machine recovery. |
-| Tigress indirect | `default_unflattening_tigress_indirect.json` | `StateMachineCffUnflattener` | Indirect transfer-map profile with materialized target proof. |
+| O-LLVM (obfuscator-llvm) | `default_unflattening_ollvm.json` | `recover_dispatcher` (automatic family) | FLA + BCF + MBA through the structural dispatcher profile. |
+| Tigress switch | `default_unflattening_tigress_engine_transition_facts.json` | `recover_dispatcher` (automatic family) | Switch-table state dispatcher and transition facts. |
+| Approov | `default_unflattening_approov.json` | `recover_dispatcher` + `simple-flattening-cleanup-unflattener` | Approov-like state constants and cleanup shapes. |
+| Hodur (PlugX) | `example_hodur.json` | `recover_dispatcher` (automatic family) | Hodur MBA + Hodur while-loop state-machine recovery. |
+| Tigress indirect | `default_unflattening_tigress_indirect.json` | `recover_dispatcher` (`family: tigress-indirect`) | Indirect transfer-map profile with materialized target proof. |
 
 ### DSL and Rule Verification
 
@@ -345,7 +345,7 @@ The practical rule is:
 
 ### Unflattening Family Selection: Dispatcher Shape, Not Vendor
 
-The §1a control-flow unflattener (`StateMachineCffUnflattener`) does **not** classify functions by *which obfuscator produced them*. It detects the **structure** of the flattening dispatcher and routes accordingly. This matters for contributors: you almost never need to "know the family" to add coverage.
+The §1a config-v2 state-machine runtime does **not** classify functions by *which obfuscator produced them*. It detects the **structure** of the flattening dispatcher and routes accordingly. This matters for contributors: you almost never need to "know the family" to add coverage.
 
 **How routing works.** At `MMAT_GLBOPT1` the rule lifts the function to a portable `FlowGraph`, then `families.registry.select_family(graph, project_config)` polls the registered `StateMachineCffFamily` *profiles* and returns the first whose `detect()` claims the graph. The claiming profile's `pipeline_for()` drives the shared five-pass spine through `run_pipeline`.
 
@@ -370,9 +370,9 @@ So an unknown obfuscator that flattens with, say, an equality-chain dispatcher i
 
 1. **New dispatcher shape** — add a `DispatcherResolver` (`accepts` / `resolve`) to the chain. Every consumer (`select_family`, all profiles) picks it up; no vendor tagging anywhere.
 2. **New vendor needing shape-specific recovery** — add a `StateMachineCffFamily` profile under `families/state_machine_cff/<name>.py`: a `detect` (claim by `DispatcherType` + any signature) and a kind-aware `pipeline_for`. Register it via the package `__init__` eager import.
-3. **Config-directed routing** — set `router_resolution` in the `StateMachineCffUnflattener` rule config: `require` (force one profile), `prefer` (bias the order), `deny` (exclude). Absent it, pure shape-detection runs.
+3. **Config-directed routing** — set `additional_configuration.router_resolution` alongside `pipeline_v2`: `require` (force one profile), `prefer` (bias the order), `deny` (exclude). Absent it, pure shape-detection runs.
 
-> Naming caveat: the *emulated-dispatcher* strategy (`emulated_dispatcher_strategy.py`, which feeds the static `CFFStrategyFamily`) recovers VM / switch dispatchers *statically* — it does **not** use the concolic emulator despite the "emulated" name. It is subsumed by the §1a `StateMachineCffUnflattener` profiles above; the concolic `EmulationCapability` handles the genuinely-needs-execution indirect-jump cases.
+> Naming caveat: the *emulated-dispatcher* strategy (`emulated_dispatcher_strategy.py`, which feeds the static `CFFStrategyFamily`) recovers VM / switch dispatchers *statically* — it does **not** use the concolic emulator despite the "emulated" name. It is subsumed by the §1a state-machine CFF profiles above; the concolic `EmulationCapability` handles the genuinely-needs-execution indirect-jump cases.
 
 
 ## Installation
@@ -533,9 +533,10 @@ options rather than selecting a different runtime project.
 
 ### Config-v2 validation
 
-Config-v2 is the only runtime path for bundled configs. User-provided configs
-run on the existing project configuration path unless they explicitly set
-`pipeline_v2_mode: config-v2` and pass fail-closed config-v2 validation.
+Config-v2 is the only runtime path for bundled configs. User-provided projects
+must contain a non-empty `additional_configuration.pipeline_v2` sequence of
+stable pass IDs and typed options; older projects must be converted with the
+offline migration command above.
 
 When you want to disable deobfuscation, just click on the `Stop` button or use the context menus:
 
@@ -576,7 +577,7 @@ Before you pick a rule, understand the shape. This is the workflow, obfuscator-a
    | MBA / arithmetic | DSL `VerifiableRule` (pattern + replacement, Z3-verified) | `src/d810/mba/rules/` |
    | Opaque predicate / constant jump | `JumpFixer` family | `src/d810/optimizers/microcode/flow/jumps/` |
    | Indirect jump / call, table decode, custom transform | Port a `FlowOptimizationRule` (step 3) | `src/d810/optimizers/microcode/flow/` |
-   | Control-flow flattening / dispatcher | `ComposedUnflatteningRule` / `StateMachineCffUnflattener` + a strategy/profile | `src/d810/optimizers/microcode/flow/flattening/` |
+   | Control-flow flattening / dispatcher | `recover_dispatcher` plus a structural family profile | `src/d810/optimizers/microcode/flow/flattening/` |
 
 3. **Porting an analysis / transform pass.** To bring an external C++ (or LLVM) deobfuscation pass into d810, reimplement it as a Python `FlowOptimizationRule`: detect the pattern at the right maturity, reuse the framework helpers (e.g. `d810.hexrays.utils.table_utils` for table / xor / global analysis), mutate the microcode graph through `DeferredGraphModifier`, and validate the result with `safe_verify`. Register the rule in a config-v2 profile so it runs.
 
