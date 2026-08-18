@@ -434,6 +434,31 @@ def test_pass_pipeline_abstains_when_coordinator_gateway_is_unavailable() -> Non
     assert lifecycle.gateway_calls == []
 
 
+def test_pass_pipeline_runs_once_per_maturity_and_resets_per_session() -> None:
+    """Repeated GLBOPT2 callbacks are bounded, then reset enables one rerun."""
+    manager = BlockOptimizerManager(
+        OptimizationStatistics(), Path("."), ctx_cls=FlowMaturityContext
+    )
+    manager.current_maturity = ida_hexrays.MMAT_GLBOPT1
+    lifecycle = _MutationGatewayLifecycle(object(), object())
+    lifecycle.analyze_current_function = lambda **_kwargs: None
+    pipeline = _RecordingPassPipeline()
+    manager.configure(
+        decompilation_lifecycle=lifecycle,
+        pass_pipeline=pipeline,
+    )
+    glbopt2_block = _make_block(maturity=ida_hexrays.MMAT_GLBOPT2)
+
+    manager.log_info_on_input(glbopt2_block)
+    manager.log_info_on_input(glbopt2_block)
+    assert len(pipeline.calls) == 1
+
+    manager.reset_pipeline_tracker()
+    manager.current_maturity = None
+    manager.log_info_on_input(_make_block(maturity=ida_hexrays.MMAT_GLBOPT2))
+    assert len(pipeline.calls) == 2
+
+
 def test_block_optimizer_records_rule_and_mba_mutation_attempts(tmp_path) -> None:
     journal = ExecutionJournalStore(
         tmp_path / "execution.sqlite", callback_detail="full"
