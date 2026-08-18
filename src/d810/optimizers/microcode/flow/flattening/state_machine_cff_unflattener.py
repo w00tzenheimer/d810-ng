@@ -212,7 +212,7 @@ from d810.passes.pipeline_config_parser import (
     pass_specs_from_project_config,
     pipeline_v2_mode_from_project_config,
 )
-from d810.passes.pipeline_v2_hook_bridge import STATE_MACHINE_NATIVE_PASS_IDS
+from d810.passes.state_machine_options import STATE_MACHINE_NATIVE_PASS_IDS
 from d810.passes.pipeline_shadow import compare_pipeline_v2_shadow
 from d810.passes.unflatten.dispatcher_progress import (
     DispatcherProgressLedger,

@@ -89,7 +89,7 @@ class TestMalformedProjectIsSkipped:
             def _boom(_runtime_project):
                 raise ValueError(MALFORMED)
 
-            monkeypatch.setattr(state_mod, "pipeline_v2_hook_activation", _boom)
+            monkeypatch.setattr(state_mod, "compile_config_v2_hook_schedule", _boom)
             try:
                 assert state.load_project(bad_index) is None
                 assert state.current_project is before_project
@@ -122,7 +122,7 @@ def test_load_first_valid_project_returns_none_when_everything_is_broken(
 
         monkeypatch.setattr(
             state_mod,
-            "pipeline_v2_hook_activation",
+            "compile_config_v2_hook_schedule",
             lambda _p: (_ for _ in ()).throw(ValueError(MALFORMED)),
         )
         try:

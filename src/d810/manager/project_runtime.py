@@ -13,11 +13,11 @@ from d810.core.project_config_persistence import (
     ProjectConfigurationWriteError,
     clone_project_configuration,
 )
-from d810.passes.pipeline_v2_hook_bridge import PipelineV2HookActivation
 from d810.passes.constant_simplification_options import (
     CompiledConstantSimplificationSchedule,
 )
 from d810.manager.preparation_scripts import PreparationScriptRegistry
+from d810.passes.config_v2_hook_runtime import ConfigV2HookSchedule
 
 
 class ProjectConfigMode(str, enum.Enum):
@@ -65,13 +65,13 @@ def build_project_runtime_snapshot(
     source_project: ProjectConfiguration,
     runtime_project: ProjectConfiguration,
     default_selection: ConfigV2DefaultSelection | None,
-    hook_activation: PipelineV2HookActivation,
+    schedule: ConfigV2HookSchedule | None,
     hook_mode: str | None,
 ) -> ProjectRuntimeSnapshot:
     """Capture the source policy and effective runtime without UI inference."""
-    if hook_activation.enabled:
+    if schedule is not None:
         mode = ProjectConfigMode.CONFIG_V2
-        effective_pass_ids = hook_activation.configured_pass_ids
+        effective_pass_ids = schedule.configured_pass_ids
     else:
         mode = ProjectConfigMode.LEGACY
         effective_pass_ids = ()
@@ -90,10 +90,14 @@ def build_project_runtime_snapshot(
         effective_pass_ids=tuple(effective_pass_ids),
         preparation_scripts=preparation_registry.descriptors,
         global_const_persistence_enabled=(
-            hook_activation.global_const_persistence_enabled
+            schedule.global_const_persistence_enabled
+            if schedule is not None
+            else False
         ),
         constant_simplification_schedule=(
-            hook_activation.constant_simplification_schedule
+            schedule.constant_simplification_schedule
+            if schedule is not None
+            else None
         ),
     )
 

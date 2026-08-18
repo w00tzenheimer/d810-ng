@@ -10,7 +10,7 @@ from d810.manager.project_runtime import (
     ProjectConfigMode,
     build_project_runtime_snapshot,
 )
-from d810.passes.pipeline_v2_hook_bridge import pipeline_v2_hook_activation
+from d810.passes.config_v2_hook_runtime import compile_config_v2_hook_schedule
 from d810.ui.project_config_logic import (
     ConfigEditMode,
     ConfigSaveStrategy,
@@ -41,12 +41,12 @@ def test_ollvm_routing_view_and_lossless_user_duplicate(tmp_path: Path) -> None:
     )
     selection = select_config_v2_default_project(source)
     assert selection is not None
-    activation = pipeline_v2_hook_activation(selection.runtime_project)
+    schedule = compile_config_v2_hook_schedule(selection.runtime_project)
     snapshot = build_project_runtime_snapshot(
         source_project=source,
         runtime_project=selection.runtime_project,
         default_selection=selection,
-        hook_activation=activation,
+        schedule=schedule,
         hook_mode="config-v2",
     )
     view = build_project_config_view(snapshot)
@@ -85,8 +85,7 @@ def test_ollvm_routing_view_and_lossless_user_duplicate(tmp_path: Path) -> None:
     )
     assert select_config_v2_default_project(duplicate) is None
 
-    duplicate_activation = pipeline_v2_hook_activation(duplicate)
-    assert duplicate_activation.enabled is True
-    assert duplicate_activation.configured_pass_ids == EXPECTED_PASS_IDS
-    assert len(duplicate_activation.instruction_rules) == 180
-    assert len(duplicate_activation.block_rules) == 6
+    duplicate_schedule = compile_config_v2_hook_schedule(duplicate)
+    assert duplicate_schedule.configured_pass_ids == EXPECTED_PASS_IDS
+    assert len(duplicate_schedule.instruction_bindings) == 180
+    assert len(duplicate_schedule.block_bindings) == 6

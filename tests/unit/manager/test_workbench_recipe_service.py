@@ -10,9 +10,9 @@ from d810.manager.workbench_recipe_models import FunctionPipelineOverride, Recip
 from d810.manager.workbench_recipe_service import RecipeEditError, RecipeService
 from d810.passes.operational_config_v2 import operational_config_v2_pass_registry
 from d810.passes.pass_pipeline import PassResult, PipelineConfig
-from d810.passes.pipeline_v2_hook_bridge import STATE_MACHINE_NATIVE_PASS_IDS
 from d810.passes.registry import PassRegistry, UnknownPassIdError
 from d810.passes.state_machine_options import (
+    STATE_MACHINE_NATIVE_PASS_IDS,
     StateMachineCffFamily,
     StateMachineCffOptions,
     StateMachineRecoveryStrategy,

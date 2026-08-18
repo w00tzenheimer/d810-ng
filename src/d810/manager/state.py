@@ -93,8 +93,8 @@ from d810.manager.workbench_recipe_models import (
 )
 from d810.optimizers.microcode.flow.handler import FlowOptimizationRule
 from d810.optimizers.microcode.instructions.handler import InstructionOptimizationRule
-from d810.passes.pipeline_v2_hook_bridge import (
-    pipeline_v2_hook_activation,
+from d810.passes.config_v2_hook_runtime import (
+    compile_config_v2_hook_schedule,
     requires_native_preanalysis_handlers,
 )
 from d810.passes.constant_simplification import (
@@ -530,11 +530,17 @@ class D810State(metaclass=SingletonMeta):
         default_selection: ConfigV2DefaultSelection | None,
     ) -> ProjectConfiguration:
         """Configure one explicit source/runtime pair without rediscovering it."""
-        # Resolve the hook activation before the state mutation below.  The
-        # outer activation wrapper also restores every state/scope/worklist
-        # field if later candidate rule validation or live reconfiguration
-        # rejects this project.
-        hook_activation = pipeline_v2_hook_activation(runtime_project)
+        # Resolve a config-v2 schedule BEFORE touching any state: it is the
+        # step that validates the pipeline payload and therefore the step that
+        # can raise.  Projects without a pipeline_v2 key remain on the
+        # transitional legacy rule path until the final cutover (lpccp-8c87).
+        # An explicitly present empty/malformed pipeline is never treated as
+        # legacy; the compiler raises its migration diagnostic instead.
+        schedule = (
+            compile_config_v2_hook_schedule(runtime_project)
+            if "pipeline_v2" in runtime_project.additional_configuration
+            else None
+        )
 
         # Candidate rules must not reuse the live instances from the previous
         # project: ``configure()`` mutates maturity/configuration state.  Build
@@ -629,11 +635,11 @@ class D810State(metaclass=SingletonMeta):
                 ),
             )
 
-        if hook_activation.enabled:
+        if schedule is not None:
             self.last_pipeline_v2_hook_mode = "config-v2"
-            self.last_pipeline_v2_hook_pass_ids = hook_activation.configured_pass_ids
-            project_ins_rules = hook_activation.instruction_rules
-            project_blk_rules = hook_activation.block_rules
+            self.last_pipeline_v2_hook_pass_ids = schedule.configured_pass_ids
+            project_ins_rules = schedule.instruction_bindings
+            project_blk_rules = schedule.block_bindings
         else:
             project_ins_rules = tuple(runtime_project.ins_rules)
             project_blk_rules = tuple(runtime_project.blk_rules)
@@ -642,14 +648,14 @@ class D810State(metaclass=SingletonMeta):
             source_project=self.current_project,
             runtime_project=runtime_project,
             default_selection=default_selection,
-            hook_activation=hook_activation,
+            schedule=schedule,
             hook_mode=self.last_pipeline_v2_hook_mode,
         )
 
-        # Config-v2's hook activation is an explicit runtime schedule, so it
+        # Config-v2's schedule is explicit, so it
         # must retain declared pass/transform order. Legacy projects retain
         # their registry-order contract.
-        if hook_activation.enabled:
+        if schedule is not None:
             rule_pairs = (
                 (rule_conf, rule)
                 for rule_conf in project_ins_rules
@@ -788,12 +794,14 @@ class D810State(metaclass=SingletonMeta):
             **self.manager.block_optimizer_config,
         )
         cfg = dict(runtime_project.additional_configuration)
-        # This is derived from the validated config-v2 activation rather than
+        # This is derived from the validated config-v2 schedule rather than
         # user-editable project JSON.  A complete native state-machine spine
         # may stage one generated-MBA restart, whose flowchart consumer must
         # therefore be installed while this runtime project is active.
         cfg["config_v2_native_state_machine_active"] = (
-            requires_native_preanalysis_handlers(hook_activation)
+            requires_native_preanalysis_handlers(schedule)
+            if schedule is not None
+            else False
         )
         cfg.setdefault("project_name", self.current_project.path.name)
         cfg.setdefault("runtime_project_name", runtime_project.path.name)

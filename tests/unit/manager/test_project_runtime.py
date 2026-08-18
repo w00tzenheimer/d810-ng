@@ -13,7 +13,7 @@ from d810.manager.project_runtime import (
     build_project_runtime_snapshot,
     clone_runtime_project,
 )
-from d810.passes.pipeline_v2_hook_bridge import pipeline_v2_hook_activation
+from d810.passes.config_v2_hook_runtime import compile_config_v2_hook_schedule
 
 
 CONF_DIR = Path("src/d810/conf")
@@ -31,13 +31,11 @@ def test_non_v2_snapshot_exposes_no_public_pass_pipeline(
         ],
         blk_rules=[RuleConfiguration(name="EnabledBlock", is_activated=True)],
     )
-    activation = pipeline_v2_hook_activation(project)
-
     snapshot = build_project_runtime_snapshot(
         source_project=project,
         runtime_project=project,
         default_selection=None,
-        hook_activation=activation,
+        schedule=None,
         hook_mode=None,
     )
 
@@ -51,13 +49,13 @@ def test_routed_config_v2_snapshot_reports_distinct_source_and_runtime() -> None
     source = ProjectConfiguration.from_file(CONF_DIR / "default_instruction_only.json")
     selection = select_config_v2_default_project(source)
     assert selection is not None
-    activation = pipeline_v2_hook_activation(selection.runtime_project)
+    schedule = compile_config_v2_hook_schedule(selection.runtime_project)
 
     snapshot = build_project_runtime_snapshot(
         source_project=source,
         runtime_project=selection.runtime_project,
         default_selection=selection,
-        hook_activation=activation,
+        schedule=schedule,
         hook_mode="config-v2",
     )
 
@@ -73,7 +71,7 @@ def test_routed_config_v2_snapshot_reports_distinct_source_and_runtime() -> None
         "jump-fixer",
     )
     assert snapshot.constant_simplification_schedule is (
-        activation.constant_simplification_schedule
+        schedule.constant_simplification_schedule
     )
     assert snapshot.constant_simplification_schedule is not None
 
@@ -84,13 +82,13 @@ def test_direct_canary_snapshot_is_config_v2_without_routing() -> None:
     )
     selection = select_config_v2_default_project(canary)
     assert selection is not None
-    activation = pipeline_v2_hook_activation(selection.runtime_project)
+    schedule = compile_config_v2_hook_schedule(selection.runtime_project)
 
     snapshot = build_project_runtime_snapshot(
         source_project=canary,
         runtime_project=selection.runtime_project,
         default_selection=selection,
-        hook_activation=activation,
+        schedule=schedule,
         hook_mode="config-v2",
     )
 
@@ -122,13 +120,13 @@ def test_snapshot_projects_explicit_global_const_persistence_authority(
             ],
         },
     )
-    activation = pipeline_v2_hook_activation(project)
+    schedule = compile_config_v2_hook_schedule(project)
 
     snapshot = build_project_runtime_snapshot(
         source_project=project,
         runtime_project=project,
         default_selection=None,
-        hook_activation=activation,
+        schedule=schedule,
         hook_mode="config-v2",
     )
 
@@ -141,7 +139,7 @@ def test_snapshot_is_immutable(tmp_path: Path) -> None:
         source_project=project,
         runtime_project=project,
         default_selection=None,
-        hook_activation=pipeline_v2_hook_activation(project),
+        schedule=None,
         hook_mode=None,
     )
 
