@@ -122,6 +122,53 @@ PYTHONPATH=src lint-imports --config .importlinter
   the installed graphify version-mismatch warning and produced no tracked graph
   diff (`graphify-out/` contains only the pre-existing cache/stat-index file).
 
+## Task 5 Fix Round 1
+
+The independent review identified context-sensitive cache reuse, discarded
+caller solver assertions, stale resolved-AST receipts, and an uncharged nested
+`m_ldc` constant. Four permanent Docker regressions were added before fixing.
+
+RED checkpoint, run from the main repository root:
+
+```text
+./tools/scripts/run_system_tests_docker.sh test -w constant-simplification-stage-controls -o task5_fix_round1_red.txt -- tests/system/runtime/backends/ast/test_z3_prover.py tests/system/runtime/backends/ast/test_z3_set_comparisons.py -q
+================= 3 failed, 108 passed, 118 warnings in 0.19s ==================
+```
+
+The failing tests were the context-resolved zero cache/receipt regression, the
+bounded caller-assertion regression, and the `m_ldc` wrapper/nested-constant
+budget regression.
+
+GREEN checkpoint, with the equal/unequal/comparison context-cache audit added:
+
+```text
+./tools/scripts/run_system_tests_docker.sh test -w constant-simplification-stage-controls -o task5_fix_round1_green.txt -- tests/system/runtime/backends/ast/test_z3_prover.py tests/system/runtime/backends/ast/test_z3_set_comparisons.py -q
+====================== 114 passed, 118 warnings in 0.13s =======================
+```
+
+The pure/adjacent and focused system checks also passed:
+
+```text
+PYTHONPATH=src pytest -q tests/unit/backends/ast/test_z3_proof_policy.py tests/unit/mba/backends/test_z3_no_global_state.py tests/unit/mba/test_native_z3_proof_template.py
+102 passed in 1.47s
+
+./tools/scripts/run_system_tests_docker.sh test -w constant-simplification-stage-controls -o task5_fix_round1_astproxy.txt -- tests/system/runtime/test_z3_astproxy_regression.py -q
+1 passed, 122 warnings in 2.72s
+```
+
+Ruff, `py_compile`, `git diff --check`, `sg scan --config sgconfig.yml
+--report-style short`, and `PYTHONPATH=src lint-imports --config .importlinter`
+all passed; import-linter reported `Contracts: 14 kept, 0 broken.`
+
+The fix bypasses all proof caches when effective `blk`/`ins`, a
+`MopSnapshot`, or a caller solver is present; bounded fresh solvers now copy
+caller assertions before applying only the local policy timeout; resolved
+receipts read the live post-visitor budget; and `m_ldc` charges its nested
+numeric constant separately before construction. Equal, unequal, comparison,
+and zero/nonzero cache paths are covered by the context audit regressions.
+
+Fix commit SHA: 37ab47636.
+
 ## Commit
 
 Commit message: `feat(z3): bound predicate proof resources`
