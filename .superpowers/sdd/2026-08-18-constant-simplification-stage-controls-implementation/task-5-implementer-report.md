@@ -381,3 +381,54 @@ blocked by the environment with `[Errno 1] Operation not permitted`.
 
 Atomic code/test commit: `a4b5e045c`
 (`fix(z3): close bounded resource accounting gaps`).
+
+## Task 5 Fix Round 5b
+
+The follow-up review identified a production-path gap after Round 4: the
+policy budget reached the recursive resolver, but contextual definitions were
+still built through budget-free native, fallback, and memory-store seams.  A
+second continuity finding showed that the direct Z3 preparation path reset the
+budget after a bounded definition build.
+
+RED checkpoints:
+
+```text
+./tools/scripts/run_system_tests_docker.sh test -w constant-simplification-stage-controls -o task5_fix5b_red.txt -- tests/system/runtime/backends/ast/test_z3_prover.py -q -k 'bounded_minsn_gateway_routes_to_python_builder or contextual_definition_builder_shares_policy_budget'
+1 gateway TypeError + 6 resolver TypeErrors (expected missing node_budget APIs)
+
+./tools/scripts/run_system_tests_docker.sh test -w constant-simplification-stage-controls -o task5_fix5b_reset_red.txt -- tests/system/runtime/backends/ast/test_z3_prover.py -q -k direct_contextual_resolution_keeps_one_cumulative_budget
+1 failed: receipt was 1 instead of the cumulative 3
+```
+
+The repair threads the backend-neutral `AstNodeBudget` through native
+predecessor search, MopTracker fallback, memory-store resolution, both Python
+and Cython recursive walkers, and the direct Z3 preparation call.  Bounded
+`minsn_to_ast` always selects the Python builder; the compiled provider remains
+the no-budget path.  The bounded Python minsn builder now propagates typed node
+limits instead of swallowing them as legacy `RuntimeError`s.  The memory-store
+comparison guard no longer catches a builder cutoff.  One budget is retained
+through original construction, contextual definition construction, recursive
+resolution, and visitor traversal.
+
+Final focused and acceptance verification:
+
+```text
+normal Task 5 pair: 129 passed, 118 warnings
+Cython/native Task 5 pair: 129 passed, 118 warnings
+Cython/Python resolver parity: 1 passed, 118 warnings
+AstProxy regression: 1 passed, 122 warnings
+def_search snapshot regressions: 14 passed, 118 warnings
+pure policy/cache/template tests: 103 passed
+ruff: All checks passed!
+py_compile: clean
+sg scan: exit 0
+lint-imports: Contracts: 14 kept, 0 broken.
+git diff --check: clean
+```
+
+`graphify update .` was retried after the final source changes; its watch
+rebuild remained blocked by the environment with `[Errno 1] Operation not
+permitted`.
+
+Atomic code/test commit: `540995e67`
+(`fix(z3): bound contextual definition expansion`).

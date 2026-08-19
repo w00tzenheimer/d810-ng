@@ -43,7 +43,7 @@
 | 2 | `f0b2088ae` | `/root/constant_stage_task2` | PASS | PASS | 46 units; 8 activation + 7 state-loading Docker passed; sg/import-linter passed | `d31017d96`, `e8759379c`, `b811ad09c`, `d4051c063` | complete after 3 fix rounds |
 | 3 | `d4051c063` | `/root/constant_stage_task3` | PASS | PASS | 35 focused + 289 manager + 11 journal; 12 global/pre-Hex + 8 activation Docker passed; ruff/sg/import-linter passed | `be510fabb`, `fafc35c5f`, `01a6cafc0`, `37eebd18a` | complete after 3 fix rounds |
 | 4 | `37eebd18a` | `/root/constant_stage_task4` | PASS | PASS | 98 focused + 88 adjacent + 22 renderer tests passed; ruff/sg/import-linter passed | `d946f4b99`, `6d9ea61c1`, `cf9020f08`, `a7ecc6a76` | complete after 1 fix round |
-| 5 | `a7ecc6a76` | `/root/constant_stage_task5_fix4` | pending | pending | 120 Python + 120 Cython + 1 parity + 1 AstProxy Docker; 103 pure; ruff/py_compile/sg/import-linter/diff-check passed | `de9194b1b`, `37ab47636`, `1399cbd50`, `753507859`, `28987e197`, `a4b5e045c` | fix round 4 complete; re-review pending |
+| 5 | `a7ecc6a76` | `/root/constant_stage_task5_fix5b` | pending | pending | 129 Python + 129 Cython + 1 parity + 1 AstProxy + 14 def-search Docker; 103 pure; ruff/py_compile/sg/import-linter/diff-check passed | `de9194b1b`, `37ab47636`, `1399cbd50`, `753507859`, `28987e197`, `a4b5e045c`, `540995e67` | fix round 5b complete; re-review pending |
 | 6 | pending | pending | pending | pending | pending | pending | pending |
 | 7 | pending | pending | pending | pending | pending | pending | pending |
 | 8 | pending | pending | pending | pending | pending | pending | pending |
@@ -71,3 +71,17 @@
 - `graphify update .` was attempted once and its watch rebuild was blocked by
   `[Errno 1] Operation not permitted`.
 - Atomic code/test commit: `a4b5e045c`.
+
+## Task 5 Fix Round 5b ledger
+
+- RED: contextual gateway/seam tests failed because the production resolver and
+  minsn gateway had no `node_budget`; the direct Z3 receipt regression failed
+  with observed `1` instead of cumulative `3` after the budget reset.
+- Production repair: budget propagation through native/fallback/memory-store
+  resolution and Python/Cython recursive paths; bounded minsn routing and
+  typed-limit propagation; one continuous budget through direct Z3 preparation.
+- Verification: normal and Cython pairs each passed 129 tests; resolver parity,
+  AstProxy, and 14 def-search snapshot tests passed; 103 pure tests and all
+  Ruff/py_compile/sg/import-linter/diff gates passed.
+- `graphify update .` was attempted after the final edits and blocked by
+  `[Errno 1] Operation not permitted` during its watch rebuild.
