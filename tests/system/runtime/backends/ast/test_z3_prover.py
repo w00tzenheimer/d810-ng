@@ -901,6 +901,7 @@ class TestZ3MopProverAPI:
         assert result.observed_expression_nodes == 1
 
     def test_m_ldc_budget_charges_wrapper_and_nested_constant(self, monkeypatch):
+        from d810.backends.ast.z3 import AstNodeZ3Visitor
         import d810.hexrays.ir.mop_utils as mop_utils
         from d810.backends.ast.z3_proof_policy import (
             Z3ExpressionNodeBudget,
@@ -926,7 +927,13 @@ class TestZ3MopProverAPI:
             d=None,
         )
         monkeypatch.setattr(mop_utils, "get_mop_key", lambda _mop: ("ldc",))
-        monkeypatch.setattr(mop_utils, "safe_make_number", lambda *_args: None)
+
+        def _fake_safe_make_number(mop, value, size):
+            mop.t = ida_hexrays.mop_n
+            mop.size = size
+            mop.nnn = SimpleNamespace(value=value)
+
+        monkeypatch.setattr(mop_utils, "safe_make_number", _fake_safe_make_number)
         monkeypatch.setattr(mop_utils.ida_hexrays, "mop_t", _DetachedMop)
 
         one_node_budget = Z3ExpressionNodeBudget(
@@ -952,3 +959,69 @@ class TestZ3MopProverAPI:
         assert ast.is_constant()
         assert ast.expected_value == 7
         assert two_node_budget.observed_nodes == 2
+
+        # The real visitor shares the builder budget.  The nested constant was
+        # already charged at construction, so translating it must not consume
+        # a third occurrence.
+        AstNodeZ3Visitor(node_budget=two_node_budget).visit(ast)
+        assert two_node_budget.observed_nodes == 2
+
+    @pytest.mark.parametrize(
+        ("max_expression_nodes", "expected_status", "expected_observed"),
+        (
+            (1, "abstained", 1),
+            (2, "proved", 2),
+        ),
+    )
+    def test_contextual_nonleaf_replacement_shares_policy_budget(
+        self, monkeypatch, max_expression_nodes, expected_status, expected_observed
+    ):
+        import d810.backends.ast.z3 as z3mod
+        from d810.backends.ast.z3 import Z3MopProver
+        from d810.backends.ast.z3_proof_policy import Z3ProofPolicy
+
+        class _FakeAst:
+            def is_leaf(self):
+                return False
+
+            def get_leaf_list(self):
+                return []
+
+        class _FakeVisitor:
+            def __init__(self, node_budget=None):
+                self.node_budget = node_budget
+
+            def visit(self, _ast):
+                if self.node_budget is not None:
+                    self.node_budget.consume()
+                return z3.BitVecVal(0, 32)
+
+        mop = SimpleNamespace(
+            t=ida_hexrays.mop_d,
+            size=4,
+            name="contextual-nonleaf",
+            d=SimpleNamespace(opcode=ida_hexrays.m_add),
+        )
+        blk = SimpleNamespace(mba=SimpleNamespace(owner="recursive-mba"))
+        ins = SimpleNamespace(label="recursive-ins")
+        monkeypatch.setattr(z3mod, "structural_mop_hash", lambda _mop, _depth: 29)
+        monkeypatch.setattr(z3mod, "AstNodeZ3Visitor", _FakeVisitor)
+        monkeypatch.setattr(
+            z3mod,
+            "mop_to_ast",
+            lambda _mop, *, node_budget: node_budget.consume() or _FakeAst(),
+        )
+        monkeypatch.setattr(z3mod, "_resolve_mop_to_ast", lambda *_args: None)
+        monkeypatch.setattr(
+            z3mod, "_recursively_resolve_ast", lambda _ast, _blk, _ins: _FakeAst()
+        )
+
+        result = Z3MopProver(
+            policy=Z3ProofPolicy(
+                max_expression_nodes=max_expression_nodes,
+                proof_timeout_ms=100,
+            )
+        ).prove_always_zero(mop, blk=blk, ins=ins)
+
+        assert result.status.value == expected_status
+        assert result.observed_expression_nodes == expected_observed
