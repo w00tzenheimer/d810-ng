@@ -75,6 +75,19 @@ def _is_enrolled_structural_rule(rule: object) -> bool:
 def enroll_structural_rule(rule: object) -> None:
     """Enroll one proof-gated structural rule in the portable certificate set."""
 
+    if getattr(rule, "proof_verdict", None) is not True:
+        raise ValueError("structural rule proof_verdict must be true")
+    try:
+        from d810.mba.extension_api import prove_typed_term_equivalence
+
+        proof_verdict = prove_typed_term_equivalence(
+            getattr(rule, "pattern"),
+            getattr(rule, "replacement"),
+        )
+    except Exception as exc:
+        raise ValueError("structural rule proof failed") from exc
+    if proof_verdict is not True:
+        raise ValueError("structural rule proof failed")
     _enroll_structural_rule(rule)
 
 

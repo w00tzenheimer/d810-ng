@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 
 from d810.core.typing import Protocol
+import d810.mba.typed_term as typed_term_module
 from d810.mba.ac_matching import AcMatchStopReason
 from d810.mba.certified_rule_compiler import (
     CompiledMbaRule,
@@ -60,6 +61,34 @@ from d810.mba.certified_catalogue import (
 
 
 _VALID_DESTINATION_SIZES = frozenset({1, 2, 4, 8})
+
+
+class NativeMbaUnsupportedCandidate(ValueError):
+    """The native host cannot lower a candidate into the portable term model."""
+
+
+class PortableContractReloaded(RuntimeError):
+    """A provider module retained a stale class after a portable reload."""
+
+
+def typed_term_identity_is_current() -> bool:
+    """Return whether the API's typed-term class is the currently loaded one."""
+
+    current_type = getattr(typed_term_module, "TypedBvTerm", None)
+    return TypedBvTerm is current_type
+
+
+def assert_current_typed_term_type(
+    expected_type: type[TypedBvTerm] | None = None,
+) -> None:
+    """Reject stale typed-term classes before an extension crosses its API."""
+
+    expected = TypedBvTerm if expected_type is None else expected_type
+    current = getattr(typed_term_module, "TypedBvTerm", None)
+    if expected is not current or not typed_term_identity_is_current():
+        raise PortableContractReloaded(
+            "typed-term class identity changed; reload the extension runtime"
+        )
 
 
 class CanonicalPatternComparisonBudgetExceeded(RuntimeError):
@@ -382,7 +411,10 @@ __all__ = [
     "NativeMbaCandidate",
     "NativeMbaHostServices",
     "NativeMbaReconstruction",
+    "NativeMbaUnsupportedCandidate",
+    "PortableContractReloaded",
     "TypedBvTerm",
+    "assert_current_typed_term_type",
     "canonicalize_ac_term",
     "canonicalize_mba_term",
     "compile_canonical_pattern",
@@ -398,4 +430,5 @@ __all__ = [
     "match_canonical_term_pattern",
     "term_cost",
     "term_fingerprint",
+    "typed_term_identity_is_current",
 ]

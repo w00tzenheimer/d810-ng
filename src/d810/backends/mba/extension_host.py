@@ -30,6 +30,7 @@ from d810.mba.extension_api import (
     NativeMbaCandidate,
     NativeMbaHostServices,
     NativeMbaReconstruction,
+    NativeMbaUnsupportedCandidate,
     _copy_json_value,
     _freeze_json_value,
 )
@@ -175,7 +176,7 @@ class _NativeMbaHostServices:
         lowering = lower_hexrays_island(ast, destination_size=destination_size)
         if lowering.term is None or lowering.raw_term is None:
             blockers = ", ".join(str(blocker) for blocker in lowering.profile.blockers)
-            raise ValueError(
+            raise NativeMbaUnsupportedCandidate(
                 "native MBA AST is unsupported" + (f": {blockers}" if blockers else "")
             )
         context = _NativeMbaContext(
