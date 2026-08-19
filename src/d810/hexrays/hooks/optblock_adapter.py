@@ -47,6 +47,11 @@ from d810.hexrays.mutation.return_carrier_corruption import (
     snapshot_return_reg_consumer_def_eas,
 )
 from d810.hexrays.mutation.block_retention import synchronize_explicit_goto_flag
+from d810.hexrays.hooks.safe_point_coordinator import (
+    HexRaysSafePointCoordinator,
+    SafePointDisposition,
+    SafePointKey,
+)
 from d810.hexrays.utils.hexrays_formatters import maturity_to_string
 
 main_logger = getLogger("d810")
@@ -410,6 +415,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         self._pass_pipeline = None  # PassPipeline | None
         self._pipeline_last_maturity: int = -1
         self._post_d810_pipeline_last_maturity: int = -1
+        self._safe_point_coordinator = HexRaysSafePointCoordinator()
         self._impossible_return_artifact_rewrite_applied: set[tuple[int, int]] = set()
         self._terminal_zero_literal_rewrite_applied: set[tuple[int, int]] = set()
         self._terminal_tail_cascade_egress_applied: set[tuple[int, int]] = set()
@@ -455,6 +461,7 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
         self._pipeline_last_maturity = -1
         self._post_d810_pipeline_last_maturity = -1
         self._pipeline_just_fired = False
+        self._safe_point_coordinator.reset()
         self._impossible_return_artifact_rewrite_applied.clear()
         self._terminal_zero_literal_rewrite_applied.clear()
         self._terminal_tail_cascade_egress_applied.clear()
@@ -561,6 +568,61 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
     ) -> None:
         if self._pass_pipeline is None:
             return
+        function_ea = int(getattr(mba, "entry_ea", 0) or 0)
+        lifecycle = self._decompilation_lifecycle
+        session_id: object = "unbound"
+        current_session = getattr(lifecycle, "current_session", None)
+        if callable(current_session):
+            try:
+                session = current_session(function_ea)
+            except Exception:
+                session = None
+            if session is not None:
+                session_id = getattr(session, "session_id", None) or getattr(
+                    session, "identity_key", "unbound"
+                )
+        generation_getter = getattr(lifecycle, "current_mba_generation", None)
+        if callable(generation_getter):
+            try:
+                generation = int(generation_getter(function_ea=function_ea))
+            except Exception:
+                generation = 0
+        else:
+            generation = 0
+        maturity = getattr(
+            mba,
+            "maturity",
+            getattr(self, "current_maturity", None),
+        )
+        if maturity is None:
+            maturity = -1
+        key = SafePointKey.from_mba(
+            session_id=session_id,
+            function_ea=function_ea,
+            mba=mba,
+            maturity=int(maturity),
+            generation=generation,
+            stage_id="d810.pass_pipeline",
+        )
+        result = self._safe_point_coordinator.run(
+            key,
+            lambda: self._execute_pass_pipeline_once(
+                mba,
+                phase_label=phase_label,
+            ),
+        )
+        if result.disposition is SafePointDisposition.MUTATED:
+            # The coordinator does not know the adapter's callback pointers.
+            # Preserve the existing maturity-wide stale-pointer fence here.
+            self._pipeline_just_fired = True
+
+    def _execute_pass_pipeline_once(
+        self,
+        mba: ida_hexrays.mbl_array_t,
+        *,
+        phase_label: str,
+    ) -> object:
+        """Run the already-eligible pipeline and return its detached outcome."""
         try:
             func_ea_hex = hex(int(getattr(mba, "entry_ea", 0) or 0))
             optimizer_logger.info(
@@ -614,25 +676,27 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
                 mba,
                 **pipeline_kwargs,
             )
-            if total > 0:
+            mutation_count = getattr(total, "applied_count", total)
+            if isinstance(mutation_count, int) and mutation_count > 0:
                 optimizer_logger.info(
                     "PassPipeline: applied %d total modification(s) on function %s at %s",
-                    total,
+                    mutation_count,
                     func_ea_hex,
                     phase_label,
                 )
-                self._pipeline_just_fired = True
             else:
                 optimizer_logger.debug(
                     "PassPipeline: no modifications applied on function %s at %s",
                     func_ea_hex,
                     phase_label,
                 )
+            return total
         except Exception:
             optimizer_logger.exception(
                 "PassPipeline: error during %s processing",
                 phase_label,
             )
+        return 0
 
     def _invalidate_flow_context(self, reason: str = "") -> None:
         if self._flow_context is not None and reason:
@@ -2663,6 +2727,14 @@ class BlockOptimizerManager(ida_hexrays.optblock_t):
             self._dispatcher_artifact_planner,
         )
         self._pass_pipeline = kwargs.get("pass_pipeline", self._pass_pipeline)
+        self._safe_point_coordinator = kwargs.get(
+            "safe_point_coordinator",
+            self._safe_point_coordinator,
+        )
+        if not isinstance(self._safe_point_coordinator, HexRaysSafePointCoordinator):
+            raise TypeError(
+                "safe_point_coordinator must be a HexRaysSafePointCoordinator"
+            )
         self._run_later_scheduler = kwargs.get(
             "pass_scheduler",
             self._run_later_scheduler,
