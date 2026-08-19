@@ -7,9 +7,11 @@ import d810.ui.panel_density_logic as panel_density_logic
 from d810.ui.panel_density_logic import (
     CHOICE_LIST_MAX_HEIGHT,
     CHOICE_LIST_MIN_HEIGHT,
-    choice_list_height,
+    FIELD_SECTION_MAX_HEIGHT,
     MIN_TREE_ROWS,
+    choice_list_height,
     plan_panel_density,
+    primary_field_section_height,
 )
 
 
@@ -120,3 +122,17 @@ def test_choice_list_height_scales_dense_choice_lists_without_screen_geometry() 
 
 def test_choice_list_height_rejects_negative_visible_row_counts() -> None:
     assert choice_list_height(-1) == CHOICE_LIST_MIN_HEIGHT
+
+
+def test_sparse_primary_field_section_uses_content_height_not_full_viewport() -> None:
+    assert primary_field_section_height(scalar_rows=3, choice_row_counts=()) < 240
+
+
+def test_dense_primary_field_section_caps_height_and_scrolls_internally() -> None:
+    assert (
+        primary_field_section_height(
+            scalar_rows=3,
+            choice_row_counts=(8, 12),
+        )
+        == FIELD_SECTION_MAX_HEIGHT
+    )

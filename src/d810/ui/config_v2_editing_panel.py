@@ -24,7 +24,10 @@ from d810.ui.config_v2_editing_logic import (
     project_config_v2_editor_view,
     project_serializer_rows,
 )
-from d810.ui.panel_density_logic import choice_list_height
+from d810.ui.panel_density_logic import (
+    choice_list_height,
+    primary_field_section_height,
+)
 from d810.ui.project_config_logic import ConfigV2FocusTarget
 
 logger = getLogger("d810.ui")
@@ -457,7 +460,7 @@ if IDA_AVAILABLE:
                 self._render()
             return shown
 
-        def _render(self) -> None:
+        def _refresh_projection(self) -> None:
             self._view = project_config_v2_document(self._draft)
             self._inspection_catalog = tuple(
                 self._adapter.inspection_catalog(
@@ -472,6 +475,19 @@ if IDA_AVAILABLE:
                 self._validation,
                 self._inspection_catalog,
             )
+
+        def _render_validation_state(self) -> None:
+            if self._validation.valid:
+                self.validation_label.setText(
+                    f"Ready | {len(self._validation.pass_ids)} pass(es)"
+                )
+            else:
+                self.validation_label.setText(
+                    f"Blocked | {len(self._validation.diagnostics)} diagnostic(s)"
+                )
+
+        def _render(self) -> None:
+            self._refresh_projection()
             destination = str(self._adapter.destination)
             try:
                 try:
@@ -519,14 +535,7 @@ if IDA_AVAILABLE:
             if self._selected_pass_index is not None:
                 self.pipeline_list.setCurrentRow(self._selected_pass_index)
 
-            if self._validation.valid:
-                self.validation_label.setText(
-                    f"Ready | {len(self._validation.pass_ids)} pass(es)"
-                )
-            else:
-                self.validation_label.setText(
-                    f"Blocked | {len(self._validation.diagnostics)} diagnostic(s)"
-                )
+            self._render_validation_state()
             self._render_routing()
             self._render_footer()
             self._render_raw_document_trees()
@@ -738,13 +747,12 @@ if IDA_AVAILABLE:
             }
             page = pages.get(primary)
             catalog_primary = page is not None
-            options_primary = (
-                primary is ConfigV2InspectorPrimarySection.OPTIONS
-                and getattr(self, "_primary_options_enabled", True)
-            )
-            has_primary = catalog_primary or options_primary
             self.primary_workspace.setVisible(catalog_primary)
-            self.inspector_elastic_sink.setVisible(not has_primary)
+            # Catalogs are true canvases and may consume the available height.
+            # Typed field sections are deliberately bounded and scroll within
+            # that bound; unused dock height belongs to the neutral sink rather
+            # than stretching an almost-empty Options frame.
+            self.inspector_elastic_sink.setVisible(not catalog_primary)
             if self._inspector_layout is not None:
                 primary_index = self._inspector_layout.indexOf(self.primary_workspace)
                 options_index = self._inspector_layout.indexOf(self.options_group)
@@ -756,12 +764,10 @@ if IDA_AVAILABLE:
                         primary_index, 1 if catalog_primary else 0
                     )
                 if options_index >= 0:
-                    self._inspector_layout.setStretch(
-                        options_index, 1 if options_primary else 0
-                    )
+                    self._inspector_layout.setStretch(options_index, 0)
                 if sink_index >= 0:
                     self._inspector_layout.setStretch(
-                        sink_index, 0 if has_primary else 1
+                        sink_index, 0 if catalog_primary else 1
                     )
             if page is not None:
                 if self.primary_workspace.indexOf(page) < 0:
@@ -894,16 +900,29 @@ if IDA_AVAILABLE:
         def _apply_edit(
             self,
             operation: typing.Callable[[], tuple[typing.Any, typing.Any]],
+            *,
+            rebuild_widgets: bool = True,
         ) -> bool:
             try:
                 self._draft, self._validation = operation()
             except Exception as exc:
                 logger.warning("Config-v2 edit failed: %s", exc)
-                self._render()
+                if rebuild_widgets:
+                    self._render()
                 self._set_status(f"Edit failed: {exc}")
                 return False
             self._set_status("")
-            self._render()
+            if rebuild_widgets:
+                self._render()
+            else:
+                # Choice-backed lists already display the user's new state.
+                # Refresh the authoritative draft projections and footer, but
+                # keep the native QListWidget alive until the user leaves the
+                # Inspector. Rebuilding it from its own checkbox event can
+                # retire the C++ signal sender and crash the IDA process.
+                self._refresh_projection()
+                self._render_validation_state()
+                self._render_footer()
             return True
 
         def _transform_catalog_query_changed(self, query: str) -> None:
@@ -987,18 +1006,37 @@ if IDA_AVAILABLE:
             if inspector is None:
                 self._render()
                 return
+            self._apply_typed_option_at(inspector.pass_index, field, value)
+
+        def _apply_typed_option_at(
+            self,
+            pass_index: int,
+            field: FieldEditorSpec,
+            value: object,
+        ) -> bool:
+            if not 0 <= pass_index < len(self._editor_view.inspectors):
+                self._render()
+                return False
+            inspector = self._editor_view.inspectors[pass_index]
+            if inspector.pass_index != pass_index:
+                self._render()
+                return False
             try:
                 options = apply_typed_field_option(inspector.options, field, value)
             except ValueError as exc:
                 self._render()
                 self._set_status(f"Invalid value for {field.label}: {exc}")
-                return
-            self._apply_edit(
+                return False
+            return self._apply_edit(
                 lambda: self._adapter.set_pass_options(
                     self._draft,
-                    pass_index=inspector.pass_index,
+                    pass_index=pass_index,
                     options=options,
-                )
+                ),
+                rebuild_widgets=not (
+                    field.control is FieldControlKind.STRING_LIST
+                    and bool(field.choices)
+                ),
             )
 
         def _render_typed_options(self, inspector: typing.Any | None) -> None:
@@ -1035,6 +1073,24 @@ if IDA_AVAILABLE:
                 stretch = 1 if is_primary and section.enabled else 0
                 if is_primary and section.enabled:
                     self._primary_options_enabled = True
+                    visible_entries = tuple(
+                        entry
+                        for entry in section.entries
+                        if entry.visible or entry.is_controller
+                    )
+                    choice_row_counts = tuple(
+                        len(entry.field.choices)
+                        for entry in visible_entries
+                        if entry.field.control is FieldControlKind.STRING_LIST
+                        and entry.field.choices
+                    )
+                    scalar_rows = len(visible_entries) - len(choice_row_counts)
+                    self.options_scroll.setMaximumHeight(
+                        primary_field_section_height(
+                            scalar_rows=scalar_rows,
+                            choice_row_counts=choice_row_counts,
+                        )
+                    )
                     self.options_scroll.setWidget(group)
                     self.options_scroll.setVisible(True)
                     self.options_sections_layout.addWidget(
@@ -1093,6 +1149,7 @@ if IDA_AVAILABLE:
                 annotation.setToolTip("\n".join(annotations))
                 annotated_layout.addWidget(annotation)
                 section_form.addRow(label, annotated_control)
+            group_layout.addStretch(1)
             return group, body
 
         def _typed_option_control(
@@ -1148,33 +1205,60 @@ if IDA_AVAILABLE:
                 )
                 return control
             if field.control is FieldControlKind.STRING_LIST and field.choices:
-                control = QtWidgets.QListWidget()
-                current_values = value if isinstance(value, (list, tuple)) else ()
-                current = {
-                    item for item in current_values if isinstance(item, str)
-                }
-                for choice in field.choices:
-                    item = QtWidgets.QListWidgetItem(choice)
-                    item.setFlags(qt_flag_or(item.flags(), _checkable_flag()))
-                    item.setData(_user_role(), choice)
-                    item.setCheckState(
-                        _checked_state()
-                        if choice in current
-                        else _unchecked_state()
-                    )
-                    control.addItem(item)
-                control.setMinimumHeight(choice_list_height(0))
-                control.setMaximumHeight(choice_list_height(len(field.choices)))
-                control.itemChanged.connect(
-                    lambda _item, control=control, field=field: self._apply_typed_option(
-                        field,
-                        [
-                            control.item(index).text()
-                            for index in range(control.count())
-                            if control.item(index).checkState() == _checked_state()
-                        ],
-                    )
+                control = QtWidgets.QScrollArea()
+                control.setWidgetResizable(True)
+                choice_body = QtWidgets.QWidget()
+                choice_layout = QtWidgets.QVBoxLayout(choice_body)
+                choice_layout.setContentsMargins(4, 2, 4, 2)
+                choice_layout.setSpacing(2)
+                selected = (
+                    {str(item) for item in value}
+                    if isinstance(value, (list, tuple))
+                    else set()
                 )
+                for choice in field.choices:
+                    choice_box = QtWidgets.QCheckBox(choice)
+                    choice_box.setChecked(choice in selected)
+                    choice_layout.addWidget(choice_box)
+
+                    def apply_changed_choice(
+                        checked: bool,
+                        *,
+                        choice: str = choice,
+                        choice_box: typing.Any = choice_box,
+                        field: FieldEditorSpec = field,
+                        selected: set[str] = selected,
+                    ) -> None:
+                        previous = set(selected)
+                        if checked:
+                            selected.add(choice)
+                        else:
+                            selected.discard(choice)
+                        inspector = self._current_inspector()
+                        accepted = inspector is not None and self._apply_typed_option_at(
+                            inspector.pass_index,
+                            field,
+                            [item for item in field.choices if item in selected],
+                        )
+                        if accepted:
+                            return
+                        # Keep the visible control consistent when validation
+                        # rejects a choice set (mba-solve, for example, cannot
+                        # have zero selected maturities). Restoring only this
+                        # checkbox avoids destroying or traversing a native
+                        # item model from inside its signal frame.
+                        selected.clear()
+                        selected.update(previous)
+                        choice_box.blockSignals(True)
+                        choice_box.setChecked(choice in selected)
+                        choice_box.blockSignals(False)
+
+                    choice_box.toggled.connect(apply_changed_choice)
+                choice_layout.addStretch(1)
+                control.setWidget(choice_body)
+                list_height = choice_list_height(len(field.choices))
+                control.setMinimumHeight(list_height)
+                control.setMaximumHeight(list_height)
                 return control
             control = QtWidgets.QLineEdit()
             if field.control is FieldControlKind.STRING_LIST:

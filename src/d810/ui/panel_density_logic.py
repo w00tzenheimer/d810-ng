@@ -23,6 +23,21 @@ CHOICE_LIST_MIN_HEIGHT = 48
 CHOICE_LIST_MAX_HEIGHT = 224
 """Maximum height before a choice-backed list must scroll internally."""
 
+FIELD_SECTION_ROW_HEIGHT = 36
+"""Approximate vertical footprint of one scalar option row."""
+
+FIELD_SECTION_CHOICE_CHROME_HEIGHT = 28
+"""Label and spacing above one choice-backed option list."""
+
+FIELD_SECTION_CHROME_HEIGHT = 48
+"""Group title, optional description, margins, and terminal spacing."""
+
+FIELD_SECTION_MIN_HEIGHT = 96
+"""Smallest useful primary option-section viewport."""
+
+FIELD_SECTION_MAX_HEIGHT = 420
+"""Largest primary option-section viewport before it scrolls internally."""
+
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class PanelDensityPlan:
@@ -53,6 +68,34 @@ def choice_list_height(
     row_height = max(1, int(row_px))
     preferred = rows * row_height
     return min(max(preferred, int(minimum_px)), int(maximum_px))
+
+
+def primary_field_section_height(
+    *,
+    scalar_rows: int,
+    choice_row_counts: tuple[int, ...],
+) -> int:
+    """Return a content-derived, bounded height for a primary field section.
+
+    Sparse pass editors must not claim the entire dock simply because their
+    section is primary. Dense editors still receive a useful workspace, then
+    rely on the section scroll area and each bounded choice list for overflow.
+    """
+
+    scalar_count = max(0, int(scalar_rows))
+    choice_heights = sum(
+        FIELD_SECTION_CHOICE_CHROME_HEIGHT + choice_list_height(row_count)
+        for row_count in choice_row_counts
+    )
+    preferred = (
+        FIELD_SECTION_CHROME_HEIGHT
+        + scalar_count * FIELD_SECTION_ROW_HEIGHT
+        + choice_heights
+    )
+    return min(
+        max(preferred, FIELD_SECTION_MIN_HEIGHT),
+        FIELD_SECTION_MAX_HEIGHT,
+    )
 
 
 def plan_panel_density(
@@ -116,8 +159,14 @@ __all__ = [
     "CHOICE_LIST_MAX_HEIGHT",
     "CHOICE_LIST_MIN_HEIGHT",
     "CHOICE_LIST_ROW_HEIGHT",
+    "FIELD_SECTION_CHOICE_CHROME_HEIGHT",
+    "FIELD_SECTION_CHROME_HEIGHT",
+    "FIELD_SECTION_MAX_HEIGHT",
+    "FIELD_SECTION_MIN_HEIGHT",
+    "FIELD_SECTION_ROW_HEIGHT",
     "MIN_TREE_ROWS",
     "PanelDensityPlan",
     "choice_list_height",
     "plan_panel_density",
+    "primary_field_section_height",
 ]

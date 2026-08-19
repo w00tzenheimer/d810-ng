@@ -440,48 +440,70 @@ class _SignalStub:
             callback(*args)
 
 
-class _ListItemStub:
-    def __init__(self, text: str) -> None:
-        self._text = text
-        self._flags = 0
-        self._data: dict[object, object] = {}
-        self._check_state = 0
-
-    def text(self) -> str:
-        return self._text
-
-    def flags(self) -> int:
-        return self._flags
-
-    def setFlags(self, flags: int) -> None:
-        self._flags = flags
-
-    def setData(self, role: object, value: object) -> None:
-        self._data[role] = value
-
-    def data(self, role: object) -> object:
-        return self._data.get(role)
-
-    def setCheckState(self, state: int) -> None:
-        self._check_state = state
-
-    def checkState(self) -> int:
-        return self._check_state
-
-
-class _ListWidgetStub:
+class _WidgetStub:
     def __init__(self) -> None:
-        self._items: list[_ListItemStub] = []
-        self.itemChanged = _SignalStub()
+        self.layout: _VBoxLayoutStub | None = None
 
-    def addItem(self, item: _ListItemStub) -> None:
-        self._items.append(item)
 
-    def count(self) -> int:
-        return len(self._items)
+class _VBoxLayoutStub:
+    def __init__(self, parent: _WidgetStub) -> None:
+        parent.layout = self
+        self.widgets: list[_CheckBoxStub] = []
 
-    def item(self, index: int) -> _ListItemStub:
-        return self._items[index]
+    def setContentsMargins(self, *margins: int) -> None:
+        del margins
+
+    def setSpacing(self, spacing: int) -> None:
+        del spacing
+
+    def addWidget(self, widget: _CheckBoxStub) -> None:
+        self.widgets.append(widget)
+
+    def addStretch(self, stretch: int) -> None:
+        del stretch
+
+
+class _CheckBoxStub:
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self._checked = False
+        self._blocked = False
+        self.toggled = _SignalStub()
+
+    def setChecked(self, checked: bool) -> None:
+        changed = self._checked != checked
+        self._checked = checked
+        if changed and not self._blocked:
+            self.toggled.emit(checked)
+
+    def isChecked(self) -> bool:
+        return self._checked
+
+    def blockSignals(self, blocked: bool) -> None:
+        self._blocked = blocked
+
+
+class _ScrollAreaStub:
+    def __init__(self) -> None:
+        self._widget: _WidgetStub | None = None
+        self.minimum_height: int | None = None
+        self.maximum_height: int | None = None
+
+    def setWidgetResizable(self, resizable: bool) -> None:
+        assert resizable is True
+
+    def setWidget(self, widget: _WidgetStub) -> None:
+        self._widget = widget
+
+    def widget(self) -> _WidgetStub:
+        assert self._widget is not None
+        return self._widget
+
+    def setMinimumHeight(self, height: int) -> None:
+        self.minimum_height = height
+
+    def setMaximumHeight(self, height: int) -> None:
+        self.maximum_height = height
 
 
 def _compiled_project_editor_method(name: str):
@@ -497,14 +519,12 @@ def _compiled_project_editor_method(name: str):
         "FieldControlKind": FieldControlKind,
         "FieldEditorSpec": FieldEditorSpec,
         "QtWidgets": types.SimpleNamespace(
-            QListWidget=_ListWidgetStub,
-            QListWidgetItem=_ListItemStub,
+            QCheckBox=_CheckBoxStub,
+            QScrollArea=_ScrollAreaStub,
+            QVBoxLayout=_VBoxLayoutStub,
+            QWidget=_WidgetStub,
         ),
-        "_checkable_flag": lambda: 1,
-        "_checked_state": lambda: 2,
-        "_unchecked_state": lambda: 0,
-        "_user_role": lambda: 32,
-        "qt_flag_or": lambda left, right: left | right,
+        "choice_list_height": lambda count: 24 + (count * 20),
         "typing": typing,
     }
     exec(compile(module, filename=str(PROJECT_EDITOR), mode="exec"), namespace)
@@ -520,11 +540,12 @@ def test_choice_backed_string_lists_emit_checkable_values_in_declared_order() ->
         choices=("CANONICAL", "GLOBAL_ANALYZED", "STRUCTURED"),
         default=["CANONICAL"],
     )
-    calls: list[tuple[object, object]] = []
+    calls: list[tuple[int, object, object]] = []
     panel = SimpleNamespace(
-        _apply_typed_option=lambda selected_field, value: calls.append(
-            (selected_field, value)
-        )
+        _current_inspector=lambda: SimpleNamespace(pass_index=4),
+        _apply_typed_option_at=lambda pass_index, selected_field, value: (
+            calls.append((pass_index, selected_field, value)) or True
+        ),
     )
 
     control = _compiled_project_editor_method("_typed_option_control")(
@@ -533,22 +554,24 @@ def test_choice_backed_string_lists_emit_checkable_values_in_declared_order() ->
         ["STRUCTURED", "CANONICAL"],
     )
 
-    assert all(control.item(index).flags() & 1 for index in range(control.count()))
-    assert [control.item(index).checkState() for index in range(control.count())] == [
-        2,
-        0,
-        2,
-    ]
-    assert [control.item(index).data(32) for index in range(control.count())] == [
+    choice_layout = control.widget().layout
+    assert choice_layout is not None
+    boxes = choice_layout.widgets
+    assert [box.text for box in boxes] == [
         "CANONICAL",
         "GLOBAL_ANALYZED",
         "STRUCTURED",
     ]
+    assert [box.isChecked() for box in boxes] == [True, False, True]
+    assert control.minimum_height == 84
+    assert control.maximum_height == 84
 
-    control.item(1).setCheckState(2)
-    control.itemChanged.emit(control.item(1))
-    assert calls[-1] == (field, ["CANONICAL", "GLOBAL_ANALYZED", "STRUCTURED"])
+    boxes[1].setChecked(True)
+    assert calls[-1] == (
+        4,
+        field,
+        ["CANONICAL", "GLOBAL_ANALYZED", "STRUCTURED"],
+    )
 
-    control.item(0).setCheckState(0)
-    control.itemChanged.emit(control.item(0))
-    assert calls[-1] == (field, ["GLOBAL_ANALYZED", "STRUCTURED"])
+    boxes[0].setChecked(False)
+    assert calls[-1] == (4, field, ["GLOBAL_ANALYZED", "STRUCTURED"])

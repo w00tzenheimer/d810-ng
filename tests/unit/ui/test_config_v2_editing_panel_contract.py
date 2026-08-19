@@ -59,6 +59,7 @@ def test_panel_projects_one_draft_into_a_stacked_builder_and_inspector() -> None
     init_source = _source("__init__")
     create_source = _source("OnCreate")
     render_calls = _calls(_method("_render"))
+    projection_calls = _calls(_method("_refresh_projection"))
 
     assert "ConfigV2EditorScreen.BUILDER" in init_source
     assert "self._screen = screen" in init_source
@@ -67,7 +68,8 @@ def test_panel_projects_one_draft_into_a_stacked_builder_and_inspector() -> None
     assert "QStackedWidget" in init_source
     assert "builder_page" in create_source
     assert "inspector_page" in create_source
-    assert "project_config_v2_editor_view" in render_calls
+    assert "_refresh_projection" in render_calls
+    assert "project_config_v2_editor_view" in projection_calls
 
 
 def test_inspector_shell_is_capability_driven_and_contract_is_on_demand() -> None:
@@ -288,9 +290,7 @@ def test_typed_option_controls_keep_experimental_and_advisory_metadata_visible()
 def test_checkable_items_combine_flags_through_qt_compatibility() -> None:
     source = PANEL.read_text(encoding="utf-8")
 
-    # The routing-family list and typed string-list controls both need the
-    # Qt-version-safe flag combiner.
-    assert source.count("qt_flag_or(item.flags(), _checkable_flag())") == 2
+    assert source.count("qt_flag_or(item.flags(), _checkable_flag())") == 1
     assert (
         "qt_flag_or(family_item.flags(), _checkable_flag())" in source
     )
@@ -299,7 +299,7 @@ def test_checkable_items_combine_flags_through_qt_compatibility() -> None:
 
 def test_inspector_callbacks_delegate_closed_typed_edits_and_rerender_rejections() -> None:
     transform_source = _source("_apply_transform_catalog_selection")
-    options_source = _source("_apply_typed_option")
+    options_source = _source("_apply_typed_option") + _source("_apply_typed_option_at")
     apply_source = _source("_apply_edit")
 
     assert "set_pass_transforms" in transform_source
@@ -502,6 +502,7 @@ class _BehaviorWidget:
         self.textChanged = _BehaviorSignal()
         self.editingFinished = _BehaviorSignal()
         self._deleted = False
+        self._signals_blocked = False
 
     def setVisible(self, visible: bool) -> None:
         self._visible = bool(visible)
@@ -550,6 +551,11 @@ class _BehaviorWidget:
 
     def setWindowTitle(self, title: str) -> None:
         self._text = title
+
+    def blockSignals(self, blocked: bool) -> bool:
+        previous = self._signals_blocked
+        self._signals_blocked = bool(blocked)
+        return previous
 
 
 class _BehaviorLayout(_BehaviorWidget):
@@ -646,7 +652,7 @@ class _BehaviorGroupBox(_BehaviorWidget):
     def setChecked(self, checked: bool) -> None:
         changed = self._checked != bool(checked)
         self._checked = bool(checked)
-        if changed:
+        if changed and not self._signals_blocked:
             self.toggled.emit(self._checked)
 
     def isChecked(self) -> bool:
@@ -693,6 +699,7 @@ class _BehaviorListItem:
         self._text = text
         self._data: dict[object, object] = {}
         self._checked = 0
+        self._owner: _BehaviorListWidget | None = None
 
     def flags(self) -> int:
         return 0
@@ -701,7 +708,10 @@ class _BehaviorListItem:
         del flags
 
     def setCheckState(self, checked: int) -> None:
+        changed = self._checked != checked
         self._checked = checked
+        if changed and self._owner is not None:
+            self._owner.itemChanged.emit(self)
 
     def checkState(self) -> int:
         return self._checked
@@ -724,6 +734,7 @@ class _BehaviorListWidget(_BehaviorWidget):
         self.itemChanged = _BehaviorSignal()
 
     def addItem(self, item: _BehaviorListItem) -> None:
+        item._owner = self
         self._items.append(item)
 
     def count(self) -> int:
@@ -896,7 +907,7 @@ def _load_behavior_panel(monkeypatch):
             CheckState=types.SimpleNamespace(Checked=2, Unchecked=0),
             ItemDataRole=types.SimpleNamespace(UserRole=32),
             ItemFlag=types.SimpleNamespace(ItemIsUserCheckable=1),
-        )
+        ),
     )
     widgets = types.SimpleNamespace(
         QCheckBox=_BehaviorCheckBox,
@@ -1123,7 +1134,7 @@ def test_fake_qt_render_rerender_routes_disabled_primary_to_sink(monkeypatch) ->
     module, panel_type, panel = _render_behavior_panel(monkeypatch)
     from d810.ui.panel_density_logic import (
         CHOICE_LIST_MAX_HEIGHT,
-        CHOICE_LIST_MIN_HEIGHT,
+        primary_field_section_height,
     )
 
     enabled = types.SimpleNamespace(field_sections=_behavior_sections(module, enabled=True))
@@ -1131,10 +1142,14 @@ def test_fake_qt_render_rerender_routes_disabled_primary_to_sink(monkeypatch) ->
     first_primary = panel.field_section_widgets["primary"]
 
     assert panel.options_scroll._widget is first_primary
+    assert panel.options_scroll.maximum_height == primary_field_section_height(
+        scalar_rows=2,
+        choice_row_counts=(),
+    )
     assert panel.options_sections_layout.stretches == {0: 1, 1: 0}
     panel._set_primary_workspace(module.ConfigV2InspectorPrimarySection.OPTIONS)
-    assert panel._inspector_layout.stretches == {0: 0, 1: 1, 2: 0}
-    assert panel.inspector_elastic_sink.isVisible() is False
+    assert panel._inspector_layout.stretches == {0: 0, 1: 0, 2: 1}
+    assert panel.inspector_elastic_sink.isVisible() is True
     assert panel.primary_workspace.pages == [panel.transforms_group, panel.rules_group]
 
     disabled = types.SimpleNamespace(field_sections=_behavior_sections(module, enabled=False))
@@ -1150,7 +1165,7 @@ def test_fake_qt_render_rerender_routes_disabled_primary_to_sink(monkeypatch) ->
     secondary_body = secondary._layout.children[-1]
     choice_control = secondary_body._layout.children[0][1]
     assert choice_control.isEnabled() is False
-    assert choice_control.minimum_height == CHOICE_LIST_MIN_HEIGHT
+    assert choice_control.minimum_height == CHOICE_LIST_MAX_HEIGHT
     assert choice_control.maximum_height == CHOICE_LIST_MAX_HEIGHT
     panel._set_primary_workspace(module.ConfigV2InspectorPrimarySection.OPTIONS)
     assert panel._inspector_layout.stretches == {0: 0, 1: 0, 2: 1}
@@ -1161,7 +1176,87 @@ def test_fake_qt_render_rerender_routes_disabled_primary_to_sink(monkeypatch) ->
     assert disabled_primary._deleted is True
     assert panel.options_scroll._widget is panel.field_section_widgets["primary"]
     panel._set_primary_workspace(module.ConfigV2InspectorPrimarySection.OPTIONS)
-    assert panel._inspector_layout.stretches == {0: 0, 1: 1, 2: 0}
+    assert panel._inspector_layout.stretches == {0: 0, 1: 0, 2: 1}
+    assert panel.inspector_elastic_sink.isVisible() is True
+
+
+def test_choice_checkboxes_apply_without_a_native_item_model(monkeypatch) -> None:
+    module, _panel_type, panel = _render_behavior_panel(monkeypatch)
+    inspector = types.SimpleNamespace(
+        pass_index=3,
+        options={"choices": ["two"]},
+    )
+    panel._current_inspector = lambda: inspector
+    applied: list[tuple[int, str, object]] = []
+
+    def apply_option(pass_index, field, value) -> bool:
+        applied.append((pass_index, field.field_id, copy.deepcopy(value)))
+        return True
+
+    panel._apply_typed_option_at = apply_option
+    field = _behavior_sections(module, enabled=True)[1].entries[0].field
+    control = panel._typed_option_control(field, ("two",))
+    choice_body = control._widget
+    first_choice = choice_body._layout.children[0]
+
+    first_choice.setChecked(True)
+
+    assert applied == [(3, "choices", ["one", "two"])]
+
+
+def test_rejected_choice_checkbox_restores_visible_and_local_selection(monkeypatch) -> None:
+    module, _panel_type, panel = _render_behavior_panel(monkeypatch)
+    inspector = types.SimpleNamespace(pass_index=3, options={"choices": ["two"]})
+    panel._current_inspector = lambda: inspector
+    attempts: list[object] = []
+
+    def reject_option(_pass_index, _field, value) -> bool:
+        attempts.append(copy.deepcopy(value))
+        return False
+
+    panel._apply_typed_option_at = reject_option
+    field = _behavior_sections(module, enabled=True)[1].entries[0].field
+    control = panel._typed_option_control(field, ("two",))
+    choice_body = control._widget
+    second_choice = choice_body._layout.children[1]
+
+    second_choice.setChecked(False)
+
+    assert attempts == [[]]
+    assert second_choice.isChecked() is True
+
+    first_choice = choice_body._layout.children[0]
+    first_choice.setChecked(True)
+    assert attempts == [[], ["one", "two"]]
+
+
+def test_choice_backed_typed_edit_does_not_rebuild_its_signal_sender(monkeypatch) -> None:
+    module, _panel_type, panel = _render_behavior_panel(monkeypatch)
+    field = _behavior_sections(module, enabled=True)[1].entries[0].field
+    panel._editor_view = types.SimpleNamespace(
+        inspectors=(
+            types.SimpleNamespace(
+                pass_index=0,
+                options={"choices": ["two"]},
+            ),
+        )
+    )
+    panel._draft = object()
+    panel._adapter = types.SimpleNamespace(
+        set_pass_options=lambda draft, **_kwargs: (draft, object())
+    )
+    rebuild_requests: list[bool] = []
+
+    def apply_edit(operation, *, rebuild_widgets=True) -> bool:
+        operation()
+        rebuild_requests.append(bool(rebuild_widgets))
+        return True
+
+    panel._apply_edit = apply_edit
+
+    panel._apply_typed_option_at(0, field, ["one", "two"])
+
+    assert rebuild_requests == [False]
 
 
 class _BehaviorAdapter:
@@ -1287,8 +1382,8 @@ def test_inspector_stretch_routes_each_primary_section_to_the_elastic_owner(
     panel._set_primary_workspace(module.ConfigV2InspectorPrimarySection.OPTIONS)
 
     assert panel.primary_workspace.isVisible() is False
-    assert panel.inspector_elastic_sink.isVisible() is False
-    assert panel._inspector_layout.stretch_calls == [(0, 0), (1, 1), (2, 0)]
+    assert panel.inspector_elastic_sink.isVisible() is True
+    assert panel._inspector_layout.stretch_calls == [(0, 0), (1, 0), (2, 1)]
 
     panel._inspector_layout.stretch_calls.clear()
     panel._set_primary_workspace(module.ConfigV2InspectorPrimarySection.NONE)
