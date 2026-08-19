@@ -399,6 +399,7 @@ class HexRaysInstructionCommitter:
         safe_verify: Callable[..., object] = lambda _mba, _context: None,
         rewrite_history: MutableMapping[object, set[int]] | None = None,
         producer_cycle_quarantine: Callable[..., object] | None = None,
+        native_failure_quarantine: Callable[[BaseException], object] | None = None,
         lifecycle_authority: object | None = None,
     ) -> None:
         self._hash = hash_minsn
@@ -408,6 +409,7 @@ class HexRaysInstructionCommitter:
         self._verify = safe_verify
         self._history = rewrite_history
         self._cycle_quarantine = producer_cycle_quarantine
+        self._native_failure_quarantine = native_failure_quarantine
         self._lifecycle_authority = lifecycle_authority
 
     @staticmethod
@@ -436,10 +438,10 @@ class HexRaysInstructionCommitter:
         )
 
     def _quarantine(self, error: BaseException) -> None:
-        if self._cycle_quarantine is None:
+        if self._native_failure_quarantine is None:
             return
         try:
-            _invoke(self._cycle_quarantine, error)
+            _invoke(self._native_failure_quarantine, error)
         except Exception:
             return
 
@@ -628,7 +630,9 @@ class HexRaysInstructionCommitter:
             seen = set() if self._history is None else self._history.get(key, set())
 
             if candidate.optimize_solo:
-                _invoke(getattr(instruction, "optimize_solo"))
+                optimize_solo = getattr(instruction, "optimize_solo", None)
+                if callable(optimize_solo):
+                    _invoke(optimize_solo)
             if candidate.may_mark_lists_dirty:
                 mark_lists_dirty = getattr(block, "mark_lists_dirty", None)
                 if not callable(mark_lists_dirty):

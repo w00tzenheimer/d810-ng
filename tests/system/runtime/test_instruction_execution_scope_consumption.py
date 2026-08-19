@@ -632,5 +632,5 @@ def test_instruction_callback_does_not_visit_nested_rules_after_rejection(monkey
     )
 
     assert result == 0
-    assert optimizer.rejected == ["rewrite-noop"]
+    assert optimizer.rejected == ["rewrite_noop"]
     assert nested_calls == []

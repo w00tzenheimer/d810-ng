@@ -484,10 +484,21 @@ class LegacyInstructionRuleAdapter:
             getattr(pending_rule, "may_touch_neighboring_instructions", False),
         ))
         may_mark = bool(metadata.get(
-            "may_mark_lists_dirty", getattr(pending_rule, "may_mark_lists_dirty", has_block)
+            "may_mark_lists_dirty",
+            getattr(
+                pending_rule,
+                "may_mark_lists_dirty",
+                has_block and callable(getattr(context.block, "mark_lists_dirty", None)),
+            ),
         ))
         may_verify = bool(metadata.get(
-            "may_verify_mba", getattr(pending_rule, "may_verify_mba", has_block)
+            "may_verify_mba",
+            getattr(
+                pending_rule,
+                "may_verify_mba",
+                has_block
+                and callable(getattr(_callback_mba(context.block), "verify", None)),
+            ),
         ))
         proof = metadata.get("proof", metadata.get("proof_result"))
         if (
@@ -1589,11 +1600,20 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             may_mark_lists_dirty=bool(has_block),
             may_verify_mba=bool(has_block),
         )
+        lifecycle = getattr(self, "_decompilation_lifecycle", None)
+        generation = 0
+        generation_getter = getattr(lifecycle, "current_mba_generation", None)
+        if callable(generation_getter):
+            try:
+                generation = int(generation_getter(function_ea=function_ea))
+            except Exception:
+                generation = 0
         context = InstructionCommitContext.from_live(
             ins,
             blk,
             function_ea=function_ea,
             maturity=maturity,
+            generation=generation,
             capabilities=capabilities,
         )
         # ``InstructionCommitContext`` intentionally contains only the stable
@@ -1627,7 +1647,12 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             return
         try:
             if len(key) >= 4 and key[2] == "object":
-                site_key = (int(key[0]), int(key[1]), int(key[3]))
+                context = getattr(self, "_last_instruction_context", None)
+                site_key = (
+                    int(key[0]),
+                    int(key[1]),
+                    int(getattr(getattr(context, "instruction", None), "ea", key[3]) or key[3]),
+                )
             else:
                 site_key = (int(key[0]), int(key[1]), int(key[2]))
         except (TypeError, ValueError, IndexError):
@@ -1637,6 +1662,21 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
             quarantined = defaultdict(set)
             self._cycle_quarantined_rule_names = quarantined
         quarantined.setdefault(site_key, set()).add(str(producer))
+
+    def _poison_instruction_generation(self, error: BaseException) -> None:
+        """Send native mutation failure to lifecycle poison authority, never cycle quarantine."""
+        context = getattr(self, "_active_instruction_commit_context", None)
+        lifecycle = getattr(self, "_decompilation_lifecycle", None)
+        poison = getattr(lifecycle, "quarantine_native_mutation", None)
+        if context is None or not callable(poison):
+            return
+        try:
+            poison(
+                function_ea=context.epoch.function_ea,
+                reason=f"optinsn native mutation failure: {error}",
+            )
+        except Exception:
+            optimizer_logger.exception("failed to poison instruction mutation generation")
 
     def _get_instruction_committer(self) -> HexRaysInstructionCommitter:
         committer = getattr(self, "_instruction_committer", None)
@@ -1649,6 +1689,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
                 safe_verify=_safe_verify,
                 rewrite_history=getattr(self, "_rewrite_seen", None),
                 producer_cycle_quarantine=self._record_cycle_quarantine,
+                native_failure_quarantine=self._poison_instruction_generation,
             )
             self._instruction_committer = committer
         return committer
@@ -1671,7 +1712,7 @@ class InstructionOptimizerManager(ida_hexrays.optinsn_t):
         else:
             record_rejected = getattr(optimizer, "record_mutation_rejected", None)
             if callable(record_rejected):
-                record_rejected(receipt.reason)
+                record_rejected(receipt.reason.replace("-", "_"))
             stats = getattr(self, "stats", None)
             if receipt.reason == "expression-bloat" and stats is not None:
                 stats.record_expression_bloat_rejected(
@@ -2720,7 +2761,7 @@ class InstructionVisitorManager(ida_hexrays.minsn_visitor_t):
             owner_ins = getattr(self, "topins", None)
         if owner_ins is None:
             owner_ins = candidate_ins
-        return self.instruction_optimizer.optimize(
+        optimized = self.instruction_optimizer.optimize(
             self.blk,
             candidate_ins,
             contextual_anchor_ins=owner_ins,
@@ -2733,4 +2774,11 @@ class InstructionVisitorManager(ida_hexrays.minsn_visitor_t):
             optimizers_override=getattr(self, "_optimizers_override", None),
             maturity_override=getattr(self, "_maturity_override", None),
             analyze_on_abstain=getattr(self, "_analyze_on_abstain", True),
+        )
+        # A rejected candidate is still a proposal decision for this callback.
+        # Stop traversal so another nested instruction cannot commit afterward.
+        return bool(
+            optimized
+            or getattr(self.instruction_optimizer, "_last_instruction_receipt", None)
+            is not None
         )

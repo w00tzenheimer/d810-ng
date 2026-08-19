@@ -158,6 +158,7 @@ def _committer(
     proof_calls: list[bool] | None = None,
     verify=None,
     quarantine=None,
+    native_failure_quarantine=None,
     history=None,
 ) -> HexRaysInstructionCommitter:
     return HexRaysInstructionCommitter(
@@ -171,6 +172,7 @@ def _committer(
         safe_verify=verify or (lambda _mba, _ctx: None),
         rewrite_history=history if history is not None else {},
         producer_cycle_quarantine=quarantine,
+        native_failure_quarantine=native_failure_quarantine,
     )
 
 
@@ -460,7 +462,10 @@ def test_verification_failure_restores_instruction_and_quarantines() -> None:
         raise RuntimeError("verify exploded")
 
     with pytest.raises(NativeMutationQuarantined):
-        _committer(verify=verify, quarantine=lambda: quarantined.append(True)).commit(
+        _committer(
+            verify=verify,
+            native_failure_quarantine=lambda _error: quarantined.append(True),
+        ).commit(
             context,
             _candidate(replacement),
         )
