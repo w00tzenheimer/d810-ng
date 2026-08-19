@@ -70,10 +70,27 @@ class FrozenConstraintExpression:
 
 @dataclass(frozen=True, slots=True)
 class FrozenConstraint:
-    """One equality constraint with no live DSL object references."""
+    """One frozen comparison or logical constraint with no live DSL objects."""
 
-    left: FrozenConstraintExpression
-    right: FrozenConstraintExpression
+    left: FrozenConstraintExpression | None = None
+    right: FrozenConstraintExpression | None = None
+    operation: str = "eq"
+    children: tuple[FrozenConstraint, ...] = ()
+
+    def __post_init__(self) -> None:
+        comparisons = {"eq", "ne", "lt", "gt", "le", "ge"}
+        logical_arity = {"and": 2, "or": 2, "not": 1}
+        if self.operation in comparisons:
+            if self.left is None or self.right is None or self.children:
+                raise ValueError("comparison constraints require two expressions")
+            return
+        expected = logical_arity.get(self.operation)
+        if expected is None or self.left is not None or self.right is not None:
+            raise ValueError(f"unsupported frozen constraint operation: {self.operation}")
+        if len(self.children) != expected:
+            raise ValueError(
+                f"frozen {self.operation} constraint requires {expected} children"
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -440,6 +457,62 @@ def _freeze_constraint_expression(expression: object) -> FrozenConstraintExpress
     return FrozenConstraintExpression(operation=operation, children=(left, right))
 
 
+def _constraint_operation(constraint: object) -> str:
+    comparison = getattr(constraint, "op_name", None)
+    if comparison is not None:
+        if comparison not in {"ne", "lt", "gt", "le", "ge"}:
+            raise CanonicalPatternMalformed(
+                f"unsupported comparison operation: {comparison}"
+            )
+        return comparison
+    if hasattr(constraint, "operand") and not hasattr(constraint, "left"):
+        return "not"
+    constraint_name = type(constraint).__name__
+    if constraint_name == "AndConstraint":
+        return "and"
+    if constraint_name == "OrConstraint":
+        return "or"
+    if hasattr(constraint, "left") and hasattr(constraint, "right"):
+        return "eq"
+    raise CanonicalPatternMalformed(
+        f"unsupported rule constraint type: {type(constraint).__name__}"
+    )
+
+
+def _freeze_constraint(constraint: object) -> FrozenConstraint:
+    operation = _constraint_operation(constraint)
+    if operation in {"and", "or"}:
+        left = getattr(constraint, "left", None)
+        right = getattr(constraint, "right", None)
+        if left is None or right is None:
+            raise CanonicalPatternMalformed(
+                f"malformed logical constraint {operation}"
+            )
+        return FrozenConstraint(
+            operation=operation,
+            children=(_freeze_constraint(left), _freeze_constraint(right)),
+        )
+    if operation == "not":
+        operand = getattr(constraint, "operand", None)
+        if operand is None:
+            raise CanonicalPatternMalformed("malformed logical constraint not")
+        return FrozenConstraint(
+            operation=operation,
+            children=(_freeze_constraint(operand),),
+        )
+    left = getattr(constraint, "left", None)
+    right = getattr(constraint, "right", None)
+    if left is None or right is None:
+        raise CanonicalPatternMalformed(
+            f"malformed comparison constraint {operation}"
+        )
+    return FrozenConstraint(
+        _freeze_constraint_expression(left),
+        _freeze_constraint_expression(right),
+        operation=operation,
+    )
+
+
 def _freeze_constraints(rule: object) -> tuple[FrozenConstraint, ...]:
     constraints = _rule_constraint_values(rule)
     try:
@@ -448,18 +521,7 @@ def _freeze_constraints(rule: object) -> tuple[FrozenConstraint, ...]:
         raise CanonicalPatternMalformed("rule constraints are not iterable") from exc
     frozen: list[FrozenConstraint] = []
     for constraint in values:
-        left = getattr(constraint, "left", None)
-        right = getattr(constraint, "right", None)
-        if left is None or right is None:
-            raise CanonicalPatternMalformed(
-                "rule constraint is not a declarative equality"
-            )
-        frozen.append(
-            FrozenConstraint(
-                _freeze_constraint_expression(left),
-                _freeze_constraint_expression(right),
-            )
-        )
+        frozen.append(_freeze_constraint(constraint))
     return tuple(frozen)
 
 
@@ -839,6 +901,112 @@ def _evaluate_frozen_constraint_expression(
     )
 
 
+def _unsigned_frozen_constraint_value(
+    term: TypedBvTerm | _UnboundFrozenConstraintTerm,
+    *,
+    width: int,
+) -> int | None:
+    if not isinstance(term, TypedBvTerm):
+        return None
+    if term.width != width or term.operation is not None or term.value is None:
+        return None
+    return int(term.value) & ((1 << width) - 1)
+
+
+def _compare_frozen_constraint_terms(
+    operation: str,
+    left: TypedBvTerm,
+    right: TypedBvTerm,
+    *,
+    width: int,
+) -> bool:
+    if operation == "eq":
+        return left == right
+    if operation == "ne":
+        left_value = _unsigned_frozen_constraint_value(left, width=width)
+        right_value = _unsigned_frozen_constraint_value(right, width=width)
+        if left_value is not None and right_value is not None:
+            return left_value != right_value
+        return left != right
+    left_value = _unsigned_frozen_constraint_value(left, width=width)
+    right_value = _unsigned_frozen_constraint_value(right, width=width)
+    if left_value is None or right_value is None:
+        return False
+    match operation:
+        case "lt":
+            return left_value < right_value
+        case "gt":
+            return left_value > right_value
+        case "le":
+            return left_value <= right_value
+        case "ge":
+            return left_value >= right_value
+        case _:
+            raise ValueError(f"unsupported comparison operation: {operation}")
+
+
+def _evaluate_frozen_constraint(
+    constraint: FrozenConstraint,
+    bindings: dict[str, TypedBvTerm],
+    *,
+    width: int,
+) -> bool:
+    if constraint.operation in {"and", "or"}:
+        left_constraint, right_constraint = constraint.children
+        if constraint.operation == "and":
+            attempted = dict(bindings)
+            if not _evaluate_frozen_constraint(
+                left_constraint, attempted, width=width
+            ):
+                return False
+            if not _evaluate_frozen_constraint(
+                right_constraint, attempted, width=width
+            ):
+                return False
+            bindings.update(attempted)
+            return True
+        for branch in (left_constraint, right_constraint):
+            attempted = dict(bindings)
+            if _evaluate_frozen_constraint(branch, attempted, width=width):
+                bindings.update(attempted)
+                return True
+        return False
+    if constraint.operation == "not":
+        return not _evaluate_frozen_constraint(
+            constraint.children[0], dict(bindings), width=width
+        )
+    if constraint.left is None or constraint.right is None:
+        return False
+    left = _evaluate_frozen_constraint_expression(
+        constraint.left,
+        bindings,
+        width=width,
+    )
+    right = _evaluate_frozen_constraint_expression(
+        constraint.right,
+        bindings,
+        width=width,
+    )
+    if isinstance(left, _UnboundFrozenConstraintTerm):
+        if constraint.operation != "eq" or isinstance(
+            right, _UnboundFrozenConstraintTerm
+        ):
+            return False
+        bindings[left.name] = right
+        return True
+    if isinstance(right, _UnboundFrozenConstraintTerm):
+        if constraint.operation != "eq":
+            return False
+        bindings[right.name] = left
+        return True
+    return _compare_frozen_constraint_terms(
+        constraint.operation,
+        left,
+        right,
+        width=width,
+    )
+
+
 def evaluate_frozen_constraints(
     constraints: tuple[FrozenConstraint, ...],
     bindings: dict[str, TypedBvTerm],
@@ -849,27 +1017,10 @@ def evaluate_frozen_constraints(
 
     for constraint in constraints:
         try:
-            left = _evaluate_frozen_constraint_expression(
-                constraint.left,
-                bindings,
-                width=width,
-            )
-            right = _evaluate_frozen_constraint_expression(
-                constraint.right,
-                bindings,
-                width=width,
-            )
+            matched = _evaluate_frozen_constraint(constraint, bindings, width=width)
         except (TypeError, ValueError):
             return False
-        if isinstance(left, _UnboundFrozenConstraintTerm):
-            if isinstance(right, _UnboundFrozenConstraintTerm):
-                return False
-            bindings[left.name] = right
-            continue
-        if isinstance(right, _UnboundFrozenConstraintTerm):
-            bindings[right.name] = left
-            continue
-        if left != right:
+        if not matched:
             return False
     return True
 

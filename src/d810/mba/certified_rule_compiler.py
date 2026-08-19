@@ -44,7 +44,7 @@ _SUPPORTED_OPERATIONS = frozenset(
 )
 _UNARY_OPERATIONS = frozenset({"bnot", "neg"})
 _AC_OPERATIONS = frozenset({"add", "and", "mul", "or", "xor"})
-_SUPPORTED_COMPARISON_OPERATIONS = frozenset({"ne", "lt", "gt", "le", "ge"})
+_SUPPORTED_COMPARISON_OPERATIONS = frozenset({"eq", "ne", "lt", "gt", "le", "ge"})
 
 
 def _verification_engine() -> Any:
@@ -713,6 +713,129 @@ def _evaluate_constraint_expression(
     )
 
 
+def _constraint_operation(constraint: Any) -> str:
+    comparison = getattr(constraint, "op_name", None)
+    if comparison is not None:
+        if comparison not in _SUPPORTED_COMPARISON_OPERATIONS - {"eq"}:
+            raise ValueError(f"unsupported comparison operation: {comparison}")
+        return comparison
+    if hasattr(constraint, "operand") and not hasattr(constraint, "left"):
+        return "not"
+    constraint_name = type(constraint).__name__
+    if constraint_name == "AndConstraint":
+        return "and"
+    if constraint_name == "OrConstraint":
+        return "or"
+    if hasattr(constraint, "left") and hasattr(constraint, "right"):
+        return "eq"
+    raise ValueError(f"unsupported constraint type: {type(constraint).__name__}")
+
+
+def _unsigned_constraint_value(term: Any, *, width: int) -> int | None:
+    if not isinstance(term, TypedBvTerm):
+        return None
+    if term.width != width or term.operation is not None or term.value is None:
+        return None
+    return int(term.value) & ((1 << width) - 1)
+
+
+def _compare_constraint_terms(
+    operation: str,
+    left: Any,
+    right: Any,
+    *,
+    width: int,
+) -> bool:
+    if operation == "eq":
+        return left == right
+    if operation == "ne":
+        left_value = _unsigned_constraint_value(left, width=width)
+        right_value = _unsigned_constraint_value(right, width=width)
+        if left_value is not None and right_value is not None:
+            return left_value != right_value
+        return left != right
+    left_value = _unsigned_constraint_value(left, width=width)
+    right_value = _unsigned_constraint_value(right, width=width)
+    if left_value is None or right_value is None:
+        return False
+    match operation:
+        case "lt":
+            return left_value < right_value
+        case "gt":
+            return left_value > right_value
+        case "le":
+            return left_value <= right_value
+        case "ge":
+            return left_value >= right_value
+        case _:
+            raise ValueError(f"unsupported comparison operation: {operation}")
+
+
+def _match_constraint(
+    constraint: Any,
+    bindings: dict[str, Any],
+    *,
+    width: int,
+) -> bool:
+    operation = _constraint_operation(constraint)
+    if operation in {"and", "or"}:
+        left_constraint = getattr(constraint, "left", None)
+        right_constraint = getattr(constraint, "right", None)
+        if left_constraint is None or right_constraint is None:
+            return False
+        if operation == "and":
+            attempted = dict(bindings)
+            if not _match_constraint(left_constraint, attempted, width=width):
+                return False
+            if not _match_constraint(right_constraint, attempted, width=width):
+                return False
+            bindings.update(attempted)
+            return True
+        for branch in (left_constraint, right_constraint):
+            attempted = dict(bindings)
+            if _match_constraint(branch, attempted, width=width):
+                bindings.update(attempted)
+                return True
+        return False
+    if operation == "not":
+        operand = getattr(constraint, "operand", None)
+        if operand is None:
+            return False
+        return not _match_constraint(operand, dict(bindings), width=width)
+
+    left_expression = getattr(constraint, "left", None)
+    right_expression = getattr(constraint, "right", None)
+    if left_expression is None or right_expression is None:
+        return False
+    try:
+        left = _evaluate_constraint_expression(
+            left_expression,
+            bindings,
+            width=width,
+        )
+        right = _evaluate_constraint_expression(
+            right_expression,
+            bindings,
+            width=width,
+        )
+    except (TypeError, ValueError):
+        return False
+    if operation == "eq":
+        if isinstance(left, _UnboundSymbolicTerm):
+            if isinstance(right, _UnboundSymbolicTerm):
+                return False
+            bindings[left.name] = right
+            return True
+        if isinstance(right, _UnboundSymbolicTerm):
+            bindings[right.name] = left
+            return True
+    elif isinstance(left, _UnboundSymbolicTerm) or isinstance(
+        right, _UnboundSymbolicTerm
+    ):
+        return False
+    return _compare_constraint_terms(operation, left, right, width=width)
+
+
 def _constraints_match_term(
     rule: CompiledMbaRule,
     bindings: dict[str, Any],
@@ -720,30 +843,11 @@ def _constraints_match_term(
     width: int,
 ) -> bool:
     for constraint in rule.constraints:
-        if not hasattr(constraint, "left") or not hasattr(constraint, "right"):
-            return False
         try:
-            left = _evaluate_constraint_expression(
-                constraint.left,
-                bindings,
-                width=width,
-            )
-            right = _evaluate_constraint_expression(
-                constraint.right,
-                bindings,
-                width=width,
-            )
+            matched = _match_constraint(constraint, bindings, width=width)
         except (TypeError, ValueError):
             return False
-        if isinstance(left, _UnboundSymbolicTerm):
-            if isinstance(right, _UnboundSymbolicTerm):
-                return False
-            bindings[left.name] = right
-            continue
-        if isinstance(right, _UnboundSymbolicTerm):
-            bindings[right.name] = left
-            continue
-        if left != right:
+        if not matched:
             return False
     return True
 

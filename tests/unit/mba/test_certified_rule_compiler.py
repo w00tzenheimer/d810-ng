@@ -4,8 +4,13 @@ from __future__ import annotations
 
 import builtins
 import inspect
+import os
+import subprocess
+import sys
+import textwrap
 from collections import Counter
 from dataclasses import fields
+from types import SimpleNamespace
 
 import pytest
 
@@ -174,6 +179,234 @@ def test_compilation_does_not_load_provider_or_native_runtime_modules(monkeypatc
     monkeypatch.setattr(builtins, "__import__", guarded_import)
     catalogue = compile_mba_rule_catalogue()
     assert len(catalogue.compiled_rules) == 112
+
+
+def test_fresh_process_compilation_does_not_scan_provider_tree() -> None:
+    source_root = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..", "..", "..")
+    )
+    source_path = os.path.join(source_root, "src")
+    script = textwrap.dedent(
+        """
+        import builtins
+
+        attempted = []
+        real_import = builtins.__import__
+
+        def guarded_import(name, *args, **kwargs):
+            lowered = name.lower()
+            blocked = (
+                "egglog" in lowered
+                or lowered.startswith("ida_")
+                or lowered in {"idaapi", "idc", "idautils", "d810_egglog"}
+                or "d810.hexrays" in lowered
+                or (
+                    lowered.startswith("d810.speedups.")
+                    and lowered != "d810.speedups.bootstrap"
+                )
+            )
+            if blocked:
+                attempted.append(name)
+                raise AssertionError(f"forbidden provider/native import: {name}")
+            return real_import(name, *args, **kwargs)
+
+        builtins.__import__ = guarded_import
+        from d810.mba.certified_rule_compiler import compile_mba_rule_catalogue
+
+        catalogue = compile_mba_rule_catalogue()
+        assert len(catalogue.receipts) == 192
+        assert len(catalogue.compiled_rules) == 112
+        assert not attempted, attempted
+        """
+    )
+    env = dict(os.environ)
+    env["PYTHONPATH"] = source_path
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=source_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
+def test_unknown_verification_backend_fails_closed() -> None:
+    from d810.mba.backend_registry import get_verification_engine
+
+    with pytest.raises(ImportError, match="not available"):
+        get_verification_engine("missing")
+
+
+def _guard_rule(
+    name: str,
+    constraint,
+):
+    from d810.mba.certified_rule_compiler import (
+        CompiledMbaRule,
+        _enroll_admitted_rule,
+    )
+    from d810.mba.dsl import Const, Var
+    from d810.mba.rules._base import VerifiableRule
+
+    x, c1, c2 = Var("x"), Const("c1"), Const("c2")
+
+    class GuardRule(VerifiableRule):
+        PATTERN = (x + (c1 * Const("one", 1))) + c2
+        REPLACEMENT = x
+        CONSTRAINTS = [constraint]
+
+    GuardRule.__name__ = name
+    return _enroll_admitted_rule(
+        CompiledMbaRule(
+            source_name=name,
+            aliases=(),
+            rule_type=GuardRule,
+            proof_widths=(32,),
+            guarded=True,
+            family="add",
+        )
+    )
+
+
+def test_comparison_and_logical_guards_distinguish_identical_bindings() -> None:
+    from d810.mba.certified_rule_compiler import apply_compiled_rule_to_term
+    from d810.mba.dsl import Const
+
+    c1, c2 = Const("c1"), Const("c2")
+    eq_rule = _guard_rule("EqualityGuardRule", c1 == c2)
+    ne_rule = _guard_rule("InequalityGuardRule", c1 != c2)
+    logical_rule = _guard_rule("LogicalGuardRule", (c1 < c2) | (c1 == c2))
+
+    candidate = _node(
+        "add",
+        _node("add", _leaf("x"), _node("mul", _constant(1), _constant(1))),
+        _constant(1),
+    )
+    assert apply_compiled_rule_to_term(eq_rule, candidate) == _leaf("x")
+    assert apply_compiled_rule_to_term(ne_rule, candidate) is None
+    assert apply_compiled_rule_to_term(logical_rule, candidate) == _leaf("x")
+
+
+@pytest.mark.parametrize(
+    ("operation", "constraint_factory", "expected"),
+    [
+        ("ne", lambda left, right: left != right, True),
+        ("lt", lambda left, right: left < right, False),
+        ("le", lambda left, right: left <= right, False),
+        ("gt", lambda left, right: left > right, True),
+        ("ge", lambda left, right: left >= right, True),
+    ],
+)
+def test_comparison_guards_use_unsigned_fixed_width_values(
+    operation,
+    constraint_factory,
+    expected,
+) -> None:
+    from d810.mba.certified_rule_compiler import apply_compiled_rule_to_term
+    from d810.mba.dsl import Const
+
+    c1, c2 = Const("c1"), Const("c2")
+    rule = _guard_rule(
+        f"Unsigned{operation.title()}GuardRule",
+        constraint_factory(c1, c2),
+    )
+    candidate = _node(
+        "add",
+        _node(
+            "add",
+            _leaf("x"),
+            _node("mul", _constant(-1), _constant(1)),
+        ),
+        _constant(0),
+    )
+    result = apply_compiled_rule_to_term(rule, candidate)
+    assert (result == _leaf("x")) is expected
+
+
+def test_canonical_constraints_preserve_operator_semantics_and_fingerprints() -> None:
+    from d810.mba.canonical_pattern import (
+        compile_canonical_pattern,
+        evaluate_frozen_constraints,
+    )
+    from d810.mba.dsl import Const, Var
+    from d810.mba.rules._base import VerifiableRule
+
+    x, c1, c2 = Var("x"), Const("c1"), Const("c2")
+
+    def descriptor(constraint):
+        return SimpleNamespace(
+            pattern=(x + c1) + c2,
+            replacement=x,
+            constraints=(constraint,),
+            rule_type=VerifiableRule,
+            source_name="same-rule",
+            aliases=(),
+            family="add",
+            proof_widths=(32,),
+            guarded=True,
+        )
+
+    equality = compile_canonical_pattern(
+        descriptor(c1 == c2), width=32, declaration_index=0
+    )
+    inequality = compile_canonical_pattern(
+        descriptor(c1 != c2), width=32, declaration_index=0
+    )
+    logical = compile_canonical_pattern(
+        descriptor((c1 < c2) | (c1 == c2)), width=32, declaration_index=0
+    )
+    logical_and = compile_canonical_pattern(
+        descriptor((c1 == c2) & (c1 <= c2)), width=32, declaration_index=0
+    )
+    logical_not = compile_canonical_pattern(
+        descriptor(~(c1 != c2)), width=32, declaration_index=0
+    )
+    unsigned_less = compile_canonical_pattern(
+        descriptor(c1 < c2), width=32, declaration_index=0
+    )
+    unsigned_greater = compile_canonical_pattern(
+        descriptor(c1 > c2), width=32, declaration_index=0
+    )
+    equal_bindings = {
+        "x": _leaf("x"),
+        "c1": _constant(1),
+        "c2": _constant(1),
+    }
+    unsigned_bindings = {
+        "x": _leaf("x"),
+        "c1": _constant(-1),
+        "c2": _constant(0),
+    }
+
+    assert equality.constraints[0].operation == "eq"
+    assert inequality.constraints[0].operation == "ne"
+    assert logical.constraints[0].operation == "or"
+    assert logical_and.constraints[0].operation == "and"
+    assert logical_not.constraints[0].operation == "not"
+    assert evaluate_frozen_constraints(
+        equality.constraints, dict(equal_bindings), width=32
+    )
+    assert not evaluate_frozen_constraints(
+        inequality.constraints, dict(equal_bindings), width=32
+    )
+    assert evaluate_frozen_constraints(
+        logical.constraints, dict(equal_bindings), width=32
+    )
+    assert evaluate_frozen_constraints(
+        logical_and.constraints, dict(equal_bindings), width=32
+    )
+    assert evaluate_frozen_constraints(
+        logical_not.constraints, dict(equal_bindings), width=32
+    )
+    assert not evaluate_frozen_constraints(
+        unsigned_less.constraints, dict(unsigned_bindings), width=32
+    )
+    assert evaluate_frozen_constraints(
+        unsigned_greater.constraints, dict(unsigned_bindings), width=32
+    )
+    assert equality.semantic_fingerprint != inequality.semantic_fingerprint
 
 
 @pytest.mark.parametrize(
