@@ -374,7 +374,7 @@ So an unknown obfuscator that flattens with, say, an equality-chain dispatcher i
 
 ## Installation
 
-**D-810 ng supports IDA 9 or later with Python 3.10 or later.**
+**D-810 ng supports IDA 9 or later with Python 3.11 or later.**
 
 There are two supported installation paths: a managed HCLI installation for
 normal use, or an editable source checkout for development.
@@ -414,7 +414,7 @@ restart IDA before using D-810.
 
 The local Docker installation proof covers one target only: Linux ARM64,
 CPython 3.13, and IDA 9.4. The release matrix remains responsible for Linux
-x86-64, Windows x86-64, macOS x86-64, macOS ARM64, and CPython 3.10 through
+x86-64, Windows x86-64, macOS x86-64, macOS ARM64, and CPython 3.11 through
 3.13.
 
 ### Install from source

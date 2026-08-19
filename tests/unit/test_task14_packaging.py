@@ -46,6 +46,18 @@ def test_core_egraph_extra_points_only_to_the_external_provider() -> None:
     assert project["optional-dependencies"]["egraph"] == ["d810-egglog>=0.1.0"]
 
 
+def test_core_and_extension_python_floors_agree() -> None:
+    core_project = _metadata()["project"]
+    extension_project = tomllib.loads(
+        (ROOT.parent / "d810-egglog-extension" / "pyproject.toml").read_text(
+            encoding="utf-8"
+        )
+    )["project"]
+
+    assert core_project["requires-python"] == ">=3.11"
+    assert extension_project["requires-python"] == core_project["requires-python"]
+
+
 def test_core_release_version_is_the_extension_api_floor() -> None:
     source = (ROOT / "src/d810/__init__.py").read_text(encoding="utf-8")
     assert '__version__ = "1.0.0b2"' in source
@@ -54,6 +66,14 @@ def test_core_release_version_is_the_extension_api_floor() -> None:
 def test_core_readme_documents_the_external_egraph_install() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     assert "d810-egglog" in readme
+
+
+def test_core_readme_documents_the_supported_python_floor() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "Python 3.11 or later" in readme
+    assert "Python 3.10 or later" not in readme
+    assert "CPython 3.11 through" in readme
+    assert "CPython 3.10 through" not in readme
 
 
 def test_task14_blocked_import_snippet_uses_exported_registry_helper() -> None:
@@ -134,6 +154,7 @@ def test_core_wheel_metadata_record_and_installation(tmp_path: Path) -> None:
         metadata_name = next(name for name in names if name.endswith(".dist-info/METADATA"))
         metadata = archive.read(metadata_name).decode("utf-8")
         assert "Version: 1.0.0b2" in metadata
+        assert "Requires-Python: >=3.11" in metadata
         assert "Requires-Dist: d810-egglog>=0.1.0" in metadata
         assert "Requires-Dist: egglog" not in metadata
         assert "Requires-Dist: cloudpickle" not in metadata
